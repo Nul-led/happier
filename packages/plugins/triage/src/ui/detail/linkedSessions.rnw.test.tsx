@@ -14,11 +14,16 @@ import { TriageLinkedSessions } from './linkedSessions.js';
 
 const calls: Array<Readonly<{ action: string; input: unknown }>> = [];
 let openFails = false;
+let releaseOpen: (() => void) | null = null;
+let blockOpen = false;
 
 const renderHeader = defineUiSurface(function LinkedSessionHeader(_context: RenderContext): React.ReactElement {
   return (
     <TriageLinkedSessions
-      sessions={[{ sessionId: 'session-linked', displayTitle: 'Route repair' }]}
+      sessions={[
+        { sessionId: 'session-linked', displayTitle: 'Route repair' },
+        { sessionId: 'session-other', displayTitle: 'Parser cleanup' },
+      ]}
       hasMore
       onLoadMore={() => {}}
     />
@@ -30,6 +35,8 @@ const mounted: PluginUiTestkit[] = [];
 async function mountHeader() {
   calls.length = 0;
   openFails = false;
+  releaseOpen = null;
+  blockOpen = false;
   const fixture = await createPluginUiTestkit({
     identity: {
       pluginId: 'happier.triage',
@@ -43,6 +50,9 @@ async function mountHeader() {
     handlers: {
       executeAction: async ({ action, input }) => {
         calls.push({ action: String(action), input });
+        if (blockOpen) {
+          await new Promise<void>((resolve) => { releaseOpen = resolve; });
+        }
         if (openFails) throw new Error('open failed');
         return {};
       },
@@ -68,7 +78,12 @@ describe('common-header linked Sessions', () => {
     });
 
     expect(calls).toEqual([{ action: 'session.open', input: { sessionId: 'session-linked' } }]);
+    const failedRow = await header.getByRole('button', { name: 'Route repair' });
+    expect(failedRow.name).toBe('Route repair');
     await expect(header.getByText('This Session could not be opened.')).resolves.toBeDefined();
+    const failedButton = Array.from(document.querySelectorAll<HTMLElement>('[role="button"]'))
+      .find((button) => button.getAttribute('aria-label') === 'Route repair');
+    expect(failedButton?.textContent).toContain('This Session could not be opened.');
 
     openFails = false;
     await act(async () => {
@@ -76,5 +91,32 @@ describe('common-header linked Sessions', () => {
     });
     expect(calls).toHaveLength(2);
     await expect(header.queryByText('This Session could not be opened.')).resolves.toBeUndefined();
+  });
+
+  it('describes unavailable rows while another Session is opening', async () => {
+    const header = await mountHeader();
+    blockOpen = true;
+
+    await act(async () => {
+      await header.press(await header.getByRole('button', { name: 'Route repair' }));
+      await Promise.resolve();
+    });
+
+    const unavailable = await header.getByRole('button', {
+      name: 'Parser cleanup',
+      state: { disabled: true },
+    });
+    expect(unavailable.state?.disabled).toBe(true);
+    await expect(header.getByText('Another Session is opening.')).resolves.toBeDefined();
+    const unavailableButton = Array.from(document.querySelectorAll<HTMLElement>('[role="button"]'))
+      .find((button) => button.getAttribute('aria-label') === 'Parser cleanup');
+    expect(unavailableButton?.textContent).toContain('Another Session is opening.');
+
+    const release = releaseOpen;
+    if (release === null) throw new Error('the Session open did not reach the host');
+    await act(async () => {
+      release();
+      await Promise.resolve();
+    });
   });
 });

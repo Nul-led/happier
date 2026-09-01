@@ -15,6 +15,11 @@ type PiJsonStreamRpcClientParams = Readonly<{
   onEvent?: (record: Readonly<Record<string, unknown>>) => void;
 }>;
 
+type PiRpcResponseTimeout = number | Readonly<{
+  afterMs: number;
+  deferWhile: () => boolean;
+}>;
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
@@ -24,7 +29,7 @@ function readResponse(record: Readonly<Record<string, unknown>>): PiRpcResponse 
 }
 
 export type PiJsonStreamRpcClient = Readonly<{
-  send(command: PiRpcCommandWithoutId, timeoutMs?: number): Promise<PiRpcResponse>;
+  send(command: PiRpcCommandWithoutId, timeout?: PiRpcResponseTimeout): Promise<PiRpcResponse>;
   write(record: JsonValue): Promise<void>;
   onExit(listener: (result: PiJsonStreamRpcExit) => void): () => void;
   dispose(): Promise<void>;
@@ -161,11 +166,14 @@ export function createPiJsonStreamRpcClient(params: PiJsonStreamRpcClientParams)
   });
 
   return {
-    async send(command, timeoutMs = 30_000) {
+    async send(command, responseTimeout = 30_000) {
       const existingTerminal = readTerminal();
       if (existingTerminal) {
         throw existingTerminal.error;
       }
+      const timeoutMs = typeof responseTimeout === 'number'
+        ? responseTimeout
+        : responseTimeout.afterMs;
       const id = randomUUID();
       const payload: PiRpcCommand = { ...command, id } as PiRpcCommand;
       const response = new Promise<PiRpcResponse>((resolve, reject) => {
@@ -190,10 +198,21 @@ export function createPiJsonStreamRpcClient(params: PiJsonStreamRpcClientParams)
           },
         });
         const dispose = () => pending.delete(id);
-        timeout = setTimeout(() => {
-          if (dispose()) reject(new Error(`Pi ${command.type} command timed out`));
-        }, timeoutMs);
-        timeout.unref?.();
+        const scheduleResponseTimeout = () => {
+          timeout = setTimeout(() => {
+            timeout = undefined;
+            if (
+              typeof responseTimeout !== 'number'
+              && responseTimeout.deferWhile()
+            ) {
+              scheduleResponseTimeout();
+              return;
+            }
+            if (dispose()) reject(new Error(`Pi ${command.type} command timed out`));
+          }, timeoutMs);
+          timeout.unref?.();
+        };
+        scheduleResponseTimeout();
       });
       try {
         await params.handle.client.write(payload);

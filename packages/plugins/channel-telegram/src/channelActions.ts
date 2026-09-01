@@ -153,7 +153,12 @@ function materializationFailure(error: unknown): ConversationProviderFailureV1 {
 
 function readFailure(result: TelegramGetUpdatesResult): ConversationProviderFailureV1 {
   if (result.kind === 'providerConflict') {
-    return { kind: 'notReady', reason: 'providerConflict', diagnostic: result.diagnostic };
+    return {
+      kind: 'notReady',
+      reason: 'providerConflict',
+      ...(result.retryAfterMs === undefined ? {} : { retryAfterMs: result.retryAfterMs }),
+      diagnostic: result.diagnostic,
+    };
   }
   if (result.kind === 'updates') {
     return {

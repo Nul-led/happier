@@ -29,8 +29,8 @@ export type GitlabDetailTabIdV1 =
 
 /** Which read a panel's content comes from. */
 export type GitlabDetailTabReadPlaneV1 =
-  /** The applied observation only; this panel issues no provider read. */
-  | 'observation'
+  /** The authoritative item reread that supplies the current description and observation. */
+  | 'overview'
   /** The notes walk plus the three independently cursored resource-event walks. */
   | 'activity'
   /** The panel's own `/diffs` changed-file walk. */
@@ -69,8 +69,9 @@ export const GITLAB_DETAIL_TABS_V1: readonly GitlabDetailTabDeclarationV1[] = Ob
     title: 'Overview',
     titleKey: 'plugins.gitlab.ui.tabs.overview',
     retention: 'retain' as const,
-    retainedState: 'its one reader scroll anchor only; it holds no provider read to keep',
-    readPlane: 'observation' as const,
+    retainedState: 'its reader scroll anchor and settled provider description render model; leaving'
+      + ' aborts an in-flight read and clears transient read failure/action state',
+    readPlane: 'overview' as const,
     scrollOwner: 'scrollArea' as const,
     kinds: BOTH_KINDS,
   }),

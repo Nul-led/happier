@@ -89,6 +89,8 @@ type HarnessProps = Readonly<{
   onSelectedKeyChange?: (key: string) => void;
   onStore?: (store: ListMultiSelectionStore) => void;
   withActionBar?: boolean;
+  dismissLabel?: string;
+  onDismiss?: () => void;
   onAction?: (actionId: string, keys: readonly string[]) => void;
   query?: string;
   retainedSelectionKeys?: readonly string[];
@@ -129,6 +131,8 @@ function Harness(props: HarnessProps): React.ReactElement {
         <List.SelectionActionBar
           actions={[{ id: 'attach', label: 'Attach all' }]}
           onAction={props.onAction ?? (() => undefined)}
+          dismissLabel={props.dismissLabel}
+          onDismiss={props.onDismiss}
           testID="bulk-bar"
         />
       ) : undefined}
@@ -411,6 +415,30 @@ describe('List multi-selection capability', () => {
       clear?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
     });
     expect(mounted.container.textContent).not.toContain('Attach all');
+    mounted.unmount();
+  });
+
+  it('keeps one dismiss control while letting a live operation name that control truthfully', async () => {
+    let dismisses = 0;
+    const mounted = mount(
+      <Harness
+        withActionBar
+        dismissLabel="Stop"
+        onDismiss={() => { dismisses += 1; }}
+      />,
+    );
+
+    await pressRow(mounted.container, 'Bravo', { ctrlKey: true });
+
+    const buttons = Array.from(mounted.container.querySelectorAll<HTMLElement>('[role="button"]'));
+    expect(buttons.filter((button) => button.textContent?.includes('Stop'))).toHaveLength(1);
+    expect(buttons.some((button) => button.textContent?.includes('Clear selection'))).toBe(false);
+
+    const stop = buttons.find((button) => button.textContent?.includes('Stop'));
+    await act(async () => {
+      stop?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    });
+    expect(dismisses).toBe(1);
     mounted.unmount();
   });
 

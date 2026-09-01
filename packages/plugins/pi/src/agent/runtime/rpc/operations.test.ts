@@ -752,6 +752,15 @@ describe('createPiRuntimeOperations', () => {
       result: { matches: 2 },
       isError: false,
     });
+    await emit(capture, {
+      type: 'message_update',
+      assistantMessageEvent: { type: 'text_end', contentIndex: 0, content: 'final answer' },
+      message: { role: 'assistant', content: [{ type: 'text', text: 'final answer' }] },
+    });
+    await emit(capture, {
+      type: 'message_end',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'final answer' }] },
+    });
     await emit(capture, { type: 'turn_end', turnId: 'provider-turn-1' });
     await emit(capture, { type: 'agent_end', willRetry: false });
 
@@ -769,6 +778,7 @@ describe('createPiRuntimeOperations', () => {
     expect(parsedEvents.filter((event) => event.kind === 'message-delta')).toEqual([
       expect.objectContaining({ channel: 'assistant', text: 'hel' }),
       expect.objectContaining({ channel: 'assistant', text: 'lo' }),
+      expect.objectContaining({ channel: 'assistant', text: 'final answer' }),
     ]);
     expect(parsedEvents).toEqual(expect.arrayContaining([
       expect.objectContaining({
@@ -1031,6 +1041,93 @@ describe('createPiRuntimeOperations', () => {
       inputIds: ['pi-input-43'],
       delivery: { kind: 'newTurn', turnId: 'pi-turn-43' },
     })]);
+  });
+
+  it('keeps prompt admission pending while Pi compacts, then accepts the delayed exact response', async () => {
+    vi.useFakeTimers();
+    try {
+      const capture: Capture = { specs: [], written: [] };
+      const runtime = await createRuntime(capture);
+      const events: AgentSessionRuntimeEvent[] = [];
+      runtime.watch((event) => events.push(event));
+
+      let settled = false;
+      const prompt = sendPrompt(runtime, 'continue after compaction', {
+        inputIds: ['pi-input-delayed-by-compaction'],
+        delivery: { kind: 'newTurn', turnId: 'pi-turn-delayed-by-compaction' },
+      }).finally(() => {
+        settled = true;
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      await emit(capture, { type: 'compaction_start', reason: 'threshold' });
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      expect(settled).toBe(false);
+      expect(events.some((event) => event.kind === 'input-custody-unknown')).toBe(false);
+
+      await emit(capture, {
+        type: 'compaction_end',
+        reason: 'threshold',
+        success: true,
+      });
+      await ackLastCommand(capture);
+
+      await expect(prompt).resolves.toEqual({ status: 'admitted' });
+      expect(events.filter((event) => event.kind === 'input-accepted')).toEqual([
+        expect.objectContaining({
+          inputIds: ['pi-input-delayed-by-compaction'],
+          delivery: { kind: 'newTurn', turnId: 'pi-turn-delayed-by-compaction' },
+        }),
+      ]);
+      await runtime.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('restores the prompt response-loss deadline after Pi compaction finishes', async () => {
+    vi.useFakeTimers();
+    try {
+      const capture: Capture = { specs: [], written: [] };
+      const runtime = await createRuntime(capture);
+      const events: AgentSessionRuntimeEvent[] = [];
+      runtime.watch((event) => events.push(event));
+
+      let result: Awaited<ReturnType<typeof sendPrompt>> | undefined;
+      void sendPrompt(runtime, 'lost response after compaction', {
+        inputIds: ['pi-input-lost-after-compaction'],
+        delivery: { kind: 'newTurn', turnId: 'pi-turn-lost-after-compaction' },
+      }).then((value) => {
+        result = value;
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      await emit(capture, { type: 'compaction_start', reason: 'threshold' });
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(result).toBeUndefined();
+
+      await emit(capture, {
+        type: 'compaction_end',
+        reason: 'threshold',
+        success: true,
+      });
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      expect(result).toMatchObject({
+        status: 'rejected',
+        diagnostic: expect.objectContaining({ code: 'pi_input_outcome_unknown' }),
+      });
+      expect(events).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'input-custody-unknown',
+          inputIds: ['pi-input-lost-after-compaction'],
+        }),
+      ]));
+      await runtime.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('keeps ambiguous prompt response loss custody unknown when generic Pi stream activity was buffered', async () => {

@@ -145,7 +145,7 @@ export type GithubPullRequestReviewPublicationOutcomeV1 =
   }>
   | Readonly<{
     kind: 'rejected';
-    reason: 'admission_failed' | 'base_advanced' | 'head_advanced' | 'dispatch_claim_failed'
+    reason: 'invalid_input' | 'admission_failed' | 'base_advanced' | 'head_advanced' | 'dispatch_claim_failed'
       | 'unsupported_anchor' | 'state_changed' | 'provider_rejected';
     observation?: ProjectedObservation;
     failure?: TriageSourceFailureV1;
@@ -371,6 +371,9 @@ export async function publishGithubPullRequestReview(
   }>,
   dependencies: GithubMutationDependenciesV1,
 ): Promise<GithubPullRequestReviewPublicationOutcomeV1> {
+  if (input.publicationPlan.verdict === null) {
+    return Object.freeze({ kind: 'rejected' as const, reason: 'invalid_input' as const });
+  }
   const repositories = openResolver(dependencies);
   const current = reduce(
     await readGithubPullRequest(input.localRef, input.route, repositories, dependencies),
@@ -576,7 +579,7 @@ export async function publishGithubPullRequestReview(
           })(),
       },
     );
-    await input.settlePublicationDispatch?.(claim, publication).catch(() => undefined);
+    await input.settlePublicationDispatch?.(claim, publication);
     const confirmedPullRequest = await confirm(
       input.localRef,
       input.route,
@@ -615,15 +618,13 @@ export async function publishGithubPullRequestReview(
         ? GITHUB_REVIEW_EVENT_BY_VERDICT[input.publicationPlan.verdict?.kind ?? 'comment']
         : GITHUB_REVIEW_EVENT_BY_VERDICT.comment,
       body: [
-        ...(claim.instructions.verdict === 'dispatch' && input.publicationPlan.verdict !== null
-          ? [input.publicationPlan.verdict.body]
-          : []),
+        input.publicationPlan.verdict.body,
         ...dispatchSummaryEntries.map((entry) => {
           const correlation = correlationByCommentId.get(entry.happierCommentId)!;
           return `${entry.body}\n\n${formatReviewCommentPublicationMarkerV1('entry', correlation)}`;
         }),
         ...(claim.instructions.verdict === 'dispatch' && verdictMarker !== null ? [verdictMarker] : []),
-      ].join('\n\n') || 'Review comments',
+      ].join('\n\n'),
       comments,
     },
   });
@@ -806,7 +807,7 @@ export async function publishGithubPullRequestComment(
         verdict: { kind: 'notRequested' },
       },
     );
-    await input.settlePublicationDispatch?.(claim, publication).catch(() => undefined);
+    await input.settlePublicationDispatch?.(claim, publication);
     const confirmed = await confirm(input.localRef, input.route, repositories, dependencies);
     return Object.freeze({
       kind: 'settled' as const,
@@ -838,7 +839,7 @@ export async function publishGithubPullRequestComment(
         verdict: { kind: 'notRequested' },
       },
     );
-    await input.settlePublicationDispatch?.(claim, publication).catch(() => undefined);
+    await input.settlePublicationDispatch?.(claim, publication);
     const confirmed = await confirm(input.localRef, input.route, repositories, dependencies);
     return Object.freeze({
       kind: 'settled' as const,

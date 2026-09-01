@@ -27,6 +27,7 @@ import {
 } from '@happier-dev/triage-sources/ui';
 
 import { BITBUCKET_PLUGIN_ID } from '../../bitbucketContracts.js';
+import { projectBitbucketPullRequestAffordancesV1 } from '../../triage/capabilities.js';
 import {
   BITBUCKET_TRIAGE_MUTATION_ACTION_IDS,
   BitbucketCommentResolutionResultV1Schema,
@@ -649,7 +650,10 @@ export function BitbucketMutationControls({
       ));
   }, [completeMutation, decline, input.instance, input.observation.locator, localRef]);
 
-  if (overview.state.presentation !== 'active') return null;
+  const affordances = projectBitbucketPullRequestAffordancesV1(
+    overview.state.presentation === 'active' ? 'OPEN' : null,
+  );
+  if (!affordances.merge && !affordances.decline) return null;
 
   const mergeSettled = projectSettledMutation('merge', merge.execution, text);
   const declineSettled = projectSettledMutation('decline', decline.execution, text);
@@ -664,7 +668,7 @@ export function BitbucketMutationControls({
       />
       <BitbucketReviewPublicationControls input={input} />
       <Divider />
-      <Stack gap="small">
+      {!affordances.merge ? null : <Stack gap="small">
         <Form.Select
           label={text('plugins.bitbucket.ui.mutations.merge.strategy', 'Merge strategy')}
           options={[
@@ -735,8 +739,8 @@ export function BitbucketMutationControls({
           />
         </Row>
         <SettledMutationBanner settled={mergeSettled} />
-      </Stack>
-      <Stack gap="small">
+      </Stack>}
+      {!affordances.decline ? null : <Stack gap="small">
         <Text
           variant="caption"
           tone="neutral"
@@ -753,7 +757,7 @@ export function BitbucketMutationControls({
           />
         </Row>
         <SettledMutationBanner settled={declineSettled} />
-      </Stack>
+      </Stack>}
     </Stack>
   );
 }

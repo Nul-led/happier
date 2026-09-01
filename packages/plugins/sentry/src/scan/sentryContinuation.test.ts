@@ -105,6 +105,8 @@ describe('encodeSentryScanContinuation', () => {
       .toBe(false);
     expect(decodeSentryScanContinuation(JSON.stringify({ ...base, sort: 'freq' })).ok).toBe(false);
     expect(decodeSentryScanContinuation(JSON.stringify({ ...base, cursor: '' })).ok).toBe(false);
+    expect(decodeSentryScanContinuation(JSON.stringify({ ...base, unexpected: true })).ok)
+      .toBe(false);
     // A probe is a saved position plus the schedule that moves it. A record
     // whose schedule this side could not have produced — a step count outside
     // its own wait, a wait that is not a doubling of the first one, an empty

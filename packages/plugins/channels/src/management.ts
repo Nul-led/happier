@@ -133,12 +133,11 @@ import {
   readConversationConnectionSharedEndpointInputModes,
   readConversationConnectionUpdateRow,
   assertConversationBindingInputModeIsDeliverable,
-  hasConversationBindingDeliveryDemandChanged,
+  commitConversationBindingMutation,
   mutateConversationConnectionLifecycleInAccountCollection,
   setConversationBindingEnabledInAccountCollection,
   updateConversationBindingPolicyInAccountCollection,
   updateConversationConnectionInAccountCollection,
-  withConversationBindingPolicy,
   withConversationConnectionLifecycle,
   type ChannelStateJsonRecord as JsonRecord,
   type ChannelStateRow as StateRow,
@@ -1040,7 +1039,12 @@ function isRequestedTransferAlreadyCurrent(input: Readonly<{
       input.transferInput.credentialRef,
     )
     && isJsonRecord(transport)
-    && transport.kind === input.transferInput.selectedTransport;
+    && transport.kind === input.transferInput.selectedTransport
+    && (
+      input.transferInput.selectedTransport !== 'durablePush'
+      || own(transport, 'webhookEndpointId')
+        === input.transferInput.endpointContinuation?.webhookEndpointId
+    );
 }
 
 /** A lost transfer response may rejoin only the one immediate committed transfer CAS. */
@@ -1052,7 +1056,9 @@ function isImmediateLostTransferCommit(input: Readonly<{
   const pending = input.current.lifecycle.pendingOldTransportStop;
   const transport = own(input.current.payload, 'transport');
   return input.transferInput.expectedRevision < Number.MAX_SAFE_INTEGER
+    && input.transferInput.expectedAuthorityEpoch < Number.MAX_SAFE_INTEGER
     && input.row.revision === input.transferInput.expectedRevision + 1
+    && input.current.lifecycle.authorityEpoch === input.transferInput.expectedAuthorityEpoch + 1
     && isRequestedTransferAlreadyCurrent({
       current: input.current,
       transferInput: input.transferInput,
@@ -1061,10 +1067,11 @@ function isImmediateLostTransferCommit(input: Readonly<{
       && pending.stopRequest.reason === 'transfer'
       && pending.stopRequest.connectionId === input.transferInput.connectionId
       && pending.stopRequest.authorityEpoch === input.current.lifecycle.authorityEpoch)
-      || (pending === null
-        && isJsonRecord(transport)
-        && transport.kind === 'durablePush'
-        && input.transferInput.selectedTransport === 'durablePush'));
+      // A transfer whose predecessor needs no provider stop commits in one
+      // retained-row revision with no pending slot. Exact requested-state
+      // equality above makes rejoining that same committed outcome safe for
+      // both durable-push retargets and durable-push detachment onto pull.
+      || (pending === null && isJsonRecord(transport)));
 }
 
 function assertTransferStartAccepted(input: ReturnType<typeof startConversationConnectionTransfer>): Extract<
@@ -4354,12 +4361,6 @@ async function mutateConversationBinding(
     };
   }
 
-  const next = withConversationBindingPolicy({
-    row,
-    current,
-    binding: transition.binding,
-    updatedAt: Date.now(),
-  });
   const projectionFrontier = didSessionProjectionTargetChange(
     current.binding.target,
     transition.binding.target,
@@ -4392,43 +4393,31 @@ async function mutateConversationBinding(
     });
     if (finalCurrent.kind !== 'current') return finalCurrent;
   }
-  const demandChanged = hasConversationBindingDeliveryDemandChanged(
-    current.binding,
-    transition.binding,
-  );
-  const result = await collection.batch([
-    demandChanged
-      ? {
-        kind: 'put' as const,
-        value: connectionRow.value,
-        expectedRevision: connectionRow.revision,
-      }
-      : {
-        kind: 'assert' as const,
-        rowId: current.binding.connectionId,
-        expectedRevision: connectionRow.revision,
-      },
-    { kind: 'put', value: next, expectedRevision: row.revision },
-    ...(projectionFrontier === null
+  const result = await commitConversationBindingMutation({
+    collection,
+    row,
+    current,
+    connectionRow,
+    binding: transition.binding,
+    updatedAt: Date.now(),
+    additionalMutations: projectionFrontier === null
       ? []
       : [{
         kind: 'put' as const,
         value: projectionFrontier,
         expectedRevision: projectionFrontierExpectedRevision,
-      }]),
-  ], { signal: context.signal });
-  assertNotAborted(context.signal);
-  if (result.status === 'conflict') {
+      }],
+    signal: context.signal,
+    assertCurrent: () => assertNotAborted(context.signal),
+  });
+  if (result.kind === 'conflict') {
     throw pluginError(
       `${operation}_conflict`,
       'Binding mutation lost its retained-row compare-and-swap.',
       true,
     );
   }
-  const persisted = result.results.find((entry) => (
-    entry.rowId === updateInput.bindingId && entry.deleted === false
-  ));
-  if (persisted === undefined) {
+  if (result.kind === 'invalidResult') {
     throw pluginError(
       `${operation}_result_invalid`,
       'Binding mutation batch did not return its retained row result.',
@@ -4438,7 +4427,7 @@ async function mutateConversationBinding(
   return {
     kind: 'updated',
     bindingId: updateInput.bindingId,
-    revision: persisted.revision,
+    revision: result.revision,
     authorityEpoch: transition.binding.authorityEpoch,
   };
 }
@@ -4672,7 +4661,7 @@ export async function createConversationConnectionForInvocation(
 
   if (createInput.selectedTransport === 'durablePush') {
     if (createInput.endpointContinuation === undefined) {
-      return await prepareEndpointRequiredConnectionCreation({
+      return await prepareEndpointRequiredConnectionJourney({
         connectionId,
         setup: prepared.setup,
         transportOrigin: prepared.transportOrigin,
@@ -4721,12 +4710,13 @@ function readDurablePushWebhookContribution(
 }
 
 /**
- * The first durable-push create call. It persists nothing and holds no
- * transaction: it returns the preallocated final connection identity plus the
- * exact generic endpoint-ensure facts, and the present-user UI performs the
- * endpoint effect through the existing host Action.
+ * The first durable-push call of a create or transfer journey. It persists
+ * nothing and holds no transaction: it returns the journey's final connection
+ * identity (preallocated for create, the incumbent identity for transfer)
+ * plus the exact generic endpoint-ensure facts, and the present-user UI
+ * performs the endpoint effect through the existing host Action.
  */
-async function prepareEndpointRequiredConnectionCreation(input: Readonly<{
+async function prepareEndpointRequiredConnectionJourney(input: Readonly<{
   connectionId: string;
   setup: ConversationProviderSetupResultV1;
   transportOrigin: ConnectionTransportOrigin;
@@ -4875,6 +4865,44 @@ async function continueDurablePushConnectionCreation(input: Readonly<{
     });
   }
   return outcome;
+}
+
+/**
+ * Admits the endpoint continuation of a transfer converting onto durable
+ * push. The retained connection has no endpoint to retarget, so the generic
+ * webhook owner must already correspond to the exact replacement
+ * materialization before the transfer CAS can use it.
+ */
+async function admitDurablePushTransferEndpointContinuation(input: Readonly<{
+  context: PluginInvocationContext;
+  connectionId: string;
+  setup: ConversationProviderSetupResultV1;
+  transportOrigin: ConnectionTransportOrigin;
+  continuation: NonNullable<ConversationConnectionTransferInputV1['endpointContinuation']>;
+}>): Promise<ConversationConnectionWebhookEndpoint> {
+  if (input.continuation.connectionId !== input.connectionId) {
+    throw pluginError(
+      'channels_connection_transfer_endpoint_mismatch',
+      'The endpoint continuation does not belong to this connection transfer.',
+    );
+  }
+  const webhookEndpointId = readCanonicalConversationWebhookEndpointId(
+    input.continuation.webhookEndpointId,
+  );
+  const webhookContribution = readDurablePushWebhookContribution(input.setup);
+  await assertConversationConnectionWebhookEndpointCorrespondence({
+    context: input.context,
+    webhookEndpointId,
+    webhookContribution,
+    targetMaterialization: input.transportOrigin.materializationRef,
+    sourceInstanceId: conversationConnectionWebhookSourceInstanceIdV1(input.connectionId),
+  });
+  assertNotAborted(input.context.signal);
+  return {
+    webhookContributionRef: webhookContribution,
+    webhookEndpointId,
+    webhookSourceInstanceId: conversationConnectionWebhookSourceInstanceIdV1(input.connectionId),
+  };
 }
 
 function assertTransferProviderPluginIdentity(input: Readonly<{
@@ -5053,9 +5081,17 @@ async function rejoinCommittedConversationConnectionTransfer(input: Readonly<{
   row: StateRow;
   current: ConversationConnectionUpdateRow;
 }>, context: PluginInvocationContext): Promise<ConversationConnectionTransferResult> {
-  if (readTransferTransportKind(input.current) === 'durablePush') {
+  if (input.current.lifecycle.pendingOldTransportStop === null) {
     return {
       kind: 'transferred',
+      connectionId: input.connectionId,
+      revision: input.row.revision,
+      authorityEpoch: input.current.lifecycle.authorityEpoch,
+    };
+  }
+  if (readTransferTransportKind(input.current) === 'durablePush') {
+    return {
+      kind: 'transferPendingOldStop',
       connectionId: input.connectionId,
       revision: input.row.revision,
       authorityEpoch: input.current.lifecycle.authorityEpoch,
@@ -5086,7 +5122,10 @@ export async function transferConversationConnectionForInvocation(
     throw pluginError('channels_connection_transfer_not_found', 'Connection transfer target does not exist.');
   }
   const current = readConversationConnectionUpdateRow({ row, connectionId: transferInput.connectionId });
-  if (row.revision !== transferInput.expectedRevision) {
+  if (
+    row.revision !== transferInput.expectedRevision
+    || current.lifecycle.authorityEpoch !== transferInput.expectedAuthorityEpoch
+  ) {
     // A lost transfer response never replays setup or test. The frozen stop is
     // idempotent and addressed to the exact retired origin, so its replay is
     // the one settlement this Action still owns for its committed custody.
@@ -5105,10 +5144,13 @@ export async function transferConversationConnectionForInvocation(
     );
   }
   const oldTransport = readTransferTransportKind(current);
-  if ((oldTransport === 'durablePush') !== (transferInput.selectedTransport === 'durablePush')) {
+  if (
+    transferInput.endpointContinuation !== undefined
+    && (oldTransport === 'durablePush' || transferInput.selectedTransport !== 'durablePush')
+  ) {
     throw pluginError(
-      'channels_connection_transfer_transport_change_unsupported',
-      'Connection transfer cannot change to or from durable push; create a separate connection for that transport change.',
+      'channels_connection_transfer_endpoint_mismatch',
+      'Only a transfer from a non-webhook transport onto durable push accepts an endpoint continuation.',
     );
   }
   const initialFrozenOldStopRequest = createTransferStopRequest({
@@ -5171,7 +5213,10 @@ export async function transferConversationConnectionForInvocation(
     row: postSetupRow,
     connectionId: transferInput.connectionId,
   });
-  if (postSetupRow.revision !== transferInput.expectedRevision) {
+  if (
+    postSetupRow.revision !== transferInput.expectedRevision
+    || postSetupCurrent.lifecycle.authorityEpoch !== transferInput.expectedAuthorityEpoch
+  ) {
     if (isImmediateLostTransferCommit({
       row: postSetupRow,
       current: postSetupCurrent,
@@ -5219,6 +5264,16 @@ export async function transferConversationConnectionForInvocation(
       reason: 'permissionMissing',
       diagnostic: `The replacement integration cannot deliver ${unsatisfiableAfterTransfer.join(', ')} for shared conversations, which saved bindings on this connection require.`,
     };
+  }
+
+  if (transferInput.selectedTransport === 'durablePush'
+    && oldTransport !== 'durablePush'
+    && transferInput.endpointContinuation === undefined) {
+    return await prepareEndpointRequiredConnectionJourney({
+      connectionId: transferInput.connectionId,
+      setup: prepared.setup,
+      transportOrigin: prepared.transportOrigin,
+    });
   }
 
   const incumbentRow = postSetupRow;
@@ -5269,13 +5324,12 @@ export async function transferConversationConnectionForInvocation(
     },
   }));
 
-  const durablePushEndpoint = oldTransport === 'durablePush'
-    ? readDurablePushTransferEndpoint({
+  let durablePushEndpoint: ConversationConnectionWebhookEndpoint | undefined;
+  if (oldTransport === 'durablePush' && transferInput.selectedTransport === 'durablePush') {
+    durablePushEndpoint = readDurablePushTransferEndpoint({
       current: incumbent,
       connectionId: transferInput.connectionId,
-    })
-    : undefined;
-  if (durablePushEndpoint !== undefined) {
+    });
     await retargetConversationConnectionWebhookEndpointForTransfer({
       context,
       connectionId: transferInput.connectionId,
@@ -5289,11 +5343,27 @@ export async function transferConversationConnectionForInvocation(
       nextTargetMaterialization: prepared.transportOrigin.materializationRef,
     });
     assertNotAborted(context.signal);
+  } else if (transferInput.selectedTransport === 'durablePush') {
+    if (transferInput.endpointContinuation === undefined || oldTransport === 'durablePush') {
+      throw pluginError(
+        'channels_connection_transfer_endpoint_required',
+        'Connection transfer onto durable push requires its exact endpoint continuation.',
+      );
+    }
+    durablePushEndpoint = await admitDurablePushTransferEndpointContinuation({
+      context,
+      connectionId: transferInput.connectionId,
+      setup: prepared.setup,
+      transportOrigin: prepared.transportOrigin,
+      continuation: transferInput.endpointContinuation,
+    });
   }
 
-  const settledLifecycle = durablePushEndpoint === undefined
-    ? lifecycleStart.connection
-    : (() => {
+  // A prior durable-push transport has no provider worker to stop. Moving
+  // away detaches only the Channels reference, while the generic webhook
+  // owner retains endpoint lifecycle independently.
+  const settledLifecycle = oldTransport === 'durablePush'
+    ? (() => {
       const finalized = finalizeConversationConnectionTransferWithoutProviderStop({
         current: lifecycleStart.connection,
       });
@@ -5305,7 +5375,8 @@ export async function transferConversationConnectionForInvocation(
         );
       }
       return finalized.connection;
-    })();
+    })()
+    : lifecycleStart.connection;
 
   // The selected immutable contributor is re-read after every external or
   // storage boundary; only that exact current generation may receive a write.

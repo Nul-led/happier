@@ -223,6 +223,11 @@ export function decodePosthogSampledEventsContinuation(
         return null;
     }
     const raw = decoded as Readonly<Record<string, unknown>>;
+    const keys = Object.keys(raw);
+    if (keys.length !== 5 || !['v', 'from', 'to', 'offset', 'limit']
+        .every((key) => Object.prototype.hasOwnProperty.call(raw, key))) {
+        return null;
+    }
     const from = raw['from'];
     const to = raw['to'];
     const offset = raw['offset'];

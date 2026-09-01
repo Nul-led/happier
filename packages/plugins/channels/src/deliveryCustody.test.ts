@@ -367,6 +367,8 @@ describe('Channels outward delivery custody', () => {
         providerMessageIds: [],
         archiveRecovery: 'ownerMustUnarchiveOrRebind' as const,
       },
+      { state: 'partial' as const, attemptCount: 1, providerMessageIds: ['message-1'], failedChunk: 1 },
+      { state: 'outcomeUnknown' as const, attemptCount: 1, providerMessageIds: [] },
     ]) {
       expect(isConversationDeliveryContentFree(custody)).toBe(true);
     }
@@ -382,8 +384,6 @@ describe('Channels outward delivery custody', () => {
         startedAt: 100,
         providerMessageIds: [],
       },
-      { state: 'partial' as const, attemptCount: 1, providerMessageIds: ['message-1'], failedChunk: 1 },
-      { state: 'outcomeUnknown' as const, attemptCount: 1, providerMessageIds: [] },
       {
         state: 'notDelivered' as const,
         attemptCount: 1,
@@ -405,5 +405,11 @@ describe('Channels outward delivery custody', () => {
     } as const;
     expect(isConversationDeliveryRetentionEligible(recoverable)).toBe(true);
     expect(isConversationDeliveryContentFree(recoverable)).toBe(false);
+    expect(isConversationDeliveryRetentionEligible({
+      state: 'partial',
+      attemptCount: 1,
+      providerMessageIds: ['message-1'],
+      failedChunk: 1,
+    })).toBe(false);
   });
 });

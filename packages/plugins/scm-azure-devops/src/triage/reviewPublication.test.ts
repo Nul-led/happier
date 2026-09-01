@@ -187,6 +187,7 @@ function harness(input: Readonly<{
   pullRequests?: readonly unknown[];
   threadReads?: readonly unknown[];
   claimDisposition?: 'dispatch' | 'reconcile';
+  settlementError?: Error;
   respond?: (request: Captured) => Reply | undefined;
 }>) {
   const requests: Captured[] = [];
@@ -225,6 +226,13 @@ function harness(input: Readonly<{
       async execute(actionId: string, actionInput: unknown) {
         expect(actionId).toBe('reviews.comments.claimPublicationDispatch');
         claimedPlans.push(actionInput);
+        if (input.settlementError !== undefined
+          && typeof actionInput === 'object'
+          && actionInput !== null
+          && 'settlement' in actionInput
+          && actionInput.settlement !== undefined) {
+          throw input.settlementError;
+        }
         const candidate = actionInput as ReviewCommentPublicationPlanV1;
         const disposition = input.claimDisposition ?? 'dispatch';
         return {
@@ -356,6 +364,20 @@ describe('Azure DevOps Reviews publication', () => {
       kind: 'settled',
       publication: { entries: [{ outcome: { kind: 'uncertain' } }] },
     });
+    expect(threadWrites(requests)).toHaveLength(0);
+  });
+
+  it('does not report settled when the canonical publication settlement fails', async () => {
+    const { context, requests } = harness({
+      threadReads: [
+        { value: [] },
+        { value: [{ id: 'not-an-integer', comments: [{ id: 4, content: 'possibly the marker' }] }] },
+      ],
+      settlementError: new Error('canonical settlement unavailable'),
+    });
+
+    await expect(submitAzureDevOpsPullRequestReview(request(plan()), context))
+      .rejects.toThrow('canonical settlement unavailable');
     expect(threadWrites(requests)).toHaveLength(0);
   });
 
@@ -669,6 +691,49 @@ describe('Azure DevOps Reviews publication', () => {
       threadContext: { filePath: 'src/index.ts' },
     });
     expect(threadWrites(requests)[0]?.body).not.toHaveProperty('pullRequestThreadContext');
+  });
+
+  it('refuses inline publication when iteration support is unknown without selecting legacy context', async () => {
+    const { context, requests, claimedPlans } = harness({
+      pullRequests: [pullRequest({ supportsIterations: undefined })],
+    });
+
+    const result = AzureReviewPublicationResultV1Schema.parse(
+      await submitAzureDevOpsPullRequestReview(request(plan()), context),
+    );
+
+    expect(result).toMatchObject({ kind: 'rejected', reason: 'unsupported-anchor' });
+    expect(claimedPlans).toHaveLength(0);
+    expect(providerWrites(requests)).toHaveLength(0);
+    expect(requests.some(({ url }) => new URL(url).pathname.toLowerCase().includes('/iterations')))
+      .toBe(false);
+  });
+
+  it('does not reject diff-less publication merely because iteration support is unknown', async () => {
+    const exactSummary = [
+      'Body summary-only', marker('A'.repeat(43)),
+      'Overall summary', verdictMarker(),
+    ].join('\n\n');
+    const { context, requests } = harness({
+      pullRequests: [pullRequest({ supportsIterations: undefined })],
+      threadReads: [
+        { value: [] },
+        { value: [] },
+        { value: [thread(110, [{ id: 111, content: exactSummary }])] },
+      ],
+    });
+
+    const result = AzureReviewPublicationResultV1Schema.parse(
+      await submitAzureDevOpsPullRequestReview(request(plan({
+        entries: [summaryEntry('summary-only')],
+        verdict: { kind: 'comment', body: 'Overall summary' },
+      })), context),
+    );
+
+    expect(result).toMatchObject({ kind: 'settled' });
+    expect(threadWrites(requests)).toHaveLength(1);
+    expect(requests.some(({ url }) => new URL(url).pathname.toLowerCase().includes('/iterations')))
+      .toBe(false);
   });
 
   it('binds an unversioned reply to its exact thread target and parent before claiming and posting', async () => {

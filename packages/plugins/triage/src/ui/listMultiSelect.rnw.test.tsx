@@ -835,7 +835,7 @@ describe('selecting several PRs & Issues rows', () => {
         expect(document.body.textContent).toContain('None of your configured actions');
     });
 
-    it('makes Clear cancel live work without hiding the selection or its progress owner', async () => {
+    it('shows one truthful Stop control for live work without hiding the selection or its progress owner', async () => {
         const harness = createHarness({ deferProjectsRead: true });
         const { shell } = await mountShell(harness);
         await pressRow('Replace the duplicated normalizer', { ctrlKey: true });
@@ -849,7 +849,10 @@ describe('selecting several PRs & Issues rows', () => {
         expect(harness.projectsSignal?.aborted).toBe(false);
 
         await act(async () => {
-            await shell.press(await shell.getByRole('button', { name: 'Clear selection' }));
+            const buttons = await shell.getAllByRole('button');
+            expect(buttons.filter((button) => button.name === 'Stop')).toHaveLength(1);
+            expect(buttons.some((button) => button.name === 'Clear selection')).toBe(false);
+            await shell.press(await shell.getByRole('button', { name: 'Stop' }));
         });
         await settle();
 

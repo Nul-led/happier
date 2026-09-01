@@ -49,12 +49,11 @@ import {
 /**
  * The panel-owned readers behind the GitLab detail body.
  *
- * Each reader's lifetime is the lifetime of the panel that owns its data, and
- * that is a structural fact here rather than a convention: every read below is
- * scoped to its panel's active interval, so leaving aborts the request, rejects
- * a late result, and discards every row the panel held. A tab that declares
- * `retain` keeps its list geometry and nothing else — the reducer is reset the
- * moment the panel becomes inactive.
+ * Each reader's request lifetime is the active interval of the panel that owns
+ * it. Leaving aborts the request and rejects a late result. Retained display
+ * state remains source-specific: Overview keeps its settled description and
+ * Changes keeps only List-owned viewport geometry while resetting provider rows
+ * and continuation through the shared paged reducer.
  *
  * That lifetime is also the rate budget. GitLab involvement scanning already
  * issues real provider work, and the Activity panel alone owns four independent
@@ -140,65 +139,82 @@ export function useGitlabOverview(
   const routingToken = useGitlabRoutingToken(input);
   const { instance } = input;
   const { active, activeSignal } = useTabPanelActivity();
+  const activeRequest = useRef<AbortSignal | null>(null);
+  const initialReadSettled = useRef(false);
   const [state, setState] = useState<Readonly<{
     value: GitlabOverviewValueV1 | null;
     refreshing: boolean;
     failure: TriageSourceFailureV1 | null;
   }>>({ value: null, refreshing: false, failure: null });
 
-  useEffect(() => {
-    if (active) return undefined;
-    setState((current) => current.refreshing || current.failure !== null
-      ? Object.freeze({ ...current, refreshing: false, failure: null })
-      : current);
-    return undefined;
-  }, [active]);
-
-  const refresh = useCallback(async (): Promise<void> => {
-    if (!active || state.refreshing) return;
+  const read = useCallback(async (signal: AbortSignal): Promise<void> => {
+    if (activeRequest.current !== null && !activeRequest.current.aborted) return;
     if (routingToken === null) {
       setState((current) => Object.freeze({
         ...current,
         refreshing: false,
         failure: ROUTE_UNAVAILABLE,
       }));
+      initialReadSettled.current = true;
       return;
     }
+    activeRequest.current = signal;
     setState((current) => Object.freeze({ ...current, refreshing: true, failure: null }));
-    const execution = await execute(
-      { v: 1, instance, localRef, routingToken },
-      { signal: activeSignal },
-    ) as ExecuteResult;
-    if (activeSignal.aborted) return;
-    if (execution.status !== 'success') {
-      setState((current) => Object.freeze({
-        ...current,
-        refreshing: false,
-        failure: dispatchFailure(
-          execution.status,
-          execution.code ?? 'gitlab-overview-read-failed',
-        ),
-      }));
-      return;
+    try {
+      const execution = await execute(
+        { v: 1, instance, localRef, routingToken },
+        { signal },
+      ) as ExecuteResult;
+      if (signal.aborted) return;
+      initialReadSettled.current = true;
+      if (execution.status !== 'success') {
+        setState((current) => Object.freeze({
+          ...current,
+          refreshing: false,
+          failure: dispatchFailure(
+            execution.status,
+            execution.code ?? 'gitlab-overview-read-failed',
+          ),
+        }));
+        return;
+      }
+      const parsed = GitlabOverviewResultV1Schema.safeParse(execution.result);
+      if (!parsed.success) {
+        setState((current) => Object.freeze({
+          ...current,
+          refreshing: false,
+          failure: UNREADABLE_RESULT,
+        }));
+      } else if (isGitlabOverviewUnavailable(parsed.data)) {
+        const failure = parsed.data.failure;
+        setState((current) => Object.freeze({
+          ...current,
+          refreshing: false,
+          failure,
+        }));
+      } else {
+        setState(Object.freeze({ value: parsed.data, refreshing: false, failure: null }));
+      }
+    } finally {
+      if (activeRequest.current === signal) activeRequest.current = null;
     }
-    const parsed = GitlabOverviewResultV1Schema.safeParse(execution.result);
-    if (!parsed.success) {
-      setState((current) => Object.freeze({
-        ...current,
-        refreshing: false,
-        failure: UNREADABLE_RESULT,
-      }));
-    } else if (isGitlabOverviewUnavailable(parsed.data)) {
-      const failure = parsed.data.failure;
-      setState((current) => Object.freeze({
-        ...current,
-        refreshing: false,
-        failure,
-      }));
-    } else {
-      setState(Object.freeze({ value: parsed.data, refreshing: false, failure: null }));
+  }, [execute, instance, localRef, routingToken]);
+
+  useEffect(() => {
+    if (!active) {
+      setState((current) => current.refreshing || current.failure !== null
+        ? Object.freeze({ ...current, refreshing: false, failure: null })
+        : current);
+      return undefined;
     }
-  }, [active, activeSignal, execute, instance, localRef, routingToken, state.refreshing]);
+    if (!initialReadSettled.current) void read(activeSignal);
+    return undefined;
+  }, [active, activeSignal, read]);
+
+  const refresh = useCallback(async (): Promise<void> => {
+    if (!active) return;
+    await read(activeSignal);
+  }, [active, activeSignal, read]);
 
   return useMemo(() => ({ ...state, refresh }), [refresh, state]);
 }

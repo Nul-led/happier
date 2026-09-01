@@ -602,7 +602,7 @@ describe('the mounted GitHub write controls', () => {
       .resolves.toMatchObject({ state: { checked: true } });
   });
 
-  it('dispatches the selected canonical proposal as a frozen comment-only publication plan', async () => {
+  it('keeps submit-review inert until its comment verdict has a user-authored summary', async () => {
     const detail = await mountDetail(
       { presentation: 'active', nativeLabel: 'Open' },
       'pull-request',
@@ -611,39 +611,10 @@ describe('the mounted GitHub write controls', () => {
     await waitForPublicationProposalRead(detail);
     await expect(detail.findByRole('checkbox', { name: 'The implementation is ready to merge.' }))
       .resolves.toMatchObject({ state: { checked: true } });
-    await act(async () => {
-      await detail.press(await detail.getByRole('button', { name: 'Submit review' }));
-    });
-    expect(recorded.at(-1)).toMatchObject({
-      action: {
-        pluginId: GITHUB_PLUGIN_ID,
-        localId: GITHUB_TRIAGE_MUTATION_ACTION_IDS_V1.pullRequestSubmitReview,
-      },
-      input: {
-        publicationPlan: {
-          target: {
-            providerId: 'github',
-            configuredAccountId: 'account-1',
-            subtarget: null,
-            entryRef: {
-              sourceId: `${GITHUB_PLUGIN_ID}/github-forge`,
-              kindId: 'pull-request',
-              collisionScope: 'github:1296269',
-              entryId: '1284',
-            },
-          },
-          baseRevision: '1b0847af63d5c1e299f2c1a7d4b6e08f3a5c9d2e',
-          headRevision: OBSERVED_HEAD,
-          entries: [{
-            happierCommentId: 'review-comment-1',
-            expectedServerRevision: 3,
-            anchor: { kind: 'line', filePath: 'src/index.ts', line: 12, side: 'after' },
-            body: 'The implementation is ready to merge.',
-          }],
-          verdict: null,
-        },
-      },
-    });
+    const submit = await detail.getByRole('button', { name: 'Submit review' });
+    expect(submit.state?.disabled).toBe(true);
+    await expect(act(async () => { await detail.press(submit); })).rejects.toThrow();
+    expect(recorded.filter((entry) => typeof entry.action === 'object')).toHaveLength(0);
   });
 
   it('keeps approve inert until its separate verdict summary is supplied', async () => {
@@ -691,7 +662,7 @@ describe('the mounted GitHub write controls', () => {
       },
     } as JsonValue;
     await act(async () => {
-      await detail.press(await detail.getByRole('button', { name: 'Submit review' }));
+      await detail.press(await detail.getByRole('button', { name: 'Publish selected comment' }));
     });
     await expect(detail.getByText(
       '1/2 review comments published; 1 unconfirmed; 0 not published. Verdict published.',
@@ -722,7 +693,7 @@ describe('the mounted GitHub write controls', () => {
       },
     } as JsonValue;
     await act(async () => {
-      await detail.press(await detail.getByRole('button', { name: 'Submit review' }));
+      await detail.press(await detail.getByRole('button', { name: 'Publish selected comment' }));
     });
     await expect(detail.getByText('Review partially published')).resolves.toMatchObject({
       content: 'Review partially published',

@@ -45,7 +45,6 @@ export const GITHUB_TRIAGE_DETAIL_ACTION_IDS_V1 = Object.freeze({
   listChangedFiles: 'triage/list-github-changed-files',
   readFeedback: 'triage/read-github-feedback',
   readChecks: 'triage/read-github-checks',
-  readReviews: 'triage/read-github-reviews',
 });
 
 /**

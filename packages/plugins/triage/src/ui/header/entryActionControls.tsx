@@ -4,8 +4,6 @@ import {
   Row,
   Stack,
   Status,
-  type PluginUiFocusTarget,
-  usePluginUiFocusTarget,
 } from '@happier-dev/plugin-ui';
 import type {
   TriageEntryRefV1,
@@ -44,8 +42,6 @@ export type TriageEntryActionRequestV1 = Readonly<{
   action: TriageActionV1;
   entryRef: TriageEntryRefV1;
   sourceInstanceId: TriageSourceInstanceIdV1;
-  /** Present only for the exact formal-review control that was pressed. */
-  returnFocusTarget?: PluginUiFocusTarget;
 }>;
 
 export type TriageEntryActionControlsPropsV1 = Readonly<{
@@ -76,22 +72,18 @@ function TriageEntryActionButton(props: Readonly<{
   blocked: boolean;
   onAction: (request: TriageEntryActionRequestV1) => void;
 }>): React.ReactElement {
-  const returnFocusTarget = usePluginUiFocusTarget();
   const titleKey = readTriageActionTitleKeyV1(props.action);
-  const restoresReviewFocus = props.action.target.kind === 'reviewStart';
   return (
     <Button
       {...(titleKey === null ? {} : { titleKey })}
       title={props.action.label}
       variant={props.action.workspaceMode === 'reference_only' ? 'secondary' : 'primary'}
       disabled={props.blocked}
-      {...(restoresReviewFocus ? { focusTarget: returnFocusTarget } : {})}
       onPress={() => {
         props.onAction({
           action: props.action,
           entryRef: props.entryRef,
           sourceInstanceId: props.sourceInstanceId,
-          ...(restoresReviewFocus ? { returnFocusTarget } : {}),
         });
       }}
     />

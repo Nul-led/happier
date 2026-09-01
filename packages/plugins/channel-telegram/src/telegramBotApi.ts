@@ -77,6 +77,7 @@ type TelegramReadFailureResult =
   | Readonly<{
       kind: 'providerConflict';
       diagnostic: string;
+      retryAfterMs?: number;
     }>
   | Readonly<{
       kind: 'notReady';
@@ -501,7 +502,15 @@ export function createTelegramBotApi(input: Readonly<{
         requestInput.timeoutSeconds * 1_000 + TELEGRAM_LONG_POLL_DEADLINE_OVERHEAD_MS,
       ));
       if (!envelope) return { kind: 'notReady', reason: 'network' };
-      if (!envelope.ok) return mapReadFailure(envelope);
+      // Telegram serves one exclusive getUpdates consumer. A 409 here is a
+      // provider conflict with an explicit retry hint so Channels can spend
+      // its incumbent bounded backoff budget; other Bot API 409s remain
+      // permanent conflicts without that hint.
+      if (!envelope.ok) {
+        return envelope.errorCode === 409
+          ? { kind: 'providerConflict', diagnostic: envelope.description, retryAfterMs: 1_000 }
+          : mapReadFailure(envelope);
+      }
       if (!Array.isArray(envelope.result)) {
         return { kind: 'notReady', reason: 'invalidConfiguration', diagnostic: 'Telegram returned invalid updates.' };
       }

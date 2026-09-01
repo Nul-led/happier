@@ -110,6 +110,23 @@ describe('provider row decoding', () => {
     expect(rowAt(reviewerPage, 1).reviewers.map((reviewer) => reviewer.vote)).toEqual([10, -5]);
   });
 
+  it('preserves absent and malformed iteration support as unknown', () => {
+    const base = {
+      pullRequestId: 7,
+      repository: { id: GATEWAY_REPOSITORY_ID, name: 'gateway' },
+      status: 'active',
+      title: 'Iteration support is provider-declared',
+    };
+
+    expect(decodeAzurePullRequestRow({ ...base, supportsIterations: true })?.supportsIterations)
+      .toBe(true);
+    expect(decodeAzurePullRequestRow({ ...base, supportsIterations: false })?.supportsIterations)
+      .toBe(false);
+    expect(decodeAzurePullRequestRow(base)?.supportsIterations).toBeNull();
+    expect(decodeAzurePullRequestRow({ ...base, supportsIterations: 'false' })?.supportsIterations)
+      .toBeNull();
+  });
+
   it('returns null for a relative provider URL instead of a resolvable-looking string', () => {
     const decoded = decodeAzureRepositoryRow({
       id: GATEWAY_REPOSITORY_ID,

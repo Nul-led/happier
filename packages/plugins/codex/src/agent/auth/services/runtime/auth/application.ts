@@ -51,7 +51,6 @@ export type CodexDirectLiveAuthApplyResult =
       reason: CodexDirectLiveAuthApplyFailureReason;
       appliedVia?: 'direct_live_hot_auth';
       activeAccountId?: string;
-      recovery?: 'restart_resume';
     }>;
 
 function normalizeOptionalId(value: string | null | undefined): string | null {

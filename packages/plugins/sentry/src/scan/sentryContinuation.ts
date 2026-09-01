@@ -149,6 +149,21 @@ export function encodeSentryScanContinuation(
 export function decodeSentryScanContinuation(token: string): SentryScanContinuationResultV1 {
   const record = decodeTriagePagingTokenV1(token);
   if (record === null || record.v !== 1) return REJECTED;
+  const keys = Object.keys(record);
+  if (
+    keys.length !== 9
+    || ![
+      'v',
+      'scanLimit',
+      'nativeLimit',
+      'cursor',
+      'probe',
+      'walkHealth',
+      'query',
+      'statsPeriod',
+      'sort',
+    ].every((key) => Object.prototype.hasOwnProperty.call(record, key))
+  ) return REJECTED;
   const { scanLimit, nativeLimit, cursor, query, statsPeriod, sort } = record;
   if (!isValidGeometry(scanLimit, nativeLimit)) return REJECTED;
   if (typeof cursor !== 'string' || cursor === '') return REJECTED;

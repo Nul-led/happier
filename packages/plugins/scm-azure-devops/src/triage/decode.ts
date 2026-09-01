@@ -43,6 +43,11 @@ export function readBoolean(raw: unknown): boolean {
   return raw === true;
 }
 
+/** Preserves a provider-declared false without turning silence or malformed data into false. */
+export function readBooleanOrNull(raw: unknown): boolean | null {
+  return typeof raw === 'boolean' ? raw : null;
+}
+
 export function readPositiveInt(raw: unknown): number | null {
   if (typeof raw !== 'number' || !Number.isSafeInteger(raw) || raw <= 0) return null;
   return raw;
@@ -181,7 +186,7 @@ export function decodeAzurePullRequestRow(raw: unknown): AzurePullRequestRow | n
     lastMergeCommitId: readCommitId(record.lastMergeCommit),
     reviewers: decodeReviewers(record.reviewers),
     labels: decodeLabels(record.labels),
-    supportsIterations: readBoolean(record.supportsIterations),
+    supportsIterations: readBooleanOrNull(record.supportsIterations),
     autoCompleteSetBy: decodeAzureIdentityRow(record.autoCompleteSetBy),
     // Stored completion options can carry `transitionWorkItems: true` set elsewhere, so their
     // VALUES are a fact a later completion path must disclose, overwrite explicitly, and compare

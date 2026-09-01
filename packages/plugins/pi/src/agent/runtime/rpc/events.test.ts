@@ -9,11 +9,74 @@ const context = {
   nowMs: () => 1,
 } as const;
 
-function reasoningTexts(events: ReturnType<ReturnType<typeof createPiRuntimeEventProjector>['project']>): string[] {
+type ProjectedEvents = ReturnType<ReturnType<typeof createPiRuntimeEventProjector>['project']>;
+
+function channelTexts(events: ProjectedEvents, channel: 'assistant' | 'reasoning'): string[] {
   return events
-    .filter((event) => event.kind === 'message-delta' && event.channel === 'reasoning')
+    .filter((event) => event.kind === 'message-delta' && event.channel === channel)
     .map((event) => event.text);
 }
+
+function reasoningTexts(events: ProjectedEvents): string[] {
+  return channelTexts(events, 'reasoning');
+}
+
+function assistantTexts(events: ProjectedEvents): string[] {
+  return channelTexts(events, 'assistant');
+}
+
+describe('createPiRuntimeEventProjector assistant snapshots', () => {
+  it('reconciles authoritative snapshots within each assistant segment across tool boundaries', () => {
+    const projector = createPiRuntimeEventProjector();
+
+    expect(assistantTexts(projector.project({
+      type: 'message_update',
+      assistantMessageEvent: { type: 'text_delta', delta: 'Progress update.' },
+    }, context))).toEqual(['Progress update.']);
+    expect(assistantTexts(projector.project({
+      type: 'message_update',
+      assistantMessageEvent: { type: 'text_end', contentIndex: 0, content: 'Progress update.' },
+      message: { role: 'assistant', content: [{ type: 'text', text: 'Progress update.' }] },
+    }, context))).toEqual([]);
+    expect(assistantTexts(projector.project({
+      type: 'message_end',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'Progress update.' }] },
+    }, context))).toEqual([]);
+
+    projector.project({
+      type: 'tool_execution_start',
+      toolCallId: 'tool-1',
+      toolName: 'Read',
+      args: {},
+    }, context);
+
+    expect(assistantTexts(projector.project({
+      type: 'message_update',
+      assistantMessageEvent: { type: 'text_end', contentIndex: 0, content: 'Final answer.' },
+      message: { role: 'assistant', content: [{ type: 'text', text: 'Final answer.' }] },
+    }, context))).toEqual(['Final answer.']);
+  });
+
+  it('does not treat a shared prefix from an earlier assistant segment as streamed current text', () => {
+    const projector = createPiRuntimeEventProjector();
+
+    projector.project({
+      type: 'message_update',
+      assistantMessageEvent: { type: 'text_delta', delta: 'Shared prefix' },
+    }, context);
+    projector.project({
+      type: 'tool_execution_start',
+      toolCallId: 'tool-1',
+      toolName: 'Read',
+      args: {},
+    }, context);
+
+    expect(assistantTexts(projector.project({
+      type: 'message_end',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'Shared prefix continued' }] },
+    }, context))).toEqual(['Shared prefix continued']);
+  });
+});
 
 describe('createPiRuntimeEventProjector reasoning', () => {
   it('streams thinking deltas and appends only the missing authoritative suffix', () => {

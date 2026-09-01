@@ -70,11 +70,12 @@ export const ConversationConnectionWebhookEndpointEnsureIdempotencyKeyV1Protocol
         pattern: '^[A-Za-z0-9._:-]+$',
     });
 /**
- * The transport selector shared by connection transfer. A durable-push
- * connection may select its existing transport so transfer can retarget its
- * existing generic webhook endpoint. Transfer never creates, detaches, or
- * converts that endpoint; those lifecycle operations remain generic webhook
- * owner responsibilities.
+ * The transport selector shared by connection transfer. Any current transport
+ * may select any admitted transport, so `connection/transfer-v1` stays the one
+ * origin/transport replacement Action. Selecting `durablePush` runs the
+ * strict endpoint-ensure journey through the generic webhook owner before the
+ * transfer CAS; moving away from `durablePush` detaches only the Channels
+ * reference and never disables, revokes, or deletes the generic endpoint.
  */
 export const CONVERSATION_CONNECTION_SELECTABLE_TRANSPORTS_V1 = [
     'checkpointedPull',
@@ -214,6 +215,7 @@ const conversationConnectionTransferResultV1 = defineProtocolUnion([
         revision: positiveSafeInteger,
         authorityEpoch: positiveSafeInteger,
     }, { policy: 'closed' }),
+    conversationConnectionEndpointRequiredResultV1,
     conversationConnectionWebhookEndpointSetupRequiredResultV1,
     ConversationProviderFailureV1ProtocolSchema,
 ]);
@@ -232,8 +234,9 @@ const conversationConnectionDeleteResultV1 = defineProtocolObject({
 
 /**
  * The create contract for every selectable transport. Durable-push endpoint
- * authority remains entirely inside the core Action; callers never supply an
- * endpoint, source identity, ensure identity, or continuation token.
+ * authority remains entirely inside the generic host Action: the mounted UI
+ * may relay only the strict endpoint id returned by that Action, never a raw
+ * URL, secret, source identity, or ensure identity.
  */
 const conversationConnectionCreateInputV1 = defineProtocolObject({
     providerSelection: targetedContributionSelectionV1,
@@ -262,15 +265,24 @@ export const ConversationConnectionCreateInputV1JsonSchema: PluginJsonSchema =
 /**
  * A transfer selects a newly admitted provider contribution and setup contract
  * for one existing connection revision. It deliberately omits policy fields,
- * caller-owned origins, and durable-push endpoint authority.
+ * caller-owned origins, and durable-push endpoint authority. A transfer onto
+ * `durablePush` carries the same strict endpoint continuation as creation:
+ * the core preallocated identity is the transferred connection itself, and
+ * the continuation only relays the endpoint the present-user UI ensured
+ * through the existing generic host Action.
  */
 export const ConversationConnectionTransferInputV1Schema = defineProtocolObject({
     connectionId: ConversationConnectionIdV1ProtocolSchema,
     expectedRevision: positiveSafeInteger,
+    expectedAuthorityEpoch: positiveSafeInteger,
     providerSelection: targetedContributionSelectionV1,
     providerSetupInput: ConversationJsonValueV1ProtocolSchema,
     credentialRef: ConversationQualifiedConnectedAccountRefV1ProtocolSchema.nullable(),
     selectedTransport: ConversationConnectionSelectableTransportV1ProtocolSchema,
+    endpointContinuation: defineProtocolObject({
+        connectionId: ConversationConnectionIdV1ProtocolSchema,
+        webhookEndpointId: ConversationWebhookEndpointIdRelayV1ProtocolSchema,
+    }, { policy: 'closed' }).optional(),
 }, { policy: 'closed' });
 export type ConversationConnectionTransferInputV1 = ReturnType<
     typeof ConversationConnectionTransferInputV1Schema.parse

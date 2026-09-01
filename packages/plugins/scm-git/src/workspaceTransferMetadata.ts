@@ -4,6 +4,11 @@ import { inspectGitCheckoutIdentity } from './checkoutIdentity.js';
 
 export type GitWorkspaceTransferMetadata = Readonly<{
     provider: 'git';
+    sessionRelativeCwd?: string;
+    portableBundle?: Readonly<{
+        v: 1;
+        relativePath: '.happier-scm/git.bundle';
+    }>;
 }> & (
     Readonly<{
         checkoutKind: 'branch';
@@ -27,6 +32,18 @@ export function isGitWorkspaceTransferMetadata(value: unknown): value is GitWork
         headRevision?: string;
     };
     if (candidate.provider !== 'git') {
+        return false;
+    }
+    const portableBundle = (candidate as { portableBundle?: unknown }).portableBundle;
+    if (portableBundle !== undefined && (
+        !portableBundle
+        || typeof portableBundle !== 'object'
+        || (portableBundle as { v?: unknown }).v !== 1
+        || (portableBundle as { relativePath?: unknown }).relativePath !== '.happier-scm/git.bundle'
+    )) {
+        return false;
+    }
+    if (candidate.sessionRelativeCwd !== undefined && typeof candidate.sessionRelativeCwd !== 'string') {
         return false;
     }
 

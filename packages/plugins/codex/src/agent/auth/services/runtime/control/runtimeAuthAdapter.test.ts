@@ -154,7 +154,7 @@ describe('Codex runtime auth adapter', () => {
     });
   });
 
-  it('reports a callback response that identifies partial live mutation for restart reconciliation', async () => {
+  it('does not let a direct-live callback smuggle restart recovery into Codex fan-out', async () => {
     const applyConnectedServiceAuthGeneration = vi.fn(async () => ({
       ok: false,
       errorCode: 'refresh_bridge_selection_update_failed',
@@ -173,7 +173,6 @@ describe('Codex runtime auth adapter', () => {
     })).resolves.toEqual({
       applied: false,
       reason: 'refresh_bridge_selection_update_failed',
-      recovery: 'restart_resume',
     });
     expect(applyConnectedServiceAuthGeneration).toHaveBeenCalledOnce();
   });
@@ -202,7 +201,6 @@ describe('Codex runtime auth adapter', () => {
     })).resolves.toEqual({
       applied: false,
       reason: 'runtime_apply_persistence_unavailable',
-      recovery: 'restart_resume',
     });
     expect(applyConnectedServiceAuthGeneration).toHaveBeenCalledOnce();
   });

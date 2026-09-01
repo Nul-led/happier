@@ -362,6 +362,7 @@ describe('Channels ingress conflict Account projections', () => {
         connectionId: CONNECTION_ID,
         bindingId: 'binding-1',
         updatedAt: 21,
+        category: 'informational',
       }],
     });
   });

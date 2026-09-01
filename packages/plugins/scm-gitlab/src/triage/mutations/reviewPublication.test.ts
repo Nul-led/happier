@@ -123,20 +123,34 @@ function actionInput(overrides: Readonly<Record<string, unknown>> = {}) {
   };
 }
 
-function createTransport(respond: (request: RecordedGitlabRequest) => StubGitlabResponse | undefined) {
+function createTransport(
+  respond: (request: RecordedGitlabRequest) => StubGitlabResponse | undefined,
+  options: Readonly<{ settlementError?: Error }> = {},
+) {
   let claimCount = 0;
   const transport = createStubGitlabTransport({ respond });
   (transport.context.services as unknown as { actions: { execute: Function } }).actions = {
-    async execute(actionId: string) {
+    async execute(actionId: string, actionInput: unknown) {
       expect(actionId).toBe('reviews.comments.claimPublicationDispatch');
       claimCount += 1;
+      if (options.settlementError !== undefined
+        && typeof actionInput === 'object'
+        && actionInput !== null
+        && 'settlement' in actionInput
+        && actionInput.settlement !== undefined) {
+        throw options.settlementError;
+      }
+      const hasVerdict = typeof actionInput === 'object'
+        && actionInput !== null
+        && 'verdict' in actionInput
+        && actionInput.verdict !== null;
       return {
         disposition: 'dispatch',
         dispatchToken: 'dispatch-token-1',
         publicationPlanId: PLAN_ID,
         entries: [{ happierCommentId: 'comment-1', publicationCorrelationId: ENTRY_CORRELATION }],
-        verdict: { publicationCorrelationId: VERDICT_CORRELATION },
-        instructions: { entries: ['dispatch'], verdict: 'dispatch' },
+        verdict: hasVerdict ? { publicationCorrelationId: VERDICT_CORRELATION } : null,
+        instructions: { entries: ['dispatch'], verdict: hasVerdict ? 'dispatch' : null },
         priorResult: null,
       };
     },
@@ -530,9 +544,37 @@ describe('gitlab/merge-request/submit-review', () => {
       acknowledgedPreexistingDraftIds: ['81'],
     }), transport.context);
 
-    expect(result).toMatchObject({ kind: 'settled', publication: { entries: [{ outcome: { kind: 'uncertain' } }] } });
+    expect(result).toMatchObject({
+      kind: 'settled',
+      publication: {
+        entries: [{ outcome: { kind: 'failed', code: 'gitlab-publication-draft-pending' } }],
+      },
+    });
     expect(transport.requests.filter((request) => request.method === 'POST' && request.url === DRAFTS_URL)).toHaveLength(0);
     expect(transport.requests.filter((request) => request.method === 'PUT')).toHaveLength(0);
+  });
+
+  it('does not report settled when the canonical publication settlement fails', async () => {
+    let notesReads = 0;
+    const transport = createTransport((request) => {
+      if (request.method === 'GET' && request.url === ITEM_URL) return { status: 200, body: mergeRequestBody() };
+      if (request.method === 'GET' && request.url === DRAFTS_LIST_URL) return { status: 200, body: [] };
+      if (request.method === 'GET' && request.url === NOTES_LIST_URL) {
+        notesReads += 1;
+        return { status: 200, body: notesReads === 1 ? [] : [{
+          id: 91,
+          body: `Published\n\n<!-- happier-review-comment:v1:${ENTRY_CORRELATION} -->`,
+        }] };
+      }
+      if (request.method === 'POST' && request.url === DRAFTS_URL) return { status: 201, body: { id: 81 } };
+      if (request.method === 'PUT' && request.url === `${DRAFTS_URL}/81/publish`) return { status: 200, body: {} };
+      return undefined;
+    }, { settlementError: new Error('canonical settlement unavailable') });
+
+    await expect(publishGitlabMergeRequestReview(actionInput({
+      publicationPlan: plan({ verdict: null }),
+    }), transport.context)).rejects.toThrow('canonical settlement unavailable');
+    expect(transport.requests.filter((request) => request.method === 'PUT')).toHaveLength(1);
   });
 
   it.each([

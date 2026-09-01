@@ -10,7 +10,6 @@ import {
   usePluginHostApi,
   usePluginUiFocusTarget,
   usePluginTranslation,
-  type PluginUiFocusTarget,
 } from '@happier-dev/plugin-ui';
 
 import {
@@ -52,10 +51,6 @@ const LOADING: ReviewChooserPhaseV1 = Object.freeze({ kind: 'loadingEngines' });
 
 export type TriagePullRequestReviewChooserPropsV1 = Readonly<{
   pending: TriagePendingPullRequestReviewV1;
-  /** The exact configured action that invoked this transient chooser. */
-  returnFocusTarget: PluginUiFocusTarget;
-  /** Dismisses only the chooser; the prepared workspace, Session and link remain. */
-  onDismiss: () => void;
   /** Retires the chooser after the canonical Session open succeeds. */
   onFinished: () => void;
 }>;
@@ -165,14 +160,6 @@ export function TriagePullRequestReviewChooser(
     }
     await openSession();
   }, [host, openSession, props.pending]);
-
-  const dismiss = React.useCallback(() => {
-    operation.current += 1;
-    props.onDismiss();
-    // The public logical target survives the child unmount and delegates the
-    // physical move to the host. No DOM/native ref escapes into Triage.
-    props.returnFocusTarget.focus();
-  }, [props.onDismiss, props.returnFocusTarget]);
 
   const choosing = phase.kind === 'choosing' ? phase : null;
   const failed = phase.kind === 'failed' ? phase : null;
@@ -313,13 +300,20 @@ export function TriagePullRequestReviewChooser(
             onPress={() => { void openSession(); }}
           />
         ) : null}
-        <Button
-          titleKey="plugins.triage.surface.actions.cancel"
-          title="Cancel"
-          variant="secondary"
-          disabled={phase.kind === 'starting' || phase.kind === 'settled'}
-          onPress={dismiss}
-        />
+        {mustOnlyOpen ? null : (
+          <Button
+            titleKey="plugins.triage.surface.actions.cancel"
+            title="Cancel"
+            variant="secondary"
+            disabled={phase.kind === 'starting' || phase.kind === 'settled'}
+            // Session creation and linking already settled before this chooser
+            // mounted. Cancel ends only the optional review continuation, then
+            // opens that stable Session so it cannot be stranded off-screen.
+            // Once opening is the only safe continuation, the primary control
+            // above owns it alone rather than presenting a duplicate Cancel.
+            onPress={() => { void openSession(); }}
+          />
+        )}
       </Row>
     </Stack>
   );

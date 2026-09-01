@@ -155,6 +155,7 @@ function harness(respond: (url: string) => Route | undefined) {
                 sourceRefName: 'refs/heads/feature',
                 targetRefName: 'refs/heads/main',
                 mergeStatus: 'succeeded',
+                supportsIterations: true,
                 lastMergeSourceCommit: { commitId: 'a'.repeat(40) },
                 reviewers: [],
               },
@@ -250,6 +251,46 @@ describe('Azure iterations read', () => {
     const seam = harness((url) => (url.includes('/iterations') ? collection([]) : undefined));
     await readAzureDevOpsIterations(planeInput(), seam.context);
     expect(seam.urls.at(-1)).toContain('api-version=7.1');
+  });
+
+  it.each([
+    ['absent', undefined],
+    ['explicitly unsupported', false],
+  ] as const)('refuses %s iteration support without reading the iteration resource', async (
+    _label,
+    supportsIterations,
+  ) => {
+    const seam = harness((url) => (
+      url.includes('/pullrequests/17?')
+        ? {
+          body: {
+            pullRequestId: PULL_REQUEST_ID,
+            repository: {
+              id: REPOSITORY_ID,
+              name: 'checkout',
+              project: { id: PROJECT_ID, name: 'Payments' },
+            },
+            title: 'Tighten the completion gate',
+            status: 'active',
+            ...(supportsIterations === undefined ? {} : { supportsIterations }),
+            isDraft: false,
+            createdBy: { id: 'viewer-1', displayName: 'Alex' },
+            creationDate: '2026-08-01T00:00:00Z',
+            sourceRefName: 'refs/heads/feature',
+            targetRefName: 'refs/heads/main',
+            lastMergeSourceCommit: { commitId: 'a'.repeat(40) },
+            reviewers: [],
+          },
+        }
+        : undefined
+    ));
+
+    const settled = AzureIterationsResultV1Schema.parse(
+      await readAzureDevOpsIterations(planeInput(), seam.context),
+    );
+
+    expect(settled.kind).toBe('unavailable');
+    expect(seam.urls.filter((url) => url.includes('/iterations'))).toHaveLength(0);
   });
 
   it('refuses an unusable routing token before authorizing or contacting Azure', async () => {

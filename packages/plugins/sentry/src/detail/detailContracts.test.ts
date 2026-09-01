@@ -86,6 +86,7 @@ describe('Sentry detail continuation', () => {
       .not.toBeNull();
     for (const token of [
       '{}',
+      `{"v":1,"cursor":"c","limit":100,"probe":${probe},"unexpected":true}`,
       `{"v":2,"cursor":"c","limit":100,"probe":${probe}}`,
       `{"v":1,"cursor":"","limit":100,"probe":${probe}}`,
       `{"v":1,"cursor":"c","limit":0,"probe":${probe}}`,

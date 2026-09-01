@@ -79,9 +79,12 @@ export function createStubGitlabTransport(input: Readonly<{
   respond: (request: RecordedGitlabRequest) =>
     StubGitlabResponse | typeof GITLAB_STUB_NEVER_ANSWERS | undefined;
   signal?: AbortSignal;
+  /** Exact configured deployment base exposed by the connected-account owner. */
+  origin?: string;
 }>): StubGitlabTransport {
   const requests: RecordedGitlabRequest[] = [];
   let materializeCount = 0;
+  const configuredOrigin = input.origin ?? GITLAB_TEST_ORIGIN;
 
   const connectedAccounts = {
     async listAccounts() {
@@ -91,8 +94,8 @@ export function createStubGitlabTransport(input: Readonly<{
           account: GITLAB_TEST_ACCOUNT,
           displayName: 'GitLab test account',
           state: 'connected' as const,
-          connectedAccountOrigins: Object.freeze([GITLAB_TEST_ORIGIN]),
-          connectedAccountBases: Object.freeze([GITLAB_TEST_ORIGIN]),
+          connectedAccountOrigins: Object.freeze([configuredOrigin]),
+          connectedAccountBases: Object.freeze([configuredOrigin]),
         })]),
       });
     },

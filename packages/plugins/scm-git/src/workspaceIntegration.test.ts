@@ -113,8 +113,8 @@ describe('git workspace integration', () => {
         })).rejects.toMatchObject({ name: 'AbortError' });
     });
 
-    it('classifies linked-worktree admin paths as non-portable while keeping regular git metadata portable', () => {
-        expect(classifyGitPortableWorkspacePath({ relativePath: '.git/HEAD' })).toBe('portable');
+    it('classifies all checkout administration as non-portable', () => {
+        expect(classifyGitPortableWorkspacePath({ relativePath: '.git/HEAD' })).toBe('non_portable');
         expect(classifyGitPortableWorkspacePath({ relativePath: '.git/worktrees/feature-auth/HEAD' })).toBe('non_portable');
         expect(classifyGitPortableWorkspacePath({ relativePath: 'README.md' })).toBe('unknown');
     });

@@ -38,6 +38,10 @@ function graphqlDataFor(document: string) {
               isResolved: false,
               path: 'src/pump.ts',
               line: 42,
+              firstComment: {
+                totalCount: 4,
+                nodes: [{ id: 'PRRC_first', author: { login: 'first' }, body: 'first reply', createdAt: '2026-08-09T13:00:00Z', url: 'https://github.com/o/r/pull/1#discussion_first' }],
+              },
               comments: {
                 nodes: [
                   { id: 'PRRC_2', author: { login: 'later' }, body: 'later reply', createdAt: '2026-08-12T13:00:00Z', url: 'https://github.com/o/r/pull/1#discussion_r2' },
@@ -194,7 +198,16 @@ describe('the GitHub feedback fetcher', () => {
     expect(threads).toMatchObject({
       kind: 'threads',
       previousCursor: 'threads-before',
-      rows: [{ id: 'PRRT_1', isResolved: false, path: 'src/pump.ts', line: 42, previousRepliesCursor: 'thread-1-before', replies: [{ id: 'PRRC_1' }, { id: 'PRRC_2' }] }],
+      rows: [{
+        id: 'PRRT_1',
+        isResolved: false,
+        path: 'src/pump.ts',
+        line: 42,
+        firstReply: { id: 'PRRC_first', body: 'first reply' },
+        replyCount: 4,
+        previousRepliesCursor: 'thread-1-before',
+        replies: [{ id: 'PRRC_1' }, { id: 'PRRC_2' }],
+      }],
     });
     expect(reviews).toMatchObject({
       kind: 'reviews',

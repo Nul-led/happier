@@ -1433,6 +1433,68 @@ export type ConversationBindingPolicyUpdateInput = Readonly<{
   now?: () => number;
 }>;
 
+type ConversationBindingCommitMutation = Parameters<ChannelStateBindingCollection['batch']>[0][number];
+
+/**
+ * The one retained-row CAS owner for an existing binding mutation. Online
+ * management owns provider/Automation resolution and the Account-local path
+ * owns offline-decidable policy changes, but neither owns a second way to
+ * serialize delivery demand, rebuild the binding row, or interpret the
+ * Collection batch result.
+ */
+export async function commitConversationBindingMutation(input: Readonly<{
+  collection: ChannelStateBindingCollection;
+  row: ChannelStateRow;
+  current: ConversationBindingUpdateRow;
+  connectionRow: ChannelStateRow;
+  binding: ConversationBindingStateV1;
+  updatedAt: number;
+  additionalMutations?: readonly ConversationBindingCommitMutation[];
+  signal?: AbortSignal;
+  assertCurrent?: () => void;
+}>): Promise<
+  | Readonly<{ kind: 'updated'; revision: number }>
+  | Readonly<{ kind: 'conflict' }>
+  | Readonly<{ kind: 'invalidResult' }>
+> {
+  const demandChanged = hasConversationBindingDeliveryDemandChanged(
+    input.current.binding,
+    input.binding,
+  );
+  const result = await input.collection.batch([
+    demandChanged
+      ? {
+        kind: 'put' as const,
+        value: input.connectionRow.value,
+        expectedRevision: input.connectionRow.revision,
+      }
+      : {
+        kind: 'assert' as const,
+        rowId: input.current.binding.connectionId,
+        expectedRevision: input.connectionRow.revision,
+      },
+    {
+      kind: 'put' as const,
+      value: withConversationBindingPolicy({
+        row: input.row,
+        current: input.current,
+        binding: input.binding,
+        updatedAt: input.updatedAt,
+      }),
+      expectedRevision: input.row.revision,
+    },
+    ...(input.additionalMutations ?? []),
+  ], input.signal === undefined ? undefined : { signal: input.signal });
+  input.assertCurrent?.();
+  if (result.status === 'conflict') return { kind: 'conflict' };
+  const persisted = result.results.find((entry) => (
+    entry.rowId === input.row.rowId && entry.deleted === false
+  ));
+  return persisted === undefined
+    ? { kind: 'invalidResult' }
+    : { kind: 'updated', revision: persisted.revision };
+}
+
 /**
  * Narrows a requested target to the arm an unreachable machine can decide.
  *
@@ -1602,45 +1664,24 @@ async function mutateConversationBindingPolicyInAccountCollection(input: Convers
     };
   }
 
-  const demandChanged = hasConversationBindingDeliveryDemandChanged(
-    current.binding,
-    transition.binding,
-  );
-  const result = await input.collection.batch([
-    demandChanged
-      ? {
-        kind: 'put' as const,
-        value: connectionRow.value,
-        expectedRevision: connectionRow.revision,
-      }
-      : {
-        kind: 'assert' as const,
-        rowId: current.binding.connectionId,
-        expectedRevision: connectionRow.revision,
-      },
-    {
-      kind: 'put',
-      value: withConversationBindingPolicy({
-        row,
-        current,
-        binding: transition.binding,
-        updatedAt: now(),
-      }),
-      expectedRevision: row.revision,
-    },
-  ], input.signal === undefined ? undefined : { signal: input.signal });
-  assertCurrent(input, input.operation);
-  if (result.status === 'conflict') {
+  const result = await commitConversationBindingMutation({
+    collection: input.collection,
+    row,
+    current,
+    connectionRow,
+    binding: transition.binding,
+    updatedAt: now(),
+    ...(input.signal === undefined ? {} : { signal: input.signal }),
+    assertCurrent: () => assertCurrent(input, input.operation),
+  });
+  if (result.kind === 'conflict') {
     throw policyError(
       `${input.operation}_conflict`,
       'Binding mutation lost its retained-row compare-and-swap.',
       true,
     );
   }
-  const persisted = result.results.find((entry) => (
-    entry.rowId === input.bindingId && entry.deleted === false
-  ));
-  if (persisted === undefined) {
+  if (result.kind === 'invalidResult') {
     throw policyError(
       `${input.operation}_result_invalid`,
       'Binding mutation batch did not return its retained row result.',
@@ -1650,7 +1691,7 @@ async function mutateConversationBindingPolicyInAccountCollection(input: Convers
   return {
     kind: 'updated',
     bindingId: input.bindingId,
-    revision: persisted.revision,
+    revision: result.revision,
     authorityEpoch: transition.binding.authorityEpoch,
   };
 }

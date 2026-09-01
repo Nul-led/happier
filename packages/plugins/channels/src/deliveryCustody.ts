@@ -29,6 +29,17 @@ export const CONVERSATION_DELIVERY_CONTENT_FREE_STATES = [
   'delivered',
   'notDelivered',
   'suppressed',
+  'partial',
+  'outcomeUnknown',
+  'resolvedAccepted',
+  'resolvedDiscarded',
+  'connectionDeleted',
+] as const satisfies readonly ConversationDeliveryCustodyState[];
+
+const CONVERSATION_DELIVERY_RETENTION_ELIGIBLE_STATES = [
+  'delivered',
+  'notDelivered',
+  'suppressed',
   'resolvedAccepted',
   'resolvedDiscarded',
   'connectionDeleted',
@@ -308,7 +319,7 @@ export function deriveConversationDeliveryProjection(custody: ConversationDelive
 }
 
 export function isConversationDeliveryRetentionEligible(custody: ConversationDeliveryCustody): boolean {
-  return (CONVERSATION_DELIVERY_CONTENT_FREE_STATES as readonly string[]).includes(custody.state);
+  return (CONVERSATION_DELIVERY_RETENTION_ELIGIBLE_STATES as readonly string[]).includes(custody.state);
 }
 
 /**
@@ -319,12 +330,12 @@ export function isConversationDeliveryRetentionEligible(custody: ConversationDel
  * resend keeps its bytes. The declared `channel-deliveries` Collection schema
  * encodes this same predicate on its body-free arm, so runtime compaction and
  * schema admission can never disagree about which terminal rows may lose
- * their content. It is deliberately narrower than retention eligibility
- * ({@link isConversationDeliveryRetentionEligible}): deletion needs no body,
- * so every content-free state expires with its row either way.
+ * their content. Body need and row-retention lifetime are intentionally
+ * independent: unresolved ambiguous rows remain retained for user resolution
+ * while their unused plaintext body is compacted.
  */
 export function isConversationDeliveryContentFree(custody: ConversationDeliveryCustody): boolean {
-  return isConversationDeliveryRetentionEligible(custody)
+  return (CONVERSATION_DELIVERY_CONTENT_FREE_STATES as readonly string[]).includes(custody.state)
     && retryConversationDeliveryAfterArchiveRecovery({ custody }).kind !== 'retryReady';
 }
 

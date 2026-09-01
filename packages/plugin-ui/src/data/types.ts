@@ -28,7 +28,7 @@ export type PluginUiAccountCollectionForDefinition<
   TDefinition extends PluginAccountCollectionDefinition,
 > = Pick<
   PluginAccountCollectionForDefinition<TDefinition>,
-  'identityTag' | 'get' | 'put' | 'delete' | 'query' | 'batch' | 'limits' | 'measureBatch'
+  'identityTag' | 'get' | 'put' | 'delete' | 'forget' | 'query' | 'batch' | 'limits' | 'measureBatch'
 >;
 
 export type PluginUiCollectionQueryInput = Readonly<{

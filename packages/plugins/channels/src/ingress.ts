@@ -26,6 +26,7 @@ import {
   type AutomationConversationResultDeliveryV1,
 } from '@happier-dev/plugin-sdk/automations';
 import { SessionSpawnNewInputV2Schema } from '@happier-dev/plugin-sdk/sessions';
+import { createCanonicalJsonSigningInput } from '@happier-dev/protocol/crypto/canonicalJson';
 import {
   areConversationEndpointIdentitiesEqual,
   CONVERSATION_AUTOMATION_RESULT_DELIVERY_ACTION_REF_V1,
@@ -376,14 +377,18 @@ type IngressCensusObligationMember =
 /**
  * The body-free replay identity a settled census keeps in place of the full
  * admitted ingress: the authenticated envelope it was already able to publish
- * without a body, plus one connection-keyed digest of the admitted text. Both
+ * without a body, plus one connection-keyed digest of the admitted text and
+ * provider Event candidate. Both
  * halves of replay equality — exact re-delivery and a later unsupported edit
  * of the same message revision — still decide from it, while the message text
  * itself stops being duplicated outside the Session transcript.
  */
 type IngressCensusCompacted = Readonly<{
   shell: ConversationAuthenticatedObservationShellV1;
-  textDigest: string;
+  /** One digest over the replay-relevant text and Event candidate together. */
+  replayDigest: string;
+  /** Legacy compacted rows covered text only and age out at the same horizon. */
+  legacyTextOnly?: true;
   /** Exact terminal-attention members retained until this census horizon. */
   retainedAttentionObligationRowIds: readonly string[];
   /**
@@ -395,6 +400,15 @@ type IngressCensusCompacted = Readonly<{
    */
   prunedObligationTombstones: readonly Readonly<{ rowId: string; revision: number }>[];
 }>;
+
+type IngressCensusCompactedStored = Readonly<{
+  shell: ConversationAuthenticatedObservationShellV1;
+  retainedAttentionObligationRowIds: readonly string[];
+  prunedObligationTombstones: readonly Readonly<{ rowId: string; revision: number }>[];
+}> & (
+  | Readonly<{ replayDigest: string }>
+  | Readonly<{ textDigest: string }>
+);
 
 type IngressCensusCommonPayload = Readonly<{
   phase: 'preparing' | 'prepared';
@@ -1057,14 +1071,18 @@ function asIngressCensus(row: StateRow | null):
 function readIngressCensusCompacted(value: JsonValue | undefined): IngressCensusCompacted | null | undefined {
   if (value === null) return null;
   if (!isJsonRecord(value)) return undefined;
-  const textDigest = own(value, 'textDigest');
+  const replayDigest = own(value, 'replayDigest');
+  const legacyTextDigest = own(value, 'textDigest');
   const shell = ConversationAuthenticatedObservationShellV1Schema.safeParse(own(value, 'shell'));
   const retainedAttentionObligationRowIds = own(value, 'retainedAttentionObligationRowIds');
   const prunedObligationTombstones = own(value, 'prunedObligationTombstones');
+  const hasReplayDigest = typeof replayDigest === 'string'
+    && /^[A-Za-z0-9_-]{43}$/u.test(replayDigest);
+  const hasLegacyTextDigest = typeof legacyTextDigest === 'string'
+    && /^[A-Za-z0-9_-]{43}$/u.test(legacyTextDigest);
   if (
     Object.keys(value).length !== 4
-    || typeof textDigest !== 'string'
-    || !/^[A-Za-z0-9_-]{43}$/u.test(textDigest)
+    || hasReplayDigest === hasLegacyTextDigest
     || !shell.success
     || !Array.isArray(retainedAttentionObligationRowIds)
     || retainedAttentionObligationRowIds.some((rowId) => (
@@ -1083,9 +1101,14 @@ function readIngressCensusCompacted(value: JsonValue | undefined): IngressCensus
       isJsonRecord(entry) && typeof entry.rowId === 'string' ? entry.rowId : ''
     ))).size !== prunedObligationTombstones.length
   ) return undefined;
+  const parsedReplayDigest = typeof replayDigest === 'string'
+    ? replayDigest
+    : legacyTextDigest;
+  if (typeof parsedReplayDigest !== 'string') return undefined;
   return {
     shell: shell.data,
-    textDigest,
+    replayDigest: parsedReplayDigest,
+    ...(hasLegacyTextDigest ? { legacyTextOnly: true as const } : {}),
     retainedAttentionObligationRowIds: retainedAttentionObligationRowIds as readonly string[],
     prunedObligationTombstones: prunedObligationTombstones as readonly Readonly<{
       rowId: string;
@@ -1309,8 +1332,11 @@ function normalizedIngressDiscriminant(
 
 /**
  * A compacted census answers both arms from the retained envelope: exact
- * re-delivery adds the keyed text digest to the structural shell comparison,
- * and a later unsupported edit never depended on the body at all.
+ * re-delivery adds the keyed replay digest to the structural shell comparison,
+ * and a later unsupported edit never depended on the body at all. The Event
+ * candidate digests to the same equality the uncompacted census compared, so
+ * a changed or disappeared candidate on one redelivered occurrence conflicts
+ * inside the replay horizon instead of silently rejoining.
  */
 async function immutableIngressMatches(
   census: IngressCensusPayload,
@@ -1327,10 +1353,12 @@ async function immutableIngressMatches(
   } else if (
     normalized.kind === 'fullText'
     && pluginJsonValuesEqual(compacted.shell, ingressShell(normalized))
-    && await deriveIngressCensusTextDigest({
+    && await deriveIngressCensusReplayDigest({
       routingIdentityKey,
       text: normalized.observation.message.text,
-    }) === compacted.textDigest
+      eventCandidate: input.eventCandidate,
+      legacyTextOnly: compacted.legacyTextOnly,
+    }) === compacted.replayDigest
   ) return true;
   // Only a full-text admission can be superseded by an unsupported edit, and
   // only a full-text admission is ever compacted.
@@ -1605,11 +1633,14 @@ export async function deriveConversationSessionRotationRowId(input: Readonly<{
 /**
  * The one keyed digest that survives census compaction. It stays in the same
  * connection-keyed private namespace as the row identities, so a retained
- * digest is neither correlatable across Accounts nor reversible to the text.
+ * digest is neither correlatable across Accounts nor reversible to the
+ * message or its semantic Event evidence.
  */
-async function deriveIngressCensusTextDigest(input: Readonly<{
+async function deriveIngressCensusReplayDigest(input: Readonly<{
   routingIdentityKey: string;
   text: string;
+  eventCandidate: ConversationIngressAutomationEventCandidateV1 | null;
+  legacyTextOnly?: boolean;
 }>): Promise<string> {
   const subtle = globalThis.crypto?.subtle;
   if (subtle === undefined) {
@@ -1623,7 +1654,13 @@ async function deriveIngressCensusTextDigest(input: Readonly<{
   return await signLengthPrefixedUtf8HmacSha256Base64Url({
     subtle,
     key,
-    parts: ['channels:ingress:v1', 'ingress-census-text', input.text],
+    parts: input.legacyTextOnly === true
+      ? ['channels:ingress:v1', 'ingress-census-text', input.text]
+      : [
+        'channels:ingress:v1',
+        'ingress-census-replay',
+        createCanonicalJsonSigningInput({ text: input.text, eventCandidate: input.eventCandidate }),
+      ],
   });
 }
 
@@ -5229,8 +5266,8 @@ async function deleteIngressRetentionCandidate(input: Readonly<{
   if (compacted === null) {
     // Bodyless routable refusals have no compacted replay envelope to carry a
     // staged tombstone list. They reach this branch only after the same frozen
-    // horizon, so their terminal members can use the ordinary exact delete →
-    // forget sequence directly before the census.
+    // horizon, so their terminal members can use DATA's atomic exact retire
+    // operation directly before the census.
     if (input.candidate.census.value.payload.normalizedIngress.kind === 'fullText') return false;
     if (!await deleteAndForgetIngressObligationsAtHorizon({
       context: input.context,
@@ -5253,17 +5290,13 @@ async function deleteIngressRetentionCandidate(input: Readonly<{
     })) return false;
   }
   assertNotAborted(input.context.signal);
-  const result = await collection.batch([{
-    kind: 'delete' as const,
-    rowId: input.candidate.census.row.rowId,
-    expectedRevision: input.candidate.census.row.revision,
-  }], { signal: input.context.signal });
-  if (result.status !== 'updated') return false;
-  const census = result.results[0];
-  if (!census?.deleted) return false;
   try {
-    await collection.forget(census.rowId, {
-      expectedRevision: census.revision,
+    // The unit-wide predicate above has already proven this exact live census
+    // past its replay horizon. DATA performs logical cleanup, absence-epoch
+    // advancement, and physical removal atomically so a crash cannot strand
+    // an undiscoverable census tombstone.
+    await collection.forget(input.candidate.census.row.rowId, {
+      expectedRevision: input.candidate.census.row.revision,
       signal: input.context.signal,
     });
     return true;
@@ -5277,25 +5310,15 @@ async function deleteAndForgetIngressObligationsAtHorizon(input: Readonly<{
   obligations: readonly Readonly<{ row: StateRow; value: IngressObligationRecord }>[];
 }>): Promise<boolean> {
   const collection = requireChannelsAccountStorage(input.context).collection(CHANNEL_STATE_COLLECTION);
-  const { maxBatchRows } = await collection.limits({ signal: input.context.signal });
-  for (let offset = 0; offset < input.obligations.length; offset += maxBatchRows) {
+  for (const obligation of input.obligations) {
     assertNotAborted(input.context.signal);
-    const result = await collection.batch(input.obligations.slice(offset, offset + maxBatchRows).map((obligation) => ({
-      kind: 'delete' as const,
-      rowId: obligation.row.rowId,
-      expectedRevision: obligation.row.revision,
-    })), { signal: input.context.signal });
-    if (result.status !== 'updated') return false;
-    for (const entry of result.results) {
-      if (!entry.deleted) return false;
-      try {
-        await collection.forget(entry.rowId, {
-          expectedRevision: entry.revision,
-          signal: input.context.signal,
-        });
-      } catch {
-        return false;
-      }
+    try {
+      await collection.forget(obligation.row.rowId, {
+        expectedRevision: obligation.row.revision,
+        signal: input.context.signal,
+      });
+    } catch {
+      return false;
     }
   }
   return true;
@@ -5375,7 +5398,7 @@ async function forgetIngressObligationTombstones(input: Readonly<{
  */
 function compactedIngressCensusValue(input: Readonly<{
   census: IngressCensusRecord;
-  compacted: IngressCensusCompacted;
+  compacted: IngressCensusCompactedStored;
   now: number;
 }>): JsonRecord {
   const {
@@ -5505,16 +5528,25 @@ async function compactSettledIngressCensus(input: Readonly<{
     value: compactedIngressCensusValue({
       census: census.value,
       compacted: normalizedIngress === null
-        ? {
-          ...priorCompacted as IngressCensusCompacted,
-          retainedAttentionObligationRowIds: nextRetainedAttentionObligationRowIds,
-          prunedObligationTombstones: nextPrunedObligationTombstones,
-        }
+        ? (priorCompacted as IngressCensusCompacted).legacyTextOnly === true
+          ? {
+            shell: (priorCompacted as IngressCensusCompacted).shell,
+            textDigest: (priorCompacted as IngressCensusCompacted).replayDigest,
+            retainedAttentionObligationRowIds: nextRetainedAttentionObligationRowIds,
+            prunedObligationTombstones: nextPrunedObligationTombstones,
+          }
+          : {
+            shell: (priorCompacted as IngressCensusCompacted).shell,
+            replayDigest: (priorCompacted as IngressCensusCompacted).replayDigest,
+            retainedAttentionObligationRowIds: nextRetainedAttentionObligationRowIds,
+            prunedObligationTombstones: nextPrunedObligationTombstones,
+          }
         : {
           shell: ingressShell(normalizedIngress),
-          textDigest: await deriveIngressCensusTextDigest({
+          replayDigest: await deriveIngressCensusReplayDigest({
             routingIdentityKey: connection.value.payload.routingIdentityKey,
             text: normalizedIngress.observation.message.text,
+            eventCandidate: census.value.payload.eventCandidate,
           }),
           retainedAttentionObligationRowIds: nextRetainedAttentionObligationRowIds,
           prunedObligationTombstones: nextPrunedObligationTombstones,
@@ -7494,7 +7526,14 @@ export async function runConversationCheckpointedPollForInvocation(input: Readon
         ...(result.diagnostic === undefined ? {} : { diagnostic: result.diagnostic }),
       },
       ...(result.retryAfterMs === undefined ? {} : { retryAfterMs: result.retryAfterMs }),
-      retryableProviderResult: result.reason === 'network' || result.reason === 'rateLimited',
+      // A provider conflict is retryable only when its provider attached an
+      // explicit bounded retry hint (for example Telegram's exclusive
+      // getUpdates slot during restart overlap). A permanent conflict remains
+      // blocked without widening the public failure vocabulary.
+      retryableProviderResult:
+        result.reason === 'network'
+        || result.reason === 'rateLimited'
+        || (result.reason === 'providerConflict' && result.retryAfterMs !== undefined),
     });
     if (failure.kind === 'ineligible') {
       await settleCapturedCheckpointedPollStop({

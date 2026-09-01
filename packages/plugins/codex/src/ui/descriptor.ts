@@ -105,32 +105,6 @@ export const CODEX_UI_DESCRIPTOR = Object.freeze({
               'homePath',
             ],
           },
-          runtimeDescriptorFromCandidate: {
-            backendMode: {
-              values: ['acp', 'appServer'],
-            },
-            sourceFields: [
-              'home',
-              'connectedServiceId',
-              'connectedServiceProfileId',
-              'connectedServiceGroupId',
-              'homePath',
-            ],
-            agentExtra: {
-              owner: 'codex',
-              schemaId: 'codex.agentRuntimeDescriptorExtra',
-              v: 1,
-              runtimeHandleFields: [
-                'backendMode',
-                'providerSessionId',
-                'home',
-                'connectedServiceId',
-                'connectedServiceProfileId',
-                'connectedServiceGroupId',
-                'homePath',
-              ],
-            },
-          },
         },
       },
     },
@@ -144,9 +118,7 @@ export const CODEX_UI_DESCRIPTOR = Object.freeze({
     },
     workState: {
       editableGoals: {
-        modeValues: ['acp', 'appServer'],
-        activeModeValues: ['appServer'],
-        activeWhenNoPersistedMode: true,
+        capabilityDriven: true,
         persistedGoalSnapshot: {
           path: ['sessionWorkStateV1'],
           itemKind: 'goal',
@@ -209,31 +181,6 @@ export const CODEX_UI_DESCRIPTOR = Object.freeze({
           mcp_resume: 'acp',
         },
         defaultValue: 'appServer',
-      },
-      backendTransport: {
-        backendMode: {
-          values: ['acp', 'appServer'],
-          // Retired setting spellings still reach spawn/resume from persisted UI state.
-          aliases: {
-            mcp: 'mcp',
-            mcp_resume: 'acp',
-          },
-          legacyExperimentalValue: 'acp',
-        },
-        runtimeHandleFields: [
-          'backendMode',
-          'providerSessionId',
-          'home',
-          'connectedServiceId',
-          'connectedServiceProfileId',
-          'connectedServiceGroupId',
-          'homePath',
-        ],
-        agentExtra: {
-          owner: 'codex',
-          schemaId: 'codex.agentRuntimeDescriptorExtra',
-          v: 1,
-        },
       },
     },
   },

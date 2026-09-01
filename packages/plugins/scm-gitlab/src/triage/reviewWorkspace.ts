@@ -20,6 +20,7 @@ import type {
   TriageVerifyReviewWorkspaceInputV1,
   TriageVerifyReviewWorkspaceResultV1,
 } from '@happier-dev/triage-protocol/v1';
+import { admitForgeRequestUrl } from '@happier-dev/triage-sources/runtime';
 
 import { admitGitlabItemInvocation } from './admission.js';
 import { buildGitlabItemUrl } from './detail/routes.js';
@@ -46,13 +47,7 @@ function readGitlabSourceCloneUrl(
 ): string | null {
   const cloneUrl = readNonEmptyString(sourceProject.http_url_to_repo);
   if (cloneUrl === null) return null;
-
-  try {
-    if (new URL(cloneUrl).origin !== new URL(origin.normalized).origin) return null;
-  } catch {
-    return null;
-  }
-  return cloneUrl;
+  return admitForgeRequestUrl(cloneUrl, origin.normalized);
 }
 
 type GitlabPreparedSourceTip = Readonly<{

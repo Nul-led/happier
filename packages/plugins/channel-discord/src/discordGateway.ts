@@ -196,6 +196,10 @@ export function createDiscordGatewaySession(input: Readonly<{
 
   let resume = copyResumeState(input.resume);
   let lastDispatchSequence = resume?.lastDispatchSequence ?? null;
+  // Resume coordinates and evidence that a provider interval existed are
+  // different facts. READY can carry an unusable resume URL; clearing the
+  // coordinates must not erase the obligation to disclose the resulting gap.
+  let hasObservedDispatchProgress = resume !== null;
   let awaitingHeartbeatAck = false;
   let heartbeatIntervalMs: number | null = null;
   // This is the authoritative Gateway Bot snapshot. The socket worker does
@@ -247,6 +251,7 @@ export function createDiscordGatewaySession(input: Readonly<{
   function recordDispatch(frame: JsonRecord): void {
     const sequence = readNonNegativeInteger(frame.s);
     if (sequence === null) return;
+    hasObservedDispatchProgress = true;
     lastDispatchSequence = sequence;
 
     if (resume) {
@@ -268,6 +273,12 @@ export function createDiscordGatewaySession(input: Readonly<{
   function discardResumeState(): void {
     resume = null;
     lastDispatchSequence = null;
+  }
+
+  function consumeProviderHistoryGap(): readonly DiscordGatewayEffect[] {
+    if (!hasObservedDispatchProgress) return [];
+    hasObservedDispatchProgress = false;
+    return [{ kind: 'historyGap', reason: 'providerHistoryUnavailable' }];
   }
 
   return {
@@ -315,14 +326,12 @@ export function createDiscordGatewaySession(input: Readonly<{
         // An initial IDENTIFY can be rejected before a session or Dispatch
         // exists (including Identify-concurrency rejection). That is a
         // reconnect/re-identify condition, not evidence of a lost interval.
-        const hadPriorDispatchOrResumeProgress = resume !== null || lastDispatchSequence !== null;
+        const hadPriorDispatchOrResumeProgress = hasObservedDispatchProgress;
         const canResume = frame.d === true && resume !== null;
         if (!canResume) discardResumeState();
         awaitingHeartbeatAck = false;
         return [
-          ...(!canResume && hadPriorDispatchOrResumeProgress
-            ? [{ kind: 'historyGap', reason: 'providerHistoryUnavailable' } satisfies DiscordGatewayEffect]
-            : []),
+          ...(!canResume && hadPriorDispatchOrResumeProgress ? consumeProviderHistoryGap() : []),
           { kind: 'disconnect', reason: 'invalidSession' },
           {
             kind: 'reconnect',
@@ -383,7 +392,7 @@ export function createDiscordGatewaySession(input: Readonly<{
         case 4_009:
           discardResumeState();
           return [
-            { kind: 'historyGap', reason: 'providerHistoryUnavailable' },
+            ...consumeProviderHistoryGap(),
             {
               kind: 'reconnect',
               canResume: false,
@@ -392,12 +401,15 @@ export function createDiscordGatewaySession(input: Readonly<{
             },
           ];
         default:
-          return [{
-            kind: 'reconnect',
-            canResume: resume !== null,
-            minDelayMs: DISCORD_RECONNECT_MIN_DELAY_MS,
-            maxDelayMs: DISCORD_RECONNECT_MAX_DELAY_MS,
-          }];
+          return [
+            ...(resume === null ? consumeProviderHistoryGap() : []),
+            {
+              kind: 'reconnect',
+              canResume: resume !== null,
+              minDelayMs: DISCORD_RECONNECT_MIN_DELAY_MS,
+              maxDelayMs: DISCORD_RECONNECT_MAX_DELAY_MS,
+            },
+          ];
       }
     },
 

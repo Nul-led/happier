@@ -14,9 +14,10 @@
  *
  * What it does own are GitLab's own facts: the note/event activity of an item, the files a merge
  * request changes, its pipelines, and its review discussions and approval state. Every one of them
- * is a real read with its own lifetime, issued when its tab becomes active and never on mount —
- * GitLab involvement scanning already spends real provider budget, and the Activity panel alone
- * owns four independent walks.
+ * is a real read with its own active-panel lifetime. The initially selected Overview performs its
+ * first acquisition on that initial active mount; unselected panels do not prefetch, and later reads
+ * remain explicit or activation-owned. GitLab involvement scanning already spends real provider
+ * budget, and the Activity panel alone owns four independent walks.
  *
  * Two compositions, not one with disabled entries. A merge request shows `Overview · Activity ·
  * Changes · Pipelines · Reviews`; an issue shows `Overview · Activity · Comments · Work Sessions`.

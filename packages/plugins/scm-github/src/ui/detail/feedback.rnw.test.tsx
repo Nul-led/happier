@@ -106,6 +106,7 @@ const answers: {
 const dispatched: string[] = [];
 const mutationInputs: unknown[] = [];
 const mounted: PluginUiTestkit[] = [];
+let nextChecksGate: Promise<JsonValue> | null = null;
 
 function withFeedbackPageEvidence(value: JsonValue): JsonValue {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return value;
@@ -117,7 +118,10 @@ function withFeedbackPageEvidence(value: JsonValue): JsonValue {
   } as JsonValue;
 }
 
-async function mountFeedback(input: JsonValue): Promise<PluginUiTestkit> {
+async function mountFeedback(
+  input: JsonValue,
+  platform: 'web' | 'ios' = 'web',
+): Promise<PluginUiTestkit> {
   let fixture!: PluginUiTestkit;
   await act(async () => {
     fixture = await createPluginUiTestkit({
@@ -128,7 +132,7 @@ async function mountFeedback(input: JsonValue): Promise<PluginUiTestkit> {
         generation: 'github-triage-feedback-mount',
       },
       surface: renderSurface,
-      surfaceContext: createSurfaceContextFixture(),
+      surfaceContext: createSurfaceContextFixture({ platform }),
       adapter: createPluginUiRnwSemanticSurfaceAdapter(),
       launchInput: input,
       handlers: {
@@ -186,7 +190,9 @@ async function mountFeedback(input: JsonValue): Promise<PluginUiTestkit> {
           }
           dispatched.push(localId);
           if (localId === GITHUB_TRIAGE_DETAIL_ACTION_IDS_V1.readChecks) {
-            return answers.checks;
+            const gate = nextChecksGate;
+            nextChecksGate = null;
+            return gate === null ? answers.checks : await gate;
           }
           if (localId === GITHUB_TRIAGE_MUTATION_ACTION_IDS_V1.pullRequestThreadResolution) {
             mutationInputs.push(actionInput);
@@ -240,6 +246,7 @@ function resetAnswers(): void {
 afterEach(async () => {
   dispatched.splice(0);
   mutationInputs.splice(0);
+  nextChecksGate = null;
   resetAnswers();
   for (const fixture of mounted.splice(0)) await fixture.dispose();
 });
@@ -336,6 +343,8 @@ describe('the mounted GitHub Feedback plane', () => {
         isResolved: false,
         path: 'src/pump.ts',
         line: 42,
+        firstReply: { id: 'PRRC_1', author: 'line-reviewer', body: 'The tail is dropped.' },
+        replyCount: 1,
         replies: [{ id: 'PRRC_1', author: 'line-reviewer', body: 'The tail is dropped.' }],
       }],
     };
@@ -408,6 +417,8 @@ describe('the mounted GitHub Feedback plane', () => {
         isResolved: false,
         path: 'src/pump.ts',
         line: 42,
+        firstReply: { id: 'PRRC_1', author: 'line-reviewer', body: 'The tail is dropped.' },
+        replyCount: 1,
         replies: [{ id: 'PRRC_1', author: 'line-reviewer', body: 'The tail is dropped.' }],
       }],
     };
@@ -444,6 +455,8 @@ describe('the mounted GitHub Feedback plane', () => {
         isResolved: false,
         path: 'src/pump.ts',
         line: 42,
+        firstReply: { id: 'PRRC_1', author: 'line-reviewer', body: 'The tail is dropped.' },
+        replyCount: 1,
         replies: [{ id: 'PRRC_1', author: 'line-reviewer', body: 'The tail is dropped.' }],
       }],
     };
@@ -497,6 +510,8 @@ describe('the mounted GitHub Feedback plane', () => {
       rows: [{
         id: 'PRRT_2',
         isResolved: true,
+        firstReply: { id: 'PRRC_2', author: 'reviewer', body: 'Resolved too early.' },
+        replyCount: 1,
         replies: [{ id: 'PRRC_2', author: 'reviewer', body: 'Resolved too early.' }],
       }],
     };
@@ -584,7 +599,7 @@ describe('the mounted GitHub Feedback plane', () => {
     await expect(detail.queryByText('Review requested from')).resolves.toBeUndefined();
   });
 
-  it('does not retain an old review decision when an explicit re-read fails', async () => {
+  it('retains the last-known-good review decision when an explicit re-read fails', async () => {
     answers.reviews = {
       kind: 'reviews',
       reviewDecision: 'approved',
@@ -603,11 +618,75 @@ describe('the mounted GitHub Feedback plane', () => {
       await detail.press(await detail.getByRole('button', { name: 'Re-read this feedback from GitHub' }));
     });
 
-    await expect(detail.queryByText('Review: Approved')).resolves.toBeUndefined();
-    await expect(detail.getByText(
-      'GitHub\'s current reviews read did not report a review decision, so nothing here says'
-        + ' whether it is approved.',
-    )).resolves.toMatchObject({ content: expect.any(String) });
+    await expect(detail.getByText('Review: Approved'))
+      .resolves.toEqual({ content: 'Review: Approved' });
+    await expect(detail.getByText('Part of this feedback could not be read'))
+      .resolves.toEqual({ content: 'Part of this feedback could not be read' });
+  });
+
+  it('retains the last-known-good checks when an explicit re-read fails', async () => {
+    answers.checks = {
+      kind: 'checks',
+      headRevision: HEAD_REVISION,
+      state: 'resolved',
+      rowState: { kind: 'failing', failingCount: 1 },
+      rows: [],
+      failingCount: 1,
+      runningCount: 0,
+      passingCount: 0,
+      omittedRowCount: 0,
+      projectionTruncated: false,
+    };
+    const detail = await mountFeedback(launchInput('pull-request'));
+    await openFeedback(detail);
+    await expect(detail.getByText('1 failing')).resolves.toEqual({ content: '1 failing' });
+
+    answers.checks = {
+      kind: 'unavailable',
+      failure: { class: 'permission', code: 'github_forbidden' },
+    };
+    await act(async () => {
+      await detail.press(await detail.getByRole('button', { name: 'Re-read this feedback from GitHub' }));
+    });
+
+    await expect(detail.getByText('1 failing')).resolves.toEqual({ content: '1 failing' });
+    await expect(detail.getByText('Part of this feedback could not be read'))
+      .resolves.toEqual({ content: 'Part of this feedback could not be read' });
+  });
+
+  it('collapses a mobile review thread to its first reply and exact reply count', async () => {
+    answers.threads = {
+      kind: 'threads',
+      rows: [{
+        id: 'PRRT_mobile',
+        isResolved: false,
+        path: 'src/mobile.ts',
+        line: 8,
+        firstReply: {
+          id: 'PRRC_first',
+          author: 'first-reviewer',
+          body: 'This is the first reply.',
+          createdAtMs: OBSERVED_AT_MS - 40_000,
+        },
+        replyCount: 4,
+        replies: [{
+          id: 'PRRC_latest',
+          author: 'latest-reviewer',
+          body: 'This is the latest reply.',
+          createdAtMs: OBSERVED_AT_MS - 10_000,
+        }],
+        previousRepliesCursor: 'older-mobile-replies',
+      }],
+    };
+    const detail = await mountFeedback(launchInput('pull-request'), 'ios');
+    await openFeedback(detail);
+
+    await expect(detail.getByText('This is the first reply.'))
+      .resolves.toEqual({ content: 'This is the first reply.' });
+    await expect(detail.getByText('4 replies')).resolves.toEqual({ content: '4 replies' });
+    await expect(detail.queryByText('This is the latest reply.')).resolves.toBeUndefined();
+    await expect(detail.queryByRole('button', { name: 'Load earlier replies' }))
+      .resolves.toBeUndefined();
   });
 
   it('re-reads each feedback connection and checks through their existing reader owners', async () => {
@@ -629,5 +708,45 @@ describe('the mounted GitHub Feedback plane', () => {
       `${GITHUB_TRIAGE_DETAIL_ACTION_IDS_V1.readFeedback}:threads`,
       `${GITHUB_TRIAGE_DETAIL_ACTION_IDS_V1.readFeedback}:threads`,
     ].sort());
+  });
+
+  it.each([
+    ['Checks', 'Re-read the checks from GitHub'],
+    ['Feedback', 'Re-read this feedback from GitHub'],
+  ] as const)('keeps the %s refresh inert while its warm checks read is pending', async (
+    tabName,
+    refreshName,
+  ) => {
+    const detail = await mountFeedback(launchInput('pull-request'));
+    await act(async () => {
+      await detail.press(await detail.getByRole('tab', { name: tabName }));
+    });
+
+    let settleChecks!: (value: JsonValue) => void;
+    nextChecksGate = new Promise<JsonValue>((resolve) => {
+      settleChecks = resolve;
+    });
+    await act(async () => {
+      await detail.press(await detail.getByRole('button', { name: refreshName }));
+    });
+
+    const pendingRefresh = await detail.getByRole('button', {
+      name: refreshName,
+      state: { disabled: true },
+    });
+    await expect(detail.press(pendingRefresh)).rejects.toMatchObject({ code: 'stale_surface' });
+    expect(dispatched.filter(
+      (action) => action === GITHUB_TRIAGE_DETAIL_ACTION_IDS_V1.readChecks,
+    )).toHaveLength(2);
+
+    await act(async () => {
+      settleChecks(answers.checks);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await expect(detail.queryByRole('button', {
+      name: refreshName,
+      state: { disabled: true },
+    })).resolves.toBeUndefined();
+    await expect(detail.getByRole('button', { name: refreshName })).resolves.toBeDefined();
   });
 });

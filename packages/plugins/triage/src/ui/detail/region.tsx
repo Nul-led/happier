@@ -21,7 +21,6 @@ import {
   useSurfaceContext,
   type ComposerRefV1,
   type MetadataEntry,
-  type PluginUiFocusTarget,
 } from '@happier-dev/plugin-ui';
 import type {
   TriageLinkedSessionProjectionV1,
@@ -210,7 +209,6 @@ function TriageEntryScopedActionRegion(props: Readonly<{
   reviewWorkspace?: NonNullable<TriageEntrySessionStartRequestV1['reviewWorkspace']>;
 }>): React.ReactElement {
   const controller = useTriageEntrySessionStart();
-  const [reviewActionFocusTarget, setReviewActionFocusTarget] = React.useState<PluginUiFocusTarget | null>(null);
   const onAction = React.useCallback((request: TriageEntryActionRequestV1) => {
     // The pressed action travels WHOLE: its mode, its profile, its prompt, its
     // delivery and its arm are all read by the one controller below. This is
@@ -222,7 +220,6 @@ function TriageEntryScopedActionRegion(props: Readonly<{
         [props.workflowSubject],
       );
       if (executable.status !== 'resolved') return;
-      setReviewActionFocusTarget(request.returnFocusTarget ?? null);
       controller.start({
         action: executable.action,
         entryRef: request.entryRef,
@@ -246,7 +243,6 @@ function TriageEntryScopedActionRegion(props: Readonly<{
   }, [controller, props]);
   const retireReviewChooser = React.useCallback(() => {
     controller.reset();
-    setReviewActionFocusTarget(null);
   }, [controller]);
   const notice = describeTriageEntrySessionPhaseV1(controller.phase);
 
@@ -259,11 +255,9 @@ function TriageEntryScopedActionRegion(props: Readonly<{
         preparesReviewWorkspace={props.reviewWorkspace !== undefined}
         onAction={onAction}
       />
-      {controller.review === null || reviewActionFocusTarget === null ? null : (
+      {controller.review === null ? null : (
         <TriagePullRequestReviewChooser
           pending={controller.review}
-          returnFocusTarget={reviewActionFocusTarget}
-          onDismiss={retireReviewChooser}
           onFinished={retireReviewChooser}
         />
       )}
@@ -370,16 +364,42 @@ export function TriageDetailRegion(props: TriageDetailRegionProps): React.ReactE
   // as this detail is: it binds the retained origin address and owns the single
   // revision-checked transaction the disclosed candidate becomes.
   const evidenceDisclosure = useTriageTierBEvidenceInsertion(props.originComposer);
-  const [postMutationRow, setPostMutationRow] = React.useState<TriageListRowV1 | null>(null);
+  const selectedFromProps = React.useMemo(
+    () => readTriageSelectedObservationV1(props.row),
+    [props.row],
+  );
+  const detailOwnerKey = selectedFromProps === null
+    ? null
+    : deriveTriageDetailMountInstanceKey(props.row.entryRef, selectedFromProps.sourceInstanceId);
+  const [postMutationState, setPostMutationState] = React.useState<Readonly<{
+    ownerKey: string | null;
+    generation: number;
+    row: TriageListRowV1 | null;
+  }>>({ ownerKey: detailOwnerKey, generation: 0, row: null });
+  // A prop change renders before a passive effect can retire local state. Make
+  // ownership part of that state and adjust it during this render so not even
+  // one frame can combine B's selection/target with A's post-mutation row.
+  // React immediately retries this component before committing its children.
+  if (postMutationState.ownerKey !== detailOwnerKey) {
+    setPostMutationState({
+      ownerKey: detailOwnerKey,
+      generation: postMutationState.generation + 1,
+      row: null,
+    });
+  }
   const postMutationReobservation = React.useRef<AbortController | null>(null);
   React.useEffect(() => {
-    setPostMutationRow(null);
+    setPostMutationState((current) => current.ownerKey === detailOwnerKey
+      ? { ...current, row: null }
+      : current);
     return () => {
       postMutationReobservation.current?.abort();
       postMutationReobservation.current = null;
     };
-  }, [props.row]);
-  const row = postMutationRow ?? props.row;
+  }, [detailOwnerKey, props.row]);
+  const row = postMutationState.ownerKey === detailOwnerKey
+    ? postMutationState.row ?? props.row
+    : props.row;
   const lookup = readTriageSourceDetailContributionV1(context, row.entryRef.source);
 
   // Which connection this row is showing, and the observation made through it,
@@ -417,6 +437,7 @@ export function TriageDetailRegion(props: TriageDetailRegionProps): React.ReactE
 
   const completePostMutation = React.useCallback(async (): Promise<void> => {
     if (selected === null) return;
+    const lifecycleGeneration = postMutationState.generation;
     postMutationReobservation.current?.abort();
     const controller = new AbortController();
     postMutationReobservation.current = controller;
@@ -430,12 +451,15 @@ export function TriageDetailRegion(props: TriageDetailRegionProps): React.ReactE
     if (!controller.signal.aborted
       && postMutationReobservation.current === controller
       && next !== null) {
-      setPostMutationRow(next);
+      setPostMutationState((current) => current.ownerKey === detailOwnerKey
+        && current.generation === lifecycleGeneration
+          ? { ...current, row: next }
+          : current);
     }
     if (postMutationReobservation.current === controller) {
       postMutationReobservation.current = null;
     }
-  }, [hostApi, props.lanes, row, selected]);
+  }, [detailOwnerKey, hostApi, postMutationState.generation, props.lanes, row, selected]);
 
   /**
    * The header's action controls, and the one press path they lead to.

@@ -379,7 +379,8 @@ export type AzurePullRequestRow = Readonly<{
   lastMergeCommitId: string | null;
   reviewers: readonly AzureReviewerRow[];
   labels: readonly string[];
-  supportsIterations: boolean;
+  /** Explicit provider support; `null` means Azure omitted or malformed the capability fact. */
+  supportsIterations: boolean | null;
   /** Set when auto-complete is enabled: completion can then fire outside our request. */
   autoCompleteSetBy: AzureIdentityRow | null;
   /**

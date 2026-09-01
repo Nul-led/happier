@@ -4,7 +4,6 @@ import {
 } from '../../actions/entrySessionProtocol.js';
 import {
     TRIAGE_WORKSPACE_MODE_MATERIALIZATION_V1,
-    type TriageWorkspaceMaterializationV1,
     type TriageWorkspaceModeV1,
 } from '../../sessions/entrySessionWorkspace.js';
 import type { JsonValue } from '@happier-dev/plugin-sdk';
@@ -196,30 +195,6 @@ export type TriageReviewWorkspacePreparationV1 = Omit<
     'workflowSubject' | 'workspace'
 >;
 
-/**
- * The materialization this wire will carry for a mode, or `null` when it cannot
- * carry one at all.
- *
- * The pairing itself is NOT restated here: it is read from the single table the
- * gate validates against
- * (`sessions/entrySessionWorkspace.ts#TRIAGE_WORKSPACE_MODE_MATERIALIZATION_V1`).
- * The reachable Action wire admits all three materializations. The
- * `pull_request` arm additionally requires the exact source-declared
- * preparation selected by the mounted surface; it never fabricates one from a
- * repository directory.
- *
- * It is exported because the press consults it BEFORE opening the host's New
- * Session surface — spending a reader's Agent and directory choice on a start
- * that is refused afterwards is worse than telling them first — and the
- * projection below consults the same function once the host has settled. One
- * reader for both, so the up-front refusal and the built request cannot drift.
- */
-export function triageNewSessionWireMaterializationV1(
-    workspaceMode: TriageWorkspaceModeV1,
-): TriageWorkspaceMaterializationV1['kind'] {
-    return TRIAGE_WORKSPACE_MODE_MATERIALIZATION_V1[workspaceMode];
-}
-
 export function projectTriageNewSessionDestinationV1(input: Readonly<{
     /** The pressed action's declared mode. It IS the request; nothing re-decides it. */
     workspaceMode: TriageWorkspaceModeV1;
@@ -240,7 +215,7 @@ export function projectTriageNewSessionDestinationV1(input: Readonly<{
     /** Saved project identities already admitted by the canonical placement owner. */
     placementCandidates?: readonly PluginUiSessionPlacementCandidateV1[];
 }>): TriageNewSessionDestinationV1 {
-    const kind = triageNewSessionWireMaterializationV1(input.workspaceMode);
+    const kind = TRIAGE_WORKSPACE_MODE_MATERIALIZATION_V1[input.workspaceMode];
 
     const draft = TriageStartEntrySessionSettledDraftV1Schema.safeParse(input.settlement);
     if (!draft.success) return { status: 'refused', reason: 'draftUnusable' };

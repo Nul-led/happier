@@ -1,9 +1,12 @@
 // @vitest-environment jsdom
+import * as React from 'react';
 import { act } from 'react';
 import { definePlugin } from '@happier-dev/plugin-sdk';
 import { createPluginUiTestkit, createSurfaceContextFixture } from '@happier-dev/plugin-sdk/testing';
 import type { PluginUiTestkit } from '@happier-dev/plugin-sdk/testing';
+import { Button } from '@happier-dev/plugin-ui';
 import { createPluginUiRnwSemanticSurfaceAdapter } from '@happier-dev/plugin-ui/testing';
+import { useTriagePostMutationCompletion } from '@happier-dev/triage-sources/ui';
 import { PLUGIN_UI_SUB_PATH_MAX_UTF8_BYTES_V1 } from '@happier-dev/plugin-sdk/ui';
 import {
     TRIAGE_SOURCES_CONTRIBUTION_POINT_ID_V1,
@@ -30,6 +33,10 @@ import {
 } from '../actions/listEntries.js';
 import { TriageListEntriesInputV1Schema } from '../actions/listEntriesProtocol.js';
 import { TRIAGE_READ_ENTRY_DETAIL_ACTION_LOCAL_ID_V1 } from '../actions/entryDetailProtocol.js';
+import {
+    TRIAGE_REOBSERVE_ENTRY_ACTION_LOCAL_ID_V1,
+    TriageReobserveEntryInputV1Schema,
+} from '../actions/reobserveEntryProtocol.js';
 import { readTriageEntryDetail } from '../actions/readEntryDetail.js';
 import { listTriagePinnedEntries } from '../actions/userMarks.js';
 import {
@@ -89,6 +96,7 @@ const INSTANCE = '11111111-1111-4111-8111-111111111111';
  * ignoring it are the same code.
  */
 const SECOND_INSTANCE = '22222222-2222-4222-8222-222222222222';
+const OTHER_INSTANCE = '33333333-3333-4333-8333-333333333333';
 const CONTRIBUTOR_GENERATION = 'contributor-generation-a';
 const TARGET_GENERATION = 'target-generation-a';
 const DETAIL_RENDERER_ID = 'example-detail';
@@ -366,6 +374,23 @@ function configuredInstance(
     });
 }
 
+function configuredOtherSourceInstance(): TriageConfiguredSourceInstanceV1 {
+    return TriageConfiguredSourceInstanceV1Schema.parse({
+        v: 1,
+        instance: { source: OTHER_SOURCE, sourceInstanceId: OTHER_INSTANCE },
+        binding: {
+            purpose: 'triage-source',
+            account: {
+                service: { pluginId: OTHER_SOURCE.pluginId, localId: 'accounts' },
+                accountId: 'account-other',
+            },
+        },
+        localInstanceKey: 'example/repository',
+        configuration: { v: 1, token: 'other-routing-token' },
+        locator: { v: 1, displayLabel: 'Other source account' },
+    });
+}
+
 function instanceRow(sourceInstanceId: string = INSTANCE): CorpusSourceInstanceRowV1 {
     return {
         instanceTag: `${sourceInstanceId === SECOND_INSTANCE ? 'b' : 'a'}${'0'.repeat(42)}`,
@@ -376,14 +401,38 @@ function instanceRow(sourceInstanceId: string = INSTANCE): CorpusSourceInstanceR
     };
 }
 
+function otherSourceInstanceRow(): CorpusSourceInstanceRowV1 {
+    return {
+        instanceTag: `c${'0'.repeat(42)}`,
+        sourceQualifiedId: `${OTHER_SOURCE.pluginId}/${OTHER_SOURCE.localId}`,
+        lifecycle: CORPUS_SOURCE_INSTANCE_LIFECYCLE.active,
+        configuredAtMs: 1,
+        configured: configuredOtherSourceInstance(),
+    };
+}
+
+function PostMutationProbe(): React.ReactElement {
+    const complete = useTriagePostMutationCompletion();
+    return (
+        <Button
+            title="Complete source mutation"
+            onPress={() => { void complete(); }}
+        />
+    );
+}
+
 function createHarness(options: Readonly<{
     secondInstance?: boolean;
     secondInstanceObservesEntry?: boolean;
+    otherSourceEntry?: boolean;
 }> = {}) {
     const { collections, control } = createTestkitCorpusCollections({ accountEncryptionMode: 'e2ee' });
     control.sourceInstances.seed(toCorpusStoredValue(instanceRow()));
     if (options.secondInstance === true) {
         control.sourceInstances.seed(toCorpusStoredValue(instanceRow(SECOND_INSTANCE)));
+    }
+    if (options.otherSourceEntry === true) {
+        control.sourceInstances.seed(toCorpusStoredValue(otherSourceInstanceRow()));
     }
     /** Every connection the mounted detail actually ran a read under. */
     const readDetailInstanceIds: string[] = [];
@@ -392,6 +441,11 @@ function createHarness(options: Readonly<{
     /** Makes one same-entry pass publish a genuinely newer observation. */
     const observationRevision = { current: 3_000 };
     let blockedDetailRead: Readonly<{
+        promise: Promise<void>;
+        release: () => void;
+        entryId?: string;
+    }> | null = null;
+    let blockedReobservation: Readonly<{
         promise: Promise<void>;
         release: () => void;
         entryId?: string;
@@ -407,9 +461,15 @@ function createHarness(options: Readonly<{
         descriptor: DESCRIPTOR,
         operations: { listInstances: {}, scan: { role: 'scan' }, get: {} },
         surfaces: { detail: {} },
-    } as unknown as TriageAdmittedSourceV1];
+    } as unknown as TriageAdmittedSourceV1, ...(options.otherSourceEntry === true ? [{
+        contributor: OTHER_CONTRIBUTOR,
+        protocol: PROTOCOL,
+        descriptor: { ...DESCRIPTOR, displayName: 'Another source' },
+        operations: { listInstances: {}, scan: { source: 'other' }, get: {} },
+        surfaces: { detail: {} },
+    } as unknown as TriageAdmittedSourceV1] : [])];
 
-    const executeScan: TriageAdmittedOperationExecutorV1 = async (_operation, input) => ({
+    const executeScan: TriageAdmittedOperationExecutorV1 = async (operation, input) => ({
         kind: 'complete',
         observations: observes.current
             && (options.secondInstanceObservesEntry !== false
@@ -417,7 +477,11 @@ function createHarness(options: Readonly<{
             kind: 'present',
             localRef: { kindId: 'pull-request', collisionScope: 'example/repository', entryId: '17' },
             locator: testkitLocator(),
-            snapshot: testkitSnapshot({ title: 'Replace the duplicated normalizer' }),
+            snapshot: testkitSnapshot({
+                title: Reflect.get(operation as object, 'source') === 'other'
+                    ? 'Another source matching entry'
+                    : 'Replace the duplicated normalizer',
+            }),
             viewer: testkitViewer(),
             sourceUpdatedAtMs: observationRevision.current,
         }, {
@@ -487,6 +551,38 @@ function createHarness(options: Readonly<{
                     : result;
             }
             return result;
+        }
+        if (action === TRIAGE_REOBSERVE_ENTRY_ACTION_LOCAL_ID_V1) {
+            const input = TriageReobserveEntryInputV1Schema.parse(request.input);
+            const blocked = blockedReobservation;
+            if (blocked !== null
+                && (blocked.entryId === undefined || blocked.entryId === input.entryRef.entryId)) {
+                blockedReobservation = null;
+                await blocked.promise;
+            }
+            const isLongEntry = input.entryRef.entryId === LONG_ENTRY_ID;
+            const isOtherSource = input.entryRef.source.pluginId === OTHER_SOURCE.pluginId;
+            return {
+                kind: 'observed',
+                entryRef: input.entryRef,
+                observation: {
+                    sourceInstanceId: input.sourceInstanceId,
+                    observedAtMs: observationRevision.current,
+                    outcome: {
+                        kind: 'present',
+                        locator: testkitLocator(),
+                        snapshot: testkitSnapshot({
+                            title: isLongEntry
+                                ? LONG_REF_ROW_TITLE
+                                : isOtherSource
+                                    ? 'Another source matching entry after mutation'
+                                    : 'Replace the duplicated normalizer after mutation',
+                        }),
+                        viewer: testkitViewer(),
+                        sourceUpdatedAtMs: observationRevision.current,
+                    },
+                },
+            };
         }
         return await listTriageEntries(TriageListEntriesInputV1Schema.parse(request.input), {
             sourceInstances: collections.sourceInstances,
@@ -560,6 +656,12 @@ function createHarness(options: Readonly<{
             blockedDetailRead = { promise, release, ...(entryId === undefined ? {} : { entryId }) };
             return release;
         },
+        blockNextReobservation(entryId?: string): () => void {
+            let release!: () => void;
+            const promise = new Promise<void>((resolve) => { release = resolve; });
+            blockedReobservation = { promise, release, ...(entryId === undefined ? {} : { entryId }) };
+            return release;
+        },
     };
 }
 
@@ -582,6 +684,7 @@ async function mountShell(
         launchInput?: JsonValue;
         secondInstance?: boolean;
         secondInstanceObservesEntry?: boolean;
+        otherSourceEntry?: boolean;
         linkedSessionCount?: number;
         replacePageLocation?: (request: Readonly<{
             subPath: string;
@@ -595,6 +698,7 @@ async function mountShell(
         ...(options.secondInstanceObservesEntry === undefined
             ? {}
             : { secondInstanceObservesEntry: options.secondInstanceObservesEntry }),
+        ...(options.otherSourceEntry === undefined ? {} : { otherSourceEntry: options.otherSourceEntry }),
     });
     currentHarness = harness;
     if (options.linkedSessionCount !== undefined) {
@@ -622,6 +726,9 @@ async function mountShell(
                         pluginId === OTHER_SOURCE.pluginId
                             ? OTHER_CONTRIBUTOR_MANIFEST
                             : CONTRIBUTOR_MANIFEST
+                    ),
+                    renderAdmittedContent: ({ content }) => (
+                        <>{content}<PostMutationProbe /></>
                     ),
                 },
             }),
@@ -926,6 +1033,91 @@ describe('opening a row into the source detail', () => {
         releaseDetailRead();
         await act(async () => { await Promise.resolve(); });
         await act(async () => { await Promise.resolve(); });
+    });
+
+    it('never renders A post-mutation state under deferred B and retires it before A is revisited', async () => {
+        const shell = await mountShell();
+        await measureFillRegion(900);
+        await openTheRow(shell);
+        const harness = currentHarness;
+        if (harness === null) throw new Error('the shell was not mounted');
+
+        harness.publishNewerObservation();
+        await act(async () => {
+            await shell.press(await shell.getByRole('button', { name: 'Complete source mutation' }));
+        });
+        await expect(shell.getByRole('heading', {
+            name: 'Replace the duplicated normalizer after mutation',
+        })).resolves.toBeDefined();
+
+        const releaseB = harness.blockNextDetailRead(LONG_ENTRY_ID);
+        await act(async () => {
+            await shell.press(await shell.getByRole('button', { name: LONG_REF_ROW_TITLE }));
+        });
+        await expect(shell.getByRole('heading', { name: LONG_REF_ROW_TITLE })).resolves.toBeDefined();
+        await expect(shell.queryByText('Replace the duplicated normalizer after mutation'))
+            .resolves.toBeUndefined();
+        await expect(shell.getByText('Reading this entry')).resolves.toBeDefined();
+        releaseB();
+        await act(async () => { await Promise.resolve(); });
+
+        const releaseA = harness.blockNextDetailRead('17');
+        await act(async () => {
+            await shell.press(await shell.getByRole('button', { name: 'Replace the duplicated normalizer' }));
+        });
+        await expect(shell.getByRole('heading', { name: 'Replace the duplicated normalizer' }))
+            .resolves.toBeDefined();
+        await expect(shell.queryByText('Replace the duplicated normalizer after mutation'))
+            .resolves.toBeUndefined();
+        await expect(shell.getByText('Reading this entry')).resolves.toBeDefined();
+        releaseA();
+        await act(async () => { await Promise.resolve(); });
+
+        // A completion that started in the first A lifetime cannot become
+        // current again merely because the reader later returns to the same
+        // entry/source identity. The lifecycle generation, not only key
+        // equality, makes this late answer inert.
+        const releaseStaleA = harness.blockNextReobservation('17');
+        await act(async () => {
+            await shell.press(await shell.getByRole('button', { name: 'Complete source mutation' }));
+            await Promise.resolve();
+        });
+        await act(async () => {
+            await shell.press(await shell.getByRole('button', { name: LONG_REF_ROW_TITLE }));
+            await shell.press(await shell.getByRole('button', { name: 'Replace the duplicated normalizer' }));
+        });
+        releaseStaleA();
+        await act(async () => {
+            for (let turn = 0; turn < 4; turn += 1) await Promise.resolve();
+        });
+        await expect(shell.getByRole('heading', { name: 'Replace the duplicated normalizer' }))
+            .resolves.toBeDefined();
+        await expect(shell.queryByText('Replace the duplicated normalizer after mutation'))
+            .resolves.toBeUndefined();
+    });
+
+    it('retires post-mutation state when the same local entry belongs to a different source', async () => {
+        const shell = await mountShell({ otherSourceEntry: true });
+        await measureFillRegion(900);
+        await openTheRow(shell);
+        const harness = currentHarness;
+        if (harness === null) throw new Error('the shell was not mounted');
+
+        harness.publishNewerObservation();
+        await act(async () => {
+            await shell.press(await shell.getByRole('button', { name: 'Complete source mutation' }));
+        });
+        const releaseOther = harness.blockNextDetailRead('17');
+        await act(async () => {
+            await shell.press(await shell.getByRole('button', { name: 'Another source matching entry' }));
+        });
+
+        await expect(shell.getByRole('heading', { name: 'Another source matching entry' }))
+            .resolves.toBeDefined();
+        await expect(shell.queryByText('Replace the duplicated normalizer after mutation'))
+            .resolves.toBeUndefined();
+        await expect(shell.getByText('Reading this entry')).resolves.toBeDefined();
+        releaseOther();
     });
 
     it('keeps one source detail mount while the open shell crosses split and stacked layouts', async () => {

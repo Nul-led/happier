@@ -2969,7 +2969,6 @@ export function createCodexAppServerRuntime(
         error: applied.reason,
         ...(applied.appliedVia ? { appliedVia: applied.appliedVia } : {}),
         ...(applied.activeAccountId ? { activeAccountId: applied.activeAccountId } : {}),
-        ...(applied.recovery ? { recovery: applied.recovery } : {}),
       };
     }
     if (disposed) {
@@ -2979,7 +2978,6 @@ export function createCodexAppServerRuntime(
         error: 'runtime_replaced_during_auth_apply',
         appliedVia: applied.appliedVia,
         activeAccountId: applied.activeAccountId,
-        recovery: 'restart_resume',
       };
     }
 

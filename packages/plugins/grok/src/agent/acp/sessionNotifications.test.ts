@@ -70,13 +70,12 @@ describe('Grok session notifications', () => {
     const upsertSystemRecord = vi.fn(async () => ({ revision: '1' }));
     const observer = createGrokSessionNotificationObserver({
       context: {
-        session: { services: { workflowActivity: { publishHeadlines } } },
+        session: { services: { workflowActivity: { publishHeadlines }, subagents: { observe: vi.fn() } } },
         workState: { publisher: vi.fn(() => ({ publish: vi.fn() })) },
         services: {
           logger: { warn: vi.fn() },
           sessions: {
             current: { upsertSystemRecord, readSystemRecord: vi.fn(async () => null) },
-            subagents: { observe: vi.fn() },
           },
         },
       } satisfies GrokSessionNotificationObserverContext,
@@ -101,11 +100,11 @@ describe('Grok session notifications', () => {
     const publish = vi.fn(async () => ({ status: 'applied', revision: '1', sourceSequence: 1 }));
     const observer = createGrokSessionNotificationObserver({
       context: {
-        session: { services: { workflowActivity: { publishHeadlines: vi.fn() } } },
+        session: { services: { workflowActivity: { publishHeadlines: vi.fn() }, subagents: { observe } } },
         workState: { publisher: vi.fn(() => ({ publish })) },
         services: {
           logger: { warn: vi.fn() },
-          sessions: { current: null, subagents: { observe } },
+          sessions: { current: null },
         },
       } satisfies GrokSessionNotificationObserverContext,
       now: () => 2_000,

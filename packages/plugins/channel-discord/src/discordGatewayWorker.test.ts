@@ -1499,10 +1499,15 @@ describe('Discord Gateway worker', () => {
       clock: immediateClock,
     });
 
-    await expect(invalidWorker.result).resolves.toEqual({ kind: 'terminal', reason: 'authenticationFailed' });
-    // A rejected untrusted READY resume URL means only that the next attempt
-    // must IDENTIFY; no prior interval was proved lost.
-    expect(invalidOpenWebSocket).toHaveBeenCalledTimes(2);
+    await expect(invalidWorker.result).resolves.toEqual({
+      kind: 'historyGap',
+      reason: 'providerHistoryUnavailable',
+    });
+    // READY proves authentication succeeded and also proves a Dispatch
+    // interval existed. If its resume coordinates are unusable, the worker
+    // must disclose that interval as unavailable instead of retrying IDENTIFY
+    // or misreporting an authentication failure.
+    expect(invalidOpenWebSocket).toHaveBeenCalledTimes(1);
   });
 
   it('backs off inside the reconnect bounds the Gateway session emitted and restarts the ramp after a healthy session', async () => {

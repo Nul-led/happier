@@ -301,21 +301,29 @@ function isUnattemptedPermissionWait(record: ConversationOutwardDeliveryRecord):
 }
 
 /**
- * A forgotten custody identity may be created again only by the pending
- * permission producer. Retention therefore needs the same complete current
- * pending projection that mediation already reads during this wake before it
- * can remove a terminal permission notification.
+ * Session and Automation sources are not forgotten until their canonical
+ * owners can prove the deterministic occurrence unreachable. Of the remaining
+ * repeatable sources, a pending permission producer needs the same complete
+ * current projection that mediation already reads during this wake before
+ * retention can remove its terminal notification.
  *
  * A binding that is no longer current cannot recreate its former custody. A
  * current binding whose mediation read was unavailable or incomplete remains
  * fail-closed: absence from that partial view is not absence from the source.
  */
-function canRetirePermissionWaitCustody(input: Readonly<{
+function canPhysicallyForgetOutwardCustody(input: Readonly<{
   record: ConversationOutwardDeliveryRecord;
   currentBindingIds: ReadonlySet<string>;
   mediationsByBindingId: ReadonlyMap<string, PermissionWaitMediationSnapshot>;
 }>): boolean {
-  if (input.record.obligation.source.kind !== 'permissionWait') return true;
+  const source = input.record.obligation.source;
+  // Session and Automation producers can revisit the same deterministic
+  // occurrence while their own frontier/handoff remains behind. Their
+  // content-free terminal custody is therefore the dedupe proof until those
+  // owners expose affirmative unreachability. Control responses are one-shot
+  // producer effects and remain eligible for ordinary coarse retirement.
+  if (source.kind === 'sessionProjection' || source.kind === 'automationResult') return false;
+  if (source.kind !== 'permissionWait') return true;
   const bindingId = input.record.obligation.bindingId;
   if (bindingId === undefined) return false;
   if (!input.currentBindingIds.has(bindingId)) return true;
@@ -324,7 +332,7 @@ function canRetirePermissionWaitCustody(input: Readonly<{
     return false;
   }
   return !mediation.truncated
-    && !mediation.pendingRequestKeys.has(permissionWaitRequestIdentityKey(input.record.obligation.source));
+    && !mediation.pendingRequestKeys.has(permissionWaitRequestIdentityKey(source));
 }
 
 async function readCurrentBindingIds(context: BackgroundServiceContext): Promise<readonly string[]> {
@@ -680,16 +688,16 @@ export async function runConversationOutwardDeliveryCycle(
         nextRetentionSweep = advanceRetentionSweep({ scanned, earliestRetainedAt, retentionAt });
         return cycleResult();
       }
-      const retirementRecords = scanned.records.filter((record) => canRetirePermissionWaitCustody({
-        record,
-        currentBindingIds,
-        mediationsByBindingId: permissionMediationsByBindingId,
-      }));
-      if (retirementRecords.length > 0) {
+      if (scanned.records.length > 0) {
         const retired = await deliveryStore.retireSelected({
-          records: retirementRecords.map((record) => ({
+          records: scanned.records.map((record) => ({
             custodyId: record.custodyId,
             expectedRevision: record.revision,
+            physicallyForget: canPhysicallyForgetOutwardCustody({
+              record,
+              currentBindingIds,
+              mediationsByBindingId: permissionMediationsByBindingId,
+            }),
           })),
         });
         if (retired.kind === 'unavailable' && retired.reason !== 'cancelled') {

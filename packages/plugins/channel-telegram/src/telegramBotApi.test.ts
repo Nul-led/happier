@@ -44,7 +44,7 @@ describe('Telegram Bot API adapter', () => {
     ]);
   });
 
-  it('reports getUpdates 409 as a provider conflict without claiming its external cause', async () => {
+  it('reports a getUpdates 409 as a retryable conflict because Telegram serves one exclusive poll consumer', async () => {
     const api = createTelegramBotApi({
       token: 'secret-token',
       http: {
@@ -61,6 +61,27 @@ describe('Telegram Bot API adapter', () => {
     await expect(api.getUpdates({ offset: '42', limit: 50, timeoutSeconds: 30 })).resolves.toEqual({
       kind: 'providerConflict',
       diagnostic: 'Conflict: terminated by other getUpdates request',
+      retryAfterMs: 1_000,
+    });
+  });
+
+  it('keeps a 409 on every other Bot API read a permanent provider conflict', async () => {
+    const api = createTelegramBotApi({
+      token: 'secret-token',
+      http: {
+        async request() {
+          return jsonResponse({
+            ok: false,
+            error_code: 409,
+            description: 'Conflict: terminated by other request',
+          }, 409);
+        },
+      },
+    });
+
+    await expect(api.getWebhookInfo()).resolves.toEqual({
+      kind: 'providerConflict',
+      diagnostic: 'Conflict: terminated by other request',
     });
   });
 

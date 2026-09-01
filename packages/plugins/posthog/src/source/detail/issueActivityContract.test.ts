@@ -28,6 +28,7 @@ describe('PostHog activity continuation', () => {
             JSON.stringify({ v: 1, page: 0, limit: 50 }),
             JSON.stringify({ v: 1, page: 1.5, limit: 50 }),
             JSON.stringify({ v: 1, page: 2 }),
+            JSON.stringify({ v: 1, page: 2, limit: 50, unexpected: true }),
             JSON.stringify({ v: 1, page: 2, limit: 0 }),
             JSON.stringify({ v: 1, page: 2, limit: 10_000 }),
         ]) {

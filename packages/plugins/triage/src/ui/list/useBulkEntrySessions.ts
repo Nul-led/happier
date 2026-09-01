@@ -32,7 +32,6 @@ import {
     projectTriagePreparedWorkspaceSelectionInputV1,
     projectTriageNewSessionDestinationV1,
     triageNewSessionDraftSeedV1,
-    triageNewSessionWireMaterializationV1,
 } from '../header/newSessionDestination.js';
 import {
     requestTriageNewSessionDraft,
@@ -651,10 +650,6 @@ export function useTriageBulkEntrySessions(
         // that omits the mounted dead control when all facts are already known.
         if (destinationUnavailable !== null) {
             setPhase(unavailable(destinationUnavailable));
-            return;
-        }
-        if (triageNewSessionWireMaterializationV1(action.workspaceMode) === null) {
-            setPhase(unavailable('preparedWorkspaceUnsupported'));
             return;
         }
         // The fan-out, planned before ANY host read and before the reader is

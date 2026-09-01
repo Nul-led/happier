@@ -400,6 +400,8 @@ export const GithubFeedbackThreadV1Schema = defineProtocolObject({
   isResolved: GithubBooleanSchema,
   path: PathSchema.optional(),
   line: CountSchema.optional(),
+  firstReply: GithubFeedbackCommentV1Schema.optional(),
+  replyCount: CountSchema,
   replies: defineProtocolArray(GithubFeedbackCommentV1Schema, {
     maxItems: GITHUB_FEEDBACK_REPLY_PAGE_SIZE_V1,
   }),
@@ -573,64 +575,3 @@ export const GithubChecksResultV1Schema = defineProtocolUnion([
   GithubDetailUnavailableSchema,
 ]);
 export type GithubChecksResultV1 = ReturnType<typeof GithubChecksResultV1Schema.parse>;
-
-/* -------------------------------------------------------------------- reviews */
-
-/**
- * The review read carries no paging position of its own for the same reason the
- * checks read does not: `reviews.ts` walks both provider collections inside one
- * invocation, because "who has signed off" computed over half the reviews is a
- * wrong answer rather than a partial one.
- */
-export const GithubReviewsInputV1Schema = defineProtocolObject({
-  v: defineProtocolLiteral(1),
-  instance: TriageConfiguredSourceInstanceV1Schema,
-  localRef: TriageSourceEntryLocalRefV1Schema,
-  routingToken: RoutingTokenSchema,
-}, { policy: 'closed' });
-export type GithubReviewsInputV1 = ReturnType<typeof GithubReviewsInputV1Schema.parse>;
-
-export const GithubProjectedReviewerRowV1Schema = defineProtocolObject({
-  login: LabelSchema,
-  /** GitHub's own state word, kept as the provider fact it is. */
-  state: LabelSchema,
-  submittedAtMs: TimestampSchema.optional(),
-  truncated: defineProtocolLiteral(true).optional(),
-}, { policy: 'closed' });
-
-export const GithubProjectedReviewRequestRowV1Schema = defineProtocolObject({
-  kind: defineProtocolUnion([
-    defineProtocolLiteral('user'),
-    defineProtocolLiteral('team'),
-  ]),
-  subject: LabelSchema,
-  truncated: defineProtocolLiteral(true).optional(),
-}, { policy: 'closed' });
-
-/**
- * GitHub's authoritative review decision includes a `REVIEW_REQUIRED` arm that
- * depends on branch-protection rules these REST reads never see, so the member is
- * OPTIONAL and an absent decision means unresolved — never "not approved".
- */
-export const GithubReviewsResultV1Schema = defineProtocolUnion([
-  defineProtocolObject({
-    kind: defineProtocolLiteral('reviews'),
-    /** Distinct authors at their newest review; never unioned with `requested`. */
-    reviewed: defineProtocolArray(GithubProjectedReviewerRowV1Schema),
-    /** Users AND teams whose review is still awaited. */
-    requested: defineProtocolArray(GithubProjectedReviewRequestRowV1Schema),
-    reviewDecision: ReviewDecisionSchema.optional(),
-    /** Present when the reviews walk failed; the requests still render. */
-    reviewsFailure: TriageSourceFailureV1Schema.optional(),
-    /** Present when the requested-reviewers walk failed; the reviews still render. */
-    requestsFailure: TriageSourceFailureV1Schema.optional(),
-    /** The submitted-review walk ended before GitHub's collection ended. */
-    reviewsIncomplete: defineProtocolLiteral(true).optional(),
-    /** The requested-reviewer walk ended before GitHub's collection ended. */
-    requestsIncomplete: defineProtocolLiteral(true).optional(),
-    omittedRowCount: CountSchema,
-    projectionTruncated: GithubBooleanSchema,
-  }, { policy: 'closed' }),
-  GithubDetailUnavailableSchema,
-]);
-export type GithubReviewsResultV1 = ReturnType<typeof GithubReviewsResultV1Schema.parse>;

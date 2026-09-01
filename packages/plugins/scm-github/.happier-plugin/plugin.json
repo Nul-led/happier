@@ -8348,6 +8348,41 @@
                   "items": {
                     "additionalProperties": false,
                     "properties": {
+                      "firstReply": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "author": {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "body": {
+                            "type": "string"
+                          },
+                          "createdAtMs": {
+                            "maximum": 9007199254740991,
+                            "minimum": -9007199254740991,
+                            "type": "integer"
+                          },
+                          "id": {
+                            "minLength": 1,
+                            "type": "string",
+                            "x-happier-max-utf8-bytes": 128
+                          },
+                          "truncated": {
+                            "const": true
+                          },
+                          "url": {
+                            "minLength": 1,
+                            "type": "string",
+                            "x-happier-max-utf8-bytes": 384
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "body"
+                        ],
+                        "type": "object"
+                      },
                       "id": {
                         "minLength": 1,
                         "type": "string",
@@ -8415,6 +8450,11 @@
                         "maxItems": 3,
                         "type": "array"
                       },
+                      "replyCount": {
+                        "maximum": 9007199254740991,
+                        "minimum": 0,
+                        "type": "integer"
+                      },
                       "truncated": {
                         "const": true
                       }
@@ -8422,6 +8462,7 @@
                     "required": [
                       "id",
                       "isResolved",
+                      "replyCount",
                       "replies"
                     ],
                     "type": "object"
@@ -9335,520 +9376,6 @@
           "ui"
         ],
         "title": "Read the GitHub checks of a pull request"
-      },
-      {
-        "connectedAccountPurposeBindings": [
-          {
-            "path": "instance.binding.account",
-            "purpose": "github-connected-account"
-          }
-        ],
-        "dangerLevel": "safe",
-        "description": "Reads who has reviewed one pull request and whose review is still awaited, from the two review resources GitHub publishes them on.",
-        "execution": {
-          "target": "daemon"
-        },
-        "hostAccess": [
-          "github-api",
-          "github-connected-account"
-        ],
-        "id": "triage/read-github-reviews",
-        "inputSchema": {
-          "$schema": "http://json-schema.org/draft-07/schema#",
-          "additionalProperties": false,
-          "properties": {
-            "instance": {
-              "additionalProperties": false,
-              "properties": {
-                "binding": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "account": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "accountId": {
-                          "maxLength": 256,
-                          "minLength": 1,
-                          "pattern": "^(?!\\s)[\\s\\S]*\\S$",
-                          "type": "string"
-                        },
-                        "service": {
-                          "additionalProperties": false,
-                          "properties": {
-                            "localId": {
-                              "maxLength": 256,
-                              "minLength": 1,
-                              "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
-                              "type": "string"
-                            },
-                            "pluginId": {
-                              "maxLength": 256,
-                              "minLength": 3,
-                              "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
-                              "type": "string"
-                            }
-                          },
-                          "required": [
-                            "pluginId",
-                            "localId"
-                          ],
-                          "type": "object"
-                        }
-                      },
-                      "required": [
-                        "service",
-                        "accountId"
-                      ],
-                      "type": "object"
-                    },
-                    "purpose": {
-                      "minLength": 1,
-                      "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
-                      "type": "string",
-                      "x-happier-max-utf8-bytes": 128
-                    }
-                  },
-                  "required": [
-                    "purpose",
-                    "account"
-                  ],
-                  "type": "object"
-                },
-                "configuration": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "token": {
-                      "minLength": 1,
-                      "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
-                      "type": "string",
-                      "x-happier-max-utf8-bytes": 1024
-                    },
-                    "v": {
-                      "const": 1
-                    }
-                  },
-                  "required": [
-                    "v",
-                    "token"
-                  ],
-                  "type": "object"
-                },
-                "instance": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "source": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "localId": {
-                          "maxLength": 256,
-                          "minLength": 1,
-                          "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
-                          "type": "string"
-                        },
-                        "pluginId": {
-                          "maxLength": 256,
-                          "minLength": 3,
-                          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "pluginId",
-                        "localId"
-                      ],
-                      "type": "object"
-                    },
-                    "sourceInstanceId": {
-                      "maxLength": 36,
-                      "minLength": 36,
-                      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "source",
-                    "sourceInstanceId"
-                  ],
-                  "type": "object"
-                },
-                "localInstanceKey": {
-                  "minLength": 1,
-                  "pattern": "^[^\\u0000-\\u001f\\u007f]+(?:\\u001f[^\\u0000-\\u001f\\u007f]+)?$",
-                  "type": "string",
-                  "x-happier-max-utf8-bytes": 128
-                },
-                "locator": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "displayLabel": {
-                      "minLength": 1,
-                      "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
-                      "type": "string",
-                      "x-happier-max-utf8-bytes": 512
-                    },
-                    "displayPath": {
-                      "minLength": 1,
-                      "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
-                      "type": "string",
-                      "x-happier-max-utf8-bytes": 512
-                    },
-                    "v": {
-                      "const": 1
-                    },
-                    "webUrl": {
-                      "minLength": 1,
-                      "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
-                      "type": "string",
-                      "x-happier-max-utf8-bytes": 384
-                    }
-                  },
-                  "required": [
-                    "v",
-                    "displayLabel"
-                  ],
-                  "type": "object"
-                },
-                "v": {
-                  "const": 1
-                }
-              },
-              "required": [
-                "v",
-                "instance",
-                "binding",
-                "localInstanceKey",
-                "configuration"
-              ],
-              "type": "object"
-            },
-            "localRef": {
-              "additionalProperties": false,
-              "properties": {
-                "collisionScope": {
-                  "minLength": 1,
-                  "pattern": "^[^\\u0000-\\u001f\\u007f]+(?:\\u001f[^\\u0000-\\u001f\\u007f]+)?$",
-                  "type": "string",
-                  "x-happier-max-utf8-bytes": 192
-                },
-                "entryId": {
-                  "minLength": 1,
-                  "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
-                  "type": "string",
-                  "x-happier-max-utf8-bytes": 128
-                },
-                "kindId": {
-                  "minLength": 1,
-                  "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
-                  "type": "string",
-                  "x-happier-max-utf8-bytes": 128
-                }
-              },
-              "required": [
-                "kindId",
-                "collisionScope",
-                "entryId"
-              ],
-              "type": "object"
-            },
-            "routingToken": {
-              "minLength": 1,
-              "type": "string",
-              "x-happier-max-utf8-bytes": 192
-            },
-            "v": {
-              "const": 1
-            }
-          },
-          "required": [
-            "v",
-            "instance",
-            "localRef",
-            "routingToken"
-          ],
-          "type": "object"
-        },
-        "placementBindings": [],
-        "resultSchema": {
-          "$schema": "http://json-schema.org/draft-07/schema#",
-          "anyOf": [
-            {
-              "additionalProperties": false,
-              "properties": {
-                "kind": {
-                  "const": "reviews"
-                },
-                "omittedRowCount": {
-                  "maximum": 9007199254740991,
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "projectionTruncated": {
-                  "anyOf": [
-                    {
-                      "const": true
-                    },
-                    {
-                      "const": false
-                    }
-                  ]
-                },
-                "requested": {
-                  "items": {
-                    "additionalProperties": false,
-                    "properties": {
-                      "kind": {
-                        "anyOf": [
-                          {
-                            "const": "user"
-                          },
-                          {
-                            "const": "team"
-                          }
-                        ]
-                      },
-                      "subject": {
-                        "minLength": 1,
-                        "type": "string"
-                      },
-                      "truncated": {
-                        "const": true
-                      }
-                    },
-                    "required": [
-                      "kind",
-                      "subject"
-                    ],
-                    "type": "object"
-                  },
-                  "type": "array"
-                },
-                "requestsFailure": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "class": {
-                      "anyOf": [
-                        {
-                          "const": "authentication"
-                        },
-                        {
-                          "const": "permission"
-                        },
-                        {
-                          "const": "rateLimit"
-                        },
-                        {
-                          "const": "transient"
-                        },
-                        {
-                          "const": "unsupportedContract"
-                        },
-                        {
-                          "const": "unknown"
-                        }
-                      ]
-                    },
-                    "code": {
-                      "minLength": 1,
-                      "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
-                      "type": "string",
-                      "x-happier-max-utf8-bytes": 128
-                    },
-                    "detail": {
-                      "minLength": 1,
-                      "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
-                      "type": "string",
-                      "x-happier-max-utf8-bytes": 256
-                    },
-                    "retryNotBeforeMs": {
-                      "maximum": 9007199254740991,
-                      "minimum": 0,
-                      "type": "integer"
-                    }
-                  },
-                  "required": [
-                    "class",
-                    "code"
-                  ],
-                  "type": "object"
-                },
-                "requestsIncomplete": {
-                  "const": true
-                },
-                "reviewDecision": {
-                  "anyOf": [
-                    {
-                      "const": "approved"
-                    },
-                    {
-                      "const": "changes-requested"
-                    },
-                    {
-                      "const": "review-required"
-                    }
-                  ]
-                },
-                "reviewed": {
-                  "items": {
-                    "additionalProperties": false,
-                    "properties": {
-                      "login": {
-                        "minLength": 1,
-                        "type": "string"
-                      },
-                      "state": {
-                        "minLength": 1,
-                        "type": "string"
-                      },
-                      "submittedAtMs": {
-                        "maximum": 9007199254740991,
-                        "minimum": -9007199254740991,
-                        "type": "integer"
-                      },
-                      "truncated": {
-                        "const": true
-                      }
-                    },
-                    "required": [
-                      "login",
-                      "state"
-                    ],
-                    "type": "object"
-                  },
-                  "type": "array"
-                },
-                "reviewsFailure": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "class": {
-                      "anyOf": [
-                        {
-                          "const": "authentication"
-                        },
-                        {
-                          "const": "permission"
-                        },
-                        {
-                          "const": "rateLimit"
-                        },
-                        {
-                          "const": "transient"
-                        },
-                        {
-                          "const": "unsupportedContract"
-                        },
-                        {
-                          "const": "unknown"
-                        }
-                      ]
-                    },
-                    "code": {
-                      "minLength": 1,
-                      "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
-                      "type": "string",
-                      "x-happier-max-utf8-bytes": 128
-                    },
-                    "detail": {
-                      "minLength": 1,
-                      "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
-                      "type": "string",
-                      "x-happier-max-utf8-bytes": 256
-                    },
-                    "retryNotBeforeMs": {
-                      "maximum": 9007199254740991,
-                      "minimum": 0,
-                      "type": "integer"
-                    }
-                  },
-                  "required": [
-                    "class",
-                    "code"
-                  ],
-                  "type": "object"
-                },
-                "reviewsIncomplete": {
-                  "const": true
-                }
-              },
-              "required": [
-                "kind",
-                "reviewed",
-                "requested",
-                "omittedRowCount",
-                "projectionTruncated"
-              ],
-              "type": "object"
-            },
-            {
-              "additionalProperties": false,
-              "properties": {
-                "failure": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "class": {
-                      "anyOf": [
-                        {
-                          "const": "authentication"
-                        },
-                        {
-                          "const": "permission"
-                        },
-                        {
-                          "const": "rateLimit"
-                        },
-                        {
-                          "const": "transient"
-                        },
-                        {
-                          "const": "unsupportedContract"
-                        },
-                        {
-                          "const": "unknown"
-                        }
-                      ]
-                    },
-                    "code": {
-                      "minLength": 1,
-                      "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
-                      "type": "string",
-                      "x-happier-max-utf8-bytes": 128
-                    },
-                    "detail": {
-                      "minLength": 1,
-                      "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
-                      "type": "string",
-                      "x-happier-max-utf8-bytes": 256
-                    },
-                    "retryNotBeforeMs": {
-                      "maximum": 9007199254740991,
-                      "minimum": 0,
-                      "type": "integer"
-                    }
-                  },
-                  "required": [
-                    "class",
-                    "code"
-                  ],
-                  "type": "object"
-                },
-                "kind": {
-                  "const": "unavailable"
-                }
-              },
-              "required": [
-                "kind",
-                "failure"
-              ],
-              "type": "object"
-            }
-          ]
-        },
-        "scopes": [
-          "global"
-        ],
-        "surfaces": [
-          "ui"
-        ],
-        "title": "Read the GitHub reviews of a pull request"
       },
       {
         "confirmation": {
@@ -55120,6 +54647,7 @@
             "plugins.github.ui.tab.overview": "Overview",
             "plugins.github.ui.tab.timeline": "Timeline",
             "plugins.github.ui.tab.workSessions": "Work Sessions",
+            "plugins.github.ui.threadReplyCount": "{count} replies",
             "plugins.github.ui.threadResolved": "Resolved",
             "plugins.github.ui.threadUnresolved": "Unresolved",
             "plugins.github.ui.timelineLabel": "Events GitHub recorded for this entry",
@@ -55489,6 +55017,7 @@
             "plugins.github.ui.tab.overview": "Обзор",
             "plugins.github.ui.tab.timeline": "Хронология",
             "plugins.github.ui.tab.workSessions": "Рабочие сессии",
+            "plugins.github.ui.threadReplyCount": "Ответы: {count}",
             "plugins.github.ui.threadResolved": "Решено",
             "plugins.github.ui.threadUnresolved": "Не решено",
             "plugins.github.ui.timelineLabel": "События, зарегистрированные GitHub для этой записи",
@@ -55858,6 +55387,7 @@
             "plugins.github.ui.tab.overview": "Przegląd",
             "plugins.github.ui.tab.timeline": "Oś czasu",
             "plugins.github.ui.tab.workSessions": "Sesje pracy",
+            "plugins.github.ui.threadReplyCount": "Odpowiedzi: {count}",
             "plugins.github.ui.threadResolved": "Rozwiązana",
             "plugins.github.ui.threadUnresolved": "Nierozwiązana",
             "plugins.github.ui.timelineLabel": "Zdarzenia GitHub zarejestrowane dla tej pozycji",
@@ -56227,6 +55757,7 @@
             "plugins.github.ui.tab.overview": "Resumen",
             "plugins.github.ui.tab.timeline": "Cronología",
             "plugins.github.ui.tab.workSessions": "Sesiones de trabajo",
+            "plugins.github.ui.threadReplyCount": "{count} respuestas",
             "plugins.github.ui.threadResolved": "Resuelta",
             "plugins.github.ui.threadUnresolved": "Sin resolver",
             "plugins.github.ui.timelineLabel": "Eventos de GitHub registrados para esta entrada",
@@ -56596,6 +56127,7 @@
             "plugins.github.ui.tab.overview": "Aperçu",
             "plugins.github.ui.tab.timeline": "Chronologie",
             "plugins.github.ui.tab.workSessions": "Sessions de travail",
+            "plugins.github.ui.threadReplyCount": "{count} réponses",
             "plugins.github.ui.threadResolved": "Résolue",
             "plugins.github.ui.threadUnresolved": "Non résolue",
             "plugins.github.ui.timelineLabel": "Événements GitHub enregistrés pour cette entrée",
@@ -56965,6 +56497,7 @@
             "plugins.github.ui.tab.overview": "Panoramica",
             "plugins.github.ui.tab.timeline": "Cronologia",
             "plugins.github.ui.tab.workSessions": "Sessioni di lavoro",
+            "plugins.github.ui.threadReplyCount": "{count} risposte",
             "plugins.github.ui.threadResolved": "Risolta",
             "plugins.github.ui.threadUnresolved": "Non risolta",
             "plugins.github.ui.timelineLabel": "Eventi registrati da GitHub per questo elemento",
@@ -57334,6 +56867,7 @@
             "plugins.github.ui.tab.overview": "Visão geral",
             "plugins.github.ui.tab.timeline": "Cronologia",
             "plugins.github.ui.tab.workSessions": "Sessões de trabalho",
+            "plugins.github.ui.threadReplyCount": "{count} respostas",
             "plugins.github.ui.threadResolved": "Resolvida",
             "plugins.github.ui.threadUnresolved": "Não resolvida",
             "plugins.github.ui.timelineLabel": "Eventos registrados pelo GitHub para esta entrada",
@@ -57703,6 +57237,7 @@
             "plugins.github.ui.tab.overview": "Resum",
             "plugins.github.ui.tab.timeline": "Cronologia",
             "plugins.github.ui.tab.workSessions": "Sessions de treball",
+            "plugins.github.ui.threadReplyCount": "{count} respostes",
             "plugins.github.ui.threadResolved": "Resolta",
             "plugins.github.ui.threadUnresolved": "Sense resoldre",
             "plugins.github.ui.timelineLabel": "Els esdeveniments que GitHub ha registrat per aquesta entrada",
@@ -58072,6 +57607,7 @@
             "plugins.github.ui.tab.overview": "概览",
             "plugins.github.ui.tab.timeline": "时间线",
             "plugins.github.ui.tab.workSessions": "工作会话",
+            "plugins.github.ui.threadReplyCount": "{count} 条回复",
             "plugins.github.ui.threadResolved": "已解决",
             "plugins.github.ui.threadUnresolved": "未解决",
             "plugins.github.ui.timelineLabel": "GitHub 记录的此条目事件",
@@ -58441,6 +57977,7 @@
             "plugins.github.ui.tab.overview": "概覽",
             "plugins.github.ui.tab.timeline": "時間軸",
             "plugins.github.ui.tab.workSessions": "工作工作階段",
+            "plugins.github.ui.threadReplyCount": "{count} 則回覆",
             "plugins.github.ui.threadResolved": "已解決",
             "plugins.github.ui.threadUnresolved": "未解決",
             "plugins.github.ui.timelineLabel": "GitHub 鈕記的這個項目事件",
@@ -58810,6 +58347,7 @@
             "plugins.github.ui.tab.overview": "概要",
             "plugins.github.ui.tab.timeline": "タイムライン",
             "plugins.github.ui.tab.workSessions": "作業セッション",
+            "plugins.github.ui.threadReplyCount": "{count} 件の返信",
             "plugins.github.ui.threadResolved": "解決済み",
             "plugins.github.ui.threadUnresolved": "未解決",
             "plugins.github.ui.timelineLabel": "このエントリで GitHub が記録したイベント",
@@ -59179,6 +58717,7 @@
             "plugins.github.ui.tab.overview": "Übersicht",
             "plugins.github.ui.tab.timeline": "Chronik",
             "plugins.github.ui.tab.workSessions": "Arbeits-Sessions",
+            "plugins.github.ui.threadReplyCount": "{count} Antworten",
             "plugins.github.ui.threadResolved": "Erledigt",
             "plugins.github.ui.threadUnresolved": "Offen",
             "plugins.github.ui.timelineLabel": "Von GitHub für diesen Eintrag aufgezeichnete Ereignisse",

@@ -93,8 +93,6 @@ async function mountChooser(executeAction: (
         {visible ? (
           <TriagePullRequestReviewChooser
             pending={PENDING}
-            returnFocusTarget={invokingAction}
-            onDismiss={() => { setVisible(false); }}
             onFinished={() => { setVisible(false); }}
           />
         ) : null}
@@ -175,9 +173,12 @@ describe('the mounted selected-PR review chooser', () => {
     });
   });
 
-  it('focuses Retry after a list failure, recovers only that read, and restores the invoking action on dismiss', async () => {
+  it('focuses Retry after a list failure, recovers only that read, and opens the stable Session on Cancel', async () => {
     let reads = 0;
+    const calls: string[] = [];
     const { fixture, focusedLabels } = await mountChooser(async (action) => {
+      calls.push(action);
+      if (action === 'session.open') return null;
       if (action !== 'review.engines.list') throw new Error(`Unexpected action ${action}`);
       reads += 1;
       if (reads === 1) throw new Error('temporarily unavailable');
@@ -195,7 +196,7 @@ describe('the mounted selected-PR review chooser', () => {
 
     await fixture.press(await fixture.getByRole('button', { name: 'Cancel' }));
     await settle();
-    expect(focusedLabels.at(-1)).toBe('Run code review');
+    expect(calls).toEqual(['review.engines.list', 'review.engines.list', 'session.open']);
     await expect(fixture.queryByRole('checkbox', { name: 'Codex' })).resolves.toBeUndefined();
   });
 
@@ -220,12 +221,52 @@ describe('the mounted selected-PR review chooser', () => {
     await fixture.press(await fixture.getByRole('button', { name: 'Start review' }));
     await settle();
     expect(focusedLabels.at(-1)).toBe('Open session');
+    await expect(fixture.queryByRole('button', { name: 'Cancel' })).resolves.toBeUndefined();
 
     await fixture.press(await fixture.getByRole('button', { name: 'Open session' }));
     await settle();
     expect(calls).toEqual([
       'review.engines.list',
       TRIAGE_START_PULL_REQUEST_REVIEW_ACTION_LOCAL_ID_V1,
+      'session.open',
+    ]);
+  });
+
+  it('offers one Session-open control after opening fails', async () => {
+    const calls: string[] = [];
+    let opens = 0;
+    const { fixture } = await mountChooser(async (action) => {
+      calls.push(action);
+      if (action === 'review.engines.list') {
+        return {
+          sessionId: 'session-review',
+          items: [{ engineId: 'codex', label: 'Codex', enabled: true }],
+        };
+      }
+      if (action === TRIAGE_START_PULL_REQUEST_REVIEW_ACTION_LOCAL_ID_V1) {
+        return { v: 1, status: 'started' };
+      }
+      if (action === 'session.open') {
+        opens += 1;
+        if (opens === 1) throw new Error('navigation unavailable');
+        return null;
+      }
+      throw new Error(`Unexpected action ${action}`);
+    });
+
+    await fixture.press(await fixture.getByRole('checkbox', { name: 'Codex' }));
+    await fixture.press(await fixture.getByRole('button', { name: 'Start review' }));
+    await settle();
+
+    await expect(fixture.getByRole('button', { name: 'Open session' })).resolves.toBeDefined();
+    await expect(fixture.queryByRole('button', { name: 'Cancel' })).resolves.toBeUndefined();
+
+    await fixture.press(await fixture.getByRole('button', { name: 'Open session' }));
+    await settle();
+    expect(calls).toEqual([
+      'review.engines.list',
+      TRIAGE_START_PULL_REQUEST_REVIEW_ACTION_LOCAL_ID_V1,
+      'session.open',
       'session.open',
     ]);
   });

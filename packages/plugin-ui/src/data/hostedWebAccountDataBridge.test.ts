@@ -104,6 +104,9 @@ function createTransportHarness(openSnapshots: readonly unknown[] = [firstSnapsh
       if (operation.operation === 'collection.delete') {
         return { kind: 'data', value: { rowId: 'task-1', revision: 5, deleted: true } };
       }
+      if (operation.operation === 'collection.forget') {
+        return { kind: 'data', value: { rowId: 'task-1', forgotten: true } };
+      }
       if (operation.operation === 'collection.query') {
         return { kind: 'data', value: { rows: [], changeCursor: 9 } };
       }
@@ -168,6 +171,7 @@ describe('hosted-web Collection UI-query guest pager', () => {
     await expect(collection.get('task-1')).resolves.toMatchObject({ revision: 3 });
     await expect(collection.put({ id: 'task-1', title: 'One' }, { expectedRevision: 3 })).resolves.toMatchObject({ revision: 4 });
     await expect(collection.delete('task-1', { expectedRevision: 4 })).resolves.toMatchObject({ deleted: true });
+    await expect(collection.forget('task-1', { expectedRevision: 5 })).resolves.toEqual({ rowId: 'task-1', forgotten: true });
     await expect(collection.query({ index: 'by-id', order: 'asc' })).resolves.toMatchObject({ changeCursor: 9 });
     await expect(collection.batch([{ kind: 'assert', rowId: 'task-1', expectedRevision: 4 }])).resolves.toMatchObject({ status: 'updated' });
     await expect(collection.limits()).resolves.toMatchObject({ maxBatchRows: 10 });
@@ -183,7 +187,7 @@ describe('hosted-web Collection UI-query guest pager', () => {
       return await transaction.set('cursor', { cursor: 9 }, { expectedVersion: 4 });
     })).resolves.toEqual({ version: 5 });
 
-    expect(harness.request.mock.calls.filter(([operation]) => operation.kind === 'data')).toHaveLength(16);
+    expect(harness.request.mock.calls.filter(([operation]) => operation.kind === 'data')).toHaveLength(17);
     expect(JSON.stringify(harness.request.mock.calls)).not.toContain('account-a');
   });
 

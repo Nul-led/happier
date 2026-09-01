@@ -154,6 +154,38 @@ describe('Discord Gateway receive-progress owner', () => {
     expect(session.snapshot()).toMatchObject({ resume: null, lastDispatchSequence: null });
   });
 
+  it('reports history loss after READY progress whose resume URL was unusable', () => {
+    const session = createDiscordGatewaySession({
+      token: 'bot-token',
+      intents: 4_608,
+      sessionStartLimit: gatewayBotLimit(),
+    });
+
+    expect(session.onFrame({
+      op: 0,
+      s: 1,
+      t: 'READY',
+      d: {
+        session_id: 'session-a',
+        resume_gateway_url: 'wss://attacker.example',
+      },
+    }, NOW)).toEqual([{
+      kind: 'dispatch',
+      sequence: 1,
+      event: 'READY',
+      payload: {
+        session_id: 'session-a',
+        resume_gateway_url: 'wss://attacker.example',
+      },
+    }]);
+    expect(session.snapshot()).toMatchObject({ resume: null, lastDispatchSequence: null });
+
+    expect(session.onClose({ code: 1_000 })).toEqual([
+      { kind: 'historyGap', reason: 'providerHistoryUnavailable' },
+      { kind: 'reconnect', canResume: false, minDelayMs: 1_000, maxDelayMs: 30_000 },
+    ]);
+  });
+
   it('clears expired-session Dispatch progress before a fresh Identify heartbeat', () => {
     const invalidSession = createDiscordGatewaySession({
       token: 'bot-token',

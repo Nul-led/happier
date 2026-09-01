@@ -95,8 +95,8 @@ import type {
   WorkspaceCheckoutRealizationRequest as ScmWorkspaceIntegrationWorkspaceCheckoutRealizationRequest,
   WorkspaceCheckoutRealizationResult as ScmWorkspaceIntegrationWorkspaceCheckoutRealizationResult,
   WorkspaceTransferRequest as ScmWorkspaceIntegrationWorkspaceTransferRequest,
-  WorkspaceTransferResult as ScmWorkspaceIntegrationWorkspaceTransferResult,
-  WorkspaceTransferEntry as ScmWorkspaceIntegrationWorkspaceTransferEntry,
+  WorkspaceTransferResult as ScmBackendRuntimeWorkspaceTransferResult,
+  WorkspaceTransferEntry as ScmBackendRuntimeWorkspaceTransferEntry,
   WorkspaceTransferMetadata as ScmWorkspaceIntegrationWorkspaceTransferMetadata,
   PortableWorkspacePathClassification as ScmWorkspaceIntegrationPortableWorkspacePathClassification,
   PortableWorkspacePathRequest as ScmWorkspaceIntegrationPortableWorkspacePathRequest,
@@ -118,6 +118,15 @@ export type ScmWorkspaceIntegrationPostMaterializationInput = Readonly<{
 export type ScmWorkspaceIntegrationWorkspaceTransferInput = Readonly<{
   context: ScmBackendContext;
   workspaceTransfer: ScmWorkspaceIntegrationWorkspaceTransferRequest;
+  artifactDirectory?: string;
+}>;
+
+export type ScmWorkspaceIntegrationWorkspaceTransferEntry = ScmBackendRuntimeWorkspaceTransferEntry & Readonly<{
+  disposeSource?: () => Promise<void> | void;
+}>;
+
+export type ScmWorkspaceIntegrationWorkspaceTransferResult = Omit<ScmBackendRuntimeWorkspaceTransferResult, 'entries'> & Readonly<{
+  entries: readonly ScmWorkspaceIntegrationWorkspaceTransferEntry[];
 }>;
 
 export type ScmWorkspaceIntegrationWorkspaceTransferEntryInput = ScmWorkspaceIntegrationWorkspaceTransferEntry;
@@ -152,9 +161,7 @@ export type ScmWorkspaceIntegrationAdministrativePathInput = Readonly<{
 export type ScmWorkspaceIntegrationPortableWorkspacePathInput = ScmWorkspaceIntegrationPortableWorkspacePathRequest;
 
 export type {
-  ScmWorkspaceIntegrationWorkspaceTransferEntry,
   ScmWorkspaceIntegrationWorkspaceTransferMetadata,
-  ScmWorkspaceIntegrationWorkspaceTransferResult,
   ScmWorkspaceIntegrationPortableWorkspacePathClassification,
 };
 

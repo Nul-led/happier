@@ -125,6 +125,12 @@ export function decodeSentryDetailContinuation(token: string): SentryDetailFront
   }
   if (typeof decoded !== 'object' || decoded === null || Array.isArray(decoded)) return null;
   const raw = decoded as Readonly<Record<string, unknown>>;
+  const keys = Object.keys(raw);
+  if (
+    keys.length !== 4
+    || !['v', 'cursor', 'limit', 'probe']
+      .every((key) => Object.prototype.hasOwnProperty.call(raw, key))
+  ) return null;
   const cursor = raw['cursor'];
   const limit = raw['limit'];
   const probe = readCursorCycleProbeV1(raw['probe']);

@@ -13,7 +13,6 @@ import {
   GithubChecksResultV1Schema,
   GithubFeedbackResultV1Schema,
   GithubOverviewResultV1Schema,
-  GithubReviewsResultV1Schema,
   GithubTimelineResultV1Schema,
   type GithubOverviewResultV1,
 } from '../../triage/detail/contracts.js';
@@ -27,8 +26,6 @@ import type {
 import type {
   GithubProjectedChangedFileRowV1,
   GithubProjectedCheckRowV1,
-  GithubProjectedReviewRequestRowV1,
-  GithubProjectedReviewerRowV1,
   GithubProjectedTimelineRowV1,
 } from '../../triage/detail/projection.js';
 import type { GithubChecksRowStateV1 } from '../../triage/mapping/facts.js';
@@ -566,7 +563,6 @@ function useGithubFeedbackConnection<TRow>(
   const { instance } = input;
 
   const readPage: PageReader<TRow> = useCallback(async (continuation, signal) => {
-    if (connection === 'reviews' && continuation === null) setReviewDecision(null);
     const execution = await execute({
       v: 1,
       instance,
@@ -605,6 +601,8 @@ function useGithubFeedbackConnection<TRow>(
           isResolved: row.isResolved,
           path: row.path ?? null,
           line: row.line ?? null,
+          firstReply: row.firstReply === undefined ? null : normalizeFeedbackComment(row.firstReply),
+          replyCount: row.replyCount,
           replies: row.replies.map(normalizeFeedbackComment),
           previousRepliesCursor: row.previousRepliesCursor ?? null,
           ...(row.truncated === true ? { truncated: true as const } : {}),
@@ -747,6 +745,10 @@ export type GithubChecksViewV1 = Readonly<{
  */
 export type GithubChecksControllerV1 = Readonly<{
   state: GithubReadStateV1<GithubChecksViewV1>;
+  /** A warm failure sits beside the retained last-known-good checks. */
+  failure: TriageSourceFailureV1 | null;
+  /** The one whole-surface checks read is still in flight. */
+  pending: boolean;
   refresh: () => void;
 }>;
 
@@ -758,44 +760,77 @@ type GithubSettledReader<T> = (
 /**
  * Drives one whole-surface read for a tab's active interval.
  *
- * Checks and reviews are both all-or-nothing answers inside their own source
- * readers, not paged UI walks. Sharing this lifecycle keeps explicit refresh,
- * cancellation and late-result rejection identical without giving either
- * consumer another source of truth.
+ * Checks are one all-or-nothing answer inside the source reader, not a paged UI
+ * walk. This lifecycle keeps explicit refresh, cancellation and late-result
+ * rejection together without giving the panel another source of truth.
  */
 function useGithubSettledRead<T>(
   read: GithubSettledReader<T>,
   active: boolean,
   activeSignal: AbortSignal,
-): Readonly<{ state: GithubReadStateV1<T>; refresh: () => void }> {
+): Readonly<{
+  state: GithubReadStateV1<T>;
+  failure: TriageSourceFailureV1 | null;
+  pending: boolean;
+  refresh: () => void;
+}> {
   const [state, setState] = useState<GithubReadStateV1<T>>({ kind: 'loading' });
+  const [failure, setFailure] = useState<TriageSourceFailureV1 | null>(null);
+  const [pending, setPending] = useState(false);
+  const inFlight = useRef(false);
+  const lastKnownGood = useRef<T | null>(null);
   const [attempt, setAttempt] = useState(0);
+
+  useEffect(() => {
+    if (active) return;
+    inFlight.current = false;
+    lastKnownGood.current = null;
+    setState({ kind: 'loading' });
+    setFailure(null);
+    setPending(false);
+  }, [active]);
 
   useEffect(() => {
     if (!active) return undefined;
     // `attempt` is an explicit re-read through the same owner as the first
     // read. There is no timer and no second reader behind refresh.
     void attempt;
-    setState({ kind: 'loading' });
+    inFlight.current = true;
+    setPending(true);
+    if (lastKnownGood.current === null) setState({ kind: 'loading' });
+    setFailure(null);
     let left = false;
     void (async () => {
       const outcome = await read(activeSignal);
       if (left || activeSignal.aborted) return;
-      setState(outcome.kind === 'ready'
-        ? { kind: 'ready', value: outcome.value }
-        : { kind: 'unavailable', failure: outcome.failure });
+      if (outcome.kind === 'ready') {
+        lastKnownGood.current = outcome.value;
+        setState({ kind: 'ready', value: outcome.value });
+        setFailure(null);
+      } else if (lastKnownGood.current === null) {
+        setState({ kind: 'unavailable', failure: outcome.failure });
+      } else {
+        setFailure(outcome.failure);
+      }
+      inFlight.current = false;
+      setPending(false);
     })();
     return () => {
       left = true;
-      setState({ kind: 'loading' });
     };
   }, [active, activeSignal, attempt, read]);
 
   const refresh = useCallback(() => {
+    if (!active || inFlight.current) return;
+    inFlight.current = true;
+    setPending(true);
     setAttempt((current) => current + 1);
-  }, []);
+  }, [active]);
 
-  return useMemo(() => ({ state, refresh }), [refresh, state]);
+  return useMemo(
+    () => ({ state, failure, pending, refresh }),
+    [failure, pending, refresh, state],
+  );
 }
 
 export function useGithubChecks(
@@ -833,78 +868,6 @@ export function useGithubChecks(
       };
     }
     const parsed = GithubChecksResultV1Schema.safeParse(execution.result);
-    if (!parsed.success) return { kind: 'failed', failure: UNREADABLE_RESULT };
-    if (parsed.data.kind === 'unavailable') {
-      return { kind: 'failed', failure: parsed.data.failure };
-    }
-    const { kind: _kind, ...view } = parsed.data;
-    return { kind: 'ready', value: view };
-  }, [execute, instance, localRef, routingToken]);
-
-  return useGithubSettledRead(read, active, activeSignal);
-}
-
-/* ------------------------------------------------------------------- reviews */
-
-export type GithubReviewsViewV1 = Readonly<{
-  reviewed: readonly GithubProjectedReviewerRowV1[];
-  requested: readonly GithubProjectedReviewRequestRowV1[];
-  reviewDecision?: 'approved' | 'changes-requested' | 'review-required';
-  reviewsFailure?: TriageSourceFailureV1;
-  requestsFailure?: TriageSourceFailureV1;
-  reviewsIncomplete?: true;
-  requestsIncomplete?: true;
-  omittedRowCount: number;
-  projectionTruncated: boolean;
-}>;
-
-export type GithubReviewsControllerV1 = Readonly<{
-  state: GithubReadStateV1<GithubReviewsViewV1>;
-  refresh: () => void;
-}>;
-
-/**
- * Reads the canonical review surface for exactly as long as Feedback is active.
- *
- * `reviews.ts` owns the two provider collections, their newest-review collapse,
- * and the review-decision derivation. This hook only invokes the already
- * declared action and retains its independently stated partial failures.
- */
-export function useGithubReviews(
-  input: TriageDetailSurfaceInputV1,
-): GithubReviewsControllerV1 {
-  const action = useMemo(
-    () => ({
-      pluginId: GITHUB_PLUGIN_ID,
-      localId: GITHUB_TRIAGE_DETAIL_ACTION_IDS_V1.readReviews,
-    }),
-    [],
-  );
-  const { execute } = useExecutePluginAction(action);
-  const { active, activeSignal } = useTabPanelActivity();
-  const localRef = useLocalRef(input);
-  const routingToken = useGithubRoutingToken(input);
-  const { instance } = input;
-  const read: GithubSettledReader<GithubReviewsViewV1> = useCallback(async (signal) => {
-    if (routingToken === null) {
-      return { kind: 'failed', failure: ROUTE_UNAVAILABLE };
-    }
-    const execution = await execute({
-      v: 1,
-      instance,
-      localRef,
-      routingToken,
-    }, { signal });
-    if (execution.status !== 'success') {
-      const code = execution.status === 'error' || execution.status === 'outcomeUnknown'
-        ? execution.code
-        : 'github-detail-read-failed';
-      return {
-        kind: 'failed',
-        failure: dispatchFailure(execution.status, code),
-      };
-    }
-    const parsed = GithubReviewsResultV1Schema.safeParse(execution.result);
     if (!parsed.success) return { kind: 'failed', failure: UNREADABLE_RESULT };
     if (parsed.data.kind === 'unavailable') {
       return { kind: 'failed', failure: parsed.data.failure };

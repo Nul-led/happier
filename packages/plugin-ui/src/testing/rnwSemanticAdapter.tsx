@@ -35,6 +35,12 @@ export type PluginUiRnwSemanticSurfaceAdapterOptions = Readonly<{
     readCurrentMounts(): unknown;
     /** Read the actual public manifest exported by the exact contributor package. */
     readContributorManifest(pluginId: string): unknown;
+    /**
+     * Optional mounted-test probe around admitted content. The real admission
+     * still runs first; this only lets a source-side test component exercise
+     * target-provided React context such as mutation completion.
+     */
+    renderAdmittedContent?: (input: Readonly<{ content: ReactNode }>) => ReactNode;
   }>;
 }>;
 
@@ -65,9 +71,10 @@ function createSemanticPresentationHost(input: Readonly<{
         ...(presentation.instanceKey === undefined ? {} : { instanceKey: presentation.instanceKey }),
       });
       if (!admission) return presentation.fallback ?? null;
+      const content = <Text value={admission.content.text} />;
       return (
         <Fragment key={admission.key}>
-          <Text value={admission.content.text} />
+          {targetedSurfaces.renderAdmittedContent?.({ content }) ?? content}
         </Fragment>
       );
     },

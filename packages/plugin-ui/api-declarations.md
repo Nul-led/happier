@@ -1107,6 +1107,7 @@ type ListSelectionActionBarProps = Readonly<{
     actions: readonly ListBulkAction[];
     onAction: (actionId: string, keys: readonly ListMultiSelectionKey[]) => void;
     onDismiss?: () => void;
+    dismissLabel?: string;
     accessibilityLabel?: string;
     testID?: string;
     style?: HappierStyleProp;
@@ -1389,6 +1390,7 @@ type PluginUiEphemeralSharedScope = Readonly<{
     acquire<T>(localKey: string, create: () => Readonly<{
         value: T;
         dispose(): void;
+        onExecutionOriginChange?(): void;
     }>): PluginUiEphemeralSharedValueLease<T> | null;
 }>;
 ```
@@ -1450,7 +1452,7 @@ type PluginUiResourceReference = Parameters<PluginUiHostApi['readResource']>[0];
 
 ### `.` — `PluginUiResourceResult` (type)
 
-Declared by `dist/hostApi/index.d.ts` as `PluginUiResourceResult`.
+Declared by `dist/hostApi/index.public.d.ts` as `PluginUiResourceResult`.
 
 ```ts
 type PluginUiResourceResult = Readonly<{
@@ -2193,7 +2195,7 @@ function useListMultiSelectionStoreSnapshot(store: ListMultiSelectionStore | nul
 
 ### `.` — `useLivePluginResource` (value)
 
-Declared by `dist/hostApi/index.d.ts` as `useLivePluginResource`.
+Declared by `dist/hostApi/index.public.d.ts` as `useLivePluginResource`.
 
 ```ts
 function useLivePluginResource(resource: PluginUiResourceReference): PluginUiResourceResult;
@@ -2247,7 +2249,7 @@ function usePluginHostApi(): PluginUiHostApi;
 
 ### `.` — `usePluginResource` (value)
 
-Declared by `dist/hostApi/index.d.ts` as `usePluginResource`.
+Declared by `dist/hostApi/index.public.d.ts` as `usePluginResource`.
 
 ```ts
 function usePluginResource(resource: PluginUiResourceReference): PluginUiResourceResult;
@@ -3421,6 +3423,7 @@ type ListSelectionActionBarProps = Readonly<{
     actions: readonly ListBulkAction[];
     onAction: (actionId: string, keys: readonly ListMultiSelectionKey[]) => void;
     onDismiss?: () => void;
+    dismissLabel?: string;
     accessibilityLabel?: string;
     testID?: string;
     style?: HappierStyleProp;
@@ -4345,7 +4348,7 @@ function useTabPanelActivity(): TabPanelActivity;
 Declared by `dist/data/types.d.ts` as `PluginUiAccountCollectionForDefinition`.
 
 ```ts
-type PluginUiAccountCollectionForDefinition<TDefinition extends PluginAccountCollectionDefinition> = Pick<PluginAccountCollectionForDefinition<TDefinition>, 'identityTag' | 'get' | 'put' | 'delete' | 'query' | 'batch' | 'limits' | 'measureBatch'>;
+type PluginUiAccountCollectionForDefinition<TDefinition extends PluginAccountCollectionDefinition> = Pick<PluginAccountCollectionForDefinition<TDefinition>, 'identityTag' | 'get' | 'put' | 'delete' | 'forget' | 'query' | 'batch' | 'limits' | 'measureBatch'>;
 ```
 
 
@@ -4360,7 +4363,7 @@ type PluginUiAccountKv = AccountKvService;
 
 ### `./data` — `PluginUiCollectionQueryFailure` (type)
 
-Declared by `dist/data/index.d.ts` as `PluginUiCollectionQueryFailure`.
+Declared by `dist/data/index.public.d.ts` as `PluginUiCollectionQueryFailure`.
 
 ```ts
 type PluginUiCollectionQueryFailure = PluginCollectionUiQueryErrorV1 | Error;
@@ -4398,7 +4401,7 @@ type PluginUiCollectionQueryPager = Readonly<{
 
 ### `./data` — `PluginUiCollectionQueryResult` (type)
 
-Declared by `dist/data/index.d.ts` as `PluginUiCollectionQueryResult`.
+Declared by `dist/data/index.public.d.ts` as `PluginUiCollectionQueryResult`.
 
 ```ts
 type PluginUiCollectionQueryResult = Readonly<{
@@ -4441,7 +4444,7 @@ type PluginUiDataClient = Readonly<{
 
 ### `./data` — `usePluginAccountKv` (value)
 
-Declared by `dist/data/index.d.ts` as `usePluginAccountKv`.
+Declared by `dist/data/index.public.d.ts` as `usePluginAccountKv`.
 
 ```ts
 function usePluginAccountKv(): PluginUiAccountKv;
@@ -4450,7 +4453,7 @@ function usePluginAccountKv(): PluginUiAccountKv;
 
 ### `./data` — `usePluginCollectionQuery` (value)
 
-Declared by `dist/data/index.d.ts` as `usePluginCollectionQuery`.
+Declared by `dist/data/index.public.d.ts` as `usePluginCollectionQuery`.
 
 ```ts
 function usePluginCollectionQuery(collectionId: PluginCollectionUiQueryRequestV1['collectionId'], uiQueryId: PluginCollectionUiQueryRequestV1['uiQueryId'], parameters?: PluginCollectionUiQueryRequestV1['parameters']): PluginUiCollectionQueryResult;
@@ -5027,6 +5030,7 @@ type PluginUiEphemeralSharedScope = Readonly<{
     acquire<T>(localKey: string, create: () => Readonly<{
         value: T;
         dispose(): void;
+        onExecutionOriginChange?(): void;
     }>): PluginUiEphemeralSharedValueLease<T> | null;
 }>;
 ```
@@ -5077,7 +5081,7 @@ type PluginUiResourceReference = Parameters<PluginUiHostApi['readResource']>[0];
 
 ### `./hostApi` — `PluginUiResourceResult` (type)
 
-Declared by `dist/hostApi/index.d.ts` as `PluginUiResourceResult`.
+Declared by `dist/hostApi/index.public.d.ts` as `PluginUiResourceResult`.
 
 ```ts
 type PluginUiResourceResult = Readonly<{
@@ -5174,7 +5178,7 @@ function useExecutePluginAction<TAction extends PluginUiActionReference>(action:
 
 ### `./hostApi` — `useLivePluginResource` (value)
 
-Declared by `dist/hostApi/index.d.ts` as `useLivePluginResource`.
+Declared by `dist/hostApi/index.public.d.ts` as `useLivePluginResource`.
 
 ```ts
 function useLivePluginResource(resource: PluginUiResourceReference): PluginUiResourceResult;
@@ -5192,7 +5196,7 @@ function usePluginHostApi(): PluginUiHostApi;
 
 ### `./hostApi` — `usePluginResource` (value)
 
-Declared by `dist/hostApi/index.d.ts` as `usePluginResource`.
+Declared by `dist/hostApi/index.public.d.ts` as `usePluginResource`.
 
 ```ts
 function usePluginResource(resource: PluginUiResourceReference): PluginUiResourceResult;
@@ -7703,6 +7707,9 @@ type PluginUiRnwSemanticSurfaceAdapterOptions = Readonly<{
     targetedSurfaces?: Readonly<{
         readCurrentMounts(): unknown;
         readContributorManifest(pluginId: string): unknown;
+        renderAdmittedContent?: (input: Readonly<{
+            content: ReactNode;
+        }>) => ReactNode;
     }>;
 }>;
 ```

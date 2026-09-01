@@ -304,7 +304,7 @@ export async function publishGithubIssueComment(
         verdict: { kind: 'notRequested' },
       },
     );
-    await input.settlePublicationDispatch?.(claim, publication).catch(() => undefined);
+    await input.settlePublicationDispatch?.(claim, publication);
     const confirmed = await confirm(input.localRef, input.route, repositories, dependencies);
     return Object.freeze({
       kind: 'settled' as const,
@@ -335,7 +335,7 @@ export async function publishGithubIssueComment(
         verdict: { kind: 'notRequested' },
       },
     );
-    await input.settlePublicationDispatch?.(claim, publication).catch(() => undefined);
+    await input.settlePublicationDispatch?.(claim, publication);
     const confirmed = await confirm(input.localRef, input.route, repositories, dependencies);
     return Object.freeze({
       kind: 'settled' as const,

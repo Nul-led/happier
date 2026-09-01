@@ -96,7 +96,7 @@ describe('activate', () => {
     };
     const context = {
       protocols: { acp: { open } },
-      session: { id: request.sessionId },
+      session: { id: request.sessionId, services: { subagents: { observe: vi.fn() } } },
       workState: { publisher },
       services: {
         interactions: { askQuestions, confirm },
@@ -104,7 +104,6 @@ describe('activate', () => {
         settings,
         sessions: {
           current: { media: { registerSourceRoot: vi.fn() } },
-          subagents: { observe: vi.fn() },
         },
       },
     } as unknown as AgentSessionRuntimeContext;

@@ -216,6 +216,7 @@ function transportFor(input: Readonly<{
   reviewCommentPublicationReads?: readonly unknown[][];
   threadPublicationReads?: readonly unknown[][];
   claimDisposition?: 'dispatch' | 'reconcile';
+  settlementError?: Error;
   claimInstructions?: Readonly<{
     entries: readonly ('dispatch' | 'reconcile' | 'confirmed' | 'held')[];
     verdict: 'dispatch' | 'reconcile' | 'confirmed' | 'held' | null;
@@ -241,6 +242,13 @@ function transportFor(input: Readonly<{
     executeAction: async (actionId, actionInput) => {
       expect(actionId).toBe('reviews.comments.claimPublicationDispatch');
       claimedPlans.push(actionInput);
+      if (input.settlementError !== undefined
+        && typeof actionInput === 'object'
+        && actionInput !== null
+        && 'settlement' in actionInput
+        && actionInput.settlement !== undefined) {
+        throw input.settlementError;
+      }
       const plan = actionInput as Readonly<Record<string, unknown>>;
       const entries = Array.isArray(plan.entries) ? plan.entries : [];
       const disposition = input.claimDisposition ?? 'dispatch';
@@ -482,6 +490,23 @@ describe('GitHub pull-request review publication', () => {
     });
   });
 
+  it('does not report settled when the canonical publication settlement fails', async () => {
+    const stub = transportFor({
+      reads: [pullRequestBody(), pullRequestBody()],
+      reviewPublicationReads: [[reviewRecord(
+        `Review\n\n<!-- happier-review-verdict:v1:${VERDICT_CORRELATION_ID} -->`,
+      )]],
+      reviewCommentPublicationReads: [[commentRecord(
+        `Comment\n\n<!-- happier-review-comment:v1:${COMMENT_CORRELATION_ID} -->`,
+      )]],
+      settlementError: new Error('canonical settlement unavailable'),
+    });
+
+    await expect(publishGithubPullRequestReviewAction(publicationInput(), stub.context))
+      .rejects.toThrow('canonical settlement unavailable');
+    expect(writes(stub)).toHaveLength(1);
+  });
+
   it('rejects a moved observed head before dispatch and returns what GitHub has now', async () => {
     const stub = transportFor({ reads: [pullRequestBody({ headSha: ADVANCED_HEAD })] });
 
@@ -562,7 +587,7 @@ describe('GitHub pull-request review publication', () => {
     });
   });
 
-  it('supplies the required review body when submitting inline entries without a verdict', async () => {
+  it('rejects inline review entries without a user-authored verdict before provider work', async () => {
     const stub = transportFor({
       reads: [pullRequestBody(), pullRequestBody()],
       reviewCommentPublicationReads: [[commentRecord(
@@ -576,17 +601,12 @@ describe('GitHub pull-request review publication', () => {
       }), stub.context),
     );
 
-    expect(result.kind).toBe('settled');
-    expect(readRecordedJsonBody(writes(stub)[0] as RecordedGithubRequest)).toMatchObject({
-      event: 'COMMENT',
-      body: 'Review comments',
-      comments: [{
-        path: 'src/index.ts',
-        line: 12,
-        side: 'RIGHT',
-        body: `Explain why this is safe.\n\n<!-- happier-review-comment:v1:${COMMENT_CORRELATION_ID} -->`,
-      }],
+    expect(result).toMatchObject({
+      kind: 'rejected',
+      reason: 'invalid_input',
     });
+    expect(stub.requests).toHaveLength(0);
+    expect(stub.claimedPlans).toHaveLength(0);
   });
 
   it('retries only the released suffix and never resubmits a confirmed review entry', async () => {
@@ -601,11 +621,11 @@ describe('GitHub pull-request review publication', () => {
     });
     const retryPlan = publicationPlan({
       entries: [publicationEntry, retryEntry],
-      verdict: null,
+      verdict: { kind: 'comment', body: 'Review these comments.' },
     });
     const stub = transportFor({
       reads: [pullRequestBody(), pullRequestBody()],
-      claimInstructions: { entries: ['confirmed', 'dispatch'], verdict: null },
+      claimInstructions: { entries: ['confirmed', 'dispatch'], verdict: 'confirmed' },
       priorPublicationResult: {
         publicationPlanId: 'C'.repeat(43),
         entries: [
@@ -620,7 +640,10 @@ describe('GitHub pull-request review publication', () => {
             outcome: { kind: 'failed', code: 'provider/rejected' },
           },
         ],
-        verdict: { kind: 'notRequested' },
+        verdict: {
+          publicationCorrelationId: VERDICT_CORRELATION_ID,
+          outcome: { kind: 'published', externalRef: 'native-verdict' },
+        },
       },
       reviewCommentPublicationReads: [[commentRecord(
         `Retry\n\n<!-- happier-review-comment:v1:${'C'.repeat(43)} -->`,
@@ -640,7 +663,7 @@ describe('GitHub pull-request review publication', () => {
     ]);
     expect(readRecordedJsonBody(writes(stub)[0] as RecordedGithubRequest)).toMatchObject({
       event: 'COMMENT',
-      body: 'Review comments',
+      body: expect.stringContaining('Review these comments.'),
       comments: [{
         path: 'src/index.ts',
         line: 14,
@@ -705,7 +728,7 @@ describe('GitHub pull-request review publication', () => {
     );
     expect(result.kind).toBe('rejected');
     if (result.kind !== 'rejected') throw new Error(`expected rejected, got ${result.kind}`);
-    expect(result.reason).toBe('unsupported_anchor');
+    expect(result.reason).toBe('invalid_input');
     expect(stub.claimedPlans).toHaveLength(0);
     expect(stub.requests.some((request) => request.method === 'POST')).toBe(false);
   });

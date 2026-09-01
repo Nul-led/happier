@@ -8326,6 +8326,68 @@ function ConnectionTransferProviderButton(props: Readonly<{
  * and a host-issued provider setup selection; it never constructs an origin,
  * policy, identifier, or idempotency key of its own.
  */
+function WebhookEndpointSetupInstructions(props: Readonly<{
+  setup: EndpointSetupPresentation;
+  testIDPrefix: string;
+  description: string;
+  t: Translate;
+}>): React.ReactElement {
+  return (
+    <Stack gap="small" testID={`${props.testIDPrefix}-webhook-required`}>
+      <Heading
+        level={4}
+        value={props.t('plugins.channels.surface.webhookEndpointSetupRequiredTitle', 'Finish webhook setup')}
+      />
+      <Text value={props.description} />
+      <Metadata
+        entries={[
+          {
+            label: props.t('plugins.channels.surface.webhookEndpointUrl', 'Webhook URL'),
+            value: props.setup.publicUrl,
+          },
+          ...(props.setup.oneTimeGeneratedSecret === undefined
+            ? [{
+                label: props.t('plugins.channels.surface.webhookEndpointSecret', 'Webhook secret'),
+                value: props.t(
+                  'plugins.channels.surface.webhookEndpointSecretLost',
+                  'This secret was already shown once. Rotate the endpoint credential to receive a new one.',
+                ),
+              }]
+            : [{
+                label: props.t('plugins.channels.surface.webhookEndpointSecret', 'Webhook secret (shown once)'),
+                value: props.setup.oneTimeGeneratedSecret,
+              }]),
+        ]}
+      />
+      <Action.Copy
+        testID={`${props.testIDPrefix}-webhook-url-copy`}
+        title={props.t('plugins.channels.surface.webhookEndpointUrlCopy', 'Copy webhook URL')}
+        value={props.setup.publicUrl}
+      />
+      {props.setup.oneTimeGeneratedSecret === undefined ? null : (
+        <Action.Copy
+          testID={`${props.testIDPrefix}-webhook-secret-copy`}
+          title={props.t('plugins.channels.surface.webhookEndpointSecretCopy', 'Copy webhook secret')}
+          value={props.setup.oneTimeGeneratedSecret}
+        />
+      )}
+      <Text
+        testID={`${props.testIDPrefix}-webhook-readiness`}
+        tone="info"
+        value={props.setup.readiness === 'credentialDisclosureLost'
+          ? props.t(
+            'plugins.channels.surface.webhookEndpointCredentialDisclosureLost',
+            'The endpoint exists, but its one-time secret is no longer available here. Rotate its credential if needed.',
+          )
+          : props.t(
+            'plugins.channels.surface.webhookEndpointAwaitingConfirmation',
+            'Save this webhook with your provider, then continue so Happier can confirm delivery.',
+          )}
+      />
+    </Stack>
+  );
+}
+
 function ConnectionTransferControls(props: Readonly<{
   connection: ChannelsConnection;
   signal: AbortSignal;
@@ -8339,6 +8401,7 @@ function ConnectionTransferControls(props: Readonly<{
   const transferAction = useExecutePluginAction(
     CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionTransfer,
   );
+  const ensureEndpointAction = useExecutePluginAction('plugin.webhook.endpoint.ensure');
   const [open, setOpen] = React.useState(false);
   const [selectionPending, setSelectionPending] = React.useState(false);
   const [selectedOperationKey, setSelectedOperationKey] = React.useState<string | undefined>();
@@ -8349,8 +8412,15 @@ function ConnectionTransferControls(props: Readonly<{
   );
   const [selectionUnavailable, setSelectionUnavailable] = React.useState(false);
   const [transferFailed, setTransferFailed] = React.useState(false);
+  const [endpointSetupRequired, setEndpointSetupRequired] = React.useState<EndpointSetupPresentation | undefined>();
   const selectionPendingRef = React.useRef(false);
   const selectedProviderSetupActionInputRef = React.useRef<SelectedProviderSetupActionInput | undefined>(undefined);
+  const selectedProviderSetupLifetimeRef = React.useRef<AbortController | undefined>(undefined);
+  const retireSelectedProviderSetup = React.useCallback(() => {
+    selectedProviderSetupLifetimeRef.current?.abort();
+    selectedProviderSetupLifetimeRef.current = undefined;
+    selectedProviderSetupActionInputRef.current = undefined;
+  }, []);
   const mountedRef = React.useRef(true);
   const operations = React.useMemo(
     () => currentProviderSetupOperations(
@@ -8368,29 +8438,26 @@ function ConnectionTransferControls(props: Readonly<{
   const actionUnavailable = transferBlocked
     || selectionPending
     || transferAction.execution.status === 'pending'
-    || transferOutcomeUnknown;
+    || transferOutcomeUnknown
+    || ensureEndpointAction.execution.status === 'pending'
+    || ensureEndpointAction.execution.status === 'outcomeUnknown';
   const defaultTransport = isConversationConnectionSelectableTransportV1(props.connection.selectedTransport)
     ? props.connection.selectedTransport
     : 'checkpointedPull';
-  // Durable push can only preserve and retarget its existing generic endpoint
-  // in this transfer Action. The other transports remain selectable only for
-  // non-durable rows, so this surface never silently converts transport.
-  const transferTransports = props.connection.selectedTransport === 'durablePush'
-    ? ['durablePush'] as const
-    : CONVERSATION_CONNECTION_SELECTABLE_TRANSPORTS_V1.filter(
-      (transport) => transport !== 'durablePush',
-    );
+  const transferTransports = CONVERSATION_CONNECTION_SELECTABLE_TRANSPORTS_V1;
 
   const openTransfer = React.useCallback(() => {
     if (actionUnavailable) return;
-    selectedProviderSetupActionInputRef.current = undefined;
+    retireSelectedProviderSetup();
     setSelectedOperationKey(undefined);
     setSelectedTransport(defaultTransport);
     setSelectionUnavailable(false);
     setTransferFailed(false);
+    setEndpointSetupRequired(undefined);
     transferAction.reset();
+    ensureEndpointAction.reset();
     setOpen(true);
-  }, [actionUnavailable, defaultTransport, transferAction.reset]);
+  }, [actionUnavailable, defaultTransport, ensureEndpointAction.reset, retireSelectedProviderSetup, transferAction.reset]);
 
   const cancelTransfer = React.useCallback(() => {
     if (selectionPending
@@ -8398,16 +8465,20 @@ function ConnectionTransferControls(props: Readonly<{
       || transferAction.execution.status === 'outcomeUnknown') {
       return;
     }
-    selectedProviderSetupActionInputRef.current = undefined;
+    retireSelectedProviderSetup();
     setSelectedOperationKey(undefined);
     setSelectedTransport(defaultTransport);
     setSelectionUnavailable(false);
     setTransferFailed(false);
+    setEndpointSetupRequired(undefined);
     transferAction.reset();
+    ensureEndpointAction.reset();
     setOpen(false);
   }, [
     defaultTransport,
     selectionPending,
+    ensureEndpointAction.reset,
+    retireSelectedProviderSetup,
     transferAction.execution.status,
     transferAction.reset,
   ]);
@@ -8421,20 +8492,24 @@ function ConnectionTransferControls(props: Readonly<{
     // Provider setup input is a transient host-issued settlement. Back keeps
     // the user-selected transport draft, but requires a fresh provider setup
     // selection before a terminal transfer can execute.
-    selectedProviderSetupActionInputRef.current = undefined;
+    retireSelectedProviderSetup();
     setSelectedOperationKey(undefined);
     setSelectionUnavailable(false);
     setTransferFailed(false);
+    setEndpointSetupRequired(undefined);
     transferAction.reset();
-  }, [selectionPending, transferAction.execution.status, transferAction.reset]);
+    ensureEndpointAction.reset();
+  }, [ensureEndpointAction.reset, retireSelectedProviderSetup, selectionPending, transferAction.execution.status, transferAction.reset]);
 
   const onTransferOutcomeReconciled = React.useCallback(() => {
-    selectedProviderSetupActionInputRef.current = undefined;
+    retireSelectedProviderSetup();
     setSelectedOperationKey(undefined);
     setSelectionUnavailable(false);
     setTransferFailed(false);
+    setEndpointSetupRequired(undefined);
     transferAction.reset();
-  }, [transferAction.reset]);
+    ensureEndpointAction.reset();
+  }, [ensureEndpointAction.reset, retireSelectedProviderSetup, transferAction.reset]);
   const requestRefresh = useExplicitFreshRereadAfterUnknownOutcome({
     outcomeUnknown: transferOutcomeUnknown,
     resource: props.resource,
@@ -8446,18 +8521,16 @@ function ConnectionTransferControls(props: Readonly<{
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
-      selectedProviderSetupActionInputRef.current = undefined;
+      retireSelectedProviderSetup();
     };
-  }, []);
+  }, [retireSelectedProviderSetup]);
 
   React.useEffect(() => {
-    const clearSelection = () => {
-      selectedProviderSetupActionInputRef.current = undefined;
-    };
+    const clearSelection = () => retireSelectedProviderSetup();
     if (props.signal.aborted) clearSelection();
     else props.signal.addEventListener('abort', clearSelection, { once: true });
     return () => props.signal.removeEventListener('abort', clearSelection);
-  }, [props.signal]);
+  }, [props.signal, retireSelectedProviderSetup]);
 
   React.useEffect(() => {
     const selected = selectedProviderSetupActionInputRef.current;
@@ -8466,21 +8539,23 @@ function ConnectionTransferControls(props: Readonly<{
     if (operations.some((operation) => pluginUiTargetedContributionOperationKey(operation) === operationKey)) return;
     // A host context/currentness revision withdrew the operation that supplied
     // this transient settlement, so it cannot reach the terminal Action.
-    selectedProviderSetupActionInputRef.current = undefined;
+    retireSelectedProviderSetup();
     setSelectedOperationKey(undefined);
     setSelectionUnavailable(true);
-  }, [operations]);
+  }, [operations, retireSelectedProviderSetup]);
 
   const selectProvider = React.useCallback(async (operation: ProviderSetupOperation) => {
     if (props.signal.aborted
       || transferBlocked
       || selectionPendingRef.current
       || transferAction.execution.status === 'pending'
-      || transferAction.execution.status === 'outcomeUnknown') {
+      || transferAction.execution.status === 'outcomeUnknown'
+      || ensureEndpointAction.execution.status === 'pending'
+      || ensureEndpointAction.execution.status === 'outcomeUnknown') {
       return;
     }
     selectionPendingRef.current = true;
-    selectedProviderSetupActionInputRef.current = undefined;
+    retireSelectedProviderSetup();
     if (mountedRef.current) {
       setSelectionPending(true);
       setSelectedOperationKey(undefined);
@@ -8491,26 +8566,34 @@ function ConnectionTransferControls(props: Readonly<{
     try {
       let selection: SelectActionInputResult;
       try {
-        selection = await hostApi.selectActionInput({ operation }, { signal: props.signal });
+        const selectionLifetime = new AbortController();
+        selectedProviderSetupLifetimeRef.current = selectionLifetime;
+        selection = await hostApi.selectActionInput({ operation }, { signal: selectionLifetime.signal });
       } catch {
+        retireSelectedProviderSetup();
         if (mountedRef.current && !props.signal.aborted) setSelectionUnavailable(true);
         return;
       }
-      if (selection.kind !== 'submitted' || props.signal.aborted || !mountedRef.current) return;
+      if (selection.kind !== 'submitted' || props.signal.aborted || !mountedRef.current) {
+        retireSelectedProviderSetup();
+        return;
+      }
       selectedProviderSetupActionInputRef.current = { operation, result: selection };
       setSelectedOperationKey(pluginUiTargetedContributionOperationKey(operation));
     } finally {
       selectionPendingRef.current = false;
       if (mountedRef.current && !props.signal.aborted) setSelectionPending(false);
     }
-  }, [hostApi, props.signal, transferAction, transferBlocked]);
+  }, [ensureEndpointAction.execution.status, hostApi, props.signal, retireSelectedProviderSetup, transferAction, transferBlocked]);
 
   const transfer = React.useCallback(async () => {
     if (props.signal.aborted
       || transferBlocked
       || selectionPendingRef.current
       || transferAction.execution.status === 'pending'
-      || transferAction.execution.status === 'outcomeUnknown') {
+      || transferAction.execution.status === 'outcomeUnknown'
+      || ensureEndpointAction.execution.status === 'pending'
+      || ensureEndpointAction.execution.status === 'outcomeUnknown') {
       return;
     }
     const selectedActionInput = selectedProviderSetupActionInputRef.current;
@@ -8527,6 +8610,7 @@ function ConnectionTransferControls(props: Readonly<{
     const parsedInput = ConversationConnectionTransferInputV1Schema.safeParse({
       connectionId: props.connection.connectionId,
       expectedRevision: props.connection.revision,
+      expectedAuthorityEpoch: props.connection.authorityEpoch,
       providerSelection: selection.selection,
       providerSetupInput: selection.input,
       credentialRef: selection.connectedAccount.kind === 'selected'
@@ -8540,38 +8624,111 @@ function ConnectionTransferControls(props: Readonly<{
     }
     setSelectionUnavailable(false);
     setTransferFailed(false);
-    // Transfer is the terminal outer relay. The host-issued selection is
-    // consumed exactly once and never survives a retried management Action.
-    selectedProviderSetupActionInputRef.current = undefined;
-    const terminalExecutionOptions = {
+    setEndpointSetupRequired(undefined);
+    // One selected Connected Account remains purpose-bound to this mounted
+    // transfer through provider setup, endpoint ensure, continuation, and a
+    // response-loss rejoin. It is retired only after a definite terminal
+    // outcome or explicit abandonment; no credential material enters plugin
+    // state or the public transfer input.
+    const settled = await transferAction.execute(parsedInput.data, {
       signal: props.signal,
       selectedActionInput,
-      // Host-private mounted execution fact, intentionally absent from the
-      // public PluginUiActionExecutionOptions author contract.
-      consumeSelectedActionInput: true as const,
-    };
-    const settled = await transferAction.execute(parsedInput.data, terminalExecutionOptions);
+    });
     if (!mountedRef.current || props.signal.aborted) return;
-    if (settled.status === 'success') {
-      const result = ConversationConnectionTransferResultV1Schema.safeParse(settled.result);
-      if (!result.success
-        || (result.data.kind !== 'transferred'
-          && result.data.kind !== 'rejoined'
-          && result.data.kind !== 'transferPendingOldStop')) {
-        setSelectedOperationKey(undefined);
-        setTransferFailed(true);
-        return;
-      }
+    if (settled.status !== 'success') {
+      if (settled.status === 'error') setTransferFailed(true);
+      return;
+    }
+    const result = ConversationConnectionTransferResultV1Schema.safeParse(settled.result);
+    if (!result.success) {
+      setTransferFailed(true);
+      return;
+    }
+    if (result.data.kind === 'transferred'
+      || result.data.kind === 'rejoined'
+      || result.data.kind === 'transferPendingOldStop') {
+      retireSelectedProviderSetup();
       setSelectedOperationKey(undefined);
       setTransferFailed(false);
       props.onRefresh();
+      return;
     }
+    if (result.data.kind !== 'endpointRequired') {
+      setTransferFailed(true);
+      return;
+    }
+
+    if (ensureEndpointAction.execution.status === 'outcomeUnknown') {
+      ensureEndpointAction.reset();
+    }
+    const ensured = await ensureEndpointAction.execute({
+      webhookContribution: { ...result.data.webhookContribution },
+      targetMaterialization: { ...result.data.targetMaterialization },
+      sourceInstanceId: result.data.sourceInstanceId,
+      setup: { ...result.data.webhookEndpointSetup },
+      idempotencyKey: result.data.webhookEndpointIdempotencyKey,
+    }, { signal: props.signal, selectedActionInput });
+    if (!mountedRef.current || props.signal.aborted) return;
+    if (ensured.status === 'outcomeUnknown') {
+      // The core-minted idempotency key makes the next deliberate transfer
+      // press an ambiguity-safe ensure rejoin; reset only controller display.
+      ensureEndpointAction.reset();
+      setTransferFailed(true);
+      return;
+    }
+    if (ensured.status !== 'success') {
+      setTransferFailed(true);
+      return;
+    }
+    if (ensured.result.readiness === 'providerConfirmationRequired'
+      || ensured.result.readiness === 'credentialDisclosureLost') {
+      const setupRequired = ConversationConnectionCreateResultV1Schema.safeParse({
+        kind: 'webhookEndpointSetupRequired',
+        webhookEndpointId: ensured.result.webhookEndpointId,
+        publicUrl: ensured.result.publicUrl,
+        readiness: ensured.result.readiness,
+        ...(ensured.result.oneTimeGeneratedSecret === undefined
+          ? {}
+          : { oneTimeGeneratedSecret: ensured.result.oneTimeGeneratedSecret }),
+      });
+      if (!setupRequired.success || setupRequired.data.kind !== 'webhookEndpointSetupRequired') {
+        setTransferFailed(true);
+        return;
+      }
+      setEndpointSetupRequired(setupRequired.data);
+    }
+    const continuationSettled = await transferAction.execute({
+      ...parsedInput.data,
+      endpointContinuation: {
+        connectionId: result.data.connectionId,
+        webhookEndpointId: ensured.result.webhookEndpointId,
+      },
+    }, { signal: props.signal });
+    if (!mountedRef.current || props.signal.aborted) return;
+    if (continuationSettled.status !== 'success') {
+      if (continuationSettled.status === 'error') setTransferFailed(true);
+      return;
+    }
+    const continuation = ConversationConnectionTransferResultV1Schema.safeParse(continuationSettled.result);
+    if (!continuation.success
+      || (continuation.data.kind !== 'transferred'
+        && continuation.data.kind !== 'rejoined'
+        && continuation.data.kind !== 'transferPendingOldStop')) {
+      setTransferFailed(true);
+      return;
+    }
+    retireSelectedProviderSetup();
+    setSelectedOperationKey(undefined);
+    setTransferFailed(false);
+    props.onRefresh();
   }, [
+    ensureEndpointAction,
     operations,
     props.connection.connectionId,
     props.connection.revision,
     props.onRefresh,
     props.signal,
+    retireSelectedProviderSetup,
     selectedOperationKey,
     selectedTransport,
     transferAction,
@@ -8657,6 +8814,17 @@ function ConnectionTransferControls(props: Readonly<{
                 onPress={transfer}
               />
             </>
+          )}
+          {endpointSetupRequired === undefined ? null : (
+            <WebhookEndpointSetupInstructions
+              setup={endpointSetupRequired}
+              testIDPrefix="channels-connection-transfer"
+              description={props.t(
+                'plugins.channels.surface.webhookEndpointTransferSetupRequiredDescription',
+                'Add this endpoint to your provider. The transferred connection keeps this setup visible while provider delivery is confirmed.',
+              )}
+              t={props.t}
+            />
           )}
           {selectionUnavailable ? (
             <Banner
@@ -10585,66 +10753,15 @@ function ProviderSetupPicker(props: Readonly<{
         </Stack>
       ) : null}
       {endpointSetupRequired !== undefined ? (
-        <Stack gap="small" testID="channels-provider-setup-webhook-required">
-          <Heading
-            level={4}
-            value={props.t(
-              'plugins.channels.surface.webhookEndpointSetupRequiredTitle',
-              'Finish webhook setup',
-            )}
-          />
-          <Text
-            value={props.t(
-              'plugins.channels.surface.webhookEndpointSetupRequiredDescription',
-              'Add this endpoint to your provider, then press Create connection again to verify it.',
-            )}
-          />
-          <Metadata
-            entries={[
-              {
-                label: props.t('plugins.channels.surface.webhookEndpointUrl', 'Webhook URL'),
-                value: endpointSetupRequired.publicUrl,
-              },
-              ...(endpointSetupRequired.oneTimeGeneratedSecret === undefined
-                ? [{
-                    label: props.t('plugins.channels.surface.webhookEndpointSecret', 'Webhook secret'),
-                    value: props.t(
-                      'plugins.channels.surface.webhookEndpointSecretLost',
-                      'This secret was already shown once. Rotate the endpoint credential to receive a new one.',
-                    ),
-                  }]
-                : [{
-                    label: props.t('plugins.channels.surface.webhookEndpointSecret', 'Webhook secret (shown once)'),
-                    value: endpointSetupRequired.oneTimeGeneratedSecret,
-                  }]),
-            ]}
-          />
-          <Action.Copy
-            testID="channels-provider-setup-webhook-url-copy"
-            title={props.t('plugins.channels.surface.webhookEndpointUrlCopy', 'Copy webhook URL')}
-            value={endpointSetupRequired.publicUrl}
-          />
-          {endpointSetupRequired.oneTimeGeneratedSecret === undefined ? null : (
-            <Action.Copy
-              testID="channels-provider-setup-webhook-secret-copy"
-              title={props.t('plugins.channels.surface.webhookEndpointSecretCopy', 'Copy webhook secret')}
-              value={endpointSetupRequired.oneTimeGeneratedSecret}
-            />
+        <WebhookEndpointSetupInstructions
+          setup={endpointSetupRequired}
+          testIDPrefix="channels-provider-setup"
+          description={props.t(
+            'plugins.channels.surface.webhookEndpointSetupRequiredDescription',
+            'Add this endpoint to your provider, then press Create connection again to verify it.',
           )}
-          <Text
-            testID="channels-provider-setup-webhook-readiness"
-            tone="info"
-            value={endpointSetupRequired.readiness === 'credentialDisclosureLost'
-              ? props.t(
-                'plugins.channels.surface.webhookEndpointCredentialDisclosureLost',
-                'The endpoint exists, but its one-time secret is no longer available here. Rotate its credential if needed.',
-              )
-              : props.t(
-                'plugins.channels.surface.webhookEndpointAwaitingConfirmation',
-                'Save this webhook with your provider, then create the connection again so Happier can confirm delivery.',
-              )}
-          />
-        </Stack>
+          t={props.t}
+        />
       ) : null}
       {feedback === 'creationUnavailable' ? (
         <Banner

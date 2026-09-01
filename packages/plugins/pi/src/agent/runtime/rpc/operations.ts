@@ -368,6 +368,7 @@ function createRuntimeOperations(params: Readonly<{
   let publishedProviderSessionId: string | null = null;
   let pendingPromptAdmission: PendingPromptAdmission | null = null;
   let pendingCancellation: PendingCancellation | null = null;
+  let piCompactionInProgress = false;
 
   function beginTurn(
     agentTurnId: string | null = null,
@@ -715,11 +716,17 @@ function createRuntimeOperations(params: Readonly<{
         for (const record of records) handleRuntimeRecordNow(record);
       };
       try {
+        // Pi queues this response behind an in-progress context compaction. In that state
+        // the process lifecycle bounds admission; otherwise retain the ordinary response-
+        // loss deadline and its custody-unknown classification.
         await params.rpc.send({
           type: 'prompt',
           message: prompt,
           ...(delivery ? { streamingBehavior: delivery } : {}),
-        }, 30_000);
+        }, {
+          afterMs: 30_000,
+          deferWhile: () => piCompactionInProgress,
+        });
         accept();
         if (admission.bufferFailure !== null) {
           const failure = admission.bufferFailure;
@@ -869,6 +876,9 @@ function createRuntimeOperations(params: Readonly<{
       await params.rpc.dispose();
     },
     handleRuntimeRecord(record) {
+      const recordType = readPiRuntimeRecordType(record);
+      if (recordType === 'compaction_start') piCompactionInProgress = true;
+      if (recordType === 'compaction_end') piCompactionInProgress = false;
       const admission = pendingPromptAdmission;
       if (!admission) {
         handleRuntimeRecordNow(record);

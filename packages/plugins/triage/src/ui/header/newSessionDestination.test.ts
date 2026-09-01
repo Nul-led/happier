@@ -5,7 +5,6 @@ import {
     projectTriageNewSessionDestinationV1,
     projectTriagePreparedWorkspaceSelectionInputV1,
     triageNewSessionDraftSeedV1,
-    triageNewSessionWireMaterializationV1,
 } from './newSessionDestination.js';
 import type { TriageActionPlacementV1 } from '../../sessions/actionLaunch.js';
 import {
@@ -224,19 +223,6 @@ describe('projecting the settled new-Session draft', () => {
             creationKey: 'creation-key-7',
             settlement: null,
         })).toEqual({ status: 'refused', reason: 'draftUnusable' });
-    });
-});
-
-describe('the wire materialization a mode resolves to', () => {
-    /**
-     * The same reader the press consults BEFORE opening the host's New Session
-     * surface and the projection consults after it settles. One reader for both
-     * is what keeps the up-front refusal and the built request from drifting.
-     */
-    it('answers every materialization the start wire owns', () => {
-        expect(triageNewSessionWireMaterializationV1('reference_only')).toBe('referenceOnly');
-        expect(triageNewSessionWireMaterializationV1('repository')).toBe('selectedProject');
-        expect(triageNewSessionWireMaterializationV1('pull_request')).toBe('reviewWorkspace');
     });
 });
 

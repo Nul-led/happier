@@ -238,6 +238,8 @@ export type ListSelectionActionBarProps = Readonly<{
   onAction: (actionId: string, keys: readonly ListMultiSelectionKey[]) => void;
   /** Replaces the default "Clear selection" behavior; the control is never removed. */
   onDismiss?: () => void;
+  /** Names that one dismiss control when it stops live work instead of clearing. */
+  dismissLabel?: string;
   accessibilityLabel?: string;
   testID?: string;
   style?: HappierStyleProp;
@@ -299,7 +301,7 @@ export function ListSelectionActionBar(props: ListSelectionActionBarProps): Reac
           />
         ))}
         <Button
-          title={translate(SELECTION_CLEAR_TRANSLATION_KEY, 'Clear selection')}
+          title={props.dismissLabel ?? translate(SELECTION_CLEAR_TRANSLATION_KEY, 'Clear selection')}
           variant="plain"
           onPress={() => {
             if (props.onDismiss) props.onDismiss();

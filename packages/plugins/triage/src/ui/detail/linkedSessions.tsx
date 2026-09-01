@@ -47,16 +47,29 @@ export function TriageLinkedSessions(props: Readonly<{
     <Stack gap="small">
       <Label value={text('plugins.triage.surface.detail.sessions', 'Sessions')} />
       <ItemGroup accessibilityLabel={text('plugins.triage.surface.detail.sessions', 'Sessions')}>
-        {props.sessions.map((session) => (
-          <Item
-            key={session.sessionId}
-            title={session.displayTitle ?? text('plugins.triage.surface.detail.session', 'Session')}
-            accessibilityLabel={session.displayTitle ?? text('plugins.triage.surface.detail.session', 'Session')}
-            busy={busySessionId === session.sessionId}
-            disabled={busySessionId !== null && busySessionId !== session.sessionId}
-            onPress={() => { void openSession(session.sessionId); }}
-          />
-        ))}
+        {props.sessions.map((session) => {
+          const title = session.displayTitle ?? text('plugins.triage.surface.detail.session', 'Session');
+          const unavailable = busySessionId !== null && busySessionId !== session.sessionId;
+          const failed = failedSessionId === session.sessionId;
+          const description = failed
+            ? text('plugins.triage.surface.detail.sessionOpenFailed', 'This Session could not be opened.')
+            : unavailable
+              ? text('plugins.triage.surface.detail.sessionUnavailable', 'Another Session is opening.')
+              : undefined;
+          return (
+            <Item
+              key={session.sessionId}
+              title={title}
+              detail={description}
+              accessibilityLabel={title}
+              accessibilityHint={description}
+              tone={failed ? 'danger' : undefined}
+              busy={busySessionId === session.sessionId}
+              disabled={unavailable}
+              onPress={() => { void openSession(session.sessionId); }}
+            />
+          );
+        })}
       </ItemGroup>
       {props.hasMore ? (
         <Button
@@ -77,13 +90,6 @@ export function TriageLinkedSessions(props: Readonly<{
           label="More linked Sessions could not be loaded."
         />
       ) : null}
-      {failedSessionId === null ? null : (
-        <Status
-          tone="danger"
-          labelKey="plugins.triage.surface.detail.sessionOpenFailed"
-          label="This Session could not be opened."
-        />
-      )}
     </Stack>
   );
 }

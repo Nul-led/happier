@@ -22,6 +22,10 @@ import {
   createBitbucketFailure,
   type BitbucketTriageFailure,
 } from '../failures.js';
+import {
+  preflightBitbucketMutationCapabilityV1,
+  type BitbucketTriageOperationV1,
+} from '../capabilities.js';
 import { isBitbucketCommentId } from '../identity.js';
 import {
   declineBitbucketPullRequest,
@@ -138,6 +142,7 @@ type MutationContext = Readonly<{
  */
 async function admitMutation(
   input: Readonly<{
+    operation: BitbucketTriageOperationV1;
     instance: Parameters<typeof admitBitbucketEntryInvocation>[0]['instance'];
     localRef: TriageSourceEntryLocalRefV1;
     lastKnownLocator: Parameters<typeof admitBitbucketEntryInvocation>[0]['lastKnownLocator'];
@@ -147,6 +152,16 @@ async function admitMutation(
   | Readonly<{ ok: true; context: MutationContext; dispose(): void }>
   | Readonly<{ ok: false; result: BitbucketMutationResultV1 }>
 > {
+  const capability = preflightBitbucketMutationCapabilityV1(input.operation);
+  if (!capability.ok) {
+    return {
+      ok: false,
+      result: unavailable(toTriageSourceFailure(createBitbucketFailure(
+        'unsupportedContract',
+        `operation-${capability.code}`,
+      ))),
+    };
+  }
   const bounded = boundMutation(context.signal);
   const runtime = toBitbucketRuntime(context, bounded.signal);
   const admitted = await admitBitbucketEntryInvocation(input, runtime);
@@ -246,6 +261,7 @@ export async function publishBitbucketPullRequestReviewAction(
 
   const admitted = await admitMutation(
     {
+      operation: 'pull-request/submit-review',
       instance: request.instance,
       localRef: request.localRef,
       lastKnownLocator: request.lastKnownLocator,
@@ -322,6 +338,9 @@ async function publishBitbucketSingleReviewComment(
 ): Promise<BitbucketReviewPublicationResultV1> {
   const admitted = await admitMutation(
     {
+      operation: mode.kind === 'create'
+        ? 'pull-request/review-comment-create'
+        : 'pull-request/thread-reply',
       instance: request.instance,
       localRef: request.localRef,
       lastKnownLocator: request.lastKnownLocator,
@@ -438,6 +457,7 @@ export async function mergeBitbucketPullRequestAction(
 
   const admitted = await admitMutation(
     {
+      operation: 'pull-request/merge',
       instance: request.instance,
       localRef: request.localRef,
       lastKnownLocator: request.lastKnownLocator,
@@ -588,6 +608,7 @@ export async function declineBitbucketPullRequestAction(
 
   const admitted = await admitMutation(
     {
+      operation: 'pull-request/close',
       instance: request.instance,
       localRef: request.localRef,
       lastKnownLocator: request.lastKnownLocator,
@@ -707,6 +728,7 @@ async function runBitbucketCommentResolution(
 
   const admitted = await admitMutation(
     {
+      operation: 'pull-request/thread-resolution',
       instance: request.instance,
       localRef: request.localRef,
       lastKnownLocator: request.lastKnownLocator,

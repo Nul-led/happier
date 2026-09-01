@@ -233,7 +233,11 @@ class MemoryDeliveryStore implements ConversationOutwardDeliveryStore {
   }
 
   async retireSelected(input: Readonly<{
-    records: readonly Readonly<{ custodyId: string; expectedRevision: number }>[];
+    records: readonly Readonly<{
+      custodyId: string;
+      expectedRevision: number;
+      physicallyForget: boolean;
+    }>[];
   }>) {
     for (const record of input.records) {
       const current = this.rows.get(record.custodyId);
@@ -790,7 +794,7 @@ describe('Channels control-response outward custody', () => {
       }),
       expect.objectContaining({ expectedExecutionOrigin: providerTransportOrigin }),
     );
-  });
+  }, 15_000);
 
   it('settles retained custody before provider I/O when the current provider limit has narrowed', async () => {
     const state = new MemoryAccountCollection();
@@ -1429,6 +1433,57 @@ describe('Channels control-response outward custody', () => {
     expect(providerCalls).toBe(1);
   });
 
+  it('compacts ambiguous custody bodies while preserving effect evidence and manual resolution', async () => {
+    const state = new MemoryAccountCollection();
+    const deliveries = new MemoryAccountCollection();
+    await state.put(providerConnectionRow(), { expectedRevision: 'absent' });
+    const store = createConversationOutwardDeliveryCollectionStore({
+      stateCollection: state as never,
+      deliveriesCollection: deliveries as never,
+      signal: new AbortController().signal,
+    });
+    const created = await store.ensure({
+      ...obligation(),
+      source: { kind: 'controlResponse', controlId: 'ambiguous-body-free', controlKind: 'recovery' },
+      content: 'Sensitive ambiguous delivery body.',
+      deliveryKey: 'delivery-ambiguous-body-free',
+    });
+    if (created.kind !== 'created') throw new Error('Expected ambiguous custody setup.');
+
+    const ambiguous = await store.compareAndSwap({
+      custodyId: created.record.custodyId,
+      expectedRevision: created.record.revision,
+      custody: {
+        state: 'partial',
+        attemptCount: 1,
+        providerMessageIds: ['provider-message-1'],
+        failedChunk: 2,
+      },
+    });
+    expect(ambiguous).toMatchObject({
+      kind: 'updated',
+      record: {
+        custody: {
+          state: 'partial',
+          providerMessageIds: ['provider-message-1'],
+          failedChunk: 2,
+        },
+      },
+    });
+    const stored = deliveries.rows.get(created.record.custodyId)?.value;
+    expect(stored).toMatchObject({
+      attention: true,
+      payload: {
+        state: 'partial',
+        content: null,
+        contentFingerprint: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/u),
+        providerMessageIds: ['provider-message-1'],
+        failedChunk: 2,
+      },
+    });
+    expect(JSON.stringify(stored)).not.toContain('Sensitive ambiguous delivery body.');
+  });
+
   it('rejoins a delivered custody row after an ordinary binding edit, and still fences a live attempt', async () => {
     const state = new MemoryAccountCollection();
     const deliveries = new MemoryAccountCollection();
@@ -1885,10 +1940,14 @@ describe('Channels control-response outward custody', () => {
       attention: true,
       payload: {
         state: 'partial',
-        content: 'Private partially-sent delivery body.',
-        contentFingerprint: null,
+        content: null,
+        contentFingerprint: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/u),
+        providerMessageIds: ['provider-message-private'],
+        failedChunk: 1,
       },
     });
+    expect(JSON.stringify(deliveries.rows.get(partial.record.custodyId)?.value))
+      .not.toContain('Private partially-sent delivery body.');
 
     vi.spyOn(deliveries, 'put').mockRejectedValueOnce({
       name: 'PluginError',

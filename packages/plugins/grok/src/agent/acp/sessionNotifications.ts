@@ -16,7 +16,6 @@ import {
 } from '@happier-dev/plugin-sdk/sessions/work-state';
 
 type GrokCurrentSession = NonNullable<AgentSessionRuntimeContext['services']['sessions']['current']>;
-type GrokSubagentsService = AgentSessionRuntimeContext['services']['sessions']['subagents'];
 type GrokWorkStatePublisher = ReturnType<AgentSessionRuntimeContext['workState']['publisher']>;
 
 type GrokSessionNotificationObserverContext = Readonly<{
@@ -31,16 +30,10 @@ type GrokSessionNotificationObserverContext = Readonly<{
           request: Parameters<GrokCurrentSession['readSystemRecord']>[0],
         ): Promise<Readonly<{ content?: unknown }> | null>;
       }> | null;
-      subagents: Readonly<{
-        observe(
-          input: Parameters<GrokSubagentsService['observe']>[0],
-          options?: Parameters<GrokSubagentsService['observe']>[1],
-        ): Promise<unknown>;
-      }>;
     }>;
   }>;
   session: Readonly<{
-    services: Pick<AgentSessionRuntimeContext['session']['services'], 'workflowActivity'>;
+    services: Pick<AgentSessionRuntimeContext['session']['services'], 'workflowActivity' | 'subagents'>;
   }>;
   workState: Readonly<{
     publisher(
@@ -336,7 +329,7 @@ export function createGrokSessionNotificationObserver(params: Readonly<{
         },
       } satisfies JsonObject;
       subagentDetailById.set(subagentId, detail);
-      const subagentObserver = params.context.services.sessions.subagents;
+      const subagentObserver = params.context.session.services.subagents;
       await subagentObserver.observe({
         observationId: `grok-native:${subagentId}`,
         ...(groupId ? { groupId } : {}),
@@ -351,7 +344,7 @@ export function createGrokSessionNotificationObserver(params: Readonly<{
       };
       const status = update.sessionUpdate === 'subagent_finished' ? mapSubagentStatus(update.status) : 'running';
       const groupId = string((asRecord(baseDetail.agentMetadata))?.workflowRunId) ?? undefined;
-      const subagentObserver = params.context.services.sessions.subagents;
+      const subagentObserver = params.context.session.services.subagents;
       await subagentObserver.observe({
         observationId: `grok-native:${subagentId}`,
         ...(groupId ? { groupId } : {}),

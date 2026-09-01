@@ -119,19 +119,3 @@ export function selectPosthogApiOrigin(
     }
     return { ok: true, origin: only };
 }
-
-/**
- * Compares a provider-returned absolute URL with the materialized origin. A relative,
- * malformed, downgraded, or cross-origin URL is never followed and never receives the
- * authorization header.
- */
-export function isSameNormalizedOrigin(
-    origin: PosthogApiOrigin,
-    candidateUrl: string,
-): boolean {
-    const url = parseUrl(candidateUrl.trim());
-    if (url === null) {
-        return false;
-    }
-    return url.origin === (origin as string);
-}

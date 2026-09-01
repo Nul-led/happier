@@ -1,6 +1,5 @@
 // @vitest-environment jsdom
 import * as React from 'react';
-import { act } from 'react';
 import {
   createPluginUiTestkit,
   createSurfaceContextFixture,
@@ -42,9 +41,8 @@ function formalAction(actionId: string, label: string): TriageActionV1 {
 }
 
 describe('the mounted configured entry action controls', () => {
-  it('restores focus to the exact formal review action that opened a chooser', async () => {
+  it('dispatches the exact formal review action that was pressed', async () => {
     const requests: TriageEntryActionRequestV1[] = [];
-    const focused: string[] = [];
     const actions = [
       formalAction('formal-review-one', 'Security review'),
       formalAction('formal-review-two', 'Architecture review'),
@@ -72,25 +70,16 @@ describe('the mounted configured entry action controls', () => {
       },
       surface,
       surfaceContext: createSurfaceContextFixture(),
-      adapter: createPluginUiRnwSemanticSurfaceAdapter({
-        physicalFocus(target) {
-          target.focus();
-          const label = document.activeElement?.getAttribute('aria-label');
-          if (label !== null && label !== undefined) focused.push(label);
-          return true;
-        },
-      }),
+      adapter: createPluginUiRnwSemanticSurfaceAdapter(),
     });
     mounted.push(fixture);
 
     await fixture.press(await fixture.getByRole('button', { name: 'Security review' }));
     expect(requests).toHaveLength(1);
-    await act(async () => { requests[0]?.returnFocusTarget?.focus(); });
-    expect(focused.at(-1)).toBe('Security review');
+    expect(requests[0]?.action.actionId).toBe('formal-review-one');
 
     await fixture.press(await fixture.getByRole('button', { name: 'Architecture review' }));
     expect(requests).toHaveLength(2);
-    await act(async () => { requests[1]?.returnFocusTarget?.focus(); });
-    expect(focused.at(-1)).toBe('Architecture review');
+    expect(requests[1]?.action.actionId).toBe('formal-review-two');
   });
 });

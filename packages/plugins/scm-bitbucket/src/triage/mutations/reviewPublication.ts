@@ -347,7 +347,7 @@ export async function publishBitbucketReviewComment(
     }],
     verdict: { kind: 'notRequested' },
   });
-  await input.settle?.(claim, publication).catch(() => undefined);
+  await input.settle?.(claim, publication);
   const latest = await dependencies.observe();
   return {
     kind: 'settled',
@@ -623,7 +623,7 @@ export async function publishBitbucketReview(
     entries: entries as ReviewCommentPublicationResultV1['entries'],
     verdict,
   });
-  await input.settle?.(claim, publication).catch(() => undefined);
+  await input.settle?.(claim, publication);
   const latest = await dependencies.observe();
   return {
     kind: 'settled',

@@ -67,10 +67,6 @@ function readString(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
-function readRecovery(value: unknown): 'restart_resume' | 'restart_rematerialize' | null {
-  return value === 'restart_resume' || value === 'restart_rematerialize' ? value : null;
-}
-
 function readSelection(input: RuntimeAuthTargetInput | RuntimeFailureInput): Record<string, unknown> | null {
   return readRecord(input.selection);
 }
@@ -117,7 +113,6 @@ export function createCodexConnectedServiceRuntimeAuthAdapter(): CodexConnectedS
         return {
           applied: false,
           reason: readString(result?.errorCode ?? result?.error) ?? 'runtime_apply_failed',
-          ...(readRecovery(result?.recovery) ? { recovery: readRecovery(result?.recovery)! } : {}),
         };
       }
       try {
@@ -126,14 +121,12 @@ export function createCodexConnectedServiceRuntimeAuthAdapter(): CodexConnectedS
           return {
             applied: false,
             reason: verification.reason ?? 'runtime_apply_persistence_failed',
-            recovery: 'restart_resume',
           };
         }
       } catch {
         return {
           applied: false,
           reason: 'runtime_apply_persistence_failed',
-          recovery: 'restart_resume',
         };
       }
       return {

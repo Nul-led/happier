@@ -134,6 +134,7 @@ import type { GithubTriageKindIdV1 } from '../triage/types.js';
 import type { GithubRepositoryCapabilitiesV1 } from '../triage/capabilities.js';
 
 import {
+  orderGithubFeedbackReplies,
   projectGithubFeedback,
   type GithubFeedbackFindingV1,
   type GithubFeedbackReviewPeopleV1,
@@ -1208,8 +1209,7 @@ function PullRequestReviewPublicationWrite({
         : []
     ));
     const body = verdictBody.trim();
-    if (entries.length === 0 && body === '') return null;
-    if (verdict !== 'comment' && body === '') return null;
+    if (body === '') return null;
     return parseReviewCommentPublicationPlanV1({
       target: Object.freeze({
         providerId: 'github',
@@ -1225,7 +1225,7 @@ function PullRequestReviewPublicationWrite({
       baseRevision: revision.baseSha,
       headRevision: revision.headSha,
       entries: Object.freeze(entries),
-      verdict: body === '' ? null : Object.freeze({ kind: verdict, body }),
+      verdict: Object.freeze({ kind: verdict, body }),
     });
   }, [input, proposalRead, proposals, selectedIds, verdict, verdictBody]);
   const payload = React.useMemo(
@@ -1328,6 +1328,7 @@ function PullRequestReviewPublicationWrite({
       <Form.TextField
         label={text('plugins.github.ui.mutations.review.summary', 'Review summary')}
         value={verdictBody}
+        required
         onChange={setVerdictBody}
       />
       <ExactWrite
@@ -2440,11 +2441,13 @@ function ChecksBody({
   view,
   locale,
   nowMs,
+  pending,
   onRefresh,
 }: Readonly<{
   view: GithubChecksViewV1;
   locale: string;
   nowMs: number;
+  pending: boolean;
   onRefresh: () => void;
 }>): React.ReactElement {
   const text = usePluginTranslation();
@@ -2540,7 +2543,7 @@ function ChecksBody({
             )}
           <RefreshRow
             onRefresh={onRefresh}
-            pending={false}
+            pending={pending}
             accessibilityLabel="Re-read the checks from GitHub"
             accessibilityLabelKey="plugins.github.ui.rereadChecks"
           />
@@ -2618,6 +2621,7 @@ function ChecksPanel({
       view={checks.value}
       locale={locale}
       nowMs={nowMs}
+      pending={controller.pending}
       onRefresh={controller.refresh}
     />
   );
@@ -2936,6 +2940,8 @@ function FeedbackFindingRow({
   capabilities: GithubReadStateV1<GithubRepositoryCapabilitiesV1>;
 }>): React.ReactElement {
   const text = usePluginTranslation();
+  const { platform } = useSurfaceContext();
+  const mobile = platform === 'ios' || platform === 'android';
   if (finding.resource === 'comment') {
     return (
       <CommentRow
@@ -2979,11 +2985,12 @@ function FeedbackFindingRow({
     );
   }
   if (finding.resource === 'thread') {
-    return finding.previousRepliesCursor === null
+    return finding.previousRepliesCursor === null || mobile
       ? (
         <ThreadFeedbackFinding
           input={input}
           finding={finding}
+          mobile={mobile}
           locale={locale}
           nowMs={nowMs}
           onObserved={onObserved}
@@ -3024,6 +3031,7 @@ function ThreadFeedbackFinding({
   input,
   finding,
   earlierReplies = [],
+  mobile = false,
   loadMore,
   pending = false,
   locale,
@@ -3035,6 +3043,7 @@ function ThreadFeedbackFinding({
   input: TriageDetailSurfaceInputV1;
   finding: GithubThreadFindingV1;
   earlierReplies?: GithubThreadFindingV1['replies'];
+  mobile?: boolean;
   loadMore?: () => void;
   pending?: boolean;
   locale: string;
@@ -3056,6 +3065,9 @@ function ThreadFeedbackFinding({
   const action = nextResolved
     ? text('plugins.github.ui.mutations.thread.resolve', 'Resolve conversation')
     : text('plugins.github.ui.mutations.thread.reopen', 'Reopen conversation');
+  const visibleReplies = mobile
+    ? finding.firstReply === null ? [] : [finding.firstReply]
+    : orderGithubFeedbackReplies([...earlierReplies, ...finding.replies]);
   return (
       <Stack gap="small">
         <Item
@@ -3065,7 +3077,7 @@ function ThreadFeedbackFinding({
             : text('plugins.github.ui.threadUnresolved', 'Unresolved')}
           tone={finding.isResolved ? 'neutral' : 'warning'}
         />
-        {[...earlierReplies, ...finding.replies].map((reply) => (
+        {visibleReplies.map((reply) => (
           <CommentRow
             key={reply.id}
             row={{
@@ -3079,9 +3091,19 @@ function ThreadFeedbackFinding({
             nowMs={nowMs}
           />
         ))}
-        {loadMore === undefined
-          ? null
-          : <Button title="Load earlier replies" titleKey="plugins.github.ui.loadEarlierReplies" variant="secondary" busy={pending} onPress={loadMore} />}
+        {mobile
+          ? (
+            <Text
+              variant="caption"
+              tone="neutral"
+              valueKey="plugins.github.ui.threadReplyCount"
+              fallback="{count} replies"
+              values={{ count: finding.replyCount }}
+            />
+          )
+          : loadMore === undefined
+            ? null
+            : <Button title="Load earlier replies" titleKey="plugins.github.ui.loadEarlierReplies" variant="secondary" busy={pending} onPress={loadMore} />}
         <ExactWrite
           localId={GITHUB_TRIAGE_MUTATION_ACTION_IDS_V1.pullRequestThreadResolution}
           payload={payload}
@@ -3234,11 +3256,11 @@ function FeedbackPanel({
   const reviewsFailure = reviews.state.failure;
   const threadsFailure = threads.state.failure;
   const requestsFailure = requests.state.failure;
-  const checksFailure = checks.state.kind === 'unavailable'
+  const checksFailure = checks.failure ?? (checks.state.kind === 'unavailable'
     ? checks.state.failure
     : checks.state.kind === 'ready'
       ? checks.state.value.checkRunsFailure ?? checks.state.value.commitStatusFailure ?? null
-      : null;
+      : null);
   const failedConnections = [
     ...(conversation.state.kind === 'unavailable' || conversation.state.failure !== null
       ? [text('plugins.github.ui.feedbackConversationFailed', 'the conversation')]
@@ -3387,7 +3409,7 @@ function FeedbackPanel({
               checks.refresh();
             }}
             pending={conversation.state.pending || threads.state.pending || reviews.state.pending
-              || requests.state.pending || checksSettling}
+              || requests.state.pending || checks.pending}
             accessibilityLabel="Re-read this feedback from GitHub"
             accessibilityLabelKey="plugins.github.ui.rereadFeedback"
           />

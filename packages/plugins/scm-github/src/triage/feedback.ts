@@ -67,6 +67,8 @@ export type GithubFeedbackThreadV1 = Readonly<{
   isResolved: boolean;
   path: string | null;
   line: number | null;
+  firstReply: GithubFeedbackCommentV1 | null;
+  replyCount: number;
   replies: readonly GithubFeedbackCommentV1[];
   previousRepliesCursor: string | null;
   truncated?: true;
@@ -170,6 +172,10 @@ const THREADS_QUERY = `query GithubFeedbackThreads(
       reviewThreads(last: $threadCount, before: $threadCursor) {
         nodes {
           id isResolved path line
+          firstComment: comments(first: 1) {
+            totalCount
+            nodes { id author { login } body createdAt url }
+          }
           comments(last: $replyCount) {
             nodes { id author { login } body createdAt url }
             pageInfo { hasPreviousPage startCursor }
@@ -318,19 +324,32 @@ function decodeThreads(connection: unknown): readonly GithubFeedbackThreadV1[] |
     const id = projectGithubDetailIdentifierV1(raw.id);
     if (id === null || typeof raw.isResolved !== 'boolean') continue;
     const replies = commentsFrom(raw.comments);
+    const firstReplies = isRecord(raw.firstComment) ? commentsFrom(raw.firstComment) : null;
+    const replyCount = isRecord(raw.firstComment) ? raw.firstComment.totalCount : null;
     const repliesCursor = isRecord(raw.comments)
       ? nullableCursor(raw.comments.pageInfo, 'previous')
       : undefined;
-    if (replies === null || repliesCursor === undefined) continue;
+    if (
+      replies === null
+      || firstReplies === null
+      || repliesCursor === undefined
+      || typeof replyCount !== 'number'
+      || !Number.isSafeInteger(replyCount)
+      || replyCount < 0
+      || firstReplies.length !== Math.min(replyCount, 1)
+    ) continue;
     const line = typeof raw.line === 'number' && Number.isSafeInteger(raw.line) ? raw.line : null;
     const path = projectGithubDetailPathV1(raw.path);
     const truncated = id.truncated || (path?.truncated ?? false)
+      || firstReplies.some((reply) => reply.truncated === true)
       || replies.some((reply) => reply.truncated === true);
     rows.push(Object.freeze({
       id: id.value,
       isResolved: raw.isResolved,
       path: path?.value ?? null,
       line,
+      firstReply: firstReplies[0] ?? null,
+      replyCount,
       replies,
       previousRepliesCursor: repliesCursor,
       ...(truncated ? { truncated: true as const } : {}),

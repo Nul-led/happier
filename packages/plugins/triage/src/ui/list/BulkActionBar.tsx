@@ -221,10 +221,13 @@ export function TriageBulkActionBar(props: TriageBulkActionBarPropsV1): React.Re
           disabled: busy,
           testID: `triage-bulk-${candidate.destination}`,
         }))}
-        // Clear may not make live work disappear. While work is active the
-        // same control first withdraws it and leaves the shared selection (and
-        // therefore progress/result reporting) mounted; once settled, the
-        // normal dismiss path exits the shared selection owner.
+        // Dismiss may not make live work disappear. While work is active the
+        // shared control truthfully says Stop, withdraws the work and leaves
+        // the selection (and therefore progress/result reporting) mounted.
+        // Once settled, it returns to the shared Clear selection behavior.
+        dismissLabel={busy
+          ? text('plugins.triage.surface.bulk.cancel', 'Stop')
+          : undefined}
         onDismiss={busy ? props.onCancel : props.onDismiss}
         onAction={(actionId, keys) => {
           const destination = destinationOf(actionId);
@@ -254,12 +257,6 @@ export function TriageBulkActionBar(props: TriageBulkActionBarPropsV1): React.Re
                 'plugins.triage.surface.bulk.selectionRetainedWhileRunning',
                 'The selection stays visible until the running action stops.',
               )}
-            />
-            <Button
-              titleKey="plugins.triage.surface.bulk.cancel"
-              title="Stop"
-              variant="plain"
-              onPress={props.onCancel}
             />
           </>
         )}

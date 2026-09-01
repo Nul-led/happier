@@ -244,7 +244,7 @@ export function createCursorAcpExtensionHandlers(params: Readonly<{
       return;
     }
     const observationId = cursorNativeTaskObservationId({ toolCallId, agentId });
-    await params.context.services.sessions.subagents.observe({
+    await params.context.session.services.subagents.observe({
       observationId,
       status: 'completed',
       detail: {

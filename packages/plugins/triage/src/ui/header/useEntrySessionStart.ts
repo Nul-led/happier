@@ -51,7 +51,6 @@ import {
     projectTriagePreparedWorkspaceSelectionInputV1,
     projectTriageNewSessionDestinationV1,
     triageNewSessionDraftSeedV1,
-    triageNewSessionWireMaterializationV1,
     type TriageNewSessionPreferenceV1,
     type TriageReviewWorkspacePreparationV1,
 } from './newSessionDestination.js';

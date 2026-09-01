@@ -106,6 +106,19 @@ function extractToolText(value: unknown): string | null {
   return text.length > 0 ? text : null;
 }
 
+function extractAssistantText(message: unknown): string | null {
+  const record = isRecord(message) ? message : null;
+  if (!record || record.role !== 'assistant' || !Array.isArray(record.content)) return null;
+  let text = '';
+  for (const item of record.content) {
+    const entry = isRecord(item) ? item : null;
+    if (!entry || entry.type !== 'text') continue;
+    const chunk = readRawString(entry.text);
+    if (chunk !== null) text += chunk;
+  }
+  return text.length > 0 ? text : null;
+}
+
 function extractAssistantThinking(message: unknown): string | null {
   const record = isRecord(message) ? message : null;
   if (!record || record.role !== 'assistant' || !Array.isArray(record.content)) return null;
@@ -117,6 +130,14 @@ function extractAssistantThinking(message: unknown): string | null {
     if (chunk !== null) thinking += chunk;
   }
   return thinking.length > 0 ? thinking : null;
+}
+
+function reconcileAuthoritativeText(authoritativeText: string, projectedText: string): string {
+  if (authoritativeText.length === 0) return '';
+  if (projectedText.length === 0) return authoritativeText;
+  return authoritativeText.startsWith(projectedText)
+    ? authoritativeText.slice(projectedText.length)
+    : `\n\n${authoritativeText}`;
 }
 
 function projectMessageEvent(
@@ -331,38 +352,106 @@ export function createPiRuntimeEventProjector(): Readonly<{
   let activeCompaction: ActivePiCompaction | null = null;
   let expectedHostCompaction: Pick<AgentSessionCompactRequest, 'compactionId' | 'trigger'> | null = null;
   let accumulatedThinkingText = '';
+  const assistantTextByContentIndex = new Map<number, string>();
+  let activeAssistantContentIndex = 0;
+
+  const clearAssistantSnapshotState = () => {
+    assistantTextByContentIndex.clear();
+    activeAssistantContentIndex = 0;
+  };
+  const readAssistantContentIndex = (value: unknown): number => {
+    const index = readNonNegativeNumber(value);
+    return index !== null && Number.isInteger(index) ? index : activeAssistantContentIndex;
+  };
+  const readProjectedAssistantText = (): string => (
+    [...assistantTextByContentIndex.entries()]
+      .sort(([left], [right]) => left - right)
+      .map(([, text]) => text)
+      .join('')
+  );
+  const projectSnapshotDelta = (
+    channel: 'assistant' | 'reasoning',
+    text: string,
+    context: PiRuntimeEventProjectionContext,
+  ): PiRuntimeEvent[] => {
+    const base = turnEventBase(context);
+    if (!base || text.length === 0) return [];
+    return [{
+      ...base,
+      kind: 'message-delta',
+      channel,
+      text,
+    }];
+  };
 
   return {
     project(record, context) {
       const raw = isRecord(record) ? record : null;
       const type = readString(raw?.type);
       if (raw && type === 'message_update') {
+        const assistantMessageEvent = isRecord(raw.assistantMessageEvent)
+          ? raw.assistantMessageEvent
+          : null;
+        const assistantEventType = readString(assistantMessageEvent?.type);
+        if (assistantEventType === 'text_start') {
+          activeAssistantContentIndex = readAssistantContentIndex(assistantMessageEvent?.contentIndex);
+          if (!assistantTextByContentIndex.has(activeAssistantContentIndex)) {
+            assistantTextByContentIndex.set(activeAssistantContentIndex, '');
+          }
+          return [];
+        }
+        if (assistantEventType === 'text_end') {
+          const contentIndex = readAssistantContentIndex(assistantMessageEvent?.contentIndex);
+          activeAssistantContentIndex = contentIndex;
+          const authoritativeText = readRawString(assistantMessageEvent?.content)
+            ?? extractAssistantText(raw.message);
+          if (authoritativeText === null) return [];
+          const text = reconcileAuthoritativeText(
+            authoritativeText,
+            assistantTextByContentIndex.get(contentIndex) ?? '',
+          );
+          assistantTextByContentIndex.set(contentIndex, authoritativeText);
+          return projectSnapshotDelta('assistant', text, context);
+        }
+
         const events = projectPiRuntimeEvents(record, context);
         for (const event of events) {
-          if (event.kind === 'message-delta' && event.channel === 'reasoning') {
+          if (event.kind !== 'message-delta') continue;
+          if (event.channel === 'reasoning') {
             accumulatedThinkingText += event.text;
+            continue;
           }
+          const contentIndex = readAssistantContentIndex(assistantMessageEvent?.contentIndex);
+          activeAssistantContentIndex = contentIndex;
+          assistantTextByContentIndex.set(
+            contentIndex,
+            (assistantTextByContentIndex.get(contentIndex) ?? '') + event.text,
+          );
         }
         return events;
       }
       if (raw && type === 'message_end') {
-        const fullText = extractAssistantThinking(raw.message);
-        const streamedText = accumulatedThinkingText;
+        const fullAssistantText = extractAssistantText(raw.message);
+        const projectedAssistantText = readProjectedAssistantText();
+        const fullThinkingText = extractAssistantThinking(raw.message);
+        const projectedThinkingText = accumulatedThinkingText;
+        clearAssistantSnapshotState();
         accumulatedThinkingText = '';
-        if (!fullText) return [];
-        const text = streamedText.length === 0
-          ? fullText
-          : fullText.startsWith(streamedText)
-            ? fullText.slice(streamedText.length)
-            : `\n\n${fullText}`;
-        const base = turnEventBase(context);
-        if (!base || text.length === 0) return [];
-        return [{
-          ...base,
-          kind: 'message-delta',
-          channel: 'reasoning',
-          text,
-        }];
+
+        const assistantText = fullAssistantText === null
+          ? ''
+          : reconcileAuthoritativeText(fullAssistantText, projectedAssistantText);
+        const thinkingText = fullThinkingText === null
+          ? ''
+          : reconcileAuthoritativeText(fullThinkingText, projectedThinkingText);
+        return [
+          ...projectSnapshotDelta('assistant', assistantText, context),
+          ...projectSnapshotDelta('reasoning', thinkingText, context),
+        ];
+      }
+      if (raw && type === 'tool_execution_start') {
+        clearAssistantSnapshotState();
+        accumulatedThinkingText = '';
       }
       if (!raw || (type !== 'compaction_start' && type !== 'compaction_end')) {
         return projectPiRuntimeEvents(record, context);
@@ -398,6 +487,7 @@ export function createPiRuntimeEventProjector(): Readonly<{
       activeCompaction = null;
       expectedHostCompaction = null;
       accumulatedThinkingText = '';
+      clearAssistantSnapshotState();
     },
   };
 }

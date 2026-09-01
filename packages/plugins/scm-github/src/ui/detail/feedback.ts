@@ -1,10 +1,6 @@
 import type { TriageRowFactV1 } from '@happier-dev/triage-protocol/v1';
 
 import type {
-  GithubProjectedReviewRequestRowV1,
-  GithubProjectedReviewerRowV1,
-} from '../../triage/detail/projection.js';
-import type {
   GithubFeedbackCommentV1,
   GithubFeedbackRequestV1,
   GithubFeedbackReviewV1,
@@ -90,6 +86,8 @@ export type GithubFeedbackFindingV1 =
     path: string | null;
     line: number | null;
     isResolved: boolean;
+    firstReply: GithubFeedbackCommentV1 | null;
+    replyCount: number;
     replies: readonly GithubFeedbackCommentV1[];
     previousRepliesCursor: string | null;
   }>
@@ -124,10 +122,19 @@ export type GithubFeedbackReviewSummaryV1 =
  * vocabulary here would make one word mean two things across the four forges;
  * the renderer owns how it is said to a reader.
  */
-export type GithubFeedbackReviewerV1 = GithubProjectedReviewerRowV1;
+export type GithubFeedbackReviewerV1 = Readonly<{
+  login: string;
+  state: string;
+  submittedAtMs?: number;
+  truncated?: true;
+}>;
 
 /** One review GitHub still records as awaited. */
-export type GithubFeedbackReviewRequestV1 = GithubProjectedReviewRequestRowV1;
+export type GithubFeedbackReviewRequestV1 = Readonly<{
+  kind: 'user' | 'team';
+  subject: string;
+  truncated?: true;
+}>;
 
 /**
  * The two review-people questions, kept apart.
@@ -327,12 +334,28 @@ function threadFindings(
     resource: 'thread' as const,
     kind: 'thread' as const,
     id: thread.id,
-    atMs: thread.replies[0]?.createdAtMs ?? null,
+    atMs: thread.firstReply?.createdAtMs ?? null,
     path: thread.path,
     line: thread.line,
     isResolved: thread.isResolved,
-    replies: thread.replies,
+    firstReply: thread.firstReply,
+    replyCount: thread.replyCount,
+    replies: orderGithubFeedbackReplies(thread.replies),
     previousRepliesCursor: thread.previousRepliesCursor,
+  }));
+}
+
+/** One chronology for replies regardless of which backwards page supplied them. */
+export function orderGithubFeedbackReplies(
+  replies: readonly GithubFeedbackCommentV1[],
+): readonly GithubFeedbackCommentV1[] {
+  return Object.freeze([...replies].sort((left, right) => {
+    if (left.createdAtMs === null || right.createdAtMs === null) {
+      if (left.createdAtMs !== right.createdAtMs) return left.createdAtMs === null ? 1 : -1;
+    } else if (left.createdAtMs !== right.createdAtMs) {
+      return left.createdAtMs - right.createdAtMs;
+    }
+    return left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
   }));
 }
 

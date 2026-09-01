@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-    isSameNormalizedOrigin,
     normalizePosthogApiOrigin,
     selectPosthogApiOrigin,
 } from './origin.js';
@@ -89,35 +88,5 @@ describe('selectPosthogApiOrigin', () => {
     it('propagates the exact rejection of a single invalid value', () => {
         expect(selectPosthogApiOrigin(['http://eu.posthog.com']))
             .toEqual({ ok: false, reason: 'notHttps' });
-    });
-});
-
-describe('isSameNormalizedOrigin', () => {
-    const origin = (() => {
-        const resolved = normalizePosthogApiOrigin('https://eu.posthog.com');
-        if (!resolved.ok) throw new Error('fixture origin must normalize');
-        return resolved.origin;
-    })();
-
-    it('accepts a provider next URL on the exact materialized origin', () => {
-        expect(isSameNormalizedOrigin(
-            origin,
-            'https://eu.posthog.com/api/organizations/?limit=100&offset=100',
-        )).toBe(true);
-        expect(isSameNormalizedOrigin(origin, 'https://EU.POSTHOG.COM:443/api/organizations/'))
-            .toBe(true);
-    });
-
-    it('rejects a cross-origin, downgraded, or malformed next URL', () => {
-        expect(isSameNormalizedOrigin(origin, 'https://us.posthog.com/api/organizations/')).toBe(false);
-        expect(isSameNormalizedOrigin(origin, 'http://eu.posthog.com/api/organizations/')).toBe(false);
-        expect(isSameNormalizedOrigin(origin, 'https://eu.posthog.com.evil.test/api/')).toBe(false);
-        expect(isSameNormalizedOrigin(origin, '/api/organizations/?offset=100')).toBe(false);
-        expect(isSameNormalizedOrigin(origin, 'nonsense')).toBe(false);
-    });
-
-    it('does not lowercase the API path when comparing origins', () => {
-        // The provider owns path case; only scheme and host are case-insensitive.
-        expect(isSameNormalizedOrigin(origin, 'https://eu.posthog.com/api/Projects/1/')).toBe(true);
     });
 });

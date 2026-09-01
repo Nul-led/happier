@@ -219,7 +219,8 @@ export async function publishGithubPullRequestReviewAction(
       failure: INVALID_INPUT_FAILURE,
     });
   }
-  if (!publicationPlanTargetsRequest(request, publicationPlan)) {
+  if (publicationPlan.verdict === null
+    || !publicationPlanTargetsRequest(request, publicationPlan)) {
     return Object.freeze({
       kind: 'rejected' as const,
       reason: 'invalid_input' as const,

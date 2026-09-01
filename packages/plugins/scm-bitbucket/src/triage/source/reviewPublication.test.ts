@@ -154,14 +154,22 @@ function withClaim(
   context: PluginInvocationContext,
   publicationPlan: ReviewCommentPublicationPlanV1,
   disposition: 'dispatch' | 'reconcile' = 'dispatch',
+  settlementError?: Error,
 ): PluginInvocationContext {
   return {
     ...context,
     services: {
       ...context.services,
       actions: {
-        execute: async (actionId: string) => {
+        execute: async (actionId: string, actionInput: unknown) => {
           expect(actionId).toBe('reviews.comments.claimPublicationDispatch');
+          if (settlementError !== undefined
+            && typeof actionInput === 'object'
+            && actionInput !== null
+            && 'settlement' in actionInput
+            && actionInput.settlement !== undefined) {
+            throw settlementError;
+          }
           return {
             disposition,
             dispatchToken: disposition === 'dispatch' ? 'dispatch-token-1' : null,
@@ -230,6 +238,30 @@ describe('Bitbucket canonical review publication', () => {
       });
     expect(claims).toBe(2);
     expect(requests.filter((candidate) => candidate.method !== 'GET')).toHaveLength(0);
+  });
+
+  it('does not report settled when the canonical publication settlement fails', async () => {
+    const invalid = entry('comment-1', 12);
+    const publicationPlan = plan({
+      entries: [{ ...invalid, anchor: { kind: 'file' as const, filePath: 'src/index.ts' } }],
+      verdict: null,
+    });
+    const { http } = createHttpStub((url) => {
+      if (url.endsWith('/2.0/user')) return { body: { uuid: VIEWER_UUID } };
+      if (url === PULL_REQUEST_URL) return { body: pullRequest() };
+      return undefined;
+    });
+    const { connectedAccounts } = createConnectedAccountsStub({ accounts: [{ accountId: 'account-1' }] });
+    const base = createInvocationContext(connectedAccounts, http);
+    const context = withClaim(
+      base,
+      publicationPlan,
+      'dispatch',
+      new Error('canonical settlement unavailable'),
+    );
+
+    await expect(publishBitbucketPullRequestReviewAction(request(publicationPlan), context))
+      .rejects.toThrow('canonical settlement unavailable');
   });
 
   it('publishes comments in order, stops at the first failure, and marks the suffix skipped', async () => {

@@ -161,6 +161,11 @@ export function decodePosthogIssueActivityContinuation(
         return null;
     }
     const raw = decoded as Readonly<Record<string, unknown>>;
+    const keys = Object.keys(raw);
+    if (keys.length !== 3 || !['v', 'page', 'limit']
+        .every((key) => Object.prototype.hasOwnProperty.call(raw, key))) {
+        return null;
+    }
     const page = raw['page'];
     const limit = raw['limit'];
     if (

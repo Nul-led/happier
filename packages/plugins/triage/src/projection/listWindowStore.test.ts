@@ -238,11 +238,45 @@ function createHarness(options: Readonly<{
         sourceANeverFinishes: false,
         /** Both lanes advance one row at a time so a mixed transport page returns two frontiers. */
         mixedSourcesNeverFinish: false,
+        /**
+         * Every configured instance returns exactly the page size the aggregate
+         * submitted, with distinct rows. This exposes transport-batch geometry:
+         * a 32-source batch and a one-source batch must share one mounted
+         * window's row allowance rather than each spending it in full.
+         */
+        rowsPerSubmittedLimit: false,
+        /** Entry ids the provider boundary handed to the aggregate. */
+        acquiredEntryIds: [] as string[],
+        /** Advance the test clock once when the one-source tail batch starts. */
+        ageEarlierBatchesOnWidePage: false,
+        agedEarlierBatches: false,
     };
 
     const scanA: ScanFn = async (input) => {
         scanCalls.count += 1;
         if (state.holdSourceA !== null) await state.holdSourceA;
+        if (state.rowsPerSubmittedLimit) {
+            const limit = input.page.kind === 'initial' ? input.page.limit : 1;
+            if (state.ageEarlierBatchesOnWidePage && limit > 1 && !state.agedEarlierBatches) {
+                state.agedEarlierBatches = true;
+                clock.nowMs += TRIAGE_VIEW_REFRESH_MIN_INTERVAL_MS + 1;
+            }
+            const sourceInstanceId = input.instance.instance.sourceInstanceId;
+            const observations = Array.from({ length: limit }, (unused, index) => {
+                const entryId = `${sourceInstanceId}-${String(index).padStart(2, '0')}`;
+                state.acquiredEntryIds.push(entryId);
+                return presentObservation({
+                    entryId,
+                    title: `Change ${entryId}`,
+                    sourceUpdatedAtMs: 10_000 - index,
+                });
+            });
+            return {
+                kind: 'complete',
+                observations,
+                evidence: { kind: 'walkFinished' },
+            };
+        }
         if (state.sourceAUsesConfigurationIdentity) {
             const accountId = input.instance.binding.account.accountId;
             return accountId === 'account-1'
@@ -545,6 +579,120 @@ describe('the mounted PRs & Issues window store', () => {
         expect(new Set(batches.flatMap((input) => (
             input.sources.kind === 'selected' ? input.sources.sourceInstanceIds : []
         ))).size).toBe(MAX_TRIAGE_LIST_SOURCE_BATCH_V1 + 1);
+        store.dispose();
+    });
+
+    it('keeps every row acquired from 33 configured sources visible or resumable', async () => {
+        const harness = createHarness({ configureSourceB: false });
+        for (let index = 0; index < MAX_TRIAGE_LIST_SOURCE_BATCH_V1; index += 1) {
+            const sourceInstanceId = `${String(index + 3).padStart(8, '0')}-1111-4111-8111-111111111111`;
+            harness.control.sourceInstances.seed(toCorpusStoredValue(instanceRow(
+                `g${String(index).padStart(4, '0')}x`,
+                SOURCE_A,
+                sourceInstanceId,
+                index + 3,
+                `account-g${String(index + 3)}`,
+            )));
+        }
+        harness.state.rowsPerSubmittedLimit = true;
+        const store = createTriageListWindowStore({
+            readEntries: harness.readEntries,
+            nowMs: () => harness.clock.nowMs,
+        });
+
+        await store.refresh('view');
+
+        const snapshot = store.getSnapshot();
+        const visible = new Set(snapshot.window?.rows.map((row) => row.entryRef.entryId) ?? []);
+        const hiddenAcquired = harness.state.acquiredEntryIds.filter((entryId) => !visible.has(entryId));
+        expect(harness.state.acquiredEntryIds).toHaveLength(MAX_TRIAGE_LIST_WINDOW_ROWS_V1);
+        expect(hiddenAcquired.length === 0 || snapshot.loadMore?.kind === 'available').toBe(true);
+        store.dispose();
+    });
+
+    it('leaves configured sources beyond one 56-row window explicitly resumable', async () => {
+        const harness = createHarness({ configureSourceB: false });
+        for (let index = 0; index < (MAX_TRIAGE_LIST_WINDOW_ROWS_V1 + 7); index += 1) {
+            const sourceInstanceId = `${String(index + 3).padStart(8, '0')}-1111-4111-8111-111111111111`;
+            harness.control.sourceInstances.seed(toCorpusStoredValue(instanceRow(
+                `h${String(index).padStart(4, '0')}x`,
+                SOURCE_A,
+                sourceInstanceId,
+                index + 3,
+                `account-h${String(index + 3)}`,
+            )));
+        }
+        harness.state.rowsPerSubmittedLimit = true;
+        const store = createTriageListWindowStore({
+            readEntries: harness.readEntries,
+            nowMs: () => harness.clock.nowMs,
+        });
+
+        await store.refresh('view');
+
+        const first = store.getSnapshot();
+        const firstBatches = harness.actionInputs.filter((input) => (
+            input.sources.kind === 'selected' && input.sources.sourceInstanceIds.length > 0
+        ));
+        expect(firstBatches.map((input) => input.sources.kind === 'selected'
+            ? [input.sources.sourceInstanceIds.length, input.limit]
+            : [])).toEqual([[32, 32], [24, 24]]);
+        expect(harness.state.acquiredEntryIds).toHaveLength(MAX_TRIAGE_LIST_WINDOW_ROWS_V1);
+        expect(first.window?.rows).toHaveLength(MAX_TRIAGE_LIST_WINDOW_ROWS_V1);
+        expect(first.window?.coverage).toBe('partial');
+        expect(first.loadMore).toEqual({ kind: 'available' });
+
+        await store.loadMore();
+
+        const allBatches = harness.actionInputs.filter((input) => (
+            input.sources.kind === 'selected' && input.sources.sourceInstanceIds.length > 0
+        ));
+        expect(allBatches.at(-1)?.sources.kind === 'selected'
+            ? allBatches.at(-1)?.sources.sourceInstanceIds.length
+            : null).toBe(8);
+        const visible = new Set(store.getSnapshot().window?.rows.map((row) => row.entryRef.entryId) ?? []);
+        expect(harness.state.acquiredEntryIds.every((entryId) => visible.has(entryId))).toBe(true);
+        expect(store.getSnapshot().loadMore).toEqual({ kind: 'exhausted' });
+
+        // A Refresh restarts the mounted depth while preserving last-known-good
+        // lane objects. Those retained lanes must not make the untouched tail
+        // look visited in the new acquisition cut.
+        await store.refresh('manual');
+        expect(store.getSnapshot().loadMore).toEqual({ kind: 'available' });
+        await store.loadMore();
+        const refreshedBatches = harness.actionInputs.filter((input) => (
+            input.sources.kind === 'selected' && input.sources.sourceInstanceIds.length > 0
+        ));
+        expect(refreshedBatches.at(-1)?.sources.kind === 'selected'
+            ? refreshedBatches.at(-1)?.sources.sourceInstanceIds.length
+            : null).toBe(8);
+        expect(store.getSnapshot().loadMore).toEqual({ kind: 'exhausted' });
+        store.dispose();
+    });
+
+    it('derives freshness from each lane completion rather than the final transport batch', async () => {
+        const harness = createHarness({ configureSourceB: false });
+        for (let index = 0; index < MAX_TRIAGE_LIST_SOURCE_BATCH_V1; index += 1) {
+            const sourceInstanceId = `${String(index + 3).padStart(8, '0')}-1111-4111-8111-111111111111`;
+            harness.control.sourceInstances.seed(toCorpusStoredValue(instanceRow(
+                `f${String(index).padStart(4, '0')}x`,
+                SOURCE_A,
+                sourceInstanceId,
+                index + 3,
+                `account-f${String(index + 3)}`,
+            )));
+        }
+        harness.state.rowsPerSubmittedLimit = true;
+        harness.state.ageEarlierBatchesOnWidePage = true;
+        const store = createTriageListWindowStore({
+            readEntries: harness.readEntries,
+            nowMs: () => harness.clock.nowMs,
+        });
+
+        await store.refresh('view');
+
+        expect(harness.state.agedEarlierBatches).toBe(true);
+        expect(store.getSnapshot().freshness).toBe('stale');
         store.dispose();
     });
 

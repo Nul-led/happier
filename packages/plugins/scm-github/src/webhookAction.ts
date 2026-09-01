@@ -7,6 +7,7 @@ import {
 } from '@happier-dev/plugin-sdk/webhooks';
 import type { PluginInvocationContext } from '@happier-dev/plugin-sdk';
 import type { PluginActionInputById, PluginActionResultById } from '@happier-dev/plugin-sdk/actions';
+import { projectPluginEventAdmissionSourceStatusV1 } from '@happier-dev/plugin-sdk/events';
 
 import {
   normalizeGithubWebhookDelivery,
@@ -193,21 +194,15 @@ function sourceStatusReports(params: Readonly<{
     const settled = result?.checkpointSafe === true;
     const telemetry = classifyGithubAutomationAdmissionTelemetry(result);
     return {
-      kind: 'source',
-      automationId: definition.automationId,
-      triggerId: definition.triggerId,
-      triggerRevision: definition.triggerRevision,
-      eventRef: definition.eventRef,
-      sourceSelectorId: definition.sourceSelectorId,
-      state: settled ? 'observing' : 'attention',
-      code: settled ? 'none' : 'admissionUnavailable',
-      lastObservedAt: params.observedAtMs,
-      lastDispositionAt: settled ? params.observedAtMs : null,
-      nextRetryAt: null,
+      ...projectPluginEventAdmissionSourceStatusV1({
+        definition,
+        result: result ?? undefined,
+        observationReceivedAt: params.observedAtMs,
+        observedDelta: settled ? 1 : 0,
+      }),
       // A retryable delivery has no terminal disposition, so it does not
       // multiply counters. Settled outcomes are mapped positionally to the
       // exact trigger definition that produced them.
-      observedDelta: settled ? 1 : 0,
       admittedDelta: telemetry.admittedDelta,
       skippedDelta: telemetry.skippedDelta,
     };

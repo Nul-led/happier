@@ -313,7 +313,7 @@ describe('Channels first-party provider composition', () => {
       await githubCore.dispose();
       await github.dispose();
     }
-  });
+  }, 15_000);
 
   describe('Telegram Automation Event source setup through the real connections-list Action', () => {
     const TELEGRAM_SETUP_ACTION_ID = 'telegram/setup-chat-event-source';

@@ -177,6 +177,11 @@ export function createHostedWebPluginUiDataClient(input: Readonly<{
         [rowId, optionsWithoutSignal(options) as JsonValue],
         collectionOptions(options.signal),
       ),
+      forget: async (rowId, options) => await requestData(
+        'collection.forget',
+        [rowId, optionsWithoutSignal(options) as JsonValue],
+        collectionOptions(options.signal),
+      ),
       query: async (request, options) => await requestData(
         'collection.query',
         [request as unknown as JsonValue],

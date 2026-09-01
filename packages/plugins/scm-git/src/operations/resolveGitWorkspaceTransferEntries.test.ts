@@ -1,5 +1,5 @@
 import { execFile as execFileCallback } from 'node:child_process';
-import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -25,17 +25,12 @@ async function configureGitRepo(cwd: string): Promise<void> {
     await runGit(cwd, ['config', 'user.name', 'Happier Test']);
 }
 
-async function resolveGitBinaryPath(): Promise<string> {
-    const { stdout } = await execFile('which', ['git']);
-    return stdout.trim();
-}
-
 async function withHostScmRuntime<T>(callback: () => Promise<T>): Promise<T> {
     return await runWithRealGitScmRuntime(callback);
 }
 
 describe('resolveGitWorkspaceTransferEntries', () => {
-    it('includes portable .git metadata for a primary checkout', async () => {
+    it('never exports checkout administration from a primary checkout', async () => {
         const repoRoot = await makeTempDir('git-transfer-primary-');
 
         try {
@@ -64,14 +59,15 @@ describe('resolveGitWorkspaceTransferEntries', () => {
 
             expect(entries).toEqual(expect.arrayContaining([
                 expect.objectContaining({ relativePath: 'README.md' }),
-                expect.objectContaining({ relativePath: '.git/HEAD' }),
             ]));
+            expect(entries.some((entry) => entry.relativePath === '.git/config')).toBe(false);
+            expect(entries.some((entry) => entry.relativePath.startsWith('.git/'))).toBe(false);
         } finally {
             await rm(repoRoot, { recursive: true, force: true });
         }
     });
 
-    it('omits linked-worktree admin metadata from a primary checkout export', async () => {
+    it('omits all checkout administration when a primary checkout owns linked worktrees', async () => {
         const repoRoot = await makeTempDir('git-transfer-primary-linked-admin-repo-');
         const worktreeRoot = await makeTempDir('git-transfer-primary-linked-admin-worktree-');
 
@@ -101,10 +97,7 @@ describe('resolveGitWorkspaceTransferEntries', () => {
                 },
             }));
 
-            expect(entries).toEqual(expect.arrayContaining([
-                expect.objectContaining({ relativePath: '.git/HEAD' }),
-            ]));
-            expect(entries.some((entry) => entry.relativePath.startsWith('.git/worktrees/'))).toBe(false);
+            expect(entries.some((entry) => entry.relativePath.startsWith('.git/'))).toBe(false);
         } finally {
             await rm(repoRoot, { recursive: true, force: true });
             await rm(worktreeRoot, { recursive: true, force: true });
@@ -190,62 +183,6 @@ describe('resolveGitWorkspaceTransferEntries', () => {
             await rm(worktreeRoot, { recursive: true, force: true });
         }
     }, 15_000);
-
-    it('falls back when git metadata discovery cannot use path-format absolute', async () => {
-        const repoRoot = await makeTempDir('git-transfer-path-fallback-');
-        const wrapperRoot = await makeTempDir('git-transfer-path-wrapper-');
-        const originalPath = process.env.PATH;
-
-        try {
-            await runGit(repoRoot, ['init']);
-            await configureGitRepo(repoRoot);
-            await writeFile(join(repoRoot, 'README.md'), 'hello\n', 'utf8');
-            await runGit(repoRoot, ['add', 'README.md']);
-            await runGit(repoRoot, ['commit', '-m', 'initial']);
-
-            const gitBinaryPath = await resolveGitBinaryPath();
-            const wrapperPath = join(wrapperRoot, 'git');
-            await writeFile(
-                wrapperPath,
-                `#!/bin/sh
-if [ "$1" = "-C" ] && [ "$3" = "rev-parse" ] && [ "$4" = "--path-format=absolute" ]; then
-    echo "fatal: unknown option: --path-format=absolute" >&2
-    exit 129
-fi
-exec "${gitBinaryPath}" "$@"
-`,
-                'utf8'
-            );
-            await chmod(wrapperPath, 0o755);
-            process.env.PATH = `${wrapperRoot}:${originalPath ?? ''}`;
-
-            const entries = await withHostScmRuntime(async () => await resolveGitWorkspaceTransferEntries({
-                context: {
-                    cwd: repoRoot,
-                    projectKey: `test:${repoRoot}`,
-                    detection: {
-                        isRepo: true,
-                        rootPath: repoRoot,
-                        mode: '.git',
-                    },
-                },
-                workspaceTransfer: {
-                    strategy: 'transfer_snapshot',
-                    includeIgnoredMode: 'exclude',
-                    ignoredIncludeGlobs: [],
-                },
-            }));
-
-            expect(entries).toEqual(expect.arrayContaining([
-                expect.objectContaining({ relativePath: 'README.md' }),
-                expect.objectContaining({ relativePath: '.git/HEAD' }),
-            ]));
-        } finally {
-            process.env.PATH = originalPath;
-            await rm(repoRoot, { recursive: true, force: true });
-            await rm(wrapperRoot, { recursive: true, force: true });
-        }
-    });
 
     it('handles large git ls-files output without hitting exec maxBuffer limits', async () => {
         const repoRoot = await makeTempDir('git-transfer-large-ls-files-');

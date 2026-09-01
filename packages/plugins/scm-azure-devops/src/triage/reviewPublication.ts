@@ -475,8 +475,13 @@ async function executePublication(input: Readonly<{
     const needsInline = input.plan.entries.some((entry) => (
       entry.anchor.kind === 'file' || entry.anchor.kind === 'line' || entry.anchor.kind === 'range'
     ));
+    if (needsInline && current.row.supportsIterations === null) {
+      return Object.freeze({
+        kind: 'rejected', reason: 'unsupported-anchor', observation: current.observation,
+      });
+    }
     let changed: Awaited<ReturnType<typeof readCurrentChangedFiles>> | null = null;
-    if (needsInline && current.row.supportsIterations !== false) {
+    if (needsInline && current.row.supportsIterations === true) {
       changed = await readCurrentChangedFiles(input.mutation);
       if (!changed.ok) {
         return Object.freeze({
@@ -550,7 +555,7 @@ async function executePublication(input: Readonly<{
       'reviews.comments.claimPublicationDispatch',
       createReviewCommentPublicationSettlementRequestV1(input.plan, claim, publication),
       { signal: input.mutation.signal },
-    ).catch(() => undefined);
+    );
     const exact = await finalObservation(input.mutation);
     return Object.freeze({
       kind: 'settled', publication, ...exact,

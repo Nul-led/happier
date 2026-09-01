@@ -32,6 +32,40 @@ function comment(
 }
 
 describe('the GitHub feedback projection', () => {
+  it('keeps thread replies in provider chronology across independently loaded pages', () => {
+    const view = projectGithubFeedback({
+      observedAtMs: OBSERVED_AT_MS,
+      facts: [],
+      comments: [],
+      historicalReviews: [],
+      threads: [{
+        id: 'PRRT_paged',
+        isResolved: false,
+        path: null,
+        line: null,
+        firstReply: comment({ id: 'reply-1', createdAtMs: OBSERVED_AT_MS - 40 }),
+        replyCount: 4,
+        replies: [
+          comment({ id: 'reply-3', createdAtMs: OBSERVED_AT_MS - 20 }),
+          comment({ id: 'reply-4', createdAtMs: OBSERVED_AT_MS - 10 }),
+          comment({ id: 'reply-1', createdAtMs: OBSERVED_AT_MS - 40 }),
+          comment({ id: 'reply-2', createdAtMs: OBSERVED_AT_MS - 30 }),
+        ],
+        previousRepliesCursor: null,
+      }],
+      reviewDecision: null,
+      requests: [],
+      checks: null,
+    });
+
+    const thread = view.findings.find((finding) => finding.resource === 'thread');
+    expect(thread?.resource).toBe('thread');
+    if (thread?.resource !== 'thread') throw new Error('expected thread finding');
+    expect(thread.replies.map((reply) => reply.id)).toEqual([
+      'reply-1', 'reply-2', 'reply-3', 'reply-4',
+    ]);
+  });
+
   it('replaces stale review and check facts with the current review and check reads, while retaining mergeability', () => {
     const view = projectGithubFeedback({
       observedAtMs: OBSERVED_AT_MS,
@@ -259,6 +293,14 @@ describe('the GitHub feedback projection', () => {
         isResolved: false,
         path: 'src/pump.ts',
         line: 42,
+        firstReply: {
+          id: 'PRRC_1',
+          author: 'octocat',
+          body: 'This branch drops the tail.',
+          createdAtMs: OBSERVED_AT_MS - 10,
+          url: 'https://github.com/o/r/pull/1#discussion_r1',
+        },
+        replyCount: 1,
         replies: [{
           id: 'PRRC_1',
           author: 'octocat',

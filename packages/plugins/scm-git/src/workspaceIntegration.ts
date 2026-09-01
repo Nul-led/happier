@@ -49,6 +49,11 @@ import {
 import { reconcileGitWorkspaceCheckout } from './operations/reconcileWorkspaceCheckout.js';
 import { resolveGitWorkspaceTransferEntries } from './operations/resolveGitWorkspaceTransferEntries.js';
 import { resolveGitWorkspaceTransferMetadata } from './workspaceTransferMetadata.js';
+import {
+    materializePortableGitWorkspaceBundle,
+    preparePortableGitWorkspaceTransfer,
+    resolvePortableGitWorkspaceRoot,
+} from './workspace/portableGitWorkspaceTransfer.js';
 
 function normalizeRelativePath(relativePath: string): string {
     return relativePath.replace(/\\/g, '/').replace(/^\.\//, '');
@@ -58,16 +63,8 @@ export function classifyGitPortableWorkspacePath(
     input: ScmWorkspaceIntegrationPortableWorkspacePathInput,
 ): 'portable' | 'non_portable' | 'unknown' {
     const normalizedRelativePath = normalizeRelativePath(resolveScmWorkspaceIntegrationPortableWorkspacePathRelativePath(input));
-    if (
-        normalizedRelativePath === '.git/commondir'
-        || normalizedRelativePath === '.git/gitdir'
-        || normalizedRelativePath === '.git/worktrees'
-        || normalizedRelativePath.startsWith('.git/worktrees/')
-    ) {
-        return 'non_portable';
-    }
     if (normalizedRelativePath === '.git' || normalizedRelativePath.startsWith('.git/')) {
-        return 'portable';
+        return 'non_portable';
     }
 
     return 'unknown';
@@ -93,6 +90,10 @@ export async function inspectGitWorkspaceLocation(input: Readonly<{
 }
 
 export async function reconcileGitWorkspacePostMaterialization(input: ScmWorkspaceIntegrationPostMaterializationInput): Promise<void> {
+    await materializePortableGitWorkspaceBundle({
+        targetPath: input.context.cwd,
+        workspaceIntegrationMetadata: input.workspaceIntegrationMetadata,
+    });
     await reconcileGitWorkspaceCheckout({
         context: input.context,
         sourcePath: resolveScmWorkspaceIntegrationCheckoutMaterializationSourcePath(input.checkoutMaterialization),
@@ -266,11 +267,31 @@ export async function realizeGitWorkspaceCheckout(
 }
 
 export async function resolveGitWorkspaceTransferSourceEntries(input: ScmWorkspaceIntegrationWorkspaceTransferInput) {
+    if (input.workspaceTransfer.strategy === 'transfer_snapshot' && input.artifactDirectory) {
+        return (await preparePortableGitWorkspaceTransfer({
+            ...input,
+            artifactDirectory: input.artifactDirectory,
+        })).entries;
+    }
     return await resolveGitWorkspaceTransferEntries(input);
 }
 
 export async function resolveGitWorkspaceTransferSourceMetadata(input: ScmWorkspaceIntegrationWorkspaceTransferInput) {
-    return await resolveGitWorkspaceTransferMetadata(input);
+    const metadata = await resolveGitWorkspaceTransferMetadata(input);
+    if (!metadata || input.workspaceTransfer.strategy !== 'transfer_snapshot' || !input.artifactDirectory) {
+        return metadata;
+    }
+    const detectedRepositoryRoot = input.context.detection.rootPath;
+    if (!detectedRepositoryRoot) return null;
+    const transferRoot = await resolvePortableGitWorkspaceRoot({
+        cwd: input.context.cwd,
+        repositoryRoot: detectedRepositoryRoot,
+    });
+    return {
+        ...metadata,
+        ...transferRoot,
+        portableBundle: { v: 1 as const, relativePath: '.happier-scm/git.bundle' as const },
+    };
 }
 
 export function classifyGitPortableWorkspaceTransferEntry(input: Readonly<{

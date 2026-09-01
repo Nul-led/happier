@@ -43,7 +43,7 @@ import {
   rereadAzurePullRequest,
   type AzurePullRequestScope,
 } from './operations.js';
-import type { AzureDevOpsApiClient } from './types.js';
+import type { AzureDevOpsApiClient, AzurePullRequestRow } from './types.js';
 
 /**
  * The five bound source-native Azure DevOps detail operations.
@@ -119,6 +119,18 @@ function malformedPullRequest(): TriageSourceFailureV1 {
   });
 }
 
+function iterationsUnavailable(supportsIterations: boolean | null): TriageSourceFailureV1 {
+  return createAzureSourceFailure({
+    class: 'unsupportedContract',
+    code: supportsIterations === false
+      ? 'azure-devops/iterations-unsupported'
+      : 'azure-devops/iteration-support-unknown',
+    detail: supportsIterations === false
+      ? 'This Azure DevOps pull request explicitly does not support iteration reads.'
+      : 'Azure DevOps did not declare whether this pull request supports iteration reads.',
+  });
+}
+
 function unavailable(failure: TriageSourceFailureV1): Readonly<{
   kind: 'unavailable';
   failure: TriageSourceFailureV1;
@@ -132,6 +144,7 @@ type AdmittedInvocation =
     address: Readonly<{ project: string; repositoryId: string; pullRequestId: number }>;
     client: AzureDevOpsApiClient;
     dependencies: AzureDetailReadDependenciesV1;
+    row: AzurePullRequestRow;
     scope: AzurePullRequestScope;
     dispose(): void;
   }>
@@ -217,6 +230,7 @@ async function admitAzureDetailInvocation(
     },
     client: authorized.client,
     dependencies: Object.freeze({ client: authorized.client, signal: bounded.signal }),
+    row: exact.row,
     scope: exact.scope,
   };
 }
@@ -244,6 +258,10 @@ export async function readAzureDevOpsIterations(
   }, context);
   if (!admitted.ok) return unavailable(admitted.failure);
   try {
+
+  if (admitted.row.supportsIterations !== true) {
+    return unavailable(iterationsUnavailable(admitted.row.supportsIterations));
+  }
 
   const read = await readAzureIterations(admitted.address, admitted.dependencies);
   if (!read.ok) return unavailable(projectAzureSourceFailure(read.failure));

@@ -10,7 +10,6 @@ import {
 import {
   GithubChangedFilesResultV1Schema,
   GithubChecksResultV1Schema,
-  GithubReviewsResultV1Schema,
   GithubTimelineResultV1Schema,
 } from './contracts.js';
 import {
@@ -21,7 +20,6 @@ import {
   projectGithubChangedFileRows,
   projectGithubCheckRows,
   projectGithubCommentBody,
-  projectGithubReviewPeople,
   projectGithubTimelineRows,
 } from './projection.js';
 
@@ -326,27 +324,4 @@ describe('GitHub detail projection schema admission', () => {
     expect(result.rows).toHaveLength(observations.length);
   });
 
-  it('admits review people beyond the retired source-local count ceiling', () => {
-    const historical = Array.from({ length: 205 }, (_, index) => ({
-      login: `reviewer-${index}`,
-      state: 'APPROVED',
-      submittedAtMs: index,
-    }));
-    const outstanding = Array.from({ length: 205 }, (_, index) => ({
-      kind: 'user' as const,
-      login: `requested-${index}`,
-    }));
-    const projected = projectGithubReviewPeople({ historical, outstanding }, BOUNDS);
-    const result = GithubReviewsResultV1Schema.parse({
-      kind: 'reviews',
-      reviewed: projected.reviewed,
-      requested: projected.requested,
-      omittedRowCount: projected.omittedRowCount,
-      projectionTruncated: projected.projectionTruncated,
-    });
-    if (result.kind !== 'reviews') throw new Error(`expected reviews, got ${result.kind}`);
-    expect(result.reviewed).toHaveLength(historical.length);
-    expect(result.requested).toHaveLength(outstanding.length);
-    expect(result.omittedRowCount).toBe(0);
-  });
 });

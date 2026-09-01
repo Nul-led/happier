@@ -729,7 +729,7 @@ function offlineConnectionRow(): OfflineChannelStateRow {
   return { rowId: 'connection-1', revision: 4, value: { ...connection } };
 }
 
-function offlineBindingRow(): OfflineChannelStateRow {
+function offlineBindingRow() {
   return {
     rowId: 'binding-1',
     revision: 5,
@@ -764,7 +764,7 @@ function offlineBindingRow(): OfflineChannelStateRow {
         deletionState: 'none',
       },
     },
-  };
+  } satisfies OfflineChannelStateRow;
 }
 
 /**
@@ -1522,7 +1522,6 @@ describe('Channels mounted provider setup recovery', () => {
       }
       throw new Error(`Unexpected mounted Action: ${String(request.action)}`);
     });
-    let selectionLifetimeSignal: AbortSignal | undefined;
     const fixture = await createPluginUiTestkit({
       identity: {
         pluginId: 'happier.channels',
@@ -1535,10 +1534,7 @@ describe('Channels mounted provider setup recovery', () => {
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(),
       handlers: {
-        selectActionInput: async ({ signal }) => {
-          selectionLifetimeSignal = signal;
-          return submittedProviderSetup;
-        },
+        selectActionInput: async () => submittedProviderSetup,
         executeAction,
         readResource: bindingResourceReader(),
       },
@@ -1603,13 +1599,19 @@ describe('Channels mounted provider setup recovery', () => {
         .map(([request]) => request)
         .filter((request) => request.action === CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionCreate);
       expect(createCalls).toHaveLength(3);
+      const successfulContinuation = createCalls[2];
+      if (successfulContinuation === undefined) throw new Error('Expected the successful continuation request.');
       expect((createCalls[0] as unknown as Readonly<{ consumeSelectedActionInput?: unknown }>)
         .consumeSelectedActionInput).toBeUndefined();
       expect(createCalls[0]?.selectedActionInput).toEqual(selectedActionInput);
       expect(createCalls[1]?.selectedActionInput).toEqual(selectedActionInput);
-      expect(createCalls[2]?.input).toEqual(createCalls[1]?.input);
-      expect(createCalls[2]?.selectedActionInput).toEqual(selectedActionInput);
-      await vi.waitFor(() => expect(selectionLifetimeSignal?.aborted).toBe(true));
+      expect(successfulContinuation.input).toEqual(createCalls[1]?.input);
+      expect(successfulContinuation.selectedActionInput).toEqual(selectedActionInput);
+      await expect(fixture.context.hostApi.executeAction(
+        CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionCreate,
+        successfulContinuation.input,
+        { selectedActionInput },
+      )).rejects.toMatchObject({ code: 'invalid_payload' });
       const ensureCalls = executeAction.mock.calls
         .map(([request]) => request)
         .filter((request) => request.action === 'plugin.webhook.endpoint.ensure');
@@ -5764,6 +5766,7 @@ describe('Channels connection lifecycle actions', () => {
       expect(request.input).toEqual({
         connectionId: 'connection-1',
         expectedRevision: 1,
+        expectedAuthorityEpoch: 1,
         providerSelection: submittedProviderSetup.selection,
         providerSetupInput: submittedProviderSetup.input,
         credentialRef,
@@ -5771,7 +5774,7 @@ describe('Channels connection lifecycle actions', () => {
       });
       expect(request.selectedActionInput).toEqual(selectedActionInput);
       expect((request as unknown as Readonly<{ consumeSelectedActionInput?: unknown }>)
-        .consumeSelectedActionInput).toBe(true);
+        .consumeSelectedActionInput).toBeUndefined();
       return {
         kind: 'transferred',
         connectionId: 'connection-1',
@@ -5815,6 +5818,10 @@ describe('Channels connection lifecycle actions', () => {
 
       await fixture.press(await fixture.getByRole('button', { name: 'Transfer connection' }));
       await fixture.press(await fixture.getByRole('button', { name: 'Transfer with Integration provider' }));
+      await expect(fixture.getByRole('radio', {
+        name: 'Durable push',
+        state: { checked: false },
+      })).resolves.toBeDefined();
       await fixture.press(await fixture.getByRole('radio', {
         name: 'Live socket',
         state: { checked: false },
@@ -5843,6 +5850,102 @@ describe('Channels connection lifecycle actions', () => {
       expect(executeAction.mock.calls.map(([request]) => request.action)).not.toContain(
         CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionCreate,
       );
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  it('ensures and continues a durable-push transfer with the same selected provider input', async () => {
+    const submittedProviderSetup = {
+      kind: 'submitted' as const,
+      action: providerSetupOperation.action,
+      input: { repository: 'happier-dev/happier' },
+      selection: {
+        target: {
+          pluginId: 'happier.channels',
+          immutableGenerationId: 'channels-target-generation-a',
+        },
+        point: providerSetupOperation.point,
+        contributor: providerSetupOperation.contributor,
+      },
+      connectedAccount: { kind: 'none' as const },
+    };
+    const selectedActionInput = { operation: providerSetupOperation, result: submittedProviderSetup } as const;
+    const executeAction = vi.fn(async (request: PluginUiTestkitExecuteActionInput) => {
+      if (request.action === 'plugin.webhook.endpoint.ensure') {
+        return {
+          webhookEndpointId: 'wh_ep_AAECAwQFBgcICQoLDA0ODw',
+          publicUrl: 'https://example.test/webhooks/channels',
+          readiness: 'ready',
+          revision: 1,
+        };
+      }
+      if (request.action !== CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionTransfer) {
+        throw new Error(`Unexpected mounted Action: ${String(request.action)}`);
+      }
+      expect(request.selectedActionInput).toEqual(selectedActionInput);
+      const input = request.input as Readonly<{ endpointContinuation?: unknown }>;
+      if (input.endpointContinuation === undefined) {
+        return {
+          kind: 'endpointRequired',
+          connectionId: 'connection-1',
+          webhookContribution: {
+            pluginId: 'com.example.conversation-provider',
+            localId: 'webhook',
+          },
+          targetMaterialization: {
+            pluginId: 'com.example.conversation-provider',
+            machineId: 'machine-example',
+            materializationId: 'materialization-example',
+          },
+          sourceInstanceId: 'channels.connection.connection-1',
+          webhookEndpointSetup: { kind: 'accountEndpointV1', credential: 'serverGenerated' },
+          webhookEndpointIdempotencyKey: 'channels-transfer-endpoint-1',
+        };
+      }
+      expect(input.endpointContinuation).toEqual({
+        connectionId: 'connection-1',
+        webhookEndpointId: 'wh_ep_AAECAwQFBgcICQoLDA0ODw',
+      });
+      return {
+        kind: 'transferPendingOldStop',
+        connectionId: 'connection-1',
+        revision: 2,
+        authorityEpoch: 2,
+      };
+    });
+    const fixture = await createPluginUiTestkit({
+      identity: {
+        pluginId: 'happier.channels',
+        pluginVersion: '0.0.0',
+        viewId: 'channels-account',
+        generation: 'channels-transfer-pull-to-push',
+        sessionId: 'session-1',
+      },
+      surface: renderSurface,
+      surfaceContext: createChannelsSurfaceContext(),
+      adapter: createChannelsSemanticAdapter(),
+      handlers: {
+        selectActionInput: async () => submittedProviderSetup,
+        executeAction,
+        readResource: bindingResourceReader(),
+      },
+    });
+
+    try {
+      await pressButtonWithAccessibleLabelFragment('Example conversation');
+      await fixture.press(await fixture.getByRole('button', { name: 'Transfer connection' }));
+      await fixture.press(await fixture.getByRole('button', { name: 'Transfer with Integration provider' }));
+      await fixture.press(await fixture.getByRole('radio', {
+        name: 'Durable push',
+        state: { checked: false },
+      }));
+      await fixture.press(await fixture.getByRole('button', { name: 'Confirm transfer' }));
+      await vi.waitFor(() => expect(executeAction.mock.calls.map(([request]) => request.action)).toEqual([
+        CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionTransfer,
+        'plugin.webhook.endpoint.ensure',
+        CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionTransfer,
+      ]));
     } finally {
       await fixture.dispose();
     }

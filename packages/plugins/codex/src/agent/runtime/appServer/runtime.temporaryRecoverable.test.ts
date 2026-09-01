@@ -3777,7 +3777,11 @@ describe('Codex app-server temporary recoverable turn failures', () => {
         errorCode: 'runtime_identity_probe_unavailable',
         error: 'runtime_identity_probe_unavailable',
       });
-      expect(clientState.requests).toContainEqual({ method: 'account/read', params: undefined });
+      expect(clientState.requests).toContainEqual({
+        method: 'account/read',
+        params: undefined,
+        options: { timeoutMs: null },
+      });
     } finally {
       await rm(codexHome, { recursive: true, force: true });
     }
@@ -3811,7 +3815,11 @@ describe('Codex app-server temporary recoverable turn failures', () => {
         errorCode: 'runtime_identity_probe_unavailable',
         error: 'runtime_identity_probe_unavailable',
       });
-      expect(clientState.requests).toContainEqual({ method: 'account/read', params: undefined });
+      expect(clientState.requests).toContainEqual({
+        method: 'account/read',
+        params: undefined,
+        options: { timeoutMs: null },
+      });
     } finally {
       await rm(codexHome, { recursive: true, force: true });
     }
@@ -3836,6 +3844,7 @@ describe('Codex app-server temporary recoverable turn failures', () => {
           },
         },
       });
+      await startCodexAppServerRuntime(runtime);
       clientState.deferTurnStartForPrompt('busy prompt');
       const send = runtime.send({ v: 1, text: 'busy prompt' });
       await waitForRequestCount('turn/start', 1);
@@ -3998,8 +4007,8 @@ describe('Codex app-server temporary recoverable turn failures', () => {
         errorCode: 'runtime_replaced_during_auth_apply',
         appliedVia: 'direct_live_hot_auth',
         activeAccountId: 'acct_target',
-        recovery: 'restart_resume',
       });
+      await expect(apply).resolves.not.toHaveProperty('recovery');
       await expect(readFile(join(codexHome, 'auth.json'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
     } finally {
       await rm(codexHome, { recursive: true, force: true });

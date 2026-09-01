@@ -177,7 +177,6 @@ export type {
 } from './api/types/issues.js';
 
 export {
-    isSameNormalizedOrigin,
     normalizePosthogApiOrigin,
     selectPosthogApiOrigin,
 } from './connect/origin.js';

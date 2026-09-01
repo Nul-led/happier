@@ -193,12 +193,14 @@ class MemoryCollection {
   readonly rows = new Map<string, StoredRow>();
   private conflictNextDelete: boolean;
   private conflictNextBatch: boolean;
+  private forgetCount = 0;
 
   constructor(private readonly options: Readonly<{
     /** Mirrors the host Collection request invariant for this boundary test. */
     enforceUniqueBatchRows?: boolean;
     conflictNextDelete?: boolean;
     conflictNextBatch?: boolean;
+    failForgetAt?: number;
     maxBatchRows?: number;
   }> = {}) {
     this.conflictNextDelete = options.conflictNextDelete === true;
@@ -249,9 +251,13 @@ class MemoryCollection {
   }
 
   async forget(rowId: string, input: Readonly<{ expectedRevision: number }>) {
+    this.forgetCount += 1;
+    if (this.options.failForgetAt === this.forgetCount) {
+      throw new Error('simulated process loss during direct retention forget');
+    }
     const current = this.rows.get(rowId);
     if (current === undefined) return { rowId, forgotten: true as const };
-    if (current.deleted !== true || current.revision !== input.expectedRevision) {
+    if (current.revision !== input.expectedRevision) {
       throw Object.assign(new Error('compare-and-swap conflict'), {
         code: 'plugin_collection_conflict',
       });
@@ -866,6 +872,14 @@ function heldAutomationOutwardObligation(): ConversationOutwardDeliveryObligatio
   };
 }
 
+function retireableControlOutwardObligation(controlId: string): ConversationOutwardDeliveryObligation {
+  return {
+    ...outwardObligation(),
+    source: { kind: 'controlResponse', controlId, controlKind: 'recovery' },
+    deliveryKey: `channels:control-response:v1:${controlId}`,
+  };
+}
+
 function permissionWaitOutwardObligation(): ConversationOutwardDeliveryObligation {
   return {
     ...outwardObligation(),
@@ -999,7 +1013,7 @@ describe('Channels outward-delivery supervisor', () => {
     ))).toEqual(expect.arrayContaining(['partial', 'outcomeUnknown']));
   });
 
-  it('batches already-selected outward retention deletes before forgetting their exact tombstone revisions', async () => {
+  it('forgets already-selected outward retention rows directly at their exact live revisions', async () => {
     const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1_000;
     let persistedAt = 100;
     const state = new MemoryCollection();
@@ -1026,12 +1040,12 @@ describe('Channels outward-delivery supervisor', () => {
       if (settled.kind !== 'updated') throw new Error('Expected terminal custody fixture.');
       return settled.record;
     }));
-    const batch = deliveries.batch.bind(deliveries);
-    const batches: Array<readonly Readonly<Record<string, unknown>>[]> = [];
-    deliveries.batch = (async (operations: readonly Readonly<Record<string, unknown>>[]) => {
-      batches.push(operations);
-      return await batch(operations);
-    }) as typeof deliveries.batch;
+    const forget = deliveries.forget.bind(deliveries);
+    const forgotten: Array<Readonly<{ rowId: string; expectedRevision: number }>> = [];
+    deliveries.forget = async (rowId, input) => {
+      forgotten.push({ rowId, expectedRevision: input.expectedRevision });
+      return await forget(rowId, input);
+    };
 
     persistedAt += THIRTY_DAYS_MS;
     await runConversationOutwardDeliveryCycle({
@@ -1044,9 +1058,7 @@ describe('Channels outward-delivery supervisor', () => {
       now: () => persistedAt,
     });
 
-    expect(batches.map((batch) => batch.length)).toEqual([2, 1]);
-    expect(batches.flat()).toEqual(expect.arrayContaining(records.map((record) => expect.objectContaining({
-      kind: 'delete',
+    expect(forgotten).toEqual(expect.arrayContaining(records.map((record) => ({
       rowId: record.custodyId,
       expectedRevision: record.revision,
     }))));
@@ -1110,15 +1122,106 @@ describe('Channels outward-delivery supervisor', () => {
     persistedAt = THIRTY_DAYS_MS;
     await runConversationOutwardDeliveryCycle({ context, now: () => persistedAt });
 
-    // A complete positive pending projection means the next wake would ensure
-    // this deterministic custody again if retention had forgotten it.
-    expect(await deliveries.get(terminal.record.custodyId)).not.toBeNull();
+    // A complete positive pending projection means the next wake could ensure
+    // this deterministic custody again. The recovery window still removes the
+    // live row and its content, but the producer-proof guard keeps the exact
+    // logical tombstone as dedupe rather than physically forgetting it.
+    expect(await deliveries.get(terminal.record.custodyId)).toBeNull();
+    expect(deliveries.rows.get(terminal.record.custodyId)?.deleted).toBe(true);
 
     // A second/third wake distinguishes retained terminal custody from a
     // delete→fresh-ensure recreation: the latter would reach provider I/O.
     await runConversationOutwardDeliveryCycle({ context, now: () => persistedAt + 1 });
     await runConversationOutwardDeliveryCycle({ context, now: () => persistedAt + 2 });
     expect(executeAdmittedTargetedOperationWithExecutionOrigin).not.toHaveBeenCalled();
+  });
+
+  it('logically retires Session and Automation custody but preserves its tombstone until producer release', async () => {
+    const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1_000;
+    let persistedAt = 0;
+    const state = new MemoryCollection();
+    const deliveries = new MemoryCollection();
+    await state.put(connectionRow(), { expectedRevision: 'absent' });
+    const context = backgroundContext({
+      state,
+      deliveries,
+      execute: vi.fn(async (action: string) => {
+        if (action === 'session.transcript.get') throw new Error('projection remains unavailable');
+        throw new Error(`Unexpected Action ${action}`);
+      }),
+      executeAdmittedTargetedOperationWithExecutionOrigin: vi.fn(),
+    });
+    const store = createConversationOutwardDeliveryCollectionStore({
+      stateCollection: state as never,
+      deliveriesCollection: deliveries as never,
+      signal: context.signal,
+      now: () => persistedAt,
+    });
+    const obligations = [outwardObligation(), heldAutomationOutwardObligation()];
+    const records = [];
+    for (const obligation of obligations) {
+      const admitted = await store.ensure(obligation);
+      if (admitted.kind !== 'created') throw new Error('Expected retained custody fixture.');
+      const terminal = await store.compareAndSwap({
+        custodyId: admitted.record.custodyId,
+        expectedRevision: admitted.record.revision,
+        custody: { state: 'delivered', attemptCount: 1, providerMessageIds: ['provider-1'] },
+      });
+      if (terminal.kind !== 'updated') throw new Error('Expected terminal retained custody.');
+      records.push(terminal.record);
+    }
+
+    persistedAt = THIRTY_DAYS_MS;
+    await runConversationOutwardDeliveryCycle({ context, now: () => persistedAt });
+
+    for (const record of records) {
+      expect(await deliveries.get(record.custodyId)).toBeNull();
+      const tombstone = deliveries.rows.get(record.custodyId);
+      expect(tombstone?.deleted).toBe(true);
+      expect((tombstone?.value.payload as Readonly<Record<string, unknown>>).content).toBeNull();
+    }
+  });
+
+  it('rediscovers remaining live retention rows after a crash between direct forgets', async () => {
+    const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1_000;
+    let persistedAt = 0;
+    const state = new MemoryCollection();
+    const deliveries = new MemoryCollection({ failForgetAt: 2 });
+    await state.put(connectionRow(), { expectedRevision: 'absent' });
+    const context = backgroundContext({
+      state,
+      deliveries,
+      execute: vi.fn(),
+      executeAdmittedTargetedOperationWithExecutionOrigin: vi.fn(),
+    });
+    const store = createConversationOutwardDeliveryCollectionStore({
+      stateCollection: state as never,
+      deliveriesCollection: deliveries as never,
+      signal: context.signal,
+      now: () => persistedAt,
+    });
+    const records = [];
+    for (const controlId of ['crash-a', 'crash-b', 'crash-c']) {
+      const admitted = await store.ensure(retireableControlOutwardObligation(controlId));
+      if (admitted.kind !== 'created') throw new Error('Expected retained control custody.');
+      const terminal = await store.compareAndSwap({
+        custodyId: admitted.record.custodyId,
+        expectedRevision: admitted.record.revision,
+        custody: { state: 'delivered', attemptCount: 1, providerMessageIds: ['provider-1'] },
+      });
+      if (terminal.kind !== 'updated') throw new Error('Expected terminal control custody.');
+      records.push(terminal.record);
+    }
+
+    persistedAt = THIRTY_DAYS_MS;
+    await runConversationOutwardDeliveryCycle({ context, now: () => persistedAt });
+    expect(records.filter((record) => deliveries.rows.has(record.custodyId))).toHaveLength(2);
+
+    // The failed and not-yet-attempted rows remain live in the canonical due
+    // index. A fresh supervisor pass needs no tombstone receipt or sweep log to
+    // find and retire them.
+    await runConversationOutwardDeliveryCycle({ context, now: () => persistedAt });
+    for (const record of records) expect(deliveries.rows.has(record.custodyId)).toBe(false);
   });
 
   it('does not restart an exhausted retention sweep before the earliest retained row can age out', async () => {
@@ -1142,7 +1245,7 @@ describe('Channels outward-delivery supervisor', () => {
       signal: context.signal,
       now: () => persistedAt,
     });
-    const created = await store.ensure(outwardObligation());
+    const created = await store.ensure(retireableControlOutwardObligation('paced-retention'));
     if (created.kind !== 'created') throw new Error('Expected retained custody fixture.');
     persistedAt = terminalAt;
     const settled = await store.compareAndSwap({
@@ -1194,11 +1297,11 @@ describe('Channels outward-delivery supervisor', () => {
     expect(await deliveries.get(settled.record.custodyId)).toBeNull();
   });
 
-  it('retains a terminal row after a retention CAS loss and retries it on the next cycle', async () => {
+  it('retains a terminal row after a direct-forget failure and retries it on the next cycle', async () => {
     const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1_000;
     let persistedAt = 0;
     const state = new MemoryCollection();
-    const deliveries = new MemoryCollection({ conflictNextBatch: true });
+    const deliveries = new MemoryCollection({ failForgetAt: 1 });
     await state.put(connectionRow(), { expectedRevision: 'absent' });
     const context = backgroundContext({
       state,
@@ -1212,7 +1315,7 @@ describe('Channels outward-delivery supervisor', () => {
       signal: context.signal,
       now: () => persistedAt,
     });
-    const created = await store.ensure(outwardObligation());
+    const created = await store.ensure(retireableControlOutwardObligation('cas-loss-retention'));
     if (created.kind !== 'created') throw new Error('Expected retained custody fixture.');
     persistedAt = 100;
     const settled = await store.compareAndSwap({
@@ -1257,7 +1360,7 @@ describe('Channels outward-delivery supervisor', () => {
         signal: context.signal,
         now: () => persistedAt,
       });
-      const created = await store.ensure(outwardObligation());
+      const created = await store.ensure(retireableControlOutwardObligation('account-scope-retention'));
       if (created.kind !== 'created') throw new Error('Expected Account custody fixture.');
       persistedAt = 100;
       const settled = await store.compareAndSwap({

@@ -82,6 +82,7 @@ const setupAction = admittedProviderOperation({ role: 'setup' });
 const connectionTestAction = admittedProviderOperation({ role: 'connectionTest' });
 const messageDeliverAction = admittedProviderOperation({ role: 'messageDeliver' });
 const connectionStopAction = admittedProviderOperation({ role: 'connectionStop' });
+const observationsPollAction = admittedProviderOperation({ role: 'observationsPoll' });
 const selectedCredentialRef = {
   service: {
     pluginId: providerSelection.contributor.pluginId,
@@ -446,6 +447,7 @@ function durablePushCreateContext(input: Readonly<{
           connectionTest: connectionTestAction,
           messageDeliver: messageDeliverAction,
           connectionStop: connectionStopAction,
+          observationsPoll: observationsPollAction,
         },
       }),
       stateCollection: input.stateCollection,
@@ -1527,6 +1529,7 @@ describe('transferConversationConnectionForInvocation targeted provider selectio
     await expect(transferConversationConnectionForInvocation({
       connectionId,
       expectedRevision: 4,
+      expectedAuthorityEpoch: 4,
       providerSelection,
       providerSetupInput: { source: 'same' },
       credentialRef: null,
@@ -1656,6 +1659,7 @@ describe('transferConversationConnectionForInvocation targeted provider selectio
     await expect(transferConversationConnectionForInvocation({
       connectionId,
       expectedRevision: 4,
+      expectedAuthorityEpoch: 4,
       providerSelection,
       providerSetupInput: { source: 'same' },
       credentialRef: null,
@@ -1780,6 +1784,7 @@ describe('transferConversationConnectionForInvocation targeted provider selectio
     await expect(transferConversationConnectionForInvocation({
       connectionId,
       expectedRevision: 4,
+      expectedAuthorityEpoch: 4,
       providerSelection,
       providerSetupInput: { source: 'same' },
       credentialRef: null,
@@ -1913,6 +1918,7 @@ describe('transferConversationConnectionForInvocation targeted provider selectio
     await expect(transferConversationConnectionForInvocation({
       connectionId,
       expectedRevision: 4,
+      expectedAuthorityEpoch: 4,
       providerSelection,
       providerSetupInput: { source: 'same' },
       credentialRef: null,
@@ -1940,6 +1946,7 @@ describe('transferConversationConnectionForInvocation targeted provider selectio
         },
       },
     });
+
   });
 
   it('rejoins a lost committed transfer by replaying only the idempotent frozen old stop', async () => {
@@ -2079,6 +2086,7 @@ describe('transferConversationConnectionForInvocation targeted provider selectio
     const transferInput = {
       connectionId,
       expectedRevision: 4,
+      expectedAuthorityEpoch: 4,
       providerSelection: replacementProviderSelection,
       providerSetupInput: { source: 'replacement' },
       credentialRef: null,
@@ -2242,6 +2250,7 @@ describe('transferConversationConnectionForInvocation targeted provider selectio
     await expect(transferConversationConnectionForInvocation({
       connectionId,
       expectedRevision: 4,
+      expectedAuthorityEpoch: 4,
       providerSelection,
       providerSetupInput: { source: 'same' },
       credentialRef: null,
@@ -2359,6 +2368,7 @@ describe('transferConversationConnectionForInvocation targeted provider selectio
     await expect(transferConversationConnectionForInvocation({
       connectionId,
       expectedRevision: 4,
+      expectedAuthorityEpoch: 4,
       providerSelection,
       providerSetupInput: { source: 'replacement' },
       credentialRef: null,
@@ -2374,6 +2384,189 @@ describe('transferConversationConnectionForInvocation targeted provider selectio
           authorityEpoch: 5,
           maximumObservationAgeMs: 120_000,
           transportOrigin: oldExecutionOrigin,
+        },
+      },
+    });
+
+  });
+
+  it('converts checkpointed pull to durable push only after generic endpoint correspondence', async () => {
+    const connectionId = 'connection-transfer-pull-to-push';
+    const oldExecutionOrigin = {
+      serverIdentityId: 'srv-example',
+      materializationRef: {
+        pluginId: providerSelection.contributor.pluginId,
+        machineId: 'machine-old',
+        materializationId: 'materialization-old',
+      },
+    } as const;
+    const collection = createMutableConnectionStateCollection();
+    collection.rows.set(connectionId, {
+      rowId: connectionId,
+      revision: 4,
+      value: createCurrentConversationConnectionFixture({
+        connectionId,
+        authority: {
+          providerPluginId: providerSelection.contributor.pluginId,
+          providerContributionSelection: {
+            contributionId: providerSelection.contributor.contributionId,
+            immutableGenerationId: providerSelection.contributor.immutableGenerationId,
+          },
+          providerSetupInput: { source: 'same' },
+          credentialRef: null,
+          transportOrigin: oldExecutionOrigin,
+          providerConnectionKey: 'example:connection',
+          providerConfig: { opaque: true },
+          routingIdentityKey: 'r'.repeat(43),
+          integrationPrincipal: { id: 'example-bot' },
+          authorityEpoch: 4,
+        },
+        transport: { kind: 'checkpointedPull' },
+        overlapSafety: 'safe',
+        replayContinuity: 'checkpointed',
+        outboundTextLimit: { maximum: 4_000, unit: 'unicodeCodePoints' },
+      }),
+    });
+    const first = durablePushCreateContext({ stateCollection: collection });
+    const transferInput = {
+      connectionId,
+      expectedRevision: 4,
+      expectedAuthorityEpoch: 4,
+      providerSelection,
+      providerSetupInput: { source: 'same' },
+      credentialRef: null,
+      selectedTransport: 'durablePush',
+    } as const;
+
+    const endpointRequired = await transferConversationConnectionForInvocation(transferInput, first.context);
+    expect(endpointRequired).toMatchObject({
+      kind: 'endpointRequired',
+      connectionId,
+      sourceInstanceId: `channels.connection.${connectionId}`,
+    });
+    expect(collection.rows.get(connectionId)?.revision).toBe(4);
+    expect(first.correspondenceInputs).toHaveLength(0);
+
+    const second = durablePushCreateContext({ stateCollection: collection });
+    const transferred = await transferConversationConnectionForInvocation({
+      ...transferInput,
+      endpointContinuation: {
+        connectionId,
+        webhookEndpointId: DURABLE_PUSH_WEBHOOK_ENDPOINT_ID,
+      },
+    }, second.context);
+
+    expect(transferred).toMatchObject({
+      kind: 'transferPendingOldStop',
+      connectionId,
+      authorityEpoch: 5,
+    });
+    expect(second.correspondenceInputs).toHaveLength(1);
+    expect(collection.rows.get(connectionId)).toMatchObject({
+      revision: 5,
+      value: {
+        payload: {
+          transport: {
+            kind: 'durablePush',
+            webhookEndpointId: DURABLE_PUSH_WEBHOOK_ENDPOINT_ID,
+            webhookSourceInstanceId: `channels.connection.${connectionId}`,
+          },
+          authorityEpoch: 5,
+          pendingOldTransportStop: expect.any(Object),
+          historyGap: { reason: 'providerHistoryUnavailable' },
+        },
+      },
+    });
+
+    await expect(transferConversationConnectionForInvocation({
+      ...transferInput,
+      endpointContinuation: {
+        connectionId,
+        webhookEndpointId: 'wh_ep_AQIDBAUGBwgJCgsMDQ4PEA',
+      },
+    }, second.context)).rejects.toMatchObject({
+      code: 'channels_connection_transfer_conflict',
+    });
+  });
+
+  it('converts durable push to checkpointed pull without a provider stop or webhook mutation', async () => {
+    const connectionId = 'connection-transfer-push-to-pull';
+    const oldExecutionOrigin = {
+      serverIdentityId: 'srv-example',
+      materializationRef: {
+        pluginId: providerSelection.contributor.pluginId,
+        machineId: 'machine-old',
+        materializationId: 'materialization-old',
+      },
+    } as const;
+    const collection = createMutableConnectionStateCollection();
+    collection.rows.set(connectionId, {
+      rowId: connectionId,
+      revision: 4,
+      value: createCurrentConversationConnectionFixture({
+        connectionId,
+        authority: {
+          providerPluginId: providerSelection.contributor.pluginId,
+          providerContributionSelection: {
+            contributionId: providerSelection.contributor.contributionId,
+            immutableGenerationId: providerSelection.contributor.immutableGenerationId,
+          },
+          providerSetupInput: { source: 'same' },
+          credentialRef: null,
+          transportOrigin: oldExecutionOrigin,
+          providerConnectionKey: 'example:connection',
+          providerConfig: { opaque: true },
+          routingIdentityKey: 'r'.repeat(43),
+          integrationPrincipal: { id: 'example-bot' },
+          authorityEpoch: 4,
+        },
+        transport: {
+          kind: 'durablePush',
+          webhookContributionRef: {
+            pluginId: providerSelection.contributor.pluginId,
+            localId: 'webhook',
+          },
+          webhookEndpointId: DURABLE_PUSH_WEBHOOK_ENDPOINT_ID,
+          webhookSourceInstanceId: `channels.connection.${connectionId}`,
+        },
+        overlapSafety: 'safe',
+        replayContinuity: 'none',
+        outboundTextLimit: { maximum: 4_000, unit: 'unicodeCodePoints' },
+      }),
+    });
+    const selected = durablePushCreateContext({ stateCollection: collection });
+
+    const transferInput = {
+      connectionId,
+      expectedRevision: 4,
+      expectedAuthorityEpoch: 4,
+      providerSelection,
+      providerSetupInput: { source: 'same' },
+      credentialRef: null,
+      selectedTransport: 'checkpointedPull',
+    } as const;
+    collection.loseNextUpdatedBatchResponse();
+    await expect(transferConversationConnectionForInvocation(transferInput, selected.context))
+      .rejects.toThrow('simulated response loss after Account write commit');
+    await expect(transferConversationConnectionForInvocation(transferInput, selected.context)).resolves.toEqual({
+      kind: 'transferred',
+      connectionId,
+      revision: 5,
+      authorityEpoch: 5,
+    });
+
+    // The response-loss rejoin reads the exact committed transfer before any
+    // selected setup/test or endpoint Action can replay.
+    expect(selected.executeAdmittedTargetedOperationWithExecutionOrigin).toHaveBeenCalledTimes(2);
+    expect(selected.correspondenceInputs).toHaveLength(0);
+    expect(collection.rows.get(connectionId)).toMatchObject({
+      revision: 5,
+      value: {
+        payload: {
+          transport: { kind: 'checkpointedPull' },
+          authorityEpoch: 5,
+          pendingOldTransportStop: null,
+          historyGap: { reason: 'providerHistoryUnavailable' },
         },
       },
     });

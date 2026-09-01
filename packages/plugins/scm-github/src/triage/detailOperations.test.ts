@@ -17,14 +17,12 @@ import {
   GITHUB_FIXTURE_REPOSITORY,
   GITHUB_ISSUE_RESPONSE,
   GITHUB_PULL_REQUEST_RESPONSE,
-  GITHUB_REQUESTED_REVIEWERS_RESPONSE,
   githubChangedFile,
   githubCheckRun,
   githubCheckRunsResponse,
   githubCombinedStatusResponse,
   githubCommitStatus,
   githubFollowUpLinkHeader,
-  githubReview,
   githubTimelineEvent,
 } from './__fixtures__/githubResponses.js';
 import { encodeGithubTriageConfiguration } from './configuration.js';
@@ -34,7 +32,6 @@ import {
   GithubChecksResultV1Schema,
   GithubFeedbackResultV1Schema,
   GithubOverviewResultV1Schema,
-  GithubReviewsResultV1Schema,
   GithubTimelineResultV1Schema,
 } from './detail/contracts.js';
 import { encodeGithubDetailContinuation } from './detail/continuation.js';
@@ -45,7 +42,6 @@ import {
   readGithubFeedback,
   listGithubTimeline,
   readGithubChecks,
-  readGithubReviews,
 } from './detailOperations.js';
 import {
   createStubGithubTransport,
@@ -882,82 +878,5 @@ describe('GitHub checks plane', () => {
       kind: 'unavailable',
       failure: { class: 'unsupportedContract', code: 'github_detail_response_invalid' },
     });
-  });
-});
-
-/* -------------------------------------------------------------------- reviews */
-
-describe('GitHub reviews plane', () => {
-  it('publishes the current review decision and requested people from their canonical resources', async () => {
-    const stub = createStubGithubTransport({
-      respond: (request) => {
-        if (request.url.includes('/pulls/1284/reviews')) {
-          return jsonResponse([
-            githubReview({
-              id: 101,
-              login: 'monalisa',
-              state: 'APPROVED',
-              submittedAt: '2026-08-10T09:00:00Z',
-            }),
-            githubReview({
-              id: 102,
-              login: 'monalisa',
-              state: 'CHANGES_REQUESTED',
-              submittedAt: '2026-08-11T09:00:00Z',
-            }),
-          ]);
-        }
-        if (request.url.includes('/pulls/1284/requested_reviewers')) {
-          return jsonResponse(GITHUB_REQUESTED_REVIEWERS_RESPONSE);
-        }
-        return undefined;
-      },
-    });
-
-    const result = GithubReviewsResultV1Schema.parse(
-      await readGithubReviews(checksInput(), stub.context),
-    );
-    if (result.kind !== 'reviews') throw new Error('the reviews read must settle as reviews');
-
-    // The historical list is GitHub's current collapsed review state, not a
-    // timeline fragment. The separately read requests retain both a user and a
-    // team that are still awaiting review.
-    expect(result.reviewed).toEqual([{
-      login: 'monalisa',
-      state: 'CHANGES_REQUESTED',
-      submittedAtMs: Date.parse('2026-08-11T09:00:00Z'),
-    }]);
-    expect(result.requested).toEqual([
-      { kind: 'user', subject: 'hubot' },
-      { kind: 'team', subject: 'Client Platform' },
-    ]);
-    expect(result.reviewDecision).toBe('changes-requested');
-    expect(stub.requests.filter((request) => request.url.includes('/pulls/1284/'))).toHaveLength(2);
-    expect(stub.requests.some((request) => request.url.includes('/reviews?'))).toBe(true);
-    expect(stub.requests.some((request) => request.url.includes('/requested_reviewers?'))).toBe(true);
-  });
-
-  it('reads submitted reviews beyond the search-only result ceiling', async () => {
-    const stub = createStubGithubTransport({
-      respond: (request) => {
-        if (request.url.includes('/requested_reviewers')) {
-          return jsonResponse({ users: [], teams: [] });
-        }
-        if (!request.url.includes('/pulls/1284/reviews')) return undefined;
-        const page = Number(new URL(request.url).searchParams.get('page') ?? '1');
-        return jsonResponse(
-          [githubReview({ id: page, login: `reviewer-${page}`, state: 'COMMENTED' })],
-          page <= 10
-            ? { link: githubFollowUpLinkHeader({ requestedUrl: request.url, nextPage: page + 1 }) }
-            : undefined,
-        );
-      },
-    });
-
-    const result = await readGithubReviews(checksInput(), stub.context);
-    expect(result).toMatchObject({ kind: 'reviews' });
-    if (result.kind !== 'reviews') throw new Error('the reviews read must settle as reviews');
-    expect(result.reviewsIncomplete).toBeUndefined();
-    expect(stub.requests.filter((request) => request.url.includes('/reviews?'))).toHaveLength(11);
   });
 });

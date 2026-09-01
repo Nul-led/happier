@@ -13,14 +13,12 @@ import {
   GithubFeedbackInputV1Schema,
   GithubFeedbackResultV1Schema,
   GithubOverviewInputV1Schema,
-  GithubReviewsInputV1Schema,
   GithubTimelineInputV1Schema,
   type GithubChangedFilesResultV1,
   type GithubCapabilitiesResultV1,
   type GithubChecksResultV1,
   type GithubFeedbackResultV1,
   type GithubOverviewResultV1,
-  type GithubReviewsResultV1,
   type GithubTimelineResultV1,
 } from './detail/contracts.js';
 import { projectGithubRepositoryCapabilities } from './capabilities.js';
@@ -36,12 +34,10 @@ import {
 import {
   GITHUB_DETAIL_BOUNDS_V1,
   projectGithubCheckRows,
-  projectGithubReviewPeople,
 } from './detail/projection.js';
 import {
   readGithubChangedFilesPage,
   readGithubChecksSurface,
-  readGithubReviewsSurface,
   readGithubTimelinePage,
   type GithubDetailPageV1,
 } from './detail/reads.js';
@@ -408,6 +404,8 @@ export async function readGithubFeedback(
     const projectedRows = result.rows.map((row) => ({
         id: row.id,
         isResolved: row.isResolved,
+        ...(row.firstReply === null ? {} : { firstReply: shapeComment(row.firstReply) }),
+        replyCount: row.replyCount,
         replies: row.replies.map(shapeComment),
         ...(row.path === null ? {} : { path: row.path }),
         ...(row.line === null ? {} : { line: row.line }),
@@ -507,75 +505,3 @@ export async function readGithubChecks(
 }
 
 /* -------------------------------------------------------------------- reviews */
-
-/**
- * Who has reviewed one pull request, and whose review is still awaited.
- *
- * The two provider collections are read together because they answer one
- * question in two halves that must not be unioned: a list built from requests
- * loses everyone who already reviewed, and a list built from reviews hides a
- * still-outstanding team request. One failing leaves the other's rows beside a
- * failure that names which read could not be made.
- *
- * This is the AUTHORITATIVE answer for review people and the review decision.
- * The event timeline mentions reviews too, but only as far as the reader has
- * paged it and without GitHub's own collapse to the newest review per author, so
- * it is a partial view of this resource and never a substitute for it.
- */
-export async function readGithubReviews(
-  input: unknown,
-  context: PluginInvocationContext,
-): Promise<GithubReviewsResultV1> {
-  const parsed = GithubReviewsInputV1Schema.safeParse(input);
-  if (!parsed.success) return unavailable(INVALID_INPUT_FAILURE);
-  const request = parsed.data;
-
-  const admitted = await admitGithubDetailInvocation({
-    instance: request.instance,
-    localRef: request.localRef,
-    routingToken: request.routingToken,
-    admissibleKinds: ['pull-request'],
-  }, context);
-  if (!admitted.ok) return unavailable(admitted.failure);
-
-  const surface = await readGithubReviewsSurface({
-    route: admitted.route,
-    entryNumber: admitted.entryNumber,
-  }, { client: admitted.client, now: Date.now, signal: admitted.signal });
-
-  const projected = projectGithubReviewPeople({
-    historical: surface.historical,
-    outstanding: surface.outstanding,
-  }, GITHUB_DETAIL_BOUNDS_V1);
-
-  // Fit both provider sequences through the one canonical Action-result byte
-  // owner. Their order is deliberate: completed review facts are authoritative
-  // history, while outstanding requests consume the remaining envelope. No
-  // source-local row count is invented for either collection.
-  const candidates = Object.freeze([
-    ...projected.reviewed.map((value) => Object.freeze({ kind: 'reviewed' as const, value })),
-    ...projected.requested.map((value) => Object.freeze({ kind: 'requested' as const, value })),
-  ]);
-  return fitActionResultSequenceV1(candidates, (included, omittedByEnvelope) => Object.freeze({
-    kind: 'reviews' as const,
-    reviewed: included
-      .filter((candidate) => candidate.kind === 'reviewed')
-      .map((candidate) => candidate.value),
-    requested: included
-      .filter((candidate) => candidate.kind === 'requested')
-      .map((candidate) => candidate.value),
-    // Omitted rather than defaulted: REST cannot prove GitHub's `REVIEW_REQUIRED`
-    // arm, so an absent decision means the question was not answered.
-    ...(surface.reviewDecision === null ? {} : { reviewDecision: surface.reviewDecision }),
-    ...(surface.reviewsFailure === null
-      ? {}
-      : { reviewsFailure: toTriageFailure(surface.reviewsFailure) }),
-    ...(surface.requestsFailure === null
-      ? {}
-      : { requestsFailure: toTriageFailure(surface.requestsFailure) }),
-    ...(surface.reviewsIncomplete ? { reviewsIncomplete: true as const } : {}),
-    ...(surface.requestsIncomplete ? { requestsIncomplete: true as const } : {}),
-    omittedRowCount: projected.omittedRowCount + omittedByEnvelope,
-    projectionTruncated: projected.projectionTruncated || omittedByEnvelope > 0,
-  })).result;
-}

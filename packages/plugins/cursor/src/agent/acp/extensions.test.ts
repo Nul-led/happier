@@ -43,7 +43,7 @@ function createFixture(params?: Readonly<{
   const observe = vi.fn(async (value: unknown) => value);
   const debug = vi.fn();
   const context = {
-    session: { id: 'happier-session-1' },
+    session: { id: 'happier-session-1', services: { subagents: { observe } } },
     workState: { publisher },
     services: {
       interactions: { askQuestions, confirm },
@@ -52,7 +52,6 @@ function createFixture(params?: Readonly<{
         current: params?.currentSessionAvailable === false
           ? null
           : { media: { registerSourceRoot } },
-        subagents: { observe },
       },
     },
   } as unknown as AgentSessionRuntimeContext;

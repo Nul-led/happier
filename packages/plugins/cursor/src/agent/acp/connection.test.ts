@@ -26,7 +26,7 @@ function createFixture(request: AgentSessionOpenRequest) {
   };
   const context = {
     protocols: { acp: { open } },
-    session: { id: request.sessionId },
+    session: { id: request.sessionId, services: { subagents: { observe: vi.fn() } } },
     ui: { askQuestions: vi.fn(), confirm: vi.fn() },
     workState: { publisher: vi.fn(() => ({ publish: vi.fn() })) },
     services: {
@@ -34,7 +34,6 @@ function createFixture(request: AgentSessionOpenRequest) {
       settings,
       sessions: {
         current: { media: { registerSourceRoot: vi.fn() } },
-        subagents: { observe: vi.fn() },
       },
     },
   } as unknown as AgentSessionRuntimeContext;

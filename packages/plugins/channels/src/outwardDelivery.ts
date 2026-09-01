@@ -225,13 +225,16 @@ export interface ConversationOutwardDeliveryStore {
     | Readonly<{ kind: 'unavailable'; reason: 'cancelled' | 'storageUnavailable' }>
   >;
   /**
-   * Retires already-selected terminal rows in bounded Collection batches, then
-   * forgets each exact tombstone revision returned by that mutation owner.
+   * Logically retires already-selected terminal rows in bounded Collection
+   * batches. Rows whose canonical producer has also proven the occurrence
+   * unreachable are atomically forgotten from their exact live revision;
+   * repeatable sources retain a content-free logical tombstone as dedupe.
    */
   retireSelected(input: Readonly<{
     records: readonly Readonly<{
       custodyId: string;
       expectedRevision: number;
+      physicallyForget: boolean;
     }>[];
   }>): Promise<
     | Readonly<{ kind: 'retired' }>
@@ -1369,43 +1372,46 @@ export function createConversationOutwardDeliveryCollectionStore(
     async retireSelected(retireInput) {
       if (input.signal.aborted) return { kind: 'unavailable', reason: 'cancelled' };
       try {
-        const { maxBatchRows } = await input.deliveriesCollection.limits({ signal: input.signal });
-        if (!Number.isSafeInteger(maxBatchRows) || maxBatchRows < 1) {
-          return { kind: 'unavailable', reason: 'storageUnavailable' };
+        const logicallyDeleted = retireInput.records.filter((record) => !record.physicallyForget);
+        if (logicallyDeleted.length > 0) {
+          const { maxBatchRows } = await input.deliveriesCollection.limits({ signal: input.signal });
+          if (!Number.isSafeInteger(maxBatchRows) || maxBatchRows < 1) {
+            return { kind: 'unavailable', reason: 'storageUnavailable' };
+          }
+          for (let offset = 0; offset < logicallyDeleted.length; offset += maxBatchRows) {
+            const selected = logicallyDeleted.slice(offset, offset + maxBatchRows);
+            const deleted = await input.deliveriesCollection.batch(selected.map((record) => ({
+              kind: 'delete' as const,
+              rowId: record.custodyId,
+              expectedRevision: record.expectedRevision,
+            })), { signal: input.signal });
+            if (deleted.status === 'conflict') return { kind: 'conflict' };
+            if (deleted.results.length !== selected.length) {
+              return { kind: 'unavailable', reason: 'storageUnavailable' };
+            }
+            if (deleted.results.some((entry, index) => {
+              const selectedRecord = selected[index];
+              return selectedRecord === undefined
+                || !entry.deleted
+                || entry.rowId !== selectedRecord.custodyId
+                || entry.revision !== selectedRecord.expectedRevision + 1;
+            })) {
+              return { kind: 'unavailable', reason: 'storageUnavailable' };
+            }
+          }
         }
-        for (let offset = 0; offset < retireInput.records.length; offset += maxBatchRows) {
-          const selected = retireInput.records.slice(offset, offset + maxBatchRows);
-          const deleted = await input.deliveriesCollection.batch(selected.map((record) => ({
-            kind: 'delete' as const,
-            rowId: record.custodyId,
-            expectedRevision: record.expectedRevision,
-          })), { signal: input.signal });
-          if (deleted.status === 'conflict') return { kind: 'conflict' };
-          if (deleted.results.length !== selected.length) {
-            return { kind: 'unavailable', reason: 'storageUnavailable' };
-          }
 
-          // Retain the exact tombstone revisions until the matching physical
-          // forget completes. This is local to one already-selected batch; it
-          // does not introduce a retention scan, ledger, or durable cursor.
-          const tombstones = deleted.results.map((entry, index) => {
-            const selectedRecord = selected[index];
-            if (selectedRecord === undefined
-              || !entry.deleted
-              || entry.rowId !== selectedRecord.custodyId
-              || entry.revision !== selectedRecord.expectedRevision + 1) return undefined;
-            return { rowId: entry.rowId, revision: entry.revision };
+        // The Data owner accepts an exact live revision once this feature has
+        // proved it past every replay/recovery horizon. Each forget is atomic
+        // with its absence-epoch advance, so a crash leaves the remaining live
+        // rows in the ordinary due index instead of stranding tombstones that
+        // no retention scan can rediscover.
+        for (const selected of retireInput.records) {
+          if (!selected.physicallyForget) continue;
+          await input.deliveriesCollection.forget(selected.custodyId, {
+            expectedRevision: selected.expectedRevision,
+            signal: input.signal,
           });
-          if (tombstones.some((entry) => entry === undefined)) {
-            return { kind: 'unavailable', reason: 'storageUnavailable' };
-          }
-          for (const tombstone of tombstones) {
-            if (tombstone === undefined) return { kind: 'unavailable', reason: 'storageUnavailable' };
-            await input.deliveriesCollection.forget(tombstone.rowId, {
-              expectedRevision: tombstone.revision,
-              signal: input.signal,
-            });
-          }
         }
         return { kind: 'retired' };
       } catch (error) {

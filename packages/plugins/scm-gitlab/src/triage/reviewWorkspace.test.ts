@@ -24,6 +24,10 @@ const NATIVE_REVISION = '4'.repeat(40);
 const REVIEW_ITEM_URL_SUFFIX = '/api/v4/projects/maintainer%2Frepository/merge_requests/7';
 const REVIEW_ITEM_URL = `https://gitlab.com${REVIEW_ITEM_URL_SUFFIX}`;
 
+function collisionScopeFor(origin: string): string {
+  return `gitlab:${Buffer.from(origin, 'utf8').toString('base64url')}:3`;
+}
+
 function prepareInput(
   overrides: Partial<TriagePrepareReviewWorkspaceInputV1> = {},
 ): TriagePrepareReviewWorkspaceInputV1 {
@@ -88,6 +92,112 @@ function withMaterializer(
 }
 
 describe('GitLab prepared review workspace', () => {
+  it.each([
+    ['another deployment path', 'https://git.example.test/B/contributor/repository.git'],
+    ['a sibling path prefix', 'https://git.example.test/A2/contributor/repository.git'],
+  ])('refuses a source clone URL under %s before SCM materialization', async (_case, cloneUrl) => {
+    const origin = 'https://git.example.test/A';
+    const transport = createStubGitlabTransport({
+      origin,
+      respond: (request) => request.url.endsWith(REVIEW_ITEM_URL_SUFFIX)
+        ? {
+          status: 200,
+          body: {
+            project_id: 3,
+            iid: 7,
+            references: { full: 'maintainer/repository!7' },
+            sha: OBSERVED_HEAD,
+            diff_refs: { base_sha: OBSERVED_BASE, head_sha: OBSERVED_HEAD },
+            source_branch: 'feature/from-fork',
+            source_project: {
+              id: 17,
+              path_with_namespace: 'contributor/repository',
+              http_url_to_repo: cloneUrl,
+            },
+          },
+        }
+        : undefined,
+    });
+    const execute = vi.fn(async () => ({
+      success: true as const,
+      targetPath: '/workspaces/selected-repository/.happier/review',
+      branchName: 'feature/from-fork',
+      created: true,
+      currentness: { kind: 'currentAtObservedHead' as const },
+    }));
+
+    await expect(prepareGitlabReviewWorkspaceAction(
+      prepareInput({
+        instance: gitlabTestConfiguredInstance({ localInstanceKey: origin }),
+        entryRef: {
+          source: { pluginId: 'happier.scm.forge.gitlab', localId: 'gitlab-forge' },
+          kindId: 'merge-request',
+          collisionScope: collisionScopeFor(origin),
+          entryId: '7',
+        },
+      }),
+      withMaterializer(transport.context, execute),
+    )).resolves.toEqual({ kind: 'refused', reason: 'pullRequestMoved' });
+
+    expect(transport.requests.map((request) => request.url))
+      .toEqual([`${origin}${REVIEW_ITEM_URL_SUFFIX}`]);
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('admits a source clone URL beneath the exact configured deployment path', async () => {
+    const origin = 'https://git.example.test/A';
+    const cloneUrl = `${origin}/group/repository.git`;
+    const transport = createStubGitlabTransport({
+      origin,
+      respond: (request) => request.url.endsWith(REVIEW_ITEM_URL_SUFFIX)
+        ? {
+          status: 200,
+          body: {
+            project_id: 3,
+            iid: 7,
+            references: { full: 'maintainer/repository!7' },
+            sha: OBSERVED_HEAD,
+            diff_refs: { base_sha: OBSERVED_BASE, head_sha: OBSERVED_HEAD },
+            source_branch: 'feature/from-fork',
+            source_project: {
+              id: 17,
+              path_with_namespace: 'contributor/repository',
+              http_url_to_repo: cloneUrl,
+            },
+          },
+        }
+        : undefined,
+    });
+    const execute = vi.fn(async () => ({
+      success: true as const,
+      targetPath: '/workspaces/selected-repository/.happier/review',
+      branchName: 'feature/from-fork',
+      created: true,
+      currentness: { kind: 'currentAtObservedHead' as const },
+    }));
+
+    await expect(prepareGitlabReviewWorkspaceAction(
+      prepareInput({
+        instance: gitlabTestConfiguredInstance({ localInstanceKey: origin }),
+        entryRef: {
+          source: { pluginId: 'happier.scm.forge.gitlab', localId: 'gitlab-forge' },
+          kindId: 'merge-request',
+          collisionScope: collisionScopeFor(origin),
+          entryId: '7',
+        },
+      }),
+      withMaterializer(transport.context, execute),
+    )).resolves.toMatchObject({ kind: 'prepared' });
+
+    expect(execute).toHaveBeenCalledWith(
+      'scm.reviewWorkspace.materializePrepared',
+      expect.objectContaining({
+        sourceTip: expect.objectContaining({ cloneUrl }),
+      }),
+      { signal: transport.context.signal },
+    );
+  });
+
   it('refuses a moved source head before local materialization', async () => {
     const transport = createStubGitlabTransport({
       respond: (request) => request.url.endsWith(REVIEW_ITEM_URL_SUFFIX)

@@ -106,7 +106,7 @@ describe('Channels V1 connection management contracts', () => {
         }).success).toBe(false);
     });
 
-    it('keeps connection transfer caller-owned, revision-guarded, and transport-preserving', () => {
+    it('keeps connection transfer caller-owned, revision-guarded, and strict across transport replacement', () => {
         const providerSelection = {
             target: {
                 pluginId: 'happier.channels',
@@ -140,6 +140,23 @@ describe('Channels V1 connection management contracts', () => {
             ...transfer,
             selectedTransport: 'durablePush',
         })).toEqual({ ...transfer, selectedTransport: 'durablePush' });
+        const durablePushContinuation = {
+            ...transfer,
+            selectedTransport: 'durablePush' as const,
+            endpointContinuation: {
+                connectionId: transfer.connectionId,
+                webhookEndpointId: 'wh_ep_AAECAwQFBgcICQoLDA0ODw',
+            },
+        };
+        expect(ConversationConnectionTransferInputV1Schema.parse(durablePushContinuation))
+            .toEqual(durablePushContinuation);
+        expect(ConversationConnectionTransferInputV1Schema.safeParse({
+            ...durablePushContinuation,
+            endpointContinuation: {
+                ...durablePushContinuation.endpointContinuation,
+                webhookEndpointId: 'caller-owned-url.example/webhook',
+            },
+        }).success).toBe(false);
         expect(ConversationConnectionTransferInputV1Schema.safeParse({
             ...transfer,
             maximumObservationAgeMs: 60_000,
@@ -282,6 +299,8 @@ describe('Channels V1 connection management contracts', () => {
         } as const;
 
         expect(ConversationConnectionCreateResultV1Schema.parse(endpointRequired))
+            .toEqual(endpointRequired);
+        expect(ConversationConnectionTransferResultV1Schema.parse(endpointRequired))
             .toEqual(endpointRequired);
         // The source instance must carry the Channels-owned derivation prefix
         // and the generic routing charset; a provider-shaped source is

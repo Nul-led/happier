@@ -1087,9 +1087,11 @@ function createIngressHarness(options: IngressHarnessOptions = {}) {
       const existing = rows.get(rowId);
       // The real Collection forget is response-loss-idempotent: an exact
       // retention retry may observe that this identity was already physically
-      // reclaimed while it was between snapshots.
+      // reclaimed while it was between snapshots. DATA also accepts an exact
+      // live revision and applies logical cleanup plus physical reclamation in
+      // one transaction once Channels has proved the row unreachable.
       if (existing === undefined) return { rowId, forgotten: true as const };
-      if (existing.deleted !== true || existing.revision !== forgetOptions.expectedRevision) {
+      if (existing.revision !== forgetOptions.expectedRevision) {
         throw new Error('Collection forget conflicted.');
       }
       rows.delete(rowId);
@@ -4530,7 +4532,7 @@ describe('Conversation provider observation ingress', () => {
       expect(compactedPayload.normalizedIngress).toBeNull();
       expect(record(compactedPayload.compacted)).toMatchObject({
         shell: expect.any(Object),
-        textDigest: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/u),
+        replayDigest: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/u),
       });
       // Settlement has no remaining consumer for either the binding fanout or
       // the provider Event candidate. The compact replay witness is the sole
@@ -4565,6 +4567,89 @@ describe('Conversation provider observation ingress', () => {
         harness.context,
       )).rejects.toMatchObject({ code: 'channels_ingress_occurrence_conflict' });
       expect(harness.rows.get(census.rowId)?.value.attention).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('conflicts a compacted census replay whose Event candidate changed or disappeared', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    try {
+      // The compacted witness digests the first-admission Event candidate
+      // beside the text, so a same-occurrence redelivery whose semantic Event
+      // evidence changed — or disappeared — is contradictory evidence inside
+      // the replay horizon exactly as the uncompacted census decides it.
+      const changedCandidate = (
+        input: ConversationProviderObservationIngestInputV1,
+      ): ConversationProviderObservationIngestInputV1 => {
+        const withCandidate = withTelegramAutomationEventCandidate(input);
+        return {
+          connectionId: withCandidate.connectionId,
+          entry: {
+            observation: withCandidate.entry.observation,
+            eventCandidate: {
+              ...withCandidate.entry.eventCandidate,
+              payload: { chatId: '100', messageId: 'telegram:message:6' },
+            },
+          },
+        };
+      };
+
+      const changedHarness = createIngressHarness();
+      const changedAdmitted = withTelegramAutomationEventCandidate(observation({
+        messageRevision: 'retention:compaction-changed',
+        messageText: 'Compaction candidate body',
+        occurredAt: 1_000,
+      }));
+      await ingestConversationProviderObservationForInvocation(changedAdmitted, changedHarness.context);
+      const changedCensus = markIngressCensusCheckpointCovered(changedHarness.rows, 1_000);
+      await expect(runConversationIngressRetentionForInvocation({ now: 2_000, limit: 1 }, changedHarness.context))
+        .resolves.toMatchObject({ compactedCensuses: 1, deletedCensuses: 0 });
+      const changedCompacted = record(record(changedHarness.rows.get(changedCensus.rowId)?.value ?? {}).payload);
+      expect(changedCompacted.normalizedIngress).toBeNull();
+      expect(record(changedCompacted.compacted)).toMatchObject({
+        replayDigest: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/u),
+      });
+
+      // The exact replay — body, shell, and candidate — still rejoins.
+      vi.setSystemTime(2_001);
+      await expect(ingestConversationProviderObservationForInvocation(changedAdmitted, changedHarness.context))
+        .resolves.toBeUndefined();
+      expect(changedHarness.rows.get(changedCensus.rowId)?.value.attention).toBe(false);
+
+      // A changed semantic candidate under the same occurrence conflicts.
+      await expect(ingestConversationProviderObservationForInvocation(
+        changedCandidate(observation({
+          messageRevision: 'retention:compaction-changed',
+          messageText: 'Compaction candidate body',
+          occurredAt: 1_000,
+        })),
+        changedHarness.context,
+      )).rejects.toMatchObject({ code: 'channels_ingress_occurrence_conflict' });
+      expect(changedHarness.rows.get(changedCensus.rowId)?.value.attention).toBe(true);
+
+      // A disappeared candidate under the same occurrence conflicts too.
+      const disappearedHarness = createIngressHarness();
+      const disappearedAdmitted = withTelegramAutomationEventCandidate(observation({
+        messageRevision: 'retention:compaction-disappeared',
+        messageText: 'Compaction candidate body two',
+        occurredAt: 1_000,
+      }));
+      await ingestConversationProviderObservationForInvocation(disappearedAdmitted, disappearedHarness.context);
+      const disappearedCensus = markIngressCensusCheckpointCovered(disappearedHarness.rows, 1_000);
+      await expect(runConversationIngressRetentionForInvocation({ now: 2_000, limit: 1 }, disappearedHarness.context))
+        .resolves.toMatchObject({ compactedCensuses: 1, deletedCensuses: 0 });
+      vi.setSystemTime(2_002);
+      await expect(ingestConversationProviderObservationForInvocation(
+        observation({
+          messageRevision: 'retention:compaction-disappeared',
+          messageText: 'Compaction candidate body two',
+          occurredAt: 1_000,
+        }),
+        disappearedHarness.context,
+      )).rejects.toMatchObject({ code: 'channels_ingress_occurrence_conflict' });
+      expect(disappearedHarness.rows.get(disappearedCensus.rowId)?.value.attention).toBe(true);
     } finally {
       vi.useRealTimers();
     }
@@ -4823,7 +4908,7 @@ describe('Conversation provider observation ingress', () => {
     }
   });
 
-  it('sizes the retention delete to the deployment batch-row limit in force, not the protocol ceiling', async () => {
+  it('retires a settled fan-out after the deployment batch-row limit is lowered', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(1_000);
     try {
@@ -4860,7 +4945,7 @@ describe('Conversation provider observation ingress', () => {
       await expect(runConversationIngressRetentionForInvocation({ now: 61_001, limit: 1 }, harness.context))
         .resolves.toMatchObject({ deletedCensuses: 1 });
 
-      expect(Math.max(...deleteBatchSizes)).toBe(1);
+      expect(deleteBatchSizes.every((size) => size <= 1)).toBe(true);
       expect(harness.rows.get(census.rowId)).toBeUndefined();
       for (const obligation of obligations) {
         expect(harness.rows.get(obligation.rowId)).toBeUndefined();
@@ -5530,7 +5615,7 @@ describe('Conversation provider observation ingress', () => {
       expect(compactedPayload.normalizedIngress).toBeNull();
       expect(record(compactedPayload.compacted)).toMatchObject({
         shell: expect.any(Object),
-        textDigest: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/u),
+        replayDigest: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/u),
       });
       expect(compactedPayload.eventCandidate).toBeNull();
       expect(compactedPayload.matchedBindings).toEqual([]);
@@ -6152,7 +6237,7 @@ describe('Conversation checkpointed-poll ingress', () => {
     expect(harness.executeAdmittedTargetedOperationWithExecutionOrigin).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps a Telegram 409 blocked after a controlled provider-exclusive poll replacement until exact manual retry', async () => {
+  it('self-heals a Telegram 409 restart overlap through the bounded retry budget', async () => {
     let releaseOldPoll!: (response: Readonly<{
       status: number;
       finalUrl: string;
@@ -6265,36 +6350,37 @@ describe('Conversation checkpointed-poll ingress', () => {
 
     await expect(oldPoll).resolves.toEqual({ kind: 'ineligible' });
     expect(record(record(rows.get('connection-1')?.value).payload).pendingOldTransportStop).toBeNull();
+    // The replacement poll overlaps the old daemon's exclusive getUpdates
+    // slot. Telegram answers 409 with a retry hint, and the incumbent budget
+    // retries instead of latching the
+    // connection into a blocked manual-retry state.
     await expect(runConversationCheckpointedPollForInvocation({
       connectionId: 'connection-1',
       waitMs: 0,
-    }, harness.context)).resolves.toEqual({ kind: 'blocked' });
-    const blocked = rows.get('connection-1');
-    if (blocked === undefined) throw new Error('Expected the blocked replacement Channel connection.');
-    expect(record(record(blocked.value).payload).pollFailure).toMatchObject({
-      phase: 'blocked',
+    }, harness.context)).resolves.toEqual({ kind: 'retry', retryAfterMs: 1_000 });
+    const retried = rows.get('connection-1');
+    if (retried === undefined) throw new Error('Expected the retrying replacement Channel connection.');
+    const retriedPollFailure = record(record(retried.value).payload).pollFailure;
+    expect(retriedPollFailure).toMatchObject({
+      phase: 'retryDue',
       attemptCount: 1,
-      retryNotBeforeMs: null,
       evidence: {
         kind: 'provider',
         reason: 'providerConflict',
         diagnostic: 'Conflict: terminated by other getUpdates request',
       },
     });
+    const retryNotBeforeMs = record(retriedPollFailure).retryNotBeforeMs;
+    if (typeof retryNotBeforeMs !== 'number') throw new Error('Expected a bounded retry-due time.');
 
-    await expect(retryConversationConnectionPollForInvocation({
-      connectionId: 'connection-1',
-      expectedRevision: blocked.revision,
-      authorityEpoch: 5,
-    }, harness.context)).resolves.toMatchObject({
-      kind: 'retryScheduled',
-      connectionId: 'connection-1',
-      authorityEpoch: 5,
-    });
+    // Once the overlapping consumer exits, the next eligible poll recovers
+    // without any manual retry: the conflict never becomes blocked custody.
+    await new Promise((resolve) => setTimeout(resolve, retryNotBeforeMs - Date.now() + 50));
     await expect(runConversationCheckpointedPollForInvocation({
       connectionId: 'connection-1',
       waitMs: 0,
     }, harness.context)).resolves.toMatchObject({ kind: 'committed', connectionId: 'connection-1' });
+    expect(record(record(rows.get('connection-1')?.value).payload).pollFailure).toBeNull();
     expect(getUpdatesCalls).toBe(3);
     expect(currentCheckpoint(rows)?.value).toMatchObject({
       payload: { opaqueToken: { v: 1, offset: '0' }, lastOccurrenceId: null },
@@ -6407,6 +6493,53 @@ describe('Conversation checkpointed-poll ingress', () => {
         retryNotBeforeMs: 12_000,
         evidence: { kind: 'provider', reason: 'rateLimited' },
       });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('gives a provider-hinted conflict the bounded retry budget before blocking it', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    try {
+      const harness = createIngressHarness({
+        pollResult: { kind: 'notReady', reason: 'providerConflict', retryAfterMs: 1_000 },
+      });
+
+      // A provider-hinted conflict (Telegram's exclusive getUpdates slot held
+      // by an overlapping poll across a daemon restart) consumes the same
+      // bounded attempt budget without widening the public reason vocabulary.
+      for (let attemptCount = 1; attemptCount <= MAX_CONVERSATION_POLL_FAILURE_ATTEMPTS; attemptCount += 1) {
+        const retryDelayMs = 1_000;
+        await expect(runConversationCheckpointedPollForInvocation({
+          connectionId: 'connection-1',
+          waitMs: 0,
+        }, harness.context)).resolves.toEqual(
+          attemptCount === MAX_CONVERSATION_POLL_FAILURE_ATTEMPTS
+            ? { kind: 'blocked' }
+            : { kind: 'retry', retryAfterMs: retryDelayMs },
+        );
+        const pollFailure = record(record(harness.rows.get('connection-1')?.value).payload).pollFailure;
+        if (attemptCount === MAX_CONVERSATION_POLL_FAILURE_ATTEMPTS) {
+          expect(pollFailure).toEqual({
+            phase: 'blocked',
+            attemptCount,
+            retryNotBeforeMs: null,
+            evidence: { kind: 'provider', reason: 'providerConflict' },
+          });
+        } else {
+          expect(pollFailure).toEqual({
+            phase: 'retryDue',
+            attemptCount,
+            retryNotBeforeMs: Date.now() + retryDelayMs,
+            evidence: { kind: 'provider', reason: 'providerConflict' },
+          });
+          vi.setSystemTime(Date.now() + retryDelayMs);
+        }
+      }
+
+      expect(harness.executeAdmittedTargetedOperationWithExecutionOrigin)
+        .toHaveBeenCalledTimes(MAX_CONVERSATION_POLL_FAILURE_ATTEMPTS);
     } finally {
       vi.useRealTimers();
     }

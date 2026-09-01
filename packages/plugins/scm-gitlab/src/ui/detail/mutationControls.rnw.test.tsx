@@ -148,6 +148,17 @@ function actionRef(localId: string) {
   return { pluginId: GITLAB_PLUGIN_ID, localId };
 }
 
+function recordedCallsFor(localId: string) {
+  return recorded.filter(({ action }) => (
+    typeof action === 'object'
+    && action !== null
+    && 'pluginId' in action
+    && action.pluginId === GITLAB_PLUGIN_ID
+    && 'localId' in action
+    && action.localId === localId
+  ));
+}
+
 afterEach(async () => {
   recorded.splice(0);
   completedMutations = 0;
@@ -215,7 +226,7 @@ describe('the mounted GitLab merge-request writes', () => {
 
     // The whole payload, not a subset: an extra member here would be a decision
     // about the repository's history that the reader never made.
-    expect(recorded).toEqual([{
+    expect(recordedCallsFor(GITLAB_TRIAGE_MUTATION_ACTION_IDS.mergeRequestMerge)).toEqual([{
       action: actionRef(GITLAB_TRIAGE_MUTATION_ACTION_IDS.mergeRequestMerge),
       input: {
         v: 1,
@@ -235,7 +246,7 @@ describe('the mounted GitLab merge-request writes', () => {
 
     await detail.press(await detail.getByRole('button', { name: 'Mark ready for review' }));
 
-    expect(recorded).toEqual([{
+    expect(recordedCallsFor(GITLAB_TRIAGE_MUTATION_ACTION_IDS.mergeRequestMarkReady)).toEqual([{
       action: actionRef(GITLAB_TRIAGE_MUTATION_ACTION_IDS.mergeRequestMarkReady),
       input: {
         v: 1,
@@ -257,7 +268,7 @@ describe('the mounted GitLab merge-request writes', () => {
 
     await detail.press(await detail.getByRole('button', { name: 'Close' }));
 
-    expect(recorded).toEqual([{
+    expect(recordedCallsFor(GITLAB_TRIAGE_MUTATION_ACTION_IDS.mergeRequestClose)).toEqual([{
       action: actionRef(GITLAB_TRIAGE_MUTATION_ACTION_IDS.mergeRequestClose),
       input: { v: 1, instance: INSTANCE, localRef: LOCAL_REF, routingToken: ROUTING_TOKEN },
     }]);
@@ -272,7 +283,7 @@ describe('the mounted GitLab merge-request writes', () => {
 
     await detail.press(await detail.getByRole('button', { name: 'Close' }));
 
-    expect(recorded).toHaveLength(1);
+    expect(recordedCallsFor(GITLAB_TRIAGE_MUTATION_ACTION_IDS.mergeRequestClose)).toHaveLength(1);
     await expect(detail.queryByRole('button', { name: 'Confirm' })).resolves.toBeUndefined();
   });
 

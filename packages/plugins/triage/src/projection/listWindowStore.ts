@@ -308,7 +308,6 @@ export function createTriageListWindowStore(deps: Readonly<{
     let window: TriageListWindowV1 | null = null;
     let error: TriageListWindowErrorV1 | null = null;
     let pending: TriageListWindowSnapshotV1['pending'] = 'idle';
-    let lastCycleCompletedAtMs: number | null = null;
     let pendingTrigger: TriageRefreshTriggerV1 = 'view';
     /**
      * How many bounded windows this mount holds.
@@ -376,24 +375,27 @@ export function createTriageListWindowStore(deps: Readonly<{
 
     function freshness(): TriageListWindowSnapshotV1['freshness'] {
         if (window === null) return 'unknown';
-        if (error !== null || lastCycleCompletedAtMs === null) return 'stale';
-        // Every configured connection, not only the ones a pass walked. A
-        // connection with no admitted contribution is skipped by the cycle
-        // and so leaves no lane behind, and a cycle in which every configured
-        // connection was skipped refused nothing — so it stamps. Deriving
-        // currentness from the walked lanes alone therefore reported a window
-        // as current over a list that had never read one configured source,
-        // and, when none of them was available, over a list that had read
-        // nothing at all. It is the same intended-versus-walked distinction
-        // `triageListCoverageLanes` already makes for coverage, asked here of
-        // the passes this mount has merged.
+        if (error !== null) return 'stale';
+        // Every configured connection, not only the ones the final Action batch
+        // walked. Each lane keeps the completion time measured on this store's
+        // clock at its own batch boundary: stamping the whole cycle after a slow
+        // tail batch makes an earlier lane look newly read even when it has
+        // already aged past the interval. A connection with no admitted
+        // contribution or one this bounded window has not reached has no lane,
+        // and therefore cannot make a freshness claim either. This is the same
+        // intended-versus-walked distinction `triageListCoverageLanes` owns for
+        // coverage, applied to currentness.
+        const nowMs = deps.nowMs();
         for (const summary of configuredSources) {
             const lane = lanes.get(summary.sourceInstanceId);
-            if (lane === undefined || lane.error !== null) return 'stale';
+            if (
+                lane === undefined
+                || lane.error !== null
+                || lane.completedAtMs === null
+                || nowMs - lane.completedAtMs >= TRIAGE_VIEW_REFRESH_MIN_INTERVAL_MS
+            ) return 'stale';
         }
-        return deps.nowMs() - lastCycleCompletedAtMs < TRIAGE_VIEW_REFRESH_MIN_INTERVAL_MS
-            ? 'fresh'
-            : 'stale';
+        return 'fresh';
     }
 
     /**
@@ -478,7 +480,9 @@ export function createTriageListWindowStore(deps: Readonly<{
 
     /** Whether any lane stopped holding a page a deeper window could continue from. */
     function anyLaneHoldsFrontier(): boolean {
-        return continuations.size > 0;
+        const availableSourceCount = configuredSources.filter((summary) => summary.available).length;
+        return continuations.size > 0
+            || availableSourceCount > windowsRequested * MAX_TRIAGE_LIST_WINDOW_ROWS_V1;
     }
 
     /**
@@ -635,7 +639,8 @@ export function createTriageListWindowStore(deps: Readonly<{
          * that produced it: handing the same token to every named connection is
          * exactly the confusion the per-lane map exists to make impossible.
          */
-        resume?: TriageListEntriesInputV1['resume'],
+        resume: TriageListEntriesInputV1['resume'] | undefined,
+        limit: number,
     ): TriageListEntriesInputV1 {
         return {
             v: 1,
@@ -649,7 +654,7 @@ export function createTriageListWindowStore(deps: Readonly<{
              * make Load More linear without minting durable cursor custody.
              */
             ...(resume === undefined ? {} : { resume }),
-            limit: TRIAGE_LIST_DEFAULT_LENS_V1.limit,
+            limit,
             /*
              * `order` IS sent, while `query` and the facets are not, and the
              * difference is not a hedge — the two kinds of lens member fail in
@@ -844,14 +849,14 @@ export function createTriageListWindowStore(deps: Readonly<{
     }>[]> {
         const acquisitionLens = lens;
         const admitted = new Map<string, CorpusQualifiedObservationV1[]>();
-        const settled = new Map<string, TriageListLaneV1>();
+        const settled = new Map<string, Readonly<{
+            lane: TriageListLaneV1;
+            completedAtMs: number;
+        }>>();
         const outcomes = new Map<string, TriageRefreshPassOutcomeV1>();
+        let remainingRowBudget = MAX_TRIAGE_LIST_WINDOW_ROWS_V1;
         for (const sourceInstanceId of input.sourceInstanceIds) admitted.set(sourceInstanceId, []);
-        for (
-            let offset = 0;
-            offset < input.sourceInstanceIds.length;
-            offset += MAX_TRIAGE_LIST_SOURCE_BATCH_V1
-        ) {
+        for (let offset = 0; offset < input.sourceInstanceIds.length;) {
             if (!isCurrent() || input.signal.aborted) {
                 for (const sourceInstanceId of input.sourceInstanceIds) {
                     if (!outcomes.has(sourceInstanceId)) outcomes.set(sourceInstanceId, { kind: 'interrupted' });
@@ -861,10 +866,23 @@ export function createTriageListWindowStore(deps: Readonly<{
                     outcome: outcomes.get(sourceInstanceId) ?? { kind: 'interrupted' },
                 }));
             }
+            if (remainingRowBudget === 0) break;
             const sourceInstanceIds = input.sourceInstanceIds.slice(
                 offset,
-                offset + MAX_TRIAGE_LIST_SOURCE_BATCH_V1,
+                offset + Math.min(MAX_TRIAGE_LIST_SOURCE_BATCH_V1, remainingRowBudget),
             );
+            offset += sourceInstanceIds.length;
+            // Every selected Action batch contributes to ONE transport window,
+            // and every named lane needs at least one row slot. While another
+            // selected batch remains, spend exactly that first-round share; the
+            // final batch may use capacity earlier short batches returned.
+            // Giving every batch the full 56-row allowance acquired 88 rows from
+            // 33 connections and folded 32 out of sight. Naming 32 lanes with a
+            // 24-row remainder was worse: eight lanes were never asked but were
+            // reported unavailable, so no continuation could reach them.
+            const batchRowBudget = offset < input.sourceInstanceIds.length
+                ? sourceInstanceIds.length
+                : remainingRowBudget;
             const resume = activeCycleIsAppend
                 ? sourceInstanceIds.flatMap((sourceInstanceId) => {
                     const continuation = continuations.get(sourceInstanceId);
@@ -875,7 +893,7 @@ export function createTriageListWindowStore(deps: Readonly<{
             let result: TriageListEntriesResultV1;
             try {
                 result = await deps.readEntries(
-                    scanInputFor(sourceInstanceIds, resume),
+                    scanInputFor(sourceInstanceIds, resume, batchRowBudget),
                     { signal: input.signal },
                 );
             } catch (cause) {
@@ -944,6 +962,11 @@ export function createTriageListWindowStore(deps: Readonly<{
             const nextContinuations = new Map(
                 (result.window.continuations ?? []).map((entry) => [entry.sourceInstanceId, entry]),
             );
+            remainingRowBudget = Math.max(0, remainingRowBudget - result.window.rows.length);
+            // Client/store time, recorded at the exact batch boundary. The
+            // Action may execute on another machine, so its assembledAtMs is not
+            // comparable with this mounted store's freshness clock.
+            const batchCompletedAtMs = deps.nowMs();
             for (const sourceInstanceId of sourceInstanceIds) {
                 continuations.delete(sourceInstanceId);
                 const next = nextContinuations.get(sourceInstanceId);
@@ -972,14 +995,15 @@ export function createTriageListWindowStore(deps: Readonly<{
                     outcomes.set(sourceInstanceId, { kind: 'interrupted' });
                     continue;
                 }
-                settled.set(sourceInstanceId, lane);
+                settled.set(sourceInstanceId, Object.freeze({ lane, completedAtMs: batchCompletedAtMs }));
                 outcomes.set(sourceInstanceId, { kind: 'completed' });
             }
         }
 
         for (const sourceInstanceId of input.sourceInstanceIds) {
-            const lane = settled.get(sourceInstanceId);
-            if (lane === undefined) continue;
+            const completed = settled.get(sourceInstanceId);
+            if (completed === undefined) continue;
+            const { lane } = completed;
             const laneObservations = admitted.get(sourceInstanceId) ?? [];
             lanes.set(sourceInstanceId, {
                 lane,
@@ -992,7 +1016,7 @@ export function createTriageListWindowStore(deps: Readonly<{
                     ? laneObservations
                     : retainObservations(lanes.get(sourceInstanceId)?.observations ?? [], laneObservations),
                 error: null,
-                completedAtMs: deps.nowMs(),
+                completedAtMs: completed.completedAtMs,
             });
         }
         return input.sourceInstanceIds.map((sourceInstanceId) => ({
@@ -1205,12 +1229,31 @@ export function createTriageListWindowStore(deps: Readonly<{
             return;
         }
 
+        const availableSourceInstanceIds = configuredSources
+            .filter((summary) => summary.available)
+            .map((summary) => summary.sourceInstanceId);
+        const firstUnvisitedSourceIndex = (windowsRequested - 1) * MAX_TRIAGE_LIST_WINDOW_ROWS_V1;
+        const appendSourceInstanceIds = cycleWasAppend
+            ? [...new Set([
+                // A page with more configured connections than rows resumes the
+                // next configured slice before deepening an earlier lane. The
+                // slice is derived from the existing mounted depth; retained
+                // last-known-good lanes may belong to a preceding refresh
+                // generation, so their mere presence cannot prove this page
+                // reacquired them. No second census or generation is stored.
+                ...availableSourceInstanceIds.slice(
+                    firstUnvisitedSourceIndex,
+                    firstUnvisitedSourceIndex + MAX_TRIAGE_LIST_WINDOW_ROWS_V1,
+                ),
+                ...availableSourceInstanceIds.filter((sourceInstanceId) => continuations.has(sourceInstanceId)),
+            ])]
+            : availableSourceInstanceIds;
         const request = coordinator.request({
-            sourceInstanceIds: configuredSources
-                .filter((summary) => summary.available && (
-                    !cycleWasAppend || continuations.has(summary.sourceInstanceId)
-                ))
-                .map((summary) => summary.sourceInstanceId),
+            // One row is the smallest fair share for one selected lane. Do not
+            // tell the coordinator a connection started when the 56-row window
+            // cannot ask it at all; the untouched suffix remains derivable from
+            // the mounted lane map and is taken first by Load More.
+            sourceInstanceIds: appendSourceInstanceIds.slice(0, MAX_TRIAGE_LIST_WINDOW_ROWS_V1),
             trigger,
         });
         if (pagingResetPending) {
@@ -1230,14 +1273,7 @@ export function createTriageListWindowStore(deps: Readonly<{
             publish();
         }
         if (!isCurrent()) return;
-        // A cycle in which every requested connection was refused read no
-        // provider at all. Stamping it would extend the fresh window without a
-        // read. A mixed request is not that cycle: at least one connection did
-        // run, so its admitted answers and continuation progress must settle as
-        // a real refresh rather than being relabelled as a no-op merely because
-        // another connection was paced.
         const askedNobody = request.startedSourceInstanceIds.length === 0;
-        if (!askedNobody) lastCycleCompletedAtMs = deps.nowMs();
         if (
             activeCycleReplacesGeneration
             && request.blocked.length === 0
