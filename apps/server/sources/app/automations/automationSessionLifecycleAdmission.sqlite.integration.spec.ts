@@ -494,6 +494,61 @@ describe("Session lifecycle Automation admission on SQLite", () => {
         })).resolves.toEqual({ remainingOccurrences: 0 });
     });
 
+    it("admits one content-free main-turn attention occurrence and rejects an unknown turn", async () => {
+        const current = await source();
+        const created = await trigger({
+            ...current,
+            events: ["userActionRequired"],
+            policy: { kind: "firstMatch" },
+        });
+        const occurredAt = Date.now();
+        const admitted = await inTx(async (tx) => await admitSessionLifecycleAutomationRunsTx({
+            tx,
+            accountId: current.accountId,
+            occurrence: {
+                v: 1,
+                kind: "sessionLifecycle",
+                event: "userActionRequired",
+                sourceSessionId: current.sessionId,
+                sourceTurnId: current.turnId,
+                requestId: "request-1",
+                requestKind: "user_action",
+                occurredAt,
+            },
+        }));
+        expect(admitted).toHaveLength(1);
+        await expect(db.automationRun.findFirstOrThrow({
+            where: { triggerId: created.id },
+            select: {
+                causeSessionLifecycleEvent: true,
+                causeSessionLifecycleRequestId: true,
+                causeSessionLifecycleRequestKind: true,
+                causeOccurredAt: true,
+            },
+        })).resolves.toEqual({
+            causeSessionLifecycleEvent: "userActionRequired",
+            causeSessionLifecycleRequestId: "request-1",
+            causeSessionLifecycleRequestKind: "user_action",
+            causeOccurredAt: new Date(occurredAt),
+        });
+
+        await expect(inTx(async (tx) => await admitSessionLifecycleAutomationRunsTx({
+            tx,
+            accountId: current.accountId,
+            occurrence: {
+                v: 1,
+                kind: "sessionLifecycle",
+                event: "userActionRequired",
+                sourceSessionId: current.sessionId,
+                sourceTurnId: "unknown-turn",
+                requestId: "request-2",
+                requestKind: "permission",
+                occurredAt: occurredAt + 1,
+            },
+        }))).resolves.toEqual([]);
+        await expect(db.automationRun.count({ where: { triggerId: created.id } })).resolves.toBe(1);
+    });
+
     it("keeps a failed exact turn terminal and never admits it", async () => {
         const current = await source();
         const created = await trigger(current);

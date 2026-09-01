@@ -2,6 +2,10 @@ import { z } from 'zod';
 
 import { asProtocolZod } from '../plugins/actions/internalProtocolZodAdapter.js';
 import { SessionIdSchema, TurnIdSchema } from '../sessions/idsV1.js';
+import {
+  SessionUserActionRequiredRequestKindV1Schema,
+  type SessionUserActionRequiredRequestKindV1,
+} from '../sessions/userActionRequiredOccurrenceV1.js';
 
 export const AutomationSessionLifecycleEventSchema = z.enum([
   'parentTurnCompleted',
@@ -13,13 +17,10 @@ export type AutomationSessionLifecycleEvent = z.infer<
   typeof AutomationSessionLifecycleEventSchema
 >;
 
-export const AutomationSessionLifecycleRequestKindSchema = z.enum([
-  'permission',
-  'user_action',
-]);
-export type AutomationSessionLifecycleRequestKind = z.infer<
-  typeof AutomationSessionLifecycleRequestKindSchema
->;
+export const AutomationSessionLifecycleRequestKindSchema =
+  SessionUserActionRequiredRequestKindV1Schema;
+export type AutomationSessionLifecycleRequestKind =
+  SessionUserActionRequiredRequestKindV1;
 
 export const AUTOMATION_SESSION_LIFECYCLE_MAX_MATCH_COUNT = 2_147_483_647;
 

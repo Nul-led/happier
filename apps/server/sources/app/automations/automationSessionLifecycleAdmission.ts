@@ -38,6 +38,18 @@ export async function admitSessionLifecycleAutomationRunsTx(params: Readonly<{
     const occurrence = AutomationSessionLifecycleOccurrenceEvidenceV1Schema.parse(
         params.occurrence,
     );
+    if (occurrence.event === "userActionRequired") {
+        const sourceTurn = await params.tx.sessionTurn.findUnique({
+            where: {
+                sessionId_turnId: {
+                    sessionId: occurrence.sourceSessionId,
+                    turnId: occurrence.sourceTurnId,
+                },
+            },
+            select: { id: true },
+        });
+        if (!sourceTurn) return [];
+    }
     const rows = await params.tx.automationTrigger.findMany({
         where: {
             kind: "sessionLifecycle",

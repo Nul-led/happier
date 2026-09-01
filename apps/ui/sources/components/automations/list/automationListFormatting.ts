@@ -37,7 +37,7 @@ export function formatAutomationTriggerLabel(trigger: AutomationTriggerListItem)
         case 'pluginEvent':
             return t('automations.list.event', { eventId: trigger.eventRef.localId });
         case 'sessionLifecycle':
-            return t('automations.list.sessionLifecycleParentTurn', { sessionId: trigger.scope.sourceSessionId });
+            return t('automations.list.sessionLifecycleParentTurn', { sessionId: trigger.sourceSessionId });
     }
 }
 

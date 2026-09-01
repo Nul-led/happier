@@ -202,12 +202,13 @@ export async function updateSessionAgentStateWithAck(opts: {
             }
         }
 
-        const updated = opts.handler(opts.getAgentState() || {});
+        const previous = opts.getAgentState() || {};
+        const updated = opts.handler(previous);
         const agentStatePayload =
             opts.sessionEncryptionMode === 'plain'
                 ? JSON.stringify(updated)
                 : (updated ? encodeBase64(encrypt(opts.encryptionKey, opts.encryptionVariant, updated)) : null);
-        const activitySummaryV1 = deriveActivitySummaryFromAgentState(updated);
+        const activitySummaryV1 = deriveActivitySummaryFromAgentState(updated, previous);
         const answer = await emitSocketWithAck<any>({
             socket: opts.socket,
             event: 'update-state',

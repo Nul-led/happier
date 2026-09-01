@@ -74,9 +74,9 @@ function definitionSeedForNonEvent(
         : {
             kind: 'sessionLifecycle',
             enabled: trigger.enabled,
-            event: trigger.event,
-            scope: trigger.scope,
-            consumption: trigger.consumption,
+            sourceSessionId: trigger.sourceSessionId,
+            events: trigger.events,
+            policy: trigger.policy,
         };
     return { definition };
 }
@@ -130,8 +130,9 @@ function appendExactTurnPrefill(
     if (!prefill) return draft;
     if (draft.triggers.some((trigger) => (
         trigger.definition?.kind === 'sessionLifecycle'
-        && trigger.definition.scope.sourceSessionId === prefill.sourceSessionId
-        && trigger.definition.scope.sourceTurnId === prefill.sourceTurnId
+        && trigger.definition.sourceSessionId === prefill.sourceSessionId
+        && trigger.definition.policy.kind === 'currentTurn'
+        && trigger.definition.policy.sourceTurnId === prefill.sourceTurnId
     ))) return draft;
     return {
         ...draft,
@@ -141,13 +142,12 @@ function appendExactTurnPrefill(
             definition: {
                 kind: 'sessionLifecycle',
                 enabled: true,
-                event: 'parentTurnCompleted',
-                scope: {
-                    kind: 'exactTurn',
-                    sourceSessionId: prefill.sourceSessionId,
+                sourceSessionId: prefill.sourceSessionId,
+                events: ['parentTurnCompleted'],
+                policy: {
+                    kind: 'currentTurn',
                     sourceTurnId: prefill.sourceTurnId,
                 },
-                consumption: 'once',
             },
         }],
     };
@@ -162,15 +162,19 @@ function replaceLifecycleRowsWithCurrentTurns(draft: AutomationEditorDraft): Aut
             triggers.push(trigger);
             continue;
         }
+        if (definition.policy.kind !== 'currentTurn') {
+            triggers.push(trigger);
+            continue;
+        }
         const current = readExactActiveParentTurn(
-            storage.getState().sessions[definition.scope.sourceSessionId],
+            storage.getState().sessions[definition.sourceSessionId],
         );
         if (!current) return null;
         if (
             draft.executionRecipe.target.kind === 'existingSession'
             && draft.executionRecipe.target.sessionId === current.sourceSessionId
         ) return null;
-        if (current.sourceTurnId === definition.scope.sourceTurnId) {
+        if (current.sourceTurnId === definition.policy.sourceTurnId) {
             triggers.push(trigger);
         } else {
             changed = true;
@@ -179,9 +183,9 @@ function replaceLifecycleRowsWithCurrentTurns(draft: AutomationEditorDraft): Aut
                 isDirty: trigger.persisted !== null || trigger.isDirty === true,
                 definition: {
                     ...definition,
-                    scope: {
-                        ...definition.scope,
-                        sourceSessionId: current.sourceSessionId,
+                    sourceSessionId: current.sourceSessionId,
+                    policy: {
+                        ...definition.policy,
                         sourceTurnId: current.sourceTurnId,
                     },
                 },
@@ -378,18 +382,19 @@ export function AutomationEditorHostScreen(props: Readonly<{
                 if (!shouldValidateAutomationEditorLifecycleTrigger(trigger)) return [];
                 const definition = trigger.definition;
                 if (definition?.kind !== 'sessionLifecycle') return [];
-                const sourceSession = storage.getState().sessions[definition.scope.sourceSessionId] ?? null;
+                if (definition.policy.kind !== 'currentTurn') return [];
+                const sourceSession = storage.getState().sessions[definition.sourceSessionId] ?? null;
                 const authority = captureSessionAutomationAuthority({
                     session: sourceSession,
-                    routeSessionId: definition.scope.sourceSessionId,
+                    routeSessionId: definition.sourceSessionId,
                     routeServerId: sourceSession?.serverId ?? null,
                     activeServerId: getActiveServerSnapshot().serverId,
                     automationsEnabled: exactTurnSupportRef.current,
                     accountSettings: storage.getState().settings,
                     accountLifetime,
                     readCurrent: () => ({
-                        session: storage.getState().sessions[definition.scope.sourceSessionId] ?? null,
-                        routeSessionId: definition.scope.sourceSessionId,
+                        session: storage.getState().sessions[definition.sourceSessionId] ?? null,
+                        routeSessionId: definition.sourceSessionId,
                         routeServerId: sourceSession?.serverId ?? null,
                         activeServerId: getActiveServerSnapshot().serverId,
                         automationsEnabled: exactTurnSupportRef.current,
@@ -407,8 +412,10 @@ export function AutomationEditorHostScreen(props: Readonly<{
         const lifecycleTurnsMatchDraft = () => lifecycleAuthorities.length === lifecycleRows
             && lifecycleAuthorities.every(({ definition }) => (
                 readExactActiveParentTurn(
-                    storage.getState().sessions[definition.scope.sourceSessionId],
-                )?.sourceTurnId === definition.scope.sourceTurnId
+                    storage.getState().sessions[definition.sourceSessionId],
+                )?.sourceTurnId === (definition.policy.kind === 'currentTurn'
+                    ? definition.policy.sourceTurnId
+                    : null)
             ));
         // Pre-request eligibility: evaluated once, from live turn truth, before
         // anything is sent. A turn that completes only after this point is

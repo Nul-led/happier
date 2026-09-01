@@ -71,23 +71,23 @@ function replaceWithCurrentExactTurns(
     let available = true;
     const triggers = draft.triggers.map((trigger) => {
         const definition = trigger.definition;
-        if (definition?.kind !== 'sessionLifecycle' || definition.scope.kind !== 'exactTurn') return trigger;
-        if (definition.scope.sourceSessionId === targetSessionId) {
+        if (definition?.kind !== 'sessionLifecycle' || definition.policy.kind !== 'currentTurn') return trigger;
+        if (definition.sourceSessionId === targetSessionId) {
             available = false;
             return trigger;
         }
-        const exact = readExactActiveParentTurn(storage.getState().sessions[definition.scope.sourceSessionId]);
+        const exact = readExactActiveParentTurn(storage.getState().sessions[definition.sourceSessionId]);
         if (!exact) {
             available = false;
             return trigger;
         }
-        if (exact.sourceTurnId === definition.scope.sourceTurnId) return trigger;
+        if (exact.sourceTurnId === definition.policy.sourceTurnId) return trigger;
         changed = true;
         return {
             ...trigger,
             definition: {
                 ...definition,
-                scope: { ...definition.scope, sourceTurnId: exact.sourceTurnId },
+                policy: { ...definition.policy, sourceTurnId: exact.sourceTurnId },
             },
         };
     });
@@ -220,13 +220,13 @@ export function SessionAutomationCreateScreen(props: Readonly<{
         submittingRef.current = true;
         setSubmitting(true);
         const sourceDefinitions = currentEditor.triggers.flatMap((trigger) => (
-            trigger.definition?.kind === 'sessionLifecycle' && trigger.definition.scope.kind === 'exactTurn'
+            trigger.definition?.kind === 'sessionLifecycle' && trigger.definition.policy.kind === 'currentTurn'
                 ? [trigger.definition]
                 : []
         ));
         const sourceAuthorities = sourceDefinitions.flatMap((definition) => {
-            if (definition.scope.sourceSessionId === props.sessionId) return [];
-            const sourceSessionId = definition.scope.sourceSessionId;
+            if (definition.sourceSessionId === props.sessionId) return [];
+            const sourceSessionId = definition.sourceSessionId;
             const sourceAuthority = captureSessionAutomationAuthority({
                 session: storage.getState().sessions[sourceSessionId] ?? null,
                 routeSessionId: sourceSessionId,
@@ -247,7 +247,7 @@ export function SessionAutomationCreateScreen(props: Readonly<{
             return sourceAuthority ? [{
                 authority: sourceAuthority,
                 sourceSessionId,
-                sourceTurnId: definition.scope.sourceTurnId,
+                sourceTurnId: definition.policy.sourceTurnId,
             }] : [];
         });
         const sourceTurnsMatchDraft = sourceAuthorities.length === sourceDefinitions.length

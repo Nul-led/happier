@@ -1214,6 +1214,17 @@ describe("sessionUpdateHandler", () => {
             sid: "s-1",
             agentState: "encrypted-state",
             expectedVersion: 1,
+            activitySummaryV1: {
+                pendingPermissionRequestCount: 1,
+                pendingUserActionRequestCount: 1,
+                pendingRequestNewestCreatedAt: 123,
+                newUserActionRequiredOccurrences: [{
+                    requestId: "request-1",
+                    sourceTurnId: "turn-1",
+                    requestKind: "user_action",
+                    occurredAt: 123,
+                }],
+            },
             runtimeIssueSummaryV1: {
                 latestTurnStatus: "failed",
                 lastRuntimeIssue: {
@@ -1234,6 +1245,15 @@ describe("sessionUpdateHandler", () => {
             sessionId: "s-1",
             expectedVersion: 1,
             agentStateCiphertext: "encrypted-state",
+            pendingPermissionRequestCount: 1,
+            pendingUserActionRequestCount: 1,
+            pendingRequestNewestCreatedAt: 123,
+            userActionRequiredOccurrences: [{
+                requestId: "request-1",
+                sourceTurnId: "turn-1",
+                requestKind: "user_action",
+                occurredAt: 123,
+            }],
         });
         expect(buildUpdateSessionUpdate).toHaveBeenCalledTimes(1);
         expect(buildUpdateSessionUpdate.mock.calls[0]?.[1]).toBe(10);

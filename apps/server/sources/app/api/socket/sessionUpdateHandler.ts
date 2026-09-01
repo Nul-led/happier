@@ -70,6 +70,7 @@ import {
     SessionRuntimeActivitySnapshotRequestSchema,
     SessionPendingAdmissionSettlementRequestV1Schema,
     SessionPendingAdmissionSettlementResponseV1Schema,
+    SessionUserActionRequiredOccurrenceV1Schema,
 } from "@happier-dev/protocol";
 import { TranscriptStreamSegmentDeltaEphemeralMessageSchema, TranscriptStreamSegmentEphemeralMessageSchema } from "@happier-dev/protocol/updates";
 import type { SessionEndAckResponse } from "@happier-dev/protocol/updates";
@@ -741,8 +742,22 @@ export function sessionUpdateHandler(
                     : typeof activitySummaryV1?.pendingRequestNewestCreatedAt === "number" && Number.isFinite(activitySummaryV1.pendingRequestNewestCreatedAt)
                         ? Math.max(0, Math.floor(activitySummaryV1.pendingRequestNewestCreatedAt))
                         : undefined;
+            const rawUserActionRequiredOccurrences =
+                activitySummaryV1?.newUserActionRequiredOccurrences;
+            const parsedUserActionRequiredOccurrences =
+                rawUserActionRequiredOccurrences === undefined
+                    ? null
+                    : SessionUserActionRequiredOccurrenceV1Schema.array().safeParse(
+                        rawUserActionRequiredOccurrences,
+                    );
             // Validate input
-            if (!sid || (typeof agentState !== 'string' && agentState !== null) || typeof expectedVersion !== 'number') {
+            if (
+                !sid
+                || (typeof agentState !== 'string' && agentState !== null)
+                || typeof expectedVersion !== 'number'
+                || (parsedUserActionRequiredOccurrences !== null
+                    && !parsedUserActionRequiredOccurrences.success)
+            ) {
                 if (callback) {
                     callback({ result: 'error' });
                 }
@@ -761,6 +776,9 @@ export function sessionUpdateHandler(
                 ...(typeof pendingPermissionRequestCount === "number" ? { pendingPermissionRequestCount } : {}),
                 ...(typeof pendingUserActionRequestCount === "number" ? { pendingUserActionRequestCount } : {}),
                 ...(pendingRequestNewestCreatedAt !== undefined ? { pendingRequestNewestCreatedAt } : {}),
+                ...(parsedUserActionRequiredOccurrences?.success
+                    ? { userActionRequiredOccurrences: parsedUserActionRequiredOccurrences.data }
+                    : {}),
             });
 
             if (!result.ok) {

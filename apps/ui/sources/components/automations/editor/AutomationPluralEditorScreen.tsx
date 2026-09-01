@@ -3,7 +3,9 @@ import { Platform, Pressable, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import type {
     AutomationPluginEventDefinitionTriggerInput,
+    type AutomationSessionLifecycleEvent,
     AutomationSessionLifecycleTriggerInput,
+    AUTOMATION_SESSION_LIFECYCLE_MAX_MATCH_COUNT,
     AutomationTriggerDefinitionInput,
 } from '@happier-dev/protocol';
 
@@ -38,6 +40,20 @@ import { t } from '@/text';
 import { AutomationRecipeComposer } from './AutomationRecipeComposer';
 
 type ScheduleTriggerDefinition = Extract<AutomationTriggerDefinitionInput, Readonly<{ kind: 'schedule' }>>;
+
+const SESSION_LIFECYCLE_EVENTS: readonly AutomationSessionLifecycleEvent[] = [
+    'parentTurnCompleted',
+    'parentTurnFailed',
+    'parentTurnCancelled',
+    'userActionRequired',
+];
+
+const SESSION_LIFECYCLE_POLICIES: readonly AutomationSessionLifecycleTriggerInput['policy']['kind'][] = [
+    'currentTurn',
+    'firstMatch',
+    'nextMatches',
+    'everyMatch',
+];
 
 export type AutomationEditorSessionOption = Readonly<{
     sessionId: string;
@@ -97,7 +113,11 @@ type EditorState =
     | Readonly<{ kind: 'chooseKind' }>
     | Readonly<{ kind: 'schedule'; clientId: string }>
     | Readonly<{ kind: 'pluginEvent'; clientId: string | null }>
-    | Readonly<{ kind: 'sessionLifecycle'; clientId: string | null }>;
+    | Readonly<{
+        kind: 'sessionLifecycle';
+        clientId: string | null;
+        phase: 'source' | 'configuration';
+    }>;
 
 const stylesheet = StyleSheet.create((theme) => ({
     root: {
@@ -210,7 +230,7 @@ function triggerTitle(trigger: AutomationEditorTriggerDraft): string {
                 ? trigger.definition.displayLabel
                 : trigger.retainedEvent?.displayLabel ?? t('automations.pluralEditor.eventTitle');
         case 'sessionLifecycle':
-            return t('automations.pluralEditor.turnCompletedTitle');
+            return t('automations.pluralEditor.lifecycleTitle');
     }
 }
 
@@ -235,9 +255,9 @@ function triggerSubtitle(
                 eventId: definition.eventRef.localId,
             });
         case 'sessionLifecycle':
-            return t('automations.pluralEditor.turnCompletedSource', {
+            return t('automations.pluralEditor.lifecycleSource', {
                 session: sessionOptions.find((option) => (
-                    option.sessionId === definition.scope.sourceSessionId
+                    option.sessionId === definition.sourceSessionId
                 ))?.label ?? t('automations.pluralEditor.selectedSession'),
                 ordinal: lifecycleOrdinal,
             });
@@ -569,7 +589,9 @@ const AutomationTriggerEditorContents = React.memo(function AutomationTriggerEdi
             setEditor({ kind: 'schedule', clientId: appended.clientId });
             return;
         }
-        setEditor({ kind, clientId: null });
+        setEditor(kind === 'sessionLifecycle'
+            ? { kind, clientId: null, phase: 'source' }
+            : { kind, clientId: null });
     }, [emitChange, props.value]);
     React.useEffect(() => {
         if (editor.kind !== 'schedule' || !pendingEditorFieldFocusRef.current) return;
@@ -605,7 +627,7 @@ const AutomationTriggerEditorContents = React.memo(function AutomationTriggerEdi
             id: option.sessionId,
             label: option.label,
             subtitle: option.subtitle,
-            disabled: option.selectable === false || option.currentParentTurnId === null,
+            disabled: option.selectable === false,
             testID: `automation-lifecycle-session-${option.sessionId}`,
         }))
     ), [props.sessionOptions]);
@@ -624,6 +646,9 @@ const AutomationTriggerEditorContents = React.memo(function AutomationTriggerEdi
         ? props.value.triggers.find((trigger) => trigger.clientId === editor.clientId) ?? null
         : null;
     const selectedPluginEvent = editor.kind === 'pluginEvent' && editor.clientId
+        ? props.value.triggers.find((trigger) => trigger.clientId === editor.clientId) ?? null
+        : null;
+    const selectedLifecycle = editor.kind === 'sessionLifecycle' && editor.clientId
         ? props.value.triggers.find((trigger) => trigger.clientId === editor.clientId) ?? null
         : null;
     const lifecycleOrdinalByClientId = React.useMemo(() => {
@@ -655,13 +680,23 @@ const AutomationTriggerEditorContents = React.memo(function AutomationTriggerEdi
     const selectLifecycleSession = React.useCallback((sessionId: string) => {
         if (editor.kind !== 'sessionLifecycle') return;
         const option = (props.sessionOptions ?? []).find((candidate) => candidate.sessionId === sessionId);
-        if (!option?.currentParentTurnId || option.selectable === false) return;
-        const exactSource = props.resolveCurrentSessionTurn?.(sessionId) ?? null;
-        if (
+        if (!option || option.selectable === false) return;
+        const currentTrigger = editor.clientId
+            ? props.value.triggers.find((trigger) => trigger.clientId === editor.clientId) ?? null
+            : null;
+        const currentDefinition = currentTrigger?.definition?.kind === 'sessionLifecycle'
+            ? currentTrigger.definition
+            : null;
+        const wantsCurrentTurn = currentDefinition?.policy.kind === 'currentTurn'
+            || (currentDefinition === null && option.currentParentTurnId !== null);
+        const exactSource = !wantsCurrentTurn
+            ? null
+            : props.resolveCurrentSessionTurn?.(sessionId) ?? null;
+        if (wantsCurrentTurn && (
             !exactSource
             || exactSource.sourceSessionId !== sessionId
             || exactSource.sourceTurnId !== option.currentParentTurnId
-        ) {
+        )) {
             setLifecycleSelectionStale(true);
             props.onSessionSelectionStale?.();
             return;
@@ -669,26 +704,71 @@ const AutomationTriggerEditorContents = React.memo(function AutomationTriggerEdi
         const definition: AutomationSessionLifecycleTriggerInput = {
             kind: 'sessionLifecycle',
             enabled: true,
-            event: 'parentTurnCompleted',
-            scope: {
-                kind: 'exactTurn',
-                sourceSessionId: exactSource.sourceSessionId,
-                sourceTurnId: exactSource.sourceTurnId,
-            },
-            consumption: 'once',
+            sourceSessionId: sessionId,
+            events: currentDefinition?.events ?? ['parentTurnCompleted'],
+            policy: currentDefinition?.policy.kind === 'currentTurn'
+                ? { kind: 'currentTurn', sourceTurnId: exactSource!.sourceTurnId }
+                : currentDefinition?.policy
+                    ?? (exactSource
+                        ? { kind: 'currentTurn', sourceTurnId: exactSource.sourceTurnId }
+                        : { kind: 'firstMatch' }),
         };
+        let clientId = editor.clientId;
         if (editor.clientId) {
-            const current = props.value.triggers.find((trigger) => trigger.clientId === editor.clientId);
             emitChange(replaceTrigger(props.value, editor.clientId, {
                 ...definition,
-                enabled: current ? getAutomationEditorTriggerEnabled(current) : true,
+                enabled: currentTrigger ? getAutomationEditorTriggerEnabled(currentTrigger) : true,
             }));
         } else {
-            emitChange(appendTrigger(props.value, definition).draft);
+            const appended = appendTrigger(props.value, definition);
+            clientId = appended.clientId;
+            emitChange(appended.draft);
         }
         setLifecycleSelectionStale(false);
-        closeTriggerEditor(editor.clientId);
-    }, [closeTriggerEditor, editor, emitChange, props.resolveCurrentSessionTurn, props.sessionOptions, props.value, props.onSessionSelectionStale]);
+        setEditor({ kind: 'sessionLifecycle', clientId, phase: 'configuration' });
+    }, [editor, emitChange, props.resolveCurrentSessionTurn, props.sessionOptions, props.value, props.onSessionSelectionStale]);
+
+    const updateLifecycleDefinition = React.useCallback((
+        update: (definition: AutomationSessionLifecycleTriggerInput) => AutomationSessionLifecycleTriggerInput,
+    ) => {
+        if (editor.kind !== 'sessionLifecycle' || !editor.clientId) return;
+        const current = props.value.triggers.find((trigger) => trigger.clientId === editor.clientId);
+        if (current?.definition?.kind !== 'sessionLifecycle') return;
+        emitChange(replaceTrigger(props.value, editor.clientId, update(current.definition)));
+    }, [editor, emitChange, props.value]);
+
+    const toggleLifecycleEvent = React.useCallback((event: AutomationSessionLifecycleEvent) => {
+        updateLifecycleDefinition((definition) => {
+            const selected = definition.events.includes(event);
+            if (selected && definition.events.length === 1) return definition;
+            return {
+                ...definition,
+                events: selected
+                    ? definition.events.filter((candidate) => candidate !== event)
+                    : [...definition.events, event],
+            };
+        });
+    }, [updateLifecycleDefinition]);
+
+    const selectLifecyclePolicy = React.useCallback((
+        kind: AutomationSessionLifecycleTriggerInput['policy']['kind'],
+    ) => {
+        updateLifecycleDefinition((definition) => {
+            if (kind === 'currentTurn') {
+                const exact = props.resolveCurrentSessionTurn?.(definition.sourceSessionId) ?? null;
+                if (!exact || exact.sourceSessionId !== definition.sourceSessionId) {
+                    setLifecycleSelectionStale(true);
+                    props.onSessionSelectionStale?.();
+                    return definition;
+                }
+                return { ...definition, policy: { kind, sourceTurnId: exact.sourceTurnId } };
+            }
+            if (kind === 'nextMatches') {
+                return { ...definition, policy: { kind, count: 2 } };
+            }
+            return { ...definition, policy: { kind } };
+        });
+    }, [props.onSessionSelectionStale, props.resolveCurrentSessionTurn, updateLifecycleDefinition]);
 
     return (
         <View testID="automation-plural-editor" style={styles.root}>
@@ -778,7 +858,11 @@ const AutomationTriggerEditorContents = React.memo(function AutomationTriggerEdi
                             ? { kind: 'schedule', clientId: trigger.clientId }
                             : getAutomationEditorTriggerKind(trigger) === 'pluginEvent'
                                 ? { kind: 'pluginEvent', clientId: trigger.clientId }
-                                : { kind: 'sessionLifecycle', clientId: trigger.clientId })}
+                                : {
+                                    kind: 'sessionLifecycle',
+                                    clientId: trigger.clientId,
+                                    phase: 'configuration',
+                                })}
                         rightElement={(
                             <Switch
                                 testID={`automation-trigger-enabled-${trigger.clientId}`}
@@ -827,7 +911,7 @@ const AutomationTriggerEditorContents = React.memo(function AutomationTriggerEdi
                     {([
                         ['schedule', 'repeat', t('automations.pluralEditor.scheduleTitle')],
                         ['pluginEvent', 'radio', t('automations.pluralEditor.eventTitle')],
-                        ['sessionLifecycle', 'timer', t('automations.pluralEditor.turnCompletedTitle')],
+                        ['sessionLifecycle', 'timer', t('automations.pluralEditor.lifecycleTitle')],
                     ] as const).map(([kind, icon, label]) => (
                         <Pressable
                             key={kind}
@@ -912,18 +996,109 @@ const AutomationTriggerEditorContents = React.memo(function AutomationTriggerEdi
                             />
                         </ItemGroup>
                     ) : null}
-                    <View style={styles.pickerFrame}>
-                        <SelectionList
-                            testID="automation-lifecycle-session-picker"
-                            rootStep={lifecycleStep}
-                            listAccessibilityLabel={t('automations.pluralEditor.chooseSession')}
-                            onSelect={(id) => selectLifecycleSession(id)}
-                            onRequestClose={() => closeTriggerEditor(editor.clientId)}
-                            autoFocusInputOnWeb
-                            maxHeight={360}
-                            heightBehavior="stabilizedContentHeight"
-                        />
-                    </View>
+                    {editor.phase === 'source' ? (
+                        <View style={styles.pickerFrame}>
+                            <SelectionList
+                                testID="automation-lifecycle-session-picker"
+                                rootStep={lifecycleStep}
+                                listAccessibilityLabel={t('automations.pluralEditor.chooseSession')}
+                                onSelect={(id) => selectLifecycleSession(id)}
+                                onRequestClose={() => closeTriggerEditor(editor.clientId)}
+                                autoFocusInputOnWeb
+                                maxHeight={360}
+                                heightBehavior="stabilizedContentHeight"
+                            />
+                        </View>
+                    ) : null}
+                    {editor.phase === 'configuration'
+                    && selectedLifecycle?.definition?.kind === 'sessionLifecycle' ? (
+                        <>
+                            <ItemGroup title={t('automations.pluralEditor.lifecycleSourceTitle')}>
+                                <Item
+                                    testID="automation-lifecycle-change-source"
+                                    title={(props.sessionOptions ?? []).find((option) => (
+                                        option.sessionId === selectedLifecycle.definition?.sourceSessionId
+                                    ))?.label ?? t('automations.pluralEditor.selectedSession')}
+                                    subtitle={t('automations.pluralEditor.changeLifecycleSource')}
+                                    onPress={() => setEditor({
+                                        kind: 'sessionLifecycle',
+                                        clientId: editor.clientId,
+                                        phase: 'source',
+                                    })}
+                                />
+                            </ItemGroup>
+                            <ItemGroup title={t('automations.pluralEditor.lifecycleEventsTitle')}>
+                                {SESSION_LIFECYCLE_EVENTS.map((event) => (
+                                    <Item
+                                        key={event}
+                                        testID={`automation-lifecycle-event-${event}`}
+                                        title={t(`automations.pluralEditor.lifecycleEvent.${event}`)}
+                                        subtitle={event === 'userActionRequired'
+                                            ? t('automations.pluralEditor.lifecycleAttentionPrivacy')
+                                            : undefined}
+                                        subtitleLines={0}
+                                        showChevron={false}
+                                        rightElement={(
+                                            <Switch
+                                                value={selectedLifecycle.definition!.events.includes(event)}
+                                                onValueChange={() => toggleLifecycleEvent(event)}
+                                                accessibilityLabel={t(`automations.pluralEditor.lifecycleEvent.${event}`)}
+                                            />
+                                        )}
+                                        rightElementOutsidePressable
+                                    />
+                                ))}
+                            </ItemGroup>
+                            <ItemGroup title={t('automations.pluralEditor.lifecyclePolicyTitle')}>
+                                {SESSION_LIFECYCLE_POLICIES.map((policy) => {
+                                    const selected = selectedLifecycle.definition!.policy.kind === policy;
+                                    return (
+                                        <Item
+                                            key={policy}
+                                            testID={`automation-lifecycle-policy-${policy}`}
+                                            title={t(`automations.pluralEditor.lifecyclePolicy.${policy}`)}
+                                            subtitle={t(`automations.pluralEditor.lifecyclePolicyDescription.${policy}`)}
+                                            subtitleLines={0}
+                                            onPress={() => selectLifecyclePolicy(policy)}
+                                            rightElement={selected
+                                                ? <Icon name="check" size={18} color={theme.colors.text.primary} />
+                                                : undefined}
+                                            rightElementOutsidePressable={selected}
+                                        />
+                                    );
+                                })}
+                                {selectedLifecycle.definition.policy.kind === 'nextMatches' ? (
+                                    <ItemGroupColumns paddingVertical={14} rowGap={18}>
+                                        <ItemGroupColumn>
+                                            <FieldItem label={t('automations.pluralEditor.lifecycleMatchCount')}>
+                                                <TextInput
+                                                    testID="automation-lifecycle-match-count"
+                                                    style={styles.input}
+                                                    value={String(selectedLifecycle.definition.policy.count)}
+                                                    keyboardType="number-pad"
+                                                    onChangeText={(value) => {
+                                                        const parsed = Number.parseInt(value, 10);
+                                                        if (!Number.isFinite(parsed)) return;
+                                                        updateLifecycleDefinition((definition) => ({
+                                                            ...definition,
+                                                            policy: {
+                                                                kind: 'nextMatches',
+                                                                count: Math.max(1, Math.min(
+                                                                    AUTOMATION_SESSION_LIFECYCLE_MAX_MATCH_COUNT,
+                                                                    parsed,
+                                                                )),
+                                                            },
+                                                        }));
+                                                    }}
+                                                    accessibilityLabel={t('automations.pluralEditor.lifecycleMatchCount')}
+                                                />
+                                            </FieldItem>
+                                        </ItemGroupColumn>
+                                    </ItemGroupColumns>
+                                ) : null}
+                            </ItemGroup>
+                        </>
+                    ) : null}
                     {editor.clientId ? (
                         <EditorActions
                             onDone={() => closeTriggerEditor(editor.clientId!)}

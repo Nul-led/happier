@@ -272,16 +272,18 @@ function AutomationTriggerOverview(props: Readonly<{
                 ) : null}
                 <Item
                     title={t('automations.detail.trigger.sourceSession')}
-                    subtitle={trigger.scope.sourceSessionId}
-                    copy={trigger.scope.sourceSessionId}
+                    subtitle={trigger.sourceSessionId}
+                    copy={trigger.sourceSessionId}
                     showChevron={false}
                 />
-                <Item
-                    title={t('automations.detail.trigger.sourceTurn')}
-                    subtitle={trigger.scope.sourceTurnId}
-                    copy={trigger.scope.sourceTurnId}
-                    showChevron={false}
-                />
+                {trigger.policy.kind === 'currentTurn' ? (
+                    <Item
+                        title={t('automations.detail.trigger.sourceTurn')}
+                        subtitle={trigger.policy.sourceTurnId}
+                        copy={trigger.policy.sourceTurnId}
+                        showChevron={false}
+                    />
+                ) : null}
             </ItemGroup>
         );
     }

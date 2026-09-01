@@ -52,7 +52,7 @@ export function sessionCanBeAutomationExecutionTarget(
 ): boolean {
     return !draft.triggers.some((trigger) => (
         trigger.definition?.kind === 'sessionLifecycle'
-        && trigger.definition.scope.sourceSessionId === sessionId
+        && trigger.definition.sourceSessionId === sessionId
     ));
 }
 

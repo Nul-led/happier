@@ -30,6 +30,7 @@ import {
     validateSessionOwnerMetadataEnvelopeForAccountModeV1,
     SessionOwnerMetadataEnvelopeV1Schema,
     SessionSharedMetadataV1Schema,
+    SessionUserActionRequiredOccurrenceV1Schema,
     SESSION_METADATA_LAYOUT_VERSION_V1,
     type PrimaryTurnStatusV1,
     type AccountEncryptionMigrateSessionsDirective,
@@ -47,6 +48,7 @@ import {
     type SessionTurnMutationDecisionV1,
     type SessionTurnMutationReceiptV1,
     type SessionTurnMutationV1,
+    type SessionUserActionRequiredOccurrenceV1,
     type SessionTranscriptObservationProvenanceV1,
 } from "@happier-dev/protocol";
 import { isDeepStrictEqual } from "node:util";
@@ -88,7 +90,10 @@ import { markAccountChanged } from "@/app/changes/markAccountChanged";
 import {
     parsePersistedSessionOwnerMetadataEnvelopeV1,
 } from "@/app/session/metadata/sessionOwnerMetadataPersistence";
-import { admitSessionLifecycleAutomationRunsTx } from "@/app/automations/automationSessionLifecycleAdmission";
+import {
+    admitSessionLifecycleAutomationRunsTx,
+    type SessionLifecycleAdmissionResult,
+} from "@/app/automations/automationSessionLifecycleAdmission";
 import { rejoinAutomationOccurrenceInsertRace } from "@/app/automations/automationOccurrencePersistence";
 import { notifySessionTranscriptMutationAfterCommit } from './sessionTranscriptMutationObserver';
 
@@ -100,6 +105,32 @@ export {
 
 type ParticipantCursor = SessionParticipantCursor;
 const JSON_PARSE_FAILED = Symbol("json-parse-failed");
+
+function scheduleSessionLifecycleAdmissionDiagnostics(params: Readonly<{
+    tx: Tx;
+    admissions: readonly SessionLifecycleAdmissionResult[];
+    accountId: string;
+    sourceSessionId: string;
+    sourceTurnId: string;
+}>): void {
+    for (const admission of params.admissions) {
+        if (admission.result.kind !== "ineligible") continue;
+        afterTx(params.tx, () => {
+            warn(
+                {
+                    module: "session-write",
+                    event: "automation_session_lifecycle_admission_ineligible",
+                    reason: admission.result.reason,
+                    triggerId: admission.triggerId,
+                    accountId: params.accountId,
+                    sourceSessionId: params.sourceSessionId,
+                    sourceTurnId: params.sourceTurnId,
+                },
+                "Session lifecycle Automation admission was ineligible after Session settlement",
+            );
+        });
+    }
+}
 
 type AccountEncryptionMigrationSessionRow = Readonly<{
     id: string;
@@ -2365,6 +2396,7 @@ export async function updateSessionAgentState(params: {
     pendingPermissionRequestCount?: number;
     pendingUserActionRequestCount?: number;
     pendingRequestNewestCreatedAt?: number | null;
+    userActionRequiredOccurrences?: readonly SessionUserActionRequiredOccurrenceV1[];
 }): Promise<UpdateSessionAgentStateResult> {
     const sessionId = typeof params.sessionId === "string" ? params.sessionId : "";
     const actorUserId = typeof params.actorUserId === "string" ? params.actorUserId : "";
@@ -2395,8 +2427,18 @@ export async function updateSessionAgentState(params: {
                 ? pendingRequestNewestCreatedAt ?? Date.now()
                 : null
             : undefined;
+    const parsedUserActionRequiredOccurrences =
+        SessionUserActionRequiredOccurrenceV1Schema.array().safeParse(
+            params.userActionRequiredOccurrences ?? [],
+        );
 
-    if (!sessionId || !actorUserId || !Number.isFinite(expectedVersion) || agentStateCiphertext === undefined) {
+    if (
+        !sessionId
+        || !actorUserId
+        || !Number.isFinite(expectedVersion)
+        || agentStateCiphertext === undefined
+        || !parsedUserActionRequiredOccurrences.success
+    ) {
         return { ok: false, error: "invalid-params" };
     }
 
@@ -2497,6 +2539,30 @@ export async function updateSessionAgentState(params: {
                         agentState: fresh.agentState,
                     },
                 };
+            }
+
+            for (const occurrence of parsedUserActionRequiredOccurrences.data) {
+                const lifecycleAdmissions = await admitSessionLifecycleAutomationRunsTx({
+                    tx,
+                    accountId: access.sessionOwnerId,
+                    occurrence: {
+                        v: 1,
+                        kind: "sessionLifecycle",
+                        event: "userActionRequired",
+                        sourceSessionId: sessionId,
+                        sourceTurnId: occurrence.sourceTurnId,
+                        requestId: occurrence.requestId,
+                        requestKind: occurrence.requestKind,
+                        occurredAt: occurrence.occurredAt,
+                    },
+                });
+                scheduleSessionLifecycleAdmissionDiagnostics({
+                    tx,
+                    admissions: lifecycleAdmissions,
+                    accountId: access.sessionOwnerId,
+                    sourceSessionId: sessionId,
+                    sourceTurnId: occurrence.sourceTurnId,
+                });
             }
 
             const participantCursors = await markSessionParticipantsChanged({
@@ -3460,23 +3526,13 @@ async function applySessionTurnMutationWithOwnerAccessInTx(params: {
                     occurredAt: params.turnMutation.observedAt,
                 },
             });
-            for (const admission of lifecycleAdmissions) {
-                if (admission.result.kind !== "ineligible") continue;
-                afterTx(tx, () => {
-                    warn(
-                        {
-                            module: "session-write",
-                            event: "automation_session_lifecycle_admission_ineligible",
-                            reason: admission.result.reason,
-                            triggerId: admission.triggerId,
-                            accountId: writeAuthority.accountId,
-                            sourceSessionId: params.turnMutation.sessionId,
-                            sourceTurnId: targetTurnId,
-                        },
-                        "Session lifecycle Automation admission was ineligible after Session settlement",
-                    );
-                });
-            }
+            scheduleSessionLifecycleAdmissionDiagnostics({
+                tx,
+                admissions: lifecycleAdmissions,
+                accountId: writeAuthority.accountId,
+                sourceSessionId: params.turnMutation.sessionId,
+                sourceTurnId: targetTurnId,
+            });
         }
 
         const nextLatestTurnId = params.turnMutation.action === "begin" ? targetTurnId : session.latestTurnId ?? targetTurnId;

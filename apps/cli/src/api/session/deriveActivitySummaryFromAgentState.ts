@@ -4,11 +4,16 @@ import {
 } from '@happier-dev/agents';
 import type { AgentState } from '../types';
 import { resolveAgentRequestKind } from '@/agent/permissions/requestKind';
+import {
+  SessionUserActionRequiredOccurrenceV1Schema,
+  type SessionUserActionRequiredOccurrenceV1,
+} from '@happier-dev/protocol';
 
 type ActivitySummary = Readonly<{
   pendingPermissionRequestCount: number;
   pendingUserActionRequestCount: number;
   pendingRequestNewestCreatedAt: number | null;
+  newUserActionRequiredOccurrences: readonly SessionUserActionRequiredOccurrenceV1[];
 }>;
 
 const PENDING_REQUEST_COVERAGE_OPTIONS = resolveAgentStateRequestCoverageOptions({
@@ -36,7 +41,10 @@ function readRequestCreatedAt(request: unknown): number | null {
     : null;
 }
 
-export function deriveActivitySummaryFromAgentState(agentState: AgentState | null | undefined): ActivitySummary {
+export function deriveActivitySummaryFromAgentState(
+  agentState: AgentState | null | undefined,
+  previousAgentState?: AgentState | null,
+): ActivitySummary {
   const requests = agentState?.requests;
   const completedRequests = agentState?.completedRequests ?? null;
   if (!requests || typeof requests !== 'object') {
@@ -44,12 +52,16 @@ export function deriveActivitySummaryFromAgentState(agentState: AgentState | nul
       pendingPermissionRequestCount: 0,
       pendingUserActionRequestCount: 0,
       pendingRequestNewestCreatedAt: null,
+      newUserActionRequiredOccurrences: [],
     };
   }
 
   let pendingPermissionRequestCount = 0;
   let pendingUserActionRequestCount = 0;
   let pendingRequestNewestCreatedAt: number | null = null;
+  const newUserActionRequiredOccurrences: SessionUserActionRequiredOccurrenceV1[] = [];
+  const previousRequests = previousAgentState?.requests;
+  const previousCompletedRequests = previousAgentState?.completedRequests;
 
   for (const [requestId, request] of Object.entries(requests)) {
     if (!request || typeof request !== 'object') continue;
@@ -73,11 +85,32 @@ export function deriveActivitySummaryFromAgentState(agentState: AgentState | nul
           ? createdAt
           : Math.max(pendingRequestNewestCreatedAt, createdAt);
     }
+
+    const requestRecord = request as Record<string, unknown>;
+    const existedBefore = Boolean(
+      previousRequests?.[requestId] || previousCompletedRequests?.[requestId],
+    );
+    if (
+      !existedBefore
+      && typeof requestRecord.subagentRef === 'undefined'
+      && typeof requestRecord.sidechainId !== 'string'
+    ) {
+      const occurrence = SessionUserActionRequiredOccurrenceV1Schema.safeParse({
+        requestId,
+        sourceTurnId: requestRecord.turnId,
+        requestKind: kind,
+        occurredAt: createdAt,
+      });
+      if (occurrence.success) {
+        newUserActionRequiredOccurrences.push(occurrence.data);
+      }
+    }
   }
 
   return {
     pendingPermissionRequestCount,
     pendingUserActionRequestCount,
     pendingRequestNewestCreatedAt,
+    newUserActionRequiredOccurrences,
   };
 }

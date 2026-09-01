@@ -3580,6 +3580,77 @@ describe("sessionWriteService", () => {
     });
 
     describe("updateSessionAgentState", () => {
+        it("admits newly pending main-turn request occurrences in the Agent-state transaction", async () => {
+            currentTx.session.findUnique
+                .mockResolvedValueOnce({
+                    accountId: "u1",
+                    encryptionMode: "plain",
+                    tag: "session-tag",
+                    shares: [],
+                    seq: 0,
+                    pendingCount: 0,
+                    pendingBlockedCount: 0,
+                    lastViewedSessionSeq: null,
+                    pendingPermissionRequestCount: 0,
+                    pendingUserActionRequestCount: 0,
+                    pendingRequestObservedAt: null,
+                    latestTurnStatus: "in_progress",
+                    lastRuntimeIssue: null,
+                    active: true,
+                    archivedAt: null,
+                })
+                .mockResolvedValueOnce({
+                    metadataLayoutVersion: 0,
+                    ownerMetadata: null,
+                    agentStateVersion: 1,
+                    agentState: "a1",
+                    seq: 0,
+                    pendingCount: 0,
+                    pendingBlockedCount: 0,
+                    lastViewedSessionSeq: null,
+                    pendingPermissionRequestCount: 0,
+                    pendingUserActionRequestCount: 0,
+                    pendingRequestObservedAt: null,
+                    latestTurnStatus: "in_progress",
+                    lastRuntimeIssue: null,
+                    active: true,
+                    archivedAt: null,
+                });
+            currentTx.session.updateMany.mockResolvedValueOnce({ count: 1 });
+            getSessionParticipantUserIds.mockResolvedValueOnce(["u1"]);
+            markAccountChanged.mockResolvedValueOnce(10);
+
+            const occurrence = {
+                requestId: "request-1",
+                sourceTurnId: "turn-1",
+                requestKind: "user_action" as const,
+                occurredAt: 123,
+            };
+            const res = await updateSessionAgentState({
+                actorUserId: "u1",
+                sessionId: "s1",
+                expectedVersion: 1,
+                agentStateCiphertext: "a2",
+                userActionRequiredOccurrences: [occurrence],
+            });
+
+            expect(res).toMatchObject({ ok: true, version: 2 });
+            expect(admitSessionLifecycleAutomationRunsTx).toHaveBeenCalledWith({
+                tx: currentTx,
+                accountId: "u1",
+                occurrence: {
+                    v: 1,
+                    kind: "sessionLifecycle",
+                    event: "userActionRequired",
+                    sourceSessionId: "s1",
+                    sourceTurnId: "turn-1",
+                    requestId: "request-1",
+                    requestKind: "user_action",
+                    occurredAt: 123,
+                },
+            });
+        });
+
         it("rejects layout-zero Agent-state edits from a non-owner admin", async () => {
             currentTx.session.findUnique
                 .mockResolvedValueOnce({

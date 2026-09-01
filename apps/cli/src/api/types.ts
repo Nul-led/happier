@@ -277,6 +277,12 @@ export interface ClientToServerEvents {
       pendingPermissionRequestCount: number,
       pendingUserActionRequestCount: number,
       pendingRequestNewestCreatedAt: number | null,
+      newUserActionRequiredOccurrences?: ReadonlyArray<{
+        requestId: string,
+        sourceTurnId: string,
+        requestKind: 'permission' | 'user_action',
+        occurredAt: number,
+      }>,
     },
   }, cb: (answer: UpdateStateAckResponse) => void) => void,
   'update-read-cursor': (data: {
@@ -973,6 +979,8 @@ export type AgentState = {
           kind?: 'permission' | 'user_action' | string,
           arguments: any,
           createdAt: number
+          /** Exact host-stamped parent turn that owns this request. */
+          turnId?: string
           /**
            * Optional provider-provided permission suggestions for this request.
            * (e.g. Claude Agent SDK `permission_suggestions`).

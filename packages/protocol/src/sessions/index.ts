@@ -43,3 +43,4 @@ export * from './metadata/sessionMetadataEnvelopesV1.js';
 export * from './metadata/sessionWorkspaceLocationV1.js';
 export * from './creation/index.js';
 export * from './permissions/index.js';
+export * from './userActionRequiredOccurrenceV1.js';
