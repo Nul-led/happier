@@ -11,7 +11,6 @@ const MAINTAINED_PUBLIC_CONSUMER_PREFIXES = Object.freeze([
   'packages/plugin-ui/fixtures/',
   'packages/tests/fixtures/plugin-platform/',
 ]);
-const NO_CURRENT_POSITIVE_CONSUMER = 'no current positive consumer';
 export class CapabilityMatrixValidationError extends Error {
   /** @param {readonly string[]} diagnostics */
   constructor(diagnostics) {
@@ -219,52 +218,8 @@ function isMaintainedPublicConsumerPath(value) {
   return !value.split('/').some((segment) => segment === '' || segment === '.' || segment === '..');
 }
 
-function sourceOwnerPath(value) {
-  return typeof value === 'string' ? value.split('#', 1)[0] : null;
-}
-
-function isSelfProvingConsumer(metadata) {
-  const provingConsumerPath = sourceOwnerPath(metadata.provingConsumer);
-  if (!provingConsumerPath) return false;
-  return [metadata.producer, metadata.specialistOwner].some((owner) => (
-    sourceOwnerPath(owner) === provingConsumerPath
-  ));
-}
-
-/**
- * Availability is an author-facing claim, so neither a catalog owner nor a
- * `PluginServices` member can prove its own capability. Available rows name a
- * maintained public plugin/example; unavailable rows remain explicit deferred
- * dispositions with an unblock.
- */
-function validateAvailabilityConsumer(label, metadata, diagnostics) {
-  if (metadata.availabilityDisposition === 'available') {
-    if (!isMaintainedPublicConsumerPath(metadata.provingConsumer)) {
-      diagnostics.push(
-        `${label} provingConsumer must name a maintained public plugin/example consumer, not a host binder`,
-      );
-    } else if (isSelfProvingConsumer(metadata)) {
-      diagnostics.push(
-        `${label} provingConsumer must name a distinct maintained public plugin/example leaf, not its producer or specialist owner`,
-      );
-    }
-    if (metadata.sourceConsumer !== metadata.provingConsumer) {
-      diagnostics.push(`${label} available sourceConsumer must match provingConsumer`);
-    }
-    return;
-  }
-  if (
-    metadata.availabilityDisposition === 'deferred'
-    && metadata.provingConsumer !== NO_CURRENT_POSITIVE_CONSUMER
-  ) {
-    diagnostics.push(
-      `${label} deferred provingConsumer must be ${JSON.stringify(NO_CURRENT_POSITIVE_CONSUMER)}`,
-    );
-  }
-}
-
 function optionalMaintainedPublicConsumer(value, label, diagnostics) {
-  if (value === null) return null;
+  if (value === null || value === undefined) return null;
   if (!isMaintainedPublicConsumerPath(value)) {
     diagnostics.push(`${label} must be null or name a maintained public plugin/example consumer`);
     return null;
@@ -295,7 +250,11 @@ function normalizeMetadataRow(label, value, diagnostics, { disposition = false, 
   const normalizedLifecycle = lifecycle
     ? requiredLifecycle(value.lifecycle, `${label}.lifecycle`, diagnostics)
     : undefined;
-  const provingConsumer = requiredString(value.provingConsumer, `${label}.provingConsumer`, diagnostics);
+  const provingConsumer = optionalMaintainedPublicConsumer(
+    value.provingConsumer,
+    `${label}.provingConsumer`,
+    diagnostics,
+  );
   const specialistOwner = requiredString(value.specialistOwner, `${label}.specialistOwner`, diagnostics);
   const predecessorRemoval = requiredString(value.predecessorRemoval, `${label}.predecessorRemoval`, diagnostics);
   let availabilityDisposition;
@@ -319,7 +278,7 @@ function normalizeMetadataRow(label, value, diagnostics, { disposition = false, 
     diagnostics.push(`${label}.sourceApiAvailability must be present or absent`);
   }
   const sourceConsumer = optionalMaintainedPublicConsumer(
-    value.sourceConsumer ?? (availabilityDisposition === 'available' ? provingConsumer : null),
+    value.sourceConsumer,
     `${label}.sourceConsumer`,
     diagnostics,
   );
@@ -331,7 +290,7 @@ function normalizeMetadataRow(label, value, diagnostics, { disposition = false, 
   if (!RELEASE_AVAILABILITY.has(releaseAvailability)) {
     diagnostics.push(`${label}.releaseAvailability must be not-published or published`);
   }
-  if (!producer || (lifecycle && !normalizedLifecycle) || !provingConsumer || !specialistOwner || !predecessorRemoval) {
+  if (!producer || (lifecycle && !normalizedLifecycle) || !specialistOwner || !predecessorRemoval) {
     return null;
   }
   return Object.freeze({
@@ -471,7 +430,6 @@ export function projectCapabilityMatrix({
       { disposition: true, lifecycle: false },
     );
     if (!catalogEntry || !policy || !rowMetadata || !definePluginEntrypoint) continue;
-    validateAvailabilityConsumer(`manifestFamilies.${family}`, rowMetadata, diagnostics);
     if (
       policy.classification === 'deferred'
       && rowMetadata.availabilityDisposition !== 'deferred'
@@ -514,7 +472,6 @@ export function projectCapabilityMatrix({
       { disposition: true },
     );
     if (!service || !rowMetadata || !isRecord(apiInventory)) continue;
-    validateAvailabilityConsumer(`services.${serviceId}`, rowMetadata, diagnostics);
     if (typeof service.property !== 'string' || service.property === '') {
       diagnostics.push(`services ${serviceId}.property must be a non-empty string`);
       continue;
@@ -554,7 +511,6 @@ export function projectCapabilityMatrix({
       { disposition: true },
     );
     if (!entry || !rowMetadata) continue;
-    validateAvailabilityConsumer(`hostAccess.${capability}`, rowMetadata, diagnostics);
     if (typeof entry.authorizationClass !== 'string' || entry.authorizationClass === '') {
       diagnostics.push(`hostAccess catalog ${capability}.authorizationClass must be a non-empty string`);
       continue;
@@ -575,7 +531,6 @@ export function projectCapabilityMatrix({
       { disposition: true },
     );
     if (!rowMetadata) continue;
-    validateAvailabilityConsumer(`subpaths.${entrypoint.specifier}`, rowMetadata, diagnostics);
     normalizedSubpaths.push(Object.freeze({
       specifier: entrypoint.specifier,
       sourceModule: entrypoint.sourceModule,
@@ -594,508 +549,6 @@ export function projectCapabilityMatrix({
   });
 }
 
-const PUBLIC_SDK_PACKAGE_NAME = '@happier-dev/plugin-sdk';
-
-function sourceAst(source) {
-  return ts.createSourceFile(
-    'capability-matrix-proving-consumer.ts',
-    source,
-    ts.ScriptTarget.Latest,
-    true,
-    ts.ScriptKind.TS,
-  );
-}
-
-function astContains(file, predicate) {
-  let found = false;
-  const visit = (node) => {
-    if (found) return;
-    if (predicate(node)) {
-      found = true;
-      return;
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(file);
-  return found;
-}
-
-function hasModuleReference(file, specifier) {
-  return astContains(file, (node) => (
-    (ts.isImportDeclaration(node) || ts.isExportDeclaration(node))
-    && node.moduleSpecifier
-    && ts.isStringLiteral(node.moduleSpecifier)
-    && node.moduleSpecifier.text === specifier
-  ));
-}
-
-function sdkModuleReference(file) {
-  return astContains(file, (node) => (
-    (ts.isImportDeclaration(node) || ts.isExportDeclaration(node))
-    && node.moduleSpecifier
-    && ts.isStringLiteral(node.moduleSpecifier)
-    && (
-      node.moduleSpecifier.text === PUBLIC_SDK_PACKAGE_NAME
-      || node.moduleSpecifier.text.startsWith(`${PUBLIC_SDK_PACKAGE_NAME}/`)
-    )
-  ));
-}
-
-function propertyAccessSegments(expression) {
-  const segments = [];
-  let current = expression;
-  while (ts.isPropertyAccessExpression(current)) {
-    segments.unshift(current.name.text);
-    current = current.expression;
-  }
-  if (ts.isIdentifier(current)) segments.unshift(current.text);
-  return segments;
-}
-
-function importedSdkTypeNames(file) {
-  const names = new Set();
-  for (const statement of file.statements) {
-    if (
-      !ts.isImportDeclaration(statement)
-      || !ts.isStringLiteral(statement.moduleSpecifier)
-      || !(
-        statement.moduleSpecifier.text === PUBLIC_SDK_PACKAGE_NAME
-        || statement.moduleSpecifier.text.startsWith(`${PUBLIC_SDK_PACKAGE_NAME}/`)
-      )
-    ) continue;
-    const bindings = statement.importClause?.namedBindings;
-    if (!bindings || !ts.isNamedImports(bindings)) continue;
-    for (const element of bindings.elements) names.add(element.name.text);
-  }
-  return names;
-}
-
-function localTypeDeclaration(file, name) {
-  return file.statements.find((statement) => (
-    (ts.isTypeAliasDeclaration(statement) || ts.isInterfaceDeclaration(statement))
-    && statement.name.text === name
-  )) ?? null;
-}
-
-function typeNodeIsSdkOwnedAtPath(file, typeNode, path, importedNames, visited = new Set()) {
-  if (!typeNode) return false;
-  if (ts.isParenthesizedTypeNode(typeNode)) {
-    return typeNodeIsSdkOwnedAtPath(file, typeNode.type, path, importedNames, visited);
-  }
-  if (ts.isUnionTypeNode(typeNode) || ts.isIntersectionTypeNode(typeNode)) {
-    return typeNode.types.some((member) => (
-      typeNodeIsSdkOwnedAtPath(file, member, path, importedNames, visited)
-    ));
-  }
-  if (ts.isImportTypeNode(typeNode)) {
-    const argument = typeNode.argument;
-    return ts.isLiteralTypeNode(argument)
-      && ts.isStringLiteral(argument.literal)
-      && (
-        argument.literal.text === PUBLIC_SDK_PACKAGE_NAME
-        || argument.literal.text.startsWith(`${PUBLIC_SDK_PACKAGE_NAME}/`)
-      );
-  }
-  if (ts.isTypeReferenceNode(typeNode) && ts.isIdentifier(typeNode.typeName)) {
-    const name = typeNode.typeName.text;
-    if (importedNames.has(name)) return true;
-    if ((name === 'Readonly' || name === 'Partial' || name === 'Required' || name === 'Pick' || name === 'Omit') && typeNode.typeArguments?.[0]) {
-      return typeNodeIsSdkOwnedAtPath(file, typeNode.typeArguments[0], path, importedNames, visited);
-    }
-    if (visited.has(name)) return false;
-    const declaration = localTypeDeclaration(file, name);
-    if (!declaration) return false;
-    const nextVisited = new Set(visited);
-    nextVisited.add(name);
-    return ts.isTypeAliasDeclaration(declaration)
-      ? typeNodeIsSdkOwnedAtPath(file, declaration.type, path, importedNames, nextVisited)
-      : typeMembersReachSdk(file, declaration.members, path, importedNames, nextVisited);
-  }
-  if (ts.isTypeLiteralNode(typeNode)) {
-    return typeMembersReachSdk(file, typeNode.members, path, importedNames, visited);
-  }
-  return false;
-}
-
-function typeMembersReachSdk(file, members, path, importedNames, visited) {
-  if (path.length === 0) {
-    return members.some((member) => (
-      ts.isPropertySignature(member)
-      && typeNodeIsSdkOwnedAtPath(file, member.type, [], importedNames, visited)
-    ));
-  }
-  const [head, ...tail] = path;
-  return members.some((member) => (
-    ts.isPropertySignature(member)
-    && propertyNameText(member.name) === head
-    && typeNodeIsSdkOwnedAtPath(file, member.type, tail, importedNames, visited)
-  ));
-}
-
-function nearestNamedDeclaration(file, name, before) {
-  let nearest = null;
-  const visit = (node) => {
-    if (node.getStart(file) >= before || node === file) {
-      ts.forEachChild(node, visit);
-      return;
-    }
-    if (
-      (ts.isParameter(node) || ts.isVariableDeclaration(node))
-      && ts.isIdentifier(node.name)
-      && node.name.text === name
-      && (!nearest || node.getStart(file) > nearest.getStart(file))
-    ) nearest = node;
-    ts.forEachChild(node, visit);
-  };
-  visit(file);
-  return nearest;
-}
-
-function enclosingSdkTypedObject(file, node, importedNames) {
-  let current = node.parent;
-  while (current && current !== file) {
-    if (ts.isObjectLiteralExpression(current)) {
-      const declaration = current.parent;
-      if (
-        ts.isVariableDeclaration(declaration)
-        && declaration.initializer === current
-        && typeNodeIsSdkOwnedAtPath(
-          file,
-          declaration.type ?? ts.getJSDocType(declaration),
-          [],
-          importedNames,
-        )
-      ) return true;
-    }
-    current = current.parent;
-  }
-  return false;
-}
-
-function expressionIsSdkOwned(file, expression, before, importedNames, visited = new Set()) {
-  const segments = propertyAccessSegments(expression);
-  if (segments.length === 0) return false;
-  const [root, ...path] = segments;
-  if (visited.has(root)) return false;
-  const declaration = nearestNamedDeclaration(file, root, before);
-  if (!declaration) return false;
-  const declarationType = declaration.type ?? ts.getJSDocType(declaration);
-  if (typeNodeIsSdkOwnedAtPath(file, declarationType, path, importedNames)) return true;
-  if (ts.isParameter(declaration) && path.length === 0) {
-    return enclosingSdkTypedObject(file, declaration, importedNames);
-  }
-  if (ts.isVariableDeclaration(declaration) && declaration.initializer) {
-    const nextVisited = new Set(visited);
-    nextVisited.add(root);
-    return expressionIsSdkOwned(file, declaration.initializer, declaration.getStart(file), importedNames, nextVisited);
-  }
-  return false;
-}
-
-function hasSdkServiceAccess(file, serviceId) {
-  if (!sdkModuleReference(file)) return false;
-  const importedNames = importedSdkTypeNames(file);
-  return astContains(file, (node) => (
-    ts.isPropertyAccessExpression(node)
-    && node.name.text === serviceId
-    && ts.isPropertyAccessExpression(node.expression)
-    && node.expression.name.text === 'services'
-    && expressionIsSdkOwned(
-      file,
-      node.expression.expression,
-      node.getStart(file),
-      importedNames,
-    )
-  ));
-}
-
-function typeOwnsSdkService(checker, contextExpression, serviceId) {
-  const contextType = checker.getTypeAtLocation(contextExpression);
-  const servicesSymbol = contextType.getProperty('services');
-  if (!servicesSymbol) return false;
-  const servicesType = checker.getTypeOfSymbolAtLocation(servicesSymbol, contextExpression);
-  const serviceSymbol = servicesType.getProperty(serviceId);
-  if (!serviceSymbol) return false;
-  const declarations = serviceSymbol.getDeclarations() ?? [];
-  return declarations.some((declaration) => {
-    const source = declaration.getSourceFile().fileName.replaceAll('\\', '/');
-    return source.includes('/packages/plugin-sdk/src/services/');
-  });
-}
-
-function hasSdkServiceAccessInProgram(program, file, serviceId) {
-  if (!sdkModuleReference(file)) return false;
-  const checker = program.getTypeChecker();
-  return astContains(file, (node) => (
-    ts.isPropertyAccessExpression(node)
-    && node.name.text === serviceId
-    && ts.isPropertyAccessExpression(node.expression)
-    && node.expression.name.text === 'services'
-    && typeOwnsSdkService(checker, node.expression.expression, serviceId)
-  ));
-}
-
-function importedDefinePluginLocalNames(file) {
-  const names = new Set();
-  for (const statement of file.statements) {
-    if (
-      !ts.isImportDeclaration(statement)
-      || !ts.isStringLiteral(statement.moduleSpecifier)
-      || statement.moduleSpecifier.text !== PUBLIC_SDK_PACKAGE_NAME
-      || statement.importClause?.isTypeOnly === true
-    ) continue;
-    const bindings = statement.importClause?.namedBindings;
-    if (!bindings || !ts.isNamedImports(bindings)) continue;
-    for (const element of bindings.elements) {
-      if (element.isTypeOnly) continue;
-      const imported = element.propertyName?.text ?? element.name.text;
-      if (imported === 'definePlugin') names.add(element.name.text);
-    }
-  }
-  return names;
-}
-
-function importedDefinePluginInputTypeNames(file) {
-  const names = new Set();
-  for (const statement of file.statements) {
-    if (
-      !ts.isImportDeclaration(statement)
-      || !ts.isStringLiteral(statement.moduleSpecifier)
-      || statement.moduleSpecifier.text !== PUBLIC_SDK_PACKAGE_NAME
-    ) continue;
-    const bindings = statement.importClause?.namedBindings;
-    if (!bindings || !ts.isNamedImports(bindings)) continue;
-    for (const element of bindings.elements) {
-      const imported = element.propertyName?.text ?? element.name.text;
-      if (imported === 'DefinePluginInput') names.add(element.name.text);
-    }
-  }
-  let changed = true;
-  while (changed) {
-    changed = false;
-    for (const statement of file.statements) {
-      if (!ts.isTypeAliasDeclaration(statement) || names.has(statement.name.text)) continue;
-      if (astContains(statement.type, (node) => ts.isTypeReferenceNode(node)
-        && ts.isIdentifier(node.typeName)
-        && names.has(node.typeName.text))) {
-        names.add(statement.name.text);
-        changed = true;
-      }
-    }
-  }
-  return names;
-}
-
-function pluginDefinitionInputObjects(file) {
-  const definePluginNames = importedDefinePluginLocalNames(file);
-  const inputs = [];
-  const visit = (node) => {
-    if (
-      ts.isCallExpression(node)
-      && ts.isIdentifier(node.expression)
-      && definePluginNames.has(node.expression.text)
-      && node.arguments.length > 0
-    ) {
-      const input = unwrapExpression(node.arguments[0]);
-      if (input && ts.isObjectLiteralExpression(input)) inputs.push(input);
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(file);
-  const definitionTypeNames = importedDefinePluginInputTypeNames(file);
-  for (const statement of file.statements) {
-    if (!ts.isVariableStatement(statement)) continue;
-    for (const declaration of statement.declarationList.declarations) {
-      if (!declaration.type || !declaration.initializer) continue;
-      const hasDefinitionType = astContains(declaration.type, (node) => (
-        ts.isTypeReferenceNode(node)
-        && ts.isIdentifier(node.typeName)
-        && definitionTypeNames.has(node.typeName.text)
-      ));
-      const input = unwrapExpression(declaration.initializer);
-      if (hasDefinitionType && ts.isObjectLiteralExpression(input)) inputs.push(input);
-    }
-  }
-  return inputs;
-}
-
-function hasHostAccessDeclaration(file, capability) {
-  return pluginDefinitionInputObjects(file).some((input) => {
-    const hostAccess = objectProperty(input, 'hostAccess');
-    return hostAccess !== null && astContains(
-      hostAccess,
-      (child) => ts.isStringLiteral(child) && child.text === capability,
-    );
-  });
-}
-
-function localVariableInitializer(file, name) {
-  for (const statement of file.statements) {
-    if (!ts.isVariableStatement(statement)) continue;
-    for (const declaration of statement.declarationList.declarations) {
-      if (ts.isIdentifier(declaration.name) && declaration.name.text === name) {
-        return declaration.initializer ?? null;
-      }
-    }
-  }
-  return null;
-}
-
-function hasPropertyInLocalValue(file, value, property, visited = new Set()) {
-  const input = unwrapExpression(value);
-  if (ts.isIdentifier(input)) {
-    if (visited.has(input.text)) return false;
-    const initializer = localVariableInitializer(file, input.text);
-    if (!initializer) return false;
-    const nextVisited = new Set(visited);
-    nextVisited.add(input.text);
-    return hasPropertyInLocalValue(file, initializer, property, nextVisited);
-  }
-  if (!ts.isObjectLiteralExpression(input) && !ts.isArrayLiteralExpression(input)) return false;
-  let found = false;
-  const visit = (node) => {
-    if (found) return;
-    if (
-      (ts.isPropertyAssignment(node) || ts.isShorthandPropertyAssignment(node))
-      && propertyNameText(node.name) === property
-    ) {
-      found = true;
-      return;
-    }
-    if (ts.isIdentifier(node)) {
-      const initializer = localVariableInitializer(file, node.text);
-      if (initializer && !visited.has(node.text)) {
-        const nextVisited = new Set(visited);
-        nextVisited.add(node.text);
-        if (hasPropertyInLocalValue(file, initializer, property, nextVisited)) found = true;
-      }
-    }
-    if (!found) ts.forEachChild(node, visit);
-  };
-  visit(input);
-  return found;
-}
-
-function hasDefinePluginContribution(file, authorKey, leaf) {
-  return pluginDefinitionInputObjects(file).some((input) => {
-    const author = objectProperty(input, authorKey);
-    if (author === null) return false;
-    if (leaf === null) return true;
-    return hasPropertyInLocalValue(file, author, leaf);
-  });
-}
-
-function containsNamedImportedCall(source, moduleSpecifier, importedName) {
-  const sourceFile = sourceAst(source);
-  const importedLocalNames = new Set();
-  for (const statement of sourceFile.statements) {
-    if (
-      !ts.isImportDeclaration(statement)
-      || !ts.isStringLiteral(statement.moduleSpecifier)
-      || statement.moduleSpecifier.text !== moduleSpecifier
-      || statement.importClause?.isTypeOnly === true
-    ) continue;
-    const bindings = statement.importClause?.namedBindings;
-    if (!bindings || !ts.isNamedImports(bindings)) continue;
-    for (const element of bindings.elements) {
-      if (element.isTypeOnly) continue;
-      const imported = element.propertyName?.text ?? element.name.text;
-      if (imported === importedName) importedLocalNames.add(element.name.text);
-    }
-  }
-  if (importedLocalNames.size === 0) return false;
-
-  let found = false;
-  const visit = (node) => {
-    if (found) return;
-    if (
-      ts.isCallExpression(node)
-      && ts.isIdentifier(node.expression)
-      && importedLocalNames.has(node.expression.text)
-    ) {
-      found = true;
-      return;
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(sourceFile);
-  return found;
-}
-
-/**
- * A row's proving consumer must EXERCISE the capability it proves, not merely
- * exist. Every token below is derived from the row itself — the published
- * subpath specifier, the `services.<id>` invocation, the hostAccess capability
- * literal, the definePlugin author key and dotted family leaf — so the bar
- * cannot drift from the capability it guards. Returns null when the source
- * carries the evidence, otherwise the diagnostic clause naming what is absent.
- */
-export function capabilityMatrixProvingConsumerExerciseFailure(row, source) {
-  if (typeof source !== 'string') return 'could not be read as source text';
-  const file = sourceAst(source);
-  if (typeof row?.specifier === 'string') {
-    const specifier = row.specifier === '.'
-      ? PUBLIC_SDK_PACKAGE_NAME
-      : `${PUBLIC_SDK_PACKAGE_NAME}/${row.specifier.replace(/^\.\//, '')}`;
-    return hasModuleReference(file, specifier)
-      ? null
-      : `does not import ${specifier}`;
-  }
-  if (typeof row?.serviceId === 'string') {
-    if (
-      row.serviceId === 'storage'
-      && containsNamedImportedCall(
-        source,
-        `${PUBLIC_SDK_PACKAGE_NAME}/storage`,
-        'requireAccountStorage',
-      )
-    ) {
-      return null;
-    }
-    return hasSdkServiceAccess(file, row.serviceId)
-      ? null
-      : `does not invoke services.${row.serviceId}`;
-  }
-  if (typeof row?.capability === 'string') {
-    return hasHostAccessDeclaration(file, row.capability)
-      ? null
-      : `does not declare the '${row.capability}' hostAccess capability`;
-  }
-  if (typeof row?.manifestFamily === 'string') {
-    const authorKey = row.definePluginAuthorKey;
-    if (typeof authorKey !== 'string' || authorKey === '') {
-      return 'has no definePlugin author key to prove';
-    }
-    const leaf = row.manifestFamily.includes('.')
-      ? row.manifestFamily.slice(row.manifestFamily.lastIndexOf('.') + 1)
-      : null;
-    if (!hasDefinePluginContribution(file, authorKey, leaf)) {
-      return `does not declare the '${authorKey}' definePlugin contribution key`;
-    }
-    return null;
-  }
-  return 'does not belong to a known capability matrix dimension';
-}
-
-export function capabilityMatrixProvingConsumerExerciseFailureInProgram(row, program, file) {
-  if (typeof row?.serviceId === 'string') {
-    if (
-      row.serviceId === 'storage'
-      && containsNamedImportedCall(
-        file.getFullText(),
-        `${PUBLIC_SDK_PACKAGE_NAME}/storage`,
-        'requireAccountStorage',
-      )
-    ) {
-      return null;
-    }
-    return hasSdkServiceAccessInProgram(program, file, row.serviceId)
-      ? null
-      : `does not invoke services.${row.serviceId}`;
-  }
-  return capabilityMatrixProvingConsumerExerciseFailure(row, file.getFullText());
-}
-
 export function renderCapabilityMatrix(matrix) {
   return `${JSON.stringify(matrix, null, 2)}\n`;
 }
@@ -1111,8 +564,7 @@ function withEvidenceLifecycleFacts(declaration) {
   return Object.freeze({
     ...declaration,
     sourceApiAvailability: declaration.sourceApiAvailability ?? 'present',
-    sourceConsumer: declaration.sourceConsumer
-      ?? (availabilityDisposition === 'available' ? declaration.provingConsumer : null),
+    sourceConsumer: declaration.sourceConsumer ?? null,
     loadedPlatformProof: declaration.loadedPlatformProof ?? 'not-recorded',
     releaseAvailability: declaration.releaseAvailability ?? 'not-published',
   });

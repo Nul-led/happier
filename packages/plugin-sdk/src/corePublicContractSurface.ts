@@ -31,7 +31,6 @@ import type {
     SessionWatchEvent,
     SessionWatchQuery,
     PluginSettingDescriptorBase,
-    SubagentObservation,
 } from './services/index.js';
 import type {
     PluginMcpDiscoveredEndpoint,
@@ -65,15 +64,11 @@ type _CurrentSessionUiMechanicsMustRemainPrivate = AssertNever<Extract<
 >>;
 type _SubagentOperationsMustBeIntentOriented = AssertTrue<Equal<
     Exclude<keyof PluginServices['sessions']['subagents'], 'capabilities' | 'list' | 'get' | 'watch'>,
-    'observe'
->>;
-type _SubagentObservationMustNotExposeLedgerMechanics = AssertTrue<Equal<
-    keyof SubagentObservation,
-    'observationId' | 'groupId' | 'status' | 'detail'
+    never
 >>;
 type _SubagentCapabilitiesMustUseIntentVocabulary = AssertTrue<Equal<
     keyof ReturnType<PluginServices['sessions']['subagents']['capabilities']>,
-    'list' | 'observe' | 'watch'
+    'list' | 'watch'
 >>;
 type _ServiceIdsMustBeExact = AssertTrue<Equal<
     PluginServiceId,
@@ -131,7 +126,6 @@ type _NamedPacketServiceTypesMustResolve = [
     SessionWatchEvent,
     SessionWatchQuery,
     PluginSettingDescriptorBase,
-    SubagentObservation,
     PluginMcpDiscoveredEndpoint,
     PluginMcpDiscoveryRequest,
     PluginMcpDiscoveryResult,

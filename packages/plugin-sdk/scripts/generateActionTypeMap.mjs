@@ -87,7 +87,12 @@ const TYPE_PROJECTIONS = [
   { relativePath: 'packages/protocol/src/plugins/actions/v2.ts', name: 'PluginActionContributionV2', export: true },
   { relativePath: 'packages/protocol/src/plugins/actions/v2.ts', name: 'PluginToolContributionV2', export: true },
   { relativePath: 'packages/protocol/src/plugins/contributions/v2.ts', name: 'PluginCommandContributionV2', export: true },
-  { relativePath: 'packages/protocol/src/actions/actionSpecs.ts', name: 'ActionSpec', export: true },
+  {
+    relativePath: 'packages/protocol/src/actions/actionSpecs.ts',
+    name: 'PluginInvocableActionSpec',
+    outputName: 'ActionSpec',
+    export: true,
+  },
   { relativePath: 'packages/protocol/src/actions/actionSpecs.ts', name: 'PluginActionInputById', export: true },
   { relativePath: 'packages/protocol/src/actions/actionSpecs.ts', name: 'PluginActionResultById', export: true },
 ];
@@ -339,7 +344,7 @@ function renderStructuralModule(onPhase = () => {}) {
       sourceFile,
       type,
       rendered: renderTypeAlias(
-        projection.name,
+        projection.outputName ?? projection.name,
         renderActionTypeProjection(
           projection.name,
           checker.typeToString(type, undefined, TYPE_FORMAT_FLAGS),
@@ -363,6 +368,7 @@ function renderStructuralModule(onPhase = () => {}) {
     '',
     "import type { JsonValue, PluginJsonSchema, PluginJsonValueV2 } from '../identity.js';",
     "import type { AgentExternalSessionTranscriptRawRecord } from '../externalSessions.js';",
+    "import type { PluginAutomationRunCause as AutomationRunCause } from '../automations.js';",
     "import type { PluginUiJsonValueV1 } from '../ui/publicContract.js';",
     '',
     ...PUBLIC_ACTION_TYPE_CLOSURE,

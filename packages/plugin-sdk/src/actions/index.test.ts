@@ -239,12 +239,12 @@ describe('ActionsService source contract', () => {
 
     it('projects exact canonical Action identities without a second registry', () => {
         expect(getActionSpec).toBe(canonicalGetActionSpec);
-        expectTypeOf<ActionId>().toEqualTypeOf<CanonicalActionSpec['id']>();
+        expectTypeOf<ActionId>().toEqualTypeOf<CanonicalPluginInvocableActionId>();
         expectTypeOf<PublicActionId>().toEqualTypeOf<ActionId>();
         expectTypeOf<Parameters<typeof getActionSpec>[0]>()
-            .toEqualTypeOf<Parameters<typeof canonicalGetActionSpec>[0]>();
+            .toEqualTypeOf<CanonicalPluginInvocableActionId>();
         expectTypeOf<ReturnType<typeof getActionSpec>>().toEqualTypeOf<ActionSpec>();
-        expectTypeOf<ActionSpec['id']>().toEqualTypeOf<CanonicalActionSpec['id']>();
+        expectTypeOf<ActionSpec['id']>().toEqualTypeOf<CanonicalPluginInvocableActionId>();
         expectTypeOf<ActionSpec['inputHints']>()
             .toEqualTypeOf<CanonicalActionSpec['inputHints']>();
         expectTypeOf<ActionSpec['inputSchema']>().toEqualTypeOf<unknown>();
@@ -316,7 +316,11 @@ describe('ActionsService source contract', () => {
         expectTypeOf<PluginActionResultById['session.transcript.get']>()
             .toEqualTypeOf<CanonicalSessionTranscriptGetExternalShareableResultV1>();
         expectTypeOf<Extract<PluginInvocableActionId, 'session.permission_mode.set'>>()
-            .toEqualTypeOf<'session.permission_mode.set'>();
+            .toEqualTypeOf<never>();
+        expectTypeOf<Extract<
+            PluginInvocableActionId,
+            'sessions.subagents.upsert' | 'sessions.subagents.updateStatus' | 'sessions.subagents.complete'
+        >>().toEqualTypeOf<never>();
         expectTypeOf<Extract<PluginInvocableActionId, 'session.history.get' | 'session.events.get' | 'session.messages.recent.get'>>()
             .toEqualTypeOf<'session.history.get' | 'session.events.get' | 'session.messages.recent.get'>();
         expectTypeOf<SessionTranscriptGetExternalShareableInputV1>()

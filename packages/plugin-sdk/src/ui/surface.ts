@@ -129,7 +129,9 @@ export type UiSurfaceHostedWebDefinition = (
 ) & Readonly<{
     build: UiSurfaceHostedWebBuild;
 }>;
-export type UiSurfaceDeclarativeDefinition = UiSurfacePlacement<UiSurfaceDeclarativeRendererDefinition>;
+export type UiSurfaceDeclarativeDefinition =
+    | UiSurfacePlacement<UiSurfaceDeclarativeRendererDefinition>
+    | UiSurfaceRendererOnlyDefinition<UiSurfaceDeclarativeRendererDefinition>;
 
 export type UiSurfaceDefinition =
     | UiSurfaceReactNativeDefinition

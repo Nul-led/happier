@@ -53,6 +53,7 @@ export type { AgentAcpTransport } from '../../agentRuntime/projections.js';
 export type { AgentAuthorRestoreCheckpointResult } from '../../agentRuntime/projections.js';
 export type { AgentConfigurationScalar } from '../../agentRuntime/projections.js';
 export type { AgentExecutionRunEvent } from '../../agentRuntime/projections.js';
+export { AgentExecutionRunEventSchema } from '../../agentRuntime/projections.js';
 export type { AgentFiniteExecutionRunHostOptions } from '../../agentRuntime/projections.js';
 export type { AgentFiniteExecutionRunProgressEvent } from '../../agentRuntime/projections.js';
 export type { AgentFiniteExecutionRunResult } from '../../agentRuntime/projections.js';
@@ -201,6 +202,8 @@ export type { AgentSessionHooksService } from '../../agentRuntime/projections.js
 export type { AgentSessionHostServices } from '../../agentRuntime/projections.js';
 export type { AgentSessionHappierToolsService } from '../../agentRuntime/projections.js';
 export type { AgentSessionNativeHomeService } from '../../agentRuntime/projections.js';
+export type { AgentSessionSubagentObservation } from '../../agentRuntime/projections.js';
+export type { AgentSessionSubagentObservationPublisher } from '../../agentRuntime/projections.js';
 export type { AgentSessionNativeToolBridgeConfig } from '../../agentRuntime/projections.js';
 export type { AgentSessionNativeToolDescriptor } from '../../agentRuntime/projections.js';
 export type { AgentSessionInFlightConfigurationOutcome } from '../../agentRuntime/projections.js';

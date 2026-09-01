@@ -180,6 +180,14 @@ describe('defineUiSurfaceDefinition', () => {
     });
 
     it('projects a placement-free renderer-only surface without synthesizing a view', () => {
+        const declarativeRenderer = defineUiSurfaceDefinition({
+            id: 'composer-summary',
+            placement: 'rendererOnly',
+            renderer: {
+                kind: 'declarative',
+                root: { kind: 'text', text: 'Summary' },
+            },
+        });
         const composerRenderer = defineUiSurfaceDefinition({
             id: 'composer-picker',
             placement: 'rendererOnly',
@@ -209,18 +217,26 @@ describe('defineUiSurfaceDefinition', () => {
                 exportName: 'renderSurface',
             },
         }]);
+        expect(buildUiSurfaceTargets(declarativeRenderer)).toEqual([]);
 
         const plugin = definePlugin({
             id: 'com.acme.composer-renderer',
             version: '1.0.0',
-            ui: { surfaces: [composerRenderer] },
+            ui: { surfaces: [composerRenderer, declarativeRenderer] },
         });
         expect(plugin.manifest.contributes.ui).toMatchObject({
-            renderers: [{
-                id: 'composer-picker-renderer',
-                kind: 'reactNative',
-                artifact: 'composer-picker-renderer',
-            }],
+            renderers: [
+                {
+                    id: 'composer-picker-renderer',
+                    kind: 'reactNative',
+                    artifact: 'composer-picker-renderer',
+                },
+                {
+                    id: 'composer-summary-renderer',
+                    kind: 'declarative',
+                    root: { kind: 'text', text: 'Summary' },
+                },
+            ],
         });
         expect(plugin.manifest.contributes.ui?.views).toBeUndefined();
         expect(plugin.manifest.contributes.ui?.settingsPages).toBeUndefined();

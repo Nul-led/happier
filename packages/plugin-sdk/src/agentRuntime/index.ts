@@ -57,6 +57,8 @@ export type {
   AgentSessionHostServices,
   AgentSessionHappierToolsService,
   AgentSessionNativeHomeService,
+  AgentSessionSubagentObservation,
+  AgentSessionSubagentObservationPublisher,
   AgentSessionNativeToolBridgeConfig,
   AgentSessionNativeToolDescriptor,
   AgentTerminalHostCreateOrAttachRequest,
@@ -156,6 +158,7 @@ export type {
   AgentConnectedAccountRuntimeAuthAdapterResultV1,
   AgentConnectedAccountRuntimeAuthAdapterV1,
   AgentConnectedAccountRuntimeAuthFailureKind,
+  AgentConnectedAccountRuntimeLimitCategoryV1,
   AgentConnectedAccountRuntimeAuthSelectionV1,
   AgentConnectedAccountRuntimeAuthHotApplyInputV1,
   AgentConnectedAccountRuntimeAuthTargetV1,
@@ -285,6 +288,7 @@ export {
 } from '@happier-dev/agents/runtime/session/preAdmissionBuffer';
 
 export {
+  AgentExecutionRunEventSchema,
   AgentProviderBindingMaterializationV1Schema,
   AgentRuntimeJsonValueSchema,
   AgentSessionProviderBindingV1Schema,

@@ -2665,6 +2665,50 @@ function assertDefinePluginOwnKeys(input: object): void {
     }
 }
 
+const DEFINE_PLUGIN_OPAQUE_AGENT_RUNTIME_KEYS = new Set([
+    'externalSessions',
+    'externalSessionHooks',
+    'externalSessionObservation',
+    'externalSessionTakeover',
+]);
+
+function captureDefinePluginAuthorValue(
+    value: unknown,
+    seen = new WeakMap<object, unknown>(),
+    path: readonly string[] = [],
+): unknown {
+    if (
+        path.length === 3
+        && path[0] === 'agents'
+        && DEFINE_PLUGIN_OPAQUE_AGENT_RUNTIME_KEYS.has(path[2]!)
+    ) return value;
+    if (Array.isArray(value)) {
+        const incumbent = seen.get(value);
+        if (incumbent !== undefined) return incumbent;
+        const captured: unknown[] = [];
+        seen.set(value, captured);
+        for (const [index, entry] of value.entries()) {
+            captured.push(captureDefinePluginAuthorValue(entry, seen, [...path, String(index)]));
+        }
+        return Object.freeze(captured);
+    }
+    if (value === null || typeof value !== 'object') return value;
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) {
+        // Executable class instances are opaque author receivers. Their methods
+        // are captured by the owning registration boundary rather than cloned.
+        return value;
+    }
+    const incumbent = seen.get(value);
+    if (incumbent !== undefined) return incumbent;
+    const captured: Record<string, unknown> = Object.create(prototype);
+    seen.set(value, captured);
+    for (const key of Object.keys(value)) {
+        captured[key] = captureDefinePluginAuthorValue(Reflect.get(value, key), seen, [...path, key]);
+    }
+    return Object.freeze(captured);
+}
+
 function definePluginImplementation<
     const TActions extends Readonly<Record<string, PluginActionDeclaration>> = Readonly<Record<string, never>>,
     const TAgents extends Readonly<Record<string, PluginAgentDefinition>> = Readonly<Record<string, never>>,
@@ -2693,24 +2737,25 @@ function definePluginImplementation<
     DefinedContributionPointProtocolMap<TContributionPoints>
 > {
     assertDefinePluginOwnKeys(input);
-    const authorInput = input as Readonly<Record<string, unknown>>;
+    const capturedInput = captureDefinePluginAuthorValue(input) as typeof input;
+    const authorInput = capturedInput as Readonly<Record<string, unknown>>;
     const contributes = projectDefinePluginColdContributes(authorInput);
 
     const manifest = {
         schemaVersion: 2,
-        id: input.id,
-        version: input.version,
-        displayName: input.displayName ?? input.id,
-        ...(input.description === undefined ? {} : { description: input.description }),
-        ...(input.engines === undefined ? {} : { engines: input.engines }),
-        runtime: input.runtime ?? { apiVersion: 1 },
-        ...(input.entrypoints === undefined ? {} : { entrypoints: input.entrypoints }),
-        ...(input.brand === undefined ? {} : { brand: input.brand }),
-        ...(input.activation === undefined ? {} : { activation: input.activation }),
-        ...(input.hostAccess === undefined ? {} : { hostAccess: input.hostAccess }),
-        ...(input.secrets === undefined ? {} : { secrets: input.secrets }),
+        id: capturedInput.id,
+        version: capturedInput.version,
+        displayName: capturedInput.displayName ?? capturedInput.id,
+        ...(capturedInput.description === undefined ? {} : { description: capturedInput.description }),
+        ...(capturedInput.engines === undefined ? {} : { engines: capturedInput.engines }),
+        runtime: capturedInput.runtime ?? { apiVersion: 1 },
+        ...(capturedInput.entrypoints === undefined ? {} : { entrypoints: capturedInput.entrypoints }),
+        ...(capturedInput.brand === undefined ? {} : { brand: capturedInput.brand }),
+        ...(capturedInput.activation === undefined ? {} : { activation: capturedInput.activation }),
+        ...(capturedInput.hostAccess === undefined ? {} : { hostAccess: capturedInput.hostAccess }),
+        ...(capturedInput.secrets === undefined ? {} : { secrets: capturedInput.secrets }),
         contributes,
-        ...(input.metadata === undefined ? {} : { metadata: input.metadata }),
+        ...(capturedInput.metadata === undefined ? {} : { metadata: capturedInput.metadata }),
     } satisfies DefinedPluginManifest;
     assertAgentRunnerDefinitions(readAuthoredAgentDefinitions(authorInput), manifest.contributes.agents);
     const daemonDatabases = normalizePluginDaemonDatabaseRuntimeProjection(
@@ -2721,20 +2766,20 @@ function definePluginImplementation<
         projectPluginAccountCollectionMigrationRuntimeProjection(authorInput.accountCollections),
         manifest.contributes.accountCollections ?? [],
     );
-    const actionContracts = projectActionContracts(input.id, authorInput.actions) as DefinedPlugin<
+    const actionContracts = projectActionContracts(capturedInput.id, authorInput.actions) as DefinedPlugin<
         TPluginId,
         DefinedPluginActionContracts<TPluginId, TActions>,
         DefinedContributionPointProtocolMap<TContributionPoints>
     >['actionContracts'];
     const contributionPoints = projectDefinedTargetedContributionPoints(
-        input.id,
-        input.contributionPoints,
+        capturedInput.id,
+        capturedInput.contributionPoints,
     );
     const activate: PluginActivationModule['activate'] = async (api) => {
         for (const adapter of DEFINE_PLUGIN_AUTHOR_ADAPTERS) {
             adapter.activate?.(authorInput, api);
         }
-        return await input.setup?.(api);
+        return await capturedInput.setup?.(api);
     };
 
     return Object.freeze({

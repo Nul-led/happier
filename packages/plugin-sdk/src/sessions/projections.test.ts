@@ -96,7 +96,6 @@ import type {
     SessionWorkflowRunStatusV1,
 } from './workState.js';
 import type {
-    SubagentObservation,
     SubagentSummary,
     SubagentsService,
     WorkStateItem,
@@ -373,9 +372,8 @@ describe('nested Session package-local projections', () => {
         expectTypeOf<SubagentRefInputV1>().toEqualTypeOf<agents.SubagentRefInputV1>();
         expectTypeOf<SubagentRefV1>().toEqualTypeOf<agents.SubagentRefV1>();
         expectTypeOf<SubagentStatusV1>().toEqualTypeOf<agents.SubagentStatusV1>();
-        expectTypeOf<SubagentObservation>().toHaveProperty('observationId');
         expectTypeOf<SubagentSummary>().toHaveProperty('id');
-        expectTypeOf<SubagentsService>().toHaveProperty('observe');
+        expectTypeOf<SubagentsService>().not.toHaveProperty('observe');
     });
 
     it('keeps Work State service types on normal runtime and predecessor values on the Protocol owner', () => {

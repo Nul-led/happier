@@ -4,6 +4,17 @@ import { readFile } from 'node:fs/promises';
 import { describe, expect, expectTypeOf, it } from 'vitest';
 
 import type {
+    ComposerDecorationResultV1 as ProtocolComposerDecorationResultV1,
+    ComposerDecorationSetV1 as ProtocolComposerDecorationSetV1,
+    ComposerFocusResultV1 as ProtocolComposerFocusResultV1,
+    ComposerInputLockRequestV1 as ProtocolComposerInputLockRequestV1,
+    ComposerOperationV1 as ProtocolComposerOperationV1,
+    ComposerReadResultV1 as ProtocolComposerReadResultV1,
+    ComposerRefV1 as ProtocolComposerRefV1,
+    ComposerSnapshotV1 as ProtocolComposerSnapshotV1,
+    ComposerSurfaceInputV1 as ProtocolComposerSurfaceInputV1,
+    ComposerTransactionResultV1 as ProtocolComposerTransactionResultV1,
+    ComposerTransactionV1 as ProtocolComposerTransactionV1,
     CurrentUiCommandDeclarationV1 as ProtocolCurrentUiCommandDeclarationV1,
     CurrentUiCommandDescriptorV1 as ProtocolCurrentUiCommandDescriptorV1,
     CurrentUiContextEntityV1 as ProtocolCurrentUiContextEntityV1,
@@ -16,6 +27,10 @@ import type {
 } from '@happier-dev/protocol/plugins/ui/client';
 import type {
     ComposerMentionRefV1,
+    ComposerDecorationResultV1,
+    ComposerDecorationSetV1,
+    ComposerFocusResultV1,
+    ComposerInputLockRequestV1,
     ComposerAttachmentUpdateV1,
     ComposerAttachmentViewV1,
     ComposerContentHandleV1,
@@ -23,8 +38,13 @@ import type {
     ComposerContentInspectResultV1,
     ComposerContentPickMediaRequestV1,
     ComposerOperationV1,
+    ComposerReadResultV1,
     ComposerStagedMediaContentV1,
     ComposerRefV1,
+    ComposerSnapshotV1,
+    ComposerSurfaceInputV1,
+    ComposerTransactionResultV1,
+    ComposerTransactionV1,
     CurrentUiCommandDeclarationV1,
     CurrentUiCommandDescriptorV1,
     CurrentUiContextEntityV1,
@@ -141,6 +161,23 @@ describe('PluginUiHostApi initial public contract', () => {
         expect(snapshot.references[0]?.composerReference).toEqual(composerReference);
         expectTypeOf<NonNullable<ComposerMentionRefV1['composerReference']>>()
             .toEqualTypeOf<Readonly<PluginUiContributionIdentityV1>>();
+    });
+
+    it('aliases the complete browser-safe Composer contract to Protocol ownership', () => {
+        expectTypeOf<ComposerRefV1>().toEqualTypeOf<ProtocolComposerRefV1>();
+        expectTypeOf<ComposerSurfaceInputV1>().toEqualTypeOf<ProtocolComposerSurfaceInputV1>();
+        expectTypeOf<ComposerSnapshotV1>().toEqualTypeOf<ProtocolComposerSnapshotV1>();
+        expectTypeOf<ComposerOperationV1>().toEqualTypeOf<ProtocolComposerOperationV1>();
+        expectTypeOf<ComposerTransactionV1>().toEqualTypeOf<ProtocolComposerTransactionV1>();
+        expectTypeOf<ComposerTransactionResultV1>()
+            .toEqualTypeOf<ProtocolComposerTransactionResultV1>();
+        expectTypeOf<ComposerReadResultV1>().toEqualTypeOf<ProtocolComposerReadResultV1>();
+        expectTypeOf<ComposerFocusResultV1>().toEqualTypeOf<ProtocolComposerFocusResultV1>();
+        expectTypeOf<ComposerDecorationSetV1>().toEqualTypeOf<ProtocolComposerDecorationSetV1>();
+        expectTypeOf<ComposerDecorationResultV1>()
+            .toEqualTypeOf<ProtocolComposerDecorationResultV1>();
+        expectTypeOf<ComposerInputLockRequestV1>()
+            .toEqualTypeOf<ProtocolComposerInputLockRequestV1>();
     });
 
     it('exposes only the opaque media-content operations on the public Composer host API', () => {

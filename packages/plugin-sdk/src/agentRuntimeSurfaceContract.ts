@@ -477,9 +477,9 @@ type _ExecutionRunOpenMustCarryProviderBoundLaunchInputs = AssertTrue<
   Equal<
     Extract<
       keyof AgentExecutionRunOpenRequest,
-      'modelSelection' | 'configuration' | 'providerBinding'
+      'modelSelection' | 'configuration' | 'providerBinding' | 'causalPermissionAuthority'
     >,
-    'modelSelection' | 'configuration' | 'providerBinding'
+    'modelSelection' | 'configuration' | 'providerBinding' | 'causalPermissionAuthority'
   >
 >;
 
@@ -614,6 +614,7 @@ type _SessionHostServicesMustStayNarrowAndProviderNeutral = AssertTrue<
     | 'activeInput'
     | 'workflowActivity'
     | 'toolExecution'
+    | 'subagents'
     | 'nativeHome'
     | 'happierTools'
   >
@@ -621,6 +622,17 @@ type _SessionHostServicesMustStayNarrowAndProviderNeutral = AssertTrue<
 
 type _AgentToolExecutionServiceMustExposeOnlyThePreEffectBoundary = AssertTrue<
   Equal<keyof AgentToolExecutionService, 'before'>
+>;
+
+type _AgentSubagentEvidencePublisherMustNotExposeLifecycleMutationActions = AssertTrue<
+  Equal<keyof AgentSessionHostServices['subagents'], 'observe'>
+>;
+
+type _AgentSubagentEvidenceMustStayBoundedToNativeCorrelation = AssertTrue<
+  Equal<
+    keyof Parameters<AgentSessionHostServices['subagents']['observe']>[0],
+    'observationId' | 'groupId' | 'status' | 'detail'
+  >
 >;
 
 type _SessionMcpTransportMustStayBounded = AssertTrue<

@@ -110,6 +110,7 @@ export type { AgentDaemonSpawnToolResolutionContextV1 } from '../../agentRuntime
 export type { AgentDaemonSpawnValidationResult } from '../../agentRuntime/projections.js';
 export type { AgentDeferredStartupEligibilityInputV1 } from '../../agentRuntime/projections.js';
 export type { AgentExecutionRunEvent } from '../../agentRuntime/projections.js';
+export { AgentExecutionRunEventSchema } from '../../agentRuntime/projections.js';
 export type { AgentExecutionRunOpenRequest } from '../../agentRuntime/projections.js';
 export type { AgentExecutionRunRuntime } from '../../agentRuntime/projections.js';
 export type { AgentExecutionRunRuntimeFactory } from '../../agentRuntime/projections.js';
@@ -250,6 +251,8 @@ export type { AgentSessionSendResult } from '../../agentRuntime/projections.js';
 export type { AgentSessionSkillCatalogItem } from '../../agentRuntime/projections.js';
 export type { AgentSessionStartupContributionV1 } from '../../agentRuntime/projections.js';
 export type { AgentSessionStartupInstructions } from '../../agentRuntime/projections.js';
+export type { AgentSessionSubagentObservation } from '../../agentRuntime/projections.js';
+export type { AgentSessionSubagentObservationPublisher } from '../../agentRuntime/projections.js';
 export type { AgentSessionTerminalComposerClearOutcome } from '../../agentRuntime/projections.js';
 export type { AgentSessionUsageLimitRecoveryControl } from '../../agentRuntime/projections.js';
 export type { AgentSessionUsageLimitRecoveryRequest } from '../../agentRuntime/projections.js';

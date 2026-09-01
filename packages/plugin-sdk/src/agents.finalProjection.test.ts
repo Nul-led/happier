@@ -102,6 +102,7 @@ describe('final Agent SDK projections', () => {
 
   it('keeps runtime schemas as exact canonical Protocol identities', () => {
     for (const name of [
+      'AgentExecutionRunEventSchema',
       'AgentProviderBindingMaterializationV1Schema',
       'AgentRuntimeJsonValueSchema',
       'AgentSessionProviderBindingV1Schema',

@@ -48,7 +48,6 @@ const PRIVACY_AMENDMENT_GATED_SESSION_HANDLE_MEMBERS = [
 const NON_PROVIDER_NORMAL_EXPERIMENTAL_OVERLAPS = [
     'HookHandler',
     'FileSystemService',
-    'SubagentObservation',
     'SubagentSummary',
     'SubagentsService',
     'WorkStateItem',
@@ -225,6 +224,7 @@ function experimentalExportOwners(program: ts.Program): ReadonlyMap<string, read
 
 const PACKED_RUNTIME_CONSUMER_KEYS = [
     '.:PluginError',
+    './agents/runtime:AgentExecutionRunEventSchema',
     './agents/runtime:AgentRuntimeJsonValueSchema',
     './agents/runtime:AgentSessionRuntimeEventSchema',
     './ui/client:createPluginUiHostApiClient',

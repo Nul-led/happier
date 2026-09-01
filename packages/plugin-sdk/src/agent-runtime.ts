@@ -82,6 +82,8 @@ export type {
   AgentSessionHooksService,
   AgentSessionHostServices,
   AgentSessionNativeHomeService,
+  AgentSessionSubagentObservation,
+  AgentSessionSubagentObservationPublisher,
   AgentSessionActiveInputBinding,
   AgentSessionActiveInputStatus,
   AgentSessionInput,
@@ -129,6 +131,7 @@ export type {
 } from './agentRuntime/index.js';
 
 export {
+  AgentExecutionRunEventSchema,
   AgentRuntimeJsonValueSchema,
   AgentSessionRuntimeEventSchema,
 } from '@happier-dev/protocol/runtime';

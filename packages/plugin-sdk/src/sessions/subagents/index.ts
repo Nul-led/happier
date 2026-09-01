@@ -4,7 +4,6 @@ export type { ParticipantRecipientV1 } from '../subagents.js';
 export type { SubagentCommandV1 } from '../subagents.js';
 export type { SubagentLaunchV1 } from '../subagents.js';
 export type { SubagentLifecycleDetailV1 } from '../subagents.js';
-export type { SubagentObservation } from '../../services/sessions.js';
 export type { SubagentRefInputV1 } from '../subagents.js';
 export type { SubagentRefV1 } from '../subagents.js';
 export type { SubagentStatusV1 } from '../subagents.js';

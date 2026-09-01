@@ -24,9 +24,9 @@ import type { PluginJsonSchema } from './identity.js';
 
 /**
  * Declaration-neutral projection of the canonical immutable automation
- * provenance.  Protocol owns parsing and persistence; the SDK owns this
+ * provenance. Protocol owns parsing and persistence; the SDK owns this
  * author-facing structural name so an external author's emitted declaration
- * does not name the host-private Protocol package.  Keep the union in lockstep
+ * does not name the host-private Protocol package. Keep the union in lockstep
  * with `AutomationRunCauseSchema` through the invocation contract test.
  */
 export type PluginAutomationRunCause =

@@ -28,7 +28,10 @@ import type { ProtocolComposableSchema, ProtocolSchemaOutput } from './protocol/
 /**
  * Target-artifact code for one static Collection migration identity. The host
  * supplies only an opened, source-contract-validated value; an author cannot
- * name Account, collection, contract, storage, or writer authority here.
+ * name Account, collection, contract, storage, or writer authority here. The
+ * host may invoke the callback at least once while preparing or retrying a
+ * candidate, until that exact staged output is accepted, so callbacks must be
+ * pure, idempotent, and free of external side effects.
  */
 export type PluginAccountCollectionMigration<
     TSource extends Readonly<Record<string, JsonValue>> = Readonly<Record<string, JsonValue>>,
@@ -196,9 +199,15 @@ export type PluginCollectionWatchQuery<
  */
 export type PluginCollectionLimits = Readonly<{
   maxRowEncodedBytes: number;
+  /** Effective live-row ceiling for this collection. */
+  maxRows: number;
+  /** Effective encoded-byte ceiling for this collection. */
+  maxCollectionEncodedBytes: number;
   maxBatchBytes: number;
   maxBatchRows: number;
+  /** Deployment-wide aggregate ceiling across all Account collections. */
   maxAccountRows: number;
+  /** Deployment-wide aggregate byte ceiling across all Account collections. */
   maxAccountBytes: number;
   /**
    * `deployment` when the connected deployment published its effective policy.
@@ -277,9 +286,9 @@ export interface PluginAccountCollection<
         deleted: true;
     }>>;
     /**
-     * Physically reclaim one exact logical-delete tombstone. Callers must own
-     * the row's retention/replay proof; the host obtains and checks the
-     * Collection absence currentness internally before issuing this CAS.
+     * Physically reclaim one exact live row or logical-delete tombstone.
+     * Callers must own the row's retention/replay proof; the host obtains and
+     * checks Collection absence currentness before issuing this CAS.
      */
     forget(
         rowId: string,

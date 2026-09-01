@@ -8,6 +8,7 @@ import {
   parsePermissionIntentAlias as canonicalParsePermissionIntentAlias,
 } from '@happier-dev/agents/permissions';
 import {
+  AgentExecutionRunEventSchema as canonicalAgentExecutionRunEventSchema,
   AgentRuntimeJsonValueSchema as canonicalAgentRuntimeJsonValueSchema,
   AgentSessionProviderBindingV1Schema as canonicalAgentSessionProviderBindingV1Schema,
   AgentSessionRuntimeEventSchema as canonicalAgentSessionRuntimeEventSchema,
@@ -51,6 +52,7 @@ import type {
   AgentSessionProviderBindingUpstream,
   AgentSessionRuntimeEvent,
 } from './session.js';
+import type { AgentExecutionRunEvent } from './executionRun.js';
 import type { AgentAcpToolNameInference } from './acpTypes.js';
 import type { JsonValue } from '../identity.js';
 
@@ -123,6 +125,8 @@ export type {
   AgentSessionHostServices,
   AgentSessionHappierToolsService,
   AgentSessionNativeHomeService,
+  AgentSessionSubagentObservation,
+  AgentSessionSubagentObservationPublisher,
   AgentSessionNativeToolBridgeConfig,
   AgentSessionNativeToolDescriptor,
   AgentTerminalHostCreateOrAttachRequest,
@@ -367,6 +371,17 @@ export const AgentSessionProviderBindingV1Schema: Readonly<{
       }>;
 }> =
   canonicalAgentSessionProviderBindingV1Schema;
+export const AgentExecutionRunEventSchema: Readonly<{
+  parse(value: unknown): AgentExecutionRunEvent;
+  safeParse(value: unknown):
+    | Readonly<{ success: true; data: AgentExecutionRunEvent }>
+    | Readonly<{
+        success: false;
+        error: Readonly<{
+          issues: readonly Readonly<{ message: string }>[];
+        }>;
+      }>;
+}> = canonicalAgentExecutionRunEventSchema;
 export const AgentSessionRuntimeEventSchema: Readonly<{
   parse(value: unknown): AgentSessionRuntimeEvent;
   safeParse(value: unknown):

@@ -3234,6 +3234,14 @@
     },
     {
       "specifier": "./agents/runtime",
+      "exportName": "AgentExecutionRunEventSchema",
+      "kind": "value",
+      "sourceModule": "src/agentRuntime/projections.ts",
+      "sourceExport": "AgentExecutionRunEventSchema",
+      "realm": "daemon"
+    },
+    {
+      "specifier": "./agents/runtime",
       "exportName": "AgentExecutionRunOpenRequest",
       "kind": "type",
       "sourceModule": "src/agentRuntime/projections.ts",
@@ -4350,6 +4358,22 @@
       "kind": "type",
       "sourceModule": "src/agentRuntime/projections.ts",
       "sourceExport": "AgentSessionStartupInstructions",
+      "realm": "daemon"
+    },
+    {
+      "specifier": "./agents/runtime",
+      "exportName": "AgentSessionSubagentObservation",
+      "kind": "type",
+      "sourceModule": "src/agentRuntime/projections.ts",
+      "sourceExport": "AgentSessionSubagentObservation",
+      "realm": "daemon"
+    },
+    {
+      "specifier": "./agents/runtime",
+      "exportName": "AgentSessionSubagentObservationPublisher",
+      "kind": "type",
+      "sourceModule": "src/agentRuntime/projections.ts",
+      "sourceExport": "AgentSessionSubagentObservationPublisher",
       "realm": "daemon"
     },
     {
@@ -7394,6 +7418,14 @@
     },
     {
       "specifier": "./events",
+      "exportName": "projectPluginEventAdmissionSourceStatusV1",
+      "kind": "value",
+      "sourceModule": "src/eventAutomation.ts",
+      "sourceExport": "projectPluginEventAdmissionSourceStatusV1",
+      "realm": "any"
+    },
+    {
+      "specifier": "./events",
       "exportName": "projectPluginEventSourceConnectionStatusV1",
       "kind": "value",
       "sourceModule": "src/eventAutomation.ts",
@@ -8830,30 +8862,6 @@
       "kind": "type",
       "sourceModule": "src/manifest.ts",
       "sourceExport": "AgentUiMutablePluginSettingReferenceV1",
-      "realm": "any"
-    },
-    {
-      "specifier": "./manifest",
-      "exportName": "AgentUiRuntimeDescriptorAgentExtraIdentityV1",
-      "kind": "type",
-      "sourceModule": "src/manifest.ts",
-      "sourceExport": "AgentUiRuntimeDescriptorAgentExtraIdentityV1",
-      "realm": "any"
-    },
-    {
-      "specifier": "./manifest",
-      "exportName": "AgentUiRuntimeDescriptorAgentExtraV1",
-      "kind": "type",
-      "sourceModule": "src/manifest.ts",
-      "sourceExport": "AgentUiRuntimeDescriptorAgentExtraV1",
-      "realm": "any"
-    },
-    {
-      "specifier": "./manifest",
-      "exportName": "AgentUiRuntimeDescriptorLinkExtrasV1",
-      "kind": "type",
-      "sourceModule": "src/manifest.ts",
-      "sourceExport": "AgentUiRuntimeDescriptorLinkExtrasV1",
       "realm": "any"
     },
     {
@@ -15583,14 +15591,6 @@
       "sourceModule": "src/sessions/subagents.ts",
       "sourceExport": "SubagentLifecycleDetailV1",
       "realm": "any"
-    },
-    {
-      "specifier": "./sessions/subagents",
-      "exportName": "SubagentObservation",
-      "kind": "type",
-      "sourceModule": "src/services/sessions.ts",
-      "sourceExport": "SubagentObservation",
-      "realm": "daemon"
     },
     {
       "specifier": "./sessions/subagents",

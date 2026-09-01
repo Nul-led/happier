@@ -217,7 +217,6 @@ export type {
     StorageScopeService,
     StorageService,
     StorageTransaction,
-    SubagentObservation,
     SubagentSummary,
     SubagentsService,
     PluginSystemToolDiagnostic,

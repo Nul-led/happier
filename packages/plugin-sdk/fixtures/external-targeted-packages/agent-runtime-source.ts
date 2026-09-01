@@ -5,6 +5,7 @@ import {
   type AgentSessionOpenRequest,
   type AgentSessionProviderBinding,
   type AgentSessionProviderCheckpoint,
+  type AgentSessionRuntimeContext,
   type AgentSessionRuntimeEvent,
   type AgentSessionSendRequest,
 } from '@happier-dev/plugin-sdk/agents/runtime';
@@ -58,6 +59,17 @@ export const externalCompactRequest: AgentSessionCompactRequest = {
   compactionId: 'compact-external',
   trigger: 'manual',
 };
+
+/** Provider-native child evidence uses the focused Agent Session seam, not generic Session mutation. */
+export async function publishExternalNativeSubagent(
+  context: AgentSessionRuntimeContext,
+) {
+  return await context.session.services.subagents.observe({
+    observationId: 'external-native-child-1',
+    status: 'running',
+    detail: { source: 'external-agent-native-event' },
+  });
+}
 
 /** Public schema values remain useable without importing Protocol directly. */
 export const externalRuntimeSchemaValues = [

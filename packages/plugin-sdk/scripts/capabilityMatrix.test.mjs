@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFile, rm, writeFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import test from 'node:test';
 import ts from 'typescript';
@@ -11,17 +11,12 @@ import {
 
 import {
   CapabilityMatrixValidationError,
-  capabilityMatrixProvingConsumerExerciseFailure,
   deriveCapabilityMatrixMetadata,
   projectCapabilityMatrix,
   readDefinePluginCapabilityPolicy,
   readPluginServicesCapabilityCatalog,
 } from './capabilityMatrix.mjs';
-import {
-  createCapabilityMatrixOutput,
-  resolveAvailableCapabilityMatrixProvingConsumerSourcePaths,
-  selectAvailableCapabilityMatrixProvingConsumerSourcePaths,
-} from './capabilityMatrixCli.mjs';
+import { createCapabilityMatrixOutput } from './capabilityMatrixCli.mjs';
 import { CAPABILITY_MATRIX_DECLARATIONS_V1 } from './capabilityMatrixMetadata.mjs';
 import {
   readCurrentApiSurfaceInventory,
@@ -29,106 +24,12 @@ import {
 
 function assertDeferredExternalDevelopmentProof(declaration) {
   assert.equal(declaration.availabilityDisposition, 'deferred');
-  assert.equal(declaration.provingConsumer, 'no current positive consumer');
+  assert.equal(declaration.provingConsumer, null);
   assert.match(declaration.unblockCondition, /maintained external development-source plugin/u);
   assert.match(declaration.unblockCondition, /current loaded development stack/u);
   assert.match(declaration.unblockCondition, /real invocation/u);
   assert.match(declaration.unblockCondition, /currentness/u);
 }
-
-test('accepts the canonical Account storage guard as a storage service invocation', () => {
-  const source = [
-    "import { requireAccountStorage } from '@happier-dev/plugin-sdk/storage';",
-    'export const run = (context) => requireAccountStorage(context, {',
-    "  code: 'storage_unavailable',",
-    "  message: 'Storage is required.',",
-    '});',
-  ].join('\n');
-
-  assert.equal(
-    capabilityMatrixProvingConsumerExerciseFailure({ serviceId: 'storage' }, source),
-    null,
-  );
-});
-
-test('rejects storage guard text that is not a named SDK import and call', () => {
-  for (const source of [
-    [
-      "const sdk = '@happier-dev/plugin-sdk/storage';",
-      'function requireAccountStorage() {}',
-      'requireAccountStorage();',
-    ].join('\n'),
-    [
-      "// import { requireAccountStorage } from '@happier-dev/plugin-sdk/storage';",
-      'function requireAccountStorage() {}',
-      'requireAccountStorage();',
-    ].join('\n'),
-    [
-      "import storage from '@happier-dev/plugin-sdk/storage';",
-      'storage.requireAccountStorage();',
-    ].join('\n'),
-  ]) {
-    assert.equal(
-      capabilityMatrixProvingConsumerExerciseFailure({ serviceId: 'storage' }, source),
-      'does not invoke services.storage',
-    );
-  }
-});
-
-test('rejects comments and unrelated literals as capability exercise evidence', () => {
-  const cases = [
-    [{ specifier: './events' }, "// import '@happier-dev/plugin-sdk/events';"],
-    [{ serviceId: 'events' }, "const note = 'context.services.events';"],
-    [{ capability: 'network.client' }, "const note = 'network.client';"],
-    [{ manifestFamily: 'actions', definePluginAuthorKey: 'actions' }, "// definePlugin({ actions: [] });"],
-    [{ serviceId: 'events' }, [
-      "import type { PluginInvocationContext } from '@happier-dev/plugin-sdk';",
-      'const unrelated = { services: { events: {} } };',
-      'unrelated.services.events;',
-    ].join('\n')],
-    [{ serviceId: 'events' }, [
-      "import type { PluginInvocationContext } from '@happier-dev/plugin-sdk';",
-      'const context = { services: { events: {} } };',
-      'context.services.events;',
-    ].join('\n')],
-    [{ capability: 'network.client' }, [
-      "import { definePlugin } from '@happier-dev/plugin-sdk';",
-      "const unrelated = { hostAccess: [{ capability: 'network.client' }] };",
-      "definePlugin({ id: 'example' });",
-    ].join('\n')],
-    [{ manifestFamily: 'mcp.discoverySources', definePluginAuthorKey: 'mcp' }, [
-      "import { definePlugin } from '@happier-dev/plugin-sdk';",
-      'const unrelated = { discoverySources: {} };',
-      'definePlugin({ mcp: { servers: {} } });',
-    ].join('\n')],
-  ];
-
-  for (const [row, source] of cases) {
-    assert.notEqual(capabilityMatrixProvingConsumerExerciseFailure(row, source), null);
-  }
-});
-
-test('accepts syntax-owned imports, service access, HostAccess, and definePlugin declarations', () => {
-  const cases = [
-    [{ specifier: './events' }, "import type { EventsService } from '@happier-dev/plugin-sdk/events';"],
-    [{ serviceId: 'events' }, [
-      "import type { PluginInvocationContext } from '@happier-dev/plugin-sdk';",
-      "export const run = (context: PluginInvocationContext) => context.services.events.plugin.emit('ready');",
-    ].join("\n")],
-    [{ capability: 'network.client' }, [
-      "import { definePlugin as define } from '@happier-dev/plugin-sdk';",
-      "define({ hostAccess: { required: [{ capability: 'network.client' }] } });",
-    ].join("\n")],
-    [{ manifestFamily: 'mcp.discoverySources', definePluginAuthorKey: 'mcp' }, [
-      "import { definePlugin as define } from '@happier-dev/plugin-sdk';",
-      "define({ mcp: { discoverySources: {} } });",
-    ].join("\n")],
-  ];
-
-  for (const [row, source] of cases) {
-    assert.equal(capabilityMatrixProvingConsumerExerciseFailure(row, source), null);
-  }
-});
 
 const CATALOG = Object.freeze([
   Object.freeze({
@@ -398,7 +299,7 @@ test('derives targeted contribution availability through the maintained external
     availabilityDisposition: 'available',
     provingConsumer: 'packages/plugin-sdk/fixtures/external-targeted-packages/contributor/src/index.ts',
     sourceApiAvailability: 'present',
-    sourceConsumer: 'packages/plugin-sdk/fixtures/external-targeted-packages/contributor/src/index.ts',
+    sourceConsumer: null,
     loadedPlatformProof: 'not-recorded',
     releaseAvailability: 'not-published',
   });
@@ -407,7 +308,7 @@ test('derives targeted contribution availability through the maintained external
 test('keeps MCP servers deferred until a maintained plugin author declares and registers one', () => {
   assert.deepEqual(CAPABILITY_MATRIX_DECLARATIONS_V1.manifestFamilies['mcp.servers'], {
     availabilityDisposition: 'deferred',
-    provingConsumer: 'no current positive consumer',
+    provingConsumer: null,
     unblockCondition: 'A maintained plugin author declares and registers an MCP server through the canonical MCP lifecycle.',
   });
 });
@@ -470,7 +371,7 @@ test('derives HostAccess metadata from the terminal/session and deferred declara
     predecessorRemoval: 'none',
     availabilityDisposition: 'available',
     sourceApiAvailability: 'present',
-    sourceConsumer: 'packages/plugins/claude/src/manifest.ts',
+    sourceConsumer: null,
     loadedPlatformProof: 'not-recorded',
     releaseAvailability: 'not-published',
   });
@@ -481,7 +382,7 @@ test('derives HostAccess metadata from the terminal/session and deferred declara
     assert.equal(row.lifecycle, 'declaration-only');
     assert.equal(row.specialistOwner, 'apps/cli/src/plugins/runtime/lifecycle/activation/policy.ts');
     assert.equal(row.availabilityDisposition, 'deferred');
-    assert.equal(row.provingConsumer, 'no current positive consumer');
+    assert.equal(row.provingConsumer, null);
   }
 });
 
@@ -500,75 +401,21 @@ test('rejects a HostAccess row without one exact availability disposition', () =
   );
 });
 
-test('rejects an available capability whose only proof is the host binder', () => {
-  assert.throws(
-    () => project({
-      hostAccess: Object.freeze({
-        'network.client': Object.freeze({
-          ...metadata().hostAccess['network.client'],
-          provingConsumer: 'apps/cli/src/plugins/runtime/hostAccess/resolve.ts',
-        }),
+test('keeps an implemented capability available without a proving consumer', () => {
+  const matrix = project({
+    manifestFamilies: Object.freeze({
+      actions: Object.freeze({
+        ...metadata().manifestFamilies.actions,
+        provingConsumer: undefined,
+        sourceConsumer: null,
       }),
     }),
-    (error) => error instanceof CapabilityMatrixValidationError
-      && error.diagnostics.includes(
-        'hostAccess.network.client provingConsumer must name a maintained public plugin/example consumer, not a host binder',
-      ),
-  );
-});
+  });
 
-test('rejects an available manifest family whose proof is only its catalog owner label', () => {
-  assert.throws(
-    () => project({
-      manifestFamilies: Object.freeze({
-        actions: Object.freeze({
-          ...metadata().manifestFamilies.actions,
-          availabilityDisposition: 'available',
-          provingConsumer: 'packages/protocol/src/plugins/contributions/catalog.ts#actions',
-        }),
-      }),
-    }),
-    (error) => error instanceof CapabilityMatrixValidationError
-      && error.diagnostics.includes(
-        'manifestFamilies.actions provingConsumer must name a maintained public plugin/example consumer, not a host binder',
-      ),
-  );
-});
-
-test('rejects an available service whose proof self-references PluginServices', () => {
-  assert.throws(
-    () => project({
-      services: Object.freeze({
-        http: Object.freeze({
-          ...metadata().services.http,
-          availabilityDisposition: 'available',
-          provingConsumer: 'packages/plugin-sdk/src/services/index.ts#PluginServices.http',
-        }),
-      }),
-    }),
-    (error) => error instanceof CapabilityMatrixValidationError
-      && error.diagnostics.includes(
-        'services.http provingConsumer must name a maintained public plugin/example consumer, not a host binder',
-      ),
-  );
-});
-
-test('rejects an available capability whose proving leaf is also its source owner', () => {
-  assert.throws(
-    () => project({
-      manifestFamilies: Object.freeze({
-        actions: Object.freeze({
-          ...metadata().manifestFamilies.actions,
-          producer: 'packages/plugins/channels/src/manifest.ts#actions',
-          provingConsumer: 'packages/plugins/channels/src/manifest.ts',
-        }),
-      }),
-    }),
-    (error) => error instanceof CapabilityMatrixValidationError
-      && error.diagnostics.includes(
-        'manifestFamilies.actions provingConsumer must name a distinct maintained public plugin/example leaf, not its producer or specialist owner',
-      ),
-  );
+  const actions = matrix.manifestFamilies.find((row) => row.manifestFamily === 'actions');
+  assert.equal(actions?.availabilityDisposition, 'available');
+  assert.equal(actions?.provingConsumer, null);
+  assert.equal(actions?.sourceConsumer, null);
 });
 
 test('requires every manifest-family and service row to state one availability disposition', () => {
@@ -642,7 +489,7 @@ test('rejects an available matrix row for a family deferred from definePlugin au
   );
 });
 
-test('requires manifest-family and service deferred rows to name no current consumer and an unblock', () => {
+test('requires manifest-family and service deferred rows to name an unblock', () => {
   assert.throws(
     () => project({
       manifestFamilies: Object.freeze({
@@ -667,31 +514,7 @@ test('requires manifest-family and service deferred rows to name no current cons
         'manifestFamilies.actions.unblockCondition must be a non-empty string',
       )
       && error.diagnostics.includes(
-        'manifestFamilies.actions deferred provingConsumer must be "no current positive consumer"',
-      )
-      && error.diagnostics.includes(
         'services.http.unblockCondition must be a non-empty string',
-      )
-      && error.diagnostics.includes(
-        'services.http deferred provingConsumer must be "no current positive consumer"',
-      ),
-  );
-});
-
-test('rejects an available public subpath whose proof is outside the public plugin/example corridor', () => {
-  assert.throws(
-    () => project({
-      subpaths: Object.freeze({
-        ...metadata().subpaths,
-        './http': Object.freeze({
-          ...metadata().subpaths['./http'],
-          provingConsumer: 'packages/plugin-sdk/fixtures/authoring-inference/run.ts',
-        }),
-      }),
-    }),
-    (error) => error instanceof CapabilityMatrixValidationError
-      && error.diagnostics.includes(
-        'subpaths../http provingConsumer must name a maintained public plugin/example consumer, not a host binder',
       ),
   );
 });
@@ -760,7 +583,7 @@ test('joins the current canonical catalogs without a missing, stale, or disposit
     predecessorRemoval: 'none',
     availabilityDisposition: 'available',
     sourceApiAvailability: 'present',
-    sourceConsumer: 'packages/plugins/claude/src/manifest.ts',
+    sourceConsumer: null,
     loadedPlatformProof: 'not-recorded',
     releaseAvailability: 'not-published',
   });
@@ -783,7 +606,7 @@ test('joins the current canonical catalogs without a missing, stale, or disposit
       predecessorRemoval: 'catalog-disposition:reshaped',
       availabilityDisposition: 'available',
       sourceApiAvailability: 'present',
-      sourceConsumer: 'packages/plugin-ui/fixtures/external-authoring/src/index.ts',
+      sourceConsumer: null,
       loadedPlatformProof: 'not-recorded',
       releaseAvailability: 'not-published',
     },
@@ -795,7 +618,7 @@ test('joins the current canonical catalogs without a missing, stale, or disposit
     assert.equal(row?.lifecycle, 'declaration-only');
     assert.equal(row?.specialistOwner, 'apps/cli/src/plugins/runtime/lifecycle/activation/policy.ts');
     assert.equal(row?.availabilityDisposition, 'deferred');
-    assert.equal(row?.provingConsumer, 'no current positive consumer');
+    assert.equal(row?.provingConsumer, null);
   }
 });
 
@@ -812,161 +635,6 @@ test('plans one deterministic capability-matrix artifact from the same public in
       .map((entry) => entry.specifier)
       .sort(),
   ]);
-});
-
-test('rejects an available capability whose declared public consumer path is absent', async () => {
-  const packageRoot = resolve(import.meta.dirname, '..');
-  const apiInventory = await readCurrentApiInventory(packageRoot);
-  await assert.rejects(
-    createCapabilityMatrixOutput({
-      packageRoot,
-      apiInventory,
-      declarations: Object.freeze({
-        ...CAPABILITY_MATRIX_DECLARATIONS_V1,
-        hostAccess: Object.freeze({
-          ...CAPABILITY_MATRIX_DECLARATIONS_V1.hostAccess,
-          network: Object.freeze({
-            availabilityDisposition: 'available',
-            provingConsumer: 'packages/plugins/not-a-real-plugin/src/consumer.ts',
-          }),
-        }),
-      }),
-    }),
-    /hostAccess\.network provingConsumer path does not name a regular file/u,
-  );
-});
-
-test('rejects an available capability whose declared consumer never exercises the family', async () => {
-  const packageRoot = resolve(import.meta.dirname, '..');
-  const apiInventory = await readCurrentApiInventory(packageRoot);
-  await assert.rejects(
-    createCapabilityMatrixOutput({
-      packageRoot,
-      apiInventory,
-      declarations: Object.freeze({
-        ...CAPABILITY_MATRIX_DECLARATIONS_V1,
-        subpaths: Object.freeze({
-          ...CAPABILITY_MATRIX_DECLARATIONS_V1.subpaths,
-          './mcp': Object.freeze({
-            availabilityDisposition: 'available',
-            // A real, maintained, regular file that never imports the subpath:
-            // the path check alone reports this row as proven.
-            provingConsumer: 'packages/plugins/opencode/src/activate.ts',
-          }),
-        }),
-      }),
-    }),
-    /subpaths\.\.\/mcp provingConsumer packages\/plugins\/opencode\/src\/activate\.ts does not import @happier-dev\/plugin-sdk\/mcp/u,
-  );
-});
-
-test('fails closed when an available proving consumer is not admitted into the TypeScript proof program', async () => {
-  const packageRoot = resolve(import.meta.dirname, '..');
-  const apiInventory = await readCurrentApiInventory(packageRoot);
-  // A real regular leaf under a maintained public consumer prefix whose
-  // extension the TypeScript proof program does not admit. Its text is a
-  // syntactically plausible SDK consumer, so syntax-only matching awards
-  // evidence the program never verified; the canonical path must fail closed
-  // on the missing proof-program admission instead.
-  const unadmittedConsumerRelative = 'packages/plugin-sdk/fixtures/external-targeted-packages/capability-proof-admission.tmp.md';
-  const unadmittedConsumer = resolve(packageRoot, 'fixtures/external-targeted-packages/capability-proof-admission.tmp.md');
-  await writeFile(
-    unadmittedConsumer,
-    [
-      'import { definePlugin } from \'@happier-dev/plugin-sdk/mcp\';',
-      'export default definePlugin({ id: \'capability-proof-admission-probe\' });',
-      '',
-    ].join('\n'),
-  );
-  try {
-    await assert.rejects(
-      createCapabilityMatrixOutput({
-        packageRoot,
-        apiInventory,
-        declarations: Object.freeze({
-          ...CAPABILITY_MATRIX_DECLARATIONS_V1,
-          subpaths: Object.freeze({
-            ...CAPABILITY_MATRIX_DECLARATIONS_V1.subpaths,
-            './mcp': Object.freeze({
-              availabilityDisposition: 'available',
-              provingConsumer: unadmittedConsumerRelative,
-            }),
-          }),
-        }),
-      }),
-      /subpaths\.\.[/]mcp provingConsumer packages\/plugin-sdk\/fixtures\/external-targeted-packages\/capability-proof-admission\.tmp\.md was not admitted into the TypeScript proof program/u,
-    );
-  } finally {
-    await rm(unadmittedConsumer, { force: true });
-  }
-});
-
-test('rejects an available manifest family whose declared consumer has no matching definePlugin author key', async () => {
-  const packageRoot = resolve(import.meta.dirname, '..');
-  const apiInventory = await readCurrentApiInventory(packageRoot);
-  await assert.rejects(
-    createCapabilityMatrixOutput({
-      packageRoot,
-      apiInventory,
-      declarations: Object.freeze({
-        ...CAPABILITY_MATRIX_DECLARATIONS_V1,
-        manifestFamilies: Object.freeze({
-          ...CAPABILITY_MATRIX_DECLARATIONS_V1.manifestFamilies,
-          'mcp.discoverySources': Object.freeze({
-            availabilityDisposition: 'available',
-            provingConsumer: 'packages/plugins/claude/src/agent/mcp/configServers.ts',
-          }),
-        }),
-      }),
-    }),
-    /manifestFamilies\.mcp\.discoverySources provingConsumer .* does not declare the 'mcp' definePlugin contribution key/u,
-  );
-});
-
-test('selects each distinct available proving-consumer source path for package staging', () => {
-  const paths = selectAvailableCapabilityMatrixProvingConsumerSourcePaths({
-    manifestFamilies: Object.freeze([
-      Object.freeze({ availabilityDisposition: 'available', provingConsumer: 'packages/plugins/channels/src/manifest.ts' }),
-      Object.freeze({ availabilityDisposition: 'deferred', provingConsumer: 'no current positive consumer' }),
-    ]),
-    services: Object.freeze([
-      Object.freeze({ availabilityDisposition: 'available', provingConsumer: 'packages/plugins/review-deepsec/src/agent/reviews/execution.ts' }),
-    ]),
-    hostAccess: Object.freeze([
-      Object.freeze({ availabilityDisposition: 'available', provingConsumer: 'packages/plugins/gemini/src/connectedAccounts/runtime.ts' }),
-      Object.freeze({ availabilityDisposition: 'deferred', provingConsumer: 'no current positive consumer' }),
-    ]),
-    subpaths: Object.freeze([
-      Object.freeze({ availabilityDisposition: 'available', provingConsumer: 'packages/plugins/gemini/src/connectedAccounts/runtime.ts' }),
-      Object.freeze({ availabilityDisposition: 'available', provingConsumer: 'packages/plugins/channels/src/activate.ts' }),
-    ]),
-  });
-
-  assert.deepEqual(paths, [
-    'packages/plugins/channels/src/activate.ts',
-    'packages/plugins/channels/src/manifest.ts',
-    'packages/plugins/gemini/src/connectedAccounts/runtime.ts',
-    'packages/plugins/review-deepsec/src/agent/reviews/execution.ts',
-  ]);
-  assert.equal(Object.isFrozen(paths), true);
-});
-
-test('stages the maintained external author proof for available browser, request-policy, and targeted-contribution capability rows', async () => {
-  const packageRoot = resolve(import.meta.dirname, '..');
-  const paths = await resolveAvailableCapabilityMatrixProvingConsumerSourcePaths({ packageRoot });
-
-  assert.equal(paths.includes('packages/plugins/gemini/src/connectedAccounts/runtime.ts'), true);
-  assert.equal(paths.includes('packages/plugins/channels/src/manifest.ts'), true);
-  assert.equal(paths.includes('packages/plugins/channels/src/ingress.ts'), true);
-  assert.equal(paths.includes('packages/plugins/channels/src/bindingTransition.ts'), true);
-  assert.equal(paths.includes('packages/plugins/posthog/src/manifest.ts'), true);
-  assert.equal(paths.includes('packages/tests/fixtures/plugin-platform/out-of-tree-channel-socket-provider/src/index.mjs'), true);
-  assert.equal(paths.includes('packages/tests/fixtures/plugin-platform/packed-targeted-contribution-projection/public-protocol.ts'), true);
-  assert.equal(paths.includes('packages/plugin-sdk/examples/action-contract-producer/src/index.ts'), true);
-  assert.equal(paths.includes('packages/plugin-sdk/fixtures/external-targeted-packages/target/src/index.ts'), true);
-  assert.equal(paths.includes('packages/plugin-sdk/fixtures/external-targeted-packages/contributor/src/index.ts'), true);
-  assert.equal(new Set(paths).size, paths.length);
-  assert.deepEqual(paths, [...paths].sort());
 });
 
 test('plans the current author-source matrix through the sole publisher output', async () => {
@@ -991,7 +659,7 @@ test('plans the current author-source matrix through the sole publisher output',
     predecessorRemoval: 'none',
     availabilityDisposition: 'available',
     sourceApiAvailability: 'present',
-    sourceConsumer: 'packages/plugins/channels/src/ingress.ts',
+    sourceConsumer: null,
     loadedPlatformProof: 'not-recorded',
     releaseAvailability: 'not-published',
   });

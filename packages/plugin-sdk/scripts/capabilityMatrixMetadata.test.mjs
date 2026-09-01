@@ -14,7 +14,7 @@ const CHANNELS_COMPOSER_PROOF = 'packages/plugins/channels/src/manifest.ts';
 
 function assertDeferredExternalDevelopmentProof(declaration) {
   assert.equal(declaration.availabilityDisposition, 'deferred');
-  assert.equal(declaration.provingConsumer, 'no current positive consumer');
+  assert.equal(declaration.provingConsumer, null);
   assert.match(declaration.unblockCondition, /maintained external development-source plugin/u);
   assert.match(declaration.unblockCondition, /current loaded development stack/u);
   assert.match(declaration.unblockCondition, /real invocation/u);
@@ -64,7 +64,7 @@ test('HostAccess declarations name the terminal session path and deferred declar
       lifecycle: 'declaration-only',
       specialistOwner: 'apps/cli/src/plugins/runtime/lifecycle/activation/policy.ts',
       availabilityDisposition: 'deferred',
-      provingConsumer: 'no current positive consumer',
+      provingConsumer: null,
       unblockCondition: CAPABILITY_MATRIX_DECLARATIONS_V1.hostAccess[capability].unblockCondition,
     });
   }
@@ -90,7 +90,7 @@ test('publishes r0.47 browser and request-policy authoring without promoting Hos
     false,
   );
   assert.equal(CAPABILITY_MATRIX_DECLARATIONS_V1.hostAccess.browser.availabilityDisposition, 'deferred');
-  assert.equal(CAPABILITY_MATRIX_DECLARATIONS_V1.hostAccess.browser.provingConsumer, 'no current positive consumer');
+  assert.equal(CAPABILITY_MATRIX_DECLARATIONS_V1.hostAccess.browser.provingConsumer, null);
   assert.equal(typeof CAPABILITY_MATRIX_DECLARATIONS_V1.hostAccess.browser.unblockCondition, 'string');
 
   const [browserEntrypoint, consumer] = await Promise.all([

@@ -134,12 +134,18 @@ async function reportCurrentSourceCatalog(
     }
 }
 
-function sourceStatusForAdmission(input: Readonly<{
-    definition: SourceDefinition;
-    result: AdmitItemResult | undefined;
+export function projectPluginEventAdmissionSourceStatusV1(input: Readonly<{
+    definition: Extract<
+        PluginActionResultById['automation.event.sources.list'],
+        Readonly<{ kind: 'page' }>
+    >['definitions'][number];
+    result: PluginActionResultById['automation.event.admit']['results'][number] | undefined;
     observationReceivedAt: number;
     observedDelta: 0 | 1;
-}>): SourceStatusInput {
+}>): Extract<
+    PluginActionInputById['automation.event.source.status.report'],
+    Readonly<{ kind: 'source' }>
+> {
     const checkpointSafe = input.result?.checkpointSafe === true;
     const status = checkpointSafe
         ? { state: 'observing' as const, code: 'none' as const }
@@ -177,7 +183,7 @@ async function reportAdmissionStatuses(input: Readonly<{
         try {
             await input.context.services.actions.execute(
                 'automation.event.source.status.report',
-                sourceStatusForAdmission({
+                projectPluginEventAdmissionSourceStatusV1({
                     definition: input.definitions[index]!,
                     result: input.results[index],
                     observationReceivedAt: input.observationReceivedAt,

@@ -1,7 +1,7 @@
 # Plugin SDK API surface
 
 > This package is Developer Preview.
-> `capability-matrix.json` records public-family availability with its proving consumer or explicit deferred disposition.
+> `capability-matrix.json` records realm-specific public-family availability separately from optional consumer and loaded proof.
 > Generated from `api-surface.json`. Do not hand-edit.
 
 | Specifier | Export | Kind | Realm |
@@ -347,6 +347,7 @@
 | `./agents/runtime` | `AgentDaemonSpawnValidationResult` | type | daemon |
 | `./agents/runtime` | `AgentDeferredStartupEligibilityInputV1` | type | daemon |
 | `./agents/runtime` | `AgentExecutionRunEvent` | type | daemon |
+| `./agents/runtime` | `AgentExecutionRunEventSchema` | value | daemon |
 | `./agents/runtime` | `AgentExecutionRunOpenRequest` | type | daemon |
 | `./agents/runtime` | `AgentExecutionRunRuntime` | type | daemon |
 | `./agents/runtime` | `AgentExecutionRunRuntimeFactory` | type | daemon |
@@ -487,6 +488,8 @@
 | `./agents/runtime` | `AgentSessionSkillCatalogItem` | type | daemon |
 | `./agents/runtime` | `AgentSessionStartupContributionV1` | type | daemon |
 | `./agents/runtime` | `AgentSessionStartupInstructions` | type | daemon |
+| `./agents/runtime` | `AgentSessionSubagentObservation` | type | daemon |
+| `./agents/runtime` | `AgentSessionSubagentObservationPublisher` | type | daemon |
 | `./agents/runtime` | `AgentSessionTerminalComposerClearOutcome` | type | daemon |
 | `./agents/runtime` | `AgentSessionUsageLimitRecoveryControl` | type | daemon |
 | `./agents/runtime` | `AgentSessionUsageLimitRecoveryRequest` | type | daemon |
@@ -867,6 +870,7 @@
 | `./events` | `admitCheckpointedPluginEventObservationV1` | value | any |
 | `./events` | `admitSessionSocketPluginEventObservationV1` | value | any |
 | `./events` | `createPluginEventAutomationSetupResultV1JsonSchema` | value | any |
+| `./events` | `projectPluginEventAdmissionSourceStatusV1` | value | any |
 | `./events` | `projectPluginEventSourceConnectionStatusV1` | value | any |
 | `./exec` | `AgentCliReadinessRequest` | type | daemon |
 | `./exec` | `AgentCliReadinessResult` | type | daemon |
@@ -1032,9 +1036,6 @@
 | `./manifest` | `AgentUiExternalSessionsSourceV1` | type | any |
 | `./manifest` | `AgentUiMessageDeclarationV1` | type | any |
 | `./manifest` | `AgentUiMutablePluginSettingReferenceV1` | type | any |
-| `./manifest` | `AgentUiRuntimeDescriptorAgentExtraIdentityV1` | type | any |
-| `./manifest` | `AgentUiRuntimeDescriptorAgentExtraV1` | type | any |
-| `./manifest` | `AgentUiRuntimeDescriptorLinkExtrasV1` | type | any |
 | `./manifest` | `AgentUiSessionAgentTeamBehaviorV1` | type | any |
 | `./manifest` | `AgentUiSessionDeclarationV1` | type | any |
 | `./manifest` | `AgentUiSessionProviderBehaviorV1` | type | any |
@@ -1876,7 +1877,6 @@
 | `./sessions/subagents` | `SubagentCommandV1` | type | any |
 | `./sessions/subagents` | `SubagentLaunchV1` | type | any |
 | `./sessions/subagents` | `SubagentLifecycleDetailV1` | type | any |
-| `./sessions/subagents` | `SubagentObservation` | type | daemon |
 | `./sessions/subagents` | `SubagentRefInputV1` | type | any |
 | `./sessions/subagents` | `SubagentRefV1` | type | any |
 | `./sessions/subagents` | `SubagentStatusV1` | type | any |

@@ -20,12 +20,12 @@ type CapabilityMatrix = Readonly<{
     manifestFamilies: readonly Readonly<{
         manifestFamily: string;
         availabilityDisposition: string;
-        provingConsumer: string;
+        provingConsumer: string | null;
     }>[];
     services: readonly Readonly<{
         serviceId: string;
         availabilityDisposition: string;
-        provingConsumer: string;
+        provingConsumer: string | null;
     }>[];
 }>;
 

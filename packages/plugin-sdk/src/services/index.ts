@@ -309,7 +309,6 @@ export type {
     WorkStateItem,
     WorkStateTruncation,
     SessionsService,
-    SubagentObservation,
     SubagentSummary,
     SubagentsService,
 } from './sessions.js';

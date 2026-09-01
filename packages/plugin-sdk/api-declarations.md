@@ -1637,7 +1637,7 @@ type UiSurfaceAppPageDefinitionFor<TView, TRenderer extends UiSurfaceRendererDef
 Declared by `dist/ui/surface.d.ts` as `UiSurfaceDeclarativeDefinition`.
 
 ```ts
-type UiSurfaceDeclarativeDefinition = UiSurfacePlacement<UiSurfaceDeclarativeRendererDefinition>;
+type UiSurfaceDeclarativeDefinition = UiSurfacePlacement<UiSurfaceDeclarativeRendererDefinition> | UiSurfaceRendererOnlyDefinition<UiSurfaceDeclarativeRendererDefinition>;
 ```
 
 
@@ -2021,50 +2021,7 @@ type ActionCaller = Readonly<{
     kind: 'automationRun';
     runId: string;
     automationId: string;
-    cause: {
-        kind: 'trigger';
-        triggerId: string;
-        triggerRevision: number;
-        triggerKind: 'schedule';
-        occurrenceKey: string;
-        occurredAt: number;
-        evidence: {
-            scheduledFor: number;
-        };
-    } | {
-        kind: 'trigger';
-        triggerId: string;
-        triggerRevision: number;
-        triggerKind: 'pluginEvent';
-        occurrenceKey: string;
-        occurredAt: number;
-        evidence: {
-            eventRef: {
-                pluginId: string;
-                localId: string;
-            };
-            sourceSelectorId: string;
-        };
-    } | {
-        kind: 'trigger';
-        triggerId: string;
-        triggerRevision: number;
-        triggerKind: 'sessionLifecycle';
-        occurrenceKey: string;
-        occurredAt: number;
-        evidence: {
-            event: 'parentTurnCompleted';
-            sourceSessionId: string;
-            sourceTurnId: string;
-        };
-    } | {
-        kind: 'manual';
-        invokedAt: number;
-    } | {
-        kind: 'conversation';
-        occurrenceKey: string;
-        occurredAt: number;
-    };
+    cause: AutomationRunCause;
 }>;
 ```
 
@@ -2403,28 +2360,12 @@ type ActionInputPredicate = Readonly<{
 Declared by `dist/actions/actionTypeMap.generated.d.ts` as `ActionSpec`.
 
 ```ts
-type ActionSpec = {
-    [x: string]: unknown;
+type ActionSpec = Omit<Readonly<{
     id: 'action.spec.search' | 'action.spec.get' | 'action.options.resolve' | 'action.invoke' | 'session.open' | 'session.fork' | 'session.continue_with_replay' | 'session.rollback' | 'session.checkpoint_code_rollback' | 'session.checkpoint' | 'session.restore' | 'session.handoff' | 'session.handoff.prepare_target' | 'session.handoff.prepare_target.resume' | 'session.handoff.prepare_target_result.get' | 'session.handoff.commit' | 'session.handoff.abort' | 'session.handoff.status.get' | 'session.spawn_new' | 'paths.list_recent' | 'projects.list' | 'prompts.invocations.list' | 'prompts.invocation.resolve' | 'machines.list' | 'servers.list' | 'review.engines.list' | 'agents.backends.list' | 'agents.models.list' | 'agents.config_options.list' | 'agents.session_modes.list' | 'sessions.spawn.profiles.list' | 'sessions.spawn.connected_services.list' | 'sessions.spawn.mcp_servers.preview' | 'session.message.send' | 'session.stop' | 'session.title.set' | 'session.model.set' | 'session.permission_mode.set' | 'session.archive' | 'session.unarchive' | 'session.status.get' | 'session.work_state.get' | 'session.goal.get' | 'session.goal.set' | 'session.goal.clear' | 'session.usageLimit.waitResume.enable' | 'session.usageLimit.waitResume.cancel' | 'session.usageLimit.checkNow' | 'session.usageLimit.consumeResetCredit' | 'session.terminalComposer.clear' | 'session.pendingInput.interruptAndRun' | 'session.vendor_plugin_catalog.list' | 'session.skill_catalog.list' | 'session.history.get' | 'session.wait.idle' | 'review.start' | 'subagents.plan.start' | 'subagents.delegate.start' | 'voice_agent.start' | 'reviews.comments.create' | 'reviews.comments.list' | 'reviews.comments.get' | 'reviews.comments.transition' | 'reviews.comments.edit' | 'reviews.comments.reply' | 'reviews.comments.redact' | 'reviews.comments.setDisposition' | 'reviews.comments.attachEvidence' | 'reviews.comments.bulkTransition' | 'reviews.comments.claimPublicationDispatch' | 'sessions.subagents.list' | 'sessions.subagents.get' | 'sessions.subagents.watch' | 'sessions.subagents.upsert' | 'sessions.subagents.updateStatus' | 'sessions.subagents.complete' | 'execution.run.start' | 'execution.run.list' | 'execution.run.get' | 'execution.run.send' | 'execution.run.ensure' | 'execution.run.ensure_or_start' | 'execution.run.stream.start' | 'execution.run.stream.read' | 'execution.run.stream.cancel' | 'execution.run.stop' | 'execution.run.action' | 'execution.run.wait' | 'session.target.primary.set' | 'session.target.tracked.set' | 'session.list' | 'session.activity.get' | 'session.messages.recent.get' | 'session.transcript.get' | 'session.events.get' | 'session.log.tail' | 'transcript.page' | 'transcript.readAfter' | 'transcript.follow' | 'transcript.unfollow' | 'transcript.import' | 'transcript.search' | 'session.permission.respond' | 'session.permission.remote.pending.list' | 'session.permission.remote.respond' | 'session.user_action.remote.answer' | 'session.permission.remote.grants.list' | 'session.permission.remote.grants.revoke' | 'session.user_action.answer' | 'session.mode.set' | 'sessions.external.candidates.list' | 'sessions.external.link.ensure' | 'sessions.external.follow' | 'sessions.external.unfollow' | 'sessions.external.backgroundFollow.set' | 'sessions.external.status.get' | 'sessions.external.transcript.page' | 'sessions.external.transcript.readAfter' | 'sessions.external.takeover' | 'sessions.external.materialize.start' | 'sessions.external.takeover.start' | 'sessions.external.operation.status.get' | 'sessions.external.operation.cancel' | 'sessions.external.operation.resume' | 'sessions.external.operation.retry' | 'sessions.external.operation.discard' | 'ui.voice_global.reset' | 'ui.voice_agent.teleport' | 'ui.current_context.read' | 'ui.current_context.command.invoke' | 'ui.pet.choose' | 'memory.search' | 'memory.get_window' | 'memory.ensure_up_to_date' | 'prompt_doc.update' | 'prompt_bundle.update' | 'prompt_asset.export' | 'prompt_registry.install' | 'daemon.promptAssets.discover' | 'daemon.promptAssets.delete' | 'daemon.promptRegistry.scanSource' | 'daemon.promptRegistry.install' | 'daemon.filesystem.readFile' | 'daemon.filesystem.writeFile' | 'daemon.filesystem.listDirectory' | 'daemon.filesystem.getDirectoryTree' | 'daemon.filesystem.listRoots' | 'daemon.filesystem.browseDirectory' | 'bugreport.collectDiagnostics' | 'bugreport.getLogTail' | 'bugreport.uploadArtifact' | 'browser.view.open' | 'browser.view.close' | 'browser.view.focus' | 'browser.target.set' | 'browser.navigate' | 'browser.reload' | 'browser.goBack' | 'browser.goForward' | 'browser.stop' | 'browser.diagnostics.snapshot' | 'browser.diagnostics.clear' | 'browser.diagnostics.pause' | 'browser.diagnostics.resume' | 'browser.diagnostics.eval' | 'browser.diagnostics.getProperties' | 'browser.diagnostics.releaseObjectGroup' | 'browser.diagnostics.elementPicker.start' | 'browser.diagnostics.elementPicker.cancel' | 'browser.context.capturePage' | 'browser.context.captureScreenshot' | 'browser.context.captureSelectedElement' | 'browser.context.captureNetworkSummary' | 'browser.context.captureConsoleSummary' | 'browser.context.annotation.start' | 'browser.context.annotation.cancel' | 'browser.context.annotation.captureRegion' | 'browser.context.annotation.captureElement' | 'browser.context.annotation.attachComment' | 'browser.context.annotation.attachStroke' | 'browser.context.annotation.attachStyleIntent' | 'browser.context.attachToComposer' | 'browser.context.attachToAgentTurn' | 'browser.context.clear' | 'browser.automation.status' | 'browser.automation.snapshot' | 'browser.automation.semanticSnapshot' | 'browser.automation.queryElements' | 'browser.automation.waitFor' | 'browser.automation.timeline.get' | 'browser.automation.cancelActive' | 'browser.automation.navigate' | 'browser.automation.reload' | 'browser.automation.goBack' | 'browser.automation.goForward' | 'browser.automation.click' | 'browser.automation.tap' | 'browser.automation.type' | 'browser.automation.press' | 'browser.automation.scroll' | 'browser.automation.hover' | 'browser.automation.focus' | 'browser.automation.select' | 'browser.automation.setValue' | 'browser.automation.upload' | 'browser.automation.drag' | 'browser.recording.start' | 'browser.recording.stop' | 'browser.recording.cancel' | 'browser.recording.status' | 'browser.recording.listForView' | 'browser.recording.discard' | 'browser.recording.cleanupExpired' | 'browser.recording.attachToComposer' | 'localServices.inventory.list' | 'localServices.inventory.refresh' | 'localServices.launcher.snapshot' | 'localServices.launcher.start' | 'localServices.launcher.openPreview' | 'localServices.launcher.registerPreview' | 'localServices.launcher.history.clear' | 'localServices.preview.openOrCreate' | 'localServices.preview.status' | 'localServices.preview.revoke' | 'localServices.publicPreview.create' | 'localServices.publicPreview.status' | 'localServices.publicPreview.revoke' | 'localServices.publicPreview.copyUrl' | 'localServices.actions.copyUrl' | 'localServices.actions.openPreview' | 'localServices.actions.forget' | 'localServices.actions.stopManaged' | 'localServices.actions.restartManaged' | 'localServices.actions.terminateDetected' | 'peerMediation.observability.snapshot' | 'peerMediation.observability.subscribe' | 'peerMediation.observability.unsubscribe' | 'devices.simulator.list' | 'devices.simulator.stream.keyframe' | 'devices.simulator.stream.snapshot' | 'devices.simulator.stream.quality.set' | 'devices.simulator.stream.fps.set' | 'devices.simulator.stream.scale.set' | 'devices.simulator.lease.acquire' | 'devices.simulator.lease.renew' | 'devices.simulator.lease.release' | 'devices.simulator.input.tap' | 'devices.simulator.input.swipe' | 'devices.simulator.input.text' | 'devices.simulator.input.key' | 'devices.simulator.input.button' | 'devices.simulator.input.orientation' | 'devices.simulator.input.pinch' | 'devices.simulator.input.rotate' | 'devices.simulator.sideband.request' | 'approval.request.list' | 'approval.request.get' | 'approval.request.create' | 'approval.request.decide' | 'plugins.scaffold' | 'plugins.install' | 'plugins.uninstall' | 'plugins.dev.submit' | 'plugins.dev.install' | 'plugins.dev.typecheck' | 'plugins.dev.build' | 'plugins.dev.test' | 'plugins.doctor' | 'plugins.pack' | 'plugins.reload' | 'plugins.list' | 'plugins.change.status' | 'plugins.sessionHooks.status.get' | 'plugins.sessionHooks.install' | 'plugins.sessionHooks.disable' | 'plugins.sessionHooks.enable' | 'plugins.sessionHooks.uninstall' | 'plugins.settings.list' | 'plugins.settings.get' | 'plugins.settings.set' | 'plugins.settings.reset' | 'plugins.settings.secret.status' | 'plugins.settings.secret.bind' | 'plugins.settings.secret.unbind' | 'plugins.settings.secret.delete' | 'plugins.permissions.grants.list' | 'plugins.permissions.grants.request' | 'plugins.permissions.grants.grant' | 'plugins.permissions.grants.revoke' | 'plugins.permissions.grants.dismissRequest' | 'plugin.webhook.endpoint.ensure' | 'plugin.webhook.endpoint.read' | 'plugin.webhook.endpoint.revoke' | 'plugin.webhook.endpoint.retarget' | 'plugin.webhook.endpoint.checkCorrespondence' | 'plugin.webhook.delivery.movePending' | 'plugin.webhook.endpoint.credential.configure' | 'plugin.webhook.endpoint.credential.rotate' | 'plugin.webhook.endpoint.credential.finishRotation' | 'account.plugins.data.erase' | 'account.sessions.signOutEverywhere' | 'account.apiTokens.create' | 'account.apiTokens.list' | 'account.apiTokens.revoke' | 'account.apiTokens.revokeAll' | 'automation.event.sources.list' | 'automation.event.admit' | 'automation.event.source.status.report' | 'automation.conversation.targets.list' | 'automation.conversation.target.verify' | 'automation.conversation.admit' | 'scm.pullRequest.list' | 'scm.pullRequest.get' | 'scm.pullRequest.openOrReuse' | 'scm.pullRequest.openCompose' | 'scm.pullRequest.checkout' | 'scm.pullRequest.prepareWorktree' | 'scm.reviewWorkspace.materializePrepared' | 'scm.pullRequest.runStacked' | 'scm.repository.clone' | 'scm.repository.init' | 'scm.repository.removeIndexLock' | 'scm.hostingRepository.describePublishTargets' | 'scm.hostingRepository.publish' | 'scm.diffSummary.generate';
     title: string;
-    safety: 'safe' | 'danger';
-    approval: {
-        result: 'optional' | 'required' | 'none';
-        flow?: 'blocking' | 'deferred' | undefined;
-    };
-    placements: ('agent_input_chips' | 'browser_context' | 'session_header' | 'session_info' | 'session_action_menu' | 'pending_messages' | 'command_palette' | 'slash_command' | 'voice_panel' | 'run_list' | 'run_card')[];
-    surfaces: {
-        ui: boolean;
-        voice: boolean;
-        agent: boolean;
-        mcp: boolean;
-        cli: boolean;
-        rpc: boolean;
-        api: boolean;
-        plugin: boolean;
-    };
-    inputSchema: unknown;
     description?: string | undefined;
+    safety: 'safe' | 'danger';
+    placements: readonly ('agent_input_chips' | 'browser_context' | 'session_header' | 'session_info' | 'session_action_menu' | 'pending_messages' | 'command_palette' | 'slash_command' | 'voice_panel' | 'run_list' | 'run_card')[];
     slash?: {
         [x: string]: unknown;
         tokens: string[];
@@ -2538,6 +2479,17 @@ type ActionSpec = {
             contributionLocalId: string;
         }[];
     } | undefined;
+    surfaces: {
+        ui: boolean;
+        voice: boolean;
+        agent: boolean;
+        mcp: boolean;
+        cli: boolean;
+        rpc: boolean;
+        api: boolean;
+        plugin: boolean;
+    };
+    inputSchema: unknown;
     inputHints?: {
         fields: readonly {
             path: string;
@@ -2566,7 +2518,12 @@ type ActionSpec = {
         description?: string | undefined;
         submitLabel?: string | undefined;
     } | undefined;
-} & Readonly<{
+}>, 'id'> & Readonly<{
+    id: PluginInvocableActionId;
+    approval: {
+        result: 'optional' | 'required' | 'none';
+        flow?: 'blocking' | 'deferred' | undefined;
+    };
     placements: ('agent_input_chips' | 'browser_context' | 'session_header' | 'session_info' | 'session_action_menu' | 'pending_messages' | 'command_palette' | 'slash_command' | 'voice_panel' | 'run_list' | 'run_card')[];
     requiredAuthority: 'account_automation' | 'present_user';
     executionPlacement: 'machine' | 'session' | 'client' | 'account';
@@ -3002,7 +2959,7 @@ type PluginActionInputById = {
     readonly "session.checkpoint": {
         v: 1;
         sessionId: string;
-        scopes: ('conversation' | 'workspace')[];
+        scopes: ('workspace' | 'conversation')[];
         candidate?: {
             source: 'provider';
             backendId: string;
@@ -3011,7 +2968,7 @@ type PluginActionInputById = {
         } | {
             source: 'composed';
             parts: {
-                scopes: ('conversation' | 'workspace')[];
+                scopes: ('workspace' | 'conversation')[];
                 candidate: {
                     source: 'provider';
                     backendId: string;
@@ -3029,7 +2986,7 @@ type PluginActionInputById = {
     readonly "session.restore": {
         v: 1;
         sessionId: string;
-        scopes: ('conversation' | 'workspace')[];
+        scopes: ('workspace' | 'conversation')[];
         anchor?: {
             kind: 'before_user_message';
             messageId: string;
@@ -3077,7 +3034,7 @@ type PluginActionInputById = {
         } | {
             source: 'composed';
             parts: {
-                scopes: ('conversation' | 'workspace')[];
+                scopes: ('workspace' | 'conversation')[];
                 candidate: {
                     source: 'happier_scm';
                     checkpointRef: string;
@@ -3135,6 +3092,18 @@ type PluginActionInputById = {
                 includeGitDirectory: boolean;
                 policyDigest: string;
             };
+        } | {
+            kind: 'create_relationship';
+            mode: 'keep_synced' | 'mirror_exactly' | 'keep_both_in_sync';
+            contentPolicy: {
+                v: 1;
+                selection: 'git_worktree' | 'all_files';
+                extraIgnorePatterns: readonly string[];
+                extraIncludePatterns: readonly string[];
+                includeGitDirectory: boolean;
+                policyDigest: string;
+            };
+            flushBeforeCommit: true;
         } | {
             kind: 'relationship';
             relationshipId: string;
@@ -3239,7 +3208,6 @@ type PluginActionInputById = {
                 };
             }[] | undefined;
         } | undefined;
-        environmentVariables?: Record<string, string> | undefined;
         agentSessionStartupInstructionsV1?: Readonly<{
             instructions: string;
             v: 1;
@@ -3407,11 +3375,6 @@ type PluginActionInputById = {
         sessionId: string;
         modelId: string;
         providerConnectionId?: string | null | undefined;
-    };
-    readonly "session.permission_mode.set": {
-        [x: string]: unknown;
-        sessionId: string;
-        permissionMode: string;
     };
     readonly "session.archive": {
         [x: string]: unknown;
@@ -4588,7 +4551,7 @@ type PluginActionInputById = {
         direction?: 'before' | 'after' | undefined;
         scope?: 'main' | 'sidechain' | 'all' | undefined;
         sidechainId?: string | null | undefined;
-        roles?: ('event' | 'unknown' | 'user' | 'agent')[] | undefined;
+        roles?: ('unknown' | 'user' | 'agent' | 'event')[] | undefined;
         kinds?: string[] | undefined;
         format?: 'compact' | 'raw' | undefined;
         includeMeta?: boolean | undefined;
@@ -8484,7 +8447,7 @@ type PluginActionResultById = {
             phase: 'failed' | 'started' | 'succeeded' | 'partially_succeeded';
             lifecycleId: string;
             source: 'provider' | 'happier_scm' | 'composed';
-            scopes: ('conversation' | 'workspace')[];
+            scopes: ('workspace' | 'conversation')[];
             candidate?: {
                 source: 'provider';
                 backendId: string;
@@ -8520,7 +8483,7 @@ type PluginActionResultById = {
             } | {
                 source: 'composed';
                 parts: {
-                    scopes: ('conversation' | 'workspace')[];
+                    scopes: ('workspace' | 'conversation')[];
                     candidate: {
                         source: 'provider';
                         backendId: string;
@@ -8556,9 +8519,9 @@ type PluginActionResultById = {
                     };
                 }[];
             } | undefined;
-            restoredScopes?: ('conversation' | 'workspace')[] | undefined;
+            restoredScopes?: ('workspace' | 'conversation')[] | undefined;
             failedScopes?: {
-                scope: 'conversation' | 'workspace';
+                scope: 'workspace' | 'conversation';
                 code: string;
                 message?: string | undefined;
             }[] | undefined;
@@ -8571,7 +8534,7 @@ type PluginActionResultById = {
         candidates?: {
             id: string;
             source: 'provider' | 'happier_scm' | 'composed';
-            scopes: ('conversation' | 'workspace')[];
+            scopes: ('workspace' | 'conversation')[];
             candidate: {
                 source: 'provider';
                 backendId: string;
@@ -8580,7 +8543,7 @@ type PluginActionResultById = {
             } | {
                 source: 'composed';
                 parts: {
-                    scopes: ('conversation' | 'workspace')[];
+                    scopes: ('workspace' | 'conversation')[];
                     candidate: {
                         source: 'provider';
                         backendId: string;
@@ -8603,7 +8566,7 @@ type PluginActionResultById = {
             phase: 'failed' | 'started' | 'succeeded' | 'partially_succeeded';
             lifecycleId: string;
             source: 'provider' | 'happier_scm' | 'composed';
-            scopes: ('conversation' | 'workspace')[];
+            scopes: ('workspace' | 'conversation')[];
             candidate?: {
                 source: 'provider';
                 backendId: string;
@@ -8639,7 +8602,7 @@ type PluginActionResultById = {
             } | {
                 source: 'composed';
                 parts: {
-                    scopes: ('conversation' | 'workspace')[];
+                    scopes: ('workspace' | 'conversation')[];
                     candidate: {
                         source: 'provider';
                         backendId: string;
@@ -8675,9 +8638,9 @@ type PluginActionResultById = {
                     };
                 }[];
             } | undefined;
-            restoredScopes?: ('conversation' | 'workspace')[] | undefined;
+            restoredScopes?: ('workspace' | 'conversation')[] | undefined;
             failedScopes?: {
-                scope: 'conversation' | 'workspace';
+                scope: 'workspace' | 'conversation';
                 code: string;
                 message?: string | undefined;
             }[] | undefined;
@@ -8687,14 +8650,14 @@ type PluginActionResultById = {
         ok: true;
         status: 'succeeded' | 'partially_succeeded';
         source: 'provider' | 'happier_scm' | 'composed';
-        restoredScopes: ('conversation' | 'workspace')[];
+        restoredScopes: ('workspace' | 'conversation')[];
         receipts: {
             v: 1;
             operation: 'checkpoint' | 'restore';
             phase: 'failed' | 'started' | 'succeeded' | 'partially_succeeded';
             lifecycleId: string;
             source: 'provider' | 'happier_scm' | 'composed';
-            scopes: ('conversation' | 'workspace')[];
+            scopes: ('workspace' | 'conversation')[];
             candidate?: {
                 source: 'provider';
                 backendId: string;
@@ -8730,7 +8693,7 @@ type PluginActionResultById = {
             } | {
                 source: 'composed';
                 parts: {
-                    scopes: ('conversation' | 'workspace')[];
+                    scopes: ('workspace' | 'conversation')[];
                     candidate: {
                         source: 'provider';
                         backendId: string;
@@ -8766,15 +8729,15 @@ type PluginActionResultById = {
                     };
                 }[];
             } | undefined;
-            restoredScopes?: ('conversation' | 'workspace')[] | undefined;
+            restoredScopes?: ('workspace' | 'conversation')[] | undefined;
             failedScopes?: {
-                scope: 'conversation' | 'workspace';
+                scope: 'workspace' | 'conversation';
                 code: string;
                 message?: string | undefined;
             }[] | undefined;
         }[];
         failedScopes?: {
-            scope: 'conversation' | 'workspace';
+            scope: 'workspace' | 'conversation';
             code: string;
             message?: string | undefined;
         }[] | undefined;
@@ -8785,7 +8748,7 @@ type PluginActionResultById = {
         candidates?: {
             id: string;
             source: 'provider' | 'happier_scm' | 'composed';
-            scopes: ('conversation' | 'workspace')[];
+            scopes: ('workspace' | 'conversation')[];
             candidate: {
                 source: 'provider';
                 backendId: string;
@@ -8821,7 +8784,7 @@ type PluginActionResultById = {
             } | {
                 source: 'composed';
                 parts: {
-                    scopes: ('conversation' | 'workspace')[];
+                    scopes: ('workspace' | 'conversation')[];
                     candidate: {
                         source: 'provider';
                         backendId: string;
@@ -8871,7 +8834,7 @@ type PluginActionResultById = {
             phase: 'failed' | 'started' | 'succeeded' | 'partially_succeeded';
             lifecycleId: string;
             source: 'provider' | 'happier_scm' | 'composed';
-            scopes: ('conversation' | 'workspace')[];
+            scopes: ('workspace' | 'conversation')[];
             candidate?: {
                 source: 'provider';
                 backendId: string;
@@ -8907,7 +8870,7 @@ type PluginActionResultById = {
             } | {
                 source: 'composed';
                 parts: {
-                    scopes: ('conversation' | 'workspace')[];
+                    scopes: ('workspace' | 'conversation')[];
                     candidate: {
                         source: 'provider';
                         backendId: string;
@@ -8943,9 +8906,9 @@ type PluginActionResultById = {
                     };
                 }[];
             } | undefined;
-            restoredScopes?: ('conversation' | 'workspace')[] | undefined;
+            restoredScopes?: ('workspace' | 'conversation')[] | undefined;
             failedScopes?: {
-                scope: 'conversation' | 'workspace';
+                scope: 'workspace' | 'conversation';
                 code: string;
                 message?: string | undefined;
             }[] | undefined;
@@ -9068,9 +9031,6 @@ type PluginActionResultById = {
         readonly [key: string]: JsonValue;
     } | null;
     readonly "session.model.set": string | number | boolean | readonly JsonValue[] | {
-        readonly [key: string]: JsonValue;
-    } | null;
-    readonly "session.permission_mode.set": string | number | boolean | readonly JsonValue[] | {
         readonly [key: string]: JsonValue;
     } | null;
     readonly "session.archive": string | number | boolean | readonly JsonValue[] | {
@@ -12809,10 +12769,6 @@ type PluginActionResultById = {
                     kind: string;
                     payload: unknown;
                 } | undefined;
-                structuredMetaArtifactRef?: {
-                    [x: string]: unknown;
-                    artifactId: string;
-                } | undefined;
             };
         } | {
             ok: false;
@@ -12957,10 +12913,6 @@ type PluginActionResultById = {
             [x: string]: unknown;
             kind: string;
             payload: unknown;
-        } | undefined;
-        structuredMetaArtifactRef?: {
-            [x: string]: unknown;
-            artifactId: string;
         } | undefined;
     };
     readonly "execution.run.send": {
@@ -13124,10 +13076,6 @@ type PluginActionResultById = {
                 [x: string]: unknown;
                 kind: string;
                 payload: unknown;
-            } | undefined;
-            structuredMetaArtifactRef?: {
-                [x: string]: unknown;
-                artifactId: string;
             } | undefined;
         };
     } | {
@@ -24415,7 +24363,7 @@ type PluginActionResultById = {
                 } | undefined;
                 workspace?: {
                     path: string;
-                    association: 'manual' | 'session_owner' | 'process_tree' | 'cwd_containment';
+                    association: 'session_owner' | 'process_tree' | 'cwd_containment' | 'manual';
                     id?: string | undefined;
                 } | undefined;
                 plugin?: {
@@ -24501,7 +24449,7 @@ type PluginActionResultById = {
                 } | undefined;
                 workspace?: {
                     path: string;
-                    association: 'manual' | 'session_owner' | 'process_tree' | 'cwd_containment';
+                    association: 'session_owner' | 'process_tree' | 'cwd_containment' | 'manual';
                     id?: string | undefined;
                 } | undefined;
                 plugin?: {
@@ -34365,35 +34313,28 @@ type AgentDeferredStartupEligibilityInputV1 = Readonly<{
 Declared by `dist/agentRuntime/executionRun.d.ts` as `AgentExecutionRunEvent`.
 
 ```ts
-type AgentExecutionRunEvent = Readonly<{
-    sequence: number;
-    runId: string;
-    emittedAtMs: number;
-    kind: 'run-start' | 'run-progress';
-}> | Readonly<{
-    sequence: number;
-    runId: string;
-    emittedAtMs: number;
-    kind: 'output-delta';
-    channel: 'assistant' | 'reasoning';
-    text: string;
-}> | Readonly<{
-    sequence: number;
-    runId: string;
-    emittedAtMs: number;
-    kind: 'checkpoint';
-    checkpointId: string;
-}> | Readonly<{
-    sequence: number;
-    runId: string;
-    emittedAtMs: number;
-    kind: 'run-complete';
-}> | Readonly<{
-    sequence: number;
-    runId: string;
-    emittedAtMs: number;
-    kind: 'run-failed' | 'run-cancelled';
-    diagnostic?: PluginDiagnosticData;
+type AgentExecutionRunEvent = AgentExecutionRunEventV1;
+```
+
+
+### `./agents/runtime` — `AgentExecutionRunEventSchema` (value)
+
+Declared by `dist/agentRuntime/projections.d.ts` as `AgentExecutionRunEventSchema`.
+
+```ts
+const AgentExecutionRunEventSchema: Readonly<{
+    parse(value: unknown): AgentExecutionRunEvent;
+    safeParse(value: unknown): Readonly<{
+        success: true;
+        data: AgentExecutionRunEvent;
+    }> | Readonly<{
+        success: false;
+        error: Readonly<{
+            issues: readonly Readonly<{
+                message: string;
+            }>[];
+        }>;
+    }>;
 }>;
 ```
 
@@ -34411,6 +34352,7 @@ type AgentExecutionRunOpenRequest = Readonly<{
     modelSelection?: ProviderBoundModelRef;
     configuration?: AgentSessionConfigurationSnapshot;
     providerBinding?: AgentSessionProviderBinding;
+    causalPermissionAuthority?: AgentSessionSendRequest['causalPermissionAuthority'];
     stateSharing?: AgentSessionOpenRequest['stateSharing'];
 }> & (Readonly<{
     kind: 'create';
@@ -35775,6 +35717,7 @@ type AgentSessionHostServices = Readonly<{
     mcp: AgentSessionMcpService;
     workflowActivity: AgentSessionWorkflowActivityService;
     toolExecution: AgentToolExecutionService;
+    subagents: AgentSessionSubagentObservationPublisher;
     nativeHome?: AgentSessionNativeHomeService;
     happierTools?: AgentSessionHappierToolsService;
 }>;
@@ -37044,6 +36987,33 @@ type AgentSessionStartupInstructions = Readonly<{
     id: string;
     revision: number;
     instructions: string;
+}>;
+```
+
+
+### `./agents/runtime` — `AgentSessionSubagentObservation` (type)
+
+Declared by `dist/agentRuntime/context.d.ts` as `AgentSessionSubagentObservation`.
+
+```ts
+type AgentSessionSubagentObservation = Readonly<{
+    observationId: string;
+    groupId?: string;
+    status: SubagentSummary['status'];
+    detail?: JsonValue;
+}>;
+```
+
+
+### `./agents/runtime` — `AgentSessionSubagentObservationPublisher` (type)
+
+Declared by `dist/agentRuntime/context.d.ts` as `AgentSessionSubagentObservationPublisher`.
+
+```ts
+type AgentSessionSubagentObservationPublisher = Readonly<{
+    observe(input: AgentSessionSubagentObservation, options?: Readonly<{
+        signal?: AbortSignal;
+    }>): Promise<SubagentSummary>;
 }>;
 ```
 
@@ -39790,6 +39760,8 @@ Declared by `dist/collections.d.ts` as `PluginCollectionLimits`.
 ```ts
 type PluginCollectionLimits = Readonly<{
     maxRowEncodedBytes: number;
+    maxRows: number;
+    maxCollectionEncodedBytes: number;
     maxBatchBytes: number;
     maxBatchRows: number;
     maxAccountRows: number;
@@ -42020,6 +41992,24 @@ Declared by `dist/events.d.ts` as `createPluginEventAutomationSetupResultV1JsonS
 
 ```ts
 const createPluginEventAutomationSetupResultV1JsonSchema: (sourceContractVersion: number, sourceConfigSchema: PluginJsonSchema) => PluginJsonSchema;
+```
+
+
+### `./events` — `projectPluginEventAdmissionSourceStatusV1` (value)
+
+Declared by `dist/eventAutomation.d.ts` as `projectPluginEventAdmissionSourceStatusV1`.
+
+```ts
+function projectPluginEventAdmissionSourceStatusV1(input: Readonly<{
+    definition: Extract<PluginActionResultById['automation.event.sources.list'], Readonly<{
+        kind: 'page';
+    }>>['definitions'][number];
+    result: PluginActionResultById['automation.event.admit']['results'][number] | undefined;
+    observationReceivedAt: number;
+    observedDelta: 0 | 1;
+}>): Extract<PluginActionInputById['automation.event.source.status.report'], Readonly<{
+    kind: 'source';
+}>>;
 ```
 
 
@@ -44626,8 +44616,6 @@ type AgentUiBehaviorDeclarationV1 = {
     workState?: {
         editableGoals?: {
             capabilityDriven?: boolean;
-            modeValues?: string[];
-            activeModeValues?: string[];
             activeWhenNoPersistedMode?: boolean;
             persistedGoalSnapshot?: {
                 path?: string[];
@@ -44692,8 +44680,6 @@ type AgentUiBehaviorDeclarationV1 = {
             backendMode: {
                 envKey: string;
                 settingKey: AgentUiSettingReferenceV1;
-                legacyMetadataKey: string;
-                runtimeDescriptorField: string;
                 defaultValue: string;
                 values: string[];
             };
@@ -44702,24 +44688,10 @@ type AgentUiBehaviorDeclarationV1 = {
                 explicitEnvKey: string;
                 settingKey: AgentUiSettingReferenceV1;
                 byServerIdSettingKey: AgentUiSettingReferenceV1;
-                legacyMetadataKey: string;
-                legacyExplicitMetadataKey: string;
-                runtimeDescriptorField: string;
-                runtimeDescriptorExplicitField: string;
                 allowedProtocols?: string[];
                 rejectCredentials?: boolean;
                 originOnly?: boolean;
             };
-            agentExtra?: AgentUiRuntimeDescriptorAgentExtraV1;
-        };
-        backendTransport?: {
-            backendMode: {
-                values: string[];
-                aliases?: Record<string, string>;
-                legacyExperimentalValue?: string;
-            };
-            runtimeHandleFields: string[];
-            agentExtra?: AgentUiRuntimeDescriptorAgentExtraIdentityV1;
         };
     };
     askUserQuestion?: {
@@ -44777,7 +44749,6 @@ type AgentUiBehaviorDeclarationV1 = {
                     sourceKind: string;
                     optionalFields: string[];
                 };
-                runtimeDescriptorFromCandidate?: AgentUiRuntimeDescriptorLinkExtrasV1;
             };
         };
         sessionHandoff?: {
@@ -44893,48 +44864,6 @@ Declared by `dist/manifest.d.ts` as `AgentUiMutablePluginSettingReferenceV1`.
 type AgentUiMutablePluginSettingReferenceV1 = {
     scope: 'account' | 'daemon';
     localId: string;
-};
-```
-
-
-### `./manifest` — `AgentUiRuntimeDescriptorAgentExtraIdentityV1` (type)
-
-Declared by `dist/manifest.d.ts` as `AgentUiRuntimeDescriptorAgentExtraIdentityV1`.
-
-```ts
-type AgentUiRuntimeDescriptorAgentExtraIdentityV1 = {
-    owner: string;
-    schemaId: string;
-    v: number;
-};
-```
-
-
-### `./manifest` — `AgentUiRuntimeDescriptorAgentExtraV1` (type)
-
-Declared by `dist/manifest.d.ts` as `AgentUiRuntimeDescriptorAgentExtraV1`.
-
-```ts
-type AgentUiRuntimeDescriptorAgentExtraV1 = {
-    runtimeHandleFields: string[];
-    owner: string;
-    schemaId: string;
-    v: number;
-};
-```
-
-
-### `./manifest` — `AgentUiRuntimeDescriptorLinkExtrasV1` (type)
-
-Declared by `dist/manifest.d.ts` as `AgentUiRuntimeDescriptorLinkExtrasV1`.
-
-```ts
-type AgentUiRuntimeDescriptorLinkExtrasV1 = {
-    backendMode: {
-        values: string[];
-    };
-    sourceFields: string[];
-    agentExtra?: AgentUiRuntimeDescriptorAgentExtraV1;
 };
 ```
 
@@ -63872,20 +63801,6 @@ type SubagentLifecycleDetailV1 = z.infer<typeof SubagentLifecycleDetailV1Schema>
 ```
 
 
-### `./sessions/subagents` — `SubagentObservation` (type)
-
-Declared by `dist/services/sessions.d.ts` as `SubagentObservation`.
-
-```ts
-type SubagentObservation = Readonly<{
-    observationId: string;
-    groupId?: string;
-    status: SubagentSummary['status'];
-    detail?: JsonValue;
-}>;
-```
-
-
 ### `./sessions/subagents` — `SubagentRefInputV1` (type)
 
 Declared by `node_modules/@happier-dev/protocol/dist/sessions/subagents/subagentRefV1.d.ts` as `SubagentRefInputV1`.
@@ -63936,7 +63851,6 @@ Declared by `dist/services/sessions.d.ts` as `SubagentsService`.
 interface SubagentsService {
     capabilities(): {
         list: PluginOperationAvailability;
-        observe: PluginOperationAvailability;
         watch: PluginOperationAvailability;
     };
     list(query?: {
@@ -63953,9 +63867,6 @@ interface SubagentsService {
         parentSessionId?: string;
         signal?: AbortSignal;
     }): Promise<SubagentSummary | null>;
-    observe(input: SubagentObservation, options?: {
-        signal?: AbortSignal;
-    }): Promise<SubagentSummary>;
     watch(query: {
         parentSessionId?: string;
         id?: string;
@@ -66783,12 +66694,7 @@ const CURRENT_UI_CONTEXT_MAX_UTF8_BYTES_V1: number;
 Declared by `dist/ui/publicContract.d.ts` as `ComposerAttachmentAuthorPresentationV1`.
 
 ```ts
-type ComposerAttachmentAuthorPresentationV1 = DeepReadonly<{
-    label: string;
-    description?: string;
-    icon?: PluginUiIconTokenV1;
-    tone?: PluginUiAttachmentToneV1;
-}>;
+type ComposerAttachmentAuthorPresentationV1 = ComposerAttachmentAuthorValueV1['presentation'];
 ```
 
 
@@ -66797,11 +66703,9 @@ type ComposerAttachmentAuthorPresentationV1 = DeepReadonly<{
 Declared by `dist/ui/publicContract.d.ts` as `ComposerAttachmentAuthorValueV1`.
 
 ```ts
-type ComposerAttachmentAuthorValueV1 = DeepReadonly<{
-    key: string;
-    value: PluginJsonValueV2;
-    presentation: ComposerAttachmentAuthorPresentationV1;
-}>;
+type ComposerAttachmentAuthorValueV1 = Extract<ProtocolComposerOperationV1, {
+    kind: 'attachment.add';
+}>['value'];
 ```
 
 
@@ -66810,13 +66714,7 @@ type ComposerAttachmentAuthorValueV1 = DeepReadonly<{
 Declared by `dist/ui/publicContract.d.ts` as `ComposerAttachmentPresentationV1`.
 
 ```ts
-type ComposerAttachmentPresentationV1 = DeepReadonly<{
-    label: string;
-    description?: string;
-    icon?: PluginUiIconTokenV1;
-    tone?: PluginUiAttachmentToneV1;
-    typeLabel: string;
-}>;
+type ComposerAttachmentPresentationV1 = ComposerAttachmentViewV1['presentation'];
 ```
 
 
@@ -66825,10 +66723,9 @@ type ComposerAttachmentPresentationV1 = DeepReadonly<{
 Declared by `dist/ui/publicContract.d.ts` as `ComposerAttachmentUpdateV1`.
 
 ```ts
-type ComposerAttachmentUpdateV1 = DeepReadonly<{
-    value: PluginJsonValueV2;
-    presentation?: ComposerAttachmentAuthorPresentationV1;
-}>;
+type ComposerAttachmentUpdateV1 = Extract<ProtocolComposerOperationV1, {
+    kind: 'attachment.update';
+}>['update'];
 ```
 
 
@@ -66837,21 +66734,7 @@ type ComposerAttachmentUpdateV1 = DeepReadonly<{
 Declared by `dist/ui/publicContract.d.ts` as `ComposerAttachmentViewV1`.
 
 ```ts
-type ComposerAttachmentViewV1 = DeepReadonly<{
-    v: 1;
-    instanceId: string;
-    attachment: PluginUiContributionIdentityV1;
-    key: string;
-    value: PluginJsonValueV2;
-    presentation: ComposerAttachmentPresentationV1;
-    availability: {
-        status: 'ready';
-    } | {
-        status: 'unavailable' | 'invalid';
-        reason?: string;
-    };
-    content?: ComposerStagedMediaContentV1;
-}>;
+type ComposerAttachmentViewV1 = ProtocolComposerSnapshotV1['attachments'][number];
 ```
 
 
@@ -66860,12 +66743,7 @@ type ComposerAttachmentViewV1 = DeepReadonly<{
 Declared by `dist/ui/publicContract.d.ts` as `ComposerCapabilitiesV1`.
 
 ```ts
-type ComposerCapabilitiesV1 = DeepReadonly<{
-    text: true;
-    references: boolean;
-    attachments: boolean;
-    submit: boolean;
-}>;
+type ComposerCapabilitiesV1 = ProtocolComposerSnapshotV1['capabilities'];
 ```
 
 
@@ -66955,19 +66833,7 @@ const ComposerControlStateV1Schema: PluginUiSchema<ComposerControlStateV1>;
 Declared by `dist/ui/publicContract.d.ts` as `ComposerDecorationResultV1`.
 
 ```ts
-type ComposerDecorationResultV1 = DeepReadonly<{
-    status: 'set';
-} | {
-    status: 'cleared';
-} | {
-    status: 'staleRevision';
-    currentRevision: number;
-} | {
-    status: 'invalid';
-} | {
-    status: 'unavailable';
-    reason: ComposerUnavailableReasonV1;
-}>;
+type ComposerDecorationResultV1 = ProtocolComposerDecorationResultV1;
 ```
 
 
@@ -66985,17 +66851,7 @@ const ComposerDecorationResultV1Schema: PluginUiSchema<ComposerDecorationResultV
 Declared by `dist/ui/publicContract.d.ts` as `ComposerDecorationSetV1`.
 
 ```ts
-type ComposerDecorationSetV1 = DeepReadonly<{
-    revision: number;
-    ranges: Array<{
-        range: ComposerTextRangeV1;
-        treatment: 'highlight' | 'muted' | 'warning' | 'success' | 'code' | {
-            kind: 'link';
-            url: string;
-        };
-        label?: string;
-    }>;
-}>;
+type ComposerDecorationSetV1 = ProtocolComposerDecorationSetV1;
 ```
 
 
@@ -67013,14 +66869,7 @@ const ComposerDecorationSetV1Schema: PluginUiSchema<ComposerDecorationSetV1>;
 Declared by `dist/ui/publicContract.d.ts` as `ComposerFocusResultV1`.
 
 ```ts
-type ComposerFocusResultV1 = DeepReadonly<{
-    status: 'focused';
-} | {
-    status: 'notEditable';
-} | {
-    status: 'unavailable';
-    reason: ComposerUnavailableReasonV1;
-}>;
+type ComposerFocusResultV1 = ProtocolComposerFocusResultV1;
 ```
 
 
@@ -67038,10 +66887,7 @@ const ComposerFocusResultV1Schema: PluginUiSchema<ComposerFocusResultV1>;
 Declared by `dist/ui/publicContract.d.ts` as `ComposerInputLockRequestV1`.
 
 ```ts
-type ComposerInputLockRequestV1 = DeepReadonly<{
-    reason: string;
-    mode: 'submit' | 'editAndSubmit';
-}>;
+type ComposerInputLockRequestV1 = ProtocolComposerInputLockRequestV1;
 ```
 
 
@@ -67059,15 +66905,7 @@ const ComposerInputLockRequestV1Schema: PluginUiSchema<ComposerInputLockRequestV
 Declared by `dist/ui/publicContract.d.ts` as `ComposerMentionRefV1`.
 
 ```ts
-type ComposerMentionRefV1 = DeepReadonly<{
-    kind: string;
-    ref: string;
-    token: string;
-    start: number;
-    end: number;
-    label?: string;
-    composerReference?: PluginUiContributionIdentityV1;
-}>;
+type ComposerMentionRefV1 = ProtocolComposerSnapshotV1['references'][number];
 ```
 
 
@@ -67076,38 +66914,7 @@ type ComposerMentionRefV1 = DeepReadonly<{
 Declared by `dist/ui/publicContract.d.ts` as `ComposerOperationV1`.
 
 ```ts
-type ComposerOperationV1 = DeepReadonly<{
-    kind: 'text.set';
-    text: string;
-} | {
-    kind: 'text.insert';
-    position: ComposerTextPositionV1;
-    text: string;
-} | {
-    kind: 'text.replaceRange';
-    range: ComposerTextRangeV1;
-    text: string;
-} | {
-    kind: 'text.clear';
-} | {
-    kind: 'reference.insert';
-    reference: ComposerMentionRefV1;
-} | {
-    kind: 'reference.remove';
-    reference: ComposerReferenceSelectorV1;
-} | {
-    kind: 'attachment.add';
-    attachmentLocalId: string;
-    value: ComposerAttachmentAuthorValueV1;
-    content?: ComposerStagedMediaContentV1;
-} | {
-    kind: 'attachment.update';
-    instanceId: string;
-    update: ComposerAttachmentUpdateV1;
-} | {
-    kind: 'attachment.remove';
-    instanceId: string;
-}>;
+type ComposerOperationV1 = ProtocolComposerOperationV1;
 ```
 
 
@@ -67125,13 +66932,7 @@ const ComposerOperationV1Schema: PluginUiSchema<ComposerOperationV1>;
 Declared by `dist/ui/publicContract.d.ts` as `ComposerReadResultV1`.
 
 ```ts
-type ComposerReadResultV1 = DeepReadonly<{
-    status: 'ready';
-    snapshot: ComposerSnapshotV1;
-} | {
-    status: 'unavailable';
-    reason: ComposerUnavailableReasonV1;
-}>;
+type ComposerReadResultV1 = ProtocolComposerReadResultV1;
 ```
 
 
@@ -67149,25 +66950,7 @@ const ComposerReadResultV1Schema: PluginUiSchema<ComposerReadResultV1>;
 Declared by `dist/ui/publicContract.d.ts` as `ComposerRefV1`.
 
 ```ts
-type ComposerRefV1 = DeepReadonly<{
-    kind: 'session';
-    sessionId: string;
-} | {
-    kind: 'newSession';
-    instanceId: string;
-} | {
-    kind: 'pendingMessage';
-    sessionId: string;
-    localId: string;
-} | {
-    kind: 'participantMessage';
-    sessionId: string;
-    instanceId: string;
-} | {
-    kind: 'automationAuthoring';
-    sessionId: string;
-    instanceId: string;
-}>;
+type ComposerRefV1 = ProtocolComposerRefV1;
 ```
 
 
@@ -67185,11 +66968,9 @@ const ComposerRefV1Schema: PluginUiSchema<ComposerRefV1>;
 Declared by `dist/ui/publicContract.d.ts` as `ComposerReferenceSelectorV1`.
 
 ```ts
-type ComposerReferenceSelectorV1 = DeepReadonly<{
-    ref: string;
-    start: number;
-    end: number;
-}>;
+type ComposerReferenceSelectorV1 = Extract<ProtocolComposerOperationV1, {
+    kind: 'reference.remove';
+}>['reference'];
 ```
 
 
@@ -67198,27 +66979,7 @@ type ComposerReferenceSelectorV1 = DeepReadonly<{
 Declared by `dist/ui/publicContract.d.ts` as `ComposerSnapshotV1`.
 
 ```ts
-type ComposerSnapshotV1 = DeepReadonly<{
-    revision: number;
-    ref: ComposerRefV1;
-    text: string;
-    selection?: ComposerTextRangeV1;
-    references: ComposerMentionRefV1[];
-    attachments: ComposerAttachmentViewV1[];
-    layout: 'wrap' | 'scroll' | 'collapsed';
-    capabilities: ComposerCapabilitiesV1;
-    state: {
-        focused: boolean;
-        editable: boolean;
-        submittable: boolean;
-        submitting: boolean;
-        running: boolean;
-        inputLock?: {
-            mode: 'submit' | 'editAndSubmit';
-            reasons: string[];
-        };
-    };
-}>;
+type ComposerSnapshotV1 = ProtocolComposerSnapshotV1;
 ```
 
 
@@ -67236,40 +66997,7 @@ const ComposerSnapshotV1Schema: PluginUiSchema<ComposerSnapshotV1>;
 Declared by `dist/ui/publicContract.d.ts` as `ComposerSurfaceInputV1`.
 
 ```ts
-type ComposerSurfaceInputV1 = DeepReadonly<{
-    v: 1;
-    role: 'controlCompact' | 'controlInteraction';
-    composer: ComposerRefV1;
-    controlLocalId: string;
-    state: {
-        visible?: boolean;
-        enabled?: boolean;
-        label?: string;
-        icon?: PluginUiIconTokenV1;
-        count?: number;
-        selected?: boolean;
-        selectedChoiceIds?: string[];
-        accessibilityLabel?: string;
-        unavailableReason?: string;
-    };
-} | {
-    v: 1;
-    role: 'attachmentPicker';
-    composer: ComposerRefV1;
-    attachmentLocalId: string;
-    instances: ComposerAttachmentViewV1[];
-} | {
-    v: 1;
-    role: 'attachmentDisplay' | 'attachmentPreview';
-    composer: ComposerRefV1;
-    attachmentLocalId: string;
-    instance: ComposerAttachmentViewV1;
-} | {
-    v: 1;
-    role: 'region';
-    composer: ComposerRefV1;
-    regionLocalId: string;
-}>;
+type ComposerSurfaceInputV1 = ProtocolComposerSurfaceInputV1;
 ```
 
 
@@ -67287,9 +67015,9 @@ const ComposerSurfaceInputV1Schema: PluginUiSchema<ComposerSurfaceInputV1>;
 Declared by `dist/ui/publicContract.d.ts` as `ComposerTextPositionV1`.
 
 ```ts
-type ComposerTextPositionV1 = DeepReadonly<{
-    offset: number;
-}>;
+type ComposerTextPositionV1 = Extract<ProtocolComposerOperationV1, {
+    kind: 'text.insert';
+}>['position'];
 ```
 
 
@@ -67298,10 +67026,7 @@ type ComposerTextPositionV1 = DeepReadonly<{
 Declared by `dist/ui/publicContract.d.ts` as `ComposerTextRangeV1`.
 
 ```ts
-type ComposerTextRangeV1 = DeepReadonly<{
-    start: number;
-    end: number;
-}>;
+type ComposerTextRangeV1 = NonNullable<ProtocolComposerSnapshotV1['selection']>;
 ```
 
 
@@ -67310,28 +67035,7 @@ type ComposerTextRangeV1 = DeepReadonly<{
 Declared by `dist/ui/publicContract.d.ts` as `ComposerTransactionResultV1`.
 
 ```ts
-type ComposerTransactionResultV1 = DeepReadonly<{
-    status: 'applied';
-    revision: number;
-    attachmentInstanceIds?: string[];
-} | {
-    status: 'conflict';
-    currentRevision: number;
-} | {
-    status: 'composerUnavailable';
-} | {
-    status: 'notEditable';
-} | {
-    status: 'invalidOperation';
-    operationIndex: number;
-    reason: string;
-    detail?: PluginJsonValueV2;
-} | {
-    status: 'limitExceeded';
-    limit: string;
-    maximum: number;
-    actual: number;
-}>;
+type ComposerTransactionResultV1 = ProtocolComposerTransactionResultV1;
 ```
 
 
@@ -67349,10 +67053,7 @@ const ComposerTransactionResultV1Schema: PluginUiSchema<ComposerTransactionResul
 Declared by `dist/ui/publicContract.d.ts` as `ComposerTransactionV1`.
 
 ```ts
-type ComposerTransactionV1 = DeepReadonly<{
-    expectedRevision: number;
-    operations: ComposerOperationV1[];
-}>;
+type ComposerTransactionV1 = ProtocolComposerTransactionV1;
 ```
 
 
@@ -67370,7 +67071,9 @@ const ComposerTransactionV1Schema: PluginUiSchema<ComposerTransactionV1>;
 Declared by `dist/ui/publicContract.d.ts` as `ComposerUnavailableReasonV1`.
 
 ```ts
-type ComposerUnavailableReasonV1 = 'notFound' | 'scopeClosed' | 'staleGeneration';
+type ComposerUnavailableReasonV1 = Extract<ProtocolComposerReadResultV1, {
+    status: 'unavailable';
+}>['reason'];
 ```
 
 
@@ -91824,8 +91527,6 @@ const PluginAgentContributionV2Schema: z.ZodUnion<readonly [
                     workState: z.ZodOptional<z.ZodObject<{
                         editableGoals: z.ZodOptional<z.ZodObject<{
                             capabilityDriven: z.ZodOptional<z.ZodBoolean>;
-                            modeValues: z.ZodOptional<z.ZodArray<z.ZodString>>;
-                            activeModeValues: z.ZodOptional<z.ZodArray<z.ZodString>>;
                             activeWhenNoPersistedMode: z.ZodOptional<z.ZodBoolean>;
                             persistedGoalSnapshot: z.ZodOptional<z.ZodObject<{
                                 path: z.ZodOptional<z.ZodArray<z.ZodString>>;
@@ -91922,8 +91623,6 @@ const PluginAgentContributionV2Schema: z.ZodUnion<readonly [
                                     }>;
                                     localId: z.ZodString;
                                 }, z.core.$strict>;
-                                legacyMetadataKey: z.ZodString;
-                                runtimeDescriptorField: z.ZodString;
                                 defaultValue: z.ZodString;
                                 values: z.ZodArray<z.ZodString>;
                             }, z.core.$strict>;
@@ -91946,32 +91645,9 @@ const PluginAgentContributionV2Schema: z.ZodUnion<readonly [
                                     }>;
                                     localId: z.ZodString;
                                 }, z.core.$strict>;
-                                legacyMetadataKey: z.ZodString;
-                                legacyExplicitMetadataKey: z.ZodString;
-                                runtimeDescriptorField: z.ZodString;
-                                runtimeDescriptorExplicitField: z.ZodString;
                                 allowedProtocols: z.ZodOptional<z.ZodArray<z.ZodString>>;
                                 rejectCredentials: z.ZodOptional<z.ZodBoolean>;
                                 originOnly: z.ZodOptional<z.ZodBoolean>;
-                            }, z.core.$strict>>;
-                            agentExtra: z.ZodOptional<z.ZodObject<{
-                                owner: z.ZodString;
-                                schemaId: z.ZodString;
-                                v: z.ZodNumber;
-                                runtimeHandleFields: z.ZodArray<z.ZodString>;
-                            }, z.core.$strict>>;
-                        }, z.core.$strict>>;
-                        backendTransport: z.ZodOptional<z.ZodObject<{
-                            backendMode: z.ZodObject<{
-                                values: z.ZodArray<z.ZodString>;
-                                aliases: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
-                                legacyExperimentalValue: z.ZodOptional<z.ZodString>;
-                            }, z.core.$strict>;
-                            runtimeHandleFields: z.ZodArray<z.ZodString>;
-                            agentExtra: z.ZodOptional<z.ZodObject<{
-                                owner: z.ZodString;
-                                schemaId: z.ZodString;
-                                v: z.ZodNumber;
                             }, z.core.$strict>>;
                         }, z.core.$strict>>;
                     }, z.core.$strict>>;
@@ -92048,18 +91724,6 @@ const PluginAgentContributionV2Schema: z.ZodUnion<readonly [
                                 sourceFromCandidate: z.ZodOptional<z.ZodObject<{
                                     sourceKind: z.ZodString;
                                     optionalFields: z.ZodArray<z.ZodString>;
-                                }, z.core.$strict>>;
-                                runtimeDescriptorFromCandidate: z.ZodOptional<z.ZodObject<{
-                                    backendMode: z.ZodObject<{
-                                        values: z.ZodArray<z.ZodString>;
-                                    }, z.core.$strict>;
-                                    sourceFields: z.ZodArray<z.ZodString>;
-                                    agentExtra: z.ZodOptional<z.ZodObject<{
-                                        owner: z.ZodString;
-                                        schemaId: z.ZodString;
-                                        v: z.ZodNumber;
-                                        runtimeHandleFields: z.ZodArray<z.ZodString>;
-                                    }, z.core.$strict>>;
                                 }, z.core.$strict>>;
                             }, z.core.$strict>>;
                         }, z.core.$strict>>;
@@ -92851,8 +92515,6 @@ const PluginAgentContributionV2Schema: z.ZodUnion<readonly [
                     workState: z.ZodOptional<z.ZodObject<{
                         editableGoals: z.ZodOptional<z.ZodObject<{
                             capabilityDriven: z.ZodOptional<z.ZodBoolean>;
-                            modeValues: z.ZodOptional<z.ZodArray<z.ZodString>>;
-                            activeModeValues: z.ZodOptional<z.ZodArray<z.ZodString>>;
                             activeWhenNoPersistedMode: z.ZodOptional<z.ZodBoolean>;
                             persistedGoalSnapshot: z.ZodOptional<z.ZodObject<{
                                 path: z.ZodOptional<z.ZodArray<z.ZodString>>;
@@ -92949,8 +92611,6 @@ const PluginAgentContributionV2Schema: z.ZodUnion<readonly [
                                     }>;
                                     localId: z.ZodString;
                                 }, z.core.$strict>;
-                                legacyMetadataKey: z.ZodString;
-                                runtimeDescriptorField: z.ZodString;
                                 defaultValue: z.ZodString;
                                 values: z.ZodArray<z.ZodString>;
                             }, z.core.$strict>;
@@ -92973,32 +92633,9 @@ const PluginAgentContributionV2Schema: z.ZodUnion<readonly [
                                     }>;
                                     localId: z.ZodString;
                                 }, z.core.$strict>;
-                                legacyMetadataKey: z.ZodString;
-                                legacyExplicitMetadataKey: z.ZodString;
-                                runtimeDescriptorField: z.ZodString;
-                                runtimeDescriptorExplicitField: z.ZodString;
                                 allowedProtocols: z.ZodOptional<z.ZodArray<z.ZodString>>;
                                 rejectCredentials: z.ZodOptional<z.ZodBoolean>;
                                 originOnly: z.ZodOptional<z.ZodBoolean>;
-                            }, z.core.$strict>>;
-                            agentExtra: z.ZodOptional<z.ZodObject<{
-                                owner: z.ZodString;
-                                schemaId: z.ZodString;
-                                v: z.ZodNumber;
-                                runtimeHandleFields: z.ZodArray<z.ZodString>;
-                            }, z.core.$strict>>;
-                        }, z.core.$strict>>;
-                        backendTransport: z.ZodOptional<z.ZodObject<{
-                            backendMode: z.ZodObject<{
-                                values: z.ZodArray<z.ZodString>;
-                                aliases: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
-                                legacyExperimentalValue: z.ZodOptional<z.ZodString>;
-                            }, z.core.$strict>;
-                            runtimeHandleFields: z.ZodArray<z.ZodString>;
-                            agentExtra: z.ZodOptional<z.ZodObject<{
-                                owner: z.ZodString;
-                                schemaId: z.ZodString;
-                                v: z.ZodNumber;
                             }, z.core.$strict>>;
                         }, z.core.$strict>>;
                     }, z.core.$strict>>;
@@ -93075,18 +92712,6 @@ const PluginAgentContributionV2Schema: z.ZodUnion<readonly [
                                 sourceFromCandidate: z.ZodOptional<z.ZodObject<{
                                     sourceKind: z.ZodString;
                                     optionalFields: z.ZodArray<z.ZodString>;
-                                }, z.core.$strict>>;
-                                runtimeDescriptorFromCandidate: z.ZodOptional<z.ZodObject<{
-                                    backendMode: z.ZodObject<{
-                                        values: z.ZodArray<z.ZodString>;
-                                    }, z.core.$strict>;
-                                    sourceFields: z.ZodArray<z.ZodString>;
-                                    agentExtra: z.ZodOptional<z.ZodObject<{
-                                        owner: z.ZodString;
-                                        schemaId: z.ZodString;
-                                        v: z.ZodNumber;
-                                        runtimeHandleFields: z.ZodArray<z.ZodString>;
-                                    }, z.core.$strict>>;
                                 }, z.core.$strict>>;
                             }, z.core.$strict>>;
                         }, z.core.$strict>>;
@@ -93791,8 +93416,6 @@ const PluginAgentContributionV2Schema: z.ZodUnion<readonly [
                     workState: z.ZodOptional<z.ZodObject<{
                         editableGoals: z.ZodOptional<z.ZodObject<{
                             capabilityDriven: z.ZodOptional<z.ZodBoolean>;
-                            modeValues: z.ZodOptional<z.ZodArray<z.ZodString>>;
-                            activeModeValues: z.ZodOptional<z.ZodArray<z.ZodString>>;
                             activeWhenNoPersistedMode: z.ZodOptional<z.ZodBoolean>;
                             persistedGoalSnapshot: z.ZodOptional<z.ZodObject<{
                                 path: z.ZodOptional<z.ZodArray<z.ZodString>>;
@@ -93889,8 +93512,6 @@ const PluginAgentContributionV2Schema: z.ZodUnion<readonly [
                                     }>;
                                     localId: z.ZodString;
                                 }, z.core.$strict>;
-                                legacyMetadataKey: z.ZodString;
-                                runtimeDescriptorField: z.ZodString;
                                 defaultValue: z.ZodString;
                                 values: z.ZodArray<z.ZodString>;
                             }, z.core.$strict>;
@@ -93913,32 +93534,9 @@ const PluginAgentContributionV2Schema: z.ZodUnion<readonly [
                                     }>;
                                     localId: z.ZodString;
                                 }, z.core.$strict>;
-                                legacyMetadataKey: z.ZodString;
-                                legacyExplicitMetadataKey: z.ZodString;
-                                runtimeDescriptorField: z.ZodString;
-                                runtimeDescriptorExplicitField: z.ZodString;
                                 allowedProtocols: z.ZodOptional<z.ZodArray<z.ZodString>>;
                                 rejectCredentials: z.ZodOptional<z.ZodBoolean>;
                                 originOnly: z.ZodOptional<z.ZodBoolean>;
-                            }, z.core.$strict>>;
-                            agentExtra: z.ZodOptional<z.ZodObject<{
-                                owner: z.ZodString;
-                                schemaId: z.ZodString;
-                                v: z.ZodNumber;
-                                runtimeHandleFields: z.ZodArray<z.ZodString>;
-                            }, z.core.$strict>>;
-                        }, z.core.$strict>>;
-                        backendTransport: z.ZodOptional<z.ZodObject<{
-                            backendMode: z.ZodObject<{
-                                values: z.ZodArray<z.ZodString>;
-                                aliases: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
-                                legacyExperimentalValue: z.ZodOptional<z.ZodString>;
-                            }, z.core.$strict>;
-                            runtimeHandleFields: z.ZodArray<z.ZodString>;
-                            agentExtra: z.ZodOptional<z.ZodObject<{
-                                owner: z.ZodString;
-                                schemaId: z.ZodString;
-                                v: z.ZodNumber;
                             }, z.core.$strict>>;
                         }, z.core.$strict>>;
                     }, z.core.$strict>>;
@@ -94015,18 +93613,6 @@ const PluginAgentContributionV2Schema: z.ZodUnion<readonly [
                                 sourceFromCandidate: z.ZodOptional<z.ZodObject<{
                                     sourceKind: z.ZodString;
                                     optionalFields: z.ZodArray<z.ZodString>;
-                                }, z.core.$strict>>;
-                                runtimeDescriptorFromCandidate: z.ZodOptional<z.ZodObject<{
-                                    backendMode: z.ZodObject<{
-                                        values: z.ZodArray<z.ZodString>;
-                                    }, z.core.$strict>;
-                                    sourceFields: z.ZodArray<z.ZodString>;
-                                    agentExtra: z.ZodOptional<z.ZodObject<{
-                                        owner: z.ZodString;
-                                        schemaId: z.ZodString;
-                                        v: z.ZodNumber;
-                                        runtimeHandleFields: z.ZodArray<z.ZodString>;
-                                    }, z.core.$strict>>;
                                 }, z.core.$strict>>;
                             }, z.core.$strict>>;
                         }, z.core.$strict>>;
@@ -94643,8 +94229,6 @@ const PluginAgentContributionV2Schema: z.ZodUnion<readonly [
                 workState: z.ZodOptional<z.ZodObject<{
                     editableGoals: z.ZodOptional<z.ZodObject<{
                         capabilityDriven: z.ZodOptional<z.ZodBoolean>;
-                        modeValues: z.ZodOptional<z.ZodArray<z.ZodString>>;
-                        activeModeValues: z.ZodOptional<z.ZodArray<z.ZodString>>;
                         activeWhenNoPersistedMode: z.ZodOptional<z.ZodBoolean>;
                         persistedGoalSnapshot: z.ZodOptional<z.ZodObject<{
                             path: z.ZodOptional<z.ZodArray<z.ZodString>>;
@@ -94741,8 +94325,6 @@ const PluginAgentContributionV2Schema: z.ZodUnion<readonly [
                                 }>;
                                 localId: z.ZodString;
                             }, z.core.$strict>;
-                            legacyMetadataKey: z.ZodString;
-                            runtimeDescriptorField: z.ZodString;
                             defaultValue: z.ZodString;
                             values: z.ZodArray<z.ZodString>;
                         }, z.core.$strict>;
@@ -94765,32 +94347,9 @@ const PluginAgentContributionV2Schema: z.ZodUnion<readonly [
                                 }>;
                                 localId: z.ZodString;
                             }, z.core.$strict>;
-                            legacyMetadataKey: z.ZodString;
-                            legacyExplicitMetadataKey: z.ZodString;
-                            runtimeDescriptorField: z.ZodString;
-                            runtimeDescriptorExplicitField: z.ZodString;
                             allowedProtocols: z.ZodOptional<z.ZodArray<z.ZodString>>;
                             rejectCredentials: z.ZodOptional<z.ZodBoolean>;
                             originOnly: z.ZodOptional<z.ZodBoolean>;
-                        }, z.core.$strict>>;
-                        agentExtra: z.ZodOptional<z.ZodObject<{
-                            owner: z.ZodString;
-                            schemaId: z.ZodString;
-                            v: z.ZodNumber;
-                            runtimeHandleFields: z.ZodArray<z.ZodString>;
-                        }, z.core.$strict>>;
-                    }, z.core.$strict>>;
-                    backendTransport: z.ZodOptional<z.ZodObject<{
-                        backendMode: z.ZodObject<{
-                            values: z.ZodArray<z.ZodString>;
-                            aliases: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
-                            legacyExperimentalValue: z.ZodOptional<z.ZodString>;
-                        }, z.core.$strict>;
-                        runtimeHandleFields: z.ZodArray<z.ZodString>;
-                        agentExtra: z.ZodOptional<z.ZodObject<{
-                            owner: z.ZodString;
-                            schemaId: z.ZodString;
-                            v: z.ZodNumber;
                         }, z.core.$strict>>;
                     }, z.core.$strict>>;
                 }, z.core.$strict>>;
@@ -94867,18 +94426,6 @@ const PluginAgentContributionV2Schema: z.ZodUnion<readonly [
                             sourceFromCandidate: z.ZodOptional<z.ZodObject<{
                                 sourceKind: z.ZodString;
                                 optionalFields: z.ZodArray<z.ZodString>;
-                            }, z.core.$strict>>;
-                            runtimeDescriptorFromCandidate: z.ZodOptional<z.ZodObject<{
-                                backendMode: z.ZodObject<{
-                                    values: z.ZodArray<z.ZodString>;
-                                }, z.core.$strict>;
-                                sourceFields: z.ZodArray<z.ZodString>;
-                                agentExtra: z.ZodOptional<z.ZodObject<{
-                                    owner: z.ZodString;
-                                    schemaId: z.ZodString;
-                                    v: z.ZodNumber;
-                                    runtimeHandleFields: z.ZodArray<z.ZodString>;
-                                }, z.core.$strict>>;
                             }, z.core.$strict>>;
                         }, z.core.$strict>>;
                     }, z.core.$strict>>;
@@ -99961,6 +99508,157 @@ const PluginHostedWebAccountDataBridgeOperationV1Schema: z.ZodUnion<readonly [
             }, z.core.$strict>,
             z.ZodObject<{
                 kind: z.ZodLiteral<"data">;
+                operation: z.ZodLiteral<"collection.forget">;
+                definition: z.ZodObject<{
+                    id: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
+                    schemaVersion: z.ZodNumber;
+                    schema: z.ZodType<import("../contributions/jsonSchema.js").PluginJsonSchemaV2, unknown, z.core.$ZodTypeInternals<import("../contributions/jsonSchema.js").PluginJsonSchemaV2, unknown>>;
+                    rowIdField: z.ZodDefault<z.ZodString>;
+                    serverReadable: z.ZodArray<z.ZodString>;
+                    indexes: z.ZodArray<z.ZodObject<{
+                        id: z.ZodString;
+                        fields: z.ZodArray<z.ZodObject<{
+                            field: z.ZodString;
+                            direction: z.ZodDefault<z.ZodEnum<{
+                                asc: "asc";
+                                desc: "desc";
+                            }>>;
+                        }, z.core.$strict>>;
+                    }, z.core.$strict>>;
+                    uiQueries: z.ZodDefault<z.ZodArray<z.ZodObject<{
+                        id: z.ZodString;
+                        indexId: z.ZodString;
+                        parameters: z.ZodDefault<z.ZodRecord<z.ZodString, z.ZodDiscriminatedUnion<[
+                            z.ZodObject<{
+                                kind: z.ZodLiteral<"string">;
+                                maxUtf8Bytes: z.ZodNumber;
+                                enum: z.ZodOptional<z.ZodArray<z.ZodString>>;
+                            }, z.core.$strict>,
+                            z.ZodObject<{
+                                kind: z.ZodLiteral<"finiteNumber">;
+                                minimum: z.ZodOptional<z.ZodNumber>;
+                                maximum: z.ZodOptional<z.ZodNumber>;
+                            }, z.core.$strict>,
+                            z.ZodObject<{
+                                kind: z.ZodLiteral<"boolean">;
+                            }, z.core.$strict>,
+                            z.ZodObject<{
+                                kind: z.ZodLiteral<"instant">;
+                            }, z.core.$strict>
+                        ], "kind">>>;
+                        prefix: z.ZodDefault<z.ZodArray<z.ZodUnion<readonly [
+                            z.ZodObject<{
+                                kind: z.ZodLiteral<"literal">;
+                                value: z.ZodUnion<readonly [
+                                    z.ZodNull,
+                                    z.ZodBoolean,
+                                    z.ZodString,
+                                    z.ZodNumber
+                                ]>;
+                            }, z.core.$strict>,
+                            z.ZodObject<{
+                                kind: z.ZodLiteral<"parameter">;
+                                parameterId: z.ZodString;
+                            }, z.core.$strict>
+                        ]>>>;
+                        range: z.ZodOptional<z.ZodObject<{
+                            lower: z.ZodOptional<z.ZodUnion<readonly [
+                                z.ZodObject<{
+                                    kind: z.ZodLiteral<"literal">;
+                                    value: z.ZodUnion<readonly [
+                                        z.ZodNull,
+                                        z.ZodBoolean,
+                                        z.ZodString,
+                                        z.ZodNumber
+                                    ]>;
+                                }, z.core.$strict>,
+                                z.ZodObject<{
+                                    kind: z.ZodLiteral<"parameter">;
+                                    parameterId: z.ZodString;
+                                }, z.core.$strict>
+                            ]>>;
+                            upper: z.ZodOptional<z.ZodUnion<readonly [
+                                z.ZodObject<{
+                                    kind: z.ZodLiteral<"literal">;
+                                    value: z.ZodUnion<readonly [
+                                        z.ZodNull,
+                                        z.ZodBoolean,
+                                        z.ZodString,
+                                        z.ZodNumber
+                                    ]>;
+                                }, z.core.$strict>,
+                                z.ZodObject<{
+                                    kind: z.ZodLiteral<"parameter">;
+                                    parameterId: z.ZodString;
+                                }, z.core.$strict>
+                            ]>>;
+                        }, z.core.$strict>>;
+                        order: z.ZodEnum<{
+                            asc: "asc";
+                            desc: "desc";
+                        }>;
+                        pageSize: z.ZodNumber;
+                        projectedFields: z.ZodArray<z.ZodString>;
+                    }, z.core.$strict>>>;
+                    relations: z.ZodDefault<z.ZodArray<z.ZodDiscriminatedUnion<[
+                        z.ZodObject<{
+                            id: z.ZodString;
+                            kind: z.ZodLiteral<"collection">;
+                            field: z.ZodString;
+                            collectionId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
+                            required: z.ZodBoolean;
+                            unique: z.ZodOptional<z.ZodBoolean>;
+                            onDelete: z.ZodEnum<{
+                                nullify: "nullify";
+                                restrict: "restrict";
+                            }>;
+                        }, z.core.$strict>,
+                        z.ZodObject<{
+                            id: z.ZodString;
+                            kind: z.ZodLiteral<"host">;
+                            field: z.ZodString;
+                            hostKind: z.ZodEnum<{
+                                account: "account";
+                                artifact: "artifact";
+                                connectedAccount: "connectedAccount";
+                                machine: "machine";
+                                message: "message";
+                                session: "session";
+                            }>;
+                        }, z.core.$strict>
+                    ], "kind">>>;
+                    quota: z.ZodOptional<z.ZodObject<{
+                        maxRows: z.ZodOptional<z.ZodNumber>;
+                        maxCollectionEncodedBytes: z.ZodOptional<z.ZodNumber>;
+                        maxRowEncodedBytes: z.ZodOptional<z.ZodNumber>;
+                        maxRowsByIndexPrefix: z.ZodOptional<z.ZodArray<z.ZodObject<{
+                            indexId: z.ZodString;
+                            prefix: z.ZodArray<z.ZodUnion<readonly [
+                                z.ZodNull,
+                                z.ZodBoolean,
+                                z.ZodString,
+                                z.ZodNumber
+                            ]>>;
+                            maxRows: z.ZodNumber;
+                        }, z.core.$strict>>>;
+                    }, z.core.$strict>>;
+                    readableSchemaVersions: z.ZodOptional<z.ZodArray<z.ZodNumber>>;
+                    migrations: z.ZodDefault<z.ZodArray<z.ZodObject<{
+                        id: z.ZodString;
+                        fromSchemaVersion: z.ZodNumber;
+                        toSchemaVersion: z.ZodNumber;
+                    }, z.core.$strict>>>;
+                    identityFields: z.ZodDefault<z.ZodArray<z.ZodString>>;
+                }, z.core.$strict>;
+                arguments: z.ZodTuple<[
+                    z.ZodString,
+                    z.ZodObject<{
+                        expectedRevision: z.ZodNumber;
+                    }, z.core.$strict>
+                ], null>;
+            }, z.core.$strict>,
+            z.ZodObject<{
+                kind: z.ZodLiteral<"data">;
                 operation: z.ZodLiteral<"collection.query">;
                 definition: z.ZodObject<{
                     id: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
@@ -101540,7 +101238,1705 @@ const ComposerControlStateV1Schema: z.ZodObject<{
 ```
 
 
+### `node_modules/@happier-dev/protocol/dist/plugins/ui/composer.d.ts` — `ComposerDecorationResultV1`
+
+Reached from a published signature; not itself a published export.
+
+```ts
+type ComposerDecorationResultV1 = DeepReadonly<z.infer<typeof ComposerDecorationResultV1Schema>>;
+```
+
+
+### `node_modules/@happier-dev/protocol/dist/plugins/ui/composer.d.ts` — `ComposerDecorationResultV1Schema`
+
+Reached from a published signature; not itself a published export.
+
+```ts
+const ComposerDecorationResultV1Schema: z.ZodDiscriminatedUnion<[
+    z.ZodObject<{
+        status: z.ZodLiteral<"set">;
+    }, z.core.$strict>,
+    z.ZodObject<{
+        status: z.ZodLiteral<"cleared">;
+    }, z.core.$strict>,
+    z.ZodObject<{
+        status: z.ZodLiteral<"staleRevision">;
+        currentRevision: z.ZodNumber;
+    }, z.core.$strict>,
+    z.ZodObject<{
+        status: z.ZodLiteral<"invalid">;
+    }, z.core.$strict>,
+    z.ZodObject<{
+        status: z.ZodLiteral<"unavailable">;
+        reason: z.ZodEnum<{
+            notFound: "notFound";
+            scopeClosed: "scopeClosed";
+            staleGeneration: "staleGeneration";
+        }>;
+    }, z.core.$strict>
+], "status">;
+```
+
+
+### `node_modules/@happier-dev/protocol/dist/plugins/ui/composer.d.ts` — `ComposerDecorationSetV1`
+
+Reached from a published signature; not itself a published export.
+
+```ts
+type ComposerDecorationSetV1 = DeepReadonly<z.infer<typeof ComposerDecorationSetV1Schema>>;
+```
+
+
+### `node_modules/@happier-dev/protocol/dist/plugins/ui/composer.d.ts` — `ComposerDecorationSetV1Schema`
+
+Reached from a published signature; not itself a published export.
+
+```ts
+const ComposerDecorationSetV1Schema: z.ZodObject<{
+    revision: z.ZodNumber;
+    ranges: z.ZodArray<z.ZodObject<{
+        range: z.ZodObject<{
+            start: z.ZodNumber;
+            end: z.ZodNumber;
+        }, z.core.$strict>;
+        treatment: z.ZodUnion<readonly [
+            z.ZodEnum<{
+                code: "code";
+                highlight: "highlight";
+                muted: "muted";
+                success: "success";
+                warning: "warning";
+            }>,
+            z.ZodObject<{
+                kind: z.ZodLiteral<"link">;
+                url: z.ZodString;
+            }, z.core.$strict>
+        ]>;
+        label: z.ZodOptional<z.ZodString>;
+    }, z.core.$strict>>;
+}, z.core.$strict>;
+```
+
+
+### `node_modules/@happier-dev/protocol/dist/plugins/ui/composer.d.ts` — `ComposerFocusResultV1`
+
+Reached from a published signature; not itself a published export.
+
+```ts
+type ComposerFocusResultV1 = DeepReadonly<z.infer<typeof ComposerFocusResultV1Schema>>;
+```
+
+
+### `node_modules/@happier-dev/protocol/dist/plugins/ui/composer.d.ts` — `ComposerFocusResultV1Schema`
+
+Reached from a published signature; not itself a published export.
+
+```ts
+const ComposerFocusResultV1Schema: z.ZodDiscriminatedUnion<[
+    z.ZodObject<{
+        status: z.ZodLiteral<"focused">;
+    }, z.core.$strict>,
+    z.ZodObject<{
+        status: z.ZodLiteral<"notEditable">;
+    }, z.core.$strict>,
+    z.ZodObject<{
+        status: z.ZodLiteral<"unavailable">;
+        reason: z.ZodEnum<{
+            notFound: "notFound";
+            scopeClosed: "scopeClosed";
+            staleGeneration: "staleGeneration";
+        }>;
+    }, z.core.$strict>
+], "status">;
+```
+
+
+### `node_modules/@happier-dev/protocol/dist/plugins/ui/composer.d.ts` — `ComposerInputLockRequestV1`
+
+Reached from a published signature; not itself a published export.
+
+```ts
+type ComposerInputLockRequestV1 = DeepReadonly<z.infer<typeof ComposerInputLockRequestV1Schema>>;
+```
+
+
+### `node_modules/@happier-dev/protocol/dist/plugins/ui/composer.d.ts` — `ComposerInputLockRequestV1Schema`
+
+Reached from a published signature; not itself a published export.
+
+```ts
+const ComposerInputLockRequestV1Schema: z.ZodObject<{
+    reason: z.ZodString;
+    mode: z.ZodEnum<{
+        editAndSubmit: "editAndSubmit";
+        submit: "submit";
+    }>;
+}, z.core.$strict>;
+```
+
+
+### `node_modules/@happier-dev/protocol/dist/plugins/ui/composer.d.ts` — `ComposerOperationV1`
+
+Reached from a published signature; not itself a published export.
+
+```ts
+type ComposerOperationV1 = DeepReadonly<z.infer<typeof ComposerOperationV1Schema>>;
+```
+
+
+### `node_modules/@happier-dev/protocol/dist/plugins/ui/composer.d.ts` — `ComposerOperationV1Schema`
+
+Reached from a published signature; not itself a published export.
+
+```ts
+const ComposerOperationV1Schema: z.ZodDiscriminatedUnion<[
+    z.ZodObject<{
+        kind: z.ZodLiteral<"text.set">;
+        text: z.ZodString;
+    }, z.core.$strict>,
+    z.ZodObject<{
+        kind: z.ZodLiteral<"text.insert">;
+        position: z.ZodObject<{
+            offset: z.ZodNumber;
+        }, z.core.$strict>;
+        text: z.ZodString;
+    }, z.core.$strict>,
+    z.ZodObject<{
+        kind: z.ZodLiteral<"text.replaceRange">;
+        range: z.ZodObject<{
+            start: z.ZodNumber;
+            end: z.ZodNumber;
+        }, z.core.$strict>;
+        text: z.ZodString;
+    }, z.core.$strict>,
+    z.ZodObject<{
+        kind: z.ZodLiteral<"text.clear">;
+    }, z.core.$strict>,
+    z.ZodObject<{
+        kind: z.ZodLiteral<"reference.insert">;
+        reference: z.ZodObject<{
+            kind: z.ZodString;
+            ref: z.ZodString;
+            token: z.ZodString;
+            label: z.ZodOptional<z.ZodString>;
+            start: z.ZodNumber;
+            end: z.ZodNumber;
+            composerReference: z.ZodOptional<z.ZodType<{
+                pluginId: string;
+                localId: string;
+            }, {
+                pluginId: string;
+                localId: string;
+            }, z.core.$ZodTypeInternals<{
+                pluginId: string;
+                localId: string;
+            }, {
+                pluginId: string;
+                localId: string;
+            }>>>;
+        }, z.core.$strict>;
+    }, z.core.$strict>,
+    z.ZodObject<{
+        kind: z.ZodLiteral<"reference.remove">;
+        reference: z.ZodObject<{
+            ref: z.ZodString;
+            start: z.ZodNumber;
+            end: z.ZodNumber;
+        }, z.core.$strict>;
+    }, z.core.$strict>,
+    z.ZodObject<{
+        kind: z.ZodLiteral<"attachment.add">;
+        attachmentLocalId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
+        value: z.ZodObject<{
+            key: z.ZodString;
+            value: z.ZodType<import("../contributions/jsonSchema.js").PluginJsonValueV2, unknown, z.core.$ZodTypeInternals<import("../contributions/jsonSchema.js").PluginJsonValueV2, unknown>>;
+            presentation: z.ZodObject<{
+                label: z.ZodString;
+                description: z.ZodOptional<z.ZodString>;
+                icon: z.ZodOptional<z.ZodEnum<{
+                    action: "action";
+                    add: "add";
+                    back: "back";
+                    browser: "browser";
+                    "change-complete": "change-complete";
+                    "change-open": "change-open";
+                    check: "check";
+                    close: "close";
+                    copy: "copy";
+                    error: "error";
+                    external: "external";
+                    file: "file";
+                    forward: "forward";
+                    globe: "globe";
+                    info: "info";
+                    more: "more";
+                    preview: "preview";
+                    refresh: "refresh";
+                    search: "search";
+                    settings: "settings";
+                    terminal: "terminal";
+                    warning: "warning";
+                }>>;
+                tone: z.ZodOptional<z.ZodEnum<{
+                    danger: "danger";
+                    info: "info";
+                    neutral: "neutral";
+                    success: "success";
+                    warning: "warning";
+                }>>;
+            }, z.core.$strict>;
+        }, z.core.$strict>;
+        content: z.ZodOptional<z.ZodObject<{
+            kind: z.ZodLiteral<"stagedMedia">;
+            handle: z.ZodObject<{
+                v: z.ZodLiteral<1>;
+                id: z.ZodString;
+                executionTarget: z.ZodObject<{
+                    serverId: z.ZodString;
+                    machineId: z.ZodString;
+                }, z.core.$strict>;
+                owner: z.ZodType<{
+                    pluginId: string;
+                    localId: string;
+                }, {
+                    pluginId: string;
+                    localId: string;
+                }, z.core.$ZodTypeInternals<{
+                    pluginId: string;
+                    localId: string;
+                }, {
+                    pluginId: string;
+                    localId: string;
+                }>>;
+                mediaKind: z.ZodEnum<{
+                    image: "image";
+                    video: "video";
+                }>;
+                mimeType: z.ZodEnum<{
+                    "image/gif": "image/gif";
+                    "image/jpeg": "image/jpeg";
+                    "image/png": "image/png";
+                    "image/webp": "image/webp";
+                    "video/webm": "video/webm";
+                }>;
+                name: z.ZodString;
+                sizeBytes: z.ZodNumber;
+                sha256: z.ZodString;
+            }, z.core.$strict>;
+        }, z.core.$strict>>;
+    }, z.core.$strict>,
+    z.ZodObject<{
+        kind: z.ZodLiteral<"attachment.update">;
+        instanceId: z.ZodString;
+        update: z.ZodObject<{
+            value: z.ZodType<import("../contributions/jsonSchema.js").PluginJsonValueV2, unknown, z.core.$ZodTypeInternals<import("../contributions/jsonSchema.js").PluginJsonValueV2, unknown>>;
+            presentation: z.ZodOptional<z.ZodObject<{
+                label: z.ZodString;
+                description: z.ZodOptional<z.ZodString>;
+                icon: z.ZodOptional<z.ZodEnum<{
+                    action: "action";
+                    add: "add";
+                    back: "back";
+                    browser: "browser";
+                    "change-complete": "change-complete";
+                    "change-open": "change-open";
+                    check: "check";
+                    close: "close";
+                    copy: "copy";
+                    error: "error";
+                    external: "external";
+                    file: "file";
+                    forward: "forward";
+                    globe: "globe";
+                    info: "info";
+                    more: "more";
+                    preview: "preview";
+                    refresh: "refresh";
+                    search: "search";
+                    settings: "settings";
+                    terminal: "terminal";
+                    warning: "warning";
+                }>>;
+                tone: z.ZodOptional<z.ZodEnum<{
+                    danger: "danger";
+                    info: "info";
+                    neutral: "neutral";
+                    success: "success";
+                    warning: "warning";
+                }>>;
+            }, z.core.$strict>>;
+        }, z.core.$strict>;
+    }, z.core.$strict>,
+    z.ZodObject<{
+        kind: z.ZodLiteral<"attachment.remove">;
+        instanceId: z.ZodString;
+    }, z.core.$strict>
+], "kind">;
+```
+
+
+### `node_modules/@happier-dev/protocol/dist/plugins/ui/composer.d.ts` — `ComposerReadResultV1`
+
+Reached from a published signature; not itself a published export.
+
+```ts
+type ComposerReadResultV1 = DeepReadonly<z.infer<typeof ComposerReadResultV1Schema>>;
+```
+
+
+### `node_modules/@happier-dev/protocol/dist/plugins/ui/composer.d.ts` — `ComposerReadResultV1Schema`
+
+Reached from a published signature; not itself a published export.
+
+```ts
+const ComposerReadResultV1Schema: z.ZodDiscriminatedUnion<[
+    z.ZodObject<{
+        status: z.ZodLiteral<"ready">;
+        snapshot: z.ZodObject<{
+            revision: z.ZodNumber;
+            ref: z.ZodType<({
+                kind: "session";
+                sessionId: string;
+            } & {}) | ({
+                kind: "newSession";
+                instanceId: string;
+            } & {}) | ({
+                kind: "pendingMessage";
+                sessionId: string;
+                localId: string;
+            } & {}) | ({
+                kind: "participantMessage";
+                sessionId: string;
+                instanceId: string;
+            } & {}) | ({
+                kind: "automationAuthoring";
+                sessionId: string;
+                instanceId: string;
+            } & {}), ({
+                kind: "session";
+                sessionId: string;
+            } & {}) | ({
+                kind: "newSession";
+                instanceId: string;
+            } & {}) | ({
+                kind: "pendingMessage";
+                sessionId: string;
+                localId: string;
+            } & {}) | ({
+                kind: "participantMessage";
+                sessionId: string;
+                instanceId: string;
+            } & {}) | ({
+                kind: "automationAuthoring";
+                sessionId: string;
+                instanceId: string;
+            } & {}), z.core.$ZodTypeInternals<({
+                kind: "session";
+                sessionId: string;
+            } & {}) | ({
+                kind: "newSession";
+                instanceId: string;
+            } & {}) | ({
+                kind: "pendingMessage";
+                sessionId: string;
+                localId: string;
+            } & {}) | ({
+                kind: "participantMessage";
+                sessionId: string;
+                instanceId: string;
+            } & {}) | ({
+                kind: "automationAuthoring";
+                sessionId: string;
+                instanceId: string;
+            } & {}), ({
+                kind: "session";
+                sessionId: string;
+            } & {}) | ({
+                kind: "newSession";
+                instanceId: string;
+            } & {}) | ({
+                kind: "pendingMessage";
+                sessionId: string;
+                localId: string;
+            } & {}) | ({
+                kind: "participantMessage";
+                sessionId: string;
+                instanceId: string;
+            } & {}) | ({
+                kind: "automationAuthoring";
+                sessionId: string;
+                instanceId: string;
+            } & {})>>;
+            text: z.ZodString;
+            selection: z.ZodOptional<z.ZodObject<{
+                start: z.ZodNumber;
+                end: z.ZodNumber;
+            }, z.core.$strict>>;
+            references: z.ZodArray<z.ZodObject<{
+                kind: z.ZodString;
+                ref: z.ZodString;
+                token: z.ZodString;
+                label: z.ZodOptional<z.ZodString>;
+                start: z.ZodNumber;
+                end: z.ZodNumber;
+                composerReference: z.ZodOptional<z.ZodType<{
+                    pluginId: string;
+                    localId: string;
+                }, {
+                    pluginId: string;
+                    localId: string;
+                }, z.core.$ZodTypeInternals<{
+                    pluginId: string;
+                    localId: string;
+                }, {
+                    pluginId: string;
+                    localId: string;
+                }>>>;
+            }, z.core.$strict>>;
+            attachments: z.ZodArray<z.ZodObject<{
+                v: z.ZodLiteral<1>;
+                instanceId: z.ZodString;
+                attachment: z.ZodType<{
+                    pluginId: string;
+                    localId: string;
+                }, {
+                    pluginId: string;
+                    localId: string;
+                }, z.core.$ZodTypeInternals<{
+                    pluginId: string;
+                    localId: string;
+                }, {
+                    pluginId: string;
+                    localId: string;
+                }>>;
+                key: z.ZodString;
+                value: z.ZodType<import("../contributions/jsonSchema.js").PluginJsonValueV2, unknown, z.core.$ZodTypeInternals<import("../contributions/jsonSchema.js").PluginJsonValueV2, unknown>>;
+                presentation: z.ZodObject<{
+                    label: z.ZodString;
+                    description: z.ZodOptional<z.ZodString>;
+                    icon: z.ZodOptional<z.ZodEnum<{
+                        action: "action";
+                        add: "add";
+                        back: "back";
+                        browser: "browser";
+                        "change-complete": "change-complete";
+                        "change-open": "change-open";
+                        check: "check";
+                        close: "close";
+                        copy: "copy";
+                        error: "error";
+                        external: "external";
+                        file: "file";
+                        forward: "forward";
+                        globe: "globe";
+                        info: "info";
+                        more: "more";
+                        preview: "preview";
+                        refresh: "refresh";
+                        search: "search";
+                        settings: "settings";
+                        terminal: "terminal";
+                        warning: "warning";
+                    }>>;
+                    tone: z.ZodOptional<z.ZodEnum<{
+                        danger: "danger";
+                        info: "info";
+                        neutral: "neutral";
+                        success: "success";
+                        warning: "warning";
+                    }>>;
+                    typeLabel: z.ZodString;
+                }, z.core.$strip>;
+                availability: z.ZodDiscriminatedUnion<[
+                    z.ZodObject<{
+                        status: z.ZodLiteral<"ready">;
+                    }, z.core.$strict>,
+                    z.ZodObject<{
+                        status: z.ZodEnum<{
+                            invalid: "invalid";
+                            unavailable: "unavailable";
+                        }>;
+                        reason: z.ZodOptional<z.ZodString>;
+                    }, z.core.$strict>
+                ], "status">;
+                content: z.ZodOptional<z.ZodObject<{
+                    kind: z.ZodLiteral<"stagedMedia">;
+                    handle: z.ZodObject<{
+                        v: z.ZodLiteral<1>;
+                        id: z.ZodString;
+                        executionTarget: z.ZodObject<{
+                            serverId: z.ZodString;
+                            machineId: z.ZodString;
+                        }, z.core.$strict>;
+                        owner: z.ZodType<{
+                            pluginId: string;
+                            localId: string;
+                        }, {
+                            pluginId: string;
+                            localId: string;
+                        }, z.core.$ZodTypeInternals<{
+                            pluginId: string;
+                            localId: string;
+                        }, {
+                            pluginId: string;
+                            localId: string;
+                        }>>;
+                        mediaKind: z.ZodEnum<{
+                            image: "image";
+                            video: "video";
+                        }>;
+                        mimeType: z.ZodEnum<{
+                            "image/gif": "image/gif";
+                            "image/jpeg": "image/jpeg";
+                            "image/png": "image/png";
+                            "image/webp": "image/webp";
+                            "video/webm": "video/webm";
+                        }>;
+                        name: z.ZodString;
+                        sizeBytes: z.ZodNumber;
+                        sha256: z.ZodString;
+                    }, z.core.$strict>;
+                }, z.core.$strict>>;
+            }, z.core.$strict>>;
+            layout: z.ZodEnum<{
+                collapsed: "collapsed";
+                scroll: "scroll";
+                wrap: "wrap";
+            }>;
+            capabilities: z.ZodObject<{
+                text: z.ZodLiteral<true>;
+                references: z.ZodBoolean;
+                attachments: z.ZodBoolean;
+                submit: z.ZodBoolean;
+            }, z.core.$strict>;
+            state: z.ZodObject<{
+                focused: z.ZodBoolean;
+                editable: z.ZodBoolean;
+                submittable: z.ZodBoolean;
+                submitting: z.ZodBoolean;
+                running: z.ZodBoolean;
+                inputLock: z.ZodOptional<z.ZodObject<{
+                    mode: z.ZodEnum<{
+                        editAndSubmit: "editAndSubmit";
+                        submit: "submit";
+                    }>;
+                    reasons: z.ZodArray<z.ZodString>;
+                }, z.core.$strict>>;
+            }, z.core.$strict>;
+        }, z.core.$strict>;
+    }, z.core.$strict>,
+    z.ZodObject<{
+        status: z.ZodLiteral<"unavailable">;
+        reason: z.ZodEnum<{
+            notFound: "notFound";
+            scopeClosed: "scopeClosed";
+            staleGeneration: "staleGeneration";
+        }>;
+    }, z.core.$strict>
+], "status">;
+```
+
+
+### `node_modules/@happier-dev/protocol/dist/plugins/ui/composer.d.ts` — `ComposerSnapshotV1`
+
+Reached from a published signature; not itself a published export.
+
+```ts
+type ComposerSnapshotV1 = DeepReadonly<z.infer<typeof ComposerSnapshotV1Schema>>;
+```
+
+
+### `node_modules/@happier-dev/protocol/dist/plugins/ui/composer.d.ts` — `ComposerSnapshotV1Schema`
+
+Reached from a published signature; not itself a published export.
+
+```ts
+const ComposerSnapshotV1Schema: z.ZodObject<{
+    revision: z.ZodNumber;
+    ref: z.ZodType<({
+        kind: "session";
+        sessionId: string;
+    } & {}) | ({
+        kind: "newSession";
+        instanceId: string;
+    } & {}) | ({
+        kind: "pendingMessage";
+        sessionId: string;
+        localId: string;
+    } & {}) | ({
+        kind: "participantMessage";
+        sessionId: string;
+        instanceId: string;
+    } & {}) | ({
+        kind: "automationAuthoring";
+        sessionId: string;
+        instanceId: string;
+    } & {}), ({
+        kind: "session";
+        sessionId: string;
+    } & {}) | ({
+        kind: "newSession";
+        instanceId: string;
+    } & {}) | ({
+        kind: "pendingMessage";
+        sessionId: string;
+        localId: string;
+    } & {}) | ({
+        kind: "participantMessage";
+        sessionId: string;
+        instanceId: string;
+    } & {}) | ({
+        kind: "automationAuthoring";
+        sessionId: string;
+        instanceId: string;
+    } & {}), z.core.$ZodTypeInternals<({
+        kind: "session";
+        sessionId: string;
+    } & {}) | ({
+        kind: "newSession";
+        instanceId: string;
+    } & {}) | ({
+        kind: "pendingMessage";
+        sessionId: string;
+        localId: string;
+    } & {}) | ({
+        kind: "participantMessage";
+        sessionId: string;
+        instanceId: string;
+    } & {}) | ({
+        kind: "automationAuthoring";
+        sessionId: string;
+        instanceId: string;
+    } & {}), ({
+        kind: "session";
+        sessionId: string;
+    } & {}) | ({
+        kind: "newSession";
+        instanceId: string;
+    } & {}) | ({
+        kind: "pendingMessage";
+        sessionId: string;
+        localId: string;
+    } & {}) | ({
+        kind: "participantMessage";
+        sessionId: string;
+        instanceId: string;
+    } & {}) | ({
+        kind: "automationAuthoring";
+        sessionId: string;
+        instanceId: string;
+    } & {})>>;
+    text: z.ZodString;
+    selection: z.ZodOptional<z.ZodObject<{
+        start: z.ZodNumber;
+        end: z.ZodNumber;
+    }, z.core.$strict>>;
+    references: z.ZodArray<z.ZodObject<{
+        kind: z.ZodString;
+        ref: z.ZodString;
+        token: z.ZodString;
+        label: z.ZodOptional<z.ZodString>;
+        start: z.ZodNumber;
+        end: z.ZodNumber;
+        composerReference: z.ZodOptional<z.ZodType<{
+            pluginId: string;
+            localId: string;
+        }, {
+            pluginId: string;
+            localId: string;
+        }, z.core.$ZodTypeInternals<{
+            pluginId: string;
+            localId: string;
+        }, {
+            pluginId: string;
+            localId: string;
+        }>>>;
+    }, z.core.$strict>>;
+    attachments: z.ZodArray<z.ZodObject<{
+        v: z.ZodLiteral<1>;
+        instanceId: z.ZodString;
+        attachment: z.ZodType<{
+            pluginId: string;
+            localId: string;
+        }, {
+            pluginId: string;
+            localId: string;
+        }, z.core.$ZodTypeInternals<{
+            pluginId: string;
+            localId: string;
+        }, {
+            pluginId: string;
+            localId: string;
+        }>>;
+        key: z.ZodString;
+        value: z.ZodType<import("../contributions/jsonSchema.js").PluginJsonValueV2, unknown, z.core.$ZodTypeInternals<import("../contributions/jsonSchema.js").PluginJsonValueV2, unknown>>;
+        presentation: z.ZodObject<{
+            label: z.ZodString;
+            description: z.ZodOptional<z.ZodString>;
+            icon: z.ZodOptional<z.ZodEnum<{
+                action: "action";
+                add: "add";
+                back: "back";
+                browser: "browser";
+                "change-complete": "change-complete";
+                "change-open": "change-open";
+                check: "check";
+                close: "close";
+                copy: "copy";
+                error: "error";
+                external: "external";
+                file: "file";
+                forward: "forward";
+                globe: "globe";
+                info: "info";
+                more: "more";
+                preview: "preview";
+                refresh: "refresh";
+                search: "search";
+                settings: "settings";
+                terminal: "terminal";
+                warning: "warning";
+            }>>;
+            tone: z.ZodOptional<z.ZodEnum<{
+                danger: "danger";
+                info: "info";
+                neutral: "neutral";
+                success: "success";
+                warning: "warning";
+            }>>;
+            typeLabel: z.ZodString;
+        }, z.core.$strip>;
+        availability: z.ZodDiscriminatedUnion<[
+            z.ZodObject<{
+                status: z.ZodLiteral<"ready">;
+            }, z.core.$strict>,
+            z.ZodObject<{
+                status: z.ZodEnum<{
+                    invalid: "invalid";
+                    unavailable: "unavailable";
+                }>;
+                reason: z.ZodOptional<z.ZodString>;
+            }, z.core.$strict>
+        ], "status">;
+        content: z.ZodOptional<z.ZodObject<{
+            kind: z.ZodLiteral<"stagedMedia">;
+            handle: z.ZodObject<{
+                v: z.ZodLiteral<1>;
+                id: z.ZodString;
+                executionTarget: z.ZodObject<{
+                    serverId: z.ZodString;
+                    machineId: z.ZodString;
+                }, z.core.$strict>;
+                owner: z.ZodType<{
+                    pluginId: string;
+                    localId: string;
+                }, {
+                    pluginId: string;
+                    localId: string;
+                }, z.core.$ZodTypeInternals<{
+                    pluginId: string;
+                    localId: string;
+                }, {
+                    pluginId: string;
+                    localId: string;
+                }>>;
+                mediaKind: z.ZodEnum<{
+                    image: "image";
+                    video: "video";
+                }>;
+                mimeType: z.ZodEnum<{
+                    "image/gif": "image/gif";
+                    "image/jpeg": "image/jpeg";
+                    "image/png": "image/png";
+                    "image/webp": "image/webp";
+                    "video/webm": "video/webm";
+                }>;
+                name: z.ZodString;
+                sizeBytes: z.ZodNumber;
+                sha256: z.ZodString;
+            }, z.core.$strict>;
+        }, z.core.$strict>>;
+    }, z.core.$strict>>;
+    layout: z.ZodEnum<{
+        collapsed: "collapsed";
+        scroll: "scroll";
+        wrap: "wrap";
+    }>;
+    capabilities: z.ZodObject<{
+        text: z.ZodLiteral<true>;
+        references: z.ZodBoolean;
+        attachments: z.ZodBoolean;
+        submit: z.ZodBoolean;
+    }, z.core.$strict>;
+    state: z.ZodObject<{
+        focused: z.ZodBoolean;
+        editable: z.ZodBoolean;
+        submittable: z.ZodBoolean;
+        submitting: z.ZodBoolean;
+        running: z.ZodBoolean;
+        inputLock: z.ZodOptional<z.ZodObject<{
+            mode: z.ZodEnum<{
+                editAndSubmit: "editAndSubmit";
+                submit: "submit";
+            }>;
+            reasons: z.ZodArray<z.ZodString>;
+        }, z.core.$strict>>;
+    }, z.core.$strict>;
+}, z.core.$strict>;
+```
+
+
+### `node_modules/@happier-dev/protocol/dist/plugins/ui/composer.d.ts` — `ComposerSurfaceInputV1`
+
+Reached from a published signature; not itself a published export.
+
+```ts
+type ComposerSurfaceInputV1 = DeepReadonly<z.infer<typeof ComposerSurfaceInputV1Schema>>;
+```
+
+
+### `node_modules/@happier-dev/protocol/dist/plugins/ui/composer.d.ts` — `ComposerSurfaceInputV1Schema`
+
+Reached from a published signature; not itself a published export.
+
+```ts
+const ComposerSurfaceInputV1Schema: z.ZodDiscriminatedUnion<[
+    z.ZodObject<{
+        v: z.ZodLiteral<1>;
+        role: z.ZodEnum<{
+            controlCompact: "controlCompact";
+            controlInteraction: "controlInteraction";
+        }>;
+        composer: z.ZodType<({
+            kind: "session";
+            sessionId: string;
+        } & {}) | ({
+            kind: "newSession";
+            instanceId: string;
+        } & {}) | ({
+            kind: "pendingMessage";
+            sessionId: string;
+            localId: string;
+        } & {}) | ({
+            kind: "participantMessage";
+            sessionId: string;
+            instanceId: string;
+        } & {}) | ({
+            kind: "automationAuthoring";
+            sessionId: string;
+            instanceId: string;
+        } & {}), ({
+            kind: "session";
+            sessionId: string;
+        } & {}) | ({
+            kind: "newSession";
+            instanceId: string;
+        } & {}) | ({
+            kind: "pendingMessage";
+            sessionId: string;
+            localId: string;
+        } & {}) | ({
+            kind: "participantMessage";
+            sessionId: string;
+            instanceId: string;
+        } & {}) | ({
+            kind: "automationAuthoring";
+            sessionId: string;
+            instanceId: string;
+        } & {}), z.core.$ZodTypeInternals<({
+            kind: "session";
+            sessionId: string;
+        } & {}) | ({
+            kind: "newSession";
+            instanceId: string;
+        } & {}) | ({
+            kind: "pendingMessage";
+            sessionId: string;
+            localId: string;
+        } & {}) | ({
+            kind: "participantMessage";
+            sessionId: string;
+            instanceId: string;
+        } & {}) | ({
+            kind: "automationAuthoring";
+            sessionId: string;
+            instanceId: string;
+        } & {}), ({
+            kind: "session";
+            sessionId: string;
+        } & {}) | ({
+            kind: "newSession";
+            instanceId: string;
+        } & {}) | ({
+            kind: "pendingMessage";
+            sessionId: string;
+            localId: string;
+        } & {}) | ({
+            kind: "participantMessage";
+            sessionId: string;
+            instanceId: string;
+        } & {}) | ({
+            kind: "automationAuthoring";
+            sessionId: string;
+            instanceId: string;
+        } & {})>>;
+        controlLocalId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
+        state: z.ZodObject<{
+            visible: z.ZodOptional<z.ZodBoolean>;
+            enabled: z.ZodOptional<z.ZodBoolean>;
+            label: z.ZodOptional<z.ZodString>;
+            icon: z.ZodOptional<z.ZodEnum<{
+                action: "action";
+                add: "add";
+                back: "back";
+                browser: "browser";
+                "change-complete": "change-complete";
+                "change-open": "change-open";
+                check: "check";
+                close: "close";
+                copy: "copy";
+                error: "error";
+                external: "external";
+                file: "file";
+                forward: "forward";
+                globe: "globe";
+                info: "info";
+                more: "more";
+                preview: "preview";
+                refresh: "refresh";
+                search: "search";
+                settings: "settings";
+                terminal: "terminal";
+                warning: "warning";
+            }>>;
+            count: z.ZodOptional<z.ZodNumber>;
+            selected: z.ZodOptional<z.ZodBoolean>;
+            selectedChoiceIds: z.ZodOptional<z.ZodArray<z.ZodString>>;
+            accessibilityLabel: z.ZodOptional<z.ZodString>;
+            unavailableReason: z.ZodOptional<z.ZodString>;
+        }, z.core.$strict>;
+    }, z.core.$strict>,
+    z.ZodObject<{
+        v: z.ZodLiteral<1>;
+        role: z.ZodLiteral<"attachmentPicker">;
+        composer: z.ZodType<({
+            kind: "session";
+            sessionId: string;
+        } & {}) | ({
+            kind: "newSession";
+            instanceId: string;
+        } & {}) | ({
+            kind: "pendingMessage";
+            sessionId: string;
+            localId: string;
+        } & {}) | ({
+            kind: "participantMessage";
+            sessionId: string;
+            instanceId: string;
+        } & {}) | ({
+            kind: "automationAuthoring";
+            sessionId: string;
+            instanceId: string;
+        } & {}), ({
+            kind: "session";
+            sessionId: string;
+        } & {}) | ({
+            kind: "newSession";
+            instanceId: string;
+        } & {}) | ({
+            kind: "pendingMessage";
+            sessionId: string;
+            localId: string;
+        } & {}) | ({
+            kind: "participantMessage";
+            sessionId: string;
+            instanceId: string;
+        } & {}) | ({
+            kind: "automationAuthoring";
+            sessionId: string;
+            instanceId: string;
+        } & {}), z.core.$ZodTypeInternals<({
+            kind: "session";
+            sessionId: string;
+        } & {}) | ({
+            kind: "newSession";
+            instanceId: string;
+        } & {}) | ({
+            kind: "pendingMessage";
+            sessionId: string;
+            localId: string;
+        } & {}) | ({
+            kind: "participantMessage";
+            sessionId: string;
+            instanceId: string;
+        } & {}) | ({
+            kind: "automationAuthoring";
+            sessionId: string;
+            instanceId: string;
+        } & {}), ({
+            kind: "session";
+            sessionId: string;
+        } & {}) | ({
+            kind: "newSession";
+            instanceId: string;
+        } & {}) | ({
+            kind: "pendingMessage";
+            sessionId: string;
+            localId: string;
+        } & {}) | ({
+            kind: "participantMessage";
+            sessionId: string;
+            instanceId: string;
+        } & {}) | ({
+            kind: "automationAuthoring";
+            sessionId: string;
+            instanceId: string;
+        } & {})>>;
+        attachmentLocalId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
+        instances: z.ZodArray<z.ZodObject<{
+            v: z.ZodLiteral<1>;
+            instanceId: z.ZodString;
+            attachment: z.ZodType<{
+                pluginId: string;
+                localId: string;
+            }, {
+                pluginId: string;
+                localId: string;
+            }, z.core.$ZodTypeInternals<{
+                pluginId: string;
+                localId: string;
+            }, {
+                pluginId: string;
+                localId: string;
+            }>>;
+            key: z.ZodString;
+            value: z.ZodType<import("../contributions/jsonSchema.js").PluginJsonValueV2, unknown, z.core.$ZodTypeInternals<import("../contributions/jsonSchema.js").PluginJsonValueV2, unknown>>;
+            presentation: z.ZodObject<{
+                label: z.ZodString;
+                description: z.ZodOptional<z.ZodString>;
+                icon: z.ZodOptional<z.ZodEnum<{
+                    action: "action";
+                    add: "add";
+                    back: "back";
+                    browser: "browser";
+                    "change-complete": "change-complete";
+                    "change-open": "change-open";
+                    check: "check";
+                    close: "close";
+                    copy: "copy";
+                    error: "error";
+                    external: "external";
+                    file: "file";
+                    forward: "forward";
+                    globe: "globe";
+                    info: "info";
+                    more: "more";
+                    preview: "preview";
+                    refresh: "refresh";
+                    search: "search";
+                    settings: "settings";
+                    terminal: "terminal";
+                    warning: "warning";
+                }>>;
+                tone: z.ZodOptional<z.ZodEnum<{
+                    danger: "danger";
+                    info: "info";
+                    neutral: "neutral";
+                    success: "success";
+                    warning: "warning";
+                }>>;
+                typeLabel: z.ZodString;
+            }, z.core.$strip>;
+            availability: z.ZodDiscriminatedUnion<[
+                z.ZodObject<{
+                    status: z.ZodLiteral<"ready">;
+                }, z.core.$strict>,
+                z.ZodObject<{
+                    status: z.ZodEnum<{
+                        invalid: "invalid";
+                        unavailable: "unavailable";
+                    }>;
+                    reason: z.ZodOptional<z.ZodString>;
+                }, z.core.$strict>
+            ], "status">;
+            content: z.ZodOptional<z.ZodObject<{
+                kind: z.ZodLiteral<"stagedMedia">;
+                handle: z.ZodObject<{
+                    v: z.ZodLiteral<1>;
+                    id: z.ZodString;
+                    executionTarget: z.ZodObject<{
+                        serverId: z.ZodString;
+                        machineId: z.ZodString;
+                    }, z.core.$strict>;
+                    owner: z.ZodType<{
+                        pluginId: string;
+                        localId: string;
+                    }, {
+                        pluginId: string;
+                        localId: string;
+                    }, z.core.$ZodTypeInternals<{
+                        pluginId: string;
+                        localId: string;
+                    }, {
+                        pluginId: string;
+                        localId: string;
+                    }>>;
+                    mediaKind: z.ZodEnum<{
+                        image: "image";
+                        video: "video";
+                    }>;
+                    mimeType: z.ZodEnum<{
+                        "image/gif": "image/gif";
+                        "image/jpeg": "image/jpeg";
+                        "image/png": "image/png";
+                        "image/webp": "image/webp";
+                        "video/webm": "video/webm";
+                    }>;
+                    name: z.ZodString;
+                    sizeBytes: z.ZodNumber;
+                    sha256: z.ZodString;
+                }, z.core.$strict>;
+            }, z.core.$strict>>;
+        }, z.core.$strict>>;
+    }, z.core.$strict>,
+    z.ZodObject<{
+        v: z.ZodLiteral<1>;
+        role: z.ZodEnum<{
+            attachmentDisplay: "attachmentDisplay";
+            attachmentPreview: "attachmentPreview";
+        }>;
+        composer: z.ZodType<({
+            kind: "session";
+            sessionId: string;
+        } & {}) | ({
+            kind: "newSession";
+            instanceId: string;
+        } & {}) | ({
+            kind: "pendingMessage";
+            sessionId: string;
+            localId: string;
+        } & {}) | ({
+            kind: "participantMessage";
+            sessionId: string;
+            instanceId: string;
+        } & {}) | ({
+            kind: "automationAuthoring";
+            sessionId: string;
+            instanceId: string;
+        } & {}), ({
+            kind: "session";
+            sessionId: string;
+        } & {}) | ({
+            kind: "newSession";
+            instanceId: string;
+        } & {}) | ({
+            kind: "pendingMessage";
+            sessionId: string;
+            localId: string;
+        } & {}) | ({
+            kind: "participantMessage";
+            sessionId: string;
+            instanceId: string;
+        } & {}) | ({
+            kind: "automationAuthoring";
+            sessionId: string;
+            instanceId: string;
+        } & {}), z.core.$ZodTypeInternals<({
+            kind: "session";
+            sessionId: string;
+        } & {}) | ({
+            kind: "newSession";
+            instanceId: string;
+        } & {}) | ({
+            kind: "pendingMessage";
+            sessionId: string;
+            localId: string;
+        } & {}) | ({
+            kind: "participantMessage";
+            sessionId: string;
+            instanceId: string;
+        } & {}) | ({
+            kind: "automationAuthoring";
+            sessionId: string;
+            instanceId: string;
+        } & {}), ({
+            kind: "session";
+            sessionId: string;
+        } & {}) | ({
+            kind: "newSession";
+            instanceId: string;
+        } & {}) | ({
+            kind: "pendingMessage";
+            sessionId: string;
+            localId: string;
+        } & {}) | ({
+            kind: "participantMessage";
+            sessionId: string;
+            instanceId: string;
+        } & {}) | ({
+            kind: "automationAuthoring";
+            sessionId: string;
+            instanceId: string;
+        } & {})>>;
+        attachmentLocalId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
+        instance: z.ZodObject<{
+            v: z.ZodLiteral<1>;
+            instanceId: z.ZodString;
+            attachment: z.ZodType<{
+                pluginId: string;
+                localId: string;
+            }, {
+                pluginId: string;
+                localId: string;
+            }, z.core.$ZodTypeInternals<{
+                pluginId: string;
+                localId: string;
+            }, {
+                pluginId: string;
+                localId: string;
+            }>>;
+            key: z.ZodString;
+            value: z.ZodType<import("../contributions/jsonSchema.js").PluginJsonValueV2, unknown, z.core.$ZodTypeInternals<import("../contributions/jsonSchema.js").PluginJsonValueV2, unknown>>;
+            presentation: z.ZodObject<{
+                label: z.ZodString;
+                description: z.ZodOptional<z.ZodString>;
+                icon: z.ZodOptional<z.ZodEnum<{
+                    action: "action";
+                    add: "add";
+                    back: "back";
+                    browser: "browser";
+                    "change-complete": "change-complete";
+                    "change-open": "change-open";
+                    check: "check";
+                    close: "close";
+                    copy: "copy";
+                    error: "error";
+                    external: "external";
+                    file: "file";
+                    forward: "forward";
+                    globe: "globe";
+                    info: "info";
+                    more: "more";
+                    preview: "preview";
+                    refresh: "refresh";
+                    search: "search";
+                    settings: "settings";
+                    terminal: "terminal";
+                    warning: "warning";
+                }>>;
+                tone: z.ZodOptional<z.ZodEnum<{
+                    danger: "danger";
+                    info: "info";
+                    neutral: "neutral";
+                    success: "success";
+                    warning: "warning";
+                }>>;
+                typeLabel: z.ZodString;
+            }, z.core.$strip>;
+            availability: z.ZodDiscriminatedUnion<[
+                z.ZodObject<{
+                    status: z.ZodLiteral<"ready">;
+                }, z.core.$strict>,
+                z.ZodObject<{
+                    status: z.ZodEnum<{
+                        invalid: "invalid";
+                        unavailable: "unavailable";
+                    }>;
+                    reason: z.ZodOptional<z.ZodString>;
+                }, z.core.$strict>
+            ], "status">;
+            content: z.ZodOptional<z.ZodObject<{
+                kind: z.ZodLiteral<"stagedMedia">;
+                handle: z.ZodObject<{
+                    v: z.ZodLiteral<1>;
+                    id: z.ZodString;
+                    executionTarget: z.ZodObject<{
+                        serverId: z.ZodString;
+                        machineId: z.ZodString;
+                    }, z.core.$strict>;
+                    owner: z.ZodType<{
+                        pluginId: string;
+                        localId: string;
+                    }, {
+                        pluginId: string;
+                        localId: string;
+                    }, z.core.$ZodTypeInternals<{
+                        pluginId: string;
+                        localId: string;
+                    }, {
+                        pluginId: string;
+                        localId: string;
+                    }>>;
+                    mediaKind: z.ZodEnum<{
+                        image: "image";
+                        video: "video";
+                    }>;
+                    mimeType: z.ZodEnum<{
+                        "image/gif": "image/gif";
+                        "image/jpeg": "image/jpeg";
+                        "image/png": "image/png";
+                        "image/webp": "image/webp";
+                        "video/webm": "video/webm";
+                    }>;
+                    name: z.ZodString;
+                    sizeBytes: z.ZodNumber;
+                    sha256: z.ZodString;
+                }, z.core.$strict>;
+            }, z.core.$strict>>;
+        }, z.core.$strict>;
+    }, z.core.$strict>,
+    z.ZodObject<{
+        v: z.ZodLiteral<1>;
+        role: z.ZodLiteral<"region">;
+        composer: z.ZodType<({
+            kind: "session";
+            sessionId: string;
+        } & {}) | ({
+            kind: "newSession";
+            instanceId: string;
+        } & {}) | ({
+            kind: "pendingMessage";
+            sessionId: string;
+            localId: string;
+        } & {}) | ({
+            kind: "participantMessage";
+            sessionId: string;
+            instanceId: string;
+        } & {}) | ({
+            kind: "automationAuthoring";
+            sessionId: string;
+            instanceId: string;
+        } & {}), ({
+            kind: "session";
+            sessionId: string;
+        } & {}) | ({
+            kind: "newSession";
+            instanceId: string;
+        } & {}) | ({
+            kind: "pendingMessage";
+            sessionId: string;
+            localId: string;
+        } & {}) | ({
+            kind: "participantMessage";
+            sessionId: string;
+            instanceId: string;
+        } & {}) | ({
+            kind: "automationAuthoring";
+            sessionId: string;
+            instanceId: string;
+        } & {}), z.core.$ZodTypeInternals<({
+            kind: "session";
+            sessionId: string;
+        } & {}) | ({
+            kind: "newSession";
+            instanceId: string;
+        } & {}) | ({
+            kind: "pendingMessage";
+            sessionId: string;
+            localId: string;
+        } & {}) | ({
+            kind: "participantMessage";
+            sessionId: string;
+            instanceId: string;
+        } & {}) | ({
+            kind: "automationAuthoring";
+            sessionId: string;
+            instanceId: string;
+        } & {}), ({
+            kind: "session";
+            sessionId: string;
+        } & {}) | ({
+            kind: "newSession";
+            instanceId: string;
+        } & {}) | ({
+            kind: "pendingMessage";
+            sessionId: string;
+            localId: string;
+        } & {}) | ({
+            kind: "participantMessage";
+            sessionId: string;
+            instanceId: string;
+        } & {}) | ({
+            kind: "automationAuthoring";
+            sessionId: string;
+            instanceId: string;
+        } & {})>>;
+        regionLocalId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
+    }, z.core.$strict>
+], "role">;
+```
+
+
+### `node_modules/@happier-dev/protocol/dist/plugins/ui/composer.d.ts` — `ComposerTransactionResultV1`
+
+Reached from a published signature; not itself a published export.
+
+```ts
+type ComposerTransactionResultV1 = DeepReadonly<z.infer<typeof ComposerTransactionResultV1Schema>>;
+```
+
+
+### `node_modules/@happier-dev/protocol/dist/plugins/ui/composer.d.ts` — `ComposerTransactionResultV1Schema`
+
+Reached from a published signature; not itself a published export.
+
+```ts
+const ComposerTransactionResultV1Schema: z.ZodDiscriminatedUnion<[
+    z.ZodObject<{
+        status: z.ZodLiteral<"applied">;
+        revision: z.ZodNumber;
+        attachmentInstanceIds: z.ZodOptional<z.ZodArray<z.ZodString>>;
+    }, z.core.$strict>,
+    z.ZodObject<{
+        status: z.ZodLiteral<"conflict">;
+        currentRevision: z.ZodNumber;
+    }, z.core.$strict>,
+    z.ZodObject<{
+        status: z.ZodLiteral<"composerUnavailable">;
+    }, z.core.$strict>,
+    z.ZodObject<{
+        status: z.ZodLiteral<"notEditable">;
+    }, z.core.$strict>,
+    z.ZodObject<{
+        status: z.ZodLiteral<"invalidOperation">;
+        operationIndex: z.ZodNumber;
+        reason: z.ZodString;
+        detail: z.ZodOptional<z.ZodType<import("../contributions/jsonSchema.js").PluginJsonValueV2, unknown, z.core.$ZodTypeInternals<import("../contributions/jsonSchema.js").PluginJsonValueV2, unknown>>>;
+    }, z.core.$strict>,
+    z.ZodObject<{
+        status: z.ZodLiteral<"limitExceeded">;
+        limit: z.ZodString;
+        maximum: z.ZodNumber;
+        actual: z.ZodNumber;
+    }, z.core.$strict>
+], "status">;
+```
+
+
+### `node_modules/@happier-dev/protocol/dist/plugins/ui/composer.d.ts` — `ComposerTransactionV1`
+
+Reached from a published signature; not itself a published export.
+
+```ts
+type ComposerTransactionV1 = DeepReadonly<z.infer<typeof ComposerTransactionV1Schema>>;
+```
+
+
+### `node_modules/@happier-dev/protocol/dist/plugins/ui/composer.d.ts` — `ComposerTransactionV1Schema`
+
+Reached from a published signature; not itself a published export.
+
+```ts
+const ComposerTransactionV1Schema: z.ZodObject<{
+    expectedRevision: z.ZodNumber;
+    operations: z.ZodArray<z.ZodDiscriminatedUnion<[
+        z.ZodObject<{
+            kind: z.ZodLiteral<"text.set">;
+            text: z.ZodString;
+        }, z.core.$strict>,
+        z.ZodObject<{
+            kind: z.ZodLiteral<"text.insert">;
+            position: z.ZodObject<{
+                offset: z.ZodNumber;
+            }, z.core.$strict>;
+            text: z.ZodString;
+        }, z.core.$strict>,
+        z.ZodObject<{
+            kind: z.ZodLiteral<"text.replaceRange">;
+            range: z.ZodObject<{
+                start: z.ZodNumber;
+                end: z.ZodNumber;
+            }, z.core.$strict>;
+            text: z.ZodString;
+        }, z.core.$strict>,
+        z.ZodObject<{
+            kind: z.ZodLiteral<"text.clear">;
+        }, z.core.$strict>,
+        z.ZodObject<{
+            kind: z.ZodLiteral<"reference.insert">;
+            reference: z.ZodObject<{
+                kind: z.ZodString;
+                ref: z.ZodString;
+                token: z.ZodString;
+                label: z.ZodOptional<z.ZodString>;
+                start: z.ZodNumber;
+                end: z.ZodNumber;
+                composerReference: z.ZodOptional<z.ZodType<{
+                    pluginId: string;
+                    localId: string;
+                }, {
+                    pluginId: string;
+                    localId: string;
+                }, z.core.$ZodTypeInternals<{
+                    pluginId: string;
+                    localId: string;
+                }, {
+                    pluginId: string;
+                    localId: string;
+                }>>>;
+            }, z.core.$strict>;
+        }, z.core.$strict>,
+        z.ZodObject<{
+            kind: z.ZodLiteral<"reference.remove">;
+            reference: z.ZodObject<{
+                ref: z.ZodString;
+                start: z.ZodNumber;
+                end: z.ZodNumber;
+            }, z.core.$strict>;
+        }, z.core.$strict>,
+        z.ZodObject<{
+            kind: z.ZodLiteral<"attachment.add">;
+            attachmentLocalId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
+            value: z.ZodObject<{
+                key: z.ZodString;
+                value: z.ZodType<import("../contributions/jsonSchema.js").PluginJsonValueV2, unknown, z.core.$ZodTypeInternals<import("../contributions/jsonSchema.js").PluginJsonValueV2, unknown>>;
+                presentation: z.ZodObject<{
+                    label: z.ZodString;
+                    description: z.ZodOptional<z.ZodString>;
+                    icon: z.ZodOptional<z.ZodEnum<{
+                        action: "action";
+                        add: "add";
+                        back: "back";
+                        browser: "browser";
+                        "change-complete": "change-complete";
+                        "change-open": "change-open";
+                        check: "check";
+                        close: "close";
+                        copy: "copy";
+                        error: "error";
+                        external: "external";
+                        file: "file";
+                        forward: "forward";
+                        globe: "globe";
+                        info: "info";
+                        more: "more";
+                        preview: "preview";
+                        refresh: "refresh";
+                        search: "search";
+                        settings: "settings";
+                        terminal: "terminal";
+                        warning: "warning";
+                    }>>;
+                    tone: z.ZodOptional<z.ZodEnum<{
+                        danger: "danger";
+                        info: "info";
+                        neutral: "neutral";
+                        success: "success";
+                        warning: "warning";
+                    }>>;
+                }, z.core.$strict>;
+            }, z.core.$strict>;
+            content: z.ZodOptional<z.ZodObject<{
+                kind: z.ZodLiteral<"stagedMedia">;
+                handle: z.ZodObject<{
+                    v: z.ZodLiteral<1>;
+                    id: z.ZodString;
+                    executionTarget: z.ZodObject<{
+                        serverId: z.ZodString;
+                        machineId: z.ZodString;
+                    }, z.core.$strict>;
+                    owner: z.ZodType<{
+                        pluginId: string;
+                        localId: string;
+                    }, {
+                        pluginId: string;
+                        localId: string;
+                    }, z.core.$ZodTypeInternals<{
+                        pluginId: string;
+                        localId: string;
+                    }, {
+                        pluginId: string;
+                        localId: string;
+                    }>>;
+                    mediaKind: z.ZodEnum<{
+                        image: "image";
+                        video: "video";
+                    }>;
+                    mimeType: z.ZodEnum<{
+                        "image/gif": "image/gif";
+                        "image/jpeg": "image/jpeg";
+                        "image/png": "image/png";
+                        "image/webp": "image/webp";
+                        "video/webm": "video/webm";
+                    }>;
+                    name: z.ZodString;
+                    sizeBytes: z.ZodNumber;
+                    sha256: z.ZodString;
+                }, z.core.$strict>;
+            }, z.core.$strict>>;
+        }, z.core.$strict>,
+        z.ZodObject<{
+            kind: z.ZodLiteral<"attachment.update">;
+            instanceId: z.ZodString;
+            update: z.ZodObject<{
+                value: z.ZodType<import("../contributions/jsonSchema.js").PluginJsonValueV2, unknown, z.core.$ZodTypeInternals<import("../contributions/jsonSchema.js").PluginJsonValueV2, unknown>>;
+                presentation: z.ZodOptional<z.ZodObject<{
+                    label: z.ZodString;
+                    description: z.ZodOptional<z.ZodString>;
+                    icon: z.ZodOptional<z.ZodEnum<{
+                        action: "action";
+                        add: "add";
+                        back: "back";
+                        browser: "browser";
+                        "change-complete": "change-complete";
+                        "change-open": "change-open";
+                        check: "check";
+                        close: "close";
+                        copy: "copy";
+                        error: "error";
+                        external: "external";
+                        file: "file";
+                        forward: "forward";
+                        globe: "globe";
+                        info: "info";
+                        more: "more";
+                        preview: "preview";
+                        refresh: "refresh";
+                        search: "search";
+                        settings: "settings";
+                        terminal: "terminal";
+                        warning: "warning";
+                    }>>;
+                    tone: z.ZodOptional<z.ZodEnum<{
+                        danger: "danger";
+                        info: "info";
+                        neutral: "neutral";
+                        success: "success";
+                        warning: "warning";
+                    }>>;
+                }, z.core.$strict>>;
+            }, z.core.$strict>;
+        }, z.core.$strict>,
+        z.ZodObject<{
+            kind: z.ZodLiteral<"attachment.remove">;
+            instanceId: z.ZodString;
+        }, z.core.$strict>
+    ], "kind">>;
+}, z.core.$strict>;
+```
+
+
 ### `node_modules/@happier-dev/protocol/dist/plugins/ui/composer.d.ts` — `DeepReadonly`
+
+Reached from a published signature; not itself a published export.
+
+```ts
+type DeepReadonly<T> = T extends readonly (infer TItem)[] ? readonly DeepReadonly<TItem>[] : T extends object ? {
+    readonly [TKey in keyof T]: DeepReadonly<T[TKey]>;
+} : T;
+```
+
+
+### `node_modules/@happier-dev/protocol/dist/plugins/ui/composerRef.d.ts` — `ComposerRefV1`
+
+Reached from a published signature; not itself a published export.
+
+```ts
+type ComposerRefV1 = DeepReadonly<ReturnType<typeof ComposerRefV1Schema.parse>>;
+```
+
+
+### `node_modules/@happier-dev/protocol/dist/plugins/ui/composerRef.d.ts` — `DeepReadonly`
 
 Reached from a published signature; not itself a published export.
 
@@ -111429,6 +112825,100 @@ const DaemonProviderProfileMigrationPreviewResponseV1Schema: z.ZodDiscriminatedU
 ```
 
 
+### `node_modules/@happier-dev/protocol/dist/runtime/agentExecutionRunV1.d.ts` — `AgentExecutionRunEventV1`
+
+Reached from a published signature; not itself a published export.
+
+```ts
+type AgentExecutionRunEventV1 = Readonly<{
+    sequence: number;
+    runId: string;
+    emittedAtMs: number;
+    kind: 'run-start' | 'run-progress';
+}> | Readonly<{
+    sequence: number;
+    runId: string;
+    emittedAtMs: number;
+    kind: 'output-delta';
+    channel: 'assistant' | 'reasoning';
+    text: string;
+}> | Readonly<{
+    sequence: number;
+    runId: string;
+    emittedAtMs: number;
+    kind: 'checkpoint';
+    checkpointId: string;
+}> | Readonly<{
+    sequence: number;
+    runId: string;
+    emittedAtMs: number;
+    kind: 'run-complete';
+}> | Readonly<{
+    sequence: number;
+    runId: string;
+    emittedAtMs: number;
+    kind: 'run-failed' | 'run-cancelled';
+    diagnostic?: AgentRuntimeDiagnosticDataV1;
+}>;
+```
+
+
+### `node_modules/@happier-dev/protocol/dist/runtime/agentRuntimeDiagnosticV1.d.ts` — `AgentRuntimeDiagnosticDataV1`
+
+Reached from a published signature; not itself a published export.
+
+```ts
+type AgentRuntimeDiagnosticDataV1 = Readonly<{
+    code: string;
+    severity: 'info' | 'warning' | 'error';
+    message?: string;
+    details?: JsonValue;
+    remediation?: ReadonlyUnion<z.infer<typeof AgentRuntimeRemediationDataV1Schema>>;
+}>;
+```
+
+
+### `node_modules/@happier-dev/protocol/dist/runtime/agentRuntimeDiagnosticV1.d.ts` — `AgentRuntimeRemediationDataV1Schema`
+
+Reached from a published signature; not itself a published export.
+
+```ts
+const AgentRuntimeRemediationDataV1Schema: z.ZodDiscriminatedUnion<[
+    z.ZodObject<{
+        kind: z.ZodLiteral<"retry">;
+    }, z.core.$strict>,
+    z.ZodObject<{
+        kind: z.ZodLiteral<"openSettings">;
+        path: z.ZodString;
+    }, z.core.$strict>,
+    z.ZodObject<{
+        kind: z.ZodLiteral<"selectAccount">;
+        service: z.ZodObject<{
+            pluginId: z.ZodString;
+            localId: z.ZodString;
+        }, z.core.$strict>;
+    }, z.core.$strict>,
+    z.ZodObject<{
+        kind: z.ZodLiteral<"installDependency">;
+        dependencyId: z.ZodString;
+    }, z.core.$strict>,
+    z.ZodObject<{
+        kind: z.ZodLiteral<"openUrl">;
+        url: z.ZodString;
+    }, z.core.$strict>
+], "kind">;
+```
+
+
+### `node_modules/@happier-dev/protocol/dist/runtime/agentRuntimeDiagnosticV1.d.ts` — `ReadonlyUnion`
+
+Reached from a published signature; not itself a published export.
+
+```ts
+type ReadonlyUnion<T> = T extends unknown ? Readonly<T> : never;
+```
+
+
 ### `node_modules/@happier-dev/protocol/dist/runtime/agentSessionV1.d.ts` — `AgentSessionRuntimeEvent`
 
 Reached from a published signature; not itself a published export.
@@ -111476,40 +112966,53 @@ const AgentSessionRuntimeEventV1Schema: z.ZodUnion<readonly [
             inputIds: z.ZodTuple<[
                 z.ZodString
             ], z.ZodString>;
-            diagnostic: z.ZodObject<{
-                code: z.ZodString;
-                severity: z.ZodEnum<{
-                    error: "error";
-                    info: "info";
-                    warning: "warning";
+            diagnostic: z.ZodType<Readonly<{
+                code: string;
+                severity: 'info' | 'warning' | 'error';
+                message?: string;
+                details?: StrictJsonValue;
+                remediation?: Readonly<{
+                    kind: "retry";
+                }> | Readonly<{
+                    kind: "openSettings";
+                    path: string;
+                }> | Readonly<{
+                    kind: "selectAccount";
+                    service: {
+                        pluginId: string;
+                        localId: string;
+                    };
+                }> | Readonly<{
+                    kind: "installDependency";
+                    dependencyId: string;
+                }> | Readonly<{
+                    kind: "openUrl";
+                    url: string;
                 }>;
-                message: z.ZodOptional<z.ZodString>;
-                details: z.ZodOptional<z.ZodType<StrictJsonValue, unknown, z.core.$ZodTypeInternals<StrictJsonValue, unknown>>>;
-                remediation: z.ZodOptional<z.ZodDiscriminatedUnion<[
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"retry">;
-                    }, z.core.$strict>,
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"openSettings">;
-                        path: z.ZodString;
-                    }, z.core.$strict>,
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"selectAccount">;
-                        service: z.ZodObject<{
-                            pluginId: z.ZodString;
-                            localId: z.ZodString;
-                        }, z.core.$strict>;
-                    }, z.core.$strict>,
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"installDependency">;
-                        dependencyId: z.ZodString;
-                    }, z.core.$strict>,
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"openUrl">;
-                        url: z.ZodString;
-                    }, z.core.$strict>
-                ], "kind">>;
-            }, z.core.$strict>;
+            }>, unknown, z.core.$ZodTypeInternals<Readonly<{
+                code: string;
+                severity: 'info' | 'warning' | 'error';
+                message?: string;
+                details?: StrictJsonValue;
+                remediation?: Readonly<{
+                    kind: "retry";
+                }> | Readonly<{
+                    kind: "openSettings";
+                    path: string;
+                }> | Readonly<{
+                    kind: "selectAccount";
+                    service: {
+                        pluginId: string;
+                        localId: string;
+                    };
+                }> | Readonly<{
+                    kind: "installDependency";
+                    dependencyId: string;
+                }> | Readonly<{
+                    kind: "openUrl";
+                    url: string;
+                }>;
+            }>, unknown>>;
             retryable: z.ZodBoolean;
         }, z.core.$strict>,
         z.ZodObject<{
@@ -111520,40 +113023,53 @@ const AgentSessionRuntimeEventV1Schema: z.ZodUnion<readonly [
             inputIds: z.ZodTuple<[
                 z.ZodString
             ], z.ZodString>;
-            issue: z.ZodObject<{
-                code: z.ZodString;
-                severity: z.ZodEnum<{
-                    error: "error";
-                    info: "info";
-                    warning: "warning";
+            issue: z.ZodType<Readonly<{
+                code: string;
+                severity: 'info' | 'warning' | 'error';
+                message?: string;
+                details?: StrictJsonValue;
+                remediation?: Readonly<{
+                    kind: "retry";
+                }> | Readonly<{
+                    kind: "openSettings";
+                    path: string;
+                }> | Readonly<{
+                    kind: "selectAccount";
+                    service: {
+                        pluginId: string;
+                        localId: string;
+                    };
+                }> | Readonly<{
+                    kind: "installDependency";
+                    dependencyId: string;
+                }> | Readonly<{
+                    kind: "openUrl";
+                    url: string;
                 }>;
-                message: z.ZodOptional<z.ZodString>;
-                details: z.ZodOptional<z.ZodType<StrictJsonValue, unknown, z.core.$ZodTypeInternals<StrictJsonValue, unknown>>>;
-                remediation: z.ZodOptional<z.ZodDiscriminatedUnion<[
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"retry">;
-                    }, z.core.$strict>,
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"openSettings">;
-                        path: z.ZodString;
-                    }, z.core.$strict>,
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"selectAccount">;
-                        service: z.ZodObject<{
-                            pluginId: z.ZodString;
-                            localId: z.ZodString;
-                        }, z.core.$strict>;
-                    }, z.core.$strict>,
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"installDependency">;
-                        dependencyId: z.ZodString;
-                    }, z.core.$strict>,
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"openUrl">;
-                        url: z.ZodString;
-                    }, z.core.$strict>
-                ], "kind">>;
-            }, z.core.$strict>;
+            }>, unknown, z.core.$ZodTypeInternals<Readonly<{
+                code: string;
+                severity: 'info' | 'warning' | 'error';
+                message?: string;
+                details?: StrictJsonValue;
+                remediation?: Readonly<{
+                    kind: "retry";
+                }> | Readonly<{
+                    kind: "openSettings";
+                    path: string;
+                }> | Readonly<{
+                    kind: "selectAccount";
+                    service: {
+                        pluginId: string;
+                        localId: string;
+                    };
+                }> | Readonly<{
+                    kind: "installDependency";
+                    dependencyId: string;
+                }> | Readonly<{
+                    kind: "openUrl";
+                    url: string;
+                }>;
+            }>, unknown>>;
         }, z.core.$strict>,
         z.ZodObject<{
             sequence: z.ZodNumber;
@@ -111573,40 +113089,53 @@ const AgentSessionRuntimeEventV1Schema: z.ZodUnion<readonly [
                     turnId: z.ZodString;
                 }, z.core.$strict>
             ], "kind">;
-            issue: z.ZodObject<{
-                code: z.ZodString;
-                severity: z.ZodEnum<{
-                    error: "error";
-                    info: "info";
-                    warning: "warning";
+            issue: z.ZodType<Readonly<{
+                code: string;
+                severity: 'info' | 'warning' | 'error';
+                message?: string;
+                details?: StrictJsonValue;
+                remediation?: Readonly<{
+                    kind: "retry";
+                }> | Readonly<{
+                    kind: "openSettings";
+                    path: string;
+                }> | Readonly<{
+                    kind: "selectAccount";
+                    service: {
+                        pluginId: string;
+                        localId: string;
+                    };
+                }> | Readonly<{
+                    kind: "installDependency";
+                    dependencyId: string;
+                }> | Readonly<{
+                    kind: "openUrl";
+                    url: string;
                 }>;
-                message: z.ZodOptional<z.ZodString>;
-                details: z.ZodOptional<z.ZodType<StrictJsonValue, unknown, z.core.$ZodTypeInternals<StrictJsonValue, unknown>>>;
-                remediation: z.ZodOptional<z.ZodDiscriminatedUnion<[
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"retry">;
-                    }, z.core.$strict>,
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"openSettings">;
-                        path: z.ZodString;
-                    }, z.core.$strict>,
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"selectAccount">;
-                        service: z.ZodObject<{
-                            pluginId: z.ZodString;
-                            localId: z.ZodString;
-                        }, z.core.$strict>;
-                    }, z.core.$strict>,
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"installDependency">;
-                        dependencyId: z.ZodString;
-                    }, z.core.$strict>,
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"openUrl">;
-                        url: z.ZodString;
-                    }, z.core.$strict>
-                ], "kind">>;
-            }, z.core.$strict>;
+            }>, unknown, z.core.$ZodTypeInternals<Readonly<{
+                code: string;
+                severity: 'info' | 'warning' | 'error';
+                message?: string;
+                details?: StrictJsonValue;
+                remediation?: Readonly<{
+                    kind: "retry";
+                }> | Readonly<{
+                    kind: "openSettings";
+                    path: string;
+                }> | Readonly<{
+                    kind: "selectAccount";
+                    service: {
+                        pluginId: string;
+                        localId: string;
+                    };
+                }> | Readonly<{
+                    kind: "installDependency";
+                    dependencyId: string;
+                }> | Readonly<{
+                    kind: "openUrl";
+                    url: string;
+                }>;
+            }>, unknown>>;
             duplicateRisk: z.ZodEnum<{
                 likely: "likely";
                 possible: "possible";
@@ -111675,40 +113204,53 @@ const AgentSessionRuntimeEventV1Schema: z.ZodUnion<readonly [
             turnId: z.ZodString;
             agentTurnId: z.ZodOptional<z.ZodString>;
             kind: z.ZodLiteral<"turn-failed">;
-            diagnostic: z.ZodObject<{
-                code: z.ZodString;
-                severity: z.ZodEnum<{
-                    error: "error";
-                    info: "info";
-                    warning: "warning";
+            diagnostic: z.ZodType<Readonly<{
+                code: string;
+                severity: 'info' | 'warning' | 'error';
+                message?: string;
+                details?: StrictJsonValue;
+                remediation?: Readonly<{
+                    kind: "retry";
+                }> | Readonly<{
+                    kind: "openSettings";
+                    path: string;
+                }> | Readonly<{
+                    kind: "selectAccount";
+                    service: {
+                        pluginId: string;
+                        localId: string;
+                    };
+                }> | Readonly<{
+                    kind: "installDependency";
+                    dependencyId: string;
+                }> | Readonly<{
+                    kind: "openUrl";
+                    url: string;
                 }>;
-                message: z.ZodOptional<z.ZodString>;
-                details: z.ZodOptional<z.ZodType<StrictJsonValue, unknown, z.core.$ZodTypeInternals<StrictJsonValue, unknown>>>;
-                remediation: z.ZodOptional<z.ZodDiscriminatedUnion<[
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"retry">;
-                    }, z.core.$strict>,
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"openSettings">;
-                        path: z.ZodString;
-                    }, z.core.$strict>,
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"selectAccount">;
-                        service: z.ZodObject<{
-                            pluginId: z.ZodString;
-                            localId: z.ZodString;
-                        }, z.core.$strict>;
-                    }, z.core.$strict>,
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"installDependency">;
-                        dependencyId: z.ZodString;
-                    }, z.core.$strict>,
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"openUrl">;
-                        url: z.ZodString;
-                    }, z.core.$strict>
-                ], "kind">>;
-            }, z.core.$strict>;
+            }>, unknown, z.core.$ZodTypeInternals<Readonly<{
+                code: string;
+                severity: 'info' | 'warning' | 'error';
+                message?: string;
+                details?: StrictJsonValue;
+                remediation?: Readonly<{
+                    kind: "retry";
+                }> | Readonly<{
+                    kind: "openSettings";
+                    path: string;
+                }> | Readonly<{
+                    kind: "selectAccount";
+                    service: {
+                        pluginId: string;
+                        localId: string;
+                    };
+                }> | Readonly<{
+                    kind: "installDependency";
+                    dependencyId: string;
+                }> | Readonly<{
+                    kind: "openUrl";
+                    url: string;
+                }>;
+            }>, unknown>>;
         }, z.core.$strict>,
         z.ZodObject<{
             sequence: z.ZodNumber;
@@ -111726,40 +113268,53 @@ const AgentSessionRuntimeEventV1Schema: z.ZodUnion<readonly [
                 unknown: "unknown";
                 user: "user";
             }>;
-            diagnostic: z.ZodOptional<z.ZodObject<{
-                code: z.ZodString;
-                severity: z.ZodEnum<{
-                    error: "error";
-                    info: "info";
-                    warning: "warning";
+            diagnostic: z.ZodOptional<z.ZodType<Readonly<{
+                code: string;
+                severity: 'info' | 'warning' | 'error';
+                message?: string;
+                details?: StrictJsonValue;
+                remediation?: Readonly<{
+                    kind: "retry";
+                }> | Readonly<{
+                    kind: "openSettings";
+                    path: string;
+                }> | Readonly<{
+                    kind: "selectAccount";
+                    service: {
+                        pluginId: string;
+                        localId: string;
+                    };
+                }> | Readonly<{
+                    kind: "installDependency";
+                    dependencyId: string;
+                }> | Readonly<{
+                    kind: "openUrl";
+                    url: string;
                 }>;
-                message: z.ZodOptional<z.ZodString>;
-                details: z.ZodOptional<z.ZodType<StrictJsonValue, unknown, z.core.$ZodTypeInternals<StrictJsonValue, unknown>>>;
-                remediation: z.ZodOptional<z.ZodDiscriminatedUnion<[
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"retry">;
-                    }, z.core.$strict>,
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"openSettings">;
-                        path: z.ZodString;
-                    }, z.core.$strict>,
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"selectAccount">;
-                        service: z.ZodObject<{
-                            pluginId: z.ZodString;
-                            localId: z.ZodString;
-                        }, z.core.$strict>;
-                    }, z.core.$strict>,
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"installDependency">;
-                        dependencyId: z.ZodString;
-                    }, z.core.$strict>,
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"openUrl">;
-                        url: z.ZodString;
-                    }, z.core.$strict>
-                ], "kind">>;
-            }, z.core.$strict>>;
+            }>, unknown, z.core.$ZodTypeInternals<Readonly<{
+                code: string;
+                severity: 'info' | 'warning' | 'error';
+                message?: string;
+                details?: StrictJsonValue;
+                remediation?: Readonly<{
+                    kind: "retry";
+                }> | Readonly<{
+                    kind: "openSettings";
+                    path: string;
+                }> | Readonly<{
+                    kind: "selectAccount";
+                    service: {
+                        pluginId: string;
+                        localId: string;
+                    };
+                }> | Readonly<{
+                    kind: "installDependency";
+                    dependencyId: string;
+                }> | Readonly<{
+                    kind: "openUrl";
+                    url: string;
+                }>;
+            }>, unknown>>>;
         }, z.core.$strict>,
         z.ZodObject<{
             sequence: z.ZodNumber;
@@ -111774,40 +113329,53 @@ const AgentSessionRuntimeEventV1Schema: z.ZodUnion<readonly [
                 unknown: "unknown";
             }>;
             retryable: z.ZodBoolean;
-            diagnostic: z.ZodOptional<z.ZodObject<{
-                code: z.ZodString;
-                severity: z.ZodEnum<{
-                    error: "error";
-                    info: "info";
-                    warning: "warning";
+            diagnostic: z.ZodOptional<z.ZodType<Readonly<{
+                code: string;
+                severity: 'info' | 'warning' | 'error';
+                message?: string;
+                details?: StrictJsonValue;
+                remediation?: Readonly<{
+                    kind: "retry";
+                }> | Readonly<{
+                    kind: "openSettings";
+                    path: string;
+                }> | Readonly<{
+                    kind: "selectAccount";
+                    service: {
+                        pluginId: string;
+                        localId: string;
+                    };
+                }> | Readonly<{
+                    kind: "installDependency";
+                    dependencyId: string;
+                }> | Readonly<{
+                    kind: "openUrl";
+                    url: string;
                 }>;
-                message: z.ZodOptional<z.ZodString>;
-                details: z.ZodOptional<z.ZodType<StrictJsonValue, unknown, z.core.$ZodTypeInternals<StrictJsonValue, unknown>>>;
-                remediation: z.ZodOptional<z.ZodDiscriminatedUnion<[
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"retry">;
-                    }, z.core.$strict>,
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"openSettings">;
-                        path: z.ZodString;
-                    }, z.core.$strict>,
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"selectAccount">;
-                        service: z.ZodObject<{
-                            pluginId: z.ZodString;
-                            localId: z.ZodString;
-                        }, z.core.$strict>;
-                    }, z.core.$strict>,
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"installDependency">;
-                        dependencyId: z.ZodString;
-                    }, z.core.$strict>,
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"openUrl">;
-                        url: z.ZodString;
-                    }, z.core.$strict>
-                ], "kind">>;
-            }, z.core.$strict>>;
+            }>, unknown, z.core.$ZodTypeInternals<Readonly<{
+                code: string;
+                severity: 'info' | 'warning' | 'error';
+                message?: string;
+                details?: StrictJsonValue;
+                remediation?: Readonly<{
+                    kind: "retry";
+                }> | Readonly<{
+                    kind: "openSettings";
+                    path: string;
+                }> | Readonly<{
+                    kind: "selectAccount";
+                    service: {
+                        pluginId: string;
+                        localId: string;
+                    };
+                }> | Readonly<{
+                    kind: "installDependency";
+                    dependencyId: string;
+                }> | Readonly<{
+                    kind: "openUrl";
+                    url: string;
+                }>;
+            }>, unknown>>>;
         }, z.core.$strict>,
         z.ZodObject<{
             sequence: z.ZodNumber;
@@ -112058,40 +113626,53 @@ const AgentSessionRuntimeEventV1Schema: z.ZodUnion<readonly [
             }>;
             retryAttempt: z.ZodOptional<z.ZodNumber>;
             phase: z.ZodLiteral<"failed">;
-            diagnostic: z.ZodObject<{
-                code: z.ZodString;
-                severity: z.ZodEnum<{
-                    error: "error";
-                    info: "info";
-                    warning: "warning";
+            diagnostic: z.ZodType<Readonly<{
+                code: string;
+                severity: 'info' | 'warning' | 'error';
+                message?: string;
+                details?: StrictJsonValue;
+                remediation?: Readonly<{
+                    kind: "retry";
+                }> | Readonly<{
+                    kind: "openSettings";
+                    path: string;
+                }> | Readonly<{
+                    kind: "selectAccount";
+                    service: {
+                        pluginId: string;
+                        localId: string;
+                    };
+                }> | Readonly<{
+                    kind: "installDependency";
+                    dependencyId: string;
+                }> | Readonly<{
+                    kind: "openUrl";
+                    url: string;
                 }>;
-                message: z.ZodOptional<z.ZodString>;
-                details: z.ZodOptional<z.ZodType<StrictJsonValue, unknown, z.core.$ZodTypeInternals<StrictJsonValue, unknown>>>;
-                remediation: z.ZodOptional<z.ZodDiscriminatedUnion<[
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"retry">;
-                    }, z.core.$strict>,
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"openSettings">;
-                        path: z.ZodString;
-                    }, z.core.$strict>,
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"selectAccount">;
-                        service: z.ZodObject<{
-                            pluginId: z.ZodString;
-                            localId: z.ZodString;
-                        }, z.core.$strict>;
-                    }, z.core.$strict>,
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"installDependency">;
-                        dependencyId: z.ZodString;
-                    }, z.core.$strict>,
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"openUrl">;
-                        url: z.ZodString;
-                    }, z.core.$strict>
-                ], "kind">>;
-            }, z.core.$strict>;
+            }>, unknown, z.core.$ZodTypeInternals<Readonly<{
+                code: string;
+                severity: 'info' | 'warning' | 'error';
+                message?: string;
+                details?: StrictJsonValue;
+                remediation?: Readonly<{
+                    kind: "retry";
+                }> | Readonly<{
+                    kind: "openSettings";
+                    path: string;
+                }> | Readonly<{
+                    kind: "selectAccount";
+                    service: {
+                        pluginId: string;
+                        localId: string;
+                    };
+                }> | Readonly<{
+                    kind: "installDependency";
+                    dependencyId: string;
+                }> | Readonly<{
+                    kind: "openUrl";
+                    url: string;
+                }>;
+            }>, unknown>>;
         }, z.core.$strict>,
         z.ZodObject<{
             sequence: z.ZodNumber;
@@ -112109,40 +113690,53 @@ const AgentSessionRuntimeEventV1Schema: z.ZodUnion<readonly [
             }>;
             retryAttempt: z.ZodOptional<z.ZodNumber>;
             phase: z.ZodLiteral<"cancelled">;
-            diagnostic: z.ZodOptional<z.ZodObject<{
-                code: z.ZodString;
-                severity: z.ZodEnum<{
-                    error: "error";
-                    info: "info";
-                    warning: "warning";
+            diagnostic: z.ZodOptional<z.ZodType<Readonly<{
+                code: string;
+                severity: 'info' | 'warning' | 'error';
+                message?: string;
+                details?: StrictJsonValue;
+                remediation?: Readonly<{
+                    kind: "retry";
+                }> | Readonly<{
+                    kind: "openSettings";
+                    path: string;
+                }> | Readonly<{
+                    kind: "selectAccount";
+                    service: {
+                        pluginId: string;
+                        localId: string;
+                    };
+                }> | Readonly<{
+                    kind: "installDependency";
+                    dependencyId: string;
+                }> | Readonly<{
+                    kind: "openUrl";
+                    url: string;
                 }>;
-                message: z.ZodOptional<z.ZodString>;
-                details: z.ZodOptional<z.ZodType<StrictJsonValue, unknown, z.core.$ZodTypeInternals<StrictJsonValue, unknown>>>;
-                remediation: z.ZodOptional<z.ZodDiscriminatedUnion<[
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"retry">;
-                    }, z.core.$strict>,
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"openSettings">;
-                        path: z.ZodString;
-                    }, z.core.$strict>,
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"selectAccount">;
-                        service: z.ZodObject<{
-                            pluginId: z.ZodString;
-                            localId: z.ZodString;
-                        }, z.core.$strict>;
-                    }, z.core.$strict>,
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"installDependency">;
-                        dependencyId: z.ZodString;
-                    }, z.core.$strict>,
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"openUrl">;
-                        url: z.ZodString;
-                    }, z.core.$strict>
-                ], "kind">>;
-            }, z.core.$strict>>;
+            }>, unknown, z.core.$ZodTypeInternals<Readonly<{
+                code: string;
+                severity: 'info' | 'warning' | 'error';
+                message?: string;
+                details?: StrictJsonValue;
+                remediation?: Readonly<{
+                    kind: "retry";
+                }> | Readonly<{
+                    kind: "openSettings";
+                    path: string;
+                }> | Readonly<{
+                    kind: "selectAccount";
+                    service: {
+                        pluginId: string;
+                        localId: string;
+                    };
+                }> | Readonly<{
+                    kind: "installDependency";
+                    dependencyId: string;
+                }> | Readonly<{
+                    kind: "openUrl";
+                    url: string;
+                }>;
+            }>, unknown>>>;
         }, z.core.$strict>,
         z.ZodObject<{
             sequence: z.ZodNumber;
@@ -112160,40 +113754,53 @@ const AgentSessionRuntimeEventV1Schema: z.ZodUnion<readonly [
             }>;
             retryAttempt: z.ZodOptional<z.ZodNumber>;
             phase: z.ZodLiteral<"outcomeUnknown">;
-            diagnostic: z.ZodObject<{
-                code: z.ZodString;
-                severity: z.ZodEnum<{
-                    error: "error";
-                    info: "info";
-                    warning: "warning";
+            diagnostic: z.ZodType<Readonly<{
+                code: string;
+                severity: 'info' | 'warning' | 'error';
+                message?: string;
+                details?: StrictJsonValue;
+                remediation?: Readonly<{
+                    kind: "retry";
+                }> | Readonly<{
+                    kind: "openSettings";
+                    path: string;
+                }> | Readonly<{
+                    kind: "selectAccount";
+                    service: {
+                        pluginId: string;
+                        localId: string;
+                    };
+                }> | Readonly<{
+                    kind: "installDependency";
+                    dependencyId: string;
+                }> | Readonly<{
+                    kind: "openUrl";
+                    url: string;
                 }>;
-                message: z.ZodOptional<z.ZodString>;
-                details: z.ZodOptional<z.ZodType<StrictJsonValue, unknown, z.core.$ZodTypeInternals<StrictJsonValue, unknown>>>;
-                remediation: z.ZodOptional<z.ZodDiscriminatedUnion<[
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"retry">;
-                    }, z.core.$strict>,
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"openSettings">;
-                        path: z.ZodString;
-                    }, z.core.$strict>,
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"selectAccount">;
-                        service: z.ZodObject<{
-                            pluginId: z.ZodString;
-                            localId: z.ZodString;
-                        }, z.core.$strict>;
-                    }, z.core.$strict>,
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"installDependency">;
-                        dependencyId: z.ZodString;
-                    }, z.core.$strict>,
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"openUrl">;
-                        url: z.ZodString;
-                    }, z.core.$strict>
-                ], "kind">>;
-            }, z.core.$strict>;
+            }>, unknown, z.core.$ZodTypeInternals<Readonly<{
+                code: string;
+                severity: 'info' | 'warning' | 'error';
+                message?: string;
+                details?: StrictJsonValue;
+                remediation?: Readonly<{
+                    kind: "retry";
+                }> | Readonly<{
+                    kind: "openSettings";
+                    path: string;
+                }> | Readonly<{
+                    kind: "selectAccount";
+                    service: {
+                        pluginId: string;
+                        localId: string;
+                    };
+                }> | Readonly<{
+                    kind: "installDependency";
+                    dependencyId: string;
+                }> | Readonly<{
+                    kind: "openUrl";
+                    url: string;
+                }>;
+            }>, unknown>>;
         }, z.core.$strict>
     ], "phase">
 ]>;

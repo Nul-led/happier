@@ -28,6 +28,11 @@ function createRequest(runId = 'run-1'): Extract<AgentExecutionRunOpenRequest, {
   };
 }
 
+const causalPermissionAuthority = Object.freeze({
+  kind: 'admittedSessionInputV1' as const,
+  admittedPermissionCeiling: 'read-only' as const,
+});
+
 function createResumeRequest(runId = 'run-resume'): Extract<AgentExecutionRunOpenRequest, { kind: 'resume' }> {
   return {
     kind: 'resume',
@@ -139,6 +144,17 @@ function failedEvent(turnId: string): AgentSessionRuntimeEvent {
 }
 
 describe('createExecutionRunHostBackendFromSessionRuntime', () => {
+  it('preserves the admitted causal permission authority on the derived Session turn', async () => {
+    const harness = createSessionHarness();
+    const execution = await createExecutionRunHostBackendFromSessionRuntime({
+      request: { ...createRequest(), causalPermissionAuthority },
+      openSession: async () => harness.session,
+    });
+
+    expect(harness.sendCalls[0]?.[0]).toMatchObject({ causalPermissionAuthority });
+    await execution.dispose();
+  });
+
   it('terminalizes rejected initial admission, clears cancellation state, and disposes once', async () => {
     const harness = createSessionHarness();
     harness.setSend(async () => ({

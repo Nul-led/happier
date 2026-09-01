@@ -669,7 +669,7 @@ export function createApiSurfaceGenerationPlan(input) {
       '# Plugin SDK API surface',
       '',
       '> This package is Developer Preview.',
-      '> `capability-matrix.json` records public-family availability with its proving consumer or explicit deferred disposition.',
+      '> `capability-matrix.json` records realm-specific public-family availability separately from optional consumer and loaded proof.',
       '> Generated from `api-surface.json`. Do not hand-edit.',
       '',
       `| Specifier | Export | Kind | Realm${hasAuthorSince ? ' | Since' : ''} |`,

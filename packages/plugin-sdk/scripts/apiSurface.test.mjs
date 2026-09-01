@@ -902,7 +902,7 @@ test('one generation plan includes host package seams but excludes them from aut
   );
   assert.match(
     generated.authorApiMarkdown,
-    /`capability-matrix\.json` records public-family availability with its proving consumer or explicit deferred disposition\./u,
+    /`capability-matrix\.json` records realm-specific public-family availability separately from optional consumer and loaded proof\./u,
   );
   assert.match(generated.authorApiMarkdown, /ActionsService/u);
   assert.doesNotMatch(generated.authorApiMarkdown, /createPluginRegistrationScope/u);

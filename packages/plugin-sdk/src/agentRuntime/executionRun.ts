@@ -2,6 +2,7 @@ import type { PluginDiagnosticData } from '../diagnostics.js';
 import type { PluginContributionRef } from '../identity.js';
 import type { Disposable } from '../lifecycle.js';
 import type { ProviderBoundModelRef } from '@happier-dev/protocol';
+import type { AgentExecutionRunEventV1 } from '@happier-dev/protocol/runtime';
 import type { AgentRuntimeContext } from './context.js';
 import type {
   AgentLaunchEnvironment,
@@ -11,6 +12,7 @@ import type {
   AgentSessionProviderBinding,
   AgentSessionRuntime,
   AgentSessionRuntimeEvent,
+  AgentSessionSendRequest,
 } from './session.js';
 
 export type AgentExecutionRunOpenRequest =
@@ -22,6 +24,8 @@ export type AgentExecutionRunOpenRequest =
     modelSelection?: ProviderBoundModelRef;
     configuration?: AgentSessionConfigurationSnapshot;
     providerBinding?: AgentSessionProviderBinding;
+    /** Exact immutable authority admitted for the host input that opened this Run. */
+    causalPermissionAuthority?: AgentSessionSendRequest['causalPermissionAuthority'];
     /** Same host-resolved policy an Agent session open carries. */
     stateSharing?: AgentSessionOpenRequest['stateSharing'];
   }> & (
@@ -40,41 +44,7 @@ export type AgentExecutionRunOpenRequest =
       }>
   );
 
-export type AgentExecutionRunEvent =
-  | Readonly<{
-      sequence: number;
-      runId: string;
-      emittedAtMs: number;
-      kind: 'run-start' | 'run-progress';
-    }>
-  | Readonly<{
-      sequence: number;
-      runId: string;
-      emittedAtMs: number;
-      kind: 'output-delta';
-      channel: 'assistant' | 'reasoning';
-      text: string;
-    }>
-  | Readonly<{
-      sequence: number;
-      runId: string;
-      emittedAtMs: number;
-      kind: 'checkpoint';
-      checkpointId: string;
-    }>
-  | Readonly<{
-      sequence: number;
-      runId: string;
-      emittedAtMs: number;
-      kind: 'run-complete';
-    }>
-  | Readonly<{
-      sequence: number;
-      runId: string;
-      emittedAtMs: number;
-      kind: 'run-failed' | 'run-cancelled';
-      diagnostic?: PluginDiagnosticData;
-    }>;
+export type AgentExecutionRunEvent = AgentExecutionRunEventV1;
 
 export type AgentExecutionRunSendResult = Readonly<{
   status: 'admitted' | 'rejected' | 'unavailable' | 'unsupported';
@@ -91,6 +61,12 @@ export interface AgentExecutionRunRuntime extends Disposable {
     options?: Readonly<{ signal?: AbortSignal }>,
   ): Promise<AgentExecutionRunSendResult>;
   stop(options?: Readonly<{ signal?: AbortSignal }>): Promise<AgentExecutionRunStopResult>;
+  /**
+   * Subscribes to ordered Run events and synchronously replays every event
+   * already published by this runtime before returning. In particular, a Run
+   * that terminalizes before `open()` settles must replay its terminal event;
+   * the host deliberately subscribes only after it receives the runtime.
+   */
   watch(listener: (event: AgentExecutionRunEvent) => void): Disposable;
 }
 
@@ -336,6 +312,9 @@ function createExecutionRunRuntimeFromSession(
           inputIds: [...inputIds],
           input,
           delivery: { kind: 'newTurn', turnId },
+          ...(options.request.causalPermissionAuthority
+            ? { causalPermissionAuthority: options.request.causalPermissionAuthority }
+            : {}),
         }, sendOptions);
       } catch (error) {
         emit({ kind: 'run-failed' });

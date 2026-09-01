@@ -5,6 +5,7 @@ import { describe, expect, expectTypeOf, it } from 'vitest';
 import ts from 'typescript';
 
 import {
+  AgentExecutionRunEventSchema as canonicalAgentExecutionRunEventSchema,
   AgentRuntimeJsonValueSchema as canonicalAgentRuntimeJsonValueSchema,
   AgentSessionProviderBindingV1Schema as canonicalAgentSessionProviderBindingV1Schema,
   AgentSessionRuntimeEventSchema as canonicalAgentSessionRuntimeEventSchema,
@@ -25,11 +26,13 @@ import type {
   ConnectedServiceLimitCategoryV1 as CanonicalConnectedServiceLimitCategoryV1,
 } from '@happier-dev/protocol';
 import type {
+  AgentExecutionRunEventV1 as CanonicalAgentExecutionRunEvent,
   AgentSessionRuntimeEvent as CanonicalAgentSessionRuntimeEvent,
 } from '@happier-dev/protocol/runtime';
 
 import * as agentRuntimeProjection from './projections.js';
 import type {
+  AgentExecutionRunEvent,
   AgentSessionRuntimeEvent,
   AgentConnectedAccountRuntimeLimitCategoryV1,
   AgentSessionProviderBinding,
@@ -91,6 +94,7 @@ const APPROVED_VALUE_ONLY_EXPORTS = [
   'ACP_HAPPIER_MCP_BRIDGE_STATIC_APPROVAL_TOOL_NAMES',
   'ACP_WRITE_LIKE_PERMISSION_KINDS',
   'createFiniteExecutionRunHostRuntime',
+  'AgentExecutionRunEventSchema',
 ] as const;
 
 const DECLARATION_CLOSURE_GENUINE_EXPORTS = [
@@ -126,6 +130,7 @@ const DECLARATION_REFINED_EXPORTS = new Set([
   'AcpLoadSessionResultV1',
   'AcpSessionOperationsV1',
   'AgentRuntimeJsonValueSchema',
+  'AgentExecutionRunEventSchema',
   'AgentAuthorRestoreCheckpointResult',
   'AgentTerminalSessionIdentityFieldId',
   'AgentTerminalSessionStateUpdate',
@@ -175,6 +180,7 @@ const DAEMON_SEPARATED_EXPORTS = new Set([
 ]);
 
 const PORTABLE_PROTOCOL_RUNTIME_EXPORTS = new Set([
+  'AgentExecutionRunEventSchema',
   'AgentProviderBindingMaterializationV1Schema',
   'AgentRuntimeJsonValueSchema',
   'AgentSessionProviderBindingV1Schema',
@@ -423,6 +429,18 @@ describe('Agent runtime package-local publication projection', () => {
       .toEqualTypeOf<CanonicalConnectedServiceLimitCategoryV1>();
   });
 
+  it('aliases finite Run events and their runtime parser to the canonical Protocol owner', async () => {
+    const executionRunSource = await readFile(new URL('./executionRun.ts', import.meta.url), 'utf8');
+    expect(executionRunSource).toContain(
+      'export type AgentExecutionRunEvent = AgentExecutionRunEventV1;',
+    );
+    expect(agentRuntimeProjection.AgentExecutionRunEventSchema)
+      .toBe(canonicalAgentExecutionRunEventSchema);
+    expectTypeOf<AgentExecutionRunEvent>().toEqualTypeOf<CanonicalAgentExecutionRunEvent>();
+    expectTypeOf<ReturnType<typeof agentRuntimeProjection.AgentExecutionRunEventSchema.parse>>()
+      .toEqualTypeOf<AgentExecutionRunEvent>();
+  }, 120_000);
+
   it('refines helper-only signatures without changing canonical runtime values or public shapes', () => {
     expect(agentRuntimeProjection.createAcpToolNameInferencePreset)
       .toBe(canonicalCreateAcpToolNameInferencePreset);
@@ -432,6 +450,8 @@ describe('Agent runtime package-local publication projection', () => {
       .toBe(canonicalResolveAcpToolPermissionPolicy);
     expect(agentRuntimeProjection.AgentRuntimeJsonValueSchema)
       .toBe(canonicalAgentRuntimeJsonValueSchema);
+    expect(agentRuntimeProjection.AgentExecutionRunEventSchema)
+      .toBe(canonicalAgentExecutionRunEventSchema);
     expect(agentRuntimeProjection.AgentSessionProviderBindingV1Schema)
       .toBe(canonicalAgentSessionProviderBindingV1Schema);
     expect(agentRuntimeProjection.AgentSessionRuntimeEventSchema)

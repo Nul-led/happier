@@ -1,5 +1,5 @@
 import type { AgentRuntimeFactoryContext, PluginInvocationContext } from '../invocation.js';
-import type { WorkStateService } from '../services/sessions.js';
+import type { SubagentSummary, WorkStateService } from '../services/sessions.js';
 import type {
   AgentModelDescriptor,
   TerminalControlPort,
@@ -512,6 +512,21 @@ export type AgentSessionNativeHomeService = Readonly<{
   readFiles(fileIds: readonly string[]): Promise<Readonly<Record<string, Uint8Array>>>;
 }>;
 
+export type AgentSessionSubagentObservation = Readonly<{
+  observationId: string;
+  groupId?: string;
+  status: SubagentSummary['status'];
+  detail?: JsonValue;
+}>;
+
+/** Agent-only publication of provider-native child-agent evidence. */
+export type AgentSessionSubagentObservationPublisher = Readonly<{
+  observe(
+    input: AgentSessionSubagentObservation,
+    options?: Readonly<{ signal?: AbortSignal }>,
+  ): Promise<SubagentSummary>;
+}>;
+
 /**
  * Host capabilities bound to one live native Agent session. The host creates
  * this bag once for that session and retires it with the session or its
@@ -531,6 +546,8 @@ export type AgentSessionHostServices = Readonly<{
   mcp: AgentSessionMcpService;
   workflowActivity: AgentSessionWorkflowActivityService;
   toolExecution: AgentToolExecutionService;
+  /** Correlated provider-native child evidence; the host owns canonical child lifecycle and custody. */
+  subagents: AgentSessionSubagentObservationPublisher;
   nativeHome?: AgentSessionNativeHomeService;
   happierTools?: AgentSessionHappierToolsService;
 }>;

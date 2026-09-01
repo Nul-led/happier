@@ -31,5 +31,6 @@ export type {
 export {
     admitCheckpointedPluginEventObservationV1,
     admitSessionSocketPluginEventObservationV1,
+    projectPluginEventAdmissionSourceStatusV1,
     projectPluginEventSourceConnectionStatusV1,
 } from '../eventAutomation.js';

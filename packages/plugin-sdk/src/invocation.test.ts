@@ -72,8 +72,14 @@ describe('Plugin invocation context', () => {
         >();
         expectTypeOf<PluginInvocationContext['caller']>()
             .toEqualTypeOf<PluginInvocationCaller | undefined>();
+        // The public projection is the canonical Protocol run-cause union under
+        // its SDK-stable name. Exact bidirectional equality is the contract: a
+        // restated structural copy can only drift (readonly wrappers, unbranded
+        // identity fields), so it must fail here rather than pass assignability.
+        expectTypeOf<PluginAutomationRunCause>()
+            .toEqualTypeOf<ProtocolAutomationRunCause>();
         expectTypeOf<ProtocolAutomationRunCause>()
-            .toMatchTypeOf<PluginAutomationRunCause>();
+            .toEqualTypeOf<PluginAutomationRunCause>();
         expectTypeOf<PluginInvocationContext['ui']>()
             .toEqualTypeOf<import('./interactions.js').PresentationService | undefined>();
         expectTypeOf<MessageActionAvailableSnapshotV1>()

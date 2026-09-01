@@ -1,7 +1,6 @@
 import type { QualifiedConnectedAccountRef } from '../connectedAccounts.js';
 import type { ProjectKeyV1, SessionServerStartSpawnDraftV1 } from '../services/sessions.js';
-import type { ComposerStagedMediaContentV1 } from '../composer.js';
-import type { JsonValue, PluginJsonValueV2 } from '../identity.js';
+import type { JsonValue } from '../identity.js';
 import type { PluginAvailabilityDescriptor } from '../manifest.js';
 import type {
     PluginDeclarativeNodeV2 as PluginManifestDeclarativeNodeV2,
@@ -14,6 +13,17 @@ import type {
     CurrentUiContextBoundedIncompletenessV1 as ProtocolCurrentUiContextBoundedIncompletenessV1,
     CurrentUiContextEntityV1 as ProtocolCurrentUiContextEntityV1,
     CurrentUiContextSnapshotV1 as ProtocolCurrentUiContextSnapshotV1,
+    ComposerDecorationResultV1 as ProtocolComposerDecorationResultV1,
+    ComposerDecorationSetV1 as ProtocolComposerDecorationSetV1,
+    ComposerFocusResultV1 as ProtocolComposerFocusResultV1,
+    ComposerInputLockRequestV1 as ProtocolComposerInputLockRequestV1,
+    ComposerOperationV1 as ProtocolComposerOperationV1,
+    ComposerReadResultV1 as ProtocolComposerReadResultV1,
+    ComposerRefV1 as ProtocolComposerRefV1,
+    ComposerSnapshotV1 as ProtocolComposerSnapshotV1,
+    ComposerSurfaceInputV1 as ProtocolComposerSurfaceInputV1,
+    ComposerTransactionResultV1 as ProtocolComposerTransactionResultV1,
+    ComposerTransactionV1 as ProtocolComposerTransactionV1,
     ComposerControlStateContentTypeV1 as ProtocolComposerControlStateContentTypeV1,
     ComposerControlStateV1 as ProtocolComposerControlStateV1,
     PluginUiContextEnrichmentV1 as ProtocolPluginUiContextEnrichmentV1,
@@ -463,13 +473,8 @@ export type PluginUiSelectedActionInputCarrierV1 = {
     result: PluginUiSelectActionInputTargetedSubmittedV1;
 };
 
-export type ComposerRefV1 = DeepReadonly<
-    | { kind: 'session'; sessionId: string }
-    | { kind: 'newSession'; instanceId: string }
-    | { kind: 'pendingMessage'; sessionId: string; localId: string }
-    | { kind: 'participantMessage'; sessionId: string; instanceId: string }
-    | { kind: 'automationAuthoring'; sessionId: string; instanceId: string }
->;
+/** Protocol owns the complete browser-safe Composer grammar; SDK only names author aliases. */
+export type ComposerRefV1 = ProtocolComposerRefV1;
 
 /**
  * Closed host-stamped launch carrier for one Composer-mounted renderer.
@@ -478,179 +483,44 @@ export type ComposerRefV1 = DeepReadonly<
  * constructs this discriminated value for a Composer mount. Protocol remains
  * the sole parser and runtime-value owner.
  */
-export type ComposerSurfaceInputV1 = DeepReadonly<
-    | {
-        v: 1;
-        role: 'controlCompact' | 'controlInteraction';
-        composer: ComposerRefV1;
-        controlLocalId: string;
-        state: {
-            visible?: boolean;
-            enabled?: boolean;
-            label?: string;
-            icon?: PluginUiIconTokenV1;
-            count?: number;
-            selected?: boolean;
-            selectedChoiceIds?: string[];
-            accessibilityLabel?: string;
-            unavailableReason?: string;
-        };
-    }
-    | {
-        v: 1;
-        role: 'attachmentPicker';
-        composer: ComposerRefV1;
-        attachmentLocalId: string;
-        instances: ComposerAttachmentViewV1[];
-    }
-    | {
-        v: 1;
-        role: 'attachmentDisplay' | 'attachmentPreview';
-        composer: ComposerRefV1;
-        attachmentLocalId: string;
-        instance: ComposerAttachmentViewV1;
-    }
-    | {
-        v: 1;
-        role: 'region';
-        composer: ComposerRefV1;
-        regionLocalId: string;
-    }
->;
+export type ComposerSurfaceInputV1 = ProtocolComposerSurfaceInputV1;
+export type ComposerSnapshotV1 = ProtocolComposerSnapshotV1;
+export type ComposerOperationV1 = ProtocolComposerOperationV1;
+export type ComposerTransactionV1 = ProtocolComposerTransactionV1;
+export type ComposerTransactionResultV1 = ProtocolComposerTransactionResultV1;
+export type ComposerReadResultV1 = ProtocolComposerReadResultV1;
+export type ComposerFocusResultV1 = ProtocolComposerFocusResultV1;
+export type ComposerDecorationSetV1 = ProtocolComposerDecorationSetV1;
+export type ComposerDecorationResultV1 = ProtocolComposerDecorationResultV1;
+export type ComposerInputLockRequestV1 = ProtocolComposerInputLockRequestV1;
 
-export type ComposerTextPositionV1 = DeepReadonly<{ offset: number }>;
-export type ComposerTextRangeV1 = DeepReadonly<{ start: number; end: number }>;
-export type ComposerReferenceSelectorV1 = DeepReadonly<{ ref: string; start: number; end: number }>;
-export type ComposerMentionRefV1 = DeepReadonly<{
-    kind: string;
-    ref: string;
-    token: string;
-    start: number;
-    end: number;
-    label?: string;
-    composerReference?: PluginUiContributionIdentityV1;
-}>;
-export type ComposerAttachmentPresentationV1 = DeepReadonly<{
-    label: string;
-    description?: string;
-    icon?: PluginUiIconTokenV1;
-    tone?: PluginUiAttachmentToneV1;
-    typeLabel: string;
-}>;
-export type ComposerAttachmentViewV1 = DeepReadonly<{
-    v: 1;
-    instanceId: string;
-    attachment: PluginUiContributionIdentityV1;
-    key: string;
-    value: PluginJsonValueV2;
-    presentation: ComposerAttachmentPresentationV1;
-    availability:
-        | { status: 'ready' }
-        | { status: 'unavailable' | 'invalid'; reason?: string };
-    content?: ComposerStagedMediaContentV1;
-}>;
-export type ComposerCapabilitiesV1 = DeepReadonly<{
-    text: true;
-    references: boolean;
-    attachments: boolean;
-    submit: boolean;
-}>;
-export type ComposerSnapshotV1 = DeepReadonly<{
-    revision: number;
-    ref: ComposerRefV1;
-    text: string;
-    selection?: ComposerTextRangeV1;
-    references: ComposerMentionRefV1[];
-    attachments: ComposerAttachmentViewV1[];
-    layout: 'wrap' | 'scroll' | 'collapsed';
-    capabilities: ComposerCapabilitiesV1;
-    state: {
-        focused: boolean;
-        editable: boolean;
-        submittable: boolean;
-        submitting: boolean;
-        running: boolean;
-        inputLock?: { mode: 'submit' | 'editAndSubmit'; reasons: string[] };
-    };
-}>;
-export type ComposerAttachmentAuthorPresentationV1 = DeepReadonly<{
-    label: string;
-    description?: string;
-    icon?: PluginUiIconTokenV1;
-    tone?: PluginUiAttachmentToneV1;
-}>;
-export type ComposerAttachmentAuthorValueV1 = DeepReadonly<{
-    key: string;
-    value: PluginJsonValueV2;
-    presentation: ComposerAttachmentAuthorPresentationV1;
-}>;
-export type ComposerAttachmentUpdateV1 = DeepReadonly<{
-    value: PluginJsonValueV2;
-    presentation?: ComposerAttachmentAuthorPresentationV1;
-}>;
-export type ComposerOperationV1 = DeepReadonly<
-    | { kind: 'text.set'; text: string }
-    | { kind: 'text.insert'; position: ComposerTextPositionV1; text: string }
-    | { kind: 'text.replaceRange'; range: ComposerTextRangeV1; text: string }
-    | { kind: 'text.clear' }
-    | { kind: 'reference.insert'; reference: ComposerMentionRefV1 }
-    | { kind: 'reference.remove'; reference: ComposerReferenceSelectorV1 }
-    | {
-        kind: 'attachment.add';
-        attachmentLocalId: string;
-        value: ComposerAttachmentAuthorValueV1;
-        content?: ComposerStagedMediaContentV1;
-    }
-    | { kind: 'attachment.update'; instanceId: string; update: ComposerAttachmentUpdateV1 }
-    | { kind: 'attachment.remove'; instanceId: string }
->;
-export type ComposerTransactionV1 = DeepReadonly<{
-    expectedRevision: number;
-    operations: ComposerOperationV1[];
-}>;
-export type ComposerTransactionResultV1 = DeepReadonly<
-    | { status: 'applied'; revision: number; attachmentInstanceIds?: string[] }
-    | { status: 'conflict'; currentRevision: number }
-    | { status: 'composerUnavailable' }
-    | { status: 'notEditable' }
-    | { status: 'invalidOperation'; operationIndex: number; reason: string; detail?: PluginJsonValueV2 }
-    | { status: 'limitExceeded'; limit: string; maximum: number; actual: number }
->;
-export type ComposerUnavailableReasonV1 = 'notFound' | 'scopeClosed' | 'staleGeneration';
-export type ComposerReadResultV1 = DeepReadonly<
-    | { status: 'ready'; snapshot: ComposerSnapshotV1 }
-    | { status: 'unavailable'; reason: ComposerUnavailableReasonV1 }
->;
-export type ComposerFocusResultV1 = DeepReadonly<
-    | { status: 'focused' }
-    | { status: 'notEditable' }
-    | { status: 'unavailable'; reason: ComposerUnavailableReasonV1 }
->;
-export type ComposerDecorationSetV1 = DeepReadonly<{
-    revision: number;
-    ranges: Array<{
-        range: ComposerTextRangeV1;
-        treatment:
-            | 'highlight'
-            | 'muted'
-            | 'warning'
-            | 'success'
-            | 'code'
-            | { kind: 'link'; url: string };
-        label?: string;
-    }>;
-}>;
-export type ComposerDecorationResultV1 = DeepReadonly<
-    | { status: 'set' }
-    | { status: 'cleared' }
-    | { status: 'staleRevision'; currentRevision: number }
-    | { status: 'invalid' }
-    | { status: 'unavailable'; reason: ComposerUnavailableReasonV1 }
->;
-export type ComposerInputLockRequestV1 = DeepReadonly<{
-    reason: string;
-    mode: 'submit' | 'editAndSubmit';
-}>;
+/** Leaf names derive from those same owner types, so nested fields cannot drift. */
+export type ComposerTextPositionV1 = Extract<
+    ProtocolComposerOperationV1,
+    { kind: 'text.insert' }
+>['position'];
+export type ComposerTextRangeV1 = NonNullable<ProtocolComposerSnapshotV1['selection']>;
+export type ComposerReferenceSelectorV1 = Extract<
+    ProtocolComposerOperationV1,
+    { kind: 'reference.remove' }
+>['reference'];
+export type ComposerMentionRefV1 = ProtocolComposerSnapshotV1['references'][number];
+export type ComposerAttachmentViewV1 = ProtocolComposerSnapshotV1['attachments'][number];
+export type ComposerAttachmentPresentationV1 = ComposerAttachmentViewV1['presentation'];
+export type ComposerCapabilitiesV1 = ProtocolComposerSnapshotV1['capabilities'];
+export type ComposerAttachmentAuthorValueV1 = Extract<
+    ProtocolComposerOperationV1,
+    { kind: 'attachment.add' }
+>['value'];
+export type ComposerAttachmentAuthorPresentationV1 = ComposerAttachmentAuthorValueV1['presentation'];
+export type ComposerAttachmentUpdateV1 = Extract<
+    ProtocolComposerOperationV1,
+    { kind: 'attachment.update' }
+>['update'];
+export type ComposerUnavailableReasonV1 = Extract<
+    ProtocolComposerReadResultV1,
+    { status: 'unavailable' }
+>['reason'];
 
 export type PluginUiHostApiWireIdentityV1 = {
     pluginId: string;

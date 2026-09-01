@@ -324,7 +324,8 @@ describe('definePlugin', () => {
             secrets,
         });
 
-        expect(plugin.manifest.secrets).toBe(secrets);
+        expect(plugin.manifest.secrets).toEqual(secrets);
+        expect(plugin.manifest.secrets).not.toBe(secrets);
     });
 
     it('projects and executes composable action schemas at the canonical Action boundary', async () => {
@@ -440,6 +441,44 @@ describe('definePlugin', () => {
                 },
             },
         } as never)).toThrow(/client action.*handler/i);
+    });
+
+    it('captures the authored definition graph before later caller mutation', async () => {
+        const originalRun = vi.fn(async () => ({ version: 1 }));
+        const replacementRun = vi.fn(async () => ({ version: 2 }));
+        const action = {
+            title: 'Inspect',
+            execution: { target: 'daemon' as const },
+            surfaces: ['plugin'] as const,
+            run: originalRun,
+        };
+        const plugin = definePlugin({
+            id: 'acme.captured-definition',
+            version: '1.0.0',
+            actions: { inspect: action },
+        });
+        action.run = replacementRun;
+        const register = vi.fn();
+
+        await plugin.activate({ actions: { register } } as never);
+
+        const registered = register.mock.calls[0]?.[1] as ((input: unknown) => Promise<unknown>) | undefined;
+        await expect(registered?.({})).resolves.toEqual({ version: 1 });
+        expect(originalRun).toHaveBeenCalledOnce();
+        expect(replacementRun).not.toHaveBeenCalled();
+    });
+
+    it('does not treat matching runtime key names in ordinary metadata as opaque leaves', () => {
+        const nested = { externalSessions: { label: 'captured' } };
+        const plugin = definePlugin({
+            id: 'acme.captured-metadata-key-collision',
+            version: '1.0.0',
+            metadata: nested,
+        });
+
+        nested.externalSessions.label = 'mutated';
+
+        expect(plugin.manifest.metadata).toEqual({ externalSessions: { label: 'captured' } });
     });
 
     it('wraps author Action handlers before attaching parser carriers so repeated activation never mutates the source handler', async () => {
@@ -2021,6 +2060,7 @@ describe('definePlugin', () => {
         } as never);
         expect(register).toHaveBeenCalledWith('assistant', executionOnlyFactory, undefined);
         expect(registerExternalSessions).toHaveBeenCalledWith('assistant', externalSessions);
+        expect(registerExternalSessions.mock.calls[0]?.[1]).toBe(externalSessions);
     });
 
     it('keeps Agent executable-binding construction local to definePlugin', () => {

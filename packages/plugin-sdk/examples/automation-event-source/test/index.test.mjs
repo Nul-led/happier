@@ -78,6 +78,10 @@ test('runs the complete public list, admit and status lifecycle for one observat
   const calls = [];
   let settledObservation;
   const observationSettled = new Promise((resolve) => { settledObservation = resolve; });
+  // This complete strict fixture is consumed by the public observer helper,
+  // whose catalog read parses the host result through the canonical schema.
+  // Keeping the fixture at that public boundary prevents an example-local
+  // approximation of the source-definition contract.
   const definition = {
     automationId: 'automation-example',
     triggerId: 'trigger-example',
@@ -89,6 +93,17 @@ test('runs the complete public list, admit and status lifecycle for one observat
     sourceSelectorId: '3f5b6d0e-1c4a-4d2b-9f77-2a0c4e6b8d91',
     sourceInstanceId: 'example/repository',
     sourceContractVersion: 1,
+    sourceConfig: {},
+    observationTransport: {
+      kind: 'checkpointedPull',
+      watcherMaterializationRef: {
+        machineId: 'machine-example',
+        materializationId: 'materialization-example',
+        pluginId: 'examples.automation-event-source',
+      },
+    },
+    filter: null,
+    maximumObservationAgeMs: null,
   };
   const context = {
     plugin: { id: 'examples.automation-event-source', version: '0.1.0' },
@@ -106,7 +121,7 @@ test('runs the complete public list, admit and status lifecycle for one observat
           if (actionId === 'automation.event.sources.list') {
             return {
               kind: 'page',
-              revision: 'source-revision-1',
+              revision: '1',
               definitions: [definition],
               nextCursor: null,
             };
@@ -114,7 +129,6 @@ test('runs the complete public list, admit and status lifecycle for one observat
           if (actionId === 'automation.event.admit') {
             return {
               results: [{ kind: 'admitted', runId: 'run-example', checkpointSafe: true }],
-              continuation: { kind: 'ready' },
             };
           }
           if (actionId === 'automation.event.source.status.report') return {};
@@ -152,8 +166,8 @@ test('runs the complete public list, admit and status lifecycle for one observat
   assert.deepEqual(calls[1].input, {
     kind: 'catalogReconciliation',
     scope: { kind: 'checkpointedPull' },
-    observedRevision: 'source-revision-1',
-    adoptedRevision: 'source-revision-1',
+    observedRevision: '1',
+    adoptedRevision: '1',
     state: 'current',
     scanStartedAt: null,
     nextRetryAt: null,
@@ -171,7 +185,7 @@ test('runs the complete public list, admit and status lifecycle for one observat
       sourceSelectorId: definition.sourceSelectorId,
     }],
   });
-  assert.deepEqual(calls[3].input, {
+  assert.deepEqual(JSON.parse(JSON.stringify(calls[3].input)), {
     kind: 'source',
     automationId: definition.automationId,
     triggerId: definition.triggerId,

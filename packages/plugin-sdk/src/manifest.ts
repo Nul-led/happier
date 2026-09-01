@@ -50,25 +50,6 @@ export type AgentUiTranscriptStorageModeV1 = 'persisted' | 'direct';
 /** A provider-owned External Sessions source; only `kind` is grammar-known. */
 export type AgentUiExternalSessionsSourceV1 = { [key: string]: unknown; kind: string };
 
-export type AgentUiRuntimeDescriptorAgentExtraIdentityV1 = {
-  owner: string;
-  schemaId: string;
-  v: number;
-};
-
-export type AgentUiRuntimeDescriptorAgentExtraV1 = {
-  runtimeHandleFields: string[];
-  owner: string;
-  schemaId: string;
-  v: number;
-};
-
-export type AgentUiRuntimeDescriptorLinkExtrasV1 = {
-  backendMode: { values: string[] };
-  sourceFields: string[];
-  agentExtra?: AgentUiRuntimeDescriptorAgentExtraV1;
-};
-
 export type AgentUiBehaviorDeclarationV1 = {
   descriptorId?: string;
   attachedSessionTerminal?: { supported?: boolean };
@@ -92,8 +73,6 @@ export type AgentUiBehaviorDeclarationV1 = {
   workState?: {
     editableGoals?: {
       capabilityDriven?: boolean;
-      modeValues?: string[];
-      activeModeValues?: string[];
       activeWhenNoPersistedMode?: boolean;
       persistedGoalSnapshot?: {
         path?: string[];
@@ -140,12 +119,7 @@ export type AgentUiBehaviorDeclarationV1 = {
       kind: 'static';
       value: Record<string, string | number | boolean | null>;
     };
-    /**
-     * A backend-mode fact this Agent contributes to the spawn/resume envelope.
-     * The mode comes from the named account setting and, for an existing
-     * Session, from the canonical runtime-descriptor envelope carrying this
-     * Agent's id.
-     */
+    /** A setting-backed session configuration option contributed on create. */
     sessionExtras?: {
       outputKey: string;
       values: string[];
@@ -157,8 +131,6 @@ export type AgentUiBehaviorDeclarationV1 = {
       backendMode: {
         envKey: string;
         settingKey: AgentUiSettingReferenceV1;
-        legacyMetadataKey: string;
-        runtimeDescriptorField: string;
         defaultValue: string;
         values: string[];
       };
@@ -167,24 +139,10 @@ export type AgentUiBehaviorDeclarationV1 = {
         explicitEnvKey: string;
         settingKey: AgentUiSettingReferenceV1;
         byServerIdSettingKey: AgentUiSettingReferenceV1;
-        legacyMetadataKey: string;
-        legacyExplicitMetadataKey: string;
-        runtimeDescriptorField: string;
-        runtimeDescriptorExplicitField: string;
         allowedProtocols?: string[];
         rejectCredentials?: boolean;
         originOnly?: boolean;
       };
-      agentExtra?: AgentUiRuntimeDescriptorAgentExtraV1;
-    };
-    backendTransport?: {
-      backendMode: {
-        values: string[];
-        aliases?: Record<string, string>;
-        legacyExperimentalValue?: string;
-      };
-      runtimeHandleFields: string[];
-      agentExtra?: AgentUiRuntimeDescriptorAgentExtraIdentityV1;
     };
   };
   askUserQuestion?: {
@@ -236,7 +194,6 @@ export type AgentUiBehaviorDeclarationV1 = {
       compatibleSource?: { sourceKind: string; optionalFields: string[] };
       linkEnsureRequestExtras?: {
         sourceFromCandidate?: { sourceKind: string; optionalFields: string[] };
-        runtimeDescriptorFromCandidate?: AgentUiRuntimeDescriptorLinkExtrasV1;
       };
     };
     sessionHandoff?: { clearMetadataKeys?: string[] };

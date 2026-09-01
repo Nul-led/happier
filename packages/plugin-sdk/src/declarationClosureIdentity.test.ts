@@ -1292,6 +1292,11 @@ describe('normal SDK declaration closure identities', () => {
 
         for (const [name, publicOutputType, privateOutputType] of [
             [
+                'AgentExecutionRunEventSchema',
+                'AgentExecutionRunEvent',
+                'AgentExecutionRunEventV1',
+            ],
+            [
                 'AgentSessionProviderBindingV1Schema',
                 'AgentSessionProviderBinding',
                 'CanonicalAgentSessionProviderBinding',

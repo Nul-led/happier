@@ -20,6 +20,12 @@ type CheckpointReceipt = NonNullable<Awaited<ReturnType<CheckpointRestore>>['rec
 
 describe('public agent-runtime entrypoint', () => {
   it('exports the strict provider-neutral wire validators', () => {
+    expect(agentRuntime.AgentExecutionRunEventSchema.safeParse({
+      kind: 'run-complete',
+      sequence: 1,
+      runId: 'run-1',
+      emittedAtMs: 1,
+    }).success).toBe(true);
     expect(agentRuntime.AgentSessionRuntimeEventSchema.safeParse({
       kind: 'turn-complete',
       sequence: 1,
@@ -50,6 +56,7 @@ describe('public agent-runtime entrypoint', () => {
       'AgentSessionConversationRollbackRequestV1Schema',
       'AgentSessionConversationRollbackResultV1Schema',
       'AgentSessionRuntimeEventV1Schema',
+      'AgentExecutionRunEventV1Schema',
       'AgentSessionSendRequestV1Schema',
     ]) {
       expect(publicRuntime[removed], removed).toBeUndefined();
@@ -60,6 +67,7 @@ describe('public agent-runtime entrypoint', () => {
     const runtime = publicAgentRuntime as Readonly<Record<string, unknown>>;
     for (const removed of [
       'RuntimeEventV1Schema',
+      'AgentExecutionRunEventV1Schema',
       'AgentSessionRuntimeEventV1Schema',
     ]) {
       expect(runtime[removed], removed).toBeUndefined();
@@ -83,6 +91,7 @@ describe('public agent-runtime entrypoint', () => {
     expectTypeOf<AgentSessionHostServices>().toHaveProperty('terminalHost');
     expectTypeOf<AgentSessionHostServices>().not.toHaveProperty('systemRecords');
     expectTypeOf<AgentSessionHostServices>().toHaveProperty('workflowActivity');
+    expectTypeOf<AgentSessionHostServices>().toHaveProperty('subagents');
     expectTypeOf<AgentSessionHostServices>().toHaveProperty('nativeHome');
   });
 

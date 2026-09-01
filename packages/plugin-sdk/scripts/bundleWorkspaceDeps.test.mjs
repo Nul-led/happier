@@ -179,7 +179,7 @@ test('plugin-sdk keeps publication preparation separate from ordinary source val
   const adjacentScript = packageJson.scripts['test:local:adjacent'];
   assert.doesNotMatch(adjacentScript, /bundleWorkspaceDeps|prepare:declarations/u);
   assert.ok(
-    adjacentScript.startsWith('yarn --cwd examples/automation-event-source build && yarn --cwd examples/action-contract-producer build && yarn --cwd examples/triage-source-target build && yarn --cwd examples/triage-source-contributor build && yarn --cwd examples/public-authoring build && node --test '),
+    adjacentScript.startsWith('yarn --cwd examples/automation-event-source build && yarn --cwd examples/action-contract-producer build && yarn --cwd examples/triage-source-target build && yarn --cwd examples/triage-source-contributor build && yarn --cwd examples/public-authoring build && yarn --cwd examples/session-agent build && node --test '),
     'the managed build for every dist-importing example must immediately precede the SDK unit lane test batch',
   );
   const adjacentNodeTests = adjacentScript.slice(adjacentScript.indexOf('node --test '));
@@ -187,6 +187,7 @@ test('plugin-sdk keeps publication preparation separate from ordinary source val
     'examples/triage-source-target/test/index.test.mjs',
     'examples/triage-source-contributor/test/index.test.mjs',
     'examples/public-authoring/test/index.test.mjs',
+    'examples/session-agent/test/index.test.mjs',
   ]) {
     assert.ok(adjacentNodeTests.includes(testPath), 'expected node test batch to include ' + testPath);
   }

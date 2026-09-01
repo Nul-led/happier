@@ -10,7 +10,7 @@ function deferred(unblockCondition, sourceMetadata = {}) {
   return Object.freeze({
     ...sourceMetadata,
     availabilityDisposition: 'deferred',
-    provingConsumer: 'no current positive consumer',
+    provingConsumer: null,
     unblockCondition,
   });
 }

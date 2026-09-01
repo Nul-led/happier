@@ -45,6 +45,7 @@ import {
     type PluginUiHostApiSurfaceContextV1,
     type PluginUiTargetedContributionOperationV1,
 } from '@happier-dev/protocol/plugins/ui/client';
+import { qualifyPluginContributionReferenceV1 } from '@happier-dev/protocol/plugins/contribution-identity';
 
 import { PluginError } from '../errors.js';
 import {
@@ -53,7 +54,6 @@ import {
     decodePluginUiResourceContent,
     encodePluginUiDiagnostic,
 } from '../host/ui/hostApiCodecs.js';
-import { qualifyPluginContributionReference } from '../host/ui/pluginReferences.js';
 import type { PluginErrorData } from '../errors.js';
 import type { JsonValue, PluginReference } from '../identity.js';
 import type { Disposable, PluginCancellationOptions } from '../lifecycle.js';
@@ -1158,7 +1158,7 @@ export async function createPluginUiHostApiClientFromTransport(
         // values; this client only binds a bare local id to its own plugin. A
         // qualified destination stays intact for the host Surface Registry.
         openSurface: async (view, input, requestOptions) => {
-            const destination = qualifyPluginContributionReference(view, options.identity.pluginId);
+            const destination = qualifyPluginContributionReferenceV1(view, options.identity.pluginId);
             await request('openSurface', {
                 destination,
                 ...(input === undefined ? {} : { input }),
