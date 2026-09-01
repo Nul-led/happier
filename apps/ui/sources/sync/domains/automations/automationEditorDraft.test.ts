@@ -214,9 +214,9 @@ describe('automationEditorDraftFromDetail', () => {
             definition: {
                 kind: 'sessionLifecycle' as const,
                 enabled: true,
-                event: 'parentTurnCompleted' as const,
-                scope: { kind: 'exactTurn' as const, sourceSessionId: 'source', sourceTurnId: 'turn' },
-                consumption: 'once' as const,
+                sourceSessionId: 'source',
+                events: ['parentTurnCompleted'] as const,
+                policy: { kind: 'currentTurn' as const, sourceTurnId: 'turn' },
             },
         };
 

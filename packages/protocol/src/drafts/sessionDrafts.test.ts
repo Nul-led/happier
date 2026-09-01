@@ -41,9 +41,9 @@ const pluralAutomation = {
       enabled: true,
       definition: {
         kind: 'sessionLifecycle',
-        event: 'parentTurnCompleted',
-        scope: { kind: 'exactTurn', sourceSessionId: 'session-1', sourceTurnId: 'turn-1' },
-        consumption: 'once',
+        sourceSessionId: 'session-1',
+        events: ['parentTurnCompleted'],
+        policy: { kind: 'currentTurn', sourceTurnId: 'turn-1' },
       },
     },
   ],

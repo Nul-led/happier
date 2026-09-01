@@ -44,9 +44,9 @@ const scheduleDefinition = {
 const lifecycleDefinition = {
     kind: 'sessionLifecycle' as const,
     enabled: true,
-    event: 'parentTurnCompleted' as const,
-    scope: { kind: 'exactTurn' as const, sourceSessionId: 'source-session', sourceTurnId: 'turn-7' },
-    consumption: 'once' as const,
+    sourceSessionId: 'source-session',
+    events: ['parentTurnCompleted'] as const,
+    policy: { kind: 'currentTurn' as const, sourceTurnId: 'turn-7' },
 };
 
 function scheduleTrigger(id: string, revision: number) {
@@ -71,9 +71,10 @@ function lifecycleTrigger(id: string, revision: number) {
         createdAt: timestamp,
         updatedAt: timestamp,
         kind: 'sessionLifecycle' as const,
-        event: 'parentTurnCompleted' as const,
-        scope: lifecycleDefinition.scope,
-        consumption: 'once' as const,
+        sourceSessionId: lifecycleDefinition.sourceSessionId,
+        events: lifecycleDefinition.events,
+        policy: lifecycleDefinition.policy,
+        remainingOccurrences: 1,
         status: { state: 'waiting' as const, runId: null },
         triggerDefinitionEnvelope: null,
     });
