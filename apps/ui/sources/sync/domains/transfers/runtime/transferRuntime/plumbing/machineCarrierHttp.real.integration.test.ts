@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import Fastify, { type FastifyInstance } from 'fastify';
 import tweetnacl from 'tweetnacl';
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { FeaturesResponseSchema, type IrohMachineHandshakeV1 } from '@happier-dev/protocol';
+import { FeaturesResponseSchema, SignedDirectRouteGrantV2Schema, type IrohMachineHandshakeV1 } from '@happier-dev/protocol';
 import { createIrohNodeNativeModule, loadIrohNodeNativeAddon } from '@happier-dev/iroh-native/node';
 
 import { TokenStorage } from '@/auth/storage/tokenStorage';
@@ -252,6 +252,10 @@ describeReal('production transfer caller over native MachineHttpTunnel', () => {
             grantAuthorizationHeaders.push(request.headers.authorization);
             const invoked = await route.invoke({ userId: accountId, body });
             const routeResponse = invoked.response as Record<string, unknown>;
+            const routeGrantParse = SignedDirectRouteGrantV2Schema.safeParse(routeResponse.grant);
+            if (!routeGrantParse.success) {
+                throw new Error(`Production grant route returned an invalid V2 grant: ${JSON.stringify(routeGrantParse.error.issues)}`);
+            }
             const outbound = input.invalidateGrant && routeResponse.grant && typeof routeResponse.grant === 'object'
                 ? {
                     ...routeResponse,
