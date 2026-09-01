@@ -25,7 +25,6 @@ vi.mock("@/app/serverUrls/effectiveServerUrls", () => ({
 import {
     composeHomeConnectionDescriptor,
     readPublishedHomeConnectionDescriptor,
-    readRedemptionHomeConnectionDescriptor,
     resetHomeConnectionDescriptorRevisionOwnerForTests,
     type HomeDescriptorPublicationFacts,
 } from "./homeConnectionDescriptorPublication";
@@ -178,20 +177,4 @@ describe("home connection descriptor publication owner", () => {
         expect(JSON.stringify(descriptor)).not.toContain("192.168.1.10:4242");
     });
 
-    it("projects the redemption descriptor with the endpoint facts enrollment needs", async () => {
-        mocks.getHomeIrohEndpointState.mockResolvedValue(activeIroh());
-        mocks.readCachedServerIdentityIdForHotPath.mockReturnValue("srv_home");
-        mocks.resolveConfiguredPublicServerUrl.mockReturnValue("https://ingress.example.test");
-
-        const descriptor = await readRedemptionHomeConnectionDescriptor({} as NodeJS.ProcessEnv);
-        expect(descriptor?.endpoints).toEqual([
-            { kind: "https", url: "https://ingress.example.test" },
-            {
-                kind: "iroh",
-                endpointId: "a".repeat(64),
-                relayUrls: ["https://relay.example.test"],
-                directAddresses: ["192.168.1.10:4242"],
-            },
-        ]);
-    });
 });

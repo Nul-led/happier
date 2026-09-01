@@ -34,10 +34,10 @@ import {
  *   owner in this tree yet (missing Lane 06 persistent outer-revision
  *   producer — reported, not simulated here).
  *
- * Two projections are derived from one composition: the public projection
- * (features payload) redacts direct-address hints, and the redemption
- * projection (assertion redemption) preserves every endpoint fact enrollment
- * needs. There is no second descriptor builder or transport resolver.
+ * Public and authenticated feature projections are derived from this one
+ * composition. The public projection redacts direct-address hints; an
+ * authenticated Home client may receive the full current descriptor. Home
+ * login redemption does not carry a descriptor.
  */
 
 export type HomeDescriptorPublicationFacts = Readonly<{
@@ -111,8 +111,7 @@ function httpsEndpointFromIngress(publicServerUrl: string | null): HomeConnectio
 
 /**
  * Composes the full-fidelity current descriptor from explicit facts, or
- * undefined when the Home can present no strict endpoint set. This is the
- * redemption-grade projection: direct-address hints are preserved.
+ * undefined when the Home can present no strict endpoint set.
  */
 export function composeHomeConnectionDescriptor(
     facts: HomeDescriptorPublicationFacts,
@@ -203,14 +202,4 @@ export async function readPublishedHomeConnectionDescriptor(
     env: NodeJS.ProcessEnv = process.env,
 ): Promise<HomeConnectionDescriptorV1 | undefined> {
     return resolvePublishedHomeConnectionDescriptor(await readHomeDescriptorPublicationFacts(env));
-}
-
-/**
- * Redemption projection read path (assertion redemption): preserves every
- * endpoint fact the enrolling client needs, including direct-address hints.
- */
-export async function readRedemptionHomeConnectionDescriptor(
-    env: NodeJS.ProcessEnv = process.env,
-): Promise<HomeConnectionDescriptorV1 | undefined> {
-    return composeHomeConnectionDescriptor(await readHomeDescriptorPublicationFacts(env));
 }
