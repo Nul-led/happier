@@ -6,7 +6,7 @@ import { join } from 'node:path';
 
 import Fastify, { type FastifyInstance } from 'fastify';
 import tweetnacl from 'tweetnacl';
-import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { FeaturesResponseSchema, SignedDirectRouteGrantV2Schema, type IrohMachineHandshakeV1 } from '@happier-dev/protocol';
 import { createIrohNodeNativeModule, loadIrohNodeNativeAddon } from '@happier-dev/iroh-native/node';
 
@@ -127,12 +127,17 @@ describeReal('production transfer caller over native MachineHttpTunnel', () => {
     const openServers: HttpServer[] = [];
     const openFastifyApps: FastifyInstance[] = [];
     const endpointKeyRoots: string[] = [];
+    let applicationNative: ReturnType<typeof createIrohNodeNativeModule>;
 
-    beforeEach(() => {
-        machineTunnelBoundary.calls = [];
-        machineTunnelBoundary.errors = [];
-        nativeBoundary.current = {
+    beforeAll(async () => {
+        const applicationKeyRoot = await mkdtemp(join(tmpdir(), 'happier-machine-transfer-client-'));
+        endpointKeyRoots.push(applicationKeyRoot);
+        applicationNative = {
             ...native,
+            createEndpoint: async (input) => await native.createEndpoint({
+                ...input,
+                keyPath: join(applicationKeyRoot, 'endpoint.key'),
+            }),
             startMachineHttpTunnel: async (input) => {
                 machineTunnelBoundary.calls.push(input);
                 try {
@@ -145,6 +150,12 @@ describeReal('production transfer caller over native MachineHttpTunnel', () => {
                 }
             },
         };
+    });
+
+    beforeEach(() => {
+        machineTunnelBoundary.calls = [];
+        machineTunnelBoundary.errors = [];
+        nativeBoundary.current = applicationNative;
         prepareDirectImportMock.mockReset();
         resetServerFeaturesClientForTests();
         setRuntimeFetch(globalThis.fetch.bind(globalThis));
