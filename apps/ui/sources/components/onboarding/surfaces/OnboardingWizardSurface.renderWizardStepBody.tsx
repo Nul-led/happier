@@ -197,6 +197,13 @@ export function renderOnboardingWizardStepBody(params: Readonly<{
         return (
             <>
                 <View style={params.styles.urlBlock}>
+                    <Text
+                        nativeID={`${params.testIDPrefix}-relay-url-label`}
+                        testID={`${params.testIDPrefix}-relay-url-label`}
+                        style={params.styles.urlHint}
+                    >
+                        {t('setupOnboarding.customRelayUrlLabel')}
+                    </Text>
                     <TextInput
                         testID={`${params.testIDPrefix}-relay-url-input`}
                         placeholder={t('common.urlPlaceholder')}
@@ -206,6 +213,8 @@ export function renderOnboardingWizardStepBody(params: Readonly<{
                         value={params.urlDraft}
                         onChangeText={params.onUrlDraftChange}
                         style={params.styles.urlInput}
+                        accessibilityLabel={t('setupOnboarding.customRelayUrlLabel')}
+                        accessibilityLabelledBy={`${params.testIDPrefix}-relay-url-label`}
                     />
                     <Text style={params.styles.urlHint}>{t('setupOnboarding.relayCustomUrlSubtitle')}</Text>
                 </View>
@@ -217,7 +226,13 @@ export function renderOnboardingWizardStepBody(params: Readonly<{
                     />
                 ) : null}
                 {params.reachabilityRemediationError ? (
-                    <Text style={params.styles.urlHint}>{params.reachabilityRemediationError}</Text>
+                    <Text
+                        accessibilityRole="alert"
+                        accessibilityLiveRegion="assertive"
+                        style={params.styles.urlHint}
+                    >
+                        {params.reachabilityRemediationError}
+                    </Text>
                 ) : null}
             </>
         );

@@ -2166,6 +2166,11 @@ describe('OnboardingWizardSurface', () => {
 
         const relayInput = screen.findByTestId('onboarding-wizard-relay-url-input')!;
         expect(relayInput.props.value).toBe('https://prefilled.relay.test');
+        expect(screen.findByTestId('onboarding-wizard-relay-url-label')?.props.children).toBe('Home address');
+        expect(relayInput.props).toMatchObject({
+            accessibilityLabel: 'Home address',
+            accessibilityLabelledBy: 'onboarding-wizard-relay-url-label',
+        });
     });
 
     it('routes the auth view change-relay action back to the wizard relay selection step', async () => {

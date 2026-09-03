@@ -4,9 +4,6 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Text } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
-import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot';
-import { HAPPIER_CLOUD_SERVER_URL } from '@/sync/domains/server/serverProfiles';
-import { createServerUrlComparableKey } from '@/sync/domains/server/url/serverUrlCanonical';
 import { t } from '@/text';
 import { Icon } from '@/components/ui/icons/Icon';
 
@@ -15,28 +12,7 @@ import { RelayRetentionDisclosure } from './RelayRetentionDisclosure';
 const DOCS_URL = 'https://docs.happier.dev';
 const GITHUB_URL = 'https://github.com/happier-dev/happier';
 const DISCORD_URL = 'https://discord.gg/W6Pb8KuHfg';
-
-const HAPPIER_CLOUD_COMPARABLE_KEY = createServerUrlComparableKey(HAPPIER_CLOUD_SERVER_URL);
-
-/**
- * Builds the host[:port] string we show in the footer when the user has
- * selected a custom relay. We hide the default scheme ports (443 for https,
- * 80 for http) because they're implied and only clutter the chip.
- * Returns null if the URL is unparseable — caller falls back to the raw URL.
- */
-function derivePresentableRelayHost(serverUrl: string): string | null {
-    try {
-        const parsed = new URL(serverUrl);
-        const host = parsed.hostname;
-        const port = parsed.port;
-        const isDefaultPort = !port
-            || (parsed.protocol === 'https:' && port === '443')
-            || (parsed.protocol === 'http:' && port === '80');
-        return isDefaultPort ? host : `${host}:${port}`;
-    } catch {
-        return null;
-    }
-}
+const MINIMUM_TOUCH_TARGET_STYLE = { minWidth: 44, minHeight: 44 } as const;
 
 export type WelcomeFooterLinksProps = Readonly<{
     variant: 'desktop' | 'mobile';
@@ -68,18 +44,7 @@ export const WelcomeFooterLinks = React.memo(function WelcomeFooterLinks(props: 
     const actionPressedStyle = { opacity: 0.7 };
     const iconColor = theme.colors.text.primary;
     const isMobile = props.variant === 'mobile';
-    const relayGroupStyle = isMobile ? styles.groupMobile : styles.groupDesktop;
-
-    // The user has actively chosen a non-cloud relay when the active server's
-    // canonicalised URL doesn't match the Happier Cloud key. While we have no
-    // server URL yet (cold start), default to the cloud framing so the footer
-    // doesn't flicker into the custom layout for a single render.
-    const activeServer = useActiveServerSnapshot();
-    const isCustomRelay = activeServer.serverUrl.length > 0
-        && createServerUrlComparableKey(activeServer.serverUrl) !== HAPPIER_CLOUD_COMPARABLE_KEY;
-    const customRelayHost = isCustomRelay
-        ? (derivePresentableRelayHost(activeServer.serverUrl) ?? activeServer.serverUrl)
-        : null;
+    const footerGroupStyle = isMobile ? styles.groupMobile : styles.groupDesktop;
 
     return (
         <View
@@ -93,44 +58,7 @@ export const WelcomeFooterLinks = React.memo(function WelcomeFooterLinks(props: 
                 />
             ) : null}
             <View style={isMobile ? styles.linksMobile : styles.linksDesktop}>
-                <View style={relayGroupStyle} testID="welcome-footer-relay">
-                    <Text style={[styles.label, labelColor]}>
-                        {isCustomRelay ? t('welcome.welcomeFooterRelayActiveLabel') : t('welcome.welcomeFooterRelay')}
-                    </Text>
-                    <Pressable
-                        onPress={props.onOpenRelayCustomFlow}
-                        accessibilityRole="link"
-                        accessibilityLabel={isCustomRelay ? t('welcome.welcomeFooterRelayEditAccessibility') : undefined}
-                        testID="welcome-footer-relay-action"
-                    >
-                        {({ pressed }) => (
-                            isCustomRelay && customRelayHost ? (
-                                <View style={isMobile ? styles.relayHostRowMobile : styles.relayHostRowDesktop}>
-                                    <Text
-                                        style={[styles.actionBold, actionColor, styles.relayHostText, pressed ? actionPressedStyle : null]}
-                                        numberOfLines={1}
-                                        ellipsizeMode="tail"
-                                        testID="welcome-footer-relay-host"
-                                    >
-                                        {customRelayHost}
-                                    </Text>
-                                    <Icon
-                                        name="pencil"
-                                        size={14}
-                                        color={iconColor}
-                                        style={pressed ? actionPressedStyle : undefined}
-                                    />
-                                </View>
-                            ) : (
-                                <Text style={[styles.actionBold, actionColor, pressed ? actionPressedStyle : null]}>
-                                    {t('welcome.welcomeFooterRelayAction')}
-                                </Text>
-                            )
-                        )}
-                    </Pressable>
-                </View>
-
-                <View style={relayGroupStyle} testID="welcome-footer-docs">
+                <View style={footerGroupStyle} testID="welcome-footer-docs">
                     <Text style={[styles.label, labelColor]}>
                         {t('welcome.welcomeFooterDocs')}
                     </Text>
@@ -141,7 +69,7 @@ export const WelcomeFooterLinks = React.memo(function WelcomeFooterLinks(props: 
                             accessibilityLabel={t('welcome.welcomeFooterGithubLabel')}
                             testID="welcome-footer-github-action"
                             hitSlop={6}
-                            style={({ pressed }) => [styles.iconButton, pressed ? actionPressedStyle : null]}
+                            style={({ pressed }) => [MINIMUM_TOUCH_TARGET_STYLE, styles.iconButton, pressed ? actionPressedStyle : null]}
                         >
                             <Icon name="github-logo" size={16} color={iconColor} />
                         </Pressable>
@@ -151,20 +79,18 @@ export const WelcomeFooterLinks = React.memo(function WelcomeFooterLinks(props: 
                             accessibilityLabel={t('welcome.welcomeFooterDiscordLabel')}
                             testID="welcome-footer-discord-action"
                             hitSlop={6}
-                            style={({ pressed }) => [styles.iconButton, pressed ? actionPressedStyle : null]}
+                            style={({ pressed }) => [MINIMUM_TOUCH_TARGET_STYLE, styles.iconButton, pressed ? actionPressedStyle : null]}
                         >
                             <Icon name="discord-logo" size={16} color={iconColor} />
                         </Pressable>
                         <Pressable
                             onPress={openDocs}
                             accessibilityRole="link"
+                            accessibilityLabel={t('welcome.welcomeFooterDocsAction')}
                             testID="welcome-footer-docs-action"
+                            style={({ pressed }) => [MINIMUM_TOUCH_TARGET_STYLE, styles.textButton, pressed ? actionPressedStyle : null]}
                         >
-                            {({ pressed }) => (
-                                <Text style={[styles.action, actionColor, pressed ? actionPressedStyle : null]}>
-                                    {t('welcome.welcomeFooterDocsAction')}
-                                </Text>
-                            )}
+                            <Text style={[styles.action, actionColor]}>{t('welcome.welcomeFooterDocsAction')}</Text>
                         </Pressable>
                     </View>
                 </View>
@@ -234,36 +160,15 @@ const stylesheet = StyleSheet.create(() => ({
         lineHeight: 18,
         textDecorationLine: 'underline',
     },
-    actionBold: {
-        ...Typography.default('semiBold'),
-        fontSize: 13,
-        lineHeight: 18,
-        textDecorationLine: 'underline',
-    },
-    relayHostRowDesktop: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 6,
-        // Cap the host chip so a long hostname can't push the pencil icon
-        // off the right edge or collide with the right-side Docs group.
-        // Ellipsis truncation handles anything past this width.
-        maxWidth: 260,
-    },
-    relayHostRowMobile: {
-        flexDirection: 'row',
+    iconButton: {
+        minWidth: 44,
+        minHeight: 44,
         alignItems: 'center',
         justifyContent: 'center',
-        gap: 6,
-        maxWidth: 280,
     },
-    relayHostText: {
-        // Let the Text shrink/ellipsize within the row instead of pushing the
-        // pencil icon out. flexShrink:1 + minWidth:0 is the canonical recipe
-        // for tail-ellipsis-inside-a-row on RN web.
-        flexShrink: 1,
-        minWidth: 0,
-    },
-    iconButton: {
+    textButton: {
+        minWidth: 44,
+        minHeight: 44,
         alignItems: 'center',
         justifyContent: 'center',
     },

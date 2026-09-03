@@ -96,6 +96,7 @@ function readyAccountServiceEntry(
     return {
         endpoint: { url: 'https://api.happier.dev', displayName: 'Happier Cloud', source: 'default' },
         status: 'ready',
+        retry: vi.fn(),
         discovery: {
             endpointUrl: 'https://api.happier.dev',
             serverIdentityId: 'srv_cloud_identity',
@@ -318,7 +319,7 @@ describe('WelcomeDecisionPanel', () => {
         expect(callbacks.onContinueWithAccountServiceProvider).not.toHaveBeenCalled();
     });
 
-    it('keeps the ordinary Home entry when the selected service does not advertise key login', async () => {
+    it('keeps a ready but methodless selected service authoritative instead of falling back to Home auth', async () => {
         const { screenPromise } = renderPanel(
             { showAnonymousSignup: true },
             readyAccountServiceEntry([], { keyLoginAvailable: false }),
@@ -326,7 +327,9 @@ describe('WelcomeDecisionPanel', () => {
         const screen = await screenPromise;
 
         expect(screen.findAllByTestId('welcome-account-service-key')).toHaveLength(0);
-        expect(screen.findByTestId('welcome-primary-start')).toBeTruthy();
+        expect(screen.findByTestId('welcome-account-service-recovery')).toBeTruthy();
+        expect(screen.findByTestId('welcome-account-service-choose')).toBeTruthy();
+        expect(screen.findAllByTestId('welcome-primary-start')).toHaveLength(0);
     });
 
     it('waits for the selected sign-in service instead of flashing Home-targeted actions', async () => {

@@ -209,7 +209,7 @@ export function AddTargetsSection(props: AddTargetsSectionProps) {
                         </Text>
                     ) : null}
 
-                    <Text style={styles.labelText}>{t('server.customServerUrlLabel')}</Text>
+                    <Text nativeID="server-settings-add-url-label" style={styles.labelText}>{t('server.customServerUrlLabel')}</Text>
                     <TextInput
                         testID="server-settings-add-url-input"
                         style={[
@@ -224,11 +224,13 @@ export function AddTargetsSection(props: AddTargetsSectionProps) {
                         autoCorrect={false}
                         keyboardType="url"
                         editable={!props.isValidating}
+                        accessibilityLabel={t('server.customServerUrlLabel')}
+                        accessibilityLabelledBy="server-settings-add-url-label"
                     />
 
                     {props.autoMode ? null : (
                         <>
-                            <Text style={styles.labelText}>{t('server.serverNameLabel')}</Text>
+                            <Text nativeID="server-settings-add-name-label" style={styles.labelText}>{t('server.serverNameLabel')}</Text>
                             <TextInput
                                 testID="server-settings-add-name-input"
                                 style={[
@@ -242,12 +244,19 @@ export function AddTargetsSection(props: AddTargetsSectionProps) {
                                 autoCapitalize="none"
                                 autoCorrect={false}
                                 editable={!props.isValidating}
+                                accessibilityLabel={t('server.serverNameLabel')}
+                                accessibilityLabelledBy="server-settings-add-name-label"
                             />
                         </>
                     )}
 
                     {props.error && (
-                        <Text testID="server-settings-add-error" style={styles.errorText}>
+                        <Text
+                            testID="server-settings-add-error"
+                            accessibilityRole="alert"
+                            accessibilityLiveRegion="assertive"
+                            style={styles.errorText}
+                        >
                             {props.error}
                         </Text>
                     )}
@@ -260,7 +269,12 @@ export function AddTargetsSection(props: AddTargetsSectionProps) {
                         />
                     ) : null}
                     {props.isValidating && (
-                        <Text style={styles.validatingText}>
+                        <Text
+                            testID="server-settings-add-validating"
+                            accessibilityRole="status"
+                            accessibilityLiveRegion="polite"
+                            style={styles.validatingText}
+                        >
                             {t('server.validatingServer')}
                         </Text>
                     )}
@@ -309,8 +323,9 @@ export function AddTargetsSection(props: AddTargetsSectionProps) {
             />
             {expanded === 'group' ? (
                 <View style={styles.contentContainer}>
-                    <Text style={styles.labelText}>{t('server.serverGroupNameLabel')}</Text>
+                    <Text nativeID="server-settings-add-group-name-label" style={styles.labelText}>{t('server.serverGroupNameLabel')}</Text>
                     <TextInput
+                        testID="server-settings-add-group-name-input"
                         style={[
                             styles.textInput,
                             isSavingGroup && styles.textInputValidating,
@@ -322,6 +337,8 @@ export function AddTargetsSection(props: AddTargetsSectionProps) {
                         autoCapitalize="none"
                         autoCorrect={false}
                         editable={!isSavingGroup}
+                        accessibilityLabel={t('server.serverGroupNameLabel')}
+                        accessibilityLabelledBy="server-settings-add-group-name-label"
                     />
 
                     <Text style={styles.labelText}>{t('server.serverGroupServersLabel')}</Text>
