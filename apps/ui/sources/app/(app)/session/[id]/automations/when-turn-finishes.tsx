@@ -13,6 +13,7 @@ export default function ExactTurnAutomationDestinationRoute() {
         sourceSessionId?: string;
         sourceTurnId?: string;
         sourceServerId?: string;
+        sessionLifecycleEvents?: string;
     }>();
     const route = parseExactTurnAutomationPrefillRoute(params);
     const routeSessionId = typeof params.id === 'string' ? params.id : null;

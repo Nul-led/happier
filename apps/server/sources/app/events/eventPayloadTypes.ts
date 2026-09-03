@@ -6,6 +6,7 @@ import type {
     AutomationRunStateChangedHostEventV1,
     ExternalSessionTranscriptInvalidationV1,
     ExecutionRunPublicState,
+    PendingActivationAuthorizationV1,
     PrimaryTurnStatusV1,
     SessionMessageDeliveryResolutionV1,
     SessionMessageAttentionImpact,
@@ -140,6 +141,7 @@ export type UpdateEvent = {
     pendingBlockedCount?: number;
     changedByAccountId?: string;
     meaningfulActivityAt?: number;
+    pendingActivationAuthorization?: PendingActivationAuthorizationV1 | null;
 } | {
     type: 'automation-upsert';
     automationId: string;

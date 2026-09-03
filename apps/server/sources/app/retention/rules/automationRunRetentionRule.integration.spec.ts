@@ -950,7 +950,7 @@ describe("automationRunRetentionRule", () => {
         ]);
     });
 
-    it("advances the Event catalog once when history clear releases a retired Event trigger", async () => {
+    it("does not advance the Event catalog when history clear deletes retired Event Run history", async () => {
         const account = await db.account.create({
             data: { id: "account-clear-released-event-trigger", encryptionMode: "plain" },
             select: { id: true },
@@ -1012,7 +1012,7 @@ describe("automationRunRetentionRule", () => {
         await expect(db.automationEventCatalogState.findUniqueOrThrow({
             where: { accountId: account.id },
             select: { eventSourceDefinitionsRevision: true },
-        })).resolves.toEqual({ eventSourceDefinitionsRevision: 8n });
+        })).resolves.toEqual({ eventSourceDefinitionsRevision: 7n });
         await expect(clearAutomationRunHistory({
             accountId: account.id,
             automationId: "automation-clear-released-event-trigger",
@@ -1020,10 +1020,10 @@ describe("automationRunRetentionRule", () => {
         await expect(db.automationEventCatalogState.findUniqueOrThrow({
             where: { accountId: account.id },
             select: { eventSourceDefinitionsRevision: true },
-        })).resolves.toEqual({ eventSourceDefinitionsRevision: 8n });
+        })).resolves.toEqual({ eventSourceDefinitionsRevision: 7n });
     });
 
-    it("advances the Event catalog once when retention releases a retired Event trigger", async () => {
+    it("does not advance the Event catalog when retention deletes retired Event Run history", async () => {
         const account = await db.account.create({
             data: { id: "account-retention-released-event-trigger", encryptionMode: "plain" },
             select: { id: true },
@@ -1089,7 +1089,7 @@ describe("automationRunRetentionRule", () => {
         await expect(db.automationEventCatalogState.findUniqueOrThrow({
             where: { accountId: account.id },
             select: { eventSourceDefinitionsRevision: true },
-        })).resolves.toEqual({ eventSourceDefinitionsRevision: 12n });
+        })).resolves.toEqual({ eventSourceDefinitionsRevision: 11n });
         await expect(rule.run({
             policy: createGloballyDisabledPolicy(),
             batchSize: 100,
@@ -1100,7 +1100,7 @@ describe("automationRunRetentionRule", () => {
         await expect(db.automationEventCatalogState.findUniqueOrThrow({
             where: { accountId: account.id },
             select: { eventSourceDefinitionsRevision: true },
-        })).resolves.toEqual({ eventSourceDefinitionsRevision: 12n });
+        })).resolves.toEqual({ eventSourceDefinitionsRevision: 11n });
     });
 
     it("deletes a soft-deleted Automation's custody-terminal history even when the Account keeps live history forever", async () => {

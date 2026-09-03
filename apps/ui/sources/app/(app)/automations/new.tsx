@@ -1,5 +1,5 @@
 import React from 'react';
-import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 
 import NewSessionScreen from '@/app/(app)/new/index';
 import { AutomationsGate } from '@/components/automations/gating/AutomationsGate';
@@ -37,6 +37,7 @@ type RouteParams = Readonly<{
     sourceSessionId?: string;
     sourceTurnId?: string;
     sourceServerId?: string;
+    sessionLifecycleEvents?: string;
 }>;
 
 function NewAutomationComposerHost(props: Readonly<{
@@ -57,7 +58,7 @@ function NewAutomationComposerHost(props: Readonly<{
                     kind: 'sessionLifecycle' as const,
                     enabled: true,
                     sourceSessionId: props.observed.sourceSessionId,
-                    events: ['parentTurnCompleted'] as const,
+                    events: [...props.observed.events],
                     policy: {
                         kind: 'currentTurn' as const,
                         sourceTurnId: props.observed.sourceTurnId,
@@ -204,7 +205,6 @@ export default function NewAutomationRoute() {
         // silently composing a plain automation without the requested trigger.
         return (
             <AutomationsGate>
-                <Stack.Screen options={{ title: t('automations.create.createButtonTitle'), headerBackTitle: t('common.back') }} />
                 <SurfaceStateCard
                     testID="new-automation-exact-turn-invalid"
                     kind="error"

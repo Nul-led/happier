@@ -54,6 +54,7 @@ describe('Automation edit route', () => {
                 sourceSessionId: 'source-session',
                 sourceTurnId: 'turn-7',
                 sourceServerId: 'server-1',
+                events: ['parentTurnCompleted'],
             },
         });
     });

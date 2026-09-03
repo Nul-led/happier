@@ -276,7 +276,8 @@ ALTER TABLE `AutomationRun`
             AND `causeSourceSessionId` IS NULL AND `causeSourceTurnId` IS NULL
             AND `causeSessionLifecycleRequestId` IS NULL AND `causeSessionLifecycleRequestKind` IS NULL
             AND `causeSessionLifecyclePolicyKind` IS NULL AND `causeSessionLifecycleConfiguredCount` IS NULL
-            AND `occurrenceKey` IS NULL AND `causeSourceSelectorId` IS NULL
+            AND (`occurrenceKey` IS NULL OR `idempotencyKey` IS NULL)
+            AND `causeSourceSelectorId` IS NULL
             AND `triggerEvidenceEnvelope` IS NULL AND `occurrenceEvidenceEqualityTag` IS NULL)
         OR (`causeKind` = 'conversation' AND `idempotencyKey` IS NULL
             AND `triggerId` IS NULL AND `causeTriggerKind` IS NULL
@@ -393,9 +394,9 @@ CREATE TABLE `AutomationWorkerClaimReceipt` (
     `accountId` VARCHAR(191) NOT NULL,
     `machineId` VARCHAR(191) NOT NULL,
     `machineInstallationId` VARCHAR(191) NOT NULL,
-    `runId` VARCHAR(191) NULL,
-    `claimedAttempt` INTEGER NULL,
-    `accountCurrentnessWitnessJson` LONGTEXT NULL,
+    -- The strict V3 claim result owns the whole committed outcome, including
+    -- the nullable claimed Run id/attempt and the currentness projection.
+    -- Shadow columns for those facts would be a second outcome owner.
     `claimResultJson` LONGTEXT NOT NULL,
     `expiresAt` DATETIME(3) NOT NULL,
     `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
@@ -403,12 +404,7 @@ CREATE TABLE `AutomationWorkerClaimReceipt` (
     INDEX `AutomationWorkerClaimReceipt_accountId_machineId_idx`(`accountId`, `machineId`),
     INDEX `AutomationWorkerClaimReceipt_expiresAt_idx`(`expiresAt`),
     CONSTRAINT `AutomationWorkerClaimReceipt_accountId_fkey`
-        FOREIGN KEY (`accountId`) REFERENCES `Account`(`id`) ON DELETE CASCADE ON UPDATE CASCADE,
-    CONSTRAINT `AutomationWorkerClaimReceipt_outcome_check` CHECK (
-        (`runId` IS NULL AND `claimedAttempt` IS NULL AND `accountCurrentnessWitnessJson` IS NULL)
-        OR (`runId` IS NOT NULL AND `claimedAttempt` IS NOT NULL AND `claimedAttempt` > 0
-            AND `accountCurrentnessWitnessJson` IS NOT NULL)
-    )
+        FOREIGN KEY (`accountId`) REFERENCES `Account`(`id`) ON DELETE CASCADE ON UPDATE CASCADE
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
 INSERT INTO `AutomationRunAssignment` (`runId`, `machineId`, `priority`)
@@ -417,9 +413,11 @@ FROM `AutomationRun` AS run
 INNER JOIN `AutomationAssignment` AS assignment ON assignment.`automationId` = run.`automationId`
 WHERE assignment.`enabled` = true;
 
+-- The one ordinary nullable composite unique that owns Run rejoin for every
+-- cause. Trigger identity is already inside the derived occurrence key, so a
+-- trigger- or cause-scoped unique would be a second dedupe owner.
 ALTER TABLE `AutomationRun`
-    ADD UNIQUE INDEX `AutomationRun_triggerId_occurrenceKey_key`(`triggerId`, `occurrenceKey`),
-    ADD UNIQUE INDEX `AutomationRun_automationId_causeKind_occurrenceKey_key`(`automationId`, `causeKind`, `occurrenceKey`),
+    ADD UNIQUE INDEX `AutomationRun_automationId_occurrenceKey_key`(`automationId`, `occurrenceKey`),
     ADD INDEX `AutomationRun_accountId_causeKind_state_idx`(`accountId`, `causeKind`, `state`),
     ADD INDEX `AutomationRun_state_dueAt_idx`(`state`, `dueAt`),
     ADD INDEX `AutomationRun_replyHandoffState_replyHandoffDueAt_idx`(`replyHandoffState`, `replyHandoffDueAt`),

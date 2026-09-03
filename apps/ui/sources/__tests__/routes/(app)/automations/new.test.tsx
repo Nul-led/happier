@@ -175,13 +175,9 @@ describe('/automations/new', () => {
                     definition: {
                         kind: 'sessionLifecycle',
                         enabled: true,
-                        event: 'parentTurnCompleted',
-                        scope: {
-                            kind: 'exactTurn',
-                            sourceSessionId: 'source-session',
-                            sourceTurnId: 'turn-7',
-                        },
-                        consumption: 'once',
+                        sourceSessionId: 'source-session',
+                        events: ['parentTurnCompleted'],
+                        policy: { kind: 'currentTurn', sourceTurnId: 'turn-7' },
                     },
                 }],
             },

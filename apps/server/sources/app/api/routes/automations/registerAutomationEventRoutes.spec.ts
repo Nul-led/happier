@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
-    MAX_AUTOMATION_EVENT_ADMIT_HTTP_REQUEST_UTF8_BYTES,
     PLUGIN_INSTALLATION_MANIFEST_PUBLISHER_HEADER_V1,
     type AutomationEventDeclarationReleaseV1,
 } from "@happier-dev/protocol";
@@ -130,25 +129,17 @@ const ADMIT_PRE_BODY_PROOF = {
     expectedBodySha256Base64Url: "different-signed-body-hash",
 } as const;
 
-function oversizedAdmitRawBody(): string {
-    return JSON.stringify({
-        ...ADMIT_BODY,
-        padding: "x".repeat(MAX_AUTOMATION_EVENT_ADMIT_HTTP_REQUEST_UTF8_BYTES),
-    });
-}
-
 describe("Automation Event HTTP routes", () => {
-    it("caps every private Event admission at the Protocol-owned canonical transport ceiling", () => {
+    it("leaves private Event admission body size to the owning server transport limit", () => {
         const app = createFakeRouteApp();
         registerAutomationEventRoutes(app as never);
 
         const route = getRouteEntry(app, "POST", ADMIT_PATH);
-        expect(route.opts.bodyLimit).toBe(MAX_AUTOMATION_EVENT_ADMIT_HTTP_REQUEST_UTF8_BYTES);
-        expect(route.opts.bodyLimit).toBeLessThan(100 * 1024 * 1024);
+        expect(route.opts.bodyLimit).toBeUndefined();
     });
 
-    it("rejects a private admission body above the canonical raw byte limit before publisher admission", async () => {
-        const app = createAuthenticatedTestApp();
+    it("rejects a private admission body above the owning server transport limit before publisher admission", async () => {
+        const app = createAuthenticatedTestApp({ bodyLimit: 1024 });
         const admitEvent = vi.fn();
         registerAutomationEventRoutes(app as never, {
             admitEvent,
@@ -159,9 +150,8 @@ describe("Automation Event HTTP routes", () => {
         });
         await app.ready();
         try {
-            const body = oversizedAdmitRawBody();
-            expect(Buffer.byteLength(body, "utf8"))
-                .toBeGreaterThan(MAX_AUTOMATION_EVENT_ADMIT_HTTP_REQUEST_UTF8_BYTES);
+            const body = JSON.stringify({ ...ADMIT_BODY, padding: "x".repeat(4096) });
+            expect(Buffer.byteLength(body, "utf8")).toBeGreaterThan(1024);
 
             const response = await app.inject({
                 method: "POST",

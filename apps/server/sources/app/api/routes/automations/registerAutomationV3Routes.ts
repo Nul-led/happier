@@ -25,6 +25,7 @@ import {
     AutomationTriggerDeleteRequestSchema,
     AutomationTriggerPatchRequestSchema,
     AutomationV3RunMutationResponseSchema,
+    AutomationV3RunReplyHandoffRedeliverRequestSchema,
     AutomationV3RunListResponseSchema,
     AutomationManualIdempotencyKeyV1Schema,
     type AutomationAccountCurrentnessWitnessV1,
@@ -84,7 +85,10 @@ import {
     startAutomationRun,
     succeedAutomationRun,
 } from "@/app/automations/automationRunService";
-import { retryBlockedAutomationReplyHandoff } from "@/app/automations/automationReplyHandoffService";
+import {
+    authorizeAutomationReplyHandoffRedelivery,
+    retryBlockedAutomationReplyHandoff,
+} from "@/app/automations/automationReplyHandoffService";
 import type { AutomationListItem, AutomationRunItem } from "@/app/automations/automationTypes";
 import { requirePresentUser } from "../../utils/requirePresentUser";
 import {
@@ -804,6 +808,22 @@ export function registerAutomationV3Routes(
             runId: request.params.runId,
         });
         if (!run) return reply.code(404).send({ error: "automation_reply_handoff_not_retryable" });
+        return reply.send(AutomationV3RunMutationResponseSchema.parse({
+            run: await toCurrentAutomationRunListDto(request.userId, run),
+        }));
+    });
+
+    app.post("/v3/automations/runs/:runId/deliver-result-again", {
+        preHandler: [app.authenticate, requirePresentUser],
+        schema: { params: z.object({ runId: z.string() }) },
+    }, async (request, reply) => {
+        const body = AutomationV3RunReplyHandoffRedeliverRequestSchema.parse(request.body);
+        const run = await authorizeAutomationReplyHandoffRedelivery({
+            accountId: request.userId,
+            runId: request.params.runId,
+            expectedRevision: body.expectedRevision,
+        });
+        if (!run) return reply.code(404).send({ error: "automation_reply_handoff_not_redeliverable" });
         return reply.send(AutomationV3RunMutationResponseSchema.parse({
             run: await toCurrentAutomationRunListDto(request.userId, run),
         }));

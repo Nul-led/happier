@@ -12,6 +12,7 @@ import {
     AutomationDefinitionReconcileRequestSchema,
     AutomationV3RunDetailSchema,
     AutomationV3RunMutationResponseSchema,
+    AutomationV3RunReplyHandoffRedeliverRequestSchema,
     AutomationV3SettingsSchema,
     AutomationV3SettingsUpdateRequestSchema,
     type AutomationV3ClearRunHistoryResponse,
@@ -243,6 +244,32 @@ export async function retryAutomationReplyHandoff(
         {
             method: 'POST',
             headers: getAutomationAuthHeaders(credentials),
+        },
+        { includeAuth: false },
+    );
+    const raw = await readAutomationJsonOrThrow(response);
+    return AutomationV3RunMutationResponseSchema.parse(raw).run;
+}
+
+/**
+ * Authorizes one further delivery of an accepted result. The exact revision the
+ * user acted on travels with the request: the server mints the Run's next
+ * distinct delivery identity only for that revision, so a repeated press or a
+ * lost response cannot turn one decision into two messages.
+ */
+export async function deliverAutomationResultAgain(
+    credentials: AuthCredentials,
+    input: Readonly<{ runId: string; expectedRevision: number }>,
+): Promise<AutomationV3RunListItem> {
+    const body = AutomationV3RunReplyHandoffRedeliverRequestSchema.parse({
+        expectedRevision: input.expectedRevision,
+    });
+    const response = await serverFetch(
+        `/v3/automations/runs/${encodeURIComponent(input.runId)}/deliver-result-again`,
+        {
+            method: 'POST',
+            headers: getAutomationAuthHeaders(credentials, { includeJsonContentType: true }),
+            body: JSON.stringify(body),
         },
         { includeAuth: false },
     );

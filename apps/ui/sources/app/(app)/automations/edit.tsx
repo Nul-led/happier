@@ -1,4 +1,4 @@
-import { Stack, useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams } from 'expo-router';
 
 import { AutomationsGate } from '@/components/automations/gating/AutomationsGate';
 import { AutomationEditorHostScreen } from '@/components/automations/screens/AutomationEditorHostScreen';
@@ -14,13 +14,13 @@ export default function AutomationEditRoute() {
         sourceSessionId?: string;
         sourceTurnId?: string;
         sourceServerId?: string;
+        sessionLifecycleEvents?: string;
     }>();
     const automationId = typeof params.id === 'string' ? params.id.trim() : '';
     const exactTurnRoute = parseExactTurnAutomationPrefillRoute(params);
 
     return (
         <AutomationsGate>
-            <Stack.Screen options={{ title: t('automations.edit.title'), headerBackTitle: t('common.back') }} />
             {exactTurnRoute.kind === 'invalid' ? (
                 <SurfaceStateCard
                     testID="automation-edit-exact-turn-invalid"

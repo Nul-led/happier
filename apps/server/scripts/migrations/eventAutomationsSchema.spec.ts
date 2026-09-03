@@ -235,7 +235,8 @@ describe("Automation trigger-set persistence contract", () => {
         for (const field of [
             "automationId", "kind", "enabled", "revision", "deletedAt", "scheduleKind",
             "nextRunAt", "eventPluginId", "eventLocalId", "sourceSelectorId",
-            "observationTransport", "definitionEnvelope", "sessionLifecycleEvent",
+            "observationTransport", "definitionEnvelope", "sessionLifecycleEventsJson",
+            "sessionLifecyclePolicyKind", "sessionLifecycleMatchCount", "remainingOccurrences",
             "sourceSessionId", "sourceTurnId",
         ]) {
             expect(trigger).toMatch(new RegExp(`^\\s*${field}\\s+`, "m"));
@@ -248,17 +249,16 @@ describe("Automation trigger-set persistence contract", () => {
         }
         expect(schema).not.toContain("filterEnvelope");
         expect(schema).not.toContain("contentRemovedAt");
-        expect(claimReceipt).toMatch(/^\s*runId\s+String\?/m);
-        expect(claimReceipt).toMatch(/^\s*claimedAttempt\s+Int\?/m);
-        // The signed claim receipt carries the exact committed post-claim
-        // Account witness: present for every claimed outcome, absent for
-        // every empty outcome.
-        expect(claimReceipt).toMatch(
-            /^\s*accountCurrentnessWitnessJson\s+String\?(?:\s+@db\.LongText)?\s*$/m,
-        );
+        // The strict claim result is the receipt's only outcome owner: it
+        // already carries the nullable claimed Run id/attempt and the
+        // currentness projection, so a shadow column would be a second,
+        // divergable owner of the same committed fact.
         expect(claimReceipt).toMatch(
             /^\s*claimResultJson\s+String(?:\s+@db\.LongText)?\s*$/m,
         );
+        for (const shadowField of ["runId", "claimedAttempt", "accountCurrentnessWitnessJson"]) {
+            expect(claimReceipt).not.toMatch(new RegExp(`^\\s*${shadowField}\\s+`, "m"));
+        }
         expect(claimReceipt).toContain("@@index([expiresAt])");
         // Runs own immutable cause identity. A mutable Trigger relation would
         // either prevent trigger deletion or SET NULL a field the trigger
@@ -275,8 +275,13 @@ describe("Automation trigger-set persistence contract", () => {
         expect(run).toContain("@@index([replyHandoffState, replyHandoffDueAt])");
         expect(run).not.toMatch(/^\s*origin(?:Kind|OccurredAt|SourceSelectorId)\s+/m);
         expect(run).not.toMatch(/^\s*claimRequestNonceDigest\s+/m);
-        expect(run).toContain("@@unique([triggerId, occurrenceKey])");
-        expect(run).toContain("@@unique([automationId, causeKind, occurrenceKey]");
+        // AUTO-09: exactly one ordinary nullable composite unique owns Run
+        // rejoin for every cause. Trigger identity is already inside the
+        // derived occurrence key, so a trigger-scoped or cause-scoped second
+        // unique would be a parallel dedupe owner rather than a stricter one.
+        expect(run).toContain("@@unique([automationId, occurrenceKey])");
+        expect(run).not.toContain("@@unique([triggerId, occurrenceKey])");
+        expect(run).not.toContain("@@unique([automationId, causeKind, occurrenceKey]");
         expect(run).toContain(
             "@@unique([automationId, legacyManualIdempotencyKey], map: \"AutomationRun_automationId_idempotencyKey_key\")",
         );
@@ -322,12 +327,15 @@ describe("Automation trigger-set persistence contract", () => {
         expect(normalized).toContain("CREATE TABLE AutomationTrigger");
         expect(normalized).toContain("CREATE TABLE AutomationRunAssignment");
         expect(normalized).toContain("CREATE TABLE AutomationWorkerClaimReceipt");
-        expect(normalized).toContain("AutomationWorkerClaimReceipt_outcome_check");
-        const outcomeCheck = namedCheck(sql, "AutomationWorkerClaimReceipt_outcome_check");
-        // A claimed outcome is durably bound to its committed post-claim
-        // witness; an empty outcome never carries one.
-        expect(outcomeCheck).toContain("accountCurrentnessWitnessJson IS NULL");
-        expect(outcomeCheck).toContain("accountCurrentnessWitnessJson IS NOT NULL");
+        // The strict claim result owns the claimed Run id, attempt, and
+        // currentness projection. Without shadow columns there is no second
+        // outcome owner left for a physical coupling check to reconcile.
+        expect(normalized).not.toContain("AutomationWorkerClaimReceipt_outcome_check");
+        const claimReceiptTable = createdTable(sql, "AutomationWorkerClaimReceipt");
+        expect(claimReceiptTable).toContain("claimResultJson");
+        for (const shadowColumn of ["runId", "claimedAttempt", "accountCurrentnessWitnessJson"]) {
+            expect(claimReceiptTable).not.toContain(shadowColumn);
+        }
         // Historical Runs must retain their immutable trigger cause after the
         // mutable definition is soft-deleted. The scalar index supports the
         // schedule worker without coupling Run history to Trigger lifecycle.
@@ -348,11 +356,17 @@ describe("Automation trigger-set persistence contract", () => {
         ]) {
             expect(livePluginEvent).toContain(`${requiredField} IS NOT NULL`);
         }
-        expect(livePluginEvent).toContain("sessionLifecycleEvent IS NULL");
+        expect(livePluginEvent).toContain("sessionLifecycleEventsJson IS NULL");
+        expect(livePluginEvent).toContain("sessionLifecyclePolicyKind IS NULL");
+        expect(livePluginEvent).toContain("sessionLifecycleMatchCount IS NULL");
+        expect(livePluginEvent).toContain("remainingOccurrences IS NULL");
         expect(livePluginEvent).toMatch(
             /observationTransport = 'socket'.*webhookEndpointId IS NULL.*observationStartsAt IS NULL.*watcherMachineId IS NOT NULL.*watcherMachineInstallationId IS NOT NULL.*watcherPluginId IS NOT NULL.*watcherMaterializationId IS NOT NULL/s,
         );
-        expect(triggerCheck).toMatch(/kind = 'sessionLifecycle'.*sessionLifecycleEvent = 'parentTurnCompleted'.*sourceTurnId IS NOT NULL/s);
+        expect(triggerCheck).toMatch(/kind = 'sessionLifecycle'.*sessionLifecycleEventsJson IS NOT NULL.*sessionLifecyclePolicyKind (?:IS NOT NULL|IN \('currentTurn', 'firstMatch', 'nextMatches', 'everyMatch'\))/s);
+        expect(triggerCheck).toMatch(/sessionLifecyclePolicyKind = 'currentTurn'.*sourceTurnId IS NOT NULL.*remainingOccurrences.*BETWEEN 0 AND 1/s);
+        expect(triggerCheck).toMatch(/sessionLifecyclePolicyKind = 'nextMatches'.*sessionLifecycleMatchCount.*remainingOccurrences.*BETWEEN 0 AND/s);
+        expect(triggerCheck).toMatch(/sessionLifecyclePolicyKind = 'everyMatch'.*remainingOccurrences IS NULL/s);
         expect(deletedPluginEvent).toMatch(/enabled = (?:false|0)/);
         for (const retainedIdentityField of [
             "eventPluginId", "eventLocalId", "sourceSelectorId", "sourceContractVersion",
@@ -363,12 +377,13 @@ describe("Automation trigger-set persistence contract", () => {
             "definitionEnvelope", "observationTransport", "webhookEndpointId", "observationStartsAt",
             "watcherMachineId", "watcherMachineInstallationId", "watcherPluginId",
             "watcherMaterializationId", "scheduleKind", "scheduleExpr", "everyMs", "timezone",
-            "nextRunAt", "sessionLifecycleEvent", "sourceSessionId", "sourceTurnId",
+            "nextRunAt", "sessionLifecycleEventsJson", "sessionLifecyclePolicyKind",
+            "sessionLifecycleMatchCount", "remainingOccurrences", "sourceSessionId", "sourceTurnId",
         ]) {
             expect(deletedPluginEvent).toContain(`${scrubbedField} IS NULL`);
         }
         expect(triggerCheck).toContain("scheduleKind IS NOT NULL");
-        expect(triggerCheck).toContain("sessionLifecycleEvent IS NOT NULL");
+        expect(triggerCheck).toContain("sessionLifecycleEventsJson IS NOT NULL");
         expect(executionInputCheck).toMatch(
             /state NOT IN \('queued', 'claimed', 'running'\).*executionInputEnvelope IS NOT NULL/s,
         );
@@ -377,17 +392,28 @@ describe("Automation trigger-set persistence contract", () => {
         expect(triggerCause).toContain("triggerId IS NOT NULL");
         expect(triggerCause).toContain("occurrenceKey IS NOT NULL");
         expect(manualCause).toContain("triggerId IS NULL");
-        expect(manualCause).toContain("occurrenceKey IS NULL");
+        // Current V3 manual admission derives and stores an automation-scoped
+        // occurrence key for idempotent retries, while retained V2 and
+        // non-idempotent manual Runs keep it null. The manual arm therefore
+        // constrains cause evidence, never the occurrence key's presence.
+        expect(manualCause).not.toContain("occurrenceKey IS NULL AND");
+        expect(manualCause).not.toContain("occurrenceKey IS NOT NULL");
+        // r0.49: the two manual retry identities are mutually exclusive. An
+        // idempotent V3 invocation carries only the derived occurrence key, a
+        // retained released-V2 row carries only its legacy column, and a
+        // non-idempotent invocation carries neither.
+        expect(manualCause).toContain("occurrenceKey IS NULL OR idempotencyKey IS NULL");
+        expect(manualCause).toContain("causeSourceSelectorId IS NULL");
+        expect(manualCause).toContain("causeTriggerKind IS NULL");
+        expect(manualCause).toContain("causeScheduledFor IS NULL");
         expect(conversationCause).toContain("triggerId IS NULL");
         expect(conversationCause).toContain("occurrenceKey IS NOT NULL");
         expect(conversationCause).toContain("idempotencyKey IS NULL");
         expect(normalized).toMatch(
-            /AutomationRun_triggerId_occurrenceKey_key.{0,80}triggerId, occurrenceKey/,
+            /AutomationRun_automationId_occurrenceKey_key.{0,80}automationId, occurrenceKey/,
         );
-        expect(normalized).not.toContain("AutomationRun_automationId_occurrenceKey_key");
-        expect(normalized).toMatch(
-            /AutomationRun_automationId_causeKind_occurrenceKey_key.{0,100}automationId, causeKind, occurrenceKey/,
-        );
+        expect(normalized).not.toContain("AutomationRun_triggerId_occurrenceKey_key");
+        expect(normalized).not.toContain("AutomationRun_automationId_causeKind_occurrenceKey_key");
         expect(normalized).toMatch(
             /AutomationEventSourceStatus.*triggerId.*PRIMARY KEY.*triggerId.*REFERENCES AutomationTrigger.*id/s,
         );
@@ -746,7 +772,7 @@ describe("Automation trigger-set executable migration", () => {
         60_000,
     );
 
-    it("migrates PostgreSQL schedule/manual data and enforces trigger-scoped occurrence identity", async () => {
+    it("migrates PostgreSQL schedule/manual data and enforces Automation-scoped occurrence identity", async () => {
         const db = await createPostgresPredecessor();
         try {
             await db.exec(await read(migrationPaths[0]));
@@ -921,6 +947,109 @@ describe("Automation trigger-set executable migration", () => {
             `)).rejects.toThrow();
             await expect(db.exec(`
                 UPDATE "AutomationRun" SET "causeKind" = 'manual' WHERE "id" = 'scheduled-run'
+            `)).rejects.toThrow();
+            // One Automation-scoped occurrence identity: the same key under a
+            // different cause is a duplicate, not a second namespace. A
+            // cause-scoped unique would silently admit both of these.
+            await expect(db.exec(`
+                INSERT INTO "AutomationRun" (
+                    "id", "automationId", "accountId", "causeKind", "causeOccurredAt", "occurrenceKey",
+                    "executionInputEnvelope", "scheduledAt", "dueAt", "updatedAt"
+                ) VALUES ('cross-cause-manual-reuse', 'automation', 'account', 'manual', CURRENT_TIMESTAMP,
+                    '${occurrenceKey}', '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            `)).rejects.toThrow();
+            await expect(db.exec(`
+                INSERT INTO "AutomationRun" (
+                    "id", "automationId", "accountId", "triggerId", "causeKind", "causeTriggerKind",
+                    "causeTriggerRevision", "causeOccurredAt", "causeScheduledFor", "occurrenceKey",
+                    "executionInputEnvelope", "scheduledAt", "dueAt", "updatedAt"
+                ) VALUES ('cross-cause-trigger-reuse', 'automation', 'account', 'second-trigger', 'trigger',
+                    'schedule', 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, '${occurrenceKey}', '{}',
+                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            `)).rejects.toThrow();
+            // A different Automation still owns a separate occurrence namespace.
+            await db.exec(`
+                INSERT INTO "AutomationRun" (
+                    "id", "automationId", "accountId", "causeKind", "causeOccurredAt", "occurrenceKey",
+                    "executionInputEnvelope", "scheduledAt", "dueAt", "updatedAt"
+                ) VALUES ('other-automation-same-key', 'manual-automation', 'account', 'manual',
+                    CURRENT_TIMESTAMP, '${occurrenceKey}', '{}',
+                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            `);
+            // Both released manual shapes are durable: V3 idempotent manual
+            // admission stores the derived occurrence key, retained V2 and
+            // non-idempotent manual Runs keep it null, and the automation-scoped
+            // unique index still fences a repeated manual occurrence.
+            const manualOccurrenceKey = "M".repeat(43);
+            await db.exec(`
+                INSERT INTO "AutomationRun" (
+                    "id", "automationId", "accountId", "causeKind", "causeOccurredAt", "occurrenceKey",
+                    "executionInputEnvelope", "scheduledAt", "dueAt", "updatedAt"
+                ) VALUES ('manual-idempotent-run', 'automation', 'account', 'manual', CURRENT_TIMESTAMP,
+                    '${manualOccurrenceKey}', '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            `);
+            await db.exec(`
+                INSERT INTO "AutomationRun" (
+                    "id", "automationId", "accountId", "causeKind", "causeOccurredAt",
+                    "executionInputEnvelope", "scheduledAt", "dueAt", "updatedAt"
+                ) VALUES ('manual-unkeyed-run', 'automation', 'account', 'manual', CURRENT_TIMESTAMP,
+                    '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            `);
+            await expect(db.exec(`
+                INSERT INTO "AutomationRun" (
+                    "id", "automationId", "accountId", "causeKind", "causeOccurredAt", "occurrenceKey",
+                    "executionInputEnvelope", "scheduledAt", "dueAt", "updatedAt"
+                ) VALUES ('manual-duplicate-occurrence', 'automation', 'account', 'manual', CURRENT_TIMESTAMP,
+                    '${manualOccurrenceKey}', '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            `)).rejects.toThrow();
+            // The retained V2 legacy column stays the only V2 retry identity.
+            await db.exec(`
+                INSERT INTO "AutomationRun" (
+                    "id", "automationId", "accountId", "causeKind", "causeOccurredAt", "idempotencyKey",
+                    "executionInputEnvelope", "scheduledAt", "dueAt", "updatedAt"
+                ) VALUES ('manual-legacy-v2-run', 'automation', 'account', 'manual', CURRENT_TIMESTAMP,
+                    'released-v2-manual', '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            `);
+            // Carrying both retry identities at once is invalid: it would give
+            // one manual invocation two competing dedupe owners.
+            await expect(db.exec(`
+                INSERT INTO "AutomationRun" (
+                    "id", "automationId", "accountId", "causeKind", "causeOccurredAt", "occurrenceKey",
+                    "idempotencyKey", "executionInputEnvelope", "scheduledAt", "dueAt", "updatedAt"
+                ) VALUES ('manual-dual-identity', 'automation', 'account', 'manual', CURRENT_TIMESTAMP,
+                    '${"W".repeat(43)}', 'released-v2-dual', '{}',
+                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            `)).rejects.toThrow();
+            await expect(db.exec(`
+                UPDATE "AutomationRun" SET "idempotencyKey" = 'released-v2-dual'
+                WHERE "id" = 'manual-idempotent-run'
+            `)).rejects.toThrow();
+            // A keyed manual Run never borrows trigger-arm or Conversation-arm
+            // evidence: the relaxed key stays inside the manual arm.
+            await expect(db.exec(`
+                INSERT INTO "AutomationRun" (
+                    "id", "automationId", "accountId", "triggerId", "causeKind", "causeOccurredAt",
+                    "occurrenceKey", "executionInputEnvelope", "scheduledAt", "dueAt", "updatedAt"
+                ) VALUES ('manual-with-trigger-identity', 'automation', 'account', 'automation', 'manual',
+                    CURRENT_TIMESTAMP, '${"T".repeat(43)}', '{}',
+                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            `)).rejects.toThrow();
+            await expect(db.exec(`
+                INSERT INTO "AutomationRun" (
+                    "id", "automationId", "accountId", "causeKind", "causeTriggerKind", "causeOccurredAt",
+                    "causeScheduledFor", "occurrenceKey", "executionInputEnvelope",
+                    "scheduledAt", "dueAt", "updatedAt"
+                ) VALUES ('manual-with-schedule-evidence', 'automation', 'account', 'manual', 'schedule',
+                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, '${"S".repeat(43)}', '{}',
+                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            `)).rejects.toThrow();
+            await expect(db.exec(`
+                INSERT INTO "AutomationRun" (
+                    "id", "automationId", "accountId", "causeKind", "causeOccurredAt", "occurrenceKey",
+                    "triggerEvidenceEnvelope", "executionInputEnvelope", "scheduledAt", "dueAt", "updatedAt"
+                ) VALUES ('manual-with-conversation-evidence', 'automation', 'account', 'manual',
+                    CURRENT_TIMESTAMP, '${"V".repeat(43)}', '{"t":"plain","v":{}}', '{}',
+                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             `)).rejects.toThrow();
             // Predecessor terminal history keeps its null execution input: the
             // transition never synthesizes recipe bytes that it cannot know.
@@ -1169,6 +1298,106 @@ describe("Automation trigger-set executable migration", () => {
                 ) VALUES ('missing-handoff-identity', 'automation', 'account', 'conversation', CURRENT_TIMESTAMP, ?,
                     '{"t":"plain","v":{}}', '{}', 'accepted', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             `).run(missingIdentityKey)).toThrow();
+            // One Automation-scoped occurrence identity: the same key under a
+            // different cause is a duplicate, not a second namespace. A
+            // cause-scoped unique would silently admit both of these.
+            expect(() => db.prepare(`
+                INSERT INTO "AutomationRun" (
+                    "id", "automationId", "accountId", "causeKind", "causeOccurredAt", "occurrenceKey",
+                    "executionInputEnvelope", "scheduledAt", "dueAt", "updatedAt"
+                ) VALUES ('cross-cause-manual-reuse', 'automation', 'account', 'manual', CURRENT_TIMESTAMP,
+                    ?, '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            `).run(appOwnedOccurrenceKey)).toThrow();
+            expect(() => db.prepare(`
+                INSERT INTO "AutomationRun" (
+                    "id", "automationId", "accountId", "triggerId", "causeKind", "causeTriggerKind",
+                    "causeTriggerRevision", "causeOccurredAt", "causeScheduledFor", "occurrenceKey",
+                    "executionInputEnvelope", "scheduledAt", "dueAt", "updatedAt"
+                ) VALUES ('cross-cause-trigger-reuse', 'automation', 'account', 'second-trigger', 'trigger',
+                    'schedule', 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?, '{}',
+                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            `).run(appOwnedOccurrenceKey)).toThrow();
+            // A different Automation still owns a separate occurrence namespace.
+            db.prepare(`
+                INSERT INTO "AutomationRun" (
+                    "id", "automationId", "accountId", "causeKind", "causeOccurredAt", "occurrenceKey",
+                    "executionInputEnvelope", "scheduledAt", "dueAt", "updatedAt"
+                ) VALUES ('other-automation-same-key', 'manual-automation', 'account', 'manual',
+                    CURRENT_TIMESTAMP, ?, '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            `).run(appOwnedOccurrenceKey);
+            // Both released manual shapes are durable: V3 idempotent manual
+            // admission stores the derived occurrence key, retained V2 and
+            // non-idempotent manual Runs keep it null, and the automation-scoped
+            // unique index still fences a repeated manual occurrence.
+            const manualOccurrenceKey = "M".repeat(43);
+            db.prepare(`
+                INSERT INTO "AutomationRun" (
+                    "id", "automationId", "accountId", "causeKind", "causeOccurredAt", "occurrenceKey",
+                    "executionInputEnvelope", "scheduledAt", "dueAt", "updatedAt"
+                ) VALUES ('manual-idempotent-run', 'automation', 'account', 'manual', CURRENT_TIMESTAMP,
+                    ?, '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            `).run(manualOccurrenceKey);
+            db.exec(`
+                INSERT INTO "AutomationRun" (
+                    "id", "automationId", "accountId", "causeKind", "causeOccurredAt",
+                    "executionInputEnvelope", "scheduledAt", "dueAt", "updatedAt"
+                ) VALUES ('manual-unkeyed-run', 'automation', 'account', 'manual', CURRENT_TIMESTAMP,
+                    '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            `);
+            expect(() => db.prepare(`
+                INSERT INTO "AutomationRun" (
+                    "id", "automationId", "accountId", "causeKind", "causeOccurredAt", "occurrenceKey",
+                    "executionInputEnvelope", "scheduledAt", "dueAt", "updatedAt"
+                ) VALUES ('manual-duplicate-occurrence', 'automation', 'account', 'manual', CURRENT_TIMESTAMP,
+                    ?, '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            `).run(manualOccurrenceKey)).toThrow();
+            // The retained V2 legacy column stays the only V2 retry identity.
+            db.exec(`
+                INSERT INTO "AutomationRun" (
+                    "id", "automationId", "accountId", "causeKind", "causeOccurredAt", "idempotencyKey",
+                    "executionInputEnvelope", "scheduledAt", "dueAt", "updatedAt"
+                ) VALUES ('manual-legacy-v2-run', 'automation', 'account', 'manual', CURRENT_TIMESTAMP,
+                    'released-v2-manual', '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            `);
+            // Carrying both retry identities at once is invalid: it would give
+            // one manual invocation two competing dedupe owners.
+            expect(() => db.prepare(`
+                INSERT INTO "AutomationRun" (
+                    "id", "automationId", "accountId", "causeKind", "causeOccurredAt", "occurrenceKey",
+                    "idempotencyKey", "executionInputEnvelope", "scheduledAt", "dueAt", "updatedAt"
+                ) VALUES ('manual-dual-identity', 'automation', 'account', 'manual', CURRENT_TIMESTAMP,
+                    ?, 'released-v2-dual', '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            `).run("W".repeat(43))).toThrow();
+            expect(() => db.exec(`
+                UPDATE "AutomationRun" SET "idempotencyKey" = 'released-v2-dual'
+                WHERE "id" = 'manual-idempotent-run'
+            `)).toThrow();
+            // A keyed manual Run never borrows trigger-arm or Conversation-arm
+            // evidence: the relaxed key stays inside the manual arm.
+            expect(() => db.prepare(`
+                INSERT INTO "AutomationRun" (
+                    "id", "automationId", "accountId", "triggerId", "causeKind", "causeOccurredAt",
+                    "occurrenceKey", "executionInputEnvelope", "scheduledAt", "dueAt", "updatedAt"
+                ) VALUES ('manual-with-trigger-identity', 'automation', 'account', 'automation', 'manual',
+                    CURRENT_TIMESTAMP, ?, '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            `).run("T".repeat(43))).toThrow();
+            expect(() => db.prepare(`
+                INSERT INTO "AutomationRun" (
+                    "id", "automationId", "accountId", "causeKind", "causeTriggerKind", "causeOccurredAt",
+                    "causeScheduledFor", "occurrenceKey", "executionInputEnvelope",
+                    "scheduledAt", "dueAt", "updatedAt"
+                ) VALUES ('manual-with-schedule-evidence', 'automation', 'account', 'manual', 'schedule',
+                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?, '{}',
+                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            `).run("S".repeat(43))).toThrow();
+            expect(() => db.prepare(`
+                INSERT INTO "AutomationRun" (
+                    "id", "automationId", "accountId", "causeKind", "causeOccurredAt", "occurrenceKey",
+                    "triggerEvidenceEnvelope", "executionInputEnvelope", "scheduledAt", "dueAt", "updatedAt"
+                ) VALUES ('manual-with-conversation-evidence', 'automation', 'account', 'manual',
+                    CURRENT_TIMESTAMP, ?, '{"t":"plain","v":{}}', '{}',
+                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            `).run("V".repeat(43))).toThrow();
             expect(() => db.exec(`
                 INSERT INTO "AutomationTrigger" (
                     "id", "automationId", "kind", "updatedAt"

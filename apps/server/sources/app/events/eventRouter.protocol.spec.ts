@@ -299,6 +299,11 @@ describe("eventRouter payloads (protocol container)", () => {
             changedByAccountId: "u1",
             meaningfulActivityAt: new Date(1_234),
             pendingActivationRequestId: "pending-local-1",
+            pendingActivationAuthorization: {
+                requestId: "pending-local-1",
+                requestedAt: 1_000,
+                status: "waiting" as const,
+            },
         };
         const payload = buildPendingChangedUpdate(
             pendingChange,
@@ -311,6 +316,23 @@ describe("eventRouter payloads (protocol container)", () => {
         expect((payload.body as any).sid).toBe("s1");
         expect((payload.body as any).meaningfulActivityAt).toBe(1_234);
         expect((payload.body as any).pendingActivationRequestId).toBe("pending-local-1");
+        expect((payload.body as any).pendingActivationAuthorization).toEqual({
+            requestId: "pending-local-1",
+            requestedAt: 1_000,
+            status: "waiting",
+        });
+    });
+
+    it("buildPendingChangedUpdate preserves an explicit null activation authorization", () => {
+        const payload = buildPendingChangedUpdate({
+            sessionId: "s1",
+            pendingVersion: 3,
+            pendingCount: 0,
+            pendingActivationAuthorization: null,
+        }, 105, "upd-5");
+
+        expect(UpdateContainerSchema.safeParse(payload).success).toBe(true);
+        expect((payload.body as any).pendingActivationAuthorization).toBeNull();
     });
 
     it("buildDeleteSessionUpdate emits a full container", () => {

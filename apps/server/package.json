@@ -65,6 +65,7 @@
     "session-turn-anchor-projection:backfill": "node ./scripts/runTsx.mjs --tsconfig ./tsconfig.json ./scripts/sessionTurnTranscriptAnchorProjectionBackfill.ts"
   },
   "devDependencies": {
+    "@happier-dev/tests": "0.0.0",
     "@types/chalk": "^2.2.0",
     "@types/express": "^4.17.21",
     "@types/node": "^22.15.3",

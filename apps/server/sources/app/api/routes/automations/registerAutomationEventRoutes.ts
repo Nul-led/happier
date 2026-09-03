@@ -5,7 +5,6 @@ import {
     AutomationEventActionHttpPathsV1,
     AutomationEventActionHttpRequestSchemasV1,
     AutomationEventAdmitHttpResultV1Schema,
-    MAX_AUTOMATION_EVENT_ADMIT_HTTP_REQUEST_UTF8_BYTES,
     AutomationEventStoredDefinitionsReadHttpRequestV1Schema,
     AutomationEventStoredDefinitionsReadResultV1Schema,
     AutomationEventSourceStatusReportResultV1Schema,
@@ -118,7 +117,8 @@ export function registerAutomationEventRoutes(
     });
 
     app.post(ADMIT_PATH, {
-        bodyLimit: MAX_AUTOMATION_EVENT_ADMIT_HTTP_REQUEST_UTF8_BYTES,
+        // Request-body size is owned by the server's app-level transport body
+        // limit; no feature-owned per-route ceiling is derived here.
         onRequest: [
             app.authenticate,
             async (request, reply) => {

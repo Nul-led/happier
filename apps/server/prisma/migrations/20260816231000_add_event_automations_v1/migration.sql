@@ -285,7 +285,8 @@ ALTER TABLE "AutomationRun"
             AND "causeSourceSessionId" IS NULL AND "causeSourceTurnId" IS NULL
             AND "causeSessionLifecycleRequestId" IS NULL AND "causeSessionLifecycleRequestKind" IS NULL
             AND "causeSessionLifecyclePolicyKind" IS NULL AND "causeSessionLifecycleConfiguredCount" IS NULL
-            AND "occurrenceKey" IS NULL AND "causeSourceSelectorId" IS NULL
+            AND ("occurrenceKey" IS NULL OR "idempotencyKey" IS NULL)
+            AND "causeSourceSelectorId" IS NULL
             AND "triggerEvidenceEnvelope" IS NULL AND "occurrenceEvidenceEqualityTag" IS NULL)
         OR ("causeKind" = 'conversation'
             AND "idempotencyKey" IS NULL
@@ -394,20 +395,15 @@ CREATE TABLE "AutomationWorkerClaimReceipt" (
     "accountId" TEXT NOT NULL,
     "machineId" TEXT NOT NULL,
     "machineInstallationId" TEXT NOT NULL,
-    "runId" TEXT,
-    "claimedAttempt" INTEGER,
-    "accountCurrentnessWitnessJson" TEXT,
+    -- The strict V3 claim result owns the whole committed outcome, including
+    -- the nullable claimed Run id/attempt and the currentness projection.
+    -- Shadow columns for those facts would be a second outcome owner.
     "claimResultJson" TEXT NOT NULL,
     "expiresAt" TIMESTAMP(3) NOT NULL,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT "AutomationWorkerClaimReceipt_pkey" PRIMARY KEY ("id"),
     CONSTRAINT "AutomationWorkerClaimReceipt_accountId_fkey"
-        FOREIGN KEY ("accountId") REFERENCES "Account"("id") ON DELETE CASCADE ON UPDATE CASCADE,
-    CONSTRAINT "AutomationWorkerClaimReceipt_outcome_check" CHECK (
-        ("runId" IS NULL AND "claimedAttempt" IS NULL AND "accountCurrentnessWitnessJson" IS NULL)
-        OR ("runId" IS NOT NULL AND "claimedAttempt" IS NOT NULL AND "claimedAttempt" > 0
-            AND "accountCurrentnessWitnessJson" IS NOT NULL)
-    )
+        FOREIGN KEY ("accountId") REFERENCES "Account"("id") ON DELETE CASCADE ON UPDATE CASCADE
 );
 
 INSERT INTO "AutomationRunAssignment" ("runId", "machineId", "priority")
@@ -416,12 +412,12 @@ FROM "AutomationRun" AS run
 JOIN "AutomationAssignment" AS assignment ON assignment."automationId" = run."automationId"
 WHERE assignment."enabled" = true;
 
+-- The one ordinary nullable composite unique that owns Run rejoin for every
+-- cause. Trigger identity is already inside the derived occurrence key, so a
+-- trigger- or cause-scoped unique would be a second dedupe owner.
 ALTER TABLE "AutomationRun"
-    ADD CONSTRAINT "AutomationRun_triggerId_occurrenceKey_key"
-        UNIQUE ("triggerId", "occurrenceKey");
-ALTER TABLE "AutomationRun"
-    ADD CONSTRAINT "AutomationRun_automationId_causeKind_occurrenceKey_key"
-        UNIQUE ("automationId", "causeKind", "occurrenceKey");
+    ADD CONSTRAINT "AutomationRun_automationId_occurrenceKey_key"
+        UNIQUE ("automationId", "occurrenceKey");
 CREATE INDEX "AutomationTrigger_automationId_enabled_updatedAt_idx"
 ON "AutomationTrigger"("automationId", "enabled", "updatedAt" DESC);
 CREATE INDEX "AutomationTrigger_event_lookup_idx"

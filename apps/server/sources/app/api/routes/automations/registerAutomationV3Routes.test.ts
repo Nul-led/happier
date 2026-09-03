@@ -93,7 +93,10 @@ const scheduleAutomation = {
         watcherPluginId: null,
         watcherMaterializationId: null,
         definitionEnvelope: null,
-        sessionLifecycleEvent: null,
+        sessionLifecycleEventsJson: null,
+        sessionLifecyclePolicyKind: null,
+        sessionLifecycleMatchCount: null,
+        remainingOccurrences: null,
         sourceSessionId: null,
         sourceTurnId: null,
         createdAt: new Date("2026-02-12T10:00:00.000Z"),
@@ -214,6 +217,7 @@ const failAutomationRun = vi.fn(async () => null);
 const settleAutomationExecutionDispatch = vi.fn(async () => null);
 const cancelAutomationRun = vi.fn(async () => null);
 const retryBlockedAutomationReplyHandoff = vi.fn(async () => null);
+const authorizeAutomationReplyHandoffRedelivery = vi.fn(async () => null);
 const verifyPublisherDefault = vi.hoisted(() => vi.fn());
 class AutomationDefinitionCreateConflictError extends Error {}
 class AutomationTemplateMutationConflictError extends Error {}
@@ -269,6 +273,7 @@ vi.mock("@/app/automations/automationRunService", () => ({
     succeedAutomationRun,
 }));
 vi.mock("@/app/automations/automationReplyHandoffService", () => ({
+    authorizeAutomationReplyHandoffRedelivery,
     retryBlockedAutomationReplyHandoff,
 }));
 vi.mock("@/app/plugins/installations/publisherProof", async (importOriginal) => {
@@ -428,6 +433,33 @@ describe("registerAutomationV3Routes", () => {
         expect(retryBlockedAutomationReplyHandoff).toHaveBeenCalledWith({
             accountId: "account-1",
             runId: "run-blocked-1",
+        });
+    });
+
+    it("routes an explicitly authorized new result delivery through the canonical Run owner", async () => {
+        const { registerAutomationV3Routes } = await import("./registerAutomationV3Routes");
+        const route = createRouteTestBuilder({
+            method: "POST",
+            path: "/v3/automations/runs/:runId/deliver-result-again",
+            registerRoutes(app) {
+                registerAutomationV3Routes(app as any);
+            },
+        });
+
+        expect(route.routeExists).toBe(true);
+        const result = await route.invoke({
+            userId: "account-1",
+            params: { runId: "run-accepted-1" },
+            body: { expectedRevision: 7 },
+        });
+        expect(result.reply.statusCode).toBe(404);
+        expect(result.response).toEqual({ error: "automation_reply_handoff_not_redeliverable" });
+        // The exact revision the user acted on reaches the owner unchanged: it
+        // is the fence that stops a replayed authorization from delivering twice.
+        expect(authorizeAutomationReplyHandoffRedelivery).toHaveBeenCalledWith({
+            accountId: "account-1",
+            runId: "run-accepted-1",
+            expectedRevision: 7,
         });
     });
 
@@ -694,13 +726,9 @@ describe("registerAutomationV3Routes", () => {
                 trigger: {
                     kind: "sessionLifecycle",
                     enabled: true,
-                    event: "parentTurnCompleted",
-                    scope: {
-                        kind: "exactTurn",
-                        sourceSessionId: "session-source",
-                        sourceTurnId: "turn-stale",
-                    },
-                    consumption: "once",
+                    sourceSessionId: "session-source",
+                    events: ["parentTurnCompleted"],
+                    policy: { kind: "currentTurn", sourceTurnId: "turn-stale" },
                 },
             },
         });

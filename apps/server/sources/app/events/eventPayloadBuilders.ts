@@ -5,6 +5,7 @@ import {
     SESSION_MESSAGE_USER_ATTENTION_IMPACT,
     parseSessionRuntimeActivityProjectionFields,
     type AutomationRunStateV3,
+    type PendingActivationAuthorizationV1,
     SessionMetadataRecipientProjectionV1Schema,
     type PrimaryTurnStatusV1,
     type SessionMessageDeliveryResolutionV1,
@@ -335,6 +336,7 @@ export function buildPendingChangedUpdate(
         changedByAccountId?: string;
         meaningfulActivityAt?: Date | number;
         pendingActivationRequestId?: string;
+        pendingActivationAuthorization?: PendingActivationAuthorizationV1 | null;
     },
     updateSeq: number,
     updateId: string,
@@ -356,6 +358,9 @@ export function buildPendingChangedUpdate(
             ...(typeof data.changedByAccountId === "string" ? { changedByAccountId: data.changedByAccountId } : {}),
             ...(typeof data.pendingActivationRequestId === "string"
                 ? { pendingActivationRequestId: data.pendingActivationRequestId }
+                : {}),
+            ...(data.pendingActivationAuthorization !== undefined
+                ? { pendingActivationAuthorization: data.pendingActivationAuthorization }
                 : {}),
             ...(typeof meaningfulActivityAt === "number" && Number.isFinite(meaningfulActivityAt)
                 ? { meaningfulActivityAt }
