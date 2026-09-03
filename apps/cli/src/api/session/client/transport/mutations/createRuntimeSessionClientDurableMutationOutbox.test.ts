@@ -12,7 +12,7 @@ import {
 } from '@happier-dev/protocol';
 
 const { configurationMock } = vi.hoisted(() => ({
-    configurationMock: { activeServerDir: '' },
+    configurationMock: { activeServerDir: '', apiServerUrl: 'https://api.test.invalid' },
 }));
 
 vi.mock('@/configuration', () => ({ configuration: configurationMock }));
@@ -364,6 +364,83 @@ describe('runtime session client durable mutation outbox', () => {
         await outbox.close();
     });
 
+    it('parks turn mutations without blocking the released-server transcript seam and replays them after upgrade', async () => {
+        const sessionId = 'released-server-turn-parking';
+        const turnMutation = {
+            v: 1,
+            sessionId,
+            mutationId: 'released-server-begin-turn',
+            action: 'begin',
+            turnId: 'turn-1',
+            observedAt: 100,
+        } as const;
+        const deliveredEvents: string[] = [];
+        const socket = {
+            connected: true,
+            emit: vi.fn(),
+            emitWithAck: vi.fn(async (event: string, payload: unknown) => {
+                deliveredEvents.push(event);
+                if (event === 'message') {
+                    const message = payload as { localId: string };
+                    return {
+                        ok: true,
+                        id: 'message-1',
+                        seq: 1,
+                        localId: message.localId,
+                        didWrite: true,
+                    };
+                }
+                return {
+                    result: 'success',
+                    receipt: {
+                        ...turnMutation,
+                        decision: 'applied',
+                        appliedAt: 101,
+                    },
+                };
+            }),
+        };
+        const requestReconnect = vi.fn();
+        const outbox = createRuntimeSessionClientDurableMutationOutbox({
+            token: 'token',
+            sessionId,
+            getSocket: () => socket,
+            requestReconnect,
+        });
+        await outbox.setSessionSyncPendingInputServerContract(serverContract('released_server_v0_2_1'));
+
+        await outbox.enqueueSessionTurnMutation(turnMutation);
+        const transcript = await outbox.enqueueTranscriptMessage(createTranscriptMessageAppendMutation({
+            sessionId,
+            localId: 'released-server-transcript',
+            content: 'compatible transcript',
+            createdAt: 102,
+            provenance: { kind: 'non_dependent', source: 'external' },
+        }));
+
+        expect(transcript).toEqual({ persisted: true, delivered: true });
+        expect(deliveredEvents).toEqual(['message']);
+        expect(requestReconnect).not.toHaveBeenCalled();
+        const paths = resolveSessionClientDurableMutationJournalPaths({
+            activeServerDir: configurationMock.activeServerDir,
+            custody: 'runtime',
+            sessionId,
+        });
+        const parked = JSON.parse(await readFile(paths.queuePath, 'utf8')) as {
+            mutations: Array<{ mutationId: string; attempts: number }>;
+        };
+        expect(parked.mutations).toEqual([
+            expect.objectContaining({ mutationId: turnMutation.mutationId, attempts: 0 }),
+        ]);
+
+        await outbox.setSessionSyncPendingInputServerContract(serverContract('session_sync_v2_pending_input_v1'));
+        await outbox.flush('connect');
+
+        await expect(readFile(paths.queuePath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+        expect(deliveredEvents).toEqual(['message', 'session-turn-mutation']);
+        await outbox.close();
+    });
+
     it('delivers runtime-activity terminal state despite an earlier retryable session-turn failure', async () => {
         const deliveredActivityStates: string[] = [];
         const outbox = createRuntimeSessionClientDurableMutationOutbox({
@@ -392,7 +469,7 @@ describe('runtime session client durable mutation outbox', () => {
                         },
                     };
                 }
-                return { delivered: false };
+                return false;
             },
         });
         await outbox.setSessionSyncPendingInputServerContract(serverContract('session_sync_v2_pending_input_v1'));

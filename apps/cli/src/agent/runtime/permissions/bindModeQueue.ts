@@ -17,6 +17,11 @@ import { readAdmittedHappierStructuredInputV1FromMeta } from '@happier-dev/proto
 import { pushMessageToQueueWithSpecialCommands, type SpecialCommandQueue } from '@/agent/runtime/queueSpecialCommands';
 import { resolveAppendSystemPromptModeOverride } from '@/agent/runtime/permissions/appendSystemPrompt';
 import { resolveProviderPromptWithReplaySeed } from '@/agent/runtime/replaySeed/replaySeedV1';
+import type { DurableProviderInputAcceptanceV1 } from '@/agent/runtime/session/input/providerInputOutcome';
+import type {
+  ReplaySeedSettlement,
+  UnsettledReplaySeedRetirement,
+} from '@/agent/runtime/replaySeed/unsettledReplaySeedRetirement';
 import { isNonSteerablePromptPayload } from '@/cli/parsers/specialCommands';
 import { readAdmittedSessionMediaInputForDispatchV1 } from '@/session/services/admitSessionStructuredInputV1';
 
@@ -155,6 +160,8 @@ export function registerPermissionModeMessageQueueBinding(opts: {
   getCurrentPermissionMode: () => PermissionMode | undefined;
   setCurrentPermissionMode: (mode: PermissionMode | undefined) => void;
   inFlightSteer?: InFlightSteerController | null;
+  /** Session-scoped hold for an accepted seed whose metadata retirement has not succeeded. */
+  replaySeedRetirement?: UnsettledReplaySeedRetirement;
 }): {
   bindSession: (session: PermissionModeQueueSessionBinding) => void;
   releaseRejectedBeforeProviderPromptIdentity: (
@@ -475,6 +482,22 @@ export function registerPermissionModeMessageQueueBinding(opts: {
           }
           return;
         }
+        // A seed the provider already ACCEPTED must be retired before any further provider
+        // input is admitted. The admission boundary retries the same idempotent settler once;
+        // while its retirement keeps failing, this input is not dispatched: ambient input
+        // returns to the queue, an exact claimed steer is rejected before provider effect.
+        const unsettledRetirementOutcome = opts.replaySeedRetirement
+          ? await opts.replaySeedRetirement.settleBeforeAdmitting()
+          : null;
+        if (stopForLostBinding()) return;
+        if (unsettledRetirementOutcome === 'failed') {
+          if (isExactClaimedSteer) {
+            rejectExactSteerBeforeProvider();
+          } else {
+            queueBlockedSteer();
+          }
+          return;
+        }
         const dispatchSteer = async (): Promise<void> => {
           if (applyConfigDelta) {
             let configOutcome: InFlightConfigApplyOutcome;
@@ -496,10 +519,11 @@ export function registerPermissionModeMessageQueueBinding(opts: {
               return;
             }
           }
+          let releaseUndispatchedReplaySeed: (() => Promise<void>) | null = null;
           try {
             if (stopForLostBinding()) return;
             let providerText = text;
-            let settleReplaySeedOnProviderAcceptance: (() => Promise<unknown>) | null = null;
+            let settleReplaySeedOnProviderAcceptance: ReplaySeedSettlement | null = null;
             if (typeof session.getMetadataSnapshot === 'function') {
               try {
                 if (stopForLostBinding()) return;
@@ -521,6 +545,15 @@ export function registerPermissionModeMessageQueueBinding(opts: {
                           },
                         }
                       : {}),
+                    ...(typeof session.readDurableProviderInputAcceptanceV1 === 'function'
+                      ? {
+                          // Reconciliation must answer for the seed's ORIGINAL Session even after
+                          // the queue binding moved, exactly like the settlement writer above.
+                          readDurableProviderInputAcceptanceV1: (
+                            associatedLocalId: string,
+                          ) => session.readDurableProviderInputAcceptanceV1!(associatedLocalId),
+                        }
+                      : {}),
                   },
                   userText: text,
                   allowSeed: true,
@@ -528,6 +561,9 @@ export function registerPermissionModeMessageQueueBinding(opts: {
                   nowMs: Date.now(),
                   refreshMetadataBeforeRead: !didReplaySeedBootstrapForSteer,
                 });
+                releaseUndispatchedReplaySeed = seedResolution.seedApplied
+                  ? seedResolution.releaseUndispatchedSeed
+                  : null;
                 if (stopForLostBinding()) return;
                 didReplaySeedBootstrapForSteer = true;
                 providerText = seedResolution.providerPrompt;
@@ -567,7 +603,9 @@ export function registerPermissionModeMessageQueueBinding(opts: {
               settleReplaySeedOnProviderAcceptance = null;
               const priorSettlements = replaySeedSettlementSequence;
               const replaySeedSettlement = priorSettlements.then(async () => {
-                await settle();
+                await (opts.replaySeedRetirement
+                  ? opts.replaySeedRetirement.settleOnProviderAcceptance(settle)
+                  : settle());
               });
               replaySeedSettlementSequence = replaySeedSettlement;
             };
@@ -577,6 +615,9 @@ export function registerPermissionModeMessageQueueBinding(opts: {
                 settleReplaySeedOnProviderAcceptance ? confirmProviderPromptAccepted : null,
               );
             }
+            // Invoking the runtime is the provider-effect boundary. Any failure after this point
+            // is ambiguous and must retain the durable association for restart reconciliation.
+            releaseUndispatchedReplaySeed = null;
             await steer.steerText(dispatchText, {
               localId,
               ...queuedPromptIdentityFields,
@@ -591,6 +632,10 @@ export function registerPermissionModeMessageQueueBinding(opts: {
             } else {
               queueBlockedSteer();
             }
+          } finally {
+            const release = releaseUndispatchedReplaySeed;
+            releaseUndispatchedReplaySeed = null;
+            await release?.();
           }
         };
         if (steer.runProviderInputDispatch) {
@@ -722,4 +767,8 @@ type PermissionModeQueueSessionBinding = {
   refreshSessionSnapshotFromServerBestEffort?: (opts?: { reason: 'connect' | 'waitForMetadataUpdate' }) => Promise<void>;
   /** Committed transcript seq used to suppress replay of exact host-consumed local commands. */
   getCommittedUserMessageSeq?: (localId: string) => number | null;
+  /** Durable accepted-delivery authority for the replay seed's dispatch association. */
+  readDurableProviderInputAcceptanceV1?: (
+    localId: string,
+  ) => Promise<DurableProviderInputAcceptanceV1>;
 };

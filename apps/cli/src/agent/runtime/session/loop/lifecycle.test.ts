@@ -47,6 +47,7 @@ vi.mock('@/ui/logger', async (importOriginal) => {
 });
 
 import { runSessionLoopLifecycle, type SessionLoopLifecycleParams } from './lifecycle';
+import { createUnsettledReplaySeedRetirement } from '@/agent/runtime/replaySeed/unsettledReplaySeedRetirement';
 import type { DaemonAgentRuntimeTurnContributionsBridge } from '../process/agentRuntimeDaemonTurnContributionsBridge';
 
 const RETIRED_AGENT_RUNTIME_DAEMON_BRIDGE_TOKEN_FILE_ENV_KEY =
@@ -186,6 +187,7 @@ function createLifecycleParams(overrides?: Readonly<{
         reset: vi.fn(),
         size: vi.fn(() => 0),
       } as unknown as SessionLoopLifecycleParams['permissionModeState']['messageQueue'],
+      replaySeedRetirement: createUnsettledReplaySeedRetirement(),
     },
     sessionSwapStrategy: {
       requestSessionSwap: vi.fn(async () => undefined),

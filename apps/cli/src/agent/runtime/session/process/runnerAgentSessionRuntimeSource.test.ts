@@ -112,14 +112,12 @@ const daemonWitness = Object.freeze({
     turnId: 'turn-1',
     userMessageSeq: 7,
     userMessageSeqs: Object.freeze([7]),
-});
-const witness = Object.freeze({
-    ...daemonWitness,
     causalPermissionAuthority: Object.freeze({
         kind: 'admittedSessionInputV1' as const,
         admittedPermissionCeiling: 'read-only',
     }),
 });
+const witness = daemonWitness;
 
 function exactAgentDeclaration(id = 'codex') {
     return {

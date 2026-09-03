@@ -4,8 +4,10 @@ import {
   AUTOMATION_REPLY_HANDOFF_DAEMON_RPC_METHOD_V1,
   AutomationOccurrenceKeyV1Schema,
   AutomationReplyHandoffDispatchResultV1Schema,
+  automationReplyHandoffIdForRunV1,
   convertContentPublicKeyFingerprintToAccountEncryptionMigrateKeyFingerprintV1,
   createAccountScopedCryptoMaterialSnapshotV1,
+  nextAutomationReplyHandoffIdForRunV1,
   openAutomationReplyHandoffReceiptStoredEnvelopeV1,
   sealAutomationConversationReplyContextStoredEnvelopeV1,
   sealAutomationRunResultStoredEnvelopeV1,
@@ -640,6 +642,62 @@ describe('registerAutomationReplyHandoffRpcHandler', () => {
       });
       expect(executeContributedAction, testCase.name).not.toHaveBeenCalled();
     }
+  });
+
+  it('delivers an authorized further delivery under its own custody identity', async () => {
+    // The Run's result was sealed under the identity admission froze. A present
+    // user then consciously authorized another delivery, so the server minted
+    // the Run's next identity and dispatched that. The daemon must recognise
+    // the sealed envelope as this Run's and hand Channels the NEW identity,
+    // otherwise the deliberate second delivery would rejoin the first custody
+    // and send nothing.
+    const sealedHandoffId = automationReplyHandoffIdForRunV1(correspondence.runId);
+    const authorizedHandoffId = nextAutomationReplyHandoffIdForRunV1({
+      runId: correspondence.runId,
+      handoffId: sealedHandoffId,
+    });
+    expect(authorizedHandoffId).toBe(`${sealedHandoffId}#2`);
+    const sealedCorrespondence = { ...correspondence, handoffId: sealedHandoffId };
+    const authorizedRequest = {
+      ...request,
+      handoff: {
+        ...request.handoff,
+        handoffId: authorizedHandoffId!,
+        resultEnvelope: {
+          ...request.handoff.resultEnvelope,
+          v: { ...request.handoff.resultEnvelope.v, correspondence: sealedCorrespondence },
+        },
+      },
+    };
+    const { handler, executeContributedAction } = createRegistration();
+
+    await expect(handler(authorizedRequest)).resolves.toMatchObject({
+      kind: 'settled',
+      settlement: { kind: 'accepted' },
+    });
+    expect(executeContributedAction).toHaveBeenCalledWith(expect.objectContaining({
+      input: expect.objectContaining({
+        handoffId: authorizedHandoffId,
+        source: { ...source, resultId: authorizedHandoffId },
+      }),
+    }));
+  });
+
+  it('blocks a sealed handoff identity that belongs to no delivery of this Run', async () => {
+    const { handler, executeContributedAction } = createRegistration();
+
+    await expect(handler({
+      ...request,
+      handoff: {
+        ...request.handoff,
+        handoffId: 'handoff-2',
+      },
+    })).resolves.toEqual({
+      kind: 'settled',
+      settlement: { kind: 'blocked' },
+      accountCurrentness: { mode: 'plain', version: 7, contentKeyFingerprint: null },
+    });
+    expect(executeContributedAction).not.toHaveBeenCalled();
   });
 
   it('returns staleClaim before opening when claim-time Account authority has moved', async () => {

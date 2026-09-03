@@ -529,17 +529,13 @@ describe('ExecutionRunManager execution-run registry integration', () => {
     });
   }, 60_000);
 
-  it('cleans up ephemeral isolation when startup probing fails before controller registration', async () => {
-    process.env.HAPPIER_SERVER_URL = 'https://api.example.test';
-    process.env.HAPPIER_WEBAPP_URL = 'https://app.example.test';
-
-    const { reloadConfiguration, configuration } = await import('@/configuration');
-    reloadConfiguration();
-
-    const { createCatalogProviderExecutionRunBackend } = await import('./runtime/catalog');
+  // Isolation custody itself belongs to the one execution-run runtime composer
+  // (`runtime/create.ts`, covered by its own ephemeral-cleanup test). What this
+  // bridge owns is refusing the run: a startup probe failure must surface from
+  // `start` and register no controller.
+  it('surfaces a startup probe failure without registering a controller', async () => {
     const { ExecutionRunHostBridge: ExecutionRunManager } = await import('@/agent/runtime/bridges/executionRun/ExecutionRunHostBridge');
 
-    let isolationRoot = '';
     const nativeRuntime: ExecutionRunHostRuntime = Object.freeze({
       async readResumeSupport() {
         throw new Error('startup probe failed');
@@ -558,22 +554,7 @@ describe('ExecutionRunManager execution-run registry integration', () => {
     const manager = createExecutionRunManager(ExecutionRunManager, {
       parentProvider: TEST_PRIMARY_BACKEND_ID,
       cwd: workspaceDir,
-      createRuntime: (opts: { runId?: string; permissionMode: string }) => {
-	        isolationRoot = join(configuration.activeServerDir, 'isolation', 'pi', 'execution_run', String(opts.runId));
-	        return createCatalogProviderExecutionRunBackend({
-	          agentId: 'pi',
-	          createRuntime: () => nativeRuntime,
-	        }, {
-          cwd: workspaceDir,
-          backendId: 'pi',
-          runId: opts.runId,
-          permissionMode: opts.permissionMode,
-          start: {
-            intent: 'delegate',
-            retentionPolicy: 'ephemeral',
-          },
-        });
-      },
+      createRuntime: () => nativeRuntime,
       sendAcp: async () => {},
       getNowMs: () => 1_700_000_000_000,
     });
@@ -589,7 +570,12 @@ describe('ExecutionRunManager execution-run registry integration', () => {
       ioMode: 'request_response',
     })).rejects.toThrow('startup probe failed');
 
-    expect(isolationRoot).not.toBe('');
-    expect(existsSync(isolationRoot)).toBe(false);
+    expect(manager.getRunningCount()).toBe(0);
+    expect(manager.listPublic()).toEqual([
+      expect.objectContaining({
+        status: 'failed',
+        error: expect.objectContaining({ message: 'startup probe failed' }),
+      }),
+    ]);
   });
 });

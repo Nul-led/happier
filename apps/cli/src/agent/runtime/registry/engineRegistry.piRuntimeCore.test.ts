@@ -181,7 +181,6 @@ describe('engineRegistry (pi runtimeCore)', () => {
             logPrefix: '[Pi native positive consumer]',
           }),
           getPermissionMode: () => 'default',
-          setThinking: () => undefined,
           memoryRecallGuidanceEnabled: false,
           runnerProcessIdentity: null,
           startupModelSelection: null,

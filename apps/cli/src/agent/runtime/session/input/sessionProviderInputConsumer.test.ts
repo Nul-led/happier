@@ -11,6 +11,7 @@ import type {
 } from '@/agent/runtime/permissions/queuedPrompt';
 import { createDeferred } from '@/testkit/async/deferred';
 import { createTestMetadata } from '@/testkit/backends/sessionMetadata';
+import { logger } from '@/ui/logger';
 import { writeSessionPendingQueueHoldV1ToMetadata } from '@happier-dev/protocol';
 import {
   createSessionProviderInputConsumer,
@@ -923,8 +924,59 @@ describe('createSessionProviderInputConsumer', () => {
     const result = await consumer.waitForNextInput({ abortSignal: new AbortController().signal });
 
     expect(result?.message).toBe('from-pending');
-    expect(materializeNextPendingMessageSafely).toHaveBeenCalledWith({ reconcileWhenEmpty: 'throttled' });
+    expect(materializeNextPendingMessageSafely).toHaveBeenCalledWith({
+      reconcileWhenEmpty: 'throttled',
+      onDiagnosticPhase: expect.any(Function),
+    });
     expect(popPendingMessage).not.toHaveBeenCalled();
+  });
+
+  it('reports the exact materialization subphase when the canonical owner remains unsettled', async () => {
+    vi.useFakeTimers();
+    const infoFileSpy = vi.spyOn(logger, 'infoFile').mockImplementation(() => {});
+    try {
+      const materialization = createDeferred<{
+        type: 'no_pending';
+      }>();
+      const materializeNextPendingMessageSafely = vi.fn(async (options?: unknown) => {
+        await new Promise<void>((resolve) => setTimeout(resolve, 10_000));
+        const diagnostics = options as {
+          onDiagnosticPhase?: (phase: 'materialize.server_claim') => void;
+        } | undefined;
+        diagnostics?.onDiagnosticPhase?.('materialize.server_claim');
+        return await materialization.promise;
+      });
+      const consumer = createSessionProviderInputConsumer({
+        messageQueue: new MessageQueue2(() => 'hash'),
+        session: {
+          waitForMetadataUpdate: async () => false,
+          materializeNextPendingMessageSafely,
+        },
+      });
+
+      const drain = consumer.drainPending({ maxPopPerWake: 1, reason: 'slow-phase-diagnostic-test' });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(materializeNextPendingMessageSafely).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      await vi.advanceTimersByTimeAsync(29_999);
+      expect(infoFileSpy).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(infoFileSpy).toHaveBeenCalledWith(
+        '[pendingQueue] input consumer phase remains unsettled',
+        expect.objectContaining({ phase: 'materialize.server_claim' }),
+      );
+
+      materialization.resolve({ type: 'no_pending' });
+      await expect(drain).resolves.toMatchObject({ materialized: 0 });
+      expect(infoFileSpy).toHaveBeenCalledWith(
+        '[pendingQueue] input consumer slow phase settled',
+        expect.objectContaining({ phase: 'materialize.server_claim' }),
+      );
+    } finally {
+      infoFileSpy.mockRestore();
+      vi.useRealTimers();
+    }
   });
 
   it('forwards runtime-idle pending delivery timing while waiting for provider input', async () => {
@@ -952,6 +1004,7 @@ describe('createSessionProviderInputConsumer', () => {
     expect(materializeNextPendingMessageSafely).toHaveBeenCalledWith({
       reconcileWhenEmpty: 'throttled',
       deliveryTiming: 'after_runtime_idle',
+      onDiagnosticPhase: expect.any(Function),
     });
   });
 
@@ -979,7 +1032,10 @@ describe('createSessionProviderInputConsumer', () => {
 
     await expect(consumer.waitForNextInput({ abortSignal: abortController.signal })).resolves.toBeNull();
 
-    expect(materializeNextPendingMessageSafely).toHaveBeenCalledWith({ reconcileWhenEmpty: 'skip' });
+    expect(materializeNextPendingMessageSafely).toHaveBeenCalledWith({
+      reconcileWhenEmpty: 'skip',
+      onDiagnosticPhase: expect.any(Function),
+    });
     expect(reconcilePendingQueueState).not.toHaveBeenCalled();
   });
 
@@ -1241,6 +1297,7 @@ describe('createSessionProviderInputConsumer', () => {
     expect(materializeNextPendingMessageSafely).toHaveBeenCalledWith({
       reconcileWhenEmpty: 'force',
       deliveryTiming: 'after_foreground_ready',
+      onDiagnosticPhase: expect.any(Function),
     });
     expect(popPendingMessage).not.toHaveBeenCalled();
   });
@@ -1268,6 +1325,7 @@ describe('createSessionProviderInputConsumer', () => {
     expect(materializeNextPendingMessageSafely).toHaveBeenCalledWith({
       reconcileWhenEmpty: 'force',
       deliveryTiming: 'after_runtime_idle',
+      onDiagnosticPhase: expect.any(Function),
     });
   });
 
@@ -1312,11 +1370,13 @@ describe('createSessionProviderInputConsumer', () => {
     expect(materializeNextPendingMessageSafely).toHaveBeenNthCalledWith(1, {
       reconcileWhenEmpty: 'force',
       deliveryTiming: 'after_runtime_idle',
+      onDiagnosticPhase: expect.any(Function),
     });
     expect(materializeNextPendingMessageSafely).toHaveBeenNthCalledWith(2, {
       reconcileWhenEmpty: 'force',
       deliveryTiming: 'after_runtime_idle',
       expectedRuntimeActivityRevision: 42,
+      onDiagnosticPhase: expect.any(Function),
     });
     expect(readRuntimeActivitySnapshotTail).toHaveBeenCalledTimes(1);
     expect(waitForRuntimeActivitySnapshotTailChange).not.toHaveBeenCalled();
@@ -1376,6 +1436,7 @@ describe('createSessionProviderInputConsumer', () => {
       reconcileWhenEmpty: 'force',
       deliveryTiming: 'after_runtime_idle',
       expectedRuntimeActivityRevision: 43,
+      onDiagnosticPhase: expect.any(Function),
     });
   });
 

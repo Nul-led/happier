@@ -3,6 +3,7 @@ import type {
   ExternalSessionsSource,
   RuntimeDescriptorV1,
 } from '@happier-dev/protocol';
+import { readRuntimeDescriptorV1ForAgent } from '@happier-dev/protocol';
 
 import type {
   ExternalSessionExecutionSurface,
@@ -44,6 +45,20 @@ export async function resolveExternalSessionLinkIdentityFromSurface(
     throw new ExternalSessionProviderFailureError({
       code: 'source_invalid',
       message: 'External-session link identity rewrote admitted source identity',
+      operation: 'resolveLinkIdentity',
+    });
+  }
+  // The runtime descriptor an Agent returns is persisted on the link and later
+  // outranks session metadata when the host resolves the Session's backend
+  // target. It is therefore host routing authority, not vendor payload: the
+  // descriptor an Agent contributes may only name the Agent that was admitted.
+  if (
+    resolved.runtimeDescriptor
+    && !readRuntimeDescriptorV1ForAgent(resolved.runtimeDescriptor, params.agentId)
+  ) {
+    throw new ExternalSessionProviderFailureError({
+      code: 'source_invalid',
+      message: 'External-session link identity returned a runtime descriptor for another Agent',
       operation: 'resolveLinkIdentity',
     });
   }

@@ -170,6 +170,14 @@ export function computeDaemonSpawnRequestKey(options: SpawnSessionOptions): Daem
   if (existingSessionId) {
     const serializationKey = `existing:${existingSessionId}`;
     const executionAuthorization = options.executionAuthorization;
+    const authorizationKey = executionAuthorization
+      ? executionAuthorization.requestedAt === undefined
+        ? `${serializationKey}:authorization:${sha256Hex(executionAuthorization.requestId)}`
+        : `${serializationKey}:authorization-revision:${sha256Hex(stableJsonStringify({
+            requestId: executionAuthorization.requestId,
+            requestedAt: executionAuthorization.requestedAt,
+          }))}`
+      : null;
     const requestKey = `:request:${sha256Hex(stableJsonStringify({
       ...(executionAuthorization ? { executionAuthorization } : {}),
       spawnSemantics: buildSpawnSemanticFingerprint(options),
@@ -178,8 +186,8 @@ export function computeDaemonSpawnRequestKey(options: SpawnSessionOptions): Daem
       kind: 'existing',
       key: `${serializationKey}${requestKey}`,
       serializationKey,
-      ...(executionAuthorization
-        ? { authorizationKey: `${serializationKey}:authorization:${sha256Hex(executionAuthorization.requestId)}` }
+      ...(authorizationKey
+        ? { authorizationKey }
         : {}),
     };
   }

@@ -3,9 +3,22 @@ import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 
 import type { ProjectedPluginToolCatalogEntry } from '@/plugins/runtime/toolCatalog';
-import { projectSessionBoundActionToolInputSchema } from './actionToolContext';
+import { bindContextualActionToolInput, projectSessionBoundActionToolInputSchema } from './actionToolContext';
 
 describe('session-bound Action tool context', () => {
+  it('preserves explicit detached execution-run scope while binding only omitted scope', () => {
+    expect(bindContextualActionToolInput({
+      actionId: 'execution.run.start',
+      input: { sessionId: null },
+      context: { defaultSessionId: 'session_current' },
+    })).toEqual({ sessionId: null });
+    expect(bindContextualActionToolInput({
+      actionId: 'execution.run.start',
+      input: {},
+      context: { defaultSessionId: 'session_current' },
+    })).toEqual({ sessionId: 'session_current' });
+  });
+
   it('optionalizes only the built-in fields whose declared host context is available', () => {
     const search = projectSessionBoundActionToolInputSchema({
       actionId: 'memory.search',

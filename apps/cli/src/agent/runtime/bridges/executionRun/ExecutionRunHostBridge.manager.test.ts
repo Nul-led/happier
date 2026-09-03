@@ -1363,6 +1363,54 @@ describe('ExecutionRunManager (long-lived runs)', () => {
     expect(manager.get(started.runId)?.status).not.toBe('running');
   });
 
+  it('publishes host-owned cancelled truth when the backend cancel never settles', async () => {
+    const sent: Array<{ provider: string; body: unknown; meta?: Record<string, unknown> }> = [];
+    const dispose = vi.fn(async () => {});
+    let cancelAttempts = 0;
+    const runtime = createTestExecutionRunHostRuntime({
+      // The turn never completes and the leaf cancel never settles: the plugin
+      // backend is wedged, yet host-owned terminal truth must still publish.
+      onWaitForTurnCompletion: () => new Promise<void>(() => {}),
+      onCancel: () => {
+        cancelAttempts += 1;
+        return new Promise<void>(() => {});
+      },
+      onDispose: dispose,
+    });
+    const manager = createExecutionRunManager({
+      parentProvider: TEST_PRIMARY_BACKEND_ID,
+      cwd: process.cwd(),
+      createRuntime: () => runtime,
+      sendAcp: async (provider: string, body: ACPMessageData, opts?: { meta?: Record<string, unknown> }) => {
+        sent.push({ provider, body, meta: opts?.meta });
+      },
+      getNowMs: () => 1_700_000_000_000,
+    });
+    const started = await manager.start({
+      sessionId: 'parent_session_1',
+      intent: 'delegate',
+      backendTarget: { kind: 'builtInAgent', agentId: TEST_PRIMARY_BACKEND_ID },
+      instructions: '',
+      permissionMode: 'read_only',
+      retentionPolicy: 'ephemeral',
+      runClass: 'long_lived',
+      ioMode: 'request_response',
+    });
+
+    await expect(manager.send(started.runId, { message: 'hello' })).resolves.toEqual({ ok: true });
+    const terminalWaiter = manager.waitForTerminal(started.runId);
+
+    await expect(manager.stop(started.runId)).resolves.toMatchObject({ ok: true });
+    await expect(terminalWaiter).resolves.toBeUndefined();
+    expect(manager.get(started.runId)?.status).toBe('cancelled');
+    expect(cancelAttempts).toBe(1);
+    const terminalToolResult = [...sent].reverse().find((m) => (m.body as any)?.type === 'tool-result');
+    expect((terminalToolResult?.body as any)?.output?.status).toBe('cancelled');
+
+    await expect(manager.dispose()).resolves.toBeUndefined();
+    expect(dispose).toHaveBeenCalledTimes(1);
+  });
+
   it('settles an arbitrary detached finish failure without orphaning the running run', async () => {
     const baseCatalog = buildExecutionRunProfileCatalog();
     class FailingProfileMap<K, V> extends Map<K, V> {

@@ -7,7 +7,6 @@ export {
   normalizeConfiguredAcpDefinition,
 } from './configured';
 export {
-  redactAcpLaunchEnv,
   withAcpLaunchEnvDefaults,
 } from './env';
 export {

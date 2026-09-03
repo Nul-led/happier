@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { WorkspaceSyncController } from './workspaceSyncController';
-import { computeWorkspaceSyncPolicyDigest, type WorkspaceSyncStatusV1 } from './workspaceSyncTypes';
+import { computeWorkspaceSyncPolicyDigest, type WorkspaceSyncRelationshipV1, type WorkspaceSyncStatusV1 } from './workspaceSyncTypes';
 import { deriveWorkspaceSyncEndpointId } from './transport/workspaceSyncBrokerProtocol';
 import { mkdir, mkdtemp, realpath, rename, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -12,6 +12,8 @@ import { createWorkspaceRootOwnershipManager } from './workspaceSyncRootOwnershi
 
 const policy = { v: 1 as const, selection: 'all_files' as const, extraIgnorePatterns: [], extraIncludePatterns: [], includeGitDirectory: false };
 const definition = { v: 1 as const, relationshipId: 'r1', controllerMachineId: 'm1', alphaWorkspaceRefId: 'a', betaWorkspaceRefId: 'b', mode: 'keep_synced' as const, contentPolicy: { ...policy, policyDigest: computeWorkspaceSyncPolicyDigest(policy) }, enabled: true, createdAtMs: 1, updatedAtMs: 1 };
+const gitWorktreePolicy = { v: 1 as const, selection: 'git_worktree' as const, extraIgnorePatterns: [], extraIncludePatterns: [], includeGitDirectory: false };
+const gitWorktreeDefinition = { ...definition, contentPolicy: { ...gitWorktreePolicy, policyDigest: computeWorkspaceSyncPolicyDigest(gitWorktreePolicy) } };
 const status: WorkspaceSyncStatusV1 = { relationshipId: 'r1', controllerMachineId: 'm1', state: 'watching', alphaPath: '/a', betaPath: '/b', mode: 'keep_synced', changedFiles: 0, conflictCount: 0, lastSuccessfulSyncAtMs: null };
 
 describe('WorkspaceSyncController', () => {
@@ -33,6 +35,179 @@ describe('WorkspaceSyncController', () => {
     const controller = new WorkspaceSyncController({ adapter: completeAdapter({ ensure }), lifecycle: lifecycle(), rootOwnershipManager: rootOwnership(), localMachineId: 'm2', resolveWorkspaceRef: () => null });
     await expect(controller.ensure(definition)).rejects.toMatchObject({ code: 'controller_unavailable' });
     expect(ensure).not.toHaveBeenCalled();
+  });
+
+  it('releases all daemon-owned root custody even when sidecar shutdown fails', async () => {
+    const lifecycleFailure = new Error('sidecar cleanup failed');
+    const release = vi.fn(async () => undefined);
+    const controller = new WorkspaceSyncController({
+      adapter: completeAdapter(),
+      lifecycle: {
+        start: vi.fn(async () => undefined),
+        stop: vi.fn(async () => { throw lifecycleFailure; }),
+      },
+      rootOwnershipManager: { tryAcquire: vi.fn(async (owner) => ({
+        owner: { ...owner, rootFingerprint: null },
+        bindCurrentRootIdentity: vi.fn(async () => undefined),
+        release,
+      })) },
+      localMachineId: 'm1',
+      resolveWorkspaceRef: (id) => id === 'a'
+        ? { machineId: 'm1', rootPath: '/a' }
+        : { machineId: 'm2', rootPath: '/b' },
+    });
+
+    await controller.ensure(definition);
+    await expect(controller.shutdown()).rejects.toMatchObject({
+      errors: [lifecycleFailure],
+    });
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a git_worktree relationship with the canonical typed outcome when Git is unavailable', async () => {
+    const ensure = vi.fn(async () => status);
+    const prepareRelationshipTarget = vi.fn(async () => undefined);
+    const managerLifecycle = lifecycle();
+    const probeGitRuntimeDependency = vi.fn(async () => false);
+    const controller = new WorkspaceSyncController({
+      adapter: completeAdapter({ ensure }), lifecycle: managerLifecycle, rootOwnershipManager: rootOwnership(),
+      localMachineId: 'm1', resolveWorkspaceRef: (id) => ({ machineId: 'other', rootPath: `/${id}` }),
+      prepareRelationshipTarget, probeGitRuntimeDependency,
+    });
+
+    await expect(controller.ensure(gitWorktreeDefinition)).rejects.toMatchObject({ code: 'git_selection_unavailable' });
+    await expect(controller.copyOnce({
+      v: 1 as const,
+      operationId: 'copy-git',
+      controllerMachineId: 'm1',
+      alphaWorkspaceRefId: 'a',
+      betaWorkspaceRefId: 'b',
+      contentPolicy: gitWorktreeDefinition.contentPolicy,
+    })).rejects.toMatchObject({ code: 'git_selection_unavailable' });
+    expect(probeGitRuntimeDependency).toHaveBeenCalledTimes(2);
+    expect(prepareRelationshipTarget).not.toHaveBeenCalled();
+    expect(managerLifecycle.start).not.toHaveBeenCalled();
+    expect(ensure).not.toHaveBeenCalled();
+  });
+
+  it('rejects persisted git_worktree rehydration before any target, root, or engine work', async () => {
+    const prepareRelationshipTarget = vi.fn(async () => undefined);
+    const managerLifecycle = lifecycle();
+    const ownership = rootOwnership();
+    const adapter = completeAdapter();
+    const controller = new WorkspaceSyncController({
+      adapter, lifecycle: managerLifecycle, rootOwnershipManager: ownership,
+      localMachineId: 'm1', resolveWorkspaceRef: (id) => ({ machineId: 'm1', rootPath: `/${id}` }),
+      prepareRelationshipTarget, probeGitRuntimeDependency: vi.fn(async () => false),
+    });
+
+    await expect(controller.rehydrateFromSettings([gitWorktreeDefinition])).rejects.toMatchObject({ code: 'git_selection_unavailable' });
+    expect(prepareRelationshipTarget).not.toHaveBeenCalled();
+    expect(ownership.tryAcquire).not.toHaveBeenCalled();
+    expect(managerLifecycle.start).not.toHaveBeenCalled();
+    expect(adapter.rehydrate).not.toHaveBeenCalled();
+    expect(adapter.ensure).not.toHaveBeenCalled();
+  });
+
+  it('rejects a recovered git_worktree copy operation before reacquiring roots or dispatching it', async () => {
+    const operation = {
+      v: 1 as const,
+      operationId: 'copy-git-recovered',
+      controllerMachineId: 'm1',
+      alphaWorkspaceRefId: 'a',
+      betaWorkspaceRefId: 'b',
+      contentPolicy: gitWorktreeDefinition.contentPolicy,
+    };
+    const ownership = rootOwnership();
+    const adapter = completeAdapter({
+      discoverCopyOnceRecoveries: vi.fn(async () => [operation]),
+      rehydrate: vi.fn(async () => []),
+    });
+    const recoverCopyOnceTarget = vi.fn(async () => ({ release: vi.fn(async () => undefined) }));
+    const controller = new WorkspaceSyncController({
+      adapter, lifecycle: lifecycle(), rootOwnershipManager: ownership, localMachineId: 'm1',
+      resolveWorkspaceRef: (id) => id === 'a' ? { machineId: 'm1', rootPath: '/a' } : { machineId: 'm2', rootPath: '/b' },
+      recoverCopyOnceTarget, probeGitRuntimeDependency: vi.fn(async () => false),
+    });
+
+    await expect(controller.rehydrateFromSettings([])).rejects.toMatchObject({ code: 'git_selection_unavailable' });
+    expect(ownership.tryAcquire).not.toHaveBeenCalled();
+    expect(recoverCopyOnceTarget).not.toHaveBeenCalled();
+    expect(adapter.copyOnce).not.toHaveBeenCalled();
+  });
+
+  it('keeps an all_files relationship usable while the Git runtime dependency is unavailable', async () => {
+    const ensure = vi.fn(async () => status);
+    const probeGitRuntimeDependency = vi.fn(async () => false);
+    const controller = new WorkspaceSyncController({
+      adapter: completeAdapter({ ensure }), lifecycle: lifecycle(), rootOwnershipManager: rootOwnership(),
+      localMachineId: 'm1', resolveWorkspaceRef: (id) => ({ machineId: 'other', rootPath: `/${id}` }),
+      probeGitRuntimeDependency,
+    });
+
+    await expect(controller.ensure(definition)).resolves.toMatchObject({ relationshipId: 'r1' });
+    await expect(controller.rehydrateFromSettings([definition])).resolves.toMatchObject([{ relationshipId: 'r1' }]);
+    expect(probeGitRuntimeDependency).not.toHaveBeenCalled();
+    expect(ensure).toHaveBeenCalledTimes(1);
+  });
+
+  it('rehydrates all_files relationships while reporting only git_worktree as unavailable', async () => {
+    const allFilesStatus = {
+      ...status,
+      relationshipId: 'all-files',
+      alphaPath: '/all-files-a',
+      betaPath: '/all-files-b',
+    };
+    const allFilesDefinition = {
+      ...definition,
+      relationshipId: 'all-files',
+      alphaWorkspaceRefId: 'all-files-a',
+      betaWorkspaceRefId: 'all-files-b',
+    };
+    const gitDefinition = {
+      ...gitWorktreeDefinition,
+      relationshipId: 'git-files',
+      alphaWorkspaceRefId: 'git-files-a',
+      betaWorkspaceRefId: 'git-files-b',
+    };
+    const rehydrate = vi.fn(async (relationships: readonly WorkspaceSyncRelationshipV1[]) => relationships.map((relationship) => ({
+      ...status,
+      relationshipId: relationship.relationshipId,
+      alphaPath: `/${relationship.alphaWorkspaceRefId}`,
+      betaPath: `/${relationship.betaWorkspaceRefId}`,
+    })));
+    const controller = new WorkspaceSyncController({
+      adapter: completeAdapter({ rehydrate }), lifecycle: lifecycle(), rootOwnershipManager: rootOwnership(),
+      localMachineId: 'm1', resolveWorkspaceRef: (id) => ({ machineId: 'other', rootPath: `/${id}` }),
+      probeGitRuntimeDependency: vi.fn(async () => false),
+    });
+
+    await expect(controller.rehydrateFromSettings([allFilesDefinition, gitDefinition])).resolves.toEqual([
+      allFilesStatus,
+      expect.objectContaining({
+        relationshipId: 'git-files',
+        state: 'error',
+        errorCode: 'git_selection_unavailable',
+      }),
+    ]);
+    expect(rehydrate).toHaveBeenCalledWith([allFilesDefinition]);
+  });
+
+  it('resolves the Git runtime dependency through the canonical SCM command owner by default', async () => {
+    const ensure = vi.fn(async () => status);
+    const controller = new WorkspaceSyncController({
+      adapter: completeAdapter({ ensure }), lifecycle: lifecycle(), rootOwnershipManager: rootOwnership(),
+      localMachineId: 'm1', resolveWorkspaceRef: (id) => ({ machineId: 'other', rootPath: `/${id}` }),
+    });
+    const originalPath = process.env.PATH;
+    process.env.PATH = '';
+    try {
+      await expect(controller.ensure(gitWorktreeDefinition)).rejects.toMatchObject({ code: 'git_selection_unavailable' });
+    } finally {
+      process.env.PATH = originalPath;
+    }
+    expect(ensure).not.toHaveBeenCalled();
+    await expect(controller.ensure(gitWorktreeDefinition)).resolves.toMatchObject({ relationshipId: 'r1' });
   });
 
   it('admits a 33rd valid relationship without an arbitrary controller count limit', async () => {

@@ -578,6 +578,11 @@ describe('runPermissionModePromptLoop Session reference dispatch', () => {
       sessionMentionLabel?: string;
       seedTextChars?: number;
       seedText?: string;
+      failAssociationRelease?: boolean;
+      onHarnessCreated?: (harness: Readonly<{
+        runtime: ReturnType<typeof createRuntime>;
+        session: ReturnType<typeof createMutableApiSessionClientFixture<PromptLoopMetadata>>;
+      }>) => void;
     }>) {
       const session = createMutableApiSessionClientFixture<PromptLoopMetadata>({
         overrides: {
@@ -597,8 +602,29 @@ describe('runPermissionModePromptLoop Session reference dispatch', () => {
           createdAtMs: 1,
         },
       } as unknown as PromptLoopMetadata);
+      Object.assign(session, {
+        readDurableProviderInputAcceptanceV1: async () => 'not_accepted' as const,
+      });
+      if (params.failAssociationRelease) {
+        session.updateMetadata = async (updater) => {
+          const current = session.__getMetadata();
+          if (!current) throw new Error('expected replay-seed metadata fixture');
+          const before = (current as {
+            replaySeedV1?: { dispatchedToLocalId?: string };
+          }).replaySeedV1?.dispatchedToLocalId;
+          const projected = updater(current);
+          const after = (projected as {
+            replaySeedV1?: { dispatchedToLocalId?: string };
+          } | null)?.replaySeedV1?.dispatchedToLocalId;
+          if (before && !after) {
+            throw new Error('metadata unavailable during replay-seed release');
+          }
+          session.__setMetadata(projected);
+        };
+      }
       const queue = createQueue();
       const runtime = createRuntime();
+      params.onHarnessCreated?.({ runtime, session });
       queue.push({
         text: USER_TEXT,
         localId: 'local-seeded-budget',
@@ -732,6 +758,37 @@ describe('runPermissionModePromptLoop Session reference dispatch', () => {
 
       const seed = (session.__getMetadata() as { replaySeedV1?: { seedText?: string } } | null)?.replaySeedV1;
       expect(seed?.seedText?.length ?? 0).toBeGreaterThan(0);
+    });
+
+    it('does not send a plain prompt when its replay-seed association cannot be released', async () => {
+      const previousMaxSeedChars = process.env.HAPPIER_REPLAY_MAX_SEED_CHARS;
+      process.env.HAPPIER_REPLAY_MAX_SEED_CHARS = '500';
+      reloadConfiguration();
+      const observedHarness: { current: Readonly<{
+        runtime: ReturnType<typeof createRuntime>;
+        session: ReturnType<typeof createMutableApiSessionClientFixture<PromptLoopMetadata>>;
+      }> | null } = { current: null };
+      try {
+        await runSeededPrompt({
+          withSessionReference: true,
+          sessionMentionCount: 6,
+          failAssociationRelease: true,
+          onHarnessCreated: (harness) => {
+            observedHarness.current = harness;
+          },
+        });
+      } finally {
+        if (previousMaxSeedChars === undefined) {
+          delete process.env.HAPPIER_REPLAY_MAX_SEED_CHARS;
+        } else {
+          process.env.HAPPIER_REPLAY_MAX_SEED_CHARS = previousMaxSeedChars;
+        }
+        reloadConfiguration();
+      }
+      expect(observedHarness.current?.runtime.sendTurnPrompt).not.toHaveBeenCalled();
+      expect((observedHarness.current?.session.__getMetadata() as {
+        replaySeedV1?: { dispatchedToLocalId?: string };
+      } | null)?.replaySeedV1?.dispatchedToLocalId).toBe('local-seeded-budget');
     });
 
     /**

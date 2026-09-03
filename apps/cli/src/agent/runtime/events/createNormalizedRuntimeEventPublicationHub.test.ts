@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { RuntimePublicationEvent } from '@/agent/runtime/turns/runtimeTurnOperations';
-
+import type { NormalizedRuntimeIdentityPublicationV1 } from './createNormalizedRuntimeEventWriter';
 import { createNormalizedRuntimeEventPublicationHub } from './createNormalizedRuntimeEventPublicationHub';
 
 describe('createNormalizedRuntimeEventPublicationHub', () => {
@@ -28,9 +27,9 @@ describe('createNormalizedRuntimeEventPublicationHub', () => {
         };
       },
     });
-    const messages: unknown[] = [];
-    const unsubscribe = hub.subscribe((message) => {
-      messages.push(message);
+    const published: NormalizedRuntimeIdentityPublicationV1[] = [];
+    const unsubscribe = hub.subscribeIdentityPublication((publication) => {
+      published.push(publication);
     });
 
     hub.publishFallbackIdentity();
@@ -48,11 +47,10 @@ describe('createNormalizedRuntimeEventPublicationHub', () => {
     });
     unsubscribe();
 
-    expect(messages).toEqual([
+    expect(published).toEqual([
       {
-        type: 'event',
-        name: 'runtime.descriptor',
-        payload: {
+        fact: 'runtimeDescriptor',
+        value: {
           v: 1,
           agentId: 'codex',
           agent: {
@@ -61,9 +59,8 @@ describe('createNormalizedRuntimeEventPublicationHub', () => {
         },
       },
       {
-        type: 'event',
-        name: 'runtime.descriptor',
-        payload: {
+        fact: 'runtimeDescriptor',
+        value: {
           v: 1,
           agentId: 'codex',
           agent: {
@@ -76,8 +73,8 @@ describe('createNormalizedRuntimeEventPublicationHub', () => {
   });
 
   it('normalizes runtime descriptor publications from the dedicated publication seam', () => {
-    const upstream: { handler?: (message: RuntimePublicationEvent) => void } = {};
-    const hub = createNormalizedRuntimeEventPublicationHub<RuntimePublicationEvent>({
+    const upstream: { handler?: (message: unknown) => void } = {};
+    const hub = createNormalizedRuntimeEventPublicationHub<unknown>({
       identity: {
         runtimeDescriptor: null,
         runtimeCapabilities: null,
@@ -92,9 +89,11 @@ describe('createNormalizedRuntimeEventPublicationHub', () => {
         };
       },
     });
+    const published: NormalizedRuntimeIdentityPublicationV1[] = [];
     const messages: unknown[] = [];
-    const unsubscribe = hub.subscribe((message) => {
-      messages.push(message);
+    hub.subscribe((message) => messages.push(message));
+    const unsubscribe = hub.subscribeIdentityPublication((publication) => {
+      published.push(publication);
     });
 
     upstream.handler?.({
@@ -111,11 +110,10 @@ describe('createNormalizedRuntimeEventPublicationHub', () => {
     });
     unsubscribe();
 
-    expect(messages).toEqual([
+    expect(published).toEqual([
       {
-        type: 'event',
-        name: 'runtime.descriptor',
-        payload: {
+        fact: 'runtimeDescriptor',
+        value: {
           v: 1,
           agentId: 'antigravity',
           agent: {
@@ -125,6 +123,56 @@ describe('createNormalizedRuntimeEventPublicationHub', () => {
         },
       },
     ]);
+    // Host-owned identity never reaches the message stream unless the legacy
+    // `AgentMessage` mirror is explicitly enabled.
+    expect(messages).toEqual([]);
   });
 
+  it('replays every already-published fact to a late identity subscriber', () => {
+    const hub = createNormalizedRuntimeEventPublicationHub<unknown>({
+      identity: {
+        runtimeDescriptor: {
+          v: 1,
+          agentId: 'codex',
+          agent: { backendMode: 'appServer' },
+        },
+        runtimeCapabilities: { backend: { sessions: { supported: true } } },
+        runtimeFacets: { v: 1, transcriptSource: { supported: true } },
+      },
+      subscribeUpstream: () => () => undefined,
+    });
+
+    hub.publishFallbackIdentity();
+
+    const published: NormalizedRuntimeIdentityPublicationV1[] = [];
+    hub.subscribeIdentityPublication((publication) => published.push(publication));
+
+    expect(published.map((publication) => publication.fact)).toEqual([
+      'runtimeDescriptor',
+      'runtimeCapabilities',
+      'runtimeFacets',
+    ]);
+  });
+
+  it('mirrors identity publication onto the legacy AgentMessage stream when the execution-run bridge asks for it', () => {
+    const hub = createNormalizedRuntimeEventPublicationHub<unknown>({
+      identity: {
+        runtimeDescriptor: null,
+        runtimeCapabilities: { backend: { sessions: { supported: true } } },
+        runtimeFacets: null,
+      },
+      subscribeUpstream: () => () => undefined,
+      mirrorIdentityPublicationToMessageStream: true,
+    });
+    const messages: unknown[] = [];
+    hub.subscribe((message) => messages.push(message));
+
+    hub.publishFallbackIdentity();
+
+    expect(messages).toEqual([{
+      type: 'event',
+      name: 'runtime.capabilities',
+      payload: { backend: { sessions: { supported: true } } },
+    }]);
+  });
 });

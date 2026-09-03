@@ -9,6 +9,7 @@ function writeFakeAcpAgentScript(params: { dir: string }): string {
     const decoder = new TextDecoder();
     let buf = '';
     let loadCount = 0;
+    let newSessionCount = 0;
 
     function send(obj) {
       process.stdout.write(JSON.stringify(obj) + '\\n');
@@ -59,7 +60,8 @@ function writeFakeAcpAgentScript(params: { dir: string }): string {
         }
 
         if (method === 'session/new') {
-          err(id, 'Internal error', 'Unable to create an ACP session.');
+          newSessionCount += 1;
+          err(id, 'Internal error', 'Unable to create an ACP session. attempt=' + newSessionCount);
           continue;
         }
 
@@ -112,8 +114,8 @@ describe('AcpBackend loadSession cleanup on failure', () => {
           args: [scriptPath],
         });
 
-        await expect(backend.startSession()).rejects.toThrow(/Unable to create an ACP session/);
-        await expect(backend.startSession()).rejects.toThrow(/Unable to create an ACP session/);
+        await expect(backend.startSession()).rejects.toThrow(/Unable to create an ACP session\. attempt=1/);
+        await expect(backend.startSession()).rejects.toThrow(/Unable to create an ACP session\. attempt=1/);
       } finally {
         try {
           await backend?.dispose();

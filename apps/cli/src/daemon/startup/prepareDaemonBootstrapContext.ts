@@ -83,6 +83,7 @@ export async function prepareDaemonBootstrapContext(
         if (preflightMachineRegistration.didRotateMachineId) {
             logger.debug('[DAEMON RUN] Same-version daemon matched a stale machine id, restarting daemon with recovered machine identity');
             await stopDaemon();
+            preflightMachineRegistration = null;
         } else {
             logger.debug('[DAEMON RUN] Daemon version and machine identity match, keeping existing daemon');
             console.log('Daemon already running with matching version');

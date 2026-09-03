@@ -660,6 +660,43 @@ export async function listPendingQueueV2LocalIdsFromServer(params: {
     }
 }
 
+export type PendingQueueV2ActivationEligibility = 'eligible' | 'missing' | 'ineligible';
+
+export async function readPendingQueueV2ActivationEligibilityFromServer(params: {
+    token: string;
+    sessionId: string;
+    requestId: string;
+}): Promise<PendingQueueV2ActivationEligibility> {
+    const serverUrl = resolveServerHttpBaseUrl();
+    const response = await axios.get(
+        `${serverUrl}/v2/sessions/${encodeURIComponent(params.sessionId)}/pending`,
+        {
+            headers: {
+                ...buildCurrentAccountStoredContentCompatibilityHttpHeaders(),
+                Authorization: `Bearer ${params.token}`,
+            },
+            timeout: 10_000,
+        },
+    );
+    const data = response?.data as { pending?: unknown } | null | undefined;
+    const pending = Array.isArray(data?.pending) ? data.pending : [];
+    for (const row of pending) {
+        if (!row || typeof row !== 'object' || Array.isArray(row)) continue;
+        const record = row as Record<string, unknown>;
+        if (readPendingLocalId(record.localId) !== params.requestId) continue;
+        const messageRole = SessionMessageRoleSchema.safeParse(record.messageRole);
+        const requestedAction = normalizePendingRequestedActionV1(record.requestedAction);
+        const deliveryStatus = readPendingDeliveryStatusFromRecord(record);
+        return messageRole.success
+            && messageRole.data === 'user'
+            && requestedAction?.kind === 'send_now'
+            && deliveryStatus.status === 'queued'
+            ? 'eligible'
+            : 'ineligible';
+    }
+    return 'missing';
+}
+
 /** Reads the exact stored content already held by one pending local identity. */
 export async function readPendingQueueV2MessageContentByLocalIdFromServer(params: {
     token: string;
@@ -699,20 +736,27 @@ export async function readPendingQueueV2MessageContentByLocalIdFromServer(params
 export type PendingQueueV2DeliveryStatusEntry = Readonly<{
     localId: string;
     status: PendingDeliveryStatusV1['status'];
+    deliveryStatus: PendingDeliveryStatusV1;
 }>;
 
 /**
  * Projects the server-owned delivery status for each current pending row. A canonical local claim
  * whose id is absent from this projection has reached a terminal outcome and must be retired.
+ *
+ * `includeDiscarded` keeps archived rows in the projection so a caller that must distinguish
+ * "resolved by the provider" from "discarded before any effect" can read the difference instead
+ * of inferring it from absence.
  */
 export async function listPendingQueueV2DeliveryStatusesFromServer(params: {
     token: string;
     sessionId: string;
+    includeDiscarded?: boolean;
 }): Promise<PendingQueueV2DeliveryStatusEntry[]> {
     const serverUrl = resolveServerHttpBaseUrl();
     const response = await axios.get(`${serverUrl}/v2/sessions/${encodeURIComponent(params.sessionId)}/pending`, {
         headers: { ...buildCurrentAccountStoredContentCompatibilityHttpHeaders(), Authorization: `Bearer ${params.token}` },
         timeout: 10_000,
+        ...(params.includeDiscarded === true ? { params: { includeDiscarded: 'true' } } : {}),
     });
     const data = response?.data as { pending?: unknown } | null | undefined;
     const pending = Array.isArray(data?.pending) ? data.pending : [];
@@ -724,7 +768,8 @@ export async function listPendingQueueV2DeliveryStatusesFromServer(params: {
         const localId = readPendingLocalId(record.localId);
         if (!localId || seen.has(localId)) continue;
         seen.add(localId);
-        entries.push({ localId, status: readPendingDeliveryStatusFromRecord(record).status });
+        const deliveryStatus = readPendingDeliveryStatusFromRecord(record);
+        entries.push({ localId, status: deliveryStatus.status, deliveryStatus });
     }
     return entries;
 }

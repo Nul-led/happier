@@ -13,6 +13,13 @@ import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 
 import type { ApiClient } from '@/api/api';
 import type { StoredCredentials } from '@/persistence';
+import type {
+  ConnectedAccountPurposeBindingOwner,
+} from '@/daemon/connectedServices/purposeBindings/ConnectedAccountPurposeBindingOwner';
+
+type ActivatePurposeBindingsInput = Parameters<
+  ConnectedAccountPurposeBindingOwner['activatePurposeBindings']
+>[0];
 
 const originalEnv = { ...process.env };
 let tempDir: string | null = null;
@@ -178,7 +185,7 @@ describe('capabilities.invoke connected-service preflight', () => {
     }));
 
     const disposePurposeLease = vi.fn();
-    const activatePurposeBindings = vi.fn(() => ({
+    const activatePurposeBindings = vi.fn((_input: ActivatePurposeBindingsInput) => ({
       subjectId: 'operation:capability-probe/consumer:happier.agent.codex/codex',
       isCurrent: () => true,
       resolvePurposeBinding: () => null,
@@ -277,8 +284,13 @@ describe('capabilities.invoke connected-service preflight', () => {
       purposes: [purpose],
       bindings: [binding],
     }));
-    const activationInput = activatePurposeBindings.mock.calls[0]?.[0];
-    expect(activationInput?.subject.isCurrent()).toBe(true);
+    const activationSubject = activatePurposeBindings.mock.calls[0]?.[0].subject;
+    // The capability probe owns one correlation-scoped operation subject; its
+    // currentness must be live rather than a constant.
+    if (activationSubject?.kind !== 'operation') {
+      throw new Error(`capability_probe_subject_kind:${activationSubject?.kind ?? 'missing'}`);
+    }
+    expect(activationSubject.isCurrent()).toBe(true);
     expect(disposePurposeLease).toHaveBeenCalledOnce();
   }, 90_000);
 

@@ -133,6 +133,10 @@ describe('startDaemonMachineRegistration', () => {
         }),
         reloadSettings: vi.fn(async () => {}),
         ensureUpToDate: vi.fn(async () => {}),
+        removeSessions: vi.fn(async () => {}),
+        reconcileRetainedSessionAccess: vi.fn(async () => {}),
+        listIndexedSessionIds: vi.fn(() => []),
+        applySessionArchivedState: vi.fn(async () => {}),
         getSettings: vi.fn(() => DEFAULT_MEMORY_SETTINGS),
         getEmbeddingsDiagnostics: vi.fn(() => ({ status: 'disabled' } as never)),
         getWorkerStatus: vi.fn(() => ({
@@ -331,6 +335,10 @@ describe('startDaemonMachineRegistration', () => {
         }),
         reloadSettings: vi.fn(async () => {}),
         ensureUpToDate: vi.fn(async () => {}),
+        removeSessions: vi.fn(async () => {}),
+        reconcileRetainedSessionAccess: vi.fn(async () => {}),
+        listIndexedSessionIds: vi.fn(() => []),
+        applySessionArchivedState: vi.fn(async () => {}),
         getSettings: vi.fn(() => DEFAULT_MEMORY_SETTINGS),
         getEmbeddingsDiagnostics: vi.fn(() => ({ status: 'disabled' } as never)),
         getWorkerStatus: vi.fn(() => ({

@@ -31,6 +31,11 @@ import type {
 import {
     parseHostEventPayloadV1,
 } from '@happier-dev/protocol';
+import type { HostPluginServices } from '@/agent/runtime/state/currentSessionUiTypes';
+import {
+    bindPluginSessionsSubagentObservation,
+    readPluginSessionsSubagentObservation,
+} from '@/session/services/pluginSessionsInventory';
 import type {
     ProviderBindingStatusRequest,
     ProviderConnectionMutationRequest,
@@ -437,7 +442,7 @@ export async function prepareRunnerDaemonPluginServices(
             ): void;
         }>): Promise<void>;
         local: Pick<
-            PluginServices,
+            HostPluginServices,
             | 'availability'
             | 'logger'
             | 'sessions'
@@ -3193,10 +3198,16 @@ export async function prepareRunnerDaemonPluginServices(
                     : undefined));
             },
         } satisfies PluginServices['sessions']['external']);
-    const sessions: PluginServices['sessions'] = Object.freeze({
+    const sessions = Object.freeze({
         ...input.local.sessions,
         external: externalSessions,
     });
+    const subagentObservation = readPluginSessionsSubagentObservation(
+        input.local.sessions,
+    );
+    if (subagentObservation) {
+        bindPluginSessionsSubagentObservation(sessions, subagentObservation);
+    }
     return Object.freeze({
         availability,
         logger,

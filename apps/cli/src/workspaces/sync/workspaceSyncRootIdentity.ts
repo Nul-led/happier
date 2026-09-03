@@ -14,3 +14,18 @@ export async function computeWorkspaceSyncRootFingerprint(canonicalRoot: string)
     .update(identity)
     .digest('hex');
 }
+
+/**
+ * Stable identity for a canonical root that currently holds no filesystem
+ * object. It never collides with a present root's fingerprint, so an approval
+ * stamped against an absent destination cannot be replayed once something
+ * occupies that path.
+ */
+export function computeWorkspaceSyncAbsentRootFingerprint(canonicalRoot: string): string {
+  return createHash('sha256')
+    .update('workspace-root-absent-v1\0')
+    .update(process.platform)
+    .update('\0')
+    .update(canonicalRoot)
+    .digest('hex');
+}

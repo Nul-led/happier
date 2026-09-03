@@ -26,6 +26,10 @@ export function withExecutionRunRuntimeIdentityPublication(params: Readonly<{
   const hub = createNormalizedRuntimeEventPublicationHub<AgentMessage>({
     identity: params.identity,
     subscribeUpstream: (handler) => params.runtime.subscribeMessages(handler),
+    // The execution-run bridge speaks the legacy host-private `AgentMessage`
+    // family, whose generic `EventMessage` member is a real member of that
+    // union and whose session-state emitter already reads these facts there.
+    mirrorIdentityPublicationToMessageStream: true,
   });
 
   return wrapExecutionRunHostRuntime({

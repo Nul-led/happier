@@ -144,6 +144,8 @@ function createEngineExecutionRunRuntimeShellConfig(opts: Readonly<{
     happyHomeDir?: string | null;
     engineRegistry?: ResolvedCliEngineRegistry;
     parentSessionStateTarget?: ExecutionRunSessionStateTarget | null;
+    /** Owning Happier Session id when the host scope has one; absent for detached Runs. */
+    happierSessionId?: string;
     sessionInteractionHost?: NativeAgentSessionInteractionHostBinding;
     onConnectedServicesRegistration?: (registration: ExecutionRunConnectedServicesLaunchV1) => void | Promise<void>;
     machineId?: string;
@@ -322,6 +324,7 @@ function createEngineExecutionRunRuntimeShellConfig(opts: Readonly<{
                 accountSettings: opts.accountSettings ?? null,
                 start: opts.start ?? null,
                 ...(opts.parentSessionStateTarget ? { parentSessionStateTarget: opts.parentSessionStateTarget } : {}),
+                ...(opts.happierSessionId ? { happierSessionId: opts.happierSessionId } : {}),
                 ...(opts.sessionInteractionHost ? { sessionInteractionHost: opts.sessionInteractionHost } : {}),
                 ...(Object.keys(isolationEnv).length > 0
                     || (providerLaunch?.unsetEnvKeys.length ?? 0) > 0
@@ -410,6 +413,8 @@ export function createExecutionRunRuntime(opts: Readonly<{
     happyHomeDir?: string | null;
     engineRegistry?: ResolvedCliEngineRegistry;
     parentSessionStateTarget?: ExecutionRunSessionStateTarget | null;
+    /** Owning Happier Session id when the host scope has one; absent for detached Runs. */
+    happierSessionId?: string;
     sessionInteractionHost?: NativeAgentSessionInteractionHostBinding;
     onConnectedServicesRegistration?: (registration: ExecutionRunConnectedServicesLaunchV1) => void | Promise<void>;
     machineId?: string;
@@ -470,6 +475,7 @@ export function createExecutionRunRuntime(opts: Readonly<{
             happyHomeDir: opts.happyHomeDir ?? null,
             ...(opts.engineRegistry ? { engineRegistry: opts.engineRegistry } : {}),
             parentSessionStateTarget: opts.parentSessionStateTarget ?? null,
+            ...(opts.happierSessionId ? { happierSessionId: opts.happierSessionId } : {}),
             ...(opts.sessionInteractionHost ? { sessionInteractionHost: opts.sessionInteractionHost } : {}),
             ...(opts.onConnectedServicesRegistration
                 ? { onConnectedServicesRegistration: opts.onConnectedServicesRegistration }

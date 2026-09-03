@@ -52,6 +52,7 @@ import {
   resolveProviderPromptWithReplaySeed,
   type ReplaySeedSettlementOutcome,
 } from '@/agent/runtime/replaySeed/replaySeedV1';
+import type { UnsettledReplaySeedRetirement } from '@/agent/runtime/replaySeed/unsettledReplaySeedRetirement';
 import { buildSessionReferenceContextBlockForDispatch } from '@/agent/runtime/prompt/sessionReferenceBlock';
 import { isAbortLikeError } from '@/agent/runtime/lifecycle/classifyAbortLikeError';
 import { isAgentNativeResumeIdentityMismatchError } from '@/session/agentTransition/agentNativeReturn';
@@ -204,6 +205,52 @@ async function parkAfterPendingMaterializationAuthFailure(params: Readonly<{
   } finally {
     params.abortSignal.removeEventListener('abort', onAbort);
     controller.abort('permission-mode-auth-park-dispose');
+  }
+}
+
+/**
+ * Sleep until a natural wake while an accepted replay seed's metadata retirement keeps
+ * failing. Wakes are the queue growing beyond the depth captured at park entry (new input
+ * seeking admission), the incumbent Session metadata/reconnect wake, or shutdown. The queue is
+ * never consumed: already-queued input stays queued as the single custody holder for the normal
+ * pop path, and each wake grants exactly one retry when the loop re-enters the admission gate.
+ *
+ * The metadata wake is what makes an already-queued follow-up recoverable. Queue growth alone
+ * required a further, third prompt to arrive before the blocked one could ever dispatch, so a
+ * user who sent exactly one more message stayed blocked indefinitely. Retirement is a metadata
+ * write, and this is the same signal the loop already uses to observe a metadata write becoming
+ * possible again — no background retry, timer cadence, or poll is introduced.
+ */
+async function parkWhileReplaySeedRetirementUnsettled(params: Readonly<{
+  messageQueue: MessageQueue2<QueuedPermissionModeMessage['mode'], PermissionModeQueuedPrompt>;
+  session: ApiSessionClient;
+  queuedDepthBeforeRetirementAttempt: number;
+  abortSignal: AbortSignal;
+}>): Promise<void> {
+  const controller = new AbortController();
+  const onAbort = () => controller.abort(params.abortSignal.reason);
+  params.abortSignal.addEventListener('abort', onAbort, { once: true });
+  if (params.abortSignal.aborted) controller.abort(params.abortSignal.reason);
+
+  try {
+    const winner = await Promise.race([
+      params.messageQueue
+        .waitForQueueGrowthBeyond(params.queuedDepthBeforeRetirementAttempt, controller.signal)
+        .then(() => 'queue' as const),
+      params.session
+        .waitForMetadataUpdate(controller.signal)
+        .then((ok) => (ok ? 'metadata' as const : 'metadata-unavailable' as const)),
+    ]);
+    controller.abort('replay-seed-retirement-park-wake');
+    if (winner === 'metadata-unavailable' && !params.abortSignal.aborted) {
+      await waitForSessionMetadataRetryBackoff({
+        abortSignal: params.abortSignal,
+        backoffMs: DEFAULT_SESSION_METADATA_WAIT_RETRY_BACKOFF_MS,
+      });
+    }
+  } finally {
+    params.abortSignal.removeEventListener('abort', onAbort);
+    controller.abort('replay-seed-retirement-park-dispose');
   }
 }
 
@@ -661,6 +708,13 @@ export async function runPermissionModePromptLoop(opts: {
     localId: string,
     onAccepted: (() => void) | null,
   ) => void;
+  /**
+   * Session-scoped hold for a replay seed the provider already accepted whose metadata
+   * retirement has not succeeded. The loop records failed settlement outcomes here and, at
+   * each admission boundary, retries the same idempotent settler once — no provider input is
+   * popped or dispatched while a retirement keeps failing.
+   */
+  replaySeedRetirement?: UnsettledReplaySeedRetirement;
   releaseRejectedBeforeProviderPromptIdentity?: (
     session: ApiSessionClient,
     message: PermissionModeQueuedPrompt,
@@ -876,43 +930,77 @@ export async function runPermissionModePromptLoop(opts: {
       pendingFreshSessionSystemPrompt = eagerStart.startedFreshSessionForTurn;
     }
 
+    // The pop path's wait for the next queued provider input: it materializes server-pending
+    // rows into the queue and observes queue, metadata, and admission wakes.
+    const waitForNextQueuedPermissionModeMessage = async (): Promise<
+      MessageBatch<QueuedPermissionModeMessage['mode'], PermissionModeQueuedPrompt> | null
+    > => {
+      return await waitForNextPermissionModeMessage({
+        messageQueue: opts.messageQueue,
+        abortSignal: opts.getAbortSignal(),
+        session: opts.session,
+        beforeCollectQueuedBatch: async () => {
+          // The metadata wake is armed by the input consumer before this callback runs. Re-read
+          // the already-projected snapshot here so an update that landed during post-turn
+          // lifecycle work cannot fall between the previous sync and the next one-shot wait.
+          syncPermissionModeFromMetadata();
+          overrideSync.syncFromMetadata();
+          if (!turnInFlight) {
+            await overrideSync.flushPendingAfterStart();
+          }
+          opts.messageQueue.discardMatching((queuedMessage, queuedMode) =>
+            isQueuedPromptAlreadyLocallyConsumed(opts.session, queuedMessage, queuedMode),
+          );
+        },
+        beforePendingMaterialize: opts.beforePendingMaterialize,
+        onMetadataUpdate: async () => {
+          await refreshSessionSnapshotBeforeTurnBestEffort();
+          syncPermissionModeFromMetadata();
+          overrideSync.syncFromMetadata();
+          if (!turnInFlight) {
+            await overrideSync.flushPendingAfterStart();
+          }
+        },
+        pendingDrainMaxPopPerWake: pendingQueueDrainMaxPopPerWake,
+        pendingQueueDeliveryTiming: opts.pendingQueueDeliveryTiming,
+        inputConsumer,
+      });
+    };
+
     while (!opts.shouldExit()) {
-    let message: QueuedPermissionModeMessage | null = pending;
-    pending = null;
+      // A seed the provider already ACCEPTED must be retired before any further provider input
+      // is admitted. The admission boundary retries the same idempotent settler once; while the
+      // retirement keeps failing, nothing is dispatched and nothing is consumed. The loop
+      // parks without taking queue custody and wakes when another input seeks admission or on
+      // shutdown. Each wake re-runs this gate before any dispatch, so a recovered write admits
+      // queued input without reapplying the seed.
+      // Capture the queue edge before the retirement attempt. Input can arrive while that
+      // async write is settling; using the later park-entry depth would miss that wake.
+      const queuedDepthBeforeRetirementAttempt = opts.messageQueue.size();
+      const unsettledRetirementOutcome = opts.replaySeedRetirement
+        ? (opts.getAbortSignal().aborted
+          // Shutdown with a possibly-outstanding retirement stays blocked. The park returns
+          // immediately on the aborted signal and the loop's exit check ends it.
+          ? 'failed' as const
+          : await opts.replaySeedRetirement.settleBeforeAdmitting())
+        : null;
+      if (unsettledRetirementOutcome === 'failed') {
+        await parkWhileReplaySeedRetirementUnsettled({
+          messageQueue: opts.messageQueue,
+          session: opts.session,
+          queuedDepthBeforeRetirementAttempt,
+          abortSignal: opts.getAbortSignal(),
+        });
+        continue;
+      }
+
+      let message: QueuedPermissionModeMessage | null = pending;
+      pending = null;
 
     if (!message) {
       let next: MessageBatch<QueuedPermissionModeMessage['mode'], PermissionModeQueuedPrompt> | null;
       try {
-        next = await waitForNextPermissionModeMessage({
-          messageQueue: opts.messageQueue,
-          abortSignal: opts.getAbortSignal(),
-          session: opts.session,
-          beforeCollectQueuedBatch: async () => {
-            // The metadata wake is armed by the input consumer before this callback runs. Re-read
-            // the already-projected snapshot here so an update that landed during post-turn
-            // lifecycle work cannot fall between the previous sync and the next one-shot wait.
-            syncPermissionModeFromMetadata();
-            overrideSync.syncFromMetadata();
-            if (!turnInFlight) {
-              await overrideSync.flushPendingAfterStart();
-            }
-            opts.messageQueue.discardMatching((queuedMessage, queuedMode) =>
-              isQueuedPromptAlreadyLocallyConsumed(opts.session, queuedMessage, queuedMode),
-            );
-          },
-          beforePendingMaterialize: opts.beforePendingMaterialize,
-          onMetadataUpdate: async () => {
-            await refreshSessionSnapshotBeforeTurnBestEffort();
-            syncPermissionModeFromMetadata();
-            overrideSync.syncFromMetadata();
-            if (!turnInFlight) {
-              await overrideSync.flushPendingAfterStart();
-            }
-          },
-          pendingDrainMaxPopPerWake: pendingQueueDrainMaxPopPerWake,
-          pendingQueueDeliveryTiming: opts.pendingQueueDeliveryTiming,
-          inputConsumer,
-        });
+        next = await waitForNextQueuedPermissionModeMessage();
       } catch (error) {
         if (!(error instanceof PendingQueueMaterializationAuthError)) throw error;
         logger.debug('[INPUT-CONSUMER] Parking permission-mode prompt loop after pending materialization auth failure');
@@ -1026,6 +1114,14 @@ export async function runPermissionModePromptLoop(opts: {
     // and is drained in this iteration's `finally` so a later failure still settles it.
     let pendingReplaySeedSettlement: (() => Promise<ReplaySeedSettlementOutcome>) | null = null;
     let replaySeedSettlement: Promise<ReplaySeedSettlementOutcome> | null = null;
+    let releaseUndispatchedReplaySeed: (() => Promise<void>) | null = null;
+    const releaseReplaySeedBeforeProviderDispatch = async (): Promise<void> => {
+      const release = releaseUndispatchedReplaySeed;
+      if (!release) return;
+      releaseUndispatchedReplaySeed = null;
+      pendingReplaySeedSettlement = null;
+      await release();
+    };
     // Idempotent: the first call takes the pending settler, so a runtime that both signals
     // acceptance and then returns normally retires exactly once.
     const confirmProviderAccepted = (): void => {
@@ -1034,7 +1130,9 @@ export async function runPermissionModePromptLoop(opts: {
       pendingReplaySeedSettlement = null;
       // The seed owner reports its own failures through the outcome and never rejects; the
       // promise is drained below so retirement is durable before the next prompt is read.
-      replaySeedSettlement = settle();
+      replaySeedSettlement = opts.replaySeedRetirement
+        ? opts.replaySeedRetirement.settleOnProviderAcceptance(settle)
+        : settle();
     };
     const drainReplaySeedSettlement = async (): Promise<void> => {
       const settlement = replaySeedSettlement;
@@ -1179,6 +1277,9 @@ export async function runPermissionModePromptLoop(opts: {
               refreshMetadataBeforeRead: false,
             });
         pendingReplaySeedSettlement = resolvedReplaySeed?.settleOnProviderAcceptance ?? null;
+        releaseUndispatchedReplaySeed = resolvedReplaySeed?.seedApplied
+          ? resolvedReplaySeed.releaseUndispatchedSeed
+          : null;
         // ONE total, not two. The replay seed's cap was enforced when the seed was built
         // and sealed into Session metadata, but the Happier Session-reference block is
         // composed into the dispatch prompt below — so without this refit the prompt
@@ -1196,6 +1297,7 @@ export async function runPermissionModePromptLoop(opts: {
         // never exceed the reservation and the refit is a no-op unless the total itself
         // shrank between sealing and dispatch (a lowered `HAPPIER_REPLAY_MAX_SEED_CHARS`,
         // or an ingress that sealed against a larger per-request `maxSeedChars`).
+        let replaySeedWasOmitted = false;
         const seedResolution = ((): { providerPrompt: string } => {
           if (!resolvedReplaySeed) return { providerPrompt: message.message.text };
           if (!resolvedReplaySeed.seedApplied) return resolvedReplaySeed;
@@ -1219,14 +1321,20 @@ export async function runPermissionModePromptLoop(opts: {
             // available: the consume updater blanks `seedText`, so the whole
             // replay context would be destroyed for a prompt that never carried
             // a byte of it. Undelivered means unsettled — the seed stays for the
-            // next dispatch, which may well have room.
+            // next dispatch, which may well have room. Its durable dispatch association is
+            // released for the same reason: this prompt may still be accepted, and an
+            // association left behind would make that acceptance retire an undelivered seed.
             pendingReplaySeedSettlement = null;
+            replaySeedWasOmitted = true;
             return { providerPrompt: message.message.text };
           }
           return {
             providerPrompt: `${fittedSeedText}\n\n${message.message.text}`,
           };
         })();
+        if (replaySeedWasOmitted) {
+          await releaseReplaySeedBeforeProviderDispatch();
+        }
         const agentComposition = providerNativeCommand
           ? undefined
           : await opts.resolveAgentCompositionBeforeDispatch?.({
@@ -1391,6 +1499,9 @@ export async function runPermissionModePromptLoop(opts: {
             pendingReplaySeedSettlement ? confirmProviderAccepted : null,
           );
         }
+        // Invoking the runtime is the effect boundary. From here onward a thrown transport or
+        // AbortError is ambiguous, so the durable association must remain for reconciliation.
+        releaseUndispatchedReplaySeed = null;
         const providerSend = Object.keys(promptDeliveryMeta).length === 0
           ? opts.runtime.sendTurnPrompt(dispatchPrompt)
           : opts.runtime.sendTurnPrompt(dispatchPrompt, promptDeliveryMeta);
@@ -1465,6 +1576,7 @@ export async function runPermissionModePromptLoop(opts: {
         handledPreTurnFailure = !beganTurn;
       }
     } finally {
+      await releaseReplaySeedBeforeProviderDispatch();
       try {
         if (beganTurn) {
           if (suppressFlushTurnFailure) {

@@ -197,16 +197,15 @@ describe('withHostSessionRuntimeIdentityPublication', () => {
     expect(updateMetadata).toHaveBeenCalledOnce();
     expect(metadata.runtimeDescriptorV1).toEqual(agentDescriptor);
 
-    const messages: unknown[] = [];
-    const unsubscribe = created?.operations.subscribeRuntimeEvents((message) => {
-      messages.push(message);
+    const published: unknown[] = [];
+    const unsubscribe = created?.operations.subscribeRuntimeIdentityPublication?.((publication) => {
+      published.push(publication);
     });
     unsubscribe?.();
 
-    expect(messages).toContainEqual({
-      type: 'event',
-      name: 'runtime.descriptor',
-      payload: agentDescriptor,
+    expect(published).toContainEqual({
+      fact: 'runtimeDescriptor',
+      value: agentDescriptor,
     });
   });
 
@@ -242,13 +241,12 @@ describe('withHostSessionRuntimeIdentityPublication', () => {
       },
     });
     const created = await wrapped.config.createSessionRuntime?.({} as never);
-    const messages: unknown[] = [];
-    created?.operations.subscribeRuntimeEvents((message) => messages.push(message));
+    const published: unknown[] = [];
+    created?.operations.subscribeRuntimeIdentityPublication?.((publication) => published.push(publication));
 
-    expect(messages).toContainEqual({
-      type: 'event',
-      name: 'runtime.capabilities',
-      payload: {
+    expect(published).toContainEqual({
+      fact: 'runtimeCapabilities',
+      value: {
         backend: { sessions: { supported: true } },
         ...runtimeCapabilities,
       },
@@ -329,15 +327,14 @@ describe('withHostSessionRuntimeIdentityPublication', () => {
       },
     });
     const created = await wrapped.config.createSessionRuntime?.({} as never);
-    const messages: unknown[] = [];
-    const unsubscribe = created?.operations.subscribeRuntimeEvents((message) => {
-      messages.push(message);
+    const published: unknown[] = [];
+    const unsubscribe = created?.operations.subscribeRuntimeIdentityPublication?.((publication) => {
+      published.push(publication);
     });
 
-    expect(messages).toContainEqual({
-      type: 'event',
-      name: 'runtime.descriptor',
-      payload: {
+    expect(published).toContainEqual({
+      fact: 'runtimeDescriptor',
+      value: {
         v: 1,
         agentId: 'codex',
         agent: {
@@ -359,20 +356,18 @@ describe('withHostSessionRuntimeIdentityPublication', () => {
     await created?.operations.sendTurnPrompt('hello');
     unsubscribe?.();
 
-    expect(messages).not.toContainEqual({
-      type: 'event',
-      name: 'runtime.descriptor',
-      payload: expect.objectContaining({
+    expect(published).not.toContainEqual({
+      fact: 'runtimeDescriptor',
+      value: expect.objectContaining({
         agent: expect.objectContaining({
           providerSessionId: 'vendor-session-1',
         }),
       }),
     });
-    expect(messages.filter((message) => (
-      Boolean(message)
-      && typeof message === 'object'
-      && (message as Readonly<Record<string, unknown>>).type === 'event'
-      && (message as Readonly<Record<string, unknown>>).name === 'runtime.descriptor'
+    expect(published.filter((publication) => (
+      Boolean(publication)
+      && typeof publication === 'object'
+      && (publication as Readonly<Record<string, unknown>>).fact === 'runtimeDescriptor'
     ))).toHaveLength(1);
   });
 
@@ -420,18 +415,17 @@ describe('withHostSessionRuntimeIdentityPublication', () => {
       },
     });
     const created = await wrapped.config.createSessionRuntime?.({} as never);
-    const messages: unknown[] = [];
-    const unsubscribe = created?.operations.subscribeRuntimeEvents((message) => {
-      messages.push(message);
+    const published: unknown[] = [];
+    const unsubscribe = created?.operations.subscribeRuntimeIdentityPublication?.((publication) => {
+      published.push(publication);
     });
 
     await created?.operations.sendTurnPrompt('hello');
     unsubscribe?.();
 
-    expect(messages).toEqual([{
-      type: 'event',
-      name: 'runtime.descriptor',
-      payload: upstreamDescriptor,
+    expect(published).toEqual([{
+      fact: 'runtimeDescriptor',
+      value: upstreamDescriptor,
     }]);
   });
 
@@ -507,6 +501,51 @@ describe('withHostSessionRuntimeIdentityPublication', () => {
       metadataReason: 'runtime-identity-publication',
     });
     expect(session.updateMetadata).not.toHaveBeenCalled();
+  });
+
+  it('delivers host-owned runtime identity through the typed publication channel instead of a pseudo-event on the canonical Agent Session stream', async () => {
+    const runtimeFacets = { v: 1, transcriptSource: { supported: true } } as const;
+    const runtimeCapabilities = { backend: { sessions: { supported: true } } };
+    const descriptor = {
+      v: 1,
+      agentId: 'acme',
+      agent: { backendMode: 'custom' },
+    } as const;
+    const plan = {
+      kind: HOST_SESSION_RUNTIME_PLAN_KIND,
+      agentId: 'acme',
+      opts: {},
+      config: {
+        createSessionRuntime: vi.fn(async () => ({ operations: createRuntimeTurnOperations() })),
+      },
+    } as unknown as HostSessionRuntimePlan;
+
+    const wrapped = withHostSessionRuntimeIdentityPublication({
+      plan,
+      identity: {
+        runtimeDescriptor: descriptor,
+        runtimeCapabilities,
+        runtimeFacets,
+      },
+    });
+    const created = await wrapped.config.createSessionRuntime?.({} as never);
+    if (!created) throw new Error('expected wrapped runtime');
+
+    const streamed: unknown[] = [];
+    created.operations.subscribeRuntimeEvents((message) => streamed.push(message));
+
+    const published: unknown[] = [];
+    const unsubscribePublication = created.operations
+      .subscribeRuntimeIdentityPublication?.((publication) => published.push(publication));
+    unsubscribePublication?.();
+
+    // The canonical Agent Session runtime stream carries only canonical strict events.
+    expect(streamed).toEqual([]);
+    expect(published).toEqual([
+      { fact: 'runtimeDescriptor', value: descriptor },
+      { fact: 'runtimeCapabilities', value: runtimeCapabilities },
+      { fact: 'runtimeFacets', value: runtimeFacets },
+    ]);
   });
 
   it('preserves dynamic permission response capability after startup', async () => {

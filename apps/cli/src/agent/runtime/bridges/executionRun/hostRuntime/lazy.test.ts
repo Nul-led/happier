@@ -137,7 +137,7 @@ describe('createLazyExecutionRunHostRuntime', () => {
     await vi.waitFor(() => expect(lateDispose).toHaveBeenCalledTimes(1));
   });
 
-  it('does not resolve the lazy runtime for a permission response before session start', async () => {
+  it('does not advertise a permission responder before the runtime declares one', async () => {
     const resolveRuntime = vi.fn(async () => ({
       readResumeSupport: async () => false,
       provisionSession: async () => ({ sessionId: 'lazy-runtime-session-1' }),
@@ -149,16 +149,9 @@ describe('createLazyExecutionRunHostRuntime', () => {
     }));
     const runtime = createLazyExecutionRunHostRuntime({
       resolveRuntime,
-      runtimeCapabilities: {
-        permissions: { capability: 'responds' },
-      },
     });
 
-    await expect(runtime.respondToPermission?.('permission-1', false)).resolves.toEqual({
-      delivered: false,
-      reason: 'no_active_session',
-    });
-
+    expect(runtime.respondToPermission).toBeUndefined();
     expect(resolveRuntime).not.toHaveBeenCalled();
   });
 
@@ -205,7 +198,7 @@ describe('createLazyExecutionRunHostRuntime', () => {
     expect(subscribeMessages).not.toHaveBeenCalled();
   });
 
-  it('publishes runtime facets once after the lazy runtime resolves', async () => {
+  it('forwards runtime identity only from the resolved runtime owner', async () => {
     let resolveRuntime!: (value: {
       readResumeSupport: () => Promise<boolean>;
       provisionSession: () => Promise<{ sessionId: string }>;
@@ -228,22 +221,6 @@ describe('createLazyExecutionRunHostRuntime', () => {
 
     const runtimeParams = {
       resolveRuntime: async () => await runtimePromise,
-      runtimeDescriptor: {
-        v: 1,
-        agentId: 'acme.provider',
-        provider: {
-          backendMode: 'native',
-        },
-      },
-      runtimeCapabilities: {
-        executionRun: { supported: true },
-      },
-      runtimeFacets: {
-        v: 1,
-        transcriptSource: {
-          supported: true,
-        },
-      },
     };
     const runtime = createLazyExecutionRunHostRuntime(runtimeParams);
     const messages: unknown[] = [];
@@ -258,7 +235,24 @@ describe('createLazyExecutionRunHostRuntime', () => {
       provisionSession: async () => ({ sessionId: 'lazy-runtime-session-1' }),
       sendPrompt: async () => {},
       cancel: async () => {},
-      subscribeMessages: vi.fn(() => () => {}),
+      subscribeMessages: vi.fn((handler) => {
+        handler({
+          type: 'event',
+          name: 'runtime.descriptor',
+          payload: { v: 1, agentId: 'canonical.runtime' },
+        });
+        handler({
+          type: 'event',
+          name: 'runtime.capabilities',
+          payload: { executionRun: { supported: true } },
+        });
+        handler({
+          type: 'event',
+          name: 'runtime.facets',
+          payload: { v: 1, transcriptSource: { supported: true } },
+        });
+        return () => {};
+      }),
       dispose: async () => {},
     });
 
@@ -269,10 +263,7 @@ describe('createLazyExecutionRunHostRuntime', () => {
         name: 'runtime.descriptor',
         payload: {
           v: 1,
-          agentId: 'acme.provider',
-          provider: {
-            backendMode: 'native',
-          },
+          agentId: 'canonical.runtime',
         },
       },
       {

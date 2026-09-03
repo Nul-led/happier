@@ -1,7 +1,7 @@
 import type {
     HostTerminalAvailabilityRequest,
 } from '@/agent/runtime/session/terminal/contract';
-import type { BackendSurfaceAvailabilityV1 } from '@happier-dev/protocol';
+import type { AgentSurfaceAvailabilityV1 } from '@happier-dev/protocol';
 
 type BivariantAsyncUnaryFn<TParams, TResult> = {
     bivarianceHack(params: TParams): Promise<TResult>;
@@ -18,13 +18,13 @@ export type TerminalRuntimeOps<
     TDiscoverIdentityResult = never,
     TAvailabilityParams = never,
 > = Readonly<{
-    evaluateAvailability?: (params: TAvailabilityParams) => Promise<BackendSurfaceAvailabilityV1> | BackendSurfaceAvailabilityV1;
+    evaluateAvailability?: (params: TAvailabilityParams) => Promise<AgentSurfaceAvailabilityV1> | AgentSurfaceAvailabilityV1;
     launch?: (params: TLaunchParams) => Promise<TLaunchResult>;
     discoverIdentity?: (params: TDiscoverIdentityParams) => Promise<TDiscoverIdentityResult>;
 }>;
 
 export type AnyTerminalRuntimeOps = Readonly<{
-    evaluateAvailability?: BivariantMaybeAsyncUnaryFn<HostTerminalAvailabilityRequest, BackendSurfaceAvailabilityV1>;
+    evaluateAvailability?: BivariantMaybeAsyncUnaryFn<HostTerminalAvailabilityRequest, AgentSurfaceAvailabilityV1>;
     launch?: BivariantAsyncUnaryFn<unknown, unknown>;
     discoverIdentity?: BivariantAsyncUnaryFn<unknown, unknown>;
 }>;

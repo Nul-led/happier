@@ -13,6 +13,8 @@ vi.mock('axios', () => ({
   },
 }));
 
+import type { CreatePluginInstallationPublisherHeader } from '@/plugins/installations/publisherProof';
+
 import {
   createAutomationClaimClient,
   isMissingAutomationWorkerEndpointError,
@@ -218,7 +220,7 @@ describe('createAutomationClaimClient', () => {
 
   it('retries one ambiguous V3 claim response with the exact signed request', async () => {
     axiosGet.mockResolvedValue({ data: { assignments: [], settings: DEFAULT_WORKER_SETTINGS } });
-    const createPublisherHeader = vi.fn(async () => 'signed-machine-proof');
+    const createPublisherHeader = vi.fn<CreatePluginInstallationPublisherHeader>(async () => 'signed-machine-proof');
     axiosPost
       .mockRejectedValueOnce({ request: {} })
       .mockResolvedValueOnce({ data: { run: null, automation: null, accountCurrentness: null } });

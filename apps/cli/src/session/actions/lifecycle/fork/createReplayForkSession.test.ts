@@ -73,7 +73,6 @@ function createBuiltInForkResolution(): ForkBackendResolution {
     backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
     replayFlavor: 'codex',
     metadataOverlay: {},
-    configuredAcp: null,
   };
 }
 

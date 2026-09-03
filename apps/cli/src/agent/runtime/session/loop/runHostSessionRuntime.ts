@@ -465,7 +465,10 @@ export type HostSessionRuntimeFactoryParams = Readonly<{
   pendingQueueDeliveryTiming?: AccountSettings['sessionPendingQueueDeliveryTiming'];
   permissionHandler: ProviderEnforcedPermissionHandler;
   getPermissionMode: () => PermissionMode;
-  setThinking: (value: boolean) => void;
+  // Effective thinking/keepalive is host-owned: the session loop's
+  // `setThinkingState` is the single writer, because it is the only path that
+  // also publishes the keepalive that carries the fact. Session-runtime
+  // factories are deliberately given no thinking authority.
   memoryRecallGuidanceEnabled: boolean;
   sessionState?: SessionStateSyncEngine;
   recordRuntimeLimitMeasurement?: HostRuntimeLimitMeasurementRecorder;
@@ -1933,9 +1936,6 @@ export async function runHostSessionRuntime(
     pendingQueueDeliveryTiming,
     permissionHandler,
     getPermissionMode: () => permissionModeState.getCurrentPermissionMode() ?? 'default',
-    setThinking: (value) => {
-      runtimeState.thinking = value;
-    },
     memoryRecallGuidanceEnabled,
     sessionState: sessionStateBridge.engine,
     runnerProcessIdentity,

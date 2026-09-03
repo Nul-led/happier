@@ -830,12 +830,76 @@ describe('registerPermissionModeMessageQueueBinding', () => {
       meta: {},
     } as UserMessage);
 
-    await Promise.resolve();
+    await vi.waitFor(() => {
+      expect(steerCalls).toHaveLength(1);
+    });
 
     expect(queueCalls).toEqual([]);
     expect(steerCalls).toEqual([
       { text: 'nudge active turn', localId: 'local-steer-1' },
     ]);
+  });
+
+  it('releases a replay-seed association when steerability is lost before provider dispatch', async () => {
+    let metadata = {
+      permissionMode: 'default',
+      permissionModeUpdatedAt: 0,
+      replaySeedV1: {
+        v: 1,
+        seedText: 'SEED',
+        sourceSessionId: 'parent',
+        sourceCutoffSeqInclusive: 3,
+        createdAtMs: 123,
+      },
+    } as unknown as Metadata;
+    let userMessageHandler: ((message: UserMessage) => boolean | void) | null = null;
+    const session = {
+      onUserMessage: (handler: (message: UserMessage) => boolean | void) => {
+        userMessageHandler = handler;
+      },
+      getMetadataSnapshot: () => metadata,
+      updateMetadata: (updater: (current: Metadata) => Metadata) => {
+        metadata = updater(metadata);
+      },
+      readDurableProviderInputAcceptanceV1: async () => 'not_accepted' as const,
+    };
+    const queueCalls: PermissionModeQueuedPrompt[] = [];
+    const steerText = vi.fn(async () => undefined);
+    let steerabilityReadCount = 0;
+
+    registerPermissionModeMessageQueueBinding({
+      session,
+      queue: {
+        push: (message: PermissionModeQueuedPrompt) => queueCalls.push(message),
+        pushIsolate: (message: PermissionModeQueuedPrompt) => queueCalls.push(message),
+        pushIsolateAndClear: (message: PermissionModeQueuedPrompt) => queueCalls.push(message),
+      },
+      getCurrentPermissionMode: () => 'default',
+      setCurrentPermissionMode: () => undefined,
+      inFlightSteer: {
+        supportsInFlightSteer: () => true,
+        isTurnInFlight: () => true,
+        canSteerPrompt: () => {
+          steerabilityReadCount += 1;
+          return steerabilityReadCount === 1;
+        },
+        steerText,
+      },
+    });
+
+    userMessageHandler?.({
+      role: 'user',
+      content: { type: 'text', text: 'nudge active turn' },
+      localId: 'local-steer-seed',
+      meta: {},
+    } as UserMessage);
+
+    await vi.waitFor(() => expect(queueCalls).toHaveLength(1));
+    expect(steerText).not.toHaveBeenCalled();
+    expect((metadata as Metadata & { replaySeedV1?: { seedText?: string; dispatchedToLocalId?: string } }).replaySeedV1)
+      .toMatchObject({ seedText: 'SEED' });
+    expect((metadata as Metadata & { replaySeedV1?: { dispatchedToLocalId?: string } }).replaySeedV1?.dispatchedToLocalId)
+      .toBeUndefined();
   });
 
   it('reads appendSystemPrompt from prototype-less metadata objects', () => {

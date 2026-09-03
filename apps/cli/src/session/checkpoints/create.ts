@@ -1,5 +1,5 @@
 import type {
-    BackendSurfaceAvailabilityV1,
+    AgentSurfaceAvailabilityV1,
     CheckpointCreationCandidateRefV1,
     CheckpointCreationCandidateV1,
     CheckpointOperationReceiptV1,
@@ -55,7 +55,7 @@ export type CreateSessionCheckpointPorts = Readonly<{
         sessionId: string;
         scopes: readonly CheckpointRestoreScopeV1[];
         timing: 'idle' | 'activeTurn';
-    }>) => MaybePromise<BackendSurfaceAvailabilityV1>;
+    }>) => MaybePromise<AgentSurfaceAvailabilityV1>;
     createLifecycleId?: (request: SessionCheckpointRequestV1) => string;
     signal?: AbortSignal;
 }>;

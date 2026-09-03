@@ -50,7 +50,7 @@ async function bundledFixtureGenerations(pluginIds: ReadonlySet<string>) {
           sourceRootPath: rootPath,
           manifestRelativePath: '.happier-plugin/plugin.json',
           distribution: await createLocalPathPluginDistributionIdentity(rootPath),
-          updatePolicy: 'manual',
+          updatePolicy: 'reviewEveryUpdate',
           createdAtMs: 0,
           immutableGenerationId: artifact.record.immutableGenerationId,
         });

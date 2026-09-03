@@ -1084,7 +1084,10 @@ export class AcpBackend implements CatalogAcpBackend {
     try {
       const { initTimeout } = await this.createConnectionAndInitialize({ operationId: randomUUID() });
 
-      // Create a new session with retry
+      // `session/new` may have created provider state as soon as the request is emitted. A
+      // timeout, disconnect, or transport failure is therefore ambiguous and must not trigger
+      // another request on this connection. The existing catch path cleans up the ambiguous
+      // connection/process before a caller may explicitly choose a fresh start attempt.
       const newSessionRequest: NewSessionRequest = {
         cwd: this.options.cwd,
         mcpServers: this.buildAcpMcpServersForSessionRequest(),
@@ -1095,38 +1098,23 @@ export class AcpBackend implements CatalogAcpBackend {
 
       logger.debug(`[AcpBackend] Creating new session...`);
 
-      const sessionResponse = await withRetry(
-        async () => {
-          let timeoutHandle: NodeJS.Timeout | null = null;
-          try {
-            const result = await Promise.race([
-              this.connection!.peer.newSession(newSessionRequest).then((res) => {
-                if (timeoutHandle) {
-                  clearTimeout(timeoutHandle);
-                  timeoutHandle = null;
-                }
-                return res;
-              }),
-              new Promise<never>((_, reject) => {
-                timeoutHandle = setTimeout(() => {
-                  reject(this.createStartupTimeoutError('New session', initTimeout));
-                }, initTimeout);
-              }),
-            ]);
-            return result;
-          } finally {
-            if (timeoutHandle) {
-              clearTimeout(timeoutHandle);
-            }
+      let timeoutHandle: NodeJS.Timeout | null = null;
+      const sessionResponse = await Promise.race([
+        this.connection!.peer.newSession(newSessionRequest).then((res) => {
+          if (timeoutHandle) {
+            clearTimeout(timeoutHandle);
+            timeoutHandle = null;
           }
-        },
-        {
-          operationName: 'NewSession',
-          maxAttempts: RETRY_CONFIG.maxAttempts,
-          baseDelayMs: RETRY_CONFIG.baseDelayMs,
-          maxDelayMs: RETRY_CONFIG.maxDelayMs,
-        }
-      );
+          return res;
+        }),
+        new Promise<never>((_, reject) => {
+          timeoutHandle = setTimeout(() => {
+            reject(this.createStartupTimeoutError('New session', initTimeout));
+          }, initTimeout);
+        }),
+      ]).finally(() => {
+        if (timeoutHandle) clearTimeout(timeoutHandle);
+      });
       const sessionId = readNonBlankOpaqueIdentifier(sessionResponse.sessionId);
       if (!sessionId) {
         throw new Error('New session response did not include a session id');

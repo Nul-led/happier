@@ -2,10 +2,15 @@ import { createHash, randomUUID } from 'node:crypto';
 import { chmod, lstat, readFile, readdir, realpath, rename, stat, unlink } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 
+import {
+  createWindowsProtectedAclBoundary,
+  type WindowsProtectedAclBoundary,
+} from '@happier-dev/cli-common/fs/windowsProtectedAcl';
+import { writeJsonAtomic } from '@/utils/fs/writeJsonAtomic';
+
 // Retired engine schema marker is intentionally local: the replacement must not import
 // the deleted replication implementation.
 const WORKSPACE_REPLICATION_SCHEMA_VERSION = 1;
-import { writeJsonAtomic } from '@/utils/fs/writeJsonAtomic';
 
 const LEGACY_DIRECTORY_NAME = 'workspace-replication';
 const RETIRED_DIRECTORY_PREFIX = 'workspace-replication.retired-v1-';
@@ -36,6 +41,9 @@ export type InspectRetiredWorkspaceReplicationStateInput = Readonly<{
   installationId?: string;
   nowMs?: number;
   randomSuffix?: string;
+  platform?: NodeJS.Platform;
+  windowsAclBoundary?: WindowsProtectedAclBoundary;
+  setPosixPrivatePermissions?: (path: string) => Promise<void>;
 }>;
 
 type InventoryEntry = Readonly<{ name: string; size: number }>;
@@ -119,6 +127,27 @@ function isOwnedAndPrivate(rootStat: Awaited<ReturnType<typeof lstat>>): boolean
   return true;
 }
 
+type LegacyStatePrivacyBoundary = Readonly<{
+  platform: NodeJS.Platform;
+  windowsAclBoundary?: WindowsProtectedAclBoundary;
+}>;
+
+async function isPathOwnedAndPrivate(
+  path: string,
+  pathStat: Awaited<ReturnType<typeof lstat>>,
+  boundary: LegacyStatePrivacyBoundary,
+): Promise<boolean> {
+  if (boundary.platform !== 'win32') return isOwnedAndPrivate(pathStat);
+  const windowsAclBoundary = boundary.windowsAclBoundary;
+  if (!windowsAclBoundary) return false;
+  try {
+    await windowsAclBoundary.verify({ path, kind: 'directory' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Validates a previously written quarantine against the exact plan-owned
  * retirement marker/directory shape. Anything ambiguous or malformed fails
@@ -127,13 +156,14 @@ function isOwnedAndPrivate(rootStat: Awaited<ReturnType<typeof lstat>>): boolean
 async function validateRetiredQuarantine(
   quarantinePath: string,
   name: string,
+  boundary: LegacyStatePrivacyBoundary,
 ): Promise<Readonly<{ valid: true; inventoryHash: string }> | Readonly<{ valid: false }>> {
   const match = RETIRED_QUARANTINE_NAME_PATTERN.exec(name);
   if (!match) return { valid: false };
   const namedAtMs = Number(match[1]);
   const statEntry = await lstat(quarantinePath).catch(() => null);
   if (!statEntry || !statEntry.isDirectory() || statEntry.isSymbolicLink()) return { valid: false };
-  if (!isOwnedAndPrivate(statEntry)) return { valid: false };
+  if (!(await isPathOwnedAndPrivate(quarantinePath, statEntry, boundary))) return { valid: false };
   const rawMarker = await readFile(join(quarantinePath, RETIREMENT_MARKER_NAME), 'utf8').catch(() => null);
   if (rawMarker === null || rawMarker.length > MAX_RECORD_BYTES) return { valid: false };
   let marker: unknown;
@@ -172,6 +202,7 @@ async function validateRetiredQuarantine(
 async function classifyRetiredQuarantine(
   activeServerDir: string,
   statePath: string,
+  boundary: LegacyStatePrivacyBoundary,
 ): Promise<WorkspaceSyncLegacyStateInspection> {
   const entries = await readdir(activeServerDir, { withFileTypes: true }).catch((error: unknown) => (
     (error as NodeJS.ErrnoException)?.code === 'ENOENT' ? [] : null
@@ -183,10 +214,21 @@ async function classifyRetiredQuarantine(
     .sort();
   if (candidates.length === 0) return { status: 'absent', path: statePath };
   if (candidates.length > 1) return unknown(statePath, 'multiple_retired_quarantines');
+  const canonicalActiveServerDir = await realpathSafe(activeServerDir);
+  const activeServerDirStat = canonicalActiveServerDir
+    ? await lstat(canonicalActiveServerDir).catch(() => null)
+    : null;
+  if (!canonicalActiveServerDir || !activeServerDirStat || !activeServerDirStat.isDirectory()
+    || activeServerDirStat.isSymbolicLink()) {
+    return unknown(statePath, 'active_server_dir_unreadable');
+  }
+  if (!(await isPathOwnedAndPrivate(canonicalActiveServerDir, activeServerDirStat, boundary))) {
+    return unknown(statePath, 'parent_ownership_or_permissions');
+  }
   const validated: Array<Readonly<{ path: string; inventoryHash: string }>> = [];
   for (const name of candidates) {
     const quarantinePath = join(activeServerDir, name);
-    const outcome = await validateRetiredQuarantine(quarantinePath, name);
+    const outcome = await validateRetiredQuarantine(quarantinePath, name, boundary);
     if (!outcome.valid) return unknown(statePath, 'malformed_retired_quarantine');
     validated.push({ path: quarantinePath, inventoryHash: outcome.inventoryHash });
   }
@@ -222,12 +264,19 @@ export function createWorkspaceSyncLegacyStateGate(inspection: WorkspaceSyncLega
 export async function inspectRetiredWorkspaceReplicationState(
   input: InspectRetiredWorkspaceReplicationStateInput,
 ): Promise<WorkspaceSyncLegacyStateInspection> {
+  const platform = input.platform ?? process.platform;
+  const boundary: LegacyStatePrivacyBoundary = {
+    platform,
+    windowsAclBoundary: platform === 'win32'
+      ? input.windowsAclBoundary ?? createWindowsProtectedAclBoundary()
+      : undefined,
+  };
   const activeServerDir = resolve(input.activeServerDir);
   const statePath = join(activeServerDir, LEGACY_DIRECTORY_NAME);
   const initialStat = await lstat(statePath).catch((error: unknown) => {
     return (error as NodeJS.ErrnoException)?.code === 'ENOENT' ? null : undefined;
   });
-  if (initialStat === null) return await classifyRetiredQuarantine(activeServerDir, statePath);
+  if (initialStat === null) return await classifyRetiredQuarantine(activeServerDir, statePath, boundary);
   if (!initialStat || !initialStat.isDirectory() || initialStat.isSymbolicLink()) {
     return unknown(statePath, 'not_a_real_directory');
   }
@@ -240,7 +289,9 @@ export async function inspectRetiredWorkspaceReplicationState(
     || basename(canonicalStatePath) !== LEGACY_DIRECTORY_NAME) {
     return unknown(statePath, 'path_replacement');
   }
-  if (!isOwnedAndPrivate(canonicalParent)) return unknown(statePath, 'parent_ownership_or_permissions');
+  if (!(await isPathOwnedAndPrivate(canonicalActiveServerDir, canonicalParent, boundary))) {
+    return unknown(statePath, 'parent_ownership_or_permissions');
+  }
   const canonicalStateStat = await lstat(canonicalStatePath).catch(() => null);
   if (!canonicalStateStat || !canonicalStateStat.isDirectory() || canonicalStateStat.isSymbolicLink()) {
     return unknown(statePath, 'path_replacement');
@@ -249,7 +300,9 @@ export async function inspectRetiredWorkspaceReplicationState(
     && canonicalStateStat.dev !== canonicalParent.dev) {
     return unknown(statePath, 'mount_replacement');
   }
-  if (!isOwnedAndPrivate(canonicalStateStat)) return unknown(statePath, 'ownership_or_permissions');
+  if (!(await isPathOwnedAndPrivate(canonicalStatePath, canonicalStateStat, boundary))) {
+    return unknown(statePath, 'ownership_or_permissions');
+  }
 
   const inventory = await readInventory(canonicalStatePath).catch(() => null);
   if (!inventory) return unknown(statePath, 'unrecognized_child');
@@ -279,7 +332,27 @@ export async function inspectRetiredWorkspaceReplicationState(
     return unknown(statePath, 'quarantine_failed');
   }
 
-  await chmod(quarantinePath, 0o700).catch(() => undefined);
+  if (platform === 'win32') {
+    const windowsAclBoundary = boundary.windowsAclBoundary;
+    if (!windowsAclBoundary) return unknown(statePath, 'quarantine_permissions_failed');
+    try {
+      await windowsAclBoundary.applyAndVerify({ path: quarantinePath, kind: 'directory' });
+    } catch {
+      return unknown(statePath, 'quarantine_permissions_failed');
+    }
+  } else {
+    try {
+      await (input.setPosixPrivatePermissions ?? ((path: string) => chmod(path, 0o700)))(quarantinePath);
+      const quarantineStat = await lstat(quarantinePath);
+      if (!quarantineStat.isDirectory() || quarantineStat.isSymbolicLink()
+        || !isOwnedAndPrivate(quarantineStat)
+        || (Number(quarantineStat.mode) & 0o077) !== 0) {
+        return unknown(statePath, 'quarantine_permissions_failed');
+      }
+    } catch {
+      return unknown(statePath, 'quarantine_permissions_failed');
+    }
+  }
   return {
     status: 'legacy_workspace_sync_state_unsupported',
     classification: 'retired_v1',

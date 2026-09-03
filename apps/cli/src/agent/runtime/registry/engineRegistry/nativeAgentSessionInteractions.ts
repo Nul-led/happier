@@ -507,7 +507,6 @@ export function createNativeAgentSessionServices(params: NativeAgentSessionInter
             ),
         })
         : base.sessions;
-    const sessions = Object.freeze({ ...inventory });
     return Object.freeze({
         ...base,
         availability: (serviceId: PluginServiceId) => {
@@ -521,7 +520,7 @@ export function createNativeAgentSessionServices(params: NativeAgentSessionInter
             }
             return base.availability(serviceId);
         },
-        sessions,
+        sessions: inventory,
         interactions,
     });
 }

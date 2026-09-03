@@ -4,6 +4,7 @@ import type {
   ConnectedServiceBindingsV1,
   ExecutionRunDisplay,
   ExecutionRunIntent,
+  ExecutionRunLaunchOrigin,
   ExecutionRunResumeHandle,
   ExecutionRunConnectedServicesLaunchV1,
   ProviderBoundModelRef,
@@ -29,6 +30,7 @@ export type ExecutionRunManagerStartParams = Readonly<{
    */
   intentInput?: unknown;
   display?: ExecutionRunDisplay;
+  launchOrigin?: ExecutionRunLaunchOrigin;
   /**
    * Optional connected-services selection for the run backend. Omitted (undefined) means
    * "apply the session-spawn account-settings defaulting"; null means "explicitly native".
@@ -129,6 +131,7 @@ export type ExecutionRunState = Readonly<{
    * env values, or closures. Dev materializes the selection daemon-side (fail-closed) at resume.
    */
   launch?: Readonly<{
+    launchOrigin?: ExecutionRunLaunchOrigin;
     modelId?: string;
     modelSelection?: ProviderBoundModelRef;
     sessionConfigOptionOverrides?: AcpConfigOptionOverridesV1;

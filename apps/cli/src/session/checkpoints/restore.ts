@@ -1,5 +1,5 @@
 import type {
-    BackendSurfaceAvailabilityV1,
+    AgentSurfaceAvailabilityV1,
     CheckpointCandidateRefV1,
     CheckpointFailedScopeV1,
     CheckpointOperationReceiptV1,
@@ -65,7 +65,7 @@ export type RestoreSessionCheckpointPorts = Readonly<{
         target?: CheckpointProviderTargetRefV1;
         scopes: readonly CheckpointRestoreScopeV1[];
         timing: 'idle';
-    }>) => MaybePromise<BackendSurfaceAvailabilityV1>;
+    }>) => MaybePromise<AgentSurfaceAvailabilityV1>;
     providerAnchorRequiresTurnEvidence?: (request: Readonly<{
         sessionId: string;
         backendId: string;

@@ -22,7 +22,9 @@ import type {
   WaitForNextProviderInputOptions,
 } from './_types';
 import type {
+  MaterializeNextPendingOptions,
   MaterializeNextPendingResult,
+  PendingMaterializationDiagnosticPhase,
   RuntimeActivitySnapshotTail,
 } from '@/api/session/sessionClientPort';
 
@@ -91,11 +93,7 @@ function buildMaterializeOptions(
   reconcileWhenEmpty: PendingMaterializationReconcileWhenEmpty,
   pendingQueueDeliveryTiming: SessionPendingQueueDeliveryTiming | undefined,
   expectedRuntimeActivityRevision?: number,
-): {
-  reconcileWhenEmpty: PendingMaterializationReconcileWhenEmpty;
-  deliveryTiming?: SessionPendingQueueDeliveryTiming;
-  expectedRuntimeActivityRevision?: number;
-} {
+): MaterializeNextPendingOptions {
   return {
     reconcileWhenEmpty,
     ...(pendingQueueDeliveryTiming ? { deliveryTiming: pendingQueueDeliveryTiming } : {}),
@@ -132,7 +130,10 @@ async function materializeWithRuntimeActivityTail(
 ): Promise<MaterializeNextPendingResult> {
   const first = await observePendingInputPhase(
     'materialize',
-    async () => await session.materializeNextPendingMessageSafely?.(options)
+    async (onDiagnosticPhase) => await session.materializeNextPendingMessageSafely?.({
+      ...options,
+      onDiagnosticPhase,
+    })
       ?? { type: 'retryable_transport' as const },
   );
   if (
@@ -148,9 +149,10 @@ async function materializeWithRuntimeActivityTail(
     if (committedRevision !== undefined) {
       return await observePendingInputPhase(
         'materialize_runtime_tail_retry',
-        async () => await session.materializeNextPendingMessageSafely?.({
+        async (onDiagnosticPhase) => await session.materializeNextPendingMessageSafely?.({
           ...options,
           expectedRuntimeActivityRevision: committedRevision,
+          onDiagnosticPhase,
         }) ?? { type: 'retryable_transport' as const },
       );
     }
@@ -952,30 +954,54 @@ async function callMetadataUpdate(
   }
 }
 
-async function observePendingInputPhase<T>(
-  phase: 'materialize' | 'materialize_runtime_tail_retry' | 'metadata_reconcile',
-  operation: () => Promise<T>,
-): Promise<T> {
-  const startedAt = Date.now();
-  let slowDiagnosticEmitted = false;
-  const timer = setTimeout(() => {
-    slowDiagnosticEmitted = true;
-    logger.infoFile('[pendingQueue] input consumer phase remains unsettled', {
-      elapsedMs: Date.now() - startedAt,
-      phase,
-    });
-  }, PENDING_INPUT_SLOW_PHASE_DIAGNOSTIC_MS);
-  timer.unref?.();
+type PendingInputConsumerDiagnosticPhase =
+  | 'materialize'
+  | 'materialize_runtime_tail_retry'
+  | 'metadata_reconcile'
+  | PendingMaterializationDiagnosticPhase;
 
-  try {
-    return await operation();
-  } finally {
-    clearTimeout(timer);
+async function observePendingInputPhase<T>(
+  initialPhase: PendingInputConsumerDiagnosticPhase,
+  operation: (onPhase: (phase: PendingMaterializationDiagnosticPhase) => void) => Promise<T>,
+): Promise<T> {
+  let phase = initialPhase;
+  let startedAt = Date.now();
+  let slowDiagnosticEmitted = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+
+  const finishPhase = () => {
+    if (timer) clearTimeout(timer);
+    timer = null;
     if (slowDiagnosticEmitted) {
       logger.infoFile('[pendingQueue] input consumer slow phase settled', {
         elapsedMs: Date.now() - startedAt,
         phase,
       });
     }
+  };
+  const startPhase = () => {
+    startedAt = Date.now();
+    slowDiagnosticEmitted = false;
+    timer = setTimeout(() => {
+      slowDiagnosticEmitted = true;
+      logger.infoFile('[pendingQueue] input consumer phase remains unsettled', {
+        elapsedMs: Date.now() - startedAt,
+        phase,
+      });
+    }, PENDING_INPUT_SLOW_PHASE_DIAGNOSTIC_MS);
+    timer.unref?.();
+  };
+  const onPhase = (nextPhase: PendingMaterializationDiagnosticPhase) => {
+    if (nextPhase === phase) return;
+    finishPhase();
+    phase = nextPhase;
+    startPhase();
+  };
+
+  startPhase();
+  try {
+    return await operation(onPhase);
+  } finally {
+    finishPhase();
   }
 }

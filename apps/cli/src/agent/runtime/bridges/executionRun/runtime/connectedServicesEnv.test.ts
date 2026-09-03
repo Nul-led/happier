@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const loggerInfoMock = vi.fn();
 const loggerWarnMock = vi.fn();
 const loggerDebugMock = vi.fn();
+const OPENAI_CODEX_ACCOUNT_SERVICE_ID = 'happier.agent.codex/openai-codex';
+const ANTHROPIC_ACCOUNT_SERVICE_ID = 'happier.agent.claude/claude-subscription';
 
 vi.mock('@/ui/logger', () => ({
     logger: {
@@ -21,14 +23,18 @@ import {
 const CONNECTED_BINDINGS = {
     v: 1,
     bindingsByServiceId: {
-        'openai-codex': { source: 'connected', selection: 'profile', profileId: 'profile_1' },
+        [OPENAI_CODEX_ACCOUNT_SERVICE_ID]: {
+            source: 'connected',
+            selection: 'profile',
+            profileId: 'profile_1',
+        },
     },
 } as const;
 
 const NATIVE_BINDINGS = {
     v: 1,
     bindingsByServiceId: {
-        'openai-codex': { source: 'native' },
+        [OPENAI_CODEX_ACCOUNT_SERVICE_ID]: { source: 'native' },
     },
 } as const;
 
@@ -82,7 +88,7 @@ describe('resolveExecutionRunConnectedServicesEnv', () => {
                 connectedServices: {
                     v: 1,
                     bindingsByServiceId: {
-                        'openai-codex': {
+                        [OPENAI_CODEX_ACCOUNT_SERVICE_ID]: {
                             source: 'connected',
                             selection: 'profile',
                             profileId: 'default_profile',
@@ -101,7 +107,7 @@ describe('resolveExecutionRunConnectedServicesEnv', () => {
             bindings: {
                 v: 1,
                 bindingsByServiceId: {
-                    'openai-codex': {
+                    [OPENAI_CODEX_ACCOUNT_SERVICE_ID]: {
                         source: 'connected',
                         selection: 'profile',
                         profileId: 'default_profile',
@@ -145,7 +151,11 @@ describe('resolveExecutionRunConnectedServicesEnv', () => {
                 connectedServices: {
                     v: 1,
                     bindingsByServiceId: {
-                        'openai-codex': { source: 'connected', selection: 'profile', profileId: 'default_profile' },
+                        [OPENAI_CODEX_ACCOUNT_SERVICE_ID]: {
+                            source: 'connected',
+                            selection: 'profile',
+                            profileId: 'default_profile',
+                        },
                     },
                 },
                 connectedServicesUpdatedAt: 123,
@@ -169,7 +179,7 @@ describe('resolveExecutionRunConnectedServicesEnv', () => {
         const requested = deps.requestMaterialization.mock.calls[0]?.[0] as {
             connectedServices: { bindingsByServiceId: Record<string, unknown> };
         };
-        expect(requested.connectedServices.bindingsByServiceId['openai-codex']).toEqual({
+        expect(requested.connectedServices.bindingsByServiceId[OPENAI_CODEX_ACCOUNT_SERVICE_ID]).toEqual({
             source: 'connected',
             selection: 'profile',
             profileId: 'default_profile',
@@ -182,7 +192,11 @@ describe('resolveExecutionRunConnectedServicesEnv', () => {
                 connectedServices: {
                     v: 1,
                     bindingsByServiceId: {
-                        openai: { source: 'connected', selection: 'group', groupId: 'team' },
+                        [ANTHROPIC_ACCOUNT_SERVICE_ID]: {
+                            source: 'connected',
+                            selection: 'group',
+                            groupId: 'team',
+                        },
                     },
                 },
                 connectedServicesUpdatedAt: 1,
@@ -191,15 +205,19 @@ describe('resolveExecutionRunConnectedServicesEnv', () => {
 
         await resolveExecutionRunConnectedServicesEnv({
             runId: 'run_1',
-            backendId: 'codex',
+            backendId: 'pi',
             backendSourceKind: 'built_in',
             connectedServices: {
                 v: 1,
                 bindingsByServiceId: {
-                    'openai-codex': { source: 'connected', selection: 'profile', profileId: 'explicit_pin' },
+                    [OPENAI_CODEX_ACCOUNT_SERVICE_ID]: {
+                        source: 'connected',
+                        selection: 'profile',
+                        profileId: 'explicit_pin',
+                    },
                 },
             },
-            connectedServicesDefaultServiceIds: ['openai'],
+            connectedServicesDefaultServiceIds: [ANTHROPIC_ACCOUNT_SERVICE_ID],
             cwd: '/tmp/project',
             deps,
         });
@@ -208,12 +226,12 @@ describe('resolveExecutionRunConnectedServicesEnv', () => {
             connectedServices: { bindingsByServiceId: Record<string, unknown> };
         };
         // Explicit pin is preserved verbatim; the bare default is resolved and merged in alongside it.
-        expect(requested.connectedServices.bindingsByServiceId['openai-codex']).toEqual({
+        expect(requested.connectedServices.bindingsByServiceId[OPENAI_CODEX_ACCOUNT_SERVICE_ID]).toEqual({
             source: 'connected',
             selection: 'profile',
             profileId: 'explicit_pin',
         });
-        expect(requested.connectedServices.bindingsByServiceId.openai).toEqual({
+        expect(requested.connectedServices.bindingsByServiceId[ANTHROPIC_ACCOUNT_SERVICE_ID]).toEqual({
             source: 'connected',
             selection: 'group',
             groupId: 'team',
@@ -229,7 +247,7 @@ describe('resolveExecutionRunConnectedServicesEnv', () => {
             runId: 'run_1',
             backendId: 'codex',
             backendSourceKind: 'built_in',
-            connectedServicesDefaultServiceIds: ['openai-codex'],
+            connectedServicesDefaultServiceIds: [OPENAI_CODEX_ACCOUNT_SERVICE_ID],
             cwd: '/tmp/project',
             deps,
         })).rejects.toBeInstanceOf(ExecutionRunConnectedServicesError);

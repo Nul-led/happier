@@ -406,7 +406,6 @@ describe('createNativeAgentSessionHostServiceOwners', () => {
                 mcpServers: {},
                 permissionHandler,
                 getPermissionMode: () => 'default',
-                setThinking: () => undefined,
                 memoryRecallGuidanceEnabled: false,
                 runnerProcessIdentity: null,
                 startupModelSelection: null,

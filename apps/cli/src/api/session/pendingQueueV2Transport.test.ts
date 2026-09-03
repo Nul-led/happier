@@ -14,6 +14,7 @@ import {
     readAcceptedPendingQueueV2DeliveryRetryDirective,
     readBlockedPendingQueueV2DeliveryByLocalIdFromServer,
     readPendingQueueV2MessageContentByLocalIdFromServer,
+    readPendingQueueV2ActivationEligibilityFromServer,
     resolveAcceptedPendingQueueV2Delivery,
     settlePendingQueueV2Admission,
 } from './pendingQueueV2Transport';
@@ -1084,9 +1085,9 @@ describe('pendingQueueV2Transport', () => {
             token: 'token',
             sessionId: 'session/with spaces',
         })).resolves.toEqual([
-            { localId: 'delivering', status: 'delivering' },
-            { localId: 'blocked', status: 'blocked' },
-            { localId: 'discarded', status: 'discarded' },
+            { localId: 'delivering', status: 'delivering', deliveryStatus: { status: 'delivering', detail: 'awaiting_acceptance' } },
+            { localId: 'blocked', status: 'blocked', deliveryStatus: { status: 'blocked', reason: 'runtime_config_blocked' } },
+            { localId: 'discarded', status: 'discarded', deliveryStatus: { status: 'discarded', reason: null } },
         ]);
     });
 
@@ -1104,8 +1105,8 @@ describe('pendingQueueV2Transport', () => {
             token: 'token',
             sessionId: 'session/with spaces',
         })).resolves.toEqual([
-            { localId: ' request-1', status: 'delivering' },
-            { localId: 'request-1 ', status: 'delivering' },
+            { localId: ' request-1', status: 'delivering', deliveryStatus: { status: 'delivering', detail: 'awaiting_acceptance' } },
+            { localId: 'request-1 ', status: 'delivering', deliveryStatus: { status: 'delivering', detail: 'awaiting_acceptance' } },
         ]);
     });
 
@@ -1178,5 +1179,42 @@ describe('pendingQueueV2Transport', () => {
             localId: 'blocked-local',
             reason: 'payload_too_large',
         });
+    });
+
+    it('admits only the exact queued user send-now Pending row for activation', async () => {
+        mockGet.mockResolvedValueOnce({
+            data: {
+                pending: [
+                    {
+                        localId: 'eligible',
+                        messageRole: 'user',
+                        requestedAction: { v: 1, kind: 'send_now' },
+                        deliveryStatus: { status: 'queued' },
+                    },
+                ],
+            },
+        });
+        await expect(readPendingQueueV2ActivationEligibilityFromServer({
+            token: 'token', sessionId: 'session-1', requestId: 'eligible',
+        })).resolves.toBe('eligible');
+
+        mockGet.mockResolvedValueOnce({
+            data: {
+                pending: [{
+                    localId: 'wrong-action',
+                    messageRole: 'user',
+                    requestedAction: { v: 1, kind: 'enqueue' },
+                    deliveryStatus: { status: 'queued' },
+                }],
+            },
+        });
+        await expect(readPendingQueueV2ActivationEligibilityFromServer({
+            token: 'token', sessionId: 'session-1', requestId: 'wrong-action',
+        })).resolves.toBe('ineligible');
+
+        mockGet.mockResolvedValueOnce({ data: { pending: [] } });
+        await expect(readPendingQueueV2ActivationEligibilityFromServer({
+            token: 'token', sessionId: 'session-1', requestId: 'resolved',
+        })).resolves.toBe('missing');
     });
 });

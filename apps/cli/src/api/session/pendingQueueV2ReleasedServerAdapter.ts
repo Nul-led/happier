@@ -4,7 +4,10 @@ import type { SessionSyncPendingInputServerContractResult } from '@/api/clientCo
 import { decodeBase64, decrypt } from '../encryption';
 import type { ClientToServerEvents, ServerToClientEvents, UserMessage } from '../types';
 import { UserMessageSchema } from '../types';
-import type { MaterializeNextPendingResult } from './sessionClientPort';
+import type {
+    MaterializeNextPendingResult,
+    PendingMaterializationDiagnosticPhase,
+} from './sessionClientPort';
 import { materializeNextPendingQueueV2MessageViaReleasedServerSocket } from './pendingQueueV2Transport';
 import { findTranscriptEncryptedMessageByLocalIdV2 } from './transcriptMessageLookup';
 import { delayUnref } from '@/utils/time';
@@ -49,6 +52,7 @@ export async function runPendingQueueV2ReleasedServerAdapter(params: Readonly<{
     getSocket: () => SessionSyncPendingInputServerContractResult['socket'];
     isRuntimeAuthorityCurrent: () => boolean;
     deliverMaterializedUserMessageToAgentQueue: (message: UserMessage, providerAction: 'send') => boolean | void;
+    reportDiagnosticPhase?: (phase: PendingMaterializationDiagnosticPhase) => void;
 }> & SessionStoredContentCryptoContext): Promise<MaterializeNextPendingResult> {
     const contractSocket = params.contractResult.socket as SessionSocket;
     const hasCurrentAuthority = (): boolean => (
@@ -64,6 +68,7 @@ export async function runPendingQueueV2ReleasedServerAdapter(params: Readonly<{
 
     let materialized;
     try {
+        params.reportDiagnosticPhase?.('materialize.server_claim');
         materialized = await materializeNextPendingQueueV2MessageViaReleasedServerSocket({
             socket: contractSocket,
             sessionId: params.sessionId,
@@ -79,6 +84,7 @@ export async function runPendingQueueV2ReleasedServerAdapter(params: Readonly<{
     const acknowledged = materialized.message;
     let lookup: Awaited<ReturnType<typeof findTranscriptEncryptedMessageByLocalIdV2>>;
     for (let attempt = 0; ; attempt += 1) {
+        params.reportDiagnosticPhase?.('materialize.compatibility_transcript_lookup');
         lookup = await findTranscriptEncryptedMessageByLocalIdV2({
             token: params.token,
             serverUrl: params.serverUrl,

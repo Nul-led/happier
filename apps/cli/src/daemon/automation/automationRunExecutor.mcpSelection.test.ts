@@ -218,10 +218,12 @@ function strictExecutionRunRecipe(params: { triggerEvidence?: typeof executionRu
   };
 }
 
+type ClaimedV2RunPayload = Extract<ClaimableRunPayload, { protocol: 'v2' }>;
+
 function buildClaimedRun(overrides: {
-  run?: Partial<ClaimableRunPayload['run']>;
-  automation?: Partial<ClaimableRunPayload['automation']>;
-} = {}): ClaimableRunPayload {
+  run?: Partial<ClaimedV2RunPayload['run']>;
+  automation?: Partial<ClaimedV2RunPayload['automation']>;
+} = {}): ClaimedV2RunPayload {
   return {
     protocol: 'v2',
     run: {
@@ -1512,17 +1514,34 @@ describe('executeClaimedRun (mcpSelection)', () => {
       type: 'success',
       sessionId: 'must-not-spawn',
     }));
+    // A completed wait carries the canonical `execution.run.get` run
+    // projection (ExecutionRunWaitCompletedResultSchema), not a partial shape.
+    const startWait = {
+      ok: true as const,
+      status: 'succeeded' as const,
+      result: {
+        run: {
+          runId: 'native-run-1',
+          callId: 'native-call-1',
+          sidechainId: 'native-sidechain-1',
+          intent: 'task' as const,
+          backendTarget: { kind: 'builtInAgent' as const, agentId: 'codex' },
+          permissionMode: 'read_only',
+          retentionPolicy: 'ephemeral' as const,
+          runClass: 'bounded' as const,
+          ioMode: 'request_response' as const,
+          status: 'succeeded' as const,
+          startedAtMs: 1_723_247_201_000,
+        },
+      },
+    };
     const executeAction = vi.fn(async () => ({
       ok: true as const,
       result: {
         runId: 'native-run-1',
         callId: 'native-call-1',
         sidechainId: 'native-sidechain-1',
-        wait: {
-          ok: true as const,
-          status: 'succeeded' as const,
-          result: { run: { runId: 'native-run-1', status: 'succeeded' as const } },
-        },
+        wait: startWait,
       },
     }));
     const claimClient = {
@@ -1610,11 +1629,7 @@ describe('executeClaimedRun (mcpSelection)', () => {
         runId: 'native-run-1',
         callId: 'native-call-1',
         sidechainId: 'native-sidechain-1',
-        wait: {
-          ok: true,
-          status: 'succeeded',
-          result: { run: { runId: 'native-run-1', status: 'succeeded' } },
-        },
+        wait: startWait,
       },
     });
     expect(enqueueAutomationPrompt).not.toHaveBeenCalled();
@@ -1838,6 +1853,49 @@ describe('executeClaimedRun (mcpSelection)', () => {
     expect(claimClient.settleExecutionDispatch).not.toHaveBeenCalled();
   });
 
+  it('does not start an execution Run when authoritative cancellation lands during the post-start currentness preflight', async () => {
+    const cancellation = new AbortController();
+    const claimClient = {
+      startRun: vi.fn(async () => START_CURRENTNESS),
+      heartbeatRun: vi.fn(async () => {}),
+      succeedRun: vi.fn(async () => {}),
+      failRun: vi.fn(async () => {}),
+      settleExecutionDispatch: vi.fn(async () => {}),
+    };
+    const executeAction = vi.fn(async () => ({ ok: true as const, result: { ok: true as const } }));
+
+    await executeClaimedRun({
+      token: 'token',
+      machineId: 'machine-1',
+      claimClient,
+      spawnSession: vi.fn(async (): Promise<SpawnSessionResult> => ({ type: 'success', sessionId: 'must-not-spawn' })),
+      heartbeatMs: 60_000,
+      leaseDurationMs: 120_000,
+      signal: cancellation.signal,
+      executeAction,
+      resolveAutomationAccountEncryption: vi.fn()
+        .mockResolvedValueOnce(availableCurrentness(CLAIM_CURRENTNESS))
+        .mockImplementationOnce(async () => {
+          // The authoritative cancellation lands while the post-start
+          // currentness resolution is still in flight, after startRun already
+          // succeeded: the irreversible native start must stay forbidden.
+          await Promise.resolve();
+          abortAutomationRunForAuthoritativeCancellation(cancellation);
+          return availableCurrentness(START_CURRENTNESS);
+        }),
+      claimed: buildStrictClaimedRun({ recipe: strictExecutionRunRecipe() }),
+    });
+
+    // The claim/start round-trip was authorized, but the async preflight
+    // before the target effect must still observe the abort before the one
+    // irreversible execution Run start.
+    expect(claimClient.startRun).toHaveBeenCalledOnce();
+    expect(executeAction).not.toHaveBeenCalled();
+    expect(claimClient.settleExecutionDispatch).not.toHaveBeenCalled();
+    expect(claimClient.failRun).not.toHaveBeenCalled();
+    expect(claimClient.succeedRun).not.toHaveBeenCalled();
+  });
+
   it('stops a known native execution Run when authoritative Automation cancellation wins after start', async () => {
     const cancellation = new AbortController();
     const claimClient = {
@@ -1982,7 +2040,7 @@ describe('executeClaimedRun (mcpSelection)', () => {
             runId: 'native-run-cancelled-during-settlement',
             callId: 'native-call-cancelled-during-settlement',
             sidechainId: 'native-sidechain-cancelled-during-settlement',
-            wait: { ok: false as const, code: 'timeout' as const },
+            wait: { ok: false as const, code: 'execution_run_target_unavailable' as const },
           },
         }
       : { ok: true as const, result: { ok: true as const } });
@@ -2167,7 +2225,9 @@ describe('executeClaimedRun (mcpSelection)', () => {
       failRun: vi.fn(async () => {}),
       settleExecutionDispatch: vi.fn(async () => {}),
     };
-    const wait = { ok: false as const, code: 'timeout' as const };
+    // Wait failures use the canonical transport-code vocabulary; the start
+    // identity must survive them.
+    const wait = { ok: false as const, code: 'execution_run_target_unavailable' as const };
 
     await executeClaimedRun({
       token: 'token',

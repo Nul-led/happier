@@ -468,8 +468,8 @@ describe('SpawnDaemonSessionRequestSchema', () => {
     expect(parsed).not.toHaveProperty('codexBackendMode');
   });
 
-  it('rejects conflicting released Codex selection without throwing from safeParse', () => {
-    expect(SpawnDaemonSessionRequestSchema.safeParse({
+  it('prefers the opaque current descriptor over a conflicting released Codex ingress hint', () => {
+    const parsed = SpawnDaemonSessionRequestSchema.parse({
       directory: '/tmp',
       codexBackendMode: 'acp',
       runtimeDescriptorV1: {
@@ -477,7 +477,14 @@ describe('SpawnDaemonSessionRequestSchema', () => {
         agentId: 'codex',
         agent: { backendMode: 'appServer' },
       },
-    }).success).toBe(false);
+    });
+
+    expect(parsed.runtimeDescriptorV1).toEqual({
+      v: 1,
+      agentId: 'codex',
+      agent: { backendMode: 'appServer' },
+    });
+    expect(parsed).not.toHaveProperty('codexBackendMode');
   });
 
   it('preserves a qualified Agent target and binds model selection to it', () => {

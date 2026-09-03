@@ -1,3 +1,4 @@
+import { MUTAGEN_ENGINE_VERSION } from '@happier-dev/cli-common/firstPartyRuntime';
 import { AccountSettingsSchema } from '@happier-dev/protocol';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -113,7 +114,13 @@ function boundaries(options: Readonly<{
   const deleteConflictLoserAtTarget = vi.fn(async () => undefined);
   const readFileAtTarget = vi.fn(async () => ({ status: 'missing' as const }));
   const resolveInstalledComponentPaths = vi.fn(() => ({ currentPath: '/installed/current', resolvedCurrentPath: '/installed/version' }));
-  const resolveArtifactPaths = vi.fn(() => ({ managerPath: '/installed/version/bin/happier-mutagen', agentPath: '/installed/version/bin/happier-mutagen-agent' }));
+  const resolveArtifactPaths = vi.fn((_payloadRoot: string, targetTriple: 'darwin-arm64' | 'darwin-amd64' | 'linux-amd64' | 'linux-arm64' | 'windows-amd64') => {
+    const suffix = targetTriple === 'windows-amd64' ? '.exe' : '';
+    return {
+      managerPath: `/installed/version/bin/happier-mutagen${suffix}`,
+      agentPath: `/installed/version/bin/happier-mutagen-agent${suffix}`,
+    };
+  });
   const assertArtifactPayload = vi.fn(() => {
     if (remainingArtifactFailures > 0) {
       remainingArtifactFailures -= 1;
@@ -359,7 +366,7 @@ describe('createDaemonWorkspaceSyncRuntime', () => {
     expect(harness.ensureInstalledComponent).toHaveBeenCalledTimes(1);
     expect(harness.assertArtifactPayload).toHaveBeenCalledWith(expect.objectContaining({
       payloadRoot: '/installed/version',
-      engineVersion: '0.18.1',
+      engineVersion: MUTAGEN_ENGINE_VERSION,
     }));
     expect(harness.resolveArtifactPaths).not.toHaveBeenCalled();
     expect(harness.createBroker).not.toHaveBeenCalled();
@@ -370,11 +377,17 @@ describe('createDaemonWorkspaceSyncRuntime', () => {
 
   it('acquires and validates a transiently missing artifact before starting', async () => {
     const harness = boundaries({ artifactFailureCount: 1 });
-    const runtime = createDaemonWorkspaceSyncRuntime(harness.deps);
+    const runtime = createDaemonWorkspaceSyncRuntime({
+      ...harness.deps,
+      resolveArtifactTarget: () => 'windows-amd64',
+    });
 
     await expect(runtime.start()).resolves.toBeUndefined();
     expect(harness.ensureInstalledComponent).toHaveBeenCalledTimes(1);
-    expect(harness.spawnSidecar).toHaveBeenCalledTimes(1);
+    expect(harness.resolveArtifactPaths).toHaveBeenCalledWith('/installed/version', 'windows-amd64');
+    expect(harness.spawnSidecar).toHaveBeenCalledWith(expect.objectContaining({
+      executablePath: '/installed/version/bin/happier-mutagen.exe',
+    }));
 
     await runtime.stop();
     expect(harness.unsubscribeSettings).toHaveBeenCalledTimes(1);

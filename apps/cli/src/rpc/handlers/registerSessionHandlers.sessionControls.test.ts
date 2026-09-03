@@ -304,7 +304,6 @@ describe('registerSessionHandlers session controls', () => {
     await expect(handlers.get('session.connectedServiceAuth.applyGeneration')?.({
       serviceId: ' openai-codex ',
       reason: 'usage_limit',
-      requireDirectLiveHotApply: true,
       expected: { profileId: ' work ', groupId: ' happier ', generation: ' 42 ' },
       authGeneration: {
         kind: 'oauth',
@@ -334,7 +333,6 @@ describe('registerSessionHandlers session controls', () => {
     expect(applyConnectedServiceAuthGeneration).toHaveBeenCalledWith({
       serviceId: 'openai-codex',
       reason: 'usage_limit',
-      requireDirectLiveHotApply: true,
       expected: { profileId: 'work', groupId: 'happier', generation: '42' },
       authGeneration: {
         kind: 'oauth',

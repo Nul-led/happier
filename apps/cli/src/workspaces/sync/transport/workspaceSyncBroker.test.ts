@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, rm, stat } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { connect as netConnect, createServer, Socket } from 'node:net';
@@ -267,15 +267,129 @@ describe('workspace sync broker authentication and attach rules', () => {
     await rm(fixture.directory, { recursive: true, force: true });
   });
 
+  it('closes terminally only after every pending stream endpoint removal settled, and aggregates the failures', async () => {
+    // POSIX endpoints are filesystem entries; the Windows relay owns its own
+    // named-pipe teardown and has no path to occupy.
+    if (process.platform === 'win32') return;
+    const fixture = await useFixture(await startBroker());
+    const { socket, wire } = await openAuthenticatedRawControl(fixture);
+    const openStream = async (requestId: string, relationshipId: string) => {
+      socket.write(encodeBrokerControlFrame({
+        t: 'open_data',
+        requestId,
+        endpointId: deriveWorkspaceSyncEndpointId(relationshipId, 'alpha'),
+        expiresAtMs: Date.now() + OPEN_REMOTE_DEADLINE_MS,
+      }));
+      const frame = await wire.waitFor(
+        (candidate) => candidate.t === 'data_ready' && candidate.requestId === requestId,
+        `data_ready ${requestId}`,
+      );
+      if (frame.t !== 'data_ready') throw new Error('unreachable');
+      return frame;
+    };
+
+    const blocked = await openStream('req-close-blocked', 'rel-close-blocked');
+    const clean = await openStream('req-close-clean', 'rel-close-clean');
+
+    // Occupy one stream's endpoint path with a non-empty directory so its
+    // existing removal step really fails, while its sibling stays removable.
+    await rm(blocked.dataEndpoint);
+    await mkdir(blocked.dataEndpoint);
+    await writeFile(join(blocked.dataEndpoint, 'occupied'), 'untouched');
+
+    const firstClose = fixture.broker.close().then(() => null, (error: unknown) => error);
+    const concurrentClose = fixture.broker.close().then(() => null, (error: unknown) => error);
+    const [failure, concurrentFailure] = await Promise.all([firstClose, concurrentClose]);
+
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect((failure as AggregateError).errors).toHaveLength(1);
+    expect((failure as AggregateError).errors[0]).toMatchObject({ code: 'ERR_FS_EISDIR' });
+    // Every caller observes the same terminal cleanup result; a concurrent
+    // close cannot return early merely because another close owns teardown.
+    expect(concurrentFailure).toBeInstanceOf(AggregateError);
+    expect((concurrentFailure as AggregateError).errors).toHaveLength(1);
+    // Close is terminal: the sibling stream's endpoint is already gone when it settles.
+    await expect(stat(clean.dataEndpoint)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(stat(fixture.socketPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(readdir(blocked.dataEndpoint)).resolves.toEqual(['occupied']);
+
+    socket.destroy();
+  });
+
+  it('keeps in-flight data endpoint creation in terminal close custody', async () => {
+    if (process.platform === 'win32') return;
+    let releaseInitialDataRemove!: () => void;
+    const initialDataRemove = new Promise<void>((resolve) => { releaseInitialDataRemove = resolve; });
+    let dataRemoveStarted = false;
+    const dataListen = vi.fn(async () => undefined);
+    const fixture = await useFixture(await startBroker({
+      createEndpoint: (endpointPath) => {
+        const native = createWorkspaceSyncBrokerEndpoint({ endpointPath });
+        if (!endpointPath.includes('/d-')) return native;
+        return {
+          ...native,
+          remove: async () => {
+            dataRemoveStarted = true;
+            await initialDataRemove;
+            await native.remove();
+          },
+          listen: dataListen,
+        };
+      },
+    }));
+    const { socket } = await openAuthenticatedRawControl(fixture);
+    socket.write(encodeBrokerControlFrame({
+      t: 'open_data',
+      requestId: 'req-creating-endpoint',
+      endpointId: deriveWorkspaceSyncEndpointId('rel-creating-endpoint', 'alpha'),
+      expiresAtMs: Date.now() + OPEN_REMOTE_DEADLINE_MS,
+    }));
+    await waitFor(() => dataRemoveStarted, 'data endpoint removal to begin');
+
+    let closeSettled = false;
+    const closing = fixture.broker.close().finally(() => { closeSettled = true; });
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+    expect(closeSettled).toBe(false);
+
+    releaseInitialDataRemove();
+    await closing;
+    expect(dataListen).not.toHaveBeenCalled();
+    socket.destroy();
+  });
+
+  it('settles setup custody when external stream creation fails before close', async () => {
+    const fixture = await useFixture(await startBroker({
+      openExternalStream: async () => {
+        throw new Error('peer unavailable');
+      },
+    }));
+    const { socket, wire } = await openAuthenticatedRawControl(fixture);
+    socket.write(encodeBrokerControlFrame({
+      t: 'open_data',
+      requestId: 'req-open-failure',
+      endpointId: deriveWorkspaceSyncEndpointId('rel-open-failure', 'alpha'),
+      expiresAtMs: Date.now() + OPEN_REMOTE_DEADLINE_MS,
+    }));
+    await expect(wire.waitFor(
+      (frame) => frame.t === 'error' && frame.requestId === 'req-open-failure',
+      'external open failure',
+    )).resolves.toMatchObject({ code: 'peer_unavailable' });
+
+    await expect(fixture.broker.close()).resolves.toBeUndefined();
+    socket.destroy();
+  });
+
   it('does not head-of-line block an independent open while another remote open is stalled', async () => {
     const stalledEndpoint = deriveWorkspaceSyncEndpointId('rel-stalled', 'alpha');
     const readyEndpoint = deriveWorkspaceSyncEndpointId('rel-ready', 'beta');
     let stalledDispatched = false;
     const fixture = await useFixture(await startBroker({
-      openExternalStream: async ({ endpointId }) => {
+      openExternalStream: async ({ endpointId, signal }) => {
         if (endpointId === stalledEndpoint) {
           stalledDispatched = true;
-          return await new Promise<PeerStream>(() => {});
+          return await new Promise<PeerStream>((_resolve, reject) => {
+            signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+          });
         }
         return new PeerStream();
       },

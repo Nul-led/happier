@@ -88,6 +88,72 @@ describe('daemon session client durable mutation outbox', () => {
         await outbox.close();
     });
 
+    it('parks daemon exact turn ends for the released server and replays them after upgrade', async () => {
+        const sessionId = 'released-server-daemon-turn';
+        const exact: ExactDaemonSessionTurnEndMutationV1 = {
+            v: 1,
+            sessionId,
+            mutationId: 'released-server-exact-end',
+            action: 'end_session',
+            turnId: 'turn-1',
+            observedAt: 100,
+        };
+        let serverMode: 'released_server_v0_2_1' | 'session_sync_v2_pending_input_v1' =
+            'released_server_v0_2_1';
+        const deliveredMutationIds: string[] = [];
+        const requestReconnect = vi.fn();
+        const createOutbox = () => createDaemonSessionClientDurableMutationOutbox({
+            token: 'token',
+            sessionId,
+            getSessionTurnServerContractMode: () => serverMode,
+            getSocket: () => ({
+                connected: true,
+                emit: () => undefined,
+                emitWithAck: async (_event, value) => {
+                    const mutation = value as ExactDaemonSessionTurnEndMutationV1;
+                    deliveredMutationIds.push(mutation.mutationId);
+                    return {
+                        result: 'success',
+                        receipt: {
+                            ...mutation,
+                            decision: 'applied',
+                            appliedAt: mutation.observedAt + 1,
+                        },
+                    };
+                },
+            }),
+            requestReconnect,
+        });
+        const outbox = createOutbox();
+
+        await outbox.enqueueExactTurnEnd(exact);
+
+        const paths = resolveSessionClientDurableMutationJournalPaths({
+            activeServerDir: configurationMock.activeServerDir,
+            custody: 'daemon',
+            sessionId,
+        });
+        const parked = JSON.parse(await readFile(paths.queuePath, 'utf8')) as {
+            mutations: Array<{ mutationId: string; attempts: number }>;
+        };
+        expect(parked.mutations).toEqual([
+            expect.objectContaining({ mutationId: exact.mutationId, attempts: 0 }),
+        ]);
+        expect(deliveredMutationIds).toEqual([]);
+        expect(vi.mocked(axios.post)).not.toHaveBeenCalled();
+        expect(requestReconnect).not.toHaveBeenCalled();
+        await expect(outbox.close()).resolves.toBeUndefined();
+
+        serverMode = 'session_sync_v2_pending_input_v1';
+        const restarted = createOutbox();
+        await restarted.awaitReady();
+        await restarted.flush('connect');
+
+        expect(deliveredMutationIds).toEqual([exact.mutationId]);
+        await expect(readFile(paths.queuePath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+        await restarted.close();
+    });
+
     it('reports a persistently blocking authoritative mutation once without changing retry custody', async () => {
         const previousMaxAttempts = process.env.HAPPIER_SESSION_MUTATION_OUTBOX_MAX_ATTEMPTS;
         const previousBaseRetryMs = process.env.HAPPIER_SESSION_MUTATION_OUTBOX_BASE_RETRY_MS;

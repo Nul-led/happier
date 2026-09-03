@@ -68,6 +68,39 @@ describe('startSingleFlightIntervalLoop', () => {
     }
   });
 
+  it('aborts and waits for the active task when stop() is requested', async () => {
+    vi.useFakeTimers();
+    try {
+      const active = createDeferred();
+      let taskSignal: AbortSignal | null = null;
+      const loop = startSingleFlightIntervalLoop({
+        intervalMs: 60_000,
+        task: async (signal) => {
+          taskSignal = signal;
+          await active.promise;
+        },
+      });
+
+      loop.trigger();
+      await vi.advanceTimersByTimeAsync(1);
+
+      let stopSettled = false;
+      const stopPromise = Promise.resolve(loop.stop()).then(() => {
+        stopSettled = true;
+      });
+      await Promise.resolve();
+
+      expect(taskSignal?.aborted).toBe(true);
+      expect(stopSettled).toBe(false);
+
+      active.resolve();
+      await stopPromise;
+      expect(stopSettled).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('can be triggered manually without waiting for the interval', async () => {
     vi.useFakeTimers();
     try {

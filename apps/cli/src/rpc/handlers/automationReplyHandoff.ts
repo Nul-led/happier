@@ -6,6 +6,7 @@ import {
     AutomationReplyHandoffDispatchResultV1Schema,
     AutomationResultDeliveryInputV1Schema,
     AutomationResultDeliveryResultV1Schema,
+    isAutomationReplyHandoffIdForRunV1,
     openAutomationConversationReplyContextStoredEnvelopeV1,
     openAutomationRunResultStoredEnvelopeV1,
     sameAutomationAccountContentIdentityV1,
@@ -111,7 +112,20 @@ function sameCorrespondence(
         && value.automationId === expected.automationId
         && value.runId === expected.runId
         && 'handoffId' in value
-        && value.handoffId === expected.handoffId;
+        // The sealed result belongs to a Run, and its delivery identity is the
+        // one thing about that Run a present user can deliberately advance: an
+        // authorized further delivery dispatches the Run's next identity while
+        // the frozen envelope still carries the identity it was sealed under.
+        // Requiring byte equality alone would make that decision undeliverable,
+        // so a sealed identity that provably belongs to this exact Run is
+        // accepted too. Account, Automation and Run stay exact either way.
+        && (
+            value.handoffId === expected.handoffId
+            || isAutomationReplyHandoffIdForRunV1({
+                runId: expected.runId,
+                handoffId: value.handoffId,
+            })
+        );
 }
 
 function sameReplyContextCorrespondence(

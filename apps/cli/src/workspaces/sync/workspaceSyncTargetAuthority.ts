@@ -36,6 +36,7 @@ import {
 import { resolveWorkspaceRefById } from '@/settings/accountSettings/workspaceRefsV1';
 import { deleteWorkspaceSyncConflictLoserAtRoot } from './workspaceSyncConflicts';
 import { readWorkspaceSyncFileAtRoot } from './workspaceSyncFileRead';
+import { computeWorkspaceSyncAbsentRootFingerprint } from './workspaceSyncRootIdentity';
 import {
   computeWorkspaceSyncRootFingerprint,
   rehydrateWorkspaceSyncTargetBootstrap,
@@ -860,27 +861,42 @@ export function createWorkspaceSyncTargetAuthority(
           if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
           throw error;
         });
-        if (!current) return HandoffTargetReplacementPreflightResultV1Schema.parse({ type: 'not_required' });
-        if (!current.isDirectory() || current.isSymbolicLink()) {
+        if (current && (!current.isDirectory() || current.isSymbolicLink())) {
           throw authorityError('workspace_root_unsafe', 'Handoff target root must be a real directory');
         }
-        const currentCanonicalRoot = await realpath(requested);
-        if (currentCanonicalRoot !== canonicalRoot) {
-          throw authorityError('root_changed', 'Handoff target root changed during inspection');
+        let replacesNonEmptyTarget = false;
+        // An absent root has no object identity to fingerprint; its canonical
+        // absence is the fact the approval binds, so a root appearing later
+        // fails the replay comparison exactly like a changed root would.
+        let rootFingerprint = computeWorkspaceSyncAbsentRootFingerprint(canonicalRoot);
+        if (current) {
+          const currentCanonicalRoot = await realpath(requested);
+          if (currentCanonicalRoot !== canonicalRoot) {
+            throw authorityError('root_changed', 'Handoff target root changed during inspection');
+          }
+          replacesNonEmptyTarget = (await readdir(currentCanonicalRoot)).length > 0;
+          await ownership.bindCurrentRootIdentity();
+          rootFingerprint = await computeWorkspaceSyncRootFingerprint(currentCanonicalRoot);
         }
-        if ((await readdir(currentCanonicalRoot)).length === 0) {
+        // Exact mirroring authorizes deleting target-only files for the life of
+        // the relationship, so it needs the destination confirmation even when
+        // there is nothing to replace today. Both consequences of one
+        // destination decision travel in one proof.
+        const consequences = [
+          ...(replacesNonEmptyTarget ? ['replace_nonempty_workspace_target'] as const : []),
+          ...(request.activatesExactMirror ? ['delete_target_only_files_during_exact_mirror'] as const : []),
+        ];
+        if (consequences.length === 0) {
           return HandoffTargetReplacementPreflightResultV1Schema.parse({ type: 'not_required' });
         }
-        await ownership.bindCurrentRootIdentity();
-        const rootFingerprint = await computeWorkspaceSyncRootFingerprint(currentCanonicalRoot);
         return HandoffTargetReplacementPreflightResultV1Schema.parse({
           type: 'approval_required',
           approval: HandoffTargetReplacementApprovalV1Schema.parse({
             v: 1,
-            consequence: 'replace_nonempty_workspace_target',
+            consequences,
             serverId: localServerId,
             machineId: localMachineId,
-            canonicalRoot: currentCanonicalRoot,
+            canonicalRoot,
             rootFingerprint,
             operationId: request.operationId,
           }),
@@ -1333,6 +1349,7 @@ export function createWorkspaceSyncTargetAuthority(
       const localCapability = createFirstBytesLocalCapability();
       const expectedLocalCapability = Buffer.from(localCapability, 'ascii');
       let accepted: Socket | null = null;
+      const pendingCapabilitySockets = new Set<Socket>();
       let closed = false;
       let closePromise: Promise<void> | null = null;
       const close = (): Promise<void> => {
@@ -1341,6 +1358,8 @@ export function createWorkspaceSyncTargetAuthority(
           closed = true;
           request.signal?.removeEventListener('abort', abortFromCaller);
           agentAbort.abort();
+          for (const socket of pendingCapabilitySockets) socket.destroy();
+          pendingCapabilitySockets.clear();
           accepted?.destroy();
           agent.destroy();
           await closeListeningServer(server);
@@ -1355,6 +1374,8 @@ export function createWorkspaceSyncTargetAuthority(
           socket.destroy();
           return;
         }
+        pendingCapabilitySockets.add(socket);
+        socket.once('close', () => pendingCapabilitySockets.delete(socket));
         void (async () => {
           let supplied: Buffer;
           try {
@@ -1372,6 +1393,7 @@ export function createWorkspaceSyncTargetAuthority(
             return;
           }
           accepted = socket;
+          pendingCapabilitySockets.delete(socket);
           void closeListeningServer(server);
           socket.setNoDelay(true);
           socket.pipe(agent, { end: false });

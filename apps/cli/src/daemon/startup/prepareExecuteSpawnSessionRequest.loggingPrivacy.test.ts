@@ -74,7 +74,6 @@ function expectNoPrivateSpawnFacts(value: unknown): void {
 function mapPrivateExternalTakeoverPlan() {
     const mapped = mapExternalTakeoverLaunchPlanToSpawnOptions({
         plan: {
-            directory: PRIVATE_DIRECTORY,
             environmentVariables: {
                 [PRIVATE_ENVIRONMENT_KEY]: PRIVATE_ENVIRONMENT_VALUE,
             },

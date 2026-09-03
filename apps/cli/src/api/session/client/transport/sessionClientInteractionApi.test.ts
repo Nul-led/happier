@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { logger } from '@/ui/logger';
 import { createTestMetadata } from '@/testkit/backends/sessionMetadata';
+import { createDeferred } from '@/testkit/async/deferred';
 import { createSessionClientInteractionApi } from './sessionClientInteractionApi';
 import { encrypt } from '../../../encryption';
 
@@ -262,6 +263,74 @@ describe('createSessionClientInteractionApi diagnostics', () => {
     expect(axiosPostMock).not.toHaveBeenCalled();
   });
 
+  it('identifies the server-claim subphase before awaiting an unsettled materialization transport', async () => {
+    const socket = createSocketStub();
+    const transport = createDeferred<{
+      ok: true;
+      didMaterialize: false;
+      pendingCount: 0;
+      pendingBlockedCount: 0;
+      pendingVersion: 2;
+    }>();
+    socketAckMock.mockImplementationOnce(async () => await transport.promise);
+    const observedPhases: string[] = [];
+    const api = createApi({
+      getSocket: () => socket as never,
+      getSessionConnectionSupervisor: () => ({ getState: () => ({ phase: 'online' }) }) as never,
+      getPendingQueueState: () => ({
+        known: true,
+        pendingCount: 1,
+        pendingBlockedCount: 0,
+        pendingVersion: 1,
+      }),
+    });
+    const pending = api.materializeNextPendingMessageSafely({
+      reconcileWhenEmpty: 'force',
+      onDiagnosticPhase: (phase) => observedPhases.push(phase),
+    });
+
+    try {
+      await vi.waitFor(() => expect(socketAckMock).toHaveBeenCalledTimes(1));
+      expect(observedPhases.at(-1)).toBe('materialize.server_claim');
+    } finally {
+      transport.resolve({
+        ok: true,
+        didMaterialize: false,
+        pendingCount: 0,
+        pendingBlockedCount: 0,
+        pendingVersion: 2,
+      });
+      await pending;
+    }
+  });
+
+  it('keeps diagnostic callback failures outside pending materialization behavior', async () => {
+    socketAckMock.mockResolvedValueOnce({
+      ok: true,
+      didMaterialize: false,
+      pendingCount: 0,
+      pendingBlockedCount: 0,
+      pendingVersion: 2,
+    });
+    const api = createApi({
+      getSessionConnectionSupervisor: () => ({ getState: () => ({ phase: 'online' }) }) as never,
+      getPendingQueueState: () => ({
+        known: true,
+        pendingCount: 1,
+        pendingBlockedCount: 0,
+        pendingVersion: 1,
+      }),
+    });
+
+    await expect(api.materializeNextPendingMessageSafely({
+      reconcileWhenEmpty: 'force',
+      onDiagnosticPhase: () => {
+        throw new Error('diagnostic callback failed');
+      },
+    })).resolves.toEqual({ type: 'no_pending' });
+    expect(socketAckMock).toHaveBeenCalledTimes(1);
+  });
+
   it('uses only the strict released-server adapter in old mode', async () => {
     const socket = createSocketStub();
     const contractResult = {
@@ -289,6 +358,7 @@ describe('createSessionClientInteractionApi diagnostics', () => {
       },
     });
     const deliver = vi.fn(() => true);
+    const observedPhases: string[] = [];
     const supervisor = { getState: () => ({ phase: 'online' }) };
     const api = createApi({
       getSocket: () => socket as never,
@@ -299,9 +369,13 @@ describe('createSessionClientInteractionApi diagnostics', () => {
       deliverMaterializedUserMessageToAgentQueue: deliver,
     });
 
-    await expect(api.materializeNextPendingMessageSafely()).resolves.toMatchObject({
+    await expect(api.materializeNextPendingMessageSafely({
+      onDiagnosticPhase: (phase) => observedPhases.push(phase),
+    })).resolves.toMatchObject({
       type: 'materialized', localId: 'old-local', seq: 8,
     });
+    expect(observedPhases).toContain('materialize.server_claim');
+    expect(observedPhases).toContain('materialize.compatibility_transcript_lookup');
     expect(socketAckMock).toHaveBeenCalledWith('pending-materialize-next', { sid: 's1' });
     expect(deliver).toHaveBeenCalledTimes(1);
     expect(axiosPostMock).not.toHaveBeenCalled();

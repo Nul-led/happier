@@ -115,11 +115,6 @@ function reviewPresentation(
     && provider.source.kind === 'bundled';
   const publisher = isBundledFirstParty
     ? Object.freeze({ status: 'bundled_first_party' as const, identity: 'Happier' as const })
-    : presentation?.publisherIdentity.status === 'unverified'
-      ? Object.freeze({ ...presentation.publisherIdentity })
-      : Object.freeze({ status: 'unavailable' as const });
-  const packageSignature = presentation?.packageSignature.status === 'verified'
-    ? Object.freeze({ ...presentation.packageSignature })
     : Object.freeze({ status: 'unavailable' as const });
   const distribution = isBundledFirstParty
     ? Object.freeze({ kind: 'bundled' as const })
@@ -141,7 +136,6 @@ function reviewPresentation(
     }),
     distribution,
     publisher,
-    packageSignature,
     contribution: Object.freeze({
       identity: Object.freeze({ ...provider.identity }),
       name: localizedFallback(provider.definition.title),

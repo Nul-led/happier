@@ -10,7 +10,8 @@ import type { Duplex } from 'node:stream';
 import { realpath } from 'node:fs/promises';
 import type { WorkspaceRootOwnershipHandle, WorkspaceRootOwnershipManager } from './workspaceSyncRootOwnership';
 import { getPathRemainderWithinBase } from '@/session/handoff/paths/sessionHandoffPathNormalization';
-import type { DeleteWorkspaceSyncConflictLoserV1, ManagedWorkspaceSync, ReadWorkspaceSyncFileResultV1, ReadWorkspaceSyncFileV1, WorkspaceSyncConflictListV1, WorkspaceSyncCopyOnceV1, WorkspaceSyncRelationshipPreparation, WorkspaceSyncRelationshipV1, WorkspaceSyncStatusV1 } from './workspaceSyncTypes';
+import { probeScmExecutableAvailable } from '@/scm/runtime';
+import type { DeleteWorkspaceSyncConflictLoserV1, ManagedWorkspaceSync, ReadWorkspaceSyncFileResultV1, ReadWorkspaceSyncFileV1, WorkspaceContentPolicyV1, WorkspaceSyncConflictListV1, WorkspaceSyncCopyOnceV1, WorkspaceSyncRelationshipPreparation, WorkspaceSyncRelationshipV1, WorkspaceSyncStatusV1 } from './workspaceSyncTypes';
 
 export type WorkspaceSyncResolvedRef = Readonly<{ machineId: string; rootPath: string }>;
 export type WorkspaceSyncTargetConflictDelete = (input: Readonly<{
@@ -80,6 +81,13 @@ export type WorkspaceSyncControllerOptions = Readonly<{
   deleteConflictLoserAtTarget?: WorkspaceSyncTargetConflictDelete;
   readFileAtTarget?: WorkspaceSyncTargetFileRead;
   /**
+   * Explicit runtime-dependency probe for the `git_worktree` content
+   * selection, whose ignore decisions are owned by the persistent Git
+   * check-ignore oracle at each endpoint. `all_files` never consults it.
+   * Defaults to the canonical SCM command resolution owner.
+   */
+  probeGitRuntimeDependency?: (signal?: AbortSignal) => Promise<boolean>;
+  /**
    * Derived once from the retired-state inspection at the daemon composition
    * boundary. Throws the exact typed legacy-state code when workspace sync
    * must stay disabled; called before any state mutation or engine process
@@ -123,6 +131,7 @@ export class WorkspaceSyncController implements ManagedWorkspaceSync {
   private readonly openLocalAgent?: WorkspaceSyncLocalAgentStreamOpen;
   private readonly deleteAtTarget?: WorkspaceSyncTargetConflictDelete;
   private readonly readAtTarget?: WorkspaceSyncTargetFileRead;
+  private readonly probeGit: NonNullable<WorkspaceSyncControllerOptions['probeGitRuntimeDependency']>;
   private readonly assertStateAvailable: () => void;
   private readonly definitions = new Map<string, WorkspaceSyncRelationshipV1>();
   private readonly copyOperations = new Map<string, WorkspaceSyncCopyOnceV1>();
@@ -140,7 +149,19 @@ export class WorkspaceSyncController implements ManagedWorkspaceSync {
   private readonly queues = new Map<string, Promise<unknown>>();
   private readonly listeners = new Map<string, Set<(status: WorkspaceSyncStatusV1) => void>>();
 
-  constructor(options: WorkspaceSyncControllerOptions) { assertCompleteAdapter(options.adapter); this.adapter = options.adapter; this.lifecycle = options.lifecycle; this.localMachineId = options.localMachineId; this.resolveRef = options.resolveWorkspaceRef; this.rootOwnershipManager = options.rootOwnershipManager; this.resolveDefinition = options.resolveRelationshipDefinition ?? (() => null); this.prepareTarget = options.prepareRelationshipTarget ?? (async () => undefined); this.recoverCopyTarget = options.recoverCopyOnceTarget; this.openMachineCarrier = options.openMachineCarrierTunnel; this.openLocalAgent = options.openLocalWorkspaceAgentStream; this.deleteAtTarget = options.deleteConflictLoserAtTarget; this.readAtTarget = options.readFileAtTarget; this.assertStateAvailable = options.assertLegacyStateAvailable ?? (() => undefined); }
+  constructor(options: WorkspaceSyncControllerOptions) { assertCompleteAdapter(options.adapter); this.adapter = options.adapter; this.lifecycle = options.lifecycle; this.localMachineId = options.localMachineId; this.resolveRef = options.resolveWorkspaceRef; this.rootOwnershipManager = options.rootOwnershipManager; this.resolveDefinition = options.resolveRelationshipDefinition ?? (() => null); this.prepareTarget = options.prepareRelationshipTarget ?? (async () => undefined); this.recoverCopyTarget = options.recoverCopyOnceTarget; this.openMachineCarrier = options.openMachineCarrierTunnel; this.openLocalAgent = options.openLocalWorkspaceAgentStream; this.deleteAtTarget = options.deleteConflictLoserAtTarget; this.readAtTarget = options.readFileAtTarget; this.probeGit = options.probeGitRuntimeDependency ?? (async (signal) => await probeScmExecutableAvailable({ bin: 'git', ...(signal ? { signal } : {}) })); this.assertStateAvailable = options.assertLegacyStateAvailable ?? (() => undefined); }
+
+  /**
+   * `git_worktree` selection is owned by Git's persistent check-ignore oracle,
+   * so Git is an explicit runtime dependency of that mode. A missing or
+   * unusable Git fails closed here, before the relationship or copy operation
+   * is accepted and before any target, root custody, or engine work starts.
+   */
+  private async assertContentSelectionRuntimeDependencies(contentPolicy: WorkspaceContentPolicyV1, signal?: AbortSignal): Promise<void> {
+    if (contentPolicy.selection !== 'git_worktree') return;
+    if (await this.probeGit(signal)) return;
+    throw Object.assign(new Error('Git is unavailable for the git_worktree workspace sync selection'), { code: 'git_selection_unavailable' });
+  }
 
   private enqueue<T>(id: string, signal: AbortSignal | undefined, action: () => Promise<T>): Promise<T> {
     abortIfRequested(signal);
@@ -249,6 +270,7 @@ export class WorkspaceSyncController implements ManagedWorkspaceSync {
         });
       }
     }
+    await this.assertContentSelectionRuntimeDependencies(valid.contentPolicy);
     const [alpha, beta] = await Promise.all([
       this.resolveRef(valid.alphaWorkspaceRefId),
       this.resolveRef(valid.betaWorkspaceRefId),
@@ -327,6 +349,7 @@ export class WorkspaceSyncController implements ManagedWorkspaceSync {
     if (previous && !areWorkspaceSyncRelationshipDefinitionsEqual(previous, valid)) {
       throw Object.assign(new Error('Workspace sync relationship definition conflicts with active relationship'), { code: 'relationship_definition_conflict' });
     }
+    await this.assertContentSelectionRuntimeDependencies(valid.contentPolicy, signal);
     let acquiredHandles: WorkspaceRootOwnershipHandle[] | undefined;
     try {
       const targetPreparation = await this.prepareTarget(valid, signal, preparation);
@@ -374,6 +397,7 @@ export class WorkspaceSyncController implements ManagedWorkspaceSync {
       if (retained && !areCopyOnceDefinitionsEqual(retained, valid)) {
         throw Object.assign(new Error('Workspace copy operation definition conflicts with active operation'), { code: 'relationship_definition_conflict' });
       }
+      await this.assertContentSelectionRuntimeDependencies(valid.contentPolicy, signal);
       const acquiredHandles = retained ? [] : await this.acquireRoots({
           v: 1, relationshipId: valid.operationId, controllerMachineId: valid.controllerMachineId,
           alphaWorkspaceRefId: valid.alphaWorkspaceRefId, betaWorkspaceRefId: valid.betaWorkspaceRefId,
@@ -504,20 +528,57 @@ export class WorkspaceSyncController implements ManagedWorkspaceSync {
       signal,
     });
   }
-  async shutdown(): Promise<void> { for (const id of this.activeIngress.keys()) this.closeActiveIngress(id); await this.lifecycle.stop(); await Promise.all([...this.fences.values()].flatMap((custody) => custody.ownedHandles).concat([...this.copyOwnedFences.values()].flat()).map((handle) => handle.release())); await Promise.all([...this.copyTargetReleases.values()].map((release) => release('abort'))); this.fences.clear(); this.copyOwnedFences.clear(); this.copyFences.clear(); this.copyOperations.clear(); this.copyTargetReleases.clear(); this.copyTerminalPending.clear(); }
+  async shutdown(): Promise<void> {
+    for (const id of this.activeIngress.keys()) this.closeActiveIngress(id);
+    const cleanupFailures: unknown[] = [];
+    try {
+      await this.lifecycle.stop();
+    } catch (error) {
+      cleanupFailures.push(error);
+    }
+    const cleanupResults = await Promise.allSettled([
+      ...[...this.fences.values()]
+        .flatMap((custody) => custody.ownedHandles)
+        .concat([...this.copyOwnedFences.values()].flat())
+        .map(async (handle) => await handle.release()),
+      ...[...this.copyTargetReleases.values()].map(async (release) => await release('abort')),
+    ]);
+    for (const result of cleanupResults) {
+      if (result.status === 'rejected') cleanupFailures.push(result.reason);
+    }
+    this.fences.clear();
+    this.copyOwnedFences.clear();
+    this.copyFences.clear();
+    this.copyOperations.clear();
+    this.copyTargetReleases.clear();
+    this.copyTerminalPending.clear();
+    if (cleanupFailures.length > 0) {
+      throw new AggregateError(cleanupFailures, 'Workspace sync controller cleanup failed');
+    }
+  }
   async rehydrateFromSettings(value: unknown): Promise<readonly WorkspaceSyncStatusV1[]> {
     this.assertStateAvailable();
     const relationships = validateWorkspaceSyncRelationships(value).filter((relationship) => (
       relationship.controllerMachineId === this.localMachineId
     ));
-    const desired = new Map(relationships.map((relationship) => [relationship.relationshipId, relationship]));
-    return await this.enqueueAll([...desired.keys(), ...this.definitions.keys()], async () => {
+    const gitRelationships = relationships.filter(({ contentPolicy }) => contentPolicy.selection === 'git_worktree');
+    const gitUnavailable = gitRelationships.length > 0 && !(await this.probeGit());
+    // Preserve the existing fail-closed single-mode result, while allowing a
+    // mixed settings snapshot to restore independent all-files relationships.
+    if (gitUnavailable && gitRelationships.length === relationships.length) {
+      throw Object.assign(new Error('Git is unavailable for the git_worktree workspace sync selection'), { code: 'git_selection_unavailable' });
+    }
+    const activeRelationships = gitUnavailable
+      ? relationships.filter(({ contentPolicy }) => contentPolicy.selection !== 'git_worktree')
+      : relationships;
+    const desired = new Map(activeRelationships.map((relationship) => [relationship.relationshipId, relationship]));
+    return await this.enqueueAll([...relationships.map(({ relationshipId }) => relationshipId), ...this.definitions.keys()], async () => {
       const pendingFences = new Map<string, Readonly<{
         handles: WorkspaceRootOwnershipHandle[];
         ownedHandles: WorkspaceRootOwnershipHandle[];
       }>>();
       try {
-        for (const relationship of relationships) {
+        for (const relationship of activeRelationships) {
           const current = this.definitions.get(relationship.relationshipId);
           if (current && areWorkspaceSyncRelationshipDefinitionsEqual(current, relationship)
             && !this.ownershipLost.has(relationship.relationshipId)) {
@@ -550,7 +611,7 @@ export class WorkspaceSyncController implements ManagedWorkspaceSync {
         custody: Readonly<{ handles: WorkspaceRootOwnershipHandle[]; ownedHandles: WorkspaceRootOwnershipHandle[] }> | undefined;
         ingress: ReadonlySet<Duplex>;
       }>>();
-      for (const relationship of relationships) {
+      for (const relationship of activeRelationships) {
         const custody = pendingFences.get(relationship.relationshipId);
         if (!custody) continue;
         stagedPrevious.set(relationship.relationshipId, {
@@ -579,7 +640,7 @@ export class WorkspaceSyncController implements ManagedWorkspaceSync {
         const recoveries = new Map([...this.copyOperations.values()].map((operation) => [operation.operationId, operation]));
         for (const recovery of await this.adapter.discoverCopyOnceRecoveries()) recoveries.set(recovery.operationId, recovery);
         for (const recovery of recoveries.values()) await this.recoverCopyOnce(recovery);
-        existing = new Map((await this.adapter.rehydrate(relationships)).map((item) => [item.relationshipId, item]));
+        existing = new Map((await this.adapter.rehydrate(activeRelationships)).map((item) => [item.relationshipId, item]));
       } catch (error) {
         await rollbackStaged();
         throw error;
@@ -593,7 +654,7 @@ export class WorkspaceSyncController implements ManagedWorkspaceSync {
         this.statuses.delete(id);
       }
       const statuses: WorkspaceSyncStatusV1[] = [];
-      for (const relationship of relationships) {
+      for (const relationship of activeRelationships) {
         const adopted = existing.get(relationship.relationshipId);
         const recoveringOwnership = this.ownershipLost.has(relationship.relationshipId);
         if (!this.definitions.has(relationship.relationshipId) || recoveringOwnership) {
@@ -615,6 +676,26 @@ export class WorkspaceSyncController implements ManagedWorkspaceSync {
             this.definitions.delete(relationship.relationshipId);
           }
           throw error;
+        }
+      }
+      if (gitUnavailable) {
+        for (const relationship of gitRelationships) {
+          const [alpha, beta] = await Promise.all([
+            this.resolveRef(relationship.alphaWorkspaceRefId),
+            this.resolveRef(relationship.betaWorkspaceRefId),
+          ]);
+          statuses.push(this.publish({
+            relationshipId: relationship.relationshipId,
+            controllerMachineId: relationship.controllerMachineId,
+            state: 'error',
+            alphaPath: alpha?.rootPath ?? relationship.alphaWorkspaceRefId,
+            betaPath: beta?.rootPath ?? relationship.betaWorkspaceRefId,
+            mode: relationship.mode,
+            changedFiles: 0,
+            conflictCount: 0,
+            lastSuccessfulSyncAtMs: null,
+            errorCode: 'git_selection_unavailable',
+          }));
         }
       }
       return statuses;

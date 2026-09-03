@@ -46,7 +46,7 @@ export function bindContextualActionToolInput(params: Readonly<{
   const additions: Record<string, string> = {};
   if (
     defaults.sessionId === 'current_session'
-    && normalizeContextValue(input.sessionId) === null
+    && !Object.prototype.hasOwnProperty.call(input, 'sessionId')
   ) {
     const value = normalizeContextValue(params.context.defaultSessionId);
     if (value) additions.sessionId = value;

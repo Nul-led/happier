@@ -19,6 +19,7 @@ import {
 
 import type { AgentMessage } from '@/agent/core/AgentMessage';
 import type { CreateCliExecutionRunBackendParams } from '@/agent/runtime/registry/engineRegistryTypes';
+import type { AgentSessionCapabilities } from '@/plugins/projection/registry/agentContributionDefinition';
 
 import {
     createNativeAgentExecutionRunHostRuntime,
@@ -110,6 +111,17 @@ function createVoiceSessionContextLease(params: Readonly<{
     };
 }
 
+/**
+ * Declared Session capabilities for the retained Voice interaction fixtures.
+ * The host reads resume admission and every offered control from this one
+ * declaration.
+ */
+const VOICE_INTERACTION_SESSION_CAPABILITIES: AgentSessionCapabilities = {
+    open: ['create', 'resume'],
+    delivery: ['newTurn'],
+    cancel: true,
+};
+
 describe('createNativeAgentExecutionRunHostRuntime', () => {
     it('keeps a native Session interaction alive across two complete Voice turns', async () => {
         const nativeListeners = new Set<(event: AgentSessionRuntimeEvent) => void>();
@@ -196,7 +208,7 @@ describe('createNativeAgentExecutionRunHostRuntime', () => {
                 permissionMode: 'read_only',
                 start: Object.freeze({ intent: 'voice_agent' as const }),
             }),
-            supportsResume: true,
+            sessionCapabilities: VOICE_INTERACTION_SESSION_CAPABILITIES,
             createSessionContext: ({ services, signal }) =>
                 createVoiceSessionContextLease({
                     services,
@@ -275,7 +287,7 @@ describe('createNativeAgentExecutionRunHostRuntime', () => {
                 permissionMode: 'read_only',
                 start: Object.freeze({ profileId: 'acme.session/assistant' }),
             }),
-            supportsResume: true,
+            sessionCapabilities: VOICE_INTERACTION_SESSION_CAPABILITIES,
             createSessionContext,
         });
 
@@ -319,7 +331,7 @@ describe('createNativeAgentExecutionRunHostRuntime', () => {
                 cwd: '/repo', runId: 'run-race', backendId: 'acme.voice/default', permissionMode: 'read_only',
                 start: Object.freeze({ intent: 'voice_agent' as const }),
             }),
-            supportsResume: true,
+            sessionCapabilities: VOICE_INTERACTION_SESSION_CAPABILITIES,
             createSessionContext: () => contextPromise,
         });
         const provisioning = host.provisionSession();
@@ -486,7 +498,10 @@ describe('createNativeAgentExecutionRunHostRuntime', () => {
             },
             async dispose() {},
         });
-        const open = vi.fn(async (_request: AgentExecutionRunOpenRequest) => opened);
+        const open = vi.fn(async (
+            _request: AgentExecutionRunOpenRequest,
+            _context: AgentRuntimeContext,
+        ) => opened);
         const runtime: AgentRuntime = Object.freeze({
             executionRuns: Object.freeze({ open }),
         });
@@ -545,7 +560,10 @@ describe('createNativeAgentExecutionRunHostRuntime', () => {
             watch() { return Object.freeze({ dispose: vi.fn() }); },
             async dispose() {},
         });
-        const open = vi.fn(async (_request: AgentExecutionRunOpenRequest) => opened);
+        const open = vi.fn(async (
+            _request: AgentExecutionRunOpenRequest,
+            _context: AgentRuntimeContext,
+        ) => opened);
         const runtime: AgentRuntime = Object.freeze({
             executionRuns: Object.freeze({ open }),
         });
@@ -1001,5 +1019,115 @@ describe('createNativeAgentExecutionRunHostRuntime', () => {
             name: 'AbortError',
             message: 'Native Agent execution run disposed',
         });
+    });
+
+    it('omits context.session for a detached execution-only Run instead of fabricating one from the run id', async () => {
+        const opened: AgentExecutionRunRuntime = Object.freeze({
+            async send() {
+                return Object.freeze({ status: 'admitted' as const });
+            },
+            async stop() {
+                return Object.freeze({ status: 'requested' as const });
+            },
+            watch() {
+                return Object.freeze({ dispose: vi.fn() });
+            },
+            async dispose() {},
+        });
+        const open = vi.fn(async (
+            _request: AgentExecutionRunOpenRequest,
+            _context: AgentRuntimeContext,
+        ) => opened);
+        const runtime: AgentRuntime = Object.freeze({
+            executionRuns: Object.freeze({ open }),
+        });
+        const host = createNativeAgentExecutionRunHostRuntime({
+            runtime,
+            lease: Object.freeze({
+                pluginId: 'acme.sample',
+                pluginVersion: '1.0.0',
+                agentId: 'acme.sample.agent',
+                localAgentId: 'agent',
+                generation: 'generation-1',
+                hasPrimaryRuntime: true,
+                isCurrent: () => true,
+                retirementSignal: new AbortController().signal,
+                createAgentRuntimeSurfaceInvocationContext:
+                    createUnexpectedAgentRuntimeSurfaceInvocationContext,
+                async createRuntime() {
+                    return runtime;
+                },
+            }),
+            options: Object.freeze({
+                cwd: '/repo',
+                runId: 'run-detached-1',
+                backendId: 'acme.sample.agent',
+                permissionMode: 'read_only',
+                start: Object.freeze({ profileId: 'review' }),
+            }),
+            supportsResume: false,
+        });
+
+        await host.provisionSession({ initialPrompt: 'start' });
+
+        expect(open).toHaveBeenCalledOnce();
+        expect(open.mock.calls[0]?.[1]).not.toHaveProperty('session');
+        await host.dispose();
+    });
+
+    it('carries the real Happier Session id on the Run context when the host scope has one', async () => {
+        const opened: AgentExecutionRunRuntime = Object.freeze({
+            async send() {
+                return Object.freeze({ status: 'admitted' as const });
+            },
+            async stop() {
+                return Object.freeze({ status: 'requested' as const });
+            },
+            watch() {
+                return Object.freeze({ dispose: vi.fn() });
+            },
+            async dispose() {},
+        });
+        const open = vi.fn(async (
+            _request: AgentExecutionRunOpenRequest,
+            _context: AgentRuntimeContext,
+        ) => opened);
+        const runtime: AgentRuntime = Object.freeze({
+            executionRuns: Object.freeze({ open }),
+        });
+        const host = createNativeAgentExecutionRunHostRuntime({
+            runtime,
+            lease: Object.freeze({
+                pluginId: 'acme.sample',
+                pluginVersion: '1.0.0',
+                agentId: 'acme.sample.agent',
+                localAgentId: 'agent',
+                generation: 'generation-1',
+                hasPrimaryRuntime: true,
+                isCurrent: () => true,
+                retirementSignal: new AbortController().signal,
+                createAgentRuntimeSurfaceInvocationContext:
+                    createUnexpectedAgentRuntimeSurfaceInvocationContext,
+                async createRuntime() {
+                    return runtime;
+                },
+            }),
+            options: Object.freeze({
+                cwd: '/repo',
+                runId: 'run-session-scoped-1',
+                backendId: 'acme.sample.agent',
+                permissionMode: 'read_only',
+                happierSessionId: 'happier-session-1',
+                start: Object.freeze({ profileId: 'review' }),
+            }),
+            supportsResume: false,
+        });
+
+        await host.provisionSession({ initialPrompt: 'start' });
+
+        expect(open).toHaveBeenCalledOnce();
+        expect(open.mock.calls[0]?.[1].session).toEqual({ id: 'happier-session-1' });
+        expect(open.mock.calls[0]?.[1].session?.id).not.toBe('run-session-scoped-1');
+        await host.dispose();
     });
 });

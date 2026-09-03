@@ -7,6 +7,8 @@ import {
 } from '@/agent/runtime/bridges/executionRun/testkit/runtime';
 import type { ExecutionRunState } from '@/agent/runtime/bridges/executionRun/executionRunTypes';
 import { sendBackendLongLivedRun } from '@/agent/runtime/bridges/executionRun/send/backendLongLivedPrompt';
+import type { ExecutionRunBackendController } from '@/agent/executionRuns/controllers/types';
+import { failureSignal } from '@/agent/executionRuns/controllers/failureSignal';
 
 function createResumableBackendHarness(): Readonly<{
   runtime: ExecutionRunHostRuntime;
@@ -156,5 +158,62 @@ describe('sendBackendLongLivedRun (resume)', () => {
       error: 'Connected-service credentials changed. Restart or resume this execution run before sending.',
     });
     expect(sendPrompt).not.toHaveBeenCalled();
+  });
+
+  it('does not replay an effectful replacement prompt after an ambiguous AbortError', async () => {
+    const sendPrompt = vi.fn(async () => {
+      throw Object.assign(new Error('replacement prompt outcome is ambiguous'), { name: 'AbortError' });
+    });
+    const cancel = vi.fn(async () => undefined);
+    const { runtime } = createTestExecutionRunHostRuntime({
+      sendPrompt,
+      cancel,
+    });
+    const run = createLongLivedResumableRun({ status: 'running' });
+    const runs = new Map([[run.runId, run]]);
+    const controller: ExecutionRunBackendController = {
+      kind: 'backend',
+      backend: runtime,
+      backendSupportsResume: true,
+      childSessionId: 'child_session_active',
+      buffer: '',
+      sidechainStreamBuffer: '',
+      sidechainStreamKey: '',
+      streamWriter: null,
+      cancelled: false,
+      turnCount: 1,
+      turnEpoch: 1,
+      turnInFlight: true,
+      turnCancelReason: null,
+      turnCancelEpoch: null,
+      pendingExternalMessages: [],
+      pendingExternalMessagesSignal: null,
+      lastMarkerWriteAtMs: 0,
+      failureSignal: failureSignal(),
+      pendingHostBarrier: Promise.resolve(),
+      terminalPromise: new Promise<void>(() => {}),
+      resolveTerminal: () => undefined,
+    };
+    const controllers = new Map([[run.runId, controller]]);
+
+    const result = await sendBackendLongLivedRun({
+      runId: run.runId,
+      params: { message: 'replacement', delivery: 'interrupt' },
+      runs,
+      controllers,
+      budgetRegistry: null,
+      createRuntime: () => runtime,
+      maxTurns: null,
+      getNowMs: () => 123,
+      finishRun: async () => undefined,
+      sendAcp: async () => {},
+      parentProvider: 'acme.runtime.provider' as any,
+      streamedTranscriptSession: null,
+      writeActivityMarker: async () => undefined,
+    });
+
+    expect(result).toMatchObject({ ok: false, errorCode: 'execution_run_failed' });
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(sendPrompt).toHaveBeenCalledOnce();
   });
 });

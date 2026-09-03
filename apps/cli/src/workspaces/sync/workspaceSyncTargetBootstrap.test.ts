@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import type { HandoffTargetReplacementApprovalV1 } from '@happier-dev/protocol';
 
 import {
   prepareExistingGitWorkspaceSyncTarget,
@@ -20,10 +21,10 @@ const rootOwnershipManager = createWorkspaceRootOwnershipManager({
 });
 const crashChildPath = join(dirname(fileURLToPath(import.meta.url)), 'workspaceSyncTargetBootstrap.child.ts');
 
-async function replacementApproval(rootPath: string) {
+async function replacementApproval(rootPath: string): Promise<HandoffTargetReplacementApprovalV1> {
   return {
     v: 1 as const,
-    consequence: 'replace_nonempty_workspace_target' as const,
+    consequences: ['replace_nonempty_workspace_target'],
     serverId: 'server-1',
     machineId: 'machine-b',
     canonicalRoot: rootPath,
@@ -74,9 +75,9 @@ describe('workspaceSyncTargetBootstrap', () => {
     const stagingDirectory = join(fixture, 'staging');
     await mkdir(target);
     await writeFile(join(target, 'approved.txt'), 'old');
-    const approval = {
+    const approval: HandoffTargetReplacementApprovalV1 = {
       v: 1 as const,
-      consequence: 'replace_nonempty_workspace_target' as const,
+      consequences: ['replace_nonempty_workspace_target'],
       serverId: 'server-1',
       machineId: 'machine-b',
       canonicalRoot: target,

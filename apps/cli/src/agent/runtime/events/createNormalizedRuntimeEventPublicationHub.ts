@@ -2,13 +2,27 @@ import type { AgentMessage } from '@/agent/core/AgentMessage';
 
 import {
   createNormalizedRuntimeEventWriter,
+  toRuntimeIdentityPublicationAgentMessage,
   type NormalizedRuntimeEventPublicationInput,
+  type NormalizedRuntimeIdentityPublicationFact,
+  type NormalizedRuntimeIdentityPublicationV1,
 } from '@/agent/runtime/events/createNormalizedRuntimeEventWriter';
+
+export type NormalizedRuntimeIdentityPublicationHandler =
+  (publication: NormalizedRuntimeIdentityPublicationV1) => void;
 
 export type NormalizedRuntimeEventPublicationHub<TMessage> = Readonly<{
   ensureUpstreamRegistered: () => void;
   publishFallbackIdentity: () => void;
   subscribe: (handler: (message: TMessage) => void) => () => void;
+  /**
+   * Typed host-private identity publication. Late subscribers are replayed the
+   * latest value of every already-published fact, so the publication result —
+   * not subscription order — is the contract.
+   */
+  subscribeIdentityPublication: (
+    handler: NormalizedRuntimeIdentityPublicationHandler,
+  ) => () => void;
   dispose: () => void;
 }>;
 
@@ -25,8 +39,21 @@ export type NormalizedRuntimeEventPublicationHub<TMessage> = Readonly<{
 export function createNormalizedRuntimeEventPublicationHub<TMessage>(params: Readonly<{
   subscribeUpstream: (handler: (message: TMessage) => void) => () => void;
   identity: NormalizedRuntimeEventPublicationInput;
+  /**
+   * Opt-in compatibility mirror for the legacy host-private `AgentMessage`
+   * family, whose generic `EventMessage` member is a real member of that union
+   * and whose execution-run consumers already read these facts from the stream.
+   * Bridges on the strict canonical Agent Session event union leave it off and
+   * consume `subscribeIdentityPublication` instead.
+   */
+  mirrorIdentityPublicationToMessageStream?: boolean;
 }>): NormalizedRuntimeEventPublicationHub<TMessage> {
   const handlers = new Set<(message: TMessage) => void>();
+  const identityHandlers = new Set<NormalizedRuntimeIdentityPublicationHandler>();
+  const publishedByFact = new Map<
+    NormalizedRuntimeIdentityPublicationFact,
+    NormalizedRuntimeIdentityPublicationV1
+  >();
   let unsubscribeUpstream: (() => void) | null = null;
 
   const dispatch = (message: AgentMessage): void => {
@@ -39,8 +66,30 @@ export function createNormalizedRuntimeEventPublicationHub<TMessage>(params: Rea
     }
   };
 
+  const notifyIdentityHandler = (
+    handler: NormalizedRuntimeIdentityPublicationHandler,
+    publication: NormalizedRuntimeIdentityPublicationV1,
+  ): void => {
+    try {
+      handler(publication);
+    } catch {
+      // Best effort: publication subscribers must not break runtime routing.
+    }
+  };
+
+  const publishIdentity = (publication: NormalizedRuntimeIdentityPublicationV1): void => {
+    publishedByFact.set(publication.fact, publication);
+    if (params.mirrorIdentityPublicationToMessageStream) {
+      dispatch(toRuntimeIdentityPublicationAgentMessage(publication));
+    }
+    for (const handler of identityHandlers) {
+      notifyIdentityHandler(handler, publication);
+    }
+  };
+
   const runtimeEventWriter = createNormalizedRuntimeEventWriter({
     dispatch,
+    publishIdentity,
     identity: params.identity,
   });
 
@@ -56,14 +105,35 @@ export function createNormalizedRuntimeEventPublicationHub<TMessage>(params: Rea
     unsubscribeUpstream = null;
   };
 
+  const clearUpstreamSubscriptionIfUnused = (): void => {
+    if (handlers.size === 0 && identityHandlers.size === 0) {
+      clearUpstreamSubscription();
+    }
+  };
+
   const subscribe = (handler: (message: TMessage) => void): (() => void) => {
     handlers.add(handler);
     ensureUpstreamRegistered();
     return () => {
       handlers.delete(handler);
-      if (handlers.size === 0) {
-        clearUpstreamSubscription();
-      }
+      clearUpstreamSubscriptionIfUnused();
+    };
+  };
+
+  const subscribeIdentityPublication = (
+    handler: NormalizedRuntimeIdentityPublicationHandler,
+  ): (() => void) => {
+    // Register upstream before the handler: an upstream that publishes
+    // synchronously on subscribe must reach the new handler exactly once,
+    // through the replay below rather than through both paths.
+    ensureUpstreamRegistered();
+    identityHandlers.add(handler);
+    for (const publication of Array.from(publishedByFact.values())) {
+      notifyIdentityHandler(handler, publication);
+    }
+    return () => {
+      identityHandlers.delete(handler);
+      clearUpstreamSubscriptionIfUnused();
     };
   };
 
@@ -73,6 +143,7 @@ export function createNormalizedRuntimeEventPublicationHub<TMessage>(params: Rea
 
   const dispose = (): void => {
     handlers.clear();
+    identityHandlers.clear();
     clearUpstreamSubscription();
   };
 
@@ -80,6 +151,7 @@ export function createNormalizedRuntimeEventPublicationHub<TMessage>(params: Rea
     ensureUpstreamRegistered,
     publishFallbackIdentity,
     subscribe,
+    subscribeIdentityPublication,
     dispose,
   });
 }

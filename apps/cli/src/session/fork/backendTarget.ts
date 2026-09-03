@@ -3,51 +3,21 @@ import { isCatalogAgentId } from '@/agent/catalog/resolution';
 import { buildConfiguredAcpBackendSessionMetadata } from '@/agent/acp/catalog/configured/sessionMetadata';
 import type { StoredCredentials } from '@/persistence';
 import { resolveAvailableAccountSettings } from '@/settings/accountSettings/resolveAvailableAccountSettings';
-import type { AccountSettings, BackendTargetRefV1, BackendTargetRefV2 } from '@happier-dev/protocol';
+import type { BackendTargetRefV1, BackendTargetRefV2 } from '@happier-dev/protocol';
 import {
   readAcpConfiguredBackendV1FromMetadata,
-  readRuntimeDescriptorV1FromMetadata,
   resolveLinkedExternalSessionMetadataV1,
 } from '@happier-dev/protocol';
 import { resolveAgentIdFromSessionMetadata } from '@happier-dev/agents';
-import {
-  resolveConfiguredAcpBackendFromAccountSettings,
-  type ResolvedConfiguredAcpBackend,
-} from '@/agent/acp/catalog/configured/resolveBackend';
+import { resolveConfiguredAcpBackendFromAccountSettings } from '@/agent/acp/catalog/configured/resolveBackend';
 import { resolveConcreteCompatBackendTargetRefs } from '@/session/backendTargets/resolveConcreteBackendTargetRefs';
-import {
-  isConcreteLegacyConfiguredBackendId,
-  isLegacyConfiguredBackendVendorSessionCarrier,
-} from '@/session/backendTargets/compat/legacyConfiguredBackend';
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  return value as Record<string, unknown>;
-}
+import { isConcreteLegacyConfiguredBackendId } from '@/session/backendTargets/compat/legacyConfiguredBackend';
 
 function readConfiguredAcpBackendIdFromFlavor(metadata: Record<string, unknown>): string | null {
   const raw = typeof metadata.flavor === 'string' ? metadata.flavor.trim() : '';
   if (!raw.startsWith('acp:')) return null;
   const backendId = raw.slice(4).trim();
   return backendId || null;
-}
-
-function readConfiguredAcpProviderSessionId(metadata: Record<string, unknown>, backendId: string): string | null {
-  const descriptor = readRuntimeDescriptorV1FromMetadata(metadata);
-  const providerId = typeof descriptor?.agentId === 'string' ? descriptor.agentId.trim() : '';
-  if (!isLegacyConfiguredBackendVendorSessionCarrier({ providerId, backendId })) {
-    return null;
-  }
-  const provider = asRecord(descriptor?.agent);
-  const providerSessionId = typeof provider?.providerSessionId === 'string' ? provider.providerSessionId.trim() : '';
-  return providerSessionId || null;
-}
-
-function buildConfiguredAcpMetadataOverlay(params: Readonly<{
-  backendId: string;
-  title: string;
-}>): ReturnType<typeof buildConfiguredAcpBackendSessionMetadata> {
-  return buildConfiguredAcpBackendSessionMetadata(params);
 }
 
 export type SessionForkBackendTargetResolution =
@@ -59,7 +29,6 @@ export type SessionForkBackendTargetResolution =
       backendTarget: BackendTargetRefV1;
       replayFlavor: string;
       metadataOverlay: Readonly<Record<string, unknown>>;
-      configuredAcp: null;
     }>
   | Readonly<{
       ok: true;
@@ -69,13 +38,6 @@ export type SessionForkBackendTargetResolution =
       backendTarget: Readonly<{ kind: 'configuredAcpBackend'; backendId: string }>;
       replayFlavor: string;
       metadataOverlay: Readonly<Record<string, unknown>>;
-      configuredAcp: Readonly<{
-        backendId: string;
-        title: string;
-        providerSessionId: string | null;
-        resolvedBackend: ResolvedConfiguredAcpBackend | null;
-        accountSettings: AccountSettings | null;
-      }>;
     }>
   | Readonly<{
       ok: false;
@@ -133,17 +95,10 @@ export async function resolveSessionForkBackendTarget(params: Readonly<{
         backendTargetV2: backendTargetRefs.backendTargetV2,
         backendTarget,
         replayFlavor: `acp:${candidateConfiguredBackendId}`,
-        metadataOverlay: buildConfiguredAcpMetadataOverlay({
+        metadataOverlay: buildConfiguredAcpBackendSessionMetadata({
           backendId: candidateConfiguredBackendId,
           title,
         }),
-        configuredAcp: {
-          backendId: candidateConfiguredBackendId,
-          title,
-          providerSessionId: readConfiguredAcpProviderSessionId(params.parentMetadata, candidateConfiguredBackendId),
-          resolvedBackend: resolvedConfiguredBackend,
-          accountSettings,
-        },
       };
     }
   }
@@ -175,6 +130,5 @@ export async function resolveSessionForkBackendTarget(params: Readonly<{
     backendTarget: backendTargetRefs.backendTarget,
     replayFlavor: agentRaw,
     metadataOverlay: {},
-    configuredAcp: null,
   };
 }

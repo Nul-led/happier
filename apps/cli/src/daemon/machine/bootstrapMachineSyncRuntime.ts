@@ -33,9 +33,14 @@ import type { SessionHandoffLocalMetadataSource } from '@/session/handoff/metada
 import type { SpawnSessionOptions, SpawnSessionResult } from '@/session/shared/spawnSessionContract';
 import type { StopSessionResult } from '@/daemon/sessions/stopSessionContract';
 import { activatePendingInactiveSession } from '@/daemon/sessions/activatePendingInactiveSession';
+import {
+  createPendingSessionActivationRecovery,
+  type PendingSessionActivationInput,
+} from '@/daemon/sessions/pendingSessionActivationRecovery';
 import { activateInactiveUsageLimitResume } from '@/daemon/sessions/activateInactiveUsageLimitResume';
 import type { AutomationWorkerHandle } from '../automation/automationWorker';
 import type { MemoryWorkerHandle } from '../memory/memoryWorker';
+import { subscribeMemorySessionRemoval } from '../memory/subscribeMemorySessionRemoval';
 import type { VoiceInferenceWorkerHandle } from '../voiceInference/voiceInferenceWorker';
 import type { DaemonServerWorkScheduler } from '../serverWork';
 import { createDaemonConnectivityCoordinator } from '../connection/createDaemonConnectivityCoordinator';
@@ -356,6 +361,7 @@ async function maybeStartPeerMediationLoopback(params: Readonly<{
   machineIrohRuntime?: DaemonMachineIrohRuntime;
   directPeerServerLifecycle: DirectTransferServerLifecycle | null;
   acquireWorkspaceSyncMachineIngress?: BootstrapMachineSyncRuntimeParams['acquireWorkspaceSyncMachineIngress'];
+  getServerFeaturesSnapshot?: BootstrapMachineSyncRuntimeParams['getServerFeaturesSnapshot'];
 }>): Promise<StartedPeerMediationLoopback | null> {
   const serverFeatures = await resolvePeerMediationMachineRpcServerFeatures(params.config);
   if (!serverFeatures) return null;
@@ -395,6 +401,13 @@ async function maybeStartPeerMediationLoopback(params: Readonly<{
         localEndpointId: params.machineIrohRuntime.endpoint.endpointId,
         role: 'acceptor' as const,
         allowedFlows: ['file_transfer', 'attachment_transfer', 'workspace_sync'] as const,
+        resolveTrustRoots: () => {
+          const current = params.getServerFeaturesSnapshot?.();
+          const features = current?.status === 'ready' ? current.features : serverFeatures;
+          return features.capabilities.machines.peerMediation.grantSigningKeys
+            .filter((key) => key.expiresAt == null || key.expiresAt > Date.now())
+            .map((key) => ({ keyId: key.keyId, publicKey: key.publicKey, expiresAt: key.expiresAt }));
+        },
         resolveApplicationTarget: async ({ handshake }) => {
           if (handshake.flow === 'file_transfer' || handshake.flow === 'attachment_transfer') {
             return params.directPeerServerLifecycle
@@ -529,7 +542,7 @@ export async function retireMachineSyncRuntimeAttempt(
     logger.warn('[DAEMON RUN] Failed to stop automation worker after machine-sync attempt failure', error);
   }
   try {
-    params.memoryWorker?.stop();
+    await params.memoryWorker?.stop();
   } catch (error) {
     logger.warn('[DAEMON RUN] Failed to stop memory worker after machine-sync attempt failure', error);
   }
@@ -932,6 +945,28 @@ export async function bootstrapMachineSyncRuntime(
     automationWorker = params.startAutomationWorkerForMachine(params.machineId);
     const activeAutomationWorker = automationWorker;
     memoryWorker = await params.startMemoryWorkerForMachine(params.machineId);
+    if (memoryWorker) {
+      // Derived daemon-memory rows for a deleted, access-revoked, or
+      // archive-excluded Session are cleared through the memory owner's single
+      // removal operation. Deletion/revocation purges run inside the Account
+      // change cursor's custody window, so a failure replays the fact.
+      const disposeMemorySessionRemoval = subscribeMemorySessionRemoval({
+        memoryWorker,
+        onSessionDeletedChange: (listener) => connectedApiMachine.onSessionDeletedChange(listener),
+        onSessionAccessRevoked: (listener) => connectedApiMachine.onSessionAccessRevoked(listener),
+        onSessionAccessReset: (listener) => connectedApiMachine.onSessionAccessReset(listener),
+        onSessionArchivedStateChange: (listener) =>
+          connectedApiMachine.onSessionArchivedStateChange(listener),
+      });
+      const stopMemoryWorker = memoryWorker.stop;
+      memoryWorker = {
+        ...memoryWorker,
+        stop: async () => {
+          disposeMemorySessionRemoval();
+          await stopMemoryWorker();
+        },
+      };
+    }
     voiceInferenceWorker = await params.startVoiceInferenceWorkerForMachine(
       params.machineId,
       normalizeNonEmptyString(params.peerMediationMachineRpc?.accountId)
@@ -1249,6 +1284,9 @@ export async function bootstrapMachineSyncRuntime(
             },
           }
         : {}),
+      ...(params.getServerFeaturesSnapshot
+        ? { getServerFeaturesSnapshot: params.getServerFeaturesSnapshot }
+        : {}),
       ...(voiceBinaryAppendConsumer ? { voiceBinaryAppendConsumer } : {}),
       ...(voiceBinaryTerminalConsumer ? { voiceBinaryTerminalConsumer } : {}),
     }).catch((error) => {
@@ -1413,9 +1451,10 @@ export async function bootstrapMachineSyncRuntime(
       });
     }
 
+    let recoverPendingSessionActivationsAfterConnect = async (): Promise<void> => {};
     if (storedCredentials) {
       const credentials = storedCredentials;
-      connectedApiMachine.onPendingSessionActivationHint(async (hint) => {
+      const activatePendingSession = async (hint: PendingSessionActivationInput): Promise<void> => {
         const result = await activatePendingInactiveSession({
           credentials,
           machineId: params.machineId,
@@ -1432,7 +1471,17 @@ export async function bootstrapMachineSyncRuntime(
             reason: result.reason,
           });
         }
+      };
+      const pendingSessionActivationRecovery = createPendingSessionActivationRecovery({
+        token: credentials.token,
+        activate: activatePendingSession,
+        warn: (message, input, error) => logger.warn(`[DAEMON RUN] ${message}`, { input, error }),
       });
+      connectedApiMachine.onPendingSessionActivationHint(
+        pendingSessionActivationRecovery.activateHint,
+      );
+      recoverPendingSessionActivationsAfterConnect =
+        pendingSessionActivationRecovery.recoverAfterConnect;
     }
 
     connectedApiMachine.onUpdate((update) => {
@@ -1640,12 +1689,19 @@ export async function bootstrapMachineSyncRuntime(
       }
     };
     resumeMachineConnectionPublications = refreshMachineConnectionPublications;
+    const handleMachineConnected = async (): Promise<void> => {
+      await refreshMachineConnectionPublications();
+      if (params.isShuttingDown()) return;
+      await recoverPendingSessionActivationsAfterConnect().catch((error) => {
+        logger.warn('[DAEMON RUN] Pending session activation reconnect scan failed; waiting custody retained', error);
+      });
+    };
     connectedApiMachine.connect({
       takeover: params.takeoverRequested,
       ...(params.prepareServerTransportForReconnect
         ? { prepareServerTransportForReconnect: params.prepareServerTransportForReconnect }
         : {}),
-      onConnect: refreshMachineConnectionPublications,
+      onConnect: handleMachineConnected,
       onOwnershipConflict: (conflict) => {
         logger.warn('[DAEMON RUN] Relay ownership conflict prevented machine connection', conflict);
         params.requestShutdown('happier-app', 'machine-owner-conflict');

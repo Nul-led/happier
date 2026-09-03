@@ -12,6 +12,45 @@ vi.mock('@/session/actions/createCliActionExecutorFromCredentials', () => ({
 }));
 vi.mock('@/session/services/resolveSessionTransportContext', () => ({ resolveSessionTransportContext }));
 
+// Strict public run state as produced by the canonical execution-run get owner:
+// the completed wait result validates `result` against ExecutionRunGetResponseSchema,
+// so presentation fixtures must exercise the real public schema, not a stub.
+const succeededRunState = {
+  runId: 'run-1',
+  callId: 'call-1',
+  sidechainId: 'call-1',
+  intent: 'review',
+  backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
+  permissionMode: 'read_only',
+  retentionPolicy: 'ephemeral',
+  runClass: 'bounded',
+  ioMode: 'request_response',
+  status: 'succeeded',
+  startedAtMs: 1,
+} as const;
+
+const succeededExecuteResult = {
+  ok: true,
+  result: {
+    ok: true,
+    status: 'succeeded',
+    result: { run: succeededRunState },
+  },
+} as const;
+
+const observationTimeoutExecuteResult = {
+  ok: true,
+  result: {
+    ok: true,
+    status: 'running',
+    disposition: 'observation_timeout',
+    runId: 'run-1',
+    timeoutMs: 1_000,
+    observedAtMs: 1_050,
+    deadlineAtMs: 1_000,
+  },
+} as const;
+
 describe('happier session run wait (action executor)', () => {
   beforeEach(() => {
     execute.mockReset();
@@ -21,14 +60,7 @@ describe('happier session run wait (action executor)', () => {
   });
 
   it('does not add a default timeout when --timeout is omitted', async () => {
-    execute.mockResolvedValueOnce({
-      ok: true,
-      result: {
-        ok: true,
-        status: 'succeeded',
-        result: { run: { runId: 'run-1', status: 'succeeded' } },
-      },
-    });
+    execute.mockResolvedValueOnce(succeededExecuteResult);
 
     const { handleSessionCommand } = await import('../handleSessionCommand');
 
@@ -54,14 +86,7 @@ describe('happier session run wait (action executor)', () => {
   });
 
   it('routes through ActionExecutor with the expected action id and args', async () => {
-    execute.mockResolvedValueOnce({
-      ok: true,
-      result: {
-        ok: true,
-        status: 'succeeded',
-        result: { run: { runId: 'run-1', status: 'succeeded' } },
-      },
-    });
+    execute.mockResolvedValueOnce(succeededExecuteResult);
 
     const { handleSessionCommand } = await import('../handleSessionCommand');
 
@@ -107,14 +132,7 @@ describe('happier session run wait (action executor)', () => {
   });
 
   it('does not resolve an API-token Session through the generic transport', async () => {
-    execute.mockResolvedValueOnce({
-      ok: true,
-      result: {
-        ok: true,
-        status: 'succeeded',
-        result: { run: { runId: 'run-1', status: 'succeeded' } },
-      },
-    });
+    execute.mockResolvedValueOnce(succeededExecuteResult);
     const { handleSessionCommand } = await import('../handleSessionCommand');
     const output = captureConsoleJsonOutput();
     try {
@@ -126,6 +144,67 @@ describe('happier session run wait (action executor)', () => {
       expect(resolveSessionTarget).toHaveBeenCalledWith('sess-1');
       expect(resolveSessionTransportContext).not.toHaveBeenCalled();
       expect(output.json()).toEqual(expect.objectContaining({ ok: true, kind: 'session_run_wait' }));
+    } finally {
+      output.restore();
+    }
+  });
+
+  it('reports an observation timeout without claiming the run finished', async () => {
+    execute.mockResolvedValueOnce(observationTimeoutExecuteResult);
+
+    const { handleSessionCommand } = await import('../handleSessionCommand');
+
+    const output = captureConsoleJsonOutput();
+    try {
+      await handleSessionCommand(['run', 'wait', 'sess-1', 'run-1', '--timeout', '1'], {
+        readCredentialsFn: async () => ({
+          token: 'token_test',
+          encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
+        }),
+      });
+
+      expect(execute).toHaveBeenCalledWith(
+        'execution.run.wait',
+        { sessionId: 'sess-canonical', runId: 'run-1', timeoutSeconds: 1 },
+        { surface: 'cli', defaultSessionId: null },
+      );
+      const text = output.logs.join('\n');
+      expect(text).not.toContain('run finished');
+      expect(text).toContain('observation ended');
+      expect(text).toContain('still running');
+    } finally {
+      output.restore();
+    }
+  });
+
+  it('preserves observation-timeout facts in the JSON envelope', async () => {
+    execute.mockResolvedValueOnce(observationTimeoutExecuteResult);
+
+    const { handleSessionCommand } = await import('../handleSessionCommand');
+
+    const output = captureConsoleJsonOutput();
+    try {
+      await handleSessionCommand(['run', 'wait', 'sess-1', 'run-1', '--timeout', '1', '--json'], {
+        readCredentialsFn: async () => ({
+          token: 'token_test',
+          encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
+        }),
+      });
+
+      expect(output.json()).toEqual({
+        v: 1,
+        ok: true,
+        kind: 'session_run_wait',
+        data: {
+          sessionId: 'sess-canonical',
+          runId: 'run-1',
+          status: 'running',
+          disposition: 'observation_timeout',
+          timeoutMs: 1_000,
+          observedAtMs: 1_050,
+          deadlineAtMs: 1_000,
+        },
+      });
     } finally {
       output.restore();
     }

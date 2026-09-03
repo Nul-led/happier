@@ -55,6 +55,7 @@ export async function writeExecutionRunActivityMarker(args: Readonly<{
     sidechainId: run.sidechainId,
     intent: run.intent,
     backendTarget: readBackendTargetRefV2(run.backendTarget),
+    ...(run.launch?.launchOrigin ? { launchOrigin: run.launch.launchOrigin } : {}),
     permissionMode: run.permissionMode,
     retentionPolicy: run.retentionPolicy,
     runClass: run.runClass,

@@ -1,8 +1,8 @@
-import type { MaterializeNextPendingResult } from '@/api/session/sessionClientPort';
-import type { RuntimeActivitySnapshotTail } from '@/api/session/sessionClientPort';
 import type {
-  PendingMaterializationDeliveryTiming,
-} from '@/api/session/pendingQueueV2Transport';
+  MaterializeNextPendingOptions,
+  MaterializeNextPendingResult,
+  RuntimeActivitySnapshotTail,
+} from '@/api/session/sessionClientPort';
 
 export type MessageBatch<Mode, Message> = {
   message: Message;
@@ -21,11 +21,7 @@ export type SessionProviderInputConsumerSession = Readonly<{
     sequence: number,
     abortSignal?: AbortSignal,
   ) => Promise<boolean>;
-  materializeNextPendingMessageSafely?: (opts?: {
-    reconcileWhenEmpty?: PendingMaterializationReconcileWhenEmpty;
-    deliveryTiming?: PendingMaterializationDeliveryTiming;
-    expectedRuntimeActivityRevision?: number;
-  }) => Promise<MaterializeNextPendingResult>;
+  materializeNextPendingMessageSafely?: (opts?: MaterializeNextPendingOptions) => Promise<MaterializeNextPendingResult>;
   /** Compatibility-only surface; the session-input owner never invokes it. */
   popPendingMessage?: () => Promise<boolean>;
   shouldAttemptPendingMaterialization?: () => boolean | Promise<boolean>;

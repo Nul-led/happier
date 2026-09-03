@@ -13,6 +13,8 @@ import type {
   SessionSendRequest,
   SessionsService,
 } from '@happier-dev/plugin-sdk/sessions';
+import type { SubagentsService } from '@happier-dev/plugin-sdk/sessions/subagents';
+import type { AgentSessionSubagentObservationPublisher } from '@happier-dev/plugin-sdk/agents/runtime';
 import { createHash, randomUUID } from 'node:crypto';
 
 import { resolveServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
@@ -83,6 +85,26 @@ export type PluginSessionHandleCapabilities = Readonly<
   & Readonly<{ subagents?: PluginSubagentsHostService }>
   & Partial<Pick<CurrentSessionHandle, 'setDisplayTitle'>>
 >;
+
+const subagentObservationBySessions = new WeakMap<
+  SessionsService,
+  AgentSessionSubagentObservationPublisher
+>();
+
+/** Associates one host-only writer without adding a reflectable public key. */
+export function bindPluginSessionsSubagentObservation<TSessions extends SessionsService>(
+  sessions: TSessions,
+  publisher: AgentSessionSubagentObservationPublisher,
+): TSessions {
+  subagentObservationBySessions.set(sessions, publisher);
+  return sessions;
+}
+
+export function readPluginSessionsSubagentObservation(
+  sessions: SessionsService,
+): AgentSessionSubagentObservationPublisher | undefined {
+  return subagentObservationBySessions.get(sessions);
+}
 
 export type PluginSessionsInventoryParams = Readonly<{
   credentials: StoredCredentials;
@@ -321,7 +343,9 @@ async function defaultReadStoragePolicy(): Promise<StoragePolicy> {
     : 'required_e2ee';
 }
 
-export function createPluginSessionsInventory(params: PluginSessionsInventoryParams): SessionsService {
+export function createPluginSessionsInventory(
+  params: PluginSessionsInventoryParams,
+): SessionsService {
   const fetchPage = params.fetchPage ?? (async (request) => await fetchSessionsPage(request));
   const fetchById = params.fetchById ?? (async (request) => await fetchSessionById(request));
   const readStoragePolicy = params.readStoragePolicy ?? defaultReadStoragePolicy;
@@ -445,10 +469,19 @@ export function createPluginSessionsInventory(params: PluginSessionsInventoryPar
     observe: unavailableHandleMethod,
     watch: unavailableHandleMethod,
   });
+  const unavailableSubagentReads: SubagentsService = Object.freeze({
+    list: unavailableHandleMethod,
+    get: unavailableHandleMethod,
+    watch: unavailableHandleMethod,
+  });
+  const unavailableSubagentObservation: AgentSessionSubagentObservationPublisher = Object.freeze({
+    observe: unavailableHandleMethod,
+  });
 
   const createSessionService = (sessionId: string): Readonly<{
     handle: SessionHandle;
     currentCapability: Pick<CurrentSessionHandle, 'setDisplayTitle'>;
+    subagentObservation: AgentSessionSubagentObservationPublisher;
   }> => {
     const readSummary: SessionHandle['summary'] = async (options) => {
       assertNotAborted(options?.signal);
@@ -543,11 +576,14 @@ export function createPluginSessionsInventory(params: PluginSessionsInventoryPar
         });
       },
     });
-    const guardedSubagents: PluginSubagentsHostService = Object.freeze({
-      capabilities() {
-        assertSynchronouslyAccessibleSession(sessionId, 'control');
-        return (subagents ?? unavailableSubagents).capabilities();
+    const guardedSubagentObservation: AgentSessionSubagentObservationPublisher = Object.freeze({
+      async observe(...args: Parameters<PluginSubagentsHostService['observe']>) {
+        const [input, options] = args;
+        await assertSessionAccess(sessionId, 'control', options?.signal);
+        return await (subagents ?? unavailableSubagents).observe(input, options);
       },
+    });
+    const guardedSubagents: SubagentsService = Object.freeze({
       async list(...args: Parameters<SessionHandle['subagents']['list']>) {
         const [query] = args;
         await assertSessionAccess(sessionId, 'control', query?.signal);
@@ -557,11 +593,6 @@ export function createPluginSessionsInventory(params: PluginSessionsInventoryPar
         const [id, options] = args;
         await assertSessionAccess(sessionId, 'control', options?.signal);
         return await (subagents ?? unavailableSubagents).get(id, options);
-      },
-      async observe(...args: Parameters<PluginSubagentsHostService['observe']>) {
-        const [input, options] = args;
-        await assertSessionAccess(sessionId, 'control', options?.signal);
-        return await (subagents ?? unavailableSubagents).observe(input, options);
       },
       watch(...args: Parameters<SessionHandle['subagents']['watch']>) {
         const [query, listener] = args;
@@ -691,7 +722,11 @@ export function createPluginSessionsInventory(params: PluginSessionsInventoryPar
         await setDisplayTitle(title, options);
       },
     });
-    return Object.freeze({ handle, currentCapability });
+    return Object.freeze({
+      handle,
+      currentCapability,
+      subagentObservation: guardedSubagentObservation,
+    });
   };
 
   const scanInventory = async (
@@ -878,18 +913,22 @@ export function createPluginSessionsInventory(params: PluginSessionsInventoryPar
     });
   };
 
-  const current = params.currentSessionId === null || params.sessionScopes.length === 0
+  const currentService = params.currentSessionId === null || params.sessionScopes.length === 0
     ? null
-    : (() => {
-      const service = createSessionService(params.currentSessionId);
-      return Object.freeze({ ...service.handle, ...service.currentCapability }) as CurrentSessionHandle;
-    })();
-  return Object.freeze({
+    : createSessionService(params.currentSessionId);
+  const current = currentService
+    ? Object.freeze({ ...currentService.handle, ...currentService.currentCapability })
+    : null;
+  const sessions = Object.freeze({
     current,
     list,
     get,
     watch,
-    subagents: current?.subagents ?? unavailableSubagents,
+    subagents: current?.subagents ?? unavailableSubagentReads,
     external: params.external,
   });
+  return bindPluginSessionsSubagentObservation(
+    sessions,
+    currentService?.subagentObservation ?? unavailableSubagentObservation,
+  );
 }

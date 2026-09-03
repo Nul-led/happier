@@ -181,7 +181,7 @@ describe('rpcHandlers (marketplace sources)', () => {
     }
   });
 
-  it('reads and writes the shared marketplace source registry file', async () => {
+  it('reads and atomically mutates the shared marketplace source registry file', async () => {
     const happyHomeDir = mkdtempSync(join(tmpdir(), 'happier-marketplace-rpc-'));
     const envScope = createEnvKeyScope(['HAPPIER_HOME_DIR', 'HAPPIER_MARKETPLACE_CURATED_SOURCE_URL']);
     envScope.patch({
@@ -198,9 +198,9 @@ describe('rpcHandlers (marketplace sources)', () => {
       });
 
       const get = mgr.handlers.get(RPC_METHODS.DAEMON_MARKETPLACE_SOURCE_REGISTRY_GET);
-      const set = mgr.handlers.get(RPC_METHODS.DAEMON_MARKETPLACE_SOURCE_REGISTRY_SET);
+      const mutate = mgr.handlers.get(RPC_METHODS.DAEMON_MARKETPLACE_SOURCE_REGISTRY_MUTATE);
       const query = mgr.handlers.get(RPC_METHODS.DAEMON_MARKETPLACE_INDEX_QUERY);
-      if (!get || !set || !query) {
+      if (!get || !mutate || !query) {
         throw new Error('expected marketplace source registry handlers');
       }
 
@@ -219,33 +219,49 @@ describe('rpcHandlers (marketplace sources)', () => {
         ],
       }));
 
-      const initialRegistry = initial as { sources: Array<Record<string, unknown>> };
-      const next = {
-        t: 'happier_marketplace_source_registry_v1',
-        schemaVersion: 1,
-        sources: [
-          {
-            ...initialRegistry.sources[0],
-            title: 'Curated marketplace',
-            registryProfileId: 'registry_private',
-          },
-        ],
-      };
-      await expect(set(next)).resolves.toEqual(next);
-      expect(JSON.parse(readFileSync(join(happyHomeDir, 'plugins', 'plugins', 'state', 'marketplace-source-registry.v1.json'), 'utf8'))).toEqual(next);
-      await expect(get({})).resolves.toEqual(next);
-      await expect(set({
-        ...next,
-        sources: [
-          ...next.sources,
-          {
-            id: 'marketplace:evil00000000',
-            title: 'Attacker curated source',
-            sourceUrl: 'https://evil.example.test/catalog.json',
-            enabled: true,
-            origin: 'curated',
-          },
-        ],
+      const curatedSourceId = (initial as { sources: Array<{ id: string }> }).sources[0]!.id;
+      await expect(mutate({
+        kind: 'setRegistryProfile',
+        sourceId: curatedSourceId,
+        registryProfileId: 'registry_private',
+      })).resolves.toMatchObject({
+        sources: [expect.objectContaining({ id: curatedSourceId, registryProfileId: 'registry_private' })],
+      });
+
+      // Both callers observed the same prior registry. Because each request
+      // describes only its own source change, the daemon applies both beneath
+      // the store's existing update lock rather than accepting two stale
+      // whole-document replacements.
+      await Promise.all([
+        mutate({ kind: 'upsert', input: { sourceUrl: 'https://alpha.example.test/index.json', title: 'Alpha', origin: 'user' } }),
+        mutate({ kind: 'upsert', input: { sourceUrl: 'https://beta.example.test/index.json', title: 'Beta', origin: 'user' } }),
+      ]);
+      const persisted = JSON.parse(readFileSync(join(happyHomeDir, 'plugins', 'plugins', 'state', 'marketplace-source-registry.v1.json'), 'utf8'));
+      expect(persisted.sources).toEqual(expect.arrayContaining([
+        expect.objectContaining({ title: 'Alpha' }),
+        expect.objectContaining({ title: 'Beta' }),
+      ]));
+      await expect(get({})).resolves.toEqual(persisted);
+      const alphaSourceId = persisted.sources.find((source: { title: string }) => source.title === 'Alpha').id;
+      const betaSourceId = persisted.sources.find((source: { title: string }) => source.title === 'Beta').id;
+      await expect(mutate({ kind: 'setEnabled', sourceId: alphaSourceId, enabled: false })).resolves.toMatchObject({
+        sources: expect.arrayContaining([expect.objectContaining({ id: alphaSourceId, enabled: false })]),
+      });
+      await expect(mutate({
+        kind: 'setRegistryProfile', sourceId: alphaSourceId, registryProfileId: 'registry_alpha',
+      })).resolves.toMatchObject({
+        sources: expect.arrayContaining([expect.objectContaining({ id: alphaSourceId, registryProfileId: 'registry_alpha' })]),
+      });
+      await expect(mutate({ kind: 'remove', sourceId: betaSourceId })).resolves.not.toMatchObject({
+        sources: expect.arrayContaining([expect.objectContaining({ id: betaSourceId })]),
+      });
+      await expect(mutate({
+        kind: 'upsert',
+        input: {
+          sourceUrl: 'https://evil.example.test/catalog.json',
+          title: 'Attacker curated source',
+          origin: 'curated',
+        },
       })).resolves.toEqual({
         ok: false,
         errorCode: 'invalid_request',

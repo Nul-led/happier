@@ -2,7 +2,11 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { isPluginError, PluginError } from '@happier-dev/plugin-sdk';
 import type { PluginServices } from '@happier-dev/plugin-sdk';
-import type { PluginSubagentsHostService } from '@/session/subagents/pluginSubagentsService';
+import type { SubagentsService } from '@happier-dev/plugin-sdk/sessions/subagents';
+import {
+    bindPluginSessionsSubagentObservation,
+    readPluginSessionsSubagentObservation,
+} from '@/session/services/pluginSessionsInventory';
 import {
     createUnavailablePluginServices,
 } from '@/plugins/runtime/invocation/services/unavailable';
@@ -27,14 +31,13 @@ const daemonWitness = Object.freeze({
     turnId: 'turn-1',
     userMessageSeq: 7,
     userMessageSeqs: Object.freeze([7]),
-});
-const witness = Object.freeze({
-    ...daemonWitness,
     causalPermissionAuthority: Object.freeze({
         kind: 'admittedSessionInputV1' as const,
         admittedPermissionCeiling: 'read-only',
     }),
+    callerPermissionMode: 'yolo' as const,
 });
+const witness = daemonWitness;
 
 function createSeparatelyBundledPluginError(input: Readonly<{
     code: string;
@@ -1553,22 +1556,19 @@ describe('runner daemon PluginServices proxy', () => {
             updatedAtMs: 1,
         });
         const canonicalSubagents = Object.freeze({
-            capabilities: () => ({
-                list: { status: 'available' as const },
-                observe: { status: 'available' as const },
-                watch: { status: 'available' as const },
-            }),
             list: vi.fn(async () => ({ items: [subagent] })),
             get: vi.fn(async (id: string) => (
                 id === subagent.id ? subagent : null
             )),
-            observe: vi.fn(async () => subagent),
             watch: vi.fn(() => ({ dispose() {} })),
-        }) satisfies PluginSubagentsHostService;
-        const canonicalSessions = Object.freeze({
+        }) satisfies SubagentsService;
+        const canonicalSubagentObservation = Object.freeze({
+            observe: vi.fn(async () => subagent),
+        });
+        const canonicalSessions = bindPluginSessionsSubagentObservation(Object.freeze({
             ...unavailable.sessions,
             subagents: canonicalSubagents,
-        });
+        }), canonicalSubagentObservation);
         const logger = {
             debug: vi.fn(),
             info: vi.fn(),
@@ -1634,6 +1634,10 @@ describe('runner daemon PluginServices proxy', () => {
             .toBe(unavailable.sessions.watch);
         expect(services.sessions.subagents)
             .toBe(canonicalSubagents);
+        expect(Reflect.ownKeys(services.sessions.subagents).sort())
+            .toEqual(['get', 'list', 'watch']);
+        expect(readPluginSessionsSubagentObservation(services.sessions))
+            .toBe(canonicalSubagentObservation);
         expect(services.sessions.external)
             .not.toBe(unavailable.sessions.external);
         const externalCapabilitiesController = new AbortController();

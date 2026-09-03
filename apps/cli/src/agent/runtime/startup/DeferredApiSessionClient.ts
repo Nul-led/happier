@@ -6,8 +6,11 @@ import type {
 import { RPC_ERROR_CODES, RPC_ERROR_MESSAGES } from '@happier-dev/protocol/rpc';
 import type { RpcHandler, RpcHandlerManagerLike } from '@/api/rpc/types';
 import type { AgentState, Metadata, UserMessage } from '@/api/types';
-import type { MaterializeNextPendingResult } from '@/api/session/sessionClientPort';
-import type { PendingMaterializationDeliveryTiming } from '@/api/session/pendingQueueV2Transport';
+import type {
+  MaterializeNextPendingOptions,
+  MaterializeNextPendingResult,
+} from '@/api/session/sessionClientPort';
+import type { DurableProviderInputAcceptanceV1 } from '@/agent/runtime/session/input/providerInputOutcome';
 import type { SessionRuntimeControls } from '@/rpc/handlers/sessionControls';
 import type { RegisteredSessionStateFieldMutationV1 } from '@/api/session/client/transport/mutations/sessionClientDurableMutationTypes';
 import {
@@ -56,11 +59,11 @@ export type DeferredApiSessionTarget = Readonly<{
   popPendingMessage: () => Promise<boolean>;
   shouldAttemptPendingMaterialization?: () => boolean;
   reconcilePendingProviderInputCustodyBeforeMaterialization?: () => Promise<boolean>;
+  readDurableProviderInputAcceptanceV1?: (
+    localId: string,
+  ) => Promise<DurableProviderInputAcceptanceV1>;
   reconcilePendingQueueState?: (opts?: { force?: boolean }) => Promise<boolean>;
-  materializeNextPendingMessageSafely?: (opts?: {
-    reconcileWhenEmpty?: 'force' | 'throttled' | 'skip';
-    deliveryTiming?: PendingMaterializationDeliveryTiming;
-  }) => Promise<MaterializeNextPendingResult>;
+  materializeNextPendingMessageSafely?: (opts?: MaterializeNextPendingOptions) => Promise<MaterializeNextPendingResult>;
   wakePendingMaterialization?: () => void;
   peekPendingMessageQueueV2Count: () => Promise<number>;
   discardPendingMessageQueueV2All: (opts: { reason: 'switch_to_local' | 'manual' }) => Promise<number>;
@@ -523,14 +526,26 @@ export class DeferredApiSessionClient {
     );
   }
 
+  /**
+   * Fails closed to `unknown` while no target is attached: an unattached binding has no durable
+   * Pending authority, and guessing either outcome would either duplicate or destroy a replay seed.
+   */
+  async readDurableProviderInputAcceptanceV1(
+    localId: string,
+  ): Promise<DurableProviderInputAcceptanceV1> {
+    return await this.withAttachedTarget(
+      (target) =>
+        target.readDurableProviderInputAcceptanceV1?.(localId)
+        ?? Promise.resolve<DurableProviderInputAcceptanceV1>('unknown'),
+      'unknown' as DurableProviderInputAcceptanceV1,
+    );
+  }
+
   async reconcilePendingQueueState(opts?: { force?: boolean }): Promise<boolean> {
     return await this.withAttachedTarget((t) => t.reconcilePendingQueueState?.(opts) ?? Promise.resolve(false), false);
   }
 
-  async materializeNextPendingMessageSafely(opts?: {
-    reconcileWhenEmpty?: 'force' | 'throttled' | 'skip';
-    deliveryTiming?: PendingMaterializationDeliveryTiming;
-  }): Promise<MaterializeNextPendingResult> {
+  async materializeNextPendingMessageSafely(opts?: MaterializeNextPendingOptions): Promise<MaterializeNextPendingResult> {
     const deferred = { type: 'deferred' as const, reason: 'supervisor_offline' as const };
     if (!this.target && !this.attachPromise) return deferred;
     return await this.withAttachedTarget(

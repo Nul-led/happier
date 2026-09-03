@@ -79,6 +79,11 @@ function wrapRuntimeTurnOperationsWithPublication(params: Readonly<{
       hub.publishFallbackIdentity();
       return unsubscribe;
     },
+    subscribeRuntimeIdentityPublication(handler) {
+      const unsubscribe = hub.subscribeIdentityPublication(handler);
+      hub.publishFallbackIdentity();
+      return unsubscribe;
+    },
     get respondToPermission() {
       const respondToPermission = readRespondToPermission();
       return respondToPermission

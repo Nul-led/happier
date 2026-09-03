@@ -329,7 +329,7 @@ describe('resolveCliEngineRegistry runtimeCore', () => {
         };
     }
 
-    function createPluginSessionLaunchParams(
+    function createSessionRuntimeParams(
         overrides: Record<string, unknown> = {},
     ): Record<string, unknown> & Readonly<{ credentials: Credentials }> {
         return {
@@ -1183,11 +1183,12 @@ describe('resolveCliEngineRegistry runtimeCore', () => {
         });
         const finiteOnlyContext = open.mock.calls[0]?.[1];
         expect(finiteOnlyContext).toMatchObject({
-            session: { id: 'run-1' },
             services: operationServices,
             protocols: { acp: { open: expect.any(Function) } },
         });
-        expect(finiteOnlyContext?.session).not.toHaveProperty('services');
+        // Detached Run: no host Session scope exists, so no context.session is
+        // fabricated from the run id.
+        expect(finiteOnlyContext?.session).toBeUndefined();
         expect(finiteOnlyContext).not.toHaveProperty('workState');
 
         publish({ sequence: 1, runId: 'run-1', emittedAtMs: 10, kind: 'run-start' });
@@ -1949,7 +1950,7 @@ describe('resolveCliEngineRegistry runtimeCore', () => {
             }],
         });
         expect(resolution?.selectedSource).toBe('plugin');
-        await expect(resolution?.engineAdapter.runtimeCore.createSessionRuntime(createPluginSessionLaunchParams({ cwd: '/repo' })))
+        await expect(resolution?.engineAdapter.runtimeCore.createSessionRuntime(createSessionRuntimeParams({ cwd: '/repo' })))
             .resolves
             .toMatchObject({
                 kind: 'hostSessionRuntimePlan',
@@ -2159,7 +2160,7 @@ describe('resolveCliEngineRegistry runtimeCore', () => {
         expect(createRuntime).not.toHaveBeenCalled();
         await expect(
             resolution?.engineAdapter.runtimeCore.createSessionRuntime(
-                createPluginSessionLaunchParams({ cwd: '/repo' }),
+                createSessionRuntimeParams({ cwd: '/repo' }),
             ),
         ).resolves.toMatchObject({
             kind: 'hostSessionRuntimePlan',
@@ -2405,7 +2406,7 @@ describe('resolveCliEngineRegistry runtimeCore', () => {
         expect(runnerCreateRuntime).not.toHaveBeenCalled();
         await expect(
             resolution?.engineAdapter.runtimeCore.createSessionRuntime(
-                createPluginSessionLaunchParams({
+                createSessionRuntimeParams({
                     directory: '/tmp/runtime-placement',
                     backendTarget: { kind: 'backend', backendId },
                 }),
@@ -2930,7 +2931,7 @@ describe('resolveCliEngineRegistry runtimeCore', () => {
         expect(runnerCreateRuntime).not.toHaveBeenCalled();
         const plan = await resolution?.engineAdapter.runtimeCore
             .createSessionRuntime(
-                createPluginSessionLaunchParams({
+                createSessionRuntimeParams({
                     directory: '/tmp/runtime-placement',
                     backendTarget: { kind: 'backend', backendId },
                 }),
@@ -2949,7 +2950,6 @@ describe('resolveCliEngineRegistry runtimeCore', () => {
             mcpServers: {},
             permissionHandler: {},
             getPermissionMode: () => 'default',
-            setThinking: () => {},
             memoryRecallGuidanceEnabled: false,
             runnerProcessIdentity: null,
             startupModelSelection: null,

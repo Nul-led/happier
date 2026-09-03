@@ -167,6 +167,7 @@ import { countMaterializablePendingRows, readKnownPendingQueueState, UNKNOWN_PEN
 import type { SessionSnapshotRefreshReason } from './sessionSnapshotRefreshReason';
 import type {
     LocallyConsumedUserMessageConfirmation,
+    MaterializeNextPendingOptions,
     MaterializeNextPendingResult,
     RuntimeActivitySnapshotTail,
     UserMessageLocalConsumptionQuery,
@@ -178,7 +179,11 @@ import {
     fetchSessionByIdCompat,
     fetchSessionTurnsProjection,
 } from '@/session/transport/http/sessionsHttp';
-import type { SessionTurnsProjectionV1 } from '@happier-dev/protocol';
+import {
+    isPendingDeliveryArchivedUncertaintyReasonV1,
+    isPendingDeliveryProviderEffectPossibleV1,
+    type SessionTurnsProjectionV1,
+} from '@happier-dev/protocol';
 import {
     fetchSessionSystemRecord as fetchSessionSystemRecordHttp,
     upsertSessionSystemRecord as upsertSessionSystemRecordHttp,
@@ -200,13 +205,13 @@ import {
     listPendingQueueV2DeliveryStatusesFromServer,
     readAcceptedPendingQueueV2DeliveryRetryDirective,
     resolveAcceptedPendingQueueV2Delivery,
-    type PendingMaterializationDeliveryTiming,
 } from './pendingQueueV2Transport';
 import { sendSessionMessage } from '@/session/services/sendSessionMessage';
 import { buildHostSessionInputAdmissionV1 } from '@/session/services/sessionInputAdmissionIdentity';
 import { delayUnrefAbortable } from '@/utils/time';
 import {
     isReversibleSessionProviderInputBlockReason,
+    type DurableProviderInputAcceptanceV1,
     type SessionProviderInputOutcome,
 } from '@/agent/runtime/session/input/providerInputOutcome';
 import { updateMetadataBestEffort } from './sessionWritesBestEffort';
@@ -3087,10 +3092,7 @@ export class ApiSessionClient extends EventEmitter {
         return await this.interactionApi.reconcilePendingQueueState(opts);
     }
 
-    async materializeNextPendingMessageSafely(opts: {
-        reconcileWhenEmpty?: 'force' | 'throttled' | 'skip';
-        deliveryTiming?: PendingMaterializationDeliveryTiming;
-    } = {}): Promise<MaterializeNextPendingResult> {
+    async materializeNextPendingMessageSafely(opts: MaterializeNextPendingOptions = {}): Promise<MaterializeNextPendingResult> {
         return await this.interactionApi.materializeNextPendingMessageSafely(opts);
     }
 
@@ -3098,6 +3100,46 @@ export class ApiSessionClient extends EventEmitter {
         const normalizedLocalId = readPendingLocalId(localId);
         return normalizedLocalId !== null
             && this.materializationRuntime.hasPendingQueueMaterializedLocalId(normalizedLocalId);
+    }
+
+    /**
+     * The durable, restart-surviving accepted-delivery status for one exact Pending localId.
+     *
+     * This adds no acceptance fact. It reads the two the Pending owner already keeps: the
+     * committed transcript row a resolved delivery produces, and the server's own pending
+     * projection. A row whose status proves no provider effect is `not_accepted`; any live or
+     * archived status for which a provider effect remains possible is `unknown`. Absence is not positive
+     * acceptance evidence because the row may have disappeared before provider dispatch; only
+     * the exact committed transcript row proves acceptance. A failed read stays `unknown` so no
+     * caller may read it as either outcome.
+     */
+    async readDurableProviderInputAcceptanceV1(
+        localId: string,
+    ): Promise<DurableProviderInputAcceptanceV1> {
+        const normalizedLocalId = readPendingLocalId(localId);
+        if (!normalizedLocalId) return 'unknown';
+        if (this.getCommittedUserMessageSeq(normalizedLocalId) !== null) return 'accepted';
+        try {
+            const statuses = await listPendingQueueV2DeliveryStatusesFromServer({
+                token: this.token,
+                sessionId: this.sessionId,
+                includeDiscarded: true,
+            });
+            const entry = statuses.find((candidate) => candidate.localId === normalizedLocalId);
+            if (!entry) return 'unknown';
+            return isPendingDeliveryProviderEffectPossibleV1(entry.deliveryStatus)
+                || (entry.deliveryStatus.status === 'discarded'
+                    && isPendingDeliveryArchivedUncertaintyReasonV1(entry.deliveryStatus.reason))
+                ? 'unknown'
+                : 'not_accepted';
+        } catch (error) {
+            logger.debug('[pendingQueue] durable provider-input acceptance read failed', {
+                sessionId: this.sessionId,
+                localId: normalizedLocalId,
+                error: serializeAxiosErrorForLog(error),
+            });
+            return 'unknown';
+        }
     }
 
     async reconcilePendingProviderInputCustodyBeforeMaterialization(): Promise<boolean> {

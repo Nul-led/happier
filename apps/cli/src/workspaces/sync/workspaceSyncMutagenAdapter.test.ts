@@ -171,13 +171,14 @@ describe('WorkspaceSyncMutagenAdapterClient', () => {
       resolveWorkspaceRef: async (id) => ({ machineId: 'm1', rootPath: `/${id}` }),
     });
 
-    await expect(adapter.ensure(relationship)).rejects.toMatchObject({ code: 'relationship_definition_conflict' });
+    await expect(adapter.ensure(relationship)).rejects.toMatchObject({ code: 'relationship_runtime_mismatch' });
+    expect(send.mock.calls.map(([command]) => command.t)).toEqual(['list', 'terminate']);
   });
 
   it('fails closed when ensure discovers multiple or conflicting sessions for one product identity', async () => {
-    for (const sessions of [
-      [genericSession(), genericSession({ identifier: 'mutagen-session-2' })],
-      [genericSession({ mode: 'two-way-safe' })],
+    for (const { sessions, expectedCode, expectedCommands } of [
+      { sessions: [genericSession(), genericSession({ identifier: 'mutagen-session-2' })], expectedCode: 'relationship_definition_conflict', expectedCommands: 1 },
+      { sessions: [genericSession({ mode: 'two-way-safe' })], expectedCode: 'relationship_runtime_mismatch', expectedCommands: 2 },
     ]) {
       const send = vi.fn(async (command: { t: string }) => command.t === 'list' ? sessions : genericSession());
       const adapter = createWorkspaceSyncMutagenAdapter({
@@ -185,8 +186,8 @@ describe('WorkspaceSyncMutagenAdapterClient', () => {
         resolveWorkspaceRef: async (id) => ({ machineId: 'm1', rootPath: `/${id}` }),
       });
 
-      await expect(adapter.ensure(relationship)).rejects.toMatchObject({ code: 'relationship_definition_conflict' });
-      expect(send).toHaveBeenCalledTimes(1);
+      await expect(adapter.ensure(relationship)).rejects.toMatchObject({ code: expectedCode });
+      expect(send).toHaveBeenCalledTimes(expectedCommands);
     }
   });
 
@@ -490,15 +491,41 @@ describe('WorkspaceSyncMutagenAdapterClient', () => {
     expect(commands.at(-1)).toEqual({ t: 'list_conflicts', requestId: 'request-1', sessionIdentifier: 'mutagen-session-1', limit: 100 });
   });
 
-  it('rejects a generic session whose exact labels or opaque endpoints do not match settings', async () => {
-    const send = vi.fn(async (command: { t: string }) => command.t === 'list'
-      ? [genericSession({ labels: { 'external.owner': 'other' } })]
-      : genericSession());
+  it('terminates a claimed session whose exact labels or opaque endpoints do not match settings before reporting the mismatch', async () => {
+    const commands: Array<{ t: string; sessionIdentifier?: string }> = [];
+    const send = vi.fn(async (command: { t: string; sessionIdentifier?: string }) => {
+      commands.push(command);
+      return command.t === 'list'
+        ? [genericSession({ labels: { 'external.owner': 'other' } })]
+        : null;
+    });
     const adapter = createWorkspaceSyncMutagenAdapter({
       send, createRequestId: () => 'request-1', nowMs: () => 1234,
       resolveWorkspaceRef: async (id) => ({ machineId: 'm1', rootPath: `/${id}` }),
     });
-    await expect(adapter.ensure(relationship)).rejects.toMatchObject({ code: 'relationship_definition_conflict' });
+    await expect(adapter.ensure(relationship)).rejects.toMatchObject({ code: 'relationship_runtime_mismatch' });
+    expect(commands.map(({ t, sessionIdentifier }) => [t, sessionIdentifier])).toEqual([
+      ['list', undefined],
+      ['terminate', 'mutagen-session-1'],
+    ]);
+  });
+
+  it('surfaces claimed-session cleanup failure and never creates a replacement beside it', async () => {
+    const commands: string[] = [];
+    const cleanupFailure = Object.assign(new Error('manager refused termination'), { code: 'engine_cleanup_failed' });
+    const send = vi.fn(async (command: { t: string }) => {
+      commands.push(command.t);
+      if (command.t === 'list') return [genericSession({ mode: 'one-way-replica' })];
+      if (command.t === 'terminate') throw cleanupFailure;
+      return genericSession();
+    });
+    const adapter = createWorkspaceSyncMutagenAdapter({
+      send, createRequestId: () => 'request-1',
+      resolveWorkspaceRef: async (id) => ({ machineId: 'm1', rootPath: `/${id}` }),
+    });
+
+    await expect(adapter.ensure(relationship)).rejects.toBe(cleanupFailure);
+    expect(commands).toEqual(['list', 'terminate']);
   });
 
   it('rehydrates exact settings-owned sessions and terminates stale manager state', async () => {
@@ -577,6 +604,26 @@ describe('WorkspaceSyncMutagenAdapterClient', () => {
       commands.push(command);
       return command.t === 'list'
         ? [genericSessionFor('r1', { mode: 'two-way-safe' })]
+        : null;
+    });
+    const adapter = createWorkspaceSyncMutagenAdapter({
+      send, createRequestId: () => 'request-1',
+      resolveWorkspaceRef: async (id) => ({ machineId: 'm1', rootPath: `/${id}` }),
+    });
+
+    await expect(adapter.rehydrate([relationship])).resolves.toEqual([]);
+    expect(commands.map(({ t, sessionIdentifier }) => [t, sessionIdentifier])).toEqual([
+      ['list', undefined],
+      ['terminate', 'mutagen-r1'],
+    ]);
+  });
+
+  it('terminates a persisted relationship claimant with mismatched ownership labels during rehydration', async () => {
+    const commands: Array<{ t: string; sessionIdentifier?: string }> = [];
+    const send = vi.fn(async (command: { t: string; sessionIdentifier?: string }) => {
+      commands.push(command);
+      return command.t === 'list'
+        ? [genericSessionFor('r1', { labels: { ...genericSessionFor('r1').labels, 'external.owner': 'other' } })]
         : null;
     });
     const adapter = createWorkspaceSyncMutagenAdapter({

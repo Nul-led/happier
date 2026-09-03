@@ -4,6 +4,7 @@ import type {
   SessionInputCausalPermissionAuthorityV1,
 } from '@happier-dev/protocol';
 import type { RuntimeConfigUpdateOutcomeV1 } from '@happier-dev/agents';
+import type { NormalizedRuntimeIdentityPublicationV1 } from '@/agent/runtime/events/createNormalizedRuntimeEventWriter';
 import type {
   AgentSessionProviderBinding,
   AgentSessionRuntime,
@@ -67,13 +68,13 @@ export type RuntimeTurnPromptMeta = Readonly<{
   causalPermissionAuthority?: SessionInputCausalPermissionAuthorityV1;
 }>;
 
-export type RuntimePublicationEvent = Readonly<{
-  type: 'event';
-  name: 'runtime.descriptor' | 'runtime.capabilities' | 'runtime.facets';
-  payload?: unknown;
-}>;
-
-export type RuntimeTurnMessage = AgentSessionRuntimeEvent | RuntimePublicationEvent;
+/**
+ * The host Session runtime stream is exactly the canonical strict Agent Session
+ * event union. Host-owned runtime descriptor/capability/facet publication is a
+ * separate typed host-private channel (`subscribeRuntimeIdentityPublication`)
+ * and must never be grafted onto this union as a pseudo-event.
+ */
+export type RuntimeTurnMessage = AgentSessionRuntimeEvent;
 
 export type RuntimeTurnMessageHandler = (message: RuntimeTurnMessage) => void;
 
@@ -141,6 +142,14 @@ export type RuntimeTurnOperations = Readonly<{
   steerInFlightTurn: (message: string, meta?: RuntimeTurnPromptMeta) => Promise<void>;
   waitForTurnCompletion: (opts?: RuntimeTurnCompletionOptions) => Promise<void>;
   subscribeRuntimeEvents: (handler: RuntimeTurnMessageHandler) => () => void;
+  /**
+   * Host-private publication of host-owned runtime identity facts. Present on
+   * runtimes composed through `withHostSessionRuntimeIdentityPublication`,
+   * which is the single writer of these facts on the Session path.
+   */
+  subscribeRuntimeIdentityPublication?: (
+    handler: (publication: NormalizedRuntimeIdentityPublicationV1) => void,
+  ) => () => void;
   respondToPermission?: (requestId: string, approved: boolean) => Promise<RuntimePermissionResponseOutcome>;
   cancelTurn: () => Promise<void>;
   /**

@@ -1,9 +1,9 @@
-import type { BackendSurfaceAvailabilityV1 } from '@happier-dev/protocol';
+import type { AgentSurfaceAvailabilityV1 } from '@happier-dev/protocol';
 
 export async function evaluateBackendSurfaceAvailability<TRequest>(
-    evaluator: (request: TRequest) => BackendSurfaceAvailabilityV1 | Promise<BackendSurfaceAvailabilityV1>,
+    evaluator: (request: TRequest) => AgentSurfaceAvailabilityV1 | Promise<AgentSurfaceAvailabilityV1>,
     request: TRequest,
-): Promise<BackendSurfaceAvailabilityV1> {
+): Promise<AgentSurfaceAvailabilityV1> {
     try {
         return await evaluator(request);
     } catch {

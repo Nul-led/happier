@@ -6,7 +6,7 @@ import {
   type BackendTargetRefV2,
   type BackendTargetRefV2Input,
 } from '@happier-dev/protocol';
-import { isConcreteBackendTargetCompatId } from './compat/customAcp';
+import { isConcreteLegacyConfiguredBackendId } from './compat/legacyConfiguredBackend';
 
 export type ResolvedConcreteBackendTargetRefs = Readonly<{
   backendTargetV2: BackendTargetRefV2;
@@ -15,12 +15,12 @@ export type ResolvedConcreteBackendTargetRefs = Readonly<{
 
 function isConcreteBackendTargetV2(target: BackendTargetRefV2): boolean {
   const backendId = typeof target.backendId === 'string' ? target.backendId.trim() : '';
-  if (!isConcreteBackendTargetCompatId(backendId)) {
+  if (!isConcreteLegacyConfiguredBackendId(backendId)) {
     return false;
   }
 
   const configuredBackendId = typeof target.configuredBackendId === 'string' ? target.configuredBackendId.trim() : '';
-  if (configuredBackendId && !isConcreteBackendTargetCompatId(configuredBackendId)) {
+  if (configuredBackendId && !isConcreteLegacyConfiguredBackendId(configuredBackendId)) {
     return false;
   }
 
@@ -88,7 +88,7 @@ export function resolveConcreteCompatBackendTargetRefs(
   }
 
   const backendTarget = convertBackendTargetRefV2ToV1(backendTargetV2);
-  if (backendTarget.kind === 'builtInAgent' && !isConcreteBackendTargetCompatId(backendTarget.agentId)) {
+  if (backendTarget.kind === 'builtInAgent' && !isConcreteLegacyConfiguredBackendId(backendTarget.agentId)) {
     return null;
   }
 

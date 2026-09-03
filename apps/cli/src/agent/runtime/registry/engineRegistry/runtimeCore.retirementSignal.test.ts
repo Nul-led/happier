@@ -459,7 +459,6 @@ describe('resolveBackendRuntimeCore retirement signal ownership', () => {
       mcpServers: {},
       permissionHandler: {},
       getPermissionMode: () => 'default',
-      setThinking: () => {},
       memoryRecallGuidanceEnabled: false,
     } as never);
 

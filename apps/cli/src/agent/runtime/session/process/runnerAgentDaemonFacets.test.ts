@@ -62,14 +62,12 @@ const daemonWitness = {
     inputId: 'input-1',
     userMessageSeq: 7,
     userMessageSeqs: [7],
-};
-const witness = {
-    ...daemonWitness,
     causalPermissionAuthority: {
         kind: 'admittedSessionInputV1' as const,
         admittedPermissionCeiling: 'read-only',
     },
-};
+} as const;
+const witness = daemonWitness;
 
 const voiceProvider = {
   pluginId: 'happier.voice.elevenlabs',

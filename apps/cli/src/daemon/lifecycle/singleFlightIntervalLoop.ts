@@ -1,5 +1,5 @@
 export type SingleFlightIntervalLoopHandle = Readonly<{
-  stop: () => void;
+  stop: () => Promise<void>;
   trigger: () => void;
   pause: () => void;
   resume: () => void;
@@ -7,7 +7,7 @@ export type SingleFlightIntervalLoopHandle = Readonly<{
 
 export function startSingleFlightIntervalLoop(args: Readonly<{
   intervalMs: number;
-  task: () => void | { nextAutomaticRunAfterMs: number } | Promise<void | { nextAutomaticRunAfterMs: number }>;
+  task: (signal: AbortSignal) => void | { nextAutomaticRunAfterMs: number } | Promise<void | { nextAutomaticRunAfterMs: number }>;
   onError?: (error: unknown) => void;
   unref?: boolean;
   failureBackoffMs?: number;
@@ -19,6 +19,8 @@ export function startSingleFlightIntervalLoop(args: Readonly<{
   let pendingForcedRerun = false;
   let failureCount = 0;
   let nextAutomaticRunAtMs = 0;
+  let activeRun: Promise<void> | null = null;
+  const abortController = new AbortController();
   const intervalMs = Math.max(1, Math.floor(args.intervalMs));
   const failureBackoffMs = Math.max(0, Math.floor(args.failureBackoffMs ?? 0));
   const maxFailureBackoffMs = Math.max(
@@ -38,8 +40,8 @@ export function startSingleFlightIntervalLoop(args: Readonly<{
     if (!options.force && Date.now() < nextAutomaticRunAtMs) return;
 
     inFlight = true;
-    Promise.resolve()
-      .then(() => args.task())
+    activeRun = Promise.resolve()
+      .then(() => args.task(abortController.signal))
       .then((result) => {
         failureCount = 0;
         nextAutomaticRunAtMs = typeof result?.nextAutomaticRunAfterMs === 'number'
@@ -59,6 +61,7 @@ export function startSingleFlightIntervalLoop(args: Readonly<{
       })
       .finally(() => {
         inFlight = false;
+        activeRun = null;
         if (pendingForcedRerun) {
           pendingForcedRerun = false;
           runOnce({ force: true });
@@ -72,10 +75,13 @@ export function startSingleFlightIntervalLoop(args: Readonly<{
   }
 
   return {
-    stop: () => {
-      if (stopped) return;
-      stopped = true;
-      clearInterval(timer);
+    stop: async () => {
+      if (!stopped) {
+        stopped = true;
+        clearInterval(timer);
+        abortController.abort();
+      }
+      await activeRun;
     },
     trigger: () => {
       runOnce({ force: true });

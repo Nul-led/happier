@@ -3,6 +3,13 @@ import { describe, expect, it } from 'vitest';
 import { DaemonStateSchema } from './types';
 
 describe('DaemonStateSchema', () => {
+  it('preserves the current daemon pending-session activation capability', () => {
+    expect(DaemonStateSchema.parse({
+      status: 'running',
+      daemonPendingSessionActivationSupported: true,
+    }).daemonPendingSessionActivationSupported).toBe(true);
+  });
+
   it('parses the additive Iroh machine endpoint publication while preserving unknown fields', () => {
     const endpoint = { endpointId: 'a'.repeat(64), relayUrls: ['https://relay.example.test/'] };
     const result = DaemonStateSchema.parse({

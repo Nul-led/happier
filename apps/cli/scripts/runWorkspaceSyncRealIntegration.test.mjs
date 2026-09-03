@@ -16,7 +16,23 @@ const binaries = Object.freeze({
 test('requires every source-built workspace-sync binary before constructing the lane', () => {
   assert.throws(
     () => createWorkspaceSyncRealIntegrationPlan({ env: {} }),
-    /HAPPIER_MUTAGEN_LIVE_MANAGER_BIN.*HAPPIER_MUTAGEN_LIVE_AGENT_BIN.*HAPPIER_MUTAGEN_BROKER_CLIENT_TEST_BIN.*HAPPIER_PROCESS_CUSTODY_LIVE_BIN/u,
+    /workspace-sync real-lane blocked preflight: required HAPPIER_MUTAGEN_LIVE_MANAGER_BIN.*HAPPIER_MUTAGEN_LIVE_AGENT_BIN.*HAPPIER_MUTAGEN_BROKER_CLIENT_TEST_BIN.*HAPPIER_PROCESS_CUSTODY_LIVE_BIN/u,
+  );
+});
+
+test('fails preflight with the owning environment name when a configured binary is unavailable', () => {
+  assert.throws(
+    () => runWorkspaceSyncRealIntegration({
+      env: binaries,
+      accessSyncImpl: (path) => {
+        if (path === binaries.HAPPIER_MUTAGEN_LIVE_AGENT_BIN) {
+          const error = new Error('ENOENT');
+          error.code = 'ENOENT';
+          throw error;
+        }
+      },
+    }),
+    /workspace-sync real-lane blocked preflight: HAPPIER_MUTAGEN_LIVE_AGENT_BIN points to an unavailable binary at \/artifacts\/happier-mutagen-agent/u,
   );
 });
 

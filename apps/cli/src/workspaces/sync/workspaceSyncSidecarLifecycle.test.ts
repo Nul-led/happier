@@ -64,6 +64,43 @@ describe('WorkspaceSyncSidecarLifecycle', () => {
     expect(stop).not.toHaveBeenCalled();
   });
 
+  it('surfaces broker endpoint cleanup failure after still completing sidecar shutdown', async () => {
+    let terminate!: () => void;
+    const termination = new Promise<void>((resolve) => { terminate = resolve; });
+    const cleanupFailure = new AggregateError([new Error('pipe cleanup failed')], 'broker cleanup failed');
+    const close = vi.fn(async () => { throw cleanupFailure; });
+    const command = vi.fn(async (input: { t: string }) => {
+      if (input.t === 'shutdown') terminate();
+      return [];
+    });
+    const lifecycle = new WorkspaceSyncSidecarLifecycle({
+      resolveRuntime: vi.fn(async () => ({
+        managerPath: '/verified/manager', agentPath: '/verified/agent',
+        dataDir: '/private/data', brokerDir: '/private/broker',
+        manifest: { engineVersion: '1', protocolEpoch: 'external-stream-v1' },
+      })),
+      createBroker: vi.fn(async () => ({
+        bootstrapDescriptor: new Uint8Array([1]), waitForReady: async () => undefined,
+        command, close,
+      })),
+      openExternalStream: vi.fn(),
+      spawn: vi.fn(async () => ({
+        pid: 42,
+        waitForTermination: async () => { await termination; return { type: 'exited' as const, code: 0 }; },
+        stop: async () => terminate(),
+      })),
+      ensurePrivateDirectory: vi.fn(async () => undefined),
+      randomBytes: () => new Uint8Array(32), randomId: () => 'opaque-id',
+      onRestartReady: async () => undefined,
+      shutdownGraceMs: 1_000,
+    });
+
+    await lifecycle.start();
+    await expect(lifecycle.stop()).rejects.toBe(cleanupFailure);
+    expect(command).toHaveBeenCalledWith(expect.objectContaining({ t: 'shutdown' }));
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
   it('returns a typed engine_unavailable error when artifact resolution fails', async () => {
     const lifecycle = new WorkspaceSyncSidecarLifecycle({
       resolveRuntime: vi.fn(async () => { throw new Error('missing artifact'); }),

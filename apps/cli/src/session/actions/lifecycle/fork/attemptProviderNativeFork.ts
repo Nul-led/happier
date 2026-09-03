@@ -59,14 +59,12 @@ export async function attemptProviderNativeFork(params: Readonly<{
     if (!shouldAttemptProviderNative) {
         return null;
     }
-    const configuredAcp = params.forkBackendResolution.configuredAcp;
-    if (configuredAcp !== null) {
-        // Account-configured ACP declares load-session support only. It has no
-        // typed fork capability or Agent-owned fork surface, so it must never
-        // infer a provider fork from resumability. Automatic strategy falls
-        // through to the canonical Replay owner.
-        return null;
-    } else if (!params.forkBackendResolution.catalogAgentId) {
+    // A provider-native fork needs a catalog Agent that owns a fork surface.
+    // Account-configured ACP has no catalog Agent id: it declares load-session
+    // support only, which is resume, not fork. Automatic strategy therefore
+    // falls through to the canonical Replay owner rather than inferring a
+    // provider fork from resumability.
+    if (!params.forkBackendResolution.catalogAgentId) {
         return null;
     }
 

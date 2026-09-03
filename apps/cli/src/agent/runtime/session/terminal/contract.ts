@@ -1,5 +1,5 @@
 import type {
-    BackendSurfaceAvailabilityV1,
+    AgentSurfaceAvailabilityV1,
     ExternalSessionsSource,
     ProviderBoundModelRef,
     RuntimeDescriptorV1,
@@ -277,7 +277,7 @@ export type HostTerminalIdentityResult = Readonly<{
 export type HostTerminalExecutionSurface = Readonly<{
     evaluateAvailability?: (
         request: HostTerminalAvailabilityRequest,
-    ) => BackendSurfaceAvailabilityV1 | Promise<BackendSurfaceAvailabilityV1>;
+    ) => AgentSurfaceAvailabilityV1 | Promise<AgentSurfaceAvailabilityV1>;
     launch?: (request: HostTerminalLaunchRequest) => HostTerminalRunResult | Promise<HostTerminalRunResult>;
     discoverIdentity?: (
         request: HostTerminalIdentityRequest,

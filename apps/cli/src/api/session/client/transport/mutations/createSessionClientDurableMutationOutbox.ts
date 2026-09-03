@@ -11,6 +11,7 @@ import { serializeAxiosErrorForLog } from '@/api/client/serializeAxiosErrorForLo
 import {
     supportsSessionSyncPendingInputV1,
     supportsRuntimeActivityV2,
+    type SessionSyncPendingInputServerContractResult,
 } from '@/api/clientCompatibility/sessionSyncPendingInputServerContract';
 import type { SessionClientConnectionContractResult } from '../sessionClientConnectionContract';
 import {
@@ -171,6 +172,7 @@ type CreateGenericSessionClientDurableMutationOutboxParams = Readonly<{
     isDeliveryActive?: () => boolean;
     isShuttingDown?: () => boolean;
     runtimeActivitySupportControlled?: boolean;
+    getSessionTurnServerContractMode?: () => SessionSyncPendingInputServerContractResult['mode'] | null;
     getSocket: () => SessionClientDurableMutationSocket | null;
     requestReconnect: (reason: string) => void;
     onTranscriptMessageDeliveryAttempt?: (mutation: Readonly<{
@@ -643,6 +645,14 @@ function readCapabilityBlockKey(mutation: QueuedSessionClientDurableMutation): s
         : mutation.kind;
 }
 
+function isSessionTurnMutationParkedForReleasedServer(
+    mutation: QueuedSessionClientDurableMutation,
+    serverContractMode: SessionSyncPendingInputServerContractResult['mode'] | null,
+): boolean {
+    return mutation.kind === 'session_turn_mutation'
+        && serverContractMode === 'released_server_v0_2_1';
+}
+
 function resolveCoalescedMutation(
     existing: QueuedSessionClientDurableMutation,
     incoming: QueuedSessionClientDurableMutation,
@@ -785,6 +795,7 @@ function createGenericSessionClientDurableMutationOutbox(
     let shared = sharedGenericSessionClientDurableMutationOutboxes.get(outboxPath);
     if (!shared) {
         const handles = new Map<symbol, CreateGenericSessionClientDurableMutationOutboxParams>();
+        let lastSessionTurnServerContractMode: SessionSyncPendingInputServerContractResult['mode'] | null = null;
         shared = {
             handles,
             outbox: createGenericSessionClientDurableMutationOutboxInstance({
@@ -802,6 +813,14 @@ function createGenericSessionClientDurableMutationOutbox(
                 runtimeActivitySupportControlled: params.runtimeActivitySupportControlled,
                 isDeliveryActive: () => [...handles.values()]
                     .some((handle) => handle.isDeliveryActive?.() !== false),
+                getSessionTurnServerContractMode: () => {
+                    const mode = [...handles.values()]
+                        .reverse()
+                        .find((handle) => handle.isDeliveryActive?.() !== false)
+                        ?.getSessionTurnServerContractMode?.() ?? null;
+                    if (mode !== null) lastSessionTurnServerContractMode = mode;
+                    return lastSessionTurnServerContractMode;
+                },
                 getSocket: () => selectActiveGenericSessionClientDurableMutationOutboxHandle(
                     handles,
                     (handle) => handle.supportsSocketDelivery !== false
@@ -1079,6 +1098,7 @@ export function createDaemonSessionClientDurableMutationOutbox(params: Readonly<
         mutation: TranscriptMessageAppendMutationV1,
     ) => Promise<boolean>;
     enableExactTurnDelivery?: boolean;
+    getSessionTurnServerContractMode?: () => SessionSyncPendingInputServerContractResult['mode'] | null;
     isShuttingDown?: () => boolean;
 }>): DaemonSessionClientDurableMutationOutbox {
     const deliverUsageLimitRecovery = params.deliverUsageLimitRecovery;
@@ -1896,6 +1916,16 @@ function createGenericSessionClientDurableMutationOutboxInstance(
                     didChange = true;
                     continue;
                 }
+                if (isSessionTurnMutationParkedForReleasedServer(
+                    mutation,
+                    sessionSyncPendingInputServerContractResult?.mode
+                        ?? params.getSessionTurnServerContractMode?.()
+                        ?? null,
+                )) {
+                    remaining.push(mutation);
+                    refreshInFlightMutations(index + 1);
+                    continue;
+                }
                 if (mutation.kind === 'registered_session_state_field' && mutation.payload.fieldId === 'runtime.activity') {
                     const contract = sessionSyncPendingInputServerContractResult;
                     if (
@@ -2245,14 +2275,22 @@ function createGenericSessionClientDurableMutationOutboxInstance(
                     });
                 }
             }
-            const hasDeliverableMutation = mutations.some((mutation) => !(
-                mutation.kind === 'registered_session_state_field'
-                && mutation.payload.fieldId === 'runtime.activity'
-                && params.runtimeActivitySupportControlled
-                && (
-                    sessionSyncPendingInputServerContractResult === null
-                    || !supportsRuntimeActivityV2(
-                        sessionSyncPendingInputServerContractResult,
+            const hasDeliverableMutation = mutations.some((mutation) => (
+                !isSessionTurnMutationParkedForReleasedServer(
+                    mutation,
+                    sessionSyncPendingInputServerContractResult?.mode
+                        ?? params.getSessionTurnServerContractMode?.()
+                        ?? null,
+                )
+                && !(
+                    mutation.kind === 'registered_session_state_field'
+                    && mutation.payload.fieldId === 'runtime.activity'
+                    && params.runtimeActivitySupportControlled
+                    && (
+                        sessionSyncPendingInputServerContractResult === null
+                        || !supportsRuntimeActivityV2(
+                            sessionSyncPendingInputServerContractResult,
+                        )
                     )
                 )
             ));

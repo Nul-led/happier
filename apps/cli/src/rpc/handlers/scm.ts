@@ -78,7 +78,7 @@ import type {
     ScmWorktreeRemoveRequest,
     ScmWorktreeRemoveResponse,
 } from '@happier-dev/protocol';
-import { SCM_OPERATION_ERROR_CODES } from '@happier-dev/protocol';
+import { SCM_OPERATION_ERROR_CODES, ScmLogListRequestSchema } from '@happier-dev/protocol';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { AsyncLocalStorage } from 'node:async_hooks';
 
@@ -311,14 +311,23 @@ export function registerScmHandlers(
 
     scmRpcHandlerManager.registerHandler<ScmLogListRequest, ScmLogListResponse>(
         RPC_METHODS.SCM_LOG_LIST,
-        async (request) =>
-            runScmRoute<ScmLogListRequest, ScmLogListResponse>({
-                request,
+        async (request) => {
+            const parsed = ScmLogListRequestSchema.safeParse(request);
+            if (!parsed.success) {
+                return {
+                    success: false,
+                    errorCode: SCM_OPERATION_ERROR_CODES.INVALID_REQUEST,
+                    error: 'Invalid SCM log-list request',
+                };
+            }
+            return runScmRoute<ScmLogListRequest, ScmLogListResponse>({
+                request: parsed.data,
                 ...routeBase,
                 onNonRepository: async () => notRepositoryResponse<ScmLogListResponse>(),
                 runWithBackend: ({ context, selection }) =>
-                    selection.backend.logList({ context, request }),
-            })
+                    selection.backend.logList({ context, request: parsed.data }),
+            });
+        }
     );
 
     scmRpcHandlerManager.registerHandler<ScmBranchListRequest, ScmBranchListResponse>(

@@ -15,9 +15,6 @@ import type {
 } from '@happier-dev/protocol';
 import type { CurrentSessionPresentationOwnerV1 } from '@happier-dev/protocol/sessions';
 import type { PluginDiagnosticData, PluginServices } from '@happier-dev/plugin-sdk';
-import type {
-    AgentSessionSubagentObservationPublisher,
-} from '@happier-dev/plugin-sdk/agents/runtime';
 import type { PermissionRequestOwner } from '@/agent/permissions/permissionRequestOwner';
 
 /**
@@ -105,8 +102,5 @@ export type HostCurrentSessionUiServices = Readonly<{
     presentation?: HostCurrentSessionPresentationService;
 }>;
 
-export type HostPluginServices = Omit<PluginServices, 'sessions'> & Readonly<{
-    sessions: Omit<PluginServices['sessions'], 'subagents'> & Readonly<{
-        subagents: PluginServices['sessions']['subagents'] & Partial<AgentSessionSubagentObservationPublisher>;
-    }>;
-}>;
+/** Host-local name for the exact public service bag carried into Agent code. */
+export type HostPluginServices = PluginServices;

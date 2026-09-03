@@ -113,6 +113,9 @@ export function createCliActionExecutor(
     // PATs and synthetic credentials remain Account automation.
     authority: resolveCliActionAuthority(params.credentials, context?.authority),
     actionsSettings: actionSettingsProvider.getActionsSettings(),
+    sessionAgentSpawnPolicyV1:
+      context?.sessionAgentSpawnPolicyV1
+      ?? actionSettingsProvider.getAccountSettings()?.sessionAgentSpawnPolicyV1,
   });
   return {
     prepare: async (actionId, input, context) => {

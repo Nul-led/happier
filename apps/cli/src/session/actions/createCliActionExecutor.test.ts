@@ -1723,6 +1723,53 @@ describe('createCliActionExecutor', () => {
     });
   });
 
+  it('enforces the live Account Agent spawn policy before daemon Session creation', async () => {
+    setActiveAccountSettingsSnapshot({
+      source: 'network',
+      settings: accountSettingsParse({
+        sessionAgentSpawnPolicyV1: {
+          v: 1,
+          allowModelOverride: false,
+        },
+      }),
+      settingsVersion: 1,
+      loadedAtMs: 1,
+      settingsSecretsReadKeys: [],
+      scopeKey: 'account:agent-spawn-policy',
+    });
+    const executor = createPlainExecutor();
+
+    await expect(executor.execute(
+      'session.spawn_new',
+      createSessionSpawnInput({
+        modelSelection: {
+          v: 1,
+          updatedAt: 1710000000000,
+          ref: {
+            agentTargetKey: 'backend:claude',
+            providerConnectionId: null,
+            modelId: 'gpt-5',
+          },
+        },
+      }),
+      {
+        surface: 'agent',
+        defaultSessionId: 'sess-1',
+        callerPermissionMode: 'yolo',
+        causalPermissionAuthority: {
+          kind: 'admittedSessionInputV1',
+          admittedPermissionCeiling: 'yolo',
+        },
+      },
+    )).resolves.toEqual({
+      ok: false,
+      errorCode: 'session_spawn_policy_denied',
+      error: 'session_spawn_policy_denied',
+      details: { field: 'modelSelection' },
+    });
+    expect(callMachineRpc).not.toHaveBeenCalled();
+  });
+
   it('preserves V2 provider resume and Windows terminal intent through the canonical private spawn bridge', async () => {
     const executor = createPlainExecutor();
     mockMachineSpawnSuccess('sess-v2-resume-windows');

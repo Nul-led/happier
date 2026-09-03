@@ -51,6 +51,8 @@ export interface WorkspaceSyncBrokerConfig {
   now?: () => number;
   validatePeerIdentity?: (context: WorkspaceSyncBrokerPeerIdentityContext) => boolean | Promise<boolean>;
   openExternalStream: (context: WorkspaceSyncBrokerOpenContext) => Promise<NodeJS.ReadWriteStream>;
+  /** OS endpoint construction boundary; production uses the native endpoint owner. */
+  createEndpoint?: (endpointPath: string) => WorkspaceSyncBrokerEndpoint;
 }
 
 export interface WorkspaceSyncBrokerEndpoint {
@@ -135,6 +137,13 @@ type PendingStream = {
   openTimer?: NodeJS.Timeout;
   attachTimer?: NodeJS.Timeout;
   openController: AbortController;
+  /**
+   * Settles with the cleanup failures once this stream's data server and
+   * endpoint removal have both finished.
+   */
+  cleanup?: Promise<readonly unknown[]>;
+  setupDone: Promise<void>;
+  resolveSetupDone: () => void;
   dataReady: Promise<boolean>;
   resolveDataReady: (accepted: boolean) => void;
   attachRequested: boolean;
@@ -153,7 +162,21 @@ type PendingCommand = {
 
 function closeServer(server: Server | undefined): Promise<void> {
   if (!server?.listening) return Promise.resolve();
-  return new Promise<void>((resolve) => server.close(() => resolve()));
+  return new Promise<void>((resolve, reject) => server.close((error) => {
+    if (error) reject(error);
+    else resolve();
+  }));
+}
+
+/**
+ * Awaits every cleanup step even when one fails and returns the collected
+ * failures. Cleanup is never abandoned because a sibling step rejected.
+ */
+async function settleCleanup(work: readonly (Promise<void> | undefined)[]): Promise<readonly unknown[]> {
+  const results = await Promise.allSettled(work);
+  return results
+    .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+    .map((result) => result.reason);
 }
 
 function typedError(error: unknown, fallback: BrokerTerminalErrorCode, message: string): BrokerProtocolError {
@@ -186,11 +209,14 @@ export class WorkspaceSyncBroker {
   private readonly activeRequestIds = new Set<string>();
   private readonly commands = new Map<string, PendingCommand>();
   private readonly controlSockets = new Set<Socket>();
+  private readonly streamCleanups = new Set<Promise<readonly unknown[]>>();
+  private readonly streamCleanupFailures: unknown[] = [];
   private authenticatedControl: Socket | undefined;
   private authenticatedSidecarPidValue: number | undefined;
   private readyResolve!: () => void;
   private readyReject!: (error: Error) => void;
   private closed = false;
+  private closeTask: Promise<void> | undefined;
 
   private constructor(
     config: WorkspaceSyncBrokerConfig,
@@ -229,7 +255,8 @@ export class WorkspaceSyncBroker {
       await mkdir(dirname(config.socketPath), { recursive: true, mode: 0o700 });
       await chmod(dirname(config.socketPath), 0o700);
     }
-    const endpoint = createWorkspaceSyncBrokerEndpoint({ endpointPath: config.socketPath });
+    const endpoint = config.createEndpoint?.(config.socketPath)
+      ?? createWorkspaceSyncBrokerEndpoint({ endpointPath: config.socketPath });
     await endpoint.remove();
     const server = createServer();
     const broker = new WorkspaceSyncBroker(
@@ -253,7 +280,7 @@ export class WorkspaceSyncBroker {
     this.authenticatedControl = undefined;
     this.authenticatedSidecarPidValue = undefined;
     this.failCommands(new BrokerProtocolError('indeterminate', 'sidecar command outcome is unknown after launch credential rotation'));
-    for (const stream of [...this.pending.values()]) this.closePending(stream);
+    for (const stream of [...this.pending.values()]) void this.closePending(stream);
     staleControl?.destroy();
     return { launchNonce: this.launchNonceValue, launchSecret: Buffer.from(this.launchSecret) };
   }
@@ -310,14 +337,29 @@ export class WorkspaceSyncBroker {
   }
 
   async close(): Promise<void> {
-    if (this.closed) return;
-    this.closed = true;
+    if (!this.closeTask) {
+      this.closed = true;
+      this.closeTask = this.closeTerminally();
+    }
+    await this.closeTask;
+  }
+
+  private async closeTerminally(): Promise<void> {
     this.readyReject(new BrokerProtocolError('agent_unavailable', 'workspace sync broker closed before sidecar authentication'));
     for (const socket of this.controlSockets) socket.destroy();
+    // Close is terminal only once every pending stream's data server and
+    // endpoint removal has settled; each stream is attempted even if one fails.
     for (const stream of [...this.pending.values()]) this.closePending(stream);
     this.failCommands(new BrokerProtocolError('indeterminate', 'sidecar command outcome is unknown after broker close'));
-    await closeServer(this.server);
-    await this.endpoint.remove();
+    await Promise.allSettled([...this.streamCleanups]);
+    const failures = this.streamCleanupFailures.splice(0);
+    failures.push(...await settleCleanup([closeServer(this.server)]));
+    // Endpoint removal remains ordered after listener close, but is attempted
+    // even when that close reported a failure.
+    failures.push(...await settleCleanup([this.endpoint.remove()]));
+    if (failures.length > 0) {
+      throw new AggregateError(failures, 'workspace sync broker stream cleanup failed');
+    }
   }
 
   private async validatePeer(
@@ -352,7 +394,7 @@ export class WorkspaceSyncBroker {
     const terminate = () => {
       if (terminating) return;
       terminating = true;
-      for (const stream of [...this.pending.values()]) if (stream.control === socket) this.closePending(stream);
+      for (const stream of [...this.pending.values()]) if (stream.control === socket) void this.closePending(stream);
       if (this.authenticatedControl === socket) {
         this.authenticatedControl = undefined;
         this.authenticatedSidecarPidValue = undefined;
@@ -419,7 +461,7 @@ export class WorkspaceSyncBroker {
       }
       case 'close': {
         const stream = this.pending.get(message.requestId);
-        if (stream?.control === socket) this.closePending(stream);
+        if (stream?.control === socket) void this.closePending(stream);
         this.send(socket, { t: 'close_ok', requestId: message.requestId });
         return;
       }
@@ -452,6 +494,8 @@ export class WorkspaceSyncBroker {
     this.activeRequestIds.add(message.requestId);
     let resolveDataReady!: (accepted: boolean) => void;
     const dataReady = new Promise<boolean>((resolve) => { resolveDataReady = resolve; });
+    let resolveSetupDone!: () => void;
+    const setupDone = new Promise<void>((resolve) => { resolveSetupDone = resolve; });
     const stream: PendingStream = {
       requestId: message.requestId,
       streamId: randomUUID(),
@@ -460,6 +504,8 @@ export class WorkspaceSyncBroker {
       control: socket,
       dataReady,
       resolveDataReady,
+      setupDone,
+      resolveSetupDone,
       openController: new AbortController(),
       attachRequested: false,
       attached: false,
@@ -480,7 +526,7 @@ export class WorkspaceSyncBroker {
       this.failPending(stream, error.code, error.message);
     }, Math.max(1, message.expiresAtMs - now));
     stream.openTimer.unref();
-    void this.completeOpenData(stream, message);
+    void this.completeOpenData(stream, message).then(stream.resolveSetupDone, stream.resolveSetupDone);
   }
 
   private async completeOpenData(
@@ -505,10 +551,12 @@ export class WorkspaceSyncBroker {
       const dataPath = process.platform === 'win32'
         ? `${this.socketPath}-data-${stream.streamId}`
         : join(dirname(this.socketPath), `d-${stream.streamId}.sock`);
-      const dataEndpoint = createWorkspaceSyncBrokerEndpoint({ endpointPath: dataPath });
-      await dataEndpoint.remove();
-      const dataServer = createServer({ allowHalfOpen: true }, (data) => { void this.acceptData(stream, data); });
+      const dataEndpoint = this.config.createEndpoint?.(dataPath)
+        ?? createWorkspaceSyncBrokerEndpoint({ endpointPath: dataPath });
       stream.dataEndpoint = dataEndpoint;
+      await dataEndpoint.remove();
+      if (stream.closed) return;
+      const dataServer = createServer({ allowHalfOpen: true }, (data) => { void this.acceptData(stream, data); });
       stream.dataServer = dataServer;
       await dataEndpoint.listen(dataServer);
       await dataEndpoint.secure();
@@ -551,7 +599,7 @@ export class WorkspaceSyncBroker {
     stream.dataCandidate = undefined;
     stream.data = data;
     data.setNoDelay(true);
-    data.once('error', () => this.closePending(stream));
+    data.once('error', () => { void this.closePending(stream); });
     stream.resolveDataReady(true);
     await closeServer(stream.dataServer);
   }
@@ -591,9 +639,9 @@ export class WorkspaceSyncBroker {
     external.pipe(data, { end: false });
     data.once('end', () => { if (typeof external.end === 'function') external.end(); });
     external.once('end', () => { if (!data.destroyed) data.end(); });
-    data.once('close', () => this.closePending(stream));
-    external.once('close', () => this.closePending(stream));
-    external.once('error', () => this.closePending(stream));
+    data.once('close', () => { void this.closePending(stream); });
+    external.once('close', () => { void this.closePending(stream); });
+    external.once('error', () => { void this.closePending(stream); });
   }
 
   private sendError(socket: Socket, requestId: string | undefined, code: string, message: string): void {
@@ -605,12 +653,28 @@ export class WorkspaceSyncBroker {
     if (stream.closed || stream.terminalSent) return;
     stream.terminalSent = true;
     this.sendError(stream.control, stream.requestId, code, message);
-    this.closePending(stream);
+    void this.closePending(stream);
   }
 
-  private closePending(stream: PendingStream): void {
-    if (stream.closed) return;
+  /**
+   * Tears a stream down exactly once and returns when its data server and
+   * endpoint removal have settled, so a terminal `close()` can await the same
+   * work the fire-and-forget callers (socket errors, CANCEL, disconnect) start.
+   */
+  private closePending(stream: PendingStream): Promise<readonly unknown[]> {
+    if (stream.closed) return stream.cleanup ?? Promise.resolve([]);
     stream.closed = true;
+    const cleanup = this.teardownPending(stream);
+    stream.cleanup = cleanup;
+    this.streamCleanups.add(cleanup);
+    void cleanup.then(
+      (failures) => this.streamCleanupFailures.push(...failures),
+      (failure: unknown) => this.streamCleanupFailures.push(failure),
+    ).finally(() => this.streamCleanups.delete(cleanup));
+    return stream.cleanup;
+  }
+
+  private async teardownPending(stream: PendingStream): Promise<readonly unknown[]> {
     if (!stream.openController.signal.aborted) {
       stream.openController.abort(new BrokerProtocolError('cancelled', 'request closed'));
     }
@@ -621,14 +685,14 @@ export class WorkspaceSyncBroker {
       if (stream.state.state !== 'CLOSING') stream.state.transition('CLOSING');
       stream.state.transition('CLOSED');
     }
-    void closeServer(stream.dataServer);
     stream.dataCandidate?.destroy();
     stream.data?.destroy();
     if (stream.external && 'destroy' in stream.external && typeof stream.external.destroy === 'function') stream.external.destroy();
-    if (stream.dataEndpoint) void stream.dataEndpoint.remove();
     this.pending.delete(stream.requestId);
     this.attachRequestIds.delete(stream.streamId);
     this.activeRequestIds.delete(stream.requestId);
+    await stream.setupDone;
+    return await settleCleanup([closeServer(stream.dataServer), stream.dataEndpoint?.remove()]);
   }
 
   private settleCommand(requestId: string, result: unknown, error?: Error): void {

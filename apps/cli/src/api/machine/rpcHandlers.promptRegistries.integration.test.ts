@@ -111,7 +111,7 @@ describe('rpcHandlers (prompt registries)', () => {
       expect(adapters.ok).toBe(true);
       expect(adapters.adapters.map((adapter: any) => adapter.id)).toContain('git');
       expect(adapters.adapters.map((adapter: any) => adapter.id)).toContain('skills_sh');
-      expect(adapters.adapters.map((adapter: any) => adapter.id)).toContain('claude_marketplace');
+      expect(adapters.adapters.map((adapter: any) => adapter.id)).not.toContain('claude_marketplace');
 
       const configuredSources = [{
         id: 'local-skills',

@@ -90,7 +90,7 @@ export type DaemonWorkspaceSyncRuntimeDependencies = Readonly<{
   subscribeSettingsSnapshot?: (listener: ActiveAccountSettingsSnapshotListener) => () => void;
   resolveInstalledComponentPaths?: (input: Readonly<{ componentId: 'mutagen-engine'; channel: PublicReleaseRingId }>) => InstalledPaths;
   ensureInstalledComponent?: typeof ensureInstalledFirstPartyComponent;
-  resolveArtifactPaths?: (payloadRoot: string) => ArtifactPaths;
+  resolveArtifactPaths?: (payloadRoot: string, targetTriple: MutagenEngineArtifactTarget) => ArtifactPaths;
   assertArtifactPayload?: (input: Readonly<{ payloadRoot: string; targetTriple: MutagenEngineArtifactTarget; engineVersion?: string }>) => ArtifactManifest;
   resolveArtifactTarget?: () => MutagenEngineArtifactTarget;
   resolveDataLayout?: (input: Readonly<{ daemonDataRoot: string; stackDevTargetMutagenDataDir?: string | null }>) => DataLayout;
@@ -156,9 +156,10 @@ export function createDaemonWorkspaceSyncRuntime(
   const resolveRuntime = () => {
     if (verifiedRuntime) return verifiedRuntime;
     const pending = Promise.resolve().then(async () => {
+      const targetTriple = resolveTarget();
       const validatePayload = (payloadRoot: string) => assertPayload({
         payloadRoot,
-        targetTriple: resolveTarget(),
+        targetTriple,
         engineVersion: MUTAGEN_ENGINE_VERSION,
       });
       let installed: InstalledPaths;
@@ -174,8 +175,8 @@ export function createDaemonWorkspaceSyncRuntime(
         });
       }
       const payloadRoot = installed.resolvedCurrentPath ?? installed.currentPath;
-      const paths = resolvePaths(payloadRoot);
-      const manifest = assertPayload({ payloadRoot, targetTriple: resolveTarget(), engineVersion: MUTAGEN_ENGINE_VERSION });
+      const paths = resolvePaths(payloadRoot, targetTriple);
+      const manifest = assertPayload({ payloadRoot, targetTriple, engineVersion: MUTAGEN_ENGINE_VERSION });
       return { managerPath: paths.managerPath, agentPath: paths.agentPath, dataDir: layout.dataDir, brokerDir: layout.brokerDir, manifest };
     });
     verifiedRuntime = pending;

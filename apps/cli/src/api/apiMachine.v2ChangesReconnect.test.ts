@@ -2846,4 +2846,152 @@ describe('ApiMachineClient /v2/changes reconnect', () => {
             resolveAccountSettingsScopeKeyForToken('account-token-retirement'),
         );
     });
+
+    it('routes durable session-access revocations to listeners before acknowledging the Account cursor', async () => {
+        const machine: Machine = {
+            id: 'machine-1',
+            encryptionKey: new Uint8Array(32).fill(7),
+            encryptionVariant: 'legacy',
+            metadata: null,
+            metadataVersion: 0,
+            daemonState: null,
+            daemonStateVersion: 0,
+        };
+        axiosGet.mockImplementation(async (url: string) => (
+            url.endsWith('/v1/account/profile')
+                ? { status: 200, data: { id: 'account-1' } }
+                : {
+                    status: 200,
+                    data: {
+                        changes: [],
+                        nextCursor: 12,
+                        sessionAccessWitness: {
+                            v: 1,
+                            throughCursor: 12,
+                            entries: [
+                                { sessionId: 'revoked-1', cursor: 11, status: 'unavailable' },
+                                { sessionId: 'kept-1', cursor: 12, status: 'available' },
+                            ],
+                        },
+                    },
+                }
+        ));
+        writeAccountChangesCursor.mockClear();
+        const client = new ApiMachineClient('token', machine);
+        client.onConnectedServicesProjection(async () => {});
+        const observed: string[] = [];
+        client.onSessionAccessRevoked(async (change) => {
+            observed.push(change.sessionId);
+            expect(writeAccountChangesCursor).not.toHaveBeenCalled();
+        });
+
+        await (client as any).syncChangesOnConnect({ reason: 'reconnect' });
+
+        expect(observed).toEqual(['revoked-1']);
+        expect(writeAccountChangesCursor).toHaveBeenCalledWith('account-1', 12);
+    });
+
+    it('retains the Account cursor when a session-access revocation listener fails', async () => {
+        const machine: Machine = {
+            id: 'machine-1',
+            encryptionKey: new Uint8Array(32).fill(7),
+            encryptionVariant: 'legacy',
+            metadata: null,
+            metadataVersion: 0,
+            daemonState: null,
+            daemonStateVersion: 0,
+        };
+        axiosGet.mockImplementation(async (url: string) => (
+            url.endsWith('/v1/account/profile')
+                ? { status: 200, data: { id: 'account-1' } }
+                : {
+                    status: 200,
+                    data: {
+                        changes: [],
+                        nextCursor: 12,
+                        sessionAccessWitness: {
+                            v: 1,
+                            throughCursor: 12,
+                            entries: [{ sessionId: 'revoked-1', cursor: 11, status: 'unavailable' }],
+                        },
+                    },
+                }
+        ));
+        writeAccountChangesCursor.mockClear();
+        const client = new ApiMachineClient('token', machine);
+        client.onConnectedServicesProjection(async () => {});
+        client.onSessionAccessRevoked(async () => {
+            throw new Error('purge_failed');
+        });
+
+        await expect((client as any).syncChangesOnConnect({ reason: 'reconnect' })).rejects.toThrow('purge_failed');
+        expect(writeAccountChangesCursor).not.toHaveBeenCalled();
+    });
+
+    it('reconciles retained Session access before acknowledging a cursor-gone reset', async () => {
+        const machine: Machine = {
+            id: 'machine-1',
+            encryptionKey: new Uint8Array(32).fill(7),
+            encryptionVariant: 'legacy',
+            metadata: null,
+            metadataVersion: 0,
+            daemonState: null,
+            daemonStateVersion: 0,
+        };
+        axiosGet.mockImplementation(async (url: string) => {
+            if (url.endsWith('/v1/account/profile')) return { status: 200, data: { id: 'account-1' } };
+            if (url.includes('/v2/changes')) {
+                return { status: 410, data: { error: 'cursor-gone', currentCursor: 42 } };
+            }
+            if (url.includes('/v1/machines/machine-1')) {
+                return { status: 200, data: { machine: { ...machine, active: true } } };
+            }
+            throw new Error(`unexpected url: ${url}`);
+        });
+        writeAccountChangesCursor.mockClear();
+        const client = new ApiMachineClient('token', machine);
+        client.onConnectedServicesProjection(async () => {});
+        const reconciled: number[] = [];
+        client.onSessionAccessReset(async ({ cursor }) => {
+            reconciled.push(cursor);
+            expect(writeAccountChangesCursor).not.toHaveBeenCalled();
+        });
+
+        await (client as any).syncChangesOnConnect({ reason: 'reconnect' });
+
+        expect(reconciled).toEqual([42]);
+        expect(writeAccountChangesCursor).toHaveBeenCalledWith('account-1', 42);
+    });
+
+    it('retains the prior cursor when cursor-gone Session access reconciliation fails', async () => {
+        const machine: Machine = {
+            id: 'machine-1',
+            encryptionKey: new Uint8Array(32).fill(7),
+            encryptionVariant: 'legacy',
+            metadata: null,
+            metadataVersion: 0,
+            daemonState: null,
+            daemonStateVersion: 0,
+        };
+        axiosGet.mockImplementation(async (url: string) => {
+            if (url.endsWith('/v1/account/profile')) return { status: 200, data: { id: 'account-1' } };
+            if (url.includes('/v2/changes')) {
+                return { status: 410, data: { error: 'cursor-gone', currentCursor: 42 } };
+            }
+            if (url.includes('/v1/machines/machine-1')) {
+                return { status: 200, data: { machine: { ...machine, active: true } } };
+            }
+            throw new Error(`unexpected url: ${url}`);
+        });
+        writeAccountChangesCursor.mockClear();
+        const client = new ApiMachineClient('token', machine);
+        client.onConnectedServicesProjection(async () => {});
+        client.onSessionAccessReset(async () => {
+            throw new Error('retained_session_reconciliation_failed');
+        });
+
+        await expect((client as any).syncChangesOnConnect({ reason: 'reconnect' }))
+            .rejects.toThrow('retained_session_reconciliation_failed');
+        expect(writeAccountChangesCursor).not.toHaveBeenCalled();
+    });
 });

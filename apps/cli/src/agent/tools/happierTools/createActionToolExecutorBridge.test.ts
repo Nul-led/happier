@@ -98,6 +98,46 @@ describe('createActionToolExecutorBridge', () => {
     ]);
   });
 
+  it('forwards canonical draftInput through the public option bridge', async () => {
+    const calls: unknown[] = [];
+    const bridge = createActionToolExecutorBridge({
+      surface: 'agent',
+      executor: {
+        execute: async (actionId, input) => {
+          calls.push({ actionId, input });
+          return {
+            ok: true,
+            result: {
+              actionId: 'subagents.delegate.start',
+              fieldPath: 'modelId',
+              optionsSourceId: 'agents.models.available',
+              options: [],
+            },
+          };
+        },
+      },
+    });
+
+    await bridge.resolveActionOptions({
+      actionId: 'subagents.delegate.start',
+      fieldPath: 'modelId',
+      optionsSourceId: null,
+      sessionId: null,
+      limit: null,
+      query: null,
+      draftInput: { backendTargetKeys: ['agent:pi'] },
+    }, 'session_current');
+
+    expect(calls).toEqual([{
+      actionId: 'action.options.resolve',
+      input: {
+        actionId: 'subagents.delegate.start',
+        fieldPath: 'modelId',
+        draftInput: { backendTargetKeys: ['agent:pi'] },
+      },
+    }]);
+  });
+
   it('does not route discoverable-only first-party tools through direct tool names on session agents', async () => {
     const calls: unknown[] = [];
     const bridge = createActionToolExecutorBridge({
@@ -550,15 +590,20 @@ describe('createActionToolExecutorBridge', () => {
     });
   });
 
-  it('normalizes execution.run.wait timeout payloads into tool errors', async () => {
+  it('normalizes execution.run.wait observation timeout as a successful nonterminal result', async () => {
     const bridge = createActionToolExecutorBridge({
       surface: 'mcp',
       executor: {
         execute: async () => ({
           ok: true,
           result: {
-            ok: false,
-            code: 'timeout',
+            ok: true,
+            status: 'running',
+            disposition: 'observation_timeout',
+            runId: 'run-1',
+            timeoutMs: 5_000,
+            observedAtMs: 6_000,
+            deadlineAtMs: 6_000,
           },
         }),
       },
@@ -574,10 +619,15 @@ describe('createActionToolExecutorBridge', () => {
     }, 'sess-1');
 
     expect(res).toEqual({
-      ok: false,
-      errorCode: 'execution_run_wait_timeout',
-      error: 'Execution run wait timed out',
-      details: { runId: 'run-1' },
+      ok: true,
+      result: {
+        status: 'running',
+        disposition: 'observation_timeout',
+        runId: 'run-1',
+        timeoutMs: 5_000,
+        observedAtMs: 6_000,
+        deadlineAtMs: 6_000,
+      },
     });
   });
 

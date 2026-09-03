@@ -6,6 +6,7 @@ import { createMutableApiSessionClientFixture } from '@/testkit/backends/session
 import { createTestMetadata } from '@/testkit/backends/sessionMetadata';
 import { MessageBuffer } from '@/ui/ink/messageBuffer';
 import { runPermissionModePromptLoop } from './runPermissionModePromptLoop';
+import { createUnsettledReplaySeedRetirement } from './replaySeed/unsettledReplaySeedRetirement';
 import {
   combinePermissionModeQueuedPrompts,
   type PermissionModeQueuedPrompt,
@@ -443,6 +444,398 @@ describe('runPermissionModePromptLoop', () => {
     });
 
     expect(sentTexts).toEqual(['SEED\n\nhello', 'SEED\n\nsecond']);
+    expect(session.__getMetadata()?.replaySeedV1?.seedText).toBe('SEED');
+  });
+
+  it('releases the durable replay-seed association when prompt preparation fails before dispatch', async () => {
+    const session = createPromptLoopSession();
+    session.__setMetadata({
+      ...createPromptLoopMetadata({ permissionMode: 'default', permissionModeUpdatedAt: 0 }),
+      replaySeedV1: {
+        v: 1,
+        seedText: 'SEED',
+        sourceSessionId: 'parent',
+        sourceCutoffSeqInclusive: 3,
+        createdAtMs: 123,
+      },
+    });
+    Object.assign(session, {
+      readDurableProviderInputAcceptanceV1: async () => 'not_accepted' as const,
+    });
+    const queue = createModeQueue();
+    const runtime = createRuntime();
+    queue.push({ text: 'hello', localId: 'local-preparation-failure' }, { permissionMode: 'default' });
+    let shouldExit = false;
+
+    await runPermissionModePromptLoop({
+      providerName: 'Test Provider',
+      agentMessageType: 'qwen',
+      explicitPermissionMode: undefined,
+      session,
+      messageQueue: queue,
+      permissionHandler: { setPermissionMode: vi.fn(), reset: vi.fn() } as any,
+      runtime: runtime as unknown as Parameters<typeof runPermissionModePromptLoop>[0]['runtime'],
+      createOverrideSynchronizer: () => ({ syncFromMetadata: () => {}, flushPendingAfterStart: async () => {} }),
+      messageBuffer: new MessageBuffer(),
+      shouldExit: () => shouldExit,
+      getAbortSignal: () => new AbortController().signal,
+      keepAlive: () => {},
+      setThinking: () => {},
+      sendReady: () => {
+        shouldExit = true;
+      },
+      currentPermissionModeUpdatedAt: 0,
+      setCurrentPermissionMode: () => {},
+      setCurrentPermissionModeUpdatedAt: () => {},
+      resolveAgentCompositionBeforeDispatch: async () => {
+        throw new Error('composition unavailable before provider dispatch');
+      },
+      formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+    });
+
+    expect(runtime.sendTurnPrompt).not.toHaveBeenCalled();
+    expect(session.__getMetadata()?.replaySeedV1).toMatchObject({
+      seedText: 'SEED',
+    });
+    expect(session.__getMetadata()?.replaySeedV1?.dispatchedToLocalId).toBeUndefined();
+  });
+
+  it('blocks the next queued prompt while an accepted seed retirement keeps failing, then dispatches it without the seed', async () => {
+    const session = createPromptLoopSession();
+    session.__setMetadata({
+      ...createPromptLoopMetadata({
+        permissionMode: 'default',
+        permissionModeUpdatedAt: 0,
+      }),
+      replaySeedV1: {
+        v: 1,
+        seedText: 'SEED',
+        sourceSessionId: 'parent',
+        sourceCutoffSeqInclusive: 3,
+        createdAtMs: 123,
+      },
+    });
+    // The provider accepted prompt #1, but retiring its seed fails on acceptance and again at
+    // each admission boundary while the write is down. Only after the write recovers — proven
+    // by the next queued prompt's own admission event — may the retained prompt #2 dispatch.
+    let retirementWriteFailures = 3;
+    let retirementWriteAttempts = 0;
+    session.updateMetadata = ((updater: (current: PromptLoopMetadata | null) => PromptLoopMetadata | null) => {
+      retirementWriteAttempts += 1;
+      if (retirementWriteFailures > 0) {
+        retirementWriteFailures -= 1;
+        throw new Error('metadata unavailable');
+      }
+      session.__setMetadata(updater(session.__getMetadata()));
+    }) as typeof session.updateMetadata;
+    // Isolate the queue-growth wake: this Session never signals a metadata wake, so the only
+    // recovery path exercised here is a new input arriving at the admission boundary.
+    session.waitForMetadataUpdate = (async () =>
+      await new Promise<boolean>(() => {})) as typeof session.waitForMetadataUpdate;
+
+    const queue = createModeQueue();
+    const runtime = createRuntime();
+    const acceptanceByLocalId = new Map<string, () => void>();
+    runtime.sendTurnPrompt = vi.fn<RuntimeTurnOperations['sendTurnPrompt']>(async (_prompt, meta) => {
+      const localId = meta?.localId ?? null;
+      if (localId) acceptanceByLocalId.get(localId)?.();
+    });
+    const registerProviderAcceptedEffect = vi.fn((localId: string, onAccepted: (() => void) | null) => {
+      if (onAccepted) acceptanceByLocalId.set(localId, onAccepted);
+      else acceptanceByLocalId.delete(localId);
+    });
+
+    queue.push({ text: 'hello', localId: 'local-1' }, { permissionMode: 'default' });
+
+    const waitFor = async (predicate: () => boolean, message: string): Promise<void> => {
+      for (let i = 0; i < 500 && !predicate(); i += 1) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      expect(predicate(), message).toBe(true);
+    };
+
+    let shouldExit = false;
+    let readyCount = 0;
+    const runPromise = runPermissionModePromptLoop({
+      providerName: 'Test Provider',
+      agentMessageType: 'qwen',
+      explicitPermissionMode: undefined,
+      session,
+      messageQueue: queue,
+      permissionHandler: { setPermissionMode: vi.fn(), reset: vi.fn() } as any,
+      runtime: runtime as unknown as Parameters<typeof runPermissionModePromptLoop>[0]['runtime'],
+      createOverrideSynchronizer: () => ({ syncFromMetadata: () => {}, flushPendingAfterStart: async () => {} }),
+      messageBuffer: new MessageBuffer(),
+      shouldExit: () => shouldExit,
+      getAbortSignal: () => new AbortController().signal,
+      keepAlive: () => {},
+      setThinking: () => {},
+      sendReady: () => {
+        readyCount += 1;
+        if (readyCount === 1) {
+          queue.push({ text: 'second', localId: 'local-2' }, { permissionMode: 'default' });
+          return;
+        }
+        shouldExit = true;
+      },
+      currentPermissionModeUpdatedAt: 0,
+      setCurrentPermissionMode: () => {},
+      setCurrentPermissionModeUpdatedAt: () => {},
+      registerProviderAcceptedEffect,
+      replaySeedRetirement: createUnsettledReplaySeedRetirement(),
+      formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+    });
+
+    // Prompt #1 was accepted and its retirement failed once; the loop retried the same
+    // settler once at the admission boundary and then parked WITHOUT consuming the queued
+    // prompt: one metadata attempt per wake, input custody left in the queue.
+    await waitFor(
+      () => runtime.sendTurnPrompt.mock.calls.length === 1 && retirementWriteAttempts >= 2,
+      'expected prompt #1 accepted, its retirement and the admission-boundary retry to have failed, and the loop to be parked',
+    );
+    expect(runtime.sendTurnPrompt).toHaveBeenCalledTimes(1);
+    expect(runtime.sendTurnPrompt).toHaveBeenCalledWith('SEED\n\nhello', localIdentityMeta('local-1'));
+    expect(session.__getMetadata()?.replaySeedV1?.seedText).toBe('SEED');
+    // No consumption-driven retries beyond the acceptance settlement and the single boundary
+    // retry, and the queued prompt is still in the queue, not buffered in loop state.
+    expect(retirementWriteAttempts).toBe(2);
+    expect(queue.size()).toBe(1);
+
+    // Recovery is triggered by the next queued prompt itself — the natural admission event.
+    // Its arrival wakes the park, the retirement retry now succeeds, and only the then
+    // retired seed lets the still-queued prompt #2 dispatch first — carrying plain user text.
+    retirementWriteFailures = 0;
+    queue.push({ text: 'third', localId: 'local-3' }, { permissionMode: 'default' });
+    await waitFor(
+      () => runtime.sendTurnPrompt.mock.calls.length === 2,
+      'expected the parked prompt #2 to dispatch once the retirement retry succeeded at the queue-growth wake',
+    );
+    await runPromise;
+
+    // The incumbent queue batches same-mode prompts. The retained prompt remains first and the
+    // later wake-up prompt follows it in the one canonical batch; both identities are preserved.
+    expect(runtime.sendTurnPrompt).toHaveBeenCalledTimes(2);
+    expect(runtime.sendTurnPrompt).toHaveBeenNthCalledWith(2, 'second\nthird', {
+      localId: 'local-2',
+      localIds: ['local-2', 'local-3'],
+    });
+    expect(retirementWriteAttempts).toBeGreaterThanOrEqual(3);
+    const finalMetadata = session.__getMetadata();
+    expect(finalMetadata?.replaySeedV1?.seedText).toBe('');
+    expect(finalMetadata?.replaySeedV1?.appliedToLocalId).toBe('local-1');
+  });
+
+  it('retries a failed retirement on the metadata wake and dispatches the already-queued prompt', async () => {
+    const session = createPromptLoopSession();
+    session.__setMetadata({
+      ...createPromptLoopMetadata({
+        permissionMode: 'default',
+        permissionModeUpdatedAt: 0,
+      }),
+      replaySeedV1: {
+        v: 1,
+        seedText: 'SEED',
+        sourceSessionId: 'parent',
+        sourceCutoffSeqInclusive: 3,
+        createdAtMs: 123,
+      },
+    });
+    // Retirement fails on acceptance and again at the admission boundary, leaving prompt #2
+    // already queued behind the block. Nothing more will ever be queued, so the queue-growth
+    // wake alone can never recover: the incumbent metadata/reconnect wake has to.
+    let retirementWriteFailures = 2;
+    let retirementWriteAttempts = 0;
+    session.updateMetadata = ((updater: (current: PromptLoopMetadata | null) => PromptLoopMetadata | null) => {
+      retirementWriteAttempts += 1;
+      if (retirementWriteFailures > 0) {
+        retirementWriteFailures -= 1;
+        throw new Error('metadata unavailable');
+      }
+      session.__setMetadata(updater(session.__getMetadata()));
+    }) as typeof session.updateMetadata;
+
+    let metadataWake: (() => void) | null = null;
+    session.waitForMetadataUpdate = (async () =>
+      await new Promise<boolean>((resolve) => {
+        metadataWake = () => resolve(true);
+      })) as typeof session.waitForMetadataUpdate;
+
+    const queue = createModeQueue();
+    const runtime = createRuntime();
+    const acceptanceByLocalId = new Map<string, () => void>();
+    runtime.sendTurnPrompt = vi.fn<RuntimeTurnOperations['sendTurnPrompt']>(async (_prompt, meta) => {
+      const localId = meta?.localId ?? null;
+      if (localId) acceptanceByLocalId.get(localId)?.();
+    });
+
+    queue.push({ text: 'hello', localId: 'local-1' }, { permissionMode: 'default' });
+
+    const waitFor = async (predicate: () => boolean, message: string): Promise<void> => {
+      for (let i = 0; i < 500 && !predicate(); i += 1) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      expect(predicate(), message).toBe(true);
+    };
+
+    let shouldExit = false;
+    let readyCount = 0;
+    const runPromise = runPermissionModePromptLoop({
+      providerName: 'Test Provider',
+      agentMessageType: 'qwen',
+      explicitPermissionMode: undefined,
+      session,
+      messageQueue: queue,
+      permissionHandler: { setPermissionMode: vi.fn(), reset: vi.fn() } as any,
+      runtime: runtime as unknown as Parameters<typeof runPermissionModePromptLoop>[0]['runtime'],
+      createOverrideSynchronizer: () => ({ syncFromMetadata: () => {}, flushPendingAfterStart: async () => {} }),
+      messageBuffer: new MessageBuffer(),
+      shouldExit: () => shouldExit,
+      getAbortSignal: () => new AbortController().signal,
+      keepAlive: () => {},
+      setThinking: () => {},
+      sendReady: () => {
+        readyCount += 1;
+        if (readyCount === 1) {
+          queue.push({ text: 'second', localId: 'local-2' }, { permissionMode: 'default' });
+          return;
+        }
+        shouldExit = true;
+      },
+      currentPermissionModeUpdatedAt: 0,
+      setCurrentPermissionMode: () => {},
+      setCurrentPermissionModeUpdatedAt: () => {},
+      registerProviderAcceptedEffect: (localId, onAccepted) => {
+        if (onAccepted) acceptanceByLocalId.set(localId, onAccepted);
+        else acceptanceByLocalId.delete(localId);
+      },
+      replaySeedRetirement: createUnsettledReplaySeedRetirement(),
+      formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+    });
+
+    await waitFor(
+      () => runtime.sendTurnPrompt.mock.calls.length === 1 && metadataWake !== null,
+      'expected the loop to park on the unsettled retirement and arm the metadata wake',
+    );
+    expect(retirementWriteAttempts).toBe(2);
+    expect(queue.size()).toBe(1);
+
+    // The metadata/reconnect wake grants exactly one further retry, which now succeeds, and the
+    // prompt already sitting in the queue dispatches without a third prompt ever arriving.
+    metadataWake!();
+    await waitFor(
+      () => runtime.sendTurnPrompt.mock.calls.length === 2,
+      'expected the queued prompt to dispatch after the metadata wake retried the retirement',
+    );
+    await runPromise;
+
+    expect(runtime.sendTurnPrompt).toHaveBeenNthCalledWith(2, 'second', localIdentityMeta('local-2'));
+    const finalMetadata = session.__getMetadata();
+    expect(finalMetadata?.replaySeedV1?.seedText).toBe('');
+    expect(finalMetadata?.replaySeedV1?.appliedToLocalId).toBe('local-1');
+  });
+
+  it('keeps blocked admission parked and exits cleanly when shutdown aborts while a retirement keeps failing', async () => {
+    const session = createPromptLoopSession();
+    session.__setMetadata({
+      ...createPromptLoopMetadata({
+        permissionMode: 'default',
+        permissionModeUpdatedAt: 0,
+      }),
+      replaySeedV1: {
+        v: 1,
+        seedText: 'SEED',
+        sourceSessionId: 'parent',
+        sourceCutoffSeqInclusive: 3,
+        createdAtMs: 123,
+      },
+    });
+    let retirementWriteFailures = 3;
+    let retirementWriteAttempts = 0;
+    session.updateMetadata = ((updater: (current: PromptLoopMetadata | null) => PromptLoopMetadata | null) => {
+      retirementWriteAttempts += 1;
+      if (retirementWriteFailures > 0) {
+        retirementWriteFailures -= 1;
+        throw new Error('metadata unavailable');
+      }
+      session.__setMetadata(updater(session.__getMetadata()));
+    }) as typeof session.updateMetadata;
+    // No metadata wake fires here: shutdown, not recovery, is the transition under test.
+    session.waitForMetadataUpdate = (async () =>
+      await new Promise<boolean>(() => {})) as typeof session.waitForMetadataUpdate;
+
+    const queue = createModeQueue();
+    const runtime = createRuntime();
+    const acceptanceByLocalId = new Map<string, () => void>();
+    runtime.sendTurnPrompt = vi.fn<RuntimeTurnOperations['sendTurnPrompt']>(async (_prompt, meta) => {
+      const localId = meta?.localId ?? null;
+      if (localId) acceptanceByLocalId.get(localId)?.();
+    });
+    const registerProviderAcceptedEffect = vi.fn((localId: string, onAccepted: (() => void) | null) => {
+      if (onAccepted) acceptanceByLocalId.set(localId, onAccepted);
+      else acceptanceByLocalId.delete(localId);
+    });
+
+    queue.push({ text: 'hello', localId: 'local-1' }, { permissionMode: 'default' });
+
+    const waitFor = async (predicate: () => boolean, message: string): Promise<void> => {
+      for (let i = 0; i < 500 && !predicate(); i += 1) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      expect(predicate(), message).toBe(true);
+    };
+
+    const abortController = new AbortController();
+    let shouldExit = false;
+    let readyCount = 0;
+    const runPromise = runPermissionModePromptLoop({
+      providerName: 'Test Provider',
+      agentMessageType: 'qwen',
+      explicitPermissionMode: undefined,
+      session,
+      messageQueue: queue,
+      permissionHandler: { setPermissionMode: vi.fn(), reset: vi.fn() } as any,
+      runtime: runtime as unknown as Parameters<typeof runPermissionModePromptLoop>[0]['runtime'],
+      createOverrideSynchronizer: () => ({ syncFromMetadata: () => {}, flushPendingAfterStart: async () => {} }),
+      messageBuffer: new MessageBuffer(),
+      shouldExit: () => shouldExit,
+      getAbortSignal: () => abortController.signal,
+      keepAlive: () => {},
+      setThinking: () => {},
+      sendReady: () => {
+        readyCount += 1;
+        if (readyCount === 1) {
+          queue.push({ text: 'second', localId: 'local-2' }, { permissionMode: 'default' });
+          return;
+        }
+        shouldExit = true;
+      },
+      currentPermissionModeUpdatedAt: 0,
+      setCurrentPermissionMode: () => {},
+      setCurrentPermissionModeUpdatedAt: () => {},
+      registerProviderAcceptedEffect,
+      replaySeedRetirement: createUnsettledReplaySeedRetirement(),
+      formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+    });
+
+    await waitFor(
+      () => runtime.sendTurnPrompt.mock.calls.length === 1 && retirementWriteAttempts >= 2,
+      'expected the loop to be parked on the unsettled retirement before shutdown',
+    );
+    // The park consumed nothing: one metadata attempt per wake (acceptance settlement plus
+    // the single admission-boundary retry), and the queued prompt is still in the queue.
+    expect(retirementWriteAttempts).toBe(2);
+    expect(queue.size()).toBe(1);
+
+    // Shutdown aborts the park; the retained prompt must not dispatch on the way out.
+    shouldExit = true;
+    abortController.abort();
+    await runPromise;
+
+    expect(runtime.sendTurnPrompt).toHaveBeenCalledTimes(1);
+    expect(retirementWriteAttempts).toBe(2);
+    // Shutdown custody: the park consumed nothing, so the queued prompt stays in the queue —
+    // the single custody holder — instead of being buffered in loop state and dropped.
+    expect(queue.size()).toBe(1);
     expect(session.__getMetadata()?.replaySeedV1?.seedText).toBe('SEED');
   });
 
@@ -1168,7 +1561,10 @@ describe('runPermissionModePromptLoop', () => {
     ]);
   });
 
-  it('does not attempt pending materialization after a local queue wake already established custody', async () => {
+  // OWNERSHIP PIN. The idle input-consumer wait must not materialize pending rows once local
+  // queue custody exists or before any dispatch; the canonical active-turn Pending pump is the
+  // only expected post-dispatch materializer and is preserved by this contract.
+  it('does not attempt idle pending materialization after a local queue wake already established custody', async () => {
     const session = createPromptLoopSession();
     const queue = createModeQueue();
     const runtime = createRuntime();
@@ -1224,7 +1620,15 @@ describe('runPermissionModePromptLoop', () => {
     });
 
     expect(beforePendingMaterialize).not.toHaveBeenCalled();
-    expect(materializeNextPendingMessageSafely).not.toHaveBeenCalled();
+    // Idle-path provenance: beforePendingMaterialize is consulted only by the idle wait's
+    // materialize step, so zero calls proves the idle wait never attempted materialization.
+    // Any materialization that did run must be the canonical active-turn Pending pump, which
+    // is armed only after provider dispatch — assert that ordering instead of a raw count.
+    const firstDispatchOrder = runtime.sendTurnPrompt.mock.invocationCallOrder[0];
+    expect(firstDispatchOrder).toBeDefined();
+    for (const materializeOrder of materializeNextPendingMessageSafely.mock.invocationCallOrder) {
+      expect(materializeOrder).toBeGreaterThan(firstDispatchOrder!);
+    }
     expect(runtime.sendTurnPrompt).toHaveBeenCalledWith('after-gate', localIdentityMeta('local-gate'));
   });
 

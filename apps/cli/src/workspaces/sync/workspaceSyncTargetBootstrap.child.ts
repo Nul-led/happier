@@ -23,7 +23,7 @@ await workspaceSyncTargetBootstrap({
   contentSelection: mode === 'missing-git' ? 'git_worktree' : 'all_files',
   ...(mode === 'existing' ? { targetReplacementApproval: {
     v: 1 as const,
-    consequence: 'replace_nonempty_workspace_target' as const,
+    consequences: ['replace_nonempty_workspace_target'] as const,
     serverId: 'server-1',
     machineId: 'machine-b',
     canonicalRoot: targetPath,

@@ -1,4 +1,8 @@
-import { PluginError, type JsonValue } from '@happier-dev/plugin-sdk';
+import {
+  PluginError,
+  type JsonValue,
+  type PluginOperationAvailability,
+} from '@happier-dev/plugin-sdk';
 import {
   type SubagentsService,
   type SubagentSummary,
@@ -32,9 +36,11 @@ type SubagentObservation = Readonly<{
   detail?: JsonValue;
 }>;
 
-export type PluginSubagentsHostService = Omit<SubagentsService, 'capabilities'> & Readonly<{
-  capabilities(): ReturnType<SubagentsService['capabilities']> & Readonly<{
-    observe: ReturnType<SubagentsService['capabilities']>['list'];
+export type PluginSubagentsHostService = SubagentsService & Readonly<{
+  capabilities(): Readonly<{
+    list: PluginOperationAvailability;
+    watch: PluginOperationAvailability;
+    observe: PluginOperationAvailability;
   }>;
   observe(input: SubagentObservation, options?: Readonly<{ signal?: AbortSignal }>): Promise<SubagentSummary>;
 }>;

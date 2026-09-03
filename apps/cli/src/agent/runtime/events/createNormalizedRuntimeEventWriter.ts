@@ -3,6 +3,7 @@ import { isDeepStrictEqual } from 'node:util';
 import {
   readRuntimeDescriptorV1,
   readAgentRuntimeFacetsV1,
+  type AgentRuntimeFacetsV1,
   type RuntimeDescriptorV1,
 } from '@happier-dev/protocol';
 
@@ -11,6 +12,44 @@ export type NormalizedRuntimeEventPublication = Readonly<{
   runtimeCapabilities: unknown;
   runtimeFacets: unknown;
 }>;
+
+/**
+ * One typed host-private publication result per host-owned runtime fact.
+ *
+ * Host identity/capability/facet publication is not part of any Agent-authored
+ * event union: the strict canonical `AgentSessionRuntimeEvent` family stays
+ * exactly what an Agent may emit, and host-owned facts travel this typed
+ * channel instead of a `{ type: 'event', name: 'runtime.*' }` pseudo-event
+ * grafted beside it.
+ */
+export type NormalizedRuntimeIdentityPublicationV1 =
+  | Readonly<{ fact: 'runtimeDescriptor'; value: RuntimeDescriptorV1 }>
+  | Readonly<{ fact: 'runtimeCapabilities'; value: unknown }>
+  | Readonly<{ fact: 'runtimeFacets'; value: AgentRuntimeFacetsV1 }>;
+
+export type NormalizedRuntimeIdentityPublicationFact =
+  NormalizedRuntimeIdentityPublicationV1['fact'];
+
+const RUNTIME_IDENTITY_PUBLICATION_EVENT_NAME_BY_FACT = {
+  runtimeDescriptor: 'runtime.descriptor',
+  runtimeCapabilities: 'runtime.capabilities',
+  runtimeFacets: 'runtime.facets',
+} as const satisfies Readonly<Record<NormalizedRuntimeIdentityPublicationFact, string>>;
+
+/**
+ * Adapter for the legacy host-private `AgentMessage` transport, whose generic
+ * `EventMessage` member is a real part of that family. The execution-run bridge
+ * keeps consuming it; the strict Agent Session bridge does not.
+ */
+export function toRuntimeIdentityPublicationAgentMessage(
+  publication: NormalizedRuntimeIdentityPublicationV1,
+): Extract<AgentMessage, Readonly<{ type: 'event' }>> {
+  return {
+    type: 'event',
+    name: RUNTIME_IDENTITY_PUBLICATION_EVENT_NAME_BY_FACT[publication.fact],
+    payload: publication.value,
+  };
+}
 
 export type NormalizedRuntimeEventPublicationInput =
   | NormalizedRuntimeEventPublication
@@ -43,6 +82,7 @@ function isRuntimeFacetsEvent(message: AgentMessage): message is RuntimeEventMes
  */
 export function createNormalizedRuntimeEventWriter(params: Readonly<{
   dispatch: (message: AgentMessage) => void;
+  publishIdentity: (publication: NormalizedRuntimeIdentityPublicationV1) => void;
   identity: NormalizedRuntimeEventPublicationInput;
 }>): RuntimeEventWriterState {
   let lastRuntimeDescriptor: RuntimeDescriptorV1 | null = null;
@@ -54,40 +94,42 @@ export function createNormalizedRuntimeEventWriter(params: Readonly<{
     typeof params.identity === 'function' ? params.identity() : params.identity;
 
   const publishRuntimeDescriptor = (
-    message: RuntimeEventMessage & Readonly<{ name: 'runtime.descriptor' }>,
     descriptor: RuntimeDescriptorV1,
     source: Exclude<typeof runtimeDescriptorSource, 'none'>,
   ): void => {
     runtimeDescriptorSource = source;
     if (lastRuntimeDescriptor && isDeepStrictEqual(lastRuntimeDescriptor, descriptor)) return;
     lastRuntimeDescriptor = descriptor;
-    params.dispatch({
-      ...message,
-      payload: descriptor,
-    });
+    params.publishIdentity({ fact: 'runtimeDescriptor', value: descriptor });
+  };
+
+  const publishRuntimeCapabilities = (value: unknown): void => {
+    if (runtimeCapabilitiesPublished) return;
+    runtimeCapabilitiesPublished = true;
+    params.publishIdentity({ fact: 'runtimeCapabilities', value });
+  };
+
+  const publishRuntimeFacets = (value: AgentRuntimeFacetsV1): void => {
+    if (runtimeFacetsPublished) return;
+    runtimeFacetsPublished = true;
+    params.publishIdentity({ fact: 'runtimeFacets', value });
   };
 
   const handleMessage = (message: AgentMessage): void => {
     if (isRuntimeDescriptorEvent(message)) {
       const normalizedDescriptor = readRuntimeDescriptorV1(message.payload);
       if (!normalizedDescriptor) return;
-      publishRuntimeDescriptor(message, normalizedDescriptor, 'upstream');
+      publishRuntimeDescriptor(normalizedDescriptor, 'upstream');
       return;
     }
     if (isRuntimeCapabilitiesEvent(message)) {
-      if (runtimeCapabilitiesPublished) return;
-      runtimeCapabilitiesPublished = true;
-      params.dispatch(message);
+      publishRuntimeCapabilities(message.payload);
       return;
     }
     if (isRuntimeFacetsEvent(message)) {
       const normalizedFacets = readAgentRuntimeFacetsV1(message.payload);
-      if (!normalizedFacets || runtimeFacetsPublished) return;
-      runtimeFacetsPublished = true;
-      params.dispatch({
-        ...message,
-        payload: normalizedFacets,
-      });
+      if (!normalizedFacets) return;
+      publishRuntimeFacets(normalizedFacets);
       return;
     }
     params.dispatch(message);
@@ -96,27 +138,14 @@ export function createNormalizedRuntimeEventWriter(params: Readonly<{
   const publishFallbackIdentity = (): void => {
     const identity = readIdentity();
     if (runtimeDescriptorSource !== 'upstream' && identity.runtimeDescriptor) {
-      publishRuntimeDescriptor({
-        type: 'event',
-        name: 'runtime.descriptor',
-        payload: identity.runtimeDescriptor,
-      }, identity.runtimeDescriptor, 'fallback');
+      publishRuntimeDescriptor(identity.runtimeDescriptor, 'fallback');
     }
-    if (!runtimeCapabilitiesPublished && identity.runtimeCapabilities !== null && identity.runtimeCapabilities !== undefined) {
-      runtimeCapabilitiesPublished = true;
-      params.dispatch({
-        type: 'event',
-        name: 'runtime.capabilities',
-        payload: identity.runtimeCapabilities,
-      });
+    if (identity.runtimeCapabilities !== null && identity.runtimeCapabilities !== undefined) {
+      publishRuntimeCapabilities(identity.runtimeCapabilities);
     }
-    if (!runtimeFacetsPublished && identity.runtimeFacets !== null && identity.runtimeFacets !== undefined) {
-      runtimeFacetsPublished = true;
-      params.dispatch({
-        type: 'event',
-        name: 'runtime.facets',
-        payload: identity.runtimeFacets,
-      });
+    const fallbackFacets = readAgentRuntimeFacetsV1(identity.runtimeFacets);
+    if (fallbackFacets) {
+      publishRuntimeFacets(fallbackFacets);
     }
   };
 

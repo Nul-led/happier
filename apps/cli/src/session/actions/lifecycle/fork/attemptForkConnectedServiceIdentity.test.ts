@@ -75,7 +75,6 @@ function createBuiltInForkResolution(): ForkBackendResolution {
     backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
     replayFlavor: 'codex',
     metadataOverlay: {},
-    configuredAcp: null,
   };
 }
 
@@ -92,7 +91,6 @@ function createOpenCodeForkResolution(): ForkBackendResolution {
     backendTarget: { kind: 'builtInAgent', agentId: 'opencode' },
     replayFlavor: 'opencode',
     metadataOverlay: {},
-    configuredAcp: null,
   } as unknown as ForkBackendResolution;
 }
 
@@ -115,13 +113,6 @@ function createConfiguredAcpForkResolution(): ForkBackendResolution {
         backendId: 'review-bot',
         title: 'Review Bot',
       },
-    },
-    configuredAcp: {
-      backendId: 'review-bot',
-      title: 'Review Bot',
-      providerSessionId: 'vendor-parent-acp',
-      resolvedBackend: { backendId: 'review-bot' },
-      accountSettings: { settingsVersion: 1 },
     },
   } as unknown as ForkBackendResolution;
 }

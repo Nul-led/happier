@@ -17,7 +17,7 @@ function nativeModelSelection(agentId: string, modelId: string, updatedAt: numbe
   };
 }
 
-function computeAuthorizedExistingSessionKey(localId: string) {
+function computeAuthorizedExistingSessionKey(localId: string, requestedAt?: number) {
   return computeDaemonSpawnRequestKey({
     machineId: 'machine-1',
     directory: '/tmp',
@@ -25,6 +25,7 @@ function computeAuthorizedExistingSessionKey(localId: string) {
     executionAuthorization: {
       provenance: 'user_request',
       requestId: localId,
+      ...(requestedAt === undefined ? {} : { requestedAt }),
     },
   } satisfies SpawnSessionOptions);
 }
@@ -194,6 +195,22 @@ describe('computeDaemonSpawnRequestKey', () => {
     expect(first.serializationKey).toBe('existing:sess_1');
     expect(second.serializationKey).toBe('existing:sess_1');
     expect(first.authorizationKey).not.toBe(second.authorizationKey);
+  });
+
+  it('distinguishes rearmed authorization revisions while retaining one Session serialization lane', () => {
+    const first = computeAuthorizedExistingSessionKey('local-1', 10);
+    const replay = computeAuthorizedExistingSessionKey('local-1', 10);
+    const rearmed = computeAuthorizedExistingSessionKey('local-1', 20);
+
+    expect(first).toEqual(replay);
+    expect(first.key).not.toBe(rearmed.key);
+    expect(first.kind).toBe('existing');
+    expect(rearmed.kind).toBe('existing');
+    if (first.kind !== 'existing' || rearmed.kind !== 'existing') {
+      throw new Error('Expected existing-session keys');
+    }
+    expect(first.authorizationKey).not.toBe(rearmed.authorizationKey);
+    expect(first.serializationKey).toBe(rearmed.serializationKey);
   });
 
   it('does not include updatedAt timestamps in the new-session key', () => {
@@ -690,6 +707,32 @@ describe('createSpawnRequestCoalescer', () => {
       { type: 'success', sessionId: 'sess_1' },
     ]);
     expect(work).toHaveBeenCalledTimes(1);
+  });
+
+  it('serializes and executes distinct rearmed revisions of the same request id', async () => {
+    const coalescer = createSpawnRequestCoalescer({ recentSuccessTtlMs: 2_000 });
+    const firstKey = computeAuthorizedExistingSessionKey('same', 10);
+    const rearmedKey = computeAuthorizedExistingSessionKey('same', 20);
+    let releaseFirst!: () => void;
+    const firstBlocked = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const firstWork = vi.fn(async () => {
+      await firstBlocked;
+      return { type: 'success' as const, sessionId: 'sess_1' };
+    });
+    const rearmedWork = vi.fn(async () => ({ type: 'success' as const, sessionId: 'sess_1' }));
+
+    const first = coalescer.run(firstKey, firstWork);
+    await vi.waitFor(() => expect(firstWork).toHaveBeenCalledOnce());
+    const rearmed = coalescer.run(rearmedKey, rearmedWork);
+    await Promise.resolve();
+    expect(rearmedWork).not.toHaveBeenCalled();
+    releaseFirst();
+
+    await expect(first).resolves.toEqual({ type: 'success', sessionId: 'sess_1' });
+    await expect(rearmed).resolves.toEqual({ type: 'success', sessionId: 'sess_1' });
+    expect(rearmedWork).toHaveBeenCalledOnce();
   });
 
   it('caches a sequential replay of the same exact authorized existing-session success', async () => {

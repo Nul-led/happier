@@ -3,21 +3,7 @@ import { isDeepStrictEqual } from 'node:util';
 import type { ApiSessionClient } from '@/api/session/sessionClient';
 import type { Metadata } from '@/api/types';
 import type { RuntimeTurnOperations } from '@/agent/runtime/turns/runtimeTurnOperations';
-import type { RuntimePublicationEvent } from '@/agent/runtime/turns/runtimeTurnOperations';
-import {
-  readRuntimeDescriptorV1,
-  readAgentRuntimeFacetsV1,
-} from '@happier-dev/protocol';
 import type { SessionStateSyncEngine } from '@happier-dev/agents';
-
-function isRuntimePublicationEvent(message: unknown): message is RuntimePublicationEvent {
-  if (!message || typeof message !== 'object') return false;
-  const record = message as Readonly<Record<string, unknown>>;
-  if (record.type !== 'event') return false;
-  return record.name === 'runtime.descriptor'
-    || record.name === 'runtime.capabilities'
-    || record.name === 'runtime.facets';
-}
 
 function updateRuntimePublicationMetadata(
   metadata: Metadata,
@@ -102,67 +88,71 @@ export function subscribeSessionRuntimePublicationToMetadata(params: Readonly<{
     // A later runtime event can still publish identity after cold-read failure.
   }
 
-  return params.runtime.subscribeRuntimeEvents((message) => {
-    if ('kind' in message && message.kind === 'provider-session-id') {
+  const unsubscribeRuntimeEvents = params.runtime.subscribeRuntimeEvents((message) => {
+    if (message.kind === 'provider-session-id') {
       publishProviderSessionId(
         message.providerSessionId,
         'nativeSessionLogPath' in message ? message.nativeSessionLogPath : null,
       );
-      return;
     }
+  });
 
-    if (!isRuntimePublicationEvent(message)) {
-      return;
-    }
-
-    if (message.name === 'runtime.descriptor') {
-      const nextDescriptor = readRuntimeDescriptorV1(message.payload);
-      if (isDeepStrictEqual(lastPublishedDescriptor, nextDescriptor)) {
-        return;
-      }
-      const previousDescriptor = lastPublishedDescriptor;
-      lastPublishedDescriptor = nextDescriptor;
-      void params.sessionState.writeHappierField({
-        sessionId: params.session.sessionId,
-        fieldId: 'identity.runtimeDescriptor',
-        value: nextDescriptor,
-        reason: 'reconciliation',
-        metadataReason: 'runtime-identity-publication',
-      }).then((result) => {
-        if (!result.ok && isDeepStrictEqual(lastPublishedDescriptor, nextDescriptor)) {
-          lastPublishedDescriptor = previousDescriptor;
-        }
-      }).catch(() => {
+  const unsubscribeIdentityPublication = params.runtime.subscribeRuntimeIdentityPublication?.(
+    (publication) => {
+      if (publication.fact === 'runtimeDescriptor') {
+        const nextDescriptor = publication.value;
         if (isDeepStrictEqual(lastPublishedDescriptor, nextDescriptor)) {
-          lastPublishedDescriptor = previousDescriptor;
+          return;
         }
-      });
-      return;
-    }
-
-    if (message.name === 'runtime.capabilities') {
-      const nextCapabilities = message.payload ?? null;
-      if (isDeepStrictEqual(lastPublishedCapabilities, nextCapabilities)) {
+        const previousDescriptor = lastPublishedDescriptor;
+        lastPublishedDescriptor = nextDescriptor;
+        void params.sessionState.writeHappierField({
+          sessionId: params.session.sessionId,
+          fieldId: 'identity.runtimeDescriptor',
+          value: nextDescriptor,
+          reason: 'reconciliation',
+          metadataReason: 'runtime-identity-publication',
+        }).then((result) => {
+          if (!result.ok && isDeepStrictEqual(lastPublishedDescriptor, nextDescriptor)) {
+            lastPublishedDescriptor = previousDescriptor;
+          }
+        }).catch(() => {
+          if (isDeepStrictEqual(lastPublishedDescriptor, nextDescriptor)) {
+            lastPublishedDescriptor = previousDescriptor;
+          }
+        });
         return;
       }
-      lastPublishedCapabilities = nextCapabilities;
+
+      if (publication.fact === 'runtimeCapabilities') {
+        const nextCapabilities = publication.value ?? null;
+        if (isDeepStrictEqual(lastPublishedCapabilities, nextCapabilities)) {
+          return;
+        }
+        lastPublishedCapabilities = nextCapabilities;
+        void params.session.updateMetadata((metadata) => updateRuntimePublicationMetadata(
+          metadata,
+          'agentRuntimeCapabilitiesV1',
+          nextCapabilities,
+        ));
+        return;
+      }
+
+      const nextFacets = publication.value;
+      if (isDeepStrictEqual(lastPublishedFacets, nextFacets)) {
+        return;
+      }
+      lastPublishedFacets = nextFacets;
       void params.session.updateMetadata((metadata) => updateRuntimePublicationMetadata(
         metadata,
-        'agentRuntimeCapabilitiesV1',
-        nextCapabilities,
+        'agentRuntimeFacetsV1',
+        nextFacets,
       ));
-      return;
-    }
+    },
+  );
 
-    const nextFacets = readAgentRuntimeFacetsV1(message.payload);
-    if (isDeepStrictEqual(lastPublishedFacets, nextFacets)) {
-      return;
-    }
-    lastPublishedFacets = nextFacets;
-    void params.session.updateMetadata((metadata) => updateRuntimePublicationMetadata(
-      metadata,
-      'agentRuntimeFacetsV1',
-      nextFacets,
-    ));
-  });
+  return () => {
+    unsubscribeRuntimeEvents();
+    unsubscribeIdentityPublication?.();
+  };
 }

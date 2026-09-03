@@ -43,6 +43,20 @@ export type MaterializeNextPendingResult =
   | { type: 'auth_failure' }
   | { type: 'deferred'; reason: 'supervisor_offline' | 'supervisor_auth_failed' | 'runtime_activity_active' | 'runtime_activity_unknown' };
 
+export type PendingMaterializationDiagnosticPhase =
+  | 'materialize.pending_snapshot'
+  | 'materialize.turn_status'
+  | 'materialize.server_claim'
+  | 'materialize.compatibility_transcript_lookup'
+  | 'materialize.input_admission';
+
+export type MaterializeNextPendingOptions = {
+  reconcileWhenEmpty?: 'force' | 'throttled' | 'skip';
+  deliveryTiming?: PendingMaterializationDeliveryTiming;
+  expectedRuntimeActivityRevision?: number;
+  onDiagnosticPhase?: (phase: PendingMaterializationDiagnosticPhase) => void;
+};
+
 export type { RuntimeActivitySnapshotTail } from './client/transport/mutations/createSessionClientDurableMutationOutbox';
 
 export type LocallyConsumedUserMessageConfirmation = Readonly<{
@@ -137,11 +151,7 @@ export interface SessionClientPort {
     sequence: number,
     abortSignal?: AbortSignal,
   ): Promise<boolean>;
-  materializeNextPendingMessageSafely?(opts?: {
-    reconcileWhenEmpty?: 'force' | 'throttled' | 'skip';
-    deliveryTiming?: PendingMaterializationDeliveryTiming;
-    expectedRuntimeActivityRevision?: number;
-  }): Promise<MaterializeNextPendingResult>;
+  materializeNextPendingMessageSafely?(opts?: MaterializeNextPendingOptions): Promise<MaterializeNextPendingResult>;
   wakePendingMaterialization?(): void;
   popPendingMessage(): Promise<boolean>;
   shouldAttemptPendingMaterialization(): boolean;

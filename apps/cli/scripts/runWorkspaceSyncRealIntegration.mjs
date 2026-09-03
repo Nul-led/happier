@@ -9,7 +9,7 @@ import { resolveArtifactName } from '../../../packages/iroh-native/scripts/build
 
 const cliDirectory = dirname(dirname(fileURLToPath(import.meta.url)));
 const defaultIrohNativeDirectory = resolve(cliDirectory, '../../packages/iroh-native');
-const requiredBinaryEnvironment = Object.freeze([
+export const requiredWorkspaceSyncRealBinaryEnvironment = Object.freeze([
   'HAPPIER_MUTAGEN_LIVE_MANAGER_BIN',
   'HAPPIER_MUTAGEN_LIVE_AGENT_BIN',
   'HAPPIER_MUTAGEN_BROKER_CLIENT_TEST_BIN',
@@ -23,9 +23,9 @@ export function createWorkspaceSyncRealIntegrationPlan({
   arch = process.arch,
   irohNativeDirectory = defaultIrohNativeDirectory,
 } = {}) {
-  const missing = requiredBinaryEnvironment.filter((name) => !String(env[name] ?? '').trim());
+  const missing = requiredWorkspaceSyncRealBinaryEnvironment.filter((name) => !String(env[name] ?? '').trim());
   if (missing.length > 0) {
-    throw new Error(`source-built workspace-sync lane requires ${requiredBinaryEnvironment.join(', ')}; missing ${missing.join(', ')}`);
+    throw new Error(`workspace-sync real-lane blocked preflight: required ${requiredWorkspaceSyncRealBinaryEnvironment.join(', ')}; missing ${missing.join(', ')}`);
   }
   const platformPath = platform === 'win32' ? win32 : posix;
   const addonPath = platformPath.join(
@@ -51,7 +51,11 @@ export function createWorkspaceSyncRealIntegrationPlan({
     env: testEnv,
   });
   return {
-    binaryPaths: requiredBinaryEnvironment.map((name) => resolve(String(env[name]))),
+    binaryInputs: requiredWorkspaceSyncRealBinaryEnvironment.map((name) => ({
+      name,
+      path: resolve(String(env[name])),
+    })),
+    binaryPaths: requiredWorkspaceSyncRealBinaryEnvironment.map((name) => resolve(String(env[name]))),
     addonPath,
     build: {
       args: ['-s', 'build:native:test-relay'],
@@ -80,13 +84,27 @@ export function runWorkspaceSyncRealIntegration({
   removeDirImpl = rmSync,
 } = {}) {
   const plan = createWorkspaceSyncRealIntegrationPlan({ env });
-  for (const binaryPath of plan.binaryPaths) accessSyncImpl(binaryPath);
+  for (const binary of plan.binaryInputs) {
+    try {
+      accessSyncImpl(binary.path);
+    } catch {
+      throw new Error(
+        `workspace-sync real-lane blocked preflight: ${binary.name} points to an unavailable binary at ${binary.path}`,
+      );
+    }
+  }
   execYarnImpl(plan.build.args, {
     cwd: plan.build.cwd,
     env,
     stdio: 'inherit',
   });
-  accessSyncImpl(plan.addonPath);
+  try {
+    accessSyncImpl(plan.addonPath);
+  } catch {
+    throw new Error(
+      `workspace-sync real-lane blocked preflight: the source-built Iroh relay fixture is unavailable at ${plan.addonPath}`,
+    );
+  }
 
   // The canonical remote workspace mirror excludes ignored native build
   // output. Preserve the selected source-built addon outside the mirror

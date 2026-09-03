@@ -12,10 +12,11 @@ import {
 } from '@happier-dev/protocol';
 import {
   createPluginSessionsInventory,
+  readPluginSessionsSubagentObservation,
   type PluginSessionHandleCapabilities,
   type PluginSessionsInventoryParams,
 } from './pluginSessionsInventory';
-import type { SubagentsService } from '@happier-dev/plugin-sdk/sessions/subagents';
+import type { PluginSubagentsHostService } from '@/session/subagents/pluginSubagentsService';
 import type { HostExternalSessionsAuthorService } from '@/session/external/privateContract';
 
 const credentials = {
@@ -265,7 +266,7 @@ describe('plugin sessions inventory public service boundary', () => {
           throw new Error('not used');
         },
         watch: () => Object.freeze({ dispose() {} }),
-      }) satisfies SubagentsService;
+      }) satisfies PluginSubagentsHostService;
       const records = Object.freeze({
         async listSystemRecords() {
           throw new Error('test_system_records_not_used');
@@ -319,6 +320,51 @@ describe('plugin sessions inventory public service boundary', () => {
       currentRow.id,
       targetRow.id,
     ]);
+  });
+
+  it('publishes bounded Subagent reads to plugins and keeps the Agent-runner observation writer host-internal', async () => {
+    const observedSubagent = Object.freeze({
+      id: 'subagent-1',
+      parentSessionId: 'session-current',
+      status: 'running' as const,
+      updatedAtMs: 5,
+    });
+    const observe = vi.fn(async () => observedSubagent);
+    const inventory = createTestPluginSessionsInventory({
+      credentials,
+      currentSessionId: 'session-current',
+      isCurrent: () => true,
+      readStoragePolicy: async () => 'optional',
+      fetchPage: async () => ({ sessions: [], nextCursor: null, hasNext: false }),
+      fetchById: async () => rawSession({ id: 'session-current', active: true }),
+      createHandleCapabilities: () => Object.freeze({
+        subagents: Object.freeze({
+          capabilities: () => Object.freeze({
+            list: Object.freeze({ status: 'available' as const }),
+            observe: Object.freeze({ status: 'available' as const }),
+            watch: Object.freeze({ status: 'available' as const }),
+          }),
+          list: async () => Object.freeze({ items: Object.freeze([observedSubagent]) }),
+          get: async () => observedSubagent,
+          observe,
+          watch: () => Object.freeze({ dispose() {} }),
+        }),
+      }),
+    });
+
+    const publicReads = inventory.subagents;
+    expect(Object.keys(publicReads).sort()).toEqual(['get', 'list', 'watch']);
+    expect(Object.keys(inventory.current!.subagents).sort())
+      .toEqual(['get', 'list', 'watch']);
+    expect(inventory.current).not.toHaveProperty('subagentObservation');
+
+    const subagentObservation = readPluginSessionsSubagentObservation(inventory);
+    if (!subagentObservation) throw new Error('Expected host Subagent observation publisher');
+    await expect(subagentObservation.observe({
+      observationId: 'child',
+      status: 'running',
+    })).resolves.toEqual(observedSubagent);
+    expect(observe).toHaveBeenCalledTimes(1);
   });
 
   it('exposes title mutation only on the host-stamped current Session handle', async () => {

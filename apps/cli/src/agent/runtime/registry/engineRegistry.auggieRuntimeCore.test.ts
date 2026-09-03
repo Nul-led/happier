@@ -225,7 +225,6 @@ describe('engineRegistry (auggie runtimeCore)', () => {
             logPrefix: '[Auggie native positive consumer]',
           }),
           getPermissionMode: () => 'default',
-          setThinking: () => undefined,
           memoryRecallGuidanceEnabled: false,
           runnerProcessIdentity: null,
           startupModelSelection: null,

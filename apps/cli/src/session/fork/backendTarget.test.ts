@@ -54,18 +54,11 @@ describe('resolveSessionForkBackendTarget', () => {
     resolveAgentIdFromSessionMetadataMock.mockReturnValue('claude');
   });
 
-  it('resolves configured ACP fork targets from embedded metadata and preserves vendor session ids', async () => {
+  it('resolves configured ACP fork targets from embedded Account-configured metadata', async () => {
     const result = await resolveSessionForkBackendTarget({
       credentials,
       parentMetadata: {
         ...buildConfiguredAcpBackendSessionMetadata({ backendId: 'review-bot', title: 'Review Bot' }),
-        runtimeDescriptorV1: {
-          v: 1,
-          agentId: 'customAcp',
-          provider: {
-            providerSessionId: 'vendor-123',
-          },
-        },
       },
     });
 
@@ -89,13 +82,6 @@ describe('resolveSessionForkBackendTarget', () => {
           title: 'Review Bot',
         }),
       }),
-      configuredAcp: {
-        backendId: 'review-bot',
-        title: 'Review Bot',
-        providerSessionId: 'vendor-123',
-        resolvedBackend: null,
-        accountSettings: null,
-      },
     });
   });
 
@@ -110,13 +96,6 @@ describe('resolveSessionForkBackendTarget', () => {
       credentials,
       parentMetadata: {
         flavor: 'acp:review-bot',
-        runtimeDescriptorV1: {
-          v: 1,
-          agentId: 'acp:review-bot',
-          provider: {
-            providerSessionId: 'vendor-456',
-          },
-        },
       },
     });
 
@@ -143,17 +122,10 @@ describe('resolveSessionForkBackendTarget', () => {
           title: 'Review Bot',
         }),
       }),
-      configuredAcp: {
-        backendId: 'review-bot',
-        title: 'Review Bot',
-        providerSessionId: 'vendor-456',
-        resolvedBackend,
-        accountSettings,
-      },
     });
   });
 
-  it('recovers configured ACP fork targets from plugin contributions when account settings are empty', async () => {
+  it('recovers configured ACP fork targets from flavor-only metadata when the Account snapshot is unavailable', async () => {
     const resolvedBackend = { backendId: 'plugin-review-bot', title: 'Plugin Review Bot' };
 
     resolveAvailableAccountSettingsMock.mockReturnValueOnce(null);
@@ -163,13 +135,6 @@ describe('resolveSessionForkBackendTarget', () => {
       credentials,
       parentMetadata: {
         flavor: 'acp:plugin-review-bot',
-        runtimeDescriptorV1: {
-          v: 1,
-          agentId: 'acp:plugin-review-bot',
-          provider: {
-            providerSessionId: 'vendor-plugin-123',
-          },
-        },
       },
     });
 
@@ -195,13 +160,6 @@ describe('resolveSessionForkBackendTarget', () => {
           title: 'Plugin Review Bot',
         }),
       }),
-      configuredAcp: {
-        backendId: 'plugin-review-bot',
-        title: 'Plugin Review Bot',
-        providerSessionId: 'vendor-plugin-123',
-        resolvedBackend,
-        accountSettings: null,
-      },
     });
   });
 
@@ -227,7 +185,6 @@ describe('resolveSessionForkBackendTarget', () => {
       backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
       replayFlavor: 'claude',
       metadataOverlay: {},
-      configuredAcp: null,
     });
   });
 

@@ -29,7 +29,11 @@ import type { SessionSyncPendingInputServerContractResult } from '@/api/clientCo
 import { runSupervisedRequest } from '@/api/connection/requestSupervision/runSupervisedRequest';
 import { addDiscardedCommittedMessageLocalIds } from '../../../queue/discardedCommittedMessageLocalIds';
 import type { KnownPendingQueueState, PendingQueueState } from '../../pendingQueueState';
-import type { MaterializeNextPendingResult } from '../../sessionClientPort';
+import type {
+    MaterializeNextPendingOptions,
+    MaterializeNextPendingResult,
+    PendingMaterializationDiagnosticPhase,
+} from '../../sessionClientPort';
 import { serializeAxiosErrorForLog } from '../../../client/serializeAxiosErrorForLog';
 import { serializeEphemeralSendError } from '../transcript/ephemeralSendOutcome';
 import type { SessionSnapshotRefreshReason } from '../../sessionSnapshotRefreshReason';
@@ -288,6 +292,17 @@ function readPlannedServerRestartRetryAfterMs(payload: unknown): number | undefi
     return Math.trunc(raw);
 }
 
+function reportPendingMaterializationDiagnosticPhase(
+    observer: ((phase: PendingMaterializationDiagnosticPhase) => void) | undefined,
+    phase: PendingMaterializationDiagnosticPhase,
+): void {
+    try {
+        observer?.(phase);
+    } catch {
+        // Diagnostics must never alter materialization or provider-custody behavior.
+    }
+}
+
 export type SessionClientInteractionApi = Readonly<{
     onUserMessage: (callback: (data: UserMessage) => boolean | void) => void;
     waitForMetadataUpdate: (abortSignal?: AbortSignal) => Promise<boolean>;
@@ -301,11 +316,7 @@ export type SessionClientInteractionApi = Readonly<{
     reconcilePendingQueueState: (opts?: { force?: boolean }) => Promise<boolean>;
     discardPendingMessageQueueV2All: (opts: { reason: 'switch_to_local' | 'manual' }) => Promise<number>;
     discardCommittedMessageLocalIds: (opts: { localIds: string[]; reason: 'switch_to_local' | 'manual' }) => Promise<number>;
-    materializeNextPendingMessageSafely: (opts?: {
-        reconcileWhenEmpty?: 'force' | 'throttled' | 'skip';
-        deliveryTiming?: PendingMaterializationDeliveryTiming;
-        expectedRuntimeActivityRevision?: number;
-    }) => Promise<MaterializeNextPendingResult>;
+    materializeNextPendingMessageSafely: (opts?: MaterializeNextPendingOptions) => Promise<MaterializeNextPendingResult>;
     popPendingMessage: () => Promise<boolean>;
 }>;
 
@@ -383,10 +394,7 @@ export function createSessionClientInteractionApi(
     let pendingQueueStateReconcileInFlight: Promise<boolean> | null = null;
     let lastPendingQueueStateReconcileAt = 0;
 
-    const runMaterializeNextPendingMessageInner = async (opts: {
-        deliveryTiming?: PendingMaterializationDeliveryTiming;
-        expectedRuntimeActivityRevision?: number;
-    } = {}): Promise<{
+    const runMaterializeNextPendingMessageInner = async (opts: MaterializeNextPendingOptions = {}): Promise<{
         didMaterialize: boolean;
         result: MaterializeNextPendingResult;
     }> => {
@@ -415,6 +423,9 @@ export function createSessionClientInteractionApi(
         if (!supervisor) {
             return { didMaterialize: false, result: { type: 'retryable_transport' } };
         }
+        const reportDiagnosticPhase = (phase: PendingMaterializationDiagnosticPhase): void => {
+            reportPendingMaterializationDiagnosticPhase(opts.onDiagnosticPhase, phase);
+        };
         if (contractResult.pendingInput === 'released_server_v0_2_1') {
             try {
                 const result = await runSupervisedRequest({
@@ -437,6 +448,7 @@ export function createSessionClientInteractionApi(
                         ...deps.getStoredContentCryptoContext(),
                         deliverMaterializedUserMessageToAgentQueue: (message, providerAction) =>
                             deps.deliverMaterializedUserMessageToAgentQueue?.(message, providerAction) ?? false,
+                        reportDiagnosticPhase,
                     }),
                 });
                 return { didMaterialize: result.type === 'materialized', result };
@@ -447,6 +459,7 @@ export function createSessionClientInteractionApi(
         }
         let materializeResult: PendingQueueMaterializeNextResult;
         try {
+            reportDiagnosticPhase('materialize.server_claim');
             materializeResult = await runSupervisedRequest({
                 supervisor,
                 requireAuth: true,
@@ -521,6 +534,7 @@ export function createSessionClientInteractionApi(
                 : materializeResult.message;
         let materializedMessage: PendingQueueMaterializedMessage | null | undefined = materializedMessageWithLocalId;
         if (materializedMessage) {
+            reportDiagnosticPhase('materialize.input_admission');
             const reconciled = await reconcileProtectedPendingInput({
                 socket,
                 sessionId: deps.sessionId,
@@ -989,11 +1003,7 @@ export function createSessionClientInteractionApi(
             return addedCount;
         },
 
-        async materializeNextPendingMessageSafely(opts: {
-            reconcileWhenEmpty?: 'force' | 'throttled' | 'skip';
-            deliveryTiming?: PendingMaterializationDeliveryTiming;
-            expectedRuntimeActivityRevision?: number;
-        } = {}) {
+        async materializeNextPendingMessageSafely(opts: MaterializeNextPendingOptions = {}) {
             const supervisorState = deps.getSessionConnectionSupervisor()?.getState();
             if (supervisorState?.phase === 'auth_failed') {
                 return { type: 'deferred', reason: 'supervisor_auth_failed' };
@@ -1008,27 +1018,33 @@ export function createSessionClientInteractionApi(
             const policy = opts.reconcileWhenEmpty ?? 'force';
             const pendingQueueState = deps.getPendingQueueState();
             if (!pendingQueueState.known) {
+                reportPendingMaterializationDiagnosticPhase(opts.onDiagnosticPhase, 'materialize.pending_snapshot');
                 await this.reconcilePendingQueueState({ force: true });
             } else if (pendingQueueState.pendingCount <= 0) {
                 if (policy === 'force') {
+                    reportPendingMaterializationDiagnosticPhase(opts.onDiagnosticPhase, 'materialize.pending_snapshot');
                     await this.reconcilePendingQueueState({ force: true });
                 } else if (policy === 'throttled') {
+                    reportPendingMaterializationDiagnosticPhase(opts.onDiagnosticPhase, 'materialize.pending_snapshot');
                     await this.reconcilePendingQueueState({ force: false });
                 }
             }
             const materializeOpts = {
                 deliveryTiming: opts.deliveryTiming,
                 expectedRuntimeActivityRevision: opts.expectedRuntimeActivityRevision,
+                onDiagnosticPhase: opts.onDiagnosticPhase,
             };
             if (!deps.shouldAttemptPendingMaterialization()) {
                 // The gate may be blocked by a stale turn-status snapshot: reconcile (which can
                 // self-heal a stale busy gate) before concluding there is nothing to drain.
+                reportPendingMaterializationDiagnosticPhase(opts.onDiagnosticPhase, 'materialize.turn_status');
                 const healedTurnStatus = await deps.reconcileTurnStatusBeforePendingMaterialization();
                 if (!healedTurnStatus || !deps.shouldAttemptPendingMaterialization()) {
                     deps.logPendingMaterializationSkip?.('materialize_safely_gate');
                     return { type: 'no_pending' };
                 }
             } else {
+                reportPendingMaterializationDiagnosticPhase(opts.onDiagnosticPhase, 'materialize.turn_status');
                 const refreshedTurnStatus = await deps.reconcileTurnStatusBeforePendingMaterialization();
                 if (!refreshedTurnStatus) {
                     deps.logPendingMaterializationSkip?.('materialize_safely_turn_status_refresh');

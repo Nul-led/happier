@@ -149,7 +149,7 @@ export async function cleanupAndShutdown(params: CleanupAndShutdownParams): Prom
         params.automationWorker.stop();
     }
     if (params.memoryWorker) {
-        params.memoryWorker.stop();
+        await params.memoryWorker.stop();
     }
     if (params.voiceInferenceWorker) {
         await params.voiceInferenceWorker.stop();

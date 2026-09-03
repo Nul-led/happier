@@ -420,7 +420,7 @@ export async function workspaceSyncTargetBootstrap(input: WorkspaceSyncTargetBoo
         if (!approval
           || approval.canonicalRoot !== canonicalRoot
           || approval.rootFingerprint !== approvalFingerprint
-          || approval.consequence !== 'replace_nonempty_workspace_target') {
+          || !approval.consequences.includes('replace_nonempty_workspace_target')) {
           throw bootstrapError('approval_stale', 'Workspace target replacement approval is stale');
         }
       }

@@ -464,4 +464,38 @@ describe('MessageQueue2', () => {
         expect(batch3?.message).toBe('after-isolated');
         expect(batch3?.mode.type).toBe('B');
     });
+
+    it('waits for queue growth without consuming messages that already have custody', async () => {
+        const queue = new MessageQueue2<string>(mode => mode);
+        queue.push('already queued', 'local');
+
+        let resolved = false;
+        const growth = queue.waitForQueueGrowthBeyond(queue.size()).then((value) => {
+            resolved = true;
+            return value;
+        });
+        await Promise.resolve();
+        expect(resolved).toBe(false);
+        expect(queue.size()).toBe(1);
+
+        queue.push('new admission', 'local');
+        await expect(growth).resolves.toBe(true);
+        expect(queue.size()).toBe(2);
+        await expect(queue.waitForMessagesAndGetAsString()).resolves.toMatchObject({
+            message: 'already queued\nnew admission',
+        });
+    });
+
+    it('releases the queue waiter when a growth wait is aborted', async () => {
+        const queue = new MessageQueue2<string>(mode => mode);
+        const controller = new AbortController();
+        const growth = queue.waitForQueueGrowthBeyond(0, controller.signal);
+
+        controller.abort();
+        await expect(growth).resolves.toBe(false);
+
+        const next = queue.waitForMessagesAndGetAsString();
+        queue.push('after abort', 'local');
+        await expect(next).resolves.toMatchObject({ message: 'after abort' });
+    });
 });

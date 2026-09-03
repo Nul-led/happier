@@ -1,5 +1,10 @@
+import { existsSync } from 'node:fs';
+import { mkdtemp, rm } from 'node:fs/promises';
+import os from 'node:os';
+import { join } from 'node:path';
+
 import { buildBackendTargetKey } from '@happier-dev/protocol';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentMessage } from '@/agent/core/AgentMessage';
 import type {
   ExecutionRunHostRuntime,
@@ -44,6 +49,13 @@ vi.mock('@/agent/runtime/registry/engineRegistry', () => ({
 describe('createExecutionRunRuntime (pi)', () => {
   beforeEach(() => {
     resolveBackendEngineAdapterResolutionMock.mockReset();
+  });
+
+  afterEach(() => {
+    vi.resetModules();
+    delete process.env.HAPPIER_HOME_DIR;
+    delete process.env.HAPPIER_SERVER_URL;
+    delete process.env.HAPPIER_WEBAPP_URL;
   });
 
   it('creates the pi execution-run runtime through runtimeCore without using the legacy execution-run registry directly', async () => {
@@ -126,6 +138,57 @@ describe('createExecutionRunRuntime (pi)', () => {
       permissionMode: 'yolo',
       causalPermissionAuthority,
     }));
+  });
+
+  // Ephemeral isolation is created before the engine can fail, so this owner —
+  // the only execution-run backend composer — must remove the run's isolation
+  // root when backend construction throws, or a failed run leaks a directory.
+  it('removes the ephemeral isolation root when runtime-core backend construction throws', async () => {
+    const homeDir = await mkdtemp(join(os.tmpdir(), 'happier-execution-run-isolation-home-'));
+    try {
+      process.env.HAPPIER_HOME_DIR = homeDir;
+      process.env.HAPPIER_SERVER_URL = 'https://api.example.test';
+      process.env.HAPPIER_WEBAPP_URL = 'https://app.example.test';
+
+      const { reloadConfiguration, configuration } = await import('@/configuration');
+      reloadConfiguration();
+
+      resolveBackendEngineAdapterResolutionMock.mockResolvedValue({
+        backendId: 'pi',
+        engineAdapter: {
+          runtimeCore: {
+            createExecutionRunBackend: () => {
+              throw new Error('engine backend failed');
+            },
+          },
+        },
+      });
+      const { createExecutionRunRuntime } = await import('./create');
+
+      const executionRuntime = createExecutionRunRuntime({
+        cwd: process.cwd(),
+        backendId: 'pi',
+        runId: 'run_engine_throw',
+        permissionMode: 'read_only',
+        start: {
+          intent: 'review',
+          retentionPolicy: 'ephemeral',
+        },
+      });
+      const isolationRoot = join(
+        configuration.activeServerDir,
+        'isolation',
+        'pi',
+        'execution_run',
+        'run_engine_throw',
+      );
+
+      await expect(executionRuntime.provisionSession({ initialPrompt: 'boot' }))
+        .rejects.toThrow('engine backend failed');
+      await expect.poll(() => existsSync(isolationRoot)).toBe(false);
+    } finally {
+      await rm(homeDir, { recursive: true, force: true });
+    }
   });
 
   it('throws when the built-in backend target is disabled in account settings before creating the runtime shell', async () => {

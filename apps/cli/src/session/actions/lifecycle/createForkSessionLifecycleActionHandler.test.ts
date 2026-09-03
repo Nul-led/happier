@@ -143,7 +143,6 @@ function createBridge(params: Readonly<{
       backendTarget: { kind: 'builtInAgent', agentId: catalogAgentId },
       replayFlavor: catalogAgentId,
       metadataOverlay: {},
-      configuredAcp: null,
     })),
     resolveExecutionSurfaces: vi.fn(async () => ({
       terminalRuntime: null,
@@ -156,10 +155,7 @@ function createBridge(params: Readonly<{
   } as unknown as ReturnType<typeof getSessionHostBridge>;
 }
 
-function createConfiguredAcpBridge(params: Readonly<{
-  supportsLoadSession: boolean;
-  providerSessionId?: string | null;
-}>): ReturnType<typeof getSessionHostBridge> {
+function createConfiguredAcpBridge(): ReturnType<typeof getSessionHostBridge> {
   const bridge = createBridge({ forkSurface: { fork: vi.fn() } });
   const resolveSessionForkBackendTarget = vi.fn(async () => ({
     ok: true as const,
@@ -174,15 +170,6 @@ function createConfiguredAcpBridge(params: Readonly<{
     backendTarget: { kind: 'configuredAcpBackend' as const, backendId: 'review-bot' },
     replayFlavor: 'acp:review-bot',
     metadataOverlay: {},
-    configuredAcp: {
-      backendId: 'review-bot',
-      title: 'Review Bot',
-      providerSessionId: params.providerSessionId ?? 'provider-parent',
-      resolvedBackend: {
-        capabilities: { supportsLoadSession: params.supportsLoadSession },
-      },
-      accountSettings: {},
-    },
   }));
   return {
     ...bridge,
@@ -218,9 +205,12 @@ describe('createForkSessionLifecycleActionHandler', () => {
     mocks.declarationSource = 'cold';
   });
 
-  it('falls back to replay for configured ACP because load-session support does not declare fork support', async () => {
+  // Account-configured ACP declares load-session (resume) support only, and no
+  // Agent-owned fork surface. Automatic fork therefore settles at the canonical
+  // Replay owner regardless of what the Account declaration says about resume.
+  it('falls back to replay for an automatic configured ACP fork', async () => {
     const handler = createForkSessionLifecycleActionHandler({
-      sessionHostBridge: createConfiguredAcpBridge({ supportsLoadSession: true }),
+      sessionHostBridge: createConfiguredAcpBridge(),
       handlers: { spawnSession: vi.fn(), stopSession: vi.fn() },
     });
 
@@ -236,26 +226,9 @@ describe('createForkSessionLifecycleActionHandler', () => {
     expect(mocks.createReplayForkSession).toHaveBeenCalledOnce();
   });
 
-  it('falls back to replay for automatic configured ACP fork without load-session support', async () => {
+  it('returns a typed refusal for an explicit configured ACP latest fork', async () => {
     const handler = createForkSessionLifecycleActionHandler({
-      sessionHostBridge: createConfiguredAcpBridge({ supportsLoadSession: false }),
-      handlers: { spawnSession: vi.fn(), stopSession: vi.fn() },
-    });
-
-    await expect(handler({
-      v: 1,
-      parentSessionId: 'parent-session',
-      forkPoint: { type: 'latest' },
-      strategy: 'auto',
-    })).resolves.toEqual({ ok: true, childSessionId: 'child-replay' });
-
-    expect(mocks.attemptAcpLatestFork).not.toHaveBeenCalled();
-    expect(mocks.createReplayForkSession).toHaveBeenCalledOnce();
-  });
-
-  it('returns a typed refusal for explicit configured ACP latest without load-session support', async () => {
-    const handler = createForkSessionLifecycleActionHandler({
-      sessionHostBridge: createConfiguredAcpBridge({ supportsLoadSession: false }),
+      sessionHostBridge: createConfiguredAcpBridge(),
       handlers: { spawnSession: vi.fn(), stopSession: vi.fn() },
     });
 

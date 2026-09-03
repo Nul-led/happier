@@ -3,6 +3,10 @@ import type { PermissionMode } from '@/api/types';
 import { MessageQueue2 } from '@/agent/runtime/modeMessageQueue';
 import { hashObject } from '@/utils/deterministicJson';
 import { registerPermissionModeMessageQueueBinding, type InFlightSteerController } from '@/agent/runtime/permissions/bindModeQueue';
+import {
+  createUnsettledReplaySeedRetirement,
+  type UnsettledReplaySeedRetirement,
+} from '@/agent/runtime/replaySeed/unsettledReplaySeedRetirement';
 import { resolveAppendSystemPromptQueueKeyValue } from '@/agent/runtime/permissions/appendSystemPrompt';
 import { readPermissionModeUpdatedAtFromMetadataSnapshot } from '@/agent/runtime/permissions/modeStateSync';
 import {
@@ -34,6 +38,13 @@ export function createPermissionModeQueueState(opts: {
   setCurrentPermissionMode: (mode: PermissionMode | undefined) => void;
   getCurrentPermissionModeUpdatedAt: () => number;
   setCurrentPermissionModeUpdatedAt: (updatedAt: number) => void;
+  /**
+   * Session-scoped hold for an accepted replay seed whose metadata retirement has not
+   * succeeded. Shared by the prompt loop's queue admission and this binding's in-flight
+   * steer admission; both retry the same idempotent settler at their admission boundaries
+   * and admit no provider input until it succeeds.
+   */
+  replaySeedRetirement: UnsettledReplaySeedRetirement;
 } {
   const resolveQueueKey = opts.resolvePermissionModeQueueKey;
   const messageQueue = new MessageQueue2<PermissionModeQueuedPromptMode, PermissionModeQueuedPrompt>(
@@ -57,6 +68,8 @@ export function createPermissionModeQueueState(opts: {
     opts.session.getMetadataSnapshot(),
   );
 
+  const replaySeedRetirement = createUnsettledReplaySeedRetirement();
+
   const binding = registerPermissionModeMessageQueueBinding({
     session: opts.session,
     agentTargetKey: opts.agentTargetKey,
@@ -66,6 +79,7 @@ export function createPermissionModeQueueState(opts: {
       currentPermissionMode = mode;
     },
     inFlightSteer: opts.inFlightSteer ?? null,
+    replaySeedRetirement,
   });
 
   return {
@@ -84,5 +98,6 @@ export function createPermissionModeQueueState(opts: {
     setCurrentPermissionModeUpdatedAt: (updatedAt) => {
       currentPermissionModeUpdatedAt = updatedAt;
     },
+    replaySeedRetirement,
   };
 }

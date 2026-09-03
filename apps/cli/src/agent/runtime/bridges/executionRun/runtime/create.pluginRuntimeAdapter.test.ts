@@ -16,6 +16,7 @@ const resolveBackendEngineAdapterResolutionMock = vi.fn();
 const requestExecutionRunConnectedServicesMaterializationMock = vi.fn();
 const releaseExecutionRunConnectedServicesMock = vi.fn(async (..._args: unknown[]) => ({ ok: true as const, released: true }));
 const prepareExecutionRunProviderLaunchMock = vi.fn();
+const OPENAI_CODEX_ACCOUNT_SERVICE_ID = 'happier.agent.codex/openai-codex';
 
 vi.mock('@/agent/runtime/registry/engineRegistry', () => ({
   resolveBackendEngineAdapterResolution: (...args: unknown[]) => resolveBackendEngineAdapterResolutionMock(...args),
@@ -1057,7 +1058,11 @@ describe('createExecutionRunBackend (plugin runtimeCore adapter)', () => {
       connectedServicesBindings: {
         v: 1 as const,
         bindingsByServiceId: {
-          'openai-codex': { source: 'connected' as const, selection: 'profile' as const, profileId: 'profile_1' },
+          [OPENAI_CODEX_ACCOUNT_SERVICE_ID]: {
+            source: 'connected' as const,
+            selection: 'profile' as const,
+            profileId: 'profile_1',
+          },
         },
       },
       connectedServiceSelectionsEnv: { HAPPIER_CONNECTED_SERVICE_SELECTIONS_JSON: '{"v":1}' },
@@ -1072,7 +1077,11 @@ describe('createExecutionRunBackend (plugin runtimeCore adapter)', () => {
         connectedServicesBindings: {
           v: 1,
           bindingsByServiceId: {
-            'openai-codex': { source: 'connected', selection: 'profile', profileId: 'profile_1' },
+            [OPENAI_CODEX_ACCOUNT_SERVICE_ID]: {
+              source: 'connected',
+              selection: 'profile',
+              profileId: 'profile_1',
+            },
           },
         },
         registration,
@@ -1118,7 +1127,11 @@ describe('createExecutionRunBackend (plugin runtimeCore adapter)', () => {
       connectedServices: {
         v: 1,
         bindingsByServiceId: {
-          'openai-codex': { source: 'connected', selection: 'profile', profileId: 'profile_1' },
+          [OPENAI_CODEX_ACCOUNT_SERVICE_ID]: {
+            source: 'connected',
+            selection: 'profile',
+            profileId: 'profile_1',
+          },
         },
       },
     });
@@ -1195,7 +1208,11 @@ describe('createExecutionRunBackend (plugin runtimeCore adapter)', () => {
       connectedServices: {
         v: 1,
         bindingsByServiceId: {
-          'openai-codex': { source: 'connected', selection: 'profile', profileId: 'profile_1' },
+          [OPENAI_CODEX_ACCOUNT_SERVICE_ID]: {
+            source: 'connected',
+            selection: 'profile',
+            profileId: 'profile_1',
+          },
         },
       },
     });

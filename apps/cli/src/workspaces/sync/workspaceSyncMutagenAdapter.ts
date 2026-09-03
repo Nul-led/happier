@@ -204,6 +204,10 @@ function definitionConflict(message: string): Error {
   return Object.assign(new Error(message), { code: 'relationship_definition_conflict' });
 }
 
+function runtimeMismatch(error: Error): Error {
+  return Object.assign(new Error(error.message, { cause: error }), { code: 'relationship_runtime_mismatch' });
+}
+
 function isIndeterminate(error: unknown): boolean {
   return typeof error === 'object' && error !== null && 'code' in error && error.code === 'indeterminate';
 }
@@ -358,7 +362,16 @@ export class WorkspaceSyncMutagenAdapterClient implements WorkspaceSyncMutagenAd
     try {
       const existing = await this.findClaimedSession(relationship.relationshipId, signal);
       if (existing) {
-        return await this.reconcileRelationshipState(existing.raw, relationship, signal);
+        try {
+          return await this.reconcileRelationshipState(existing.raw, relationship, signal);
+        } catch (error) {
+          if (!(error instanceof Error)
+            || (error as Error & { code?: string }).code !== 'relationship_definition_conflict') {
+            throw error;
+          }
+          await this.terminateRuntimeSession(relationship.relationshipId, existing.generic.identifier, signal);
+          throw runtimeMismatch(error);
+        }
       }
       return await this.reconcileRelationshipState(await this.options.send({
         t: 'create',

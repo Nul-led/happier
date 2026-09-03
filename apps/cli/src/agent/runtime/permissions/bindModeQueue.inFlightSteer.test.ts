@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { MessageQueue2 } from '@/agent/runtime/modeMessageQueue';
 import { registerPermissionModeMessageQueueBinding } from './bindModeQueue';
+import { createUnsettledReplaySeedRetirement } from '../replaySeed/unsettledReplaySeedRetirement';
 import type {
   PermissionModeQueuedPrompt,
   PermissionModeQueuedPromptMode,
@@ -638,6 +639,92 @@ describe('registerPermissionModeMessageQueueBinding (in-flight steer)', () => {
     expect(session.getMetadataSnapshot()?.replaySeedV1?.appliedToLocalId).toBe(
       'local-steer-acceptance',
     );
+  });
+
+  it('blocks a further steer while an accepted seed retirement keeps failing, then steers without the seed once it succeeds', async () => {
+    const { session, emitUserMessage, setMetadataSnapshot } = createSessionHarness();
+    const { queue, spyPush } = createQueue();
+    setMetadataSnapshot({
+      replaySeedV1: {
+        v: 1,
+        seedText: 'SEED',
+        sourceSessionId: 'sess_parent',
+        sourceCutoffSeqInclusive: 3,
+        createdAtMs: 123,
+      },
+    });
+    // The provider accepted steer #1, but retiring its seed fails on acceptance and again at
+    // the next steer admission boundary. Only after the write recovers may steer #3 dispatch.
+    let retirementWriteFailures = 2;
+    let retirementWriteAttempts = 0;
+    session.updateMetadata = vi.fn(async (updater: (m: any) => any) => {
+      retirementWriteAttempts += 1;
+      if (retirementWriteFailures > 0) {
+        retirementWriteFailures -= 1;
+        throw new Error('metadata unavailable');
+      }
+      setMetadataSnapshot(updater(session.getMetadataSnapshot() ?? {}));
+    });
+
+    const acceptanceByLocalId = new Map<string, () => void>();
+    const steerText = vi.fn(async (_text: string, options?: { localId?: string | null }) => {
+      const localId = options?.localId ?? null;
+      if (localId) acceptanceByLocalId.get(localId)?.();
+    });
+
+    registerPermissionModeMessageQueueBinding({
+      session: session as any,
+      queue,
+      getCurrentPermissionMode: () => 'default',
+      setCurrentPermissionMode: () => {},
+      replaySeedRetirement: createUnsettledReplaySeedRetirement(),
+      inFlightSteer: {
+        isTurnInFlight: () => true,
+        supportsInFlightSteer: () => true,
+        registerProviderAcceptedEffect: (localId: string, onAccepted: (() => void) | null) => {
+          if (onAccepted) acceptanceByLocalId.set(localId, onAccepted);
+          else acceptanceByLocalId.delete(localId);
+        },
+        steerText,
+      },
+    } as any);
+
+    const waitFor = async (predicate: () => boolean): Promise<void> => {
+      for (let i = 0; i < 500 && !predicate(); i += 1) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      expect(predicate()).toBe(true);
+    };
+
+    emitUserMessage({ content: { text: 'steer me' }, localId: 'local-1', meta: {} });
+    await waitFor(() => retirementWriteAttempts === 1);
+    expect(steerText).toHaveBeenCalledTimes(1);
+    expect(steerText).toHaveBeenCalledWith(
+      'SEED\n\nsteer me',
+      expect.objectContaining({ localId: 'local-1' }),
+    );
+
+    emitUserMessage({ content: { text: 'again' }, localId: 'local-2', meta: {} });
+    // The admission boundary retried the failed retirement, it failed again, and steer #2 is
+    // blocked back to the queue instead of carrying the already-accepted seed to the provider.
+    await waitFor(() => retirementWriteAttempts === 2 && spyPush.mock.calls.length > 0);
+    expect(steerText).toHaveBeenCalledTimes(1);
+    expect(spyPush).toHaveBeenCalledWith(
+      expect.objectContaining({ text: 'again' }),
+      { permissionMode: 'default' },
+    );
+
+    // The write recovers; the next steer admission boundary retries successfully and only
+    // then dispatches — with the retired seed no longer prefixed.
+    retirementWriteFailures = 0;
+    emitUserMessage({ content: { text: 'third' }, localId: 'local-3', meta: {} });
+    await waitFor(() => steerText.mock.calls.length === 2);
+    expect(steerText).toHaveBeenCalledWith(
+      'third',
+      expect.objectContaining({ localId: 'local-3' }),
+    );
+    expect(retirementWriteAttempts).toBeGreaterThanOrEqual(3);
+    expect(session.getMetadataSnapshot()?.replaySeedV1?.seedText).toBe('');
   });
 
   it('settles an accepted steer against its original Session after the queue binding moves', async () => {

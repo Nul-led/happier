@@ -24,11 +24,3 @@ export function isConcreteLegacyConfiguredBackendId(value: unknown): value is st
     && !isLegacyCustomAcpId(normalized)
     && !isLegacyConfiguredAcpFlavorCarrier(normalized);
 }
-
-export function isLegacyConfiguredBackendVendorSessionCarrier(params: Readonly<{
-  providerId: string;
-  backendId: string;
-}>): boolean {
-  const providerId = params.providerId.trim();
-  return isLegacyCustomAcpId(providerId) || providerId === `acp:${params.backendId}`;
-}

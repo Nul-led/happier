@@ -85,8 +85,33 @@ describe('resolveExecutionRunResumeBackendOptions', () => {
     expect(options.sessionConfigOptionOverrides).toBeUndefined();
   });
 
-  it('returns empty options when there is no launch record (or no run)', () => {
-    expect(resolveExecutionRunResumeBackendOptions({ run: baseRun(undefined) })).toEqual({});
+  it('rehydrates the admitted start intent with profileId and intentInput from the run record', () => {
+    const options = resolveExecutionRunResumeBackendOptions({
+      run: {
+        ...baseRun({ modelId: 'gpt-5.5' }),
+        profileId: 'review_profile',
+        intentInput: { commitModelSelection: MODEL_SELECTION },
+      },
+    });
+    expect(options.start).toEqual({
+      intent: 'delegate',
+      retentionPolicy: 'resumable',
+      profileId: 'review_profile',
+      intentInput: { commitModelSelection: MODEL_SELECTION },
+    });
+  });
+
+  it('rehydrates the admitted start intent even when the run has no launch record (Voice runs)', () => {
+    const options = resolveExecutionRunResumeBackendOptions({ run: baseRun(undefined) });
+    expect(options.start).toEqual({
+      intent: 'delegate',
+      retentionPolicy: 'resumable',
+    });
+    expect(options.modelId).toBeUndefined();
+    expect(options.connectedServices).toBeUndefined();
+  });
+
+  it('returns empty options when there is no run', () => {
     expect(resolveExecutionRunResumeBackendOptions({ run: null })).toEqual({});
   });
 });

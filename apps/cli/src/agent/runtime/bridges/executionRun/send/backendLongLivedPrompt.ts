@@ -20,44 +20,6 @@ import type { ExecutionRunTranscriptPublisher } from '../executionRunTranscriptP
 import { isExecutionRunTranscriptCustodyError } from '../executionRunTranscriptPublisher';
 import { settleExecutionRunController } from '../settleExecutionRunController';
 
-function readAbortRetryConfig(): { maxAttempts: number; delayMs: number } {
-  const parseIntOr = (raw: unknown, fallback: number): number => {
-    const n = typeof raw === 'string' ? Number.parseInt(raw, 10) : typeof raw === 'number' ? raw : NaN;
-    return Number.isFinite(n) && n >= 1 ? Math.trunc(n) : fallback;
-  };
-  const parseDelayOr = (raw: unknown, fallback: number): number => {
-    const n = typeof raw === 'string' ? Number.parseInt(raw, 10) : typeof raw === 'number' ? raw : NaN;
-    return Number.isFinite(n) && n >= 0 ? Math.trunc(n) : fallback;
-  };
-
-  return {
-    maxAttempts: parseIntOr(process.env.HAPPIER_EXECUTION_RUN_ABORT_RETRY_ATTEMPTS, 2),
-    delayMs: parseDelayOr(process.env.HAPPIER_EXECUTION_RUN_ABORT_RETRY_DELAY_MS, 50),
-  };
-}
-
-async function sendPromptWithAbortRetry(args: Readonly<{
-  send: () => Promise<void>;
-  maxAttempts: number;
-  delayMs: number;
-}>): Promise<void> {
-  const attempts = Math.max(1, Math.trunc(args.maxAttempts));
-  for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    try {
-      await args.send();
-      return;
-    } catch (e) {
-      if (!isAbortLikeError(e) || attempt >= attempts) throw e;
-      const delay = Math.max(0, Math.trunc(args.delayMs));
-      if (delay > 0) {
-        await new Promise((resolve) => setTimeout(resolve, delay));
-      } else {
-        await new Promise((resolve) => setTimeout(resolve, 0));
-      }
-    }
-  }
-}
-
 export async function sendBackendLongLivedRun(args: Readonly<{
   runId: string;
   params: Readonly<{ message: string; resume?: boolean; delivery?: unknown }>;
@@ -140,9 +102,6 @@ export async function sendBackendLongLivedRun(args: Readonly<{
     if (!admission.ok) return admission;
   }
 
-  const abortRetry = readAbortRetryConfig();
-  let shouldRetryAbortSend = false;
-
   if (ctrl2.turnInFlight) {
     const hasSteer = typeof ctrl2.backend.sendSteerPrompt === 'function';
     const action = resolveInFlightDeliveryAction({ delivery, hasSteer });
@@ -167,7 +126,6 @@ export async function sendBackendLongLivedRun(args: Readonly<{
     } catch {
       // best effort
     }
-    shouldRetryAbortSend = true;
   }
 
   if (typeof args.maxTurns === 'number' && ctrl2.turnCount >= args.maxTurns) {
@@ -187,13 +145,11 @@ export async function sendBackendLongLivedRun(args: Readonly<{
   if (runAfterTurn) {
     args.runs.set(args.runId, { ...runAfterTurn, turnCount: ctrl2.turnCount });
   }
-  const sendPromise = Promise.resolve().then(() => sendPromptWithAbortRetry({
-    send: async () => {
-      await ctrl2.backend.sendPrompt(ctrl2.childSessionId!, args.params.message);
-    },
-    maxAttempts: shouldRetryAbortSend ? abortRetry.maxAttempts : 1,
-    delayMs: abortRetry.delayMs,
-  }));
+  // One effectful provider send only. An AbortError after invocation does not prove the
+  // provider rejected the prompt, so replaying it here could execute the same input twice.
+  const sendPromise = Promise.resolve().then(async () => {
+    await ctrl2.backend.sendPrompt(ctrl2.childSessionId!, args.params.message);
+  });
 
   const runCompletionLoop = async (): Promise<void> => {
     try {

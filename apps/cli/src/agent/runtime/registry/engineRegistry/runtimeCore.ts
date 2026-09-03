@@ -588,11 +588,16 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
                                     'Voice Agent Session interaction requires parent Session host custody',
                                 );
                             }
+                            if (!effectiveSessionCapabilities) {
+                                throw new Error(
+                                    'Voice Agent Session interaction requires declared Session capabilities',
+                                );
+                            }
                             return createNativeAgentSessionInteractionHostRuntime({
                                 runtime: nativeAgentRuntime,
                                 lease: runtimeLease,
                                 options,
-                                supportsResume: sessionOpenCapabilities?.includes('resume') === true,
+                                sessionCapabilities: effectiveSessionCapabilities,
                                 ...(agentRetirementSignal ? { generationSignal: agentRetirementSignal } : {}),
                                 ...(services ? { services } : {}),
                                 createSessionContext,

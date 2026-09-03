@@ -232,6 +232,75 @@ export class MessageQueue2<Mode, Message = string> {
     return await this.waitForMessages(abortSignal);
   }
 
+  /**
+   * Resolve once the queue holds more than `depth` messages, the queue is closed or reset, or
+   * `abortSignal` aborts. Unlike `waitForMessagesSignal` this wait is edge-triggered, so it is
+   * safe to await while messages are already queued: an admission park that must not consume
+   * the queue sleeps on growth here instead of spinning on the level-triggered signal.
+   *
+   * Resolves `true` when the queue grew beyond `depth`, and `false` when it closed, reset, or
+   * the signal aborted.
+   */
+  async waitForQueueGrowthBeyond(depth: number, abortSignal?: AbortSignal): Promise<boolean> {
+    while (!abortSignal?.aborted) {
+      if (this.queue.length > depth) {
+        return true;
+      }
+      if (this.closed) {
+        return false;
+      }
+      if (!(await this.waitForQueueMutation(abortSignal))) {
+        return this.queue.length > depth;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * One-shot wait for the next queue mutation (push, reset, close) without the
+   * "already non-empty" short-circuit of `waitForMessages`. Shares the single-waiter slot.
+   */
+  private waitForQueueMutation(abortSignal?: AbortSignal): Promise<boolean> {
+    return new Promise((resolve, reject) => {
+      let abortHandler: (() => void) | null = null;
+
+      const waiterFunc = (hasMessages: boolean) => {
+        if (abortHandler && abortSignal) {
+          abortSignal.removeEventListener('abort', abortHandler);
+        }
+        resolve(hasMessages);
+      };
+
+      if (abortSignal) {
+        abortHandler = () => {
+          if (this.waiter === waiterFunc) {
+            this.waiter = null;
+          }
+          resolve(false);
+        };
+        abortSignal.addEventListener('abort', abortHandler);
+      }
+
+      if (this.closed || abortSignal?.aborted) {
+        if (abortHandler && abortSignal) {
+          abortSignal.removeEventListener('abort', abortHandler);
+        }
+        resolve(false);
+        return;
+      }
+
+      if (this.waiter) {
+        if (abortHandler && abortSignal) {
+          abortSignal.removeEventListener('abort', abortHandler);
+        }
+        reject(new Error('MessageQueue2 already has an active waiter'));
+        return;
+      }
+
+      this.waiter = waiterFunc;
+    });
+  }
+
   private collectBatch(): MessageQueueBatch<Mode, Message> | null {
     if (this.queue.length === 0) {
       return null;

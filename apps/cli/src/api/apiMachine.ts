@@ -265,6 +265,27 @@ export type SessionDeletedChangeNotification = Readonly<{
     accountScope: ExternalSessionOperationAccountScope;
 }>;
 
+/**
+ * Durable Account-relative loss of access to a Session, proven by the
+ * `/v2/changes` Session-access witness. Unlike a physical deletion it carries
+ * no lifecycle hint: the witness itself is the authority. Consumers that hold
+ * derived local state for the Session must clear it before the Account change
+ * cursor advances, so the fact replays when their cleanup fails.
+ */
+export type SessionAccessRevokedNotification = Readonly<{
+    sessionId: string;
+    cursor: number;
+}>;
+
+/**
+ * The Account change cursor is no longer replayable. Consumers with finite
+ * derived Session state must re-check that retained set before the replacement
+ * cursor is acknowledged.
+ */
+export type SessionAccessResetNotification = Readonly<{
+    cursor: number;
+}>;
+
 export type ConnectedServicesProjectionNotification = Readonly<{
     source: AccountSettingsVersionHintSource | 'startup' | 'reconnect' | 'live';
     executionAuthority: ConnectedServiceExecutionAuthorityV1;
@@ -353,6 +374,12 @@ export class ApiMachineClient {
     ) => void | Promise<void>>();
     private sessionDeletedChangeListeners = new Set<(
         change: SessionDeletedChangeNotification,
+    ) => void | Promise<void>>();
+    private sessionAccessRevokedListeners = new Set<(
+        change: SessionAccessRevokedNotification,
+    ) => void | Promise<void>>();
+    private sessionAccessResetListeners = new Set<(
+        change: SessionAccessResetNotification,
     ) => void | Promise<void>>();
     private connectedServicesProjectionListener: ((notification: ConnectedServicesProjectionNotification) => void | Promise<void>) | null = null;
     private machineTransferListeners = new Set<(payload: MachineTransferReceiveEnvelope) => void>();
@@ -899,23 +926,23 @@ export class ApiMachineClient {
                 ...(this.lifecycleDependencies.workspaceSync
                     ? { workspaceSync: this.lifecycleDependencies.workspaceSync }
                     : {}),
-                sessionHandoffCoordinator: createTrackedSessionHandoffCoordinator({
-                    expectedAccountServerId: configuration.activeServerId,
-                    readCredentials: async () => await readStoredCredentials().catch(() => null),
-                    callMachine: async (input) => input.machineId === this.machine.id
-                        ? await this.rpcHandlerManager.invokeLocal(
-                            input.method,
-                            input.request,
-                            input.signal ? { signal: input.signal } : undefined,
-                        )
-                        : await callMachineRpc(input),
-                    ...(this.lifecycleDependencies.workspaceSyncHandoffAdapter
-                        ? {
+                ...(this.lifecycleDependencies.workspaceSyncHandoffAdapter
+                    ? {
+                        sessionHandoffCoordinator: createTrackedSessionHandoffCoordinator({
+                            expectedAccountServerId: configuration.activeServerId,
+                            readCredentials: async () => await readStoredCredentials().catch(() => null),
+                            callMachine: async (input) => input.machineId === this.machine.id
+                                ? await this.rpcHandlerManager.invokeLocal(
+                                    input.method,
+                                    input.request,
+                                    input.signal ? { signal: input.signal } : undefined,
+                                )
+                                : await callMachineRpc(input),
                             workspaceSyncAdapter:
                                 this.lifecycleDependencies.workspaceSyncHandoffAdapter,
-                        }
-                        : {}),
-                }),
+                        }),
+                    }
+                    : {}),
                 ...(this.lifecycleDependencies.createCapabilitiesApiClient
                     ? {
                         createCapabilitiesApiClient:
@@ -940,31 +967,7 @@ export class ApiMachineClient {
                 externalSessionStatusDemandChannel: this,
                 subscribeSessionArchivedStateChanges:
                     deps?.subscribeSessionArchivedStateChanges
-                    ?? ((listener) => this.onUpdate((update) => {
-                        const body = update.body;
-                        if (
-                            body.t !== 'update-session'
-                            || body.archivedAt === undefined
-                        ) {
-                            return false;
-                        }
-                        void Promise.resolve(listener({
-                            sessionId: body.id,
-                            archived: body.archivedAt !== null,
-                        })).catch((error) => {
-                            logger.warn(
-                                '[API MACHINE] Session archive-state listener failed',
-                                {
-                                    sessionId: body.id,
-                                    archived: body.archivedAt !== null,
-                                    message: error instanceof Error
-                                        ? error.message
-                                        : String(error),
-                                },
-                            );
-                        });
-                        return true;
-                    })),
+                    ?? ((listener) => this.onSessionArchivedStateChange(listener)),
                 subscribeSessionDeletedChanges: (listener) =>
                     this.onSessionDeletedChange(listener),
                 workingDirectory: deps?.workingDirectory ?? this.machineRpcWorkingDirectory,
@@ -1118,6 +1121,70 @@ export class ApiMachineClient {
         for (const listener of this.sessionDeletedChangeListeners) {
             await Promise.resolve(listener(change));
         }
+    }
+
+    onSessionAccessRevoked(
+        listener: (
+            change: SessionAccessRevokedNotification,
+        ) => void | Promise<void>,
+    ): () => void {
+        this.sessionAccessRevokedListeners.add(listener);
+        return () => {
+            this.sessionAccessRevokedListeners.delete(listener);
+        };
+    }
+
+    private async notifySessionAccessRevoked(
+        change: SessionAccessRevokedNotification,
+    ): Promise<void> {
+        for (const listener of this.sessionAccessRevokedListeners) {
+            await Promise.resolve(listener(change));
+        }
+    }
+
+    onSessionAccessReset(
+        listener: (change: SessionAccessResetNotification) => void | Promise<void>,
+    ): () => void {
+        this.sessionAccessResetListeners.add(listener);
+        return () => {
+            this.sessionAccessResetListeners.delete(listener);
+        };
+    }
+
+    private async notifySessionAccessReset(
+        change: SessionAccessResetNotification,
+    ): Promise<void> {
+        for (const listener of this.sessionAccessResetListeners) {
+            await Promise.resolve(listener(change));
+        }
+    }
+
+    /**
+     * Live archive-state transitions from the incumbent Session update stream.
+     * This is the one archive-state seam; the machine RPC handlers and the
+     * daemon memory owner both consume it rather than reading `update-session`
+     * themselves.
+     */
+    onSessionArchivedStateChange(
+        listener: (
+            change: Readonly<{ sessionId: string; archived: boolean }>,
+        ) => void | Promise<void>,
+    ): () => void {
+        return this.onUpdate((update) => {
+            const body = update.body;
+            if (body.t !== 'update-session' || body.archivedAt === undefined) {
+                return false;
+            }
+            const change = { sessionId: body.id, archived: body.archivedAt !== null } as const;
+            void Promise.resolve(listener(change)).catch((error) => {
+                logger.warn('[API MACHINE] Session archive-state listener failed', {
+                    sessionId: change.sessionId,
+                    archived: change.archived,
+                    message: error instanceof Error ? error.message : String(error),
+                });
+            });
+            return true;
+        });
     }
 
     onConnectedServicesProjection(
@@ -1705,6 +1772,9 @@ export class ApiMachineClient {
             token: this.token,
             sessionId,
             getSocket: () => null,
+            getSessionTurnServerContractMode: () => (
+                this.getSessionSyncPendingInputServerContractResult()?.mode ?? null
+            ),
             requestReconnect: () => undefined,
             ...(isShuttingDown ? { isShuttingDown } : {}),
         });
@@ -1874,6 +1944,13 @@ export class ApiMachineClient {
                         ) {
                             this.sessionSyncPendingInputServerContractResult =
                                 contractResult;
+                            for (const outbox of this.daemonTerminalSessionMutationOutboxes.values()) {
+                                void outbox.flush('connect').catch((error) => {
+                                    logger.warn('[API MACHINE] Daemon terminal mutation reconnect flush failed', {
+                                        error: serializeAxiosErrorForLog(error),
+                                    });
+                                });
+                            }
                         }
                     }
 
@@ -2464,6 +2541,8 @@ export class ApiMachineClient {
         if (result.status === 'cursor-gone') {
             this.applyResourceSessionAccessWitness({ accountId });
             signal.throwIfAborted();
+            await this.notifySessionAccessReset({ cursor: result.currentCursor });
+            signal.throwIfAborted();
             await this.refreshMachineFromServer(signal);
             signal.throwIfAborted();
             await this.notifyAccountSettingsVersionHint({ settingsVersion: null, source: 'cursor-gone' });
@@ -2623,6 +2702,17 @@ export class ApiMachineClient {
             // listener failure leaves the Account cursor untouched so the
             // incumbent changes retry owner replays the exact same deletion.
             await this.notifySessionDeletedChange(deletion);
+        }
+        for (const entry of result.response.sessionAccessWitness?.entries ?? []) {
+            if (entry.status !== 'unavailable') continue;
+            signal.throwIfAborted();
+            // Same custody rule as deletion: derived local state for a Session
+            // the Account can no longer reach is cleared before the cursor
+            // advances, so a failed purge replays instead of being lost.
+            await this.notifySessionAccessRevoked({
+                sessionId: entry.sessionId,
+                cursor: entry.cursor,
+            });
         }
 
         signal.throwIfAborted();

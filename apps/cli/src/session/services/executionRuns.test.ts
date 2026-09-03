@@ -296,9 +296,13 @@ describe('listExecutionRuns', () => {
             request: {},
         });
 
+        // The partial marker is not projected (no invented policy), and with the
+        // live RPC unavailable the list owner fails closed instead of claiming
+        // there are no runs.
         expect(result).toEqual({
-            ok: true,
-            data: { runs: [] },
+            ok: false,
+            code: 'execution_run_protocol_unsupported',
+            message: 'RPC method not available',
         });
     });
 
@@ -373,11 +377,13 @@ describe('listExecutionRuns', () => {
             request: {},
         });
 
+        // The predecessor builtIn customAcp shape is not projected, and with the
+        // live RPC unavailable the list owner fails closed instead of claiming
+        // there are no runs.
         expect(result).toEqual({
-            ok: true,
-            data: {
-                runs: [],
-            },
+            ok: false,
+            code: 'execution_run_protocol_unsupported',
+            message: 'RPC method not available',
         });
     });
 
@@ -1025,6 +1031,36 @@ describe('normalizeExecutionRunRpcPayload', () => {
 describe('startExecutionRun', () => {
     beforeEach(() => {
         callSessionRpc.mockReset();
+        listExecutionRunMarkers.mockReset();
+        listExecutionRunMarkers.mockResolvedValue([]);
+    });
+
+    it('keeps a lost start response ambiguous even when a correlated activity marker exists', async () => {
+        callSessionRpc.mockRejectedValueOnce(markRpcRequestDisposition(
+            new Error('RPC call timeout'),
+            'outcomeUnknown',
+        ));
+        listExecutionRunMarkers.mockResolvedValue([
+            {
+                ...createMarker({ runId: 'run-marker-1', status: 'running', startedAtMs: 10 }),
+                startRequestId: 'action-request-1',
+            },
+        ]);
+
+        await expect(startExecutionRun({
+            token: 'token',
+            sessionId: 'sess-1',
+            mode: 'plain',
+            ctx: null,
+            // A predecessor caller may still send a correlation field; the marker
+            // is diagnostic evidence, never a durable receipt for an accepted start.
+            request: { startRequestId: 'action-request-1' },
+        })).resolves.toEqual({
+            ok: false,
+            code: 'execution_run_start_ambiguous',
+            message: 'Execution run start response timed out; accepted outcome is unknown',
+            details: { executionRunStart: { v: 1, runCreation: 'outcomeUnknown' } },
+        });
     });
 
     it('projects only strict start certainty across the session RPC service seam', async () => {
@@ -1507,8 +1543,13 @@ describe('waitForExecutionRun', () => {
         });
 
         await expect(waitPromise).resolves.toEqual({
-            ok: false,
-            code: 'timeout',
+            ok: true,
+            disposition: 'observation_timeout',
+            runId: 'run_1',
+            status: 'running',
+            timeoutMs: 100,
+            deadlineAtMs: expect.any(Number),
+            observedAtMs: expect.any(Number),
         });
         expect(callSessionRpc).toHaveBeenCalledTimes(1);
     });

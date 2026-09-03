@@ -26,9 +26,6 @@ function readRuntimePermissionCapability(value: unknown): ExecutionRunPermission
 export function createLazyExecutionRunHostRuntime(params: Readonly<{
   resolveRuntime: () => Promise<ExecutionRunHostRuntime>;
   onProvisionSession?: (sessionId: string) => Promise<void>;
-  runtimeDescriptor?: unknown;
-  runtimeCapabilities?: unknown;
-  runtimeFacets?: unknown;
 }>): ExecutionRunHostRuntime {
   const handlers = new Set<ExecutionRunHostRuntimeMessageHandler>();
   const unsubscribeByHandler = new Map<ExecutionRunHostRuntimeMessageHandler, () => void>();
@@ -38,24 +35,7 @@ export function createLazyExecutionRunHostRuntime(params: Readonly<{
   let disposePromise: Promise<void> | null = null;
   let disposed = false;
   let activeSessionId: string | null = null;
-  let emittedRuntimeDescriptor = false;
-  let emittedRuntimeCapabilities = false;
-  let emittedRuntimeFacets = false;
-  let permissionCapability = readRuntimePermissionCapability(params.runtimeCapabilities);
-
-  const emitRuntimeEvent = (name: string, payload: unknown): void => {
-    if (payload === null || payload === undefined) return;
-    if (name === 'runtime.capabilities') {
-      permissionCapability = readRuntimePermissionCapability(payload) ?? 'static';
-    }
-    for (const handler of handlers) {
-      try {
-        handler({ type: 'event', name, payload });
-      } catch {
-        // Best effort: runtime event subscribers must not break backend routing.
-      }
-    }
-  };
+  let permissionCapability: ExecutionRunPermissionCapability | null = null;
 
   const attachQueuedHandlers = (runtime: ExecutionRunHostRuntime): void => {
     for (const handler of handlers) {
@@ -84,18 +64,6 @@ export function createLazyExecutionRunHostRuntime(params: Readonly<{
       resolvedRuntime = runtime;
       permissionCapability = runtime.permissionCapability ?? permissionCapability;
       attachQueuedHandlers(runtime);
-      if (!emittedRuntimeDescriptor) {
-        emitRuntimeEvent('runtime.descriptor', params.runtimeDescriptor ?? null);
-        emittedRuntimeDescriptor = true;
-      }
-      if (!emittedRuntimeCapabilities) {
-        emitRuntimeEvent('runtime.capabilities', params.runtimeCapabilities ?? null);
-        emittedRuntimeCapabilities = true;
-      }
-      if (!emittedRuntimeFacets) {
-        emitRuntimeEvent('runtime.facets', params.runtimeFacets ?? null);
-        emittedRuntimeFacets = true;
-      }
       return runtime;
     })();
 

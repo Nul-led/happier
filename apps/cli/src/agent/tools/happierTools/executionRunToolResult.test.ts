@@ -61,15 +61,28 @@ describe('normalizeExecutionRunToolResult', () => {
     });
   });
 
-  it('maps a standalone shared waiter timeout to a stable tool failure with its run id', () => {
+  it('keeps a standalone observation timeout successful and nonterminal', () => {
     expect(normalizeExecutionRunToolResult(
-      { ok: false, code: 'timeout' },
+      {
+        ok: true,
+        status: 'running',
+        disposition: 'observation_timeout',
+        runId: 'run_wait_timeout_1',
+        timeoutMs: 5_000,
+        observedAtMs: 6_000,
+        deadlineAtMs: 6_000,
+      },
       { runId: 'run_wait_timeout_1' },
     )).toEqual({
-      ok: false,
-      errorCode: 'execution_run_wait_timeout',
-      error: 'Execution run wait timed out',
-      details: { runId: 'run_wait_timeout_1' },
+      ok: true,
+      result: {
+        status: 'running',
+        disposition: 'observation_timeout',
+        runId: 'run_wait_timeout_1',
+        timeoutMs: 5_000,
+        observedAtMs: 6_000,
+        deadlineAtMs: 6_000,
+      },
     });
   });
 

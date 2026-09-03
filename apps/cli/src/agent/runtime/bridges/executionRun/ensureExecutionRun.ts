@@ -34,7 +34,6 @@ export async function ensureExecutionRun(args: Readonly<{
     sessionConfigOptionOverrides?: AcpConfigOptionOverridesV1;
     accountSettings?: Readonly<Record<string, unknown>> | null;
     connectedServices?: ConnectedServiceBindingsV1 | null;
-    start?: any;
   }) => ExecutionRunHostRuntime;
   sendAcp: ExecutionRunTranscriptPublisher;
   parentProvider: ACPProvider;
@@ -113,7 +112,6 @@ export async function ensureExecutionRun(args: Readonly<{
           modelSelection,
           sessionConfigOptionOverrides,
           permissionIntent,
-          start,
           connectedServices,
         }) =>
           args.createRuntime({
@@ -124,7 +122,6 @@ export async function ensureExecutionRun(args: Readonly<{
             ...(modelSelection ? { modelSelection } : {}),
             ...(sessionConfigOptionOverrides ? { sessionConfigOptionOverrides } : {}),
             permissionMode: permissionIntent,
-            ...(start ? { start } : {}),
             ...(connectedServices !== undefined ? { connectedServices } : {}),
           }),
       });

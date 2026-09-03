@@ -6841,6 +6841,10 @@ describe('registerMachineRpcHandlers', () => {
         stop: () => {},
         reloadSettings: async () => {},
         ensureUpToDate: async () => {},
+        removeSessions: async () => {},
+        reconcileRetainedSessionAccess: async () => {},
+        listIndexedSessionIds: () => [],
+        applySessionArchivedState: async () => {},
         getEmbeddingsDiagnostics: () => ({
           mode: 'disabled' as const,
           presetId: null,

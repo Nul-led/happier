@@ -88,7 +88,6 @@ describe('SessionHostBridge current custom Agent (integration)', () => {
         mcpServers: {},
         permissionHandler: {},
         getPermissionMode: () => 'default',
-        setThinking: () => {},
         memoryRecallGuidanceEnabled: false,
       } as never);
       expect(runtime).toMatchObject({

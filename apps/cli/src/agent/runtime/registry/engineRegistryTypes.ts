@@ -66,6 +66,8 @@ export type CreateCliExecutionRunBackendParams = Readonly<{
     start?: ExecutionRunBackendStartContext | null;
     isolation?: ExecutionRunBackendIsolation;
     parentSessionStateTarget?: ExecutionRunSessionStateTarget | null;
+    /** Host-only owning Happier Session id for the Run scope; absent for detached Runs. */
+    happierSessionId?: string;
     /** Host-only Session service custody for retained multi-turn Voice. */
     sessionInteractionHost?: NativeAgentSessionInteractionHostBinding;
 }>;

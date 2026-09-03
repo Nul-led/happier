@@ -46,7 +46,6 @@ const forkBackendResolution = {
     backendTarget: { kind: 'builtInAgent' as const, agentId: 'grok' as const },
     replayFlavor: 'grok',
     metadataOverlay: {},
-    configuredAcp: null,
 };
 
 describe('attemptNativeForkOpen', () => {

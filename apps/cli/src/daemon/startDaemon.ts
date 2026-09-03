@@ -74,7 +74,7 @@ import {
   readServerEnabledBit,
   type ConnectedServiceId,
 } from '@happier-dev/protocol';
-import { readIrohRelayConfigFromEnv } from '@happier-dev/iroh-native';
+import { classifyIrohHomeCarrierFailure, readIrohRelayConfigFromEnv } from '@happier-dev/iroh-native';
 import { readOrCreateInstallationIdentity } from './identity/store';
 import {
   startPluginWebhookDaemonWorkerV1,
@@ -122,6 +122,7 @@ import type {
 } from '@/plugins/runtime/invocation/services/managedServiceEndpointProjection';
 import { createCurrentMachineExecutionOriginContextResolver } from '@/api/machine/resolveCurrentMachineExecutionOriginContext';
 import { createServerUrlServerFeaturesSnapshotStore } from '@/features/serverFeaturesSnapshotStore';
+import { startServerFeaturesSnapshotRefreshLoop } from './serverFeaturesSnapshotRefreshLoop';
 import { resolveServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
 import { createDaemonPeerMediationObservabilityRuntime } from './machine/peerMediationObservabilityRuntime';
 import {
@@ -243,7 +244,8 @@ export async function startDaemon(
   const preparedIrohState: {
     machine: DaemonMachineIrohRuntime | null;
     home: DaemonHomeTransport | null;
-  } = { machine: null, home: null };
+    failedStartupCleanup: (() => Promise<void>) | null;
+  } = { machine: null, home: null, failedStartupCleanup: null };
   let stopMachineIrohAcceptor: () => Promise<void> = async () => {};
   const stopWorkspaceSyncRuntime = async (): Promise<void> => {
     const runtime = workspaceSyncRuntime;
@@ -300,15 +302,31 @@ export async function startDaemon(
       initialMachineMetadata,
       startupSource,
       prepareServerTransport: async ({ persistedCredentials }) => {
-        const createdIrohRuntime = await createDaemonMachineIrohRuntime({
-          happyHomeDir: configuration.happyHomeDir,
-          relayConfig: readIrohRelayConfigFromEnv(process.env),
-        }).catch((error) => {
-          logger.warn('[DAEMON RUN] Optional Iroh endpoint is unavailable; retaining standard Home transport', error);
-          return null;
-        });
-        preparedIrohState.machine = createdIrohRuntime?.available ? createdIrohRuntime : null;
-        if (!preparedIrohState.machine) return;
+        let createdIrohRuntime;
+        try {
+          createdIrohRuntime = await createDaemonMachineIrohRuntime({
+            happyHomeDir: configuration.happyHomeDir,
+            relayConfig: readIrohRelayConfigFromEnv(process.env),
+          });
+        } catch (error) {
+          const classification = classifyIrohHomeCarrierFailure(error);
+          if (!classification.fallbackAllowed) throw error;
+          logger.warn('[DAEMON RUN] Iroh carrier is unreachable; evaluating independently trusted HTTPS fallback', {
+            failureClass: classification.failureClass,
+          });
+        }
+        if (createdIrohRuntime?.available) {
+          preparedIrohState.machine = createdIrohRuntime;
+        } else if (createdIrohRuntime?.reason === 'startup_failed') {
+          preparedIrohState.failedStartupCleanup = createdIrohRuntime.shutdown;
+          const classification = classifyIrohHomeCarrierFailure(createdIrohRuntime.error);
+          if (!classification.fallbackAllowed) throw createdIrohRuntime.error;
+          logger.warn('[DAEMON RUN] Iroh carrier startup failed; evaluating independently trusted HTTPS fallback', {
+            failureClass: classification.failureClass,
+          });
+        } else if (createdIrohRuntime) {
+          logger.warn('[DAEMON RUN] Iroh native runtime is unavailable; evaluating independently trusted HTTPS fallback');
+        }
         preparedIrohState.home = await prepareDaemonHomeIrohTransport({
           runtime: preparedIrohState.machine,
           profile: await getActiveServerProfile(),
@@ -402,6 +420,7 @@ export async function startDaemon(
     // source the local-services inventory + browser daemon gates already use — no second fetch path.
     const serverFeaturesSnapshotStore = createServerUrlServerFeaturesSnapshotStore({
       serverUrl: resolveServerHttpBaseUrl,
+      token: credentials.token,
       timeoutMs: 1_500,
       onReady: async (features) => {
         await applyDaemonHomeDescriptorRefresh({
@@ -421,6 +440,12 @@ export async function startDaemon(
     });
     api.setServerFeaturesSnapshotProvider(() => serverFeaturesSnapshotStore.getSnapshot());
     let refreshBrowserRouteOwners: (() => Promise<void>) | null = null;
+    const minimumServerFeaturesSnapshotRefreshIntervalMs = 30_000;
+    const configuredServerFeaturesSnapshotRefreshIntervalMs = resolvePositiveIntEnv(
+      process.env.HAPPIER_DAEMON_SERVER_FEATURES_REFRESH_INTERVAL_MS,
+      5 * 60_000,
+      { min: minimumServerFeaturesSnapshotRefreshIntervalMs, max: 60 * 60_000 },
+    );
     const refreshServerFeaturesAndBrowserRouteOwners = async (): Promise<void> => {
       await serverFeaturesSnapshotStore.refresh();
       await refreshBrowserRouteOwners?.();
@@ -429,15 +454,15 @@ export async function startDaemon(
     // session runtime-action dispatch reads real bits rather than failing closed. After the session
     // control runtime exists, the same refresh also gives browser route owners a late-registration
     // chance if the server was temporarily unreachable during startup.
-    void refreshServerFeaturesAndBrowserRouteOwners();
-    let serverFeaturesSnapshotRefreshInterval: NodeJS.Timeout | null = setInterval(() => {
-      void refreshServerFeaturesAndBrowserRouteOwners();
-    }, resolvePositiveIntEnv(
-      process.env.HAPPIER_DAEMON_SERVER_FEATURES_REFRESH_INTERVAL_MS,
-      5 * 60_000,
-      { min: 30_000, max: 60 * 60_000 },
-    ));
-    serverFeaturesSnapshotRefreshInterval.unref?.();
+    const serverFeaturesSnapshotRefreshLoop = startServerFeaturesSnapshotRefreshLoop({
+      refresh: refreshServerFeaturesAndBrowserRouteOwners,
+      isTransitionActive: serverFeaturesSnapshotStore.isRefreshTransitionActive,
+      transitionIntervalMs: minimumServerFeaturesSnapshotRefreshIntervalMs,
+      stableIntervalMs: configuredServerFeaturesSnapshotRefreshIntervalMs,
+      onError: (error) => {
+        logger.debug('[DAEMON RUN] Server-features scheduled refresh failed (non-fatal)', error);
+      },
+    });
     let automationWorker: AutomationWorkerHandle | null = null;
     let memoryWorker: MemoryWorkerHandle | null = null;
     let voiceInferenceWorker: VoiceInferenceWorkerHandle | null = null;
@@ -606,10 +631,7 @@ export async function startDaemon(
           clearInterval(connectedServiceMaterializedHomeCleanupInterval);
           connectedServiceMaterializedHomeCleanupInterval = null;
         }
-        if (serverFeaturesSnapshotRefreshInterval) {
-          clearInterval(serverFeaturesSnapshotRefreshInterval);
-          serverFeaturesSnapshotRefreshInterval = null;
-        }
+        serverFeaturesSnapshotRefreshLoop.stop();
         await connectedServiceQuotasCoordinator?.flushInBandQuotaPersistence(2_000);
         await daemonServerWorkScheduler?.flushAll(2_000);
       },
@@ -1526,18 +1548,19 @@ export async function startDaemon(
             return workspaceSyncRuntime;
           }
           await stopWorkspaceSyncRuntime();
-          const featureSnapshot = serverFeaturesSnapshotStore.getSnapshot();
-          const trustRoots = featureSnapshot?.status === 'ready'
-            ? featureSnapshot.features.capabilities.machines.peerMediation.grantSigningKeys
-                .filter((key) => key.expiresAt == null || key.expiresAt > Date.now())
-                .map((key) => ({ keyId: key.keyId, publicKey: key.publicKey, expiresAt: key.expiresAt }))
-            : [];
-          const openMachineCarrierTunnel = machineIrohRuntime && externalActionAccountId && trustRoots.length > 0
+          const openMachineCarrierTunnel = machineIrohRuntime && externalActionAccountId
             ? createWorkspaceMachineCarrierTunnelOpen({
                 accountId: externalActionAccountId,
                 localMachineId: registeredMachineId,
                 runtime: machineIrohRuntime,
-                trustRoots,
+                resolveTrustRoots: () => {
+                  const featureSnapshot = serverFeaturesSnapshotStore.getSnapshot();
+                  return featureSnapshot?.status === 'ready'
+                    ? featureSnapshot.features.capabilities.machines.peerMediation.grantSigningKeys
+                        .filter((key) => key.expiresAt == null || key.expiresAt > Date.now())
+                        .map((key) => ({ keyId: key.keyId, publicKey: key.publicKey, expiresAt: key.expiresAt }))
+                    : [];
+                },
                 readTargetMachine: async (targetMachineId) => await api.getMachine(targetMachineId),
                 mintGrant: async (request) => await api.mintPeerMediationRouteGrant(request),
               })
@@ -1888,6 +1911,7 @@ export async function startDaemon(
         await stopDirectPeerServer();
         await homeIrohTransport?.release();
         await machineIrohRuntime?.shutdown();
+        await preparedIrohState.failedStartupCleanup?.();
       },
       stopTailscaleTransferServeLifecycle,
       stopSshTunnelsOnShutdown: sshTunnelSupervisor.stopAllTunnels,
@@ -1901,6 +1925,7 @@ export async function startDaemon(
     await stopWorkspaceSyncRuntime().catch(() => undefined);
     await (homeIrohTransport ?? preparedIrohState.home)?.release().catch(() => undefined);
     await (machineIrohRuntime ?? preparedIrohState.machine)?.shutdown().catch(() => undefined);
+    await preparedIrohState.failedStartupCleanup?.().catch(() => undefined);
     try {
       await releaseDaemonOwnershipAfterFatal({
         daemonLockHandle,

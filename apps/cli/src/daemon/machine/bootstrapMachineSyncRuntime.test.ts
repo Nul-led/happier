@@ -539,6 +539,10 @@ describe('bootstrapMachineSyncRuntime', () => {
             stop: vi.fn(),
             reloadSettings: vi.fn(async () => {}),
             ensureUpToDate: vi.fn(async () => {}),
+      removeSessions: vi.fn(async () => {}),
+      reconcileRetainedSessionAccess: vi.fn(async () => {}),
+      listIndexedSessionIds: vi.fn(() => []),
+      applySessionArchivedState: vi.fn(async () => {}),
             getSettings: vi.fn(() => DEFAULT_MEMORY_SETTINGS),
             getEmbeddingsDiagnostics: vi.fn(() =>
                 buildUnavailableMemoryEmbeddingsDiagnostics(DEFAULT_MEMORY_SETTINGS.embeddings),

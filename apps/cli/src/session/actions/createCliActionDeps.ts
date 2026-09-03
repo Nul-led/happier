@@ -170,9 +170,6 @@ import {
 import { executePluginDevLoopAction } from '@/plugins/devLoop/actions';
 import { executePluginSettingsAdministrationAction } from '@/plugins/settings/administration';
 import { getSessionHostBridge } from '@/agent/runtime/bridges/session/SessionHostBridge';
-import {
-  isConcreteBackendTargetCompatId,
-} from '@/session/backendTargets/compat/customAcp';
 import { resolveBackendTargetFromSessionMetadata } from '@/session/backendTargets/resolveBackendTargetFromSessionMetadata';
 import { resolveSessionAgentSpawnInheritedOverridesFromMetadata } from '@/session/fork/resolveForkInheritedOverridesFromMetadata';
 import { createCliActionInventoryDeps } from './cliActionDeps/createCliActionInventoryDeps';
@@ -2220,6 +2217,9 @@ export function createCliActionDeps(params: Readonly<{
             machineId: targetMachineId,
             operationId: operationId.trim(),
             targetPath: targetPath.trim(),
+            ...(workspaceAction.kind === 'create_relationship' && workspaceAction.mode === 'mirror_exactly'
+              ? { activatesExactMirror: true }
+              : {}),
           },
           ...(signal ? { signal } : {}),
         }));

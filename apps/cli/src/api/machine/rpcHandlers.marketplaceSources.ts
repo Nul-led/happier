@@ -1,7 +1,5 @@
-import {
-  MarketplaceSourceRegistryV1Schema,
-  type MarketplaceSourceRegistryV1,
-} from '@happier-dev/protocol';
+import type { MarketplaceSourceRegistryV1 } from '@happier-dev/protocol';
+import { MarketplaceSourceRegistryMutationV1Schema } from '@happier-dev/protocol/marketplace';
 import {
   HOST_PRIVATE_PLUGIN_INSTALL_DECISION_RPC_METHOD,
   HostPrivatePluginInstallDecisionV1Schema,
@@ -34,15 +32,14 @@ export function registerMachineMarketplaceSourcesRpcHandlers(params: Readonly<{
     return await store.read();
   });
 
-  params.rpcHandlerManager.registerHandler(RPC_METHODS.DAEMON_MARKETPLACE_SOURCE_REGISTRY_SET, async (raw: unknown): Promise<MarketplaceSourceRegistryV1 | ReturnType<typeof invalidRequest>> => {
-    const parsed = MarketplaceSourceRegistryV1Schema.safeParse(raw);
+  params.rpcHandlerManager.registerHandler(RPC_METHODS.DAEMON_MARKETPLACE_SOURCE_REGISTRY_MUTATE, async (raw: unknown): Promise<MarketplaceSourceRegistryV1 | ReturnType<typeof invalidRequest>> => {
+    const parsed = MarketplaceSourceRegistryMutationV1Schema.safeParse(raw);
     if (!parsed.success) {
       return invalidRequest('invalid_request');
     }
 
     try {
-      await store.write(parsed.data);
-      return parsed.data;
+      return await store.mutateSource(parsed.data);
     } catch {
       return invalidRequest('invalid_request');
     }

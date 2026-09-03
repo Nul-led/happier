@@ -149,13 +149,16 @@ export class WorkspaceSyncSidecarLifecycle {
   async stop(): Promise<void> {
     if (this.stopping) return;
     this.stopping = true;
+    const cleanupFailures: unknown[] = [];
     this.supervisor.markStopRequested({ reason: 'shutdown', requestedAtMs: Date.now() });
     const broker = this.activeBroker;
     const process = this.activeProcess;
     this.activeProcess = null;
     this.activeBroker = null;
     if (broker) {
-      await broker.command({ t: 'shutdown', requestId: this.dependencies.randomId() }).catch(() => undefined);
+      await broker.command({ t: 'shutdown', requestId: this.dependencies.randomId() }).catch((error: unknown) => {
+        cleanupFailures.push(error);
+      });
     }
     if (process) {
       const graceMs = this.dependencies.shutdownGraceMs ?? 5_000;
@@ -163,14 +166,21 @@ export class WorkspaceSyncSidecarLifecycle {
       if (graceMs > 0) {
         let timer: ReturnType<typeof setTimeout> | undefined;
         exitedNaturally = await Promise.race([
-          process.waitForTermination().then(() => true, () => false),
+          process.waitForTermination().then(
+            () => true,
+            (error: unknown) => { cleanupFailures.push(error); return false; },
+          ),
           new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(false), graceMs); }),
         ]);
         if (timer !== undefined) clearTimeout(timer);
       }
-      if (!exitedNaturally) await process.stop().catch(() => undefined);
+      if (!exitedNaturally) await process.stop().catch((error: unknown) => {
+        cleanupFailures.push(error);
+      });
     }
-    await broker?.close().catch(() => undefined);
+    await broker?.close().catch((error: unknown) => {
+      cleanupFailures.push(error);
+    });
     const unavailable = engineUnavailable(new Error('sidecar lifecycle stopped'));
     this.currentReadiness?.reject(unavailable);
     this.currentAuthenticatedReadiness?.reject(unavailable);
@@ -179,6 +189,10 @@ export class WorkspaceSyncSidecarLifecycle {
     this.currentReadiness = null;
     this.currentAuthenticatedReadiness = null;
     this.supervisor.dispose();
+    if (cleanupFailures.length === 1) throw cleanupFailures[0];
+    if (cleanupFailures.length > 1) {
+      throw new AggregateError(cleanupFailures, 'Workspace sync sidecar cleanup failed');
+    }
   }
 
   async command(command: MutagenControlCommandV1, signal?: AbortSignal): Promise<unknown> {
@@ -261,6 +275,7 @@ export class WorkspaceSyncSidecarLifecycle {
       }
       this.ready = true;
       this.completedInitialStart = true;
+      this.supervisor.markStable();
       this.currentReadiness?.resolve();
       this.currentReadiness = null;
       return { pid: process.pid, waitForTermination: async () => await termination };
@@ -286,7 +301,7 @@ export class WorkspaceSyncSidecarLifecycle {
     this.activeProcess = null;
     this.ready = false;
     this.authenticated = false;
-    await broker?.close().catch(() => undefined);
+    await broker?.close();
     if (!this.stopping && event.type === 'spawn_error') {
       const error = engineUnavailable(new Error(event.errorMessage));
       this.currentReadiness?.reject(error);

@@ -17,10 +17,7 @@ import { attemptProviderNativeFork } from './attemptProviderNativeFork';
  */
 function callWithStrategy(
   requestedStrategy: string,
-  configuredAcp: null | Readonly<{
-    providerSessionId: string | null;
-    supportsLoadSession: boolean;
-  }> = null,
+  configuredAcp = false,
 ) {
   return attemptProviderNativeFork({
     requestedStrategy,
@@ -35,16 +32,6 @@ function callWithStrategy(
     spawnNonce: 'nonce:native',
     forkBackendResolution: {
       catalogAgentId: configuredAcp ? null : 'codex',
-      configuredAcp: configuredAcp
-        ? {
-            providerSessionId: configuredAcp.providerSessionId,
-            resolvedBackend: {
-              capabilities: {
-                supportsLoadSession: configuredAcp.supportsLoadSession,
-              },
-            },
-          }
-        : null,
       agentHintAgentId: configuredAcp ? 'acp:review-bot' : 'codex',
       backendTargetV2: configuredAcp
         ? {
@@ -84,19 +71,11 @@ describe('attemptProviderNativeFork strategy admission', () => {
     expect(mocks.dispatchProviderNativeFork).not.toHaveBeenCalled();
   });
 
-  it('does not infer configured ACP fork support from load-session capability and parent identity', async () => {
-    await callWithStrategy('provider_native', {
-      providerSessionId: 'provider-parent',
-      supportsLoadSession: true,
-    });
-    expect(mocks.dispatchProviderNativeFork).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    { providerSessionId: 'provider-parent', supportsLoadSession: false },
-    { providerSessionId: null, supportsLoadSession: true },
-  ])('does not duck-type an unsupported configured ACP fork from %o', async (configuredAcp) => {
-    await expect(callWithStrategy('provider_native', configuredAcp)).resolves.toBeNull();
+  // Account-configured ACP has no catalog Agent id and therefore no fork
+  // surface. Load-session support is resume, never fork, so an explicit native
+  // request must decline here instead of inferring a fork from resumability.
+  it('never attempts a provider-native fork for an Account-configured ACP parent', async () => {
+    await expect(callWithStrategy('provider_native', true)).resolves.toBeNull();
     expect(mocks.dispatchProviderNativeFork).not.toHaveBeenCalled();
   });
 

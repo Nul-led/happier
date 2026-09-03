@@ -1,3 +1,4 @@
+import axios from 'axios';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createPlainSessionFixture } from '@/testkit/backends/sessionFixtures';
@@ -72,6 +73,7 @@ vi.mock('./pendingQueueV2Transport', async (importOriginal) => {
 describe('ApiSessionClient provider-input settlement', () => {
   afterEach(() => {
     vi.useRealTimers();
+    vi.restoreAllMocks();
     resolveAcceptedMock.mockReset();
     blockDeliveryMock.mockReset();
     listDeliveryStatusesMock.mockReset();
@@ -570,7 +572,7 @@ describe('ApiSessionClient provider-input settlement', () => {
     const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
     (client as any).materializationRuntime.markPendingQueueMaterializedLocalId('manual-handled-local');
     listDeliveryStatusesMock.mockResolvedValueOnce([
-      { localId: 'later-local', status: 'queued' },
+      { localId: 'later-local', status: 'queued', deliveryStatus: { status: 'queued' } },
     ]);
 
     await expect(client.reconcilePendingProviderInputCustodyBeforeMaterialization()).resolves.toBe(true);
@@ -586,7 +588,7 @@ describe('ApiSessionClient provider-input settlement', () => {
     const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
     (client as any).materializationRuntime.markPendingQueueMaterializedLocalId('discarded-local');
     listDeliveryStatusesMock.mockResolvedValueOnce([
-      { localId: 'discarded-local', status: 'discarded' },
+      { localId: 'discarded-local', status: 'discarded', deliveryStatus: { status: 'discarded', reason: null } },
     ]);
 
     await expect(client.reconcilePendingProviderInputCustodyBeforeMaterialization()).resolves.toBe(true);
@@ -602,7 +604,10 @@ describe('ApiSessionClient provider-input settlement', () => {
       const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
       const localId = `unresolved-${status}`;
       (client as any).materializationRuntime.markPendingQueueMaterializedLocalId(localId);
-      listDeliveryStatusesMock.mockResolvedValueOnce([{ localId, status }]);
+      const deliveryStatus = status === 'blocked'
+        ? { status, reason: 'runtime_config_blocked' as const }
+        : { status };
+      listDeliveryStatusesMock.mockResolvedValueOnce([{ localId, status, deliveryStatus }]);
 
       await expect(client.reconcilePendingProviderInputCustodyBeforeMaterialization()).resolves.toBe(false);
 
@@ -628,13 +633,157 @@ describe('ApiSessionClient provider-input settlement', () => {
     const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
     (client as any).materializationRuntime.markPendingQueueMaterializedLocalId('exact-live-local');
     listDeliveryStatusesMock.mockResolvedValueOnce([
-      { localId: 'wrong-terminal-local', status: 'discarded' },
-      { localId: 'exact-live-local', status: 'delivering' },
+      { localId: 'wrong-terminal-local', status: 'discarded', deliveryStatus: { status: 'discarded', reason: null } },
+      { localId: 'exact-live-local', status: 'delivering', deliveryStatus: { status: 'delivering' } },
     ]);
 
     await expect(client.reconcilePendingProviderInputCustodyBeforeMaterialization()).resolves.toBe(false);
 
     expect(client.hasPendingProviderInput('exact-live-local')).toBe(true);
+  });
+
+  it('reads durable provider-input acceptance from the incumbent Pending delivery state', async () => {
+    sessionSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
+    userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
+    const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
+
+    // Only a status that proves no provider effect is classified as not accepted.
+    listDeliveryStatusesMock.mockResolvedValueOnce([
+      { localId: 'archived-local', status: 'discarded', deliveryStatus: { status: 'discarded', reason: 'cancelled' } },
+    ]);
+    await expect(client.readDurableProviderInputAcceptanceV1('archived-local')).resolves.toBe('not_accepted');
+    expect(listDeliveryStatusesMock).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: 's1', includeDiscarded: true }),
+    );
+
+    // Absence is not positive acceptance evidence: the row may never have existed, may have
+    // been deleted before provider dispatch, or may have resolved without this client's
+    // committed-message tracker observing the result.
+    listDeliveryStatusesMock.mockResolvedValueOnce([
+      { localId: 'other-local', status: 'queued', deliveryStatus: { status: 'queued' } },
+    ]);
+    await expect(client.readDurableProviderInputAcceptanceV1('resolved-local')).resolves.toBe('unknown');
+
+    // An unreadable durable status is never reported as either outcome.
+    listDeliveryStatusesMock.mockRejectedValueOnce(new Error('network unavailable'));
+    await expect(client.readDurableProviderInputAcceptanceV1('unreadable-local')).resolves.toBe('unknown');
+
+    // A durable effect-possible status is ambiguous even while this daemon still holds local
+    // custody; local runtime state cannot strengthen the Pending owner's durable truth.
+    (client as any).materializationRuntime.markPendingQueueMaterializedLocalId('claimed-local');
+    listDeliveryStatusesMock.mockResolvedValueOnce([
+      { localId: 'claimed-local', status: 'delivering', deliveryStatus: { status: 'delivering' } },
+    ]);
+    await expect(client.readDurableProviderInputAcceptanceV1('claimed-local')).resolves.toBe('unknown');
+
+    listDeliveryStatusesMock.mockResolvedValueOnce([
+      {
+        localId: 'uncertain-local',
+        status: 'blocked',
+        deliveryStatus: { status: 'blocked', reason: 'delivery_outcome_uncertain' },
+      },
+    ]);
+    await expect(client.readDurableProviderInputAcceptanceV1('uncertain-local')).resolves.toBe('unknown');
+
+    for (const reason of ['dismissed_uncertain', 'resent_as_new'] as const) {
+      listDeliveryStatusesMock.mockResolvedValueOnce([
+        {
+          localId: reason,
+          status: 'discarded',
+          deliveryStatus: { status: 'discarded', reason },
+        },
+      ]);
+      await expect(client.readDurableProviderInputAcceptanceV1(reason)).resolves.toBe('unknown');
+    }
+
+    await client.close();
+  });
+
+  it('recovers exact committed provider-input acceptance after restart before consulting Pending status', async () => {
+    sessionSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
+    userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
+    const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
+    const transcriptGet = vi.spyOn(axios, 'get');
+
+    expect(client.getCommittedUserMessageSeq('committed-after-restart')).toBeNull();
+    transcriptGet.mockResolvedValueOnce({
+      status: 200,
+      data: {
+        message: {
+          id: 'message-committed-after-restart',
+          seq: 42,
+          localId: 'committed-after-restart',
+          sidechainId: null,
+          createdAt: 100,
+          updatedAt: 101,
+          content: {
+            t: 'plain',
+            v: { role: 'user', content: { type: 'text', text: 'committed prompt' } },
+          },
+        },
+      },
+    } as never);
+
+    await expect(client.readDurableProviderInputAcceptanceV1('committed-after-restart'))
+      .resolves.toBe('accepted');
+    expect(listDeliveryStatusesMock).not.toHaveBeenCalled();
+
+    const notFound = Object.assign(new Error('Message not found'), {
+      isAxiosError: true,
+      response: { status: 404, data: { error: 'Message not found' } },
+    });
+    transcriptGet.mockRejectedValueOnce(notFound);
+    listDeliveryStatusesMock.mockResolvedValueOnce([
+      {
+        localId: 'not-committed',
+        status: 'queued',
+        deliveryStatus: { status: 'queued' },
+      },
+    ]);
+
+    await expect(client.readDurableProviderInputAcceptanceV1('not-committed'))
+      .resolves.toBe('not_accepted');
+    expect(listDeliveryStatusesMock).toHaveBeenCalledTimes(1);
+
+    await client.close();
+  });
+
+  it.each([
+    ['auth failure', Object.assign(new Error('unauthorized'), {
+      isAxiosError: true,
+      response: { status: 401, data: { error: 'Unauthorized' } },
+    })],
+    ['unhealthy lookup', Object.assign(new Error('connection reset'), {
+      isAxiosError: true,
+      code: 'ECONNRESET',
+    })],
+  ])('keeps durable provider-input acceptance unknown on %s', async (_label, lookupError) => {
+    sessionSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
+    userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
+    const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
+    vi.spyOn(axios, 'get').mockRejectedValueOnce(lookupError);
+
+    await expect(client.readDurableProviderInputAcceptanceV1('lookup-failed'))
+      .resolves.toBe('unknown');
+    expect(listDeliveryStatusesMock).not.toHaveBeenCalled();
+
+    await client.close();
+  });
+
+  it('keeps durable provider-input acceptance unknown on an invalid exact lookup response', async () => {
+    sessionSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
+    userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
+    const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
+    vi.spyOn(axios, 'get').mockResolvedValueOnce({
+      status: 200,
+      data: { message: { id: 'malformed' } },
+    } as never);
+
+    await expect(client.readDurableProviderInputAcceptanceV1('lookup-malformed'))
+      .resolves.toBe('unknown');
+    expect(listDeliveryStatusesMock).not.toHaveBeenCalled();
+
+    await client.close();
   });
 
   it('routes normalized accepted, pre-effect, and ambiguous outcomes through the canonical Pending actions', async () => {

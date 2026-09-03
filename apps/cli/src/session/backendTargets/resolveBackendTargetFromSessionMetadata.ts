@@ -6,7 +6,7 @@ import {
   type BackendTargetRefV2,
 } from '@happier-dev/protocol';
 
-import { isConcreteBackendTargetCompatId } from '@/session/backendTargets/compat/customAcp';
+import { isConcreteLegacyConfiguredBackendId } from '@/session/backendTargets/compat/legacyConfiguredBackend';
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
@@ -14,7 +14,7 @@ function readNonEmptyString(value: unknown): string | null {
 
 function readBuiltInBackendTarget(backendId: unknown): BackendTargetRefV2 | null {
   const normalized = readNonEmptyString(backendId);
-  if (!normalized || !isConcreteBackendTargetCompatId(normalized)) return null;
+  if (!normalized || !isConcreteLegacyConfiguredBackendId(normalized)) return null;
 
   try {
     return readBackendTargetRefV2({

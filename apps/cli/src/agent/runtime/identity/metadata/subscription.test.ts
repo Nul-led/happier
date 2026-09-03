@@ -6,6 +6,7 @@ import type {
   RuntimeTurnMessage,
   RuntimeTurnMessageHandler,
 } from '@/agent/runtime/turns/runtimeTurnOperations';
+import type { NormalizedRuntimeIdentityPublicationV1 } from '@/agent/runtime/events/createNormalizedRuntimeEventWriter';
 
 import { subscribeSessionRuntimePublicationToMetadata } from './subscription';
 
@@ -25,8 +26,11 @@ function createRuntimePublicationMetadata(
   };
 }
 
+type IdentityPublicationHandler = (publication: NormalizedRuntimeIdentityPublicationV1) => void;
+
 function createHarness(options?: Readonly<{ providerSessionId?: string | null }>) {
   let runtimeHandler: RuntimeTurnMessageHandler | null = null;
+  let identityHandler: IdentityPublicationHandler | null = null;
 
   const session = {
     sessionId: 'session-1',
@@ -50,6 +54,14 @@ function createHarness(options?: Readonly<{ providerSessionId?: string | null }>
         }
       };
     }),
+    subscribeRuntimeIdentityPublication: vi.fn((handler: IdentityPublicationHandler) => {
+      identityHandler = handler;
+      return () => {
+        if (identityHandler === handler) {
+          identityHandler = null;
+        }
+      };
+    }),
   };
 
   return {
@@ -58,6 +70,9 @@ function createHarness(options?: Readonly<{ providerSessionId?: string | null }>
     runtime,
     emit(message: RuntimeTurnMessage) {
       runtimeHandler?.(message);
+    },
+    publish(publication: NormalizedRuntimeIdentityPublicationV1) {
+      identityHandler?.(publication);
     },
   };
 }
@@ -119,7 +134,7 @@ describe('subscribeSessionRuntimePublicationToMetadata', () => {
     });
   });
 
-  it('normalizes runtime publication events before writing metadata and dedupes equal facets', () => {
+  it('routes each typed runtime publication fact to its single writer and dedupes equal facets', () => {
     const harness = createHarness();
     const unsubscribe = subscribeSessionRuntimePublicationToMetadata({
       session: harness.session,
@@ -127,30 +142,27 @@ describe('subscribeSessionRuntimePublicationToMetadata', () => {
       runtime: harness.runtime as never,
     });
 
-    harness.emit({
-      type: 'event',
-      name: 'runtime.descriptor',
-      payload: {
+    harness.publish({
+      fact: 'runtimeDescriptor',
+      value: {
         v: 1,
         agentId: 'acme.provider',
-        provider: {
+        agent: {
           backendMode: 'native',
         },
       },
     });
-    harness.emit({
-      type: 'event',
-      name: 'runtime.capabilities',
-      payload: {
+    harness.publish({
+      fact: 'runtimeCapabilities',
+      value: {
         executionRun: {
           supported: true,
         },
       },
     });
-    harness.emit({
-      type: 'event',
-      name: 'runtime.facets',
-      payload: {
+    harness.publish({
+      fact: 'runtimeFacets',
+      value: {
         v: 1,
         transcriptSource: {
           supported: true,
@@ -158,10 +170,9 @@ describe('subscribeSessionRuntimePublicationToMetadata', () => {
         },
       },
     });
-    harness.emit({
-      type: 'event',
-      name: 'runtime.facets',
-      payload: {
+    harness.publish({
+      fact: 'runtimeFacets',
+      value: {
         v: 1,
         transcriptSource: {
           supported: true,
@@ -209,7 +220,7 @@ describe('subscribeSessionRuntimePublicationToMetadata', () => {
     ]);
   });
 
-  it('clears both runtimeDescriptorV1 and the legacy alias when the runtime descriptor payload is invalid', () => {
+  it('never routes host-owned identity facts through the canonical Agent Session event stream', () => {
     const harness = createHarness();
     subscribeSessionRuntimePublicationToMetadata({
       session: harness.session,
@@ -217,22 +228,16 @@ describe('subscribeSessionRuntimePublicationToMetadata', () => {
       runtime: harness.runtime as never,
     });
 
+    // A pseudo-event is no longer a member of the canonical union, so even a
+    // hand-forged one must not be interpreted as a host identity publication.
     harness.emit({
       type: 'event',
       name: 'runtime.descriptor',
-      payload: {
-        providerId: 'missing-version',
-      },
-    });
+      payload: { v: 1, agentId: 'codex', agent: { backendMode: 'appServer' } },
+    } as never);
 
-    expect(harness.sessionState.writeHappierField).toHaveBeenCalledWith({
-      sessionId: 'session-1',
-      fieldId: 'identity.runtimeDescriptor',
-      value: null,
-      reason: 'reconciliation',
-      metadataReason: 'runtime-identity-publication',
-    });
-    expect(harness.session.updateMetadata).not.toHaveBeenCalledWith(expect.any(Function));
+    expect(harness.sessionState.writeHappierField).not.toHaveBeenCalled();
+    expect(harness.session.updateMetadata).not.toHaveBeenCalled();
   });
 
   it('retries an unchanged runtime descriptor after a failed session-state write', async () => {
@@ -249,22 +254,14 @@ describe('subscribeSessionRuntimePublicationToMetadata', () => {
     const descriptor = {
       v: 1,
       agentId: 'codex',
-      provider: {
+      agent: {
         backendMode: 'appServer',
         providerSessionId: 'thread-1',
       },
-    };
-    harness.emit({
-      type: 'event',
-      name: 'runtime.descriptor',
-      payload: descriptor,
-    });
+    } as const;
+    harness.publish({ fact: 'runtimeDescriptor', value: descriptor });
     await Promise.resolve();
-    harness.emit({
-      type: 'event',
-      name: 'runtime.descriptor',
-      payload: descriptor,
-    });
+    harness.publish({ fact: 'runtimeDescriptor', value: descriptor });
 
     expect(harness.sessionState.writeHappierField).toHaveBeenCalledTimes(2);
   });
@@ -277,10 +274,9 @@ describe('subscribeSessionRuntimePublicationToMetadata', () => {
       runtime: harness.runtime as never,
     });
 
-    harness.emit({
-      type: 'event',
-      name: 'runtime.facets',
-      payload: {
+    harness.publish({
+      fact: 'runtimeFacets',
+      value: {
         v: 1,
         transcriptSource: {
           supported: true,
@@ -319,7 +315,7 @@ describe('subscribeSessionRuntimePublicationToMetadata', () => {
     ]);
   });
 
-  it('removes invalid runtime facets from metadata and later restores a valid normalized publication', () => {
+  it('replaces a stale runtime facets publication with the newest published value', () => {
     const harness = createHarness();
     subscribeSessionRuntimePublicationToMetadata({
       session: harness.session,
@@ -327,20 +323,19 @@ describe('subscribeSessionRuntimePublicationToMetadata', () => {
       runtime: harness.runtime as never,
     });
 
-    harness.emit({
-      type: 'event',
-      name: 'runtime.facets',
-      payload: {
+    harness.publish({
+      fact: 'runtimeFacets',
+      value: {
         v: 1,
         transcriptSource: {
-          supported: false,
+          supported: true,
+          followLeaseSupported: true,
         },
       },
     });
-    harness.emit({
-      type: 'event',
-      name: 'runtime.facets',
-      payload: {
+    harness.publish({
+      fact: 'runtimeFacets',
+      value: {
         v: 1,
         transcriptSource: {
           supported: true,
@@ -361,7 +356,15 @@ describe('subscribeSessionRuntimePublicationToMetadata', () => {
     );
 
     expect(updates).toEqual([
-      createRuntimePublicationMetadata(),
+      createRuntimePublicationMetadata({
+        agentRuntimeFacetsV1: {
+          v: 1,
+          transcriptSource: {
+            supported: true,
+            followLeaseSupported: true,
+          },
+        },
+      }),
       createRuntimePublicationMetadata({
         agentRuntimeFacetsV1: {
           v: 1,

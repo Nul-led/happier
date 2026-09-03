@@ -32,8 +32,10 @@ import {
     CodexPassiveRealtimeSetupResultV1Schema,
     ConnectedServiceBindingsV1Schema,
     PluginScaffoldUiModeSchema,
+    PluginScaffoldTemplateSchema,
     qualifiedPurposeKey,
     type CapabilityId,
+  PluginUpdatePolicyV1Schema,
 } from '@happier-dev/protocol';
 import type { AgentProviderCatalogObservationService } from '@/providers/probe/agentCatalogObservation';
 import { ProviderProbeCancelledError } from '@/providers/probe/client';
@@ -481,6 +483,7 @@ async function invokeAgentCliInstall(
 type PluginMarketplaceCapabilityMethod =
     | 'install'
     | 'update'
+    | 'setUpdatePolicy'
     | 'enable'
     | 'disable'
     | 'rollback'
@@ -496,6 +499,7 @@ function resolveMarketplaceActionMethod(method: string): PluginMarketplaceCapabi
     if (
         method === 'install'
         || method === 'update'
+        || method === 'setUpdatePolicy'
         || method === 'enable'
         || method === 'disable'
         || method === 'rollback'
@@ -634,12 +638,26 @@ async function invokePluginDevelopmentAction(
                 },
             };
         }
+        const requestedTemplate = params?.template;
+        const template = requestedTemplate === undefined || requestedTemplate === null
+            ? undefined
+            : PluginScaffoldTemplateSchema.safeParse(requestedTemplate);
+        if (template && !template.success) {
+            return {
+                ok: false,
+                error: {
+                    message: `Unsupported plugin scaffold template: ${String(requestedTemplate)}`,
+                    code: 'plugin_scaffold_invalid_input',
+                },
+            };
+        }
         const result = await scaffoldLocalPlugin({
             targetDir,
             pluginId,
             displayName,
             invokerName: resolveInvokerName() ?? 'happier',
             ...(ui ? { ui: ui.data } : {}),
+            ...(template ? { template: template.data } : {}),
         });
         if (!result.ok) {
             return {
@@ -666,6 +684,7 @@ async function invokePluginDevelopmentAction(
     if (!pluginId) {
         return { ok: false, error: { message: 'pluginId is required', code: 'plugin-not-found' } };
     }
+
     const entry = await readInstalledPluginCatalogEntry({
         pluginId,
         happyHomeDir: configuration.happyHomeDir,
@@ -780,6 +799,35 @@ async function invokePluginMarketplaceAction(
         return { ok: false, error: { message: 'pluginId is required', code: 'plugin-not-found' } };
     }
 
+    if (action === 'setUpdatePolicy') {
+        const parsedPolicy = PluginUpdatePolicyV1Schema.safeParse(params?.policy);
+        if (!parsedPolicy.success) {
+            return {
+                ok: false,
+                error: { message: 'policy must be a supported plugin update policy', code: 'plugin_update_policy_invalid' },
+            };
+        }
+        const change = await requestUserPluginChange({
+            request: { kind: 'setUpdatePolicy', pluginId, policy: parsedPolicy.data },
+            approval: 'none',
+        });
+        if (change.kind !== 'committed') {
+            return {
+                ok: false,
+                error: change.kind === 'failed'
+                    ? {
+                        message: change.message ?? `Plugin update policy change failed (${change.code}).`,
+                        code: change.code,
+                    }
+                    : {
+                        message: `The daemon did not commit the plugin update policy (${change.kind}).`,
+                        code: change.kind,
+                    },
+            };
+        }
+        return { ok: true, result: { action, pluginId, policy: parsedPolicy.data, change } };
+    }
+
     // Installing an exact catalog listing is its own explicit action: the caller
     // names a marketplace source and gets exactly that published version.
     // Updating is not that action — see the canonical `update` dispatch below.
@@ -788,10 +836,16 @@ async function invokePluginMarketplaceAction(
         if (!sourceId) {
             return { ok: false, error: { message: 'sourceId is required', code: 'plugin_source_missing' } };
         }
+        // The caller may carry the package name of the listing it showed. It
+        // only targets the source before acquisition — the exact origin,
+        // version, SRI and manifest facts still come from the source's own
+        // answer and are revalidated by the daemon staging owner.
+        const packageName = typeof params?.packageName === 'string' ? params.packageName.trim() : '';
         const exactInstall = await requestExactMarketplaceInstall({
             happyHomeDir: configuration.happyHomeDir,
             sourceId,
             pluginId,
+            ...(packageName ? { packageName } : {}),
         });
         if (!exactInstall.ok) {
             return { ok: false, error: { message: exactInstall.message, code: exactInstall.code } };
@@ -925,6 +979,7 @@ function createPluginMarketplaceCapability(
             methods: {
                 install: { title: 'Install' },
                 update: { title: 'Update' },
+                setUpdatePolicy: { title: 'Set update policy' },
                 enable: { title: 'Enable' },
                 disable: { title: 'Disable' },
                 rollback: { title: 'Rollback' },

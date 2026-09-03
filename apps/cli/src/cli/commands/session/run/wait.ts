@@ -67,6 +67,30 @@ export async function cmdSessionRunWait(
   if (!result.ok) {
     throw new Error(`execution_run_wait_${result.code}`);
   }
+
+  // An observation timeout ends this caller's wait, not the run itself: the run
+  // remains active and addressable, so it must not be presented as finished.
+  if (result.status === 'running') {
+    if (json) {
+      await printJsonEnvelope({
+        ok: true,
+        kind: 'session_run_wait',
+        data: {
+          sessionId,
+          runId: result.runId,
+          status: result.status,
+          disposition: result.disposition,
+          timeoutMs: result.timeoutMs,
+          observedAtMs: result.observedAtMs,
+          deadlineAtMs: result.deadlineAtMs,
+        },
+      });
+      return;
+    }
+    console.log(chalk.yellow('!'), `observation ended after ${result.timeoutMs}ms: run ${result.runId} is still running`);
+    return;
+  }
+
   const status = result.status;
 
   if (json) {

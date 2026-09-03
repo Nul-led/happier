@@ -43,6 +43,7 @@ import {
   resolveEffectiveCodingPromptText,
 } from '@/agent/prompting/coding/resolveEffectiveCodingPrompt';
 import type { InFlightSteerController } from '@/agent/runtime/permissions/bindModeQueue';
+import type { UnsettledReplaySeedRetirement } from '@/agent/runtime/replaySeed/unsettledReplaySeedRetirement';
 import { registerKillSessionHandler } from '@/rpc/handlers/killSession';
 import type { MessageBuffer } from '@/ui/ink/messageBuffer';
 import {
@@ -368,6 +369,7 @@ export type SessionLoopLifecycleParams = Readonly<{
     setCurrentPermissionMode: (mode: PermissionMode | undefined) => void;
     setCurrentPermissionModeUpdatedAt: (updatedAt: number) => void;
     messageQueue: MessageQueue2<PermissionModeQueuedPromptMode, PermissionModeQueuedPrompt>;
+    replaySeedRetirement: UnsettledReplaySeedRetirement;
   }>;
   sessionSwapStrategy: HostSessionRuntimeSessionSwapStrategy;
   runtimeDirectory: string;
@@ -1254,6 +1256,7 @@ export async function runSessionLoopLifecycle(params: SessionLoopLifecycleParams
       explicitPermissionMode: params.opts.permissionMode,
       session: params.session,
       messageQueue: params.permissionModeState.messageQueue,
+      replaySeedRetirement: params.permissionModeState.replaySeedRetirement,
       permissionHandler: params.permissionHandler,
       runtime: runtimeForPromptLoop,
       createOverrideSynchronizer: (isStarted): PromptLoopOverrideSynchronizer | RuntimeOverrideSynchronizers => createRuntimeOverrideSynchronizersFn({

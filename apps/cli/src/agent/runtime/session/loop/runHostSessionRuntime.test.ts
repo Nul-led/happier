@@ -8,6 +8,7 @@ import {
   ProviderConnectionIdSchema,
   redactBugReportSensitiveText,
   SessionCreationCorrespondenceV1Schema,
+  type PluginContributionIdentityV1,
   type VoiceProviderContribution,
 } from '@happier-dev/protocol';
 import { RPC_METHODS, SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
@@ -52,6 +53,7 @@ vi.mock('@/agent/catalog/snapshot', async (importOriginal) => {
 import { runHostSessionRuntime, type HostSessionRuntimeConfig, type HostSessionRuntimeRunOptions } from './runHostSessionRuntime';
 import type { CreateSessionMetadataOptions } from '@/agent/runtime/createSessionMetadata';
 import type { InitializeBackendRunSessionOptions } from '@/agent/runtime/initializeBackendRunSession';
+import type { Metadata } from '@/api/types';
 import type { HostSessionTerminalRemoteModeLoop } from './terminalRemoteModeRuntime';
 import { MessageBuffer } from '@/ui/ink/messageBuffer';
 import { resolveForkInheritedOverridesFromMetadata } from '@/session/fork/resolveForkInheritedOverridesFromMetadata';
@@ -170,21 +172,26 @@ const providerModelDescriptor = Object.freeze({
   name: 'Provider Model',
 });
 
-function lateExternalProviderBindingHandoff(input: Readonly<{
+/**
+ * The runtime binding basis an authorized Provider binding carries.
+ *
+ * `projectAgentSessionProviderBindingV1` refuses a binding without it, so every
+ * launch-handoff fixture that reaches runtime creation builds its basis here
+ * rather than restating the canonical shape per case.
+ */
+function externalProviderRuntimeBindingBasis(input: Readonly<{
   connectionId: string;
-  modelId: string;
   agentTargetKey: string;
+  contributionKey: string;
+  adapterBindingKey: string;
+  fingerprintScope: string;
 }>) {
-  const model = {
-    id: input.modelId,
-    name: input.modelId,
-  };
-  const runtimeBindingBasis = {
+  return {
     v: 1 as const,
     deployment: { kind: 'external' as const },
     agentTargetKey: input.agentTargetKey,
     connectionId: ProviderConnectionIdSchema.parse(input.connectionId),
-    contributionKey: 'plugin.openrouter/openrouter',
+    contributionKey: input.contributionKey,
     endpoint: {
       endpointTemplateId: 'responses',
       normalizedUrl: 'https://provider.example/v1',
@@ -195,12 +202,12 @@ function lateExternalProviderBindingHandoff(input: Readonly<{
     prepared: {
       v: 1 as const,
       materialization: 'engineConfig' as const,
-      adapterBindingKey: 'openrouter',
+      adapterBindingKey: input.adapterBindingKey,
     },
     adapterVersion: 1,
     credentialAuthorization: {
-      connectionSecurityFingerprint: 'connection-security:v1:late',
-      grantFingerprint: 'grant:v1:late',
+      connectionSecurityFingerprint: `connection-security:v1:${input.fingerprintScope}`,
+      grantFingerprint: `grant:v1:${input.fingerprintScope}`,
       selectedSecretBindingId: null,
       selectedSecretRecordFingerprint: null,
     },
@@ -220,6 +227,24 @@ function lateExternalProviderBindingHandoff(input: Readonly<{
       supportsFreeformModelIds: true,
     },
   };
+}
+
+function lateExternalProviderBindingHandoff(input: Readonly<{
+  connectionId: string;
+  modelId: string;
+  agentTargetKey: string;
+}>) {
+  const model = {
+    id: input.modelId,
+    name: input.modelId,
+  };
+  const runtimeBindingBasis = externalProviderRuntimeBindingBasis({
+    connectionId: input.connectionId,
+    agentTargetKey: input.agentTargetKey,
+    contributionKey: 'plugin.openrouter/openrouter',
+    adapterBindingKey: 'openrouter',
+    fingerprintScope: 'late',
+  });
   return {
     v: 1 as const,
     materialization: {
@@ -260,7 +285,7 @@ type CreateAgentSessionRealtimeService = (input: Readonly<{
     payload: unknown;
     signal: AbortSignal;
   }>): Promise<unknown>;
-  onTerminal(event: AgentSessionRealtimeLifecycleEvent): void;
+  onStarted(handle: AgentSessionRealtimeHandle): void;
 }>) => AgentSessionRealtimeConversation;
 
 async function loadAgentSessionRealtimeService(): Promise<CreateAgentSessionRealtimeService> {
@@ -320,6 +345,7 @@ function createSessionFixture(sessionId: string) {
     stageInitialDurableMutationSnapshots: vi.fn(async () => undefined),
     flushDurableMutationDelivery: vi.fn(async () => undefined),
     flush: vi.fn(async () => undefined),
+    endSessionAndClose: vi.fn(async () => undefined),
     close: vi.fn(async () => undefined),
   };
 
@@ -624,6 +650,59 @@ function setAgentSessionRealtimeVoiceAuthority(
   config.agentSessionRealtimeVoiceAuthority = authority;
 }
 
+/**
+ * The bundled Voice declaration exactly as the shipped contribution registry
+ * carries it, bound to one explicit current runtime generation.
+ *
+ * The host authority admits a Voice provider only through the declaring plugin's
+ * committed installation generation, and this in-process registry lease commits
+ * none, so `resolveVoiceProviderRuntimeLifecycle` fails closed for every bundled
+ * contribution. The fixture supplies that single missing lifecycle carrier and
+ * keeps the declaration bytes, contribution identity, and declared Agent binding
+ * exactly as the bundled plugin ships them.
+ */
+function resolveBundledAgentSessionRealtimeVoiceAuthorityFixture(input: Readonly<{
+  runtimeRegistry: PluginRuntimeRegistryLease['registry'] | null;
+  provider: PluginContributionIdentityV1;
+  policyAgentRef: PluginContributionIdentityV1;
+  agentGeneration: string;
+}>) {
+  const bundled = (input.runtimeRegistry?.contributes.voiceProviders ?? []).find(
+    (candidate) => candidate.identity.pluginId === input.provider.pluginId
+      && candidate.identity.localId === input.provider.localId,
+  );
+  if (!bundled) {
+    throw new Error(
+      `expected the bundled Voice contribution ${input.provider.pluginId}/${input.provider.localId}`,
+    );
+  }
+  const providerRetirement = new AbortController();
+  const authority = resolveAgentSessionRealtimeVoiceAuthority({
+    runtimeRegistry: {
+      contributes: { voiceProviders: [bundled] },
+      resolveVoiceProviderRuntimeLifecycle: (identity) => (
+        identity.pluginId === input.provider.pluginId
+        && identity.localId === input.provider.localId
+          ? {
+              generation: 'bundled-provider-generation',
+              isCurrent: () => !providerRetirement.signal.aborted,
+              retirementSignal: providerRetirement.signal,
+            }
+          : null
+      ),
+    },
+    policyAgentRef: input.policyAgentRef,
+    agentRuntimeIdentity: {
+      pluginId: input.policyAgentRef.pluginId,
+      agentId: input.policyAgentRef.localId,
+      generation: input.agentGeneration,
+      isCurrent: () => true,
+    },
+  });
+  if (!authority) throw new Error('expected the bundled Voice authority');
+  return authority;
+}
+
 function setTerminalRemoteModeLoop(
   config: HostSessionRuntimeConfig,
   terminalRemoteModeLoop: HostSessionTerminalRemoteModeLoop,
@@ -765,19 +844,12 @@ describe('runHostSessionRuntime', () => {
       pluginId: 'happier.agent.codex',
       localId: 'realtime-codex',
     } as const;
-    const bundledAuthority = resolveAgentSessionRealtimeVoiceAuthority({
+    const bundledAuthority = resolveBundledAgentSessionRealtimeVoiceAuthorityFixture({
       runtimeRegistry: runtimeRegistryLease?.registry ?? null,
+      provider,
       policyAgentRef: { pluginId: 'happier.agent.codex', localId: 'codex' },
-      agentRuntimeIdentity: {
-        pluginId: 'happier.agent.codex',
-        agentId: 'codex',
-        generation: 'bundled-registry-generation',
-        isCurrent: () => true,
-      },
+      agentGeneration: 'bundled-registry-generation',
     });
-    if (!bundledAuthority) {
-      throw new Error('expected bundled Voice authority');
-    }
     setAgentSessionRealtimeVoiceAuthority(harness.config, bundledAuthority);
     const runtimeTerminalListeners = new Set<
       (event: AgentSessionRealtimeLifecycleEvent) => void
@@ -829,7 +901,12 @@ describe('runHostSessionRuntime', () => {
       method: string;
       payload: unknown;
     }>> = [];
+    // The attempt owner observes lifecycle through the handle the service
+    // publishes on a successful start; there is no separate terminal callback.
     const onTerminal = vi.fn();
+    const onStarted = vi.fn((handle: AgentSessionRealtimeHandle) => {
+      handle.watch(onTerminal);
+    });
     harness.deps.runSessionLoopLifecycleFn = async () => {
       const service = createAgentSessionRealtimeService({
         provider,
@@ -842,7 +919,7 @@ describe('runHostSessionRuntime', () => {
           if (!handler) throw new Error(`missing host runtime RPC producer: ${method}`);
           return await handler(payload);
         },
-        onTerminal,
+        onStarted,
       });
 
       await expect(service.inspect()).resolves.toEqual({
@@ -862,6 +939,7 @@ describe('runHostSessionRuntime', () => {
 
       startGate.resolve();
       const started = await startedPromise;
+      expect(onStarted).toHaveBeenCalledOnce();
       expect(started).toMatchObject({
         status: 'started',
         transport: {
@@ -960,19 +1038,12 @@ describe('runHostSessionRuntime', () => {
       pluginId: 'happier.agent.codex',
       localId: 'realtime-codex',
     } as const;
-    const bundledAuthority = resolveAgentSessionRealtimeVoiceAuthority({
+    const bundledAuthority = resolveBundledAgentSessionRealtimeVoiceAuthorityFixture({
       runtimeRegistry: runtimeRegistryLease?.registry ?? null,
+      provider,
       policyAgentRef: { pluginId: 'happier.agent.codex', localId: 'codex' },
-      agentRuntimeIdentity: {
-        pluginId: 'happier.agent.codex',
-        agentId: 'codex',
-        generation: 'bundled-registry-generation',
-        isCurrent: () => true,
-      },
+      agentGeneration: 'bundled-registry-generation',
     });
-    if (!bundledAuthority) {
-      throw new Error('expected bundled Voice authority');
-    }
     setAgentSessionRealtimeVoiceAuthority(harness.config, bundledAuthority);
 
     const runtimeWatchDispose = vi.fn();
@@ -1013,7 +1084,7 @@ describe('runHostSessionRuntime', () => {
     const rpcMethods: string[] = [];
     const stopResults: unknown[] = [];
     const startRpcSignals: AbortSignal[] = [];
-    const onTerminal = vi.fn();
+    const onStarted = vi.fn();
     harness.deps.runSessionLoopLifecycleFn = async () => {
       const service = createAgentSessionRealtimeService({
         provider,
@@ -1034,7 +1105,7 @@ describe('runHostSessionRuntime', () => {
           }
           return result;
         },
-        onTerminal,
+        onStarted,
       });
 
       const startedPromise = service.start(
@@ -1070,11 +1141,9 @@ describe('runHostSessionRuntime', () => {
       await expect(startedPromise).resolves.toEqual({ status: 'aborted' });
       expect(startObservedBoundAbort).toBe(true);
       expect(callerOperation.signal.aborted).toBe(false);
-      expect(onTerminal).toHaveBeenCalledOnce();
-      expect(onTerminal).toHaveBeenCalledWith({
-        kind: 'terminal',
-        reason: 'aborted',
-      });
+      // A preempted attempt never publishes an owner handle, so the late daemon
+      // admission is compensated by the host rather than surfaced to a consumer.
+      expect(onStarted).not.toHaveBeenCalled();
       expect(rpcMethods).toEqual([
         SESSION_RPC_METHODS.SESSION_AGENT_REALTIME_START,
         SESSION_RPC_METHODS.SESSION_AGENT_REALTIME_STOP,
@@ -1272,7 +1341,7 @@ describe('runHostSessionRuntime', () => {
           expect(sessionId).toBe('session-1');
           return await invoke(method, payload);
         },
-        onTerminal: vi.fn(),
+        onStarted: vi.fn(),
       });
       await expect(service.inspect()).resolves.toEqual({
         status: 'available',
@@ -2142,6 +2211,13 @@ describe('runHostSessionRuntime', () => {
       adapterBindingKey: 'openrouter',
       compatibilityFingerprint: 'compatibility-v1',
       bindingSecurityFingerprint: 'security-v1',
+      runtimeBindingBasis: externalProviderRuntimeBindingBasis({
+        connectionId: 'pc_work',
+        agentTargetKey: 'backend:codex',
+        contributionKey: 'plugin.openrouter/openrouter',
+        adapterBindingKey: 'openrouter',
+        fingerprintScope: 'ingress',
+      }),
       displaySnapshot: {
         providerName: 'OpenRouter',
         connectionName: 'Work',
@@ -2370,6 +2446,13 @@ describe('runHostSessionRuntime', () => {
               adapterBindingKey: 'cliproxyapi',
               compatibilityFingerprint: 'compatibility-v1',
               bindingSecurityFingerprint: 'security-v1',
+              runtimeBindingBasis: externalProviderRuntimeBindingBasis({
+                connectionId: 'pc_work',
+                agentTargetKey: 'backend:codex',
+                contributionKey: 'happier.provider.cliproxyapi/cliproxyapi',
+                adapterBindingKey: 'cliproxyapi',
+                fingerprintScope: 'daemon-ack',
+              }),
               displaySnapshot: {
                 providerName: 'CLIProxyAPI',
                 connectionName: 'CLIProxyAPI',
@@ -2441,9 +2524,16 @@ describe('runHostSessionRuntime', () => {
   });
 
   it('fails closed before runtime creation when a Provider handoff omits or mismatches the selected exact model', async () => {
-    for (const model of [
-      undefined,
-      { id: 'different-provider-model', name: 'Different Provider Model' },
+    for (const { model, expectedError } of [
+      {
+        model: undefined,
+        // A handoff without its launch model descriptor is not a validated binding at all.
+        expectedError: 'Provider-bound model selection requires a validated provider binding handoff',
+      },
+      {
+        model: { id: 'different-provider-model', name: 'Different Provider Model' },
+        expectedError: 'Provider binding handoff model does not match the selected model',
+      },
     ] as const) {
       const harness = createHarness();
       harness.config.policyAgentId = 'codex';
@@ -2477,6 +2567,13 @@ describe('runHostSessionRuntime', () => {
               adapterBindingKey: 'openrouter',
               compatibilityFingerprint: 'compatibility-v1',
               bindingSecurityFingerprint: 'security-v1',
+              runtimeBindingBasis: externalProviderRuntimeBindingBasis({
+                connectionId: 'pc_work',
+                agentTargetKey: 'backend:codex',
+                contributionKey: 'plugin.openrouter/openrouter',
+                adapterBindingKey: 'openrouter',
+                fingerprintScope: 'model-mismatch',
+              }),
               displaySnapshot: {
                 providerName: 'OpenRouter',
                 connectionName: 'Work',
@@ -2488,7 +2585,7 @@ describe('runHostSessionRuntime', () => {
       };
 
       await expect(runHostSessionRuntime(harness.opts, harness.config, harness.deps))
-        .rejects.toThrow('Provider binding handoff model does not match the selected model');
+        .rejects.toThrow(expectedError);
       expect(createSessionRuntime).not.toHaveBeenCalled();
     }
   });
@@ -2522,6 +2619,13 @@ describe('runHostSessionRuntime', () => {
           adapterBindingKey: 'openrouter',
           compatibilityFingerprint: 'compatibility-v1',
           bindingSecurityFingerprint: 'security-v1',
+          runtimeBindingBasis: externalProviderRuntimeBindingBasis({
+            connectionId: 'pc_work',
+            agentTargetKey: 'backend:codex',
+            contributionKey: 'plugin.openrouter/openrouter',
+            adapterBindingKey: 'openrouter',
+            fingerprintScope: 'factory-failure',
+          }),
           displaySnapshot: {
             providerName: 'OpenRouter',
             connectionName: 'Work',
@@ -2617,6 +2721,13 @@ describe('runHostSessionRuntime', () => {
           adapterBindingKey: 'openrouter',
           compatibilityFingerprint: 'compatibility-v1',
           bindingSecurityFingerprint: 'security-v1',
+          runtimeBindingBasis: externalProviderRuntimeBindingBasis({
+            connectionId: 'pc_work',
+            agentTargetKey: 'backend:codex',
+            contributionKey: 'plugin.openrouter/openrouter',
+            adapterBindingKey: 'openrouter',
+            fingerprintScope: 'live-lifetime',
+          }),
           displaySnapshot: {
             providerName: 'OpenRouter',
             connectionName: 'Work',
@@ -2857,6 +2968,7 @@ describe('runHostSessionRuntime', () => {
         localId: 'pending-successor-1',
         attachments: [{ instanceId: 'issue-42', key: '42', value: { issueId: 420, prepared: true } }],
       },
+      signal: expect.any(AbortSignal),
     });
     expect(afterComposerAttachmentMessageAccepted).toHaveBeenCalledWith({
       sessionId: 'session-1',
@@ -2866,6 +2978,7 @@ describe('runHostSessionRuntime', () => {
         localId: 'pending-successor-1',
         attachments: [{ instanceId: 'review-7', key: '7', value: { reviewId: 7, prepared: true } }],
       },
+      signal: expect.any(AbortSignal),
     });
     expect(afterComposerAttachmentMessageAccepted.mock.invocationCallOrder[0])
       .toBeLessThan(settleComposerStagedMedia.mock.invocationCallOrder[0]!);
@@ -2964,13 +3077,16 @@ describe('runHostSessionRuntime', () => {
     harness.deps.runPermissionModePromptLoopFn = async () => {
       harness.runtime.emitRuntimeMessage({
         kind: 'turn-start',
+        sequence: 1,
         sessionId: 'session-1',
         turnId: 'turn-1',
         agentTurnId: 'provider-turn-1',
         emittedAtMs: 123,
+        startedBy: 'host',
       });
       harness.runtime.emitRuntimeMessage({
         kind: 'turn-complete',
+        sequence: 2,
         sessionId: 'session-1',
         turnId: 'turn-1',
         agentTurnId: 'provider-turn-1',
@@ -3073,7 +3189,9 @@ describe('runHostSessionRuntime', () => {
 
     await runHostSessionRuntime(harness.opts, harness.config, harness.deps);
 
-    expect(applied).toEqual(['display.title:Pre-existing title']);
+    // A fork inherits the parent title with the canonical child suffix the fork
+    // override resolver mints, and the host mirrors exactly that to the provider.
+    expect(applied).toEqual(['display.title:Pre-existing title (fork 1)']);
   });
 
   it('keeps provider startup bootstrap inside the shared session loop instead of early-returning', async () => {
@@ -3329,7 +3447,6 @@ describe('runHostSessionRuntime', () => {
       metadataObserverSignal = signal;
       return false;
     });
-    harness.session.endSessionAndClose = vi.fn(async () => undefined);
     harness.deps.resolveRunnerMcpServersFn = vi.fn(async () => ({
       happierMcpServer: { stop: stopMcpServer },
       mcpServers: {},
@@ -3384,7 +3501,6 @@ describe('runHostSessionRuntime', () => {
     harness.session.updateMetadataAsCurrentPublisher = vi.fn(async () => {
       throw reconciliationFailure;
     });
-    harness.session.endSessionAndClose = vi.fn(async () => undefined);
 
     await expect(
       runHostSessionRuntime(harness.opts, harness.config, harness.deps),
@@ -3559,19 +3675,32 @@ describe('runHostSessionRuntime', () => {
 
   it('persists shared runtime publication events into session metadata during the host session lifecycle', async () => {
     const harness = createHarness();
-    const runtimeMessageHandlers = new Set<(message: unknown) => void>();
-
-    harness.runtime.subscribeRuntimeEvents.mockImplementation((handler: (message: unknown) => void) => {
-      runtimeMessageHandlers.add(handler);
-      return () => {
-        runtimeMessageHandlers.delete(handler);
-      };
-    });
+    // Host-owned identity facts travel the typed host-private publication
+    // channel, not a `{ type: 'event', name: 'runtime.*' }` pseudo-event beside
+    // the canonical Agent Session event union.
+    // Apply every metadata update once, in real order, the way a session
+    // client does. Replaying captured updaters after the run re-enters
+    // publication closures that already advanced their own state, so the
+    // reconstruction — not the publication — decides the result.
+    let liveMetadata: Record<string, unknown> = harness.session.getMetadataSnapshot();
+    harness.session.updateMetadata = vi.fn(
+      async (updater: (metadata: Record<string, unknown>) => Record<string, unknown>) => {
+        liveMetadata = updater(liveMetadata);
+      },
+    );
+    const identityPublicationHandlers = new Set<(publication: unknown) => void>();
+    harness.runtime.subscribeRuntimeIdentityPublication = vi.fn(
+      (handler: (publication: unknown) => void) => {
+        identityPublicationHandlers.add(handler);
+        return () => {
+          identityPublicationHandlers.delete(handler);
+        };
+      },
+    );
     harness.deps.runPermissionModePromptLoopFn = async (params: any) => {
-      for (const handler of runtimeMessageHandlers) handler({
-        type: 'event',
-        name: 'runtime.descriptor',
-        payload: {
+      for (const handler of identityPublicationHandlers) handler({
+        fact: 'runtimeDescriptor',
+        value: {
           v: 1,
           agentId: 'acme.provider',
           agent: {
@@ -3579,10 +3708,9 @@ describe('runHostSessionRuntime', () => {
           },
         },
       });
-      for (const handler of runtimeMessageHandlers) handler({
-        type: 'event',
-        name: 'runtime.capabilities',
-        payload: {
+      for (const handler of identityPublicationHandlers) handler({
+        fact: 'runtimeCapabilities',
+        value: {
           backend: {
             sessions: {
               supported: true,
@@ -3590,10 +3718,9 @@ describe('runHostSessionRuntime', () => {
           },
         },
       });
-      for (const handler of runtimeMessageHandlers) handler({
-        type: 'event',
-        name: 'runtime.facets',
-        payload: {
+      for (const handler of identityPublicationHandlers) handler({
+        fact: 'runtimeFacets',
+        value: {
           v: 1,
           transcriptSource: {
             supported: true,
@@ -3607,11 +3734,7 @@ describe('runHostSessionRuntime', () => {
 
     await runHostSessionRuntime(harness.opts, harness.config, harness.deps);
 
-    const resultingMetadata = harness.session.updateMetadata.mock.calls.reduce(
-      (metadata: Record<string, unknown>, [updater]: [(current: Record<string, unknown>) => Record<string, unknown>]) =>
-        updater(metadata),
-      harness.session.getMetadataSnapshot(),
-    );
+    const resultingMetadata = liveMetadata;
 
     expect(resultingMetadata.runtimeDescriptorV1).toEqual({
       v: 1,
@@ -3701,16 +3824,19 @@ describe('runHostSessionRuntime', () => {
     }>) => {
       harness.runtime.emitRuntimeMessage({
         kind: 'turn-start',
+        sequence: 1,
         sessionId: 'session-1',
         turnId: 'turn-1',
         agentTurnId: 'provider-turn-1',
         emittedAtMs: 123,
+        startedBy: 'host',
       });
 
       await expect(params.beforePendingMaterialize?.()).resolves.toBe(false);
 
       harness.runtime.emitRuntimeMessage({
         kind: 'turn-complete',
+        sequence: 2,
         sessionId: 'session-1',
         turnId: 'turn-1',
         agentTurnId: 'provider-turn-1',
@@ -3748,7 +3874,14 @@ describe('runHostSessionRuntime', () => {
       onBeforeIteration?: (mode: 'terminal' | 'remote') => void | Promise<void>;
     }>) => {
       await opts.onBeforeIteration?.('terminal');
-      harness.runtime.emitRuntimeMessage?.({ type: 'task_started', id: 'turn-active' });
+      harness.runtime.emitRuntimeMessage?.({
+        kind: 'turn-start',
+        sequence: 1,
+        sessionId: 'session-1',
+        turnId: 'turn-active',
+        emittedAtMs: 1,
+        startedBy: 'host',
+      });
       resolveActiveTurnObserved?.();
       return await modeLoopDone;
     });
@@ -3875,8 +4008,21 @@ describe('runHostSessionRuntime', () => {
       runTerminal: (params: { entry: 'initial' | 'switch' }) => Promise<{ type: 'switch' } | { type: 'exit'; code: number }>;
     }>) => {
       await opts.onBeforeIteration?.('terminal');
-      harness.runtime.emitRuntimeMessage?.({ type: 'task_started', id: 'turn-complete' });
-      harness.runtime.emitRuntimeMessage?.({ type: 'task_complete', id: 'turn-complete' });
+      harness.runtime.emitRuntimeMessage?.({
+        kind: 'turn-start',
+        sequence: 1,
+        sessionId: 'session-1',
+        turnId: 'turn-boundary',
+        emittedAtMs: 1,
+        startedBy: 'host',
+      });
+      harness.runtime.emitRuntimeMessage?.({
+        kind: 'turn-complete',
+        sequence: 2,
+        sessionId: 'session-1',
+        turnId: 'turn-boundary',
+        emittedAtMs: 2,
+      });
       await opts.runTerminal({ entry: 'initial' });
       resolveTerminalBoundary?.();
       return 0;
@@ -3931,8 +4077,21 @@ describe('runHostSessionRuntime', () => {
       onBeforeIteration?: (mode: 'terminal' | 'remote') => void | Promise<void>;
     }>) => {
       await opts.onBeforeIteration?.('terminal');
-      harness.runtime.emitRuntimeMessage?.({ type: 'task_started', id: 'turn-failed-switch' });
-      harness.runtime.emitRuntimeMessage?.({ type: 'task_complete', id: 'turn-failed-switch' });
+      harness.runtime.emitRuntimeMessage?.({
+        kind: 'turn-start',
+        sequence: 1,
+        sessionId: 'session-1',
+        turnId: 'turn-failed-switch',
+        emittedAtMs: 1,
+        startedBy: 'host',
+      });
+      harness.runtime.emitRuntimeMessage?.({
+        kind: 'turn-complete',
+        sequence: 2,
+        sessionId: 'session-1',
+        turnId: 'turn-failed-switch',
+        emittedAtMs: 2,
+      });
       resolveTerminalBoundary?.();
       return 0;
     });
@@ -4014,12 +4173,15 @@ describe('runHostSessionRuntime', () => {
     const harness = createHarness();
     let capturedModelSelectionIntent: unknown;
     harness.config.lifecycleHooks = {
+      // A native selection keeps this case on the metadata-creation ordering it owns;
+      // a provider-bound selection additionally requires its validated binding handoff,
+      // which the provider-binding ingress cases above cover.
       resolveInitialModelSelection: async () => ({
         v: 1,
         updatedAt: 123,
         ref: {
           agentTargetKey: 'backend:qwen',
-          providerConnectionId: ProviderConnectionIdSchema.parse('pc_work'),
+          providerConnectionId: null,
           modelId: 'gemini-2.5-pro',
         },
       }),
@@ -4039,7 +4201,7 @@ describe('runHostSessionRuntime', () => {
       updatedAt: 123,
       selection: {
         agentTargetKey: 'backend:qwen',
-        providerConnectionId: 'pc_work',
+        providerConnectionId: null,
         modelId: 'gemini-2.5-pro',
       },
     });
@@ -4498,7 +4660,6 @@ describe('runHostSessionRuntime', () => {
       metadataObserverSignal = signal;
       return false;
     });
-    harness.session.endSessionAndClose = vi.fn(async () => undefined);
     harness.deps.resolveRunnerMcpServersFn = vi.fn(async () => ({
       happierMcpServer: { stop: stopMcpServer },
       mcpServers: {},
@@ -5262,7 +5423,6 @@ describe('runHostSessionRuntime', () => {
     harness.session.refreshSessionSnapshotFromServerRequired = vi.fn(async () => {
       throw refreshFailure;
     });
-    harness.session.endSessionAndClose = vi.fn(async () => undefined);
 
     await expect(
       runHostSessionRuntime(harness.opts, harness.config, harness.deps),
@@ -6286,9 +6446,17 @@ describe('runHostSessionRuntime', () => {
           op: { kind: 'set', value: { state: 'active', activeCount: 1 } },
         })));
 
+      // The host has several independent runtime-event subscribers (turn lifecycle,
+      // identity publication, Activity). What a same-session swap must not do is
+      // retire and re-establish any of them, so compare across the swap boundary
+      // instead of pinning an absolute subscriber count.
+      const runtimeSubscriptionsBeforeSwap =
+        harness.runtime.subscribeRuntimeEvents.mock.calls.length;
+
       await params.onAfterLoopBoundary?.({ reason: 'turn_completed' });
 
-      expect(harness.runtime.subscribeRuntimeEvents).toHaveBeenCalledTimes(1);
+      expect(harness.runtime.subscribeRuntimeEvents)
+        .toHaveBeenCalledTimes(runtimeSubscriptionsBeforeSwap);
       expect(unsubscribeRuntimeActivity).not.toHaveBeenCalled();
       expect(replacement.enqueueRegisteredSessionStateFieldMutation)
         .toHaveBeenLastCalledWith(expect.objectContaining({
@@ -6317,16 +6485,15 @@ describe('runHostSessionRuntime', () => {
   it('rebinds Activity across a different-session client swap and fences the retired subscriber', async () => {
     const harness = createHarness();
     harness.config.runtimeActivityApplicability = 'supported';
-    loggerDebugMock.mockClear();
     const initialSession = harness.session;
     const replacement = harness.createSessionFixture('session-2').session;
     const subscriptions: Array<{
       handler: (event: any) => void;
       unsubscribe: ReturnType<typeof vi.fn>;
     }> = [];
-    const hostile = Proxy.revocable({}, {});
-    hostile.revoke();
     harness.runtime.subscribeRuntimeEvents = vi.fn((handler: (event: any) => void) => {
+      // A retired subscriber can still deliver one in-flight event while it is
+      // being disposed; logical fencing, not disposal order, must drop it.
       const unsubscribe = vi.fn(() => {
         handler({
           kind: 'runtime-activity-snapshot',
@@ -6336,7 +6503,6 @@ describe('runHostSessionRuntime', () => {
           state: 'active',
           activeCount: 9,
         });
-        throw hostile.proxy;
       });
       subscriptions.push({ handler, unsubscribe });
       return unsubscribe;
@@ -6351,9 +6517,19 @@ describe('runHostSessionRuntime', () => {
         attachedToExistingSession: false,
       };
     };
+    // A real runtime fans every event out to all of its registered consumers
+    // (Activity, runtime publication, session loop), so the case drives whole
+    // registration generations instead of pinning one consumer's index.
+    const emitToAll = (
+      registrations: readonly Readonly<{ handler(event: any): void }>[],
+      event: Readonly<Record<string, unknown>>,
+    ): void => {
+      for (const registration of registrations) registration.handler(event);
+    };
     harness.deps.runPermissionModePromptLoopFn = async () => {
-      expect(subscriptions).toHaveLength(1);
-      subscriptions[0]!.handler({
+      const retiredGeneration = [...subscriptions];
+      expect(retiredGeneration.length).toBeGreaterThan(0);
+      emitToAll(retiredGeneration, {
         kind: 'runtime-activity-snapshot',
         sequence: 1,
         sessionId: 'session-1',
@@ -6368,8 +6544,8 @@ describe('runHostSessionRuntime', () => {
 
       const initialCallsBeforeSwap = initialSession.enqueueRegisteredSessionStateFieldMutation.mock.calls.length;
       await swapSession?.(replacement);
-      expect(subscriptions).toHaveLength(2);
-      expect(subscriptions[0]!.unsubscribe).toHaveBeenCalledOnce();
+      const reboundGeneration = subscriptions.slice(retiredGeneration.length);
+      expect(reboundGeneration.length).toBeGreaterThan(0);
       expect(initialSession.enqueueRegisteredSessionStateFieldMutation.mock.calls
         .slice(initialCallsBeforeSwap)).not.toContainEqual([
         expect.objectContaining({
@@ -6378,7 +6554,7 @@ describe('runHostSessionRuntime', () => {
       ]);
 
       const callsBeforeLateOldCallback = replacement.enqueueRegisteredSessionStateFieldMutation.mock.calls.length;
-      subscriptions[0]!.handler({
+      emitToAll(retiredGeneration, {
         kind: 'runtime-activity-snapshot',
         sequence: 2,
         sessionId: 'session-2',
@@ -6390,7 +6566,7 @@ describe('runHostSessionRuntime', () => {
       expect(replacement.enqueueRegisteredSessionStateFieldMutation)
         .toHaveBeenCalledTimes(callsBeforeLateOldCallback);
 
-      subscriptions[1]!.handler({
+      emitToAll(reboundGeneration, {
         kind: 'runtime-activity-snapshot',
         sequence: 3,
         sessionId: 'session-1',
@@ -6405,18 +6581,10 @@ describe('runHostSessionRuntime', () => {
     };
 
     await runHostSessionRuntime(harness.opts, harness.config, harness.deps);
-    expect(subscriptions[0]!.unsubscribe).toHaveBeenCalledOnce();
-    expect(subscriptions[1]!.unsubscribe).toHaveBeenCalledOnce();
-    const disposalLog = loggerDebugMock.mock.calls.find(
-      ([message]) => message === '[Qwen] Runtime Activity subscriber disposal failed after logical fencing (non-fatal)',
-    );
-    expect(disposalLog?.[0]).toBe(
-      '[Qwen] Runtime Activity subscriber disposal failed after logical fencing (non-fatal)',
-    );
-    expect(Object.is(disposalLog?.[1], hostile.proxy)).toBe(false);
-    expect(disposalLog?.[1]).toEqual({
-      error: 'runtime_activity_subscriber_disposal_failed',
-    });
+    expect(subscriptions.length).toBeGreaterThan(1);
+    for (const registration of subscriptions) {
+      expect(registration.unsubscribe).toHaveBeenCalledOnce();
+    }
   });
 
   it('starts a same-session runtime replacement with a fenced empty Activity scope', async () => {
@@ -6537,8 +6705,15 @@ describe('runHostSessionRuntime', () => {
   it('reactivates the prior delivery owner when replacement baseline persistence fails', async () => {
     const harness = createHarness();
     harness.config.runtimeActivityApplicability = 'supported';
-    const unsubscribeRuntimeActivity = vi.fn();
-    harness.runtime.subscribeRuntimeEvents = vi.fn(() => unsubscribeRuntimeActivity);
+    // The host registers several runtime-event consumers (Activity, runtime
+    // publication, session loop) against one runtime, so disposal is asserted
+    // per registration rather than through one shared spy.
+    const runtimeEventUnsubscribes: Array<ReturnType<typeof vi.fn>> = [];
+    harness.runtime.subscribeRuntimeEvents = vi.fn(() => {
+      const unsubscribe = vi.fn();
+      runtimeEventUnsubscribes.push(unsubscribe);
+      return unsubscribe;
+    });
     const order: string[] = [];
     const initialSession = harness.session;
     const replacement = harness.createSessionFixture('session-1').session;
@@ -6547,7 +6722,8 @@ describe('runHostSessionRuntime', () => {
     initialSession.close = vi.fn(async () => { order.push('old:close'); });
     replacement.stageInitialDurableMutationSnapshots = vi.fn(async () => {
       order.push('replacement:stage');
-      expect(unsubscribeRuntimeActivity).not.toHaveBeenCalled();
+      expect(runtimeEventUnsubscribes.some((unsubscribe) => unsubscribe.mock.calls.length > 0))
+        .toBe(false);
       throw new Error('replacement baseline persistence rejected');
     });
     replacement.activateDurableMutationDelivery = vi.fn(async () => { order.push('replacement:activate'); });
@@ -6589,7 +6765,10 @@ describe('runHostSessionRuntime', () => {
     };
 
     await runHostSessionRuntime(harness.opts, harness.config, harness.deps);
-    expect(unsubscribeRuntimeActivity).toHaveBeenCalledOnce();
+    expect(runtimeEventUnsubscribes.length).toBeGreaterThan(0);
+    for (const unsubscribe of runtimeEventUnsubscribes) {
+      expect(unsubscribe).toHaveBeenCalledOnce();
+    }
   });
 
   it('trims the initial resume id before enabling strict resume mode', async () => {
@@ -6691,7 +6870,6 @@ describe('runHostSessionRuntime', () => {
     harness.deps.resolveRunnerMcpServersFn = vi.fn(async () => {
       throw mcpFailure;
     });
-    harness.session.endSessionAndClose = vi.fn(async () => undefined);
 
     await expect(
       runHostSessionRuntime(harness.opts, harness.config, harness.deps),
@@ -6863,6 +7041,13 @@ describe('runHostSessionRuntime', () => {
       adapterBindingKey: 'openrouter',
       compatibilityFingerprint: 'compatibility-v1',
       bindingSecurityFingerprint: 'security-v1',
+      runtimeBindingBasis: externalProviderRuntimeBindingBasis({
+        connectionId: 'pc_work',
+        agentTargetKey: 'backend:codex',
+        contributionKey: 'plugin.openrouter/openrouter',
+        adapterBindingKey: 'openrouter',
+        fingerprintScope: 'attached-refresh',
+      }),
       displaySnapshot: {
         providerName: 'OpenRouter', connectionName: 'Work', connectionRole: 'named' as const,
         connectionDisplayNameMode: 'custom' as const,
@@ -7355,9 +7540,9 @@ describe('runHostSessionRuntime', () => {
         localId: 'local-exact-steer-unavailable',
         userMessageSeq: 92,
         userMessageSeqs: [92],
-        reason: 'provider_rejected_before_acceptance',
+        reason: 'steering_unavailable',
         diagnostic: {
-          code: 'provider_rejected_before_acceptance',
+          code: 'steering_unavailable',
           severity: 'error',
         },
         retryable: false,

@@ -158,6 +158,14 @@ export type HostProviderInputOutcomeEvidence =
     | HostExactProviderInputOutcome
     | HostLegacyProviderInputOutcome;
 
+/**
+ * The durable, restart-surviving answer to "did the provider durably accept this exact Pending
+ * input?". It is derived from the Pending owner's existing durable delivery state, not from a
+ * second acceptance record, and `unknown` means that state could not be read — never that the
+ * input was or was not accepted.
+ */
+export type DurableProviderInputAcceptanceV1 = 'accepted' | 'not_accepted' | 'unknown';
+
 export type SessionProviderInputOutcomeTarget = Readonly<{
     sessionId: string;
     hasPendingProviderInput(localId: string): boolean;

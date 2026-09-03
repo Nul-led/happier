@@ -820,6 +820,7 @@ describe('native Agent session host adapter', () => {
                 (() => NativeAgentNewTurnAdmissionWitness | null)
                 | null;
         } = { current: null };
+        let currentPermissionMode: 'default' | 'yolo' = 'default';
         const nativeEventListeners =
             new Set<(event: AgentSessionRuntimeEvent) => void>();
         const sessionDispose = vi.fn(async () => undefined);
@@ -854,6 +855,7 @@ describe('native Agent session host adapter', () => {
                 userMessageSeq:
                     inputId === 'input-runner-owned-runtime' ? 17 : 18,
                 userMessageSeqs: [],
+                callerPermissionMode: currentPermissionMode,
                 ...(request.causalPermissionAuthority
                     ? {
                         causalPermissionAuthority:
@@ -954,7 +956,7 @@ describe('native Agent session host adapter', () => {
             permissionHandler: {
                 cancelByPlugin: vi.fn(async () => undefined),
             },
-            getPermissionMode: () => 'default',
+            getPermissionMode: () => currentPermissionMode,
             setThinking: () => undefined,
             memoryRecallGuidanceEnabled: false,
         } as never);
@@ -1024,6 +1026,7 @@ describe('native Agent session host adapter', () => {
             turnId: 'turn-runner-owned-runtime',
             userMessageSeq: 17,
             userMessageSeqs: [],
+            callerPermissionMode: 'default',
             causalPermissionAuthority: {
                 kind: 'admittedSessionInputV1',
                 admittedPermissionCeiling: 'read-only',
@@ -1053,6 +1056,7 @@ describe('native Agent session host adapter', () => {
         }));
         expect(activeTurnAdmissionWitnessReader.current?.()).toBeNull();
 
+        currentPermissionMode = 'yolo';
         await created.operations.sendTurnPrompt('next runner turn', {
             turnId: 'turn-runner-owned-runtime-next',
             localId: 'input-runner-owned-runtime-next',
@@ -1063,6 +1067,7 @@ describe('native Agent session host adapter', () => {
             turnId: 'turn-runner-owned-runtime-next',
             userMessageSeq: 18,
             userMessageSeqs: [],
+            callerPermissionMode: 'yolo',
         });
         for (const listener of nativeEventListeners) {
             listener({
@@ -1078,6 +1083,7 @@ describe('native Agent session host adapter', () => {
             turnId: 'turn-runner-owned-runtime-next',
             userMessageSeq: 18,
             userMessageSeqs: [],
+            callerPermissionMode: 'yolo',
         });
         for (const listener of nativeEventListeners) {
             listener({
@@ -6665,6 +6671,12 @@ describe('native Agent session host adapter', () => {
         const hostServices = readHostServices(capturedContext.current);
         expect(capturedContext.current.services.availability('sessions')).toEqual({ status: 'available' });
         expect(capturedContext.current.services.availability('interactions')).toEqual({ status: 'available' });
+        expect(Reflect.ownKeys(hostServices.sessions).sort()).toEqual([
+            'current', 'external', 'get', 'list', 'subagents', 'watch',
+        ]);
+        expect(Reflect.ownKeys(hostServices.sessions.subagents).sort()).toEqual([
+            'get', 'list', 'watch',
+        ]);
         await expect(capturedContext.current.session.services.subagents.observe({
             observationId: 'worker-1',
             status: 'running',
@@ -6722,7 +6734,7 @@ describe('native Agent session host adapter', () => {
         const verify = vi.fn<AgentSessionContinuationControl['verify']>(async () => ({
             status: 'reachable' as const,
         }));
-        const open = vi.fn(async () => ({
+        const open = vi.fn<AgentSessionRuntimeFactory['open']>(async () => ({
             send: vi.fn(async () => ({ status: 'admitted' as const })),
             watch: () => ({ dispose: () => undefined }),
             dispose: vi.fn(),
@@ -7302,7 +7314,7 @@ describe('native Agent session host adapter', () => {
         expect(Object.isFrozen(observedHostWitnesses[0]?.causalPermissionAuthority?.sourceAuthority)).toBe(true);
     });
 
-    it('projects redacted native failure diagnostics into public Host Events and listeners', () => {
+    it('projects redacted native failure diagnostics into public runtime listeners', () => {
         const providerMessageSentinel = 'VOICE_PRIVATE_MESSAGE_SENTINEL: user transcript';
         const providerAdditionalDetailsSentinel = 'VOICE_PRIVATE_DETAILS_SENTINEL: startup instructions';
         const spoofedAgentId = 'SPOOFED_NATIVE_DIAGNOSTIC_AGENT';
@@ -7316,24 +7328,7 @@ describe('native Agent session host adapter', () => {
             },
             dispose: vi.fn(),
         };
-        const hostEvents: unknown[] = [];
-        const runtime = createNativeAgentSessionOperations(
-            session,
-            'session-privacy',
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            [],
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            (event) => hostEvents.push(event),
-        );
+        const runtime = createNativeAgentSessionOperations(session, 'session-privacy');
         const events: unknown[] = [];
         runtime.subscribeRuntimeEvents((event) => events.push(event));
 
@@ -7348,7 +7343,6 @@ describe('native Agent session host adapter', () => {
             });
         }
         events.length = 0;
-        hostEvents.length = 0;
 
         for (const listener of listeners) {
             listener({
@@ -7391,15 +7385,10 @@ describe('native Agent session host adapter', () => {
             },
         }];
         expect(events).toEqual(expectedPublicEvents);
-        expect(hostEvents).toEqual(expectedPublicEvents);
         expect(JSON.stringify(events)).not.toContain(providerMessageSentinel);
         expect(JSON.stringify(events)).not.toContain(providerAdditionalDetailsSentinel);
         expect(JSON.stringify(events)).not.toContain(spoofedAgentId);
         expect(JSON.stringify(events)).not.toContain(spoofedAgentTurnId);
-        expect(JSON.stringify(hostEvents)).not.toContain(providerMessageSentinel);
-        expect(JSON.stringify(hostEvents)).not.toContain(providerAdditionalDetailsSentinel);
-        expect(JSON.stringify(hostEvents)).not.toContain(spoofedAgentId);
-        expect(JSON.stringify(hostEvents)).not.toContain(spoofedAgentTurnId);
     });
 
     it('preserves a native session auth diagnostic while stripping spoofed detail fields', () => {
@@ -7464,7 +7453,7 @@ describe('native Agent session host adapter', () => {
         expect(JSON.stringify(events)).not.toContain('SPOOFED_NATIVE_AUTH_AGENT');
     });
 
-    it('preserves bounded native diagnostics while redacting private detail bags in public Host Events and listeners', async () => {
+    it('preserves bounded native diagnostics while redacting private detail bags in public runtime listeners', async () => {
         const providerMessageSentinel = 'NATIVE_PRIVATE_MESSAGE_SENTINEL: user transcript';
         const providerAdditionalDetailsSentinel = 'NATIVE_PRIVATE_DETAILS_SENTINEL: startup instructions';
         const spoofedAgentId = 'SPOOFED_NATIVE_DIAGNOSTIC_AGENT';
@@ -7504,35 +7493,16 @@ describe('native Agent session host adapter', () => {
                 },
                 dispose: vi.fn(),
             };
-            const hostEvents: unknown[] = [];
             const listenerEvents: unknown[] = [];
-            const runtime = createNativeAgentSessionOperations(
-                session,
-                sessionId,
-                undefined,
-                undefined,
-                undefined,
-                undefined,
-                undefined,
-                undefined,
-                undefined,
-                [],
-                undefined,
-                undefined,
-                undefined,
-                undefined,
-                (event) => hostEvents.push(event),
-            );
+            const runtime = createNativeAgentSessionOperations(session, sessionId);
             runtime.subscribeRuntimeEvents((event) => listenerEvents.push(event));
             return {
                 runtime,
-                hostEvents,
                 listenerEvents,
                 publish(event: AgentSessionRuntimeEvent): void {
                     for (const listener of nativeListeners) listener(event);
                 },
                 clear(): void {
-                    hostEvents.length = 0;
                     listenerEvents.length = 0;
                 },
             };
@@ -7558,13 +7528,11 @@ describe('native Agent session host adapter', () => {
             throw new Error(`expected a diagnostic-bearing event, received '${event.kind}'`);
         };
         const assertProjection = (
-            hostEvents: readonly unknown[],
             listenerEvents: readonly unknown[],
             expectedKind: string,
             expected: RuntimeDiagnostic,
             expectedSource: string | null,
         ): void => {
-            expect(hostEvents).toEqual(listenerEvents);
             expect(listenerEvents).toHaveLength(1);
             const event = AgentSessionRuntimeEventSchema.parse(listenerEvents[0]);
             expect(event.kind).toBe(expectedKind);
@@ -7575,7 +7543,7 @@ describe('native Agent session host adapter', () => {
                 ...(expected.remediation !== undefined ? { remediation: expected.remediation } : {}),
                 ...(expectedSource === null ? {} : { details: { v: 1, source: expectedSource } }),
             });
-            const serialized = JSON.stringify({ hostEvents, listenerEvents });
+            const serialized = JSON.stringify(listenerEvents);
             expect(serialized).not.toContain(providerMessageSentinel);
             expect(serialized).not.toContain(providerAdditionalDetailsSentinel);
             expect(serialized).not.toContain(spoofedAgentId);
@@ -7605,7 +7573,6 @@ describe('native Agent session host adapter', () => {
             retryable: true,
         });
         assertProjection(
-            rejected.hostEvents,
             rejected.listenerEvents,
             'input-rejected',
             rejectedDiagnostic,
@@ -7634,7 +7601,6 @@ describe('native Agent session host adapter', () => {
             issue: custodyDiagnostic,
         });
         assertProjection(
-            custody.hostEvents,
             custody.listenerEvents,
             'input-custody-unknown',
             custodyDiagnostic,
@@ -7665,7 +7631,6 @@ describe('native Agent session host adapter', () => {
             duplicateRisk: 'possible',
         });
         assertProjection(
-            delivery.hostEvents,
             delivery.listenerEvents,
             'input-delivery-failed',
             deliveryDiagnostic,
@@ -7698,7 +7663,6 @@ describe('native Agent session host adapter', () => {
             diagnostic: failedDiagnostic,
         });
         assertProjection(
-            failed.hostEvents,
             failed.listenerEvents,
             'turn-failed',
             failedDiagnostic,
@@ -7732,7 +7696,6 @@ describe('native Agent session host adapter', () => {
             diagnostic: cancelledDiagnostic,
         });
         assertProjection(
-            cancelled.hostEvents,
             cancelled.listenerEvents,
             'turn-cancelled',
             cancelledDiagnostic,
@@ -7757,7 +7720,6 @@ describe('native Agent session host adapter', () => {
             diagnostic: runtimeEndedDiagnostic,
         });
         assertProjection(
-            runtimeEnded.hostEvents,
             runtimeEnded.listenerEvents,
             'runtime-ended',
             runtimeEndedDiagnostic,
@@ -7786,7 +7748,6 @@ describe('native Agent session host adapter', () => {
             diagnostic: compactionFailedDiagnostic,
         });
         assertProjection(
-            compactionFailed.hostEvents,
             compactionFailed.listenerEvents,
             'context-compaction',
             compactionFailedDiagnostic,
@@ -7812,7 +7773,6 @@ describe('native Agent session host adapter', () => {
             diagnostic: compactionCancelledDiagnostic,
         });
         assertProjection(
-            compactionCancelled.hostEvents,
             compactionCancelled.listenerEvents,
             'context-compaction',
             compactionCancelledDiagnostic,
@@ -7838,7 +7798,6 @@ describe('native Agent session host adapter', () => {
             diagnostic: compactionOutcomeUnknownDiagnostic,
         });
         assertProjection(
-            compactionOutcomeUnknown.hostEvents,
             compactionOutcomeUnknown.listenerEvents,
             'context-compaction',
             compactionOutcomeUnknownDiagnostic,
@@ -8994,7 +8953,6 @@ describe('native Agent session host adapter', () => {
             undefined,
             undefined,
             undefined,
-            undefined,
             { capability: 'observable', observeAfter },
         );
         runtime.subscribeRuntimeEvents(() => undefined);
@@ -10060,6 +10018,103 @@ describe('native Agent session host adapter', () => {
         expect(cancel.mock.calls[0]?.[0]).toEqual({ turnId: 'turn-cancel', reason: 'user' });
     });
 
+    it.each([
+        ['requested', { status: 'requested' as const, turnId: 'turn-cancel' }],
+        ['notRunning', { status: 'notRunning' as const }],
+    ] as const)('settles a provider %s cancellation result as host success without surfacing an error', async (_status, cancelResult) => {
+        const listeners = new Set<(event: AgentSessionRuntimeEvent) => void>();
+        const send = vi.fn<AgentSessionRuntime['send']>(async (request) => {
+            for (const listener of listeners) {
+                listener({
+                    sequence: 1,
+                    sessionId: 'session-1',
+                    emittedAtMs: 1,
+                    kind: 'input-accepted',
+                    inputIds: request.inputIds,
+                    delivery: request.delivery,
+                });
+                listener({
+                    sequence: 2,
+                    sessionId: 'session-1',
+                    emittedAtMs: 2,
+                    kind: 'turn-start',
+                    turnId: request.delivery.turnId,
+                    startedBy: 'host',
+                });
+            }
+            return { status: 'admitted' };
+        });
+        const cancel = vi.fn<NonNullable<AgentSessionRuntime['cancel']>>(async () => cancelResult);
+        const session: AgentSessionRuntime = {
+            send,
+            cancel,
+            watch(listener) {
+                listeners.add(listener);
+                return { dispose: () => { listeners.delete(listener); } };
+            },
+            dispose: vi.fn(),
+        };
+        const runtime = createNativeAgentSessionOperations(session, 'session-1');
+        await runtime.sendTurnPrompt(
+            'wait for cancel',
+            { localId: `queue-local-cancel-${cancelResult.status}`, turnId: 'turn-cancel' },
+        );
+
+        await expect(runtime.cancelTurn()).resolves.toBeUndefined();
+        expect(cancel).toHaveBeenCalledTimes(1);
+        expect(cancel.mock.calls[0]?.[0]).toEqual({ turnId: 'turn-cancel', reason: 'user' });
+    });
+
+    it('propagates a provider cancellation unavailability as a host error', async () => {
+        const listeners = new Set<(event: AgentSessionRuntimeEvent) => void>();
+        const send = vi.fn<AgentSessionRuntime['send']>(async (request) => {
+            for (const listener of listeners) {
+                listener({
+                    sequence: 1,
+                    sessionId: 'session-1',
+                    emittedAtMs: 1,
+                    kind: 'input-accepted',
+                    inputIds: request.inputIds,
+                    delivery: request.delivery,
+                });
+                listener({
+                    sequence: 2,
+                    sessionId: 'session-1',
+                    emittedAtMs: 2,
+                    kind: 'turn-start',
+                    turnId: request.delivery.turnId,
+                    startedBy: 'host',
+                });
+            }
+            return { status: 'admitted' };
+        });
+        const cancel = vi.fn<NonNullable<AgentSessionRuntime['cancel']>>(async () => ({
+            status: 'unavailable',
+            diagnostic: {
+                code: 'native_cancel_unavailable',
+                severity: 'error',
+                message: 'provider cancel unavailable',
+            },
+        }));
+        const session: AgentSessionRuntime = {
+            send,
+            cancel,
+            watch(listener) {
+                listeners.add(listener);
+                return { dispose: () => { listeners.delete(listener); } };
+            },
+            dispose: vi.fn(),
+        };
+        const runtime = createNativeAgentSessionOperations(session, 'session-1');
+        await runtime.sendTurnPrompt(
+            'wait for cancel failure',
+            { localId: 'queue-local-cancel-unavailable', turnId: 'turn-cancel' },
+        );
+
+        await expect(runtime.cancelTurn()).rejects.toThrow('provider cancel unavailable');
+        expect(cancel).toHaveBeenCalledTimes(1);
+    });
+
     it('does not offer cancellation when the Agent declaration omits it', async () => {
         const listeners = new Set<(event: AgentSessionRuntimeEvent) => void>();
         const send = vi.fn<AgentSessionRuntime['send']>(async (request) => {
@@ -10343,6 +10398,7 @@ describe('native Agent session host adapter', () => {
             dispose: vi.fn(),
         };
         const runtime = createNativeAgentSessionOperations(session, 'session-1');
+        runtime.subscribeRuntimeEvents(() => undefined);
         runtime.beginTurnLifecycle();
 
         await expect(runtime.waitForTurnCompletion({ timeoutMs: 1 }))

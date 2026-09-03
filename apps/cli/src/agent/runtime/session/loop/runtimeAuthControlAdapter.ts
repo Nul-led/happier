@@ -49,9 +49,6 @@ function projectApplyRequest(
   return {
     serviceId: request.serviceId,
     reason: request.reason,
-    ...(request.requireDirectLiveHotApply === undefined
-      ? {}
-      : { requireDirectLiveHotApply: request.requireDirectLiveHotApply }),
     ...(request.expected === undefined ? {} : { expected: projectExpected(request.expected) }),
     authGeneration: parsedAuthGeneration.data,
   };

@@ -74,6 +74,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
     return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
+function isExecutionRunStartResponseTimeout(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error ?? '');
+    return message.toLowerCase().includes('rpc call timeout');
+}
+
 function readOwnDataProperty(record: Record<string, unknown>, key: string): unknown {
     const descriptor = Object.getOwnPropertyDescriptor(record, key);
     return descriptor && Object.prototype.hasOwnProperty.call(descriptor, 'value')
@@ -207,6 +212,7 @@ function toExecutionRunPublicState(marker: ExecutionRunMarkerRecord): ExecutionR
         intent: marker.intent,
         backendTarget,
         ...(marker.display !== undefined ? { display: marker.display } : {}),
+        ...(marker.launchOrigin !== undefined ? { launchOrigin: marker.launchOrigin } : {}),
         permissionMode,
         retentionPolicy: marker.retentionPolicy,
         runClass: marker.runClass,
@@ -538,6 +544,16 @@ export async function startExecutionRun(
         const runCreation = readRpcRequestDisposition(error) === 'notSent'
             ? 'noRunCreated'
             : 'outcomeUnknown';
+        if (runCreation === 'outcomeUnknown' && isExecutionRunStartResponseTimeout(error)) {
+            // A run marker is diagnostic evidence, never a durable receipt: a lost
+            // start response stays ambiguous and the caller owns any fresh attempt.
+            return {
+                ok: false,
+                code: 'execution_run_start_ambiguous',
+                message: 'Execution run start response timed out; accepted outcome is unknown',
+                details: withExecutionRunStartFailureDetails(undefined, 'outcomeUnknown'),
+            };
+        }
         if (!isFallbackSafeExecutionRunRpcError(error)) {
             if ((typeof error === 'object' && error !== null) || typeof error === 'function') {
                 let detailsAttached = false;

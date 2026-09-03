@@ -23,6 +23,7 @@ import { createExecutionRunHostBackendFromSessionRuntime } from '@happier-dev/pl
 
 import type { AgentMessage } from '@/agent/core/AgentMessage';
 import type { CreateCliExecutionRunBackendParams } from '@/agent/runtime/registry/engineRegistryTypes';
+import type { AgentSessionCapabilities } from '@/plugins/projection/registry/agentContributionDefinition';
 import { createUnavailablePluginServices } from '@/plugins/runtime/invocation/services/unavailable';
 import { createPluginInvocationPresentation } from '@/plugins/runtime/invocation/services/interactions';
 import { resolveAgentContributionQualifiedId } from '@/plugins/projection/registry/agentRoutingIdentity';
@@ -192,6 +193,8 @@ function buildLaunchEnvironment(
 function createNativeAgentInvocationContext(params: Readonly<{
     lease: NativeAgentRuntimeLeaseIdentity;
     runId: string;
+    /** Owning Happier Session id when the host scope has one; absent for detached Runs. */
+    happierSessionId?: string;
     signal: AbortSignal;
     services: PluginServices;
     invokedAtMs: number;
@@ -207,7 +210,9 @@ function createNativeAgentInvocationContext(params: Readonly<{
         }),
         surface: 'agent' as const,
         invokedAtMs: params.invokedAtMs,
-        session: Object.freeze({ id: params.runId }),
+        // A detached execution-only Run has no Happier Session scope, so the
+        // context omits `session` instead of fabricating one from the run id.
+        ...(params.happierSessionId ? { session: Object.freeze({ id: params.happierSessionId }) } : {}),
         signal: params.signal,
         services: params.services,
         ui: createPluginInvocationPresentation({
@@ -355,6 +360,9 @@ export function createNativeAgentExecutionRunHostRuntime(params: Readonly<{
             const context = createNativeAgentInvocationContext({
                 lease: params.lease,
                 runId,
+                ...(params.options.happierSessionId
+                    ? { happierSessionId: params.options.happierSessionId }
+                    : {}),
                 signal,
                 services,
                 invokedAtMs,
@@ -645,7 +653,11 @@ export function createNativeAgentSessionInteractionHostRuntime(params: Readonly<
     runtime: AgentRuntime;
     lease: NativeAgentRuntimeLeaseIdentity;
     options: CreateCliExecutionRunBackendParams;
-    supportsResume: boolean;
+    /**
+     * One declared capability set owns both resume admission and the controls
+     * this retained interaction may offer.
+     */
+    sessionCapabilities: AgentSessionCapabilities;
     generationSignal?: AbortSignal;
     services?: Promise<PluginServices>;
     createSessionContext: NativeAgentSessionContextLeaseFactory;
@@ -654,6 +666,7 @@ export function createNativeAgentSessionInteractionHostRuntime(params: Readonly<
     if (!sessions) {
         throw new Error(`Agent runtime '${params.lease.agentId}' does not support sessions`);
     }
+    const supportsResume = params.sessionCapabilities.open.includes('resume');
     const runId = readRequiredString(params.options.runId, 'a run id');
     const launchEnvironment = buildLaunchEnvironment(params.options);
     const sanitize = params.options.sanitizeProviderDiagnosticText ?? ((value: string) => value);
@@ -726,7 +739,10 @@ export function createNativeAgentSessionInteractionHostRuntime(params: Readonly<
                     sessionId: context.session.id,
                     cwd: params.options.cwd,
                     context,
-                    initialConfiguration: params.options.configuration,
+                    capabilities: params.sessionCapabilities,
+                    ...(params.options.configuration
+                        ? { initialConfiguration: params.options.configuration }
+                        : {}),
                 });
                 unsubscribeEvents = operations.subscribeRuntimeEvents((event) => {
                     if ('type' in event) return;
@@ -749,12 +765,12 @@ export function createNativeAgentSessionInteractionHostRuntime(params: Readonly<
     return Object.freeze({
         permissionCapability: 'static' as const,
         async readResumeSupport() {
-            return params.supportsResume;
+            return supportsResume;
         },
         async provisionSession(options) {
             assertUsable();
             provisionPromise ??= (async () => {
-                if (options?.resumeSessionId && !params.supportsResume) {
+                if (options?.resumeSessionId && !supportsResume) {
                     throw new Error('Backend does not support resume');
                 }
                 await open(options?.resumeSessionId);

@@ -352,6 +352,7 @@ export async function startDaemonRuntimeBootstrap(
     startupSource: params.startupSource,
     serviceManaged: isDaemonStartupSourceServiceManaged(params.startupSource),
     serviceLabel: params.serviceLabel,
+    daemonPendingSessionActivationSupported: true,
     transfer: initialTransferState,
   };
   transferRuntimeStatePublisher = createDaemonTransferRuntimeStatePublisher({

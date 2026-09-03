@@ -186,6 +186,7 @@ export async function finishExecutionRun(args: Readonly<{
     sidechainId: updated.sidechainId,
     intent: updated.intent,
     backendTarget: readBackendTargetRefV2(updated.backendTarget),
+    ...(updated.launch?.launchOrigin ? { launchOrigin: updated.launch.launchOrigin } : {}),
     permissionMode: updated.permissionMode,
     retentionPolicy: updated.retentionPolicy,
     runClass: updated.runClass,

@@ -467,7 +467,7 @@ describe('createExecutionRunRpcActionExecutor', () => {
     });
   });
 
-  it('keeps an agent-started execution run at its active turn ceiling after the session mode widens', async () => {
+  it('rejects escalation above the active turn ceiling after the session mode widens', async () => {
     const start = vi.fn(async () => ({
       runId: 'run_causal_1',
       callId: 'call_causal_1',
@@ -493,13 +493,12 @@ describe('createExecutionRunRpcActionExecutor', () => {
         causalPermissionAuthority: firstTurnAuthority,
       } as unknown as Parameters<typeof executor.execute>[2],
     )).resolves.toEqual({
-      ok: true,
-      result: {
-        runId: 'run_causal_1',
-        callId: 'call_causal_1',
-        sidechainId: 'side_causal_1',
-      },
+      ok: false,
+      errorCode: 'permission_escalation_denied',
+      error: 'permission_escalation_denied',
+      details: { executionRunStart: { v: 1, runCreation: 'noRunCreated' } },
     });
+    expect(start).not.toHaveBeenCalled();
 
     await expect(executor.execute(
       'execution.run.start',
@@ -520,10 +519,6 @@ describe('createExecutionRunRpcActionExecutor', () => {
     });
 
     expect(start).toHaveBeenNthCalledWith(1, expect.objectContaining({
-      permissionMode: 'default',
-      causalPermissionAuthority: firstTurnAuthority,
-    }));
-    expect(start).toHaveBeenNthCalledWith(2, expect.objectContaining({
       permissionMode: 'yolo',
       causalPermissionAuthority: laterTurnAuthority,
     }));
@@ -719,13 +714,19 @@ describe('createExecutionRunRpcActionExecutor', () => {
       await vi.advanceTimersByTimeAsync(0);
       expect(start).toHaveBeenCalledTimes(1);
       await vi.advanceTimersByTimeAsync(2_000);
-      await expect(result).resolves.toEqual({
+      await expect(result).resolves.toMatchObject({
         ok: true,
         result: {
           runId: 'run_detached_waiting_1',
           callId: 'call_detached_waiting_1',
           sidechainId: 'sidechain_detached_waiting_1',
-          wait: { ok: false, code: 'timeout' },
+          wait: {
+            ok: true,
+            status: 'running',
+            disposition: 'observation_timeout',
+            runId: 'run_detached_waiting_1',
+            timeoutMs: 1_000,
+          },
         },
       });
       expect(start).toHaveBeenCalledTimes(1);

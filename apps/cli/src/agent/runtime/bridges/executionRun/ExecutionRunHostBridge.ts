@@ -534,6 +534,7 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
   private createExecutionRunRuntime(opts: ExecutionRunRuntimeCreateOptions): ExecutionRunHostRuntime {
     const runScope = opts.runId ? this.runs.get(opts.runId)?.sessionId : undefined;
     const parentSessionStateTarget = runScope === null ? null : this.parentSessionStateTarget;
+    const happierSessionId = typeof runScope === 'string' && runScope.trim().length > 0 ? runScope : undefined;
     return createExecutionRunBridgeRuntime({
       cwd: this.cwd,
       runId: opts.runId,
@@ -549,6 +550,7 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
         ? { sessionConfigOptionOverrides: opts.sessionConfigOptionOverrides }
         : {}),
       accountSettings: opts.accountSettings ?? null,
+      ...(happierSessionId ? { happierSessionId } : {}),
       ...(opts.connectedServices !== undefined
         ? { connectedServices: opts.connectedServices }
         : {}),
@@ -616,9 +618,9 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
 
   /**
    * ONE resume backend factory (LC-F2): every recreation path rehydrates the run's immutable launch
-   * record so the recreated backend re-applies the SAME model, config overrides, and connected-service
-   * selection (daemon re-materializes it, fail-closed) instead of falling back to a bare backend on
-   * ambient/native auth. Keeps resume symmetric with start.
+   * record so the recreated backend re-applies the SAME model, config overrides, connected-service
+   * selection, and admitted start intent (daemon re-materializes the selection, fail-closed) instead
+   * of falling back to a bare backend on ambient/native auth. Keeps resume symmetric with start.
    */
   private createResumeExecutionRunRuntime(opts: Readonly<{
     runId?: string;
@@ -653,6 +655,7 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
       ...(resumeOptions.connectedServices !== undefined
         ? { connectedServices: resumeOptions.connectedServices }
         : {}),
+      ...(resumeOptions.start ? { start: resumeOptions.start } : {}),
     });
   }
 
@@ -739,6 +742,7 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
       intent: run.intent,
       backendTarget: run.backendTarget,
       ...(run.display ? { display: run.display } : {}),
+      ...(run.launch?.launchOrigin ? { launchOrigin: run.launch.launchOrigin } : {}),
       permissionMode: run.permissionMode,
       retentionPolicy: run.retentionPolicy,
       runClass: run.runClass,

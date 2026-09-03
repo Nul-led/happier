@@ -1,5 +1,6 @@
 import type { AcpConfigOptionOverridesV1, ConnectedServiceBindingsV1, ProviderBoundModelRef } from '@happier-dev/protocol';
 
+import type { ExecutionRunBackendStartContext } from '@/agent/executionRuns/registry/executionRunBackendTypes';
 import type { ExecutionRunState } from './executionRunTypes';
 
 /**
@@ -7,8 +8,10 @@ import type { ExecutionRunState } from './executionRunTypes';
  *
  * Start owns a rich launch specification; every backend recreation on resume must rebuild from that
  * SAME specification instead of a lossy, defaulted reconstruction. This owner reads the run's
- * immutable launch record and returns exactly what a recreated backend needs re-applied: model,
- * canonical config overrides (e.g. reasoning effort), and the persisted connected-service SELECTION.
+ * immutable admitted state and returns exactly what a recreated backend needs re-applied: the model,
+ * canonical config overrides (e.g. reasoning effort), the persisted connected-service SELECTION, and
+ * the original start intent (`ExecutionRunBackendStartContext`) so the recreated backend is the SAME
+ * kind of backend (runtime-core selects the Voice interaction runtime from `start.intent`).
  *
  * In dev's architecture connected services are materialized DAEMON-side from the selection at backend
  * spawn (fail-closed there): so this owner threads the persisted selection through as `connectedServices`
@@ -21,21 +24,30 @@ export type ExecutionRunResumeBackendOptions = Readonly<{
   modelSelection?: ProviderBoundModelRef;
   sessionConfigOptionOverrides?: AcpConfigOptionOverridesV1;
   connectedServices?: ConnectedServiceBindingsV1 | null;
+  /** The run's immutable admitted start intent, rebuilt so a recreated backend is the SAME kind of backend. */
+  start?: ExecutionRunBackendStartContext;
 }>;
 
 export function resolveExecutionRunResumeBackendOptions(args: Readonly<{
   run: ExecutionRunState | null;
 }>): ExecutionRunResumeBackendOptions {
-  const launch = args.run?.launch ?? null;
-  if (!launch) return {};
+  const run = args.run;
+  if (!run) return {};
+  const launch = run.launch ?? null;
   return {
-    ...(launch.modelId ? { modelId: launch.modelId } : {}),
-    ...(launch.modelSelection ? { modelSelection: launch.modelSelection } : {}),
-    ...(launch.sessionConfigOptionOverrides
+    ...(launch?.modelId ? { modelId: launch.modelId } : {}),
+    ...(launch?.modelSelection ? { modelSelection: launch.modelSelection } : {}),
+    ...(launch?.sessionConfigOptionOverrides
       ? { sessionConfigOptionOverrides: launch.sessionConfigOptionOverrides }
       : {}),
-    ...(launch.connectedServicesSelection !== undefined
+    ...(launch && launch.connectedServicesSelection !== undefined
       ? { connectedServices: launch.connectedServicesSelection }
       : {}),
+    start: {
+      intent: run.intent,
+      retentionPolicy: run.retentionPolicy,
+      ...(run.profileId ? { profileId: run.profileId } : {}),
+      ...(typeof run.intentInput !== 'undefined' ? { intentInput: run.intentInput } : {}),
+    },
   };
 }

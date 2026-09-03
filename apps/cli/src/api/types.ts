@@ -463,6 +463,7 @@ export const DaemonStateSchema = z.object({
   startupSource: DaemonStartupSourceSchema.optional(),
   serviceManaged: z.boolean().optional(),
   serviceLabel: z.string().optional(),
+  daemonPendingSessionActivationSupported: z.boolean().optional(),
   shutdownRequestedAt: z.number().optional(),
   shutdownSource:
     z.union([

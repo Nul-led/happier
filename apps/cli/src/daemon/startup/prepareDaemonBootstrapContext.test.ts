@@ -224,6 +224,28 @@ describe('prepareDaemonBootstrapContext', () => {
     expect(result.daemonLockHandle).toBe(acquiredLock);
   });
 
+  it('uses a rotated preflight only for identity recovery and leaves daemon-state registration to startup', async () => {
+    const { prepareDaemonBootstrapContext } = await import('./prepareDaemonBootstrapContext');
+    mocks.ensureMachineRegistered.mockResolvedValueOnce({
+      machineId: 'machine-recovered',
+      didRotateMachineId: true,
+      machine: { id: 'machine-recovered' },
+    });
+    const acquiredLock = { kind: 'acquired-lock' };
+    mocks.acquireDaemonLock.mockResolvedValue(acquiredLock);
+
+    const result = await prepareDaemonBootstrapContext({
+      daemonLockHandle: null,
+      initialMachineMetadata: { platform: 'darwin' } as never,
+      startupSource: 'manual',
+    });
+
+    expect(result.machineId).toBe('machine-recovered');
+    expect(mocks.stopDaemon).toHaveBeenCalledOnce();
+    expect(result.daemonLockHandle).toBe(acquiredLock);
+    expect(result.preflightMachineRegistration).toBeNull();
+  });
+
   it('does not stop a daemon whose persisted PID is definitively absent', async () => {
     const { prepareDaemonBootstrapContext } = await import('./prepareDaemonBootstrapContext');
     mocks.isDaemonRunningCurrentlyInstalledHappyVersion.mockResolvedValue(false);

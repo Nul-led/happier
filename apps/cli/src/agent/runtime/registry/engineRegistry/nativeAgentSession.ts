@@ -85,6 +85,10 @@ import {
     type HostCurrentSessionUiServices,
     type HostPluginServices,
 } from '@/agent/runtime/state/currentSessionUiTypes';
+import {
+    bindPluginSessionsSubagentObservation,
+    readPluginSessionsSubagentObservation,
+} from '@/session/services/pluginSessionsInventory';
 import type { AgentRuntimeRegistrationLease } from '@/plugins/runtime/lifecycle/contributions/targetAgents';
 import type { PublicAcpHostLaunchResolver } from '@/agent/acp/runtime/publicSession/createPublicAcpSession';
 import {
@@ -1203,10 +1207,7 @@ export function createNativeAgentSessionHostServices(params: Readonly<{
 function readAgentSessionSubagentObservationPublisher(
     services: PluginServices,
 ): AgentSessionHostServices['subagents'] | undefined {
-    const subagents = (services as HostPluginServices).sessions.subagents;
-    return typeof subagents.observe === 'function'
-        ? subagents as AgentSessionHostServices['subagents']
-        : undefined;
+    return readPluginSessionsSubagentObservation(services.sessions);
 }
 
 function cloneNativeAgentSessionMcpServers(
@@ -1808,6 +1809,9 @@ export type NativeAgentNewTurnAdmissionWitness = Readonly<{
     userMessageSeq: number | null;
     userMessageSeqs: readonly number[];
     causalPermissionAuthority?: SessionInputCausalPermissionAuthorityV1;
+    callerPermissionMode?: ReturnType<
+        HostSessionRuntimeFactoryParams['getPermissionMode']
+    > | null;
 }>;
 
 export type NativeAgentNewTurnAdmissionOptions = Readonly<{
@@ -2012,20 +2016,18 @@ export function createNativeAgentSessionInteractionOperations(params: Readonly<{
     sessionId: string;
     cwd: string;
     context: AgentSessionRuntimeContext;
+    /**
+     * The Agent's declared Session capabilities, resolved once by the engine
+     * layer. Retained Session interactions are a projection of the same Agent,
+     * so they must not re-derive capabilities from runtime method presence:
+     * that made this path a second capability owner that could offer an
+     * undeclared control and silently drop a declared one.
+     */
+    capabilities: AgentSessionCapabilities;
     connectedAccounts?: NonNullable<AgentSessionOpenRequest['connectedAccounts']>;
     initialConfiguration?: AgentSessionConfigurationSnapshot;
 }>): PluginRuntimeHookOperations {
-    const capabilities: AgentSessionCapabilities = {
-        open: ['create', 'resume'],
-        delivery: ['newTurn'],
-        cancel: typeof params.session.cancel === 'function',
-        ...(typeof params.session.updateConfiguration === 'function'
-            ? { configuration: true }
-            : {}),
-        ...(typeof params.session.compact === 'function'
-            ? { compaction: { events: true, manual: true } }
-            : {}),
-    };
+    const capabilities = params.capabilities;
     return createNativeAgentSessionOperations(
         params.session,
         params.sessionId,
@@ -4593,18 +4595,27 @@ export async function createNativeAgentRuntimeSessionPlan(params: Readonly<{
                     readActiveTurnAdmissionWitness(),
             });
             const services = operationServices
-                ? Object.freeze({
-                    ...operationServices,
-                    availability: (serviceId: Parameters<PluginServices['availability']>[0]) => (
-                        serviceId === 'sessions'
-                            ? sessionServices.availability('sessions')
-                            : operationServices.availability(serviceId)
-                    ),
-                    sessions: Object.freeze({
+                ? (() => {
+                    const sessions = Object.freeze({
                         ...sessionServices.sessions,
                         external: operationServices.sessions.external,
-                    }),
-                })
+                    });
+                    const subagentObservation = readPluginSessionsSubagentObservation(
+                        sessionServices.sessions,
+                    );
+                    if (subagentObservation) {
+                        bindPluginSessionsSubagentObservation(sessions, subagentObservation);
+                    }
+                    return Object.freeze({
+                        ...operationServices,
+                        availability: (serviceId: Parameters<PluginServices['availability']>[0]) => (
+                            serviceId === 'sessions'
+                                ? sessionServices.availability('sessions')
+                                : operationServices.availability(serviceId)
+                        ),
+                        sessions,
+                    });
+                })()
                 : sessionServices;
             const terminalHostLaunchTransformerBinding =
                 sessionHostServices.terminalHost
@@ -5215,7 +5226,16 @@ export async function createNativeAgentRuntimeSessionPlan(params: Readonly<{
                 sanitizeBoundaryError,
                 params.authorizeNewTurn,
                 (reader) => {
-                    readActiveTurnAdmissionWitness = reader;
+                    readActiveTurnAdmissionWitness = () => {
+                        const witness = reader();
+                        return witness
+                            ? {
+                                ...witness,
+                                callerPermissionMode:
+                                    hostRuntimeParams.getPermissionMode(),
+                            }
+                            : null;
+                    };
                 },
                 toolExecutionCapability
                     ? {

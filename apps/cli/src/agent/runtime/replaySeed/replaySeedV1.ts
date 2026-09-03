@@ -1,4 +1,7 @@
+import type { DurableProviderInputAcceptanceV1 } from '@/agent/runtime/session/input/providerInputOutcome';
 import { logger } from '@/ui/logger';
+
+export type { DurableProviderInputAcceptanceV1 };
 
 export type ReplaySeedV1 = {
   v: 1;
@@ -8,6 +11,19 @@ export type ReplaySeedV1 = {
   createdAtMs: number;
   appliedToLocalId?: string;
   appliedAtMs?: number;
+  /**
+   * The exact Pending localId whose provider prompt this seed's text was composed into,
+   * recorded BEFORE the provider can accept it.
+   *
+   * Retirement is a separate metadata write that can fail, and the hold that retries it is
+   * runtime-local. A restart therefore used to lose every trace that an already-accepted seed
+   * had been handed over, and the next prompt carried the whole replay context again. This
+   * association is the durable half of that fact: it names an existing Pending row, so the
+   * incumbent durable accepted-delivery status for that row decides — at the next admission —
+   * whether the seed is retired or still owed to the provider. It is not a second acceptance
+   * fact; it records nothing about the outcome.
+   */
+  dispatchedToLocalId?: string;
 };
 
 const REPLAY_SEED_CONSUMED_SENTINEL_LOCAL_ID = '__replay_seed_consumed__';
@@ -68,15 +84,47 @@ export function createReplaySeedV1ConsumeUpdater(params: Readonly<{ localId: str
   return (current: any) => {
     const currentSeed = readReplaySeedV1FromMetadata(current);
     if (!currentSeed || currentSeed.appliedToLocalId) return current;
+    const { dispatchedToLocalId: _retiredAssociation, ...retiredSeed } = currentSeed;
     return {
       ...(current as any),
       replaySeedV1: {
-        ...currentSeed,
+        ...retiredSeed,
         seedText: '',
         appliedToLocalId,
         appliedAtMs: params.nowMs,
       },
     };
+  };
+}
+
+/**
+ * Records that this seed's text was composed into the provider prompt carried by one exact
+ * Pending localId. Written before dispatch, so provider acceptance always finds the
+ * association already durable.
+ */
+export function createReplaySeedV1DispatchAssociationUpdater(params: Readonly<{ localId: string }>) {
+  return (current: any) => {
+    const currentSeed = readReplaySeedV1FromMetadata(current);
+    if (!currentSeed || !currentSeed.seedText || currentSeed.appliedToLocalId) return current;
+    if (currentSeed.dispatchedToLocalId === params.localId) return current;
+    return {
+      ...(current as any),
+      replaySeedV1: { ...currentSeed, dispatchedToLocalId: params.localId },
+    };
+  };
+}
+
+/**
+ * Drops the association when the composed seed never reached the provider under that localId.
+ * Without this the input could still be accepted — carrying none of the seed — and
+ * reconciliation would read that acceptance as proof the seed was delivered.
+ */
+export function createReplaySeedV1DispatchAssociationReleaseUpdater(params: Readonly<{ localId: string }>) {
+  return (current: any) => {
+    const currentSeed = readReplaySeedV1FromMetadata(current);
+    if (!currentSeed || currentSeed.dispatchedToLocalId !== params.localId) return current;
+    const { dispatchedToLocalId: _released, ...releasedSeed } = currentSeed;
+    return { ...(current as any), replaySeedV1: releasedSeed };
   };
 }
 
@@ -128,6 +176,14 @@ export type ResolvedProviderPromptWithReplaySeed = Readonly<{
    * same seed be prefixed again on the following turn.
    */
   settleOnProviderAcceptance: () => Promise<ReplaySeedSettlementOutcome>;
+  /**
+   * Drops the durable dispatch association when the composed seed is abandoned before the
+   * provider send. Idempotent and a no-op when no seed was applied. A failed metadata write
+   * rejects and retains the association so callers cannot continue across the provider-effect
+   * boundary with a plain prompt whose accepted Pending row would later retire an undelivered
+   * seed.
+   */
+  releaseUndispatchedSeed: () => Promise<void>;
 }>;
 
 export async function resolveProviderPromptWithReplaySeed(params: Readonly<{
@@ -136,6 +192,13 @@ export async function resolveProviderPromptWithReplaySeed(params: Readonly<{
     updateMetadata: (updater: (metadata: any) => any) => void | Promise<void>;
     refreshSessionSnapshotFromServerBestEffort?: (opts?: { reason: 'connect' | 'waitForMetadataUpdate' }) => Promise<void>;
     ensureMetadataSnapshot?: (opts?: { timeoutMs?: number; abortSignal?: AbortSignal }) => Promise<unknown>;
+    /**
+     * The Pending owner's durable accepted-delivery read. Absent means this binding has no
+     * durable authority to reconcile an association against, so none is recorded.
+     */
+    readDurableProviderInputAcceptanceV1?: (
+      localId: string,
+    ) => Promise<DurableProviderInputAcceptanceV1>;
   };
   userText: string;
   allowSeed: boolean;
@@ -162,11 +225,81 @@ export async function resolveProviderPromptWithReplaySeed(params: Readonly<{
     }
   }
 
+  const readDurableAcceptance = params.session.readDurableProviderInputAcceptanceV1;
+  const unseededResolution: ResolvedProviderPromptWithReplaySeed = {
+    providerPrompt: params.userText,
+    seedApplied: false,
+    seedText: '',
+    settleOnProviderAcceptance: async () => 'not_applied',
+    releaseUndispatchedSeed: async () => {},
+  };
+
+  // Startup/admission reconciliation. An unretired seed that already names a Pending localId
+  // was handed to the provider by some earlier resolution — possibly one whose runtime is
+  // gone. The durable accepted delivery for that exact row is the only authority on whether
+  // the provider took custody, so it decides here, before any decision to prefix again.
+  if (params.allowSeed && typeof readDurableAcceptance === 'function') {
+    const persistedSeed = readReplaySeedV1FromMetadata(params.session.getMetadataSnapshot());
+    const dispatchedToLocalId = isReplaySeedV1PendingProviderAcceptance(persistedSeed)
+      ? persistedSeed!.dispatchedToLocalId
+      : undefined;
+    if (dispatchedToLocalId) {
+      let acceptance: DurableProviderInputAcceptanceV1;
+      try {
+        acceptance = await readDurableAcceptance(dispatchedToLocalId);
+      } catch {
+        acceptance = 'unknown';
+      }
+      if (acceptance === 'accepted') {
+        // The provider already has this seed; the lost retirement is completed here.
+        try {
+          await params.session.updateMetadata(
+            createReplaySeedV1ConsumeUpdater({ localId: dispatchedToLocalId, nowMs: params.nowMs }),
+          );
+        } catch (error) {
+          logger.warn(
+            '[replaySeedV1] Failed to retire a durably accepted replay seed at admission; it stays blocked',
+            error,
+          );
+        }
+        return unseededResolution;
+      }
+      if (acceptance === 'unknown') {
+        // Neither prefixing nor retiring is provable. Hold the seed back for this input only:
+        // it stays intact for the next admission that can read the durable status.
+        return unseededResolution;
+      }
+      // 'not_accepted': the input was rejected, blocked or is still owed, so the seed is
+      // still live and the association below simply moves to this input.
+    }
+  }
+
   const seedResolution = buildProviderPromptWithReplaySeed({
     metadata: params.session.getMetadataSnapshot(),
     userText: params.userText,
     allowSeed: params.allowSeed,
   });
+
+  // Associate before dispatch, so provider acceptance can never outrun the durable record of
+  // which Pending row carries this seed. A binding without the durable acceptance authority
+  // records nothing: an association it could never reconcile would only strand the seed.
+  let associatedLocalId: string | null = null;
+  if (seedResolution.shouldConsumeSeed && typeof readDurableAcceptance === 'function' && params.localId) {
+    try {
+      await params.session.updateMetadata(
+        createReplaySeedV1DispatchAssociationUpdater({ localId: params.localId }),
+      );
+      associatedLocalId = params.localId;
+    } catch (error) {
+      // Fail closed: an unassociated seed handed to the provider is exactly the duplicate this
+      // association prevents, so this prompt goes out with the user's text alone.
+      logger.warn(
+        '[replaySeedV1] Failed to record a replay-seed dispatch association; withholding the seed',
+        error,
+      );
+      return unseededResolution;
+    }
+  }
 
   let settled = false;
   const settleOnProviderAcceptance = async (): Promise<ReplaySeedSettlementOutcome> => {
@@ -185,10 +318,28 @@ export async function resolveProviderPromptWithReplaySeed(params: Readonly<{
     }
   };
 
+  const releaseUndispatchedSeed = async (): Promise<void> => {
+    const localId = associatedLocalId;
+    if (!localId || settled) return;
+    try {
+      await params.session.updateMetadata(
+        createReplaySeedV1DispatchAssociationReleaseUpdater({ localId }),
+      );
+      associatedLocalId = null;
+    } catch (error) {
+      logger.warn(
+        '[replaySeedV1] Failed to release an undispatched replay-seed association',
+        error,
+      );
+      throw error;
+    }
+  };
+
   return {
     providerPrompt: seedResolution.providerPrompt,
     seedApplied: seedResolution.shouldConsumeSeed,
     seedText: seedResolution.seedText,
     settleOnProviderAcceptance,
+    releaseUndispatchedSeed,
   };
 }

@@ -338,7 +338,6 @@ describe('first-party native Agent production dispatch', () => {
                             logPrefix: `[${agentId} native dispatch proof]`,
                         }),
                         getPermissionMode: () => 'read-only' as const,
-                        setThinking: () => undefined,
                         memoryRecallGuidanceEnabled: false,
                         runnerProcessIdentity: null,
                         startupModelSelection: null,

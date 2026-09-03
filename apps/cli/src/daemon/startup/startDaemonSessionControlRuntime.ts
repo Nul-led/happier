@@ -7098,6 +7098,8 @@ export async function startDaemonSessionControlRuntime(
                                         correlationId:
                                             invocationId,
                                         signal,
+                                        readActiveTurnAdmissionWitness:
+                                            () => operationWitness ?? null,
                                         isGenerationCurrent:
                                             () => authorizeOperation(
                                                 operationWitness,

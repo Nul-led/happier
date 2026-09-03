@@ -8,7 +8,9 @@ import {
 } from '@/agent/runtime/bridges/executionRun/testkit';
 import { executeBoundedBackendRun } from './bounded/loop';
 import { createLazyExecutionRunHostRuntime } from './hostRuntime/lazy';
+import type { ExecutionRunHostRuntime } from './executionRunHostRuntime';
 import { startExecutionRun } from './startExecutionRun';
+import { stopExecutionRun } from './executionRunStop';
 import type { ExecutionRunState } from './executionRunTypes';
 import type { ExecutionRunStructuredMeta } from '@/agent/executionRuns/profiles/ExecutionRunIntentProfile';
 import { VoiceAgentManager } from '@/agent/voice/agent/VoiceAgentManager';
@@ -928,9 +930,9 @@ describe('startExecutionRun', () => {
     }
   });
 
-  it('QA2-F04: bounds backend session provisioning — a never-settling provision fails the run terminally', async () => {
+  it('does not impose an environment-driven provisioning deadline and keeps the controller addressable', async () => {
     const previousTimeout = process.env.HAPPIER_EXECUTION_RUN_BACKEND_PROVISION_TIMEOUT_MS;
-    process.env.HAPPIER_EXECUTION_RUN_BACKEND_PROVISION_TIMEOUT_MS = '50';
+    process.env.HAPPIER_EXECUTION_RUN_BACKEND_PROVISION_TIMEOUT_MS = '10';
     const runs = new Map<string, ExecutionRunState>();
     const controllers = new Map<string, ExecutionRunController>();
     const finishRun = vi.fn(async (runId: string, next) => {
@@ -945,16 +947,16 @@ describe('startExecutionRun', () => {
     });
 
     try {
-      const hangingRuntime = createLazyExecutionRunHostRuntime({
-        resolveRuntime: async () => {
-          // Never settles: simulates lazy runtime creation whose process spawn /
-          // vendor handshake cannot cooperate with cleanup after host timeout.
-          return await new Promise<never>(() => {});
-        },
+      let resolveRuntime!: (runtime: ExecutionRunHostRuntime) => void;
+      const runtimeReady = new Promise<ExecutionRunHostRuntime>((resolve) => {
+        resolveRuntime = resolve;
       });
-      const createRuntime = vi.fn(() => hangingRuntime);
+      const delayedRuntime = createLazyExecutionRunHostRuntime({
+        resolveRuntime: async () => await runtimeReady,
+      });
+      const createRuntime = vi.fn(() => delayedRuntime);
 
-      await expect(startExecutionRun({
+      const startPromise = startExecutionRun({
         params: {
           sessionId: 'session_1',
           intent: 'delegate',
@@ -980,16 +982,17 @@ describe('startExecutionRun', () => {
         send: async () => ({ ok: true }),
         voiceAgentManager,
         getDepthByCallId: () => null,
-      })).rejects.toMatchObject({
-        code: 'execution_run_backend_provision_timeout',
-        details: { executionRunStart: { v: 1, runCreation: 'outcomeUnknown' } },
       });
 
-      // The run must land terminal-FAILED (not linger "running" with no process).
-      expect(finishRun).toHaveBeenCalledTimes(1);
-      const failedRun = [...runs.values()][0];
-      expect(failedRun).toMatchObject({ status: 'failed' });
-      expect(controllers.size).toBe(0);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(controllers.size).toBe(1);
+      expect(finishRun).not.toHaveBeenCalled();
+
+      resolveRuntime(createTestExecutionRunHostRuntime({
+        onSendPrompt: async () => {},
+        onWaitForTurnCompletion: async () => {},
+      }));
+      await expect(startPromise).resolves.toMatchObject({ runId: expect.any(String) });
     } finally {
       if (previousTimeout === undefined) {
         delete process.env.HAPPIER_EXECUTION_RUN_BACKEND_PROVISION_TIMEOUT_MS;
@@ -1071,6 +1074,316 @@ describe('startExecutionRun', () => {
       expect(successorDispose).not.toHaveBeenCalled();
       expect(successorResolveTerminal).not.toHaveBeenCalled();
     } finally {
+      await voiceAgentManager.dispose();
+    }
+  });
+
+  it('cancels a bounded child that finishes provisioning after the run was stopped', async () => {
+    let resolveProvision!: () => void;
+    const provisioning = new Promise<void>((resolve) => {
+      resolveProvision = resolve;
+    });
+    const cancel = vi.fn();
+    const dispose = vi.fn();
+    const executeBoundedRun = vi.fn();
+    const runtime = createTestExecutionRunHostRuntime({
+      sessionId: 'late_child_session',
+      onProvisionSession: async () => await provisioning,
+      onCancel: cancel,
+      onDispose: dispose,
+    });
+    const controllers = new Map<string, ExecutionRunController>();
+    const runs = new Map<string, ExecutionRunState>();
+    const finishRun = vi.fn(async (runId: string, next) => {
+      const current = runs.get(runId);
+      if (current) runs.set(runId, { ...current, ...next });
+    });
+    const voiceAgentManager = new VoiceAgentManager({
+      createRuntime: () => {
+        throw new Error('voice runtime should not be used by bounded delegate runs');
+      },
+    });
+
+    try {
+      const started = await startExecutionRun({
+        params: {
+          sessionId: 'session_1',
+          intent: 'delegate',
+          backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
+          permissionMode: 'workspace_write',
+          retentionPolicy: 'ephemeral',
+          runClass: 'bounded',
+          ioMode: 'request_response',
+        },
+        parentProvider: TEST_BACKEND_ID,
+        sendAcp: async () => {},
+        streamedTranscriptSession: null,
+        createRuntime: () => runtime,
+        getNowMs: () => 1_700_000_000_000,
+        budgetRegistry: null,
+        runs,
+        controllers,
+        enqueueMarkerWrite: async () => {},
+        writeActivityMarker: async () => {},
+        finishRun,
+        executeBoundedRun,
+        send: async () => ({ ok: true }),
+        voiceAgentManager,
+        getDepthByCallId: () => null,
+      });
+
+      await expect(stopExecutionRun({
+        runId: started.runId,
+        runs,
+        controllers,
+        voiceAgentManager,
+        getNowMs: () => 1_700_000_000_001,
+        finishRun,
+      })).resolves.toEqual({ ok: true });
+      resolveProvision();
+
+      await vi.waitFor(() => expect(cancel).toHaveBeenCalledWith('late_child_session'));
+      expect(executeBoundedRun).not.toHaveBeenCalled();
+      expect(dispose).toHaveBeenCalled();
+      expect(runs.get(started.runId)?.status).toBe('cancelled');
+    } finally {
+      await voiceAgentManager.dispose();
+    }
+  });
+
+  it('cancels a long-lived child that finishes provisioning after the run was stopped', async () => {
+    let resolveProvision!: () => void;
+    const provisioning = new Promise<void>((resolve) => {
+      resolveProvision = resolve;
+    });
+    const cancel = vi.fn();
+    const dispose = vi.fn();
+    const send = vi.fn(async () => ({ ok: true }));
+    const runtime = createTestExecutionRunHostRuntime({
+      sessionId: 'late_long_lived_child_session',
+      onProvisionSession: async () => await provisioning,
+      onCancel: cancel,
+      onDispose: dispose,
+    });
+    const controllers = new Map<string, ExecutionRunController>();
+    const runs = new Map<string, ExecutionRunState>();
+    const finishRun = vi.fn(async (runId: string, next) => {
+      const current = runs.get(runId);
+      if (current) runs.set(runId, { ...current, ...next });
+    });
+    const voiceAgentManager = new VoiceAgentManager({
+      createRuntime: () => {
+        throw new Error('voice runtime should not be used by long-lived delegate runs');
+      },
+    });
+
+    try {
+      const startPromise = startExecutionRun({
+        params: {
+          sessionId: 'session_1',
+          intent: 'delegate',
+          backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
+          instructions: 'Do not dispatch this after cancellation.',
+          permissionMode: 'workspace_write',
+          retentionPolicy: 'resumable',
+          runClass: 'long_lived',
+          ioMode: 'request_response',
+        },
+        parentProvider: TEST_BACKEND_ID,
+        sendAcp: async () => {},
+        streamedTranscriptSession: null,
+        createRuntime: () => runtime,
+        getNowMs: () => 1_700_000_000_000,
+        budgetRegistry: null,
+        runs,
+        controllers,
+        enqueueMarkerWrite: async () => {},
+        writeActivityMarker: async () => {},
+        finishRun,
+        executeBoundedRun: async () => {},
+        send,
+        voiceAgentManager,
+        getDepthByCallId: () => null,
+      });
+
+      await vi.waitFor(() => expect(controllers.size).toBe(1));
+      const runId = [...runs.keys()][0]!;
+      await expect(stopExecutionRun({
+        runId,
+        runs,
+        controllers,
+        voiceAgentManager,
+        getNowMs: () => 1_700_000_000_001,
+        finishRun,
+      })).resolves.toEqual({ ok: true });
+      resolveProvision();
+
+      await expect(startPromise).resolves.toMatchObject({ runId });
+      expect(cancel).toHaveBeenCalledWith('late_long_lived_child_session');
+      expect(dispose).toHaveBeenCalled();
+      expect(send).not.toHaveBeenCalled();
+      expect(runs.get(runId)?.status).toBe('cancelled');
+      expect(runs.get(runId)?.resumeHandle).toBeNull();
+    } finally {
+      resolveProvision();
+      await voiceAgentManager.dispose();
+    }
+  });
+
+  it('stops an accepted bounded run while backend resume support is still loading', async () => {
+    let resolveResumeSupport!: () => void;
+    let resolveResumeSupportStarted!: () => void;
+    const resumeSupport = new Promise<void>((resolve) => {
+      resolveResumeSupport = resolve;
+    });
+    const resumeSupportStarted = new Promise<void>((resolve) => {
+      resolveResumeSupportStarted = resolve;
+    });
+    const dispose = vi.fn();
+    const executeBoundedRun = vi.fn();
+    const baseRuntime = createTestExecutionRunHostRuntime({ onDispose: dispose });
+    const runtime = {
+      ...baseRuntime,
+      async readResumeSupport() {
+        resolveResumeSupportStarted();
+        await resumeSupport;
+        return false;
+      },
+    } satisfies TestExecutionRunHostRuntime;
+    const controllers = new Map<string, ExecutionRunController>();
+    const runs = new Map<string, ExecutionRunState>();
+    const finishRun = vi.fn(async (runId: string, next) => {
+      const current = runs.get(runId);
+      if (current) runs.set(runId, { ...current, ...next });
+    });
+    const voiceAgentManager = new VoiceAgentManager({
+      createRuntime: () => {
+        throw new Error('voice runtime should not be used by bounded delegate runs');
+      },
+    });
+
+    try {
+      const startPromise = startExecutionRun({
+        params: {
+          sessionId: 'session_1',
+          intent: 'delegate',
+          backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
+          permissionMode: 'workspace_write',
+          retentionPolicy: 'ephemeral',
+          runClass: 'bounded',
+          ioMode: 'request_response',
+        },
+        parentProvider: TEST_BACKEND_ID,
+        sendAcp: async () => {},
+        streamedTranscriptSession: null,
+        createRuntime: () => runtime,
+        getNowMs: () => 1_700_000_000_000,
+        budgetRegistry: null,
+        runs,
+        controllers,
+        enqueueMarkerWrite: async () => {},
+        writeActivityMarker: async () => {},
+        finishRun,
+        executeBoundedRun,
+        send: async () => ({ ok: true }),
+        voiceAgentManager,
+        getDepthByCallId: () => null,
+      });
+
+      await resumeSupportStarted;
+      const runId = [...runs.keys()][0]!;
+      const stopResult = await stopExecutionRun({
+        runId,
+        runs,
+        controllers,
+        voiceAgentManager,
+        getNowMs: () => 1_700_000_000_001,
+        finishRun,
+      });
+      resolveResumeSupport();
+      await startPromise;
+
+      expect(stopResult).toEqual({ ok: true });
+      expect(executeBoundedRun).not.toHaveBeenCalled();
+      expect(dispose).toHaveBeenCalled();
+      expect(runs.get(runId)?.status).toBe('cancelled');
+    } finally {
+      resolveResumeSupport();
+      await voiceAgentManager.dispose();
+    }
+  });
+
+  it('stops an accepted bounded run while its transcript start is still publishing', async () => {
+    let resolveTranscript!: () => void;
+    let resolveTranscriptStarted!: () => void;
+    const transcript = new Promise<void>((resolve) => {
+      resolveTranscript = resolve;
+    });
+    const transcriptStarted = new Promise<void>((resolve) => {
+      resolveTranscriptStarted = resolve;
+    });
+    const createRuntime = vi.fn(() => createTestExecutionRunHostRuntime());
+    const controllers = new Map<string, ExecutionRunController>();
+    const runs = new Map<string, ExecutionRunState>();
+    const finishRun = vi.fn(async (runId: string, next) => {
+      const current = runs.get(runId);
+      if (current) runs.set(runId, { ...current, ...next });
+    });
+    const voiceAgentManager = new VoiceAgentManager({
+      createRuntime: () => {
+        throw new Error('voice runtime should not be used by bounded delegate runs');
+      },
+    });
+
+    try {
+      const startPromise = startExecutionRun({
+        params: {
+          sessionId: 'session_1',
+          intent: 'delegate',
+          backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
+          permissionMode: 'workspace_write',
+          retentionPolicy: 'ephemeral',
+          runClass: 'bounded',
+          ioMode: 'request_response',
+        },
+        parentProvider: TEST_BACKEND_ID,
+        sendAcp: async () => {
+          resolveTranscriptStarted();
+          await transcript;
+        },
+        streamedTranscriptSession: null,
+        createRuntime,
+        getNowMs: () => 1_700_000_000_000,
+        budgetRegistry: null,
+        runs,
+        controllers,
+        enqueueMarkerWrite: async () => {},
+        writeActivityMarker: async () => {},
+        finishRun,
+        executeBoundedRun: async () => {},
+        send: async () => ({ ok: true }),
+        voiceAgentManager,
+        getDepthByCallId: () => null,
+      });
+
+      await transcriptStarted;
+      const runId = [...runs.keys()][0]!;
+      const stopResult = await stopExecutionRun({
+        runId,
+        runs,
+        controllers,
+        voiceAgentManager,
+        getNowMs: () => 1_700_000_000_001,
+        finishRun,
+      });
+      resolveTranscript();
+      await startPromise;
+
+      expect(stopResult).toEqual({ ok: true });
+      expect(createRuntime).not.toHaveBeenCalled();
+      expect(runs.get(runId)?.status).toBe('cancelled');
+    } finally {
+      resolveTranscript();
       await voiceAgentManager.dispose();
     }
   });

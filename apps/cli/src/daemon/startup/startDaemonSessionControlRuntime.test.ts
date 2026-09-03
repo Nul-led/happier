@@ -6965,7 +6965,7 @@ describe('startDaemonSessionControlRuntime', () => {
             definition: {
                 id: attachmentOwner.localId,
                 title: { key: 'composer.attachment.image', fallback: 'Image' },
-                icon: 'image',
+                icon: 'file',
                 cardinality: 'many',
                 valueSchema: {
                     type: 'object',
@@ -8188,7 +8188,7 @@ describe('startDaemonSessionControlRuntime', () => {
                         kind: 'localPath',
                         canonicalPath: retainedProviderSourceRoot,
                     },
-                    updatePolicy: 'manual',
+                    updatePolicy: 'reviewEveryUpdate',
                     createdAtMs: 1,
                     immutableGenerationId:
                         retainedScope.immutableGenerationId,
@@ -8225,7 +8225,7 @@ describe('startDaemonSessionControlRuntime', () => {
                                 retainedProviderSourceRoot,
                         },
                     },
-                    updatePolicy: 'manual' as const,
+                    updatePolicy: 'reviewEveryUpdate' as const,
                     optionalAccess: [],
                 },
             },
@@ -8928,7 +8928,7 @@ describe('startDaemonSessionControlRuntime', () => {
                         kind: 'localPath',
                         canonicalPath: sourceRootPath,
                     },
-                    updatePolicy: 'manual',
+                    updatePolicy: 'reviewEveryUpdate',
                     createdAtMs: 1,
                     immutableGenerationId,
                 });

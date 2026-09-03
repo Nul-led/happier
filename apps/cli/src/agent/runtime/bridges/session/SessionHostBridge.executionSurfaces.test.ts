@@ -198,6 +198,7 @@ describe('SessionHostBridge execution surfaces', () => {
       sourceMachineId: metadata.machineId,
       externalSessionLinkAuthority: resolveLinkedExternalSessionAuthorityV1(metadata),
       sessionAgentId: 'acme.handoff',
+      sessionProviderSessionId: 'acme-session-1',
     })).resolves.toEqual({
       eligible: true,
       agentId: 'acme.handoff',
@@ -472,7 +473,6 @@ describe('SessionHostBridge execution surfaces', () => {
       mcpServers: {},
       permissionHandler: {},
       getPermissionMode: () => 'default',
-      setThinking: () => {},
       memoryRecallGuidanceEnabled: false,
     } as never);
 

@@ -29,6 +29,11 @@ import {
     resolveExternalSessionCandidateIdentityKey,
 } from './candidateQuery';
 
+/** The exact request the candidate-query owner sends to an Agent leaf. */
+type ExternalSessionCandidateListRequest = Parameters<
+    Parameters<typeof executeExternalSessionCandidateQuery>[0]['listCandidates']
+>[0];
+
 const roots: string[] = [];
 const unavailableManagedEndpointRead: AgentExternalSessionsManagedEndpointRead =
     async () => {
@@ -526,13 +531,9 @@ describe('External Sessions candidate query owner', () => {
     it('persists exact preparation chunks privately and serves only the rows it has already indexed', async () => {
         const activeServerDir = await mkdtemp(join(tmpdir(), 'happier-candidate-index-'));
         roots.push(activeServerDir);
-        const listCandidates = vi.fn(async ({ cursor }: Readonly<{
-            cursor?: string;
-            readCandidateIndexState?: (candidate: Readonly<{
-                remoteSessionId: string;
-                linkData?: Readonly<Record<string, unknown>>;
-            }>) => Readonly<Record<string, unknown>> | undefined;
-        }>) => cursor
+        const listCandidates = vi.fn(async (
+            { cursor }: ExternalSessionCandidateListRequest,
+        ) => cursor
             ? {
                 candidates: [{
                     remoteSessionId: 'newest',
@@ -2510,14 +2511,7 @@ describe('External Sessions candidate query owner', () => {
             linkData: { projectId: 'project-a' },
         }));
         const observedPreviousState = vi.fn();
-        const listCandidates = vi.fn(async (request: Readonly<{
-            cursor?: string;
-            limit: number;
-            readCandidateIndexState?: (candidate: Readonly<{
-                remoteSessionId: string;
-                linkData?: Readonly<Record<string, unknown>>;
-            }>) => Readonly<Record<string, unknown>> | undefined;
-        }>) => {
+        const listCandidates = vi.fn(async (request: ExternalSessionCandidateListRequest) => {
             const offset = request.cursor ? Number.parseInt(request.cursor.slice(5), 10) : 0;
             const page = corpus.slice(offset, offset + request.limit).map((candidate, index) => {
                 const previous = request.readCandidateIndexState?.(candidate);

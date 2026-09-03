@@ -1,13 +1,38 @@
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { inspectRetiredWorkspaceReplicationState } from './workspaceSyncLegacyState';
 
 async function makeServerDir(): Promise<string> {
   return await mkdtemp(join(tmpdir(), 'happier-workspace-sync-legacy-state-'));
+}
+
+/**
+ * Stands in for the canonical Windows protected-ACL boundary (the real one
+ * shells out to System32 tools). `rejectPaths` models every non-ok boundary
+ * result the owner must fail closed on: a broad or inherited DACL, an
+ * unresolved owner, a reparse point, or an unavailable PowerShell inspection.
+ */
+function windowsAclBoundaryStub(rejectPaths: readonly string[] = []) {
+  const reject = (path: string) => {
+    if (rejectPaths.includes(path)) throw new Error(`Windows protected path has an unsafe ACL entry: ${path}`);
+  };
+  return {
+    verify: vi.fn(async (input: Readonly<{ path: string }>) => { reject(input.path); }),
+    applyAndVerify: vi.fn(async (input: Readonly<{ path: string }>) => { reject(input.path); }),
+  };
+}
+
+async function makeLegacyStateRoot(activeServerDir: string): Promise<string> {
+  const stateRoot = join(activeServerDir, 'workspace-replication');
+  await mkdir(join(stateRoot, 'cas'), { recursive: true });
+  await mkdir(join(stateRoot, 'jobs'));
+  await writeFile(join(stateRoot, 'jobs', 'job-1.json'), JSON.stringify({ schemaVersion: 1, jobId: 'job-1' }));
+  await chmod(stateRoot, 0o700);
+  return stateRoot;
 }
 
 describe('inspectRetiredWorkspaceReplicationState', () => {
@@ -236,6 +261,136 @@ describe('inspectRetiredWorkspaceReplicationState', () => {
     })).resolves.toMatchObject({ status: 'legacy_workspace_sync_state_unknown' });
     await expect(stat(stateRoot)).resolves.toBeTruthy();
 
+    await rm(activeServerDir, { recursive: true, force: true });
+  });
+
+  it('fails closed on Windows when the canonical protected-ACL boundary rejects, however private the POSIX mode looks', async () => {
+    const activeServerDir = await makeServerDir();
+    const canonicalServerDir = await realpath(activeServerDir);
+    const stateRoot = await makeLegacyStateRoot(activeServerDir);
+    const canonicalStateRoot = join(canonicalServerDir, 'workspace-replication');
+
+    // The state root is 0o700 and owned by this user: POSIX mode bits are never
+    // a Windows privacy proof.
+    const rejectedState = windowsAclBoundaryStub([canonicalStateRoot]);
+    await expect(inspectRetiredWorkspaceReplicationState({
+      activeServerDir,
+      installationId: 'installation-test',
+      platform: 'win32',
+      windowsAclBoundary: rejectedState,
+    })).resolves.toMatchObject({
+      status: 'legacy_workspace_sync_state_unknown',
+      reason: 'ownership_or_permissions',
+    });
+    expect(rejectedState.verify).toHaveBeenCalledWith({ path: canonicalStateRoot, kind: 'directory' });
+
+    // The containing active server directory carries the same requirement.
+    const rejectedParent = windowsAclBoundaryStub([canonicalServerDir]);
+    await expect(inspectRetiredWorkspaceReplicationState({
+      activeServerDir,
+      installationId: 'installation-test',
+      platform: 'win32',
+      windowsAclBoundary: rejectedParent,
+    })).resolves.toMatchObject({
+      status: 'legacy_workspace_sync_state_unknown',
+      reason: 'parent_ownership_or_permissions',
+    });
+
+    // Nothing was quarantined or otherwise mutated.
+    await expect(stat(stateRoot)).resolves.toBeTruthy();
+    await expect(readdir(activeServerDir)).resolves.toEqual(['workspace-replication']);
+
+    await rm(activeServerDir, { recursive: true, force: true });
+  });
+
+  it('quarantines on Windows once the protected-ACL boundary verifies, and protects the quarantine natively', async () => {
+    const activeServerDir = await makeServerDir();
+    await makeLegacyStateRoot(activeServerDir);
+    const windowsAclBoundary = windowsAclBoundaryStub();
+
+    const result = await inspectRetiredWorkspaceReplicationState({
+      activeServerDir,
+      installationId: 'installation-test',
+      nowMs: 1_700_000_000_000,
+      randomSuffix: 'winok',
+      platform: 'win32',
+      windowsAclBoundary,
+    });
+
+    const quarantinePath = join(activeServerDir, 'workspace-replication.retired-v1-1700000000000-winok');
+    expect(result).toMatchObject({
+      status: 'legacy_workspace_sync_state_unsupported',
+      classification: 'retired_v1',
+      quarantinePath,
+    });
+    expect(windowsAclBoundary.applyAndVerify).toHaveBeenCalledWith({ path: quarantinePath, kind: 'directory' });
+
+    // A restart re-proves the quarantine through the same boundary and fails
+    // closed when it can no longer be proven private.
+    await expect(inspectRetiredWorkspaceReplicationState({
+      activeServerDir,
+      platform: 'win32',
+      windowsAclBoundary: windowsAclBoundaryStub([quarantinePath]),
+    })).resolves.toMatchObject({
+      status: 'legacy_workspace_sync_state_unknown',
+      reason: 'malformed_retired_quarantine',
+    });
+    await expect(inspectRetiredWorkspaceReplicationState({
+      activeServerDir,
+      platform: 'win32',
+      windowsAclBoundary: windowsAclBoundaryStub(),
+    })).resolves.toMatchObject({
+      status: 'legacy_workspace_sync_state_unsupported',
+      quarantinePath,
+    });
+
+    await rm(activeServerDir, { recursive: true, force: true });
+  });
+
+  it('fails closed when POSIX quarantine permissions cannot be established', async () => {
+    const activeServerDir = await makeServerDir();
+    await makeLegacyStateRoot(activeServerDir);
+
+    const result = await inspectRetiredWorkspaceReplicationState({
+      activeServerDir,
+      installationId: 'installation-test',
+      nowMs: 1_700_000_000_000,
+      randomSuffix: 'chmodfail',
+      platform: 'linux',
+      setPosixPrivatePermissions: async () => {
+        throw Object.assign(new Error('chmod denied'), { code: 'EPERM' });
+      },
+    });
+
+    expect(result).toMatchObject({
+      status: 'legacy_workspace_sync_state_unknown',
+      reason: 'quarantine_permissions_failed',
+    });
+    await expect(stat(join(
+      activeServerDir,
+      'workspace-replication.retired-v1-1700000000000-chmodfail',
+    ))).resolves.toBeTruthy();
+    await rm(activeServerDir, { recursive: true, force: true });
+  });
+
+  it('rechecks the renamed POSIX quarantine instead of trusting a successful permission call', async () => {
+    const activeServerDir = await makeServerDir();
+    const stateRoot = await makeLegacyStateRoot(activeServerDir);
+    await chmod(stateRoot, 0o755);
+
+    const result = await inspectRetiredWorkspaceReplicationState({
+      activeServerDir,
+      installationId: 'installation-test',
+      nowMs: 1_700_000_000_000,
+      randomSuffix: 'chmodnoop',
+      platform: 'linux',
+      setPosixPrivatePermissions: async () => undefined,
+    });
+
+    expect(result).toMatchObject({
+      status: 'legacy_workspace_sync_state_unknown',
+      reason: 'quarantine_permissions_failed',
+    });
     await rm(activeServerDir, { recursive: true, force: true });
   });
 });

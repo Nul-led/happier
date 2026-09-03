@@ -104,6 +104,7 @@ describe('ExecutionRunHostBridge detached task scope', () => {
       expect(prompts[0]).toContain('Return only one strict JSON value that satisfies this required result schema:');
       expect(createdRuntimeOptions).toHaveLength(1);
       expect(createdRuntimeOptions[0]).not.toHaveProperty('parentSessionStateTarget');
+      expect(createdRuntimeOptions[0]).not.toHaveProperty('happierSessionId');
       expect(sent).not.toHaveBeenCalled();
       expect(committed).not.toHaveBeenCalled();
       expect(parentSessionMutation).not.toHaveBeenCalled();
@@ -112,6 +113,62 @@ describe('ExecutionRunHostBridge detached task scope', () => {
         runId: started.runId,
         happySessionId: null,
       }));
+    } finally {
+      await manager.dispose();
+    }
+  });
+
+  it('forwards the owning Happier Session id to the runtime backend for a Session-scoped run', async () => {
+    const sent = vi.fn(async () => {});
+    const createdRuntimeOptions: Array<Record<string, unknown>> = [];
+
+    const runtime = createTestExecutionRunHostRuntime({
+      onSendPrompt: async () => {},
+      onWaitForTurnCompletion: async () => {},
+    });
+    runtimeFactoryMock.createExecutionRunBridgeRuntime.mockImplementation((options: Record<string, unknown>) => {
+      createdRuntimeOptions.push(options);
+      return runtime as ExecutionRunHostRuntime;
+    });
+
+    const manager = new ExecutionRunHostBridge({
+      parentProvider: TEST_BACKEND_ID,
+      cwd: process.cwd(),
+      sendAcp: sent,
+      parentSessionStateTarget: {
+        sessionId: 'happier_parent_session_1',
+        enqueueRegisteredSessionStateFieldMutation: vi.fn(async () => {}),
+      },
+      getNowMs: () => 1_700_000_000_000,
+    });
+
+    try {
+      const started = await manager.start({
+        sessionId: 'happier_parent_session_1',
+        intent: 'task',
+        backendTarget: { kind: 'builtInAgent', agentId: TEST_BACKEND_ID },
+        instructions: 'Return a bounded result.',
+        intentInput: {
+          input: { topic: 'session scope' },
+          resultSchema: {
+            type: 'object',
+            properties: { answer: { type: 'string' } },
+            required: ['answer'],
+            additionalProperties: false,
+          },
+        },
+        permissionMode: 'read_only',
+        retentionPolicy: 'ephemeral',
+        runClass: 'bounded',
+        ioMode: 'request_response',
+      });
+
+      await manager.waitForTerminal(started.runId);
+
+      expect(createdRuntimeOptions).toHaveLength(1);
+      expect(createdRuntimeOptions[0]).toHaveProperty('happierSessionId', 'happier_parent_session_1');
+      // The owning Happier Session id is the real Session scope, never the run id.
+      expect(createdRuntimeOptions[0].happierSessionId).not.toBe(started.runId);
     } finally {
       await manager.dispose();
     }

@@ -55,15 +55,6 @@ const principalPresentation = Object.freeze({
       packageName: '@acme/voice',
       registryOrigin: 'https://registry.npmjs.org',
     }),
-    publisherIdentity: Object.freeze({
-      status: 'unverified' as const,
-      id: 'acme',
-      displayName: 'Acme',
-    }),
-    packageSignature: Object.freeze({
-      status: 'verified' as const,
-      keyId: 'acme-key',
-    }),
 });
 const principal = derivePluginInstallReviewPrincipalDigest(principalPresentation);
 const principalSnapshot = Object.freeze({
@@ -281,8 +272,7 @@ describe('Voice client raw credential authorization RPC', () => {
           packageName: '@acme/voice',
           registryOrigin: 'https://registry.npmjs.org',
         },
-        publisher: { status: 'unverified', id: 'acme', displayName: 'Acme' },
-        packageSignature: { status: 'verified', keyId: 'acme-key' },
+        publisher: { status: 'unavailable' },
         contribution: { identity: contribution, name: 'Browser Voice' },
         credentialSlot: { id: 'api_key', name: 'API key', purpose: 'voice.browser' },
       },
@@ -336,7 +326,7 @@ describe('Voice client raw credential authorization RPC', () => {
     });
   });
 
-  it('never projects publisher or package-signature presentation from a mismatched review principal', async () => {
+  it('fails closed to unavailable review facts when the stored principal presentation does not match its digest', async () => {
     const mismatchedPrincipalSnapshot = Object.freeze({
       ...principalSnapshot,
       digest: PluginInstallReviewPrincipalDigestSchema.parse('a'.repeat(64)),
@@ -346,7 +336,8 @@ describe('Voice client raw credential authorization RPC', () => {
     await expect(service.inspect({ contribution, rawGrant: webConnectionAuthorizationGrant })).resolves.toMatchObject({
       review: {
         publisher: { status: 'unavailable' },
-        packageSignature: { status: 'unavailable' },
+        distribution: { kind: 'unavailable' },
+        package: { identity: contribution.pluginId },
       },
     });
   });
