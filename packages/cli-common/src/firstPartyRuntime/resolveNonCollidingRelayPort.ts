@@ -48,13 +48,24 @@ export async function readSiblingRelayPorts(params: Readonly<{
 async function pickEphemeralLocalhostPort(): Promise<number | null> {
   return await new Promise((resolve) => {
     const server = createServer();
-    const finish = (port: number | null) => {
-      server.close(() => resolve(port));
-    };
-    server.once('error', () => finish(null));
+    server.once('error', () => resolve(null));
     server.listen(0, '127.0.0.1', () => {
       const address = server.address();
-      finish(address && typeof address === 'object' ? address.port : null);
+      const port = address && typeof address === 'object' ? address.port : null;
+      server.close(() => resolve(port));
+    });
+  });
+}
+
+export async function isLocalRelayPortBindable(params: Readonly<{
+  host: string;
+  port: number;
+}>): Promise<boolean> {
+  return await new Promise((resolve) => {
+    const server = createServer();
+    server.once('error', () => resolve(false));
+    server.listen(params.port, params.host, () => {
+      server.close(() => resolve(true));
     });
   });
 }
@@ -69,14 +80,23 @@ export async function resolveNonCollidingRelayPort(params: Readonly<{
   explicitConfiguredPort?: boolean;
 }>): Promise<number> {
   const siblingPorts = await readSiblingRelayPorts(params);
-  const preferredPort = params.configuredPort ?? params.defaultPort;
-  if (!siblingPorts.has(preferredPort)) return preferredPort;
-
-  if (params.explicitConfiguredPort === true && params.configuredPort !== null) {
+  // A configured port may currently be held by this runtime because update planning happens
+  // before its service is stopped. Preserve that durable identity here; service convergence and
+  // health checks report an unrelated-process conflict after the incumbent has been stopped.
+  if (params.configuredPort !== null) {
+    if (!siblingPorts.has(params.configuredPort)) return params.configuredPort;
+    const configurationKind = params.explicitConfiguredPort === true ? 'Explicit' : 'Persisted';
     throw new Error(
-      `Explicit relay PORT=${params.configuredPort} collides with another installed local relay. `
+      `${configurationKind} relay PORT=${params.configuredPort} collides with another installed local relay. `
       + 'Choose a different --env PORT=<free-port> or uninstall the sibling relay first.',
     );
+  }
+
+  if (!siblingPorts.has(params.defaultPort) && await isLocalRelayPortBindable({
+    host: '127.0.0.1',
+    port: params.defaultPort,
+  })) {
+    return params.defaultPort;
   }
 
   for (let attempt = 0; attempt < MAX_EPHEMERAL_PORT_ATTEMPTS; attempt += 1) {

@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import {
   createPersonalHomeOperations,
@@ -10,10 +11,12 @@ import {
   type PersonalHomeOperationsDeps,
   type PersonalHomeRelocateInput,
 } from './operations.js';
-import { createPersonalHomeBackup } from './backup.js';
-import { verifyPersonalHomeArchive } from './archive.js';
+import * as tar from 'tar';
+
+import { createPersonalHomeBackup, PERSONAL_HOME_BACKUP_INVENTORY_MAX_MANIFEST_READS } from './backup.js';
+import { createPersonalHomeArchive, PERSONAL_HOME_BACKUP_QUICK_INSPECTION_MAX_MANIFEST_BYTES, verifyPersonalHomeArchive } from './archive.js';
 import { resolvePersonalHomeRuntimeLayout, type PersonalHomeRuntimeLayout } from './layout.js';
-import { fingerprintMasterSecret } from './manifest.js';
+import { fingerprintMasterSecret, serializePersonalHomeManifest, type PersonalHomeBackupManifestV1 } from './manifest.js';
 import { acquirePersonalHomeOperationLock } from './lock.js';
 import type { ManagedRelayPurpose } from './personalHomeRuntimeSpec.js';
 
@@ -85,6 +88,47 @@ function makeDeps(layout: PersonalHomeRuntimeLayout, overrides: Partial<Personal
   return { deps, events, setRunning: (value: boolean) => { running = value; } };
 }
 
+/** Writes a minimal but fully valid Personal Home backup archive with controlled manifest/metadata times. */
+async function writeInventoryFixtureArchive(params: Readonly<{ backupsDir: string; name: string; createdAt: string; mtimeMs: number }>): Promise<Readonly<{ path: string; createdAt: string; archiveBytes: number }>> {
+  const outputPath = join(params.backupsDir, params.name);
+  const staging = `${outputPath}.inventory-staging`;
+  const files = new Map<string, string>([
+    ['database/home.sqlite', `sqlite-${params.createdAt}`],
+    ['secrets/handy-master-secret.txt', 'inventory-secret'],
+    ['configuration/home.env.json', '{}'],
+  ]);
+  await mkdir(staging, { recursive: true });
+  for (const [path, content] of files) {
+    await mkdir(dirname(join(staging, path)), { recursive: true });
+    await writeFile(join(staging, path), content);
+  }
+  const archive = await createPersonalHomeArchive({
+    stagingDir: staging,
+    outputPath,
+    manifest: {
+      format: 'happier-personal-home-backup',
+      version: 1,
+      createdAt: params.createdAt,
+      happierVersion: '0.0.0',
+      schemaVersion: '1',
+      homeServerIdentityId: 'home-identity',
+      masterSecretFingerprint: fingerprintMasterSecret('inventory-secret'),
+      databaseProvider: 'sqlite',
+      filesProvider: 'local',
+      sourcePlatform: 'linux',
+      sourceRuntimeMode: 'user',
+      entries: [...files.entries()].map(([path, content]) => ({
+        path,
+        size: Buffer.byteLength(content),
+        sha256: createHash('sha256').update(content).digest('hex'),
+      })),
+    },
+  });
+  await rm(staging, { recursive: true, force: true });
+  await utimes(outputPath, new Date(params.mtimeMs), new Date(params.mtimeMs));
+  return { path: archive.path, createdAt: params.createdAt, archiveBytes: archive.archiveBytes };
+}
+
 async function writeRestoreRecoveryJournal(
   layout: PersonalHomeRuntimeLayout,
   state: 'rollback_available' | 'finalization_available' | 'ambiguous',
@@ -120,6 +164,46 @@ async function writeRestoreRecoveryJournal(
       : {}),
     entries,
   })}\n`);
+}
+
+async function writeActivatingRestoreJournal(
+  layout: PersonalHomeRuntimeLayout,
+  manifest: PersonalHomeBackupManifestV1,
+): Promise<Readonly<{ journalPath: string; stage: string; configurationRollbackArtifact: string; rollbackPath: string }>> {
+  const operationsDir = join(layout.dataDir, '.operations');
+  const id = '00000000-0000-4000-8000-000000000002';
+  const stage = `${layout.dataDir}.restore-stage-${process.pid}-${id}`;
+  const configurationRollbackArtifact = join(layout.configDir, `server.env.${id}.restore-rollback`);
+  const entries = [
+    [layout.databasePath, join(stage, 'database/home.sqlite')],
+    [layout.publicFilesDir, join(stage, 'files/public')],
+    [layout.privateFilesDir, join(stage, 'files/private')],
+    [layout.masterSecretPath, join(stage, 'secrets/handy-master-secret.txt')],
+    [layout.derivedDataDir, join(stage, 'derived')],
+  ].map(([target, source], index) => ({
+    target,
+    source,
+    rollback: `${target}.restore-rollback-${id}`,
+    hadTarget: index === 0,
+    state: index < 4 ? 'promoted' : 'untouched',
+  }));
+  await mkdir(operationsDir, { recursive: true });
+  await mkdir(stage, { recursive: true });
+  await mkdir(layout.configDir, { recursive: true });
+  await writeFile(join(stage, 'manifest.json'), serializePersonalHomeManifest(manifest));
+  await writeFile(configurationRollbackArtifact, 'previous-configuration');
+  await writeFile(entries[0]!.rollback, 'previous-database');
+  const journalPath = join(operationsDir, 'restore-journal.json');
+  await writeFile(journalPath, `${JSON.stringify({
+    version: 2,
+    phase: 'activating',
+    stage,
+    wasRunning: true,
+    configurationRollbackArtifact,
+    configurationRollbackState: 'pending',
+    entries,
+  })}\n`);
+  return { journalPath, stage, configurationRollbackArtifact, rollbackPath: entries[0]!.rollback };
 }
 
 describe('PersonalHomeOperations facade', () => {
@@ -593,7 +677,7 @@ describe('PersonalHomeOperations facade', () => {
     }
   });
 
-  it.each(['rollback_available', 'finalization_available', 'ambiguous'] as const)(
+  it.each(['rollback_available', 'ambiguous'] as const)(
     'refuses erase before lifecycle mutation while restore recovery is %s',
     { timeout: 60_000 },
     async (recoveryState) => {
@@ -613,8 +697,8 @@ describe('PersonalHomeOperations facade', () => {
         });
 
         expect(confirm).not.toHaveBeenCalled();
-        expect(isRunning).not.toHaveBeenCalled();
-        expect(stop).not.toHaveBeenCalled();
+        expect(isRunning).toHaveBeenCalledTimes(2);
+        expect(stop).toHaveBeenCalledTimes(1);
         expect(start).not.toHaveBeenCalled();
         await expect(readFile(layout.databasePath, 'utf8')).resolves.toBe('sqlite-fixture');
         await expect(readFile(layout.masterSecretPath, 'utf8')).resolves.toBe('master-secret-fixture');
@@ -866,6 +950,99 @@ describe('PersonalHomeOperations facade', () => {
     }
   });
 
+  it('returns a reserved source to service across a process restart when the destination staged nothing', { timeout: 60_000 }, async () => {
+    const source = await fixture('relocate-restart-return');
+    try {
+      const { deps } = makeDeps(source.layout, {
+        readIdentity: async () => ({ homeServerIdentityId: 'srv_home_identity', schemaVersion: '1' }),
+      });
+      let running = true;
+      let quarantined = false;
+      const activate = vi.fn(async () => { running = true; quarantined = false; });
+      const lifecycle = {
+        isRunning: async () => running,
+        stop: async () => { running = false; },
+        start: async () => { running = true; },
+        healthCheck: async () => true,
+        quarantine: async () => { running = false; quarantined = true; },
+        activate,
+        readServiceStatus: async () => ({ running, quarantined }),
+      };
+      const reserving = makeRelocateInput();
+      await expect(createPersonalHomeOperations({ ...deps, lifecycle }).relocate({
+        ...reserving,
+        destination: {
+          ...reserving.destination,
+          stage: async () => { throw new Error('transport closed'); },
+          status: async () => { throw new Error('destination unreachable'); },
+        },
+      })).rejects.toThrow('transport closed');
+      expect(running).toBe(false);
+
+      // A new process owns no invocation-local memory of the pre-relocation state.
+      const restarted = makeRelocateInput();
+      const abort = vi.fn(restarted.destination.abort);
+      await expect(createPersonalHomeOperations({ ...deps, lifecycle }).relocate({
+        ...restarted,
+        recoveryAction: 'return_to_source',
+        destination: {
+          ...restarted.destination,
+          abort,
+          status: async (operationId) => ({ operationId, status: 'absent' as const }),
+        },
+      })).resolves.toMatchObject({ status: 'returned' });
+
+      expect(activate).toHaveBeenCalledTimes(1);
+      expect(running).toBe(true);
+      expect(abort).not.toHaveBeenCalled();
+      const marker = JSON.parse(await readFile(join(source.layout.dataDir, '.operations', 'relocation-source.json'), 'utf8')) as { phase: string };
+      expect(marker.phase).toBe('returned_to_source');
+    } finally {
+      await rm(source.root, { recursive: true, force: true });
+    }
+  });
+
+  it('releases a failed reservation without starting a Home that was already stopped', { timeout: 60_000 }, async () => {
+    const source = await fixture('relocate-initially-stopped');
+    try {
+      const { deps } = makeDeps(source.layout, {
+        readIdentity: async () => ({ homeServerIdentityId: 'srv_home_identity', schemaVersion: '1' }),
+      });
+      let running = false;
+      let quarantined = false;
+      const activate = vi.fn(async () => { running = true; quarantined = false; });
+      const input = makeRelocateInput();
+      const ops = createPersonalHomeOperations({
+        ...deps,
+        lifecycle: {
+          isRunning: async () => running,
+          stop: async () => { running = false; },
+          start: async () => { running = true; },
+          healthCheck: async () => true,
+          quarantine: async () => { running = false; quarantined = true; },
+          activate,
+          readServiceStatus: async () => ({ running, quarantined }),
+        },
+      });
+
+      await expect(ops.relocate({
+        ...input,
+        destination: {
+          ...input.destination,
+          stage: async () => { throw new Error('transport closed'); },
+          status: async (operationId) => ({ operationId, status: 'absent' as const }),
+        },
+      })).rejects.toThrow('transport closed');
+
+      expect(activate).not.toHaveBeenCalled();
+      expect(running).toBe(false);
+      const marker = JSON.parse(await readFile(join(source.layout.dataDir, '.operations', 'relocation-source.json'), 'utf8')) as { phase: string };
+      expect(marker.phase).toBe('returned_to_source');
+    } finally {
+      await rm(source.root, { recursive: true, force: true });
+    }
+  });
+
   it('verifies a backup through the archive owner and compares identity without leaking secrets', { timeout: 60_000 }, async () => {
     const { root, layout } = await fixture('verify');
     try {
@@ -920,6 +1097,146 @@ describe('PersonalHomeOperations facade', () => {
     }
   });
 
+  it('automatically finalizes a completed restore journal on the next operations contact', { timeout: 60_000 }, async () => {
+    const { root, layout } = await fixture('restore-contact-completed');
+    try {
+      await writeRestoreRecoveryJournal(layout, 'finalization_available');
+      const artifact = join(layout.configDir, 'server.env.00000000-0000-4000-8000-000000000001.restore-rollback');
+      await mkdir(layout.configDir, { recursive: true });
+      await writeFile(artifact, 'previous-configuration');
+
+      await expect(createPersonalHomeOperations(makeDeps(layout).deps).reconcileRestore()).resolves.toMatchObject({
+        outcome: 'finalized',
+      });
+      await expect(stat(join(layout.dataDir, '.operations', 'restore-journal.json'))).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(stat(artifact)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('surfaces completed-journal finalization failure and blocks ordinary mutation', { timeout: 60_000 }, async () => {
+    const { root, layout } = await fixture('restore-contact-completed-failure');
+    try {
+      await writeRestoreRecoveryJournal(layout, 'finalization_available');
+      const artifact = join(layout.configDir, 'server.env.00000000-0000-4000-8000-000000000001.restore-rollback');
+      await mkdir(layout.configDir, { recursive: true });
+      await writeFile(artifact, 'previous-configuration');
+      const { deps } = makeDeps(layout, {
+        finalizeConfiguration: async () => { throw new Error('configuration cleanup unavailable'); },
+      });
+      const ops = createPersonalHomeOperations(deps);
+
+      await expect(ops.backup({ outputPath: join(layout.backupsDir, 'must-not-exist.tar') })).rejects.toMatchObject({
+        code: 'restore_recovery_required',
+        message: expect.stringContaining('configuration cleanup unavailable'),
+      });
+      await expect(stat(join(layout.backupsDir, 'must-not-exist.tar'))).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(stat(join(layout.dataDir, '.operations', 'restore-journal.json'))).resolves.toBeTruthy();
+      await expect(ops.inspect()).resolves.toMatchObject({
+        restoreRecovery: { status: 'finalization_available', phase: 'completed' },
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('revalidates and finalizes a valid running activating candidate on the next operations contact', { timeout: 60_000 }, async () => {
+    const { root, layout } = await fixture('restore-contact-activating-valid');
+    try {
+      const backup = await createPersonalHomeBackup({
+        layout,
+        outputPath: join(layout.backupsDir, 'contact.tar'),
+        stagingDir: join(root, 'backup-staging'),
+        homeServerIdentityId: 'home-identity',
+        schemaVersion: '1',
+        happierVersion: '0.0.0',
+        configuration: {},
+        sqlite: sqliteOk,
+      });
+      const interrupted = await writeActivatingRestoreJournal(layout, backup.manifest);
+      const { deps, setRunning } = makeDeps(layout);
+      setRunning(true);
+
+      await expect(createPersonalHomeOperations(deps).inspect()).resolves.toMatchObject({
+        restoreRecovery: { status: 'none' },
+      });
+      await expect(stat(interrupted.journalPath)).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(stat(interrupted.stage)).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(stat(interrupted.configurationRollbackArtifact)).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(stat(interrupted.rollbackPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('stops an invalid activating candidate, preserves recovery artifacts, and blocks ordinary mutation', { timeout: 60_000 }, async () => {
+    const { root, layout } = await fixture('restore-contact-activating-invalid');
+    try {
+      const backup = await createPersonalHomeBackup({
+        layout,
+        outputPath: join(layout.backupsDir, 'contact.tar'),
+        stagingDir: join(root, 'backup-staging'),
+        homeServerIdentityId: 'home-identity',
+        schemaVersion: '1',
+        happierVersion: '0.0.0',
+        configuration: {},
+        sqlite: sqliteOk,
+      });
+      const interrupted = await writeActivatingRestoreJournal(layout, backup.manifest);
+      let running = true;
+      const stop = vi.fn(async () => { running = false; });
+      const { deps } = makeDeps(layout, {
+        lifecycle: { isRunning: async () => running, stop, start: async () => { running = true; }, healthCheck: async () => true },
+        attestActivatedHome: async () => ({ authenticated: true, homeServerIdentityId: 'home-identity', accountCount: 2, sessionCount: 0 }),
+      });
+
+      await expect(createPersonalHomeOperations(deps).backup({ outputPath: join(layout.backupsDir, 'must-not-exist.tar') })).rejects.toMatchObject({
+        code: 'restore_recovery_required',
+      });
+      expect(stop).toHaveBeenCalledTimes(1);
+      expect(running).toBe(false);
+      await expect(stat(interrupted.journalPath)).resolves.toBeTruthy();
+      await expect(stat(interrupted.stage)).resolves.toBeTruthy();
+      await expect(readFile(interrupted.configurationRollbackArtifact, 'utf8')).resolves.toBe('previous-configuration');
+      await expect(readFile(interrupted.rollbackPath, 'utf8')).resolves.toBe('previous-database');
+      await expect(stat(join(layout.backupsDir, 'must-not-exist.tar'))).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(createPersonalHomeOperations(deps).inspect()).resolves.toMatchObject({
+        restoreRecovery: { status: 'rollback_available', phase: 'activating' },
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('stops before blocking an ambiguous journal without trusting journal-controlled paths', { timeout: 60_000 }, async () => {
+    const { root, layout } = await fixture('restore-contact-ambiguous');
+    try {
+      const outside = join(root, 'outside-sentinel');
+      await writeFile(outside, 'preserve');
+      await mkdir(join(layout.dataDir, '.operations'), { recursive: true });
+      await writeFile(join(layout.dataDir, '.operations', 'restore-journal.json'), JSON.stringify({ phase: 'activating', target: outside }));
+      let running = true;
+      const stop = vi.fn(async () => { running = false; });
+      const { deps } = makeDeps(layout, {
+        lifecycle: { isRunning: async () => running, stop, start: async () => { running = true; }, healthCheck: async () => true },
+      });
+
+      await expect(createPersonalHomeOperations(deps).backup({ outputPath: join(layout.backupsDir, 'must-not-exist.tar') })).rejects.toMatchObject({
+        code: 'restore_recovery_required',
+      });
+      expect(stop).toHaveBeenCalledTimes(1);
+      expect(running).toBe(false);
+      await expect(readFile(outside, 'utf8')).resolves.toBe('preserve');
+      await expect(stat(join(layout.dataDir, '.operations', 'restore-journal.json'))).resolves.toBeTruthy();
+      await expect(createPersonalHomeOperations(deps).inspect()).resolves.toMatchObject({
+        restoreRecovery: { status: 'ambiguous', affectedTargets: [] },
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('inspects manifest metadata without treating arbitrary tar files as Personal Home backups', { timeout: 60_000 }, async () => {
     const { root, layout } = await fixture('inspect-backup-metadata');
     try {
@@ -935,10 +1252,79 @@ describe('PersonalHomeOperations facade', () => {
 
       const inspection = await createPersonalHomeOperations(deps).inspect();
       expect(inspection.storage.backupsCount).toBe(1);
+      expect(inspection.storage.backupsCountComplete).toBe(true);
       expect(inspection.storage.latestBackup).toEqual({
         path: olderPath,
         createdAt: created.manifest.createdAt,
         archiveBytes: created.archiveBytes,
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('bounds inspect backup inventory to an explicitly truncated truthful projection across many archives', { timeout: 120_000 }, async () => {
+    const { root, layout } = await fixture('inspect-backup-inventory-bounded');
+    try {
+      const { deps } = makeDeps(layout);
+      const budget = PERSONAL_HOME_BACKUP_INVENTORY_MAX_MANIFEST_READS;
+      const total = budget + 2;
+      const created: Array<Readonly<{ path: string; createdAt: string; archiveBytes: number }>> = [];
+      for (let index = 0; index < total; index += 1) {
+        const createdAt = new Date(Date.UTC(2026, 0, 1, 0, 0, 0, index * 7)).toISOString();
+        created.push(await writeInventoryFixtureArchive({
+          backupsDir: layout.backupsDir,
+          name: `personal-home-${String(index).padStart(3, '0')}.tar`,
+          createdAt,
+          mtimeMs: Date.parse(createdAt),
+        }));
+      }
+      // Creation order equals directory-metadata order, so the two oldest archives fall outside
+      // the newest-candidate window and a bounded inventory must stop reading manifests before
+      // reaching them.
+      const inspection = await createPersonalHomeOperations(deps).inspect();
+      expect(inspection.storage.backupsCountComplete).toBe(false);
+      expect(inspection.storage.backupsCount).toBe(budget);
+      expect(inspection.storage.latestBackup).toBeNull();
+      // Bounded inspection never deletes or rewrites user-created backups.
+      await expect(stat(created[0]!.path)).resolves.toMatchObject({ size: created[0]!.archiveBytes });
+      await expect(stat(created[1]!.path)).resolves.toMatchObject({ size: created[1]!.archiveBytes });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reports the backup inventory as incomplete when a candidate archive exceeds the quick-manifest budget', { timeout: 60_000 }, async () => {
+    const { root, layout } = await fixture('inspect-backup-inventory-unconfirmable');
+    try {
+      const { deps } = makeDeps(layout);
+      const confirmed = await createPersonalHomeOperations(deps).backup({ outputPath: join(layout.backupsDir, 'personal-home-confirmed.tar') });
+      const header = Buffer.alloc(512);
+      new tar.Header({ path: 'manifest.json', type: 'File', size: PERSONAL_HOME_BACKUP_QUICK_INSPECTION_MAX_MANIFEST_BYTES + 1, mode: 0o600 }).encode(header);
+      await writeFile(join(layout.backupsDir, 'personal-home-oversized.tar'), Buffer.concat([header, Buffer.alloc(1024)]));
+
+      const inspection = await createPersonalHomeOperations(deps).inspect();
+      expect(inspection.storage.backupsCountComplete).toBe(false);
+      expect(inspection.storage.backupsCount).toBe(1);
+      expect(inspection.storage.latestBackup).toBeNull();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('bounds directory traversal even when the backup directory contains only unrelated entries', { timeout: 60_000 }, async () => {
+    const { root, layout } = await fixture('inspect-backup-directory-bounded');
+    try {
+      await mkdir(layout.backupsDir, { recursive: true });
+      for (let index = 0; index < 65; index += 1) {
+        await writeFile(join(layout.backupsDir, `unrelated-${String(index).padStart(3, '0')}.txt`), 'not a backup');
+      }
+
+      const inspection = await createPersonalHomeOperations(makeDeps(layout).deps).inspect();
+      expect(inspection.storage).toMatchObject({
+        backupsCount: 0,
+        backupsCountComplete: false,
+        latestBackup: null,
       });
     } finally {
       await rm(root, { recursive: true, force: true });

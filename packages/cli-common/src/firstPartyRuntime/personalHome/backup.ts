@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { mkdir, readFile, lstat, cp, readdir, writeFile, rm, stat, realpath } from 'node:fs/promises';
+import { mkdir, readFile, lstat, cp, opendir, readdir, writeFile, rm, stat, realpath } from 'node:fs/promises';
 import { dirname, isAbsolute, join, parse, relative, resolve } from 'node:path';
-import { createPersonalHomeArchive, readPersonalHomeArchiveManifestMetadata, verifyPersonalHomeArchive } from './archive.js';
+import { createPersonalHomeArchive, PersonalHomeArchiveError, readPersonalHomeArchiveManifestMetadata, verifyPersonalHomeArchive } from './archive.js';
 import { type PersonalHomeRuntimeLayout } from './layout.js';
 import { fingerprintMasterSecret, type PersonalHomeBackupEntry, type PersonalHomeBackupManifestV1 } from './manifest.js';
 import { assertStablePersonalHomeSqliteSnapshot, PersonalHomeSqliteSnapshotError } from './sqliteSnapshot.js';
@@ -160,20 +160,57 @@ export async function createPersonalHomeBackupWithLease(params: Readonly<{
 }
 
 export type PersonalHomeBackupArchiveInventoryEntry = Readonly<{ path: string; createdAt: string; archiveBytes: number }>;
-export async function listPersonalHomeBackupArchives(backupsDir: string): Promise<PersonalHomeBackupArchiveInventoryEntry[]> {
-  const inventory: PersonalHomeBackupArchiveInventoryEntry[] = [];
-  let names: string[];
-  try { names = await readdir(backupsDir); } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error; }
-  for (const name of names) {
-    if (!name.endsWith('.tar')) continue;
-    const path = resolve(backupsDir, name);
-    try {
-      const info = await lstat(path);
-      if (!info.isFile()) continue;
-      const metadata = await readPersonalHomeArchiveManifestMetadata(path);
-      inventory.push({ path, createdAt: metadata.manifest.createdAt, archiveBytes: metadata.archiveBytes });
-    } catch { /* An entry that disappears or cannot be inspected is not a current archive fact. */ }
+
+/**
+ * Upper bound on archives whose manifests one settings inventory may quick-read. The protected
+ * resource is the shared host's inspect/settings latency and I/O, not backup retention: the user
+ * backup directory is never pruned or size-capped. Beyond either the directory or manifest-read
+ * budget the inventory reports a confirmed lower bound and no authoritative latest archive;
+ * explicit Verify and Restore remain unaffected.
+ */
+export const PERSONAL_HOME_BACKUP_INVENTORY_MAX_MANIFEST_READS = 32;
+const PERSONAL_HOME_BACKUP_INVENTORY_MAX_DIRECTORY_ENTRIES = 64;
+
+export type PersonalHomeBackupArchiveInventory = Readonly<{
+  /** Confirmed Personal Home archives; exact when `complete`, otherwise a confirmed lower bound. */
+  count: number;
+  /** False when directory or manifest projection stopped early, or a candidate could not be quick-confirmed within the parser resource limit. */
+  complete: boolean;
+  /** Newest archive by manifest creation time only when the inventory is complete. */
+  latest: PersonalHomeBackupArchiveInventoryEntry | null;
+}>;
+
+export async function listPersonalHomeBackupArchives(backupsDir: string): Promise<PersonalHomeBackupArchiveInventory> {
+  const candidates: string[] = [];
+  let complete = true;
+  try {
+    const directory = await opendir(backupsDir);
+    let observedEntries = 0;
+    for await (const entry of directory) {
+      if (observedEntries >= PERSONAL_HOME_BACKUP_INVENTORY_MAX_DIRECTORY_ENTRIES) {
+        complete = false;
+        break;
+      }
+      observedEntries += 1;
+      if (entry.isFile() && entry.name.endsWith('.tar')) candidates.push(resolve(backupsDir, entry.name));
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { count: 0, complete: true, latest: null };
+    throw error;
   }
-  inventory.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt) || b.path.localeCompare(a.path));
-  return inventory;
+  if (candidates.length > PERSONAL_HOME_BACKUP_INVENTORY_MAX_MANIFEST_READS) complete = false;
+  const confirmed: PersonalHomeBackupArchiveInventoryEntry[] = [];
+  for (const candidate of candidates.slice(0, PERSONAL_HOME_BACKUP_INVENTORY_MAX_MANIFEST_READS)) {
+    try {
+      const metadata = await readPersonalHomeArchiveManifestMetadata(candidate);
+      confirmed.push({ path: candidate, createdAt: metadata.manifest.createdAt, archiveBytes: metadata.archiveBytes });
+    } catch (error) {
+      // An archive the quick-manifest budget cannot confirm (e.g. a legacy backup whose manifest
+      // sits beyond the header budget) must never let the inventory report a partial count as
+      // exact. Structural failures remain "not a current archive fact", as for arbitrary tars.
+      if (error instanceof PersonalHomeArchiveError && error.code === 'resource_limit') complete = false;
+    }
+  }
+  confirmed.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt) || b.path.localeCompare(a.path));
+  return { count: confirmed.length, complete, latest: complete ? confirmed[0] ?? null : null };
 }

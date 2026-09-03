@@ -754,6 +754,7 @@ export async function uninstallRelayRuntimePayloadLocal(params: Readonly<{
   statePath: string;
   logDir: string;
   retainedPurpose?: ManagedRelayPurpose;
+  retainedVersion?: string;
 }>): Promise<void> {
   const entryNames = await listRelayRuntimeManagedRootEntries(params.installRoot);
   await clearNamedRootEntries({
@@ -762,7 +763,10 @@ export async function uninstallRelayRuntimePayloadLocal(params: Readonly<{
   });
   await removeRuntimePayloadPath(params.shimPath);
   if (params.retainedPurpose) {
-    await writeJsonFile(params.statePath, { purpose: params.retainedPurpose });
+    await writeJsonFile(params.statePath, {
+      ...(params.retainedVersion ? { retainedPersonalHomeVersion: params.retainedVersion } : {}),
+      purpose: params.retainedPurpose,
+    });
   } else {
     await rm(params.statePath, { force: true });
   }
@@ -1154,6 +1158,25 @@ async function reconcileInterruptedPersonalHomeUpdate(params: Readonly<{
     await removePersonalHomeUpdateRecoveryRecord(params.layout);
 }
 
+function removeLegacyPersonalHomePublicOrigin(envText: string, canonicalServerUrl: string): string {
+    const env = parseEnvText(envText);
+    const publicServerUrl = String(env.HAPPIER_PUBLIC_SERVER_URL ?? '').trim().replace(/\/+$/u, '');
+    const canonical = canonicalServerUrl.trim().replace(/\/+$/u, '');
+    if (!publicServerUrl || publicServerUrl !== canonical) return envText;
+
+    const retiredKeys = new Set([
+        'HAPPIER_PUBLIC_SERVER_URL',
+        'HAPPIER_PUBLIC_SERVER_URL_INFERRED',
+    ]);
+    const lines = envText.split('\n').filter((line) => {
+        const trimmed = line.trim();
+        const separatorIndex = trimmed.indexOf('=');
+        return separatorIndex < 0 || !retiredKeys.has(trimmed.slice(0, separatorIndex).trim());
+    });
+    const rendered = lines.join('\n');
+    return rendered.endsWith('\n') ? rendered : `${rendered}\n`;
+}
+
 async function installOrUpdateRelayRuntimeLocalUnderMutationLocks(params: Readonly<{
     serverBinaryPath: string;
     channel: 'stable' | 'preview' | 'publicdev';
@@ -1192,6 +1215,10 @@ async function installOrUpdateRelayRuntimeLocalUnderMutationLocks(params: Readon
     personalHomeRestoreHooks?: PersonalHomeRestoreHooks;
     /** RelayHostEngine-owned lifecycle assertion, required for Personal Home mutation. */
     assertPersonalHomeStopped?: () => Promise<void>;
+    /** RelayHostEngine-owned bootstrap state check, evaluated under the incumbent Home lock. */
+    assertPersonalHomeMutationPrecondition?: () => Promise<void>;
+    /** RelayHostEngine-owned legacy service cleanup, executed only after mutation locks are held. */
+    cleanupLegacyServiceBeforeInstall?: () => Promise<void>;
 }>, rootMigrationSource: RelayRuntimeInstallRootMigrationSource | null): Promise<Readonly<{ baseUrl: string; version: string | null }>> {
     const platform = (String(params.platform ?? '').trim() || process.platform) as NodeJS.Platform;
     const homeDir = String(params.homeDir ?? '').trim() || homedir();
@@ -1392,7 +1419,9 @@ async function installOrUpdateRelayRuntimeLocalUnderMutationLocks(params: Readon
         if (params.createPersonalHomeRestorePoint) {
             const previousState = tryParseJsonObject(previousInstallState.previousStateText ?? '');
             const previousVersion = typeof previousState?.version === 'string' && previousState.version.trim()
-                ? previousState.version.trim()
+              ? previousState.version.trim()
+              : typeof previousState?.retainedPersonalHomeVersion === 'string' && previousState.retainedPersonalHomeVersion.trim()
+                ? previousState.retainedPersonalHomeVersion.trim()
                 : null;
             const candidateVersion = typeof params.version === 'string' && params.version.trim()
                 ? params.version.trim()
@@ -1459,8 +1488,12 @@ async function installOrUpdateRelayRuntimeLocalUnderMutationLocks(params: Readon
                 generateId: randomUUID,
             })
             : null;
-        const existingEnvText = existsSync(configEnvPath) ? await readFile(configEnvPath, 'utf8').catch(() => '') : '';
-        const existingPortRaw = existingEnvText ? String(parseEnvText(existingEnvText).PORT ?? '').trim() : '';
+        const existingEnvTextRaw = existsSync(configEnvPath) ? await readFile(configEnvPath, 'utf8').catch(() => '') : '';
+        const existingEnvText = params.purpose?.kind === 'personal-home'
+            ? removeLegacyPersonalHomePublicOrigin(existingEnvTextRaw, params.purpose.canonicalServerUrl)
+            : existingEnvTextRaw;
+        const existingEnv = parseEnvText(existingEnvText);
+        const existingPortRaw = String(existingEnv.PORT ?? '').trim();
         const overridePortRaw = String((params.env ?? {}).PORT ?? '').trim();
         const configuredPortRaw = overridePortRaw || existingPortRaw;
         const configuredPort = configuredPortRaw && Number.isInteger(Number.parseInt(configuredPortRaw, 10))
@@ -1475,12 +1508,28 @@ async function installOrUpdateRelayRuntimeLocalUnderMutationLocks(params: Readon
             configuredPort,
             explicitConfiguredPort: Boolean(overridePortRaw),
         });
+        // Personal Home uninstall intentionally retains server.env because it is
+        // the storage-location authority. An omitted-purpose reinstall must
+        // therefore render from those persisted locations rather than silently
+        // relocating the Home back under this install lane's defaults.
+        const renderedDataDir = params.purpose?.kind === 'personal-home'
+            ? String(existingEnv.HAPPIER_SERVER_LIGHT_DATA_DIR ?? existingEnv.HAPPY_SERVER_LIGHT_DATA_DIR ?? '').trim()
+                || defaults.dataDir
+            : defaults.dataDir;
+        const renderedFilesDir = params.purpose?.kind === 'personal-home'
+            ? String(existingEnv.HAPPIER_SERVER_LIGHT_FILES_DIR ?? existingEnv.HAPPY_SERVER_LIGHT_FILES_DIR ?? '').trim()
+                || join(renderedDataDir, 'files')
+            : filesDir;
+        const renderedDbDir = params.purpose?.kind === 'personal-home'
+            ? String(existingEnv.HAPPIER_SERVER_LIGHT_DB_DIR ?? existingEnv.HAPPY_SERVER_LIGHT_DB_DIR ?? '').trim()
+                || join(renderedDataDir, 'pglite')
+            : dbDir;
         const baseEnvText = renderSelfHostServerEnvText({
             port: resolvedPort,
             host: defaults.serverHost,
-            dataDir: defaults.dataDir,
-            filesDir,
-            dbDir,
+            dataDir: renderedDataDir,
+            filesDir: renderedFilesDir,
+            dbDir: renderedDbDir,
             uiDir,
             uiDeploymentId: uiDeployment?.deploymentId,
             serverBinDir: dirname(installServerBinaryPath),
@@ -1506,7 +1555,7 @@ async function installOrUpdateRelayRuntimeLocalUnderMutationLocks(params: Readon
         // only carry the inherited setting when the file has no assignment.
         const approvalKey = 'HAPPIER_HOME_DEVICE_APPROVAL_REQUIRED';
         const inheritedApproval = params.purpose?.kind === 'personal-home'
-            && !Object.prototype.hasOwnProperty.call(parseEnvText(existingEnvText), approvalKey)
+            && !Object.prototype.hasOwnProperty.call(existingEnv, approvalKey)
             && Object.prototype.hasOwnProperty.call(process.env, approvalKey)
             ? String(process.env[approvalKey] ?? '')
             : null;
@@ -1687,6 +1736,7 @@ async function installOrUpdateRelayRuntimeLocalUnderMutationLocks(params: Readon
                     persistent: true,
                 });
                 await applyServicePlan(candidateStopPlan, { runCommands: true });
+                await params.assertPersonalHomeStopped?.();
             } catch (rollbackError) {
                 rollbackFailures.push({ phase: 'candidate_stop', error: rollbackError });
                 rollbackCanProceed = false;
@@ -1809,9 +1859,12 @@ async function installOrUpdateRelayRuntimeLocalUnderMutationLocks(params: Readon
                         persistent: true,
                     });
                     await applyServicePlan(restorePlan, {
-                        runCommands: params.runServiceCommands !== false,
+                        runCommands: params.runServiceCommands !== false
+                            && (params.purpose?.kind !== 'personal-home' || personalHomeWasRunning),
                     });
-                    if (params.runServiceCommands !== false && params.skipHealthCheck !== true) {
+                    if (params.runServiceCommands !== false
+                        && params.skipHealthCheck !== true
+                        && (params.purpose?.kind !== 'personal-home' || personalHomeWasRunning)) {
                         const rollbackBaseUrl = resolveConfiguredSelfHostBaseUrl({
                             fallbackBaseUrl: `http://${defaults.serverHost}:${defaults.serverPort}`,
                             envText: previousInstallState.previousEnvText ?? '',
@@ -1926,6 +1979,11 @@ export async function installOrUpdateRelayRuntimeLocal(
                 channel: params.channel,
                 homeDir,
             });
+            const installUnderHeldLocks = async () => {
+                await params.assertPersonalHomeMutationPrecondition?.();
+                await params.cleanupLegacyServiceBeforeInstall?.();
+                return installOrUpdateRelayRuntimeLocalUnderMutationLocks(params, rootMigrationSource);
+            };
             if (params.purpose?.kind === 'personal-home') {
                 // A user-mode legacy migration renames the complete install root, including its
                 // persistent data directory. Lock that existing Home before the move; creating a
@@ -1953,14 +2011,14 @@ export async function installOrUpdateRelayRuntimeLocal(
                     async () => {
                         await assertPersonalHomeRelocationSourceAllowsActivation(sourceDataDir);
                         await assertPersonalHomeRelocationDestinationAllowsActivation(sourceDataDir);
-                        return installOrUpdateRelayRuntimeLocalUnderMutationLocks(params, rootMigrationSource);
+                        return installUnderHeldLocks();
                     },
                     rootMigrationSource && sourceDataDir !== destinationDataDir
                         ? { movedToDataDir: destinationDataDir }
                         : {},
                 );
             }
-            return installOrUpdateRelayRuntimeLocalUnderMutationLocks(params, rootMigrationSource);
+            return installUnderHeldLocks();
         },
     });
 }

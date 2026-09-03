@@ -93,6 +93,10 @@ describe('Personal Home runtime purpose', () => {
       .toThrow(/port/i);
     expect(() => createPersonalHomeRuntimeSpec({ canonicalServerUrl: 'http://127.0.0.1:43123/home' }))
       .toThrow(/origin|path/i);
+    expect(() => createPersonalHomeRuntimeSpec({ canonicalServerUrl: 'http://localhost:43123' }))
+      .toThrow(/127\.0\.0\.1/i);
+    expect(() => createPersonalHomeRuntimeSpec({ canonicalServerUrl: 'http://[::1]:43123' }))
+      .toThrow(/127\.0\.0\.1/i);
   });
 
     it('resolves the Personal Home data paths beneath the managed runtime root', () => {

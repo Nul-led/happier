@@ -120,7 +120,6 @@ describeReleasedServer(releasedServerSuiteName, () => {
     // @ts-expect-error -- this composed suite's Vitest config maps @/ to UI source; the package-wide TS program maps it to CLI source.
     const { probeServerFeaturesAtUrl } = await import('@/sync/api/capabilities/serverFeaturesClient');
     const {
-      createAccountDirectorySession,
       parseAccountDirectoryCapability,
     // @ts-expect-error -- this composed suite's Vitest config maps @/ to UI source; the package-wide TS program maps it to CLI source.
     } = await import('@/sync/domains/accountDirectory/accountDirectorySession');
@@ -132,21 +131,13 @@ describeReleasedServer(releasedServerSuiteName, () => {
     expect(features.status).toBe('ready');
     if (features.status !== 'ready') throw new Error('released server feature probe did not become ready');
 
-    // server-v0.2.1 predates Account Directory. The current reader must accept
-    // that additive absence and the canonical Directory session must stop
-    // before issuing any Directory request.
+    // server-v0.2.1 predates Account Directory. The current reader accepts
+    // that additive absence, so callers stop before constructing the
+    // identity-bound Directory session or issuing any Directory request.
     const directoryCapability = parseAccountDirectoryCapability(
       features.features.capabilities.accountDirectory,
     );
     expect(directoryCapability).toBeNull();
-    const directorySession = createAccountDirectorySession(
-      { endpoint: server.baseUrl },
-      { capability: features.features.capabilities.accountDirectory as never },
-    );
-    await expect(directorySession.refresh()).resolves.toMatchObject({
-      status: 'unsupported',
-      homes: [],
-    });
 
     cliHome = resolve(testDir, 'cli-home');
     const workspaceDir = resolve(testDir, 'workspace');

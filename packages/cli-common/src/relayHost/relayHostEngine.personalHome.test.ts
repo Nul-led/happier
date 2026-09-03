@@ -9,6 +9,98 @@ import type { PersonalHomeRestoreHooks } from '../firstPartyRuntime/personalHome
 import { normalizePersonalHomeRestorableConfigurationV1 } from '../firstPartyRuntime/personalHome/configuration.js';
 
 describe('RelayHostEngine (Personal Home purpose)', () => {
+  it.each([
+    { label: 'initial install after erase', installed: false, canonicalServerUrl: null, dataPresent: false },
+    { label: 'signup closure after uninstall', installed: true, canonicalServerUrl: 'http://127.0.0.1:43123', dataPresent: true },
+  ] as const)('blocks $label when the explicit operation changes state after admission but before the mutation lock', async (expectedState) => {
+    const originalPlatform = process.platform;
+    const homeDir = await mkdtemp(join(tmpdir(), 'personal-home-engine-bootstrap-interrupted-'));
+    try {
+      Object.defineProperty(process, 'platform', { value: 'linux' });
+      vi.doMock('node:os', async () => {
+        const actual = await vi.importActual<typeof import('node:os')>('node:os');
+        return { ...actual, homedir: () => homeDir };
+      });
+      vi.doMock('node:child_process', async () => {
+        const actual = await vi.importActual<typeof import('node:child_process')>('node:child_process');
+        return {
+          ...actual,
+          spawnSync: () => ({
+            status: 0,
+            stdout: 'LoadState=not-found\nActiveState=inactive\nSubState=dead\nUnitFileState=disabled\n',
+            stderr: '',
+          }),
+        };
+      });
+      vi.doMock('../firstPartyRuntime/relayRuntimeInstall.js', async () => {
+        const actual = await vi.importActual<typeof import('../firstPartyRuntime/relayRuntimeInstall.js')>('../firstPartyRuntime/relayRuntimeInstall.js');
+        return {
+          ...actual,
+          installOrUpdateRelayRuntimeLocal: async (params: { assertPersonalHomeMutationPrecondition?: () => Promise<void> }) => {
+            expect(params.assertPersonalHomeMutationPrecondition).toBeTypeOf('function');
+            const defaults = resolveRelayRuntimeDefaults({ platform: 'linux', mode: 'user', channel: 'preview', homeDir });
+            await rm(join(defaults.installRoot, 'bin', 'happier-server'), { force: true });
+            await mkdir(defaults.installRoot, { recursive: true });
+            await writeFile(join(defaults.installRoot, 'self-host-state.json'), JSON.stringify({
+              purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' },
+            }), 'utf8');
+            await params.assertPersonalHomeMutationPrecondition!();
+            throw new Error('installer mutated after bootstrap precondition');
+          },
+        };
+      });
+
+      const canonicalServerUrl = 'http://127.0.0.1:43123';
+      const defaults = resolveRelayRuntimeDefaults({ platform: 'linux', mode: 'user', channel: 'preview', homeDir });
+      if (expectedState.installed) {
+        await mkdir(join(defaults.installRoot, 'bin'), { recursive: true });
+        await mkdir(defaults.configDir, { recursive: true });
+        await mkdir(defaults.dataDir, { recursive: true });
+        await writeFile(join(defaults.installRoot, 'bin', 'happier-server'), '#!/bin/sh\n', 'utf8');
+        await writeFile(join(defaults.installRoot, 'self-host-state.json'), JSON.stringify({
+          version: 'preview-1',
+          purpose: { kind: 'personal-home', canonicalServerUrl },
+        }), 'utf8');
+        await writeFile(join(defaults.configDir, 'server.env'), `PORT=43123\nHAPPIER_CANONICAL_SERVER_URL=${canonicalServerUrl}\n`, 'utf8');
+        await writeFile(join(defaults.dataDir, 'handy-master-secret.txt'), 'retained', 'utf8');
+      }
+      const payloadRoot = join(homeDir, 'payload');
+      await mkdir(payloadRoot, { recursive: true });
+      const serverBinaryPath = join(payloadRoot, 'happier-server');
+      await writeFile(serverBinaryPath, '#!/bin/sh\n', 'utf8');
+
+      const { createRelayHostEngine } = await import('./relayHostEngine.js');
+      const engine = createRelayHostEngine({
+        resolveRemoteReleaseTarget: async () => ({ os: 'linux', arch: 'x64' }),
+        runRemoteText: async () => ({ status: 0, stdout: '', stderr: '' }),
+        copyLocalDirectoryToRemote: async () => {},
+        installRemoteComponent: async () => ({ binaryPath: '', versionId: 'preview-1' }),
+      });
+
+      await expect(engine.installOrUpdate({
+        target: { kind: 'local' },
+        mode: 'user',
+        channel: 'preview',
+        selfHostRelayBinaryOverride: serverBinaryPath,
+        purpose: { kind: 'personal-home', canonicalServerUrl },
+        env: { PORT: '43123', AUTH_ANONYMOUS_SIGNUP_ENABLED: '0' },
+        expectedPersonalHomeState: {
+          installed: expectedState.installed,
+          canonicalServerUrl: expectedState.canonicalServerUrl,
+          dataPresent: expectedState.dataPresent,
+        },
+      })).rejects.toMatchObject({ code: 'personal_home_bootstrap_interrupted' });
+    } finally {
+      Object.defineProperty(process, 'platform', { value: originalPlatform });
+      vi.doUnmock('../firstPartyRuntime/relayRuntimeInstall.js');
+      vi.doUnmock('node:child_process');
+      vi.doUnmock('node:os');
+      vi.resetModules();
+      vi.clearAllMocks();
+      await rm(homeDir, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   it('fails the production install before mutation when canonical status still reports the Home active', async () => {
     const originalPlatform = process.platform;
     const homeDir = await mkdtemp(join(tmpdir(), 'personal-home-engine-still-running-'));

@@ -16,6 +16,7 @@ export {
   createPersonalHomeRelocationDestinationAbortTaskKind,
   createPersonalHomeSystemTaskOperations,
   createDeferredPersonalHomeSystemTaskOperations,
+  createPersonalHomeRestoreContactReconciler,
   PERSONAL_HOME_SYSTEM_TASK_KINDS,
   PERSONAL_HOME_SYSTEM_TASK_KIND_IDS,
   parseRelayRuntimeTaskParams,

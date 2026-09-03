@@ -15,7 +15,13 @@ import {
   type StageEntry,
 } from './serverSidecars.js';
 
-export const SERVER_BINARY_DEFAULT_EXTERNALS = Object.freeze(['redis']);
+// `expo-modules-core` is the React Native availability probe boundary of
+// `@happier-dev/iroh-native`'s root entry (`HappierIrohNative.ts`). Its guarded
+// require must stay a runtime lookup: resolving it at build time drags the
+// React Native dependency graph (reached through the root-hoisted
+// react-native symlink) into the server bundle, whose Flow sources Bun cannot
+// parse. Keep it external so the probe fails closed to `null` off-Expo.
+export const SERVER_BINARY_DEFAULT_EXTERNALS = Object.freeze(['redis', 'expo-modules-core']);
 
 function resolvePrismaEngineFileNameForTarget(target: BinaryTarget): string {
   const key = `${target.os}-${target.arch}`;

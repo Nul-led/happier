@@ -7576,7 +7576,7 @@ async function runVerticalAWithCapturedOutputs(candidate, options = {}) {
             status: 'approved',
             reviewedAt: '2026-07-23T00:00:00.000Z',
           },
-          updatePolicy: 'automatic',
+          updatePolicy: 'reviewSensitiveChanges',
         },
       },
     );
@@ -7624,7 +7624,7 @@ async function runVerticalAWithCapturedOutputs(candidate, options = {}) {
           registryOrigin: publicRegistry.origin,
           packageName: publicPlugin.packageName,
         },
-        updatePolicy: 'automatic',
+        updatePolicy: 'reviewSensitiveChanges',
       },
     });
     const marketplaceAction = await runPackedPluginRoundtrip({

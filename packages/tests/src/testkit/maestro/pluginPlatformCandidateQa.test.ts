@@ -44,7 +44,7 @@ function mobileInstallationReview(
     optionalHostAccess: [],
     rawCredentialAccess: [],
     compatibility: { happier: '^0.2.0', runtimeApiVersion: 1 },
-    updatePolicy: 'manual',
+    updatePolicy: 'reviewEveryUpdate',
   };
 }
 

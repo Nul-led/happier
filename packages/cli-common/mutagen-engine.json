@@ -1,20 +1,12 @@
 {
   "schemaVersion": 1,
   "component": "mutagen-engine",
-  "sourceStrategy": {
-    "kind": "external-sibling-materialize",
-    "sourceRootEnv": "HAPPIER_MUTAGEN_FORK_SOURCE_ROOT",
-    "defaultSibling": "../happier-mutagen",
-    "vendorRoot": "packages/cli-common/mutagen-engine/vendor",
-    "metadataFile": "packages/cli-common/mutagen-engine/vendor/MUTAGEN-SOURCE.json",
-    "materializer": "apps/stack/scripts/build/mutagen_engine_artifact.mjs"
-  },
   "fork": {
     "remote": "https://github.com/happier-dev/mutagen.git",
     "branch": "happier/external-stream-v1",
     "sourceBaseCommit": "f5ed5c91fa6c934f5678393c56d00362d6443a1d",
-    "releaseCommit": null,
-    "implementationState": "dirty-uncommitted",
+    "releaseCommit": "6cbea9c5febe35880b50ec2e5f0ea1d52c7b1521",
+    "implementationState": "immutable-release",
     "transportSpikeCommit": "cd8069cf8b945dfa0d0f47d8685322c6f1e16e44"
   },
   "upstream": {
@@ -45,23 +37,38 @@
   ],
   "artifact": {
     "releaseRepository": "happier-dev/mutagen",
+    "sourceRepository": "https://github.com/happier-dev/mutagen",
     "releaseTag": "mutagen-v<engine-version>",
-    "managerPath": "bin/happier-mutagen",
-    "agentPath": "bin/happier-mutagen-agent",
+    "sourceArchive": "happier-mutagen-source-mutagen-v<engine-version>.tar.gz",
+    "managerPathByTarget": {
+      "default": "bin/happier-mutagen",
+      "windows-amd64": "bin/happier-mutagen.exe"
+    },
+    "agentPathByTarget": {
+      "default": "bin/happier-mutagen-agent",
+      "windows-amd64": "bin/happier-mutagen-agent.exe"
+    },
     "licensePath": "licenses/MUTAGEN-LICENSE",
+    "ssplLicensePath": "licenses/SSPL-LICENSE",
     "thirdPartyNoticesPath": "licenses/THIRD-PARTY-NOTICES",
     "manifestPath": ".happier-mutagen-engine.json",
     "checksumsPath": "checksums.txt"
   },
   "license": {
-    "policy": "mit-only",
+    "policy": "mixed-mit-sspl",
+    "ssplEnabled": true,
+    "managerBuildTags": [
+      "mutagensidecar",
+      "mutagensspl"
+    ],
+    "agentBuildTags": [
+      "mutagenagent",
+      "mutagensspl"
+    ],
     "requiredPaths": [
       "licenses/MUTAGEN-LICENSE",
+      "licenses/SSPL-LICENSE",
       "licenses/THIRD-PARTY-NOTICES"
-    ],
-    "forbiddenPaths": [
-      "sspl",
-      "licenses/SSPL"
     ]
   }
 }

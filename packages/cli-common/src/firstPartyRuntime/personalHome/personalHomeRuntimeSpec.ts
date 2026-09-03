@@ -50,9 +50,8 @@ function requireCanonicalServerUrl(value: unknown): string {
   if (parsed.protocol !== 'http:') {
     throw new Error('Personal Home canonicalServerUrl must use the loopback http origin');
   }
-  const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/gu, '');
-  if (hostname !== '127.0.0.1' && hostname !== 'localhost' && hostname !== '::1') {
-    throw new Error('Personal Home canonicalServerUrl must use a loopback host');
+  if (parsed.hostname !== '127.0.0.1') {
+    throw new Error('Personal Home canonicalServerUrl must use 127.0.0.1');
   }
   if (!parsed.port) {
     throw new Error('Personal Home canonicalServerUrl must include an explicit port');

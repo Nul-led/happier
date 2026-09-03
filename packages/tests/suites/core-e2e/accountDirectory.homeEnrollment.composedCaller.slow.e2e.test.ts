@@ -74,6 +74,7 @@ async function acquireGitHubOAuthToken(params: Readonly<{
     accountDirectoryTarget?: Readonly<{
         endpointUrl: string;
         serverIdentityId: string;
+        canonicalServerUrl: string;
     }>;
 }>): Promise<string> {
     const proofHash = createHash('sha256').update(params.proof, 'utf8').digest('hex');
@@ -82,6 +83,7 @@ async function acquireGitHubOAuthToken(params: Readonly<{
         query.set('purpose', 'account_directory');
         query.set('endpointUrl', params.accountDirectoryTarget.endpointUrl);
         query.set('endpointServerIdentityId', params.accountDirectoryTarget.serverIdentityId);
+        query.set('canonicalServerUrl', params.accountDirectoryTarget.canonicalServerUrl);
     }
 
     const start = await fetchJson<{ url?: string }>(
@@ -114,6 +116,7 @@ async function loadProductionModules() {
     return {
         tokenStorage: await import('@/auth/storage/tokenStorage'),
         approvalClient: await import('@/auth/approval/homeDeviceApprovalClient'),
+        homeEnrollmentTransport: await import('@/auth/enrollment/homeEnrollmentTransport'),
         serverFeatures: await import('@/sync/api/capabilities/serverFeaturesClient'),
         directorySession: await import('@/sync/domains/accountDirectory/accountDirectorySession'),
         serverProfiles: await import('@/sync/domains/server/serverProfiles'),
@@ -320,6 +323,16 @@ describe('core e2e: Account Directory Home enrollment through the production cal
         const storedApproverHomeB = await approverModules.tokenStorage.TokenStorage
             .getCredentialsForServerUrl(homeBBaseUrl, { serverId: homeBIdentity });
         expect(storedApproverHomeB?.token).toBe(approverHomeBToken);
+        const approvalTransportResolution = await approverModules.homeEnrollmentTransport
+            .resolveHomeEnrollmentTransport(
+                homeDescriptor({ homeServerIdentityId: homeBIdentity, baseUrl: homeBBaseUrl }),
+            );
+        expect(approvalTransportResolution.ok).toBe(true);
+        if (!approvalTransportResolution.ok) throw new Error('unreachable');
+        const approvalTarget = {
+            transport: approvalTransportResolution.transport,
+            credentials: { token: approverHomeBToken },
+        };
 
         // --- Directory facts: account A signs in; the full-account OAuth first
         // creates the Account Service account, then the restricted Directory
@@ -341,6 +354,7 @@ describe('core e2e: Account Directory Home enrollment through the production cal
             accountDirectoryTarget: {
                 endpointUrl: accountServiceBaseUrl,
                 serverIdentityId: accountServiceIdentity,
+                canonicalServerUrl: accountServiceBaseUrl,
             },
         });
         directoryTarget = { endpoint: accountServiceBaseUrl, serverIdentityId: accountServiceIdentity };
@@ -423,7 +437,6 @@ describe('core e2e: Account Directory Home enrollment through the production cal
         // singleton cannot observe the requester's continuation state. ---
         useProductionClient(approverClient);
         expect(approverModules.enrollment.getPendingPreferredHomeEnrollment()).toBeNull();
-        const approvalTarget = { endpointUrl: homeBBaseUrl, serverId: homeBIdentity };
         const listedBeforeDecision = await approverModules.approvalClient.listHomeDeviceApprovals(approvalTarget);
         expect(listedBeforeDecision.ok).toBe(true);
         if (!listedBeforeDecision.ok) throw new Error('unreachable');
@@ -543,14 +556,13 @@ describe('core e2e: Account Directory Home enrollment through the production cal
         expect(retryEnrollment.approvalId).not.toBe(firstApprovalId);
 
         useProductionClient(approverClient);
-        const retryApprovalTarget = { endpointUrl: homeBBaseUrl, serverId: homeBIdentity };
-        const retryListed = await approverModules.approvalClient.listHomeDeviceApprovals(retryApprovalTarget);
+        const retryListed = await approverModules.approvalClient.listHomeDeviceApprovals(approvalTarget);
         expect(retryListed.ok).toBe(true);
         if (!retryListed.ok) throw new Error('unreachable');
         expect(retryListed.items.map((item) => item.approvalId)).toEqual([retryEnrollment.approvalId]);
 
         const rejected = await approverModules.approvalClient.decideHomeDeviceApproval(
-            retryApprovalTarget,
+            approvalTarget,
             retryEnrollment.approvalId,
             'reject',
         );
@@ -661,6 +673,7 @@ describe('core e2e: Account Directory Home enrollment through the production cal
             serverId: activeBefore.serverId,
             serverUrl: activeBefore.serverUrl,
         });
+        await approvalTransportResolution.transport.close();
     }, 300_000);
 
     afterAll(async () => {

@@ -643,7 +643,59 @@ describe('installOrUpdateRelayRuntimeLocal Personal Home restore-point lifecycle
     }
   });
 
-  it('reports incomplete rollback and retains recovery artifacts when the candidate cannot be stopped', async () => {
+  it('restores a previously stopped Personal Home without starting it', async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), 'happier-personal-home-recovery-stopped-'));
+    try {
+      const payloadRoot = join(homeDir, 'payload');
+      await mkdir(payloadRoot, { recursive: true });
+      const serverBinaryPath = join(payloadRoot, 'happier-server');
+      await writeFile(serverBinaryPath, '#!/bin/sh\necho new-runtime\n', 'utf8');
+      const { resolveRelayRuntimeDefaults } = await import('./relayRuntime.js');
+      const defaults = resolveRelayRuntimeDefaults({ platform: 'linux', mode: 'user', channel: 'preview', homeDir });
+      const installedBinaryPath = join(defaults.installRoot, 'bin', 'happier-server');
+      await mkdir(dirname(installedBinaryPath), { recursive: true });
+      await writeFile(installedBinaryPath, '#!/bin/sh\necho old-runtime\n', 'utf8');
+      await writeFile('/tmp/happier-personal-home-recovery.service', '[Service]\n', 'utf8');
+      const serviceApplications: Array<Readonly<{ action: string; runCommands: boolean }>> = [];
+      applyServicePlanMock.mockImplementation(async (
+        plan: { action?: string },
+        options?: { runCommands?: boolean },
+      ) => {
+        serviceApplications.push({
+          action: String(plan.action ?? 'unknown'),
+          runCommands: options?.runCommands === true,
+        });
+      });
+      checkRelayRuntimeHealthMock.mockResolvedValue({
+        reachable: false,
+        url: 'http://127.0.0.1:43123/health',
+      });
+
+      const { installOrUpdateRelayRuntimeLocal } = await import('./relayRuntimeInstall.js');
+      await expect(installOrUpdateRelayRuntimeLocal({
+        serverBinaryPath,
+        channel: 'preview',
+        mode: 'user',
+        platform: 'linux',
+        homeDir,
+        purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' },
+        assertPersonalHomeStopped: async () => undefined,
+        readPersonalHomeWasRunning: async () => false,
+        env: { PORT: '43123', AUTH_ANONYMOUS_SIGNUP_ENABLED: '0' },
+        runServiceCommands: true,
+      })).rejects.toThrow('did not become healthy');
+
+      expect(serviceApplications).toEqual(expect.arrayContaining([
+        { action: 'install', runCommands: false },
+      ]));
+      expect(serviceApplications.filter(({ action, runCommands }) => action === 'install' && runCommands)).toHaveLength(1);
+      await expect(readFile(installedBinaryPath, 'utf8')).resolves.toContain('old-runtime');
+    } finally {
+      await rm(homeDir, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it('reports incomplete rollback when the stop command succeeds but terminal state is not proven', async () => {
     const homeDir = await mkdtemp(join(tmpdir(), 'happier-personal-home-recovery-stop-failure-'));
     try {
       const payloadRoot = join(homeDir, 'payload');
@@ -655,9 +707,8 @@ describe('installOrUpdateRelayRuntimeLocal Personal Home restore-point lifecycle
       const installedBinaryPath = join(defaults.installRoot, 'bin', 'happier-server');
       await mkdir(dirname(installedBinaryPath), { recursive: true });
       await writeFile(installedBinaryPath, '#!/bin/sh\necho old-runtime\n', 'utf8');
-      let stopCount = 0;
       applyServicePlanMock.mockImplementation(async (plan: { action?: string }) => {
-        if (plan.action === 'stop' && ++stopCount === 2) throw new Error('candidate stop failed');
+        serviceEvents.push(`service:${String(plan.action ?? 'unknown')}`);
       });
       checkRelayRuntimeHealthMock.mockResolvedValue({ reachable: false, url: 'http://127.0.0.1:43123/health' });
       const restorePointPath = join(homeDir, 'restore-point.tar');
@@ -672,7 +723,11 @@ describe('installOrUpdateRelayRuntimeLocal Personal Home restore-point lifecycle
         platform: 'linux',
         homeDir,
         purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' },
-        assertPersonalHomeStopped: async () => undefined,
+        assertPersonalHomeStopped: vi.fn(async () => {
+          const stopAssertions = serviceEvents.filter((event) => event === 'stopped:asserted').length;
+          serviceEvents.push('stopped:asserted');
+          if (stopAssertions === 1) throw new Error('candidate remained active');
+        }),
         env: { PORT: '43123', AUTH_ANONYMOUS_SIGNUP_ENABLED: '0' },
         runServiceCommands: true,
         createPersonalHomeRestorePoint: async () => ({
@@ -694,7 +749,7 @@ describe('installOrUpdateRelayRuntimeLocal Personal Home restore-point lifecycle
     } finally {
       await rm(homeDir, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 
   it('does not reactivate the previous runtime when Personal Home data restore fails', async () => {
     const homeDir = await mkdtemp(join(tmpdir(), 'happier-personal-home-recovery-data-failure-'));

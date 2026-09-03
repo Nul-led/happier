@@ -6,8 +6,12 @@ import {
   assertCurrentManagedStackSessionAgentIdentity,
   buildCurrentManagedStackSessionAgentAuthorArgs,
   buildCurrentManagedStackSessionAgentArchiveInstallArgs,
+  buildCurrentManagedStackSessionAgentFailingSourceUpdate,
   buildCurrentManagedStackSessionAgentInstallArgs,
+  buildCurrentManagedStackSessionAgentPluginStateArgs,
+  buildCurrentManagedStackSessionAgentReloadArgs,
   buildCurrentManagedStackSessionAgentSelectors,
+  buildCurrentManagedStackSessionAgentUninstallArgs,
   CURRENT_SOURCE_SESSION_AGENT_ASSISTANT_TEXT,
   CURRENT_SOURCE_SESSION_AGENT_CONFIRMATION_TITLE,
   CURRENT_SOURCE_SESSION_AGENT_DISPLAY_TITLE,
@@ -17,6 +21,7 @@ import {
   CURRENT_SOURCE_SESSION_AGENT_REASONING_TEXT,
   CURRENT_SOURCE_SESSION_AGENT_UPDATED_REASONING_TEXT,
   readCurrentManagedStackSessionAgentCatalogIdentity,
+  requireCurrentManagedStackSessionAgentAuthorCommandRefusal,
 } from './currentManagedStackPluginUiQa';
 import {
   buildComposerEnabledProbeScript,
@@ -150,11 +155,11 @@ describe('current-source Session Agent harness boundaries', () => {
       '--json',
     ]);
     expect(buildCurrentManagedStackSessionAgentAuthorArgs({ command: 'typecheck', sourceRoot }))
-      .toEqual(['plugins', 'dev', 'typecheck', sourceRoot]);
+      .toEqual(['plugins', 'dev', 'typecheck', sourceRoot, '--json']);
     expect(buildCurrentManagedStackSessionAgentAuthorArgs({ command: 'test', sourceRoot }))
       .toEqual(['plugins', 'test', sourceRoot]);
     expect(buildCurrentManagedStackSessionAgentAuthorArgs({ command: 'build', sourceRoot }))
-      .toEqual(['plugins', 'dev', 'build', sourceRoot]);
+      .toEqual(['plugins', 'dev', 'build', sourceRoot, '--json']);
     expect(buildCurrentManagedStackSessionAgentAuthorArgs({
       command: 'pack',
       sourceRoot,
@@ -166,6 +171,64 @@ describe('current-source Session Agent harness boundaries', () => {
       '--out',
       '/tmp/external-session-agent.tgz',
     ]);
+  });
+
+  it('anchors the failing external-author edit to real maintained example bytes', () => {
+    const exampleAgentSource = readFileSync(
+      new URL(
+        '../../../../plugin-sdk/examples/session-agent/agent/deterministicSessionAgent.ts',
+        import.meta.url,
+      ),
+      'utf8',
+    );
+
+    const failing = buildCurrentManagedStackSessionAgentFailingSourceUpdate(exampleAgentSource);
+
+    // The edit must break the closed reasoning-channel union in the real
+    // example, so the canonical `plugins dev typecheck`/`build` commands refuse
+    // it instead of silently producing another working generation.
+    expect(exampleAgentSource).toContain("channel: 'reasoning',");
+    expect(failing).not.toContain("channel: 'reasoning',");
+    expect(failing).toContain("channel: 'deterministic-failing-update',");
+    // Only the reasoning delta breaks, so the refusal is attributable to this
+    // exact edit rather than to a wholesale unbuildable source.
+    expect(failing).toContain("channel: 'assistant',");
+
+    // A drifted example must fail loudly rather than stage a source the author
+    // toolchain would happily accept.
+    expect(() => buildCurrentManagedStackSessionAgentFailingSourceUpdate('export const noop = 1;\n'))
+      .toThrow('plugin_ui_current_stack_session_agent_failing_update_anchor_missing');
+  });
+
+  it('attributes a failing-source refusal to the intended compiler diagnostic', async () => {
+    const sourceRoot = '/tmp/external-session-agent';
+    const expectedRefusal = Object.assign(new Error('author typecheck failed'), {
+      stdout: JSON.stringify({
+        ok: false,
+        kind: 'plugins_dev_typecheck',
+        error: {
+          code: 'plugin_author_failed',
+          diagnostics: [{
+            code: 'plugin_author_tool_failed',
+            message: 'Type is not assignable to the closed event channel union.',
+            source: { file: 'src/agent/deterministicSessionAgent.ts', line: 42, column: 9 },
+          }],
+        },
+      }),
+    });
+
+    await expect(requireCurrentManagedStackSessionAgentAuthorCommandRefusal({
+      command: 'typecheck',
+      sourceRoot,
+      runAuthorCommand: async () => { throw expectedRefusal; },
+    })).resolves.toBeUndefined();
+
+    const environmentFailure = new Error('managed JavaScript runtime is unavailable');
+    await expect(requireCurrentManagedStackSessionAgentAuthorCommandRefusal({
+      command: 'typecheck',
+      sourceRoot,
+      runAuthorCommand: async () => { throw environmentFailure; },
+    })).rejects.toBe(environmentFailure);
   });
 
   it('installs through the canonical headless public development command', () => {
@@ -188,6 +251,51 @@ describe('current-source Session Agent harness boundaries', () => {
       'archive',
       '--json',
     ]);
+  });
+
+  it('drives development reload and plugin state changes through the documented public CLI commands', () => {
+    // The loaded lifecycle must prove the documented author contract from the
+    // example README — `plugins reload/disable/enable/uninstall` — rather than
+    // submitting private daemon-control requests for the same mutations.
+    expect(buildCurrentManagedStackSessionAgentReloadArgs(CURRENT_SOURCE_SESSION_AGENT_PLUGIN_ID)).toEqual([
+      'plugins',
+      'reload',
+      CURRENT_SOURCE_SESSION_AGENT_PLUGIN_ID,
+      '--json',
+    ]);
+    expect(buildCurrentManagedStackSessionAgentPluginStateArgs('disable', CURRENT_SOURCE_SESSION_AGENT_PLUGIN_ID)).toEqual([
+      'plugins',
+      'disable',
+      CURRENT_SOURCE_SESSION_AGENT_PLUGIN_ID,
+      '--json',
+    ]);
+    expect(buildCurrentManagedStackSessionAgentPluginStateArgs('enable', CURRENT_SOURCE_SESSION_AGENT_PLUGIN_ID)).toEqual([
+      'plugins',
+      'enable',
+      CURRENT_SOURCE_SESSION_AGENT_PLUGIN_ID,
+      '--json',
+    ]);
+    expect(buildCurrentManagedStackSessionAgentUninstallArgs(CURRENT_SOURCE_SESSION_AGENT_PLUGIN_ID)).toEqual([
+      'plugins',
+      'uninstall',
+      CURRENT_SOURCE_SESSION_AGENT_PLUGIN_ID,
+      '--json',
+    ]);
+  });
+
+  it('advertises a session-agent command that actually runs the mutating lifecycle', () => {
+    // The whole spec is one reversible mutation journey gated at declaration
+    // time by both variables, so a command that supplies only the attach gate
+    // runs zero tests and reports a vacuous green. The advertised command must
+    // therefore carry both opt-ins itself.
+    const packageJson = JSON.parse(
+      readFileSync(new URL('../../../package.json', import.meta.url), 'utf8'),
+    ) as Readonly<{ scripts?: Readonly<Record<string, string>> }>;
+    const command = packageJson.scripts?.['test:ui:e2e:plugin-current-stack:session-agent'];
+
+    expect(command).toContain('HAPPIER_E2E_PLUGIN_UI_CURRENT_STACK=1');
+    expect(command).toContain('HAPPIER_E2E_PLUGIN_UI_CURRENT_STACK_MUTATIONS=1');
+    expect(command).toContain('suites/ui-e2e/plugin.ui.currentStack.sessionAgent.spec.ts');
   });
 
   it('derives the exact qualified identity and stable client selectors from one owner', () => {

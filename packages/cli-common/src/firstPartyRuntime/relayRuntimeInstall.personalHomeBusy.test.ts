@@ -37,6 +37,7 @@ describe('installOrUpdateRelayRuntimeLocal Personal Home exclusion', () => {
       const { withPersonalHomeOperationLock } = await import('./personalHome/lock.js');
       const { installOrUpdateRelayRuntimeLocal } = await import('./relayRuntimeInstall.js');
       let migrationRan = false;
+      let legacyCleanupRan = false;
 
       await withPersonalHomeOperationLock(defaults.dataDir, 'backup', async () => {
         await expect(installOrUpdateRelayRuntimeLocal({
@@ -53,11 +54,15 @@ describe('installOrUpdateRelayRuntimeLocal Personal Home exclusion', () => {
           runMigrationCommand: async () => {
             migrationRan = true;
           },
+          cleanupLegacyServiceBeforeInstall: async () => {
+            legacyCleanupRan = true;
+          },
         })).rejects.toMatchObject({ code: 'operation_in_progress' });
       });
 
       expect(serviceActions).toEqual([]);
       expect(migrationRan).toBe(false);
+      expect(legacyCleanupRan).toBe(false);
       await expect(access(join(defaults.installRoot, 'bin', 'happier-server'))).rejects.toMatchObject({ code: 'ENOENT' });
     } finally {
       await rm(homeDir, { recursive: true, force: true });

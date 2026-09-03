@@ -8,7 +8,7 @@ import * as tar from 'tar';
 import { createPersonalHomeBackup } from './backup.js';
 import { createPersonalHomeArchive, extractVerifiedPersonalHomeArchive, extractVerifiedPersonalHomeArchiveSnapshot, PERSONAL_HOME_BACKUP_QUICK_INSPECTION_MAX_HEADERS, PERSONAL_HOME_BACKUP_QUICK_INSPECTION_MAX_MANIFEST_BYTES, readPersonalHomeArchiveManifestMetadata, verifyPersonalHomeArchive, verifyPersonalHomeArchiveSnapshot, withPrivatePersonalHomeArchiveSnapshot } from './archive.js';
 import { resolvePersonalHomeRuntimeLayout } from './layout.js';
-import { finalizePersonalHomeRestoreWithLease, inspectPersonalHomeRestoreRecovery, recoverPersonalHomeRestoreWithLease, restorePersonalHomeBackup as restorePersonalHomeBackupOwner } from './restore.js';
+import { finalizePersonalHomeRestoreWithLease, hasMeaningfulPersonalHomeData, inspectPersonalHomeRestoreRecovery, recoverPersonalHomeRestoreWithLease, restorePersonalHomeBackup as restorePersonalHomeBackupOwner } from './restore.js';
 import { parsePersonalHomeBackupManifest } from './manifest.js';
 import { assertStablePersonalHomeSqliteSnapshot, PersonalHomeSqliteSnapshotError } from './sqliteSnapshot.js';
 
@@ -64,6 +64,18 @@ function recoveryJournalFixture(layout: ReturnType<typeof resolvePersonalHomeRun
 }
 
 describe('Personal Home backup and restore owner', () => {
+  it.runIf(process.platform !== 'win32')('fails closed when target metadata cannot be read', async () => {
+    const { root, layout } = await fixture();
+    const databaseParent = dirname(layout.databasePath);
+    try {
+      await chmod(databaseParent, 0o000);
+      await expect(hasMeaningfulPersonalHomeData(layout)).rejects.toMatchObject({ code: 'EACCES' });
+    } finally {
+      await chmod(databaseParent, 0o700).catch(() => undefined);
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('publishes new archives with the bounded manifest as the first tar entry', async () => {
     const { root, layout } = await fixture();
     try {
@@ -1381,6 +1393,37 @@ describe('Personal Home backup and restore owner', () => {
         recoverConfiguration: async () => undefined,
       })).resolves.toMatchObject({ outcome: 'rolled_back', restartedHome: false });
       await expect(readFile(destination.layout.databasePath, 'utf8')).resolves.toBe('destination-before-crash');
+      await expect(lstat(journalPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await rm(destination.root, { recursive: true, force: true });
+    }
+  });
+
+  it('cleans a journaled cross-filesystem candidate without replacing the untouched active Home', async () => {
+    const destination = await fixture();
+    try {
+      const id = randomUUID();
+      const stage = `${destination.layout.dataDir}.restore-stage-791-${id}`;
+      const journal = recoveryJournalFixture(destination.layout, stage, id);
+      const candidate = `${destination.layout.databasePath}.restore-candidate-${id}`;
+      journal.entries[0] = { ...journal.entries[0]!, source: candidate };
+      await writeFile(destination.layout.databasePath, 'active-before-interrupted-copy');
+      await writeFile(candidate, 'partial-candidate');
+      const journalPath = join(destination.layout.dataDir, '.operations', 'restore-journal.json');
+      await mkdir(dirname(journalPath), { recursive: true });
+      await writeFile(journalPath, JSON.stringify(journal));
+
+      await expect(recoverPersonalHomeRestoreWithLease({
+        layout: destination.layout,
+        operationLeaseHeld: true,
+        isHomeRunning: async () => false,
+        stopHome: async () => undefined,
+        startHome: async () => undefined,
+        healthCheck: async () => true,
+        recoverConfiguration: async () => undefined,
+      })).resolves.toMatchObject({ outcome: 'rolled_back', restartedHome: false });
+      await expect(readFile(destination.layout.databasePath, 'utf8')).resolves.toBe('active-before-interrupted-copy');
+      await expect(lstat(candidate)).rejects.toMatchObject({ code: 'ENOENT' });
       await expect(lstat(journalPath)).rejects.toMatchObject({ code: 'ENOENT' });
     } finally {
       await rm(destination.root, { recursive: true, force: true });

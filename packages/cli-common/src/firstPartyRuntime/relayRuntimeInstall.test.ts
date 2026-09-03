@@ -142,6 +142,12 @@ describe('installOrUpdateRelayRuntimeLocal', () => {
       process.env.HAPPIER_HOME_DEVICE_APPROVAL_REQUIRED = '1';
       await install();
       const defaults = resolveRelayRuntimeDefaults({ platform: 'linux', mode: 'user', channel: 'preview', homeDir });
+      await writeFile(join(defaults.configDir, 'server.env'), `${await readFileText(join(defaults.configDir, 'server.env'))}HAPPIER_PUBLIC_SERVER_URL=${canonicalServerUrl}\nHAPPIER_PUBLIC_SERVER_URL_INFERRED=1\n`, 'utf8');
+      await install();
+      const contractedEnvText = await readFileText(join(defaults.configDir, 'server.env'));
+      expect(contractedEnvText).not.toContain('HAPPIER_PUBLIC_SERVER_URL=');
+      expect(contractedEnvText).not.toContain('HAPPIER_PUBLIC_SERVER_URL_INFERRED=');
+
       await writeFile(join(defaults.configDir, 'server.env'), `${await readFileText(join(defaults.configDir, 'server.env'))}HAPPIER_PUBLIC_SERVER_URL=https://home.example.test\n`, 'utf8');
       process.env.HAPPIER_HOME_DEVICE_APPROVAL_REQUIRED = '0';
       await install();
@@ -384,8 +390,6 @@ describe('installOrUpdateRelayRuntimeLocal', () => {
         channel: 'preview',
         homeDir,
       });
-      await mkdir(previewDefaults.configDir, { recursive: true });
-      await writeFile(join(previewDefaults.configDir, 'server.env'), 'PORT=3005\nHAPPIER_SERVER_HOST=127.0.0.1\n', 'utf8');
 
       const payloadRoot = join(homeDir, 'payload');
       const migrationsSourceDir = join(payloadRoot, 'prisma', 'sqlite', 'migrations', '20200101000000_init');
@@ -411,6 +415,52 @@ describe('installOrUpdateRelayRuntimeLocal', () => {
       const envText = await readFileText(join(previewDefaults.configDir, 'server.env'));
       const advertisedPort = new URL(result.baseUrl).port;
       expect(envText).toContain(`PORT=${advertisedPort}`);
+    } finally {
+      await rm(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a persisted PORT that collides with a sibling instead of silently moving the Home', async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), 'happier-cli-common-relay-runtime-persisted-port-collision-'));
+    try {
+      const stableDefaults = resolveRelayRuntimeDefaults({
+        platform: 'linux',
+        mode: 'user',
+        channel: 'stable',
+        homeDir,
+      });
+      await mkdir(stableDefaults.configDir, { recursive: true });
+      await writeFile(join(stableDefaults.configDir, 'server.env'), 'PORT=3005\nHAPPIER_SERVER_HOST=127.0.0.1\n', 'utf8');
+
+      const previewDefaults = resolveRelayRuntimeDefaults({
+        platform: 'linux',
+        mode: 'user',
+        channel: 'preview',
+        homeDir,
+      });
+      await mkdir(previewDefaults.configDir, { recursive: true });
+      await writeFile(join(previewDefaults.configDir, 'server.env'), 'PORT=3005\nHAPPIER_SERVER_HOST=127.0.0.1\n', 'utf8');
+
+      const payloadRoot = join(homeDir, 'payload');
+      const migrationsSourceDir = join(payloadRoot, 'prisma', 'sqlite', 'migrations', '20200101000000_init');
+      await mkdir(migrationsSourceDir, { recursive: true });
+      await writeFile(join(migrationsSourceDir, 'migration.sql'), '-- init\n', 'utf8');
+      const serverBinaryPath = join(payloadRoot, 'happier-server');
+      await writeFile(serverBinaryPath, '#!/bin/sh\necho ok\n', 'utf8');
+
+      await expect(installOrUpdateRelayRuntimeLocal({
+        serverBinaryPath,
+        channel: 'preview',
+        mode: 'user',
+        platform: 'linux',
+        arch: 'arm64',
+        homeDir,
+        runServiceCommands: false,
+        skipHealthCheck: true,
+      })).rejects.toThrow(/Persisted relay PORT=3005 collides/i);
+
+      await expect(readFileText(join(previewDefaults.configDir, 'server.env')))
+        .resolves.toContain('PORT=3005');
     } finally {
       await rm(homeDir, { recursive: true, force: true });
     }

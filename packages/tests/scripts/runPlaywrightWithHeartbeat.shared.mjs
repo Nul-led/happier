@@ -54,7 +54,7 @@ function elapsedSeconds(startedAtMs) {
   return Math.floor((Date.now() - startedAtMs) / 1000);
 }
 
-const TIMEOUT_ARTIFACT_TOOL_NAMES = new Set(['playwright', 'vitest', 'wsrepl-lima-matrix']);
+const TIMEOUT_ARTIFACT_TOOL_NAMES = new Set(['playwright', 'vitest']);
 
 function safeCommandMetadata(params) {
   return {

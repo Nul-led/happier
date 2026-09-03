@@ -51,6 +51,7 @@ async function acquireGitHubOAuthToken(params: Readonly<{
   accountDirectoryTarget?: Readonly<{
     endpointUrl: string;
     serverIdentityId: string;
+    canonicalServerUrl: string;
   }>;
 }>): Promise<string> {
   const proofHash = createHash('sha256').update(params.proof, 'utf8').digest('hex');
@@ -59,6 +60,7 @@ async function acquireGitHubOAuthToken(params: Readonly<{
     query.set('purpose', 'account_directory');
     query.set('endpointUrl', params.accountDirectoryTarget.endpointUrl);
     query.set('endpointServerIdentityId', params.accountDirectoryTarget.serverIdentityId);
+    query.set('canonicalServerUrl', params.accountDirectoryTarget.canonicalServerUrl);
   }
 
   const start = await fetchJson<{ url?: string }>(
@@ -229,6 +231,7 @@ describe('core e2e: Account Directory enrollment survives Account Service outage
       accountDirectoryTarget: {
         endpointUrl: accountService.baseUrl,
         serverIdentityId: accountServiceIdentity!,
+        canonicalServerUrl: accountService.baseUrl,
       },
     });
 

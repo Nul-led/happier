@@ -29,7 +29,10 @@ import {
   shouldMigrateLegacyUnsuffixedRelayRuntimeInstallRoot,
   uninstallRelayRuntimePayloadLocal,
 } from '../firstPartyRuntime/relayRuntimeInstall.js';
-import { resolveNonCollidingRelayPort } from '../firstPartyRuntime/resolveNonCollidingRelayPort.js';
+import {
+  isLocalRelayPortBindable,
+  resolveNonCollidingRelayPort,
+} from '../firstPartyRuntime/resolveNonCollidingRelayPort.js';
 import {
   mergeSelfHostServerEnvText,
   parseEnvText,
@@ -132,9 +135,18 @@ function parsePersistedManagedRelayPurpose(value: unknown): ManagedRelayPurpose 
   }
 }
 
+async function readOptionalMutationAuthorityText(path: string): Promise<string> {
+  try {
+    return await readFile(path, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return '';
+    throw error;
+  }
+}
+
 async function readPersistedManagedRelayPurpose(defaults: RelayRuntimeDefaults): Promise<ManagedRelayPurpose | undefined> {
   const statePath = join(defaults.installRoot, 'self-host-state.json');
-  const stateText = existsSync(statePath) ? await readFile(statePath, 'utf8').catch(() => '') : '';
+  const stateText = await readOptionalMutationAuthorityText(statePath);
   if (!stateText.trim()) return undefined;
   return parsePersistedManagedRelayPurpose(tryParseJsonObject(stateText)?.purpose);
 }
@@ -145,7 +157,7 @@ async function resolvePersistedLocalPersonalHomeLayout(params: Readonly<{
   platform: NodeJS.Platform;
 }>): Promise<PersonalHomeRuntimeLayout> {
   const envPath = join(params.defaults.configDir, 'server.env');
-  const envText = existsSync(envPath) ? await readFile(envPath, 'utf8').catch(() => '') : '';
+  const envText = await readOptionalMutationAuthorityText(envPath);
   return resolvePersonalHomeRuntimeLayout({
     env: {
       ...parseEnvText(envText),
@@ -166,6 +178,37 @@ export class PersonalHomeRuntimeClassificationRequiredError extends Error {
   constructor() {
     super('Preserved Home data exists but the managed runtime purpose is missing or invalid. Retry through an explicit matching Personal Home install or recover the runtime state.');
     this.name = 'PersonalHomeRuntimeClassificationRequiredError';
+  }
+}
+
+export class PersonalHomeBootstrapInterruptedError extends Error {
+  readonly code = 'personal_home_bootstrap_interrupted' as const;
+
+  constructor() {
+    super('Personal Home changed during setup. Review the current state and retry deliberately.');
+    this.name = 'PersonalHomeBootstrapInterruptedError';
+  }
+}
+
+export class RelayHostLifecyclePostconditionError extends Error {
+  readonly code = 'relay_host_lifecycle_postcondition_failed' as const;
+  readonly action: 'stop' | 'uninstall';
+  readonly service: RelayRuntimeStatusSnapshot['service'];
+  readonly terminalState: 'active' | 'registered-inactive' | 'deregistered' | 'indeterminate';
+
+  constructor(params: Readonly<{
+    action: 'stop' | 'uninstall';
+    service: RelayRuntimeStatusSnapshot['service'];
+    terminalState: RelayHostLifecyclePostconditionError['terminalState'];
+  }>) {
+    super(
+      `Relay runtime ${params.action} command completed without proving its terminal service state: `
+      + `state=${params.terminalState}, enabled=${String(params.service.enabled)}, active=${String(params.service.active)}.`,
+    );
+    this.name = 'RelayHostLifecyclePostconditionError';
+    this.action = params.action;
+    this.service = params.service;
+    this.terminalState = params.terminalState;
   }
 }
 
@@ -437,6 +480,8 @@ async function resolveLocalDesiredRelayUrl(params: Readonly<{
   channel: PublicReleaseRingId;
   envOverrides?: Record<string, string>;
   purpose?: ManagedRelayPurpose;
+  freshPersonalHome: boolean;
+  allowFreshPersonalHomePortReplanning: boolean;
 }>): Promise<string> {
   const defaults = resolveRelayRuntimeDefaults({
     platform: process.platform,
@@ -460,7 +505,15 @@ async function resolveLocalDesiredRelayUrl(params: Readonly<{
   if (purposePortRaw && existingPortRaw && purposePortRaw !== existingPortRaw) {
     throw new Error('Personal Home canonicalServerUrl does not match the persisted runtime port');
   }
-  const configuredPortRaw = purposePortRaw || overridePortRaw || existingPortRaw;
+  const provisionalPersonalHomeDefault = params.freshPersonalHome
+    && params.allowFreshPersonalHomePortReplanning
+    && params.purpose?.kind === 'personal-home'
+    && !overridePortRaw
+    && !existingPortRaw
+    && Number.parseInt(purposePortRaw, 10) === defaults.serverPort;
+  const configuredPortRaw = provisionalPersonalHomeDefault
+    ? ''
+    : purposePortRaw || overridePortRaw || existingPortRaw;
   const configuredPort = configuredPortRaw && Number.isInteger(Number.parseInt(configuredPortRaw, 10))
     ? Number.parseInt(configuredPortRaw, 10)
     : null;
@@ -469,9 +522,11 @@ async function resolveLocalDesiredRelayUrl(params: Readonly<{
     mode: params.mode,
     channel: params.channel,
     homeDir: homedir(),
-    defaultPort: defaults.serverPort,
+    defaultPort: provisionalPersonalHomeDefault
+      ? Number.parseInt(purposePortRaw, 10)
+      : defaults.serverPort,
     configuredPort,
-    explicitConfiguredPort: Boolean(overridePortRaw || purposePortRaw),
+    explicitConfiguredPort: Boolean(overridePortRaw || (purposePortRaw && !provisionalPersonalHomeDefault)),
   });
   const baseEnvText = renderSelfHostServerEnvTextFromResolvedValues({
     port: resolvedPort,
@@ -500,7 +555,10 @@ async function resolveLocalDesiredRelayUrl(params: Readonly<{
     envText,
   });
   if (params.purpose?.kind === 'personal-home') {
-    return params.purpose.canonicalServerUrl;
+    if (!provisionalPersonalHomeDefault) return params.purpose.canonicalServerUrl;
+    const plannedUrl = new URL(params.purpose.canonicalServerUrl);
+    plannedUrl.port = String(resolvedPort);
+    return plannedUrl.toString().replace(/\/$/u, '');
   }
   return resolvedBaseUrl;
 }
@@ -1191,7 +1249,7 @@ export function createRelayHostEngine(deps: RelayHostEngineDeps): RelayHostEngin
       '--property=UnitFileState,ActiveState,SubState,LoadState',
     ]);
     if (result.status !== 0) {
-      return { loadState: 'not-found', activeState: '', enabledState: '' };
+      return { loadState: 'indeterminate', activeState: '', enabledState: '' };
     }
     const parsed = parseSystemctlShowOutput(result.stdout);
     return {
@@ -1205,12 +1263,30 @@ export function createRelayHostEngine(deps: RelayHostEngineDeps): RelayHostEngin
     backend: 'launchd-user' | 'launchd-system';
     label: string;
   }>): Readonly<{ loadState: string; activeState: string; enabledState: string }> => {
-    const loaded = runLocalText('launchctl', ['list', params.label]).status === 0;
+    type LaunchdListProbe =
+      | Readonly<{ kind: 'loaded' }>
+      | Readonly<{ kind: 'absent' }>
+      | Readonly<{ kind: 'indeterminate' }>;
+    const probeLaunchdList = (): LaunchdListProbe => {
+      const result = runLocalText('launchctl', ['list', params.label]);
+      if (result.status === 0) return { kind: 'loaded' };
+      const output = `${result.stdout}\n${result.stderr}`;
+      if (/could not find (?:specified )?service|service.*not found/iu.test(output)) {
+        return { kind: 'absent' };
+      }
+      return { kind: 'indeterminate' };
+    };
+
+    const listProbe = probeLaunchdList();
+    if (listProbe.kind === 'indeterminate') {
+      return { loadState: 'indeterminate', activeState: '', enabledState: '' };
+    }
     const definitionPath = resolveLaunchdPlistDefinitionPath({
       backend: params.backend,
       label: params.label,
       homeDir: homedir(),
     });
+    const loaded = listProbe.kind === 'loaded';
     const registered = loaded || existsSync(definitionPath);
     if (!registered) return { loadState: 'not-found', activeState: '', enabledState: '' };
 
@@ -1253,7 +1329,7 @@ export function createRelayHostEngine(deps: RelayHostEngineDeps): RelayHostEngin
         : { loadState: 'not-found', activeState: '', enabledState: '' };
     }
     if (result.status !== 0) {
-      return { loadState: 'not-found', activeState: '', enabledState: '' };
+      return { loadState: 'indeterminate', activeState: '', enabledState: '' };
     }
     const output = `${result.stdout}\n${result.stderr}`;
     return {
@@ -1261,6 +1337,43 @@ export function createRelayHostEngine(deps: RelayHostEngineDeps): RelayHostEngin
       activeState: /Status:\s*Running/i.test(output) ? 'active' : 'inactive',
       enabledState: /Scheduled Task State:\s*Enabled/i.test(output) ? 'enabled' : 'disabled',
     };
+  };
+
+  type LocalServiceState = Readonly<{
+    loadState: string;
+    activeState: string;
+    enabledState: string;
+  }>;
+
+  const resolveLocalServiceState = (params: Readonly<{
+    backend: ServiceBackend;
+    label: string;
+  }>): LocalServiceState => {
+    if (params.backend === 'systemd-user' || params.backend === 'systemd-system') {
+      return resolveLocalSystemdUnitState({ backend: params.backend, unitName: params.label });
+    }
+    if (params.backend === 'launchd-user' || params.backend === 'launchd-system') {
+      return resolveLocalLaunchdServiceState({ backend: params.backend, label: params.label });
+    }
+    return resolveLocalWindowsScheduledTaskState({ label: params.label });
+  };
+
+  const projectLocalServiceState = (state: LocalServiceState): RelayRuntimeStatusSnapshot['service'] => {
+    if (state.loadState === 'not-found' || state.loadState === 'indeterminate') {
+      return { enabled: null, active: null };
+    }
+    return {
+      enabled: state.enabledState === 'enabled',
+      active: state.activeState === 'active',
+    };
+  };
+
+  const classifyLocalServiceTerminalState = (
+    state: LocalServiceState,
+  ): RelayHostLifecyclePostconditionError['terminalState'] => {
+    if (state.loadState === 'indeterminate') return 'indeterminate';
+    if (state.loadState === 'not-found') return 'deregistered';
+    return state.activeState === 'active' ? 'active' : 'registered-inactive';
   };
 
   const resolveLocalServiceOwnedByInstallRoot = async (params: Readonly<{
@@ -1392,42 +1505,10 @@ export function createRelayHostEngine(deps: RelayHostEngineDeps): RelayHostEngin
       defaults,
     });
 
-    const service = await (async () => {
-      if (backend === 'systemd-user' || backend === 'systemd-system') {
-        const snapshot = resolveLocalSystemdUnitState({
-          backend,
-          unitName: effectiveServiceName,
-        });
-        if (snapshot.loadState === 'not-found') return { enabled: null, active: null };
-        return {
-          enabled: snapshot.enabledState === 'enabled',
-          active: snapshot.activeState === 'active',
-        };
-      }
-      if (backend === 'launchd-user' || backend === 'launchd-system') {
-        const snapshot = resolveLocalLaunchdServiceState({
-          backend,
-          label: effectiveServiceName,
-        });
-        if (snapshot.loadState === 'not-found') {
-          return { enabled: null, active: null };
-        }
-        return {
-          enabled: snapshot.enabledState === 'enabled',
-          active: snapshot.activeState === 'active',
-        };
-      }
-      const snapshot = resolveLocalWindowsScheduledTaskState({
-        label: effectiveServiceName,
-      });
-      if (snapshot.loadState === 'not-found') {
-        return { enabled: null, active: null };
-      }
-      return {
-        enabled: snapshot.enabledState === 'enabled',
-        active: snapshot.activeState === 'active',
-      };
-    })();
+    const service = projectLocalServiceState(resolveLocalServiceState({
+      backend,
+      label: effectiveServiceName,
+    }));
     const installed = Boolean(version) || existsSync(installBinaryPath);
     // Installed runtime classification is owner metadata. A caller may request Personal Home
     // facts for an absent runtime, but it must not relabel an already-installed generic Home.
@@ -1535,7 +1616,7 @@ export function createRelayHostEngine(deps: RelayHostEngineDeps): RelayHostEngin
     if (preservedHomeDataPresent && !persistedPurpose) {
       await assertExplicitPersonalHomeMatchesPreservedConfiguration({ defaults, requested: parsed.purpose });
     }
-    const purpose = resolveEffectiveLocalMutationPurpose({
+    let purpose = resolveEffectiveLocalMutationPurpose({
       persisted: persistedPurpose,
       requested: parsed.purpose,
     });
@@ -1544,8 +1625,14 @@ export function createRelayHostEngine(deps: RelayHostEngineDeps): RelayHostEngin
       channel,
       envOverrides: parsed.env,
       purpose,
+      freshPersonalHome: persistedPurpose === undefined && !preservedHomeDataPresent,
+      allowFreshPersonalHomePortReplanning: parsed.expectedPersonalHomeState === undefined,
     });
+    if (purpose?.kind === 'personal-home' && purpose.canonicalServerUrl !== desiredRelayUrl) {
+      purpose = { kind: 'personal-home', canonicalServerUrl: desiredRelayUrl };
+    }
     const backend = resolveServiceBackend({ platform: process.platform, mode }) as ServiceBackend;
+    const effectiveServiceName = await resolveLocalEffectiveServiceName({ backend, channel, defaults });
     const shouldTreatStableLaneAsLegacyUnsuffixedInstall = await shouldMigrateLegacyUnsuffixedRelayRuntimeInstallRoot({
       platform: process.platform,
       mode,
@@ -1661,7 +1748,7 @@ export function createRelayHostEngine(deps: RelayHostEngineDeps): RelayHostEngin
       : null;
     const policy = deps.localInstallPolicy ?? {};
 
-    await (async () => {
+    const cleanupLegacyServiceBeforeInstall = async (): Promise<void> => {
       if (channel === 'stable') return undefined;
       if (backend !== 'systemd-user' && backend !== 'systemd-system' && backend !== 'launchd-user' && backend !== 'launchd-system') return undefined;
 
@@ -1696,7 +1783,7 @@ export function createRelayHostEngine(deps: RelayHostEngineDeps): RelayHostEngin
       }
       await rm(legacyDefinitionPath, { force: true }).catch(() => undefined);
       return undefined;
-    })();
+    };
 
     const resolvedPortFromDesiredUrl = (() => {
       try {
@@ -1718,6 +1805,39 @@ export function createRelayHostEngine(deps: RelayHostEngineDeps): RelayHostEngin
         platform: process.platform,
       })
       : null;
+    const assertPersonalHomeMutationPrecondition = parsed.expectedPersonalHomeState
+      ? async (): Promise<void> => {
+        const expected = parsed.expectedPersonalHomeState!;
+        // The precondition compares durable incumbent facts. Projecting the caller-requested
+        // purpose onto an absent runtime would make every legitimate fresh install appear to
+        // have raced from `canonicalServerUrl: null` to the requested URL before mutation.
+        const status = await readLocalStatus({ ...parsed, purpose: undefined });
+        const persistedCanonicalServerUrl = status.purpose?.kind === 'personal-home'
+          ? status.purpose.canonicalServerUrl
+          : null;
+        if (
+          status.installed !== expected.installed
+          || persistedCanonicalServerUrl !== expected.canonicalServerUrl
+          || status.dataPresent !== expected.dataPresent
+        ) {
+          throw new PersonalHomeBootstrapInterruptedError();
+        }
+        if (
+          !expected.installed
+          && expected.canonicalServerUrl === null
+          && !expected.dataPresent
+          && purpose?.kind === 'personal-home'
+        ) {
+          const fixedUrl = new URL(purpose.canonicalServerUrl);
+          const fixedPort = Number.parseInt(fixedUrl.port, 10);
+          const bindable = Number.isInteger(fixedPort)
+            && fixedPort > 0
+            && fixedPort <= 65_535
+            && await isLocalRelayPortBindable({ host: fixedUrl.hostname, port: fixedPort });
+          if (!bindable) throw new PersonalHomeBootstrapInterruptedError();
+        }
+      }
+      : null;
 
     const local = await installOrUpdateRelayRuntimeLocal({
       serverBinaryPath,
@@ -1728,23 +1848,20 @@ export function createRelayHostEngine(deps: RelayHostEngineDeps): RelayHostEngin
       version,
       runServiceCommands: policy.runServiceCommands !== false,
       skipHealthCheck: policy.skipHealthCheck === true,
+      cleanupLegacyServiceBeforeInstall,
+      ...(assertPersonalHomeMutationPrecondition ? { assertPersonalHomeMutationPrecondition } : {}),
       ...(resolvePersonalHomeUpgradeLayout ? {
         resolvePersonalHomeUpdateLayout: resolvePersonalHomeUpgradeLayout,
         readPersonalHomeWasRunning: async () => (await readLocalStatus({ ...parsed, purpose })).service.active === true,
         assertPersonalHomeStopped: async () => {
-          const status = await readLocalStatus({ ...parsed, purpose });
-          if (status.service.active === true) {
-            throw new Error('Personal Home is still running after the managed service stop');
-          }
-          const statusUrl = new URL(status.baseUrl);
-          const statusPort = Number.parseInt(statusUrl.port, 10);
-          const portOpen = await probeLocalPortOpen({
-            host: statusUrl.hostname,
-            port: Number.isInteger(statusPort) && statusPort > 0 ? statusPort : 80,
-            timeoutMs: LOCAL_RELAY_STATUS_HEALTH_TIMEOUT_MS,
-          }).catch(() => false);
-          if (portOpen) {
-            throw new Error('Personal Home is still running after the managed service stop');
+          const serviceState = resolveLocalServiceState({ backend, label: effectiveServiceName });
+          const terminalState = classifyLocalServiceTerminalState(serviceState);
+          if (terminalState !== 'registered-inactive' && terminalState !== 'deregistered') {
+            throw new RelayHostLifecyclePostconditionError({
+              action: 'stop',
+              service: projectLocalServiceState(serviceState),
+              terminalState,
+            });
           }
         },
         createPersonalHomeRestorePoint: async ({ happierVersion }) => {
@@ -1841,6 +1958,11 @@ export function createRelayHostEngine(deps: RelayHostEngineDeps): RelayHostEngin
     const serverBinaryName = process.platform === 'win32' ? 'happier-server.exe' : 'happier-server';
     const installServerBinaryPath = join(defaults.installRoot, 'bin', serverBinaryName);
     const statePath = join(defaults.installRoot, 'self-host-state.json');
+    const persistedStateText = await readOptionalMutationAuthorityText(statePath);
+    const persistedState = persistedStateText ? tryParseJsonObject(persistedStateText) : null;
+    const retainedPersonalHomeVersion = typeof persistedState?.version === 'string' && persistedState.version.trim()
+      ? persistedState.version.trim()
+      : null;
     const stdoutPath = join(defaults.logDir, 'server.out.log');
     const stderrPath = join(defaults.logDir, 'server.err.log');
     const backend = resolveServiceBackend({ platform: process.platform, mode }) as ServiceBackend;
@@ -1874,12 +1996,27 @@ export function createRelayHostEngine(deps: RelayHostEngineDeps): RelayHostEngin
       await applyServicePlan(plan, {
         runCommands: true,
       });
+      const terminalServiceState = resolveLocalServiceState({
+        backend,
+        label: effectiveServiceName,
+      });
+      const terminalState = classifyLocalServiceTerminalState(terminalServiceState);
+      if (terminalState !== 'deregistered') {
+        throw new RelayHostLifecyclePostconditionError({
+          action: 'uninstall',
+          service: projectLocalServiceState(terminalServiceState),
+          terminalState,
+        });
+      }
       await uninstallRelayRuntimePayloadLocal({
         installRoot: defaults.installRoot,
         shimPath: join(defaults.binDir, serverBinaryName),
         statePath,
         logDir: defaults.logDir,
         ...(persistedPurpose?.kind === 'personal-home' ? { retainedPurpose: persistedPurpose } : {}),
+        ...(persistedPurpose?.kind === 'personal-home' && retainedPersonalHomeVersion
+          ? { retainedVersion: retainedPersonalHomeVersion }
+          : {}),
       });
       if (persistedPurpose?.kind !== 'personal-home' && existsSync(statePath)) {
         throw new Error('Failed to remove relay runtime state file.');
@@ -2209,7 +2346,7 @@ export function createRelayHostEngine(deps: RelayHostEngineDeps): RelayHostEngin
               return;
             }
             const envPath = join(defaults.configDir, 'server.env');
-            const envText = existsSync(envPath) ? await readFile(envPath, 'utf8').catch(() => '') : '';
+            const envText = await readOptionalMutationAuthorityText(envPath);
             const baseUrl = resolveConfiguredSelfHostBaseUrl({
               fallbackBaseUrl: `http://${defaults.serverHost}:${defaults.serverPort}`,
               envText,
@@ -2244,6 +2381,17 @@ export function createRelayHostEngine(deps: RelayHostEngineDeps): RelayHostEngin
           });
           await applyServicePlan(plan, { runCommands: true });
           await ensureLocalRelayHealthy();
+          if (parsed.action === 'stop') {
+            const terminalServiceState = resolveLocalServiceState({ backend, label: serviceName });
+            const terminalState = classifyLocalServiceTerminalState(terminalServiceState);
+            if (terminalState !== 'registered-inactive' && terminalState !== 'deregistered') {
+              throw new RelayHostLifecyclePostconditionError({
+                action: 'stop',
+                service: projectLocalServiceState(terminalServiceState),
+                terminalState,
+              });
+            }
+          }
           if (parsed.action === 'activate' || parsed.action === 'quarantine') {
             const status = await readLocalStatus(parsed);
             const postconditionMet = parsed.action === 'activate'
@@ -2303,6 +2451,15 @@ export function createRelayHostEngine(deps: RelayHostEngineDeps): RelayHostEngin
           healthPath: defaults.healthPath,
           stderrPath: `${defaults.logDir}/server.err.log`,
         });
+      } else if (parsed.action === 'stop') {
+        const status = await readRemoteStatus({ parsed, ssh: parsed.target.ssh });
+        if (status.service.active !== false) {
+          throw new RelayHostLifecyclePostconditionError({
+            action: 'stop',
+            service: status.service,
+            terminalState: status.service.active === true ? 'active' : 'indeterminate',
+          });
+        }
       }
     },
   };

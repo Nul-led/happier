@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 // @ts-expect-error -- this compatibility suite's Vitest config maps @/ to UI source; the package-wide TS program maps it to CLI source.
 import { scopedStorageId } from '@/utils/system/storageScope';
 
-const RELEASED_CLIENT_V0_2_1_COMMIT = 'b1d15a8a9c241737d1ca9b167459901e6259173a';
+const RELEASED_CLIENT_V0_2_1_COMMIT = '98ea8fb76733b1dd785d38c31360179cafa84824';
 
 function installWebStorage(initial: Readonly<Record<string, string>>): void {
   const values = new Map(Object.entries(initial));
@@ -71,17 +71,15 @@ describe(`released client v0.2.1 reader compatibility (${RELEASED_CLIENT_V0_2_1_
     });
   });
 
-  it('accepts the independently released V1 QR writer output through the current reader', async () => {
+  it('classifies the independently released V1 QR writer output as update-required without retaining its secret', async () => {
     // @ts-expect-error -- runtime Vitest alias resolves the current UI reader; see the package alias note above.
-    const { parsePairingDeepLink } = await import('@/auth/pairing/pairingUrl');
+    const { classifyLegacyPairingDeepLink } = await import('@/auth/pairing/pairingUrl');
 
     // Exact golden output asserted by cli-v0.2.1's pairingUrl.scheme.test.ts.
     const releasedV1Link =
       'happier-dev:///pair?v=1&pairId=pid123&secret=sec_abc&server=https%3A%2F%2Fstack.example.test%2Fpath%3Fx%3D1';
-    expect(parsePairingDeepLink(releasedV1Link)).toEqual({
-      pairId: 'pid123',
-      secret: 'sec_abc',
-      serverUrl: 'https://stack.example.test/path?x=1',
-    });
+    const classification = classifyLegacyPairingDeepLink(releasedV1Link);
+    expect(classification).toEqual({ kind: 'legacy_pairing_update_required' });
+    expect(JSON.stringify(classification)).not.toContain('sec_abc');
   });
 });

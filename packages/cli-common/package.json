@@ -112,6 +112,21 @@
       "import": "./dist/firstPartyRuntime/sqliteMigrationCatalog.js",
       "default": "./dist/firstPartyRuntime/sqliteMigrationCatalog.js"
     },
+    "./firstPartyRuntime/personalHome/bootstrap": {
+      "types": "./dist/firstPartyRuntime/personalHome/bootstrap.d.ts",
+      "import": "./dist/firstPartyRuntime/personalHome/bootstrap.js",
+      "default": "./dist/firstPartyRuntime/personalHome/bootstrap.js"
+    },
+    "./firstPartyRuntime/personalHome/runtimeSpec": {
+      "types": "./dist/firstPartyRuntime/personalHome/personalHomeRuntimeSpec.d.ts",
+      "import": "./dist/firstPartyRuntime/personalHome/personalHomeRuntimeSpec.js",
+      "default": "./dist/firstPartyRuntime/personalHome/personalHomeRuntimeSpec.js"
+    },
+    "./firstPartyRuntime/personalHome/signupPolicy": {
+      "types": "./dist/firstPartyRuntime/personalHomeSignupPolicy.d.ts",
+      "import": "./dist/firstPartyRuntime/personalHomeSignupPolicy.js",
+      "default": "./dist/firstPartyRuntime/personalHomeSignupPolicy.js"
+    },
     "./service/discovery": {
       "types": "./dist/service/discovery/index.d.ts",
       "import": "./dist/service/discovery/index.js",
@@ -225,6 +240,8 @@
     "typecheck:local": "node ../../scripts/workspaces/runTypeScriptCli.mjs --noEmit -p tsconfig.json",
     "test": "../../apps/stack/bin/hstack-exec --script=test:local",
     "test:local": "node ../../node_modules/vitest/vitest.mjs run --config vitest.config.ts && yarn -s test:dist:local",
+    "test:mutagen-engine:live": "../../apps/stack/bin/hstack-exec --script=test:mutagen-engine:live:local",
+    "test:mutagen-engine:live:local": "node scripts/runMutagenEngineLiveTest.mjs",
     "test:dist:local": "node --test processInstance.test.mjs tests/componentArtifacts.cliDistBuildLock.test.mjs tests/componentArtifacts.test.mjs tests/downloadGitHubReleaseAsset.test.mjs tests/exports.test.mjs tests/firstPartyRuntime.componentCatalog.test.mjs tests/firstPartyRuntime.installLayout.test.mjs tests/firstPartyRuntime.installVersionedPayload.test.mjs tests/firstPartyRuntime.promoteVersionedPayload.test.mjs tests/firstPartyRuntime.pruneRetainedVersions.test.mjs tests/firstPartyRuntime.relayRuntime.test.mjs tests/firstPartyRuntime.retentionPolicy.test.mjs tests/firstPartyRuntime.syncInstalledShims.test.mjs tests/links.test.mjs tests/nodeRelease.test.mjs tests/pinnedRunnerSnapshot.test.mjs tests/service.test.mjs tests/update.test.mjs tests/vendorBundledPackageRuntimeDependencies.test.mjs tests/workspaces.test.mjs"
   },
   "dependencies": {

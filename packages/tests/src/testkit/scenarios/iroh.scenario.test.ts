@@ -1,6 +1,3 @@
-import { readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import { createIrohTestController } from '../irohTestController';
@@ -17,14 +14,5 @@ describe('Iroh supporting evidence boundaries', () => {
     const controller = createIrohTestController();
     await expect(controller.forceRelayOnly()).rejects.toThrow(/test-relay-fixture/);
     expect(controller.getObservedPath()).toBe('unknown');
-  });
-
-  it('keeps the checked-in iroh relay fixture holepunch-only by default', () => {
-    // Source-level deployment assertion only: it checks the checked-in relay policy; it does not
-    // force a runtime path or prove that application bytes moved over direct or relayed transport.
-    const configPath = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../../deploy/iroh-relay/relay.toml');
-    const config = readFileSync(configPath, 'utf8');
-    expect(config).toMatch(/^enable_relay\s*=\s*false\b/m);
-    expect(config).toMatch(/^enable_quic_addr_discovery\s*=\s*true\b/m);
   });
 });

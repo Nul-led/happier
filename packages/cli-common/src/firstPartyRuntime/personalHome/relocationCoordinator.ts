@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 
 import { HomeConnectionDescriptorV1Schema, type HomeConnectionDescriptorV1 } from '@happier-dev/protocol';
 
@@ -9,6 +9,11 @@ import { createPersonalHomePathProtection } from './protection.js';
 import type {
   PersonalHomeRelocationDestinationFacts,
   PersonalHomeRelocationDestinationOwner,
+} from './relocationDestination.js';
+import {
+  personalHomeRelocationDescriptorMatchesDestination,
+  personalHomeRelocationDestinationOwnsCandidate,
+  resolvePersonalHomeRelocationDestinationEndpoints,
 } from './relocationDestination.js';
 
 export type PersonalHomeRelocationSourceResult = Readonly<{
@@ -38,7 +43,9 @@ export type PersonalHomeRelocationSourceRecoveryFacts =
       destinationMachineId: string;
       sourceDescriptorRevision: number;
       primaryAction: 'finish_move';
-      secondaryAction: 'return_to_source';
+      /** Absent once publication moved writable authority to the destination:
+       * returning would abort a Home that may already have accepted writes. */
+      secondaryAction?: 'return_to_source';
     }>;
 
 export type PersonalHomeRelocationSourceCoordinatorParams = Readonly<{
@@ -49,8 +56,10 @@ export type PersonalHomeRelocationSourceCoordinatorParams = Readonly<{
   sourceDescriptorRevision: number;
   destinationMachineId: string;
   recoveryAction?: 'finish_move' | 'return_to_source';
-  stopSource(): Promise<void>;
-  restoreSourceAfterFailedStage(): Promise<void>;
+  /** Stops the source and reports whether it was in service beforehand. The
+   * coordinator persists that fact, so recovery after a process restart never
+   * depends on invocation-local state. */
+  stopSource(): Promise<Readonly<{ wasRunning: boolean }>>;
   quarantineSource(): Promise<void>;
   activateSource(): Promise<void>;
   readSourceServiceStatus(): Promise<Readonly<{ running: boolean; quarantined: boolean }>>;
@@ -63,9 +72,18 @@ export type PersonalHomeRelocationSourceCoordinatorParams = Readonly<{
 type SourceMarker = Readonly<{
   version: 1;
   operationId: string;
-  phase: 'destination_staged' | 'source_quarantined' | 'pending' | 'committed' | 'returning_to_source' | 'returned_to_source';
+  phase: 'source_reserved' | 'destination_staged' | 'source_quarantined' | 'pending' | 'destination_published' | 'committed' | 'returning_to_source' | 'returned_to_source';
   destinationMachineId: string;
   bundleSha256: string;
+  /** Whether the source Home was in service when this relocation reserved it.
+   * An automatic rollback restores exactly that state; an explicit return to
+   * the original Home always puts it back in service. Older markers omit it and
+   * are treated as previously running. */
+  sourcePriorRunning?: boolean;
+  /** Source-local archive reserved for this operation. It is required while the
+   * destination has not accepted the bundle so a retry resumes the exact same
+   * verified archive instead of producing a differently-digested one. */
+  sourceArchivePath?: string;
   homeServerIdentityId: string;
   sourceCanonicalServerUrl: string;
   sourceDescriptorRevision: number;
@@ -82,6 +100,25 @@ export class PersonalHomeRelocationSourceActivationBlockedError extends Error {
   }
 }
 
+/** A destination upload failed and the destination-local abort owner could not
+ * prove that its operation-scoped plaintext transfer reservation was removed.
+ * The transfer failure remains the primary error; this closed fact is carried
+ * separately so the source coordinator can persist cleanup attention without
+ * learning a destination filesystem path. */
+export class PersonalHomeRelocationTransferCleanupError extends Error {
+  readonly transferCleanupNeedsAttention = true as const;
+  readonly cause: unknown;
+
+  constructor(transferError: unknown) {
+    const message = transferError instanceof Error && transferError.message.trim()
+      ? transferError.message.trim()
+      : 'Personal Home relocation archive transfer failed.';
+    super(`${message} Destination transfer cleanup could not be confirmed and needs attention.`);
+    this.name = 'PersonalHomeRelocationTransferCleanupError';
+    this.cause = transferError;
+  }
+}
+
 const protectRelocationSourcePath = createPersonalHomePathProtection();
 const sourceMarkerPath = (dataDir: string): string => join(dataDir, '.operations', 'relocation-source.json');
 
@@ -90,7 +127,7 @@ function parseSourceMarker(raw: string): SourceMarker {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('invalid marker');
   const marker = value as Record<string, unknown>;
   const sourceDescriptor = HomeConnectionDescriptorV1Schema.safeParse(marker.sourceDescriptor);
-  if (Object.keys(marker).some((key) => !['version', 'operationId', 'phase', 'destinationMachineId', 'bundleSha256', 'homeServerIdentityId', 'sourceCanonicalServerUrl', 'sourceDescriptorRevision', 'sourceDescriptor', 'destinationTransferCleanupNeedsAttention'].includes(key))
+  if (Object.keys(marker).some((key) => !['version', 'operationId', 'phase', 'destinationMachineId', 'bundleSha256', 'sourceArchivePath', 'sourcePriorRunning', 'homeServerIdentityId', 'sourceCanonicalServerUrl', 'sourceDescriptorRevision', 'sourceDescriptor', 'destinationTransferCleanupNeedsAttention'].includes(key))
     || marker.version !== 1
     || typeof marker.operationId !== 'string' || !marker.operationId
     || typeof marker.destinationMachineId !== 'string' || !marker.destinationMachineId
@@ -103,7 +140,10 @@ function parseSourceMarker(raw: string): SourceMarker {
     || sourceDescriptor.data.canonicalServerUrl !== marker.sourceCanonicalServerUrl
     || sourceDescriptor.data.revision !== marker.sourceDescriptorRevision
     || (marker.destinationTransferCleanupNeedsAttention !== undefined && marker.destinationTransferCleanupNeedsAttention !== true)
-    || typeof marker.phase !== 'string' || !['destination_staged', 'source_quarantined', 'pending', 'committed', 'returning_to_source', 'returned_to_source'].includes(marker.phase)) {
+    || (marker.sourceArchivePath !== undefined && (typeof marker.sourceArchivePath !== 'string' || !isAbsolute(marker.sourceArchivePath)))
+    || (marker.sourcePriorRunning !== undefined && typeof marker.sourcePriorRunning !== 'boolean')
+    || typeof marker.phase !== 'string' || !['source_reserved', 'destination_staged', 'source_quarantined', 'pending', 'destination_published', 'committed', 'returning_to_source', 'returned_to_source'].includes(marker.phase)
+    || (marker.phase === 'source_reserved' && typeof marker.sourceArchivePath !== 'string')) {
     throw new Error('invalid marker');
   }
   return marker as SourceMarker;
@@ -129,7 +169,8 @@ export async function inspectPersonalHomeRelocationSourceRecovery(
   } catch {
     return { status: 'ambiguous' };
   }
-  if (!marker || marker.phase === 'committed' || marker.phase === 'returned_to_source') {
+  if (!marker || marker.phase === 'committed'
+    || (marker.phase === 'returned_to_source' && marker.destinationTransferCleanupNeedsAttention !== true)) {
     return { status: 'none' };
   }
   return {
@@ -138,11 +179,18 @@ export async function inspectPersonalHomeRelocationSourceRecovery(
     destinationMachineId: marker.destinationMachineId,
     sourceDescriptorRevision: marker.sourceDescriptorRevision,
     primaryAction: 'finish_move',
-    secondaryAction: 'return_to_source',
+    // Publication already moved writable authority to the destination, so the
+    // only safe convergence is finishing the move.
+    ...(['source_reserved', 'destination_staged'].includes(marker.phase)
+      ? { secondaryAction: 'return_to_source' as const }
+      : {}),
   };
 }
 
 /** Ordinary lifecycle/start paths consult the source-local authority marker.
+ * Once the final stopped backup is reserved, the source must not accept writes
+ * that are absent from that immutable bundle. Only the explicit return-to-source
+ * recovery corridor may reactivate it.
  * Destination activation uses the distinct destination `commit` authority and
  * therefore never needs a caller-controlled bypass flag. */
 export async function assertPersonalHomeRelocationSourceAllowsActivation(dataDir: string): Promise<void> {
@@ -154,7 +202,7 @@ export async function assertPersonalHomeRelocationSourceAllowsActivation(dataDir
       error instanceof Error ? error.message : 'Personal Home relocation source state is unreadable.',
     );
   }
-  if (marker && marker.phase !== 'destination_staged' && marker.phase !== 'returning_to_source' && marker.phase !== 'returned_to_source') {
+  if (marker && marker.phase !== 'returning_to_source' && marker.phase !== 'returned_to_source') {
     throw new PersonalHomeRelocationSourceActivationBlockedError(
       'This Personal Home is a stopped relocation source. Finish or recover the move before starting it.',
     );
@@ -191,11 +239,7 @@ function descriptorMatchesDestination(
   descriptor: HomeConnectionDescriptorV1 | null,
   destination: PersonalHomeRelocationDestinationFacts,
 ): boolean {
-  if (!descriptor || !destination.homeServerIdentityId || !destination.canonicalServerUrl) return false;
-  const revisionFloor = destination.minimumOuterRevisionExclusive ?? destination.sourceDescriptorRevision;
-  return descriptor.homeServerIdentityId === destination.homeServerIdentityId
-    && descriptor.canonicalServerUrl === destination.canonicalServerUrl
-    && descriptor.revision > revisionFloor;
+  return personalHomeRelocationDescriptorMatchesDestination(descriptor, destination);
 }
 
 function descriptorMatchesSource(
@@ -220,9 +264,7 @@ function destinationPublicationFacts(
     homeServerIdentityId: destination.homeServerIdentityId,
     canonicalServerUrl: destination.canonicalServerUrl,
     minimumOuterRevisionExclusive: destination.minimumOuterRevisionExclusive ?? destination.sourceDescriptorRevision,
-    endpoints: destination.endpoint
-      ? [{ kind: 'iroh', ...destination.endpoint }]
-      : [{ kind: 'https', url: destination.canonicalServerUrl }],
+    endpoints: resolvePersonalHomeRelocationDestinationEndpoints(destination),
   };
 }
 
@@ -230,6 +272,42 @@ function cleanupAttentionFacts(marker: SourceMarker): Readonly<{ destinationTran
   return marker.destinationTransferCleanupNeedsAttention === true
     ? { destinationTransferCleanupNeedsAttention: true }
     : {};
+}
+
+/** Both Homes stay stopped and intact; only the named recovery action is safe. */
+function pendingRelocation(
+  marker: SourceMarker,
+  recoveryAction: 'finish_move' | 'return_to_source',
+): PersonalHomeRelocationSourceResult {
+  return {
+    operationId: marker.operationId,
+    status: 'pending',
+    destinationMachineId: marker.destinationMachineId,
+    sourceDescriptorRevision: marker.sourceDescriptorRevision,
+    recoveryAction,
+    ...cleanupAttentionFacts(marker),
+  };
+}
+
+/**
+ * Releases the source reservation once the destination has authoritatively
+ * proven it holds no candidate. An explicit `Return to Original Home` always
+ * puts the source back in service; an automatic rollback restores exactly the
+ * service state the relocation found, read from the durable reservation fact.
+ */
+async function releaseReservationToSource(
+  params: PersonalHomeRelocationSourceCoordinatorParams,
+  marker: SourceMarker,
+  intent: 'explicit_return' | 'automatic_rollback',
+  failureMessage: string,
+): Promise<void> {
+  await writeSourceMarker(params.sourceDataDir, { ...marker, phase: 'returning_to_source' });
+  if (intent === 'explicit_return' || marker.sourcePriorRunning !== false) {
+    await params.activateSource();
+    const sourceService = await params.readSourceServiceStatus();
+    if (!sourceService.running || sourceService.quarantined) throw new Error(failureMessage);
+  }
+  await writeSourceMarker(params.sourceDataDir, { ...marker, phase: 'returned_to_source' });
 }
 
 /**
@@ -241,6 +319,38 @@ export async function coordinatePersonalHomeRelocation(
   params: PersonalHomeRelocationSourceCoordinatorParams,
 ): Promise<PersonalHomeRelocationSourceResult> {
   let marker = await readSourceMarker(params.sourceDataDir);
+  // Returning authority to the source completes the operation. Retain the
+  // marker for same-operation retry/inspection, but it must not reserve the
+  // source against a later, explicitly distinct relocation.
+  if (marker?.phase === 'returned_to_source'
+    && marker.destinationTransferCleanupNeedsAttention !== true
+    && marker.operationId !== params.operationId) {
+    marker = null;
+  }
+  if (marker?.phase === 'returned_to_source' && marker.destinationTransferCleanupNeedsAttention === true) {
+    assertMarkerMatchesRequest(marker, params);
+    const cleanup = await params.destination.abort(marker.operationId);
+    if (cleanup.transferCleanupNeedsAttention === true) {
+      return pendingRelocation(marker, 'return_to_source');
+    }
+    const { destinationTransferCleanupNeedsAttention: _attention, ...cleanedMarker } = marker;
+    await writeSourceMarker(params.sourceDataDir, cleanedMarker);
+    marker = cleanedMarker;
+    const current = HomeConnectionDescriptorV1Schema.nullable().parse(
+      await params.readPublishedDescriptor(params.homeServerIdentityId),
+    );
+    if (!current || !descriptorMatchesSource(current, marker.sourceDescriptor)) {
+      throw new Error('Returned Personal Home source descriptor is no longer authoritative.');
+    }
+    return {
+      operationId: marker.operationId,
+      status: 'returned',
+      destinationMachineId: marker.destinationMachineId,
+      sourceDescriptorRevision: marker.sourceDescriptorRevision,
+      publishedDescriptor: current,
+    };
+  }
+  let createdReservation = false;
   let staged: PersonalHomeRelocationDestinationFacts;
   if (!marker) {
     const sourceDescriptor = HomeConnectionDescriptorV1Schema.nullable().parse(
@@ -252,51 +362,148 @@ export async function coordinatePersonalHomeRelocation(
       || sourceDescriptor.revision !== params.sourceDescriptorRevision) {
       throw new Error('The current Personal Home source descriptor could not be authoritatively read before relocation.');
     }
-    await params.stopSource();
+    const { wasRunning } = await params.stopSource();
     try {
       const backup = await params.createFinalBackup();
-      staged = await params.destination.stage({
-        operationId: params.operationId,
-        archivePath: backup.archivePath,
-        bundleSha256: backup.bundleSha256,
-        expectedHomeServerIdentityId: params.homeServerIdentityId,
-        expectedCanonicalServerUrl: params.sourceCanonicalServerUrl,
-        sourceDescriptorRevision: params.sourceDescriptorRevision,
-      });
-      if (staged.status !== 'quarantined'
-        || staged.homeServerIdentityId !== params.homeServerIdentityId
-        || staged.bundleSha256 !== backup.bundleSha256
-        || staged.authenticated !== true) {
-        throw new Error('Relocation destination did not return verified quarantined facts for the transferred Home.');
+      if (!isAbsolute(backup.archivePath) || !/^[a-f0-9]{64}$/u.test(backup.bundleSha256)) {
+        throw new Error('Final Personal Home relocation backup did not return a valid source-local archive receipt.');
       }
       marker = {
         version: 1,
         operationId: params.operationId,
-        phase: 'destination_staged',
+        phase: 'source_reserved',
         destinationMachineId: params.destinationMachineId,
         bundleSha256: backup.bundleSha256,
+        sourceArchivePath: backup.archivePath,
+        sourcePriorRunning: wasRunning,
         homeServerIdentityId: params.homeServerIdentityId,
         sourceCanonicalServerUrl: params.sourceCanonicalServerUrl,
         sourceDescriptorRevision: params.sourceDescriptorRevision,
         sourceDescriptor,
-        ...(staged.transferCleanupNeedsAttention === true ? { destinationTransferCleanupNeedsAttention: true as const } : {}),
       };
       await writeSourceMarker(params.sourceDataDir, marker);
+      createdReservation = true;
     } catch (error) {
-      await params.restoreSourceAfterFailedStage();
+      // Nothing was reserved, so the source returns to exactly its prior state.
+      if (wasRunning) await params.activateSource();
       throw error;
     }
   } else {
     assertMarkerMatchesRequest(marker, params);
-    const destinationStatus = await params.destination.status(params.operationId);
-    const returnRecovery = params.recoveryAction === 'return_to_source';
-    if (destinationStatus.status !== 'quarantined'
-      && destinationStatus.status !== 'active'
-      && !(returnRecovery && destinationStatus.status === 'aborted')) {
+  }
+
+  let destinationStatus: Awaited<ReturnType<typeof params.destination.status>> = createdReservation
+    ? { operationId: params.operationId, status: 'absent' }
+    : await params.destination.status(params.operationId);
+  let returnRecovery = params.recoveryAction === 'return_to_source';
+  if (marker.phase === 'source_reserved') {
+    if (returnRecovery && destinationStatus.status === 'absent') {
+      const current = HomeConnectionDescriptorV1Schema.nullable().parse(
+        await params.readPublishedDescriptor(params.homeServerIdentityId),
+      );
+      if (!current || !descriptorMatchesSource(current, marker.sourceDescriptor)) {
+        return pendingRelocation(marker, 'return_to_source');
+      }
+      await releaseReservationToSource(
+        params,
+        marker,
+        'explicit_return',
+        'Original Personal Home could not be reactivated after the destination authoritatively reported no staged candidate.',
+      );
+      return {
+        operationId: params.operationId,
+        status: 'returned',
+        destinationMachineId: params.destinationMachineId,
+        sourceDescriptorRevision: params.sourceDescriptorRevision,
+        publishedDescriptor: current,
+        ...cleanupAttentionFacts(marker),
+      };
+    }
+    if (destinationStatus.status === 'recovery_required') {
+      // The destination stopped before it could prove ownership of any candidate,
+      // so neither Home may be activated, aborted, or erased from here.
+      return pendingRelocation(marker, returnRecovery ? 'return_to_source' : 'finish_move');
+    }
+    if (destinationStatus.status !== 'absent'
+      && destinationStatus.status !== 'receiving'
+      && destinationStatus.status !== 'quarantined') {
+      throw new Error('Reserved relocation destination state cannot be safely resumed.');
+    }
+    try {
+      staged = await params.destination.stage({
+        operationId: params.operationId,
+        archivePath: marker.sourceArchivePath!,
+        bundleSha256: marker.bundleSha256,
+        expectedHomeServerIdentityId: params.homeServerIdentityId,
+        expectedCanonicalServerUrl: params.sourceCanonicalServerUrl,
+        sourceDescriptorRevision: params.sourceDescriptorRevision,
+      });
+    } catch (error) {
+      if (error instanceof PersonalHomeRelocationTransferCleanupError) {
+        marker = { ...marker, destinationTransferCleanupNeedsAttention: true };
+        // The primary transfer error already carries cleanup attention. A
+        // source-marker write failure must not replace it with a less useful
+        // persistence exception; the source remains stopped either way.
+        await writeSourceMarker(params.sourceDataDir, marker).catch(() => undefined);
+      }
+      try {
+        destinationStatus = await params.destination.status(params.operationId);
+      } catch {
+        // The destination outcome is unknown. Keep the source stopped behind
+        // its durable reservation until a later authoritative status read.
+        throw error;
+      }
+      if (destinationStatus.status === 'absent') {
+        await releaseReservationToSource(
+          params,
+          marker,
+          'automatic_rollback',
+          'Personal Home source could not be restored after the destination authoritatively reported no staged candidate.',
+        );
+      }
+      throw error;
+    }
+    if (staged.status !== 'quarantined'
+      || staged.homeServerIdentityId !== params.homeServerIdentityId
+      || staged.bundleSha256 !== marker.bundleSha256
+      || staged.authenticated !== true) {
+      throw new Error('Relocation destination did not return verified quarantined facts for the transferred Home.');
+    }
+    marker = {
+      ...marker,
+      phase: 'destination_staged',
+      ...(staged.transferCleanupNeedsAttention === true ? { destinationTransferCleanupNeedsAttention: true as const } : {}),
+    };
+    await writeSourceMarker(params.sourceDataDir, marker);
+  } else {
+    const recoveredDestinationStatus = destinationStatus;
+    if (recoveredDestinationStatus.status === 'absent') {
       throw new Error('Relocation destination recovery state is not verified and quarantined.');
     }
-    staged = destinationStatus;
-    if (!returnRecovery && marker.phase === 'committed' && destinationStatus.status === 'active') {
+    // A destination that failed after it had already restored, authenticated and
+    // counted this relocation's own Home is still the verified candidate: its
+    // commit is designed to be re-entered rather than abandoned.
+    const verifiedRecoveryCandidate = recoveredDestinationStatus.status === 'recovery_required'
+      && recoveredDestinationStatus.bundleSha256 === marker.bundleSha256
+      && recoveredDestinationStatus.homeServerIdentityId === params.homeServerIdentityId
+      && personalHomeRelocationDestinationOwnsCandidate(recoveredDestinationStatus);
+    if (recoveredDestinationStatus.status === 'recovery_required' && !verifiedRecoveryCandidate) {
+      return pendingRelocation(marker, returnRecovery ? 'return_to_source' : 'finish_move');
+    }
+    if (recoveredDestinationStatus.status !== 'quarantined'
+      && recoveredDestinationStatus.status !== 'active'
+      && !verifiedRecoveryCandidate
+      && !(returnRecovery && recoveredDestinationStatus.status === 'aborted')) {
+      throw new Error('Relocation destination recovery state is not verified and quarantined.');
+    }
+    staged = recoveredDestinationStatus;
+    if (staged.status === 'active' || marker.phase === 'destination_published' || marker.phase === 'committed') {
+      // Writable authority already moved to the destination. Only idempotent
+      // publication readback and commit may converge; returning to the source
+      // would abort a Home that may already have accepted writes.
+      returnRecovery = false;
+    }
+    if (!returnRecovery && marker.phase === 'committed' && recoveredDestinationStatus.status === 'active') {
       const descriptor = await params.readPublishedDescriptor(params.homeServerIdentityId);
       if (!descriptor || !descriptorMatchesDestination(descriptor, staged)) {
         throw new Error('Committed relocation descriptor is no longer authoritative.');
@@ -312,7 +519,7 @@ export async function coordinatePersonalHomeRelocation(
     }
   }
 
-  if (params.recoveryAction === 'return_to_source') {
+  if (returnRecovery) {
     if (marker.phase === 'returned_to_source') {
       const current = HomeConnectionDescriptorV1Schema.nullable().parse(
         await params.readPublishedDescriptor(params.homeServerIdentityId),
@@ -329,41 +536,16 @@ export async function coordinatePersonalHomeRelocation(
         ...cleanupAttentionFacts(marker),
       };
     }
-    await params.destination.abort(params.operationId);
-    let current = HomeConnectionDescriptorV1Schema.nullable().parse(
+    const current = HomeConnectionDescriptorV1Schema.nullable().parse(
       await params.readPublishedDescriptor(params.homeServerIdentityId),
     );
-    const currentRevision = current?.revision ?? 0;
+    // The descriptor publisher is the authority boundary. A source-local phase
+    // cannot authorize Return after publication may have committed, and Return
+    // must never republish the source merely to manufacture its own precondition.
     if (!current || !descriptorMatchesSource(current, marker.sourceDescriptor)) {
-      const minimumOuterRevisionExclusive = Math.max(
-        marker.sourceDescriptor.revision,
-        currentRevision,
-      );
-      try {
-        await params.publishDestination({
-          operationId: params.operationId,
-          homeServerIdentityId: marker.sourceDescriptor.homeServerIdentityId,
-          canonicalServerUrl: marker.sourceDescriptor.canonicalServerUrl,
-          minimumOuterRevisionExclusive,
-          endpoints: marker.sourceDescriptor.endpoints,
-        });
-      } catch {
-        // Publication response loss is reconciled through fresh readback.
-      }
-      current = HomeConnectionDescriptorV1Schema.nullable().parse(
-        await params.readPublishedDescriptor(params.homeServerIdentityId),
-      );
+      return pendingRelocation(marker, 'finish_move');
     }
-    if (!current || !descriptorMatchesSource(current, marker.sourceDescriptor)) {
-      return {
-        operationId: params.operationId,
-        status: 'pending',
-        destinationMachineId: params.destinationMachineId,
-        sourceDescriptorRevision: params.sourceDescriptorRevision,
-        recoveryAction: 'return_to_source',
-        ...cleanupAttentionFacts(marker),
-      };
-    }
+    await params.destination.abort(params.operationId);
     await writeSourceMarker(params.sourceDataDir, { ...marker, phase: 'returning_to_source' });
     await params.activateSource();
     const sourceService = await params.readSourceServiceStatus();
@@ -405,17 +587,15 @@ export async function coordinatePersonalHomeRelocation(
   );
   const authoritative = descriptorMatchesDestination(readback, staged) ? readback : null;
   if (!authoritative) {
-    await writeSourceMarker(params.sourceDataDir, { ...marker, phase: 'pending' });
-    return {
-      operationId: params.operationId,
-      status: 'pending',
-      destinationMachineId: params.destinationMachineId,
-      sourceDescriptorRevision: params.sourceDescriptorRevision,
-      recoveryAction: 'finish_move',
-      ...cleanupAttentionFacts(marker),
-    };
+    marker = { ...marker, phase: 'pending' };
+    await writeSourceMarker(params.sourceDataDir, marker);
+    return pendingRelocation(marker, 'finish_move');
   }
 
+  // Publication is the authority transfer point: from here the destination is
+  // the published Home, so recovery may only finish the move.
+  marker = { ...marker, phase: 'destination_published' };
+  await writeSourceMarker(params.sourceDataDir, marker);
   await params.destination.commit({ operationId: params.operationId, publishedDescriptor: authoritative });
   await writeSourceMarker(params.sourceDataDir, { ...marker, phase: 'committed' });
   return {

@@ -172,6 +172,24 @@ export function resolveRelayRuntimeDefaults(params: Readonly<{
   const homeDir = String(params.homeDir ?? '').trim();
   const serverPort = resolveDefaultRelayRuntimePort(channel);
 
+  if (mode === 'system' && platform === 'win32') {
+    const systemRoot = 'C:\\ProgramData\\happier';
+    const installRoot = appendChannelSuffix(`${systemRoot}\\self-host`, channel);
+    return {
+      channel,
+      mode,
+      installRoot,
+      binDir: `${systemRoot}\\bin`,
+      configDir: `${installRoot}\\config`,
+      dataDir: `${installRoot}\\data`,
+      logDir: `${installRoot}\\logs`,
+      serviceName: appendChannelSuffix('happier-server', channel),
+      serverHost: '127.0.0.1',
+      serverPort,
+      healthPath: '/health',
+    };
+  }
+
   if (mode === 'system') {
     return {
       channel,

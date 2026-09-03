@@ -22,11 +22,16 @@ import {
   type PersonalHomeRestorableConfigurationV1,
 } from './configuration.js';
 import { createPersonalHomePathProtection } from './protection.js';
-import { replacePersonalHomeFileDurably, syncPersonalHomeFileAndParent } from './durableFile.js';
+import { removePathDurably, replacePersonalHomeFileDurably, syncPersonalHomeFileAndParent } from './durableFile.js';
 import {
+  assertRestoredPersonalHomeAllowlistedFilesReadable,
   finalizePersonalHomeRestoreWithLease,
+  hasMeaningfulPersonalHomeData,
+  inspectPersonalHomeRestoreRecovery,
   restorePersonalHomeBackupWithLease,
 } from './restore.js';
+import { verifyPersonalHomeArchive } from './archive.js';
+import { fingerprintMasterSecret } from './manifest.js';
 import { erasePersonalHomeData } from './erase.js';
 import {
   createPersonalHomeRelocationDestinationOwner,
@@ -298,7 +303,7 @@ function assertPersonalHomeConfigurationRollbackArtifact(envPath: string, rollba
 export async function finalizePersonalHomeSanitizedConfiguration(layout: PersonalHomeRuntimeLayout, rollbackArtifact: string): Promise<void> {
   const envPath = join(layout.configDir, 'server.env');
   assertPersonalHomeConfigurationRollbackArtifact(envPath, rollbackArtifact);
-  await rm(rollbackArtifact, { force: true });
+  await removePathDurably(rollbackArtifact);
 }
 
 export async function createCanonicalPersonalHomeOperations(params: Readonly<{
@@ -451,9 +456,90 @@ export async function createCanonicalPersonalHomeRelocationDestinationOwner(para
       }
       return { ...endpoint, ...authenticatedReadiness };
     },
+    inspectReceivedCandidate: async (input) => {
+      const layout = await resolveAttestedLayout();
+      let recovery: Awaited<ReturnType<typeof inspectPersonalHomeRestoreRecovery>>;
+      try {
+        recovery = await inspectPersonalHomeRestoreRecovery(layout);
+      } catch (error) {
+        return {
+          outcome: 'ambiguous',
+          reason: error instanceof Error ? error.message : String(error),
+        };
+      }
+      if (recovery.status === 'rollback_available' || recovery.status === 'ambiguous') {
+        return {
+          outcome: 'ambiguous',
+          reason: `the canonical restore journal is ${recovery.status}${recovery.phase ? ` (${recovery.phase})` : ''}`,
+        };
+      }
+      if (recovery.status === 'none' && !(await hasMeaningfulPersonalHomeData(layout))) {
+        return { outcome: 'absent' };
+      }
+
+      try {
+        const manifest = await verifyPersonalHomeArchive(input.archivePath);
+        if (manifest.homeServerIdentityId !== input.expectedHomeServerIdentityId) {
+          throw new Error('Interrupted relocation archive identity does not match the reserved Home');
+        }
+        if (!(await readInstalledMigrationCatalog(layout)).some((entry) => entry.name === manifest.schemaVersion)) {
+          throw new Error('Interrupted relocation archive schema is not supported by this runtime');
+        }
+        const [identity, counts, authenticatedReadiness, configuration, secret] = await Promise.all([
+          readCanonicalPersonalHomeIdentity(layout),
+          readPersonalHomeDataCountsFromSqlite(layout.databasePath),
+          params.attestStagedHome({ layout }),
+          readPersonalHomeSanitizedConfiguration(layout),
+          readFile(layout.masterSecretPath),
+        ]);
+        if (identity.homeServerIdentityId !== manifest.homeServerIdentityId
+          || fingerprintMasterSecret(secret) !== manifest.masterSecretFingerprint
+          || authenticatedReadiness.authenticated !== true
+          || authenticatedReadiness.homeServerIdentityId !== manifest.homeServerIdentityId
+          || authenticatedReadiness.accountCount !== counts.accountCount
+          || authenticatedReadiness.sessionCount !== counts.sessionCount
+          || counts.accountCount < 1 || counts.sessionCount < 0) {
+          throw new Error('Interrupted relocation identity, secret, authentication, or data-count facts do not match');
+        }
+        const normalizedConfiguration = parsePersonalHomeRestorableConfigurationV1({
+          ...configuration,
+          homeServerIdentityId: identity.homeServerIdentityId,
+        });
+        if (normalizedConfiguration.homeServerIdentityId !== manifest.homeServerIdentityId) {
+          throw new Error('Interrupted relocation configuration identity does not match');
+        }
+        await assertRestoredPersonalHomeAllowlistedFilesReadable(layout, manifest);
+        const endpoint = await params.materializeEndpoint({
+          layout,
+          sourceDescriptorRevision: input.sourceDescriptorRevision,
+        });
+        if (endpoint.homeServerIdentityId !== manifest.homeServerIdentityId) {
+          throw new Error('Interrupted relocation endpoint identity does not match the restored Home');
+        }
+        if (recovery.status === 'finalization_available') {
+          const finalization = await finalizePersonalHomeRestoreWithLease({
+            layout,
+            operationLeaseHeld: true,
+            finalizeConfiguration: (artifact) => finalizePersonalHomeSanitizedConfiguration(layout, artifact),
+          });
+          if (finalization.outcome !== 'finalized') {
+            throw new Error(finalization.error ?? 'Interrupted relocation restore finalization failed');
+          }
+        }
+        return { outcome: 'restored', ...endpoint, ...authenticatedReadiness };
+      } catch (error) {
+        return {
+          outcome: 'ambiguous',
+          reason: error instanceof Error ? error.message : String(error),
+        };
+      }
+    },
     abortCandidate: async () => {
       const layout = await resolveAttestedLayout();
-      await erasePersonalHomeData({ layout, operationLeaseHeld: true, operation: 'relocate' });
+      const erase = await erasePersonalHomeData({ layout, operationLeaseHeld: true, operation: 'relocate' });
+      if (erase.outcome === 'partial') {
+        throw new Error(erase.error ?? 'Personal Home relocation candidate cleanup was incomplete.');
+      }
     },
   });
 }

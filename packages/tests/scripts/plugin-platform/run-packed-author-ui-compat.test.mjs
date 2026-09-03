@@ -1886,7 +1886,7 @@ test('vertical-a accepts exact marketplace identity from the canonical installat
       enabled: true,
       trust: { pluginId: 'acme.public-registry', distribution, state: 'trusted', approvedAtMs: 1 },
       source: { distribution, admittedIntegrity: artifactIntegrity },
-      updatePolicy: 'automatic',
+      updatePolicy: 'reviewSensitiveChanges',
       optionalAccess: [],
     },
     runtimeCatalog: {
@@ -1900,7 +1900,7 @@ test('vertical-a accepts exact marketplace identity from the canonical installat
       install: {
         mode: 'managed_install',
         manifestVersion: '1.0.0',
-        updatePolicy: 'automatic',
+        updatePolicy: 'reviewSensitiveChanges',
         trust: { distribution },
       },
     },
@@ -1909,7 +1909,7 @@ test('vertical-a accepts exact marketplace identity from the canonical installat
       version: '1.0.0',
       marketplaceIntegrity: artifactIntegrity,
       distribution,
-      updatePolicy: 'automatic',
+      updatePolicy: 'reviewSensitiveChanges',
     },
   };
 
@@ -4635,7 +4635,7 @@ test('packed reviewed install carries exact daemon review through the authentica
       },
     }],
     compatibility: { happier: '^0.2.0', runtimeApiVersion: 1 },
-    updatePolicy: 'manual',
+    updatePolicy: 'reviewEveryUpdate',
   };
   const calls = [];
   const change = {
@@ -4729,7 +4729,7 @@ test('packed reviewed install reports the post-timeout daemon catalog state with
     optionalHostAccess: [],
     rawCredentialAccess: [],
     compatibility: { happier: '^0.2.0', runtimeApiVersion: 1 },
-    updatePolicy: 'manual',
+    updatePolicy: 'reviewEveryUpdate',
   };
   const calls = [];
   const timeout = Object.assign(

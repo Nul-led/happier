@@ -20,7 +20,7 @@ describe('Personal Home operation owner contracts', () => {
     await assertPersonalHomeBackupRestoreContract();
   });
 
-  it('relocation keeps the source recoverable, quarantines the destination on failure, and fails closed without a destination resolver', { timeout: 30_000 }, async () => {
+  it('relocation moves verified bytes through the production task owner and commits only after authoritative publication', { timeout: 30_000 }, async () => {
     await assertPersonalHomeRelocationContract();
   });
 });

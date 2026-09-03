@@ -6,9 +6,12 @@ import { startServerLight, type StartedServer } from '../../src/testkit/process/
 import { resolveUiWebBeforeAllTimeoutMs, startUiWeb, type StartedUiWeb } from '../../src/testkit/process/uiWeb';
 import { registerMachineIdentity } from '../../src/testkit/machineIdentity';
 import { gotoCommittedWithRetries, normalizeLoopbackBaseUrl, waitForAuthenticatedHomeUi } from '../../src/testkit/uiE2e/pageNavigation';
+import { secretBearingBrowserCapturePolicy } from '../../src/testkit/uiE2e/secretBearingBrowserCapture';
 
 const run = createRunDirs({ runLabel: 'ui-e2e' });
 const browserDiagnosticsByPage = new WeakMap<Page, () => string>();
+
+test.use(secretBearingBrowserCapturePolicy);
 
 function collectBrowserDiagnostics(page: Page): () => string {
     const pageConsole: string[] = [];

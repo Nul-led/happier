@@ -54,11 +54,15 @@ describe('installOrUpdateRelayRuntimeLocal Personal Home locking', () => {
         env: { PORT: '43123', AUTH_ANONYMOUS_SIGNUP_ENABLED: '0' },
         runServiceCommands: false,
         skipHealthCheck: true,
+        cleanupLegacyServiceBeforeInstall: async () => {
+          lockEvents.push('legacy:cleanup');
+        },
       });
 
       expect(lockEvents).toEqual([
         'payload:acquired',
         'home:upgrade:acquired',
+        'legacy:cleanup',
         'home:upgrade:released',
         'payload:released',
       ]);

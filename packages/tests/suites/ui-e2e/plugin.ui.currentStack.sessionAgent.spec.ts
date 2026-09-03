@@ -39,11 +39,24 @@ function sessionPathname(url: string): string | null {
 
 test.describe('current managed Stack external Session Agent', () => {
   test.skip(!enabled, 'Set HAPPIER_E2E_PLUGIN_UI_CURRENT_STACK=1 to attach to an already-running managed Stack.');
+  // Declaration-time gate: `beforeAll` installs the fixture, so the mutation
+  // opt-in must be decided before any hook runs. A skipped suite must never
+  // prepare, install, or need cleanup. Every step of this journey mutates the
+  // catalog, so the advertised `test:ui:e2e:plugin-current-stack:session-agent`
+  // command sets both variables itself rather than reporting a vacuous green;
+  // a broader run that sets only the attach gate still skips this suite whole.
+  test.skip(!mutationsEnabled, 'Set HAPPIER_E2E_PLUGIN_UI_CURRENT_STACK_MUTATIONS=1 to opt into reversible catalog mutations.');
   test.describe.configure({ mode: 'serial' });
 
   let context: CurrentManagedStackPluginUiContext;
   let attestation: CurrentManagedStackPluginUiAttestation;
   let fixture: CurrentManagedStackSessionAgentFixture;
+  // `beforeAll` installs the fixture, so anything that prevents the journey
+  // body from reaching its own `finally` — a failing `beforeEach`, a worker
+  // teardown — would otherwise leave the plugin installed on the selected
+  // Stack. The journey claims retirement before it starts cleaning up, so this
+  // hook owns exactly the window the journey never reached.
+  let retired = false;
 
   test.beforeAll(async () => {
     test.setTimeout(20 * 60_000);
@@ -59,8 +72,13 @@ test.describe('current managed Stack external Session Agent', () => {
     await installAuthBootstrapStorageSnapshot(page, context.authStorage);
   });
 
+  test.afterAll(async () => {
+    if (retired) return;
+    retired = true;
+    await fixture?.cleanup();
+  });
+
   test('drives the exact qualified external Agent through one full reversible source lifecycle', async ({ page }, testInfo) => {
-    test.skip(!mutationsEnabled, 'Set HAPPIER_E2E_PLUGIN_UI_CURRENT_STACK_MUTATIONS=1 to opt into reversible catalog mutations.');
     test.setTimeout(30 * 60_000);
     await testInfo.attach('current-managed-stack-session-agent-attestation.json', {
       body: Buffer.from(`${JSON.stringify(attestation, null, 2)}\n`, 'utf8'),
@@ -209,6 +227,40 @@ test.describe('current managed Stack external Session Agent', () => {
       await expect(page.getByText(fixture.updatedReasoningText)).not.toHaveCount(0, { timeout: 120_000 });
       await expect(page.getByText(fixture.assistantText)).toHaveCount(approvedMessageCount + 2, { timeout: 180_000 });
 
+      // A failing external-author edit: the canonical author typecheck and
+      // build must refuse it, the daemon must keep the incumbent generation
+      // applied, and the Agent must still complete a real turn on the last
+      // good bytes rather than degrading to an unavailable row.
+      const incumbent = await fixture.generation();
+      const refused = await fixture.applyFailingSourceUpdate();
+      expect(refused.appliedGeneration).toBe(incumbent.appliedGeneration);
+      lifecyclePhases.push({ phase: 'source-update-refused', generation: refused.appliedGeneration });
+      await assertCurrentManagedStackSessionAgentIdentity({ context, phase: 'active' });
+      await visitRoute({
+        urlPath: `/session/${sessionId}`,
+        requiredTestId: fixture.selectors.sessionComposerInput,
+      });
+      await composerSend({
+        inputTestId: fixture.selectors.sessionComposerInput,
+        sendTestId: fixture.selectors.sessionComposerSend,
+        text: SESSION_AGENT_PROMPT,
+      });
+      await settleConfirmation();
+      // The incumbent bytes are the reloaded generation's, so its reasoning
+      // sentinel — not the pristine one — must still drive the turn.
+      await expect(page.getByText(fixture.updatedReasoningText)).not.toHaveCount(0, { timeout: 120_000 });
+      await expect(page.getByText(fixture.assistantText)).toHaveCount(approvedMessageCount + 3, { timeout: 180_000 });
+
+      // Recovery: repairing the source reloads the same plugin identity onto a
+      // fresh current generation through the ordinary development change path.
+      const recovered = await fixture.recoverFailingSourceUpdate();
+      expect(recovered.appliedGeneration).not.toBe(incumbent.appliedGeneration);
+      lifecyclePhases.push({ phase: 'source-update-recovered', generation: recovered.appliedGeneration });
+      const recoveredIdentity = await assertCurrentManagedStackSessionAgentIdentity({ context, phase: 'active' });
+      if (recoveredIdentity?.appliedGeneration !== recovered.appliedGeneration) {
+        throw new Error('session_agent_recovery_generation_not_current');
+      }
+
       // Disable: the exact qualified option must disappear from the picker.
       const disabled = await fixture.disable();
       lifecyclePhases.push({ phase: 'source-disabled', generation: disabled.appliedGeneration });
@@ -313,6 +365,7 @@ test.describe('current managed Stack external Session Agent', () => {
       throw error;
     } finally {
       let cleanupError: unknown = null;
+      retired = true;
       try {
         await fixture.cleanup();
       } catch (error) {

@@ -665,7 +665,28 @@ test('refuses a mountable-looking projection that substitutes a declarative rend
         renderer: {
           kind: 'declarative',
           contributionId: PACKED_TARGETED_CONTRIBUTION_FIXTURE.rendererId,
-          model: {},
+          model: {
+            identity: {
+              pluginId: PACKED_TARGETED_CONTRIBUTION_FIXTURE.contributorPluginId,
+              localId: PACKED_TARGETED_CONTRIBUTION_FIXTURE.rendererId,
+              qualifiedId: `${PACKED_TARGETED_CONTRIBUTION_FIXTURE.contributorPluginId}/${PACKED_TARGETED_CONTRIBUTION_FIXTURE.rendererId}`,
+              generation: 'contributor-generation',
+            },
+            visible: true,
+            requiredHostMethods: [],
+            declarativeInventory: {
+              actions: [],
+              destinations: [],
+              settings: [],
+              uiQueries: [],
+            },
+            root: {
+              kind: 'text',
+              path: 'root',
+              order: 0,
+              text: 'Structurally valid substituted renderer',
+            },
+          },
         },
       },
     }],

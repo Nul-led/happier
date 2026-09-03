@@ -195,6 +195,11 @@ export type { PersonalHomeSignupPolicyState } from './personalHomeSignupPolicy.j
 export { resolvePersonalHomeRuntimeLayout, assertLayoutPath } from './personalHome/layout.js';
 export type { PersonalHomeRuntimeLayout } from './personalHome/layout.js';
 export {
+  assertPersonalHomeBootAdmission,
+  PersonalHomeBootAdmissionError,
+} from './personalHome/bootAdmission.js';
+export type { PersonalHomeBootAdmissionBlockReason } from './personalHome/bootAdmission.js';
+export {
   DEFAULT_PERSONAL_HOME_ORIGIN,
   DEFAULT_PERSONAL_HOME_PORT,
   assertPersonalHomeEnvironmentKeys,
@@ -252,16 +257,27 @@ export type {
   PersonalHomeRestoreOperationResult,
   PersonalHomeRelocateOperationResult,
 } from './personalHome/operations.js';
-export type { PersonalHomeRestoreRecoveryFacts, PersonalHomeRestoreRecoveryResult } from './personalHome/restore.js';
+export type { PersonalHomeRestoreRecoveryFacts, PersonalHomeRestoreRecoveryResult, PersonalHomeRestoreFinalizationResult } from './personalHome/restore.js';
 export type {
   PersonalHomeRelocationDestinationOwner,
   PersonalHomeRelocationDestinationDeps,
   PersonalHomeRelocationDestinationFacts,
+  PersonalHomeRelocationDestinationAbsence,
   PersonalHomeRelocationDestinationStatus,
   PersonalHomeRelocationDestinationStageInput,
   PersonalHomeRelocationDestinationCommitInput,
 } from './personalHome/relocationDestination.js';
-export { coordinatePersonalHomeRelocation } from './personalHome/relocationCoordinator.js';
+export {
+  coordinatePersonalHomeRelocation,
+  PersonalHomeRelocationTransferCleanupError,
+} from './personalHome/relocationCoordinator.js';
+export {
+  cleanupPersonalHomeRelocationUpload,
+  consumePersonalHomeRelocationUpload,
+  hasPersonalHomeRelocationUploadReservation,
+  preparePersonalHomeRelocationUpload,
+} from './personalHome/relocationTransfer.js';
+export type { PersonalHomeRelocationUpload } from './personalHome/relocationTransfer.js';
 export type {
   PersonalHomeRelocationSourceCoordinatorParams,
   PersonalHomeRelocationSourceResult,

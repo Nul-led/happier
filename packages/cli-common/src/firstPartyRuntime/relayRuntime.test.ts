@@ -49,6 +49,21 @@ describe('resolveRelayRuntimeDefaults', () => {
       serviceName: 'happier-server-dev',
       serverPort: 3005,
     });
+
+    expect(resolveRelayRuntimeDefaults({
+      platform: 'win32',
+      mode: 'system',
+      channel: 'preview',
+      homeDir: 'C:\\Users\\ignored',
+    })).toMatchObject({
+      installRoot: 'C:\\ProgramData\\happier\\self-host-preview',
+      binDir: 'C:\\ProgramData\\happier\\bin',
+      configDir: 'C:\\ProgramData\\happier\\self-host-preview\\config',
+      dataDir: 'C:\\ProgramData\\happier\\self-host-preview\\data',
+      logDir: 'C:\\ProgramData\\happier\\self-host-preview\\logs',
+      serviceName: 'happier-server-preview',
+      serverPort: 3005,
+    });
   });
 });
 

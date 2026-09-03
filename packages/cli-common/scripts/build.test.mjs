@@ -146,6 +146,66 @@ describe('cli-common atomic build contract', () => {
     }
   });
 
+  it('does not reacquire the package lock when an outer workspace publisher supplies staged output', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'happier-cli-common-outer-stage-lock-'));
+    try {
+      const packageDir = join(root, 'packages', 'cli-common');
+      const distDir = join(packageDir, 'dist');
+      const outputDir = join(root, 'workspace-staged-dist');
+      const lockDir = join(root, '.project', 'tmp', 'workspace-dist-builds');
+      const lockPath = join(lockDir, 'happier-dev-cli-common.lock');
+      const packageJson = {
+        name: '@happier-dev/cli-common',
+        version: '0.0.0',
+        type: 'module',
+        main: './dist/index.js',
+        types: './dist/index.d.ts',
+        exports: {
+          '.': {
+            default: './dist/index.js',
+            types: './dist/index.d.ts',
+          },
+        },
+      };
+
+      mkdirSync(distDir, { recursive: true });
+      mkdirSync(lockDir, { recursive: true });
+      writeFileSync(join(packageDir, 'package.json'), JSON.stringify(packageJson, null, 2), 'utf8');
+      writeFileSync(join(distDir, 'index.js'), 'export const version = "old";\n', 'utf8');
+      writeFileSync(join(distDir, 'index.d.ts'), 'export declare const version: string;\n', 'utf8');
+      writeFileSync(
+        lockPath,
+        JSON.stringify({
+          pid: process.pid,
+          createdAtMs: Date.now(),
+          updatedAtMs: Date.now(),
+        }),
+        'utf8',
+      );
+
+      await buildPackageDistAtomically({
+        packageDir,
+        packageJson,
+        env: {
+          ...process.env,
+          HAPPIER_WORKSPACE_DIST_OUTPUT_DIR: outputDir,
+          HAPPIER_PACKAGE_DIST_BUILD_LOCK_TIMEOUT_MS: '20',
+          HAPPIER_PACKAGE_DIST_BUILD_LOCK_POLL_MS: '5',
+        },
+        buildIntoDistDir: async ({ stagingDistDir }) => {
+          mkdirSync(stagingDistDir, { recursive: true });
+          writeFileSync(join(stagingDistDir, 'index.js'), 'export const version = "new";\n', 'utf8');
+          writeFileSync(join(stagingDistDir, 'index.d.ts'), 'export declare const version: string;\n', 'utf8');
+        },
+      });
+
+      expect(readFileSync(join(outputDir, 'index.js'), 'utf8')).toContain('"new"');
+      expect(readFileSync(join(distDir, 'index.js'), 'utf8')).toContain('"old"');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('keeps the previous dist visible while staging a new build', async () => {
     const root = mkdtempSync(join(tmpdir(), 'happier-cli-common-build-'));
     try {

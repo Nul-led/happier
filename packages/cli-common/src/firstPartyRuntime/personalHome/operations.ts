@@ -28,6 +28,7 @@ import {
   inspectPersonalHomeRestoreRecovery,
   finalizePersonalHomeRestoreWithLease,
   hasMeaningfulPersonalHomeData,
+  reconcilePersonalHomeRestoreWithLease,
   recoverPersonalHomeRestoreWithLease,
   restorePersonalHomeBackupWithLease,
   type PersonalHomeRestoreRecoveryFacts,
@@ -133,6 +134,8 @@ export type PersonalHomeInspection = Readonly<{
     publicFilesPresent: boolean;
     privateFilesPresent: boolean;
     backupsCount: number;
+    /** False when the newest-candidate manifest-read budget stopped the inventory early; then `backupsCount` is a confirmed lower bound, never an exact total. */
+    backupsCountComplete: boolean;
     latestBackup: Readonly<{ path: string; createdAt: string; archiveBytes: number }> | null;
     ownedErasePaths: readonly string[];
     estimatedOwnedBytes: number | null;
@@ -190,9 +193,12 @@ export type PersonalHomeEraseOperationInput = Readonly<{
 } & PersonalHomeOperationContext>;
 
 export type PersonalHomeEraseOperationResult = Readonly<{
+  outcome: 'completed' | 'partial';
   removedPaths: readonly string[];
+  remainingOwnedPaths: readonly string[];
   remainingUnknownPaths: readonly string[];
   stoppedRunningHome: boolean;
+  error: string | null;
 }>;
 
 export type PersonalHomeRelocateInput = Readonly<{
@@ -211,8 +217,8 @@ export type PersonalHomeOperations = Readonly<{
   verifyBackup(input: Readonly<{ archivePath: string } & PersonalHomeOperationContext>): Promise<PersonalHomeBackupVerification>;
   restore(input: PersonalHomeRestoreOperationInput): Promise<PersonalHomeRestoreResult>;
   erase(input: PersonalHomeEraseOperationInput): Promise<PersonalHomeEraseOperationResult>;
+  reconcileRestore(input?: PersonalHomeOperationContext): Promise<PersonalHomeRestoreFinalizationResult>;
   recoverRestore(input?: PersonalHomeOperationContext): Promise<PersonalHomeRestoreRecoveryResult>;
-  finalizeRestore(input?: PersonalHomeOperationContext): Promise<PersonalHomeRestoreFinalizationResult>;
   relocate(input: PersonalHomeRelocateInput): Promise<PersonalHomeRelocateOperationResult>;
 }>;
 
@@ -274,7 +280,26 @@ export function createPersonalHomeOperations(deps: PersonalHomeOperationsDeps): 
   const checkCancelled = (context: PersonalHomeOperationContext): void => {
     if (context.signal?.aborted) throw new PersonalHomeOperationsError('operation_cancelled', 'Personal Home operation was cancelled before mutation.');
   };
-  const withStableLayoutLease = async <T>(kind: 'inspect' | 'backup' | 'verify_backup' | 'restore' | 'erase' | 'relocate', context: PersonalHomeOperationContext, fn: (layout: PersonalHomeRuntimeLayout, purpose: PersonalHomePurpose) => Promise<T>): Promise<T> => {
+  const reconcileRestoreWithLease = async (layout: PersonalHomeRuntimeLayout): Promise<PersonalHomeRestoreFinalizationResult> => {
+    return await reconcilePersonalHomeRestoreWithLease({
+      layout,
+      operationLeaseHeld: true,
+      isHomeRunning: () => deps.lifecycle.isRunning(),
+      stopHome: () => deps.lifecycle.stop(),
+      healthCheck: healthCheck ?? (async () => false),
+      readIdentity: () => deps.readIdentity(layout),
+      readDataCountsFromDatabase: (databasePath) => deps.readDataCountsFromDatabase
+        ? deps.readDataCountsFromDatabase(layout, databasePath)
+        : Promise.reject(new Error('Canonical Personal Home data-count reader is unavailable.')),
+      attestActivatedHome: () => deps.attestActivatedHome
+        ? deps.attestActivatedHome()
+        : Promise.reject(new Error('Canonical Personal Home authenticated readiness is unavailable.')),
+      finalizeConfiguration: (artifact) => deps.finalizeConfiguration
+        ? deps.finalizeConfiguration(layout, artifact)
+        : Promise.reject(new Error('Canonical Personal Home configuration finalizer is unavailable.')),
+    });
+  };
+  const withStableLayoutLease = async <T>(kind: 'inspect' | 'backup' | 'verify_backup' | 'restore' | 'erase' | 'relocate', context: PersonalHomeOperationContext, fn: (layout: PersonalHomeRuntimeLayout, purpose: PersonalHomePurpose) => Promise<T>, reconcileRestore = true): Promise<T> => {
     checkCancelled(context);
     const initialPurpose = await deps.readPurpose(); assertPersonalHomePurpose(initialPurpose); assertExpectedPurpose(initialPurpose, context);
     const initialLayout = await deps.resolveLayout(); await deps.validateLayout(initialLayout);
@@ -283,6 +308,15 @@ export function createPersonalHomeOperations(deps: PersonalHomeOperationsDeps): 
       const currentPurpose = await deps.readPurpose(); assertPersonalHomePurpose(currentPurpose); assertExpectedPurpose(currentPurpose, context);
       const currentLayout = await deps.resolveLayout(); await deps.validateLayout(currentLayout);
       if (JSON.stringify(currentLayout) !== JSON.stringify(initialLayout) || currentPurpose.canonicalServerUrl !== initialPurpose.canonicalServerUrl) throw new PersonalHomeOperationsError('purpose_not_personal_home', 'Personal Home purpose or canonical layout changed while waiting for the operation lease.');
+      if (reconcileRestore) {
+        const reconciliation = await reconcileRestoreWithLease(initialLayout);
+        if (reconciliation.outcome === 'recovery_required' && kind !== 'inspect') {
+          throw new PersonalHomeOperationsError(
+            'restore_recovery_required',
+            reconciliation.error ?? 'Personal Home restore requires recovery before another operation can continue.',
+          );
+        }
+      }
       return fn(initialLayout, currentPurpose);
     });
   };
@@ -395,7 +429,7 @@ export function createPersonalHomeOperations(deps: PersonalHomeOperationsDeps): 
     return withStableLayoutLease('inspect', context, async (layout, purpose) => {
       context.progress?.('inspecting');
       const ownedErasePaths = resolvePersonalHomeEraseTargets(layout);
-      const [identity, masterSecret, running, databaseBytes, publicFilesPresent, privateFilesPresent, backupArchives, restoreRecovery, relocationRecovery, estimatedOwnedBytes, destinationHasData] =
+      const [identity, masterSecret, running, databaseBytes, publicFilesPresent, privateFilesPresent, backupInventory, restoreRecovery, relocationRecovery, estimatedOwnedBytes, destinationHasData] =
       await Promise.all([
         readIdentityOrNull(layout),
         readMasterSecretFacts(layout),
@@ -404,7 +438,7 @@ export function createPersonalHomeOperations(deps: PersonalHomeOperationsDeps): 
         isDirectory(layout.publicFilesDir),
         isDirectory(layout.privateFilesDir),
         listPersonalHomeBackupArchives(layout.backupsDir),
-        inspectPersonalHomeRestoreRecovery(layout),
+        inspectPersonalHomeRestoreRecovery(layout).catch((): PersonalHomeRestoreRecoveryFacts => ({ status: 'ambiguous', affectedTargets: [] })),
         inspectPersonalHomeRelocationSourceRecovery(layout.dataDir),
         estimateOwnedBytes(ownedErasePaths),
         hasMeaningfulPersonalHomeData(layout),
@@ -416,7 +450,7 @@ export function createPersonalHomeOperations(deps: PersonalHomeOperationsDeps): 
       running,
       identity,
       masterSecret,
-      storage: { databasePresent: databaseBytes !== null, databaseBytes, publicFilesPresent, privateFilesPresent, backupsCount: backupArchives.length, latestBackup: backupArchives[0] ?? null, ownedErasePaths, estimatedOwnedBytes, destinationEmpty: !destinationHasData },
+      storage: { databasePresent: databaseBytes !== null, databaseBytes, publicFilesPresent, privateFilesPresent, backupsCount: backupInventory.count, backupsCountComplete: backupInventory.complete, latestBackup: backupInventory.latest, ownedErasePaths, estimatedOwnedBytes, destinationEmpty: !destinationHasData },
       restoreRecovery,
       relocationRecovery,
       };
@@ -542,19 +576,11 @@ export function createPersonalHomeOperations(deps: PersonalHomeOperationsDeps): 
         healthCheck: healthCheck ?? (async () => false),
         recoverConfiguration: (artifact) => deps.recoverConfiguration(layout, artifact),
       });
-    });
+    }, false);
   };
 
-  const finalizeRestore = async (input: PersonalHomeOperationContext = {}): Promise<PersonalHomeRestoreFinalizationResult> => {
-    return withStableLayoutLease('restore', input, async (layout) => {
-      if (!deps.finalizeConfiguration) throw new PersonalHomeOperationsError('restore_unavailable', 'Personal Home restore finalization owner is unavailable.');
-      input.progress?.('finalizing_restore');
-      return finalizePersonalHomeRestoreWithLease({
-        layout,
-        operationLeaseHeld: true,
-        finalizeConfiguration: (artifact) => deps.finalizeConfiguration!(layout, artifact),
-      });
-    });
+  const reconcileRestore = async (input: PersonalHomeOperationContext = {}): Promise<PersonalHomeRestoreFinalizationResult> => {
+    return await withStableLayoutLease('inspect', input, async (layout) => await reconcileRestoreWithLease(layout), false);
   };
 
   const erase = async (input: PersonalHomeEraseOperationInput): Promise<PersonalHomeEraseOperationResult> => {
@@ -613,7 +639,14 @@ export function createPersonalHomeOperations(deps: PersonalHomeOperationsDeps): 
       }
       input.progress?.('erasing');
       const result = await erasePersonalHomeData({ layout, operationLeaseHeld: true });
-      return { removedPaths: result.removedPaths, remainingUnknownPaths: result.remainingUnknownPaths, stoppedRunningHome: wasRunning };
+      return {
+        outcome: result.outcome,
+        removedPaths: result.removedPaths,
+        remainingOwnedPaths: result.remainingOwnedPaths,
+        remainingUnknownPaths: result.remainingUnknownPaths,
+        stoppedRunningHome: wasRunning,
+        error: result.error,
+      };
     });
   };
 
@@ -640,7 +673,6 @@ export function createPersonalHomeOperations(deps: PersonalHomeOperationsDeps): 
         throw new PersonalHomeOperationsError('identity_unavailable', 'Personal Home identity changed before relocation cutover.');
       }
       const backupName = createHash('sha256').update(input.operationId).digest('hex').slice(0, 24);
-      let sourceWasRunning = false;
       return await coordinatePersonalHomeRelocation({
         sourceDataDir: leasedLayout.dataDir,
         operationId: input.operationId,
@@ -654,8 +686,8 @@ export function createPersonalHomeOperations(deps: PersonalHomeOperationsDeps): 
         readPublishedDescriptor: input.readPublishedDescriptor,
         stopSource: async () => {
           input.progress?.('stopping_source');
-          sourceWasRunning = await deps.lifecycle.isRunning();
-          if (sourceWasRunning) {
+          const wasRunning = await deps.lifecycle.isRunning();
+          if (wasRunning) {
             try {
               await deps.lifecycle.stop();
             } catch (stopError) {
@@ -683,9 +715,7 @@ export function createPersonalHomeOperations(deps: PersonalHomeOperationsDeps): 
             }
           }
           if (await deps.lifecycle.isRunning()) throw new PersonalHomeOperationsError('home_stop_failed', 'Personal Home did not stop; relocation was not attempted.');
-        },
-        restoreSourceAfterFailedStage: async () => {
-          if (sourceWasRunning) await activateSource();
+          return { wasRunning };
         },
         quarantineSource: async () => {
           input.progress?.('quarantining_source');
@@ -723,8 +753,8 @@ export function createPersonalHomeOperations(deps: PersonalHomeOperationsDeps): 
     verifyBackup,
     restore,
     erase,
+    reconcileRestore,
     recoverRestore,
-    finalizeRestore,
     relocate,
   } satisfies PersonalHomeOperations);
 }

@@ -153,7 +153,7 @@ export async function buildPackageDistAtomically(options = {}) {
   const lockPollMs = options.lockPollMs
     ?? parsePositiveInteger(commandEnv.HAPPIER_PACKAGE_DIST_BUILD_LOCK_POLL_MS, 250);
 
-  return await withWorkspaceDistBuildLock(async ({ heldLockValue }) => {
+  const runStagedBuild = async ({ heldLockValue }) => {
     let stageRoot = null;
     let distMovedToBackup = false;
 
@@ -209,7 +209,21 @@ export async function buildPackageDistAtomically(options = {}) {
     if (!marker.trim()) {
       throw new Error(`cli-common build produced an empty dist entrypoint: ${relative(packageDir, indexPath)}`);
     }
-  }, {
+  };
+
+  // An outer workspace publisher that supplies HAPPIER_WORKSPACE_DIST_OUTPUT_DIR already owns
+  // this package's workspace build lock and passes only the global bundle lease through
+  // HAPPIER_WORKSPACE_DIST_BUILD_LOCK_HELD; reacquiring the same package lock here would
+  // self-deadlock the nested build. Mirror scripts/workspaces/buildTypeScriptPackageDist.mjs:
+  // build directly into the staged output when an outer publisher supplies it, and keep the
+  // ordinary workspace package lock for standalone builds.
+  if (workspaceOutputDir) {
+    return await runStagedBuild({
+      heldLockValue: commandEnv.HAPPIER_WORKSPACE_DIST_BUILD_LOCK_HELD,
+    });
+  }
+
+  return await withWorkspaceDistBuildLock(runStagedBuild, {
     lockPath,
     env: commandEnv,
     timeoutMs: lockTimeoutMs,

@@ -556,7 +556,7 @@ export type PackedPluginInstallReview = Readonly<{
     locator: string;
     integrity?: string;
   }>;
-  executableRealms: readonly ('daemon' | 'reactNative')[];
+  executableRealms: readonly ('daemon' | 'reactNative' | 'hostedWeb')[];
   requiredHostAccess: readonly Readonly<{
     id: string;
     capability: string;

@@ -42,4 +42,31 @@ describe('uninstallRelayRuntimePayloadLocal', () => {
     await expect(readFile(join(installRoot, 'operator-note.txt'), 'utf8')).resolves.toBe('keep me');
     await expect(readFile(join(installRoot, 'operator-backups', 'snapshot.tar'), 'utf8')).resolves.toBe('keep this too');
   });
+
+  it('retains the Personal Home purpose and version needed to reinstall preserved data', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'happier-home-uninstall-state-'));
+    const installRoot = join(root, 'self-host');
+    const statePath = join(installRoot, 'self-host-state.json');
+    const logDir = join(installRoot, 'logs');
+    const shimPath = join(root, 'bin', 'happier-server');
+    await mkdir(join(installRoot, 'bin'), { recursive: true });
+    await mkdir(logDir, { recursive: true });
+    await mkdir(join(root, 'bin'), { recursive: true });
+    await writeFile(join(installRoot, 'bin', 'happier-server'), 'runtime');
+    await writeFile(shimPath, 'shim');
+
+    await uninstallRelayRuntimePayloadLocal({
+      installRoot,
+      shimPath,
+      statePath,
+      logDir,
+      retainedPurpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' },
+      retainedVersion: '0.3.0-test',
+    });
+
+    await expect(readFile(statePath, 'utf8').then((text) => JSON.parse(text))).resolves.toEqual({
+      retainedPersonalHomeVersion: '0.3.0-test',
+      purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' },
+    });
+  });
 });

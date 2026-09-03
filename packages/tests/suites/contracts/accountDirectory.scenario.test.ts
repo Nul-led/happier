@@ -17,6 +17,7 @@ import {
   AccountDirectoryMeResponseV1Schema,
   HomeConnectionDescriptorV1Schema,
   HomeLoginAssertionV1Schema,
+  createHomeCredentialDestinationDigestV1,
 } from '@happier-dev/protocol';
 
 const keyBase64 = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=';
@@ -116,6 +117,7 @@ describe('Account Directory supporting protocol contracts', () => {
       issuerServerIdentityId: 'srv_account_service',
       issuerSubjectId: 'account-subject-1',
       audienceHomeServerIdentityId: httpsDescriptor.homeServerIdentityId,
+      credentialDestinationDigestBase64Url: createHomeCredentialDestinationDigestV1(httpsDescriptor),
       clientBoxPublicKeyBase64: keyBase64,
       issuedAtMs,
       expiresAtMs: issuedAtMs + ACCOUNT_DIRECTORY_ASSERTION_MIN_LIFETIME_MS,

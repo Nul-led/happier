@@ -38,17 +38,57 @@ type StoredCredentials = Readonly<{
   value: Readonly<Record<string, unknown>>;
 }>;
 
+/**
+ * Diagnostics from this journey may never carry pairing material. Redact the QR invite payload,
+ * any legacy secret parameter, and whole `happier*://pair` deep links before an entry is retained.
+ */
+function redactPairingSecrets(entry: string): string {
+  return entry
+    .replace(/happier[a-z0-9+.-]*:\/\/pair\S*/gi, '<redacted-pairing-deep-link>')
+    .replace(/([?&](?:payload|secret|qrSecretBase64Url)=)[^\s&"']+/gi, '$1<redacted>')
+    .replace(/(["'](?:payload|secret|qrSecretBase64Url)["']\s*:\s*["'])[^"']*(["'])/gi, '$1<redacted>$2')
+    .replace(/(authorization\s*[:=]\s*(?:Bearer\s+)?)[^\s,"'}]+/gi, '$1<redacted>');
+}
+
 function collectBrowserDiagnostics(page: Page): () => string {
   const entries: string[] = [];
-  page.on('console', (message) => entries.push(`console.${message.type()}: ${message.text()}`));
-  page.on('pageerror', (error) => entries.push(`pageerror: ${error.message}`));
+  const push = (entry: string) => entries.push(redactPairingSecrets(entry));
+  page.on('console', (message) => push(`console.${message.type()}: ${message.text()}`));
+  page.on('pageerror', (error) => push(`pageerror: ${error.message}`));
   page.on('requestfailed', (request) => {
-    entries.push(`requestfailed: ${request.method()} ${request.url()} ${request.failure()?.errorText ?? ''}`.trim());
+    push(`requestfailed: ${request.method()} ${request.url()} ${request.failure()?.errorText ?? ''}`.trim());
   });
   page.on('response', (response) => {
-    if (response.status() >= 400) entries.push(`response: ${response.status()} ${response.request().method()} ${response.url()}`);
+    if (response.status() >= 400) push(`response: ${response.status()} ${response.request().method()} ${response.url()}`);
   });
   return () => entries.slice(-80).join('\n') || 'No browser errors were captured.';
+}
+
+const PAIRING_FEATURE_ID = 'auth.pairing.desktopQrMobileScan';
+const PAIRING_SURFACE_TIMEOUT_MS = 30_000;
+
+/**
+ * Early discriminating check on the composed surface: the QR block and the regenerate control are
+ * the first elements that exist only once the pairing decision resolved `enabled` for the
+ * authenticated Home. A loading (`unknown`) or unavailable (`disabled`) decision keeps them
+ * unmounted, so fail fast with redacted diagnostics rather than waiting out the link-button budget.
+ */
+async function assertPairingSurfaceRendered(params: Readonly<{
+  page: Page;
+  browserDiagnostics: () => string;
+}>): Promise<void> {
+  const pairingSurface = params.page.locator('[data-testid="add-phone-qr"], [data-testid="add-phone-generate"]');
+  try {
+    await expect(pairingSurface.first()).toHaveCount(1, { timeout: PAIRING_SURFACE_TIMEOUT_MS });
+  } catch (error) {
+    throw new Error([
+      `Home B rendered no add-phone pairing surface within ${PAIRING_SURFACE_TIMEOUT_MS}ms.`,
+      `Expected the ${PAIRING_FEATURE_ID} decision to be enabled for the authenticated Home`,
+      '(Home B must run with HAPPIER_FEATURE_AUTH_PAIRING__DESKTOP_QR_MOBILE_SCAN_ENABLED=1; the server gate fails closed).',
+      'A still-loading or unavailable decision unmounts add-phone-qr, add-phone-generate and add-phone-show-link.',
+      `Browser diagnostics (pairing material redacted):\n${params.browserDiagnostics()}`,
+    ].join('\n'), { cause: error });
+  }
 }
 
 const REQUIRED_ENROLLMENT_PATHS = new Set([
@@ -68,28 +108,38 @@ const FORBIDDEN_DIRECT_QR_UI_IDS = [
   'add-phone-approve',
   'add-phone-reject',
 ] as const;
-const FORBIDDEN_DIRECT_QR_OBSERVER_KEY = '__happierLane09ForbiddenDirectQrUi';
+const FORBIDDEN_DIRECT_QR_REPORTER = '__happierLane09ReportForbiddenDirectQrUi';
 
-async function observeForbiddenDirectQrUi(page: Page): Promise<void> {
-  await page.evaluate(({ key, testIds }) => {
-    const seen = new Set<string>();
+/**
+ * Whole-lifecycle observation of the comparison-code / approval controls that the direct-QR
+ * contract forbids. The observer is installed as an init script **before any app code runs on
+ * the page**, and it reports each sighting to a Node-side sink through an exposed binding, so a
+ * control that mounts and unmounts during initial pairing-link processing — before any
+ * post-navigation `evaluate` could run, and across every later navigation — is still recorded.
+ * Install this immediately after `newPage()` and before the first navigation.
+ */
+async function installForbiddenDirectQrUiObserver(page: Page): Promise<() => readonly string[]> {
+  const seen = new Set<string>();
+  await page.exposeFunction(FORBIDDEN_DIRECT_QR_REPORTER, (testId: string) => {
+    seen.add(testId);
+  });
+  await page.addInitScript(({ reporter, testIds }) => {
+    const reported = new Set<string>();
     const scan = () => {
       for (const testId of testIds) {
-        if (document.querySelector(`[data-testid="${testId}"]`)) seen.add(testId);
+        if (reported.has(testId)) continue;
+        if (!document.querySelector(`[data-testid="${testId}"]`)) continue;
+        reported.add(testId);
+        const report = Reflect.get(window, reporter) as ((id: string) => Promise<void>) | undefined;
+        void report?.(testId);
       }
     };
     scan();
-    const observer = new MutationObserver(scan);
-    observer.observe(document.documentElement, { childList: true, subtree: true });
-    Reflect.set(window, key, { observer, seen });
-  }, { key: FORBIDDEN_DIRECT_QR_OBSERVER_KEY, testIds: FORBIDDEN_DIRECT_QR_UI_IDS });
-}
-
-async function readObservedForbiddenDirectQrUi(page: Page): Promise<readonly string[]> {
-  return await page.evaluate((key) => {
-    const state = Reflect.get(window, key) as { seen?: Set<string> } | undefined;
-    return state?.seen ? [...state.seen].sort() : [];
-  }, FORBIDDEN_DIRECT_QR_OBSERVER_KEY);
+    // `document` exists before `documentElement` on a freshly created document, so observe the
+    // document node itself to cover the very first render.
+    new MutationObserver(scan).observe(document, { childList: true, subtree: true });
+  }, { reporter: FORBIDDEN_DIRECT_QR_REPORTER, testIds: FORBIDDEN_DIRECT_QR_UI_IDS });
+  return () => [...seen].sort();
 }
 
 function withVisibleHomeAGroup(snapshot: AuthBootstrapStorageSnapshot): AuthBootstrapStorageSnapshot {
@@ -115,7 +165,7 @@ async function openAuthenticatedPage(params: Readonly<{
   uiBaseUrl: string;
   home: HomeFixture;
   withVisibleGroup?: boolean;
-}>): Promise<void> {
+}>): Promise<() => string> {
   const browserDiagnostics = collectBrowserDiagnostics(params.page);
   const snapshot = buildAuthBootstrapStorageSnapshot({
     serverUrl: params.home.server.baseUrl,
@@ -130,6 +180,7 @@ async function openAuthenticatedPage(params: Readonly<{
   );
   await gotoDomContentLoadedWithRetries(params.page, params.uiBaseUrl, 180_000);
   await waitForInitialAppUi({ page: params.page, timeoutMs: 180_000, browserDiagnostics });
+  return browserDiagnostics;
 }
 
 async function readHomeState(page: Page): Promise<BrowserHomeState> {
@@ -166,19 +217,23 @@ async function readHomeState(page: Page): Promise<BrowserHomeState> {
   });
 }
 
+function credentialStorageScopeFragment(serverIdentityId: string): string {
+  return `auth_credentials__srv_${serverIdentityId.toLowerCase().replace(/[^a-z0-9._-]/g, '_').replace(/_+/g, '_')}`;
+}
+
 async function readCredentialsForStableIdentity(page: Page, serverIdentityId: string): Promise<StoredCredentials> {
-  return await page.evaluate((identity) => {
-    const scope = `auth_credentials__srv_${identity.toLowerCase().replace(/[^a-z0-9._-]/g, '_').replace(/_+/g, '_')}`;
+  const scope = credentialStorageScopeFragment(serverIdentityId);
+  return await page.evaluate((scopeValue) => {
     for (let index = 0; index < window.localStorage.length; index += 1) {
       const key = window.localStorage.key(index);
-      if (!key || !key.toLowerCase().includes(scope)) continue;
+      if (!key || !key.toLowerCase().includes(scopeValue)) continue;
       const raw = window.localStorage.getItem(key);
       if (!raw) continue;
       const value = JSON.parse(raw) as Record<string, unknown>;
       if (typeof value.token === 'string' && value.token.length > 0) return { storageKey: key, value };
     }
-    throw new Error(`No credentials stored for stable Home identity ${identity}`);
-  }, serverIdentityId);
+    throw new Error(`No credentials stored under scope ${scopeValue}`);
+  }, scope);
 }
 
 function trackEnrollmentRequests(page: Page, sink: URL[]): void {
@@ -186,6 +241,48 @@ function trackEnrollmentRequests(page: Page, sink: URL[]): void {
     const url = new URL(request.url());
     if (TRACKED_ENROLLMENT_PATHS.has(url.pathname)) sink.push(url);
   });
+}
+
+/**
+ * Produces Home's single-use V2 invite through the real trusted-device production caller
+ * (authenticated Settings → add-phone pairing surface) and binds it to the exact Home
+ * identity before any joining device consumes it.
+ */
+async function produceTrustedHomeQrInviteLink(params: Readonly<{
+  page: Page;
+  uiBaseUrl: string;
+  home: HomeFixture;
+}>): Promise<string> {
+  const browserDiagnostics = await openAuthenticatedPage({ page: params.page, uiBaseUrl: params.uiBaseUrl, home: params.home });
+  await gotoDomContentLoadedWithRetries(params.page, `${params.uiBaseUrl}/settings`, 180_000);
+  await expect(params.page.getByTestId('settings-add-your-phone-shortcut')).toHaveCount(1, { timeout: 120_000 });
+  await params.page.getByTestId('settings-add-your-phone-shortcut').click();
+  await expect(params.page).toHaveURL(/\/settings\/add-phone/, { timeout: 60_000 });
+  await expect(params.page.getByTestId('add-phone-pairing-link')).toHaveCount(0);
+  await assertPairingSurfaceRendered({ page: params.page, browserDiagnostics });
+  await expect(params.page.getByTestId('add-phone-show-link')).toHaveCount(1, { timeout: 120_000 });
+  await params.page.getByTestId('add-phone-show-link').click();
+  const pairingLink = params.page.getByTestId('add-phone-pairing-link');
+  await expect(pairingLink).toHaveCount(1, { timeout: 120_000 });
+  const pairingLinkRaw = (await pairingLink.innerText()).trim();
+
+  const pairingUrl = new URL(pairingLinkRaw);
+  expect(pairingUrl.protocol.startsWith('happier')).toBe(true);
+  expect(pairingUrl.pathname).toBe('/pair');
+  expect(pairingUrl.hash).toBe('');
+  expect([...pairingUrl.searchParams.keys()].sort()).toEqual(['payload', 'v']);
+  expect(pairingUrl.searchParams.get('v')).toBe('2');
+  expect(pairingUrl.searchParams.has('pairId')).toBe(false);
+  expect(pairingUrl.searchParams.has('secret')).toBe(false);
+  const invite = parseHomeQrInviteV2Payload(pairingUrl.searchParams.get('payload') ?? '', { nowMs: Date.now() });
+  expect(invite).toMatchObject({
+    v: 2,
+    intent: 'home_device',
+    home: { homeServerIdentityId: params.home.serverIdentityId, canonicalServerUrl: params.home.server.baseUrl },
+  });
+  expect(invite?.home.endpoints).toContainEqual({ kind: 'https', url: params.home.server.baseUrl });
+  expect(Buffer.from(invite?.qrSecretBase64Url ?? '', 'base64url')).toHaveLength(32);
+  return pairingLinkRaw;
 }
 
 async function runEnrollmentScenario(params: Readonly<{
@@ -207,6 +304,10 @@ async function runEnrollmentScenario(params: Readonly<{
 
     const joiningPage = await homeAContext.newPage();
     const trustedHomeBPage = await homeBContext.newPage();
+    // Installed before the first navigation so the forbidden-control observation covers the whole
+    // page lifecycle rather than a post-load suffix.
+    const readJoiningForbiddenUi = await installForbiddenDirectQrUiObserver(joiningPage);
+    const readTrustedForbiddenUi = await installForbiddenDirectQrUiObserver(trustedHomeBPage);
     await openAuthenticatedPage({ page: joiningPage, uiBaseUrl: params.uiBaseUrl, home: params.homeA, withVisibleGroup: true });
     await openAuthenticatedPage({ page: trustedHomeBPage, uiBaseUrl: params.uiBaseUrl, home: params.homeB });
 
@@ -218,44 +319,22 @@ async function runEnrollmentScenario(params: Readonly<{
     trackEnrollmentRequests(joiningPage, enrollmentRequests);
     trackEnrollmentRequests(trustedHomeBPage, enrollmentRequests);
 
-    await gotoDomContentLoadedWithRetries(trustedHomeBPage, `${params.uiBaseUrl}/settings`, 180_000);
-    await expect(trustedHomeBPage.getByTestId('settings-add-your-phone-shortcut')).toHaveCount(1, { timeout: 120_000 });
-    await trustedHomeBPage.getByTestId('settings-add-your-phone-shortcut').click();
-    await expect(trustedHomeBPage).toHaveURL(/\/settings\/add-phone/, { timeout: 60_000 });
-    await expect(trustedHomeBPage.getByTestId('add-phone-pairing-link')).toHaveCount(0);
-    await expect(trustedHomeBPage.getByTestId('add-phone-show-link')).toHaveCount(1, { timeout: 120_000 });
-    await trustedHomeBPage.getByTestId('add-phone-show-link').click();
-    const pairingLink = trustedHomeBPage.getByTestId('add-phone-pairing-link');
-    await expect(pairingLink).toHaveCount(1, { timeout: 120_000 });
-    const pairingLinkRaw = (await pairingLink.innerText()).trim();
+    const pairingLinkRaw = await produceTrustedHomeQrInviteLink({ page: trustedHomeBPage, uiBaseUrl: params.uiBaseUrl, home: params.homeB });
 
-    const pairingUrl = new URL(pairingLinkRaw);
-    expect(pairingUrl.protocol.startsWith('happier')).toBe(true);
-    expect(pairingUrl.pathname).toBe('/pair');
-    expect(pairingUrl.hash).toBe('');
-    expect([...pairingUrl.searchParams.keys()].sort()).toEqual(['payload', 'v']);
-    expect(pairingUrl.searchParams.get('v')).toBe('2');
-    expect(pairingUrl.searchParams.has('pairId')).toBe(false);
-    expect(pairingUrl.searchParams.has('secret')).toBe(false);
-    const invite = parseHomeQrInviteV2Payload(pairingUrl.searchParams.get('payload') ?? '', { nowMs: Date.now() });
-    expect(invite).toMatchObject({
-      v: 2,
-      intent: 'home_device',
-      home: { homeServerIdentityId: params.homeB.serverIdentityId, canonicalServerUrl: params.homeB.server.baseUrl },
-    });
-    expect(invite?.home.endpoints).toContainEqual({ kind: 'https', url: params.homeB.server.baseUrl });
-    expect(Buffer.from(invite?.qrSecretBase64Url ?? '', 'base64url')).toHaveLength(32);
-
-    await gotoDomContentLoadedWithRetries(joiningPage, `${params.uiBaseUrl}/restore`, 180_000);
+    // Authenticated Add Home enters through the real production caller: the account
+    // settings item pushes ADD_HOME_RESTORE_PATH (/restore?entryIntent=add_home). The
+    // explicit add_home intent is load-bearing — a bare /restore parses as the Welcome
+    // enter_home intent, whose contract is to open the scanned Home instead.
+    await gotoDomContentLoadedWithRetries(joiningPage, `${params.uiBaseUrl}/settings/account`, 180_000);
+    const addHomeItem = joiningPage.getByTestId('settings-account-add-home');
+    await expect(addHomeItem).toHaveCount(1, { timeout: 120_000 });
+    await addHomeItem.click();
+    await expect(joiningPage).toHaveURL(/\/restore\?entryIntent=add_home/, { timeout: 60_000 });
     const manualLinkButton = joiningPage.getByTestId('restore-enter-pairing-link');
     await expect(manualLinkButton).toHaveCount(1, { timeout: 120_000 });
     await manualLinkButton.click();
     await expect(joiningPage.getByTestId('web-prompt-input')).toHaveCount(1, { timeout: 30_000 });
     await joiningPage.getByTestId('web-prompt-input').fill(pairingLinkRaw);
-    await Promise.all([
-      observeForbiddenDirectQrUi(joiningPage),
-      observeForbiddenDirectQrUi(trustedHomeBPage),
-    ]);
     await joiningPage.getByTestId('web-prompt-confirm').click();
 
     await expect(joiningPage.getByTestId('restore-scan-confirm-code')).toHaveCount(0);
@@ -266,8 +345,8 @@ async function runEnrollmentScenario(params: Readonly<{
       async () => await readCredentialsForStableIdentity(joiningPage, params.homeB.serverIdentityId).then(() => true).catch(() => false),
       { timeout: 120_000 },
     ).toBe(true);
-    expect(await readObservedForbiddenDirectQrUi(joiningPage)).toEqual([]);
-    expect(await readObservedForbiddenDirectQrUi(trustedHomeBPage)).toEqual([]);
+    expect(readJoiningForbiddenUi()).toEqual([]);
+    expect(readTrustedForbiddenUi()).toEqual([]);
 
     const homeBCredentials = await readCredentialsForStableIdentity(joiningPage, params.homeB.serverIdentityId);
     const token = homeBCredentials.value.token;
@@ -316,6 +395,188 @@ async function runEnrollmentScenario(params: Readonly<{
   }
 }
 
+/**
+ * Welcome entry (J09-05/F-QR-01 enter_home direction): a fresh unauthenticated client with no
+ * stored Home credential consumes a scanned Home B V2 invite. The scanned invite reaches the
+ * app through the production deep-link redirect target that `redirectSystemPath` builds for a
+ * scanned V2 invite (`/restore?pairingLink=…&entryIntent=enter_home`); the camera
+ * capture and OS deep-link dispatch in front of that route are the only boundaries a headless
+ * browser cannot inject. The journey must end with the persisted focused Home identity on B,
+ * not merely shell navigation.
+ */
+async function runWelcomeEntryScenario(params: Readonly<{
+  browser: Browser;
+  uiBaseUrl: string;
+  /**
+   * A Home this fresh client never adopted. It is the UI build's configured default endpoint,
+   * which makes it the exact wrong-destination candidate, and it is the foreign authority that
+   * must reject the Home B credential. Nothing here asserts that it was ever selected.
+   */
+  foreignHome: HomeFixture;
+  homeB: HomeFixture;
+}>): Promise<void> {
+  let joiningContext: BrowserContext | null = null;
+  let trustedContext: BrowserContext | null = null;
+  try {
+    joiningContext = await params.browser.newContext({
+      viewport: { width: 390, height: 844 },
+      userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148',
+      hasTouch: true,
+    });
+    trustedContext = await params.browser.newContext({ viewport: { width: 1280, height: 844 } });
+    await joiningContext.grantPermissions(['camera'], { origin: params.uiBaseUrl }).catch(() => {});
+
+    const joiningPage = await joiningContext.newPage();
+    const trustedHomeBPage = await trustedContext.newPage();
+    const joiningDiagnostics = collectBrowserDiagnostics(joiningPage);
+    // Installed before the deep-link navigation: initial pairing-link processing can mount and
+    // unmount a control before any post-load `evaluate` would exist, so the observer must run
+    // ahead of app code on this page.
+    const readJoiningForbiddenUi = await installForbiddenDirectQrUiObserver(joiningPage);
+
+    const enrollmentRequests: URL[] = [];
+    trackEnrollmentRequests(joiningPage, enrollmentRequests);
+    trackEnrollmentRequests(trustedHomeBPage, enrollmentRequests);
+
+    const pairingLinkRaw = await produceTrustedHomeQrInviteLink({ page: trustedHomeBPage, uiBaseUrl: params.uiBaseUrl, home: params.homeB });
+
+    await gotoDomContentLoadedWithRetries(
+      joiningPage,
+      `${params.uiBaseUrl}/restore?pairingLink=${encodeURIComponent(pairingLinkRaw)}&entryIntent=enter_home`,
+      180_000,
+    );
+
+    try {
+      await expect.poll(
+        async () => await readCredentialsForStableIdentity(joiningPage, params.homeB.serverIdentityId).then(() => true).catch(() => false),
+        { timeout: 180_000 },
+      ).toBe(true);
+      expect(readJoiningForbiddenUi()).toEqual([]);
+
+      // The B credential is stored under the exact scanned Home identity.
+      const homeBCredentials = await readCredentialsForStableIdentity(joiningPage, params.homeB.serverIdentityId);
+      expect(Object.keys(homeBCredentials.value).sort()).toEqual(['token']);
+
+      // Same authority proof as the Add Home direction: the issued credential authenticates at
+      // the scanned Home and is rejected by the foreign Home it was never issued for.
+      const token = homeBCredentials.value.token;
+      expect(typeof token).toBe('string');
+      const profileAtHomeB = await fetch(`${params.homeB.server.baseUrl}/v1/account/profile`, {
+        headers: { Authorization: `Bearer ${String(token)}` },
+        signal: AbortSignal.timeout(15_000),
+      });
+      expect(profileAtHomeB.status).toBe(200);
+      const sameTokenAtForeignHome = await fetch(`${params.foreignHome.server.baseUrl}/v1/account/profile`, {
+        headers: { Authorization: `Bearer ${String(token)}` },
+        signal: AbortSignal.timeout(15_000),
+      });
+      expect([401, 403]).toContain(sameTokenAtForeignHome.status);
+
+      // Persisted identity truth, not router navigation: server-state-v1 must hold the
+      // scanned Home B as the focused Home and as the active profile.
+      const homeState = await readHomeState(joiningPage);
+      const adoptedEntries = Object.entries(homeState.profiles).filter(([, profile]) => {
+        const candidate = profile as { serverIdentityId?: unknown } | null;
+        return candidate?.serverIdentityId === params.homeB.serverIdentityId;
+      });
+      expect(adoptedEntries).toHaveLength(1);
+      const [bLocalId, adoptedProfile] = adoptedEntries[0] as [string, unknown];
+      expect(adoptedProfile).toMatchObject({ serverIdentityId: params.homeB.serverIdentityId, source: 'qr' });
+      expect(homeState.activeServerId).toBe(bLocalId);
+      expect(homeState.activeProfile).toMatchObject({ serverIdentityId: params.homeB.serverIdentityId });
+
+      // The authenticated shell opened focused on Home B (stable shell test id).
+      await expect(joiningPage.getByTestId('nav-new-session')).toBeVisible({ timeout: 120_000 });
+
+      // Destination binding: every enrollment request — including the trusted completer's —
+      // targeted Home B. The build's configured default endpoint received no enrollment
+      // request and holds no credential on this fresh, never-adopted client.
+      await expect.poll(() => enrollmentRequests.map((url) => url.pathname), { timeout: 30_000 })
+        .toEqual(expect.arrayContaining([...REQUIRED_ENROLLMENT_PATHS]));
+      expect(enrollmentRequests.map((url) => url.pathname)).not.toContain('/v1/auth/pairing/consume');
+      for (const requestUrl of enrollmentRequests) {
+        expect(requestUrl.origin).toBe(params.homeB.server.baseUrl);
+      }
+      const foreignScopeFragment = credentialStorageScopeFragment(params.foreignHome.serverIdentityId);
+      for (const key of Object.keys(homeState.credentialsByKey)) {
+        expect(key.toLowerCase().includes(foreignScopeFragment)).toBe(false);
+      }
+    } catch (error) {
+      const failureState = await readHomeState(joiningPage).catch(() => null);
+      throw new Error([
+        'Welcome enter_home journey did not reach the scanned Home B as the focused Home.',
+        `Persisted state at failure: ${
+          failureState
+            ? JSON.stringify({
+              activeServerId: failureState.activeServerId,
+              profileIds: Object.keys(failureState.profiles),
+              credentialStorageKeys: Object.keys(failureState.credentialsByKey),
+            })
+            : 'unavailable'
+        }`,
+        `Browser diagnostics (pairing material redacted):\n${joiningDiagnostics()}`,
+      ].join('\n'), { cause: error });
+    }
+  } finally {
+    await trustedContext?.close().catch(() => {});
+    await joiningContext?.close().catch(() => {});
+  }
+}
+
+/**
+ * Released QR V1 compatibility is a refusal contract, not an enrollment fallback. Exercise the
+ * immutable released producer output through authenticated Add Home's real manual-entry surface
+ * and prove the composed browser neither contacts a pairing endpoint nor changes Home state.
+ */
+async function runReleasedV1UpdateRequiredScenario(params: Readonly<{
+  browser: Browser;
+  uiBaseUrl: string;
+  homeA: HomeFixture;
+}>): Promise<void> {
+  const releasedV1Link =
+    'happier-dev:///pair?v=1&pairId=pid123&secret=sec_abc&server=https%3A%2F%2Fstack.example.test%2Fpath%3Fx%3D1';
+  const context = await params.browser.newContext({
+    viewport: { width: 390, height: 844 },
+    userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148',
+    hasTouch: true,
+  });
+  try {
+    const page = await context.newPage();
+    const readForbiddenUi = await installForbiddenDirectQrUiObserver(page);
+    await openAuthenticatedPage({ page, uiBaseUrl: params.uiBaseUrl, home: params.homeA, withVisibleGroup: true });
+    const before = await readHomeState(page);
+    const enrollmentRequests: URL[] = [];
+    trackEnrollmentRequests(page, enrollmentRequests);
+
+    await gotoDomContentLoadedWithRetries(page, `${params.uiBaseUrl}/settings/account`, 180_000);
+    await page.getByTestId('settings-account-add-home').click();
+    await expect(page).toHaveURL(/\/restore\?entryIntent=add_home/, { timeout: 60_000 });
+    const manualLinkButton = page.getByTestId('restore-enter-pairing-link');
+    await expect(manualLinkButton).toHaveCount(1, { timeout: 120_000 });
+    await manualLinkButton.click();
+    await expect(page.getByTestId('web-prompt-input')).toHaveCount(1, { timeout: 30_000 });
+    await page.getByTestId('web-prompt-input').fill(releasedV1Link);
+    await page.getByTestId('web-prompt-confirm').click();
+
+    // The alert's stable button ids prove the typed update-required route rendered without
+    // coupling this journey to translated copy. Cancel is deliberately inert.
+    await expect(page.getByTestId('web-modal-button-0')).toHaveCount(1, { timeout: 30_000 });
+    await expect(page.getByTestId('web-modal-button-1')).toHaveCount(1);
+    await page.getByTestId('web-modal-button-1').click();
+    await expect(page.getByTestId('web-modal-button-0')).toHaveCount(0);
+
+    const after = await readHomeState(page);
+    expect(after).toEqual(before);
+    expect(enrollmentRequests).toEqual([]);
+    expect(readForbiddenUi()).toEqual([]);
+    expect(JSON.stringify(after)).not.toContain('pid123');
+    expect(JSON.stringify(after)).not.toContain('sec_abc');
+    expect(JSON.stringify(after)).not.toContain('stack.example.test');
+  } finally {
+    await context.close().catch(() => {});
+  }
+}
+
 test.describe('ui e2e: direct Home QR enrollment through production callers', () => {
   test.describe.configure({ mode: 'serial' });
   const suiteDir = run.testDir('auth-pairing-add-phone-suite');
@@ -329,21 +590,34 @@ test.describe('ui e2e: direct Home QR enrollment through production callers', ()
   let plainHomeB: HomeFixture | null = null;
   let e2eeHomeB: HomeFixture | null = null;
 
-  test.beforeAll(async () => {
-    const uiEnv = { ...process.env, CI: '1', EXPO_PUBLIC_DEBUG: '1', EXPO_PUBLIC_HAPPY_STORAGE_SCOPE: storageScope };
+  test.beforeAll(async ({ browser }) => {
+    // Resolve the Playwright worker browser before starting three Homes or Metro,
+    // so an incapable host fails without spending the full fixture-startup budget.
+    void browser;
+    const uiEnv = {
+      ...process.env,
+      CI: '1',
+      EXPO_PUBLIC_DEBUG: '1',
+      EXPO_PUBLIC_HAPPY_STORAGE_SCOPE: storageScope,
+      HAPPIER_E2E_UI_WEB_MODE: process.env.HAPPIER_E2E_UI_WEB_MODE ?? 'metro',
+    };
     test.setTimeout(resolveUiWebBeforeAllTimeoutMs(uiEnv) + 240_000);
     await mkdir(suiteDir, { recursive: true });
 
     homeAServer = await startServerLight({
       testDir: resolve(join(suiteDir, 'home-a')),
       dbProvider: 'sqlite',
-      extraEnv: { HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED: '1' },
+      extraEnv: {
+        HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED: '1',
+        HAPPIER_FEATURE_AUTH_PAIRING__DESKTOP_QR_MOBILE_SCAN_ENABLED: '1',
+      },
     });
     plainHomeBServer = await startServerLight({
       testDir: resolve(join(suiteDir, 'home-b-plain')),
       dbProvider: 'sqlite',
       extraEnv: {
         HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED: '1',
+        HAPPIER_FEATURE_AUTH_PAIRING__DESKTOP_QR_MOBILE_SCAN_ENABLED: '1',
         HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: 'optional',
         HAPPIER_FEATURE_ENCRYPTION__DEFAULT_ACCOUNT_MODE: 'plain',
       },
@@ -353,6 +627,7 @@ test.describe('ui e2e: direct Home QR enrollment through production callers', ()
       dbProvider: 'sqlite',
       extraEnv: {
         HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED: '1',
+        HAPPIER_FEATURE_AUTH_PAIRING__DESKTOP_QR_MOBILE_SCAN_ENABLED: '1',
         HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: 'required',
         HAPPIER_FEATURE_ENCRYPTION__DEFAULT_ACCOUNT_MODE: 'e2ee',
       },
@@ -398,5 +673,17 @@ test.describe('ui e2e: direct Home QR enrollment through production callers', ()
     test.setTimeout(540_000);
     if (!uiBaseUrl || !homeA || !e2eeHomeB) throw new Error('missing composed Home fixtures');
     await runEnrollmentScenario({ browser, uiBaseUrl, homeA, homeB: e2eeHomeB });
+  });
+
+  test('opens a fresh unauthenticated scanned Home B focused (Welcome enter_home)', async ({ browser }) => {
+    test.setTimeout(540_000);
+    if (!uiBaseUrl || !homeA || !plainHomeB) throw new Error('missing composed Home fixtures');
+    await runWelcomeEntryScenario({ browser, uiBaseUrl, foreignHome: homeA, homeB: plainHomeB });
+  });
+
+  test('refuses released QR V1 with update-required and zero enrollment side effects', async ({ browser }) => {
+    test.setTimeout(540_000);
+    if (!uiBaseUrl || !homeA) throw new Error('missing composed Home fixtures');
+    await runReleasedV1UpdateRequiredScenario({ browser, uiBaseUrl, homeA });
   });
 });

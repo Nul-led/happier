@@ -81,7 +81,7 @@ export type PluginInstallationReviewFacts = Readonly<{
     | Readonly<{ status: 'notApplicable' }>
     | Readonly<{ status: 'approved'; sourceId: string; reviewedAt: string; reason?: string | null }>
     | Readonly<{ status: 'unreviewed'; sourceId: string }>;
-  executableRealms: readonly ('daemon' | 'reactNative')[];
+  executableRealms: readonly ('daemon' | 'reactNative' | 'hostedWeb')[];
   contributions: readonly Readonly<{ family: string; count: number }>[];
   requestInterceptors: readonly PluginInstallationReviewRequestInterceptor[];
   uiArtifacts: Readonly<{
@@ -101,7 +101,7 @@ export type PluginInstallationReviewFacts = Readonly<{
       diagnostics: readonly Readonly<{ code: string; message: string }>[];
     }>[];
   }>;
-  updatePolicy: 'automatic' | 'manual' | 'pinned';
+  updatePolicy: 'reviewSensitiveChanges' | 'reviewEveryUpdate' | 'pinned';
 }>;
 
 export declare function readPluginInstallReviewRequiredEnvelope(envelope: unknown): Readonly<{

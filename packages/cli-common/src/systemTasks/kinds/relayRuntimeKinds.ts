@@ -10,6 +10,7 @@ import { SystemTaskExecutionError } from '../runSystemTask.js';
 import { type InteractiveSystemTaskKind } from '../interactiveTaskKinds.js';
 import {
   assertPersonalHomeEnvironmentKeys,
+  createPersonalHomeRuntimeSpec,
   parsePersonalHomeRuntimePurpose,
   type ManagedRelayPurpose,
 } from '../../firstPartyRuntime/personalHome/personalHomeRuntimeSpec.js';
@@ -42,6 +43,11 @@ export interface RelayRuntimeTaskParams {
   env?: Record<string, string>;
   selfHostRelayBinaryOverride?: string;
   purpose?: ManagedRelayPurpose;
+  expectedPersonalHomeState?: Readonly<{
+    installed: boolean;
+    canonicalServerUrl: string | null;
+    dataPresent: boolean;
+  }>;
 }
 
 export interface RelayRuntimeStatusSnapshot {
@@ -80,6 +86,10 @@ export type RelayRuntimeKindDeps = Readonly<{
   checkHealth: (params: Readonly<{ baseUrl: string }>) => Promise<boolean>;
   installOrUpdate: (params: RelayRuntimeTaskParams) => Promise<Readonly<{ relayUrl: string; mode: 'user' | 'system' }>>;
   control: (params: RelayRuntimeTaskParams & Readonly<{ action: 'start' | 'stop' | 'restart' | 'uninstall' }>) => Promise<void>;
+  reconcilePersonalHomeRestore?: (
+    params: RelayRuntimeTaskParams,
+    context: Readonly<{ signal?: AbortSignal; progress(stepId: string, message?: string): void }>,
+  ) => Promise<void>;
 }>;
 
 export type PersonalHomeTaskBaseParams = Readonly<{
@@ -109,7 +119,7 @@ export type PersonalHomeBackupTaskInput = Readonly<{ outputPath?: string }>;
 export type PersonalHomeVerifyBackupTaskInput = Readonly<{ archivePath: string }>;
 export type PersonalHomeRestoreTaskInput =
   | Readonly<{ action?: 'restore'; archivePath: string; confirmOverwrite?: true; expectedHomeServerIdentityId?: string }>
-  | Readonly<{ action: 'recover' | 'finalize' }>;
+  | Readonly<{ action: 'recover' }>;
 export type PersonalHomeEraseTaskInput = Readonly<Record<never, never>>;
 export type PersonalHomeRelocationDestinationStageTaskInput = PersonalHomeRelocationDestinationStageInput;
 export type PersonalHomeRelocationDestinationStatusTaskInput = Readonly<{ operationId: string }>;
@@ -144,12 +154,12 @@ export type PersonalHomeSystemTaskParamsByKind = Readonly<{
  * supplies those once, while task callers provide only operation facts.
  */
 export type PersonalHomeSystemTaskOperations = Readonly<{
+  reconcileRestore(context: PersonalHomeTaskOperationContext): Promise<void>;
   inspect(context: PersonalHomeTaskOperationContext): Promise<SystemTaskJsonValue>;
   backup(input: PersonalHomeBackupTaskInput & PersonalHomeTaskOperationContext): Promise<SystemTaskJsonValue>;
   verifyBackup(input: PersonalHomeVerifyBackupTaskInput & PersonalHomeTaskOperationContext): Promise<SystemTaskJsonValue>;
-  restore(input: Exclude<PersonalHomeRestoreTaskInput, Readonly<{ action: 'recover' | 'finalize' }>> & PersonalHomeTaskOperationContext): Promise<SystemTaskJsonValue>;
+  restore(input: Exclude<PersonalHomeRestoreTaskInput, Readonly<{ action: 'recover' }>> & PersonalHomeTaskOperationContext): Promise<SystemTaskJsonValue>;
   recoverRestore(context: PersonalHomeTaskOperationContext): Promise<SystemTaskJsonValue>;
-  finalizeRestore(context: PersonalHomeTaskOperationContext): Promise<SystemTaskJsonValue>;
   erase(context: PersonalHomeTaskOperationContext): Promise<SystemTaskJsonValue>;
 }>;
 
@@ -231,6 +241,19 @@ export function createPersonalHomeSystemTaskOperations(params: Readonly<{
     expectedCanonicalServerUrl: context.requestedPurpose.canonicalServerUrl,
   });
   return Object.freeze({
+    reconcileRestore: async (context) => {
+      try {
+        const reconciliation = await params.operations.reconcileRestore(ownerContext(context));
+        if (reconciliation.outcome === 'recovery_required') {
+          throw new SystemTaskExecutionError(
+            'restore_recovery_required',
+            reconciliation.error ?? 'Personal Home restore requires recovery before the runtime operation can continue.',
+          );
+        }
+      } catch (error) {
+        translatePersonalHomeDomainError(error);
+      }
+    },
     inspect: async (context) => await result(params.operations.inspect(ownerContext(context))),
     backup: async (input) => await result(params.operations.backup({
         ...(input.outputPath === undefined ? {} : { outputPath: input.outputPath }),
@@ -252,7 +275,6 @@ export function createPersonalHomeSystemTaskOperations(params: Readonly<{
       }));
     },
     recoverRestore: async (context) => await result(params.operations.recoverRestore(ownerContext(context))),
-    finalizeRestore: async (context) => await result(params.operations.finalizeRestore(ownerContext(context))),
     erase: async (context) => {
       if (!context.confirm) throw new SystemTaskExecutionError('confirmation_required', 'Personal Home erase confirmation is unavailable.');
       return await result(params.operations.erase({ confirm: context.confirm, ...ownerContext(context) }));
@@ -276,13 +298,50 @@ export function createDeferredPersonalHomeSystemTaskOperations(
     return pending;
   };
   return Object.freeze({
+    reconcileRestore: async (context) => await (await operations(context.runtimeTarget)).reconcileRestore(context),
     inspect: async (context) => await (await operations(context.runtimeTarget)).inspect(context),
     backup: async (input) => await (await operations(input.runtimeTarget)).backup(input),
     verifyBackup: async (input) => await (await operations(input.runtimeTarget)).verifyBackup(input),
     restore: async (input) => await (await operations(input.runtimeTarget)).restore(input),
     recoverRestore: async (input) => await (await operations(input.runtimeTarget)).recoverRestore(input),
-    finalizeRestore: async (input) => await (await operations(input.runtimeTarget)).finalizeRestore(input),
     erase: async (input) => await (await operations(input.runtimeTarget)).erase(input),
+});
+}
+
+export function createPersonalHomeRestoreContactReconciler(params: Readonly<{
+  readStatus(runtime: RelayRuntimeTaskParams): Promise<RelayRuntimeStatusSnapshot>;
+  operations: PersonalHomeSystemTaskOperations;
+}>): NonNullable<RelayRuntimeKindDeps['reconcilePersonalHomeRestore']> {
+  return async (runtime, context) => {
+    if (runtime.target.kind !== 'local') return;
+    const snapshot = await params.readStatus(runtime);
+    if (snapshot.purpose?.kind !== 'personal-home') return;
+    // An absent runtime status may project the caller-requested purpose so install planning can
+    // use the Personal Home layout. That projection is not evidence of an existing restore
+    // contact. Retained Home data remains authoritative after a safe runtime uninstall.
+    if (!snapshot.installed && snapshot.dataPresent !== true) return;
+    await params.operations.reconcileRestore({
+      ...(context.signal ? { signal: context.signal } : {}),
+      progress: context.progress,
+      requestedPurpose: snapshot.purpose,
+      runtimeTarget: {
+        channel: runtime.channel ?? 'stable',
+        mode: runtime.mode ?? 'user',
+      },
+    });
+  };
+}
+
+async function reconcileRelayRuntimeContact(
+  deps: Pick<RelayRuntimeKindDeps, 'reconcilePersonalHomeRestore'>,
+  params: RelayRuntimeTaskParams,
+  context: Readonly<{ signal?: AbortSignal; emit(event: Readonly<{ type: 'progress'; stepId: string; message?: string }>): void }>,
+): Promise<void> {
+  await deps.reconcilePersonalHomeRestore?.(params, {
+    ...(context.signal ? { signal: context.signal } : {}),
+    progress(stepId, message) {
+      context.emit({ type: 'progress', stepId, ...(message ? { message } : {}) });
+    },
   });
 }
 
@@ -311,13 +370,11 @@ export function createPersonalHomeRestoreTaskKind(deps: PersonalHomeTaskKindDeps
     deps,
     [...PERSONAL_HOME_BASE_KEYS, 'action', 'archivePath', 'confirmOverwrite', 'expectedHomeServerIdentityId'],
     async (operations, value, context) => {
-      if (value.action === 'recover' || value.action === 'finalize') {
+      if (value.action === 'recover') {
         if (value.archivePath !== undefined || value.confirmOverwrite !== undefined || value.expectedHomeServerIdentityId !== undefined) {
-          throw new SystemTaskExecutionError('invalid_params', 'Restore recovery and finalization do not accept archive or overwrite fields.');
+          throw new SystemTaskExecutionError('invalid_params', 'Restore recovery does not accept archive or overwrite fields.');
         }
-        return value.action === 'recover'
-          ? await operations.recoverRestore(context)
-          : await operations.finalizeRestore(context);
+        return await operations.recoverRestore(context);
       }
       if (value.action !== undefined && value.action !== 'restore') {
         throw new SystemTaskExecutionError('invalid_params', 'Invalid restore action.');
@@ -527,10 +584,12 @@ function parsePositiveInteger(value: unknown, field: string): number {
   return value;
 }
 
-export function createRelayRuntimeStatusTaskKind(deps: Pick<RelayRuntimeKindDeps, 'readStatus' | 'checkHealth'>): InteractiveSystemTaskKind<RelayRuntimeStatusResult> {
+export function createRelayRuntimeStatusTaskKind(deps: Pick<RelayRuntimeKindDeps, 'readStatus' | 'checkHealth' | 'reconcilePersonalHomeRestore'>): InteractiveSystemTaskKind<RelayRuntimeStatusResult> {
   return {
     async run(ctx) {
       const parsed = parseRelayRuntimeTaskParams(ctx.params);
+
+      await reconcileRelayRuntimeContact(deps, parsed, ctx);
 
       ctx.emit({
         type: 'progress',
@@ -551,10 +610,12 @@ export function createRelayRuntimeStatusTaskKind(deps: Pick<RelayRuntimeKindDeps
   };
 }
 
-export function createRelayRuntimeInstallOrUpdateTaskKind(deps: Pick<RelayRuntimeKindDeps, 'installOrUpdate'>): InteractiveSystemTaskKind<Readonly<{ relayUrl: string; mode: 'user' | 'system' }>> {
+export function createRelayRuntimeInstallOrUpdateTaskKind(deps: Pick<RelayRuntimeKindDeps, 'installOrUpdate' | 'reconcilePersonalHomeRestore'>): InteractiveSystemTaskKind<Readonly<{ relayUrl: string; mode: 'user' | 'system' }>> {
   return {
     async run(ctx) {
       const parsed = parseRelayRuntimeTaskParams(ctx.params);
+
+      await reconcileRelayRuntimeContact(deps, parsed, ctx);
 
       ctx.emit({
         type: 'progress',
@@ -567,10 +628,12 @@ export function createRelayRuntimeInstallOrUpdateTaskKind(deps: Pick<RelayRuntim
   };
 }
 
-export function createRelayRuntimeStartTaskKind(deps: Pick<RelayRuntimeKindDeps, 'control' | 'readStatus' | 'checkHealth'>): InteractiveSystemTaskKind<RelayRuntimeStatusResult> {
+export function createRelayRuntimeStartTaskKind(deps: Pick<RelayRuntimeKindDeps, 'control' | 'readStatus' | 'checkHealth' | 'reconcilePersonalHomeRestore'>): InteractiveSystemTaskKind<RelayRuntimeStatusResult> {
   return {
     async run(ctx) {
       const parsed = parseRelayRuntimeTaskParams(ctx.params);
+
+      await reconcileRelayRuntimeContact(deps, parsed, ctx);
 
       ctx.emit({
         type: 'progress',
@@ -602,10 +665,11 @@ export function createRelayRuntimeStartTaskKind(deps: Pick<RelayRuntimeKindDeps,
   };
 }
 
-export function createRelayRuntimeRestartTaskKind(deps: Pick<RelayRuntimeKindDeps, 'control' | 'readStatus' | 'checkHealth'>): InteractiveSystemTaskKind<RelayRuntimeStatusResult> {
+export function createRelayRuntimeRestartTaskKind(deps: Pick<RelayRuntimeKindDeps, 'control' | 'readStatus' | 'checkHealth' | 'reconcilePersonalHomeRestore'>): InteractiveSystemTaskKind<RelayRuntimeStatusResult> {
   return {
     async run(ctx) {
       const parsed = parseRelayRuntimeTaskParams(ctx.params);
+      await reconcileRelayRuntimeContact(deps, parsed, ctx);
       ctx.emit({ type: 'progress', stepId: 'relay.restart', message: 'Restarting relay runtime' });
       await deps.control({ ...parsed, action: 'restart' });
       const snapshot = await deps.readStatus(parsed);
@@ -615,10 +679,12 @@ export function createRelayRuntimeRestartTaskKind(deps: Pick<RelayRuntimeKindDep
   };
 }
 
-export function createRelayRuntimeStopTaskKind(deps: Pick<RelayRuntimeKindDeps, 'control'>): InteractiveSystemTaskKind<Readonly<{ stopped: true }>> {
+export function createRelayRuntimeStopTaskKind(deps: Pick<RelayRuntimeKindDeps, 'control' | 'reconcilePersonalHomeRestore'>): InteractiveSystemTaskKind<Readonly<{ stopped: true }>> {
   return {
     async run(ctx) {
       const parsed = parseRelayRuntimeTaskParams(ctx.params);
+
+      await reconcileRelayRuntimeContact(deps, parsed, ctx);
 
       ctx.emit({
         type: 'progress',
@@ -638,10 +704,12 @@ export function createRelayRuntimeStopTaskKind(deps: Pick<RelayRuntimeKindDeps, 
   };
 }
 
-export function createRelayRuntimeUninstallTaskKind(deps: Pick<RelayRuntimeKindDeps, 'control'>): InteractiveSystemTaskKind<Readonly<{ uninstalled: true }>> {
+export function createRelayRuntimeUninstallTaskKind(deps: Pick<RelayRuntimeKindDeps, 'control' | 'reconcilePersonalHomeRestore'>): InteractiveSystemTaskKind<Readonly<{ uninstalled: true }>> {
   return {
     async run(ctx) {
       const parsed = parseRelayRuntimeTaskParams(ctx.params);
+
+      await reconcileRelayRuntimeContact(deps, parsed, ctx);
 
       ctx.emit({
         type: 'progress',
@@ -707,6 +775,7 @@ export function parseRelayRuntimeTaskParams(params: unknown): RelayRuntimeTaskPa
     ? value.selfHostRelayBinaryOverride
     : undefined;
   let purpose: ManagedRelayPurpose | undefined;
+  let expectedPersonalHomeState: RelayRuntimeTaskParams['expectedPersonalHomeState'];
   try {
     purpose = value.purpose === undefined
       ? undefined
@@ -722,6 +791,30 @@ export function parseRelayRuntimeTaskParams(params: unknown): RelayRuntimeTaskPa
           'Personal Home runtime does not support SSH targets.',
         );
       }
+    }
+    if (value.expectedPersonalHomeState !== undefined) {
+      if (purpose?.kind !== 'personal-home' || kind !== 'local') {
+        throw new SystemTaskExecutionError(
+          'invalid_params',
+          'Personal Home expected state requires a local Personal Home mutation.',
+        );
+      }
+      const expected = value.expectedPersonalHomeState;
+      if (!expected || typeof expected !== 'object' || Array.isArray(expected)) {
+        throw new SystemTaskExecutionError('invalid_params', 'Invalid Personal Home expected state.');
+      }
+      const record = expected as Record<string, unknown>;
+      if (typeof record.installed !== 'boolean' || typeof record.dataPresent !== 'boolean') {
+        throw new SystemTaskExecutionError('invalid_params', 'Invalid Personal Home expected state.');
+      }
+      const canonicalServerUrl = record.canonicalServerUrl === null
+        ? null
+        : createPersonalHomeRuntimeSpec({ canonicalServerUrl: String(record.canonicalServerUrl ?? '') }).canonicalServerUrl;
+      expectedPersonalHomeState = {
+        installed: record.installed,
+        canonicalServerUrl,
+        dataPresent: record.dataPresent,
+      };
     }
   } catch (error) {
     if (error instanceof SystemTaskExecutionError) throw error;
@@ -743,6 +836,7 @@ export function parseRelayRuntimeTaskParams(params: unknown): RelayRuntimeTaskPa
     ...(env ? { env } : {}),
     ...(selfHostRelayBinaryOverride ? { selfHostRelayBinaryOverride } : {}),
     ...(purpose ? { purpose } : {}),
+    ...(expectedPersonalHomeState ? { expectedPersonalHomeState } : {}),
   };
 }
 

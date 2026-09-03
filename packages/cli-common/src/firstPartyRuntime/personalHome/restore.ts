@@ -1,24 +1,33 @@
 import { randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
-import { access, cp, lstat, mkdir, open, readFile, readdir, rename, rm, stat, statfs, unlink, writeFile } from 'node:fs/promises';
+import { access, lstat, mkdir, open, readFile, readdir, rm, stat, statfs, unlink, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 
 import { extractVerifiedPersonalHomeArchiveSnapshot, PersonalHomeArchiveError, verifyPersonalHomeArchive, verifyPersonalHomeArchiveSnapshot, withPrivatePersonalHomeArchiveSnapshot } from './archive.js';
 import type { PersonalHomeBackupResult, PersonalHomeSqliteMaintenance } from './backup.js';
 import type { PersonalHomeRuntimeLayout } from './layout.js';
 import { withPersonalHomeOperationLock } from './lock.js';
-import { fingerprintMasterSecret } from './manifest.js';
+import { fingerprintMasterSecret, parsePersonalHomeBackupManifest } from './manifest.js';
 import { assertStablePersonalHomeSqliteSnapshot, assertPersonalHomeSqliteSidecarsStable } from './sqliteSnapshot.js';
 import {
   parsePersonalHomeRestorableConfigurationJsonV1,
   type PersonalHomeRestorableConfigurationV1,
 } from './configuration.js';
 import { createPersonalHomePathProtection } from './protection.js';
-import { replacePersonalHomeFileDurably } from './durableFile.js';
+import { removePathDurably, renamePersonalHomePathDurably, replacePersonalHomeFileDurably, syncPersonalHomeParentDirectory } from './durableFile.js';
+import { preparePersonalHomeRestorePromotionSources } from './restorePromotion.js';
 import type { PersonalHomeAuthenticatedReadiness } from './readiness.js';
 
 export class PersonalHomeRestoreError extends Error {
   constructor(public readonly code: 'destination_not_empty' | 'identity_mismatch' | 'schema_unsupported' | 'insufficient_space' | 'restore_failed' | 'recovery_required', message: string) { super(message); this.name = 'PersonalHomeRestoreError'; }
+}
+export class PersonalHomeRestoreActivationBlockedError extends Error {
+  readonly code = 'PERSONAL_HOME_RESTORE_ACTIVATION_BLOCKED';
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'PersonalHomeRestoreActivationBlockedError';
+  }
 }
 export type PersonalHomeRestoreResult = Readonly<{ outcome: 'restored' | 'rolled_back' | 'recovery_required'; manifest: Awaited<ReturnType<typeof verifyPersonalHomeArchive>>; recoveryArchive?: PersonalHomeBackupResult; rollbackPaths?: readonly string[]; error?: string; configurationArtifact: 'applied_by_owner' }>;
 export type PersonalHomeRestoreHooks = Readonly<{
@@ -50,7 +59,10 @@ export type PersonalHomeRestoreFinalizationResult = Readonly<{ outcome: 'none' |
 
 const journalPathFor = (layout: PersonalHomeRuntimeLayout): string => join(layout.dataDir, '.operations', 'restore-journal.json');
 const protectPersonalHomeRestorePath = createPersonalHomePathProtection();
-const exists = async (path: string): Promise<boolean> => lstat(path).then(() => true).catch(() => false);
+const exists = async (path: string): Promise<boolean> => lstat(path).then(() => true).catch((error: NodeJS.ErrnoException) => {
+  if (error.code === 'ENOENT') return false;
+  throw error;
+});
 export async function hasMeaningfulPersonalHomeData(layout: PersonalHomeRuntimeLayout): Promise<boolean> { for (const path of [layout.databasePath, layout.publicFilesDir, layout.privateFilesDir, layout.masterSecretPath]) if (await exists(path)) return true; return false; }
 function assertPlausiblePersonalHomeDataCounts(counts: Readonly<{ accountCount: number; sessionCount: number }>): void {
   if (!Number.isSafeInteger(counts.accountCount) || counts.accountCount < 1) {
@@ -63,19 +75,11 @@ function assertPlausiblePersonalHomeDataCounts(counts: Readonly<{ accountCount: 
 async function moveIfPresent(from: string, to: string): Promise<void> {
   if (!(await exists(from))) return;
   await mkdir(dirname(to), { recursive: true });
-  try {
-    await rename(from, to);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'EXDEV') throw error;
-    await rm(to, { recursive: true, force: true });
-    try {
-      await cp(from, to, { recursive: true, errorOnExist: true, force: false });
-      await rm(from, { recursive: true, force: true });
-    } catch (copyError) {
-      await rm(to, { recursive: true, force: true }).catch(() => undefined);
-      throw copyError;
-    }
-  }
+  await renamePersonalHomePathDurably(from, to);
+}
+async function unlinkDurably(path: string): Promise<void> {
+  await unlink(path);
+  await syncPersonalHomeParentDirectory(path);
 }
 function targetEntries(layout: PersonalHomeRuntimeLayout, stage: string, id: string): RestoreJournalEntry[] {
   return [
@@ -135,8 +139,9 @@ function parseJournal(layout: PersonalHomeRuntimeLayout, value: string): Restore
     if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) throw new PersonalHomeRestoreError('recovery_required', 'Personal Home restore journal entry is invalid.');
     const entry = candidate as Record<string, unknown>;
     const expected = expectedEntries[index]!;
+    const candidateSource = `${expected.target}.restore-candidate-${stageId}`;
     if (Object.keys(entry).sort().join(',') !== 'hadTarget,rollback,source,state,target'
-      || entry.target !== expected.target || entry.source !== expected.source || entry.rollback !== expected.rollback
+      || entry.target !== expected.target || (entry.source !== expected.source && entry.source !== candidateSource) || entry.rollback !== expected.rollback
       || typeof entry.hadTarget !== 'boolean' || typeof entry.state !== 'string' || !RESTORE_ENTRY_STATES.includes(entry.state as RestoreEntryState)) {
       throw new PersonalHomeRestoreError('recovery_required', 'Personal Home restore journal entry does not match the canonical layout.');
     }
@@ -179,7 +184,7 @@ async function assertJournalMutationPathsSafe(layout: PersonalHomeRuntimeLayout,
   const configurationPaths = journal.configurationRollbackArtifact
     ? [resolve(layout.configDir), journal.configurationRollbackArtifact]
     : [];
-  for (const path of [journal.stage, ...journal.entries.flatMap((entry) => [entry.target, entry.rollback]), ...configurationPaths]) {
+  for (const path of [journal.stage, ...journal.entries.flatMap((entry) => [entry.target, entry.source, entry.rollback]), ...configurationPaths]) {
     try {
       if ((await lstat(path)).isSymbolicLink()) throw new PersonalHomeRestoreError('recovery_required', 'Personal Home restore recovery path is a symbolic link.');
     } catch (error) {
@@ -187,8 +192,43 @@ async function assertJournalMutationPathsSafe(layout: PersonalHomeRuntimeLayout,
     }
   }
 }
+async function cleanupJournalPromotionSources(journal: RestoreJournal): Promise<void> {
+  for (const entry of journal.entries) {
+    if (entry.source.startsWith(`${entry.target}.restore-candidate-`)) await removePathDurably(entry.source);
+  }
+}
 const rollbackable = (journal: RestoreJournal): boolean => (journal.phase !== 'applying_configuration' && journal.phase !== 'activating') || typeof journal.configurationRollbackArtifact === 'string';
 export async function inspectPersonalHomeRestoreRecovery(layout: PersonalHomeRuntimeLayout): Promise<PersonalHomeRestoreRecoveryFacts> { const journal = await readJournal(layout); return journal ? { status: journal.phase === 'completed' ? 'finalization_available' : rollbackable(journal) ? 'rollback_available' : 'ambiguous', phase: journal.phase, affectedTargets: journal.entries.filter((entry) => entry.state !== 'untouched').map((entry) => entry.target) } : { status: 'none', affectedTargets: [] }; }
+/**
+ * Direct process-start admission for the canonical restore journal.
+ *
+ * Restore activation and a fully-applied rollback both intentionally restart
+ * the Home before removing the journal. Every other retained phase represents
+ * mixed, staged, or unproven writable state and must stay stopped until the
+ * restore owner resumes or recovers it.
+ */
+export async function assertPersonalHomeRestoreAllowsActivation(layout: PersonalHomeRuntimeLayout): Promise<void> {
+  let journal: RestoreJournal | null;
+  try {
+    journal = await readJournal(layout);
+  } catch (error) {
+    throw new PersonalHomeRestoreActivationBlockedError(
+      error instanceof Error
+        ? error.message
+        : 'Personal Home restore state is unreadable; recover the restore before starting it.',
+    );
+  }
+  if (!journal || journal.phase === 'activating' || journal.phase === 'completed') return;
+  if (journal.phase === 'rolling_back'
+    && journal.configurationRollbackArtifact === undefined
+    && journal.configurationRollbackState === undefined
+    && journal.entries.every((entry) => entry.state === 'untouched' || entry.state === 'rollback_applied')) {
+    return;
+  }
+  throw new PersonalHomeRestoreActivationBlockedError(
+    'This Personal Home has an interrupted restore. Recover the restore before starting it.',
+  );
+}
 async function rollbackFromJournal(layout: PersonalHomeRuntimeLayout, journal: RestoreJournal): Promise<void> {
   if (!rollbackable(journal)) throw new PersonalHomeRestoreError('recovery_required', 'Restore configuration or activation state is ambiguous.');
   journal.phase = 'rolling_back'; await writeJournal(journalPathFor(layout), journal);
@@ -208,9 +248,9 @@ async function rollbackFromJournal(layout: PersonalHomeRuntimeLayout, journal: R
     await writeJournal(journalPathFor(layout), journal);
     rollbackExists = await exists(entry.rollback); targetExists = await exists(entry.target);
     if (entry.hadTarget) {
-      if (rollbackExists) { if (targetExists) await rm(entry.target, { recursive: true, force: true }); await moveIfPresent(entry.rollback, entry.target); }
+      if (rollbackExists) { if (targetExists) await removePathDurably(entry.target); await moveIfPresent(entry.rollback, entry.target); }
       else throw new PersonalHomeRestoreError('recovery_required', `Previous Home target cannot be proven recoverable: ${entry.target}`);
-    } else if (targetExists) await rm(entry.target, { recursive: true, force: true });
+    } else if (targetExists) await removePathDurably(entry.target);
     entry.state = 'rollback_applied';
     await writeJournal(journalPathFor(layout), journal);
   }
@@ -244,7 +284,7 @@ async function rollbackConfigurationFromJournal(
     journal.phase = 'rolling_back';
     await writeJournal(journalPathFor(layout), journal);
   }
-  await rm(artifact, { force: true });
+  await removePathDurably(artifact);
   delete journal.configurationRollbackArtifact;
   delete journal.configurationRollbackState;
   journal.phase = 'rolling_back';
@@ -270,7 +310,9 @@ export async function recoverPersonalHomeRestoreWithLease(params: Readonly<{ lay
     await rollbackConfigurationFromJournal(params.layout, journal, params.recoverConfiguration);
     await rollbackFromJournal(params.layout, journal);
     if (journal.wasRunning) { await params.startHome(); restartedHome = true; if (!(await params.healthCheck())) throw new Error('Recovered Personal Home failed health verification'); }
-    await unlink(path); await rm(journal.stage, { recursive: true, force: true }).catch(() => undefined);
+    await cleanupJournalPromotionSources(journal);
+    await removePathDurably(journal.stage);
+    await unlinkDurably(path);
     return { outcome: 'rolled_back', restartedHome };
   } catch (error) { return { outcome: 'recovery_required', restartedHome, error: error instanceof Error ? error.message : String(error) }; }
 }
@@ -293,15 +335,106 @@ export async function finalizePersonalHomeRestoreWithLease(params: Readonly<{
     removedPaths.push(journal.configurationRollbackArtifact);
     for (const entry of journal.entries) {
       if (await exists(entry.rollback)) {
-        await rm(entry.rollback, { recursive: true, force: true });
+        await removePathDurably(entry.rollback);
         removedPaths.push(entry.rollback);
       }
     }
-    await rm(journal.stage, { recursive: true, force: true }).catch(() => undefined);
-    await unlink(path);
+    await cleanupJournalPromotionSources(journal);
+    await removePathDurably(journal.stage);
+    await unlinkDurably(path);
     return { outcome: 'finalized', removedPaths };
   } catch (error) {
     return { outcome: 'recovery_required', removedPaths: [], error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/**
+ * Reconciles restore state at the existing operations lease boundary. `activating` is durable only
+ * after the staged/promoted database-count comparison, so a restarted owner can re-derive every
+ * remaining commit fact from the canonical promoted layout plus the server-owned live readiness
+ * receipt. No second crash-state store or caller-provided path is needed.
+ */
+export async function reconcilePersonalHomeRestoreWithLease(params: Readonly<{
+  layout: PersonalHomeRuntimeLayout;
+  operationLeaseHeld: true;
+  isHomeRunning(): Promise<boolean>;
+  stopHome(): Promise<void>;
+  healthCheck(): Promise<boolean>;
+  readIdentity(): Promise<Readonly<{ homeServerIdentityId: string }>>;
+  readDataCountsFromDatabase(databasePath: string): Promise<Readonly<{ accountCount: number; sessionCount: number }>>;
+  attestActivatedHome(): Promise<PersonalHomeAuthenticatedReadiness>;
+  finalizeConfiguration(rollbackArtifact: string): Promise<void>;
+}>): Promise<PersonalHomeRestoreFinalizationResult> {
+  if (!(await journalExists(params.layout))) return { outcome: 'none', removedPaths: [] };
+
+  let journal: RestoreJournal;
+  try {
+    const parsed = await readJournal(params.layout);
+    if (!parsed) throw new PersonalHomeRestoreError('recovery_required', 'Personal Home restore journal disappeared during reconciliation.');
+    journal = parsed;
+  } catch (error) {
+    let stopError: unknown;
+    await stopHomeBeforeRollback(params).catch((failure) => { stopError = failure; });
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      outcome: 'recovery_required',
+      removedPaths: [],
+      error: stopError
+        ? `${message} Personal Home could not be proven stopped: ${stopError instanceof Error ? stopError.message : String(stopError)}`
+        : message,
+    };
+  }
+
+  if (journal.phase === 'completed') {
+    return finalizePersonalHomeRestoreWithLease(params);
+  }
+
+  if (journal.phase !== 'activating') {
+    try {
+      await stopHomeBeforeRollback(params);
+    } catch (error) {
+      return { outcome: 'recovery_required', removedPaths: [], error: error instanceof Error ? error.message : String(error) };
+    }
+    return {
+      outcome: 'recovery_required',
+      removedPaths: [],
+      error: 'Interrupted Personal Home restore requires explicit recovery before another operation can continue.',
+    };
+  }
+
+  try {
+    await assertJournalMutationPathsSafe(params.layout, journal);
+    if (!(await params.isHomeRunning())) throw new Error('Interrupted restored Personal Home is not running.');
+    if (!(await params.healthCheck())) throw new Error('Interrupted restored Personal Home failed health verification.');
+    const manifest = parsePersonalHomeBackupManifest(JSON.parse(await readFile(join(journal.stage, 'manifest.json'), 'utf8')) as unknown);
+    const [identity, counts, readiness] = await Promise.all([
+      params.readIdentity(),
+      params.readDataCountsFromDatabase(params.layout.databasePath),
+      params.attestActivatedHome(),
+    ]);
+    assertPlausiblePersonalHomeDataCounts(counts);
+    if (identity.homeServerIdentityId !== manifest.homeServerIdentityId
+      || readiness.authenticated !== true
+      || readiness.homeServerIdentityId !== manifest.homeServerIdentityId
+      || readiness.accountCount !== counts.accountCount
+      || readiness.sessionCount !== counts.sessionCount) {
+      throw new Error('Interrupted restored Personal Home identity, authentication, or promoted data counts do not match.');
+    }
+    await assertRestoredPersonalHomeAllowlistedFilesReadable(params.layout, manifest);
+    journal.phase = 'completed';
+    await writeJournal(journalPathFor(params.layout), journal);
+    return finalizePersonalHomeRestoreWithLease(params);
+  } catch (error) {
+    let stopError: unknown;
+    await stopHomeBeforeRollback(params).catch((failure) => { stopError = failure; });
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      outcome: 'recovery_required',
+      removedPaths: [],
+      error: stopError
+        ? `${message} Personal Home could not be proven stopped: ${stopError instanceof Error ? stopError.message : String(stopError)}`
+        : message,
+    };
   }
 }
 
@@ -320,7 +453,7 @@ async function restorePersonalHomeBackupFromSnapshot(params: Readonly<{ layout: 
   const stageCapacity = await readCapacity(dirname(params.layout.dataDir));
   const stagedBytes = manifest.entries.reduce((total, entry) => total + entry.size, 0);
   if (stageCapacity.availableBytes < stagedBytes) throw new PersonalHomeRestoreError('insufficient_space', 'Insufficient free space for Personal Home restore staging');
-  const id = randomUUID(); const stage = `${params.layout.dataDir}.restore-stage-${process.pid}-${id}`; let retainStage = false; await mkdir(stage, { recursive: true });
+  const id = randomUUID(); const stage = `${params.layout.dataDir}.restore-stage-${process.pid}-${id}`; let retainStage = false; let promotionCandidatePaths: readonly string[] = []; await mkdir(stage, { recursive: true });
   try {
     await protectPersonalHomeRestorePath(stage, 'directory');
     try {
@@ -376,7 +509,20 @@ async function restorePersonalHomeBackupFromSnapshot(params: Readonly<{ layout: 
       if ((!params.isHomeRunning || await params.isHomeRunning()) && params.stopHome) await params.stopHome();
       if (params.isHomeRunning && await params.isHomeRunning()) throw new PersonalHomeRestoreError('restore_failed', 'Personal Home did not stop; restore was not promoted.');
       if (destinationHasData && await exists(params.layout.databasePath)) { const active = await params.sqliteMaintenance(params.layout.databasePath); try { await assertStablePersonalHomeSqliteSnapshot({ databasePath: params.layout.databasePath, ...active, checkSidecars: false }); } finally { await active.close(); } await assertPersonalHomeSqliteSidecarsStable(params.layout.databasePath); }
-      journal = { version: 2, phase: 'prepared', stage, wasRunning, entries: targetEntries(params.layout, stage, id) }; for (const entry of journal.entries) entry.hadTarget = await exists(entry.target); await writeJournal(journalPath, journal); journalPersisted = true;
+      const promotionPreparation = await preparePersonalHomeRestorePromotionSources({
+        entries: targetEntries(params.layout, stage, id),
+        operationId: id,
+        stageDeviceId: stageCapacity.deviceId,
+        readFilesystemCapacity: readCapacity,
+        beforeMaterialize: async (entries) => {
+          journal = { version: 2, phase: 'prepared', stage, wasRunning, entries: entries.map((entry) => ({ ...entry, rollback: `${entry.target}.restore-rollback-${id}`, hadTarget: false, state: 'untouched' })) };
+          for (const entry of journal.entries) entry.hadTarget = await exists(entry.target);
+          await writeJournal(journalPath, journal);
+          journalPersisted = true;
+        },
+      });
+      promotionCandidatePaths = promotionPreparation.candidatePaths;
+      if (!journal) throw new PersonalHomeRestoreError('restore_failed', 'Personal Home restore promotion journal was not prepared.');
       for (const entry of journal.entries) if (entry.hadTarget) { journal.phase = 'preserving'; entry.state = 'preserving'; await writeJournal(journalPath, journal); await moveIfPresent(entry.target, entry.rollback); entry.state = 'preserved'; await writeJournal(journalPath, journal); }
       journal.phase = 'promoting'; await writeJournal(journalPath, journal);
       for (const entry of journal.entries) if (await exists(entry.source)) { entry.state = 'promoting'; await writeJournal(journalPath, journal); await moveIfPresent(entry.source, entry.target); entry.state = 'promoted'; await writeJournal(journalPath, journal); }
@@ -403,7 +549,7 @@ async function restorePersonalHomeBackupFromSnapshot(params: Readonly<{ layout: 
           || readiness.sessionCount < 0
         ) throw new Error('Personal Home authenticated readiness attestation failed');
       }
-      await assertRestoredAllowlistedFilesReadable(params.layout, manifest);
+      await assertRestoredPersonalHomeAllowlistedFilesReadable(params.layout, manifest);
       journal.phase = 'completed'; await writeJournal(journalPath, journal);
       return { outcome: 'restored', manifest, ...(recoveryArchive ? { recoveryArchive } : {}), rollbackPaths: journal.entries.filter((entry) => entry.hadTarget).map((entry) => entry.rollback), configurationArtifact: 'applied_by_owner' };
     } catch (error) {
@@ -422,11 +568,16 @@ async function restorePersonalHomeBackupFromSnapshot(params: Readonly<{ layout: 
       if (!failed) { persistedJournal.phase = 'rolling_back'; await writeJournal(journalPath, persistedJournal).catch(() => { failed = true; }); }
       if (!failed) await rollbackFromJournal(params.layout, persistedJournal).catch(() => { failed = true; });
       if (!failed && wasRunning && params.startHome) { await params.startHome().catch(() => { failed = true; }); if (!failed && params.healthCheck && !(await params.healthCheck())) failed = true; }
-      if (!failed) await unlink(journalPath).catch(() => { failed = true; });
+      if (!failed) await unlinkDurably(journalPath).catch(() => { failed = true; });
       retainStage = failed;
       return { outcome: failed ? 'recovery_required' : 'rolled_back', manifest, ...(recoveryArchive ? { recoveryArchive } : {}), rollbackPaths: persistedJournal.entries.filter((entry) => entry.hadTarget).map((entry) => entry.rollback), error: error instanceof Error ? error.message : String(error), configurationArtifact: 'applied_by_owner' };
     }
-  } finally { if (!retainStage) await rm(stage, { recursive: true, force: true }).catch(() => undefined); }
+  } finally {
+    if (!retainStage) {
+      await rm(stage, { recursive: true, force: true }).catch(() => undefined);
+      await Promise.all(promotionCandidatePaths.map(async (path) => rm(path, { recursive: true, force: true }).catch(() => undefined)));
+    }
+  }
 }
 
 type FilesystemCapacity = Readonly<{ deviceId: string; availableBytes: number; availableEntries?: number }>;
@@ -489,7 +640,7 @@ function restoredPath(layout: PersonalHomeRuntimeLayout, archivePath: string): s
   if (archivePath.startsWith('files/private/')) return join(layout.privateFilesDir, relative('files/private', archivePath));
   throw new PersonalHomeRestoreError('restore_failed', `Unsupported restored path: ${archivePath}`);
 }
-async function assertRestoredAllowlistedFilesReadable(layout: PersonalHomeRuntimeLayout, manifest: PersonalHomeRestoreResult['manifest']): Promise<void> {
+export async function assertRestoredPersonalHomeAllowlistedFilesReadable(layout: PersonalHomeRuntimeLayout, manifest: PersonalHomeRestoreResult['manifest']): Promise<void> {
   for (const entry of manifest.entries) {
     if (entry.path === 'configuration/home.env.json') continue;
     const path = restoredPath(layout, entry.path);

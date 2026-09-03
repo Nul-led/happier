@@ -54,6 +54,14 @@ export const CURRENT_SOURCE_SESSION_AGENT_UPDATED_REASONING_TEXT = 'Preparing th
 export const CURRENT_SOURCE_SESSION_AGENT_PACKED_REASONING_TEXT = 'Preparing the packed deterministic check.';
 export const CURRENT_SOURCE_SESSION_AGENT_CONFIRMATION_TITLE = 'Run deterministic check?';
 const CURRENT_SOURCE_SESSION_AGENT_PACKED_VERSION = '0.2.0';
+/**
+ * The reasoning-delta channel is a closed union in the public runtime-event
+ * contract, so replacing it with an unknown member is a deterministic
+ * compile-time refusal that survives the version and reasoning-text rewrites
+ * above. Anchoring on real example bytes keeps a drifted example loud.
+ */
+const CURRENT_SOURCE_SESSION_AGENT_FAILING_UPDATE_ANCHOR = "channel: 'reasoning',";
+const CURRENT_SOURCE_SESSION_AGENT_FAILING_UPDATE_REPLACEMENT = "channel: 'deterministic-failing-update',";
 const CURRENT_SOURCE_NATIVE_PUBLIC_FIXTURE_ROOT = join(
   REPOSITORY_ROOT,
   'packages/tests/fixtures/plugin-platform/current-source-native-public',
@@ -278,6 +286,14 @@ export type CurrentManagedStackSessionAgentFixture = Readonly<{
   reattach(context: CurrentManagedStackPluginUiContext): void;
   generation(): Promise<CurrentManagedStackSourcePluginGeneration>;
   applySourceUpdate(): Promise<CurrentManagedStackSourcePluginGeneration>;
+  /**
+   * Leaves the disposable source broken after proving the canonical author
+   * typecheck and build both refuse it. Returns the generation still applied by
+   * the daemon, which the caller asserts is the untouched incumbent.
+   */
+  applyFailingSourceUpdate(): Promise<CurrentManagedStackSourcePluginGeneration>;
+  /** Restores the last good source, rebuilds, and reloads onto a fresh generation. */
+  recoverFailingSourceUpdate(): Promise<CurrentManagedStackSourcePluginGeneration>;
   installPackedDiscriminator(): Promise<CurrentManagedStackSourcePluginGeneration>;
   disable(): Promise<CurrentManagedStackSourcePluginGeneration>;
   enable(): Promise<CurrentManagedStackSourcePluginGeneration>;
@@ -1710,7 +1726,7 @@ export function buildCurrentManagedStackSessionAgentAuthorArgs(params: Readonly<
       params.archivePath,
     ]);
   }
-  return Object.freeze(['plugins', 'dev', params.command, params.sourceRoot]);
+  return Object.freeze(['plugins', 'dev', params.command, params.sourceRoot, '--json']);
 }
 
 /**
@@ -1775,6 +1791,24 @@ export function buildCurrentManagedStackSessionAgentArchiveInstallArgs(archivePa
     'archive',
     '--json',
   ]);
+}
+
+/** The documented development reload command an external author runs after an edit. */
+export function buildCurrentManagedStackSessionAgentReloadArgs(pluginId: string): readonly string[] {
+  return Object.freeze(['plugins', 'reload', pluginId, '--json']);
+}
+
+/** The canonical plugin enable/disable commands — the Settings toggle's CLI twin. */
+export function buildCurrentManagedStackSessionAgentPluginStateArgs(
+  kind: 'enable' | 'disable',
+  pluginId: string,
+): readonly string[] {
+  return Object.freeze(['plugins', kind, pluginId, '--json']);
+}
+
+/** The canonical uninstall command; plugin data is intentionally preserved. */
+export function buildCurrentManagedStackSessionAgentUninstallArgs(pluginId: string): readonly string[] {
+  return Object.freeze(['plugins', 'uninstall', pluginId, '--json']);
 }
 
 async function installCurrentManagedStackSessionAgentThroughCli(params: Readonly<{
@@ -1856,6 +1890,54 @@ async function installCurrentManagedStackSessionAgentArchiveThroughCli(params: R
   }
 }
 
+/**
+ * Runs one canonical plugins CLI lifecycle command against the selected
+ * Stack's daemon home. The loaded journey must prove the documented public
+ * author contract, so reload/enable/disable/uninstall ride exactly the
+ * command an external author types — never a private daemon-control shortcut.
+ * A non-committed JSON envelope (review required, refused, expired) fails the
+ * row through its typed error code instead of being retried out-of-band.
+ */
+async function runCurrentManagedStackSessionAgentCliLifecycleCommand(params: Readonly<{
+  context: CurrentManagedStackPluginUiContext;
+  args: readonly string[];
+  expectedKind: string;
+  expectedPluginId?: string;
+}>): Promise<void> {
+  let stdout: string;
+  try {
+    stdout = (await execFileAsync(
+      process.execPath,
+      [join(REPOSITORY_ROOT, 'apps/cli/bin/happier.mjs'), ...params.args],
+      {
+        cwd: REPOSITORY_ROOT,
+        env: { ...process.env, HAPPIER_HOME_DIR: params.context.cliHome },
+        maxBuffer: 32 * 1024 * 1024,
+        timeout: 300_000,
+      },
+    )).stdout;
+  } catch (error) {
+    const processError = error as Error & { stdout?: string | Buffer };
+    stdout = typeof processError.stdout === 'string'
+      ? processError.stdout
+      : Buffer.isBuffer(processError.stdout)
+        ? processError.stdout.toString('utf8')
+        : '';
+    if (!stdout.trim()) throw error;
+  }
+  const response = asRecord(JSON.parse(stdout.trim()));
+  const data = asRecord(response?.data);
+  const errorCode = asRecord(response?.error)?.code;
+  if (response?.ok !== true || response.kind !== params.expectedKind) {
+    throw new Error(
+      `plugin_ui_current_stack_session_agent_cli_change_refused:${params.expectedKind}:${String(errorCode ?? response?.kind ?? 'no_envelope')}`,
+    );
+  }
+  if (params.expectedPluginId && data?.pluginId !== params.expectedPluginId) {
+    throw new Error(`plugin_ui_current_stack_session_agent_cli_change_identity_mismatch:${params.expectedKind}`);
+  }
+}
+
 function nextSessionAgentSourceVersion(previousIndex: number): string {
   return `0.1.${10 + previousIndex}`;
 }
@@ -1885,6 +1967,73 @@ async function rewriteSessionAgentSourceVersion(params: Readonly<{
     throw new Error('plugin_ui_current_stack_session_agent_behavior_update_anchor_missing');
   }
   await writeFile(agentPath, agentUpdated, 'utf8');
+}
+
+/**
+ * Derives the deterministic failing external-author edit from real example
+ * bytes. Exported so the owner-level test can prove the edit stays anchored to
+ * the maintained example instead of silently degrading into a source rewrite
+ * that still compiles.
+ */
+export function buildCurrentManagedStackSessionAgentFailingSourceUpdate(source: string): string {
+  const updated = source.replace(
+    CURRENT_SOURCE_SESSION_AGENT_FAILING_UPDATE_ANCHOR,
+    CURRENT_SOURCE_SESSION_AGENT_FAILING_UPDATE_REPLACEMENT,
+  );
+  if (updated === source) {
+    throw new Error('plugin_ui_current_stack_session_agent_failing_update_anchor_missing');
+  }
+  return updated;
+}
+
+/**
+ * Runs a managed author command that must refuse the current source. A command
+ * that succeeds is a coverage failure, not a passing journey: it would mean the
+ * failing edit never reached the author toolchain.
+ */
+export async function requireCurrentManagedStackSessionAgentAuthorCommandRefusal(params: Readonly<{
+  command: 'typecheck' | 'build';
+  sourceRoot: string;
+  runAuthorCommand?: typeof runCurrentManagedStackSessionAgentAuthorCommand;
+}>): Promise<void> {
+  try {
+    await (params.runAuthorCommand ?? runCurrentManagedStackSessionAgentAuthorCommand)(params);
+  } catch (error) {
+    const processError = error as Error & { stdout?: string | Buffer };
+    const stdout = typeof processError.stdout === 'string'
+      ? processError.stdout
+      : Buffer.isBuffer(processError.stdout)
+        ? processError.stdout.toString('utf8')
+        : '';
+    try {
+      const response = asRecord(JSON.parse(stdout.trim()));
+      const failure = asRecord(response?.error);
+      const diagnostics = Array.isArray(failure?.diagnostics)
+        ? failure.diagnostics.map(asRecord)
+        : [];
+      const expectedSourceFailure = diagnostics.some((diagnostic) => {
+        const source = asRecord(diagnostic?.source);
+        return diagnostic?.code === 'plugin_author_tool_failed'
+          && typeof source?.file === 'string'
+          && source.file.replaceAll('\\', '/') === 'src/agent/deterministicSessionAgent.ts';
+      });
+      if (
+        response?.ok === false
+        && response.kind === `plugins_dev_${params.command}`
+        && failure?.code === 'plugin_author_failed'
+        && expectedSourceFailure
+      ) {
+        return;
+      }
+    } catch {
+      // Missing or malformed JSON means the managed author command itself did
+      // not establish the expected source-level refusal. Preserve that failure.
+    }
+    throw error;
+  }
+  throw new Error(
+    `plugin_ui_current_stack_session_agent_failing_update_${params.command}_unexpectedly_passed`,
+  );
 }
 
 async function rewriteSessionAgentPackedDiscriminator(params: Readonly<{
@@ -2033,7 +2182,9 @@ export function buildCurrentManagedStackSessionAgentSelectors(): CurrentManagedS
  * Owns one reversible current-source Session Agent row built from the
  * canonical deterministic public example. The example's own managed author
  * commands prepare dependencies and run typecheck/test/build/pack;
- * installation uses the canonical dev-and-trust daemon change path. Every row
+ * installation and every later lifecycle mutation — reload, disable, enable,
+ * uninstall — ride the documented public plugins CLI commands an external
+ * author runs, verified afterward through the daemon catalog seam. Every row
  * starts from the pristine example source and cleanup retires the fixture even
  * after a failed client flow. One archive-only reasoning sentinel lets the
  * browser row prove a deterministic Session turn actually used packed bytes.
@@ -2057,6 +2208,8 @@ export async function prepareCurrentManagedStackSessionAgentFixture(params: Read
   let context = params.context;
   let installed = false;
   let sourceUpdateOrdinal = 0;
+  /** Retained bytes of the last building source while a failing edit is staged. */
+  let lastGoodAgentSource: string | null = null;
   const packOutputRoot = await mkdtemp(join(tmpdir(), 'happier-current-source-session-agent-pack-'));
   const packSourceRoot = join(packOutputRoot, 'source');
   const packArchivePath = join(packOutputRoot, 'session-agent.tgz');
@@ -2077,11 +2230,11 @@ export async function prepareCurrentManagedStackSessionAgentFixture(params: Read
   };
   const uninstallOnce = async (): Promise<void> => {
     try {
-      await uninstallTrustedLocalPluginFixture({
-        daemonPort: context.daemon.port,
-        controlToken: context.daemon.controlToken,
-        pluginId,
-        postJson: params.postJson,
+      await runCurrentManagedStackSessionAgentCliLifecycleCommand({
+        context,
+        args: buildCurrentManagedStackSessionAgentUninstallArgs(pluginId),
+        expectedKind: 'plugins_uninstall',
+        expectedPluginId: pluginId,
       });
     } catch (error) {
       await assertCurrentManagedStackSourcePluginAbsent({
@@ -2153,15 +2306,56 @@ export async function prepareCurrentManagedStackSessionAgentFixture(params: Read
           version: nextSessionAgentSourceVersion(sourceUpdateOrdinal),
         });
         await runCurrentManagedStackSessionAgentAuthorCommand({ command: 'build', sourceRoot });
-        await reloadTrustedLocalPluginFixture({
-          daemonPort: context.daemon.port,
-          controlToken: context.daemon.controlToken,
-          pluginRoot: sourceRoot,
-          pluginId,
-          changedPaths: ownsSourceRoot
-            ? ['src/index.ts', 'src/agent/deterministicSessionAgent.ts', 'dist']
-            : ['index.ts', 'agent/deterministicSessionAgent.ts', 'dist'],
-          postJson: params.postJson,
+        // The documented author reload: the CLI re-inspects the source root
+        // and submits the development change through the canonical owner, so
+        // the loaded row proves `happier plugins reload --json` end to end.
+        await runCurrentManagedStackSessionAgentCliLifecycleCommand({
+          context,
+          args: buildCurrentManagedStackSessionAgentReloadArgs(pluginId),
+          expectedKind: 'plugins_reload',
+          expectedPluginId: pluginId,
+        });
+        return await generation();
+      },
+      applyFailingSourceUpdate: async () => {
+        if (!ownsSourceRoot) {
+          throw new Error('plugin_ui_current_stack_session_agent_source_update_rejected_for_caller_root');
+        }
+        if (!installed) {
+          throw new Error('plugin_ui_current_stack_session_agent_source_update_requires_install');
+        }
+        const sourceDirectory = await resolveCurrentManagedStackSessionAgentSourceDirectory(sourceRoot);
+        const agentPath = join(sourceDirectory, 'agent', 'deterministicSessionAgent.ts');
+        lastGoodAgentSource = await readFile(agentPath, 'utf8');
+        await writeFile(
+          agentPath,
+          buildCurrentManagedStackSessionAgentFailingSourceUpdate(lastGoodAgentSource),
+          'utf8',
+        );
+        // The canonical author toolchain, not the harness, must refuse the
+        // broken edit. No daemon change is requested, so the installed
+        // generation below is the untouched incumbent.
+        await requireCurrentManagedStackSessionAgentAuthorCommandRefusal({ command: 'typecheck', sourceRoot });
+        await requireCurrentManagedStackSessionAgentAuthorCommandRefusal({ command: 'build', sourceRoot });
+        return await generation();
+      },
+      recoverFailingSourceUpdate: async () => {
+        if (lastGoodAgentSource === null) {
+          throw new Error('plugin_ui_current_stack_session_agent_failing_update_not_applied');
+        }
+        const sourceDirectory = await resolveCurrentManagedStackSessionAgentSourceDirectory(sourceRoot);
+        await writeFile(
+          join(sourceDirectory, 'agent', 'deterministicSessionAgent.ts'),
+          lastGoodAgentSource,
+          'utf8',
+        );
+        lastGoodAgentSource = null;
+        await runCurrentManagedStackSessionAgentAuthorCommand({ command: 'build', sourceRoot });
+        await runCurrentManagedStackSessionAgentCliLifecycleCommand({
+          context,
+          args: buildCurrentManagedStackSessionAgentReloadArgs(pluginId),
+          expectedKind: 'plugins_reload',
+          expectedPluginId: pluginId,
         });
         return await generation();
       },
@@ -2174,11 +2368,21 @@ export async function prepareCurrentManagedStackSessionAgentFixture(params: Read
         return await generation();
       },
       disable: async () => {
-        await requestCurrentManagedStackPluginState({ ...params, context, pluginId, kind: 'disable' });
+        await runCurrentManagedStackSessionAgentCliLifecycleCommand({
+          context,
+          args: buildCurrentManagedStackSessionAgentPluginStateArgs('disable', pluginId),
+          expectedKind: 'plugins_disable',
+          expectedPluginId: pluginId,
+        });
         return await generation();
       },
       enable: async () => {
-        await requestCurrentManagedStackPluginState({ ...params, context, pluginId, kind: 'enable' });
+        await runCurrentManagedStackSessionAgentCliLifecycleCommand({
+          context,
+          args: buildCurrentManagedStackSessionAgentPluginStateArgs('enable', pluginId),
+          expectedKind: 'plugins_enable',
+          expectedPluginId: pluginId,
+        });
         return await generation();
       },
       reinstall: async () => {

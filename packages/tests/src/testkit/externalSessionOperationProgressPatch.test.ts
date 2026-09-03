@@ -27,6 +27,7 @@ function recordedSessionPatch(body: unknown): RecordedHttpProxyRequest {
       truncated: false,
       complete: true,
     },
+    responseBody: null,
   };
 }
 

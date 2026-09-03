@@ -247,7 +247,15 @@ export function createRemoteSshManageHostTaskKind(
             mode: runtimeMode,
             args: ['home', 'erase', '--json', '--channel', runtimeChannel, '--mode', runtimeMode, '--confirmation-token', confirmationToken],
           });
-          if (!Array.isArray(erased.removedPaths) || erased.stoppedRunningHome !== true && erased.stoppedRunningHome !== false) {
+          const eraseOutcome = erased.outcome === undefined ? 'completed' : erased.outcome;
+          const partialFactsValid = eraseOutcome !== 'partial'
+            || Array.isArray(erased.remainingOwnedPaths) && typeof erased.error === 'string';
+          if (
+            (eraseOutcome !== 'completed' && eraseOutcome !== 'partial')
+            || !Array.isArray(erased.removedPaths)
+            || !partialFactsValid
+            || erased.stoppedRunningHome !== true && erased.stoppedRunningHome !== false
+          ) {
             throw new SystemTaskExecutionError('invalid_cli_response', 'Remote Personal Home erase did not return confirmed final facts.');
           }
           return { action: parsed.action, personalHome: erased } satisfies SystemTaskJsonObject;

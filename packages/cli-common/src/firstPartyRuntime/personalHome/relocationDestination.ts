@@ -14,6 +14,7 @@ import { replacePersonalHomeFileDurably } from './durableFile.js';
 import { withPersonalHomeOperationLock } from './lock.js';
 import { createPersonalHomePathProtection } from './protection.js';
 import type { PersonalHomeAuthenticatedReadiness } from './readiness.js';
+import { cleanupPersonalHomeRelocationUpload, hasPersonalHomeRelocationUploadReservation } from './relocationTransfer.js';
 
 export type PersonalHomeRelocationDestinationStatus =
   | 'absent'
@@ -40,8 +41,16 @@ export type PersonalHomeRelocationDestinationFacts = Readonly<{
   accountCount?: number;
   sessionCount?: number;
   failureCode?: string;
-  /** Source-side transfer staging succeeded, but its temporary remote upload
-   * directory could not be removed. Destination authority remains valid. */
+  /** The destination-side transfer upload reservation could not be removed
+   * after stage or abort. Destination authority remains valid. */
+  transferCleanupNeedsAttention?: true;
+}>;
+
+/** A destination holding no operation state. Abort also returns this shape when
+ * the only remaining material was an exact upload reservation that it removed. */
+export type PersonalHomeRelocationDestinationAbsence = Readonly<{
+  operationId: string;
+  status: 'absent';
   transferCleanupNeedsAttention?: true;
 }>;
 
@@ -61,10 +70,50 @@ export type PersonalHomeRelocationDestinationCommitInput = Readonly<{
 
 export type PersonalHomeRelocationDestinationOwner = Readonly<{
   stage(input: PersonalHomeRelocationDestinationStageInput): Promise<PersonalHomeRelocationDestinationFacts>;
-  status(operationId: string): Promise<PersonalHomeRelocationDestinationFacts | Readonly<{ operationId: string; status: 'absent' }>>;
+  status(operationId: string): Promise<PersonalHomeRelocationDestinationFacts | PersonalHomeRelocationDestinationAbsence>;
   commit(input: PersonalHomeRelocationDestinationCommitInput): Promise<PersonalHomeRelocationDestinationFacts>;
-  abort(operationId: string): Promise<PersonalHomeRelocationDestinationFacts>;
+  abort(operationId: string): Promise<PersonalHomeRelocationDestinationFacts | PersonalHomeRelocationDestinationAbsence>;
 }>;
+
+export function resolvePersonalHomeRelocationDestinationEndpoints(
+  destination: PersonalHomeRelocationDestinationFacts,
+): HomeConnectionDescriptorV1['endpoints'] {
+  if (!destination.canonicalServerUrl) return [];
+  return destination.endpoint
+    ? [{ kind: 'iroh', ...destination.endpoint }]
+    : [{ kind: 'https', url: destination.canonicalServerUrl }];
+}
+
+/**
+ * Durable proof that the destination bytes are this relocation's own candidate:
+ * the canonical restore completed and its Home identity, authentication and
+ * promoted Account/Session counts were verified against the reserved bundle.
+ *
+ * Anything weaker — a `receiving` marker, or a `recovery_required` marker whose
+ * stage never produced verified facts — may be untouched pre-existing Home data
+ * that this relocation never owned, and must never be erased.
+ */
+export function personalHomeRelocationDestinationOwnsCandidate(
+  facts: PersonalHomeRelocationDestinationFacts,
+): boolean {
+  const { accountCount, sessionCount } = facts;
+  return facts.authenticated === true
+    && facts.homeServerIdentityId === facts.expectedHomeServerIdentityId
+    && typeof accountCount === 'number' && Number.isSafeInteger(accountCount) && accountCount >= 1
+    && typeof sessionCount === 'number' && Number.isSafeInteger(sessionCount) && sessionCount >= 0;
+}
+
+export function personalHomeRelocationDescriptorMatchesDestination(
+  descriptor: HomeConnectionDescriptorV1 | null,
+  destination: PersonalHomeRelocationDestinationFacts,
+): boolean {
+  if (!descriptor || !destination.homeServerIdentityId || !destination.canonicalServerUrl) return false;
+  const revisionFloor = destination.minimumOuterRevisionExclusive ?? destination.sourceDescriptorRevision;
+  return descriptor.homeServerIdentityId === destination.homeServerIdentityId
+    && descriptor.canonicalServerUrl === destination.canonicalServerUrl
+    && descriptor.revision > revisionFloor
+    && JSON.stringify(descriptor.endpoints) === JSON.stringify(resolvePersonalHomeRelocationDestinationEndpoints(destination));
+}
 
 export class PersonalHomeRelocationDestinationError extends Error {
   constructor(
@@ -85,23 +134,44 @@ export class PersonalHomeRelocationDestinationError extends Error {
 
 type Marker = PersonalHomeRelocationDestinationFacts & Readonly<{ version: 1 }>;
 
+export type PersonalHomeRelocationDestinationStagedCandidate = Readonly<{
+  authenticated: true;
+  homeServerIdentityId: string;
+  accountCount: number;
+  sessionCount: number;
+  canonicalServerUrl?: string;
+  minimumOuterRevisionExclusive?: number;
+  endpoint?: IrohEndpointDescriptorV1;
+}>;
+
+/** Outcome of inspecting the candidate left behind when a destination process
+ * died between the durable `receiving` marker and the durable `staged` marker. */
+export type PersonalHomeRelocationDestinationReceivedCandidate =
+  /** Nothing was mutated: the canonical restore may run normally. */
+  | Readonly<{ outcome: 'absent' }>
+  /** The canonical restore already completed and its facts verify. */
+  | (Readonly<{ outcome: 'restored' }> & PersonalHomeRelocationDestinationStagedCandidate)
+  /** Partial or unverifiable candidate: artifacts are retained for explicit recovery. */
+  | Readonly<{ outcome: 'ambiguous'; reason: string }>;
+
 export type PersonalHomeRelocationDestinationDeps = Readonly<{
   dataDir: string;
   quarantine(): Promise<void>;
   readServiceStatus(): Promise<Readonly<{ running: boolean; quarantined: boolean }>>;
   /** Existing restore/verification owner. It must be retry-safe for this operation id. */
-  stageCandidate(input: PersonalHomeRelocationDestinationStageInput): Promise<Readonly<{
-    authenticated: true;
-    homeServerIdentityId: string;
-    accountCount: number;
-    sessionCount: number;
-    canonicalServerUrl?: string;
-    minimumOuterRevisionExclusive?: number;
-    endpoint?: IrohEndpointDescriptorV1;
-  }>>;
+  stageCandidate(input: PersonalHomeRelocationDestinationStageInput): Promise<PersonalHomeRelocationDestinationStagedCandidate>;
+  /** Reads the existing restore/identity/count/configuration/service facts of an
+   * interrupted `receiving` candidate. It never re-restores or overwrites. */
+  inspectReceivedCandidate(input: PersonalHomeRelocationDestinationStageInput): Promise<PersonalHomeRelocationDestinationReceivedCandidate>;
   activate(): Promise<void>;
   attestActive(): Promise<PersonalHomeAuthenticatedReadiness>;
   abortCandidate(operationId: string): Promise<void>;
+  /** Whether the exact operation still reserves destination-side temporary
+   * transfer material. Defaults to the shared relocation transfer owner. */
+  hasUploadReservation?(operationId: string): Promise<boolean>;
+  /** Removes the exact operation's temporary transfer reservation. Defaults to
+   * the shared relocation transfer owner. */
+  cleanupUploadReservation?(operationId: string): Promise<void>;
 }>;
 
 const OPERATION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
@@ -140,7 +210,7 @@ function parseMarker(raw: string): Marker {
   const parsed = JSON.parse(raw) as unknown;
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('invalid marker');
   const value = parsed as Record<string, unknown>;
-  const allowed = new Set(['version', 'operationId', 'status', 'bundleSha256', 'expectedHomeServerIdentityId', 'expectedCanonicalServerUrl', 'sourceDescriptorRevision', 'homeServerIdentityId', 'canonicalServerUrl', 'minimumOuterRevisionExclusive', 'endpoint', 'authenticated', 'accountCount', 'sessionCount', 'failureCode']);
+  const allowed = new Set(['version', 'operationId', 'status', 'bundleSha256', 'expectedHomeServerIdentityId', 'expectedCanonicalServerUrl', 'sourceDescriptorRevision', 'homeServerIdentityId', 'canonicalServerUrl', 'minimumOuterRevisionExclusive', 'endpoint', 'authenticated', 'accountCount', 'sessionCount', 'failureCode', 'transferCleanupNeedsAttention']);
   if (Object.keys(value).some((key) => !allowed.has(key))
     || value.version !== 1
     || typeof value.operationId !== 'string' || !OPERATION_ID.test(value.operationId)
@@ -155,7 +225,8 @@ function parseMarker(raw: string): Marker {
     || (value.authenticated !== undefined && value.authenticated !== true)
     || (value.accountCount !== undefined && (typeof value.accountCount !== 'number' || !Number.isSafeInteger(value.accountCount) || value.accountCount < 1))
     || (value.sessionCount !== undefined && (typeof value.sessionCount !== 'number' || !Number.isSafeInteger(value.sessionCount) || value.sessionCount < 0))
-    || (value.failureCode !== undefined && (typeof value.failureCode !== 'string' || !value.failureCode))) {
+    || (value.failureCode !== undefined && (typeof value.failureCode !== 'string' || !value.failureCode))
+    || (value.transferCleanupNeedsAttention !== undefined && value.transferCleanupNeedsAttention !== true)) {
     throw new Error('invalid marker');
   }
   if ((value.status === 'quarantined' || value.status === 'activating' || value.status === 'active')
@@ -180,6 +251,7 @@ function parseMarker(raw: string): Marker {
     ...(typeof value.accountCount === 'number' ? { accountCount: value.accountCount } : {}),
     ...(typeof value.sessionCount === 'number' ? { sessionCount: value.sessionCount } : {}),
     ...(value.failureCode === undefined ? {} : { failureCode: value.failureCode as string }),
+    ...(value.transferCleanupNeedsAttention === true ? { transferCleanupNeedsAttention: true as const } : {}),
   };
 }
 
@@ -264,11 +336,48 @@ function markerForStage(input: PersonalHomeRelocationDestinationStageInput, stat
   };
 }
 
+async function resumeReceivedCandidate(
+  deps: PersonalHomeRelocationDestinationDeps,
+  input: PersonalHomeRelocationDestinationStageInput,
+): Promise<PersonalHomeRelocationDestinationStagedCandidate> {
+  if (await sha256File(input.archivePath) !== input.bundleSha256) {
+    throw new PersonalHomeRelocationDestinationError('relocation_bundle_mismatch', 'Transferred Personal Home bundle digest does not match the source receipt.');
+  }
+  const received = await deps.inspectReceivedCandidate(input);
+  if (received.outcome === 'restored') {
+    const { outcome: _outcome, ...candidate } = received;
+    return candidate;
+  }
+  if (received.outcome === 'absent') {
+    return await deps.stageCandidate(input);
+  }
+  throw new PersonalHomeRelocationDestinationError(
+    'relocation_destination_recovery_required',
+    `The interrupted relocation destination candidate could not be verified: ${received.reason}`,
+  );
+}
+
 export function createPersonalHomeRelocationDestinationOwner(deps: PersonalHomeRelocationDestinationDeps): PersonalHomeRelocationDestinationOwner {
-  const statusWithLease = async (operationId: string) => {
+  const hasUploadReservation = deps.hasUploadReservation
+    ?? (async (operationId: string) => await hasPersonalHomeRelocationUploadReservation({ operationId }));
+  const cleanupUploadReservation = deps.cleanupUploadReservation
+    ?? (async (operationId: string) => {
+      await cleanupPersonalHomeRelocationUpload({ operationId });
+    });
+  const removeReservationForAbort = async (operationId: string): Promise<Readonly<{ transferCleanupNeedsAttention?: true }>> => {
+    try {
+      await cleanupUploadReservation(operationId);
+      return {};
+    } catch {
+      // The candidate state is durably aborted; only the temporary reservation
+      // removal failed, and it is reported instead of failing the abort.
+      return { transferCleanupNeedsAttention: true };
+    }
+  };
+  const statusWithLease = async (operationId: string): Promise<PersonalHomeRelocationDestinationFacts | PersonalHomeRelocationDestinationAbsence> => {
     assertOperationId(operationId);
     const marker = await readMarker(deps.dataDir);
-    if (!marker) return { operationId, status: 'absent' as const };
+    if (!marker) return { operationId, status: 'absent' };
     assertSameOperation(marker, operationId);
     return publicFacts(marker);
   };
@@ -282,7 +391,20 @@ export function createPersonalHomeRelocationDestinationOwner(deps: PersonalHomeR
     stage: async (input) => {
       assertStageInput(input);
       return await withPersonalHomeOperationLock(deps.dataDir, 'relocate', async () => {
-        const existing = await readMarker(deps.dataDir);
+        let existing = await readMarker(deps.dataDir);
+        // An aborted candidate has relinquished destination authority. Keep it
+        // visible and idempotent to its own operation, while treating it as
+        // absence when a later distinct relocation is explicitly prepared.
+        if (existing?.status === 'aborted' && existing.operationId !== input.operationId) {
+          if (existing.transferCleanupNeedsAttention === true
+            || await hasUploadReservation(existing.operationId)) {
+            throw new PersonalHomeRelocationDestinationError(
+              'relocation_operation_conflict',
+              'The previous relocation destination still owns transfer cleanup that must be retried before another relocation.',
+            );
+          }
+          existing = null;
+        }
         if (existing) {
           assertSameOperation(existing, input.operationId);
           if (existing.bundleSha256 !== input.bundleSha256
@@ -309,11 +431,17 @@ export function createPersonalHomeRelocationDestinationOwner(deps: PersonalHomeR
             throw new PersonalHomeRelocationDestinationError('relocation_destination_recovery_required', 'The relocation destination requires explicit recovery.');
           }
         }
-        if (await sha256File(input.archivePath) !== input.bundleSha256) {
-          throw new PersonalHomeRelocationDestinationError('relocation_bundle_mismatch', 'Transferred Personal Home bundle digest does not match the source receipt.');
-        }
-        if (!existing) {
-          await writeMarker(deps.dataDir, markerForStage(input, 'receiving'));
+        // A durable `receiving` marker means a previous process died inside the
+        // canonical restore. The already-received candidate is reconciled from its
+        // own facts rather than re-restored over a possibly non-empty destination.
+        const resuming = existing?.status === 'receiving';
+        if (!resuming) {
+          if (await sha256File(input.archivePath) !== input.bundleSha256) {
+            throw new PersonalHomeRelocationDestinationError('relocation_bundle_mismatch', 'Transferred Personal Home bundle digest does not match the source receipt.');
+          }
+          if (!existing) {
+            await writeMarker(deps.dataDir, markerForStage(input, 'receiving'));
+          }
         }
         await deps.quarantine();
         const service = await deps.readServiceStatus();
@@ -321,7 +449,7 @@ export function createPersonalHomeRelocationDestinationOwner(deps: PersonalHomeR
           throw new PersonalHomeRelocationDestinationError('relocation_destination_not_quarantined', 'Destination service is not durably stopped and quarantined.');
         }
         try {
-          const candidate = await deps.stageCandidate(input);
+          const candidate = resuming ? await resumeReceivedCandidate(deps, input) : await deps.stageCandidate(input);
           if (candidate.homeServerIdentityId !== input.expectedHomeServerIdentityId) {
             throw new PersonalHomeRelocationDestinationError('relocation_bundle_mismatch', 'Staged Personal Home identity does not match the relocation target.');
           }
@@ -367,15 +495,12 @@ export function createPersonalHomeRelocationDestinationOwner(deps: PersonalHomeR
         const marker = await readMarker(deps.dataDir);
         if (!marker) throw new PersonalHomeRelocationDestinationError('relocation_destination_not_staged', 'Relocation destination is not staged.');
         assertSameOperation(marker, input.operationId);
+        if (!personalHomeRelocationDescriptorMatchesDestination(publishedDescriptor, marker)) {
+          throw new PersonalHomeRelocationDestinationError('invalid_relocation_operation', 'Published destination descriptor does not match the staged Home endpoint facts or advance its revision.');
+        }
         if (marker.status === 'active') return publicFacts(marker);
         if ((marker.status !== 'quarantined' && marker.status !== 'activating' && marker.status !== 'recovery_required') || !marker.homeServerIdentityId) {
           throw new PersonalHomeRelocationDestinationError('relocation_destination_not_staged', 'Relocation destination is not verified and quarantined.');
-        }
-        const minimumOuterRevisionExclusive = marker.minimumOuterRevisionExclusive ?? marker.sourceDescriptorRevision;
-        if (publishedDescriptor.homeServerIdentityId !== marker.homeServerIdentityId
-          || publishedDescriptor.canonicalServerUrl !== marker.canonicalServerUrl
-          || publishedDescriptor.revision <= minimumOuterRevisionExclusive) {
-          throw new PersonalHomeRelocationDestinationError('invalid_relocation_operation', 'Published destination descriptor does not match the staged Home or advance its revision.');
         }
         try {
           const { failureCode: _failureCode, ...verifiedMarker } = marker;
@@ -405,17 +530,70 @@ export function createPersonalHomeRelocationDestinationOwner(deps: PersonalHomeR
       assertOperationId(operationId);
       return await withPersonalHomeOperationLock(deps.dataDir, 'relocate', async () => {
         const marker = await readMarker(deps.dataDir);
-        if (!marker) throw new PersonalHomeRelocationDestinationError('relocation_destination_not_staged', 'Relocation destination is not staged.');
-        assertSameOperation(marker, operationId);
-        if (marker.status === 'aborted') return publicFacts(marker);
+        if (marker) assertSameOperation(marker, operationId);
+        if (!marker) {
+          // A transfer that failed before stage leaves an exact upload
+          // reservation with no candidate marker. Abort owns its cleanup; an
+          // operation with no reservation and no candidate is still not staged.
+          if (!(await hasUploadReservation(operationId))) {
+            throw new PersonalHomeRelocationDestinationError('relocation_destination_not_staged', 'Relocation destination is not staged.');
+          }
+          return {
+            operationId,
+            status: 'absent' as const,
+            ...(await removeReservationForAbort(operationId)),
+          };
+        }
+        if (marker.status === 'aborted') {
+          // Retry the reservation removal so a previous cleanup failure converges.
+          const cleanup = await removeReservationForAbort(operationId);
+          if (cleanup.transferCleanupNeedsAttention === true) {
+            const retained: Marker = { ...marker, transferCleanupNeedsAttention: true };
+            await writeMarker(deps.dataDir, retained);
+            return publicFacts(retained);
+          }
+          if (marker.transferCleanupNeedsAttention === true) {
+            const { transferCleanupNeedsAttention: _attention, ...cleaned } = marker;
+            await writeMarker(deps.dataDir, cleaned);
+            return publicFacts(cleaned);
+          }
+          return publicFacts(marker);
+        }
+        if (marker.status === 'activating' || marker.status === 'active') {
+          // Activation already ordered this Home into service, so it may hold
+          // writes that exist nowhere else. Only the idempotent commit/readback
+          // corridor may converge it; abort must never erase it.
+          throw new PersonalHomeRelocationDestinationError(
+            'relocation_destination_already_active',
+            'The relocation destination has been activated; finish or recover the move instead of aborting it.',
+          );
+        }
         await deps.quarantine();
         const service = await deps.readServiceStatus();
         if (service.running || !service.quarantined) {
           throw new PersonalHomeRelocationDestinationError('relocation_destination_not_quarantined', 'Destination could not be quarantined before abort.');
         }
+        if (!personalHomeRelocationDestinationOwnsCandidate(publicFacts(marker))) {
+          // The destination cannot prove these bytes are this relocation's own
+          // candidate, so they stay stopped and retained for explicit recovery
+          // instead of being deleted. The original failure cause is preserved.
+          const recovery: Marker = {
+            ...marker,
+            status: 'recovery_required',
+            failureCode: marker.failureCode ?? 'destination_ownership_unproven',
+          };
+          await writeMarker(deps.dataDir, recovery);
+          return publicFacts(recovery);
+        }
         await deps.abortCandidate(operationId);
         const aborted: Marker = { ...marker, status: 'aborted' };
         await writeMarker(deps.dataDir, aborted);
+        const cleanup = await removeReservationForAbort(operationId);
+        if (cleanup.transferCleanupNeedsAttention === true) {
+          const retained: Marker = { ...aborted, transferCleanupNeedsAttention: true };
+          await writeMarker(deps.dataDir, retained);
+          return publicFacts(retained);
+        }
         return publicFacts(aborted);
       });
     },

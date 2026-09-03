@@ -436,7 +436,7 @@ function parseReviewFacts(value) {
   const version = readNonEmptyString(value.version);
   const source = parseReviewSource(value.source);
   const executableRealms = Array.isArray(value.executableRealms)
-    && value.executableRealms.every((realm) => realm === 'daemon' || realm === 'reactNative')
+    && value.executableRealms.every((realm) => realm === 'daemon' || realm === 'reactNative' || realm === 'hostedWeb')
     && new Set(value.executableRealms).size === value.executableRealms.length
     ? value.executableRealms
     : null;
@@ -493,7 +493,7 @@ function parseReviewFacts(value) {
     || !optionalHostAccess
     || !rawCredentialAccess
     || !compatibility
-    || (value.updatePolicy !== 'automatic' && value.updatePolicy !== 'manual' && value.updatePolicy !== 'pinned')
+    || (value.updatePolicy !== 'reviewSensitiveChanges' && value.updatePolicy !== 'reviewEveryUpdate' && value.updatePolicy !== 'pinned')
   ) {
     return null;
   }
@@ -546,7 +546,7 @@ function diagnoseReviewFacts(value) {
   if (!parseCuration(value.curation)) return 'review.curation: invalid';
   if (
     !Array.isArray(value.executableRealms)
-    || !value.executableRealms.every((realm) => realm === 'daemon' || realm === 'reactNative')
+    || !value.executableRealms.every((realm) => realm === 'daemon' || realm === 'reactNative' || realm === 'hostedWeb')
     || new Set(value.executableRealms).size !== value.executableRealms.length
   ) return 'review.executableRealms: invalid';
   if (!Array.isArray(value.contributions) || value.contributions.length > 64) {
@@ -586,8 +586,8 @@ function diagnoseReviewFacts(value) {
   if (!parseRawCredentialAccess(value.rawCredentialAccess)) return 'review.rawCredentialAccess: invalid';
   if (!parseReviewCompatibility(value.compatibility)) return 'review.compatibility: invalid';
   if (
-    value.updatePolicy !== 'automatic'
-    && value.updatePolicy !== 'manual'
+    value.updatePolicy !== 'reviewSensitiveChanges'
+    && value.updatePolicy !== 'reviewEveryUpdate'
     && value.updatePolicy !== 'pinned'
   ) return 'review.updatePolicy: invalid';
   return 'review: invalid';

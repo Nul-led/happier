@@ -6,36 +6,31 @@ import { DatabaseSync } from 'node:sqlite';
 
 import { uninstallRelayRuntimePayloadLocal } from '../../../cli-common/src/firstPartyRuntime/relayRuntimeInstall';
 import { verifyPersonalHomeArchive } from '../../../cli-common/src/firstPartyRuntime/personalHome/archive';
-import { createPersonalHomeBackupWithLease } from '../../../cli-common/src/firstPartyRuntime/personalHome/backup';
 import { resolvePersonalHomeRuntimeLayout } from '../../../cli-common/src/firstPartyRuntime/personalHome/layout';
 import {
   createCanonicalPersonalHomeOperations,
-  createPersonalHomeSqliteMaintenance,
-  inspectPersonalHomeSanitizedConfigurationStorage,
-  preparePersonalHomeSanitizedConfiguration,
+  createCanonicalPersonalHomeRelocationDestinationOwner,
+  readPersonalHomeDataCountsFromSqlite,
   readPersonalHomeIdentityFromSqlite,
 } from '../../../cli-common/src/firstPartyRuntime/personalHome/productionAdapters';
-import { readPersonalHomeRelocationMarker, relocatePersonalHome } from '../../../cli-common/src/firstPartyRuntime/personalHome/relocation';
-import { restorePersonalHomeBackupWithLease } from '../../../cli-common/src/firstPartyRuntime/personalHome/restore';
 import {
-  migrateStagedPersonalHomeSqliteDatabase,
   resolveInstalledPersonalHomeSqliteMigrationPaths,
   type PersonalHomeMigrationProcessRunner,
 } from '../../../cli-common/src/firstPartyRuntime/personalHome/stagedMigrationFrontier';
-import { readSqliteMigrationCatalog, type SqliteMigrationCatalogEntry } from '../../../cli-common/src/firstPartyRuntime/sqliteMigrationCatalog';
+import { readSqliteMigrationCatalog } from '../../../cli-common/src/firstPartyRuntime/sqliteMigrationCatalog';
 import type { InteractiveSystemTaskKind, InteractiveSystemTaskPromptRequest } from '../../../cli-common/src/systemTasks/interactiveTaskKinds';
 import {
   createPersonalHomeBackupTaskKind,
   createPersonalHomeEraseTaskKind,
-  createPersonalHomeRelocateTaskKind,
   createPersonalHomeRestoreTaskKind,
   createPersonalHomeSystemTaskOperations,
   createPersonalHomeVerifyBackupTaskKind,
   PERSONAL_HOME_SYSTEM_TASK_KINDS,
   type PersonalHomeTaskBaseParams,
 } from '../../../cli-common/src/systemTasks/kinds/relayRuntimeKinds';
+import { createRemoteSshManageHostTaskKind } from '../../../cli-common/src/systemTasks/kinds/remoteSshManageHostKind';
 import { SystemTaskExecutionError } from '../../../cli-common/src/systemTasks/runSystemTask';
-import type { SystemTaskJsonValue } from '@happier-dev/protocol';
+import type { HomeConnectionDescriptorV1, SystemTaskJsonValue } from '@happier-dev/protocol';
 
 function require(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -80,7 +75,7 @@ async function fixture(
   await mkdir(layout.configDir, { recursive: true });
   await mkdir(layout.dataDir, { recursive: true });
   await writeFile(join(layout.configDir, 'server.env'), [
-    `HAPPIER_PUBLIC_SERVER_URL=${purpose.canonicalServerUrl}`,
+    `HAPPIER_CANONICAL_SERVER_URL=${purpose.canonicalServerUrl}`,
     'HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY=plaintext_only',
     'HAPPIER_FEATURE_ENCRYPTION__DEFAULT_ACCOUNT_MODE=plain',
     'HAPPIER_FEATURE_ENCRYPTION__PLAIN_ACCOUNT_SETTINGS_AT_REST=plain',
@@ -93,9 +88,11 @@ async function fixture(
   if (withData) {
     await mkdir(dirname(layout.databasePath), { recursive: true });
     const database = new DatabaseSync(layout.databasePath);
-    database.exec('PRAGMA journal_mode=WAL; CREATE TABLE SimpleCache (key TEXT PRIMARY KEY, value TEXT NOT NULL); CREATE TABLE _prisma_migrations (migration_name TEXT NOT NULL, checksum TEXT NOT NULL, finished_at TEXT, rolled_back_at TEXT); CREATE TABLE SessionMessage (id TEXT PRIMARY KEY, value TEXT NOT NULL)');
+    database.exec('PRAGMA journal_mode=WAL; CREATE TABLE SimpleCache (key TEXT PRIMARY KEY, value TEXT NOT NULL); CREATE TABLE _prisma_migrations (migration_name TEXT NOT NULL, checksum TEXT NOT NULL, finished_at TEXT, rolled_back_at TEXT); CREATE TABLE Account (id TEXT PRIMARY KEY); CREATE TABLE Session (id TEXT PRIMARY KEY); CREATE TABLE SessionMessage (id TEXT PRIMARY KEY, value TEXT NOT NULL)');
     database.prepare('INSERT INTO _prisma_migrations (migration_name, checksum, finished_at, rolled_back_at) VALUES (?, ?, CURRENT_TIMESTAMP, NULL)').run(baseline.name, catalog[0]!.checksum);
     database.prepare('INSERT INTO SimpleCache (key, value) VALUES (?, ?)').run('server.identity.v1', data.identity);
+    database.prepare('INSERT INTO Account (id) VALUES (?)').run('account_fixture');
+    database.prepare('INSERT INTO Session (id) VALUES (?)').run('session_fixture');
     database.prepare('INSERT INTO SessionMessage (id, value) VALUES (?, ?)').run('msg_fixture', data.transcript);
     database.close();
     await mkdir(join(layout.publicFilesDir, 'attachments'), { recursive: true });
@@ -107,7 +104,7 @@ async function fixture(
     await writeFile(layout.irohEndpointKeyPath, 'excluded-iroh-key');
   }
 
-  const lifecycle = { running: withData, healthResults: [] as boolean[] };
+  const lifecycle = { running: withData, quarantined: false, healthResults: [] as boolean[] };
   const runMigrationProcess: PersonalHomeMigrationProcessRunner | undefined = withPendingMigration ? async (input) => {
     require(input.env.DATABASE_URL, 'Migration runner did not receive the staged database URL');
     const database = new DatabaseSync(new URL(input.env.DATABASE_URL).pathname);
@@ -121,9 +118,17 @@ async function fixture(
     lifecycle: {
       isRunning: async () => lifecycle.running,
       stop: async () => { lifecycle.running = false; },
-      start: async () => { lifecycle.running = true; },
+      start: async () => { lifecycle.running = true; lifecycle.quarantined = false; },
+      quarantine: async () => { lifecycle.running = false; lifecycle.quarantined = true; },
+      activate: async () => { lifecycle.running = true; lifecycle.quarantined = false; },
+      readServiceStatus: async () => ({ running: lifecycle.running, quarantined: lifecycle.quarantined }),
       healthCheck: async () => lifecycle.healthResults.shift() ?? true,
     },
+    attestActivatedHome: async () => ({
+      authenticated: true,
+      homeServerIdentityId: (await readPersonalHomeIdentityFromSqlite(layout.databasePath, catalog)).homeServerIdentityId,
+      ...await readPersonalHomeDataCountsFromSqlite(layout.databasePath),
+    }),
     readHappierVersion: async () => '0.3-current-source',
     readPurpose: async () => purpose,
     ...(runMigrationProcess ? { runMigrationProcess } : {}),
@@ -209,7 +214,7 @@ export async function assertPersonalHomeUninstallPreservesDataContract(): Promis
 export async function assertPersonalHomeBackupRestoreContract(): Promise<void> {
   const source = await fixture('backup-source', true);
   const empty = await fixture('restore-empty', false, undefined, true);
-  const rollback = await fixture('restore-rollback', true, { identity: 'srv_prior', transcript: 'prior transcript', secret: 'prior secret' }, true);
+  const rollback = await fixture('restore-rollback', true, { identity: 'srv_personal_home_fixture', transcript: 'prior transcript', secret: 'prior secret' }, true);
   try {
     const archivePath = join(source.root, 'home.tar');
     const sourceOperations = createPersonalHomeSystemTaskOperations({ operations: source.operations });
@@ -247,80 +252,133 @@ export async function assertPersonalHomeBackupRestoreContract(): Promise<void> {
 export async function assertPersonalHomeRelocationContract(): Promise<void> {
   const source = await fixture('relocation-source', true);
   const destination = await fixture('relocation-destination', false, undefined, true);
-  let quarantined = false;
-  let destinationRunning = false;
   try {
-    const publicationFailure = new Error('publication failed');
-    let observed: unknown;
-    try {
-      await relocatePersonalHome({
-        source: { dataDir: source.layout.dataDir, homeServerIdentityId: 'srv_personal_home_fixture' },
-        destination: { dataDir: destination.layout.dataDir },
-        platform: 'linux',
-        priorSourceRunning: true,
-        revalidateSourceUnderLocks: async () => {
-          require(source.lifecycle.running === true, 'Relocation source was not running during locked revalidation');
-          require(
-            (await readPersonalHomeIdentityFromSqlite(source.layout.databasePath, source.catalog)).homeServerIdentityId
-              === 'srv_personal_home_fixture',
-            'Relocation source identity changed before the final backup',
-          );
+    require(destination.runMigrationProcess, 'Destination lacks migration process');
+    const destinationOwner = await createCanonicalPersonalHomeRelocationDestinationOwner({
+      homeDir: destination.root,
+      platform: 'linux',
+      mode: 'user',
+      quarantine: async () => { destination.lifecycle.running = false; destination.lifecycle.quarantined = true; },
+      activate: async () => { destination.lifecycle.running = true; destination.lifecycle.quarantined = false; },
+      readServiceStatus: async () => ({ running: destination.lifecycle.running, quarantined: destination.lifecycle.quarantined }),
+      runMigrationProcess: destination.runMigrationProcess,
+      attestStagedHome: async () => ({
+        authenticated: true,
+        homeServerIdentityId: (await readPersonalHomeIdentityFromSqlite(destination.layout.databasePath, destination.catalog)).homeServerIdentityId,
+        ...await readPersonalHomeDataCountsFromSqlite(destination.layout.databasePath),
+      }),
+      attestActivatedHome: async () => ({
+        authenticated: true,
+        homeServerIdentityId: (await readPersonalHomeIdentityFromSqlite(destination.layout.databasePath, destination.catalog)).homeServerIdentityId,
+        ...await readPersonalHomeDataCountsFromSqlite(destination.layout.databasePath),
+      }),
+      materializeEndpoint: async ({ sourceDescriptorRevision }) => ({
+        homeServerIdentityId: 'srv_personal_home_fixture',
+        canonicalServerUrl: 'https://destination.example.test',
+        minimumOuterRevisionExclusive: sourceDescriptorRevision,
+      }),
+    });
+    let transferredBytes = 0;
+    let transferCount = 0;
+    const transportedDestination = {
+      ...destinationOwner,
+      stage: async (input: Parameters<typeof destinationOwner.stage>[0]) => {
+        transferCount += 1;
+        const receivedPath = join(destination.root, 'received', `${input.operationId}.tar`);
+        await mkdir(dirname(receivedPath), { recursive: true });
+        await copyFile(input.archivePath, receivedPath);
+        const bytes = await readFile(receivedPath);
+        transferredBytes = bytes.byteLength;
+        require(createHash('sha256').update(bytes).digest('hex') === input.bundleSha256, 'Transfer changed archive bytes');
+        return destinationOwner.stage({ ...input, archivePath: receivedPath });
+      },
+    };
+    const sourceDescriptor = {
+      v: 1 as const,
+      homeServerIdentityId: 'srv_personal_home_fixture',
+      canonicalServerUrl: purpose.canonicalServerUrl,
+      revision: 7,
+      endpoints: [{ kind: 'https' as const, url: purpose.canonicalServerUrl }],
+    };
+    let publishedDescriptor: HomeConnectionDescriptorV1 = sourceDescriptor;
+    let publishAvailable = false;
+    const relocationKind = createRemoteSshManageHostTaskKind({
+      resolveHostTrust: async () => ({ status: 'trusted' }),
+      testConnection: async () => undefined,
+      installRemoteCli: async () => undefined,
+      runDaemonServiceCommand: async () => undefined,
+      runRelayRuntimeCommand: async () => undefined,
+      runPersonalHomeRelocation: async (input) => {
+        const result = await source.operations.relocate({
+          operationId: input.operationId,
+          sourceDescriptorRevision: input.sourceDescriptorRevision,
+          destinationMachineId: input.destinationMachineId,
+          ...(input.recoveryAction ? { recoveryAction: input.recoveryAction } : {}),
+          destination: transportedDestination,
+          publishDestination: async (facts) => {
+            require(source.lifecycle.quarantined && !source.lifecycle.running, 'Source was not quarantined before publication');
+            require(destination.lifecycle.quarantined && !destination.lifecycle.running, 'Destination was not quarantined before publication');
+            if (!publishAvailable) throw new Error('publication unavailable');
+            publishedDescriptor = {
+              v: 1,
+              homeServerIdentityId: facts.homeServerIdentityId,
+              canonicalServerUrl: facts.canonicalServerUrl,
+              revision: facts.minimumOuterRevisionExclusive + 1,
+              endpoints: facts.endpoints,
+            };
+            return input.publishDestination(facts);
+          },
+          readPublishedDescriptor: input.readPublishedDescriptor,
+        });
+        return { ...result };
+      },
+    });
+    const relocate = () => runKind(
+      'remote.ssh.manageHost.v1',
+      { 'remote.ssh.manageHost.v1': relocationKind },
+      {
+        action: 'personalHome.relocate',
+        channel: 'stable',
+        relayRuntime: { channel: 'stable', mode: 'user' },
+        personalHomeRelocation: {
+          operationId: 'operation-fixture',
+          destinationMachineId: 'machine-destination',
+          sourceDescriptorRevision: sourceDescriptor.revision,
         },
-        prepareDestination: async () => { await mkdir(destination.layout.dataDir, { recursive: true }); },
-        stopSource: async () => { source.lifecycle.running = false; },
-        startSource: async () => { source.lifecycle.running = true; },
-        createFinalBackup: async () => createPersonalHomeBackupWithLease({
-          layout: source.layout, outputPath: join(source.layout.backupsDir, 'relocation.tar'), stagingDir: join(source.root, 'relocation-staging'),
-          homeServerIdentityId: 'srv_personal_home_fixture', schemaVersion: baseline.name, happierVersion: '0.3-current-source',
-          configuration: { canonicalServerUrl: purpose.canonicalServerUrl }, sqlite: await createPersonalHomeSqliteMaintenance(source.layout.databasePath), operationLeaseHeld: true,
-        }),
-        transfer: { send: async ({ sourcePath, expectedBytes, expectedSha256 }) => {
-          const receivedPath = join(destination.root, 'received.tar');
-          await copyFile(sourcePath, receivedPath);
-          const bytes = await readFile(receivedPath);
-          const sha256 = createHash('sha256').update(bytes).digest('hex');
-          require(bytes.byteLength === expectedBytes && sha256 === expectedSha256, 'Transfer changed archive bytes');
-          return { receivedPath, bytes: bytes.byteLength, sha256 };
-        } },
-        restoreDestination: async (archivePath) => {
-          const result = await restorePersonalHomeBackupWithLease({
-            layout: destination.layout, archivePath, operationLeaseHeld: true, expectedHomeServerIdentityId: 'srv_personal_home_fixture', confirmOverwrite: true,
-            isSchemaSupported: async (schema) => destination.catalog.some((entry) => entry.name === schema), sqliteMaintenance: createPersonalHomeSqliteMaintenance,
-            runMigrations: async (databasePath, manifest) => {
-              require(destination.runMigrationProcess, 'Destination lacks migration process');
-              await migrateStagedPersonalHomeSqliteDatabase({ layout: destination.layout, databasePath, manifestSchemaVersion: manifest.schemaVersion, runProcess: destination.runMigrationProcess });
-            },
-            verifyStagedIdentity: async (databasePath, manifest) => (await readPersonalHomeIdentityFromSqlite(databasePath, destination.catalog)).homeServerIdentityId === manifest.homeServerIdentityId,
-            inspectConfigurationStorage: (configuration) => inspectPersonalHomeSanitizedConfigurationStorage(destination.layout, configuration),
-            prepareConfiguration: (configuration) => preparePersonalHomeSanitizedConfiguration(destination.layout, configuration),
-          });
-          require(result.outcome === 'restored', 'Destination restore failed');
-        },
-        verifyDestination: async () => readPersonalHomeIdentityFromSqlite(destination.layout.databasePath, destination.catalog),
-        startDestination: async () => { destinationRunning = true; return { healthy: true, homeServerIdentityId: 'srv_personal_home_fixture' }; },
-        stopDestination: async () => { destinationRunning = false; },
-        quarantineDestination: async () => { quarantined = true; },
-        commitSameHomeRelocation: async () => { throw publicationFailure; },
-        destinationDescriptor: { v: 1, homeServerIdentityId: 'srv_personal_home_fixture', canonicalServerUrl: 'https://destination.example.test', revision: 1, endpoints: [{ kind: 'https', url: 'https://destination.example.test' }] },
-      });
-    } catch (error) { observed = error; }
-    require(
-      observed === publicationFailure,
-      `Publication failure was not surfaced: ${observed instanceof Error ? observed.message : String(observed)}`,
+        ssh: { target: 'destination.example.test', auth: 'agent' },
+      },
+      async (request) => {
+        if (request.kind === 'personal_home.publish_relocation_descriptor.v1') {
+          return { descriptor: publishedDescriptor };
+        }
+        if (request.kind === 'personal_home.read_relocation_descriptor.v1') {
+          return { descriptor: publishedDescriptor };
+        }
+        throw new Error(`Unexpected relocation prompt: ${request.kind}`);
+      },
     );
-    require(!source.lifecycle.running, 'Publication failure restarted the source instead of keeping it stopped');
-    require(!destinationRunning, 'Publication failure left the destination running');
-    require(quarantined, 'Publication failure did not quarantine the destination');
-    require((await readPersonalHomeRelocationMarker(source.layout.dataDir))?.phase === 'pending', 'Source recovery marker is absent');
-    require((await readPersonalHomeRelocationMarker(destination.layout.dataDir))?.phase === 'pending', 'Destination recovery marker is absent');
+
+    const pending = await relocate();
+    const pendingHome = (pending as Readonly<{ personalHome?: Readonly<{ status?: string; recoveryAction?: string }> }>).personalHome;
+    require(pendingHome?.status === 'pending' && pendingHome.recoveryAction === 'finish_move', 'Publication failure did not preserve a finishable move');
+    require(transferredBytes > 0, 'Relocation did not transfer real archive bytes');
+    require(transferCount === 1, 'Initial relocation did not stage exactly one transferred bundle');
+    require(!source.lifecycle.running && source.lifecycle.quarantined, 'Pending relocation did not retain the source disabled');
+    require(!destination.lifecycle.running && destination.lifecycle.quarantined, 'Pending relocation activated the destination before publication');
     require(value(source.layout.databasePath, "SELECT value FROM SessionMessage WHERE id = 'msg_fixture'") === 'real transcript bytes', 'Relocation damaged source bytes');
     require(value(destination.layout.databasePath, "SELECT value FROM SessionMessage WHERE id = 'msg_fixture'") === 'real transcript bytes', 'Relocation did not move destination bytes');
-
-    const operations = createPersonalHomeSystemTaskOperations({ operations: source.operations });
-    let unsupported: unknown;
-    try {
-      await runKind(PERSONAL_HOME_SYSTEM_TASK_KINDS.relocate, { [PERSONAL_HOME_SYSTEM_TASK_KINDS.relocate]: createPersonalHomeRelocateTaskKind({ operations }) }, { ...base(), destination: { targetId: 'machine-destination', descriptor: { v: 1, homeServerIdentityId: 'srv_personal_home_fixture', canonicalServerUrl: 'https://destination.example.test', revision: 1, endpoints: [{ kind: 'https', url: 'https://destination.example.test' }] } } });
-    } catch (error) { unsupported = error; }
-    require(unsupported instanceof SystemTaskExecutionError && unsupported.code === 'unsupported', 'Shared task kind did not fail closed without a destination resolver');
+    publishAvailable = true;
+    const committed = await relocate();
+    const committedHome = (committed as Readonly<{
+      personalHome?: Readonly<{ status?: string; publishedDescriptor?: HomeConnectionDescriptorV1 }>;
+    }>).personalHome;
+    require(committedHome?.status === 'committed', 'Retry did not finish the already-staged relocation');
+    require(
+      JSON.stringify(committedHome.publishedDescriptor) === JSON.stringify(publishedDescriptor),
+      'Relocation committed without returning the exact authoritative descriptor readback',
+    );
+    require(transferCount === 1, 'Publication retry retransferred an already verified destination bundle');
+    require(destination.lifecycle.running && !destination.lifecycle.quarantined, 'Destination was not activated after authoritative readback');
+    require(!source.lifecycle.running && source.lifecycle.quarantined, 'Committed relocation reactivated the retained source copy');
   } finally { await Promise.all([source.cleanup(), destination.cleanup()]); }
 }

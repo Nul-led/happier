@@ -80,7 +80,7 @@ const completeReview = {
     },
   }],
   compatibility: { happier: '^0.2.0', runtimeApiVersion: 1 },
-  updatePolicy: 'automatic',
+  updatePolicy: 'reviewSensitiveChanges',
 } as const;
 
 function reviewRequiredEnvelope(review: unknown) {
@@ -283,7 +283,7 @@ describe('decideAuthenticatedPluginInstallReview', () => {
       updateChannel: { kind: 'path', locator: '/tmp/acme-plugin', development: true },
       signature: { status: 'notProvided' },
       curation: { status: 'notApplicable' },
-      updatePolicy: 'manual',
+      updatePolicy: 'reviewEveryUpdate',
     } as const;
     const archiveReview = {
       ...pathReview,

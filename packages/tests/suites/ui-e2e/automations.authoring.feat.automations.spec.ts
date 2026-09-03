@@ -586,9 +586,13 @@ test.describe('ui e2e: automations authoring', () => {
             return {
                 triggerId: lifecycle.id,
                 enabled: lifecycle.enabled,
-                sourceSessionId: lifecycle.scope?.sourceSessionId ?? null,
-                sourceTurnId: lifecycle.scope?.sourceTurnId ?? null,
-                consumption: lifecycle.consumption,
+                events: lifecycle.events,
+                sourceSessionId: lifecycle.sourceSessionId,
+                sourceTurnId: lifecycle.policy.kind === 'currentTurn'
+                    ? lifecycle.policy.sourceTurnId
+                    : null,
+                policy: lifecycle.policy.kind,
+                remainingOccurrences: lifecycle.remainingOccurrences,
                 status: lifecycle.status?.state ?? null,
                 existingSessionId: found.existingSessionId,
                 hasEnabledAssignment: found.assignments.some((assignment) => assignment.enabled),
@@ -596,9 +600,11 @@ test.describe('ui e2e: automations authoring', () => {
         }, { timeout: 60_000 }).toEqual({
             triggerId: expect.any(String),
             enabled: true,
+            events: ['parentTurnCompleted'],
             sourceSessionId: sourceSession.sessionId,
             sourceTurnId: observedTurnId,
-            consumption: 'once',
+            policy: 'currentTurn',
+            remainingOccurrences: 1,
             status: 'waiting',
             existingSessionId: sessionId,
             hasEnabledAssignment: true,

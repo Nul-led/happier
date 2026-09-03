@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -339,6 +339,27 @@ describe('RelayHostEngine (Personal Home mutation seam)', () => {
     }
   }, 30_000);
 
+  it.skipIf(process.platform === 'win32')('fails closed when the persisted Home environment cannot be read', async () => {
+    const runtime = await createInstalledPersonalHomeRuntime();
+    const envPath = join(runtime.defaults.configDir, 'server.env');
+    try {
+      mockLinuxHost(runtime.homeDir);
+      mockStoppedLocalHome();
+      await chmod(envPath, 0o000);
+
+      const engine = await createTestEngine();
+      await expect(engine.control({
+        target: { kind: 'local' },
+        mode: 'user',
+        channel: 'preview',
+        action: 'start',
+      })).rejects.toMatchObject({ code: 'EACCES' });
+    } finally {
+      await chmod(envPath, 0o600).catch(() => undefined);
+      await runtime.dispose();
+    }
+  }, 30_000);
+
   it('safe uninstall preserves the Personal Home classification for an omitted-purpose reinstall', async () => {
     const runtime = await createInstalledPersonalHomeRuntime();
     const lockEvents: string[] = [];
@@ -347,8 +368,26 @@ describe('RelayHostEngine (Personal Home mutation seam)', () => {
       mockStoppedLocalHome();
       mockRecordingHomeLock(lockEvents);
       const serverBinaryPath = await writeLocalServerBinary(runtime.homeDir);
-      await mkdir(runtime.defaults.dataDir, { recursive: true });
-      await writeFile(join(runtime.defaults.dataDir, 'handy-master-secret.txt'), 'preserved-home-secret');
+      const customDataDir = join(runtime.homeDir, 'custom-home-data');
+      const customDatabasePath = join(runtime.homeDir, 'custom-home-db', 'home.sqlite');
+      const customFilesDir = join(runtime.homeDir, 'custom-home-files');
+      const customEnv = [
+        'PORT=43123',
+        'HAPPIER_SERVER_HOST=127.0.0.1',
+        `HAPPIER_CANONICAL_SERVER_URL=${CANONICAL_SERVER_URL}`,
+        `HAPPIER_PUBLIC_SERVER_URL=${PUBLIC_SERVER_URL}`,
+        `HAPPIER_SERVER_LIGHT_DATA_DIR=${customDataDir}`,
+        `DATABASE_URL=file:${customDatabasePath}`,
+        `HAPPIER_SERVER_LIGHT_FILES_DIR=${customFilesDir}`,
+        'AUTH_ANONYMOUS_SIGNUP_ENABLED=0',
+        'HAPPIER_HOME_DEVICE_APPROVAL_REQUIRED=1',
+        '',
+      ].join('\n');
+      await writeFile(join(runtime.defaults.configDir, 'server.env'), customEnv, 'utf8');
+      await mkdir(customDataDir, { recursive: true });
+      await mkdir(customFilesDir, { recursive: true });
+      await writeFile(join(customDataDir, 'handy-master-secret.txt'), 'preserved-home-secret');
+      await writeFile(join(customFilesDir, 'preserved.txt'), 'preserved-home-file');
 
       const { createRelayHostEngine } = await import('./relayHostEngine.js');
       const engine = createRelayHostEngine({
@@ -368,13 +407,13 @@ describe('RelayHostEngine (Personal Home mutation seam)', () => {
 
       const statePath = join(runtime.defaults.installRoot, 'self-host-state.json');
       const uninstalledState = JSON.parse(await readFile(statePath, 'utf8'));
-      expect(uninstalledState).toEqual({ purpose: PERSONAL_HOME_PURPOSE });
-      expect(await readFile(join(runtime.defaults.dataDir, 'handy-master-secret.txt'), 'utf8')).toBe('preserved-home-secret');
+      expect(uninstalledState).toEqual({ retainedPersonalHomeVersion: '0.3.0-test', purpose: PERSONAL_HOME_PURPOSE });
+      expect(await readFile(join(runtime.defaults.configDir, 'server.env'), 'utf8')).toBe(customEnv);
+      expect(await readFile(join(customDataDir, 'handy-master-secret.txt'), 'utf8')).toBe('preserved-home-secret');
+      expect(await readFile(join(customFilesDir, 'preserved.txt'), 'utf8')).toBe('preserved-home-file');
 
-      // The persisted purpose remains the canonical origin authority while no runtime is
-      // installed, even if the retained environment is unavailable and must be recreated.
-      await rm(join(runtime.defaults.configDir, 'server.env'));
-
+      // The persisted purpose and retained environment remain the canonical identity and
+      // storage-location authorities while no runtime is installed.
       const uninstalledStatus = await engine.readStatus({
         target: { kind: 'local' },
         mode: 'user',
@@ -397,6 +436,12 @@ describe('RelayHostEngine (Personal Home mutation seam)', () => {
 
       const reinstalledState = JSON.parse(await readFile(statePath, 'utf8'));
       expect(reinstalledState.purpose).toEqual(PERSONAL_HOME_PURPOSE);
+      const reinstalledEnv = await readFile(join(runtime.defaults.configDir, 'server.env'), 'utf8');
+      expect(reinstalledEnv).toContain(`HAPPIER_SERVER_LIGHT_DATA_DIR=${customDataDir}`);
+      expect(reinstalledEnv).toContain(`DATABASE_URL=file:${customDatabasePath}`);
+      expect(reinstalledEnv).toContain(`HAPPIER_SERVER_LIGHT_FILES_DIR=${customFilesDir}`);
+      expect(await readFile(join(customDataDir, 'handy-master-secret.txt'), 'utf8')).toBe('preserved-home-secret');
+      expect(await readFile(join(customFilesDir, 'preserved.txt'), 'utf8')).toBe('preserved-home-file');
       expect(lockEvents).toEqual([
         'home:uninstall:acquired',
         'home:uninstall:released',
@@ -406,7 +451,7 @@ describe('RelayHostEngine (Personal Home mutation seam)', () => {
     } finally {
       await runtime.dispose();
     }
-  });
+  }, 30_000);
 
   it('uses the persisted Personal Home origin when an installed erased runtime has no environment', async () => {
     const runtime = await createInstalledPersonalHomeRuntime();

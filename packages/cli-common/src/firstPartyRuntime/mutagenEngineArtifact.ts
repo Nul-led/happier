@@ -4,11 +4,9 @@ import {
 import {
   lstatSync,
   readFileSync,
-  readdirSync,
 } from 'node:fs';
 import {
   join,
-  relative,
   resolve,
   win32,
 } from 'node:path';
@@ -20,19 +18,33 @@ import {
  */
 export const MUTAGEN_ENGINE_FORK_REMOTE = 'https://github.com/happier-dev/mutagen.git';
 export const MUTAGEN_ENGINE_FORK_BRANCH = 'happier/external-stream-v1';
-/** Immutable commit on which the current uncommitted fork implementation is based. */
+/** Immutable commit on which the Happier fork implementation was based. */
 export const MUTAGEN_ENGINE_FORK_SOURCE_BASE_COMMIT = 'f5ed5c91fa6c934f5678393c56d00362d6443a1d';
-/** Filled only after the implementation is committed; release preparation blocks while null. */
-export const MUTAGEN_ENGINE_FORK_RELEASE_COMMIT: string | null = null;
+/** Exact committed fork bytes approved for the managed engine release. */
+export const MUTAGEN_ENGINE_FORK_RELEASE_COMMIT = '6cbea9c5febe35880b50ec2e5f0ea1d52c7b1521';
 export const MUTAGEN_ENGINE_TRANSPORT_SPIKE_COMMIT = 'cd8069cf8b945dfa0d0f47d8685322c6f1e16e44';
 export const MUTAGEN_ENGINE_UPSTREAM_TAG = 'v0.18.1';
 /** Immutable first-party component policy version used for acquisition. */
-export const MUTAGEN_ENGINE_VERSION = '0.18.1';
+export const MUTAGEN_ENGINE_VERSION = '0.18.1-happier.5';
 export const MUTAGEN_ENGINE_UPSTREAM_COMMIT = 'a225ae50aee3d7ebb59139203cb84e8a6a3ff4bf';
 export const MUTAGEN_ENGINE_GO_VERSION = '1.22.12';
 export const MUTAGEN_ENGINE_PROTOCOL_EPOCH = 'external-stream-v1';
 export const MUTAGEN_ENGINE_ARTIFACT_SCHEMA_VERSION = 1 as const;
 export const MUTAGEN_ENGINE_ARTIFACT_FORMAT = 'happier-mutagen-engine';
+const MUTAGEN_ENGINE_SOURCE_REPOSITORY = 'https://github.com/happier-dev/mutagen';
+const MUTAGEN_ENGINE_MANAGER_BUILD_TAGS = Object.freeze([
+  'mutagensidecar',
+  'mutagensspl',
+] as const);
+const MUTAGEN_ENGINE_AGENT_BUILD_TAGS = Object.freeze([
+  'mutagenagent',
+  'mutagensspl',
+] as const);
+const MUTAGEN_ENGINE_BUILD_TAGS = Object.freeze([
+  'mutagensidecar',
+  'mutagensspl',
+  'mutagenagent',
+] as const);
 
 /** SHA-256 values published by the Go distribution index for Go 1.22.12. */
 export const MUTAGEN_ENGINE_GO_DISTRIBUTION_SHA256 = Object.freeze({
@@ -52,7 +64,9 @@ export const MUTAGEN_ENGINE_SUPPORTED_TARGETS = [
 ] as const;
 
 export type MutagenEngineArtifactTarget = (typeof MUTAGEN_ENGINE_SUPPORTED_TARGETS)[number];
-export type MutagenEngineWatcher = 'fsevents' | 'inotify' | 'native' | 'polling';
+export type MutagenEngineWatcher = 'fsevents' | 'native' | 'polling';
+type MutagenEngineManagerRelativePath = 'bin/happier-mutagen' | 'bin/happier-mutagen.exe';
+type MutagenEngineAgentRelativePath = 'bin/happier-mutagen-agent' | 'bin/happier-mutagen-agent.exe';
 
 export type MutagenEngineArtifactErrorCode =
   | 'mutagen_engine_artifact_untrusted'
@@ -77,6 +91,9 @@ export interface MutagenEngineArtifactManifest {
   readonly engineVersion: string;
   /** Exact immutable commit whose bytes produced the manager/agent pair. */
   readonly forkCommit: string;
+  readonly sourceRepository: typeof MUTAGEN_ENGINE_SOURCE_REPOSITORY;
+  readonly sourceTag: string;
+  readonly sourceArchive: string;
   readonly forkBranch: typeof MUTAGEN_ENGINE_FORK_BRANCH;
   readonly transportSpikeCommit: typeof MUTAGEN_ENGINE_TRANSPORT_SPIKE_COMMIT;
   readonly upstreamTag: typeof MUTAGEN_ENGINE_UPSTREAM_TAG;
@@ -89,23 +106,26 @@ export interface MutagenEngineArtifactManifest {
   readonly protocolEpoch: typeof MUTAGEN_ENGINE_PROTOCOL_EPOCH;
   readonly targetTriple: MutagenEngineArtifactTarget;
   readonly supportedTargets?: readonly MutagenEngineArtifactTarget[];
-  readonly managerPath: 'bin/happier-mutagen';
-  readonly agentPath: 'bin/happier-mutagen-agent';
-  readonly licensePolicy: 'mit-only';
-  readonly ssplEnabled: false;
+  readonly managerPath: MutagenEngineManagerRelativePath;
+  readonly agentPath: MutagenEngineAgentRelativePath;
+  readonly licensePolicy: 'mixed-mit-sspl';
+  readonly ssplEnabled: true;
   readonly buildTags: readonly string[];
+  readonly managerBuildTags: readonly string[];
+  readonly agentBuildTags: readonly string[];
   readonly cgoEnabled: boolean;
   readonly watcher: MutagenEngineWatcher;
   readonly protocol?: string;
   readonly managerSha256: string;
   readonly agentSha256: string;
-  readonly releaseTag?: string;
+  readonly releaseTag: string;
 }
 
 export interface MutagenEngineArtifactPaths {
   readonly managerPath: string;
   readonly agentPath: string;
   readonly mutagenLicensePath: string;
+  readonly ssplLicensePath: string;
   readonly thirdPartyNoticesPath: string;
   readonly manifestPath: string;
   readonly checksumsPath: string;
@@ -134,11 +154,6 @@ export interface MutagenEngineReleaseAssetBundle {
 const ENGINE_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
 const COMMIT_PATTERN = /^[0-9a-f]{40}$/u;
-const RELATIVE_ARTIFACT_PATHS = new Set([
-  'bin/happier-mutagen',
-  'bin/happier-mutagen-agent',
-]);
-
 /** Resolve the only release-tag shape accepted for a Mutagen engine. */
 export function resolveMutagenEngineReleaseTag(engineVersion: string): string {
   const version = String(engineVersion ?? '').trim();
@@ -234,7 +249,10 @@ export function resolveMutagenEngineArtifactTarget(params: Readonly<{
   return target as MutagenEngineArtifactTarget;
 }
 
-export function resolveMutagenEngineArtifactPaths(payloadRoot: string): MutagenEngineArtifactPaths {
+export function resolveMutagenEngineArtifactPaths(
+  payloadRoot: string,
+  targetTriple: MutagenEngineArtifactTarget,
+): MutagenEngineArtifactPaths {
   const root = String(payloadRoot ?? '').trim();
   if (!root) {
     throw new MutagenEngineArtifactError(
@@ -242,10 +260,12 @@ export function resolveMutagenEngineArtifactPaths(payloadRoot: string): MutagenE
       'Mutagen engine payload root is required.',
     );
   }
+  const executablePaths = resolveMutagenEngineExecutableRelativePaths(targetTriple);
   return {
-    managerPath: join(root, 'bin', 'happier-mutagen'),
-    agentPath: join(root, 'bin', 'happier-mutagen-agent'),
+    managerPath: join(root, executablePaths.managerPath),
+    agentPath: join(root, executablePaths.agentPath),
     mutagenLicensePath: join(root, 'licenses', 'MUTAGEN-LICENSE'),
+    ssplLicensePath: join(root, 'licenses', 'SSPL-LICENSE'),
     thirdPartyNoticesPath: join(root, 'licenses', 'THIRD-PARTY-NOTICES'),
     manifestPath: join(root, '.happier-mutagen-engine.json'),
     checksumsPath: join(root, 'checksums.txt'),
@@ -263,9 +283,11 @@ export function assertMutagenEngineArtifactManifest(
   const record = asRecord(value, 'Mutagen engine manifest');
   assertOnlyKeys(record, new Set([
     'format', 'schemaVersion', 'component', 'engineVersion', 'forkCommit', 'forkBranch',
-    'transportSpikeCommit', 'upstreamTag', 'upstreamCommit', 'toolchain', 'protocolEpoch',
+    'sourceRepository', 'sourceTag', 'sourceArchive', 'transportSpikeCommit',
+    'upstreamTag', 'upstreamCommit', 'toolchain', 'protocolEpoch',
     'targetTriple', 'supportedTargets', 'managerPath', 'agentPath', 'licensePolicy',
-    'ssplEnabled', 'buildTags', 'cgoEnabled', 'watcher', 'protocol', 'managerSha256',
+    'ssplEnabled', 'buildTags', 'managerBuildTags', 'agentBuildTags',
+    'cgoEnabled', 'watcher', 'protocol', 'managerSha256',
     'agentSha256', 'releaseTag',
   ]), 'manifest');
   const format = readOptionalString(record, 'format') ?? MUTAGEN_ENGINE_ARTIFACT_FORMAT;
@@ -281,6 +303,17 @@ export function assertMutagenEngineArtifactManifest(
   const engineVersion = readRequiredString(record, 'engineVersion');
   if (!ENGINE_VERSION_PATTERN.test(engineVersion)) rejectManifest('manifest engineVersion is invalid');
   const forkCommit = readRequiredString(record, 'forkCommit');
+  const expectedReleaseTag = resolveMutagenEngineReleaseTag(engineVersion);
+  const sourceRepository = readRequiredString(record, 'sourceRepository');
+  if (sourceRepository !== MUTAGEN_ENGINE_SOURCE_REPOSITORY) {
+    rejectManifest(`manifest source repository must be ${MUTAGEN_ENGINE_SOURCE_REPOSITORY}`);
+  }
+  const sourceTag = readRequiredString(record, 'sourceTag');
+  if (sourceTag !== expectedReleaseTag) rejectManifest('manifest source tag must match the immutable engine version');
+  const sourceArchive = readRequiredString(record, 'sourceArchive');
+  if (sourceArchive !== `happier-mutagen-source-${expectedReleaseTag}.tar.gz`) {
+    rejectManifest('manifest source archive must match the immutable source tag');
+  }
   const forkBranch = readOptionalString(record, 'forkBranch') ?? MUTAGEN_ENGINE_FORK_BRANCH;
   if (forkBranch !== MUTAGEN_ENGINE_FORK_BRANCH) rejectManifest('manifest fork branch is not approved');
   const transportSpikeCommit = readOptionalString(record, 'transportSpikeCommit') ?? MUTAGEN_ENGINE_TRANSPORT_SPIKE_COMMIT;
@@ -330,25 +363,36 @@ export function assertMutagenEngineArtifactManifest(
 
   const managerPath = readRequiredString(record, 'managerPath');
   const agentPath = readRequiredString(record, 'agentPath');
-  if (managerPath !== 'bin/happier-mutagen' || agentPath !== 'bin/happier-mutagen-agent') {
+  const executablePaths = resolveMutagenEngineExecutableRelativePaths(targetTriple);
+  if (managerPath !== executablePaths.managerPath || agentPath !== executablePaths.agentPath) {
     rejectManifest('manifest must contain the manager and agent at the canonical bin paths');
   }
-  if (!RELATIVE_ARTIFACT_PATHS.has(managerPath) || !RELATIVE_ARTIFACT_PATHS.has(agentPath)) {
-    rejectManifest('manifest executable paths must be relative and canonical');
-  }
 
-  if (record.licensePolicy !== 'mit-only') rejectManifest('Mutagen engine license policy must be mit-only');
-  if (record.ssplEnabled !== false) rejectManifest('SSPL-enabled Mutagen artifacts are not accepted');
+  if (record.licensePolicy !== 'mixed-mit-sspl') {
+    rejectManifest('Mutagen engine license policy must be mixed-mit-sspl');
+  }
+  if (record.ssplEnabled !== true) rejectManifest('Mutagen engine SSPL support must be enabled');
   const buildTags = readStringArray(record, 'buildTags');
-  if (buildTags.some((tag) => /sspl/i.test(tag))) rejectManifest('SSPL build tags are not accepted');
+  const managerBuildTags = readStringArray(record, 'managerBuildTags');
+  const agentBuildTags = readStringArray(record, 'agentBuildTags');
+  assertExactBuildTags(managerBuildTags, MUTAGEN_ENGINE_MANAGER_BUILD_TAGS, 'manager');
+  assertExactBuildTags(agentBuildTags, MUTAGEN_ENGINE_AGENT_BUILD_TAGS, 'agent');
+  assertExactBuildTags(buildTags, MUTAGEN_ENGINE_BUILD_TAGS, 'aggregate');
   const cgoEnabled = readBoolean(record, 'cgoEnabled');
   const watcher = readRequiredString(record, 'watcher') as MutagenEngineWatcher;
-  if (!['fsevents', 'inotify', 'native', 'polling'].includes(watcher)) rejectManifest('manifest watcher policy is invalid');
-  if (targetTriple.startsWith('darwin-') && (!cgoEnabled || watcher !== 'fsevents')) {
-    rejectManifest('macOS Mutagen artifacts must use cgo-enabled FSEvents builds');
+  const expectedWatcher: MutagenEngineWatcher = targetTriple.startsWith('darwin-')
+    ? 'fsevents'
+    : targetTriple.startsWith('linux-')
+      ? 'polling'
+      : 'native';
+  if (watcher !== expectedWatcher) {
+    rejectManifest(`manifest watcher policy for ${targetTriple} must be ${expectedWatcher}`);
+  }
+  if (targetTriple.startsWith('darwin-') && !cgoEnabled) {
+    rejectManifest('macOS Mutagen artifacts must use cgo-enabled builds');
   }
   const releaseTag = readOptionalString(record, 'releaseTag');
-  if (releaseTag != null && releaseTag !== resolveMutagenEngineReleaseTag(engineVersion)) {
+  if (releaseTag == null || releaseTag !== expectedReleaseTag) {
     rejectManifest('manifest release tag does not match the immutable engine version');
   }
   const managerSha256 = readRequiredString(record, 'managerSha256');
@@ -375,6 +419,9 @@ export function assertMutagenEngineArtifactManifest(
     component: 'mutagen-engine',
     engineVersion,
     forkCommit,
+    sourceRepository: MUTAGEN_ENGINE_SOURCE_REPOSITORY,
+    sourceTag,
+    sourceArchive,
     forkBranch: MUTAGEN_ENGINE_FORK_BRANCH,
     transportSpikeCommit: MUTAGEN_ENGINE_TRANSPORT_SPIKE_COMMIT,
     upstreamTag: MUTAGEN_ENGINE_UPSTREAM_TAG,
@@ -386,49 +433,61 @@ export function assertMutagenEngineArtifactManifest(
     protocolEpoch: MUTAGEN_ENGINE_PROTOCOL_EPOCH,
     targetTriple,
     ...(supportedTargets ? { supportedTargets: Object.freeze([...supportedTargets]) } : {}),
-    managerPath: 'bin/happier-mutagen',
-    agentPath: 'bin/happier-mutagen-agent',
-    licensePolicy: 'mit-only',
-    ssplEnabled: false,
+    managerPath: executablePaths.managerPath,
+    agentPath: executablePaths.agentPath,
+    licensePolicy: 'mixed-mit-sspl',
+    ssplEnabled: true,
     buildTags: Object.freeze([...buildTags]),
+    managerBuildTags: Object.freeze([...managerBuildTags]),
+    agentBuildTags: Object.freeze([...agentBuildTags]),
     cgoEnabled,
     watcher,
     ...(protocol ? { protocol } : {}),
     managerSha256,
     agentSha256,
-    ...(releaseTag ? { releaseTag } : {}),
+    releaseTag,
   });
 }
 
 /** Validate the complete extracted payload before it enters managed install. */
 export function assertMutagenEngineArtifactPayload(params: Readonly<{
   payloadRoot: string;
-  targetTriple?: MutagenEngineArtifactTarget;
+  targetTriple: MutagenEngineArtifactTarget;
   engineVersion?: string;
   /** Repository build tooling may supply its already-validated release policy; runtime callers omit this. */
   trustedForkReleaseCommit?: string | null;
 }>): MutagenEngineArtifactManifest {
   const root = String(params.payloadRoot ?? '').trim();
   if (!root) rejectPayload('Mutagen engine payload root is required');
-  const paths = resolveMutagenEngineArtifactPaths(root);
+  const paths = resolveMutagenEngineArtifactPaths(root, params.targetTriple);
   for (const [label, path] of [
     ['manager binary', paths.managerPath],
     ['agent binary', paths.agentPath],
     ['Mutagen license', paths.mutagenLicensePath],
+    ['SSPL license', paths.ssplLicensePath],
     ['third-party notices', paths.thirdPartyNoticesPath],
     ['checksums', paths.checksumsPath],
     ['artifact manifest', paths.manifestPath],
   ] as const) {
     assertRegularFile(path, label);
   }
-  if (process.platform !== 'win32' || params.targetTriple !== 'windows-amd64') {
+  if (params.targetTriple !== 'windows-amd64') {
     assertExecutable(paths.managerPath, 'manager binary');
     assertExecutable(paths.agentPath, 'agent binary');
   }
   const license = readFileSync(paths.mutagenLicensePath, 'utf8');
-  if (!license.trim() || /SSPL/i.test(license)) rejectPayload('Mutagen license closure is missing or contains SSPL text');
+  if (!/\bMIT License\b/iu.test(license) || !/Server Side Public License/iu.test(license)) {
+    rejectPayload('Mutagen umbrella license is empty or does not describe the mixed MIT and SSPL source license boundary');
+  }
+  const ssplLicense = readFileSync(paths.ssplLicensePath, 'utf8');
+  if (!/server\s+side\s+public\s+license/iu.test(ssplLicense) || !/version\s+1\b/iu.test(ssplLicense)) {
+    rejectPayload('SSPL license is empty or not recognizable as Server Side Public License Version 1');
+  }
   if (!readFileSync(paths.thirdPartyNoticesPath, 'utf8').trim()) rejectPayload('third-party notice closure is empty');
-  const checksums = parseMutagenEngineChecksums(readFileSync(paths.checksumsPath, 'utf8'));
+  const checksums = parseMutagenEngineChecksums(
+    readFileSync(paths.checksumsPath, 'utf8'),
+    params.targetTriple,
+  );
 
   let rawManifest: unknown;
   try {
@@ -442,14 +501,14 @@ export function assertMutagenEngineArtifactPayload(params: Readonly<{
       ? {}
       : { trustedForkReleaseCommit: params.trustedForkReleaseCommit },
   );
-  if (params.targetTriple != null && manifest.targetTriple !== params.targetTriple) {
+  if (manifest.targetTriple !== params.targetTriple) {
     rejectPayload(`artifact target triple ${manifest.targetTriple} does not match requested ${params.targetTriple}`);
   }
   if (params.engineVersion != null && manifest.engineVersion !== params.engineVersion) {
     rejectPayload(`artifact engine version ${manifest.engineVersion} does not match requested ${params.engineVersion}`);
   }
-  if (checksums.get('bin/happier-mutagen') !== manifest.managerSha256
-    || checksums.get('bin/happier-mutagen-agent') !== manifest.agentSha256) {
+  if (checksums.get(manifest.managerPath) !== manifest.managerSha256
+    || checksums.get(manifest.agentPath) !== manifest.agentSha256) {
     rejectPayload('checksums.txt does not match the signed artifact manifest');
   }
   if (sha256File(paths.managerPath) !== manifest.managerSha256) {
@@ -458,7 +517,16 @@ export function assertMutagenEngineArtifactPayload(params: Readonly<{
   if (sha256File(paths.agentPath) !== manifest.agentSha256) {
     rejectPayload('agent binary checksum does not match the artifact manifest');
   }
-  assertNoForbiddenEntries(root);
+  for (const [relativePath, absolutePath] of [
+    ['licenses/MUTAGEN-LICENSE', paths.mutagenLicensePath],
+    ['licenses/SSPL-LICENSE', paths.ssplLicensePath],
+    ['licenses/THIRD-PARTY-NOTICES', paths.thirdPartyNoticesPath],
+    ['.happier-mutagen-engine.json', paths.manifestPath],
+  ] as const) {
+    if (sha256File(absolutePath) !== checksums.get(relativePath)) {
+      rejectPayload(`${relativePath} checksum does not match checksums.txt`);
+    }
+  }
   return manifest;
 }
 
@@ -501,18 +569,49 @@ function assertOnlyKeys(record: Record<string, unknown>, allowed: ReadonlySet<st
   if (unknown.length > 0) rejectManifest(`${label} contains unknown field(s): ${unknown.join(', ')}`);
 }
 
-function parseMutagenEngineChecksums(value: string): ReadonlyMap<string, string> {
+function parseMutagenEngineChecksums(
+  value: string,
+  targetTriple: MutagenEngineArtifactTarget,
+): ReadonlyMap<string, string> {
   const result = new Map<string, string>();
+  const executablePaths = resolveMutagenEngineExecutableRelativePaths(targetTriple);
+  const expectedPaths = new Set([
+    executablePaths.managerPath,
+    executablePaths.agentPath,
+    'licenses/MUTAGEN-LICENSE',
+    'licenses/SSPL-LICENSE',
+    'licenses/THIRD-PARTY-NOTICES',
+    '.happier-mutagen-engine.json',
+  ]);
   const lines = value.trim().split(/\r?\n/u);
   for (const line of lines) {
-    const match = /^([0-9a-f]{64}) {2}(bin\/happier-mutagen(?:-agent)?)$/u.exec(line);
-    if (!match || result.has(match[2])) rejectPayload('checksums.txt has malformed or duplicate entries');
+    const match = /^([0-9a-f]{64}) {2}(.+)$/u.exec(line);
+    if (!match || !expectedPaths.has(match[2]) || result.has(match[2])) {
+      rejectPayload('checksums.txt has malformed, unexpected, or duplicate entries');
+    }
     result.set(match[2], match[1]);
   }
-  if (result.size !== 2 || !result.has('bin/happier-mutagen') || !result.has('bin/happier-mutagen-agent')) {
-    rejectPayload('checksums.txt must contain exactly the manager and agent checksums');
+  if (result.size !== expectedPaths.size || [...expectedPaths].some((path) => !result.has(path))) {
+    rejectPayload('checksums.txt must contain the exact executable, license, notice, and manifest closure');
   }
   return result;
+}
+
+function resolveMutagenEngineExecutableRelativePaths(
+  targetTriple: MutagenEngineArtifactTarget,
+): Readonly<{
+  managerPath: MutagenEngineManagerRelativePath;
+  agentPath: MutagenEngineAgentRelativePath;
+}> {
+  if (!MUTAGEN_ENGINE_SUPPORTED_TARGETS.includes(targetTriple)) {
+    throw new MutagenEngineArtifactError(
+      'mutagen_engine_unsupported_platform',
+      `Unsupported Mutagen engine target triple: ${String(targetTriple)}`,
+    );
+  }
+  return targetTriple === 'windows-amd64'
+    ? { managerPath: 'bin/happier-mutagen.exe', agentPath: 'bin/happier-mutagen-agent.exe' }
+    : { managerPath: 'bin/happier-mutagen', agentPath: 'bin/happier-mutagen-agent' };
 }
 
 function readRequiredString(record: Record<string, unknown>, key: string): string {
@@ -537,6 +636,16 @@ function readStringArray(record: Record<string, unknown>, key: string): string[]
     rejectManifest(`manifest ${key} must be a string array`);
   }
   return (value as string[]).map((entry) => entry.trim());
+}
+
+function assertExactBuildTags(
+  actual: readonly string[],
+  expected: readonly string[],
+  label: 'manager' | 'agent' | 'aggregate',
+): void {
+  if (actual.length !== expected.length || actual.some((tag, index) => tag !== expected[index])) {
+    rejectManifest(`manifest ${label} build tags must be exactly ${expected.join(', ')}`);
+  }
 }
 
 function rejectManifest(message: string): never {
@@ -569,25 +678,6 @@ function assertExecutable(path: string, label: string): void {
 
 function sha256File(path: string): string {
   return createHash('sha256').update(readFileSync(path)).digest('hex');
-}
-
-function assertNoForbiddenEntries(root: string): void {
-  const visit = (directory: string): void => {
-    let entries;
-    try {
-      entries = readdirSync(directory, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const entry of entries) {
-      const path = join(directory, entry.name);
-      if (/sspl/i.test(entry.name) || entry.name === 'LICENSE-SSPL') {
-        rejectPayload(`SSPL payload entry is forbidden: ${relative(root, path)}`);
-      }
-      if (entry.isDirectory()) visit(path);
-    }
-  };
-  visit(root);
 }
 
 function isWindowsPathLike(path: string): boolean {
