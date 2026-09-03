@@ -304,14 +304,7 @@ describe("plugin webhook Account status projection", () => {
                 targetStatus: "current",
                 publicUrl: "https://happier.example/v1/plugins/webhooks/opaque-status",
                 queue: { queued: 1, retrying: 1, claimed: 1, deadLetter: 1 },
-                pendingTargetTransfer: {
-                    previousTargetMaterialization: {
-                        machineId: "machine-old",
-                        materializationId: "materialization-old",
-                        pluginId: "acme.github",
-                    },
-                    eligibleDeliveryCount: 3,
-                },
+                pendingTargetTransfer: { eligibleDeliveryCount: 3 },
                 credentialRotation: {
                     previousCredentialVersionId: "credential-previous",
                     previousAcceptUntilMs: NOW.getTime() + 60_000,

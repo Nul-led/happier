@@ -30,6 +30,14 @@ const resolveWebhookDestinationAddresses: WebhookDestinationAddressResolver = as
   (await lookup(hostname, { all: true, verbatim: true })).map((answer) => answer.address)
 );
 
+/**
+ * Keeps the bound the previous global-`fetch` transport applied — undici caps
+ * header and body waits at 300s — because `node:http` applies none. An
+ * unresponsive receiver otherwise holds this socket and the sequential channel
+ * loop behind it forever.
+ */
+const WEBHOOK_REQUEST_WALL_TIME_MS = 300_000;
+
 type AdmittedWebhookDestination = Readonly<{
   url: string;
   validatedAddresses: readonly string[];
@@ -161,6 +169,7 @@ export async function sendWebhookActivityNotificationAsync(params: Readonly<{
     method: 'POST',
     body,
     signal: abort.signal,
+    wallTimeMs: WEBHOOK_REQUEST_WALL_TIME_MS,
   });
   response.cancel();
   if (response.status >= 300 && response.status < 400) {

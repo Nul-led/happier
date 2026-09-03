@@ -199,21 +199,14 @@ describe('PluginWebhookAdministrationScreen', () => {
         expect(screen.getTextContent()).toContain('source-unattached');
     });
 
-    it('resumes a partial prior-target delivery move from persisted endpoint status', async () => {
+    it('resumes a partial stale-target delivery move from persisted endpoint status', async () => {
         const client = createClient();
         const fixture = await client.readStatus({ pageSize: 100, deadLetterPageSize: 100 });
         vi.mocked(client.readStatus).mockResolvedValue({
             ...fixture,
             endpoints: [{
                 ...fixture.endpoints[0]!,
-                pendingTargetTransfer: {
-                    previousTargetMaterialization: {
-                        machineId: 'machine-old',
-                        materializationId: 'materialization-old',
-                        pluginId: 'acme.github',
-                    },
-                    eligibleDeliveryCount: 2,
-                },
+                pendingTargetTransfer: { eligibleDeliveryCount: 2 },
             }],
         });
         vi.mocked(client.executeAction).mockResolvedValueOnce({
@@ -233,11 +226,6 @@ describe('PluginWebhookAdministrationScreen', () => {
         expect(client.executeAction).toHaveBeenCalledWith('plugin.webhook.delivery.movePending', {
             webhookEndpointId: 'wh_ep_AAECAwQFBgcICQoLDA0ODw',
             endpointRevision: 1,
-            previousTargetMaterialization: {
-                machineId: 'machine-old',
-                materializationId: 'materialization-old',
-                pluginId: 'acme.github',
-            },
             targetMaterialization: {
                 machineId: 'machine-1',
                 materializationId: 'materialization-1',
