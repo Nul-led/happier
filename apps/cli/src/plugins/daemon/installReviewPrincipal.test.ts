@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { PluginInstallationReview } from './changeContract';
+import type { PluginInstallationReview } from '@happier-dev/protocol/marketplace/internal';
 import {
   derivePluginInstallReviewPrincipal,
   derivePluginInstallReviewPrincipalDigest,
@@ -30,7 +30,7 @@ function review() {
     optionalHostAccess: [],
     rawCredentialAccess: [],
     compatibility: { happier: '*', runtimeApiVersion: 1 },
-    updatePolicy: 'automatic',
+    updatePolicy: 'reviewSensitiveChanges',
   } satisfies PluginInstallationReview;
 }
 
@@ -48,7 +48,7 @@ describe('plugin install-review principal digest', () => {
       .toBe(derivePluginInstallReviewPrincipal(initial).digest);
   });
 
-  it('changes with package, distribution, publisher, or package-signature authority', () => {
+  it('changes only with plugin/package or trusted distribution identity', () => {
     const initial = review();
     const digest = derivePluginInstallReviewPrincipal(initial).digest;
 
@@ -62,16 +62,50 @@ describe('plugin install-review principal digest', () => {
     }).digest).not.toBe(digest);
     expect(derivePluginInstallReviewPrincipal({
       ...initial,
+      updateChannel: { ...initial.updateChannel, registryProfileId: 'acme-profile' },
+    }).digest).not.toBe(digest);
+    expect(derivePluginInstallReviewPrincipal({
+      ...initial,
+      updateChannel: {
+        kind: 'path',
+        locator: '/Users/alice/private/plugins/voice',
+        development: false,
+      },
+    }).digest).not.toBe(digest);
+  });
+
+  it('excludes unverified catalog publisher presentation and npm registry signature keys', () => {
+    const initial = review();
+    const principal = derivePluginInstallReviewPrincipal(initial);
+    const digest = principal.digest;
+
+    // Registry signing keys authenticate the registry response, not the plugin
+    // publisher shown by a discovery catalog; catalog publisher labels are
+    // unverified presentation/curation metadata. Key rotation and label changes
+    // are not publisher-channel changes (PEP-SDK r0.77 / PEP-MASTER r0.138).
+    expect(derivePluginInstallReviewPrincipal({
+      ...initial,
       publisherIdentity: {
         status: 'unverified',
         id: 'acme',
         displayName: 'Acme',
       },
-    }).digest).not.toBe(digest);
+    }).digest).toBe(digest);
     expect(derivePluginInstallReviewPrincipal({
       ...initial,
-      signature: { status: 'verified', keyId: 'publisher-key-2' },
-    }).digest).not.toBe(digest);
+      publisherIdentity: { status: 'unavailable' },
+    }).digest).toBe(digest);
+    expect(derivePluginInstallReviewPrincipal({
+      ...initial,
+      signature: { status: 'verified', keyId: 'registry-key-rotated' },
+    }).digest).toBe(digest);
+    expect(derivePluginInstallReviewPrincipal({
+      ...initial,
+      signature: { status: 'notProvided' },
+    }).digest).toBe(digest);
+
+    expect('publisherIdentity' in principal.presentation).toBe(false);
+    expect('packageSignature' in principal.presentation).toBe(false);
   });
 
   it('returns a safe presentation from the exact facts used by the digest', () => {
@@ -86,15 +120,6 @@ describe('plugin install-review principal digest', () => {
         kind: 'npm',
         packageName: '@happier/plugin-voice-openai',
         registryOrigin: 'https://registry.npmjs.org',
-      },
-      publisherIdentity: {
-        status: 'unverified',
-        id: 'happier',
-        displayName: 'Happier',
-      },
-      packageSignature: {
-        status: 'verified',
-        keyId: 'publisher-key-1',
       },
     });
     expect(derivePluginInstallReviewPrincipalDigest(npm.presentation)).toBe(npm.digest);
@@ -116,12 +141,14 @@ describe('plugin install-review principal digest', () => {
       kind: 'path',
       development: true,
     });
-    expect(path.presentation.publisherIdentity).toEqual({
-      status: 'unverified',
-      id: 'happier',
-      displayName: 'Happier',
+    expect(path.presentation).toEqual({
+      v: 1,
+      packageIdentity: {
+        pluginId: 'happier.voice.openai',
+        packageName: '@happier/plugin-voice-openai',
+      },
+      distributionIdentity: { kind: 'path', development: true },
     });
-    expect(path.presentation.packageSignature).toEqual({ status: 'unavailable' });
 
     const archive = derivePluginInstallReviewPrincipal({
       ...review(),
@@ -129,6 +156,7 @@ describe('plugin install-review principal digest', () => {
         kind: 'archive',
         locator: 'https://user:password@example.test/private/plugin.tgz?token=secret',
         integrity: 'secret-integrity',
+        integrityBasis: 'observed',
       },
       updateChannel: {
         kind: 'archive',

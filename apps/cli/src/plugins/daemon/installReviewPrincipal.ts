@@ -7,7 +7,7 @@ import {
   type PluginInstallReviewPrincipalPresentationV1,
 } from '@happier-dev/protocol';
 
-import type { PluginInstallationReview } from './changeContract';
+import type { PluginInstallationReview } from '@happier-dev/protocol/marketplace/internal';
 
 function distributionIdentity(
   review: PluginInstallationReview,
@@ -32,20 +32,6 @@ function distributionIdentity(
   };
 }
 
-function publisherIdentity(
-  review: PluginInstallationReview,
-): PluginInstallReviewPrincipalPresentationV1['publisherIdentity'] {
-  return Object.freeze({ ...review.publisherIdentity });
-}
-
-function packageSignature(
-  review: PluginInstallationReview,
-): PluginInstallReviewPrincipalPresentationV1['packageSignature'] {
-  return review.signature.status === 'verified'
-    ? { status: 'verified', keyId: review.signature.keyId }
-    : { status: 'unavailable' };
-}
-
 export function derivePluginInstallReviewPrincipalDigest(
   presentationInput: PluginInstallReviewPrincipalPresentationV1,
 ): PluginInstallReviewPrincipalDigest {
@@ -68,9 +54,15 @@ export function pluginInstallReviewPrincipalPresentationMatchesDigest(
 /**
  * Derives the stable principal reviewed for a plugin installation.
  *
- * Package version, artifact integrity, and runtime bytes are deliberately excluded:
- * an update by the same package/distribution/publisher/signature authority remains the same
- * reviewed principal, while changing any of those authority identities invalidates it.
+ * The presentation is exactly the authorization identity: plugin/package identity plus
+ * the trusted distribution identity owned by the current installation channel.
+ * Package version, artifact integrity, runtime bytes, unverified catalog publisher
+ * labels, and npm registry signature keys are deliberately excluded: a registry
+ * signing key authenticates the registry response rather than the publisher, and
+ * catalog publisher labels are unverified presentation/curation metadata, so key
+ * rotation and label changes are not publisher-channel changes (PEP-SDK r0.77 /
+ * PEP-MASTER r0.138). Those facts stay visible on the installation review record
+ * without participating in principal identity.
  */
 export type PluginInstallReviewPrincipal = Readonly<{
   digest: PluginInstallReviewPrincipalDigest;
@@ -87,8 +79,6 @@ export function derivePluginInstallReviewPrincipal(
       packageName: review.packageIdentity.name,
     },
     distributionIdentity: distributionIdentity(review),
-    publisherIdentity: publisherIdentity(review),
-    packageSignature: packageSignature(review),
   });
   const digest = derivePluginInstallReviewPrincipalDigest(presentation);
   return Object.freeze({ digest, presentation: Object.freeze(presentation) });

@@ -301,6 +301,38 @@ function projectSessionHeaderActions(
 }
 
 /**
+ * Projects the one declarative Universal Search provider descriptor.
+ *
+ * It carries identity and the resolved qualified query Action, and nothing
+ * else. Title, icon, availability, execution target and currentness are the
+ * referenced Action's own projected facts, which the host already holds — a
+ * second copy here would be a second answer to the same question.
+ */
+function projectSearchProviders(
+    registry: ResolvedContributionRegistry,
+    entriesById: Record<string, PluginUiProjectedEntry>,
+): void {
+    for (const contribution of registry.searchProviders ?? []) {
+        const pluginId = readPluginId(contribution);
+        if (!pluginId
+            || contribution.identity.pluginId !== pluginId
+            || contribution.identity.localId !== contribution.definition.id) {
+            continue;
+        }
+        const definition = contribution.definition;
+        addEntry(entriesById, {
+            id: `searchProvider:${pluginId}:${definition.id}`,
+            pluginId,
+            contributionKind: 'searchProvider',
+            descriptorId: definition.id,
+            // The descriptor spells a same-plugin local id; the qualified
+            // identity is resolved here, once, so no consumer re-qualifies it.
+            action: Object.freeze({ pluginId, localId: definition.action }),
+        });
+    }
+}
+
+/**
  * Projects the declared, same-plugin transcript-tail Resource binding. The
  * generic UI Resource consumer retains snapshot validation and lifecycle;
  * this cold projection only preserves the manifest-qualified descriptor.
@@ -1308,6 +1340,7 @@ export const pluginUiProjectionFamily = definePluginProjectionFamilyV2({
         const entriesById: Record<string, PluginUiProjectedEntry> = {};
         projectTranslations(registry, entriesById, requestedLocale);
         projectSessionHeaderActions(registry, entriesById);
+        projectSearchProviders(registry, entriesById);
         projectTranscriptActivities(registry, entriesById);
         projectSessionInfoSections(registry, entriesById, hostRuntime?.declarative, hostRuntime);
         projectGeneratedHostedWebRenderers(

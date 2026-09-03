@@ -9,6 +9,7 @@ import {
 } from '@/session/external/currentGlobalRouting';
 
 import type { StablePluginConnectedAccountsOwner } from '@/plugins/runtime/invocation/services/connectedAccounts';
+import { createTargetedContributionsService } from '@/plugins/runtime/invocation/services/targetedContributions';
 import type { PluginReloadController } from '@/plugins/runtime/reload/controller';
 
 const ownerMocks = vi.hoisted(() => ({
@@ -63,6 +64,13 @@ import {
 } from './candidateStorage';
 
 const temporaryHomes = new Set<string>();
+const unusedTargetedContributionsOwner = createTargetedContributionsService({
+  subscribeToCatalogChanges: () => () => undefined,
+  readAdmittedSnapshot: async () => Object.freeze({
+    generation: 'unused-target-generation',
+    contributions: Object.freeze([]),
+  }),
+});
 
 afterEach(async () => {
   await Promise.all(
@@ -108,6 +116,7 @@ function createReloadController(): PluginReloadController {
     }),
     tryAcquireRuntimeRegistry: vi.fn(() => null),
     isRuntimeRegistryCurrent: vi.fn(() => false),
+    invalidateRuntimeProjection: vi.fn(),
     applyResourceSessionAccessWitness: vi.fn(),
     shutdown: vi.fn(async () => undefined),
     getState: () => Object.freeze({
@@ -116,6 +125,7 @@ function createReloadController(): PluginReloadController {
       lastResult: null,
     }),
     subscribe: vi.fn(() => () => undefined),
+    getTargetedContributionsOwner: () => unusedTargetedContributionsOwner,
     publishDurableRunningSessionDisposition: vi.fn(),
     currentGlobalExternalSessions: createCurrentGlobalExternalSessionsRouter(
       () => null,

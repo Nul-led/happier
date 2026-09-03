@@ -9,8 +9,8 @@ vi.mock('@/daemon/controlClient', () => ({
 vi.mock('@/daemon/ensureDaemon', () => ({ ensureDaemonRunningForSessionCommand: vi.fn() }));
 vi.mock('@/terminal/prompts/promptConfirmYesNo', () => ({ promptConfirmYesNo: vi.fn() }));
 
-import { createPluginInstallationReviewFixture } from '@/plugins/testkit/pluginInstallationReviewFixture';
-import type { PluginInstallationReview } from './changeContract';
+import { createPluginInstallationReviewFixture } from '@happier-dev/protocol/testing/pluginInstallationReviewFixture';
+import type { PluginInstallationReview } from '@happier-dev/protocol/marketplace/internal';
 import {
   decideUserPluginChange,
   formatPluginInstallationReviewForTerminal,
@@ -181,7 +181,7 @@ describe('requestUserPluginChange', () => {
           }],
         }],
       },
-      updatePolicy: 'automatic',
+      updatePolicy: 'reviewSensitiveChanges',
     }));
     expect(output).toContain('Identity:');
     expect(output).toContain('Verification signals:');
@@ -648,7 +648,7 @@ describe('requestUserPluginChange', () => {
       review: completeReview({
         version: '1.2.3',
         packageIdentity: { name: '@acme/example', version: '1.2.3' },
-        source: { kind: 'npm', locator: '@acme/example@1.2.3' },
+        source: { kind: 'npm', locator: '@acme/example@1.2.3', integrity: 'sha512-example', integrityBasis: 'expected' },
         executableRealms: ['daemon' as const],
         requiredHostAccess: [],
         optionalHostAccess: [],
@@ -678,7 +678,7 @@ describe('requestUserPluginChange', () => {
           integrity: `sha512-${Buffer.alloc(64, 1).toString('base64')}`,
           manifestDigest: `sha256:${'a'.repeat(64)}`,
           review: { status: 'approved', reviewedAt: '2026-07-21T00:00:00.000Z' },
-          updatePolicy: 'automatic',
+          updatePolicy: 'reviewSensitiveChanges',
         },
       },
       approval: 'prompt',
@@ -714,7 +714,7 @@ describe('requestUserPluginChange', () => {
       review: completeReview({
         version: '1.2.3',
         packageIdentity: { name: '@acme/example', version: '1.2.3' },
-        source: { kind: 'npm', locator: '@acme/example@1.2.3' },
+        source: { kind: 'npm', locator: '@acme/example@1.2.3', integrity: 'sha512-example', integrityBasis: 'expected' },
         executableRealms: ['daemon' as const],
         requiredHostAccess: [],
         optionalHostAccess: [],
@@ -738,7 +738,7 @@ describe('requestUserPluginChange', () => {
           integrity: `sha512-${Buffer.alloc(64, 1).toString('base64')}`,
           manifestDigest: `sha256:${'a'.repeat(64)}`,
           review: { status: 'approved', reviewedAt: '2026-07-21T00:00:00.000Z' },
-          updatePolicy: 'automatic',
+          updatePolicy: 'reviewSensitiveChanges',
         },
       },
       approval: 'none',

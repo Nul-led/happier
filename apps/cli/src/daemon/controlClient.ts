@@ -113,12 +113,9 @@ import type {
 } from './spawn/persistedTakeoverAdmission';
 import { buildDaemonControlHttpHeaders } from './controlHttp';
 import {
-  PluginDevelopmentSourceRootReviewSchema,
-  PluginInstallationReviewSchema,
   type PluginChangeDecision,
   type PluginChangeDecisionResult,
   type PluginChangeListResult,
-  type PluginChangePendingReviewResult,
   type PluginChangeRequest,
   type PluginChangeRequestResult,
   type PluginChangeStatusRequest,
@@ -126,6 +123,10 @@ import {
   type PluginChangeTerminalResult,
   type PluginPendingChangeEntry,
 } from '@/plugins/daemon/changeContract';
+import {
+  PluginChangePendingReviewResultSchema,
+  type PluginChangePendingReviewResult,
+} from '@happier-dev/protocol/marketplace/internal';
 import {
   PLUGIN_ACTION_EXECUTE_PATH,
   PLUGIN_CATALOG_READ_PATH,
@@ -545,32 +546,12 @@ function parseDaemonPluginChangeReviewResult(
   result: unknown,
 ): PluginChangePendingReviewResult | null | undefined {
   if (!result || typeof result !== 'object') return undefined;
-  const record = result as Readonly<Record<string, unknown>>;
-  if (record.kind === 'sourceRootReviewRequired') {
-    const pendingChangeId = typeof record.pendingChangeId === 'string'
-      ? record.pendingChangeId.trim()
-      : '';
-    const review = PluginDevelopmentSourceRootReviewSchema.safeParse(record.review);
-    if (!pendingChangeId || !review.success) return null;
-    return {
-      kind: 'sourceRootReviewRequired',
-      pendingChangeId,
-      review: review.data,
-    };
-  }
-  if (record.kind === 'reviewRequired') {
-    const pendingChangeId = typeof record.pendingChangeId === 'string'
-      ? record.pendingChangeId.trim()
-      : '';
-    const review = PluginInstallationReviewSchema.safeParse(record.review);
-    if (!pendingChangeId || !review.success) return null;
-    return {
-      kind: 'reviewRequired',
-      pendingChangeId,
-      review: review.data,
-    };
-  }
-  return undefined;
+  const kind = (result as Readonly<Record<string, unknown>>).kind;
+  // Non-review arms fall through to the caller's own result handling; only the
+  // two pending-review arms are parsed — and fail closed — here.
+  if (kind !== 'reviewRequired' && kind !== 'sourceRootReviewRequired') return undefined;
+  const parsed = PluginChangePendingReviewResultSchema.safeParse(result);
+  return parsed.success ? parsed.data : null;
 }
 
 export async function requestDaemonPluginChange(

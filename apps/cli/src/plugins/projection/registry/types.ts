@@ -55,6 +55,7 @@ import type {
   PluginJsonSchemaV2,
   PluginComposerAttachmentContributionV1,
   PluginComposerReferenceProviderContributionV1,
+  PluginSearchProviderContributionV1,
   PluginComposerControlContributionV1,
   PluginComposerRegionContributionV1,
   PreparedPluginJsonSchema,
@@ -112,6 +113,9 @@ export type ResolvedComposerAttachmentContribution = ResolvedTargetUiContributio
 >;
 export type ResolvedComposerReferenceContribution = ResolvedTargetUiContribution<
     PluginComposerReferenceProviderContributionV1
+>;
+export type ResolvedSearchProviderContribution = ResolvedTargetUiContribution<
+    PluginSearchProviderContributionV1
 >;
 export type ResolvedComposerControlContribution = ResolvedTargetUiContribution<
     PluginComposerControlContributionV1
@@ -825,6 +829,7 @@ export type ResolvedContributionInputs = Readonly<{
     uiRenderersV2?: readonly ResolvedUiRendererV2Contribution[];
     uiTranslationsV2?: readonly ResolvedUiTranslationBundleV2Contribution[];
     composerReferences?: readonly ResolvedComposerReferenceContribution[];
+    searchProviders?: readonly ResolvedSearchProviderContribution[];
     composerAttachments?: readonly ResolvedComposerAttachmentContribution[];
     composerControls?: readonly ResolvedComposerControlContribution[];
     composerRegions?: readonly ResolvedComposerRegionContribution[];
@@ -879,6 +884,7 @@ export type ResolvedContributionRegistry = Readonly<{
     uiRenderersV2?: readonly ResolvedUiRendererV2Contribution[];
     uiTranslationsV2?: readonly ResolvedUiTranslationBundleV2Contribution[];
     composerReferences?: readonly ResolvedComposerReferenceContribution[];
+    searchProviders?: readonly ResolvedSearchProviderContribution[];
     composerAttachments?: readonly ResolvedComposerAttachmentContribution[];
     composerControls?: readonly ResolvedComposerControlContribution[];
     composerRegions?: readonly ResolvedComposerRegionContribution[];

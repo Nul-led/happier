@@ -12,7 +12,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { configuration, reloadConfiguration } from '@/configuration';
 import type { DaemonPluginChangeService } from '@/plugins/daemon/changeService';
 import { createDaemonPluginRuntimeOwner } from '@/plugins/daemon/runtimeOwner';
-import { createMarketplaceCatalogDocument, createMarketplaceCatalogEntry } from '@/plugins/testkit/marketplaceCatalog';
 import { createEnvKeyScope } from '@/testkit/env/envScope';
 import { createTempDir, removeTempDir } from '@/testkit/fs/tempDir';
 import { captureConsoleJsonOutput, captureConsoleText } from '@/testkit/logger/captureOutput';
@@ -135,21 +134,28 @@ async function createRemoteMarketplaceServer(): Promise<Readonly<{
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? '127.0.0.1'}`);
     if (url.pathname === '/catalog.json') {
       res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify(createMarketplaceCatalogDocument({
+      // Raw obsolete URL-catalog fixture in the retired
+      // happier_plugin_marketplace_catalog_v1 wire shape: URL-based
+      // `packageUrl` entries the current npm-origin marketplace index must
+      // reject. Untyped on purpose; the legacy protocol schema is deleted.
+      res.end(JSON.stringify({
+        t: 'happier_plugin_marketplace_catalog_v1',
+        schemaVersion: 1,
         sourceUrl: `${url.origin}/catalog.json`,
         title: 'Curated Marketplace',
         description: 'Curated plugin discovery feed',
         entries: [
-          createMarketplaceCatalogEntry({
-            pluginId: SAMPLE_PLUGIN_ID,
+          {
+            id: `marketplace.${SAMPLE_PLUGIN_ID}`,
+            manifestId: SAMPLE_PLUGIN_ID,
             title: 'Acme Sample',
             description: 'Sample plugin from the marketplace',
             sourceUrl: `${url.origin}/entries/acme.sample.json`,
             packageUrl: `${url.origin}/plugins/acme.sample.tar.gz`,
             categories: ['providers'],
-          }),
+          },
         ],
-      })));
+      }));
       return;
     }
 
@@ -287,7 +293,7 @@ async function seedExactCuratedMarketplaceListing(params: Readonly<{
       review: { status: params.reviewStatus ?? 'approved', reviewedAt: '2026-07-21T00:00:00.000Z' },
       categories: ['actions'],
       media: [],
-      updatePolicy: 'curated-auto' as const,
+      updatePolicy: 'reviewSensitiveChanges' as const,
       links: {},
     }],
     diagnostics: [],
@@ -310,8 +316,28 @@ async function seedExactCuratedMarketplaceListing(params: Readonly<{
 }
 
 function marketplaceIndexServiceForSnapshot(snapshot: MarketplaceIndexSourceSnapshotV1) {
+  const querySources = async (raw: unknown) => createMarketplaceIndex({ revision: 1, sources: [snapshot], query: raw });
   return {
-    querySources: async (raw: unknown) => createMarketplaceIndex({ revision: 1, sources: [snapshot], query: raw }),
+    querySources,
+    // The exact-listing method is the one owner every single-listing command
+    // and the Install and Trust action reach; the double answers from the same
+    // seeded source rather than a second fixture path.
+    queryExactListing: async (query: Readonly<{ sourceId: string; pluginId: string; packageName?: string }>) => ({
+      ok: true as const,
+      source: {
+        id: snapshot.source.id,
+        title: snapshot.source.title,
+        sourceUrl: snapshot.source.sourceUrl,
+        enabled: true,
+        origin: snapshot.source.kind,
+      },
+      result: await querySources({
+        text: '',
+        cursor: null,
+        limit: 1,
+        filters: { sourceIds: [query.sourceId], pluginIds: [query.pluginId], includeUnavailable: true },
+      }),
+    }),
   };
 }
 
@@ -579,7 +605,7 @@ describe('handlePluginsCommand', () => {
       expect(output.text()).toContain('happier plugins update <pluginId> [--json]');
       expect(output.text()).toContain('happier plugins rollback <pluginId> [--json]');
       expect(output.text()).toContain('happier plugins uninstall <pluginId> [--delete-data --yes] [--json]');
-      expect(output.text()).toContain('happier plugins create <name> [--id <plugin.id>] [--name <display name>] [--ui hostedWeb|reactNative] [--json]');
+      expect(output.text()).toContain('happier plugins create <name> [--id <plugin.id>] [--name <display name>] [--template session-agent] [--ui hostedWeb|reactNative] [--json]');
       expect(output.text()).toContain('happier plugins dev [path] [--sdk-registry <origin>] [--json]');
       expect(output.text()).toContain('happier plugins dev install <path> [--sdk-registry <origin>] [--json]');
       expect(output.text()).toContain('happier plugins dev typecheck|build|test <path> [--json]');
@@ -930,7 +956,7 @@ describe('handlePluginsCommand', () => {
       operation: 'install' as const,
       projectRoot,
     }));
-    const startPluginDevelopmentSourceObserver = vi.fn(async () => ({ stop: vi.fn() }));
+    const startPluginDevelopmentSourceObserver = vi.fn(async () => ({ stop: vi.fn(), failure: new Promise<Error>(() => {}) }));
     const requestDevelopmentChange = vi.fn(async () => ({ ok: true as const }));
     const controller = new AbortController();
     controller.abort();
@@ -1009,7 +1035,7 @@ describe('handlePluginsCommand', () => {
         declaredDependencies: { '@happier-dev/plugin-sdk': '0.1.0' },
         observedDirectoryPaths: ['/canonical/plugin', '/canonical/plugin/src'],
       });
-      return { stop };
+      return { stop, failure: new Promise<Error>(() => {}) };
     });
     const output = captureConsoleText();
     try {
@@ -1062,7 +1088,7 @@ describe('handlePluginsCommand', () => {
         message: 'author dependency resolution failed',
       }],
     }));
-    const startPluginDevelopmentSourceObserver = vi.fn(async () => ({ stop: vi.fn() }));
+    const startPluginDevelopmentSourceObserver = vi.fn(async () => ({ stop: vi.fn(), failure: new Promise<Error>(() => {}) }));
     const requestDevelopmentChange = vi.fn(async () => ({ ok: true as const }));
     const previousExitCode = process.exitCode;
     process.exitCode = undefined;
@@ -1128,7 +1154,7 @@ describe('handlePluginsCommand', () => {
       onObservation(value: typeof observation): 'adopted' | 'retained' | Promise<'adopted' | 'retained'>;
     }) => {
       await input.onObservation(observation);
-      return { stop };
+      return { stop, failure: new Promise<Error>(() => {}) };
     });
     const output = captureConsoleText();
     try {
@@ -1180,7 +1206,7 @@ describe('handlePluginsCommand', () => {
       onObservation(value: typeof observation): 'adopted' | 'retained' | Promise<'adopted' | 'retained'>;
     }) => {
       await input.onObservation(observation);
-      return { stop };
+      return { stop, failure: new Promise<Error>(() => {}) };
     });
     const output = captureConsoleText();
     try {
@@ -1233,7 +1259,7 @@ describe('handlePluginsCommand', () => {
       onObservation(value: typeof observation): 'adopted' | 'retained' | Promise<'adopted' | 'retained'>;
     }) => {
       await input.onObservation(observation);
-      return { stop };
+      return { stop, failure: new Promise<Error>(() => {}) };
     });
     const previousExitCode = process.exitCode;
     process.exitCode = undefined;
@@ -1312,7 +1338,7 @@ describe('handlePluginsCommand', () => {
       onObservation(value: typeof observation): 'adopted' | 'retained' | Promise<'adopted' | 'retained'>;
     }) => {
       await input.onObservation(observation);
-      return { stop };
+      return { stop, failure: new Promise<Error>(() => {}) };
     });
     const output = captureConsoleJsonOutput();
     try {
@@ -1389,7 +1415,7 @@ describe('handlePluginsCommand', () => {
       ): 'adopted' | 'retained' | Promise<'adopted' | 'retained'>;
     }) => {
       await input.onObservation(await inspectPluginDevelopmentSource());
-      return { stop };
+      return { stop, failure: new Promise<Error>(() => {}) };
     });
     const output = captureConsoleText();
     try {
@@ -1449,7 +1475,7 @@ describe('handlePluginsCommand', () => {
     }) => {
       await input.onObservation(await inspectPluginDevelopmentSource());
       await input.onObservation(await inspectPluginDevelopmentSource());
-      return { stop };
+      return { stop, failure: new Promise<Error>(() => {}) };
     });
     const previousExitCode = process.exitCode;
     process.exitCode = undefined;
@@ -1523,7 +1549,7 @@ describe('handlePluginsCommand', () => {
       ): 'adopted' | 'retained' | Promise<'adopted' | 'retained'>;
     }) => {
       await input.onObservation(await inspectPluginDevelopmentSource());
-      return { stop };
+      return { stop, failure: new Promise<Error>(() => {}) };
     });
 
     const command = handlePluginsCommand(['dev', '/fixture/plugin'], {
@@ -1544,6 +1570,45 @@ describe('handlePluginsCommand', () => {
       { signal: controller.signal, approval: 'none' },
     );
     expect(stop).toHaveBeenCalledTimes(1);
+  });
+
+  it('exits through the observer failure settlement instead of waiting when a post-start refresh fails', async () => {
+    const controller = new AbortController();
+    const inspectPluginDevelopmentSource = vi.fn(async () => ({
+      ok: true as const,
+      sourceKind: 'singleFile' as const,
+      sourceRootPath: '/canonical/plugin.ts',
+      request: { kind: 'development' as const, projectRoot: '/canonical/plugin.ts' },
+      developmentEntryPath: '/canonical/plugin.ts',
+      observedRelativePaths: ['plugin.ts'],
+      declaredDependencies: {},
+      observedDirectoryPaths: ['/canonical/plugin.ts'],
+    }));
+    const stop = vi.fn();
+    let failObserver!: (error: Error) => void;
+    const failure = new Promise<Error>((_resolve, reject) => {
+      failObserver = reject;
+    });
+    const startPluginDevelopmentSourceObserver = vi.fn(async () => ({ stop, failure }));
+    const requestDevelopmentChange = vi.fn(async () => ({ ok: true as const }));
+    const output = captureConsoleText();
+    const previousExitCode = process.exitCode;
+    process.exitCode = undefined;
+    try {
+      const command = handlePluginsCommand(['dev', '/fixture/plugin.ts'], {
+        inspectPluginDevelopmentSource,
+        startPluginDevelopmentSourceObserver,
+        requestDevelopmentChange,
+      }, { signal: controller.signal });
+      await vi.waitFor(() => expect(startPluginDevelopmentSourceObserver).toHaveBeenCalledOnce());
+      failObserver(new Error('observer watch failed'));
+
+      await expect(command).rejects.toThrow('observer watch failed');
+      expect(stop).toHaveBeenCalledOnce();
+    } finally {
+      output.restore();
+      process.exitCode = previousExitCode;
+    }
   });
 
   it('submits the captured UI edit batch without repeating author-root preparation or CLI UI work', async () => {
@@ -1581,7 +1646,7 @@ describe('handlePluginsCommand', () => {
       onObservation(value: typeof observation): 'adopted' | 'retained' | Promise<'adopted' | 'retained'>;
     }) => {
       await input.onObservation(observation);
-      return { stop };
+      return { stop, failure: new Promise<Error>(() => {}) };
     });
     const output = captureConsoleJsonOutput();
     try {
@@ -1656,7 +1721,7 @@ describe('handlePluginsCommand', () => {
       deliveries.push(await input.onObservation(observation));
       deliveries.push(await input.onObservation(observation));
       setTimeout(() => controller.abort(), 0);
-      return { stop };
+      return { stop, failure: new Promise<Error>(() => {}) };
     });
     const output = captureConsoleJsonOutput();
     try {
@@ -1724,7 +1789,7 @@ describe('handlePluginsCommand', () => {
       onObservation(value: typeof observation): 'adopted' | 'retained' | Promise<'adopted' | 'retained'>;
     }) => {
       await input.onObservation(observation);
-      return { stop };
+      return { stop, failure: new Promise<Error>(() => {}) };
     });
     const output = captureConsoleJsonOutput();
     try {
@@ -3447,7 +3512,7 @@ describe('handlePluginsCommand', () => {
           integrity: listing.integrity,
           manifestDigest: listing.manifestDigest,
           review: { status: 'approved', reviewedAt: '2026-07-21T00:00:00.000Z' },
-          updatePolicy: 'automatic',
+          updatePolicy: 'reviewSensitiveChanges',
         },
       });
       expect(daemonBoundary.decideChange).not.toHaveBeenCalled();
@@ -4522,6 +4587,7 @@ describe('handlePluginsCommand', () => {
         expect(parsed.ok).toBe(false);
         expect(parsed.kind).toBe('plugins_marketplace_list');
         expect(parsed.error?.code).toBe('not_found');
+        expect((parsed as { error?: { message?: string } }).error?.message).toContain('plugins marketplace sources add');
       } finally {
         listOutput.restore();
       }
@@ -4540,6 +4606,7 @@ describe('handlePluginsCommand', () => {
         expect(parsed.ok).toBe(false);
         expect(parsed.kind).toBe('plugins_marketplace_show');
         expect(parsed.error?.code).toBe('not_found');
+        expect((parsed as { error?: { message?: string } }).error?.message).toContain('plugins marketplace sources add');
       } finally {
         showOutput.restore();
       }
@@ -4553,6 +4620,7 @@ describe('handlePluginsCommand', () => {
         expect(parsed.ok).toBe(false);
         expect(parsed.kind).toBe('plugins_marketplace_install');
         expect(parsed.error?.code).toBe('install_unavailable');
+        expect((parsed as { error?: { message?: string } }).error?.message).toContain('plugins marketplace sources add');
       } finally {
         installOutput.restore();
       }

@@ -2,8 +2,12 @@ import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { MAX_AGENT_ROUTING_ID_BYTES } from '@happier-dev/protocol';
+import { parseQualifiedPluginContributionKey } from '@happier-dev/protocol/plugins/contribution-identity';
+import { MAX_PLUGIN_IDENTIFIER_BYTES } from '@happier-dev/protocol/plugins/plugin-id';
 import { describe, expect, it, vi } from 'vitest';
 
+import { createHostDeclarativeAcpRunnerBinding } from '@/plugins/runtime/runner/agentSessionRunnerFactoryBinding';
 import { createPluginStateStore } from '@/plugins/store/state.testkit';
 import { createPluginManifestV2Fixture } from '@/plugins/testkit/manifestV2Fixture';
 import {
@@ -226,5 +230,40 @@ describe('Agent identity formatting', () => {
         })).toBe('acme.alpha/assistant/voice');
         expect(resolveAgentContributionQualifiedId(identity))
             .toBe('acme.alpha/agents/assistant%2Fvoice');
+    });
+
+    it('carries a maximum-length installed Agent identity through routing, authority and runner binding', () => {
+        const identity = {
+            pluginId: `${'a'.repeat(MAX_PLUGIN_IDENTIFIER_BYTES - 2)}.b`,
+            localId: 'c'.repeat(MAX_PLUGIN_IDENTIFIER_BYTES),
+        };
+        const routingId = resolveContributedAgentRoutingId({
+            ...identity,
+            provenance: 'external',
+        });
+
+        // The routing id is the qualified contribution key, so it stays within
+        // the Protocol-owned bound and parses back to the exact identity.
+        expect(routingId).toHaveLength(MAX_AGENT_ROUTING_ID_BYTES);
+        expect(parseQualifiedPluginContributionKey(routingId)).toEqual(identity);
+
+        // The `/agents/` authority key is a different string and is not a
+        // routing key for anything.
+        const qualifiedId = resolveAgentContributionQualifiedId(identity);
+        expect(qualifiedId).not.toBe(routingId);
+        expect(parseQualifiedPluginContributionKey(qualifiedId)).toBeNull();
+
+        // The runner binding admits both spellings at their maxima rather than
+        // rejecting the largest valid installed Agent.
+        expect(createHostDeclarativeAcpRunnerBinding({
+            kind: 'host_declarative_acp_v1',
+            v: 1,
+            pluginId: identity.pluginId,
+            pluginVersion: '1.0.0',
+            agentId: routingId,
+            qualifiedAgentId: qualifiedId,
+            localAgentId: identity.localId,
+            immutableGenerationId: 'generation-1',
+        })).toMatchObject({ agentId: routingId, qualifiedAgentId: qualifiedId });
     });
 });

@@ -24,7 +24,7 @@ import {
   PLUGIN_CHANGE_STATUS_PATH,
   registerDaemonPluginChangeRoutes,
 } from './controlRoutes';
-import { createPluginInstallationReviewFixture } from '@/plugins/testkit/pluginInstallationReviewFixture';
+import { createPluginInstallationReviewFixture } from '@happier-dev/protocol/testing/pluginInstallationReviewFixture';
 
 describe('registerDaemonPluginChangeRoutes', () => {
   it('admits destructive uninstall only through the authenticated daemon change route', async () => {
@@ -74,6 +74,47 @@ describe('registerDaemonPluginChangeRoutes', () => {
       pluginId: 'acme.example',
       actorEvidence,
     });
+  });
+
+  it('admits only canonical update policies on the existing private change route', async () => {
+    const app = fastify();
+    const requestPluginChange = vi.fn(async () => ({
+      kind: 'committed' as const,
+      pluginId: 'acme.example',
+      desiredGeneration: 'generation-1',
+      appliedGeneration: 'generation-1',
+      pendingSurfaces: [],
+    }));
+    registerDaemonPluginChangeRoutes(app, {
+      service: {
+        requestPluginChange,
+        decidePluginChange: vi.fn(),
+        statusPluginChange: async () => ({ kind: 'expired' }),
+        listPendingPluginChanges: async () => ({ changes: [] }),
+        shutdown: async () => undefined,
+      },
+      requireAuth: async () => undefined,
+    });
+
+    const accepted = await app.inject({
+      method: 'POST',
+      url: '/plugins/change/request',
+      payload: { kind: 'setUpdatePolicy', pluginId: 'acme.example', policy: 'reviewSensitiveChanges' },
+    });
+    expect(accepted.statusCode).toBe(200);
+    expect(requestPluginChange).toHaveBeenCalledWith({
+      kind: 'setUpdatePolicy',
+      pluginId: 'acme.example',
+      policy: 'reviewSensitiveChanges',
+    });
+
+    const rejected = await app.inject({
+      method: 'POST',
+      url: '/plugins/change/request',
+      payload: { kind: 'setUpdatePolicy', pluginId: 'acme.example', policy: 'automatic' },
+    });
+    expect(rejected.statusCode).toBe(400);
+    expect(requestPluginChange).toHaveBeenCalledTimes(1);
   });
 
   it('projects a daemon-owned pending change status without creating another request', async () => {
@@ -518,7 +559,7 @@ describe('registerDaemonPluginChangeRoutes', () => {
       integrity: `sha512-${Buffer.alloc(64, 1).toString('base64')}`,
       manifestDigest: `sha256:${'a'.repeat(64)}`,
       review: { status: 'approved', reviewedAt: '2026-07-21T00:00:00.000Z' },
-      updatePolicy: 'automatic',
+      updatePolicy: 'reviewSensitiveChanges',
     };
 
     const response = await app.inject({
@@ -572,7 +613,7 @@ describe('registerDaemonPluginChangeRoutes', () => {
       integrity: `sha512-${Buffer.alloc(64, 1).toString('base64')}`,
       manifestDigest: `sha256:${'a'.repeat(64)}`,
       review: { status: 'unreviewed', reviewedAt: null },
-      updatePolicy: 'manual',
+      updatePolicy: 'reviewEveryUpdate',
     };
 
     const response = await app.inject({
@@ -589,6 +630,99 @@ describe('registerDaemonPluginChangeRoutes', () => {
 
     expect(response.statusCode).toBe(200);
     expect(requestPluginChange).toHaveBeenCalledWith(expect.objectContaining({ expectedMarketplaceListing }));
+  });
+
+  it('passes an exact unreviewed user-source listing to the daemon change owner', async () => {
+    const app = fastify();
+    const requestPluginChange = vi.fn(async () => ({ kind: 'failed' as const, code: 'fixture' }));
+    registerDaemonPluginChangeRoutes(app, {
+      service: {
+        requestPluginChange,
+        decidePluginChange: vi.fn(),
+        statusPluginChange: async () => ({ kind: 'expired' }),
+        listPendingPluginChanges: async () => ({ changes: [] }),
+        shutdown: async () => undefined,
+      },
+      requireAuth: async () => undefined,
+    });
+    const expectedMarketplaceListing = {
+      source: {
+        id: 'source_team_catalog',
+        kind: 'user',
+        sourceUrl: 'https://catalog.example.test/index.json',
+      },
+      pluginId: 'acme.example',
+      publisher: { id: 'acme', displayName: 'Acme' },
+      packageName: '@acme/example',
+      registryOrigin: 'https://registry.example.test',
+      registryProfileId: 'registry_private',
+      version: '1.2.3',
+      integrity: `sha512-${Buffer.alloc(64, 1).toString('base64')}`,
+      manifestDigest: `sha256:${'a'.repeat(64)}`,
+      review: { status: 'unreviewed', reviewedAt: null },
+      updatePolicy: 'pinned',
+    };
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/plugins/change/request',
+      payload: {
+        kind: 'installNpm',
+        packageName: '@acme/example',
+        selector: '1.2.3',
+        registryOrigin: 'https://registry.example.test',
+        registryProfileId: 'registry_private',
+        expectedMarketplaceListing,
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(requestPluginChange).toHaveBeenCalledWith(expect.objectContaining({ expectedMarketplaceListing }));
+  });
+
+  it('rejects a user-source listing that claims an approved review', async () => {
+    const app = fastify();
+    const requestPluginChange = vi.fn();
+    registerDaemonPluginChangeRoutes(app, {
+      service: {
+        requestPluginChange,
+        decidePluginChange: vi.fn(),
+        statusPluginChange: async () => ({ kind: 'expired' }),
+        listPendingPluginChanges: async () => ({ changes: [] }),
+        shutdown: async () => undefined,
+      },
+      requireAuth: async () => undefined,
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/plugins/change/request',
+      payload: {
+        kind: 'installNpm',
+        packageName: '@acme/example',
+        selector: '1.2.3',
+        registryOrigin: 'https://registry.example.test',
+        expectedMarketplaceListing: {
+          source: {
+            id: 'source_team_catalog',
+            kind: 'user',
+            sourceUrl: 'https://catalog.example.test/index.json',
+          },
+          pluginId: 'acme.example',
+          publisher: { id: 'acme', displayName: 'Acme' },
+          packageName: '@acme/example',
+          registryOrigin: 'https://registry.example.test',
+          version: '1.2.3',
+          integrity: `sha512-${Buffer.alloc(64, 1).toString('base64')}`,
+          manifestDigest: `sha256:${'a'.repeat(64)}`,
+          review: { status: 'approved', reviewedAt: '2026-07-21T00:00:00.000Z' },
+          updatePolicy: 'reviewSensitiveChanges',
+        },
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(requestPluginChange).not.toHaveBeenCalled();
   });
 
   it('rejects caller-injected evidence on an approved curated marketplace listing', async () => {
@@ -627,7 +761,7 @@ describe('registerDaemonPluginChangeRoutes', () => {
           integrity: `sha512-${Buffer.alloc(64, 1).toString('base64')}`,
           manifestDigest: `sha256:${'a'.repeat(64)}`,
           review: { status: 'approved', reviewedAt: '2026-07-21T00:00:00.000Z' },
-          updatePolicy: 'automatic',
+          updatePolicy: 'reviewSensitiveChanges',
           actorEvidence: {
             kind: 'authenticatedLocalUser',
             interactionId: 'caller-selected',
@@ -730,7 +864,7 @@ describe('registerDaemonPluginChangeRoutes', () => {
           integrity: `sha512-${Buffer.alloc(64, 1).toString('base64')}`,
           manifestDigest: `sha256:${'a'.repeat(64)}`,
           review: { status: 'withdrawn', reviewedAt: '2026-07-21T00:00:00.000Z' },
-          updatePolicy: 'automatic',
+          updatePolicy: 'reviewSensitiveChanges',
         },
       },
     });

@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { reloadConfiguration } from '@/configuration';
 import { clearDaemonStateForTestTeardown, writeDaemonState } from '@/persistence';
-import { createPluginInstallationReviewFixture } from '@/plugins/testkit/pluginInstallationReviewFixture';
+import { createPluginInstallationReviewFixture } from '@happier-dev/protocol/testing/pluginInstallationReviewFixture';
 import { createEnvKeyScope } from '@/testkit/env/envScope';
 import { createTempDir, removeTempDir } from '@/testkit/fs/tempDir';
 

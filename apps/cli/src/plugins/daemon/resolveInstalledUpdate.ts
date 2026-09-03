@@ -1,6 +1,7 @@
 import semver from 'semver';
 
-import type { PluginUpdatePolicy } from '@/plugins/store/install/trustIdentity';
+import type { PluginUpdatePolicyV1 } from '@happier-dev/protocol';
+
 import type { PluginStateRecord } from '@/plugins/store/state';
 
 import type { PluginChangeRequest } from './changeContract';
@@ -14,7 +15,7 @@ export type ResolvedInstalledPluginUpdate =
   | Readonly<{
       kind: 'npm';
       request: InstallNpmRequest;
-      updatePolicy: Exclude<PluginUpdatePolicy, 'pinned'>;
+      updatePolicy: Exclude<PluginUpdatePolicyV1, 'pinned'>;
     }>
   | Readonly<{ kind: 'archive'; request: InstallArchiveRequest }>
   | Readonly<{ kind: 'path'; request: InstallPathRequest }>;
@@ -55,7 +56,7 @@ export function resolveInstalledPluginUpdate(
       `Plugin '${pluginId}' has no current trusted update channel`,
     );
   }
-  const updatePolicy = record.install.updatePolicy ?? 'manual';
+  const updatePolicy = record.install.updatePolicy ?? 'reviewEveryUpdate';
   if (updatePolicy === 'pinned') {
     throw new DaemonPluginChangePreparationError(
       'plugin_update_pinned',
@@ -65,12 +66,6 @@ export function resolveInstalledPluginUpdate(
 
   switch (trust.distribution.kind) {
     case 'npm':
-      if (updatePolicy === 'automatic' && !record.install.curatedUpdateSource) {
-        throw new DaemonPluginChangePreparationError(
-          'plugin_update_trust_unavailable',
-          `Plugin '${pluginId}' has no reviewed curated source binding for automatic updates`,
-        );
-      }
       return {
         kind: 'npm',
         request: {

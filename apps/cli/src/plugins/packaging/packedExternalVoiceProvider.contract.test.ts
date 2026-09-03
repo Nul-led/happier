@@ -83,6 +83,10 @@ async function expectPackedCurrentUiToolContract(
   // Provider-managed capture does not exist until createConnection. The public
   // runtime must retain this exact desired mute and apply it before publishing
   // the connection instead of rejecting or acknowledging an unapplied value.
+  // Only the provider-managed arm of the public runtime union owns that mute.
+  if (runtime.microphoneMode !== 'provider_managed') {
+    throw new Error(`packed_current_ui_microphone_mode:${runtime.microphoneMode}`);
+  }
   await runtime.setInputMuted(true);
   const connection = await runtime.createConnection({
     session: {

@@ -1,124 +1,63 @@
 import { describe, expect, it } from 'vitest';
 
-import { createPluginInstallationReviewFixture } from '@/plugins/testkit/pluginInstallationReviewFixture';
+import { createPluginInstallationReviewFixture } from '@happier-dev/protocol/testing/pluginInstallationReviewFixture';
+import {
+  PluginInstallationReviewRequestInterceptorSchema,
+  PluginInstallationReviewSchema,
+} from '@happier-dev/protocol/marketplace/internal';
 
-import { PluginInstallationReviewSchema } from './changeContract';
+import { projectPluginInstallationReviewRequestInterceptor } from './changeContract';
 
-describe('PluginInstallationReviewSchema', () => {
-  it('keeps content integrity at the external source boundary rather than in path or review facts', () => {
-    const pathReview = createPluginInstallationReviewFixture();
+/**
+ * Producer-side conformance for the CLI daemon emitter: the serialized review
+ * schema and its owner-level admission tests live in
+ * `@happier-dev/protocol/marketplace/internal`; this lane proves the values
+ * the CLI daemon actually projects satisfy that cross-process contract.
+ */
+describe('CLI-emitted installation review conforms to the protocol review contract', () => {
+  it('projects request-policy contributions into bounded, sorted review facts', () => {
+    const fact = projectPluginInstallationReviewRequestInterceptor({
+      id: 'rewrite-api',
+      origins: ['https://b.example.test', 'https://a.example.test'],
+      methods: ['POST', 'GET'],
+      priority: 7,
+    });
 
-    expect(PluginInstallationReviewSchema.safeParse(pathReview).success).toBe(true);
-    expect(PluginInstallationReviewSchema.safeParse({
-      ...pathReview,
-      source: { ...pathReview.source, integrity: 'sha256-local-path-content' },
-    }).success).toBe(false);
-    expect(PluginInstallationReviewSchema.safeParse({
-      ...pathReview,
-      integrity: {
-        packageDigest: `sha256:${'a'.repeat(64)}`,
-        manifestDigest: `sha256:${'b'.repeat(64)}`,
-        uiArtifactDigest: `sha256:${'c'.repeat(64)}`,
-      },
-    }).success).toBe(false);
-    expect(PluginInstallationReviewSchema.safeParse({
-      ...pathReview,
-      source: {
-        kind: 'archive',
-        locator: 'https://example.test/plugin.tgz',
-        integrity: 'sha512-observed-archive-integrity',
-        integrityBasis: 'observed',
-      },
-    }).success).toBe(true);
-    expect(PluginInstallationReviewSchema.safeParse({
-      ...pathReview,
-      source: {
-        kind: 'npm',
-        locator: '@acme/example@1.0.0',
-        integrity: 'sha512-external-source-integrity',
-        integrityBasis: 'expected',
-      },
-    }).success).toBe(true);
-    expect(PluginInstallationReviewSchema.safeParse({
-      ...pathReview,
-      source: {
-        kind: 'npm',
-        locator: '@acme/example@1.0.0',
-        integrity: 'sha512-observed-npm-integrity',
-        integrityBasis: 'observed',
-      },
-    }).success).toBe(false);
+    expect(fact).toEqual({
+      id: 'rewrite-api',
+      origins: ['https://a.example.test', 'https://b.example.test'],
+      methods: ['GET', 'POST'],
+      priority: 7,
+    });
+    expect(PluginInstallationReviewRequestInterceptorSchema.safeParse(fact).success).toBe(true);
   });
 
-  it('admits a bounded newer-version compatibility report and rejects an unbounded one', () => {
-    const pathReview = createPluginInstallationReviewFixture();
-    const blockedVersion = {
-      version: '1.2.5',
-      diagnostics: [{
-        code: 'plugin_manifest_semantic_invalid' as const,
-        message: 'Plugin manifest requires happier >=9999.0.0',
-      }],
-    };
-    const review = {
-      ...pathReview,
-      compatibility: {
-        ...pathReview.compatibility,
-        blockedNewerVersions: [blockedVersion],
-      },
-    };
+  it('defaults an undeclared chain priority and omits an undeclared method scope', () => {
+    const fact = projectPluginInstallationReviewRequestInterceptor({
+      id: 'shape-api',
+      origins: ['https://api.example.test'],
+    });
+
+    expect(fact).toEqual({
+      id: 'shape-api',
+      origins: ['https://api.example.test'],
+      priority: 0,
+    });
+    expect(PluginInstallationReviewRequestInterceptorSchema.safeParse(fact).success).toBe(true);
+  });
+
+  it('emits whole reviews the cross-process schema admits, including declared request policies', () => {
+    const review = createPluginInstallationReviewFixture({
+      requestInterceptors: [
+        projectPluginInstallationReviewRequestInterceptor({
+          id: 'rewrite-api',
+          origins: ['https://b.example.test', 'https://a.example.test'],
+          methods: ['GET', 'POST'],
+          priority: 10,
+        }),
+      ],
+    });
 
     expect(PluginInstallationReviewSchema.safeParse(review).success).toBe(true);
-    expect(PluginInstallationReviewSchema.safeParse({
-      ...review,
-      compatibility: {
-        ...review.compatibility,
-        blockedNewerVersions: Array.from({ length: 33 }, () => blockedVersion),
-      },
-    }).success).toBe(false);
-    expect(PluginInstallationReviewSchema.safeParse({
-      ...pathReview,
-      compatibility: { runtimeApiVersion: 1 },
-    }).success).toBe(true);
-  });
-
-  it('accepts only non-secret raw Voice credential review facts', () => {
-    const pathReview = createPluginInstallationReviewFixture();
-    const rawCredentialAccess = [{
-      accessMode: 'raw',
-      contribution: { pluginId: 'acme.voice', localId: 'conversation' },
-      credentialSlot: {
-        id: 'voice_auth',
-        title: 'Voice credential',
-        purpose: 'voice.client-auth',
-      },
-      sourceClass: { kind: 'savedSecret', secretKinds: ['apiKey'] },
-      realm: 'web',
-      phase: 'connection',
-      request: {
-        kind: 'httpHeaders',
-        origin: 'https://voice.example.test',
-        headerNames: ['authorization'],
-      },
-    }];
-
-    expect(PluginInstallationReviewSchema.safeParse({
-      ...pathReview,
-      rawCredentialAccess,
-    }).success).toBe(true);
-    expect(PluginInstallationReviewSchema.safeParse({
-      ...pathReview,
-      rawCredentialAccess: [{ ...rawCredentialAccess[0], accountId: 'account-1' }],
-    }).success).toBe(false);
-    expect(PluginInstallationReviewSchema.safeParse({
-      ...pathReview,
-      rawCredentialAccess: [{ ...rawCredentialAccess[0], secretValue: 'not-a-review-fact' }],
-    }).success).toBe(false);
-    expect(PluginInstallationReviewSchema.safeParse({
-      ...pathReview,
-      rawCredentialAccess: [{
-        ...rawCredentialAccess[0],
-        request: { ...rawCredentialAccess[0]!.request, token: 'not-a-review-fact' },
-      }],
-    }).success).toBe(false);
   });
 });

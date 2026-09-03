@@ -46,6 +46,7 @@ import type {
     ResolvedUiViewV2Contribution,
     ResolvedComposerAttachmentContribution,
     ResolvedComposerReferenceContribution,
+    ResolvedSearchProviderContribution,
     ResolvedComposerControlContribution,
     ResolvedComposerRegionContribution,
     ResolvedActivationTarget,
@@ -289,6 +290,7 @@ export function projectLoadedPluginContributes(
     const uiRendererV2Candidates: ResolvedUiRendererV2Contribution[] = [];
     const uiTranslationV2Candidates: ResolvedUiTranslationBundleV2Contribution[] = [];
     const composerReferenceCandidates: ResolvedComposerReferenceContribution[] = [];
+    const searchProviderCandidates: ResolvedSearchProviderContribution[] = [];
     const composerAttachmentCandidates: ResolvedComposerAttachmentContribution[] = [];
     const composerControlCandidates: ResolvedComposerControlContribution[] = [];
     const composerRegionCandidates: ResolvedComposerRegionContribution[] = [];
@@ -396,6 +398,17 @@ export function projectLoadedPluginContributes(
     }
     for (const contribution of pluginRegistry.composerReferences) {
         composerReferenceCandidates.push({
+            provenance: params.provenance,
+            source: { kind: contribution.sourceSpec.kind },
+            pluginId: contribution.pluginId,
+            pluginVersion: contribution.pluginVersion,
+            identity: contribution.identity!,
+            manifestPath: contribution.manifestPath,
+            definition: contribution.definition,
+        });
+    }
+    for (const contribution of pluginRegistry.searchProviders) {
+        searchProviderCandidates.push({
             provenance: params.provenance,
             source: { kind: contribution.sourceSpec.kind },
             pluginId: contribution.pluginId,
@@ -937,6 +950,7 @@ export function projectLoadedPluginContributes(
         uiRenderersV2: Object.freeze(uiRendererV2Candidates),
         uiTranslationsV2: Object.freeze(uiTranslationV2Candidates),
         composerReferences: Object.freeze(composerReferenceCandidates),
+        searchProviders: Object.freeze(searchProviderCandidates),
         composerAttachments: Object.freeze(composerAttachmentCandidates),
         composerControls: Object.freeze(composerControlCandidates),
         composerRegions: Object.freeze(composerRegionCandidates),

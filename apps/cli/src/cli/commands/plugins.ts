@@ -101,11 +101,12 @@ import {
   type UserPluginChangeStatusResult,
 } from '@/plugins/daemon/changeClient';
 import type {
-  PluginChangePendingReviewResult,
   PluginChangeRequest,
 } from '@/plugins/daemon/changeContract';
+import type { PluginChangePendingReviewResult } from '@happier-dev/protocol/marketplace/internal';
 import {
   PluginIdSchema,
+  PluginScaffoldTemplateSchema,
   PluginScaffoldUiModeSchema,
   type MarketplaceIndexItemV1,
   type MarketplaceSourceRegistryV1,
@@ -156,7 +157,7 @@ type PluginsCommandDeps = Readonly<{
     signal?: AbortSignal;
   }>) => Promise<MachinePluginInvocationLogReadResult>;
   executeSettingsAdministrationAction?: PluginsSettingsCommandDeps['executeSettingsAdministrationAction'];
-  marketplaceIndexService?: Pick<ReturnType<typeof createMarketplaceIndexService>, 'querySources'>;
+  marketplaceIndexService?: Pick<ReturnType<typeof createMarketplaceIndexService>, 'querySources' | 'queryExactListing'>;
 }>;
 
 type PluginsCommandRuntime = Readonly<{
@@ -184,7 +185,7 @@ function usage(): string {
       { label: `${pluginCommand} rollback <pluginId> [--json]`, description: 'Restore the retained prior plugin version through the active daemon' },
       { label: `${pluginCommand} enable|disable <pluginId> [--json]`, description: 'Change plugin admission through the active daemon' },
       { label: `${pluginCommand} uninstall <pluginId> [--delete-data --yes] [--json]`, description: 'Remove a local installed plugin; preserve its data unless --delete-data --yes is supplied' },
-      { label: `${pluginCommand} create <name> [--id <plugin.id>] [--name <display name>] [--ui hostedWeb|reactNative] [--json]`, description: 'Create a minimal TypeScript plugin, optionally with a wired UI surface, ready for the normal development loop' },
+      { label: `${pluginCommand} create <name> [--id <plugin.id>] [--name <display name>] [--template session-agent] [--ui hostedWeb|reactNative] [--json]`, description: 'Create a minimal TypeScript plugin, optionally from a first-party starting template or with a wired UI surface' },
       { label: `${pluginCommand} dev [path] [--sdk-registry <origin>] [--json]`, description: 'Watch a source plugin and submit captured edit batches to the daemon-owned development cycle' },
       { label: `${pluginCommand} dev install <path> [--sdk-registry <origin>] [--json]`, description: 'Repair or refresh a stale or wiped author root; the watch loop already materializes it' },
       { label: `${pluginCommand} dev typecheck|build|test <path> [--json]`, description: 'Run one managed focused development check' },
@@ -367,6 +368,13 @@ async function resolveMarketplaceSourceForCommand(store: Readonly<{
     return await store.resolveSourceReference(sourceRef);
   }
   return await store.resolvePreferredSource();
+}
+
+function missingMarketplaceSourceMessage(sourceRef: string | null): string {
+  if (sourceRef && /^[a-z][a-z0-9+.-]*:\/\//iu.test(sourceRef)) {
+    return `Marketplace catalog URLs must be persisted before browsing or installing. Run ${(resolveInvokerName() ?? 'happier')} plugins marketplace sources add <catalogUrl>, then use the persisted source.`;
+  }
+  return 'No enabled marketplace source is configured';
 }
 
 function formatMarketplaceContributionSummary(entry: Pick<MarketplaceIndexItemV1, 'summary'>): string {
@@ -1583,7 +1591,7 @@ async function runPluginsCreateCommand(args: readonly string[]): Promise<void> {
   }
   const targetDir = readCommandPositionals(args, {
     startIndex: 1,
-    valueFlags: ['--id', '--name', '--ui'],
+    valueFlags: ['--id', '--name', '--ui', '--template'],
   })[0] ?? null;
   if (!targetDir || targetDir === 'help' || targetDir === '--help' || targetDir === '-h') {
     console.log(usage());
@@ -1606,12 +1614,44 @@ async function runPluginsCreateCommand(args: readonly string[]): Promise<void> {
     process.exitCode = 1;
     return;
   }
+  const templateValue = readFlagValue(args, '--template');
+  const template = templateValue?.startsWith('--') ? null : templateValue;
+  if (hasFlagValue(args, '--template') && template === null) {
+    const message = `--template requires one of: ${PluginScaffoldTemplateSchema.options.join(', ')}`;
+    if (wantsJson(args)) {
+      await printJsonEnvelope({
+        ok: false,
+        kind: 'plugins_create',
+        error: { code: 'invalid_option', message },
+      }, { exitCode: 1 });
+      return;
+    }
+    console.error(errorFrame('Error:', [message]));
+    process.exitCode = 1;
+    return;
+  }
+  const parsedTemplate = template ? PluginScaffoldTemplateSchema.safeParse(template) : null;
+  if (parsedTemplate && !parsedTemplate.success) {
+    const message = `--template requires one of: ${PluginScaffoldTemplateSchema.options.join(', ')}`;
+    if (wantsJson(args)) {
+      await printJsonEnvelope({
+        ok: false,
+        kind: 'plugins_create',
+        error: { code: 'invalid_option', message },
+      }, { exitCode: 1 });
+      return;
+    }
+    console.error(errorFrame('Error:', [message]));
+    process.exitCode = 1;
+    return;
+  }
   const result = await scaffoldLocalPlugin({
     targetDir,
     pluginId: readFlagValue(args, '--id') ?? `local.${slug}`,
     displayName: readFlagValue(args, '--name') ?? displayName,
     invokerName: resolveInvokerName() ?? 'happier',
     ...(ui ? { ui: ui as PluginScaffoldUiMode } : {}),
+    ...(parsedTemplate?.success ? { template: parsedTemplate.data } : {}),
   });
 
   if (!result.ok) {
@@ -1959,7 +1999,14 @@ async function runPluginsDevCommand(
   });
 
   try {
-    await waitForPluginDevStop(runtime.signal);
+    // The observer owns exactly-once termination: a post-start refresh failure
+    // stops it and settles `failure`, so the command exits through the same
+    // error reporting as a failed start instead of waiting forever next to an
+    // unhandled rejection.
+    await Promise.race([
+      waitForPluginDevStop(runtime.signal),
+      observer.failure,
+    ]);
   } finally {
     observer.stop();
   }
@@ -2595,7 +2642,7 @@ async function runPluginsMarketplaceListCommand(
   const registryStore = createMarketplaceSourceRegistryStore();
   const source = await resolveMarketplaceSourceForCommand(registryStore, sourceRef);
   if (!source) {
-    const error = 'No enabled marketplace source is configured';
+    const error = missingMarketplaceSourceMessage(sourceRef);
     if (wantsJson(args)) {
       await printJsonEnvelope(
         {
@@ -2674,7 +2721,7 @@ async function runPluginsMarketplaceShowCommand(
   const registryStore = createMarketplaceSourceRegistryStore();
   const source = await resolveMarketplaceSourceForCommand(registryStore, sourceRef);
   if (!source) {
-    const error = 'No enabled marketplace source is configured';
+    const error = missingMarketplaceSourceMessage(sourceRef);
     if (wantsJson(args)) {
       await printJsonEnvelope(
         {
@@ -2694,8 +2741,15 @@ async function runPluginsMarketplaceShowCommand(
     return;
   }
 
-  const result = await queryAllMarketplaceSourceItems(source, deps.marketplaceIndexService);
-  const indexEntry = result.items.find((entry) => entry.pluginId === pluginId) ?? null;
+  // Showing one listing targets that source for that plugin. Walking every
+  // discovery page to find it would refetch the whole source to answer a
+  // single-item question.
+  const exact = await (deps.marketplaceIndexService ?? createMarketplaceIndexService()).queryExactListing({
+    sourceId: source.id,
+    pluginId,
+  });
+  const result = exact.ok ? exact.result : null;
+  const indexEntry = result?.items.find((entry) => entry.pluginId === pluginId) ?? null;
   if (wantsJson(args)) {
     if (!indexEntry) {
       await printJsonEnvelope(
@@ -2728,7 +2782,7 @@ async function runPluginsMarketplaceShowCommand(
           title: source.title,
           description: source.description ?? null,
           sourceUrl: source.sourceUrl,
-          cache: result.sources[0]?.freshness ?? null,
+          cache: result?.sources[0]?.freshness ?? null,
         },
         plugin: projectMarketplaceIndexItemForCliOutput(indexEntry),
       },
@@ -2746,7 +2800,7 @@ async function runPluginsMarketplaceShowCommand(
     title: source.title,
     sourceUrl: source.sourceUrl,
     entry: indexEntry,
-    diagnostics: result.diagnostics,
+    diagnostics: result?.diagnostics ?? [],
   });
 }
 
@@ -2776,7 +2830,9 @@ async function runPluginsMarketplaceInstallCommand(args: readonly string[], _dep
   const registryStore = createMarketplaceSourceRegistryStore();
   const source = await resolveMarketplaceSourceForCommand(registryStore, sourceRef);
   if (!source || !source.enabled) {
-    await reportMarketplaceInstallUnavailable(args, 'No enabled marketplace source is configured for this Install and trust action.');
+    await reportMarketplaceInstallUnavailable(args, sourceRef && /^[a-z][a-z0-9+.-]*:\/\//iu.test(sourceRef)
+      ? missingMarketplaceSourceMessage(sourceRef)
+      : 'No enabled marketplace source is configured for this Install and trust action.');
     return;
   }
 

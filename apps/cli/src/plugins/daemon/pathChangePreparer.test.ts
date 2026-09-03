@@ -161,6 +161,74 @@ async function loadCurrentDevelopmentSentinel(input: Readonly<{
 }
 
 describe('createDaemonPathPluginChangePreparer', () => {
+  it('sets update policy through the existing transaction path without review or executable reactivation', async () => {
+    const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-plugin-policy-'));
+    roots.push(happyHomeDir);
+    const pluginRoot = await createDescriptorPlugin();
+    const preparedCandidates: PluginRegistryRuntimeCandidate[] = [];
+    const service = createDaemonPluginChangeService({
+      prepare: createDaemonPathPluginChangePreparer({
+        happyHomeDir,
+        runtimeLifecycle: {
+          prepare: async (candidate) => {
+            preparedCandidates.push(candidate);
+            return {
+              abort: async () => undefined,
+              adopt: async () => Object.freeze(Object.fromEntries(
+                candidate.changedPluginIds.map((pluginId) => [
+                  pluginId,
+                  candidate.pluginGenerations[pluginId]?.immutableGenerationId ?? null,
+                ]),
+              )),
+            };
+          },
+        },
+      }),
+      createPendingChangeId: () => 'pending-policy-install',
+    });
+    const install = await service.requestPluginChange({
+      kind: 'installPath',
+      locator: pluginRoot,
+      development: false,
+    });
+    if (install.kind !== 'reviewRequired') throw new Error('Expected installation review');
+    await service.decidePluginChange({
+      pendingChangeId: install.pendingChangeId,
+      decision: 'installAndTrust',
+      actorEvidence: { kind: 'authenticatedLocalUser', interactionId: 'policy-install', occurredAtMs: 1 },
+    });
+
+    await expect(service.requestPluginChange({
+      kind: 'setUpdatePolicy',
+      pluginId: 'acme.descriptor',
+      policy: 'pinned',
+    })).resolves.toMatchObject({
+      kind: 'committed',
+      pluginId: 'acme.descriptor',
+      desiredGeneration: expect.any(String),
+      // Nothing was reactivated, so the runtime reports no applied generation
+      // for this plugin: the served code is exactly the one already running.
+      appliedGeneration: null,
+    });
+    expect(preparedCandidates.at(-1)).toMatchObject({
+      mutationKind: 'state',
+      changedPluginIds: [],
+    });
+    await expect(createPluginRegistryStateStore({ happyHomeDir }).read()).resolves.toMatchObject({
+      plugins: { 'acme.descriptor': { install: { updatePolicy: 'pinned' } } },
+    });
+
+    await expect(service.requestPluginChange({
+      kind: 'setUpdatePolicy',
+      pluginId: 'acme.descriptor',
+      policy: 'reviewSensitiveChanges',
+    })).resolves.toMatchObject({
+      kind: 'failed',
+      code: 'plugin_update_policy_unsupported',
+    });
+    await service.shutdown();
+  });
+
   it('threads the authenticated ordinary-versus-hard cause without inferring from mutation kind or contribution shape', async () => {
     const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-plugin-cause-'));
     roots.push(happyHomeDir);
@@ -2147,7 +2215,7 @@ describe('createDaemonPathPluginChangePreparer', () => {
         contributions: [{ family: 'ui.renderers', count: 1 }],
         uiArtifacts: { status: 'unavailable', contributionIds: ['main-native'] },
         compatibility: { happier: '^0.2.0', runtimeApiVersion: 1 },
-        updatePolicy: 'manual',
+        updatePolicy: 'reviewEveryUpdate',
       },
     });
     expect(reactNativeOnly).not.toHaveProperty('review.integrity');
@@ -2171,8 +2239,17 @@ describe('createDaemonPathPluginChangePreparer', () => {
     const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-plugin-home-'));
     roots.push(happyHomeDir);
     const pluginRoot = await createDescriptorPlugin();
-    const adopt = vi.fn(async () => undefined);
-    const prepareRuntime = vi.fn(async () => ({ abort: async () => undefined, adopt }));
+    let preparedCandidate: PluginRegistryRuntimeCandidate | undefined;
+    const adopt = vi.fn(async () => Object.freeze(Object.fromEntries(
+      (preparedCandidate?.changedPluginIds ?? []).map((pluginId) => [
+        pluginId,
+        preparedCandidate?.pluginGenerations[pluginId]?.immutableGenerationId ?? null,
+      ]),
+    )));
+    const prepareRuntime = vi.fn(async (candidate: PluginRegistryRuntimeCandidate) => {
+      preparedCandidate = candidate;
+      return { abort: async () => undefined, adopt };
+    });
     const service = createDaemonPluginChangeService({
       prepare: createDaemonPathPluginChangePreparer({
         happyHomeDir,
@@ -2228,10 +2305,16 @@ describe('createDaemonPathPluginChangePreparer', () => {
         if (runtimePreparationCount === 1) firstGeneration = generation;
         else laterGeneration = generation;
         const isFirst = runtimePreparationCount === 1;
+        const appliedGenerationsByPluginId = Object.freeze(Object.fromEntries(
+          candidate.changedPluginIds.map((pluginId) => [
+            pluginId,
+            candidate.pluginGenerations[pluginId]?.immutableGenerationId ?? null,
+          ]),
+        ));
         return {
           abort: async () => undefined,
           adopt: async () => {
-            if (!isFirst) return;
+            if (!isFirst) return appliedGenerationsByPluginId;
             await writeFile(join(pluginRoot, 'payload.txt'), 'later generation bytes');
             const laterPrepared = await preparePath({
               kind: 'installPath',
@@ -2243,7 +2326,9 @@ describe('createDaemonPathPluginChangePreparer', () => {
             expect(laterResult).toMatchObject({
               kind: 'committed',
               desiredGeneration: laterGeneration,
+              appliedGeneration: laterGeneration,
             });
+            return appliedGenerationsByPluginId;
           },
         };
       },
@@ -2399,7 +2484,7 @@ describe('createDaemonPathPluginChangePreparer', () => {
     })).resolves.toEqual(expect.objectContaining({ kind: 'committed', pluginId: 'acme.descriptor' }));
   });
 
-  it('requires a new decision when a trusted development replacement narrows ambient required access', async () => {
+  it('reuses source trust when a trusted development replacement narrows ambient required access', async () => {
     const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-plugin-home-'));
     roots.push(happyHomeDir);
     const pluginRoot = await createDescriptorPlugin({
@@ -2434,10 +2519,26 @@ describe('createDaemonPathPluginChangePreparer', () => {
       }>;
       optional: unknown[];
     };
+    // Dropping an origin reaches nowhere the approved grant could not, so the
+    // reviewed source trust carries the replacement without a new decision.
     hostAccess.required[0]!.scope.targets = [{
       kind: 'fixedOrigin',
       origin: 'https://api.example.test',
     }];
+    await writeFile(manifestPath, JSON.stringify(manifest), 'utf8');
+
+    await expect(service.requestPluginChange({
+      kind: 'installPath',
+      locator: pluginRoot,
+      development: true,
+    })).resolves.toMatchObject({ kind: 'committed', pluginId: 'acme.descriptor' });
+
+    // Re-adding the dropped origin reaches past the narrowed grant and reopens
+    // the decision.
+    hostAccess.required[0]!.scope.targets = [
+      { kind: 'fixedOrigin', origin: 'https://api.example.test' },
+      { kind: 'fixedOrigin', origin: 'https://secondary.example.test' },
+    ];
     await writeFile(manifestPath, JSON.stringify(manifest), 'utf8');
 
     await expect(service.requestPluginChange({
@@ -2451,9 +2552,6 @@ describe('createDaemonPathPluginChangePreparer', () => {
         requiredHostAccess: [expect.objectContaining({
           id: 'api',
           capability: 'network',
-          normalizedScope: {
-            targets: [{ kind: 'fixedOrigin', origin: 'https://api.example.test' }],
-          },
         })],
       },
     });

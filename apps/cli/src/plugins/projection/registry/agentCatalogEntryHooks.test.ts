@@ -358,6 +358,7 @@ describe('Agent registration catalog projections', () => {
       isExplicitCliSubcommand: true,
       parsed: { agentArgs: [] },
       settings: {},
+      pluginSettings: {},
       environment: {},
       startOrigin: 'terminal' as const,
     };
@@ -377,11 +378,16 @@ describe('Agent registration catalog projections', () => {
   });
 
   it('injects only the owner-provided non-secret Settings projection for an Agent launch', async () => {
+    const readOwnedMode = (
+      scope: Readonly<Record<string, unknown>> | undefined,
+    ): string | null => (
+      typeof scope?.ownedMode === 'string' ? scope.ownedMode : null
+    );
     const buildSessionOptions = vi.fn((input: AgentCliSessionCommandBuildInputV1) => ({
       ok: true as const,
       options: {
-        accountSelected: input.pluginSettings.account?.ownedMode ?? null,
-        daemonSelected: input.pluginSettings.daemon?.ownedMode ?? null,
+        accountSelected: readOwnedMode(input.pluginSettings.account),
+        daemonSelected: readOwnedMode(input.pluginSettings.daemon),
       },
     }));
     const projected = projectAgentCliSessionCommandCatalogEntry({
@@ -400,6 +406,7 @@ describe('Agent registration catalog projections', () => {
       isExplicitCliSubcommand: true,
       parsed: { agentArgs: [] },
       settings: { ownedMode: 'wrong-host-value' },
+      pluginSettings: {},
       environment: {},
       startOrigin: 'terminal',
     })).resolves.toEqual({ accountSelected: 'safe', daemonSelected: 'daemon-safe' });

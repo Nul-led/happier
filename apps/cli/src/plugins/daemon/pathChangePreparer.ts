@@ -7,6 +7,7 @@ import {
 import {
   createPluginRegistryStateStore,
   PluginRegistryCandidateConflictError,
+  resolvePluginUpdatePolicyChangeRejection,
   type PluginRegistryRuntimeLifecycle,
 } from '@/plugins/store/registry/currentState';
 import type { PluginRegistryCommitRecord } from '@/plugins/store/registry/commitRecord';
@@ -341,6 +342,7 @@ export function createDaemonPathPluginChangePreparer(params: Readonly<{
       || request.kind === 'uninstall'
       || request.kind === 'uninstallAndDeleteData'
       || request.kind === 'forgetTrust'
+      || request.kind === 'setUpdatePolicy'
     ) {
       const stateRequest = request;
       const store = createPluginRegistryStateStore({
@@ -350,6 +352,12 @@ export function createDaemonPathPluginChangePreparer(params: Readonly<{
       const existing = (await store.read()).plugins[stateRequest.pluginId];
       const allowsAlreadyAbsent = stateRequest.kind === 'uninstallAndDeleteData' && !existing;
       if (!existing && !allowsAlreadyAbsent) throw new Error(`Unknown plugin id: ${stateRequest.pluginId}`);
+      if (stateRequest.kind === 'setUpdatePolicy') {
+        const rejection = resolvePluginUpdatePolicyChangeRejection(existing, stateRequest.policy);
+        if (rejection) {
+          throw new DaemonPluginChangePreparationError(rejection.code, rejection.message);
+        }
+      }
       if (
         (stateRequest.kind === 'uninstall' || stateRequest.kind === 'uninstallAndDeleteData')
         && existing?.source.kind === 'bundled'
@@ -427,8 +435,13 @@ export function createDaemonPathPluginChangePreparer(params: Readonly<{
             transaction = existing
               ? (await store.uninstallWithResult(stateRequest.pluginId))?.transaction ?? null
               : null;
-          } else {
+          } else if (stateRequest.kind === 'forgetTrust') {
             transaction = (await store.forgetTrustWithResult(stateRequest.pluginId))?.transaction ?? null;
+          } else if (stateRequest.kind === 'setUpdatePolicy') {
+            transaction = (await store.setUpdatePolicyWithResult(
+              stateRequest.pluginId,
+              stateRequest.policy,
+            ))?.transaction ?? null;
           }
           const generation = transaction
             ? transaction.record.pluginGenerations[stateRequest.pluginId]?.immutableGenerationId ?? null
@@ -552,7 +565,7 @@ export function createDaemonPathPluginChangePreparer(params: Readonly<{
               manifestRelativePath: PLUGIN_MANIFEST_RELATIVE_PATH,
               generatedManifestContents: projected.canonicalManifestJson,
               distribution,
-              updatePolicy: 'manual',
+              updatePolicy: 'reviewEveryUpdate',
               createdAtMs: Date.now(),
             });
             const manifestAuthority = 'external' as const;
@@ -654,7 +667,7 @@ export function createDaemonPathPluginChangePreparer(params: Readonly<{
             manifestRelativePath: resolved.manifestRelativePath,
             generatedManifestContents: serializeCanonicalPluginManifest(resolved.manifest),
             distribution,
-            updatePolicy: 'manual',
+            updatePolicy: 'reviewEveryUpdate',
             createdAtMs: Date.now(),
           });
           resolved = Object.freeze({
@@ -700,7 +713,7 @@ export function createDaemonPathPluginChangePreparer(params: Readonly<{
           sourceRootPath: developmentCandidate?.rootPath ?? resolved.pluginRootPath,
           manifestRelativePath: resolved.manifestRelativePath,
           distribution,
-          updatePolicy: 'manual',
+          updatePolicy: 'reviewEveryUpdate',
           createdAtMs: Date.now(),
         });
       } catch (error) {
@@ -781,15 +794,16 @@ export function createDaemonPathPluginChangePreparer(params: Readonly<{
         manifestAuthority: resolved.manifestAuthority,
         sourceProvenance: pluginSourceProvenanceForKind(existingAtPreparation.source.kind),
       });
+      const selectedOptionalAccess = existingAtPreparation.install.optionalAccess ?? [];
       if (
         previous.ok
         && previous.manifest.id === manifest.id
-        && !hasReviewSensitivePluginUpdate(previous.manifest, manifest)
+        && !hasReviewSensitivePluginUpdate(previous.manifest, manifest, selectedOptionalAccess)
       ) {
         preservedOptionalSelections = preserveValidPluginOptionalSelections(
           manifest.id,
           manifest,
-          existingAtPreparation.install.optionalAccess ?? [],
+          selectedOptionalAccess,
         );
       }
     }
@@ -815,7 +829,7 @@ export function createDaemonPathPluginChangePreparer(params: Readonly<{
             signature: { status: 'notProvided' },
             provenance: { status: 'notProvided' },
             curation: { status: 'notApplicable' },
-            updatePolicy: 'manual',
+            updatePolicy: 'reviewEveryUpdate',
           },
           uiArtifacts: { verification: 'unavailable', contributionIds: [] },
         });
@@ -906,7 +920,7 @@ export function createDaemonPathPluginChangePreparer(params: Readonly<{
             pluginId: manifest.id,
             catalogRecord,
             trust,
-            updatePolicy: existingAtApply?.install.updatePolicy ?? 'manual',
+            updatePolicy: existingAtApply?.install.updatePolicy ?? 'reviewEveryUpdate',
             optionalAccess,
             preparedGeneration,
             ...(installReviewPrincipal

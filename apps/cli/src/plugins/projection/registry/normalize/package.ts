@@ -42,6 +42,7 @@ import type {
   PluginContributionPointV1,
   PluginTargetedContributionV1,
   PluginComposerReferenceProviderContributionV1,
+  PluginSearchProviderContributionV1,
   PluginComposerAttachmentContributionV1,
   PluginComposerControlContributionV1,
   PluginComposerRegionContributionV1,
@@ -148,6 +149,7 @@ export type PluginContributionRegistry = Readonly<{
   promptAssets: readonly PluginOwnedContribution<PluginPromptAssetContributionV1>[];
   uiTranslations: readonly PluginOwnedContribution<PluginUiTranslationsContributionV1>[];
   sessionHeaderActions: readonly PluginOwnedContribution<PluginSessionHeaderActionDescriptorV1>[];
+  searchProviders: readonly PluginOwnedContribution<PluginSearchProviderContributionV1>[];
   transcriptActivities: readonly PluginOwnedContribution<PluginTranscriptActivityContributionV1>[];
   sessionInfoSections: readonly PluginOwnedContribution<PluginSessionInfoSectionContributionV1>[];
   hostedWeb: readonly PluginOwnedContribution<PluginHostedWebContributionV1>[];
@@ -397,6 +399,7 @@ export function buildPluginContributionRegistry(params: Readonly<{
   const promptAssets: PluginOwnedContribution<PluginPromptAssetContributionV1>[] = [];
   const uiTranslations: PluginOwnedContribution<PluginUiTranslationsContributionV1>[] = [];
   const sessionHeaderActions: PluginOwnedContribution<PluginSessionHeaderActionDescriptorV1>[] = [];
+  const searchProviders: PluginOwnedContribution<PluginSearchProviderContributionV1>[] = [];
   const transcriptActivities: PluginOwnedContribution<PluginTranscriptActivityContributionV1>[] = [];
   const sessionInfoSections: PluginOwnedContribution<PluginSessionInfoSectionContributionV1>[] = [];
   const hostedWeb: PluginOwnedContribution<PluginHostedWebContributionV1>[] = [];
@@ -783,6 +786,19 @@ export function buildPluginContributionRegistry(params: Readonly<{
       });
     }
 
+    for (const definition of readSemanticDefinitions<PluginSearchProviderContributionV1>('searchProviders')) {
+      searchProviders.push({
+        pluginId: plugin.pluginId,
+        pluginVersion: plugin.manifest.version,
+        identity: createPluginContributionIdentity({ pluginId: plugin.pluginId, localId: definition.id }),
+        pluginRootPath: plugin.pluginRootPath,
+        manifestPath: plugin.manifestPath,
+        daemonEntryPath: plugin.daemonEntryPath,
+        devDaemonEntryPath: plugin.devDaemonEntryPath,
+        sourceSpec: plugin.sourceSpec,
+        definition,
+      });
+    }
     for (const definition of readSemanticDefinitions<PluginTranscriptActivityContributionV1>('transcriptActivities')) {
       transcriptActivities.push({
         pluginId: plugin.pluginId,
@@ -1079,6 +1095,7 @@ export function buildPluginContributionRegistry(params: Readonly<{
     promptAssets: Object.freeze(promptAssets),
     uiTranslations: Object.freeze(uiTranslations),
     sessionHeaderActions: Object.freeze(sessionHeaderActions),
+    searchProviders: Object.freeze(searchProviders),
     transcriptActivities: Object.freeze(transcriptActivities),
     sessionInfoSections: Object.freeze(sessionInfoSections),
     hostedWeb: Object.freeze(hostedWeb),

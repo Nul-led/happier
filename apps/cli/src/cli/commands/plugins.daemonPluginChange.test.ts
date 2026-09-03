@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createEnvKeyScope } from '@/testkit/env/envScope';
-import { createPluginInstallationReviewFixture } from '@/plugins/testkit/pluginInstallationReviewFixture';
+import { createPluginInstallationReviewFixture } from '@happier-dev/protocol/testing/pluginInstallationReviewFixture';
 import { captureStdoutJsonOutput } from '@/testkit/logger/captureOutput';
 
 const daemon = vi.hoisted(() => ({
@@ -36,7 +36,7 @@ const reviewRequired = {
     pluginId: 'acme.sample',
     displayName: 'Acme Sample',
     packageIdentity: { name: '@acme/sample', version: '1.0.0' },
-    source: { kind: 'archive', locator: '/tmp/acme-sample.tgz' },
+    source: { kind: 'archive', locator: '/tmp/acme-sample.tgz', integrity: 'sha512-sample', integrityBasis: 'observed' },
     updateChannel: { kind: 'archive', locator: '/tmp/acme-sample.tgz' },
   }),
 };

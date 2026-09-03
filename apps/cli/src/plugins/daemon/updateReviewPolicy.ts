@@ -3,6 +3,10 @@ import {
   PluginHostAccessRequestV2Schema,
   type PluginHostAccessRequestV2,
 } from '@happier-dev/protocol';
+import type {
+  PluginInstallationReview,
+  PluginInstallationReviewRequestInterceptor,
+} from '@happier-dev/protocol/marketplace/internal';
 
 import type { CanonicalPluginManifest } from '@/plugins/manifest/types';
 import {
@@ -10,11 +14,12 @@ import {
   qualifyHostAccessContributionReference,
 } from '@/plugins/runtime/hostAccess/resolve';
 import {
-  fingerprintPluginHostAccessRequest,
-} from '@/plugins/runtime/hostAccess/scope';
-import {
   projectPluginInstallationReviewRequestInterceptor,
 } from './changeContract';
+import {
+  projectPluginInstallationReviewExecutableRealms,
+  projectPluginInstallationReviewRawCredentialAccess,
+} from './installationReview';
 
 import {
   createDefaultPluginAccessScopeRegistry,
@@ -23,20 +28,30 @@ import {
 
 const accessScopeRegistry = createDefaultPluginAccessScopeRegistry();
 
-function hasDaemonExecution(manifest: CanonicalPluginManifest): boolean {
-  return Boolean(manifest.entrypoints?.daemon || manifest.entrypoints?.development);
-}
+type RawCredentialAccessFact = PluginInstallationReview['rawCredentialAccess'][number];
 
-function hasReactNativeExecution(manifest: CanonicalPluginManifest): boolean {
-  return manifest.contributes.ui.renderers.some((renderer) => renderer.kind === 'reactNative');
+/**
+ * A `reviewSensitiveChanges` update reopens human review only when the
+ * candidate can reach further than the incumbent grant. `exact` and `narrower`
+ * are both admissible; every other relation — including a scope whose
+ * direction the canonical registry cannot rank — reopens review.
+ */
+function isWithinGrantedScope(
+  capability: string,
+  candidateScope: unknown,
+  grantedScope: unknown,
+): boolean {
+  const relation = accessScopeRegistry.compare(capability, candidateScope, grantedScope).relation;
+  return relation === 'exact' || relation === 'narrower';
 }
 
 function hasExecutableRealmExpansion(
   previous: CanonicalPluginManifest,
   candidate: CanonicalPluginManifest,
 ): boolean {
-  return (!hasDaemonExecution(previous) && hasDaemonExecution(candidate))
-    || (!hasReactNativeExecution(previous) && hasReactNativeExecution(candidate));
+  const granted = new Set(projectPluginInstallationReviewExecutableRealms(previous));
+  return projectPluginInstallationReviewExecutableRealms(candidate)
+    .some((realm) => !granted.has(realm));
 }
 
 function qualifyNetworkTargetReference(
@@ -46,7 +61,10 @@ function qualifyNetworkTargetReference(
   }>['scope']['targets'][number],
 ) {
   switch (target.kind) {
+    // Both carry their whole meaning inline: there is no contribution
+    // reference to qualify against the owning plugin.
     case 'fixedOrigin':
+    case 'httpsHostSuffix':
       return target;
     case 'connectedAccountOrigin':
       return {
@@ -109,73 +127,114 @@ function qualifyHostAccessRequestReferences(
   }
 }
 
-function hasReviewSensitiveHostAccessChange(
+/**
+ * The scope a preserved selection actually granted, expressed as a qualified
+ * host-access request against the current declaration. A selection stores the
+ * unqualified scope it was minted from, so both sides are qualified through
+ * the same owner before any comparison. Returns `null` when the stored
+ * selection cannot be read as a request for this declaration at all.
+ */
+function readSelectionGrantedRequest(
+  pluginId: string,
+  declaration: PluginHostAccessRequestV2,
+  selection: PluginAccessSelection,
+): PluginHostAccessRequestV2 | null {
+  const parsed = PluginHostAccessRequestV2Schema.safeParse({
+    ...declaration,
+    scope: selection.normalizedScope,
+  });
+  if (!parsed.success) return null;
+  return qualifyHostAccessRequestReferences(selection.pluginId || pluginId, parsed.data);
+}
+
+function readValidSelectionsByAccessId(
+  pluginId: string,
+  selections: readonly PluginAccessSelection[],
+): ReadonlyMap<string, PluginAccessSelection> {
+  const byAccessId = new Map<string, PluginAccessSelection>();
+  for (const selection of selections) {
+    if (selection.pluginId !== pluginId || !accessScopeRegistry.validateSelection(selection)) continue;
+    byAccessId.set(selection.accessId, selection);
+  }
+  return byAccessId;
+}
+
+/**
+ * Required host access is unconditional authority, so every candidate
+ * declaration must stay inside the request of the same id the user already
+ * approved. Removed declarations and reworded reasons disclose no new reach
+ * and are therefore not review-sensitive.
+ */
+function hasRequiredHostAccessExpansion(
   previous: CanonicalPluginManifest,
   candidate: CanonicalPluginManifest,
 ): boolean {
-  const previousRequired = new Map(previous.hostAccess.required.map((request) => [request.id, request]));
-  for (const rawRequest of candidate.hostAccess.required) {
-    const rawPrior = previousRequired.get(rawRequest.id);
+  const granted = new Map(previous.hostAccess.required.map((request) => [request.id, request]));
+  return candidate.hostAccess.required.some((rawRequest) => {
+    const rawPrior = granted.get(rawRequest.id);
+    if (!rawPrior || rawPrior.capability !== rawRequest.capability) return true;
     const request = qualifyHostAccessRequestReferences(candidate.id, rawRequest);
-    const prior = rawPrior
-      ? qualifyHostAccessRequestReferences(previous.id, rawPrior)
-      : undefined;
-    if (
-      !prior
-      || prior.capability !== request.capability
-      || prior.reason !== request.reason
-    ) {
-      return true;
-    }
-    const comparison = accessScopeRegistry.compare(
-      request.capability,
-      request.scope,
-      prior.scope,
-    );
-    if (comparison.relation !== 'exact') return true;
-  }
+    const prior = qualifyHostAccessRequestReferences(previous.id, rawPrior);
+    return !isWithinGrantedScope(request.capability, request.scope, prior.scope);
+  });
+}
 
-  const previousOptional = new Map(previous.hostAccess.optional.map((request) => [request.id, request]));
-  for (const rawRequest of candidate.hostAccess.optional) {
-    const rawPrior = previousOptional.get(rawRequest.id);
-    const request = qualifyHostAccessRequestReferences(candidate.id, rawRequest);
-    const prior = rawPrior
-      ? qualifyHostAccessRequestReferences(previous.id, rawPrior)
-      : undefined;
-    if (
-      !prior
-      || prior.capability !== request.capability
-      || prior.reason !== request.reason
-      || accessScopeRegistry.compare(request.capability, request.scope, prior.scope).relation !== 'exact'
-    ) {
-      return true;
+/**
+ * An optional declaration is a request, not authority: it grants nothing until
+ * the user selects it, and the selection the host persisted is the exact scope
+ * that was granted. A declaration the user never selected can therefore appear
+ * or widen freely, while a selected one is measured against its own selection —
+ * the same fact {@link preserveValidPluginOptionalSelections} carries forward.
+ */
+function hasSelectedOptionalHostAccessExpansion(
+  candidate: CanonicalPluginManifest,
+  selections: readonly PluginAccessSelection[],
+): boolean {
+  const selectionsByAccessId = readValidSelectionsByAccessId(candidate.id, selections);
+  if (selectionsByAccessId.size === 0) return false;
+  return candidate.hostAccess.optional.some((declaration) => {
+    const selection = selectionsByAccessId.get(declaration.id);
+    if (!selection) return false;
+    if (selection.capability !== declaration.capability) return true;
+    const granted = readSelectionGrantedRequest(candidate.id, declaration, selection);
+    if (!granted) return true;
+    const request = qualifyHostAccessRequestReferences(candidate.id, declaration);
+    return !isWithinGrantedScope(request.capability, request.scope, granted.scope);
+  });
+}
+
+/**
+ * Agent Connected Account purposes are projected into required host access by
+ * the canonical purpose projection, so they are compared through the same
+ * scope registry, keyed by the Agent and purpose the user approved.
+ */
+function connectedAccountPurposeRequestsByKey(
+  manifest: CanonicalPluginManifest,
+): ReadonlyMap<string, PluginHostAccessRequestV2> {
+  const byKey = new Map<string, PluginHostAccessRequestV2>();
+  for (const agent of manifest.contributes.agents) {
+    for (const { request } of projectConnectedAccountPurposeDeclarationsToHostAccess(
+      agent.connectedAccounts ?? [],
+    )) {
+      byKey.set(
+        JSON.stringify([agent.id, request.id]),
+        qualifyHostAccessRequestReferences(manifest.id, request),
+      );
     }
+  }
+  return byKey;
+}
+
+function hasConnectedAccountPurposeAccessExpansion(
+  previous: CanonicalPluginManifest,
+  candidate: CanonicalPluginManifest,
+): boolean {
+  const granted = connectedAccountPurposeRequestsByKey(previous);
+  for (const [key, request] of connectedAccountPurposeRequestsByKey(candidate)) {
+    const prior = granted.get(key);
+    if (!prior || !isWithinGrantedScope(request.capability, request.scope, prior.scope)) return true;
   }
   return false;
-}
-
-function connectedAccountPurposeAccessFacts(
-  manifest: CanonicalPluginManifest,
-): readonly string[] {
-  return manifest.contributes.agents.flatMap((agent) =>
-    projectConnectedAccountPurposeDeclarationsToHostAccess(
-      agent.connectedAccounts ?? [],
-    ).map(({ request }) =>
-      JSON.stringify([
-        agent.id,
-        fingerprintPluginHostAccessRequest(
-          qualifyHostAccessRequestReferences(manifest.id, request),
-        ),
-      ])),
-  ).sort();
-}
-
-function hasConnectedAccountPurposeAccessChange(
-  previous: CanonicalPluginManifest,
-  candidate: CanonicalPluginManifest,
-): boolean {
-  return JSON.stringify(connectedAccountPurposeAccessFacts(previous))
-    !== JSON.stringify(connectedAccountPurposeAccessFacts(candidate));
 }
 
 function contributionKeys(
@@ -214,33 +273,156 @@ function hasDeclaredIntegrationExpansion(
   return false;
 }
 
-function requestInterceptorReviewFacts(
-  manifest: CanonicalPluginManifest,
-): readonly string[] {
-  return Object.freeze(manifest.contributes.requestInterceptors.map((contribution) => (
-    JSON.stringify(projectPluginInstallationReviewRequestInterceptor(contribution))
-  )).sort());
+function isStringSetContained(
+  candidate: readonly string[],
+  granted: readonly string[],
+): boolean {
+  const allowed = new Set(granted);
+  return candidate.every((entry) => allowed.has(entry));
 }
 
-function hasRequestInterceptorDeclarationChange(
+/**
+ * A request interceptor reaches exactly the origin/method pairs it declares —
+ * `contributionAllowsRequest` treats an absent `methods` list as every method —
+ * and it may only rewrite a request back inside that same declared reach.
+ * `priority` is the ascending chain-order key, so a lower number moves the
+ * interceptor ahead of interceptors that previously ran before it.
+ */
+function isRequestInterceptorWithinGrant(
+  candidate: PluginInstallationReviewRequestInterceptor,
+  granted: PluginInstallationReviewRequestInterceptor,
+): boolean {
+  return isStringSetContained(candidate.origins, granted.origins)
+    && (granted.methods === undefined
+      || (candidate.methods !== undefined && isStringSetContained(candidate.methods, granted.methods)))
+    && candidate.priority >= granted.priority;
+}
+
+function hasRequestInterceptorExpansion(
   previous: CanonicalPluginManifest,
   candidate: CanonicalPluginManifest,
 ): boolean {
-  return JSON.stringify(requestInterceptorReviewFacts(previous))
-    !== JSON.stringify(requestInterceptorReviewFacts(candidate));
+  const granted = new Map(previous.contributes.requestInterceptors.map((contribution) => [
+    contribution.id,
+    projectPluginInstallationReviewRequestInterceptor(contribution),
+  ]));
+  return candidate.contributes.requestInterceptors.some((contribution) => {
+    const prior = granted.get(contribution.id);
+    if (!prior) return true;
+    return !isRequestInterceptorWithinGrant(
+      projectPluginInstallationReviewRequestInterceptor(contribution),
+      prior,
+    );
+  });
 }
 
+/**
+ * A declared contribution's identity is not its disclosure: an already-declared
+ * Voice provider can add or widen a raw credential grant without changing any
+ * contribution key. The review-sensitivity check therefore reads the exact
+ * raw-credential facts the installation review disclosed, from that one
+ * projection owner, and keys each disclosure by the contribution, slot,
+ * credential source, realm, phase and request target it names. The slot title
+ * is presentation copy and is deliberately absent from the key and from the
+ * comparison.
+ */
+function rawCredentialAccessKey(fact: RawCredentialAccessFact): string {
+  return JSON.stringify([
+    fact.contribution.pluginId,
+    fact.contribution.localId,
+    fact.credentialSlot.id,
+    fact.credentialSlot.purpose,
+    fact.sourceClass.kind,
+    fact.sourceClass.kind === 'connectedAccount' ? fact.sourceClass.service : null,
+    fact.realm,
+    fact.phase,
+    fact.accessMode,
+    fact.request.kind,
+    fact.request.kind === 'httpHeaders' ? fact.request.origin : null,
+  ]);
+}
+
+function isRawCredentialRequestWithinGrant(
+  candidate: RawCredentialAccessFact['request'],
+  granted: RawCredentialAccessFact['request'],
+): boolean {
+  if (candidate.kind === 'httpHeaders') {
+    return granted.kind === 'httpHeaders'
+      && isStringSetContained(candidate.headerNames, granted.headerNames);
+  }
+  if (candidate.kind === 'environment') {
+    return granted.kind === 'environment' && isStringSetContained(candidate.keys, granted.keys);
+  }
+  return granted.kind === 'files' && isStringSetContained(candidate.fileIds, granted.fileIds);
+}
+
+function isRawCredentialAccessWithinGrant(
+  candidate: RawCredentialAccessFact,
+  granted: RawCredentialAccessFact,
+): boolean {
+  if (
+    candidate.sourceClass.kind === 'savedSecret'
+    && granted.sourceClass.kind === 'savedSecret'
+    && !isStringSetContained(candidate.sourceClass.secretKinds, granted.sourceClass.secretKinds)
+  ) {
+    return false;
+  }
+  return isRawCredentialRequestWithinGrant(candidate.request, granted.request);
+}
+
+function hasRawCredentialAccessExpansion(
+  previous: CanonicalPluginManifest,
+  candidate: CanonicalPluginManifest,
+): boolean {
+  const granted = new Map<string, RawCredentialAccessFact[]>();
+  for (const fact of projectPluginInstallationReviewRawCredentialAccess(previous)) {
+    const key = rawCredentialAccessKey(fact);
+    granted.set(key, [...(granted.get(key) ?? []), fact]);
+  }
+  return projectPluginInstallationReviewRawCredentialAccess(candidate).some((fact) => (
+    !(granted.get(rawCredentialAccessKey(fact)) ?? []).some((prior) => (
+      isRawCredentialAccessWithinGrant(fact, prior)
+    ))
+  ));
+}
+
+/**
+ * Whether an explicit `reviewSensitiveChanges` update must reopen the present-
+ * user installation review. The question is directional: review reopens when
+ * the candidate can reach somewhere the approved grant could not — a new
+ * executable realm, new or widened required host access, a selected optional
+ * grant that no longer contains its declaration, new or widened Connected
+ * Account purpose authority, a new declared integration, wider request
+ * interceptor reach, or wider raw-credential disclosure. Reworded reasons and
+ * other disclosure copy, removed declarations, unselected optional
+ * declarations, and provably narrowed authority reach no further than what the
+ * user already approved and are admitted without review.
+ *
+ * `selectedOptionalAccess` is the installed record's persisted
+ * `install.optionalAccess`, which both preparers read before deciding.
+ */
 export function hasReviewSensitivePluginUpdate(
   previous: CanonicalPluginManifest,
   candidate: CanonicalPluginManifest,
+  selectedOptionalAccess: readonly PluginAccessSelection[],
 ): boolean {
   return hasExecutableRealmExpansion(previous, candidate)
-    || hasReviewSensitiveHostAccessChange(previous, candidate)
-    || hasConnectedAccountPurposeAccessChange(previous, candidate)
+    || hasRequiredHostAccessExpansion(previous, candidate)
+    || hasSelectedOptionalHostAccessExpansion(candidate, selectedOptionalAccess)
+    || hasConnectedAccountPurposeAccessExpansion(previous, candidate)
     || hasDeclaredIntegrationExpansion(previous, candidate)
-    || hasRequestInterceptorDeclarationChange(previous, candidate);
+    || hasRequestInterceptorExpansion(previous, candidate)
+    || hasRawCredentialAccessExpansion(previous, candidate);
 }
 
+/**
+ * Carries the user's optional-access grants across an update. A declaration
+ * that disappeared drops its selection, and a declaration that narrowed inside
+ * its grant keeps the user's decision at the reduced authority by re-minting
+ * the selection from the current declaration through the same scope registry
+ * that created it. A declaration that reaches beyond its selection cannot be
+ * carried forward at all and returns `null`, which reopens review.
+ */
 export function preserveValidPluginOptionalSelections(
   pluginId: string,
   manifest: CanonicalPluginManifest,
@@ -257,27 +439,29 @@ export function preserveValidPluginOptionalSelections(
       return null;
     }
     if (!declaration) continue;
-    const parsedSelectedRequest = PluginHostAccessRequestV2Schema.safeParse({
-      ...declaration,
-      scope: selection.normalizedScope,
-    });
-    if (!parsedSelectedRequest.success) return null;
+    const granted = readSelectionGrantedRequest(pluginId, declaration, selection);
+    if (!granted) return null;
     const qualifiedDeclaration = qualifyHostAccessRequestReferences(pluginId, declaration);
-    const qualifiedSelection = qualifyHostAccessRequestReferences(
-      selection.pluginId,
-      parsedSelectedRequest.data,
-    );
-    if (
-      qualifiedDeclaration.capability !== selection.capability
-      || accessScopeRegistry.compare(
-        qualifiedDeclaration.capability,
-        qualifiedDeclaration.scope,
-        qualifiedSelection.scope,
-      ).relation !== 'exact'
-    ) {
-      return null;
+    if (qualifiedDeclaration.capability !== selection.capability) return null;
+    const relation = accessScopeRegistry.compare(
+      qualifiedDeclaration.capability,
+      qualifiedDeclaration.scope,
+      granted.scope,
+    ).relation;
+    if (relation === 'exact') {
+      // The grant is unchanged, so the incumbent selection is carried forward
+      // byte for byte rather than re-minted from equivalent declaration text.
+      preserved.push(selection);
+      continue;
     }
-    preserved.push(selection);
+    if (relation !== 'narrower') return null;
+    preserved.push(accessScopeRegistry.createSelection({
+      pluginId: selection.pluginId,
+      accessId: selection.accessId,
+      capability: declaration.capability,
+      scope: declaration.scope,
+      selectedAtMs: selection.selectedAtMs,
+    }));
   }
   return Object.freeze(preserved);
 }

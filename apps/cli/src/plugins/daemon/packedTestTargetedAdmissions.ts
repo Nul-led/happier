@@ -82,7 +82,7 @@ export async function readPackedTestTargetedAdmission(params: Readonly<{
   reloadController: PluginReloadController;
   request: PackedTestTargetedAdmissionReadRequest;
 }>): Promise<PackedTestTargetedAdmissionReadResponse> {
-  const lease = params.reloadController.tryAcquireRuntimeRegistry?.() ?? null;
+  const lease = params.reloadController.tryAcquireRuntimeRegistry();
   if (!lease) return unavailable('plugin_packed_targeted_admission_runtime_unavailable');
   try {
     if (!params.reloadController.isRuntimeRegistryCurrent(lease.registry)) {

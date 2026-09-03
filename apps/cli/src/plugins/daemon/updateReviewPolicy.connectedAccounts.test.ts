@@ -2,13 +2,18 @@ import { describe, expect, it } from 'vitest';
 import type { ConnectedAccountPurposeDeclarationV1 } from '@happier-dev/protocol';
 
 import { readCanonicalPluginManifest } from '@/plugins/manifest/normalize';
-import { createDefaultPluginAccessScopeRegistry } from '@/plugins/store/install/accessScopeRegistry';
+import {
+  createDefaultPluginAccessScopeRegistry,
+  type PluginAccessSelection,
+} from '@/plugins/store/install/accessScopeRegistry';
 import { createPluginManifestV2Fixture } from '@/plugins/testkit/manifestV2Fixture';
 
 import {
   hasReviewSensitivePluginUpdate,
   preserveValidPluginOptionalSelections,
 } from './updateReviewPolicy';
+
+const registry = createDefaultPluginAccessScopeRegistry();
 
 function manifest(
   materializationKinds?: readonly ('environment' | 'files')[],
@@ -34,6 +39,24 @@ function manifest(
   }));
   if (!parsed) throw new Error('Expected canonical Connected Accounts manifest');
   return parsed;
+}
+
+function upstreamSelection(
+  materializationKinds?: readonly ('environment' | 'files')[],
+): PluginAccessSelection {
+  return registry.createSelection({
+    pluginId: 'acme.consumer',
+    accessId: 'upstream',
+    capability: 'connectedAccounts',
+    scope: {
+      serviceRefs: ['account'],
+      operations: ['use'],
+      ...(materializationKinds !== undefined
+        ? { materializationKinds: [...materializationKinds] }
+        : {}),
+    },
+    selectedAtMs: 1,
+  });
 }
 
 function agentManifest(
@@ -122,36 +145,46 @@ function interceptorManifest(requestInterceptors: readonly Readonly<Record<strin
 }
 
 describe('Connected Accounts plugin update review policy', () => {
-  it('treats kind order as canonical but makes every authority change review-sensitive', () => {
+  it('treats kind order as canonical and reopens review only for a selected materialization expansion', () => {
     const current = manifest(['environment', 'files']);
+    const granted = [upstreamSelection(['environment', 'files'])];
 
     expect(hasReviewSensitivePluginUpdate(
       current,
       manifest(['files', 'environment']),
+      granted,
     )).toBe(false);
     expect(hasReviewSensitivePluginUpdate(
       current,
       manifest(['environment']),
-    )).toBe(true);
+      granted,
+    )).toBe(false);
     expect(hasReviewSensitivePluginUpdate(
       current,
       manifest(),
+      granted,
+    )).toBe(false);
+    expect(hasReviewSensitivePluginUpdate(
+      manifest(['environment']),
+      current,
+      [upstreamSelection(['environment'])],
     )).toBe(true);
   });
 
-  it('preserves an optional selection only for the exact current materialization authority', () => {
-    const registry = createDefaultPluginAccessScopeRegistry();
-    const selection = registry.createSelection({
-      pluginId: 'acme.consumer',
-      accessId: 'upstream',
-      capability: 'connectedAccounts',
-      scope: {
-        serviceRefs: ['account'],
-        operations: ['use'],
-        materializationKinds: ['environment'],
-      },
-      selectedAtMs: 1,
-    });
+  /**
+   * An unselected optional declaration grants nothing, so widening it discloses
+   * a request the user can still refuse rather than authority they now hold.
+   */
+  it('does not reopen review for a materialization expansion the user never selected', () => {
+    expect(hasReviewSensitivePluginUpdate(
+      manifest(['environment']),
+      manifest(['environment', 'files']),
+      [],
+    )).toBe(false);
+  });
+
+  it('carries an optional selection forward only while the declaration stays inside it', () => {
+    const selection = upstreamSelection(['environment']);
 
     expect(preserveValidPluginOptionalSelections(
       'acme.consumer',
@@ -167,7 +200,7 @@ describe('Connected Accounts plugin update review policy', () => {
       'acme.consumer',
       manifest(),
       [selection],
-    )).toBeNull();
+    )).toEqual([upstreamSelection()]);
     expect(preserveValidPluginOptionalSelections(
       'acme.consumer',
       manifest(['environment'], {
@@ -186,24 +219,28 @@ describe('Connected Accounts plugin update review policy', () => {
     )).toBeNull();
   });
 
-  it('makes generated Agent purpose materialization-authority changes review-sensitive', () => {
+  it('makes generated Agent purpose materialization expansion review-sensitive in one direction', () => {
     const current = agentManifest(['environment', 'files']);
 
     expect(hasReviewSensitivePluginUpdate(
       current,
       agentManifest(['files', 'environment']),
+      [],
     )).toBe(false);
     expect(hasReviewSensitivePluginUpdate(
       current,
       agentManifest(['environment']),
-    )).toBe(true);
+      [],
+    )).toBe(false);
     expect(hasReviewSensitivePluginUpdate(
       current,
       agentManifest(),
-    )).toBe(true);
+      [],
+    )).toBe(false);
     expect(hasReviewSensitivePluginUpdate(
       agentManifest(['environment']),
       current,
+      [],
     )).toBe(true);
   });
 
@@ -218,10 +255,10 @@ describe('Connected Accounts plugin update review policy', () => {
       localId: 'account',
     });
 
-    expect(hasReviewSensitivePluginUpdate(local, selfQualified)).toBe(false);
-    expect(hasReviewSensitivePluginUpdate(selfQualified, local)).toBe(false);
-    expect(hasReviewSensitivePluginUpdate(local, external)).toBe(true);
-    expect(hasReviewSensitivePluginUpdate(external, local)).toBe(true);
+    expect(hasReviewSensitivePluginUpdate(local, selfQualified, [])).toBe(false);
+    expect(hasReviewSensitivePluginUpdate(selfQualified, local, [])).toBe(false);
+    expect(hasReviewSensitivePluginUpdate(local, external, [])).toBe(true);
+    expect(hasReviewSensitivePluginUpdate(external, local, [])).toBe(true);
   });
 
   it('canonicalizes local and explicit self-qualified manual Connected Accounts service references', () => {
@@ -234,11 +271,12 @@ describe('Connected Accounts plugin update review policy', () => {
       pluginId: 'acme.accounts',
       localId: 'account',
     });
+    const granted = [upstreamSelection()];
 
-    expect(hasReviewSensitivePluginUpdate(local, selfQualified)).toBe(false);
-    expect(hasReviewSensitivePluginUpdate(selfQualified, local)).toBe(false);
-    expect(hasReviewSensitivePluginUpdate(local, external)).toBe(true);
-    expect(hasReviewSensitivePluginUpdate(external, local)).toBe(true);
+    expect(hasReviewSensitivePluginUpdate(local, selfQualified, granted)).toBe(false);
+    expect(hasReviewSensitivePluginUpdate(selfQualified, local, granted)).toBe(false);
+    expect(hasReviewSensitivePluginUpdate(local, external, granted)).toBe(true);
+    expect(hasReviewSensitivePluginUpdate(external, local, granted)).toBe(false);
   });
 
   it('canonicalizes local and explicit self-qualified Connected Account network origins', () => {
@@ -252,19 +290,19 @@ describe('Connected Accounts plugin update review policy', () => {
       localId: 'account',
     });
 
-    expect(hasReviewSensitivePluginUpdate(local, selfQualified)).toBe(false);
-    expect(hasReviewSensitivePluginUpdate(selfQualified, local)).toBe(false);
-    expect(hasReviewSensitivePluginUpdate(local, external)).toBe(true);
-    expect(hasReviewSensitivePluginUpdate(external, local)).toBe(true);
+    expect(hasReviewSensitivePluginUpdate(local, selfQualified, [])).toBe(false);
+    expect(hasReviewSensitivePluginUpdate(selfQualified, local, [])).toBe(false);
+    expect(hasReviewSensitivePluginUpdate(local, external, [])).toBe(true);
+    expect(hasReviewSensitivePluginUpdate(external, local, [])).toBe(true);
   });
 
-  it('treats explicit network.client private-network intent as an authority change', () => {
+  it('treats acquired network.client private-network intent as an authority expansion', () => {
     const defaultIntent = networkClientManifest();
     const privateIntent = networkClientManifest(true);
 
-    expect(hasReviewSensitivePluginUpdate(defaultIntent, defaultIntent)).toBe(false);
-    expect(hasReviewSensitivePluginUpdate(defaultIntent, privateIntent)).toBe(true);
-    expect(hasReviewSensitivePluginUpdate(privateIntent, defaultIntent)).toBe(true);
+    expect(hasReviewSensitivePluginUpdate(defaultIntent, defaultIntent, [])).toBe(false);
+    expect(hasReviewSensitivePluginUpdate(defaultIntent, privateIntent, [])).toBe(true);
+    expect(hasReviewSensitivePluginUpdate(privateIntent, defaultIntent, [])).toBe(false);
   });
 
   it('requires review when an existing request interceptor widens its declared policy', () => {
@@ -279,7 +317,8 @@ describe('Connected Accounts plugin update review policy', () => {
       methods: ['GET', 'POST'],
     }]);
 
-    expect(hasReviewSensitivePluginUpdate(current, current)).toBe(false);
-    expect(hasReviewSensitivePluginUpdate(current, widened)).toBe(true);
+    expect(hasReviewSensitivePluginUpdate(current, current, [])).toBe(false);
+    expect(hasReviewSensitivePluginUpdate(current, widened, [])).toBe(true);
+    expect(hasReviewSensitivePluginUpdate(widened, current, [])).toBe(false);
   });
 });

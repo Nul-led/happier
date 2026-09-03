@@ -3,11 +3,11 @@ import type { PluginDevelopmentSourceRequest } from '@/plugins/authoring/sourceO
 import type {
   PluginChangeDecision,
   PluginChangeDecisionResult,
-  PluginChangePendingReviewResult,
   PluginChangePendingSurface,
   PluginChangeRequest,
   PluginChangeRequestResult,
 } from './changeContract';
+import type { PluginChangePendingReviewResult } from '@happier-dev/protocol/marketplace/internal';
 import { requestUserPluginChange } from './changeClient';
 
 export type DevelopmentChangeResult = Readonly<{

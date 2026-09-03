@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
+import type { PluginUpdatePolicyV1 } from '@happier-dev/protocol';
 
 import type { PluginStateRecord } from '@/plugins/store/state';
 
 import { resolveInstalledPluginUpdate } from './resolveInstalledUpdate';
 
 function npmRecord(
-  updatePolicy: 'automatic' | 'manual' | 'pinned',
-  hasCuratedUpdateSource = false,
+  updatePolicy: PluginUpdatePolicyV1 | undefined,
   manifestVersion = '1.0.0',
 ): PluginStateRecord {
   const record: PluginStateRecord = {
@@ -22,7 +22,7 @@ function npmRecord(
     install: {
       mode: 'managed_install',
       manifestVersion,
-      updatePolicy,
+      ...(updatePolicy ? { updatePolicy } : {}),
       trust: {
         pluginId: 'acme.example',
         state: 'trusted',
@@ -37,21 +37,12 @@ function npmRecord(
     },
     state: { enabled: true },
   };
-  if (hasCuratedUpdateSource) {
-    Object.assign(record.install, {
-      curatedUpdateSource: {
-        id: 'marketplace:curated',
-        sourceUrl: 'https://marketplace.example.test/catalog.json',
-        registryProfileId: 'registry_private',
-      },
-    });
-  }
   return record;
 }
 
 describe('resolveInstalledPluginUpdate', () => {
   it('preserves the daemon-owned npm channel and policy while leaving version resolution open', () => {
-    expect(resolveInstalledPluginUpdate('acme.example', npmRecord('automatic', true))).toEqual({
+    expect(resolveInstalledPluginUpdate('acme.example', npmRecord('reviewSensitiveChanges'))).toEqual({
       kind: 'npm',
       request: {
         kind: 'installNpm',
@@ -60,14 +51,19 @@ describe('resolveInstalledPluginUpdate', () => {
         registryOrigin: 'https://registry.example.test',
         registryProfileId: 'registry_private',
       },
-      updatePolicy: 'automatic',
+      updatePolicy: 'reviewSensitiveChanges',
     });
+  });
+
+  it('defaults an unpublished record without an explicit policy to reviewEveryUpdate', () => {
+    expect(resolveInstalledPluginUpdate('acme.example', npmRecord(undefined)))
+      .toMatchObject({ kind: 'npm', updatePolicy: 'reviewEveryUpdate' });
   });
 
   it('keeps preview updates on the same prerelease line and above the installed version', () => {
     expect(resolveInstalledPluginUpdate(
       'acme.example',
-      npmRecord('automatic', true, '2.0.0-beta.1'),
+      npmRecord('reviewEveryUpdate', '2.0.0-beta.1'),
     )).toMatchObject({
       kind: 'npm',
       request: {
@@ -81,14 +77,20 @@ describe('resolveInstalledPluginUpdate', () => {
       .toThrowError(expect.objectContaining({ code: 'plugin_update_pinned' }));
   });
 
-  it('fails closed when an automatic npm record has no reviewed curated-source binding', () => {
-    expect(() => resolveInstalledPluginUpdate('acme.example', npmRecord('automatic')))
-      .toThrowError(expect.objectContaining({ code: 'plugin_update_trust_unavailable' }));
+  it('resolves reviewSensitiveChanges updates from the trusted npm channel alone — no curated binding required', () => {
+    // Curation is discovery/recommendation only: the trust record's exact npm
+    // origin/package/profile is the whole update channel.
+    const resolution = resolveInstalledPluginUpdate('acme.example', npmRecord('reviewSensitiveChanges'));
+    expect(resolution.kind).toBe('npm');
+    if (resolution.kind === 'npm') {
+      expect(resolution.request.packageName).toBe('@acme/example');
+      expect(resolution.request.registryOrigin).toBe('https://registry.example.test');
+    }
   });
 
   it('uses the trusted canonical local path for development updates', () => {
     const record: PluginStateRecord = {
-      ...npmRecord('manual'),
+      ...npmRecord('reviewEveryUpdate'),
       source: {
         kind: 'path',
         locator: '/stale/consumer/path',
@@ -101,7 +103,7 @@ describe('resolveInstalledPluginUpdate', () => {
       install: {
         mode: 'link',
         manifestVersion: '1.0.0',
-        updatePolicy: 'manual',
+        updatePolicy: 'reviewEveryUpdate',
         trust: {
           pluginId: 'acme.example',
           state: 'trusted',

@@ -82,7 +82,7 @@ export async function readCurrentDaemonPluginCatalogSnapshot(params: Readonly<{
   happyHomeDir?: string;
 }>): Promise<CurrentDaemonPluginCatalogSnapshot> {
   const catalogParams = params.happyHomeDir ? { happyHomeDir: params.happyHomeDir } : undefined;
-  const lease = params.reloadController.tryAcquireRuntimeRegistry?.() ?? null;
+  const lease = params.reloadController.tryAcquireRuntimeRegistry();
   try {
     const catalog = await readInstalledPluginCatalogSnapshot(catalogParams);
     // A durable commit can lead publication of its derived serving lease. Do

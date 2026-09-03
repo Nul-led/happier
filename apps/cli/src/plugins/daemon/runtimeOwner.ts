@@ -154,9 +154,9 @@ export function createDaemonPluginRuntimeOwner(params: Readonly<{
   // The controller owns this stable target-local observer across cold startup
   // and prepared registry replacement. Runtime construction only consumes it.
   const targetedContributions =
-    params.reloadController.getTargetedContributionsOwner?.();
+    params.reloadController.getTargetedContributionsOwner();
   const onTerminalActivationFailure = (): void => {
-    params.reloadController.invalidateRuntimeProjection?.();
+    params.reloadController.invalidateRuntimeProjection();
     params.onRuntimeProjectionInvalidated?.();
   };
   const beforePublish = params.reconcileConnectedAccountPurposePublication

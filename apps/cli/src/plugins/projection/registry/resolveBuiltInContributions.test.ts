@@ -854,6 +854,7 @@ describe('resolveBuiltInContributions', () => {
         agentArgs: ['exec', '--model', 'gpt-5.1-codex-max'],
       },
       settings: { codexBackendMode: 'appServer' },
+      pluginSettings: {},
       environment: {},
       startOrigin: 'terminal',
     })).toEqual({
@@ -897,6 +898,7 @@ describe('resolveBuiltInContributions', () => {
         agentArgs: ['--model', 'claude-opus-4-6', '--js-runtime', 'bun'],
       },
       settings: { claudeUnifiedTerminalResumeChoice: 'ask_every_time' },
+      pluginSettings: {},
       environment: {},
       startOrigin: 'terminal',
     })).toEqual({
@@ -915,6 +917,7 @@ describe('resolveBuiltInContributions', () => {
         agentArgs: ['--model', 'claude-opus-4-6'],
       },
       settings: {},
+      pluginSettings: {},
       environment: {},
       startOrigin: 'terminal',
     })).toEqual({

@@ -2,17 +2,15 @@ import {
   PLUGIN_CONTRIBUTION_CATALOG_V2,
   PLUGIN_HOST_ACCESS_CAPABILITY_CATALOG_V2,
   type PluginHostAccessRequestV2,
+  type PluginUpdatePolicyV1,
 } from '@happier-dev/protocol';
+import { MAX_PLUGIN_INSTALLATION_REVIEW_STRING_LENGTH, type PluginInstallationReview } from '@happier-dev/protocol/marketplace/internal';
 
 import type { NpmArtifactCompatibilitySelection } from '@/plugins/distribution/npm/types';
 import type { CanonicalPluginManifest } from '@/plugins/manifest/types';
 import { createDefaultPluginAccessScopeRegistry } from '@/plugins/store/install/accessScopeRegistry';
 
-import {
-  MAX_PLUGIN_INSTALLATION_REVIEW_STRING_LENGTH,
-  projectPluginInstallationReviewRequestInterceptor,
-  type PluginInstallationReview,
-} from './changeContract';
+import { projectPluginInstallationReviewRequestInterceptor } from './changeContract';
 
 type ReviewPublisherIdentity = PluginInstallationReview['publisherIdentity'];
 type ReviewSignature = PluginInstallationReview['signature'];
@@ -33,7 +31,7 @@ export type PluginInstallationReviewSourceFacts =
       signature: Readonly<{ status: 'notProvided' }>;
       provenance: Readonly<{ status: 'notProvided' }>;
       curation: Readonly<{ status: 'notApplicable' }>;
-      updatePolicy: 'manual';
+      updatePolicy: 'reviewEveryUpdate';
     }>
   | Readonly<{
       kind: 'archive';
@@ -45,7 +43,7 @@ export type PluginInstallationReviewSourceFacts =
       signature: Readonly<{ status: 'notProvided' }>;
       provenance: Readonly<{ status: 'notProvided' }>;
       curation: Readonly<{ status: 'notApplicable' }>;
-      updatePolicy: 'manual';
+      updatePolicy: 'reviewEveryUpdate';
     }>
   | Readonly<{
       kind: 'npm';
@@ -62,10 +60,10 @@ export type PluginInstallationReviewSourceFacts =
       blockedNewerVersions?: NpmArtifactCompatibilitySelection['blockedNewerVersions'];
       marketplaceSource?: Readonly<{
         id: string;
-        kind: 'curated' | 'community-npm';
+        kind: 'curated' | 'community-npm' | 'user';
         sourceUrl: string;
       }>;
-      updatePolicy: 'automatic' | 'manual' | 'pinned';
+      updatePolicy: PluginUpdatePolicyV1;
     }>;
 
 const hostAccessAuthorizationClassByCapability = new Map(
@@ -128,13 +126,22 @@ function projectOptionalHostAccess(
   return projected as PluginInstallationReview['optionalHostAccess'];
 }
 
-function projectExecutableRealms(
+/**
+ * The one executable-realm projection. It is both the realm set a human
+ * reviews before installing and the set an automatic `reviewSensitiveChanges`
+ * update may only contract, so the review dialog and the update-review policy
+ * read the same realms from one owner.
+ */
+export function projectPluginInstallationReviewExecutableRealms(
   manifest: CanonicalPluginManifest,
 ): PluginInstallationReview['executableRealms'] {
-  const realms: Array<'daemon' | 'reactNative'> = [];
+  const realms: Array<'daemon' | 'reactNative' | 'hostedWeb'> = [];
   if (manifest.entrypoints?.daemon || manifest.entrypoints?.development) realms.push('daemon');
   if (manifest.contributes.ui.renderers.some((renderer) => renderer.kind === 'reactNative')) {
     realms.push('reactNative');
+  }
+  if (manifest.contributes.ui.renderers.some((renderer) => renderer.kind === 'hostedWeb')) {
+    realms.push('hostedWeb');
   }
   return Object.freeze(realms);
 }
@@ -265,7 +272,13 @@ function projectRawCredentialRequest(
   });
 }
 
-function projectRawVoiceCredentialAccess(
+/**
+ * The one raw-credential disclosure projection. It is both what a human
+ * reviews before installing and the fact set an automatic
+ * `reviewSensitiveChanges` update must not expand, so the review dialog and
+ * the update-review policy read the same facts from one owner.
+ */
+export function projectPluginInstallationReviewRawCredentialAccess(
   manifest: CanonicalPluginManifest,
 ): ReviewRawCredentialAccess {
   return Object.freeze(manifest.contributes.voiceProviders.flatMap((contribution) => {
@@ -330,7 +343,7 @@ export function projectPluginInstallationReview(params: Readonly<{
     ? providedUiArtifactIds
     : declaredUiArtifactIds;
   const happierEngine = projectHappierEngineForReview(params.manifest.engines?.happier);
-  const rawCredentialAccess = projectRawVoiceCredentialAccess(params.manifest);
+  const rawCredentialAccess = projectPluginInstallationReviewRawCredentialAccess(params.manifest);
   return Object.freeze({
     pluginId: params.manifest.id,
     displayName: localizedText(params.manifest.displayName),
@@ -345,7 +358,7 @@ export function projectPluginInstallationReview(params: Readonly<{
     signature: Object.freeze({ ...params.source.signature }),
     provenance: Object.freeze({ ...params.source.provenance }),
     curation: Object.freeze({ ...params.source.curation }),
-    executableRealms: projectExecutableRealms(params.manifest),
+    executableRealms: projectPluginInstallationReviewExecutableRealms(params.manifest),
     contributions: projectContributions(params.manifest),
     requestInterceptors: projectRequestInterceptors(params.manifest),
     uiArtifacts: Object.freeze({

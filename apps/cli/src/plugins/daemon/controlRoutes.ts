@@ -1,7 +1,10 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import semver from 'semver';
 import { z } from 'zod';
 import { NpmRegistryProfileIdV1Schema } from '@happier-dev/protocol/rpc';
+import {
+  ExpectedMarketplaceListingV1Schema,
+} from '@happier-dev/protocol/marketplace/internal';
+import { PluginUpdatePolicyV1Schema } from '@happier-dev/protocol';
 
 import type { PluginActionExecutionAttempt } from '@/plugins/projection/actions/execute';
 import type { CurrentDaemonPluginCatalogSnapshot } from './currentCatalog';
@@ -38,52 +41,6 @@ const AuthenticatedUserInteractionSchema = z.object({
   occurredAtMs: z.number().int().nonnegative().safe(),
   provenance: ExplicitCliTrustFlagProvenanceSchema.optional(),
 }).strict();
-const CredentialFreeHttpsUrlSchema = z.string().trim().max(2_048).url().refine((value) => {
-  const parsed = new URL(value);
-  return parsed.protocol === 'https:' && !parsed.username && !parsed.password && !parsed.hash;
-}, 'Expected a credential-free HTTPS URL');
-const ExpectedMarketplaceListingBaseShape = {
-  pluginId: PluginIdSchema,
-  publisher: z.object({
-    id: z.string().trim().min(1).max(128).regex(/^[a-z0-9][a-z0-9._-]*$/u),
-    displayName: z.string().trim().min(1).max(512),
-  }).strict(),
-  packageName: z.string().trim().min(1).max(214).regex(/^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/u),
-  registryOrigin: CredentialFreeHttpsUrlSchema,
-  registryProfileId: NpmRegistryProfileIdV1Schema.optional(),
-  version: z.string().trim().min(1).max(128)
-    .refine((value) => semver.valid(value) === value, 'Expected an exact canonical npm semver version'),
-  integrity: z.string().trim().regex(/^sha512-[A-Za-z0-9+/]{86}==$/u),
-  manifestDigest: z.string().trim().regex(/^sha256:[a-f0-9]{64}$/u),
-} as const;
-const ExpectedMarketplaceListingSchema = z.union([z.object({
-  source: z.object({
-    id: z.string().trim().min(1).max(256).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/u),
-    kind: z.literal('curated'),
-    sourceUrl: CredentialFreeHttpsUrlSchema,
-  }).strict(),
-  ...ExpectedMarketplaceListingBaseShape,
-  review: z.object({
-    status: z.literal('approved'),
-    reviewedAt: z.string().datetime(),
-    reason: z.string().trim().min(1).max(1_024).nullable().optional(),
-  }).strict(),
-  updatePolicy: z.enum(['automatic', 'manual', 'pinned']),
-}).strict(), z.object({
-  source: z.object({
-    id: z.literal('marketplace:community-npm'),
-    kind: z.literal('community-npm'),
-    sourceUrl: CredentialFreeHttpsUrlSchema,
-  }).strict(),
-  ...ExpectedMarketplaceListingBaseShape,
-  registryProfileId: z.undefined().optional(),
-  review: z.object({
-    status: z.literal('unreviewed'),
-    reviewedAt: z.null(),
-  }).strict(),
-  updatePolicy: z.enum(['manual', 'pinned']),
-}).strict()]);
-
 const ArchiveSha256IntegritySchema = z.string().trim().regex(/^sha256-[A-Za-z0-9+/]{43}=$/u);
 
 const PluginChangeRequestSchema = z.union([
@@ -104,11 +61,16 @@ const PluginChangeRequestSchema = z.union([
     selector: NonEmptyStringSchema.optional(),
     registryOrigin: NonEmptyStringSchema.optional(),
     registryProfileId: NpmRegistryProfileIdV1Schema.optional(),
-    expectedMarketplaceListing: ExpectedMarketplaceListingSchema.optional(),
+    expectedMarketplaceListing: ExpectedMarketplaceListingV1Schema.optional(),
   }).strict(),
   z.object({
     kind: z.literal('update'),
     pluginId: PluginIdSchema,
+  }).strict(),
+  z.object({
+    kind: z.literal('setUpdatePolicy'),
+    pluginId: PluginIdSchema,
+    policy: PluginUpdatePolicyV1Schema,
   }).strict(),
   z.object({
     kind: z.literal('development'),
@@ -172,7 +134,7 @@ export async function executeAppliedDaemonPluginActionWithController(
   ) => Promise<TargetActionCurrentIntentResult>,
 ): Promise<PluginActionExecutionAttempt> {
   const { executePluginActionIfAvailable } = await import('@/plugins/projection/actions/execute');
-  const lease = reloadController.tryAcquireRuntimeRegistry?.() ?? null;
+  const lease = reloadController.tryAcquireRuntimeRegistry();
   if (!lease) {
     return {
       matched: true,

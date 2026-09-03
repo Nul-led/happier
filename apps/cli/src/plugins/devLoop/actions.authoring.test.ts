@@ -160,6 +160,7 @@ describe('Plugin authoring Actions', () => {
         targetDir,
         id: 'acme.external-author',
         name: 'External Author',
+        template: 'session-agent',
       }, { surface: 'agent', bypassApprovals: true })).resolves.toMatchObject({
         ok: true,
         result: {
@@ -169,6 +170,8 @@ describe('Plugin authoring Actions', () => {
         },
       });
       await expect(readFile(join(targetDir, 'package.json'), 'utf8')).resolves.toContain('happier-plugin-acme-external-author');
+      await expect(readFile(join(targetDir, 'src', 'agent', 'sessionAgent.ts'), 'utf8'))
+        .resolves.toContain('export const createSessionAgentRuntime');
 
       await expect(executor.execute('plugins.dev.submit' as never, {
         projectRoot: targetDir,

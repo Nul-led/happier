@@ -788,6 +788,35 @@ describe('plugin UI projection family', () => {
         });
     });
 
+    it('projects a search provider as identity plus its resolved qualified query Action', () => {
+        const registry = {
+            ...createEmptyResolvedContributionRegistry(),
+            searchProviders: [{
+                provenance: 'external',
+                source: { kind: 'path' },
+                pluginId: 'acme.triage',
+                identity: { pluginId: 'acme.triage', localId: 'entries' },
+                manifestPath: '/plugins/acme/.happier-plugin/plugin.json',
+                definition: { id: 'entries', action: 'entries/search-v1' },
+            }],
+        } satisfies ResolvedContributionRegistry;
+
+        const entries = buildPluginProjectionV2({
+            registry,
+            generation: 9,
+        } as Parameters<typeof buildPluginProjectionV2>[0]).familiesById.pluginUi?.entriesById ?? {};
+
+        // Identity and one reference. Title, icon, availability and execution
+        // target stay with the referenced Action's own projection.
+        expect(entries['searchProvider:acme.triage:entries']).toEqual({
+            id: 'searchProvider:acme.triage:entries',
+            pluginId: 'acme.triage',
+            contributionKind: 'searchProvider',
+            descriptorId: 'entries',
+            action: { pluginId: 'acme.triage', localId: 'entries/search-v1' },
+        });
+    });
+
     it('projects a Session-info section through the canonical declarative model', () => {
         const registry = {
             ...createEmptyResolvedContributionRegistry(),

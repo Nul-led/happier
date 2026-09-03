@@ -3,6 +3,7 @@ import { join } from 'node:path';
 
 import {
   type PluginSourceSpecV1,
+  type PluginUpdatePolicyV1,
   pluginCompatibilityProjectionEqualV1,
 } from '@happier-dev/protocol';
 
@@ -30,12 +31,9 @@ import {
   type StagedNpmArtifactCandidate,
 } from '@/plugins/distribution/npm/stage';
 import {
-  createPluginCuratedUpdateSourceBinding,
   createNpmPluginDistributionIdentity,
   createPluginTrustRecord,
   isPluginTrustRecordAuthorized,
-  type PluginCuratedUpdateSourceBinding,
-  type PluginUpdatePolicy,
 } from '@/plugins/store/install/trustIdentity';
 import {
   hasReviewSensitivePluginUpdate,
@@ -55,6 +53,7 @@ import { resolvePluginStorePaths } from '@/plugins/store/paths';
 import type { PluginStateRecord } from '@/plugins/store/state';
 import {
   createMarketplaceIndexService,
+  resolveExactMarketplaceSourceBinding,
 } from '@/plugins/store/marketplace/service';
 import {
   marketplaceListingMatchesExpected,
@@ -76,7 +75,6 @@ import { createSelectedPluginOptionalAccess } from './optionalAccessSelections';
 import { createDaemonPluginCandidateOperationRoot } from './candidateStorage';
 import { createVerifiedPortablePluginInstallationAvailability } from '@/plugins/availability/releaseFacts';
 import { projectPluginFailureText } from '@/plugins/runtime/lifecycle/utils';
-import { DaemonPluginChangePreparationError } from './changeService';
 
 const PACKAGE_MANIFEST_PATH = '.happier-plugin/plugin.json';
 
@@ -94,30 +92,42 @@ type CreateNpmRegistryClient = (options: Readonly<{
 export type DaemonNpmPluginChangePreparationContext = Readonly<{
   installedUpdate: Readonly<{
     pluginId: string;
-    updatePolicy: Exclude<PluginUpdatePolicy, 'pinned'>;
+    updatePolicy: Exclude<PluginUpdatePolicyV1, 'pinned'>;
   }>;
 }>;
 
-async function canApplyAutomaticNpmUpdate(params: Readonly<{
+/**
+ * Decides whether a prepared npm candidate may be admitted without a new
+ * present-user review. Only an explicit update of an installed record
+ * qualifies — the canonical `installedUpdate` context `runtimeOwner` derives
+ * from {@link resolveInstalledPluginUpdate} — and only when that record is
+ * already under the explicit `reviewSensitiveChanges` policy and every trusted
+ * channel fact is preserved: the exact npm origin/package/profile trust
+ * record still authorizes this candidate, the previous manifest is still
+ * readable from registry custody, and no review-sensitive trust fact changed
+ * (executable realm expansion, host access, Connected Account purpose access,
+ * declared integrations, request interceptors, raw credential disclosure).
+ * Everything else reopens the full review — a first install, any policy
+ * mismatch, and every exact marketplace or direct npm install, including one
+ * naming a plugin already installed on this same trusted channel. Curation
+ * is not an input: withdrawing a marketplace listing affects discovery and
+ * recommendation only and never disables installed code.
+ */
+async function canApplyNpmUpdateWithoutReview(params: Readonly<{
+  installedUpdate: DaemonNpmPluginChangePreparationContext['installedUpdate'] | undefined;
   existing: PluginStateRecord | undefined;
+  hasReviewedPrincipal: boolean;
   candidate: CanonicalPluginManifest;
   distribution: ReturnType<typeof createNpmPluginDistributionIdentity>;
-  updatePolicy: 'automatic' | 'manual' | 'pinned';
-  automaticUpdateAuthorized: boolean;
-  curatedUpdateSource: PluginCuratedUpdateSourceBinding | undefined;
+  updatePolicy: PluginUpdatePolicyV1;
 }>): Promise<boolean> {
   const existing = params.existing;
   if (
-    !existing
-    || !params.automaticUpdateAuthorized
-    || params.updatePolicy !== 'automatic'
-    || existing.install.updatePolicy !== 'automatic'
-    || !params.curatedUpdateSource
-    || !existing.install.curatedUpdateSource
-    || !curatedUpdateSourceBindingsEqual(
-      existing.install.curatedUpdateSource,
-      params.curatedUpdateSource,
-    )
+    !params.installedUpdate
+    || !existing
+    || !params.hasReviewedPrincipal
+    || params.updatePolicy !== 'reviewSensitiveChanges'
+    || existing.install.updatePolicy !== 'reviewSensitiveChanges'
     || !isPluginTrustRecordAuthorized(existing.install.trust, {
       pluginId: params.candidate.id,
       distribution: params.distribution,
@@ -131,18 +141,19 @@ async function canApplyAutomaticNpmUpdate(params: Readonly<{
     manifestPath: existing.source.manifestPath,
     sourceProvenance: 'registryCustodied',
   });
+  const selectedOptionalAccess = existing.install.optionalAccess ?? [];
   if (
     !previous.ok
     || previous.manifest.id !== params.candidate.id
     || previous.manifest.version !== existing.install.manifestVersion
-    || hasReviewSensitivePluginUpdate(previous.manifest, params.candidate)
+    || hasReviewSensitivePluginUpdate(previous.manifest, params.candidate, selectedOptionalAccess)
   ) {
     return false;
   }
   return preserveValidPluginOptionalSelections(
     params.candidate.id,
     params.candidate,
-    existing.install.optionalAccess ?? [],
+    selectedOptionalAccess,
   ) !== null;
 }
 
@@ -162,20 +173,24 @@ function assertMarketplaceRequestMatchesListing(
   }
 }
 
-async function assertCuratedUpdateSourceBindingCurrent(
+/**
+ * Source targeting before acquisition. The listing the user acted on names a
+ * source; that binding is resolved from persisted state before any registry
+ * access, so a removed, disabled, or rebound source refuses the change without
+ * fetching anything. The full listing is revalidated again at apply, because
+ * the source can still move while a human reviews the change.
+ */
+async function assertMarketplaceSourceBindingCurrent(
   happyHomeDir: string,
-  binding: PluginCuratedUpdateSourceBinding,
+  request: Extract<PluginChangeRequest, { kind: 'installNpm' }>,
 ): Promise<void> {
-  const source = (await createMarketplaceSourceRegistryStore({ happyHomeDir }).read()).sources.find(
-    (entry) => entry.id === binding.id,
-  ) ?? null;
-  if (
-    !source
-    || !source.enabled
-    || source.origin !== 'curated'
-    || source.sourceUrl !== binding.sourceUrl
-    || (source.registryProfileId ?? undefined) !== binding.registryProfileId
-  ) {
+  const expected = request.expectedMarketplaceListing;
+  if (!expected) return;
+  const binding = await resolveExactMarketplaceSourceBinding({ happyHomeDir, sourceId: expected.source.id });
+  if (!binding.ok
+    || binding.source.origin !== expected.source.kind
+    || binding.source.sourceUrl !== expected.source.sourceUrl
+    || (binding.source.registryProfileId ?? undefined) !== expected.registryProfileId) {
     throw new NpmRegistryProfileOperationError('source_changed');
   }
 }
@@ -183,14 +198,19 @@ async function assertCuratedUpdateSourceBindingCurrent(
 async function assertMarketplaceListingCurrent(
   happyHomeDir: string,
   request: Extract<PluginChangeRequest, { kind: 'installNpm' }>,
-  service?: Pick<ReturnType<typeof createMarketplaceIndexService>, 'querySources'>,
+  service?: Pick<ReturnType<typeof createMarketplaceIndexService>, 'queryExactListing'>,
 ): Promise<void> {
   const expected = request.expectedMarketplaceListing;
   if (!expected) return;
+  // The expected listing carries the untrusted exact distribution facts the
+  // user acted on. They target the source before acquisition — the resolver
+  // asks that one source for that one package — and are revalidated here
+  // against the freshly resolved listing before any artifact is admitted.
   const result = await resolveExactMarketplaceListingForInstall({
     happyHomeDir,
     sourceId: expected.source.id,
     pluginId: expected.pluginId,
+    packageName: expected.packageName,
   }, service);
   if (!result.ok || !marketplaceListingMatchesExpected(expected, result.resolution.listing)) {
     throw new NpmRegistryProfileOperationError('source_changed');
@@ -233,29 +253,6 @@ function npmArtifactRequestFor(
       : request.registryOrigin ? { registryOrigin: request.registryOrigin } : {}),
     ...(request.registryProfileId ? { explicitProfileId: request.registryProfileId } : {}),
   };
-}
-
-function curatedUpdateSourceFromMarketplaceListing(
-  request: Extract<PluginChangeRequest, { kind: 'installNpm' }>,
-): PluginCuratedUpdateSourceBinding | undefined {
-  const expected = request.expectedMarketplaceListing;
-  if (!expected || expected.source.kind !== 'curated' || expected.updatePolicy !== 'automatic') {
-    return undefined;
-  }
-  return createPluginCuratedUpdateSourceBinding({
-    id: expected.source.id,
-    sourceUrl: expected.source.sourceUrl,
-    ...(expected.registryProfileId ? { registryProfileId: expected.registryProfileId } : {}),
-  });
-}
-
-function curatedUpdateSourceBindingsEqual(
-  left: PluginCuratedUpdateSourceBinding,
-  right: PluginCuratedUpdateSourceBinding,
-): boolean {
-  return left.id === right.id
-    && left.sourceUrl === right.sourceUrl
-    && left.registryProfileId === right.registryProfileId;
 }
 
 function projectNpmSignature(
@@ -318,7 +315,7 @@ export function createDaemonNpmPluginChangePreparer(params: Readonly<{
   onRegistryApplied?: (record: PluginRegistryCommitRecord) => void;
   npmRegistryProfiles?: NpmRegistryProfileArtifactService;
   createClient?: CreateNpmRegistryClient;
-  marketplaceIndexService?: Pick<ReturnType<typeof createMarketplaceIndexService>, 'querySources'>;
+  marketplaceIndexService?: Pick<ReturnType<typeof createMarketplaceIndexService>, 'queryExactListing'>;
   nowMs?: () => number;
 }>): (
   request: PluginChangeRequest,
@@ -334,44 +331,27 @@ export function createDaemonNpmPluginChangePreparer(params: Readonly<{
       throw new Error(`Plugin change '${request.kind}' is not implemented by the npm candidate adapter`);
     }
     assertMarketplaceRequestMatchesListing(request);
+    await assertMarketplaceSourceBindingCurrent(params.happyHomeDir, request);
     const installedUpdate = context?.installedUpdate;
-    const automaticInstalledUpdate = installedUpdate?.updatePolicy === 'automatic';
     const requestedUpdatePolicy = installedUpdate?.updatePolicy
       ?? request.expectedMarketplaceListing?.updatePolicy
-      ?? 'manual';
-    const marketplaceCuratedUpdateSource = curatedUpdateSourceFromMarketplaceListing(request);
-    const updateTargetPluginId = installedUpdate?.pluginId
-      ?? request.expectedMarketplaceListing?.pluginId;
-    const existingAtAdmission = updateTargetPluginId
-      ? (await createPluginRegistryStateStore({ happyHomeDir: params.happyHomeDir }).read())
-        .plugins[updateTargetPluginId]
+      ?? 'reviewEveryUpdate';
+    const registryStateStore = createPluginRegistryStateStore({ happyHomeDir: params.happyHomeDir });
+    const admissionSnapshot = installedUpdate
+      ? await registryStateStore.readSnapshot()
       : undefined;
-    const persistedCuratedUpdateSource = existingAtAdmission?.install.updatePolicy === 'automatic'
-      ? existingAtAdmission.install.curatedUpdateSource
+    const existingAtAdmission = installedUpdate
+      ? admissionSnapshot?.state.plugins[installedUpdate.pluginId]
       : undefined;
-    const automaticUpdateAuthorized = requestedUpdatePolicy === 'automatic'
-      && persistedCuratedUpdateSource !== undefined
-      && (
-        automaticInstalledUpdate
-        || (
-          marketplaceCuratedUpdateSource !== undefined
-          && curatedUpdateSourceBindingsEqual(
-            persistedCuratedUpdateSource,
-            marketplaceCuratedUpdateSource,
-          )
-        )
-      );
-    if (installedUpdate?.updatePolicy === 'automatic' && !automaticUpdateAuthorized) {
-      throw new DaemonPluginChangePreparationError(
-        'plugin_update_trust_unavailable',
-        `Plugin '${installedUpdate.pluginId}' has no reviewed curated source binding for automatic updates`,
-      );
-    }
-    if (marketplaceCuratedUpdateSource) {
-      await assertCuratedUpdateSourceBindingCurrent(params.happyHomeDir, marketplaceCuratedUpdateSource);
-    } else if (automaticUpdateAuthorized && persistedCuratedUpdateSource) {
-      await assertCuratedUpdateSourceBindingCurrent(params.happyHomeDir, persistedCuratedUpdateSource);
-    }
+    // A review-free update is only ever an explicit update of an installed
+    // record under the explicit `reviewSensitiveChanges` policy whose trusted
+    // npm channel and sensitivity checks pass below. An exact marketplace or
+    // direct install is never one, however closely its coordinates match the
+    // installed channel. Curation is not an input either: withdrawal or source
+    // removal never blocks an update and never disables installed code.
+    const sensitiveUpdateWithoutReviewCandidate = installedUpdate !== undefined
+      && requestedUpdatePolicy === 'reviewSensitiveChanges'
+      && existingAtAdmission?.install.updatePolicy === 'reviewSensitiveChanges';
 
     const operationRootPath = await createDaemonPluginCandidateOperationRoot({
       happyHomeDir: params.happyHomeDir,
@@ -396,7 +376,7 @@ export function createDaemonNpmPluginChangePreparer(params: Readonly<{
           },
           destinationPath: join(operationRootPath, 'candidate.tgz'),
           artifactMaxBytes: DEFAULT_PORTABLE_ARCHIVE_LIMITS.maxExpandedBytes,
-          ...(automaticUpdateAuthorized ? { requireCompatibleProjection: true } : {}),
+          ...(sensitiveUpdateWithoutReviewCandidate ? { requireCompatibleProjection: true } : {}),
           client,
         });
       });
@@ -427,21 +407,19 @@ export function createDaemonNpmPluginChangePreparer(params: Readonly<{
       });
 
       const expectedMarketplaceListing = request.expectedMarketplaceListing;
-      const existingAtPreparation = (
-        await createPluginRegistryStateStore({ happyHomeDir: params.happyHomeDir }).read()
-      ).plugins[staged.candidate.manifest.id];
+      const preparationSnapshot = await registryStateStore.readSnapshot();
+      const existingAtPreparation = preparationSnapshot.state.plugins[staged.candidate.manifest.id];
+      const priorPrincipalDigest = preparationSnapshot
+        .installReviewPrincipalDigestsByPluginId[staged.candidate.manifest.id];
+      const priorPrincipalPresentation = preparationSnapshot
+        .installReviewPrincipalPresentationsByPluginId[staged.candidate.manifest.id];
+      const priorInstallReviewPrincipal = priorPrincipalDigest && priorPrincipalPresentation
+        ? Object.freeze({
+            digest: priorPrincipalDigest,
+            presentation: priorPrincipalPresentation,
+          })
+        : undefined;
       const updatePolicy = requestedUpdatePolicy;
-      const curatedUpdateSource = automaticInstalledUpdate
-        ? persistedCuratedUpdateSource
-        : updatePolicy === 'automatic'
-          ? curatedUpdateSourceFromMarketplaceListing(request)
-          : undefined;
-      if (updatePolicy === 'automatic' && !curatedUpdateSource) {
-        throw new DaemonPluginChangePreparationError(
-          'plugin_update_trust_unavailable',
-          `Plugin '${staged.candidate.manifest.id}' has no reviewed curated source binding for automatic updates`,
-        );
-      }
 
       const distribution = createNpmPluginDistributionIdentity({
         registryOrigin: staged.candidate.source.registryOrigin,
@@ -515,14 +493,6 @@ export function createDaemonNpmPluginChangePreparer(params: Readonly<{
         },
       });
       const installReviewPrincipal = derivePluginInstallReviewPrincipal(review);
-      const requiresReview = !(await canApplyAutomaticNpmUpdate({
-        existing: existingAtPreparation,
-        candidate: staged.candidate.manifest.value,
-        distribution,
-        updatePolicy,
-        automaticUpdateAuthorized,
-        curatedUpdateSource,
-      }));
       let cleanupPromise: Promise<void> | undefined;
       const cleanup = () => {
         cleanupPromise ??= cleanupOwnedCandidate({
@@ -532,6 +502,15 @@ export function createDaemonNpmPluginChangePreparer(params: Readonly<{
         });
         return cleanupPromise;
       };
+
+      const requiresReview = !(await canApplyNpmUpdateWithoutReview({
+        installedUpdate,
+        existing: existingAtPreparation,
+        hasReviewedPrincipal: priorInstallReviewPrincipal !== undefined,
+        candidate: staged.candidate.manifest.value,
+        distribution,
+        updatePolicy,
+      }));
 
       return Object.freeze({
         pluginId: staged.candidate.manifest.id,
@@ -544,16 +523,16 @@ export function createDaemonNpmPluginChangePreparer(params: Readonly<{
           }
           try {
             await assertMarketplaceListingCurrent(params.happyHomeDir, request, params.marketplaceIndexService);
-            if (curatedUpdateSource) {
-              await assertCuratedUpdateSourceBindingCurrent(
-                params.happyHomeDir,
-                curatedUpdateSource,
-              );
-            }
-            const existingAtApply = (
-              await createPluginRegistryStateStore({ happyHomeDir: params.happyHomeDir }).read()
-            ).plugins[staged.candidate.manifest.id];
-            if (JSON.stringify(existingAtApply) !== JSON.stringify(existingAtPreparation)) {
+            const applySnapshot = await registryStateStore.readSnapshot();
+            const existingAtApply = applySnapshot.state.plugins[staged.candidate.manifest.id];
+            if (
+              JSON.stringify(existingAtApply) !== JSON.stringify(existingAtPreparation)
+              || applySnapshot.installReviewPrincipalDigestsByPluginId[staged.candidate.manifest.id]
+                !== priorPrincipalDigest
+              || JSON.stringify(
+                applySnapshot.installReviewPrincipalPresentationsByPluginId[staged.candidate.manifest.id],
+              ) !== JSON.stringify(priorPrincipalPresentation)
+            ) {
               return { kind: 'conflict' as const, pluginId: staged.candidate.manifest.id };
             }
             await npmRegistryProfiles.runArtifactRequest(npmArtifactRequestFor(request), async (access) => {
@@ -599,6 +578,12 @@ export function createDaemonNpmPluginChangePreparer(params: Readonly<{
             ) {
               return { kind: 'failed' as const, code: 'plugin_install_trust_required' };
             }
+            const committedInstallReviewPrincipal = approval
+              ? installReviewPrincipal
+              : priorInstallReviewPrincipal;
+            if (!committedInstallReviewPrincipal) {
+              return { kind: 'failed' as const, code: 'plugin_install_trust_required' };
+            }
             const source: PluginSourceSpecV1 = {
               kind: 'package',
               locator: staged.candidate.source.packageName,
@@ -618,7 +603,6 @@ export function createDaemonNpmPluginChangePreparer(params: Readonly<{
                 mode: 'managed_install',
                 manifestVersion: staged.candidate.manifest.version,
                 installedPath: null,
-                ...(curatedUpdateSource ? { curatedUpdateSource } : {}),
               },
               state: { enabled: true, lastLoadedAtMs: nowMs(), lastError: null },
             };
@@ -639,8 +623,8 @@ export function createDaemonNpmPluginChangePreparer(params: Readonly<{
               availability,
               admittedIntegrity: staged.candidate.source.integrity,
               preparedGeneration: candidateGeneration,
-              installReviewPrincipalDigest: installReviewPrincipal.digest,
-              installReviewPrincipalPresentation: installReviewPrincipal.presentation,
+              installReviewPrincipalDigest: committedInstallReviewPrincipal.digest,
+              installReviewPrincipalPresentation: committedInstallReviewPrincipal.presentation,
             });
             if (transaction.status !== 'committed' && transaction.status !== 'outcomeUnknown') {
               throw new Error(`Npm installation ended without a committed registry transaction (${transaction.status})`);

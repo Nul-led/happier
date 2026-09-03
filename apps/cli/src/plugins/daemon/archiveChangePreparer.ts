@@ -219,7 +219,7 @@ export function createDaemonArchivePluginChangePreparer(params: Readonly<{
         sourceRootPath: staged.candidate.rootPath,
         manifestRelativePath: PACKAGE_MANIFEST_PATH,
         distribution,
-        updatePolicy: 'manual',
+        updatePolicy: 'reviewEveryUpdate',
         createdAtMs: nowMs(),
       });
       preparedGeneration = candidateGeneration;
@@ -237,7 +237,7 @@ export function createDaemonArchivePluginChangePreparer(params: Readonly<{
           signature: { status: 'notProvided' },
           provenance: { status: 'notProvided' },
           curation: { status: 'notApplicable' },
-          updatePolicy: 'manual',
+          updatePolicy: 'reviewEveryUpdate',
         },
         uiArtifacts: {
           verification: 'verified',
@@ -317,7 +317,7 @@ export function createDaemonArchivePluginChangePreparer(params: Readonly<{
               pluginId: staged.candidate.manifest.id,
               catalogRecord,
               trust,
-              updatePolicy: 'manual',
+              updatePolicy: 'reviewEveryUpdate',
               optionalAccess,
               availability,
               admittedIntegrity: materialized.integrity,

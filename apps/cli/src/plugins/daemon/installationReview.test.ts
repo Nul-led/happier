@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
 import { validatePluginManifest } from '@/plugins/manifest/validate';
-import { PluginInstallationReviewSchema } from './changeContract';
+import { readCanonicalPluginManifest } from '@/plugins/manifest/normalize';
+import { createPluginManifestV2Fixture } from '@/plugins/testkit/manifestV2Fixture';
+import { PluginInstallationReviewSchema } from '@happier-dev/protocol/marketplace/internal';
 
 import {
   projectPluginInstallationReview,
@@ -101,7 +103,7 @@ describe('projectPluginInstallationReview', () => {
         signature: { status: 'notProvided' },
         provenance: { status: 'notProvided' },
         curation: { status: 'notApplicable' },
-        updatePolicy: 'manual',
+        updatePolicy: 'reviewEveryUpdate',
       },
       uiArtifacts: { verification: 'verified', contributionIds: [] },
     });
@@ -121,7 +123,7 @@ describe('projectPluginInstallationReview', () => {
         signature: { status: 'notProvided' },
         provenance: { status: 'notProvided' },
         curation: { status: 'notApplicable' },
-        updatePolicy: 'manual',
+        updatePolicy: 'reviewEveryUpdate',
       },
       uiArtifacts: { verification: 'verified', contributionIds: [] },
     });
@@ -142,7 +144,7 @@ describe('projectPluginInstallationReview', () => {
         signature: { status: 'notProvided' },
         provenance: { status: 'notProvided' },
         curation: { status: 'notApplicable' },
-        updatePolicy: 'manual',
+        updatePolicy: 'reviewEveryUpdate',
       },
       uiArtifacts: { verification: 'verified', contributionIds: [] },
     });
@@ -174,7 +176,7 @@ describe('projectPluginInstallationReview', () => {
           message: `Evaluator reason ${index + 1}`,
         }],
       })),
-      updatePolicy: 'manual',
+      updatePolicy: 'reviewEveryUpdate',
     };
 
     const review = projectPluginInstallationReview({
@@ -198,7 +200,7 @@ describe('projectPluginInstallationReview', () => {
         signature: { status: 'notProvided' },
         provenance: { status: 'notProvided' },
         curation: { status: 'notApplicable' },
-        updatePolicy: 'manual',
+        updatePolicy: 'reviewEveryUpdate',
       },
       uiArtifacts: { verification: 'verified', contributionIds: ['raw-voice-client'] },
     });
@@ -244,6 +246,42 @@ describe('projectPluginInstallationReview', () => {
     ]);
   });
 
+  it('projects a hostedWeb UI renderer as its own executable realm through the review wire schema', () => {
+    const parsed = readCanonicalPluginManifest(createPluginManifestV2Fixture({
+      id: 'acme.hosted-review',
+      version: '1.0.0',
+      contributes: {
+        ui: {
+          renderers: [{
+            id: 'panel',
+            kind: 'hostedWeb',
+            source: { kind: 'artifact', artifact: 'panel-web' },
+          }],
+        },
+      },
+    }));
+    if (!parsed) throw new Error('Expected canonical hosted-web renderer manifest');
+
+    const review = projectPluginInstallationReview({
+      manifest: parsed,
+      source: {
+        kind: 'path',
+        locator: '/tmp/hosted-review',
+        development: false,
+        packageName: null,
+        publisher: { status: 'unavailable' },
+        signature: { status: 'notProvided' },
+        provenance: { status: 'notProvided' },
+        curation: { status: 'notApplicable' },
+        updatePolicy: 'reviewEveryUpdate',
+      },
+      uiArtifacts: { verification: 'verified', contributionIds: ['panel-web'] },
+    });
+
+    expect(review.executableRealms).toEqual(['daemon', 'hostedWeb']);
+    expect(PluginInstallationReviewSchema.safeParse(review).success).toBe(true);
+  });
+
   it('projects each request interceptor declaration as an exact review fact', () => {
     const review = projectPluginInstallationReview({
       manifest: createManifest({ includeRequestInterceptors: true }),
@@ -256,7 +294,7 @@ describe('projectPluginInstallationReview', () => {
         signature: { status: 'notProvided' },
         provenance: { status: 'notProvided' },
         curation: { status: 'notApplicable' },
-        updatePolicy: 'manual',
+        updatePolicy: 'reviewEveryUpdate',
       },
       uiArtifacts: { verification: 'verified', contributionIds: [] },
     });

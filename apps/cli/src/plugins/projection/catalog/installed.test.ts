@@ -9,7 +9,7 @@ import { createEnvKeyScope } from '@/testkit/env/envScope';
 import { reloadConfiguration } from '@/configuration';
 import { materializeSamplePluginFixture, SAMPLE_PLUGIN_ID } from '@/plugins/testkit/samplePackage';
 import { createPluginManifestV2Fixture } from '@/plugins/testkit/manifestV2Fixture';
-import { createPluginInstallationReviewFixture } from '@/plugins/testkit/pluginInstallationReviewFixture';
+import { createPluginInstallationReviewFixture } from '@happier-dev/protocol/testing/pluginInstallationReviewFixture';
 import { createPluginStateStore } from '@/plugins/store/state.testkit';
 import type { UserPluginChangeResult } from '@/plugins/daemon/changeClient';
 import { createDaemonPluginChangeService } from '@/plugins/daemon/changeService';

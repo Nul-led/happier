@@ -121,6 +121,7 @@ async function writeSdkRegistryPackFixture(
     "  id: 'acme.sdk-registry-pack', version: '1.0.0',",
     "  displayName: 'SDK registry pack', engines: { happier: '>=0.0.0' }, runtime: { apiVersion: 1 },",
     "  entrypoints: { daemon: './dist/index.js' }, hostAccess: { required: [], optional: [] },",
+    `  metadata: JSON.parse(${JSON.stringify('{"__proto__":{"inert":true},"ordinary":"preserved"}')}),`,
     '});',
     '',
   ].join('\n'), 'utf8');
@@ -627,11 +628,13 @@ describe('packLocalPlugin', () => {
   it('packs an unpublished-SDK author project through bundled prepublication materialization without a registry override', async () => {
     const parent = await mkdtemp(join(tmpdir(), 'happier-sdk-prepublication-pack-'));
     const root = join(parent, 'plugin');
+    const archivePath = join(parent, 'prepublication-sdk.tgz');
+    const extractedRoot = join(parent, 'extracted');
     try {
       await writeSdkRegistryPackFixture(root);
       const result = await packLocalPlugin({
         locator: root,
-        outPath: join(parent, 'prepublication-sdk.tgz'),
+        outPath: archivePath,
       });
 
       // The author declares the prepublication SDK version, so the toolchain
@@ -639,6 +642,20 @@ describe('packLocalPlugin', () => {
       // this the one pack case evaluated against the real `definePlugin`.
       expect(result, result.ok ? '' : result.diagnostics.map((entry) => entry.message).join('\n'))
         .toMatchObject({ ok: true, pluginId: 'acme.sdk-registry-pack' });
+      if (!result.ok) return;
+      expect(Object.getPrototypeOf(result.manifest.metadata)).toBe(Object.prototype);
+      expect(Object.hasOwn(result.manifest.metadata!, '__proto__')).toBe(true);
+      expect(result.manifest.metadata?.__proto__).toEqual({ inert: true });
+      expect((Object.getPrototypeOf(result.manifest.metadata) as { inert?: unknown }).inert).toBeUndefined();
+      await mkdir(extractedRoot);
+      await tar.x({ file: archivePath, cwd: extractedRoot });
+      const packedManifest = JSON.parse(
+        await readFile(join(extractedRoot, 'package', '.happier-plugin', 'plugin.json'), 'utf8'),
+      ) as { metadata?: Record<string, unknown> };
+      expect(Object.getPrototypeOf(packedManifest.metadata)).toBe(Object.prototype);
+      expect(Object.hasOwn(packedManifest.metadata!, '__proto__')).toBe(true);
+      expect(packedManifest.metadata?.__proto__).toEqual({ inert: true });
+      expect((Object.getPrototypeOf(packedManifest.metadata) as { inert?: unknown }).inert).toBeUndefined();
       await expect(readFile(join(root, 'node_modules', '@happier-dev', 'plugin-sdk', 'package.json'), 'utf8'))
         .rejects.toMatchObject({ code: 'ENOENT' });
     } finally {

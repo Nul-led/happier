@@ -43,6 +43,7 @@ import type {
     ResolvedSystemToolContribution,
     ResolvedToolContribution,
     ResolvedComposerReferenceContribution,
+    ResolvedSearchProviderContribution,
     ResolvedComposerAttachmentContribution,
     ResolvedComposerControlContribution,
     ResolvedComposerRegionContribution,
@@ -164,6 +165,9 @@ export function createResolvedContributionRegistry(inputs: ResolvedContributionI
     const uiTranslationsV2 = Object.freeze([...(inputs.uiTranslationsV2 ?? [])].sort(compareUiTranslationsV2Contributes));
     const composerReferences: readonly ResolvedComposerReferenceContribution[] = freezeComposerContributions(
         inputs.composerReferences ?? [],
+    );
+    const searchProviders: readonly ResolvedSearchProviderContribution[] = freezeComposerContributions(
+        inputs.searchProviders ?? [],
     );
     const composerAttachments: readonly ResolvedComposerAttachmentContribution[] = freezeComposerContributions(
         inputs.composerAttachments ?? [],
@@ -482,6 +486,7 @@ export function createResolvedContributionRegistry(inputs: ResolvedContributionI
         uiRenderersV2,
         uiTranslationsV2,
         composerReferences,
+        searchProviders,
         composerAttachments,
         composerControls,
         composerRegions,
@@ -985,6 +990,10 @@ export function createMergedContributionRegistry(
         composerReferences: Object.freeze([
             ...(builtIn.composerReferences ?? []),
             ...(plugin.composerReferences ?? []),
+        ]),
+        searchProviders: Object.freeze([
+            ...(builtIn.searchProviders ?? []),
+            ...(plugin.searchProviders ?? []),
         ]),
         composerAttachments: Object.freeze([
             ...(builtIn.composerAttachments ?? []),

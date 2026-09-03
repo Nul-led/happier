@@ -13,6 +13,14 @@ import type { ResolvedExecutablePluginRuntimeRegistry } from '@/plugins/runtime/
 import type { PluginRegistryAvailabilityInventory } from '@/plugins/store/registry/currentState';
 import type { PluginChangeRequest, PreparedDaemonPluginChange } from './changeContract';
 
+const unusedTargetedContributionsOwner = createTargetedContributionsService({
+  subscribeToCatalogChanges: () => () => undefined,
+  readAdmittedSnapshot: async () => Object.freeze({
+    generation: 'unused-target-generation',
+    contributions: Object.freeze([]),
+  }),
+});
+
 const ownerMocks = vi.hoisted(() => ({
   runtimeLifecycleParams: null as null | Readonly<Record<string, unknown>>,
   resolveRuntimeRegistryParams: null as null | Readonly<Record<string, unknown>>,
@@ -212,6 +220,7 @@ describe('createDaemonPluginRuntimeOwner publication join', () => {
       shutdown: vi.fn(),
       getState: () => ({ generation: 0, activeRegistry: null, lastResult: null }),
       subscribe: vi.fn(() => () => undefined),
+      getTargetedContributionsOwner: () => unusedTargetedContributionsOwner,
       publishDurableRunningSessionDisposition: vi.fn(),
       currentGlobalExternalSessions: createCurrentGlobalExternalSessionsRouter(
         () => null,
@@ -298,6 +307,7 @@ describe('createDaemonPluginRuntimeOwner publication join', () => {
       shutdown: vi.fn(),
       getState: () => ({ generation: 0, activeRegistry: null, lastResult: null }),
       subscribe: vi.fn(() => () => undefined),
+      getTargetedContributionsOwner: () => unusedTargetedContributionsOwner,
       publishDurableRunningSessionDisposition: vi.fn(),
       currentGlobalExternalSessions: createCurrentGlobalExternalSessionsRouter(
         () => null,
@@ -366,10 +376,12 @@ describe('createDaemonPluginRuntimeOwner publication join', () => {
       }),
       tryAcquireRuntimeRegistry: vi.fn(() => null),
       isRuntimeRegistryCurrent: vi.fn(() => true),
+      invalidateRuntimeProjection: vi.fn(),
       applyResourceSessionAccessWitness: vi.fn(),
       shutdown: vi.fn(),
       getState: () => ({ generation: 0, activeRegistry: null, lastResult: null }),
       subscribe: vi.fn(() => () => undefined),
+      getTargetedContributionsOwner: () => unusedTargetedContributionsOwner,
       publishDurableRunningSessionDisposition: vi.fn(),
       currentGlobalExternalSessions: createCurrentGlobalExternalSessionsRouter(
         () => null,
@@ -423,10 +435,12 @@ describe('createDaemonPluginRuntimeOwner publication join', () => {
       }),
       tryAcquireRuntimeRegistry: vi.fn(() => null),
       isRuntimeRegistryCurrent: vi.fn(() => true),
+      invalidateRuntimeProjection: vi.fn(),
       applyResourceSessionAccessWitness: vi.fn(),
       shutdown: vi.fn(),
       getState: () => ({ generation: 0, activeRegistry: null, lastResult: null }),
       subscribe: vi.fn(() => () => undefined),
+      getTargetedContributionsOwner: () => unusedTargetedContributionsOwner,
       publishDurableRunningSessionDisposition: vi.fn(),
       currentGlobalExternalSessions: createCurrentGlobalExternalSessionsRouter(
         () => null,
@@ -472,6 +486,7 @@ describe('createDaemonPluginRuntimeOwner publication join', () => {
       }),
       tryAcquireRuntimeRegistry: vi.fn(() => null),
       isRuntimeRegistryCurrent: vi.fn(() => true),
+      invalidateRuntimeProjection: vi.fn(),
       applyResourceSessionAccessWitness: vi.fn(),
       shutdown: vi.fn(),
       getState: () => ({ generation: 0, activeRegistry: null, lastResult: null }),
@@ -527,10 +542,12 @@ describe('createDaemonPluginRuntimeOwner publication join', () => {
       }),
       tryAcquireRuntimeRegistry: vi.fn(() => null),
       isRuntimeRegistryCurrent: vi.fn(() => true),
+      invalidateRuntimeProjection: vi.fn(),
       applyResourceSessionAccessWitness: vi.fn(),
       shutdown: vi.fn(),
       getState: () => ({ generation: 0, activeRegistry: null, lastResult: null }),
       subscribe: vi.fn(() => () => undefined),
+      getTargetedContributionsOwner: () => unusedTargetedContributionsOwner,
       publishDurableRunningSessionDisposition: vi.fn(),
       currentGlobalExternalSessions: controllerRouter,
       subscribeRunningSessionDisposition: vi.fn(() => () => undefined),
@@ -576,10 +593,12 @@ describe('createDaemonPluginRuntimeOwner publication join', () => {
       }),
       tryAcquireRuntimeRegistry: vi.fn(() => null),
       isRuntimeRegistryCurrent: vi.fn(() => true),
+      invalidateRuntimeProjection: vi.fn(),
       applyResourceSessionAccessWitness: vi.fn(),
       shutdown: vi.fn(),
       getState: () => ({ generation: 0, activeRegistry: null, lastResult: null }),
       subscribe: vi.fn(() => () => undefined),
+      getTargetedContributionsOwner: () => unusedTargetedContributionsOwner,
       publishDurableRunningSessionDisposition: vi.fn(),
       currentGlobalExternalSessions: createCurrentGlobalExternalSessionsRouter(
         () => null,
@@ -664,10 +683,12 @@ describe('createDaemonPluginRuntimeOwner publication join', () => {
       }),
       tryAcquireRuntimeRegistry: vi.fn(() => null),
       isRuntimeRegistryCurrent: vi.fn(() => true),
+      invalidateRuntimeProjection: vi.fn(),
       applyResourceSessionAccessWitness: vi.fn(),
       shutdown: vi.fn(),
       getState: () => ({ generation: 0, activeRegistry: null, lastResult: null }),
       subscribe: vi.fn(() => () => undefined),
+      getTargetedContributionsOwner: () => unusedTargetedContributionsOwner,
       publishDurableRunningSessionDisposition: vi.fn(),
       currentGlobalExternalSessions: createCurrentGlobalExternalSessionsRouter(
         () => null,
@@ -725,10 +746,12 @@ describe('createDaemonPluginRuntimeOwner publication join', () => {
       }),
       tryAcquireRuntimeRegistry: vi.fn(() => null),
       isRuntimeRegistryCurrent: vi.fn(() => true),
+      invalidateRuntimeProjection: vi.fn(),
       applyResourceSessionAccessWitness: vi.fn(),
       shutdown: vi.fn(),
       getState: () => ({ generation: 0, activeRegistry: null, lastResult: null }),
       subscribe: vi.fn(() => () => undefined),
+      getTargetedContributionsOwner: () => unusedTargetedContributionsOwner,
       publishDurableRunningSessionDisposition: vi.fn(),
       currentGlobalExternalSessions: createCurrentGlobalExternalSessionsRouter(
         () => null,
@@ -1082,6 +1105,7 @@ describe('createDaemonPluginRuntimeOwner publication join', () => {
       acquireRuntimeRegistry,
       tryAcquireRuntimeRegistry: vi.fn(() => null),
       isRuntimeRegistryCurrent: vi.fn(() => false),
+      invalidateRuntimeProjection: vi.fn(),
       applyResourceSessionAccessWitness: vi.fn(),
       shutdown: vi.fn(async () => undefined),
       getState: () => Object.freeze({
@@ -1090,6 +1114,7 @@ describe('createDaemonPluginRuntimeOwner publication join', () => {
         lastResult: null,
       }),
       subscribe: vi.fn(() => () => undefined),
+      getTargetedContributionsOwner: () => unusedTargetedContributionsOwner,
       publishDurableRunningSessionDisposition: vi.fn(),
       currentGlobalExternalSessions: createCurrentGlobalExternalSessionsRouter(
         () => null,
@@ -1142,10 +1167,12 @@ describe('createDaemonPluginRuntimeOwner publication join', () => {
       }),
       tryAcquireRuntimeRegistry: vi.fn(() => null),
       isRuntimeRegistryCurrent: vi.fn(() => true),
+      invalidateRuntimeProjection: vi.fn(),
       applyResourceSessionAccessWitness: vi.fn(),
       shutdown: vi.fn(),
       getState: () => ({ generation: 0, activeRegistry: null, lastResult: null }),
       subscribe: vi.fn(() => () => undefined),
+      getTargetedContributionsOwner: () => unusedTargetedContributionsOwner,
       publishDurableRunningSessionDisposition: vi.fn(),
       currentGlobalExternalSessions: createCurrentGlobalExternalSessionsRouter(
         () => null,
@@ -1214,10 +1241,12 @@ describe('createDaemonPluginRuntimeOwner publication join', () => {
       }),
       tryAcquireRuntimeRegistry: vi.fn(() => null),
       isRuntimeRegistryCurrent: vi.fn(() => true),
+      invalidateRuntimeProjection: vi.fn(),
       applyResourceSessionAccessWitness: vi.fn(),
       shutdown: vi.fn(),
       getState: () => ({ generation: 0, activeRegistry: null, lastResult: null }),
       subscribe: vi.fn(() => () => undefined),
+      getTargetedContributionsOwner: () => unusedTargetedContributionsOwner,
       publishDurableRunningSessionDisposition: vi.fn(),
       currentGlobalExternalSessions: createCurrentGlobalExternalSessionsRouter(
         () => null,
@@ -1262,12 +1291,7 @@ describe('createDaemonPluginRuntimeOwner publication join', () => {
           install: {
             mode: 'managed_install',
             manifestVersion: '1.0.0',
-            updatePolicy: 'automatic',
-            curatedUpdateSource: {
-              id: 'marketplace:curated',
-              sourceUrl: 'https://marketplace.example.test/catalog.json',
-              registryProfileId: 'registry_private',
-            },
+            updatePolicy: 'reviewSensitiveChanges',
             trust: {
               pluginId: 'acme.plugin',
               state: 'trusted',
@@ -1298,10 +1322,12 @@ describe('createDaemonPluginRuntimeOwner publication join', () => {
         acquireRuntimeRegistry: vi.fn(),
         tryAcquireRuntimeRegistry: vi.fn(() => null),
         isRuntimeRegistryCurrent: vi.fn(() => false),
+        invalidateRuntimeProjection: vi.fn(),
         applyResourceSessionAccessWitness: vi.fn(),
         shutdown: vi.fn(),
         getState: () => ({ generation: 0, activeRegistry: null, lastResult: null }),
         subscribe: vi.fn(() => () => undefined),
+        getTargetedContributionsOwner: () => unusedTargetedContributionsOwner,
         publishDurableRunningSessionDisposition: vi.fn(),
         currentGlobalExternalSessions: createCurrentGlobalExternalSessionsRouter(
           () => null,
@@ -1325,7 +1351,7 @@ describe('createDaemonPluginRuntimeOwner publication join', () => {
     }, {
       installedUpdate: {
         pluginId: 'acme.plugin',
-        updatePolicy: 'automatic',
+        updatePolicy: 'reviewSensitiveChanges',
       },
     });
   });
@@ -1352,6 +1378,7 @@ describe('createDaemonPluginRuntimeOwner publication join', () => {
       }),
       tryAcquireRuntimeRegistry: vi.fn(() => null),
       isRuntimeRegistryCurrent: vi.fn(() => false),
+      invalidateRuntimeProjection: vi.fn(),
       applyResourceSessionAccessWitness: vi.fn(),
       shutdown: vi.fn(async () => undefined),
       getState: () => Object.freeze({
@@ -1360,6 +1387,7 @@ describe('createDaemonPluginRuntimeOwner publication join', () => {
         lastResult: null,
       }),
       subscribe: vi.fn(() => () => undefined),
+      getTargetedContributionsOwner: () => unusedTargetedContributionsOwner,
       publishDurableRunningSessionDisposition: vi.fn(),
       currentGlobalExternalSessions: createCurrentGlobalExternalSessionsRouter(
         () => null,
@@ -1416,10 +1444,12 @@ describe('createDaemonPluginRuntimeOwner publication join', () => {
       }),
       tryAcquireRuntimeRegistry: vi.fn(() => null),
       isRuntimeRegistryCurrent: vi.fn(() => false),
+      invalidateRuntimeProjection: vi.fn(),
       applyResourceSessionAccessWitness: vi.fn(),
       shutdown: vi.fn(async () => undefined),
       getState: () => ({ generation: 0, activeRegistry: null, lastResult: null }),
       subscribe: vi.fn(() => () => undefined),
+      getTargetedContributionsOwner: () => unusedTargetedContributionsOwner,
       publishDurableRunningSessionDisposition: vi.fn(),
       currentGlobalExternalSessions: createCurrentGlobalExternalSessionsRouter(
         () => null,
@@ -1462,6 +1492,7 @@ describe('createDaemonPluginRuntimeOwner publication join', () => {
       }),
       tryAcquireRuntimeRegistry: vi.fn(() => null),
       isRuntimeRegistryCurrent: vi.fn(() => false),
+      invalidateRuntimeProjection: vi.fn(),
       applyResourceSessionAccessWitness: vi.fn(),
       shutdown: vi.fn(async () => undefined),
       getState: () => Object.freeze({
@@ -1470,6 +1501,7 @@ describe('createDaemonPluginRuntimeOwner publication join', () => {
         lastResult: null,
       }),
       subscribe: vi.fn(() => () => undefined),
+      getTargetedContributionsOwner: () => unusedTargetedContributionsOwner,
       publishDurableRunningSessionDisposition: vi.fn(),
       currentGlobalExternalSessions: createCurrentGlobalExternalSessionsRouter(
         () => null,

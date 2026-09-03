@@ -1,5 +1,6 @@
 import {
   PluginScaffoldUiModeSchema,
+  PluginScaffoldTemplateSchema,
   type ActionExecutorContext,
   type PluginDevLoopActionIdV1,
 } from '@happier-dev/protocol';
@@ -330,6 +331,10 @@ export async function executePluginDevLoopAction(
         // the `plugins.scaffold` action input already validates against.
         const ui = PluginScaffoldUiModeSchema.safeParse(readString(input, 'ui'));
         return ui.success ? { ui: ui.data } : {};
+      })(),
+      ...(() => {
+        const template = PluginScaffoldTemplateSchema.safeParse(readString(input, 'template'));
+        return template.success ? { template: template.data } : {};
       })(),
     });
     if (!result.ok) {
