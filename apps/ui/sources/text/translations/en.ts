@@ -9807,7 +9807,7 @@ export const en = {
 
 workspaceSync: {
     title: 'Workspace sync',
-    footer: 'Status comes from the controller machine. Changes are never assumed before the controller confirms them.',
+    footer: 'Status comes from the computer managing this relationship. Changes appear only after that computer confirms them.',
     legacyRecovery: {
         title: 'Retired workspace sync data',
         footer: 'Happier only inspects and quarantines this retired data. It never deletes it in the app.',
@@ -10434,7 +10434,7 @@ settingsSession: {
                   title: 'Workspace',
                   noneTitle: 'Don’t move files',
                   noneSubtitle: 'Move the session without changing the target workspace.',
-                  copyOnceSubtitle: 'Materialize a finite copy on the target and stop.',
+                  copyOnceSubtitle: 'Copy the workspace to the destination once, then stop syncing.',
                   keepSyncedSubtitle: 'Reflect source updates while preserving safe target-only files.',
                   mirrorExactlySubtitle: 'Keep an exact replica; target-only files may be removed.',
                   keepBothInSyncSubtitle: 'Reconcile changes on either endpoint and show conflicts.',

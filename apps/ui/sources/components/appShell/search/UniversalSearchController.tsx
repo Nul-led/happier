@@ -298,17 +298,25 @@ export function UniversalSearchController(props: UniversalSearchControllerProps)
         [workspaceRefs, workspaceScope],
     );
     const workspaceActivationAvailable = Boolean(activeSession || workspaceRef);
-    const files = React.useMemo<UniversalSearchSource>(() => workspaceScope && workspaceActivationAvailable ? ({
+    const workspaceSearchAvailable = workspaceActivationAvailable && selectedCredentialIsCurrent;
+    const files = React.useMemo<UniversalSearchSource>(() => workspaceScope && workspaceSearchAvailable && selectedCredentialBinding ? ({
         status: 'ready',
         resolverKey: workspaceResolverKey,
         resolve: async (value, signal) => buildUniversalSearchWorkspaceFileResults({
-            files: await searchWorkspaceFiles({ scope: workspaceScope, query: value, limit: 20, resultType: 'file', signal }),
+            files: await searchWorkspaceFiles({
+                scope: workspaceScope,
+                query: value,
+                limit: 20,
+                resultType: 'file',
+                accountLifetime: selectedCredentialBinding,
+                signal,
+            }),
             scope: workspaceScope,
             workspaceRefId: workspaceRef?.id ?? null,
             sessionId: activeSession?.id ?? null,
         }),
-    }) : ({ status: 'absent' }), [activeSession?.id, workspaceActivationAvailable, workspaceRef?.id, workspaceResolverKey, workspaceScope]);
-    const commits = React.useMemo<UniversalSearchSource>(() => workspaceScope && workspaceActivationAvailable ? ({
+    }) : ({ status: 'absent' }), [activeSession?.id, selectedCredentialBinding, workspaceRef?.id, workspaceResolverKey, workspaceScope, workspaceSearchAvailable]);
+    const commits = React.useMemo<UniversalSearchSource>(() => workspaceScope && workspaceSearchAvailable ? ({
         status: 'ready',
         resolverKey: workspaceResolverKey,
         resolve: async (value, signal) => {
@@ -330,7 +338,7 @@ export function UniversalSearchController(props: UniversalSearchControllerProps)
                 target: { kind: 'workspaceCommit', scope: workspaceScope, sha: entry.sha, workspaceRefId: workspaceRef?.id ?? null, sessionId: activeSession?.id ?? null, serverId: workspaceScope.serverId },
             }));
         },
-    }) : ({ status: 'absent' }), [activeSession?.id, workspaceActivationAvailable, workspaceRef?.id, workspaceResolverKey, workspaceScope]);
+    }) : ({ status: 'absent' }), [activeSession?.id, workspaceRef?.id, workspaceResolverKey, workspaceScope, workspaceSearchAvailable]);
 
     const accountLifetime = captureActiveServerAccountScopeLifetime();
     const accountScopeKey = accountLifetime

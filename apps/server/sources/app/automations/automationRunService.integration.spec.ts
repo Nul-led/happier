@@ -35,6 +35,7 @@ import {
     deriveAutomationAccountCurrentnessWitness,
 } from "./automationAccountCurrentness";
 import { runAutomationScheduleWorkerPass } from "./automationScheduleWorker";
+import { toAutomationRunV2ApiDto } from "./automationApiProjection";
 
 const TEST_TEMPLATE_ENVELOPE = JSON.stringify({
     kind: "happier_automation_template_encrypted_v1",
@@ -583,6 +584,8 @@ describe("automationRunService (integration)", () => {
         id: string;
         targetKind: "newSession" | "existingSession" | "executionRun";
         state: "queued" | "claimed" | "running";
+        /** Freeze the predecessor execution input the released V2 seam admits. */
+        retainedV2?: boolean;
     }>) {
         const account = await db.account.create({
             data: { encryptionMode: "plain" },
@@ -592,11 +595,19 @@ describe("automationRunService (integration)", () => {
             data: { id: `machine-${params.id}`, accountId: account.id, metadata: "{}" },
             select: { id: true },
         });
-        const executionInputEnvelope = params.targetKind === "newSession"
-            ? TEST_STRICT_PLAIN_RECIPE
-            : params.targetKind === "existingSession"
-                ? strictPlainExistingSessionRecipe(`session-${params.id}`)
-                : TEST_STRICT_PLAIN_EXECUTION_RECIPE;
+        const executionInputEnvelope = params.retainedV2
+            ? JSON.stringify({
+                kind: "happier_automation_run_execution_input_v1",
+                targetType: "new_session",
+                templateVersion: 1,
+                templateCiphertext: TEST_TEMPLATE_ENVELOPE,
+                origin: { kind: "scheduled", scheduledFor: Date.now() - 30_000 },
+            })
+            : params.targetKind === "newSession"
+                ? TEST_STRICT_PLAIN_RECIPE
+                : params.targetKind === "existingSession"
+                    ? strictPlainExistingSessionRecipe(`session-${params.id}`)
+                    : TEST_STRICT_PLAIN_EXECUTION_RECIPE;
         if (params.targetKind === "existingSession") {
             await db.session.create({
                 data: {
@@ -1886,6 +1897,84 @@ describe("automationRunService (integration)", () => {
         });
     });
 
+    it("refuses a released-V2 cancellation of a running Run before it mutates anything", async () => {
+        const seeded = await seedOrdinaryCancelRun({
+            id: "run-v2-running-cancel-refusal",
+            targetKind: "newSession",
+            state: "running",
+            retainedV2: true,
+        });
+        const before = await db.automationRun.findUniqueOrThrow({
+            where: { id: seeded.run.id },
+        });
+        const updates: UpdatePayload[] = [];
+        const observer = createMachineConnection({
+            accountId: seeded.account.id,
+            machineId: seeded.machine.id,
+            updates,
+        });
+        eventRouter.addConnection(seeded.account.id, observer);
+        try {
+            // A running Run can only settle uncertain, and released V2 has no
+            // uncertain state. Mutating first would strand the Run in a shape
+            // the V2 projection cannot render at all, so the Run stays
+            // invisible to this caller instead.
+            await expect(cancelAutomationRun({
+                accountId: seeded.account.id,
+                runId: seeded.run.id,
+                requireV2RunRepresentability: true,
+            })).resolves.toBeNull();
+        } finally {
+            eventRouter.removeConnection(seeded.account.id, observer);
+        }
+        await expect(db.automationRun.findUniqueOrThrow({
+            where: { id: seeded.run.id },
+        })).resolves.toEqual(before);
+        await expect(db.automationRunEvent.count({
+            where: { runId: seeded.run.id },
+        })).resolves.toBe(0);
+        expect(updates).toEqual([]);
+    });
+
+    it.each(["queued", "claimed"] as const)(
+        "still cancels a released-V2 %s Run into the representable cancelled state",
+        async (state) => {
+            const seeded = await seedOrdinaryCancelRun({
+                id: `run-v2-${state}-cancel`,
+                targetKind: "newSession",
+                state,
+                retainedV2: true,
+            });
+            await expect(cancelAutomationRun({
+                accountId: seeded.account.id,
+                runId: seeded.run.id,
+                requireV2RunRepresentability: true,
+            })).resolves.toEqual(expect.objectContaining({
+                id: seeded.run.id,
+                state: "cancelled",
+            }));
+            expect(toAutomationRunV2ApiDto(await db.automationRun.findUniqueOrThrow({
+                where: { id: seeded.run.id },
+            }) as never)).toEqual(expect.objectContaining({ state: "cancelled" }));
+        },
+    );
+
+    it("keeps the current V3 cancellation of the same running Run truthfully uncertain", async () => {
+        const seeded = await seedOrdinaryCancelRun({
+            id: "run-v3-running-cancel-uncertain",
+            targetKind: "newSession",
+            state: "running",
+            retainedV2: true,
+        });
+        await expect(cancelAutomationRun({
+            accountId: seeded.account.id,
+            runId: seeded.run.id,
+        })).resolves.toEqual(expect.objectContaining({
+            id: seeded.run.id,
+            state: "outcome_uncertain",
+        }));
+    });
+
     it("leaves an already-terminal Run unchanged by ordinary cancellation", async () => {
         const seeded = await seedOrdinaryCancelRun({
             id: "run-ordinary-cancel-terminal",
@@ -2006,6 +2095,46 @@ describe("automationRunService (integration)", () => {
             eventRouter.removeConnection(seeded.account.id, observer);
         }
     });
+
+    it.each(["newSession", "existingSession"] as const)(
+        "names the authoritative cancellation cause when a running %s target is cancelled",
+        async (targetKind) => {
+            const seeded = await seedOrdinaryCancelRun({
+                id: `run-session-target-running-cancel-cause-${targetKind}`,
+                targetKind,
+                state: "running",
+            });
+            const updates: UpdatePayload[] = [];
+            const observer = createMachineConnection({
+                accountId: seeded.account.id,
+                machineId: seeded.machine.id,
+                updates,
+            });
+            eventRouter.addConnection(seeded.account.id, observer);
+            try {
+                const cancelled = await cancelAutomationRun({
+                    accountId: seeded.account.id,
+                    runId: seeded.run.id,
+                });
+                // A Session target keeps no dispatch vocabulary, so the state
+                // alone cannot separate "the present user cancelled this" from
+                // "your attempt went stale". Without the named cause the
+                // claiming machine abandons the attempt and leaves the exact
+                // deterministic Automation input pending in the Session.
+                expect(cancelled?.state).toBe("outcome_uncertain");
+                expect(updates.map((update) => update.body)).toContainEqual(
+                    expect.objectContaining({
+                        t: "automation-run-state-changed",
+                        runId: seeded.run.id,
+                        currentState: "outcome_uncertain",
+                        transitionCause: "cancelledWhileRunning",
+                    }),
+                );
+            } finally {
+                eventRouter.removeConnection(seeded.account.id, observer);
+            }
+        },
+    );
 
     it("publishes no cancellation cause when a running Run kept no dispatch permission", async () => {
         const seeded = await seedExecutionDispatchRun({

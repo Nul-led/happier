@@ -73,6 +73,25 @@ describe('getAutomationRunInvalidationAction', () => {
       'abort',
     ],
     [
+      // Session targets keep no dispatch vocabulary at all, so their running
+      // cancellation can only be published as uncertain with its own cause.
+      // Without acting on it the claiming machine would abandon a stale
+      // attempt and leave the exact deterministic Automation input pending.
+      'a Session-target cancellation that landed while the Run was running',
+      {
+        t: 'automation-run-state-changed',
+        runId: 'run-active',
+        automationId: 'automation-1',
+        runCause: { kind: 'manual', invokedAt: 123 },
+        previousState: 'running',
+        currentState: 'outcome_uncertain',
+        transitionedAt: 123,
+        claimedByMachineId: 'machine-1',
+        transitionCause: 'cancelledWhileRunning',
+      },
+      'authoritative-cancellation',
+    ],
+    [
       'machine-scoped cancellation for another Run',
       {
         t: 'automation-run-state-changed',

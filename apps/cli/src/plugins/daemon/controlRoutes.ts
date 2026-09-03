@@ -25,22 +25,6 @@ export const PLUGIN_CATALOG_READ_PATH = '/plugins/catalog/read';
 const NonEmptyStringSchema = z.string().trim().min(1).max(32_768);
 const PluginIdSchema = z.string().trim().min(1).max(256);
 const ImmutableGenerationIdSchema = z.string().trim().min(1).max(512);
-const ExplicitCliTrustFlagProvenanceSchema = z.object({
-  kind: z.literal('explicitCliTrustFlag'),
-  command: z.literal('plugins install'),
-  flag: z.literal('--trust'),
-  source: z.object({
-    kind: z.literal('path'),
-    locator: NonEmptyStringSchema,
-  }).strict(),
-  pluginId: PluginIdSchema.optional(),
-}).strict();
-const AuthenticatedUserInteractionSchema = z.object({
-  kind: z.literal('authenticatedLocalUser'),
-  interactionId: NonEmptyStringSchema,
-  occurredAtMs: z.number().int().nonnegative().safe(),
-  provenance: ExplicitCliTrustFlagProvenanceSchema.optional(),
-}).strict();
 const ArchiveSha256IntegritySchema = z.string().trim().regex(/^sha256-[A-Za-z0-9+/]{43}=$/u);
 
 const PluginChangeRequestSchema = z.union([
@@ -79,27 +63,32 @@ const PluginChangeRequestSchema = z.union([
     changedPaths: z.array(NonEmptyStringSchema).max(4_096).optional(),
     sdkRegistryOrigin: NonEmptyStringSchema.optional(),
   }).strict(),
-  ...(['enable', 'disable', 'rollback', 'forgetTrust'] as const).map((kind) => (
+  ...([
+    'enable',
+    'disable',
+    'rollback',
+    'forgetTrust',
+    'uninstall',
+    'uninstallAndDeleteData',
+  ] as const).map((kind) => (
     z.object({ kind: z.literal(kind), pluginId: PluginIdSchema }).strict()
   )),
-  z.object({ kind: z.literal('uninstall'), pluginId: PluginIdSchema }).strict(),
-  z.object({
-    kind: z.literal('uninstallAndDeleteData'),
-    pluginId: PluginIdSchema,
-    actorEvidence: AuthenticatedUserInteractionSchema,
-  }).strict(),
 ]);
 
+/**
+ * The route authenticates the caller and the change service resolves the
+ * pending change this answers, so the request carries no caller-described
+ * actor, interaction id, or approval timestamp. Keeping every member strict
+ * means such a field is rejected here rather than silently ignored.
+ */
 const PluginChangeDecisionSchema = z.discriminatedUnion('decision', [
   z.object({
     pendingChangeId: NonEmptyStringSchema,
     decision: z.literal('trustSourceRoot'),
-    actorEvidence: AuthenticatedUserInteractionSchema,
   }).strict(),
   z.object({
     pendingChangeId: NonEmptyStringSchema,
     decision: z.literal('installAndTrust'),
-    actorEvidence: AuthenticatedUserInteractionSchema,
     optionalSelections: z.array(z.object({
       accessId: NonEmptyStringSchema,
       selected: z.boolean(),

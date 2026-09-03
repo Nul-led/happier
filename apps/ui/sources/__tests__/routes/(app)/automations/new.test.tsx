@@ -21,6 +21,7 @@ const authorityCaptures = vi.hoisted(() => ({ list: [] as Array<{ serverId: stri
 // simulated while the mounted binding keeps the observed identity.
 const liveTurn = vi.hoisted(() => ({ value: 'turn-7' }));
 const composerMounts = vi.hoisted(() => ({ list: [] as Array<Record<string, unknown>> }));
+const retargetRequests = vi.hoisted(() => ({ list: [] as Array<Record<string, unknown> | null> }));
 
 vi.mock('expo-router', async () => {
     const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
@@ -33,10 +34,11 @@ vi.mock('expo-router', async () => {
         useRouter: () => ({ ...harness.state.router, setParams }),
     };
 });
-vi.mock('@/app/(app)/new/index', () => ({ default: () => {
+vi.mock('@/app/(app)/new/index', () => ({ default: (props: any) => {
     React.useEffect(() => {
         composerMounts.list.push({ ...routeState.params });
     }, []);
+    retargetRequests.list.push(props?.automationExactTurnRetarget ?? null);
     mounted(routeState.params);
     return React.createElement('NewSessionScreen');
 } }));
@@ -120,6 +122,7 @@ describe('/automations/new', () => {
         authorityCaptures.list.length = 0;
         liveTurn.value = 'turn-7';
         composerMounts.list.length = 0;
+        retargetRequests.list.length = 0;
     });
 
     it('fails a partial exact-turn tuple closed instead of composing generically', async () => {
@@ -267,5 +270,36 @@ describe('/automations/new', () => {
         expect(composerMounts.list.at(-1)).toMatchObject({ draftId: seededDraftId, dataId: seededDataId });
         expect(screen.findAllByProps({ testID: 'new-automation-exact-turn-stale' })).toHaveLength(0);
         expect(mounted).toHaveBeenLastCalledWith(expect.objectContaining({ automation: '1' }));
+    });
+
+    it('keeps the chosen lifecycle events when explicitly adopting the current turn', async () => {
+        routeState.params = {
+            sourceSessionId: 'source-session',
+            sourceTurnId: 'turn-7',
+            sourceServerId: 'server-1',
+            sessionLifecycleEvents: 'parentTurnFailed,userActionRequired',
+        };
+        const { default: Route } = await import('@/app/(app)/automations/new');
+        const screen = await renderScreen(<Route />);
+
+        liveTurn.value = 'turn-8';
+        await screen.update(<Route />);
+        await act(async () => {});
+
+        const stale = screen.findByProps({ testID: 'new-automation-exact-turn-stale' });
+        await act(async () => stale.props.action.onPress());
+        await act(async () => {});
+
+        // Adoption retargets the turn only. The event selection is the
+        // author's, so neither URL truth nor the retarget handed to the
+        // incumbent draft owner may fall back to the observation default.
+        expect(setParams).toHaveBeenCalledWith(expect.objectContaining({
+            sourceTurnId: 'turn-8',
+            sessionLifecycleEvents: 'parentTurnFailed,userActionRequired',
+        }));
+        expect(retargetRequests.list.at(-1)).toMatchObject({
+            sourceTurnId: 'turn-8',
+            events: ['parentTurnFailed', 'userActionRequired'],
+        });
     });
 });

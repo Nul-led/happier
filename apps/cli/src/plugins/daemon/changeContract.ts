@@ -10,26 +10,6 @@ import {
   type PluginInstallationReviewRequestInterceptor,
 } from '@happier-dev/protocol/marketplace/internal';
 
-export type PluginChangeActorProvenance = Readonly<{
-  /** A present user supplied `happier plugins install --trust`. */
-  kind: 'explicitCliTrustFlag';
-  command: 'plugins install';
-  flag: '--trust';
-  source: Readonly<{
-    kind: 'path';
-    locator: string;
-  }>;
-  /** Available only after the daemon has identified the reviewed package. */
-  pluginId?: string;
-}>;
-
-export type AuthenticatedUserInteraction = Readonly<{
-  kind: 'authenticatedLocalUser';
-  interactionId: string;
-  occurredAtMs: number;
-  provenance?: PluginChangeActorProvenance;
-}>;
-
 export type PluginChangeRequest =
   | Readonly<{ kind: 'installPath'; locator: string; development: boolean; sdkRegistryOrigin?: string }>
   | Readonly<{ kind: 'installArchive'; locator: string; expectedIntegrity?: string }>
@@ -51,12 +31,7 @@ export type PluginChangeRequest =
       sdkRegistryOrigin?: string;
     }>
   | Readonly<{ kind: 'enable' | 'disable' | 'rollback' | 'forgetTrust'; pluginId: string }>
-  | Readonly<{ kind: 'uninstall'; pluginId: string }>
-  | Readonly<{
-      kind: 'uninstallAndDeleteData';
-      pluginId: string;
-      actorEvidence: AuthenticatedUserInteraction;
-    }>;
+  | Readonly<{ kind: 'uninstall' | 'uninstallAndDeleteData'; pluginId: string }>;
 
 /**
  * Projects one declared request-policy contribution into the serialized
@@ -126,16 +101,22 @@ export type PluginChangeRequestResult =
   | PluginChangeApplyResult
   | Readonly<{ kind: 'busy'; pluginId: string }>;
 
+/**
+ * A decision names the daemon-issued pending change it answers and nothing
+ * about its own author. The authenticated control route establishes that a
+ * local present user is calling, and the change service resolves the pending
+ * change itself, so a caller-supplied actor, interaction id, or timestamp
+ * would be self-asserted rather than evidence. Approval and selection times
+ * are taken from the daemon clock where the record is written.
+ */
 export type PluginChangeDecision =
   | Readonly<{
       pendingChangeId: string;
       decision: 'trustSourceRoot';
-      actorEvidence: AuthenticatedUserInteraction;
     }>
   | Readonly<{
       pendingChangeId: string;
       decision: 'installAndTrust';
-      actorEvidence: AuthenticatedUserInteraction;
       optionalSelections?: readonly PluginResourceSelection[];
     }>
   | Readonly<{
@@ -207,7 +188,6 @@ export type PreparedDaemonPluginChangeCandidate = Readonly<{
   review?: PluginInstallationReview;
   requiresReview?: boolean;
   apply: (decision?: Readonly<{
-    actorEvidence: AuthenticatedUserInteraction;
     optionalSelections: readonly PluginResourceSelection[];
   }>, control?: Readonly<{
     /** Releases same-plugin apply exclusivity after the serving lease is swapped. */
@@ -220,9 +200,7 @@ export type PreparedDaemonPluginSourceRootApproval = Readonly<{
   kind: 'sourceRootApprovalRequired';
   pendingKey: string;
   review: PluginDevelopmentSourceRootReview;
-  continueAfterSourceRootApproval: (
-    actorEvidence: AuthenticatedUserInteraction,
-  ) => Promise<PreparedDaemonPluginChangeCandidate>;
+  continueAfterSourceRootApproval: () => Promise<PreparedDaemonPluginChangeCandidate>;
   cleanup: () => Promise<void>;
 }>;
 

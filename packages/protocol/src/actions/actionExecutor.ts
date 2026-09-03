@@ -1010,14 +1010,9 @@ function resolveServerIdForExecutionRunScope(
   return normalizeId(ctx.serverId) || null;
 }
 
-type ExecutionRunCallOptions = Readonly<{
-  serverId?: string;
-  originSessionId?: string;
-  targetMachineId?: string;
-  exactMachineId?: string;
-  causalPermissionAuthority?: SessionInputCausalPermissionAuthorityV1;
-  signal?: AbortSignal;
-}>;
+type ExecutionRunCallOptions = NonNullable<
+  Parameters<ActionExecutorDeps['executionRunStart']>[2]
+>;
 
 function buildExecutionRunCallOptions(
   serverId: string | null,

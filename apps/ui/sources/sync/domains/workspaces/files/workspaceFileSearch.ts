@@ -3,7 +3,6 @@ import Fuse from 'fuse.js';
 import type { FileSearchItem } from '@/sync/domains/fileSystem/fileSearchItem';
 import {
     captureActiveServerAccountScopeLifetime,
-    type ActiveServerAccountScopeLifetime,
 } from '@/sync/domains/scope/activeServerAccountScope';
 import { tryBuildWorkspaceCacheKey, type WorkspaceScopeBase } from '@/sync/domains/workspaces/workspaceScope';
 import { machineFilesystemListDirectory } from '@/sync/ops/machineFileBrowser';
@@ -19,6 +18,11 @@ type WorkspaceCache = {
 };
 
 const FILE_INDEX_FALLBACK_LIMIT = 5000;
+
+export type WorkspaceFileSearchAccountLifetime = Readonly<{
+    isCurrent(): boolean;
+    onRetire(cancel: () => void): Readonly<{ dispose(): void }>;
+}>;
 
 export class WorkspaceFileSearchUnavailableError extends Error {
     readonly code = 'WORKSPACE_FILE_SEARCH_UNAVAILABLE';
@@ -147,11 +151,13 @@ function createFuse(files: FileSearchItem[], threshold: number = 0.3): Fuse<File
 }
 
 const workspaceCaches = new Map<string, WorkspaceCache>();
-let boundAccountLifetime: ActiveServerAccountScopeLifetime | null = null;
+let boundAccountLifetime: WorkspaceFileSearchAccountLifetime | null = null;
 let boundAccountRetirement: Readonly<{ dispose(): void }> | null = null;
 
-function bindWorkspaceFileSearchToActiveAccountLifetime(): ActiveServerAccountScopeLifetime | null {
-    const lifetime = captureActiveServerAccountScopeLifetime();
+function bindWorkspaceFileSearchToAccountLifetime(
+    explicitLifetime?: WorkspaceFileSearchAccountLifetime,
+): WorkspaceFileSearchAccountLifetime | null {
+    const lifetime = explicitLifetime ?? captureActiveServerAccountScopeLifetime();
     if (!lifetime || lifetime === boundAccountLifetime) return lifetime;
 
     boundAccountRetirement?.dispose();
@@ -167,7 +173,7 @@ function bindWorkspaceFileSearchToActiveAccountLifetime(): ActiveServerAccountSc
     return lifetime;
 }
 
-function throwIfWorkspaceFileSearchAccountRetired(lifetime: ActiveServerAccountScopeLifetime | null): void {
+function throwIfWorkspaceFileSearchAccountRetired(lifetime: WorkspaceFileSearchAccountLifetime | null): void {
     if (lifetime && !lifetime.isCurrent()) {
         throw new WorkspaceFileSearchUnavailableError();
     }
@@ -338,7 +344,7 @@ async function buildFileItemsFromDirectoryFallback(
 async function ensureCacheValid(input: Readonly<{
     scope: WorkspaceScopeBase;
     workspaceCacheKey: string;
-    accountLifetime: ActiveServerAccountScopeLifetime | null;
+    accountLifetime: WorkspaceFileSearchAccountLifetime | null;
     signal?: AbortSignal;
 }>): Promise<void> {
     const cache = getOrCreateWorkspaceCache(input.workspaceCacheKey);
@@ -418,10 +424,12 @@ export async function searchWorkspaceFiles(input: Readonly<{
     limit?: number;
     threshold?: number;
     resultType?: FileSearchItem['fileType'];
+    /** Exact selected-Home credential lifetime; omitted callers retain the active Account owner. */
+    accountLifetime?: WorkspaceFileSearchAccountLifetime;
     signal?: AbortSignal;
 }>): Promise<FileSearchItem[]> {
     throwIfWorkspaceFileSearchAborted(input.signal);
-    const accountLifetime = bindWorkspaceFileSearchToActiveAccountLifetime();
+    const accountLifetime = bindWorkspaceFileSearchToAccountLifetime(input.accountLifetime);
     throwIfWorkspaceFileSearchAccountRetired(accountLifetime);
     // Fails closed on a scope that names no workspace, exactly as the empty-key guard this
     // replaces did — an unaddressable workspace has no index to search.

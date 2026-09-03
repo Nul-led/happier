@@ -114,6 +114,29 @@ describe('workspaceFileSearch', () => {
         expect(accountBFiles.map((entry) => entry.fullPath)).not.toContain('src/stale-account-a.ts');
     });
 
+    it('binds an inactive selected workspace search to its exact supplied credential lifetime', async () => {
+        activeAccountLifetime = createAccountLifetimeFixture('account-a');
+        const inactiveAccountB = createAccountLifetimeFixture('account-b');
+        machineRipgrepMock.mockResolvedValueOnce({ success: true, stdout: 'src/account-b.ts\n' });
+
+        const mod = await import('./workspaceFileSearch');
+        const accountBFiles = await mod.searchWorkspaceFiles({
+            scope: SCOPE_B,
+            query: '',
+            limit: 50,
+            accountLifetime: inactiveAccountB,
+        });
+        expect(accountBFiles.map((entry) => entry.fullPath)).toContain('src/account-b.ts');
+
+        inactiveAccountB.retire();
+        await expect(mod.searchWorkspaceFiles({
+            scope: SCOPE_B,
+            query: '',
+            limit: 50,
+            accountLifetime: inactiveAccountB,
+        })).rejects.toMatchObject({ code: 'WORKSPACE_FILE_SEARCH_UNAVAILABLE' });
+    });
+
     it('throws a typed unavailable error only when ripgrep and directory traversal both fail', async () => {
         machineRipgrepMock.mockResolvedValue({ success: false, stdout: '', stderr: 'missing', exitCode: 127 });
         machineFilesystemListDirectoryMock.mockResolvedValue({ ok: false });

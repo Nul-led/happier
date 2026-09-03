@@ -584,11 +584,17 @@ describe('createActionExecutor run options parity (model + effort)', () => {
   });
 
   it('requires and threads active-turn authority for every Agent existing-run effect', async () => {
-    const executionRunSend = vi.fn(async () => ({}));
-    const executionRunEnsure = vi.fn(async () => ({}));
-    const executionRunEnsureOrStart = vi.fn(async () => ({}));
-    const executionRunStreamStart = vi.fn(async () => ({}));
-    const executionRunAction = vi.fn(async () => ({}));
+    const executionRunSend = vi.fn(async () => ({ ok: true, data: {} }));
+    const executionRunEnsure = vi.fn(async () => ({ ok: true, data: {} }));
+    const executionRunEnsureOrStart = vi.fn(async () => ({
+      ok: true,
+      data: { runId: 'run_1', created: false },
+    }));
+    const executionRunStreamStart = vi.fn(async () => ({
+      ok: true,
+      data: { streamId: 'stream_1' },
+    }));
+    const executionRunAction = vi.fn(async () => ({ ok: true, data: {} }));
     const executor = createActionExecutor(createDeps({
       executionRunSend,
       executionRunEnsure,
@@ -615,7 +621,8 @@ describe('createActionExecutor run options parity (model + effort)', () => {
       });
       expect(dependency).not.toHaveBeenCalled();
 
-      await expect(executor.execute(actionId, input, RUN_DISPATCHER_CALLER)).resolves.toMatchObject({ ok: true });
+      const result = await executor.execute(actionId, input, RUN_DISPATCHER_CALLER);
+      expect(result, `${actionId}: ${JSON.stringify(result)}`).toMatchObject({ ok: true });
       expect(dependency).toHaveBeenCalledWith(
         's1',
         expect.anything(),
