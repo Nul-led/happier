@@ -7,6 +7,11 @@ import { storage, useSetting } from '@/sync/domains/state/storage';
 import type { Session } from '@/sync/domains/state/storageTypes';
 import { storeTempData } from '@/utils/sessions/tempDataStore';
 import { readMachineControlTargetForSession } from '@/sync/ops/sessionMachineTarget';
+import { useOpenProject } from '@/components/projects/useOpenProject';
+import {
+    useUniversalSearchRuntime,
+    type UniversalSearchScopeSeed,
+} from '@/components/appShell/search/UniversalSearchRuntimeContext';
 
 import type { CreateSessionFromWorkspaceScopeOptions } from './resolveSessionListHeaderActionHandlers';
 
@@ -31,13 +36,17 @@ function resolveSeedSession(sessionId: unknown): Session | null {
     return session ?? null;
 }
 
-export function useSessionListNavigationActions() {
+export function useSessionListNavigationActions(
+    universalSearchScope?: UniversalSearchScopeSeed,
+) {
     const router = useRouter();
+    const openProject = useOpenProject();
+    const universalSearch = useUniversalSearchRuntime();
     const rememberLastProjectSessionSelections = useSetting('rememberLastProjectSessionSelections') !== false;
 
     return {
         handleOpenProject(workspaceRefId: string) {
-            router.push(`/projects/${encodeURIComponent(workspaceRefId)}`);
+            openProject(workspaceRefId);
         },
         handleCreateSessionFromWorkspaceScope(
             scopeHint: WorkspaceScopeHint,
@@ -86,6 +95,18 @@ export function useSessionListNavigationActions() {
         },
         handleOpenArchivedSessions() {
             router.push('/session/archived');
+        },
+        /**
+         * Escalates the contextual query through the canonical Search opener,
+         * which chooses the modal or native route for the current platform.
+         */
+        handleOpenUniversalSearch(query: string) {
+            const normalizedQuery = normalizeString(query);
+            if (universalSearchScope) {
+                universalSearch.open(normalizedQuery ?? undefined, universalSearchScope);
+                return;
+            }
+            universalSearch.open(normalizedQuery ?? undefined);
         },
     };
 }

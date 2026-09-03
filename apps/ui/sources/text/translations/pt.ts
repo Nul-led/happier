@@ -3,6 +3,7 @@ import { providerSessionTranslations } from './providerSessionTranslations';
 import { externalSessionOperationTranslations } from './externalSessionOperationTranslations';
 import { externalSessionSettingsTranslations } from './externalSessionSettingsTranslations';
 import { pluginPermissionTranslations } from './pluginPermissionTranslations';
+import { pluginMarketplaceDiscoverTranslations } from './pluginMarketplaceDiscoverTranslations';
 import { sessionRemotePermissionGrantTranslations } from './sessionRemotePermissionGrantTranslations';
 import { voiceReadinessTranslations } from './voiceReadinessTranslations';
 import { voiceDiagnosticsTranslations } from './voiceDiagnosticsTranslations';
@@ -555,15 +556,17 @@ const promptLibraryUxRefinementTranslationExtension = {
 
 const sessionHandoffTranslationExtensions = {
   pt: {
-    activeWarning: {
-      title: 'Esta sessão ainda está em execução aqui',
-      message: 'A transferência vai parar esta sessão nesta máquina antes de transferi-la para a máquina selecionada.',
-      confirm: 'Transferir e parar aqui',
-    },
-    mirrorConfirmation: {
-      title: 'Espelhar este espaço de trabalho exatamente?',
-      message: ({ sourceMachine, sourcePath, targetMachine, targetPath }: { sourceMachine: string; sourcePath: string; targetMachine: string; targetPath: string }) => `Espelhe ${sourcePath} de ${sourceMachine} para ${targetPath} em ${targetMachine}. Os arquivos que existem apenas no destino podem ser removidos permanentemente.`,
-      confirm: 'Espelhar e permitir remoções',
+    targetApproval: {
+      title: 'O que acontece no destino',
+      sourceLabel: 'Movendo de',
+      destinationLabel: 'Movendo para',
+      modeLabel: 'Modo de sincronização',
+      replaceTarget: ({ machine, path }: { machine: string; path: string }) => `Os arquivos que já estão em ${path} em ${machine} serão substituídos por este espaço de trabalho.`,
+      exactMirror: ({ machine, path }: { machine: string; path: string }) => `Durante o espelhamento exato, os arquivos que existem apenas em ${path} em ${machine} podem ser removidos permanentemente.`,
+      decision: {
+        replaceDestination: 'Substituir arquivos de destino',
+        mirrorAndAllowRemovals: 'Espelhar e permitir remoções',
+      },
     },
     progress: {
       title: 'Transferindo sessao',
@@ -719,7 +722,7 @@ export const pt = {
         title: 'Atalhos de teclado',
         entrySubtitle: 'Descubra e controle atalhos de aplicativos',
         generalGroupTitle: 'Controles de teclado',
-        generalGroupFooter: 'As preferências de atalho são armazenadas localmente neste dispositivo.',
+        generalGroupFooter: 'As preferências de atalho são sincronizadas com a sua conta.',
         enableShortcutsTitle: 'Habilite atalhos unificados',
         enableShortcutsSubtitle: 'Use o novo registro de comandos do teclado para atalhos de aplicativos.',
         singleKeyTitle: 'Atalhos de tecla única',
@@ -743,7 +746,7 @@ export const pt = {
             composerFocus: 'Focar compositor',
             composerSendImmediate: 'Enviar imediatamente',
             composerSendPending: 'Enviar para a fila pendente',
-            commandPaletteOpen: 'Abrir paleta de comandos',
+            commandPaletteOpen: 'Abrir a pesquisa',
             browserAddressFocus: 'Focar a barra de endereço do navegador',
             browserBack: 'Voltar no navegador',
             browserForward: 'Avançar no navegador',
@@ -905,8 +908,12 @@ export const pt = {
     fieldAction: "Ação",
     approve: "Aprovar",
     reject: "Rejeitar",
+    stopWaiting: "Parar de esperar",
     loadError: "Falha ao carregar a aprovação.",
     decisionError: "Falha ao atualizar a aprovação.",
+    unsafeDetailsTitle: "Estes detalhes não podem ser mostrados com segurança",
+    unsafeDetailsBody: "O Happier não conseguiu mostrar este pedido exatamente como foi enviado, por isso não pode ser aprovado. Recuse-o ou peça que seja enviado novamente.",
+    approveUnavailableHint: "A aprovação fica indisponível enquanto estes detalhes não puderem ser mostrados com segurança.",
     confirmApproveTitle: "Aprovar solicitação?",
     confirmApproveBody: "Isso executará a ação solicitada.",
     confirmRejectTitle: "Rejeitar solicitação?",
@@ -1361,6 +1368,11 @@ export const pt = {
             suppressed: "Suprimida",
             blocked: "Bloqueada",
         },
+        replyHandoffDeliverAgainTitle: "Enviar esta resposta novamente",
+        replyHandoffDeliverAgainSubtitle: "Usa isto se a resposta nunca chegou à conversa.",
+        replyHandoffDeliverAgainConfirmTitle: "Enviar esta resposta novamente?",
+        replyHandoffDeliverAgainConfirmMessage: "O Happier já entregou esta resposta ao canal, mas não consegue confirmar que chegou. Enviar novamente entrega uma cópia nova, por isso a conversa pode ficar com duas.",
+        replyHandoffDeliverAgainConfirmButton: "Enviar novamente",
         nativeExecutionTitle: "Execução nativa",
         nativeExecutionCall: ({ callId }: { callId: string }) => `Chamada ${callId}`,
         nativeExecutionSidechain: ({ sidechainId }: { sidechainId: string }) => `Sidechain ${sidechainId}`,
@@ -1632,6 +1644,12 @@ export const pt = {
 
     connectionStatus: {
       title: "Conexão",
+      summary: {
+        connected: "Conectado",
+        reconnecting: "Reconectando",
+        unavailable: "Indisponível",
+        signInAgain: "Entrar novamente",
+      },
       labels: {
         server: "Servidor",
         socket: "WebSocket",
@@ -1639,7 +1657,23 @@ export const pt = {
         lastSync: "Última sincronização",
         nextRetry: "Próxima tentativa",
         lastError: "Último erro",
+        canonicalAddress: "Endereço canônico",
+        runtimeOrigin: "Origem de execução",
+        endpointId: "ID do endpoint",
+        connectionPath: "Caminho da conexão",
+        relayConfiguration: "Configuração do relay",
+        transportError: "Erro de transporte",
+        lastTransition: "Última transição",
       },
+      values: {
+        pathDirect: "Direto",
+        pathRelay: "Relay seguro",
+        relayDisabled: "Desativado",
+        relayAutomatic: ({ relays, direct }: { relays: string; direct: number }) =>
+            `Automática · ${relays} · ${direct} endereços diretos`,
+      },
+      copyDiagnostics: "Copiar diagnóstico",
+      diagnosticsCopied: "Diagnóstico copiado",
     },
 
   time: {
@@ -1677,6 +1711,7 @@ export const pt = {
       "Este método de login está desativado neste servidor. Use outra opção abaixo para restaurar sua conta.",
     scanComputerQrInstructions: "Escaneie o código QR exibido no Happier no seu computador (Configurações → Adicionar seu telefone).",
     scanComputerQrButton: "Escanear QR para entrar",
+    scanExistingHomeQrTitle: "Digitalize um QR de uma Home existente",
     waitingForApproval: "Aguardando aprovação…",
     securingCredentials: "A proteger credenciais…",
     showQrInstead: "Mostrar um código QR em vez disso",
@@ -1695,6 +1730,7 @@ export const pt = {
     pairingQrTooLargeTitle: "Grande demais para um código QR",
     pairingQrTooLargeBody: "Este convite inclui detalhes de conexão adicionais e não pode ser mostrado como código QR. O seu Home continua pronto para emparelhar — use o link seguro abaixo.",
     homeAddedPreservedFocusBody: "Este Home foi adicionado. O Home selecionado não mudou.",
+    requesterDeviceAddedBody: "O dispositivo solicitante foi adicionado a este Home.",
     requestingDeviceLabel: "Dispositivo solicitante",
     thisDevice: "Este dispositivo",
     startAgain: "Começar de novo",
@@ -1708,11 +1744,19 @@ export const pt = {
     unsupportedEnrollmentResponseBody: "Este Home retornou uma resposta que esta versão do Happier não consegue usar. Atualize o Happier ou digitalize outro Home.",
     updateRequiredTitle: "Atualização necessária",
     updateRequiredBody: "Este Home usa um formato de emparelhamento antigo que não pode ser aceito com segurança. Atualize o Happier nos dois dispositivos e tente novamente.",
-    generateNewQrCode: "Gerar novo código QR",
+    legacyPairingUpdateRequiredBody: "Este QR foi criado por uma versão mais antiga do Happier. Atualize o Happier no outro dispositivo e crie um novo QR.",
+    scanNewQr: "Escanear um novo QR",
+    homeEnrollmentRetryBody:
+      "Não foi possível concluir a adição deste Home. Verifique a conexão e tente novamente.",
+    homeEnrollmentPartialCommitBody:
+      "A credencial do Home pode ter sido salva, mas a adição do Home não foi concluída. Tente novamente com este Home antes de iniciar outra adição.",
+    generateNewQrCode: "Criar um novo código QR",
     pairingQrExpired: "Este código QR expirou. Gere um novo.",
     openMachine: "Abrir máquina",
     terminalUrlPlaceholder: "happier://terminal?...",
     accountUrlPlaceholder: "happier:///account?...",
+    showRequesterQrInstructions:
+      "Mantenha este código QR neste dispositivo. Em um dispositivo já inscrito, abra o Happier e escaneie-o para adicionar este dispositivo.",
     restoreQrInstructions:
       "Em um dispositivo onde você já está conectado, vá em Configurações → Conta e escaneie este código QR.",
     externalAuthVerifiedTitle: ({ provider }: { provider: string }) =>
@@ -2012,6 +2056,14 @@ export const pt = {
         allHistorySubtitle: "Preencher tudo (pode levar tempo)",
       },
     },
+    archived: {
+        groupTitle: 'Sessões arquivadas',
+        groupFooter: 'Quando ativado, as sessões arquivadas são indexadas para a pesquisa local. Quando desativado, são excluídas e o conteúdo indexado é removido da pesquisa.',
+        includeTitle: 'Pesquisar sessões arquivadas',
+        includeSubtitle: 'Indexar sessões arquivadas nesta máquina',
+        unsupportedSubtitle: 'O Happier precisa ser atualizado nesta máquina',
+        unsupportedFooter: 'Esta máquina não indica suporte à indexação de arquivadas, então a configuração não pode ser aplicada aqui. O restante da pesquisa continua disponível.',
+    },
     indexContents: {
       groupTitle: "Conteúdo do índice",
       title: "Conteúdo pesquisável",
@@ -2246,13 +2298,14 @@ export const pt = {
         backendsSubtitle: "Backends configurados e alvos de inicialização personalizados.",
       },
       enableInjection: {
-        title: "Ativar injeção de orientação",
+        title: "Instruções de execuções do Happier",
+        subtitle: "Desativar remove o roteamento nativo primeiro e a mecânica de execuções do Happier dos prompts de sistema dos agentes de código.",
       },
       characterBudget: {
-        title: "Limite de caracteres",
+        title: "Limite de regras personalizadas",
         subtitle: ({ value }: { value: string }) => `${value} caracteres`,
-        promptTitle: "Limite de caracteres",
-        promptBody: "Máximo de caracteres a injetar no prompt do sistema.",
+        promptTitle: "Limite de regras personalizadas",
+        promptBody: "Máximo de caracteres para regras de execução personalizadas no prompt do sistema.",
       },
       rules: {
         groupTitle: "Regras de orientação",
@@ -5359,7 +5412,7 @@ export const pt = {
         "Escolha se Seta para cima/Seta para baixo percorre apenas as mensagens enviadas nesta sessão ou em todas as sessões.",
       historyScopePerSessionOption: "Por sessão",
       historyScopeGlobalOption: "Global (todos)",
-      commandPalette: "Paleta de comandos",
+      commandPalette: "Pesquisa",
       commandPaletteEnabled: "Use o atalho para abrir",
       commandPaletteDisabled: "Acesso rápido a comandos desativado",
       hideInactiveSessions: "Ocultar sessões inativas",
@@ -6017,7 +6070,15 @@ export const pt = {
         temporaryThrottle: "Limite temporário",
       },
     },
-    composerBanners: {
+        pendingActivation: {
+            waiting_offline: { title: 'Mensagem na fila para esta máquina', body: 'Ela será processada quando esta máquina e o daemon voltarem a ficar online.' },
+            waiting: { title: 'Aguardando retomada', body: 'Sua mensagem está segura na fila enquanto o daemon retoma esta sessão.' },
+            failed: { title: 'Não foi possível retomar a sessão', body: 'Sua mensagem continua segura na fila. Tente novamente quando quiser.' },
+            queued: { title: 'Mensagem na fila', body: 'Esta sessão inativa tem uma mensagem na fila. Retome-a quando quiser.' },
+            queued_offline: { title: 'Mensagem aguardando retomada manual', body: 'Ela ficará na fila até você retomar esta sessão.' },
+            actions: { retry: 'Tentar novamente', resume: 'Retomar', process_when_online: 'Processar quando online', keepQueued: 'Manter na fila', autoResumeOptions: 'Opções de retomada automática' },
+        },
+	    composerBanners: {
         showBannerAction: 'Mostrar aviso',
         hideBannerAction: 'Ocultar aviso',
     },
@@ -6220,9 +6281,6 @@ export const pt = {
 	      },},
 	    resuming: "Retomando...",
 	    resumeFailed: "Falha ao retomar a sessão",
-	    pendingQueuedResumeFailedTitle: "Mensagem na fila",
-	    pendingQueuedResumeFailedBody:
-	      "Sua mensagem foi salva na fila de pendentes, mas o Happier não conseguiu retomar esta sessão. Tente novamente para iniciá-la.",
 	    invalidLinkTitle: "Link de sessão inválido",
 	    invalidLinkDescription: "O link da sessão está ausente ou é inválido. Verifique a URL e tente novamente.",
 	    resumeSupportNoteChecking:
@@ -6616,13 +6674,27 @@ export const pt = {
     },
   },
 
+    universalSearch: {
+        commitsUpdateRequired: 'Atualize o Happier nesta máquina para pesquisar commits.',
+    moreResultsAvailable: 'Há mais resultados disponíveis. Refine a pesquisa.',
+    sections: {
+      sessions: 'Sessões',
+      projects: 'Projetos',
+      settings: 'Configurações',
+      messages: 'Mensagens',
+      files: 'Arquivos',
+      commits: 'Commits',
+    },
+  },
+
   commandPalette: {
     placeholder: "Digite um comando ou pesquise...",
     noCommandsFound: "Nenhum comando encontrado",
+    activationFailed: "Não foi possível concluir esse comando.",
         shortcutsHelpTitle: 'Atalhos de teclado',
         shortcutsHelpBody: ({ shortcuts }: { shortcuts: string }) => `Atalhos ativos:\n${shortcuts}`,
         shortcutsHelpEmpty: 'Nenhum atalho ativo neste dispositivo.',
-        shortcutsHelpCommandPalette: 'Abrir paleta de comandos',
+        shortcutsHelpCommandPalette: 'Abrir a pesquisa',
         shortcutsHelpHelp: 'Abrir atalhos de teclado',
         shortcutsHelpNewSession: 'Nova sessão',
         commands: {
@@ -7011,6 +7083,14 @@ export const pt = {
     viewOptions: 'Opções de visualização',
     searchSessions: 'Buscar sessões',
     searchSessionsPlaceholder: 'Buscar sessões...',
+    searchEverythingFor: ({ query }: { query: string }) => `Buscar “${query}” em tudo`,
+    searchGroupInThisView: 'Nesta visualização',
+    searchGroupOtherMatches: 'Outras correspondências',
+    searchMatchTranscript: 'Correspondência na transcrição',
+    searchMatchHiddenByFilters: 'Oculta pelos filtros',
+    searchMatchArchived: 'Arquivada',
+    searchMatchExternal: 'Externa',
+    searchMatchAnotherMachine: 'Outra máquina',
     filterByTags: 'Filtrar por tags',
     folders: 'Pastas',
     addFolder: 'Adicionar pasta',
@@ -7235,7 +7315,8 @@ export const pt = {
     viewSessionLogTitle: "Ver log da sessão",
     viewSessionLogSubtitle: "Abrir a cauda do log ao vivo para esta sessão",
     pinSession: "Fixar sessão",
-    unpinSession: "Desafixar sessão",
+        unpinSession: "Desafixar sessão",
+        pinLimitExceeded: ({ count }: { count: number }) => `Pode fixar até ${count.toLocaleString()} sessões. Desafixe outra sessão e tente novamente.`,
     copyResumeCommand: "Copiar comando de retomada",
     resumeCommand: ({ sessionId }: { sessionId: string }) =>
       `happier resume ${sessionId}`,
@@ -9755,6 +9836,16 @@ settingsSession: {
           title: 'Avançado',
       },
       messageSending: {
+        inactiveResumePolicyTitle: 'Retomada automática após o envio',
+        inactiveResumePolicySubtitle: 'Escolha o que o Happier deve fazer após enviar para uma sessão inativa.',
+        inactiveResumePolicy: {
+          whenAvailableTitle: 'Agora ou quando a máquina voltar',
+          whenAvailableSubtitle: 'Retomar imediatamente se estiver acessível; caso contrário, processar quando o daemon se reconectar.',
+          onlineOnlyTitle: 'Somente se a máquina estiver online',
+          onlineOnlySubtitle: 'Tentar uma vez ao enviar. Se indisponível, manter a mensagem na fila.',
+          manualTitle: 'Nunca automaticamente',
+          manualSubtitle: 'Sempre manter as mensagens na fila até você retomar a sessão.',
+        },
         title: "Envio de mensagens",
         footer:
           "Controla o que acontece quando você envia uma mensagem enquanto o agente está em execução.",
@@ -11420,6 +11511,8 @@ settingsSession: {
     notAvailable: "Não disponível",
     linkNewDevice: "Escanear QR para vincular novo dispositivo",
     linkNewDeviceSubtitle: "Escaneie o código QR exibido no seu novo dispositivo",
+    addAnotherHome: "Adicionar outro Home",
+    addAnotherHomeSubtitle: "Escaneie um QR code sem mudar o Home atual",
     profile: "Perfil",
     name: "Nome",
     github: "GitHub",
@@ -11934,6 +12027,8 @@ settingsSession: {
     welcomePrimarySubtitle: "Um toque. Sem formulário. Sua chave vive aqui.",
 
     welcomeSecondaryButton: "Entrar — já uso o Happier",
+    continueWithKey: "Usar uma chave",
+    useDifferentHome: "Usar outra Home",
     welcomeSecondarySubtitle: "Escaneie um código QR ou insira sua chave secreta",
 
     // Unified onboarding redesign — returning-user copy variants.
@@ -12155,6 +12250,8 @@ settingsSession: {
           relayCustomUrlSubtitle: 'Use a URL de um relay que você já tenha em execução',
           authRestoreTitle: 'Restaurar ou adicionar este dispositivo',
           authRestoreSubtitle: 'Use um QR code ou um link para conectar este dispositivo',
+          addHomeTitle: 'Adicionar outro Home',
+          addHomeSubtitle: 'Escaneie um QR code para adicionar um Home sem sair do atual',
           authSecretKeyTitle: 'Entrar com chave secreta',
           authSecretKeySubtitle: 'Insira sua chave secreta para entrar no Happier',
           authLostAccessTitle: 'Sem acesso?',
@@ -13376,12 +13473,15 @@ settingsSession: {
       ...pluginAccountReleaseSelectionTranslations.pt,
       ...pluginMachineMatrixTranslations.pt,
       ...pluginInvocationLogTranslations.pt,
+      ...pluginMarketplaceDiscoverTranslations.pt,
       ...eventAutomationComposerTranslations.pt,
     title: "Catálogo de plugins",
-    subtitle: "Navegue por descritores de plugins curados e gerencie os plugins instalados neste dispositivo.",
+    subtitle: "Descubra plugins no npm e nas origens configuradas e gira os plugins instalados nesta máquina.",
     appPanelsTitle: "Painéis de plugins",
     appPanelsSubtitle: "Abra painéis do app fornecidos pelos plugins instalados.",
     executionOriginReleaseContentConflict: "O conteúdo da versão não corresponde. Publique uma nova versão.",
+    administrationMachineTitle: "Máquina de administração",
+    executionOriginTitle: "Origem de execução",
     readOnlyProjectionUnavailable: "Os detalhes dos plugins em cache são somente leitura: este dispositivo está acessível, mas não foi possível carregar o registro de plugins dele. Tente novamente para gerenciar plugins.",
     readOnlyAccountRecovery: "Os detalhes da conta do plugin estão disponíveis, mas os detalhes específicos da máquina não estarão disponíveis até que uma instalação compatível do plugin esteja disponível.",
     readOnlySnapshot: "Os detalhes dos plugins em cache são somente leitura enquanto este dispositivo está desconectado. Reconecte-o para gerenciar plugins.",
@@ -13406,12 +13506,15 @@ settingsSession: {
     pendingChangesTitle: "Aguardando a sua decisão",
     pendingChangesFooter: "Alterações de plugin preparadas nesta máquina. Um agente pode preparar uma, mas só você pode aprová-la.",
     pendingChangesReviewHint: "Mostra a revisão completa antes de confiar em qualquer coisa.",
+    pendingChangeReviewAction: "Rever",
+    pendingChangeRejectHint: "Descarta a alteração preparada. Nada é instalado nem considerado confiável.",
     pendingChangeSourceRootSubtitle: ({ path }: { path: string }) => `Pasta do plugin: ${path}`,
     pendingChangeInstallSubtitle: ({ pluginId, source }: { pluginId: string; source: string }) => `${pluginId} de ${source}`,
     pendingChangeApplying: "Esta alteração já foi decidida e está sendo aplicada.",
     pendingChangeExpired: "Esta alteração expirou antes de ser decidida. Solicite-a novamente.",
     pendingChangeRejected: "A alteração do plugin foi rejeitada.",
-    pendingChangeConfirmRejectBody: "A alteração preparada é descartada. Nada é instalado nem recebe confiança.",
+    pendingChangeConfirmRejectBody: ({ machine, server }: { machine: string; server: string }) => `A alteração preparada é descartada em ${machine} (${server}). Nada é instalado nem recebe confiança.`,
+    pendingChangeCommitted: "Esta alteração já foi decidida e aplicada.",
     pendingChangeFailed: ({ outcome }: { outcome: string }) => `A alteração do plugin não foi aplicada (${outcome}).`,
     developmentCreateDirectoryTitle: "Pasta do plugin",
     developmentCreateDirectoryBody: "Insira a nova pasta absoluta na máquina selecionada. A pasta ainda não pode existir.",
@@ -13441,10 +13544,24 @@ settingsSession: {
     diagnosticsSnapshotEmptySubtitle: "Os diagnósticos atuais do registro aparecerão aqui quando este dispositivo os informar.",
     catalogUrlLabel: "URL do catálogo",
     loadCatalog: "Carregar catálogo",
+    discoverTitle: "Descobrir plugins",
+    discoverSearchLabel: "Pesquisar plugins",
+    discoverSearchPlaceholder: "Pesquisar todas as fontes de marketplace de uma vez",
+    discoverSearch: "Pesquisar",
+    discoverSourceFilterLabel: "Filtro de fonte de marketplace",
+    discoverSourceAll: "Todas",
+    discoverLoadMore: "Carregar mais",
+    discoverRevisionChanged: "O índice do marketplace mudou ao carregar mais. Pesquise novamente para ver resultados atuais.",
+    discoverEmptyTitle: "Nenhum plugin encontrado",
+    discoveredVia: ({ source }: { source: string }) => `Descoberto via ${source}`,
+    sourceKindCurated: "Marketplace curado — recomendações, não autorização",
+    sourceKindUser: "Sua fonte de marketplace",
+    sourceKindCommunityNpm: "Registro público npm",
+    communityNpmSourceTitle: "npm da comunidade",
     installAndTrust: "Instalar e confiar",
     marketplaceWithdrawnTitle: "Retirado do marketplace",
-    marketplaceWithdrawnBody: "Esta listagem foi retirada do marketplace selecionado. Novas instalações e atualizações estão bloqueadas.",
-    marketplaceWithdrawnInstalledBody: "Esta listagem foi retirada do marketplace selecionado. Novas instalações e atualizações estão bloqueadas. O plugin instalado permanece ativado até que você o desative ou desinstale.",
+    marketplaceWithdrawnBody: "Esta listagem foi retirada do marketplace selecionado. Novas instalações a partir desta listagem estão bloqueadas.",
+    marketplaceWithdrawnInstalledBody: "Esta listagem foi retirada do marketplace selecionado. Novas instalações a partir desta listagem estão bloqueadas. O plugin instalado permanece ativado e é atualizado conforme a regra de atualização selecionada.",
     trustPolicy: {
       localTrusted: "Confiável localmente",
       trusted: "Confiável",
@@ -13475,6 +13592,9 @@ settingsSession: {
     marketplaceInstallReviewRawCredentialAccess: ({ details }: { details: string }) => `Acesso direto a credenciais de Voice:\n${details}`,
     marketplaceInstallReviewRawCredentialAccessItem: ({ contribution, credential, source, realm, phase, request }: { contribution: string; credential: string; source: string; realm: string; phase: string; request: string }) =>
       `${contribution}: ${credential}; origem ${source}; runtime ${realm}; fase ${phase}; pedido ${request}. O código do plugin no runtime ${realm} recebe diretamente a credencial selecionada e pode utilizá-la ou copiá-la.`,
+    marketplaceInstallReviewRequestInterceptors: ({ details }: { details: string }) => `Políticas de pedidos (âmbito de reescrita de URL/método):\n${details}`,
+    marketplaceInstallReviewRequestInterceptorItem: ({ id, origins, methods, priority }: { id: string; origins: string; methods: string; priority: string }) =>
+      `${id}: origens ${origins}; métodos ${methods}; prioridade ${priority}`,
     marketplaceInstallReviewBody: ({ identity, verification, executableRealms, contributions, uiArtifacts, requiredAccess, optionalAccess, compatibility }: { identity: string; verification: string; executableRealms: string; contributions: string; uiArtifacts: string; requiredAccess: string; optionalAccess: string; compatibility: string }) => `Identidade:\n${identity}\n\nSinais de verificação:\n${verification}\n\nCódigo executável: ${executableRealms}\nContribuições: ${contributions}\nArtefatos de UI: ${uiArtifacts}\n\nO código confiável do daemon e do React Native é executado com a autoridade da aplicação ou do processo e pode usar diretamente arquivos, rede, ambiente e processos. O acesso ao host listado abaixo descreve serviços mediados pelo Happier; não é uma sandbox para o código executável do plugin.\n\nDivulgações e serviços cooperativos obrigatórios:\n${requiredAccess}\n\nRecursos opcionais do host (desativados por padrão):\n${optionalAccess}\n\nCompatibilidade e atualizações:\n${compatibility}`,
     marketplaceInstallDecisionFailed: ({ outcome }: { outcome: string }) => `O plugin não foi instalado (${outcome}).`,
     marketplaceChangeDecisionFailed: ({ action, outcome }: { action: string; outcome: string }) => `${action} falhou (${outcome}).`,
@@ -13488,6 +13608,7 @@ settingsSession: {
     marketplaceCommunityUnreviewedBody: "Este pacote npm de terceiros não foi revisado pela Happier. «Instalar e confiar» aprova o código executável e o acesso ao host declarados depois que o daemon verifica a versão e a integridade exatas. O código confiável do daemon e do React Native é executado com a autoridade da aplicação ou do processo; o acesso ao host listado não é uma sandbox.",
     genericSettingsTitle: "Definições do plugin",
     genericSettingsFooter: "Armazenadas localmente para este plugin nesta máquina.",
+    genericSettingsAccountFooter: "Sincronizadas para este plugin em toda a tua conta.",
     genericSettingsLoading: "A carregar definições do plugin",
     genericSettingsUnavailable: "As definições do plugin não estão disponíveis para esta máquina.",
     genericSettingsLoadError: "Não foi possível carregar as definições do plugin.",
@@ -13497,6 +13618,7 @@ settingsSession: {
     registriesFooter: "O início de sessão no registo controla apenas o acesso a pacotes. Os plugins instalados e confiáveis continuam disponíveis se um registo for removido ou tiver a sessão terminada.",
     registriesAdd: "Adicionar registo",
     registriesAddTitle: "Adicionar registo privado",
+    registriesOriginTitle: "Origem do registo",
     registriesAddOriginBody: "Introduza a origem HTTPS do registo sem credenciais.",
     registriesInvalidOriginTitle: "Origem do registo inválida",
     registriesInvalidOriginBody: "Use uma origem HTTPS sem credenciais, caminho, consulta ou fragmento.",
@@ -13540,6 +13662,8 @@ settingsSession: {
     },
     registriesErrorTitle: "A operação do registo falhou",
     registriesErrorBody: "Atualize a lista de registos e tente novamente.",
+    registriesConflictTitle: "As definições do registo foram alteradas",
+    registriesConflictBody: "As definições do registo foram alteradas antes de esta ação ser aplicada. Reveja a lista atualizada e tente novamente.",
     registriesInvalidProfileTitle: "Definições do registo inválidas",
     registriesInvalidProfileBody: "Verifique o nome do registo e os âmbitos dos pacotes e tente novamente.",
     registriesNoMachine: "Selecione uma máquina para gerir registos privados.",
@@ -13660,6 +13784,7 @@ settingsSession: {
         missingRequirement: 'Falta um requisito a esta vista do plugin neste dispositivo.',
     },
     personalHome: {
+        settings: personalHomeSettingsTranslations.pt,
         bootstrap: {
             title: 'Preparando sua Casa Pessoal',
             ensuringHomeStatus: 'Preparando sua Casa local.',

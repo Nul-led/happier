@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { computeWorkspaceSyncPolicyDigest } from '@happier-dev/protocol';
 import type { Machine, Session } from '@/sync/domains/state/storageTypes';
 import {
     collectRenderedTestIds,
@@ -35,7 +36,7 @@ const defaultApprovalArtifactBody = {
     actionArgs: {
         sessionId: 'session-1',
         requestId: 'ask-1',
-        answers: [{ question: 'Continue?', answer: 'Yes' }],
+        answers: [{ question: 'Continue?', values: ['Yes'] }],
     },
     summary: 'Approve answering the user',
     preview: {
@@ -177,6 +178,53 @@ function createSessionTitleApprovalArtifact(serverId?: string) {
     };
 }
 
+function createHandoffApprovalArtifact(input: Readonly<{
+    mode: 'keep_synced' | 'mirror_exactly' | 'copy_once';
+    consequences: readonly string[];
+}>) {
+    const contentPolicyFields = {
+        v: 1 as const,
+        selection: 'all_files' as const,
+        extraIgnorePatterns: [],
+        extraIncludePatterns: [],
+        includeGitDirectory: false,
+    };
+    const contentPolicy = {
+        ...contentPolicyFields,
+        policyDigest: computeWorkspaceSyncPolicyDigest(contentPolicyFields),
+    };
+    return {
+        ...createApprovalArtifact(),
+        body: JSON.stringify({
+            ...defaultApprovalArtifactBody,
+            actionId: 'session.handoff',
+            actionArgs: {
+                sessionId: 'session-1',
+                targetMachineId: 'machine-2',
+                targetPath: '/workspace/target',
+                workspaceAction: input.mode === 'copy_once'
+                    ? { kind: 'copy_once', contentPolicy }
+                    : {
+                        kind: 'create_relationship',
+                        mode: input.mode,
+                        contentPolicy,
+                        flushBeforeCommit: true,
+                    },
+            },
+            summary: 'Move session and mirror workspace',
+            handoffTargetReplacementApproval: {
+                v: 1,
+                consequences: input.consequences,
+                serverId: 'server-cache',
+                machineId: 'machine-2',
+                canonicalRoot: '/workspace/target',
+                rootFingerprint: 'a'.repeat(64),
+                operationId: 'handoff-action-1',
+            },
+        }),
+    };
+}
+
 function createSessionFixtures() {
     return {
         'session-1': createSessionFixture({
@@ -199,6 +247,17 @@ function createMachineFixtures() {
             metadata: {
                 displayName: 'Rebound workstation',
                 host: 'workstation.local',
+                platform: 'darwin',
+                happyCliVersion: '0.0.0-test',
+                happyHomeDir: '/Users/tester/.happy-dev',
+                homeDir: '/Users/tester',
+            },
+        }),
+        'machine-2': createMachineFixture({
+            id: 'machine-2',
+            metadata: {
+                displayName: 'Studio laptop',
+                host: 'studio.local',
                 platform: 'darwin',
                 happyCliVersion: '0.0.0-test',
                 happyHomeDir: '/Users/tester/.happy-dev',
@@ -607,6 +666,82 @@ describe('ApprovalDetailScreen', () => {
         expect(screen.findByTestId('approvals.cancel')?.props.accessibilityLabel).toBe('common.cancel');
     });
 
+    it('shows both target replacement and exact-mirror deletion in one handoff approval that names both endpoints', async () => {
+        currentArtifact = createHandoffApprovalArtifact({
+            mode: 'mirror_exactly',
+            consequences: [
+                'replace_nonempty_workspace_target',
+                'delete_target_only_files_during_exact_mirror',
+            ],
+        });
+        const { ApprovalDetailScreen } = await import('./ApprovalDetailScreen');
+        const screen = await renderScreen(<ApprovalDetailScreen artifactId="artifact-1" />);
+
+        expect(screen.findByTestId('approvals.handoff-target-consequences')).not.toBeNull();
+        const text = screen.getTextContent();
+        expect(text).toContain('sessionHandoff.targetApproval.replaceTarget');
+        expect(text).toContain('sessionHandoff.targetApproval.exactMirror');
+        // The confirmation must name where the workspace comes from and where it lands.
+        expect(text).toContain('sessionHandoff.targetApproval.sourceLabel');
+        expect(text).toContain('sessionHandoff.targetApproval.destinationLabel');
+        expect(text).toContain('Rebound workstation');
+        expect(text).toContain('~/repo');
+        expect(text).toContain('Studio laptop');
+        expect(text).toContain('/workspace/target');
+        // The chosen sync mode is read from the persisted action arguments.
+        expect(text).toContain('sessionHandoff.targetApproval.modeLabel');
+        expect(text).toContain('workspaceSync.mode.mirrorExactly');
+        // The exact-mirror consequence replaces the generic decision label.
+        const approve = screen.findByTestId('approvals.approve');
+        expect(approve?.props.title).toBe('sessionHandoff.targetApproval.decision.mirrorAndAllowRemovals');
+        expect(approve?.props.accessibilityLabel).toBe('sessionHandoff.targetApproval.decision.mirrorAndAllowRemovals');
+        expect(screen.findAllByTestId('approvals.handoff-target-consequences')).toHaveLength(1);
+    });
+
+    it('names both endpoints and uses a consequence-specific decision for an ordinary non-empty replacement', async () => {
+        currentArtifact = createHandoffApprovalArtifact({
+            mode: 'keep_synced',
+            consequences: ['replace_nonempty_workspace_target'],
+        });
+        delete machineFixtures['machine-target'];
+        const { ApprovalDetailScreen } = await import('./ApprovalDetailScreen');
+        const screen = await renderScreen(<ApprovalDetailScreen artifactId="artifact-1" />);
+
+        const text = screen.getTextContent();
+        expect(text).toContain('sessionHandoff.targetApproval.replaceTarget');
+        expect(text).not.toContain('sessionHandoff.targetApproval.exactMirror');
+        expect(text).toContain('machine-target');
+        expect(text).toContain('~/repo');
+        expect(text).toContain('Studio laptop');
+        expect(text).toContain('/workspace/target');
+        expect(text).toContain('workspaceSync.mode.keepSynced');
+        expect(screen.findByTestId('approvals.approve')?.props.title).toBe('sessionHandoff.targetApproval.decision.replaceDestination');
+    });
+
+    it('names the copy-once mode from the persisted action arguments without implying mirror deletions', async () => {
+        currentArtifact = createHandoffApprovalArtifact({
+            mode: 'copy_once',
+            consequences: ['replace_nonempty_workspace_target'],
+        });
+        const { ApprovalDetailScreen } = await import('./ApprovalDetailScreen');
+        const screen = await renderScreen(<ApprovalDetailScreen artifactId="artifact-1" />);
+
+        const text = screen.getTextContent();
+        expect(text).toContain('sessionHandoff.targetApproval.modeLabel');
+        expect(text).toContain('workspaceSync.mode.copyOnce');
+        expect(text).not.toContain('workspaceSync.mode.mirrorExactly');
+        expect(text).toContain('sessionHandoff.targetApproval.replaceTarget');
+        expect(text).not.toContain('sessionHandoff.targetApproval.exactMirror');
+        expect(screen.findByTestId('approvals.approve')?.props.title).toBe('sessionHandoff.targetApproval.decision.replaceDestination');
+        // A consequence-bearing label is never truncated: it wraps to whatever the
+        // narrow width, large text size or translation needs.
+        expect(screen.findByTestId('approvals.approve')?.props.titleNumberOfLines).toBe('complete');
+        expect(screen.findByTestId('approvals.reject')?.props.titleNumberOfLines).toBe('complete');
+        expect(screen.findByTestId('approvals.actions')?.props.style).toEqual(expect.arrayContaining([
+            expect.objectContaining({ flexDirection: 'column' }),
+        ]));
+    });
+
     it('renders requester, session context, and structured action details', async () => {
         const { ApprovalDetailScreen } = await import('./ApprovalDetailScreen');
 
@@ -622,6 +757,124 @@ describe('ApprovalDetailScreen', () => {
         expect(text).toContain('Agent wants to answer the pending question');
         expect(text).toContain('Continue?');
         expect(text).toContain('Yes');
+    });
+
+    it('renders the released scalar structured-answer shape and keeps it approvable', async () => {
+        currentArtifact = {
+            ...createApprovalArtifact(),
+            body: JSON.stringify({
+                ...defaultApprovalArtifactBody,
+                actionArgs: {
+                    sessionId: 'session-1',
+                    requestId: 'ask-legacy',
+                    answers: [
+                        { question: '  Use the compatibility path?  ', answer: '  Yes, once  ' },
+                    ],
+                },
+            }),
+        };
+        const { ApprovalDetailScreen } = await import('./ApprovalDetailScreen');
+
+        const screen = await renderScreen(<ApprovalDetailScreen artifactId="artifact-1" />);
+        const text = screen.getTextContent();
+
+        // The rendered-text testkit normalizes layout whitespace. Exact value
+        // preservation is asserted at the structured-answer projection owner.
+        expect(text).toContain('Use the compatibility path?');
+        expect(text).toContain('Yes, once');
+        expect(screen.findByTestId('approvals.unrepresentable-details')).toBeNull();
+        expect(screen.findByTestId('approvals.approve')?.props.disabled).toBe(false);
+    });
+
+    it('withholds approval and shows a bounded safety error when one structured answer is malformed', async () => {
+        currentArtifact = {
+            ...createApprovalArtifact(),
+            body: JSON.stringify({
+                ...defaultApprovalArtifactBody,
+                actionArgs: {
+                    sessionId: 'session-1',
+                    requestId: 'ask-malformed',
+                    answers: [
+                        { question: '  Use the compatibility path?  ', answer: '  Yes, once  ' },
+                        { question: 'Malformed', values: [{ secret: 'must-not-render' }] },
+                    ],
+                },
+            }),
+        };
+        const { ApprovalDetailScreen } = await import('./ApprovalDetailScreen');
+
+        const screen = await renderScreen(<ApprovalDetailScreen artifactId="artifact-1" />);
+        const text = screen.getTextContent();
+
+        expect(screen.findByTestId('approvals.unrepresentable-details')).not.toBeNull();
+        expect(text).toContain('approvals.unsafeDetailsTitle');
+        expect(text).not.toContain('must-not-render');
+        // Partial content would imply the reader saw the whole question set.
+        expect(text).not.toContain('Use the compatibility path?');
+
+        const approve = screen.findByTestId('approvals.approve');
+        expect(approve?.props.disabled).toBe(true);
+        expect(approve?.props.accessibilityHint).toBe('approvals.approveUnavailableHint');
+        // Rejecting an unshowable request stays available.
+        expect(screen.findByTestId('approvals.reject')?.props.disabled).toBe(false);
+
+        await screen.pressByTestIdAsync('approvals.approve');
+        expect(executeSpy).not.toHaveBeenCalled();
+        expect(updateArtifactWithHeaderSpy).not.toHaveBeenCalled();
+    });
+
+    it('withholds approval for a duplicated structured question', async () => {
+        currentArtifact = {
+            ...createApprovalArtifact(),
+            body: JSON.stringify({
+                ...defaultApprovalArtifactBody,
+                actionArgs: {
+                    sessionId: 'session-1',
+                    requestId: 'ask-duplicate',
+                    answers: [
+                        { question: 'Deploy to production?', values: ['No'] },
+                        { question: 'Deploy to production?', values: ['Yes'] },
+                    ],
+                },
+            }),
+        };
+        const { ApprovalDetailScreen } = await import('./ApprovalDetailScreen');
+
+        const screen = await renderScreen(<ApprovalDetailScreen artifactId="artifact-1" />);
+
+        expect(screen.findByTestId('approvals.unrepresentable-details')).not.toBeNull();
+        expect(screen.getTextContent()).not.toContain('Deploy to production?');
+        expect(screen.findByTestId('approvals.approve')?.props.disabled).toBe(true);
+
+        await screen.pressByTestIdAsync('approvals.approve');
+        expect(executeSpy).not.toHaveBeenCalled();
+    });
+
+    it('withholds approval instead of only hiding a structured answer payload above the canonical total-size bound', async () => {
+        currentArtifact = {
+            ...createApprovalArtifact(),
+            body: JSON.stringify({
+                ...defaultApprovalArtifactBody,
+                actionArgs: {
+                    sessionId: 'session-1',
+                    requestId: 'ask-oversized',
+                    answers: Array.from({ length: 16 }, (_, index) => ({
+                        question: `Question ${index}`,
+                        values: [`oversized-answer-${index}-${'x'.repeat(16_360)}`],
+                    })),
+                },
+            }),
+        };
+        const { ApprovalDetailScreen } = await import('./ApprovalDetailScreen');
+
+        const screen = await renderScreen(<ApprovalDetailScreen artifactId="artifact-1" />);
+
+        expect(screen.getTextContent()).not.toContain('oversized-answer-0');
+        expect(screen.findByTestId('approvals.unrepresentable-details')).not.toBeNull();
+        expect(screen.findByTestId('approvals.approve')?.props.disabled).toBe(true);
+
+        await screen.pressByTestIdAsync('approvals.approve');
+        expect(executeSpy).not.toHaveBeenCalled();
     });
 
     it('opens the linked session from the approval context card', async () => {

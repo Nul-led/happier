@@ -1,49 +1,45 @@
 import * as React from 'react';
 import { View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
-import { getActionSpec, resolveEffectiveActionInputFields, type ActionId } from '@happier-dev/protocol';
 
 import { Text } from '@/components/ui/text/Text';
 import { t } from '@/text';
-import { formatApprovalFieldValues, getApprovalFieldValues, shouldHideApprovalField } from './approvalFieldValues';
+import type { ApprovalActionFieldsPresentation } from './approvalFieldValues';
 
 export const ActionApprovalFieldsCard = React.memo(function ActionApprovalFieldsCard(props: Readonly<{
-    actionId: string;
-    actionArgs: unknown;
+    presentation: ApprovalActionFieldsPresentation;
 }>) {
-    const spec = React.useMemo(() => {
-        try {
-            return getActionSpec(props.actionId as ActionId);
-        } catch {
-            return null;
-        }
-    }, [props.actionId]);
-
-    const fields = React.useMemo(() => {
-        if (!spec) return [];
-        const resolved = resolveEffectiveActionInputFields(spec, props.actionArgs);
-        const paths = resolved.map((field) => field.path);
-        return resolved.filter((field) => !shouldHideApprovalField(field.path, paths));
-    }, [props.actionArgs, spec]);
-
-    const rows = React.useMemo(() => {
-        return fields.flatMap((field) => {
-            const value = formatApprovalFieldValues(getApprovalFieldValues(props.actionArgs, field.path));
-            if (!value) return [];
-            return [{ key: field.path, title: field.title, value }];
-        });
-    }, [fields, props.actionArgs]);
-
-    if (!spec || rows.length === 0) return null;
+    const rows = props.presentation.rows;
+    if (rows.length === 0) return null;
 
     return (
         <View style={styles.card}>
             <Text style={styles.sectionTitle}>{t('approvals.details')}</Text>
             <View style={styles.rows}>
                 {rows.map((row) => (
-                    <View key={row.key} style={styles.row}>
+                    <View key={row.path} style={styles.row}>
                         <Text style={styles.label}>{row.title}</Text>
-                        <Text style={styles.value}>{row.value}</Text>
+                        {row.kind === 'unrepresentable' ? (
+                            <View testID="approvals.unrepresentable-details" style={styles.unrepresentable}>
+                                <Text style={styles.unrepresentableTitle}>{t('approvals.unsafeDetailsTitle')}</Text>
+                                <Text style={styles.unrepresentableBody}>{t('approvals.unsafeDetailsBody')}</Text>
+                            </View>
+                        ) : null}
+                        {row.kind === 'structuredAnswers' ? (
+                            <View style={styles.structuredAnswers}>
+                                {row.answers.map((answer, index) => (
+                                    <View key={`${answer.question}:${index}`} style={styles.structuredAnswer}>
+                                        <Text style={styles.question}>{answer.question}</Text>
+                                        {answer.values.map((value, valueIndex) => (
+                                            <Text key={`${value}:${valueIndex}`} style={styles.value}>{value}</Text>
+                                        ))}
+                                    </View>
+                                ))}
+                            </View>
+                        ) : null}
+                        {row.kind === 'value' ? (
+                            <Text style={styles.value}>{row.value}</Text>
+                        ) : null}
                     </View>
                 ))}
             </View>
@@ -80,5 +76,31 @@ const styles = StyleSheet.create((theme) => ({
         fontSize: 14,
         color: theme.colors.text.primary,
         lineHeight: 20,
+    },
+    structuredAnswers: {
+        gap: 10,
+    },
+    structuredAnswer: {
+        gap: 2,
+    },
+    question: {
+        fontSize: 14,
+        color: theme.colors.text.primary,
+        lineHeight: 20,
+        fontWeight: '600',
+    },
+    unrepresentable: {
+        gap: 2,
+    },
+    unrepresentableTitle: {
+        fontSize: 14,
+        lineHeight: 20,
+        fontWeight: '600',
+        color: theme.colors.state.danger.foreground,
+    },
+    unrepresentableBody: {
+        fontSize: 14,
+        lineHeight: 20,
+        color: theme.colors.text.secondary,
     },
 }));

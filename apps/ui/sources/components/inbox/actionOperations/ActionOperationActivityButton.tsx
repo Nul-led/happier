@@ -6,7 +6,6 @@ import { Icon, ICON_SIZE } from '@/components/ui/icons/Icon';
 import { TabBadge } from '@/components/ui/navigation/tabBadge/TabBadge';
 import { FloatingOverlay } from '@/components/ui/overlays/FloatingOverlay';
 import { Popover } from '@/components/ui/popover';
-import { Text } from '@/components/ui/text/Text';
 import { t } from '@/text';
 import type { ActionOperationProjection } from '@/sync/domains/actionOperations/actionOperationSelectors';
 import { actionOperationStore } from '@/sync/domains/actionOperations/actionOperationStore';
@@ -147,9 +146,6 @@ export const ActionOperationActivityButtonView = React.memo(function ActionOpera
                             surfaceChrome="theme"
                             containerStyle={{ width: Math.min(maxWidth, 400) }}
                         >
-                            <View style={styles.popoverHeader}>
-                                <Text style={styles.popoverTitle}>{t('inbox.updates')}</Text>
-                            </View>
                             <ActionOperationLedgerView
                                 operations={props.operations}
                                 preferredSessionId={props.preferredSessionId}
@@ -224,16 +220,6 @@ const styles = StyleSheet.create((theme) => ({
         position: 'relative',
         alignItems: 'center',
         justifyContent: 'center',
-    },
-    popoverHeader: {
-        minHeight: 44,
-        justifyContent: 'center',
-        paddingHorizontal: 16,
-        borderBottomWidth: StyleSheet.hairlineWidth,
-        borderBottomColor: theme.colors.border.default,
-    },
-    popoverTitle: {
-        color: theme.colors.text.primary,
     },
     popoverBottomInset: {
         height: 14,

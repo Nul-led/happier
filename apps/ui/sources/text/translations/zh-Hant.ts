@@ -1,6 +1,7 @@
 import { externalSessionOperationTranslations } from './externalSessionOperationTranslations';
 import { externalSessionSettingsTranslations } from './externalSessionSettingsTranslations';
 import { pluginPermissionTranslations } from './pluginPermissionTranslations';
+import { pluginMarketplaceDiscoverTranslations } from './pluginMarketplaceDiscoverTranslations';
 import { sessionRemotePermissionGrantTranslations } from './sessionRemotePermissionGrantTranslations';
 import { voiceReadinessTranslations } from './voiceReadinessTranslations';
 import { voiceDiagnosticsTranslations } from './voiceDiagnosticsTranslations';
@@ -509,15 +510,17 @@ const promptLibraryUxRefinementTranslationExtension = {
 
 const sessionHandoffTranslationExtensions = {
   'zh-Hant': {
-    activeWarning: {
-      title: '此工作階段仍在這台裝置上執行',
-      message: '開始移交前，Happier 會先在這台裝置上停止此工作階段，再將其轉移到所選裝置。',
-      confirm: '在此停止並移交',
-    },
-    mirrorConfirmation: {
-      title: '要完整鏡像此工作區嗎？',
-      message: ({ sourceMachine, sourcePath, targetMachine, targetPath }: { sourceMachine: string; sourcePath: string; targetMachine: string; targetPath: string }) => `將 ${sourceMachine} 上的 ${sourcePath} 鏡像到 ${targetMachine} 上的 ${targetPath}。只存在於目的地的檔案可能會被永久刪除。`,
-      confirm: '鏡像並允許刪除',
+    targetApproval: {
+      title: '目的地會發生什麼',
+      sourceLabel: '從',
+      destinationLabel: '移動到',
+      modeLabel: '同步模式',
+      replaceTarget: ({ machine, path }: { machine: string; path: string }) => `${machine} 上 ${path} 中已有的檔案將被此工作區取代。`,
+      exactMirror: ({ machine, path }: { machine: string; path: string }) => `完整鏡像期間，只存在於 ${machine} 上 ${path} 的檔案可能會被永久刪除。`,
+      decision: {
+        replaceDestination: '取代目的地的檔案',
+        mirrorAndAllowRemovals: '鏡像並允許刪除',
+      },
     },
     progress: {
       title: '正在移交工作階段',
@@ -680,6 +683,10 @@ const zhHantOverrides: DeepPartial<typeof zhHans> = {
   approvals: {
     proposedComments: ({ count }: { count: number }) => `${count} 則建議的留言`,
     generation: ({ generation }: { generation: string }) => `世代：${generation}`,
+    stopWaiting: '停止等待',
+    unsafeDetailsTitle: '這些詳細資料無法安全顯示',
+    unsafeDetailsBody: 'Happier 無法完全依照傳送的內容顯示此請求，因此無法核准。請拒絕該請求，或請對方重新傳送。',
+    approveUnavailableHint: '在這些詳細資料無法安全顯示期間，無法核准。',
     status: {
       expired: '已過期',
     },
@@ -715,7 +722,7 @@ const zhHantOverrides: DeepPartial<typeof zhHans> = {
       title: '鍵盤快速鍵',
       entrySubtitle: '發現並控制應用程式快捷方式',
       generalGroupTitle: '鍵盤控制',
-      generalGroupFooter: '快捷方式首選項儲存於該裝置本機。',
+      generalGroupFooter: '快捷方式首選項會與您的帳號同步。',
       enableShortcutsTitle: '啟用統一快速鍵',
       enableShortcutsSubtitle: '使用新的鍵盤命令註冊表作為應用程式捷徑。',
       singleKeyTitle: '單鍵快速鍵',
@@ -739,7 +746,7 @@ const zhHantOverrides: DeepPartial<typeof zhHans> = {
           composerFocus: '聚焦輸入框',
           composerSendImmediate: '立即傳送',
           composerSendPending: '傳送到待處理佇列',
-          commandPaletteOpen: '開啟命令面板',
+          commandPaletteOpen: '開啟搜尋',
           browserAddressFocus: '聚焦瀏覽器網址列',
           browserBack: '瀏覽器上一頁',
           browserForward: '瀏覽器下一頁',
@@ -1065,6 +1072,14 @@ const zhHantOverrides: DeepPartial<typeof zhHans> = {
     },
 
     memorySearchSettings: {
+        archived: {
+            groupTitle: '已封存工作階段',
+            groupFooter: '開啟後，已封存的工作階段會建立本機搜尋索引。關閉後，它們會被排除，已索引的內容也會從搜尋中移除。',
+            includeTitle: '搜尋已封存工作階段',
+            includeSubtitle: '在這台機器上為已封存工作階段建立索引',
+            unsupportedSubtitle: '這台機器上的 Happier 需要更新',
+            unsupportedFooter: '這台機器未回報支援封存索引，因此無法在此套用該設定。其他搜尋仍可使用。',
+        },
         disabled: {
             title: '記憶搜尋已停用',
             openFeatureSettings: '開啟功能設定',
@@ -1688,6 +1703,11 @@ const zhHantOverrides: DeepPartial<typeof zhHans> = {
                 suppressed: '已抑制',
                 blocked: '已阻擋',
             },
+            replyHandoffDeliverAgainTitle: '再次傳送這則回覆',
+            replyHandoffDeliverAgainSubtitle: '如果回覆始終沒有出現在對話中，可以使用這個動作。',
+            replyHandoffDeliverAgainConfirmTitle: '要再次傳送這則回覆嗎？',
+            replyHandoffDeliverAgainConfirmMessage: 'Happier 已把這則回覆交給頻道，但無法確認是否送達。再次傳送會投遞一份新的副本，對話中可能出現兩則。',
+            replyHandoffDeliverAgainConfirmButton: '再次傳送',
             lastUpdated: ({ time }: { time: string }) => `上次更新：${time}`,
             lastUpdatedStale: ({ time }: { time: string }) => `上次更新：${time} • 已過期`,
             noData: '尚無配額資料',
@@ -2267,6 +2287,12 @@ const zhHantOverrides: DeepPartial<typeof zhHans> = {
 
     connectionStatus: {
         title: '連線',
+        summary: {
+            connected: '已連線',
+            reconnecting: '正在重新連線',
+            unavailable: '無法使用',
+            signInAgain: '重新登入',
+        },
         labels: {
             server: '伺服器',
             socket: '套接字',
@@ -2274,7 +2300,23 @@ const zhHantOverrides: DeepPartial<typeof zhHans> = {
             lastSync: '上次同步',
             nextRetry: '下次重試',
             lastError: '上次錯誤',
+            canonicalAddress: '正規位址',
+            runtimeOrigin: '執行階段來源',
+            endpointId: '端點 ID',
+            connectionPath: '連線路徑',
+            relayConfiguration: '中繼設定',
+            transportError: '傳輸錯誤',
+            lastTransition: '上次轉換',
         },
+        values: {
+            pathDirect: '直連',
+            pathRelay: '安全中繼',
+            relayDisabled: '已停用',
+            relayAutomatic: ({ relays, direct }: { relays: string; direct: number }) =>
+                `自動 · ${relays} · ${direct} 個直連位址`,
+        },
+        copyDiagnostics: '複製診斷資訊',
+        diagnosticsCopied: '已複製診斷資訊',
     },
 
     time: {
@@ -2310,6 +2352,7 @@ const zhHantOverrides: DeepPartial<typeof zhHans> = {
         scanComputerQrUnavailableBody: '此伺服器已停用此登入方式。請使用下方其他選項來還原帳號。',
         scanComputerQrInstructions: '掃描電腦端 Happier（設定 → 新增手機）中顯示的 QR 碼。',
         scanComputerQrButton: '掃描 QR 碼登入',
+        scanExistingHomeQrTitle: '掃描現有 Home 的 QR 碼',
         waitingForApproval: '等待確認…',
         securingCredentials: '正在保護憑證…',
         showQrInstead: '改為顯示 QR 碼',
@@ -2327,6 +2370,7 @@ const zhHantOverrides: DeepPartial<typeof zhHans> = {
         pairingQrTooLargeTitle: '內容過長，無法顯示為 QR 碼',
         pairingQrTooLargeBody: '此邀請包含額外的連線資訊，無法以 QR 碼顯示。您的 Home 仍可繼續配對——請改用下方的安全連結。',
         homeAddedPreservedFocusBody: '已加入此 Home。目前選取的 Home 未變更。',
+        requesterDeviceAddedBody: '已將提出請求的裝置加入此 Home。',
         requestingDeviceLabel: '提出要求的裝置',
         thisDevice: '此裝置',
         startAgain: '重新開始',
@@ -2340,9 +2384,14 @@ const zhHantOverrides: DeepPartial<typeof zhHans> = {
         unsupportedEnrollmentResponseBody: '此 Home 傳回了目前版本 Happier 無法使用的回應。請更新 Happier 或掃描其他 Home。',
         updateRequiredTitle: '需要更新',
         updateRequiredBody: '此 Home 使用了無法安全接受的舊配對格式。請在兩台裝置上更新 Happier 後再試一次。',
-        generateNewQrCode: '產生新的 QR 碼',
+        legacyPairingUpdateRequiredBody: '此 QR 碼由舊版 Happier 建立。請在另一台裝置上更新 Happier 並建立新的 QR 碼。',
+        scanNewQr: '掃描新的 QR 碼',
+        homeEnrollmentRetryBody: '無法完成加入此 Home。請檢查連線後再試一次。',
+        homeEnrollmentPartialCommitBody: 'Home 憑證可能已儲存，但加入 Home 尚未完成。請先重試此 Home，再開始其他加入程序。',
+        generateNewQrCode: '建立新的 QR 碼',
         pairingQrExpired: '此 QR 碼已過期。請產生新的 QR 碼。',
         accountUrlPlaceholder: 'happier:///account?...',
+        showRequesterQrInstructions: '請在此裝置上保留這個 QR 碼。請在已註冊的裝置上開啟 Happier 並掃描它，以加入此裝置。',
         restoreQrInstructions: '在已登入的裝置上前往 設定 → 帳戶 並掃描此 QR 碼。',
         externalAuthVerifiedTitle: ({ provider }: { provider: string }) => `${provider} 驗證完成`,
         externalAuthVerifiedBody: ({ provider }: { provider: string }) =>
@@ -2462,13 +2511,14 @@ const zhHantOverrides: DeepPartial<typeof zhHans> = {
         backendsSubtitle: "已設定的後端與自訂啟動目標。",
       },
       enableInjection: {
-        title: "啟用指引注入",
+        title: "Happier 執行指示",
+        subtitle: "關閉後，編碼代理的系統提示詞中將移除原生優先路由說明與 Happier 執行機制。",
       },
       characterBudget: {
-        title: "字元上限",
+        title: "自訂規則字元上限",
         subtitle: ({ value }: { value: string }) => `${value} 個字元`,
-        promptTitle: "字元上限",
-        promptBody: "可注入到系統提示詞中的最大字元數。",
+        promptTitle: "自訂規則字元上限",
+        promptBody: "系統提示詞中自訂執行規則的最大字元數。",
       },
       rules: {
         groupTitle: "指引規則",
@@ -4459,7 +4509,7 @@ const zhHantOverrides: DeepPartial<typeof zhHans> = {
         historyScopeModalMessage: '選擇方向鍵上/下是僅在此工作階段送出的訊息間循環，或在所有工作階段間循環。',
         historyScopePerSessionOption: '按工作階段',
         historyScopeGlobalOption: '全域',
-          commandPalette: '命令面板',
+          commandPalette: '搜尋',
           commandPaletteEnabled: '使用快捷鍵開啟',
           commandPaletteDisabled: '快速命令存取已停用',
           hideInactiveSessions: '隱藏非活躍工作階段',
@@ -4836,7 +4886,15 @@ const zhHantOverrides: DeepPartial<typeof zhHans> = {
             statusPaused: '等待已暫停',
             statusExhausted: '群組已耗盡',
           },
-          composerBanners: {
+        pendingActivation: {
+            waiting_offline: { title: '訊息已加入此機器的佇列', body: '這台機器及其背景服務重新上線後，訊息將被處理。' },
+            waiting: { title: '等待恢復', body: '背景服務恢復此工作階段時，你的訊息會安全地保留在佇列中。' },
+            failed: { title: '無法恢復工作階段', body: '你的訊息仍安全地保留在佇列中。準備好後請重試。' },
+            queued: { title: '訊息已加入佇列', body: '此非作用中工作階段有一則排隊訊息。準備好後請恢復工作階段。' },
+            queued_offline: { title: '訊息等待手動恢復', body: '在你恢復此工作階段之前，訊息會一直留在佇列中。' },
+            actions: { retry: '重試', resume: '恢復', process_when_online: '上線後處理', keepQueued: '保留在佇列中', autoResumeOptions: '自動恢復選項' },
+        },
+            composerBanners: {
               showBannerAction: '顯示橫幅',
               hideBannerAction: '隱藏橫幅',
           },
@@ -5069,9 +5127,6 @@ const zhHantOverrides: DeepPartial<typeof zhHans> = {
             },
             resuming: '正在恢復...',
             resumeFailed: '無法恢復工作階段',
-            pendingQueuedResumeFailedTitle: '訊息已排入佇列',
-            pendingQueuedResumeFailedBody:
-                '你的訊息已儲存到待傳送佇列，但 Happier 無法恢復此工作階段。請重試以啟動它。',
             openRuns: '開啟工作階段執行',
             openAutomations: '開啟工作階段自動化',
             openSubagents: ({ count }: { count: number }) => (count > 0 ? `開啟代理 (${count})` : '開啟代理'),
@@ -5328,13 +5383,27 @@ const zhHantOverrides: DeepPartial<typeof zhHans> = {
         },
     },
 
+    universalSearch: {
+        commitsUpdateRequired: '請更新此機器上的 Happier 以搜尋提交。',
+        moreResultsAvailable: '還有更多結果。請縮小搜尋範圍。',
+        sections: {
+            sessions: '工作階段',
+            projects: '專案',
+            settings: '設定',
+            messages: '訊息',
+            files: '檔案',
+            commits: '提交',
+        },
+    },
+
     commandPalette: {
         placeholder: '輸入命令或搜尋...',
         noCommandsFound: '找不到命令',
+        activationFailed: '無法完成該命令。',
         shortcutsHelpTitle: '鍵盤快速鍵',
         shortcutsHelpBody: ({ shortcuts }: { shortcuts: string }) => `可用快速鍵:\n${shortcuts}`,
         shortcutsHelpEmpty: '此裝置上沒有啟用的快速鍵。',
-        shortcutsHelpCommandPalette: '開啟命令面板',
+        shortcutsHelpCommandPalette: '開啟搜尋',
         shortcutsHelpHelp: '開啟鍵盤快速鍵',
         shortcutsHelpNewSession: '新增工作階段',
         pets: {
@@ -5493,6 +5562,14 @@ const zhHantOverrides: DeepPartial<typeof zhHans> = {
         viewOptions: '檢視選項',
         searchSessions: '搜尋工作階段',
         searchSessionsPlaceholder: '搜尋工作階段...',
+        searchEverythingFor: ({ query }: { query: string }) => `全域搜尋「${query}」`,
+        searchGroupInThisView: '目前檢視',
+        searchGroupOtherMatches: '其他相符項目',
+        searchMatchTranscript: '對話內容相符',
+        searchMatchHiddenByFilters: '已被篩選條件隱藏',
+        searchMatchArchived: '已封存',
+        searchMatchExternal: '外部',
+        searchMatchAnotherMachine: '另一台機器',
         filterByTags: '依標籤篩選',
         folders: '資料夾',
         addFolder: '新增資料夾',
@@ -5684,6 +5761,7 @@ const zhHantOverrides: DeepPartial<typeof zhHans> = {
         viewSessionLogSubtitle: '開啟此工作階段的即時日誌尾端',
         pinSession: '釘選工作階段',
         unpinSession: '取消釘選',
+        pinLimitExceeded: ({ count }: { count: number }) => `最多可釘選 ${count.toLocaleString()} 個工作階段。請取消釘選另一個工作階段後再試一次。`,
         viewMachine: '查看裝置',
         viewMachineSubtitle: '查看裝置詳情和工作階段',
         killSessionSubtitle: '立即終止工作階段',
@@ -7914,6 +7992,16 @@ settingsSession: {
             title: '進階',
         },
         messageSending: {
+            inactiveResumePolicyTitle: '傳送後自動恢復',
+            inactiveResumePolicySubtitle: '選擇向非作用中工作階段傳送訊息後 Happier 應執行的操作。',
+            inactiveResumePolicy: {
+                whenAvailableTitle: '立即或機器恢復時',
+                whenAvailableSubtitle: '可連線時立即恢復；否則在背景服務重新連線後處理。',
+                onlineOnlyTitle: '僅當機器在線上時',
+                onlineOnlySubtitle: '傳送時只嘗試一次。若無法使用，則將訊息保留在佇列中。',
+                manualTitle: '永不自動恢復',
+                manualSubtitle: '始終將訊息保留在佇列中，直到你恢復工作階段。',
+            },
             title: '訊息送出',
             footer: '控制代理執行中送出訊息時的行為。',
             queueInAgentTitle: '在代理中排隊（目前）',
@@ -8986,6 +9074,8 @@ settingsSession: {
         notAvailable: '不可用',
         linkNewDevice: '掃描 QR 碼以連結新裝置',
         linkNewDeviceSubtitle: '掃描新裝置上顯示的 QR 碼',
+        addAnotherHome: '新增另一個 Home',
+        addAnotherHomeSubtitle: '掃描 QR Code，而不切換目前的 Home',
         profile: '個人資料',
         name: '姓名',
         github: 'GitHub',
@@ -9459,6 +9549,8 @@ settingsSession: {
         welcomePrimarySubtitle: '一次點擊。無需表單。你的金鑰就在這裡。',
 
         welcomeSecondaryButton: '登入 — 我已在使用 Happier',
+        continueWithKey: '使用密鑰',
+        useDifferentHome: '使用其他 Home',
         welcomeSecondarySubtitle: '掃描 QR 碼，或輸入你的密鑰',
 
         // Unified onboarding redesign — returning-user copy variants.
@@ -9680,6 +9772,8 @@ settingsSession: {
 	        relayCustomUrlSubtitle: '使用你已經在執行的中繼 URL',
         authRestoreTitle: '還原或新增此裝置',
         authRestoreSubtitle: '使用 QR Code 或連結來連接此裝置',
+        addHomeTitle: '新增另一個 Home',
+        addHomeSubtitle: '掃描 QR Code 新增 Home，同時保留目前的 Home',
         authLostAccessTitle: '無法存取？',
         authLostAccessSubtitle: '使用你的身分提供者重設帳號',
         webRelayHostHandoffTitle: '在這台電腦上設定 Relay',
@@ -10455,12 +10549,15 @@ settingsSession: {
     ...pluginAccountReleaseSelectionTranslations['zh-Hant'],
     ...pluginMachineMatrixTranslations['zh-Hant'],
     ...pluginInvocationLogTranslations['zh-Hant'],
+    ...pluginMarketplaceDiscoverTranslations['zh-Hant'],
     ...eventAutomationComposerTranslations['zh-Hant'],
     title: "外掛程式目錄",
-    subtitle: "瀏覽精選的外掛程式描述項，並管理此裝置上的已安裝外掛程式。",
+    subtitle: "從 npm 與已設定的來源探索外掛程式，並管理這台機器上已安裝的外掛程式。",
     appPanelsTitle: "外掛程式面板",
     appPanelsSubtitle: "開啟已安裝外掛程式提供的應用程式面板。",
     executionOriginReleaseContentConflict: "發行內容不符。請發行新版本。",
+    administrationMachineTitle: "管理機器",
+    executionOriginTitle: "執行來源",
     readOnlyProjectionUnavailable: "快取的外掛程式詳細資訊為唯讀：可連線到此裝置，但無法載入其外掛程式登錄。請重試以管理外掛程式。",
     readOnlyAccountRecovery: "外掛程式的帳戶詳細資訊可用，但在可使用相容的外掛程式安裝之前，特定裝置的詳細資訊不可用。",
     readOnlySnapshot: "此裝置中斷連線時，快取的外掛程式詳細資訊為唯讀。重新連線後即可管理外掛程式。",
@@ -10485,12 +10582,15 @@ settingsSession: {
     pendingChangesTitle: "等待你的決定",
     pendingChangesFooter: "在這台機器上準備好的外掛變更。代理可以準備變更，但只有你能核准。",
     pendingChangesReviewHint: "在信任任何內容之前先顯示完整審閱。",
+    pendingChangeReviewAction: "審閱",
+    pendingChangeRejectHint: "捨棄已準備的變更。不會安裝或信任任何內容。",
     pendingChangeSourceRootSubtitle: ({ path }: { path: string }) => `外掛資料夾：${path}`,
     pendingChangeInstallSubtitle: ({ pluginId, source }: { pluginId: string; source: string }) => `${pluginId}，來自 ${source}`,
     pendingChangeApplying: "此變更已決定，正在套用中。",
     pendingChangeExpired: "此變更在決定前已過期。請重新申請。",
     pendingChangeRejected: "外掛變更已遭拒絕。",
-    pendingChangeConfirmRejectBody: "已準備的變更將被捨棄。不會安裝或信任任何內容。",
+    pendingChangeConfirmRejectBody: ({ machine, server }: { machine: string; server: string }) => `將在 ${machine}（${server}）上捨棄已準備的變更。不會安裝或信任任何內容。`,
+    pendingChangeCommitted: "此變更已決定並已套用。",
     pendingChangeFailed: ({ outcome }: { outcome: string }) => `外掛變更未套用（${outcome}）。`,
     developmentCreateDirectoryTitle: "外掛程式資料夾",
     developmentCreateDirectoryBody: "輸入所選機器上的新絕對資料夾。該資料夾必須尚未存在。",
@@ -10520,10 +10620,24 @@ settingsSession: {
     diagnosticsSnapshotEmptySubtitle: "此裝置回報目前的登錄診斷後，相關資訊會顯示在這裡。",
     catalogUrlLabel: "目錄 URL",
     loadCatalog: "載入目錄",
+    discoverTitle: "探索外掃程式",
+    discoverSearchLabel: "搜尋外掃程式",
+    discoverSearchPlaceholder: "同時搜尋所有市集來源",
+    discoverSearch: "搜尋",
+    discoverSourceFilterLabel: "市集來源篩選",
+    discoverSourceAll: "全部",
+    discoverLoadMore: "載入更多",
+    discoverRevisionChanged: "載入更多時市集索引已變更。請重新搜尋以查看目前結果。",
+    discoverEmptyTitle: "找不到外掃程式",
+    discoveredVia: ({ source }: { source: string }) => `透過 ${source} 探索`,
+    sourceKindCurated: "精選市集 — 僅為推薦，並非授權",
+    sourceKindUser: "你的市集來源",
+    sourceKindCommunityNpm: "公開 npm 登錄",
+    communityNpmSourceTitle: "社群 npm",
     installAndTrust: "安裝並信任",
     marketplaceWithdrawnTitle: "已從外掛程式市集撤下",
-    marketplaceWithdrawnBody: "此項目已從精選外掛程式市集撤下。新的安裝與更新已遭封鎖。",
-    marketplaceWithdrawnInstalledBody: "此項目已從精選外掛程式市集撤下。新的安裝與更新已遭封鎖。已安裝的外掛程式會維持啟用，直到你停用或解除安裝。",
+    marketplaceWithdrawnBody: "此項目已從精選外掛程式市集撤下。此項目的新安裝已遭封鎖。",
+    marketplaceWithdrawnInstalledBody: "此項目已從精選外掛程式市集撤下。此項目的新安裝已遭封鎖。已安裝的外掛程式會維持啟用，並依其選擇的更新規則更新。",
     trustPolicy: {
       localTrusted: "本機受信任",
       trusted: "受信任",
@@ -10554,6 +10668,9 @@ settingsSession: {
     marketplaceInstallReviewRawCredentialAccess: ({ details }: { details: string }) => `原始 Voice 憑證存取：\n${details}`,
     marketplaceInstallReviewRawCredentialAccessItem: ({ contribution, credential, source, realm, phase, request }: { contribution: string; credential: string; source: string; realm: string; phase: string; request: string }) =>
         `${contribution}：${credential}；來源 ${source}；執行階段 ${realm}；階段 ${phase}；請求 ${request}。${realm} 執行階段中的外掛程式碼會直接收到所選憑證，且可使用或複製它。`,
+     marketplaceInstallReviewRequestInterceptors: ({ details }: { details: string }) => `請求策略（URL/方法改寫範圍）：\n${details}`,
+     marketplaceInstallReviewRequestInterceptorItem: ({ id, origins, methods, priority }: { id: string; origins: string; methods: string; priority: string }) =>
+         `${id}：來源 ${origins}；方法 ${methods}；優先順序 ${priority}`,
     marketplaceInstallReviewBody: ({ identity, verification, executableRealms, contributions, uiArtifacts, requiredAccess, optionalAccess, compatibility }: { identity: string; verification: string; executableRealms: string; contributions: string; uiArtifacts: string; requiredAccess: string; optionalAccess: string; compatibility: string }) => `身分：\n${identity}\n\n驗證訊號：\n${verification}\n\n可執行程式碼：${executableRealms}\n貢獻：${contributions}\n介面成品：${uiArtifacts}\n\n受信任的守護程式與 React Native 程式碼會以應用程式或程序的權限執行，並可直接使用檔案、網路、環境與程序。下列主機存取權限描述由 Happier 中介的服務；它不是可執行外掛程式碼的沙箱。\n\n必要的揭露與協作服務：\n${requiredAccess}\n\n選用的主機資源（預設關閉）：\n${optionalAccess}\n\n相容性與更新：\n${compatibility}`,
     marketplaceInstallDecisionFailed: ({ outcome }: { outcome: string }) => `未安裝外掛程式（${outcome}）。`,
     marketplaceChangeDecisionFailed: ({ action, outcome }: { action: string; outcome: string }) => `${action}失敗（${outcome}）。`,
@@ -10567,6 +10684,7 @@ settingsSession: {
     marketplaceCommunityUnreviewedBody: "此第三方 npm 套件尚未經過 Happier 審核。「安裝並信任」會在守護程式驗證此確切版本與完整性後，核准其宣告的可執行程式碼與主機存取權限。受信任的守護程式與 React Native 程式碼會以應用程式或程序的權限執行；列出的主機存取權限並非沙箱。",
     genericSettingsTitle: "外掛程式設定",
     genericSettingsFooter: "在此機器上為此外掛程式儲存於本機。",
+    genericSettingsAccountFooter: "為此外掛程式在你的帳戶中同步。",
     genericSettingsLoading: "正在載入外掛程式設定",
     genericSettingsUnavailable: "此機器無法使用外掛程式設定。",
     genericSettingsLoadError: "無法載入外掛程式設定。",
@@ -10576,6 +10694,7 @@ settingsSession: {
     registriesFooter: "登錄登入只控制套件存取權。移除登錄或登出後，已安裝且受信任的外掛程式仍可使用。",
     registriesAdd: "新增登錄",
     registriesAddTitle: "新增私人登錄",
+    registriesOriginTitle: "登錄來源",
     registriesAddOriginBody: "輸入不含認證資訊的 HTTPS 登錄來源。",
     registriesInvalidOriginTitle: "登錄來源無效",
     registriesInvalidOriginBody: "請使用不含認證資訊、路徑、查詢或片段的 HTTPS 來源。",
@@ -10619,6 +10738,8 @@ settingsSession: {
     },
     registriesErrorTitle: "登錄操作失敗",
     registriesErrorBody: "請重新整理登錄清單後再試一次。",
+    registriesConflictTitle: "登錄設定已變更",
+    registriesConflictBody: "套用此動作前登錄設定已變更。請檢視重新整理後的清單，然後再試一次。",
     registriesInvalidProfileTitle: "登錄設定無效",
     registriesInvalidProfileBody: "請檢查登錄名稱與套件範圍，然後再試一次。",
     registriesNoMachine: "請選擇一台機器以管理私人登錄。",
@@ -10734,7 +10855,8 @@ settingsSession: {
       hostedWebEndpointPolicyDenied: '此檢視的位址遭其安全性原則封鎖。請檢查外掛設定或使用支援的主機。',
       missingRequirement: '此裝置缺少該外掛檢視所需的條件。',
   },
-  personalHome: {
+    personalHome: {
+        settings: personalHomeSettingsTranslations.zhHant,
       bootstrap: {
           title: '正在準備你的個人之家',
           ensuringHomeStatus: '正在準備你的本地之家。',

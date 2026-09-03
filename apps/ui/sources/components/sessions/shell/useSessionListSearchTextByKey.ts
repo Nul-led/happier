@@ -1,12 +1,10 @@
 import * as React from 'react';
 import { useShallow } from 'zustand/react/shallow';
 
-import type { Message } from '@/sync/domains/messages/messageTypes';
-import { readStoredSessionMessages } from '@/sync/domains/messages/readStoredSessionMessages';
 import type { SessionListRenderableSession } from '@/sync/domains/session/listing/sessionListRenderable';
+import type { Session } from '@/sync/domains/state/storageTypes';
 import { readSessionListRowForServerId } from '@/sync/domains/session/listing/sessionListRowStateLookup';
 import type { SessionListIndexItem } from '@/sync/domains/sessionList/sessionListIndex';
-import type { PendingMessage } from '@/sync/domains/state/storageTypes';
 import { getStorage } from '@/sync/domains/state/storageStore';
 import type { StorageState } from '@/sync/store/types';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
@@ -47,11 +45,16 @@ function appendRenderableText(parts: string[], renderable: SessionListRenderable
     appendSessionMetadataText(parts, renderable?.metadata ?? null);
 }
 
-function readMessageText(message: Message): string | null {
-    if (message.kind === 'user-text') return message.displayText ?? message.text;
-    if (message.kind === 'agent-text') return message.text;
-    if (message.kind === 'tool-call') return message.tool.description ?? null;
-    return null;
+export function buildCanonicalSessionListSearchText(input: Readonly<{
+    sessionId: string;
+    renderable?: SessionListRenderableSession | null;
+    session?: Session | null;
+}>): string {
+    const parts: string[] = [];
+    appendText(parts, input.sessionId);
+    appendRenderableText(parts, input.renderable);
+    appendSessionMetadataText(parts, input.session ? readSessionOwnerMetadataView(input.session) : null);
+    return parts.join('\n');
 }
 
 function collectSessionKeys(items: ReadonlyArray<SessionListIndexItem>): ReadonlyArray<SessionSearchKey> {
@@ -76,32 +79,17 @@ function buildSearchTextBySessionKey(
 ): Readonly<Record<string, string>> {
     const out: Record<string, string> = {};
     for (const entry of sessionKeys) {
-        const parts: string[] = [];
-        appendText(parts, entry.sessionId);
-        appendRenderableText(
-            parts,
-            readSessionListRowForServerId(state.sessionListRowStateByServerId, entry.serverId, entry.sessionId)
-                ?? state.sessionListRenderables?.[entry.sessionId]
-                ?? null,
-        );
         const session = state.sessions?.[entry.sessionId] ?? null;
-        appendSessionMetadataText(parts, session ? readSessionOwnerMetadataView(session) : null);
-
-        for (const message of readStoredSessionMessages(state, entry.sessionId)) {
-            appendText(parts, readMessageText(message));
-        }
-
-        const pending = state.sessionPending?.[entry.sessionId];
-        for (const pendingMessage of (pending?.messages ?? []) as PendingMessage[]) {
-            appendText(parts, pendingMessage.displayText ?? pendingMessage.text);
-        }
-        for (const discardedMessage of (pending?.discarded ?? []) as PendingMessage[]) {
-            appendText(parts, discardedMessage.displayText ?? discardedMessage.text);
-        }
-
-        if (parts.length > 0) {
-            out[entry.key] = parts.join('\n');
-        }
+        const text = buildCanonicalSessionListSearchText({
+            sessionId: entry.sessionId,
+            renderable: readSessionListRowForServerId(
+                state.sessionListRowStateByServerId,
+                entry.serverId,
+                entry.sessionId,
+            ) ?? state.sessionListRenderables?.[entry.sessionId] ?? null,
+            session,
+        });
+        if (text) out[entry.key] = text;
     }
 
     return Object.keys(out).length > 0 ? out : EMPTY_SEARCH_TEXT_BY_SESSION_KEY;

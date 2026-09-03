@@ -5,11 +5,10 @@ import {
     type WorkspaceRefV1,
 } from '@happier-dev/protocol';
 
-import { resolveExactServerScopedMachine } from '@/sync/domains/machines/resolveServerScopedMachines';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { storage } from '@/sync/domains/state/storage';
 import type { Machine, ScmWorkingSnapshot } from '@/sync/domains/state/storageTypes';
-import { isMachineOnline } from '@/utils/sessions/machineUtils';
+import { isWorkspaceScopeReachableFromState } from '@/sync/domains/workspaces/workspaceReachability';
 
 /**
  * The Account's persisted projects, each with the two facts its SCM working
@@ -145,19 +144,10 @@ type ProjectsListMachineInventory = Readonly<{
  */
 function reachabilityOf(
     state: ProjectsListMachineInventory,
-    ref: Readonly<{ serverId: string; machineId: string }>,
+    ref: Readonly<{ serverId: string; machineId: string; rootPath: string }>,
     activeServerId: string,
 ): boolean {
-    const machine = resolveExactServerScopedMachine<Machine>({
-        machineId: ref.machineId,
-        serverId: ref.serverId,
-        activeServerId,
-        activeMachines: Object.values(state.machines ?? {}).filter(
-            (candidate): candidate is Machine => candidate !== undefined,
-        ),
-        machineListByServerId: state.machineListByServerId ?? {},
-    });
-    return machine ? isMachineOnline(machine) : false;
+    return isWorkspaceScopeReachableFromState(state, ref, activeServerId);
 }
 
 export async function listProjectsForActions(params: Readonly<{

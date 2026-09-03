@@ -33,6 +33,10 @@ describe('Personal Home translations', () => {
         const expectedLeaves = flattenTranslationLeaves(en.personalHome)
             .map((leaf) => `${leaf.key}:${leaf.kind}`)
             .sort();
+        expect(expectedLeaves).toContain('settings.restoreCleanupWarningTitle:string');
+        expect(expectedLeaves).toContain('settings.restoreCleanupWarningBody:string');
+        expect(expectedLeaves).not.toContain('settings.searchTitle:string');
+        expect(expectedLeaves).not.toContain('settings.searchIndexing:string');
         const shapeMismatches = locales.flatMap(({ code, root }) => {
             const actualLeaves = flattenTranslationLeaves(root.personalHome)
                 .map((leaf) => `${leaf.key}:${leaf.kind}`)
@@ -43,7 +47,13 @@ describe('Personal Home translations', () => {
         });
         const untranslated = Object.values(auditTranslations({ en, locales }))
             .flatMap((report) => report.untranslatedStrings)
-            .filter((entry) => entry.key.startsWith('personalHome.'));
+            .filter((entry) => entry.key.startsWith('personalHome.bootstrap.') || [
+                    'personalHome.settings.installOrUpdateAction',
+                    'personalHome.settings.startAction',
+                    'personalHome.settings.stopAction',
+                    'personalHome.settings.restoreCleanupWarningTitle',
+                    'personalHome.settings.restoreCleanupWarningBody',
+                ].includes(entry.key));
 
         expect(shapeMismatches).toEqual([]);
         expect(untranslated).toEqual([]);

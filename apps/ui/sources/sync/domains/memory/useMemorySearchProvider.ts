@@ -112,7 +112,12 @@ export function useMemorySearchProvider(target?: Readonly<{ serverId?: string | 
     // arbitrary first machine and never an automatic all-machine fanout.
     const daemonTargetSelection = useDaemonMemorySearchTargetSelection();
     const daemonTarget = daemonMemorySearchEnabled
-        ? resolveDaemonMemorySearchTarget(daemonTargetSelection)
+        ? resolveDaemonMemorySearchTarget(
+            daemonTargetSelection,
+            requestedServerId && target?.machineId
+                ? { serverId: requestedServerId, machineId: target.machineId }
+                : null,
+        )
         : null;
     const daemonServerId = daemonTarget?.serverId ?? null;
     const daemonMachineId = daemonTarget?.machineId ?? null;
@@ -123,8 +128,8 @@ export function useMemorySearchProvider(target?: Readonly<{ serverId?: string | 
             ? effectiveFeaturesSnapshot.features.capabilities.homeSearch
             : undefined;
         const nextDaemonTarget = requestedServerId
-            ? target?.machineId
-                ? { serverId: requestedServerId, machineId: target.machineId }
+            ? daemonServerId && daemonMachineId
+                ? { serverId: daemonServerId, machineId: daemonMachineId }
                 : null
             : daemonServerId && daemonMachineId
                 ? { serverId: daemonServerId, machineId: daemonMachineId }

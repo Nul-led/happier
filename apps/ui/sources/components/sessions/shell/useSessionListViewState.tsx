@@ -118,23 +118,23 @@ import {
 import { useSessionAttentionStandingInputs } from '@/hooks/session/useSessionAttentionStandingInputs';
 import { sessionSetAttentionStandingWithServerScope } from '@/sync/ops/sessionOrganization';
 import { resolveWorkspaceRootTreeRowId, treeRowId } from './drop-resolution/treeRowId';
-import { isSessionListPrimaryHeaderKind } from './sessionListPrimaryHeader';
 import {
-    getSessionListHeaderControlsAnchorKey,
     hasActiveSessionListHeaderFilters,
 } from './sessionListFilters';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
+import { HappyError } from '@/utils/errors/errors';
 import { useActiveServerAccountScope } from '@/sync/store/hooks';
 import { deleteSessionDraft } from '@/sync/ops/sessionDrafts/sessionDraftRepository';
 import {
     SESSION_LIST_MEMORY_SEARCH_MIN_QUERY_LENGTH,
-    useSessionListMemorySearchAugmentation,
+    useSessionListMemorySearchAugmentationForContext,
+    useSessionListMemorySearchContext,
+    type SessionListMemorySearchTarget,
 } from './search/useSessionListMemorySearchAugmentation';
 import { useSessionListHeaderFilterRetention } from './search/useSessionListHeaderFilterRetention';
 import { buildSessionListRetentionKey } from './scroll/sessionListRetentionKey';
 import { useSessionListPaneSourceScopeKey } from './sessionListPaneRetention';
 import {
-    SessionListFilteredNoResultsMessage,
     SESSION_LIST_FILTERED_NO_RESULTS_MESSAGE_KEY,
     type SessionListVirtualizedNode,
 } from './sessionListVirtualizedContent';
@@ -160,10 +160,11 @@ import {
 } from './selection/SessionListSelectionContext';
 import { syncPerformanceTelemetry } from '@/sync/runtime/syncPerformanceTelemetry';
 
-const SEARCH_FOCUS_TRANSFER_SETTLE_MS = 50;
 const NATIVE_LIST_ALL_RENDERED_ROW_STORE_MAX_ITEMS = 200;
 const EMPTY_MEMORY_MATCHED_SESSION_KEYS: ReadonlySet<string> = new Set();
 const EMPTY_VIEWABLE_SESSION_ROW_KEYS: ReadonlySet<string> = new Set();
+const EMPTY_KNOWN_TAGS: ReadonlyArray<string> = [];
+const EMPTY_MEMORY_MATCHED_SESSION_TARGETS: ReadonlyArray<SessionListMemorySearchTarget> = [];
 const EMPTY_SESSION_FOLDER_MOVE_TARGETS: readonly SessionFolderMoveTarget[] = [];
 const SESSION_LIST_IDLE_MOVE_RESULT = Object.freeze({
     instruction: Object.freeze({ kind: 'idle' as const }),
@@ -183,18 +184,6 @@ function resolveTreeRowIdForSessionItem(item: Extract<SessionListIndexItem, { ty
     const serverId = typeof item.serverId === 'string' ? item.serverId.trim() : '';
     const sessionId = String(item.sessionId ?? '').trim();
     return serverId ? treeRowId.session(serverId, sessionId) : `session:${sessionId}`;
-}
-
-function buildSessionListMemoryCandidateKeySet(items: ReadonlyArray<SessionListIndexItem>): ReadonlySet<string> {
-    const keys = new Set<string>();
-    for (const item of items) {
-        if (item.type !== 'session') continue;
-        const serverId = typeof item.serverId === 'string' ? item.serverId.trim() : '';
-        const sessionId = String(item.sessionId ?? '').trim();
-        if (!serverId || !sessionId) continue;
-        keys.add(sessionTagKey(serverId, sessionId));
-    }
-    return keys;
 }
 
 function mergeSessionListRowStoreKeySets(
@@ -447,27 +436,6 @@ function areVirtualizedNodeArraysReferenceEqual(
     return left.every((node, index) => node === right[index]);
 }
 
-function shouldInsertFilteredNoResultsAfterHeader(params: Readonly<{
-    item: SessionListIndexItem;
-    itemIndex: number;
-    items: ReadonlyArray<SessionListIndexItem>;
-    filtersActive: boolean;
-    headerControlsAnchorKey: string | null;
-}>): boolean {
-    if (!params.filtersActive) return false;
-    if (!params.headerControlsAnchorKey) return false;
-    const item = params.item;
-    if (item.type !== 'header' || !isSessionListPrimaryHeaderKind(item.headerKind)) return false;
-    if (getSessionListHeaderControlsAnchorKey(item) !== params.headerControlsAnchorKey) return false;
-
-    for (let index = params.itemIndex + 1; index < params.items.length; index += 1) {
-        const candidate = params.items[index];
-        if (candidate.type === 'session') return false;
-        if (candidate.type === 'header' && isSessionListPrimaryHeaderKind(candidate.headerKind)) break;
-    }
-    return true;
-}
-
 export type SessionListViewStateOptions = Readonly<{
     pathname?: string;
     surfaceOwnership?: Partial<SessionListSurfaceOwnership>;
@@ -496,13 +464,21 @@ export function useSessionListViewStateFromPaneState(
     const pathname = usePathname();
     const effectivePathname = options.pathname ?? pathname;
     const surfaceOwnership = normalizeSessionListSurfaceOwnership(options.surfaceOwnership);
+    const selection = useSessionListSelectionState();
+    const activeOrganizationServerId = typeof selection.activeServerId === 'string'
+        ? selection.activeServerId.trim()
+        : '';
     // Same scope identity the pane retention keys by, so a published order and the pane
     // it was captured from can never describe different server/selection scopes.
     const sessionNavigationSourceScopeKey = useSessionListPaneSourceScopeKey();
+    const memorySearchContext = useSessionListMemorySearchContext({ serverId: activeOrganizationServerId });
     const renderPaneState = sessionListPaneState;
     const retentionKey = React.useMemo(
-        () => buildSessionListRetentionKey(storageKind),
-        [storageKind],
+        () => buildSessionListRetentionKey(
+            storageKind,
+            `${sessionNavigationSourceScopeKey}\u0000transcript:${memorySearchContext.activeScopeKey}`,
+        ),
+        [memorySearchContext.activeScopeKey, sessionNavigationSourceScopeKey, storageKind],
     );
     const {
         searchQuery,
@@ -525,9 +501,6 @@ export function useSessionListViewStateFromPaneState(
     const [collapsedGroupKeysV1, setCollapsedGroupKeysV1] = useLocalSettingMutable('collapsedGroupKeysV1');
     const [sessionMruOrderV1, setSessionMruOrderV1] = useLocalSettingMutable('sessionMruOrderV1');
     const [sessionListFocusedFolderV1, setSessionListFocusedFolderV1] = useLocalSettingMutable('sessionListFocusedFolderV1');
-    const [activeSearchHeaderControlsAnchorKey, setActiveSearchHeaderControlsAnchorKey] = React.useState<string | null>(null);
-    const [focusedSearchHeaderControlsAnchorKey, setFocusedSearchHeaderControlsAnchorKey] = React.useState<string | null>(null);
-    const searchFocusTransferTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
     const sessionFoldersFeatureEnabled = useFeatureEnabled('sessions.folders');
     const folderActionsEnabled = sessionFoldersFeatureEnabled;
     const sessionListDensity = useSetting('sessionListDensity');
@@ -554,10 +527,6 @@ export function useSessionListViewStateFromPaneState(
         platform: Platform.OS,
     });
     const currentUserId = typeof profile?.id === 'string' ? profile.id : null;
-    const selection = useSessionListSelectionState();
-    const activeOrganizationServerId = typeof selection.activeServerId === 'string'
-        ? selection.activeServerId.trim()
-        : '';
     const organizationProjection = useSessionOrganizationProjection(activeOrganizationServerId);
     const organizationListViewState = React.useMemo(() => buildSessionOrganizationListViewState({
         serverId: activeOrganizationServerId,
@@ -652,7 +621,12 @@ export function useSessionListViewStateFromPaneState(
         return result.ok ? result.scope : null;
     }, [activeOrganizationServerId]);
     const runOrganizationMutation = React.useCallback((mutation: () => Promise<void>) => {
-        void mutation().catch(() => undefined);
+        void mutation().catch((error: unknown) => {
+            Modal.alert(
+                t('common.error'),
+                error instanceof HappyError ? error.message : t('errors.unknownError'),
+            );
+        });
     }, []);
     const setSessionPinForTarget = React.useCallback(async (
         target: SessionBulkActionTarget,
@@ -744,22 +718,58 @@ export function useSessionListViewStateFromPaneState(
             });
         });
     }, [activeOrganizationServerId, availableWorkspaceLabelsV1, getAvailableOrganizationMutationScope, runOrganizationMutation]);
-    const sessionListMemoryCandidateKeys = React.useMemo(
-        () => buildSessionListMemoryCandidateKeySet(renderPaneState.visibleSessionListIndex ?? []),
-        [renderPaneState.visibleSessionListIndex],
+    const memorySearch = useSessionListMemorySearchAugmentationForContext(
+        {
+            searchQuery,
+            enabled: surfaceOwnership.dataActive,
+        },
+        memorySearchContext,
     );
-    const memorySearch = useSessionListMemorySearchAugmentation({
-        searchQuery,
-        candidateSessionKeys: sessionListMemoryCandidateKeys,
-        enabled: surfaceOwnership.dataActive,
-    });
     const activeMemoryMatchedSessionKeys = React.useMemo(() => {
         const query = searchQuery.trim();
-        if (!query || memorySearch.lastSuccessfulQuery !== query) {
+        if (
+            !query
+            || memorySearch.lastSuccessfulQuery !== query
+            || memorySearch.lastSuccessfulScopeKey !== memorySearch.activeScopeKey
+        ) {
             return EMPTY_MEMORY_MATCHED_SESSION_KEYS;
         }
         return memorySearch.memoryMatchedSessionKeys;
-    }, [memorySearch.lastSuccessfulQuery, memorySearch.memoryMatchedSessionKeys, searchQuery]);
+    }, [
+        memorySearch.activeScopeKey,
+        memorySearch.lastSuccessfulQuery,
+        memorySearch.lastSuccessfulScopeKey,
+        memorySearch.memoryMatchedSessionKeys,
+        searchQuery,
+    ]);
+    const activeMemoryMatchedSessionTargets = React.useMemo(() => {
+        const query = searchQuery.trim();
+        if (
+            !query
+            || memorySearch.lastSuccessfulQuery !== query
+            || memorySearch.lastSuccessfulScopeKey !== memorySearch.activeScopeKey
+        ) {
+            return EMPTY_MEMORY_MATCHED_SESSION_TARGETS;
+        }
+        return memorySearch.memoryMatchedSessionTargets;
+    }, [
+        memorySearch.activeScopeKey,
+        memorySearch.lastSuccessfulQuery,
+        memorySearch.lastSuccessfulScopeKey,
+        memorySearch.memoryMatchedSessionTargets,
+        searchQuery,
+    ]);
+    // The render/materialization owner compares these exact transcript targets with
+    // the current filtered view. It keeps in-view rows ordinary and projects every
+    // absent or filter-hidden target under `Other matches` without mutating filters.
+    const searchOtherMatches = React.useMemo(() => {
+        if (activeMemoryMatchedSessionTargets.length === 0) return null;
+        return {
+            matches: activeMemoryMatchedSessionTargets,
+            inThisViewTitle: t('sessionsList.searchGroupInThisView'),
+            otherMatchesTitle: t('sessionsList.searchGroupOtherMatches'),
+        };
+    }, [activeMemoryMatchedSessionTargets]);
     const searchableTextBySessionKey = useSessionListSearchTextByKey(
         renderPaneState.visibleSessionListIndex ?? [],
         searchQuery.trim().length > 0,
@@ -783,50 +793,42 @@ export function useSessionListViewStateFromPaneState(
         selectedTags: selectedHeaderTags,
         searchableTextBySessionKey,
         memoryMatchedSessionKeys: activeMemoryMatchedSessionKeys,
-        controlsAnchorKey: activeSearchHeaderControlsAnchorKey,
-    }), [activeMemoryMatchedSessionKeys, activeSearchHeaderControlsAnchorKey, searchQuery, searchableTextBySessionKey, selectedHeaderTags]);
-    const baseHeaderControls = React.useMemo(() => ({
-        allKnownTags: sessionTagsEnabled === true ? allKnownTags : [],
+    }), [activeMemoryMatchedSessionKeys, searchQuery, searchableTextBySessionKey, selectedHeaderTags]);
+    const universalSearchScope = React.useMemo(() => (
+        draftScope && activeOrganizationServerId
+            ? {
+                accountId: draftScope.accountId,
+                serverId: activeOrganizationServerId,
+                sessionId: null,
+                machineId: null,
+                rootPath: null,
+            }
+            : undefined
+    ), [activeOrganizationServerId, draftScope]);
+    const {
+        handleOpenProject,
+        handleCreateSessionFromWorkspaceScope,
+        handleOpenArchivedSessions,
+        handleOpenUniversalSearch,
+    } = useSessionListNavigationActions(universalSearchScope);
+    const searchChrome = React.useMemo(() => ({
+        allKnownTags: sessionTagsEnabled === true ? allKnownTags : EMPTY_KNOWN_TAGS,
         selectedTags: selectedHeaderTags,
         searchQuery,
         searchTrailingAccessory,
         onSelectedTagsChange: setSelectedHeaderTags,
         onSearchQueryChange: setSearchQuery,
-    }), [allKnownTags, searchQuery, searchTrailingAccessory, selectedHeaderTags, sessionTagsEnabled]);
-    React.useEffect(() => {
-        if (
-            focusedSearchHeaderControlsAnchorKey !== null
-            || searchQuery.trim().length > 0
-            || selectedHeaderTags.length > 0
-        ) {
-            return;
-        }
-        setActiveSearchHeaderControlsAnchorKey(null);
-    }, [focusedSearchHeaderControlsAnchorKey, searchQuery, selectedHeaderTags.length]);
-
-    const clearSearchFocusTransferTimeout = React.useCallback(() => {
-        if (searchFocusTransferTimeoutRef.current === null) return;
-        clearTimeout(searchFocusTransferTimeoutRef.current);
-        searchFocusTransferTimeoutRef.current = null;
-    }, []);
-
-    React.useEffect(() => () => {
-        clearSearchFocusTransferTimeout();
-    }, [clearSearchFocusTransferTimeout]);
-
-    const handleHeaderSearchFocusChange = React.useCallback((anchorKey: string, focused: boolean) => {
-        clearSearchFocusTransferTimeout();
-        if (focused) {
-            setActiveSearchHeaderControlsAnchorKey(anchorKey);
-            setFocusedSearchHeaderControlsAnchorKey(anchorKey);
-            return;
-        }
-
-        searchFocusTransferTimeoutRef.current = setTimeout(() => {
-            searchFocusTransferTimeoutRef.current = null;
-            setFocusedSearchHeaderControlsAnchorKey((current) => current === anchorKey ? null : current);
-        }, SEARCH_FOCUS_TRANSFER_SETTLE_MS);
-    }, [clearSearchFocusTransferTimeout]);
+        onSearchEverything: handleOpenUniversalSearch,
+    }), [
+        allKnownTags,
+        handleOpenUniversalSearch,
+        searchQuery,
+        searchTrailingAccessory,
+        selectedHeaderTags,
+        sessionTagsEnabled,
+        setSearchQuery,
+        setSelectedHeaderTags,
+    ]);
 
     React.useEffect(() => {
         if (selectedHeaderTags.length === 0) return;
@@ -904,6 +906,7 @@ export function useSessionListViewStateFromPaneState(
         pinnedKeySet: orderingPersistenceState.pinnedKeySet,
         sessionTags: normalizedShellState.sessionTags,
         headerFilters,
+        searchOtherMatches,
         selectedSessionId,
         showServerBadge: shellFlags.showServerBadge,
         showPinnedServerBadge: shellFlags.showPinnedServerBadge,
@@ -1432,11 +1435,6 @@ export function useSessionListViewStateFromPaneState(
     ]));
 
     const {
-        handleOpenProject,
-        handleCreateSessionFromWorkspaceScope,
-        handleOpenArchivedSessions,
-    } = useSessionListNavigationActions();
-    const {
         handleRenameWorkspace,
         handleResetWorkspaceName,
         handleToggleCollapse,
@@ -1693,14 +1691,6 @@ export function useSessionListViewStateFromPaneState(
         projectHeaderViewModelByGroupKey,
     } = renderModels.projectHeaderViewModelState;
 
-    const fallbackHeaderControlsAnchorKey = React.useMemo(() => {
-        const anchor = renderModels.listItems.find((item): item is Extract<SessionListIndexItem, { type: 'header' }> =>
-            item.type === 'header' && isSessionListPrimaryHeaderKind(item.headerKind)
-        );
-        return anchor ? getSessionListHeaderControlsAnchorKey(anchor) : null;
-    }, [renderModels.listItems]);
-    const headerControlsAnchorKey = activeSearchHeaderControlsAnchorKey
-        ?? (hasActiveSessionListHeaderFilters(headerFilters) ? fallbackHeaderControlsAnchorKey : null);
 
     useSessionListWorkspaceLabelMigration({
         workspaceLabels: normalizedShellState.workspaceLabels,
@@ -1758,29 +1748,9 @@ export function useSessionListViewStateFromPaneState(
             onFolderDragCancel={rowInteractions.handleDragCancel}
             resolveDropResult={rowInteractions.resolveTreeDropResult}
             onFolderDropResult={rowInteractions.handleFolderHeaderTreeDropResult}
-            headerControls={
-                isSessionListPrimaryHeaderKind(item.headerKind)
-                && (
-                    headerControlsAnchorKey === null
-                    || getSessionListHeaderControlsAnchorKey(item) === headerControlsAnchorKey
-                )
-                    ? {
-                        ...baseHeaderControls,
-                        searchOpen: focusedSearchHeaderControlsAnchorKey === getSessionListHeaderControlsAnchorKey(item),
-                        onSearchFocusChange: (focused: boolean) => {
-                            const anchorKey = getSessionListHeaderControlsAnchorKey(item);
-                            handleHeaderSearchFocusChange(anchorKey, focused);
-                        },
-                    }
-                    : undefined
-            }
         />
     ), [
-        baseHeaderControls,
         collapsedKeys,
-        focusedSearchHeaderControlsAnchorKey,
-        handleHeaderSearchFocusChange,
-        headerControlsAnchorKey,
         handleAddSubfolder,
         handleOpenProject,
         handleCreateSessionFromWorkspaceScope,
@@ -1954,7 +1924,6 @@ export function useSessionListViewStateFromPaneState(
             item: SessionListIndexItem;
             node: SessionListVirtualizedNode;
         }>>();
-        const filtersActive = hasActiveSessionListHeaderFilters(headerFilters);
         const nodes: SessionListVirtualizedNode[] = [];
         renderedListItems.forEach((item, index) => {
             const id = buildSessionListIndexNodeId(item);
@@ -1972,26 +1941,13 @@ export function useSessionListViewStateFromPaneState(
                 next.set(id, entry);
                 nodes.push(entry.node);
             }
-            if (shouldInsertFilteredNoResultsAfterHeader({
-                item,
-                itemIndex: index,
-                items: renderedListItems,
-                filtersActive,
-                headerControlsAnchorKey,
-            })) {
-                nodes.push({
-                    id: `filtered-no-results:${id}`,
-                    kind: 'filteredNoResults',
-                    rowViewModel: null,
-                });
-            }
         });
         virtualizedNodeCacheRef.current = next;
         const previousNodes = previousVirtualizedNodesRef.current;
         const output = areVirtualizedNodeArraysReferenceEqual(previousNodes, nodes) ? previousNodes : nodes;
         previousVirtualizedNodesRef.current = output;
         return output;
-    }, [headerControlsAnchorKey, headerFilters, renderedListItems]);
+    }, [renderedListItems]);
 
     const nodeIds = React.useMemo(() => (
         virtualizedNodes.map((node) => node.id)
@@ -2107,9 +2063,6 @@ export function useSessionListViewStateFromPaneState(
     ]);
 
     const renderVirtualizedItem = React.useCallback((params: { item: SessionListVirtualizedNode; index: number }) => {
-        if (params.item.kind === 'filteredNoResults') {
-            return <SessionListFilteredNoResultsMessage />;
-        }
         const item = nodeByIdRef.current.get(params.item.id) ?? listItemsRef.current[params.index] ?? null;
         if (!item) return null;
         if (item.type === 'header') return renderHeaderItemRef.current(item, params.index);
@@ -2172,6 +2125,7 @@ export function useSessionListViewStateFromPaneState(
         onTreeViewportLayout: handleTreeViewportLayout,
         onTreeContentSizeChange: rowInteractions.handleTreeContentSizeChange,
         onPressArchivedSessions: handleOpenArchivedSessions,
+        searchChrome,
         keyboardZoneProps,
         sessionListSelectionStore,
         sessionListSelectionTargetsByKey,

@@ -1,3 +1,34 @@
+const expandedLifecycleEnglish = {
+    lifecycleTitle: 'When a Session event occurs',
+    lifecycleSource: ({ session, ordinal }: { session: string; ordinal: number }) =>
+        `${session} · Session event trigger ${ordinal}`,
+    lifecycleSourceTitle: 'Source Session',
+    changeLifecycleSource: 'Choose a different Session',
+    lifecycleEventsTitle: 'Events',
+    lifecycleEvent: {
+        parentTurnCompleted: 'Turn completed successfully',
+        parentTurnFailed: 'Turn failed',
+        parentTurnCancelled: 'Turn was cancelled or stopped',
+        userActionRequired: 'Needs your attention',
+    },
+    lifecycleAttentionPrivacy: 'Uses only the request identity and turn—not its private contents.',
+    lifecyclePolicyTitle: 'Occurrence',
+    lifecyclePolicy: {
+        currentTurn: 'Current turn only',
+        firstMatch: 'First matching event',
+        nextMatches: 'Next matching events',
+        everyMatch: 'Every matching event',
+    },
+    lifecyclePolicyDescription: {
+        currentTurn: 'Runs at most once for the exact active parent turn.',
+        firstMatch: 'Runs once for the first selected event after this trigger is saved.',
+        nextMatches: 'Runs for a fixed number of future selected events.',
+        everyMatch: 'Runs for every future selected event while enabled.',
+    },
+    lifecycleMatchCount: 'Number of matches',
+    lifecycleMatchCountHelp: 'Each unique matching event uses one occurrence.',
+} as const;
+
 /**
  * Locale-owned copy for the plural trigger editor and exact-turn entry flow.
  *
@@ -7,6 +38,7 @@
 export const automationTriggerSetTranslations = {
     ru: {
         pluralEditor: {
+            ...expandedLifecycleEnglish,
             triggersTitle: 'Триггеры',
             triggersFooter: 'Каждый включённый триггер работает независимо. Совпадение любого из них запускает автоматизацию.',
             emptyBody: 'Автоматических триггеров нет. Автоматизацию всё равно можно запустить вручную.',
@@ -37,15 +69,20 @@ export const automationTriggerSetTranslations = {
             createNewSubtitle: 'Начните с уже выбранного текущего хода.',
             addToExistingSubtitle: 'Добавьте текущий ход в существующую автоматизацию.',
             searchPlaceholder: 'Поиск автоматизаций',
+            eventListA11y: 'Выберите событие жизненного цикла сессии',
             destinationA11y: 'Выберите, куда добавить триггер этого хода',
             staleTitle: 'Ход изменился',
             staleBody: 'Выбранный ход больше не является активным родительским ходом. Обновите данные и явно выберите текущий ход.',
             useCurrentTurn: 'Использовать текущий ход',
             unavailable: 'Сейчас нет активного родительского хода.',
+            resolvingRowSubtitle: 'Проверяем, какие автоматизации вам доступны…',
+            unavailableRowSubtitle: 'Сведения недоступны — нельзя проверить эту автоматизацию для этой сессии.',
+            incompleteNoticeTitle: 'Некоторые автоматизации не удалось прочитать',
         },
     },
     pl: {
         pluralEditor: {
+            ...expandedLifecycleEnglish,
             triggersTitle: 'Wyzwalacze',
             triggersFooter: 'Każdy włączony wyzwalacz działa niezależnie. Dopasowanie dowolnego z nich uruchamia automatyzację.',
             emptyBody: 'Brak automatycznych wyzwalaczy. Nadal możesz uruchomić tę automatyzację ręcznie.',
@@ -67,13 +104,17 @@ export const automationTriggerSetTranslations = {
         exactTurn: {
             actionTitle: 'Gdy zakończy się ten przebieg…', createNew: 'Utwórz nową automatyzację',
             createNewSubtitle: 'Zacznij z już wybranym dokładnie tym przebiegiem.', addToExistingSubtitle: 'Dodaj ten przebieg do istniejącej automatyzacji.',
-            searchPlaceholder: 'Szukaj automatyzacji', destinationA11y: 'Wybierz, gdzie dodać wyzwalacz tego przebiegu', staleTitle: 'Przebieg się zmienił',
+            searchPlaceholder: 'Szukaj automatyzacji', eventListA11y: 'Wybierz zdarzenie cyklu życia sesji', destinationA11y: 'Wybierz, gdzie dodać wyzwalacz tego przebiegu', staleTitle: 'Przebieg się zmienił',
             staleBody: 'Wybrany przebieg nie jest już aktywnym przebiegiem nadrzędnym. Odśwież i jawnie wybierz bieżący przebieg.',
             useCurrentTurn: 'Użyj bieżącego przebiegu', unavailable: 'Nie ma teraz aktywnego przebiegu nadrzędnego.',
+            resolvingRowSubtitle: 'Sprawdzanie, których automatyzacji możesz użyć…',
+            unavailableRowSubtitle: 'Szczegóły niedostępne — nie można zweryfikować tej automatyzacji dla tej sesji.',
+            incompleteNoticeTitle: 'Nie udało się odczytać niektórych automatyzacji',
         },
     },
     es: {
         pluralEditor: {
+            ...expandedLifecycleEnglish,
             triggersTitle: 'Activadores', triggersFooter: 'Cada activador habilitado funciona de forma independiente. Una coincidencia en cualquiera de ellos inicia la automatización.',
             emptyBody: 'No hay activadores automáticos. Aun así, puedes ejecutar esta automatización manualmente.',
             orSemantics: 'Añade tantos activadores como quieras. Funcionan de forma independiente: la automatización se ejecuta cuando coincide cualquiera de ellos.',
@@ -91,13 +132,18 @@ export const automationTriggerSetTranslations = {
         exactTurn: {
             actionTitle: 'Cuando termine este turno…', createNew: 'Crear una automatización', createNewSubtitle: 'Empieza con este turno exacto ya seleccionado.',
             addToExistingSubtitle: 'Añade este turno exacto a una automatización existente.', searchPlaceholder: 'Buscar automatizaciones',
+            eventListA11y: 'Elige el evento del ciclo de vida de la sesión',
             destinationA11y: 'Elige dónde añadir el activador de este turno', staleTitle: 'Este turno ha cambiado',
             staleBody: 'El turno seleccionado ya no es el turno principal activo. Actualiza y elige explícitamente el turno actual.',
             useCurrentTurn: 'Usar el turno actual', unavailable: 'Ahora mismo no hay ningún turno principal activo.',
+            resolvingRowSubtitle: 'Comprobando qué automatizaciones puedes usar…',
+            unavailableRowSubtitle: 'Detalles no disponibles: no se puede verificar esta automatización para esta sesión.',
+            incompleteNoticeTitle: 'No se pudieron leer algunas automatizaciones',
         },
     },
     fr: {
         pluralEditor: {
+            ...expandedLifecycleEnglish,
             triggersTitle: 'Déclencheurs', triggersFooter: 'Chaque déclencheur activé fonctionne indépendamment. Une correspondance sur l’un d’eux lance l’automatisation.',
             emptyBody: 'Aucun déclencheur automatique. Vous pouvez toujours lancer cette automatisation manuellement.',
             orSemantics: 'Ajoutez autant de déclencheurs que nécessaire. Ils fonctionnent indépendamment : l’automatisation se lance dès que l’un d’eux correspond.',
@@ -115,13 +161,18 @@ export const automationTriggerSetTranslations = {
         exactTurn: {
             actionTitle: 'À la fin de ce tour…', createNew: 'Créer une automatisation', createNewSubtitle: 'Commencez avec ce tour précis déjà sélectionné.',
             addToExistingSubtitle: 'Ajoutez ce tour précis à une automatisation existante.', searchPlaceholder: 'Rechercher des automatisations',
+            eventListA11y: 'Choisir l’événement du cycle de vie de la session',
             destinationA11y: 'Choisir où ajouter le déclencheur de ce tour', staleTitle: 'Ce tour a changé',
             staleBody: 'Le tour sélectionné n’est plus le tour parent actif. Actualisez puis choisissez explicitement le tour actuel.',
             useCurrentTurn: 'Utiliser le tour actuel', unavailable: 'Aucun tour parent n’est actif pour le moment.',
+            resolvingRowSubtitle: 'Vérification des automatisations que vous pouvez utiliser…',
+            unavailableRowSubtitle: 'Détails indisponibles — cette automatisation ne peut pas être vérifiée pour cette session.',
+            incompleteNoticeTitle: 'Certaines automatisations n’ont pas pu être lues',
         },
     },
     it: {
         pluralEditor: {
+            ...expandedLifecycleEnglish,
             triggersTitle: 'Trigger', triggersFooter: 'Ogni trigger abilitato funziona in modo indipendente. La corrispondenza di uno qualsiasi avvia l’automazione.',
             emptyBody: 'Nessun trigger automatico. Puoi comunque avviare questa automazione manualmente.',
             orSemantics: 'Aggiungi tutti i trigger che vuoi. Funzionano in modo indipendente: l’automazione parte quando ne corrisponde uno qualsiasi.',
@@ -139,13 +190,18 @@ export const automationTriggerSetTranslations = {
         exactTurn: {
             actionTitle: 'Al termine di questo turno…', createNew: 'Crea una nuova automazione', createNewSubtitle: 'Inizia con questo turno preciso già selezionato.',
             addToExistingSubtitle: 'Aggiungi questo turno preciso a un’automazione esistente.', searchPlaceholder: 'Cerca automazioni',
+            eventListA11y: 'Scegli l’evento del ciclo di vita della sessione',
             destinationA11y: 'Scegli dove aggiungere il trigger di questo turno', staleTitle: 'Questo turno è cambiato',
             staleBody: 'Il turno selezionato non è più il turno principale attivo. Aggiorna e scegli esplicitamente il turno corrente.',
             useCurrentTurn: 'Usa il turno corrente', unavailable: 'Al momento non è disponibile un turno principale attivo.',
+            resolvingRowSubtitle: 'Verifica delle automazioni che puoi usare…',
+            unavailableRowSubtitle: 'Dettagli non disponibili: questa automazione non può essere verificata per questa sessione.',
+            incompleteNoticeTitle: 'Impossibile leggere alcune automazioni',
         },
     },
     pt: {
         pluralEditor: {
+            ...expandedLifecycleEnglish,
             triggersTitle: 'Acionadores', triggersFooter: 'Cada acionador ativado funciona de forma independente. Uma correspondência em qualquer um inicia a automação.',
             emptyBody: 'Sem acionadores automáticos. Ainda pode executar esta automação manualmente.',
             orSemantics: 'Adicione quantos acionadores quiser. Funcionam de forma independente — a automação é executada quando qualquer um corresponde.',
@@ -163,13 +219,18 @@ export const automationTriggerSetTranslations = {
         exactTurn: {
             actionTitle: 'Quando este turno terminar…', createNew: 'Criar uma nova automação', createNewSubtitle: 'Comece com este turno exato já selecionado.',
             addToExistingSubtitle: 'Adicione este turno exato a uma automação existente.', searchPlaceholder: 'Pesquisar automações',
+            eventListA11y: 'Escolher o evento do ciclo de vida da sessão',
             destinationA11y: 'Escolher onde adicionar o acionador deste turno', staleTitle: 'Este turno mudou',
             staleBody: 'O turno selecionado já não é o turno principal ativo. Atualize e escolha explicitamente o turno atual.',
             useCurrentTurn: 'Usar o turno atual', unavailable: 'Não existe um turno principal ativo neste momento.',
+            resolvingRowSubtitle: 'A verificar quais automatizações pode usar…',
+            unavailableRowSubtitle: 'Detalhes indisponíveis — não é possível verificar esta automatização nesta sessão.',
+            incompleteNoticeTitle: 'Não foi possível ler algumas automatizações',
         },
     },
     ca: {
         pluralEditor: {
+            ...expandedLifecycleEnglish,
             triggersTitle: 'Activadors', triggersFooter: 'Cada activador habilitat funciona de manera independent. Una coincidència en qualsevol d’ells inicia l’automatització.',
             emptyBody: 'No hi ha activadors automàtics. Encara pots executar aquesta automatització manualment.',
             orSemantics: 'Afegeix tants activadors com vulguis. Funcionen independentment: l’automatització s’executa quan qualsevol coincideix.',
@@ -187,13 +248,18 @@ export const automationTriggerSetTranslations = {
         exactTurn: {
             actionTitle: 'Quan acabi aquest torn…', createNew: 'Crea una automatització', createNewSubtitle: 'Comença amb aquest torn exacte ja seleccionat.',
             addToExistingSubtitle: 'Afegeix aquest torn exacte a una automatització existent.', searchPlaceholder: 'Cerca automatitzacions',
+            eventListA11y: 'Tria l’esdeveniment del cicle de vida de la sessió',
             destinationA11y: 'Tria on afegir l’activador d’aquest torn', staleTitle: 'Aquest torn ha canviat',
             staleBody: 'El torn seleccionat ja no és el torn principal actiu. Actualitza i tria explícitament el torn actual.',
             useCurrentTurn: 'Fes servir el torn actual', unavailable: 'Ara mateix no hi ha cap torn principal actiu.',
+            resolvingRowSubtitle: 'Comprovant quines automatitzacions pots fer servir…',
+            unavailableRowSubtitle: 'Detalls no disponibles: no es pot verificar aquesta automatització en aquesta sessió.',
+            incompleteNoticeTitle: 'No s’han pogut llegir algunes automatitzacions',
         },
     },
     de: {
         pluralEditor: {
+            ...expandedLifecycleEnglish,
             triggersTitle: 'Auslöser', triggersFooter: 'Jeder aktivierte Auslöser arbeitet unabhängig. Ein Treffer bei einem beliebigen Auslöser startet die Automation.',
             emptyBody: 'Keine automatischen Auslöser. Du kannst diese Automation weiterhin manuell starten.',
             orSemantics: 'Füge beliebig viele Auslöser hinzu. Sie arbeiten unabhängig — sobald einer zutrifft, läuft die Automation.',
@@ -211,13 +277,18 @@ export const automationTriggerSetTranslations = {
         exactTurn: {
             actionTitle: 'Wenn dieser Turn endet…', createNew: 'Neue Automation erstellen', createNewSubtitle: 'Beginne mit diesem bereits ausgewählten Turn.',
             addToExistingSubtitle: 'Füge diesen Turn einer vorhandenen Automation hinzu.', searchPlaceholder: 'Automationen durchsuchen',
+            eventListA11y: 'Session-Lebenszyklusereignis auswählen',
             destinationA11y: 'Auswählen, wo der Auslöser für diesen Turn hinzugefügt wird', staleTitle: 'Dieser Turn hat sich geändert',
             staleBody: 'Der ausgewählte Turn ist nicht mehr der aktive übergeordnete Turn. Aktualisiere und wähle den aktuellen Turn ausdrücklich aus.',
             useCurrentTurn: 'Aktuellen Turn verwenden', unavailable: 'Im Moment gibt es keinen aktiven übergeordneten Turn.',
+            resolvingRowSubtitle: 'Prüfe, welche Automations du verwenden kannst…',
+            unavailableRowSubtitle: 'Details nicht verfügbar — diese Automation kann für diese Session nicht überprüft werden.',
+            incompleteNoticeTitle: 'Einige Automations konnten nicht gelesen werden',
         },
     },
     'zh-Hans': {
         pluralEditor: {
+            ...expandedLifecycleEnglish,
             triggersTitle: '触发器', triggersFooter: '每个已启用的触发器都独立工作。任意一个匹配都会启动此自动化。',
             emptyBody: '没有自动触发器。你仍可手动运行此自动化。', orSemantics: '可添加任意数量的触发器。它们彼此独立，任意一个匹配时都会运行自动化。',
             enabledSubtitle: '暂停整个自动化，而不更改任何触发器。', addTrigger: '添加触发器', addTriggerSubtitle: '设置计划、连接事件，或等待某个指定轮次结束。',
@@ -231,13 +302,17 @@ export const automationTriggerSetTranslations = {
         },
         exactTurn: {
             actionTitle: '当此轮次结束时…', createNew: '创建新自动化', createNewSubtitle: '以已选中的这个确切轮次开始。',
-            addToExistingSubtitle: '将这个确切轮次添加到现有自动化。', searchPlaceholder: '搜索自动化', destinationA11y: '选择要将此轮次触发器添加到何处',
+            addToExistingSubtitle: '将这个确切轮次添加到现有自动化。', searchPlaceholder: '搜索自动化', eventListA11y: '选择会话生命周期事件', destinationA11y: '选择要将此轮次触发器添加到何处',
             staleTitle: '此轮次已更改', staleBody: '所选轮次已不再是当前活动的父轮次。请刷新并明确选择当前轮次。',
             useCurrentTurn: '使用当前轮次', unavailable: '当前没有可用的活动父轮次。',
+            resolvingRowSubtitle: '正在检查你可以使用哪些自动化…',
+            unavailableRowSubtitle: '详细信息不可用 — 无法针对此会话验证此自动化。',
+            incompleteNoticeTitle: '部分自动化无法读取',
         },
     },
     'zh-Hant': {
         pluralEditor: {
+            ...expandedLifecycleEnglish,
             triggersTitle: '觸發器', triggersFooter: '每個已啟用的觸發器都獨立運作。任意一個符合條件都會啟動此自動化。',
             emptyBody: '沒有自動觸發器。你仍可手動執行此自動化。', orSemantics: '可新增任意數量的觸發器。它們彼此獨立，任意一個符合條件時都會執行自動化。',
             enabledSubtitle: '暫停整個自動化，而不變更任何觸發器。', addTrigger: '新增觸發器', addTriggerSubtitle: '設定排程、連接事件，或等待某個指定輪次結束。',
@@ -251,13 +326,17 @@ export const automationTriggerSetTranslations = {
         },
         exactTurn: {
             actionTitle: '當此輪次結束時…', createNew: '建立新自動化', createNewSubtitle: '以已選取的這個確切輪次開始。',
-            addToExistingSubtitle: '將這個確切輪次加入現有自動化。', searchPlaceholder: '搜尋自動化', destinationA11y: '選擇要將此輪次觸發器加入何處',
+            addToExistingSubtitle: '將這個確切輪次加入現有自動化。', searchPlaceholder: '搜尋自動化', eventListA11y: '選擇工作階段生命週期事件', destinationA11y: '選擇要將此輪次觸發器加入何處',
             staleTitle: '此輪次已變更', staleBody: '所選輪次已不再是目前作用中的父輪次。請重新整理並明確選取目前輪次。',
             useCurrentTurn: '使用目前輪次', unavailable: '目前沒有可用的作用中父輪次。',
+            resolvingRowSubtitle: '正在檢查你可以使用哪些自動化…',
+            unavailableRowSubtitle: '詳細資訊無法使用 — 無法針對此工作階段驗證此自動化。',
+            incompleteNoticeTitle: '部分自動化無法讀取',
         },
     },
     ja: {
         pluralEditor: {
+            ...expandedLifecycleEnglish,
             triggersTitle: 'トリガー', triggersFooter: '有効なトリガーはそれぞれ独立して動作します。どれか一つが一致すると、このオートメーションが開始します。',
             emptyBody: '自動トリガーはありません。このオートメーションは引き続き手動で実行できます。',
             orSemantics: 'トリガーはいくつでも追加できます。それぞれが独立して動作し、どれか一つが一致するとオートメーションが実行されます。',
@@ -275,9 +354,13 @@ export const automationTriggerSetTranslations = {
         exactTurn: {
             actionTitle: 'このターンが終了したとき…', createNew: '新しいオートメーションを作成', createNewSubtitle: 'このターンを選択した状態で始めます。',
             addToExistingSubtitle: 'このターンを既存のオートメーションに追加します。', searchPlaceholder: 'オートメーションを検索',
+            eventListA11y: 'セッションのライフサイクルイベントを選択',
             destinationA11y: 'このターンのトリガーを追加する場所を選択', staleTitle: 'ターンが変更されました',
             staleBody: '選択したターンは現在の親ターンではありません。更新して、現在のターンを明示的に選択してください。',
             useCurrentTurn: '現在のターンを使用', unavailable: '現在、使用できる親ターンはありません。',
+            resolvingRowSubtitle: '使用できるオートメーションを確認しています…',
+            unavailableRowSubtitle: '詳細を利用できないため、このセッションに対してこのオートメーションを検証できません。',
+            incompleteNoticeTitle: '一部のオートメーションを読み込めませんでした',
         },
     },
 } as const;

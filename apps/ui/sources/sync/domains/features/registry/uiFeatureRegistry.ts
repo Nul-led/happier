@@ -477,6 +477,9 @@ export const UI_FEATURE_REGISTRY = {
             icon: { ioniconName: 'search-outline', color: '#34C759' },
         },
     },
+    search: {
+        settingsToggle: undefined,
+    },
     'terminal.embeddedPty': {
         settingsToggle: {
             showInSettings: true,

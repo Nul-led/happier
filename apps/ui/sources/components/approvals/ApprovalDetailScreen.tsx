@@ -28,7 +28,10 @@ import { resolvePreferredServerIdForSessionId } from '@/sync/runtime/orchestrati
 import { useLayoutMaxWidthStyle } from '@/components/ui/layout/layout';
 import { ApprovalSessionContextCard } from './ApprovalSessionContextCard';
 import { ActionApprovalFieldsCard } from './ActionApprovalFieldsCard';
+import { describeApprovalActionFields } from './approvalFieldValues';
 import { ApprovalPreviewCard } from './ApprovalPreviewCard';
+import { HandoffTargetConsequencesCard, describeHandoffTargetApproval } from './HandoffTargetConsequencesCard';
+import { readApprovalSessionEndpointLabels, readApprovalTargetEndpointLabels } from './approvalEndpointLabels';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
 
@@ -88,6 +91,13 @@ const styles = StyleSheet.create((theme) => ({
     flexDirection: 'row',
     gap: 12,
     marginTop: 16,
+  },
+  actionsStack: {
+    flexDirection: 'column',
+    alignItems: 'stretch',
+  },
+  actionFullWidth: {
+    width: '100%',
   },
 }));
 
@@ -220,6 +230,19 @@ export const ApprovalDetailScreen = React.memo((props: Readonly<{ artifactId: st
     }
   }, [parsed]);
 
+  // One reading of the arguments decides both what the card shows and whether the
+  // decision may be taken, so an invisible field can never sit behind a live
+  // Approve button.
+  const actionFields = React.useMemo(() => (
+    parsed?.kind === 'built_in'
+      ? describeApprovalActionFields({
+        actionId: String(parsed.request.actionId),
+        actionArgs: parsed.request.actionArgs,
+      })
+      : null
+  ), [parsed]);
+  const approvalWithheld = actionFields?.unrepresentable != null;
+
   const request = parsed?.request ?? null;
   const sessionId = request?.createdBy.sessionId ?? (typeof artifact?.header?.sessionId === 'string' ? artifact.header.sessionId : '');
   const session = useSession(sessionId || '');
@@ -229,6 +252,25 @@ export const ApprovalDetailScreen = React.memo((props: Readonly<{ artifactId: st
     metadata: ownerMetadata,
   });
   const machine = useMachine(machineId || '');
+  const handoffTargetApproval = parsed?.kind === 'built_in'
+    ? parsed.request.handoffTargetReplacementApproval ?? null
+    : null;
+  const handoffTargetActionArgs = parsed?.kind === 'built_in' ? parsed.request.actionArgs : null;
+  const handoffTargetMachine = useMachine(handoffTargetApproval?.machineId ?? '');
+  const handoffTargetPresentation = React.useMemo(() => (
+    handoffTargetApproval
+      ? describeHandoffTargetApproval({
+        approval: handoffTargetApproval,
+        actionArgs: handoffTargetActionArgs,
+        source: readApprovalSessionEndpointLabels({ session, machine, machineId }),
+        destination: readApprovalTargetEndpointLabels({
+          machineId: handoffTargetApproval.machineId,
+          machine: handoffTargetMachine,
+          canonicalRoot: handoffTargetApproval.canonicalRoot,
+        }),
+      })
+      : null
+  ), [handoffTargetApproval, handoffTargetActionArgs, handoffTargetMachine, machine, machineId, session]);
   const approvalServerId = React.useMemo(() => {
     if (!parsed) return null;
     const requestServerId = parsed?.kind === 'built_in' && typeof (parsed.request as { serverId?: unknown }).serverId === 'string'
@@ -243,6 +285,8 @@ export const ApprovalDetailScreen = React.memo((props: Readonly<{ artifactId: st
   const decide = React.useCallback(
     async (decision: 'approve' | 'reject' | 'cancel') => {
       if (!parsed || decisionInFlightRef.current || parsed.request.status !== 'open') return;
+      // Fails closed for a programmatic press too, not only for the dimmed control.
+      if (decision === 'approve' && approvalWithheld) return;
 
       try {
         decisionInFlightRef.current = true;
@@ -333,7 +377,7 @@ export const ApprovalDetailScreen = React.memo((props: Readonly<{ artifactId: st
         setIsDeciding(false);
       }
     },
-    [approvalServerId, executor, parsed, props.artifactId, sessionId],
+    [approvalServerId, approvalWithheld, executor, parsed, props.artifactId, sessionId],
   );
 
   if (isLoading) {
@@ -433,8 +477,11 @@ export const ApprovalDetailScreen = React.memo((props: Readonly<{ artifactId: st
             {parsed.kind === 'host_action' ? <Text style={styles.statusMeta}>{parsed.request.profileId}</Text> : null}
           </View>
 
+          {handoffTargetPresentation ? (
+            <HandoffTargetConsequencesCard presentation={handoffTargetPresentation} />
+          ) : null}
           {parsed.kind === 'built_in' ? <ApprovalPreviewCard preview={parsed.request.preview} /> : null}
-          {parsed.kind === 'built_in' ? <ActionApprovalFieldsCard actionId={String(parsed.request.actionId)} actionArgs={parsed.request.actionArgs} /> : null}
+          {actionFields ? <ActionApprovalFieldsCard presentation={actionFields} /> : null}
           {parsed.kind === 'host_action' ? parsed.request.proposalPreview.map((proposal, index) => (
             <View key={`${proposal.pathSha256}:${proposal.bodySha256}:${index}`} style={styles.statusCard}>
               <Text style={styles.statusLabel}>{proposal.pathLabel}{proposal.startLine ? `:${proposal.startLine}` : ''}</Text>
@@ -445,13 +492,19 @@ export const ApprovalDetailScreen = React.memo((props: Readonly<{ artifactId: st
         </View>
 
         {parsed.request.status === 'open' && (
-          <View style={styles.actionsRow}>
+          <View
+            testID="approvals.actions"
+            style={[styles.actionsRow, handoffTargetPresentation ? styles.actionsStack : null]}
+          >
             <RoundButton
               testID="approvals.approve"
               size="normal"
-              title={t('approvals.approve')}
-              accessibilityLabel={t('approvals.approve')}
-              disabled={isDeciding}
+              title={handoffTargetPresentation?.decisionLabel ?? t('approvals.approve')}
+              accessibilityLabel={handoffTargetPresentation?.decisionLabel ?? t('approvals.approve')}
+              titleNumberOfLines={handoffTargetPresentation ? 'complete' : 1}
+              disabled={isDeciding || approvalWithheld}
+              accessibilityHint={approvalWithheld ? t('approvals.approveUnavailableHint') : undefined}
+              style={handoffTargetPresentation ? styles.actionFullWidth : undefined}
               onPress={() => decide('approve')}
             />
             <RoundButton
@@ -459,8 +512,12 @@ export const ApprovalDetailScreen = React.memo((props: Readonly<{ artifactId: st
               size="normal"
               title={t('approvals.reject')}
               accessibilityLabel={t('approvals.reject')}
+              titleNumberOfLines={handoffTargetPresentation ? 'complete' : 1}
               disabled={isDeciding}
-              style={{ backgroundColor: theme.colors.state.danger.foreground }}
+              style={[
+                handoffTargetPresentation ? styles.actionFullWidth : null,
+                { backgroundColor: theme.colors.state.danger.foreground },
+              ]}
               textStyle={{ color: theme.colors.button.primary.tint }}
               onPress={() => decide('reject')}
             />
@@ -470,7 +527,9 @@ export const ApprovalDetailScreen = React.memo((props: Readonly<{ artifactId: st
                 size="normal"
                 title={t('common.cancel')}
                 accessibilityLabel={t('common.cancel')}
+                titleNumberOfLines={handoffTargetPresentation ? 'complete' : 1}
                 disabled={isDeciding}
+                style={handoffTargetPresentation ? styles.actionFullWidth : undefined}
                 onPress={() => decide('cancel')}
               />
             ) : null}

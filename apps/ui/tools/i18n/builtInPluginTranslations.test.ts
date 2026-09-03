@@ -28,6 +28,7 @@ const MODULE_BUNDLES = [
     'channel-telegram',
     'channels',
     'claude',
+    'cliproxyapi',
     'codex',
     'copilot',
     'gemini',

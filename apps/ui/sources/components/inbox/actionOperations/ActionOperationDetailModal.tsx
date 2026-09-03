@@ -31,7 +31,7 @@ import {
     type ActionOperationDetailProjection,
 } from './actionOperationDetailPresentation';
 import { resumeActionOperationHandoff } from './resumeActionOperationHandoff';
-import { requestActionOperationStop } from './requestActionOperationStop';
+import { ActionOperationDetailControls } from './ActionOperationDetailControls';
 
 function translateHostStatus(value: 'accepted' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'reconnecting' | 'unavailable'): string {
     switch (value) {
@@ -102,10 +102,6 @@ export const ActionOperationDetailModal = React.memo(function ActionOperationDet
     const machine = useMachine(operation?.snapshot.scope.machineId ?? '');
     const sessionId = operation?.snapshot.scope.sessionId ?? null;
     const sessionMetadata = useSessionListPreferredMetadata(sessionId);
-    const [cancelPending, setCancelPending] = React.useState(false);
-    const [cancelFeedback, setCancelFeedback] = React.useState<
-        'requested' | 'unsupported' | 'already_settled' | 'not_found' | 'failed' | null
-    >(null);
     const [resumePending, setResumePending] = React.useState(false);
     const [resumeFeedback, setResumeFeedback] = React.useState<string | null>(null);
     const mountedRef = React.useRef(true);
@@ -161,20 +157,6 @@ export const ActionOperationDetailModal = React.memo(function ActionOperationDet
         ? detail.nextAction.sessionId
         : destinationSessionId;
 
-    const requestCancellation = () => {
-        if (!detail.canCancel || cancelPending) return;
-        setCancelPending(true);
-        setCancelFeedback(null);
-        void requestActionOperationStop(snapshot).then((result) => {
-            if (!mountedRef.current) return;
-            setCancelFeedback(result.kind);
-        }).catch(() => {
-            if (!mountedRef.current) return;
-            setCancelFeedback('failed');
-        }).finally(() => {
-            if (mountedRef.current) setCancelPending(false);
-        });
-    };
     const requestHandoffResume = () => {
         if (detail.nextAction?.kind !== 'resume_handoff' || resumePending) return;
         setResumePending(true);
@@ -348,67 +330,35 @@ export const ActionOperationDetailModal = React.memo(function ActionOperationDet
                 </ItemGroup>
             ) : null}
 
-            {detail.canCancel ? (
-                <View style={styles.cancelSection}>
-                    <Text style={styles.cancelHint}>{t('inbox.actionOperations.cancel.hint')}</Text>
-                    {cancelFeedback ? (
-                        <Text
-                            testID="action-operation-cancel-feedback"
-                            accessibilityLiveRegion="polite"
-                            role="status"
-                            style={styles.cancelFeedback}
-                        >
-                            {cancelFeedback === 'requested'
-                                ? t('inbox.actionOperations.cancel.requested')
-                                : cancelFeedback === 'already_settled'
-                                    ? t('inbox.actionOperations.cancel.alreadySettled')
-                                    : cancelFeedback === 'unsupported'
-                                        ? t('inbox.actionOperations.cancel.unsupported')
-                                        : cancelFeedback === 'not_found'
-                                            ? t('inbox.actionOperations.cancel.notFound')
-                                            : t('inbox.actionOperations.cancel.failed')}
-                        </Text>
-                    ) : null}
-                </View>
-            ) : null}
-
-            <View style={styles.actions}>
-                {detail.nextAction?.kind === 'resume_handoff' ? (
-                    <RoundButton
-                        title={t('inbox.actionOperations.recovery.resumeAction')}
-                        testID="action-operation-resume-handoff"
-                        loading={resumePending}
-                        disabled={resumePending || resumeFeedback === t('inbox.actionOperations.recovery.resumeRequested')}
-                        onPress={requestHandoffResume}
-                    />
-                ) : null}
-                {openSessionId ? (
-                    <RoundButton
-                        title={t('runs.openSession')}
-                        testID="action-operation-open-session"
-                        onPress={() => {
-                            router.push(createActivitySurfaceSessionRoute(openSessionId));
-                            props.onClose();
-                        }}
-                    />
-                ) : null}
-                {detail.canCancel ? (
-                    <RoundButton
-                        display="inverted"
-                        title={cancelPending ? t('runs.stop.stoppingLabel') : t('inbox.actionOperations.cancel.stop')}
-                        testID="action-operation-cancel"
-                        loading={cancelPending}
-                        disabled={cancelPending || cancelFeedback === 'requested'}
-                        onPress={requestCancellation}
-                    />
-                ) : null}
-                <RoundButton
-                    display="inverted"
-                    title={terminal ? t('common.done') : t('common.collapse')}
-                    testID={terminal ? 'action-operation-done' : 'action-operation-collapse'}
-                    onPress={props.onClose}
-                />
-            </View>
+            <ActionOperationDetailControls
+                operation={snapshot}
+                terminal={terminal}
+                canCancel={detail.canCancel}
+                onClose={props.onClose}
+                leading={(
+                    <>
+                        {detail.nextAction?.kind === 'resume_handoff' ? (
+                            <RoundButton
+                                title={t('inbox.actionOperations.recovery.resumeAction')}
+                                testID="action-operation-resume-handoff"
+                                loading={resumePending}
+                                disabled={resumePending || resumeFeedback === t('inbox.actionOperations.recovery.resumeRequested')}
+                                onPress={requestHandoffResume}
+                            />
+                        ) : null}
+                        {openSessionId ? (
+                            <RoundButton
+                                title={t('runs.openSession')}
+                                testID="action-operation-open-session"
+                                onPress={() => {
+                                    router.push(createActivitySurfaceSessionRoute(openSessionId));
+                                    props.onClose();
+                                }}
+                            />
+                        ) : null}
+                    </>
+                )}
+            />
         </View>
     );
 });
@@ -492,21 +442,7 @@ const styles = StyleSheet.create((theme) => ({
     recoveryBody: {
         color: theme.colors.text.secondary,
     },
-    cancelSection: {
-        gap: 4,
-    },
-    cancelHint: {
-        color: theme.colors.text.secondary,
-    },
     cancelFeedback: {
         color: theme.colors.text.primary,
-    },
-    actions: {
-        minHeight: 44,
-        flexDirection: 'row',
-        justifyContent: 'flex-end',
-        alignItems: 'center',
-        gap: 10,
-        flexWrap: 'wrap',
     },
 }));

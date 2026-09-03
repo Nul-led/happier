@@ -3,6 +3,7 @@ import { providerSessionTranslations } from './providerSessionTranslations';
 import { externalSessionOperationTranslations } from './externalSessionOperationTranslations';
 import { externalSessionSettingsTranslations } from './externalSessionSettingsTranslations';
 import { pluginPermissionTranslations } from './pluginPermissionTranslations';
+import { pluginMarketplaceDiscoverTranslations } from './pluginMarketplaceDiscoverTranslations';
 import { sessionRemotePermissionGrantTranslations } from './sessionRemotePermissionGrantTranslations';
 import { voiceReadinessTranslations } from './voiceReadinessTranslations';
 import { voiceDiagnosticsTranslations } from './voiceDiagnosticsTranslations';
@@ -508,15 +509,17 @@ const promptLibraryUxRefinementTranslationExtension = {
 
 const sessionHandoffTranslationExtensions = {
   ru: {
-    activeWarning: {
-      title: 'Этот сеанс все еще запущен на этом устройстве',
-      message: 'Перед передачей на выбранное устройство Happier остановит этот сеанс на текущем устройстве.',
-      confirm: 'Передать и остановить здесь',
-    },
-    mirrorConfirmation: {
-      title: 'Создать точную копию рабочего пространства?',
-      message: ({ sourceMachine, sourcePath, targetMachine, targetPath }: { sourceMachine: string; sourcePath: string; targetMachine: string; targetPath: string }) => `Скопировать ${sourcePath} с ${sourceMachine} в ${targetPath} на ${targetMachine}. Файлы, существующие только в месте назначения, могут быть удалены безвозвратно.`,
-      confirm: 'Копировать и разрешить удаление',
+    targetApproval: {
+      title: 'Что произойдёт в месте назначения',
+      sourceLabel: 'Откуда переносим',
+      destinationLabel: 'Куда переносим',
+      modeLabel: 'Режим синхронизации',
+      replaceTarget: ({ machine, path }: { machine: string; path: string }) => `Файлы, которые уже находятся в ${path} на ${machine}, будут заменены этим рабочим пространством.`,
+      exactMirror: ({ machine, path }: { machine: string; path: string }) => `При точном копировании файлы, существующие только в ${path} на ${machine}, могут быть удалены безвозвратно.`,
+      decision: {
+        replaceDestination: 'Заменить файлы в месте назначения',
+        mirrorAndAllowRemovals: 'Скопировать точно и разрешить удаление',
+      },
     },
     progress: {
       title: 'Передача сессии',
@@ -685,7 +688,7 @@ export const ru = {
         title: 'Сочетания клавиш',
         entrySubtitle: 'Находите и управляйте ярлыками приложений',
         generalGroupTitle: 'Управление с клавиатуры',
-        generalGroupFooter: 'Настройки ярлыков хранятся локально на этом устройстве.',
+        generalGroupFooter: 'Настройки сочетаний клавиш синхронизируются с вашей учётной записью.',
         enableShortcutsTitle: 'Включить унифицированные ярлыки',
         enableShortcutsSubtitle: 'Используйте новый реестр команд клавиатуры для ярлыков приложений.',
         singleKeyTitle: 'Одноклавишные сочетания клавиш',
@@ -709,7 +712,7 @@ export const ru = {
             composerFocus: 'Перейти к вводу',
             composerSendImmediate: 'Отправить сразу',
             composerSendPending: 'Отправить в очередь ожидания',
-            commandPaletteOpen: 'Открыть палитру команд',
+            commandPaletteOpen: 'Открыть поиск',
             browserAddressFocus: 'Перейти в адресную строку браузера',
             browserBack: 'Назад в браузере',
             browserForward: 'Вперёд в браузере',
@@ -871,8 +874,12 @@ export const ru = {
     fieldAction: "Действие",
     approve: "Подтвердить",
     reject: "Отклонить",
+    stopWaiting: "Перестать ждать",
     loadError: "Не удалось загрузить подтверждение.",
     decisionError: "Не удалось обновить подтверждение.",
+    unsafeDetailsTitle: "Эти сведения нельзя показать безопасно",
+    unsafeDetailsBody: "Happier не смог показать этот запрос точно в том виде, в каком он был отправлен, поэтому подтвердить его нельзя. Отклоните запрос или попросите отправить его заново.",
+    approveUnavailableHint: "Подтверждение недоступно, пока эти сведения нельзя показать безопасно.",
     confirmApproveTitle: "Подтвердить запрос?",
     confirmApproveBody: "Это выполнит запрошенное действие.",
     confirmRejectTitle: "Отклонить запрос?",
@@ -1339,6 +1346,11 @@ export const ru = {
             suppressed: "Подавлено",
             blocked: "Заблокировано",
         },
+        replyHandoffDeliverAgainTitle: "Отправить этот ответ ещё раз",
+        replyHandoffDeliverAgainSubtitle: "Используйте это, если ответ так и не появился в переписке.",
+        replyHandoffDeliverAgainConfirmTitle: "Отправить этот ответ ещё раз?",
+        replyHandoffDeliverAgainConfirmMessage: "Happier уже передал этот ответ каналу, но не может подтвердить доставку. Повторная отправка доставит новую копию, поэтому в переписке может оказаться два ответа.",
+        replyHandoffDeliverAgainConfirmButton: "Отправить ещё раз",
         nativeExecutionTitle: "Нативное выполнение",
         nativeExecutionCall: ({ callId }: { callId: string }) => `Вызов ${callId}`,
         nativeExecutionSidechain: ({ sidechainId }: { sidechainId: string }) => `Sidechain ${sidechainId}`,
@@ -1583,6 +1595,7 @@ export const ru = {
       "Этот способ входа отключён на этом сервере. Используйте другой вариант ниже, чтобы восстановить аккаунт.",
     scanComputerQrInstructions: "Отсканируйте QR-код, показанный в Happier на компьютере (Настройки → Добавить телефон).",
     scanComputerQrButton: "Сканировать QR для входа",
+    scanExistingHomeQrTitle: "Отсканируйте QR-код существующего Home",
     waitingForApproval: "Ожидание подтверждения…",
     securingCredentials: "Защита учётных данных…",
     showQrInstead: "Показать QR‑код вместо этого",
@@ -1601,6 +1614,7 @@ export const ru = {
     pairingQrTooLargeTitle: "Не помещается в QR-код",
     pairingQrTooLargeBody: "Это приглашение содержит дополнительные сведения о подключении и не может быть показано как QR-код. Ваш Home по-прежнему готов к сопряжению — используйте безопасную ссылку ниже.",
     homeAddedPreservedFocusBody: "Этот Home добавлен. Выбранный Home не изменился.",
+    requesterDeviceAddedBody: "Запрашивающее устройство добавлено в этот Home.",
     requestingDeviceLabel: "Запрашивающее устройство",
     thisDevice: "Это устройство",
     startAgain: "Начать заново",
@@ -1614,11 +1628,19 @@ export const ru = {
     unsupportedEnrollmentResponseBody: "Этот Home вернул ответ, который данная версия Happier не может использовать. Обновите Happier или отсканируйте другой Home.",
     updateRequiredTitle: "Требуется обновление",
     updateRequiredBody: "Этот Home использует устаревший формат подключения, который нельзя безопасно принять. Обновите Happier на обоих устройствах и повторите попытку.",
-    generateNewQrCode: "Сгенерировать новый QR‑код",
+    legacyPairingUpdateRequiredBody: "Этот QR-код создан в более старой версии Happier. Обновите Happier на другом устройстве и создайте новый QR-код.",
+    scanNewQr: "Сканировать новый QR-код",
+    homeEnrollmentRetryBody:
+      "Не удалось завершить добавление этого Home. Проверьте подключение и повторите попытку.",
+    homeEnrollmentPartialCommitBody:
+      "Учётные данные Home могли сохраниться, но добавление Home не завершилось. Повторите попытку с этим Home, прежде чем начинать другое добавление.",
+    generateNewQrCode: "Создать новый QR‑код",
     pairingQrExpired: "Этот QR‑код истёк. Сгенерируйте новый.",
     openMachine: "Открыть машину",
     terminalUrlPlaceholder: "happier://terminal?...",
     accountUrlPlaceholder: "happier:///account?...",
+    showRequesterQrInstructions:
+      "Оставьте этот QR‑код на этом устройстве. На уже зарегистрированном устройстве откройте Happier и отсканируйте его, чтобы добавить это устройство.",
     restoreQrInstructions:
       "На устройстве, где вы уже вошли в аккаунт, откройте Настройки → Аккаунт и отсканируйте этот QR‑код.",
     externalAuthVerifiedTitle: ({ provider }: { provider: string }) =>
@@ -1904,6 +1926,14 @@ export const ru = {
         allHistorySubtitle: "Дозаполнить всё (может занять время)",
       },
     },
+    archived: {
+        groupTitle: 'Архивные сессии',
+        groupFooter: 'Когда включено, архивные сессии индексируются для локального поиска. Когда выключено, они исключаются, а их проиндексированное содержимое удаляется из поиска.',
+        includeTitle: 'Искать в архивных сессиях',
+        includeSubtitle: 'Индексировать архивные сессии на этой машине',
+        unsupportedSubtitle: 'На этой машине нужно обновить Happier',
+        unsupportedFooter: 'Эта машина не сообщает о поддержке индексации архива, поэтому настройку здесь применить нельзя. Остальной поиск продолжает работать.',
+    },
     indexContents: {
       groupTitle: "Содержимое индекса",
       title: "Доступное для поиска содержимое",
@@ -2088,14 +2118,15 @@ export const ru = {
           backendsSubtitle: "Настроенные серверные части и пользовательские цели запуска.",
         },
         enableInjection: {
-          title: "Включить внедрение подсказок",
+          title: "Инструкции для запусков Happier",
+          subtitle: "Отключение удаляет приоритет нативной маршрутизации и механику запусков Happier из системных промптов агентов программирования.",
         },
         characterBudget: {
-          title: "Лимит символов",
+          title: "Лимит пользовательских правил",
           subtitle: ({ value }: { value: string }) => `${value} символов`,
-          promptTitle: "Лимит символов",
+          promptTitle: "Лимит пользовательских правил",
           promptBody:
-            "Максимум символов, которые будут добавлены в системный промпт.",
+            "Максимум символов для пользовательских правил запуска в системном промпте.",
         },
         rules: {
           groupTitle: "Правила подсказок",
@@ -5185,7 +5216,7 @@ export const ru = {
       "Выберите, перебирает ли ArrowUp/ArrowDown сообщения только этой сессии или всех сессий.",
     historyScopePerSessionOption: "По сессии",
     historyScopeGlobalOption: "Глобально",
-      commandPalette: "Палитра команд",
+      commandPalette: "Поиск",
       commandPaletteEnabled: "Используйте сочетание клавиш для открытия",
       commandPaletteDisabled: "Быстрый доступ к командам отключён",
       hideInactiveSessions: "Скрывать неактивные сессии",
@@ -5847,6 +5878,14 @@ export const ru = {
     viewOptions: 'Параметры вида',
     searchSessions: 'Поиск сеансов',
     searchSessionsPlaceholder: 'Поиск сеансов...',
+    searchEverythingFor: ({ query }: { query: string }) => `Искать «${query}» везде`,
+    searchGroupInThisView: 'В этом представлении',
+    searchGroupOtherMatches: 'Другие совпадения',
+    searchMatchTranscript: 'Совпадение в переписке',
+    searchMatchHiddenByFilters: 'Скрыта фильтрами',
+    searchMatchArchived: 'В архиве',
+    searchMatchExternal: 'Внешняя',
+    searchMatchAnotherMachine: 'Другая машина',
     filterByTags: 'Фильтр по тегам',
     folders: 'Папки',
     addFolder: 'Добавить папку',
@@ -6060,7 +6099,8 @@ export const ru = {
     viewSessionLogTitle: "Открыть лог сессии",
     viewSessionLogSubtitle: "Открыть хвост лога в реальном времени для этой сессии",
     pinSession: "Закрепить сессию",
-    unpinSession: "Открепить сессию",
+        unpinSession: "Открепить сессию",
+        pinLimitExceeded: ({ count }: { count: number }) => `Можно закрепить до ${count.toLocaleString()} сеансов. Открепите другой сеанс и повторите попытку.`,
     copyResumeCommand: "Скопировать команду возобновления",
     resumeCommand: ({ sessionId }: { sessionId: string }) =>
       `happier resume ${sessionId}`,
@@ -6212,6 +6252,12 @@ export const ru = {
 
   connectionStatus: {
     title: "Соединение",
+    summary: {
+      connected: "Подключено",
+      reconnecting: "Переподключение",
+      unavailable: "Недоступно",
+      signInAgain: "Войдите снова",
+    },
     labels: {
       server: "Сервер",
       socket: "Сокет",
@@ -6219,7 +6265,23 @@ export const ru = {
       lastSync: "Последняя синхронизация",
       nextRetry: "Следующая попытка",
       lastError: "Последняя ошибка",
+      canonicalAddress: "Канонический адрес",
+      runtimeOrigin: "Источник среды выполнения",
+      endpointId: "ID конечной точки",
+      connectionPath: "Путь подключения",
+      relayConfiguration: "Конфигурация ретранслятора",
+      transportError: "Ошибка транспорта",
+      lastTransition: "Последнее изменение",
     },
+    values: {
+      pathDirect: "Прямой",
+      pathRelay: "Защищённый ретранслятор",
+      relayDisabled: "Отключено",
+      relayAutomatic: ({ relays, direct }: { relays: string; direct: number }) =>
+          `Автоматически · ${relays} · прямых адресов: ${direct}`,
+    },
+    copyDiagnostics: "Копировать диагностику",
+    diagnosticsCopied: "Диагностика скопирована",
   },
 
   time: {
@@ -6391,7 +6453,15 @@ export const ru = {
         temporaryThrottle: "Временное ограничение",
       },
     },
-    composerBanners: {
+        pendingActivation: {
+            waiting_offline: { title: 'Сообщение в очереди для этой машины', body: 'Оно будет обработано, когда эта машина и её daemon снова будут онлайн.' },
+            waiting: { title: 'Ожидание возобновления', body: 'Ваше сообщение сохранено в очереди, пока daemon возобновляет эту сессию.' },
+            failed: { title: 'Не удалось возобновить сессию', body: 'Ваше сообщение по-прежнему сохранено в очереди. Повторите попытку, когда будете готовы.' },
+            queued: { title: 'Сообщение в очереди', body: 'В этой неактивной сессии есть сообщение в очереди. Возобновите её, когда будете готовы.' },
+            queued_offline: { title: 'Сообщение ожидает ручного возобновления', body: 'Оно останется в очереди, пока вы не возобновите эту сессию.' },
+            actions: { retry: 'Повторить', resume: 'Возобновить', process_when_online: 'Обработать после подключения', keepQueued: 'Оставить в очереди', autoResumeOptions: 'Параметры автовозобновления' },
+        },
+	    composerBanners: {
         showBannerAction: 'Показать баннер',
         hideBannerAction: 'Скрыть баннер',
     },
@@ -6594,9 +6664,6 @@ export const ru = {
 	      },},
 	    resuming: "Возобновление...",
 	    resumeFailed: "Не удалось возобновить сессию",
-	    pendingQueuedResumeFailedTitle: "Сообщение поставлено в очередь",
-	    pendingQueuedResumeFailedBody:
-	      "Ваше сообщение сохранено в очереди ожидания, но Happier не смог возобновить эту сессию. Нажмите «Повторить», чтобы запустить её.",
 	    invalidLinkTitle: "Недействительная ссылка на сессию",
 	    invalidLinkDescription: "Ссылка на сессию отсутствует или недействительна. Проверьте URL и попробуйте снова.",
 	    resumeSupportNoteChecking:
@@ -6986,13 +7053,27 @@ export const ru = {
     },
   },
 
+    universalSearch: {
+        commitsUpdateRequired: 'Обновите Happier на этом компьютере, чтобы искать коммиты.',
+    moreResultsAvailable: 'Доступны дополнительные результаты. Уточните поиск.',
+    sections: {
+      sessions: 'Сессии',
+      projects: 'Проекты',
+      settings: 'Настройки',
+      messages: 'Сообщения',
+      files: 'Файлы',
+      commits: 'Коммиты',
+    },
+  },
+
   commandPalette: {
     placeholder: "Введите команду или поиск...",
     noCommandsFound: "Команды не найдены",
+    activationFailed: "Не удалось выполнить эту команду.",
         shortcutsHelpTitle: 'Сочетания клавиш',
         shortcutsHelpBody: ({ shortcuts }: { shortcuts: string }) => `Активные сочетания:\n${shortcuts}`,
         shortcutsHelpEmpty: 'На этом устройстве нет активных сочетаний.',
-        shortcutsHelpCommandPalette: 'Открыть палитру команд',
+        shortcutsHelpCommandPalette: 'Открыть поиск',
         shortcutsHelpHelp: 'Открыть сочетания клавиш',
         shortcutsHelpNewSession: 'Новая сессия',
         commands: {
@@ -9616,6 +9697,16 @@ settingsSession: {
         title: 'Дополнительно',
     },
     messageSending: {
+      inactiveResumePolicyTitle: 'Автоматическое возобновление после отправки',
+      inactiveResumePolicySubtitle: 'Выберите, что Happier должен делать после отправки в неактивную сессию.',
+      inactiveResumePolicy: {
+        whenAvailableTitle: 'Сейчас или после возвращения машины',
+        whenAvailableSubtitle: 'Возобновить сразу, если доступна; иначе обработать после переподключения daemon.',
+        onlineOnlyTitle: 'Только если машина онлайн',
+        onlineOnlySubtitle: 'Попробовать один раз при отправке. Если недоступна, оставить сообщение в очереди.',
+        manualTitle: 'Никогда автоматически',
+        manualSubtitle: 'Всегда оставлять сообщения в очереди до ручного возобновления сессии.',
+      },
       title: "Отправка сообщений",
       footer:
         "Определяет, что происходит при отправке сообщения, пока агент работает.",
@@ -11275,6 +11366,8 @@ settingsSession: {
     notAvailable: "Недоступно",
     linkNewDevice: "Сканировать QR для привязки нового устройства",
     linkNewDeviceSubtitle: "Отсканируйте QR‑код, показанный на новом устройстве",
+    addAnotherHome: "Добавить ещё один Home",
+    addAnotherHomeSubtitle: "Отсканируйте QR-код, не переключая текущий Home",
     profile: "Профиль",
     name: "Имя",
     github: "GitHub",
@@ -11775,6 +11868,8 @@ settingsSession: {
     welcomePrimarySubtitle: "Одно касание. Без форм. Ваш ключ хранится здесь.",
 
     welcomeSecondaryButton: "Войти — я уже пользуюсь Happier",
+    continueWithKey: "Войти с ключом",
+    useDifferentHome: "Использовать другой Home",
     welcomeSecondarySubtitle: "Отсканируйте QR-код или введите секретный ключ",
 
     // Unified onboarding redesign — returning-user copy variants.
@@ -11931,6 +12026,8 @@ settingsSession: {
 	    relayCustomUrlSubtitle: "Используйте URL Relay, который уже запущен",
     authRestoreTitle: "Восстановить или добавить это устройство",
     authRestoreSubtitle: "Используйте QR-код или ссылку, чтобы подключить это устройство",
+    addHomeTitle: "Добавить ещё один Home",
+    addHomeSubtitle: "Отсканируйте QR-код, чтобы добавить Home, не покидая текущий",
     authSecretKeyTitle: "Войти с секретным ключом",
     authSecretKeySubtitle: "Введите секретный ключ, чтобы войти в Happier",
     authLostAccessTitle: "Потеряли доступ?",
@@ -13178,12 +13275,15 @@ settingsSession: {
       ...pluginAccountReleaseSelectionTranslations.ru,
       ...pluginMachineMatrixTranslations.ru,
       ...pluginInvocationLogTranslations.ru,
+      ...pluginMarketplaceDiscoverTranslations.ru,
       ...eventAutomationComposerTranslations.ru,
     title: "Каталог плагинов",
-    subtitle: "Просматривайте отобранные дескрипторы плагинов и управляйте установленными плагинами на этом устройстве.",
+    subtitle: "Находите плагины в npm и настроенных источниках и управляйте плагинами, установленными на этой машине.",
     appPanelsTitle: "Панели плагинов",
     appPanelsSubtitle: "Открывайте панели приложения, добавленные установленными плагинами.",
     executionOriginReleaseContentConflict: "Содержимое релиза не совпадает. Опубликуйте новую версию.",
+    administrationMachineTitle: "Машина администрирования",
+    executionOriginTitle: "Источник выполнения",
     readOnlyProjectionUnavailable: "Сведения о плагинах из кэша доступны только для чтения: устройство доступно, но не удалось загрузить его реестр плагинов. Повторите попытку, чтобы управлять плагинами.",
     readOnlyAccountRecovery: "Сведения об учетной записи плагина доступны, но сведения для конкретного устройства недоступны, пока не станет доступна совместимая установка плагина.",
     readOnlySnapshot: "Пока это устройство отключено, сведения о плагинах из кэша доступны только для чтения. Подключите устройство снова, чтобы управлять плагинами.",
@@ -13208,12 +13308,15 @@ settingsSession: {
     pendingChangesTitle: "Ожидает вашего решения",
     pendingChangesFooter: "Изменения плагинов, подготовленные на этой машине. Агент может подготовить изменение, но одобрить его можете только вы.",
     pendingChangesReviewHint: "Показывает полный обзор до того, как что-либо получит доверие.",
+    pendingChangeReviewAction: "Проверить",
+    pendingChangeRejectHint: "Отменяет подготовленное изменение. Ничего не устанавливается и не вызывает доверия.",
     pendingChangeSourceRootSubtitle: ({ path }: { path: string }) => `Папка плагина: ${path}`,
     pendingChangeInstallSubtitle: ({ pluginId, source }: { pluginId: string; source: string }) => `${pluginId} из ${source}`,
     pendingChangeApplying: "Это изменение уже решено и сейчас применяется.",
     pendingChangeExpired: "Срок действия изменения истёк до принятия решения. Запросите его снова.",
     pendingChangeRejected: "Изменение плагина отклонено.",
-    pendingChangeConfirmRejectBody: "Подготовленное изменение будет отброшено. Ничего не установлено и не получит доверия.",
+    pendingChangeConfirmRejectBody: ({ machine, server }: { machine: string; server: string }) => `Подготовленное изменение будет отброшено на ${machine} (${server}). Ничего не установлено и не получит доверия.`,
+    pendingChangeCommitted: "Это изменение уже решено и применено.",
     pendingChangeFailed: ({ outcome }: { outcome: string }) => `Изменение плагина не применено (${outcome}).`,
     developmentCreateDirectoryTitle: "Папка плагина",
     developmentCreateDirectoryBody: "Введите новую абсолютную папку на выбранном компьютере. Папка ещё не должна существовать.",
@@ -13243,10 +13346,24 @@ settingsSession: {
     diagnosticsSnapshotEmptySubtitle: "Текущая диагностика реестра появится здесь, когда устройство сообщит её.",
     catalogUrlLabel: "URL каталога",
     loadCatalog: "Загрузить каталог",
+    discoverTitle: "Обзор плагинов",
+    discoverSearchLabel: "Поиск плагинов",
+    discoverSearchPlaceholder: "Искать во всех источниках маркетплейса сразу",
+    discoverSearch: "Найти",
+    discoverSourceFilterLabel: "Фильтр источников маркетплейса",
+    discoverSourceAll: "Все",
+    discoverLoadMore: "Загрузить ещё",
+    discoverRevisionChanged: "Индекс маркетплейса изменился при дозагрузке. Выполните поиск заново, чтобы увидеть актуальные результаты.",
+    discoverEmptyTitle: "Плагины не найдены",
+    discoveredVia: ({ source }: { source: string }) => `Найдено через ${source}`,
+    sourceKindCurated: "Отобранный маркетплейс — рекомендации, а не разрешение",
+    sourceKindUser: "Ваш источник маркетплейса",
+    sourceKindCommunityNpm: "Публичный реестр npm",
+    communityNpmSourceTitle: "npm сообщества",
     installAndTrust: "Установить и доверять",
     marketplaceWithdrawnTitle: "Удалено из маркетплейса",
-    marketplaceWithdrawnBody: "Эта публикация удалена из выбранного маркетплейса. Новые установки и обновления заблокированы.",
-    marketplaceWithdrawnInstalledBody: "Эта публикация удалена из выбранного маркетплейса. Новые установки и обновления заблокированы. Установленный плагин останется включённым, пока вы не отключите или не удалите его.",
+    marketplaceWithdrawnBody: "Эта публикация удалена из выбранного маркетплейса. Новые установки из этой публикации заблокированы.",
+    marketplaceWithdrawnInstalledBody: "Эта публикация удалена из выбранного маркетплейса. Новые установки из этой публикации заблокированы. Установленный плагин останется включённым и обновляется согласно выбранному правилу обновлений.",
     trustPolicy: {
       localTrusted: "Локально доверенный",
       trusted: "Доверенный",
@@ -13277,6 +13394,9 @@ settingsSession: {
     marketplaceInstallReviewRawCredentialAccess: ({ details }: { details: string }) => `Прямой доступ к учётным данным Voice:\n${details}`,
     marketplaceInstallReviewRawCredentialAccessItem: ({ contribution, credential, source, realm, phase, request }: { contribution: string; credential: string; source: string; realm: string; phase: string; request: string }) =>
       `${contribution}: ${credential}; источник ${source}; среда ${realm}; этап ${phase}; запрос ${request}. Код плагина в среде ${realm} получает выбранные учётные данные напрямую и может использовать или копировать их.`,
+    marketplaceInstallReviewRequestInterceptors: ({ details }: { details: string }) => `Политики запросов (область перезаписи URL/метода):\n${details}`,
+    marketplaceInstallReviewRequestInterceptorItem: ({ id, origins, methods, priority }: { id: string; origins: string; methods: string; priority: string }) =>
+      `${id}: источники ${origins}; методы ${methods}; приоритет ${priority}`,
     marketplaceInstallReviewBody: ({ identity, verification, executableRealms, contributions, uiArtifacts, requiredAccess, optionalAccess, compatibility }: { identity: string; verification: string; executableRealms: string; contributions: string; uiArtifacts: string; requiredAccess: string; optionalAccess: string; compatibility: string }) => `Идентификация:\n${identity}\n\nСигналы проверки:\n${verification}\n\nИсполняемый код: ${executableRealms}\nВозможности: ${contributions}\nАртефакты интерфейса: ${uiArtifacts}\n\nДоверенный код демона и React Native выполняется с полномочиями приложения или процесса и может напрямую использовать файлы, сеть, окружение и процессы. Указанный ниже доступ к хосту описывает сервисы, посредником для которых выступает Happier; это не песочница для исполняемого кода плагина.\n\nОбязательные раскрытия и кооперативные сервисы:\n${requiredAccess}\n\nНеобязательные ресурсы хоста (по умолчанию отключены):\n${optionalAccess}\n\nСовместимость и обновления:\n${compatibility}`,
     marketplaceInstallDecisionFailed: ({ outcome }: { outcome: string }) => `Плагин не установлен (${outcome}).`,
     marketplaceChangeDecisionFailed: ({ action, outcome }: { action: string; outcome: string }) => `${action}: сбой (${outcome}).`,
@@ -13290,6 +13410,7 @@ settingsSession: {
     marketplaceCommunityUnreviewedBody: "Этот сторонний npm-пакет не проверен Happier. «Установить и доверять» разрешает объявленный исполняемый код и доступ к хосту после проверки демоном точной версии и целостности. Доверенный код демона и React Native выполняется с полномочиями приложения или процесса; указанный доступ к хосту не является песочницей.",
     genericSettingsTitle: "Настройки плагина",
     genericSettingsFooter: "Хранятся локально для этого плагина на этой машине.",
+    genericSettingsAccountFooter: "Синхронизируется для этого плагина в вашей учётной записи.",
     genericSettingsLoading: "Загрузка настроек плагина",
     genericSettingsUnavailable: "Настройки плагина недоступны для этой машины.",
     genericSettingsLoadError: "Не удалось загрузить настройки плагина.",
@@ -13299,6 +13420,7 @@ settingsSession: {
     registriesFooter: "Вход в реестр управляет только доступом к пакетам. Установленные доверенные плагины останутся доступны после удаления реестра или выхода из него.",
     registriesAdd: "Добавить реестр",
     registriesAddTitle: "Добавить частный реестр",
+    registriesOriginTitle: "Адрес реестра",
     registriesAddOriginBody: "Введите HTTPS-адрес реестра без учётных данных.",
     registriesInvalidOriginTitle: "Недопустимый адрес реестра",
     registriesInvalidOriginBody: "Используйте HTTPS-адрес без учётных данных, пути, запроса и фрагмента.",
@@ -13342,6 +13464,8 @@ settingsSession: {
     },
     registriesErrorTitle: "Операция с реестром не выполнена",
     registriesErrorBody: "Обновите список реестров и повторите попытку.",
+    registriesConflictTitle: "Настройки реестра изменились",
+    registriesConflictBody: "Настройки реестра изменились до применения этого действия. Проверьте обновленный список и повторите попытку.",
     registriesInvalidProfileTitle: "Недопустимые настройки реестра",
     registriesInvalidProfileBody: "Проверьте название реестра и области пакетов, затем повторите попытку.",
     registriesNoMachine: "Выберите машину для управления частными реестрами.",
@@ -13458,6 +13582,7 @@ settingsSession: {
         missingRequirement: 'Для этого представления плагина не хватает требования на этом устройстве.',
     },
     personalHome: {
+        settings: personalHomeSettingsTranslations.ru,
         bootstrap: {
             title: 'Подготовка вашего Личного дома',
             ensuringHomeStatus: 'Подготовка локального Дома.',

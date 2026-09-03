@@ -6,8 +6,15 @@ import { clearTempData, peekTempData, type NewSessionData } from '@/utils/sessio
 import { createUseSettingMock } from '@/dev/testkit/mocks/storage';
 
 const routerPushSpy = vi.hoisted(() => vi.fn());
+const openUniversalSearchSpy = vi.hoisted(() => vi.fn());
 const rememberLastProjectSessionSelections = vi.hoisted(() => ({ value: true }));
 const sessionById = vi.hoisted(() => ({ value: {} as Record<string, any> }));
+const projectOpenState = vi.hoisted(() => ({
+    workspaceRefs: [] as any[],
+    mobileSurfaces: {} as Record<string, string>,
+    activeRootPaths: {} as Record<string, string>,
+    worktreeIds: {} as Record<string, string>,
+}));
 
 vi.mock('expo-router', async () => {
     const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
@@ -17,6 +24,23 @@ vi.mock('expo-router', async () => {
         },
     }).module;
 });
+
+vi.mock('@/utils/platform/responsive', () => ({ useDeviceType: () => 'phone' }));
+
+vi.mock('@/components/workspaceCockpit/useMobileWorkspaceExperienceState', () => ({
+    useMobileWorkspaceExperienceState: () => ({ cockpitEnabled: true }),
+}));
+
+vi.mock('@/components/appShell/panes/AppPaneProvider', () => ({
+    useOptionalAppPaneContext: () => ({ state: { scopes: {} } }),
+}));
+
+vi.mock('@/components/appShell/search/UniversalSearchRuntimeContext', () => ({
+    useUniversalSearchRuntime: () => ({
+        open: openUniversalSearchSpy,
+        buildCommands: vi.fn(),
+    }),
+}));
 
 vi.mock('@/sync/domains/state/storage', async (importOriginal) => {
     const { createStorageModuleMock } = await import('@/dev/testkit/mocks/storage');
@@ -40,8 +64,17 @@ vi.mock('@/sync/domains/state/storage', async (importOriginal) => {
                 if (name === 'rememberLastProjectSessionSelections') {
                     return rememberLastProjectSessionSelections.value;
                 }
+                if (name === 'workspaceRefsV1') {
+                    return projectOpenState.workspaceRefs;
+                }
                 return undefined;
             } }),
+            useLocalSetting: (name: string) => name === 'projectLastActiveRootPathByWorkspaceRefId'
+                ? projectOpenState.activeRootPaths
+                : name === 'projectLastActiveWorktreeIdByWorkspaceRefId'
+                    ? projectOpenState.worktreeIds
+                    : undefined,
+            useProjectLastMobileSurfacesByWorkspaceRefId: () => projectOpenState.mobileSurfaces,
         },
     });
 });
@@ -49,8 +82,13 @@ vi.mock('@/sync/domains/state/storage', async (importOriginal) => {
 describe('useSessionListNavigationActions', () => {
     beforeEach(() => {
         routerPushSpy.mockClear();
+        openUniversalSearchSpy.mockClear();
         rememberLastProjectSessionSelections.value = true;
         sessionById.value = {};
+        projectOpenState.workspaceRefs = [];
+        projectOpenState.mobileSurfaces = {};
+        projectOpenState.activeRootPaths = {};
+        projectOpenState.worktreeIds = {};
         clearTempData();
     });
 
@@ -80,6 +118,30 @@ describe('useSessionListNavigationActions', () => {
             },
         });
 
+        await hook.unmount();
+    });
+
+    it('opens an existing project through its persisted mobile surface and worktree', async () => {
+        projectOpenState.workspaceRefs = [{
+            id: 'wr_1',
+            serverId: 'server_a',
+            machineId: 'machine_a',
+            rootPath: '/repo',
+            label: 'Repo',
+            createdAtMs: 1,
+        }];
+        projectOpenState.mobileSurfaces = { wr_1: 'git' };
+        projectOpenState.activeRootPaths = { wr_1: '/repo/.worktrees/feature' };
+        projectOpenState.worktreeIds = { wr_1: 'gitwt_feature' };
+
+        const { useSessionListNavigationActions } = await import('./useSessionListNavigationActions');
+        const hook = await renderHook(() => useSessionListNavigationActions());
+
+        act(() => {
+            hook.getCurrent().handleOpenProject('wr_1');
+        });
+
+        expect(routerPushSpy).toHaveBeenCalledWith('/projects/wr_1/git?worktreeId=gitwt_feature');
         await hook.unmount();
     });
 
@@ -208,6 +270,32 @@ describe('useSessionListNavigationActions', () => {
                 spawnServerId: 'server_a',
             },
         });
+
+        await hook.unmount();
+    });
+
+    it('escalates through the canonical universal Search opener with a normalized query', async () => {
+        const { useSessionListNavigationActions } = await import('./useSessionListNavigationActions');
+        const hook = await renderHook(() => useSessionListNavigationActions({
+            accountId: 'account-b',
+            serverId: 'home-b',
+            sessionId: null,
+            machineId: null,
+            rootPath: null,
+        }));
+
+        await act(async () => {
+            hook.getCurrent().handleOpenUniversalSearch('  vector  ');
+        });
+
+        expect(openUniversalSearchSpy).toHaveBeenCalledWith('vector', {
+            accountId: 'account-b',
+            serverId: 'home-b',
+            sessionId: null,
+            machineId: null,
+            rootPath: null,
+        });
+        expect(routerPushSpy).not.toHaveBeenCalled();
 
         await hook.unmount();
     });

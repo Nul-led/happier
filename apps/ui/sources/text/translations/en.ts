@@ -9863,7 +9863,7 @@ workspaceSync: {
         synced: ({ label }: { label: string }) => `Synced endpoint · ${label}`,
     },
     diagnostics: {
-        title: 'Diagnostics',
+        title: 'Details',
         relationshipId: 'Relationship ID',
         controllerMachineId: 'Controller machine ID',
         alphaMachineId: 'Source machine ID',
@@ -14054,7 +14054,7 @@ settingsSession: {
       ...pluginMarketplaceDiscoverTranslations.en,
       ...eventAutomationComposerTranslations.en,
       title: "Plugin marketplace",
-      subtitle: "Browse curated plugin descriptors and manage installed plugins on this machine.",
+      subtitle: "Discover plugins from npm and configured sources, and manage installed plugins on this machine.",
       appPanelsTitle: "Plugin panels",
       appPanelsSubtitle: "Open app panels contributed by installed plugins.",
       executionOriginReleaseContentConflict: "Release content does not match. Publish a new version.",

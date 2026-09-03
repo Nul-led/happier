@@ -3,6 +3,7 @@ import { providerSessionTranslations } from './providerSessionTranslations';
 import { externalSessionOperationTranslations } from './externalSessionOperationTranslations';
 import { externalSessionSettingsTranslations } from './externalSessionSettingsTranslations';
 import { pluginPermissionTranslations } from './pluginPermissionTranslations';
+import { pluginMarketplaceDiscoverTranslations } from './pluginMarketplaceDiscoverTranslations';
 import { sessionRemotePermissionGrantTranslations } from './sessionRemotePermissionGrantTranslations';
 import { voiceReadinessTranslations } from './voiceReadinessTranslations';
 import { voiceDiagnosticsTranslations } from './voiceDiagnosticsTranslations';
@@ -511,15 +512,17 @@ const promptLibraryUxRefinementTranslationExtension = {
 
 const sessionHandoffTranslationExtensions = {
   ja: {
-    activeWarning: {
-      title: 'このセッションはこのマシンでまだ実行中です',
-      message: 'ハンドオフを開始すると、選択したマシンへ転送する前にこのマシン上のセッションを停止します。',
-      confirm: 'ここで停止してハンドオフ',
-    },
-    mirrorConfirmation: {
-      title: 'このワークスペースを完全にミラーしますか？',
-      message: ({ sourceMachine, sourcePath, targetMachine, targetPath }: { sourceMachine: string; sourcePath: string; targetMachine: string; targetPath: string }) => `${sourceMachine} の ${sourcePath} を ${targetMachine} の ${targetPath} にミラーします。移行先にのみ存在するファイルは完全に削除される場合があります。`,
-      confirm: 'ミラーして削除を許可',
+    targetApproval: {
+      title: '移行先で起きること',
+      sourceLabel: '移行元',
+      destinationLabel: '移行先',
+      modeLabel: '同期モード',
+      replaceTarget: ({ machine, path }: { machine: string; path: string }) => `${machine} の ${path} にすでにあるファイルは、このワークスペースの内容に置き換えられます。`,
+      exactMirror: ({ machine, path }: { machine: string; path: string }) => `完全なミラー中は、${machine} の ${path} にのみ存在するファイルが完全に削除される場合があります。`,
+      decision: {
+        replaceDestination: '移行先のファイルを置き換える',
+        mirrorAndAllowRemovals: 'ミラーして削除を許可',
+      },
     },
     progress: {
       title: 'セッションを引き継ぎ中',
@@ -653,7 +656,7 @@ export const ja = {
         title: 'キーボードショートカット',
         entrySubtitle: 'アプリのショートカットを検出して制御する',
         generalGroupTitle: 'キーボードコントロール',
-        generalGroupFooter: 'ショートカット設定はこのデバイスにローカルに保存されます。',
+        generalGroupFooter: 'ショートカット設定はアカウントと同期されます。',
         enableShortcutsTitle: '統合ショートカットを有効にする',
         enableShortcutsSubtitle: 'アプリのショートカットには新しいキーボード コマンド レジストリを使用します。',
         singleKeyTitle: '単一キーのショートカット',
@@ -677,7 +680,7 @@ export const ja = {
             composerFocus: 'コンポーザーにフォーカス',
             composerSendImmediate: 'すぐに送信',
             composerSendPending: '保留キューに送信',
-            commandPaletteOpen: 'コマンドパレットを開く',
+            commandPaletteOpen: '検索を開く',
             browserAddressFocus: 'ブラウザーのアドレスバーにフォーカス',
             browserBack: 'ブラウザーで戻る',
             browserForward: 'ブラウザーで進む',
@@ -839,8 +842,12 @@ export const ja = {
     fieldAction: "アクション",
     approve: "承認",
     reject: "拒否",
+    stopWaiting: "待機を停止",
     loadError: "承認を読み込めませんでした。",
     decisionError: "承認を更新できませんでした。",
+    unsafeDetailsTitle: "この内容は安全に表示できません",
+    unsafeDetailsBody: "送信されたとおりに表示できなかったため、このリクエストは承認できません。拒否するか、再送を依頼してください。",
+    approveUnavailableHint: "この内容を安全に表示できない間は承認できません。",
     confirmApproveTitle: "承認しますか？",
     confirmApproveBody: "要求されたアクションを実行します。",
     confirmRejectTitle: "拒否しますか？",
@@ -1295,6 +1302,11 @@ export const ja = {
             suppressed: "抑制済み",
             blocked: "ブロック中",
         },
+        replyHandoffDeliverAgainTitle: "この返信をもう一度送信",
+        replyHandoffDeliverAgainSubtitle: "返信が会話に届かなかった場合に使います。",
+        replyHandoffDeliverAgainConfirmTitle: "この返信をもう一度送信しますか？",
+        replyHandoffDeliverAgainConfirmMessage: "Happier はこの返信をすでにチャンネルへ引き渡しましたが、届いたかどうかは確認できません。もう一度送信すると新しいコピーが配信されるため、会話に 2 通残る可能性があります。",
+        replyHandoffDeliverAgainConfirmButton: "もう一度送信",
         nativeExecutionTitle: "ネイティブ実行",
         nativeExecutionCall: ({ callId }: { callId: string }) => `呼び出し ${callId}`,
         nativeExecutionSidechain: ({ sidechainId }: { sidechainId: string }) => `Sidechain ${sidechainId}`,
@@ -1909,6 +1921,12 @@ export const ja = {
 
 	  connectionStatus: {
 	    title: "接続",
+	    summary: {
+	      connected: "接続済み",
+	      reconnecting: "再接続中",
+	      unavailable: "利用できません",
+	      signInAgain: "再度サインイン",
+	    },
 	    labels: {
 	      server: "サーバー",
 	      socket: "ソケット",
@@ -1916,7 +1934,23 @@ export const ja = {
 	      lastSync: "最終同期",
 	      nextRetry: "次の再試行",
 	      lastError: "直近のエラー",
+	      canonicalAddress: "正規アドレス",
+	      runtimeOrigin: "ランタイム接続元",
+	      endpointId: "エンドポイント ID",
+	      connectionPath: "接続経路",
+	      relayConfiguration: "リレー設定",
+	      transportError: "トランスポートエラー",
+	      lastTransition: "最終遷移",
 	    },
+	    values: {
+	      pathDirect: "直接",
+	      pathRelay: "セキュアリレー",
+	      relayDisabled: "無効",
+	      relayAutomatic: ({ relays, direct }: { relays: string; direct: number }) =>
+	          `自動 · ${relays} · 直接アドレス ${direct} 件`,
+	    },
+	    copyDiagnostics: "診断をコピー",
+	    diagnosticsCopied: "診断をコピーしました",
 	  },
 
   time: {
@@ -1953,6 +1987,7 @@ export const ja = {
       "このサーバーではこのサインイン方法が無効になっています。下の別の方法でアカウントを復元してください。",
     scanComputerQrInstructions: "パソコンの Happier（設定 → スマホを追加）に表示されたQRコードをスキャンします。",
     scanComputerQrButton: "QRをスキャンしてサインイン",
+    scanExistingHomeQrTitle: "既存のHomeのQRコードをスキャン",
     waitingForApproval: "承認待ち…",
     securingCredentials: "認証情報を保護しています…",
     showQrInstead: "代わりにQRコードを表示",
@@ -1971,6 +2006,7 @@ export const ja = {
     pairingQrTooLargeTitle: "QRコードに収まりません",
     pairingQrTooLargeBody: "この招待には接続情報が多く含まれているため、QRコードとして表示できません。Homeは引き続きペアリングできます。下の安全なリンクをご利用ください。",
     homeAddedPreservedFocusBody: "このHomeを追加しました。現在選択中のHomeは変更されていません。",
+    requesterDeviceAddedBody: "リクエスト元のデバイスをこのHomeに追加しました。",
     requestingDeviceLabel: "要求元デバイス",
     thisDevice: "このデバイス",
     startAgain: "最初からやり直す",
@@ -1984,11 +2020,19 @@ export const ja = {
     unsupportedEnrollmentResponseBody: "このHomeから、現在のHappierでは使用できない応答が返されました。Happierを更新するか、別のHomeをスキャンしてください。",
     updateRequiredTitle: "更新が必要です",
     updateRequiredBody: "このHomeは安全に受け入れられない古いペアリング形式を使用しています。両方のデバイスでHappierを更新して、もう一度お試しください。",
-    generateNewQrCode: "新しいQRコードを生成",
+    legacyPairingUpdateRequiredBody: "このQRは古いバージョンのHappierで作成されました。もう一方のデバイスでHappierを更新し、新しいQRを作成してください。",
+    scanNewQr: "新しいQRをスキャン",
+    homeEnrollmentRetryBody:
+      "このHomeの追加を完了できませんでした。接続を確認して、もう一度お試しください。",
+    homeEnrollmentPartialCommitBody:
+      "Homeの認証情報は保存された可能性がありますが、Homeの追加は完了しませんでした。別の登録を始める前に、このHomeをもう一度お試しください。",
+    generateNewQrCode: "新しいQRコードを作成",
     pairingQrExpired: "このQRコードは期限切れです。新しいコードを生成してください。",
     openMachine: "マシンを開く",
     terminalUrlPlaceholder: "happier://terminal?...",
     accountUrlPlaceholder: "happier:///account?...",
+    showRequesterQrInstructions:
+      "このデバイスにこのQRコードを表示したままにしてください。すでに登録済みのデバイスでHappierを開き、このコードをスキャンしてこのデバイスを追加してください。",
     restoreQrInstructions:
       "すでにサインインしている端末で、設定 → アカウント に移動してこのQRコードをスキャンしてください。",
     externalAuthVerifiedTitle: ({ provider }: { provider: string }) =>
@@ -2256,6 +2300,14 @@ export const ja = {
         allHistorySubtitle: "すべてをバックフィル（時間がかかる場合があります）",
       },
     },
+    archived: {
+        groupTitle: 'アーカイブ済みセッション',
+        groupFooter: 'オンにすると、アーカイブ済みセッションがローカル検索用にインデックスされます。オフにすると除外され、インデックス済みの内容は検索から削除されます。',
+        includeTitle: 'アーカイブ済みセッションを検索',
+        includeSubtitle: 'このマシンでアーカイブ済みセッションをインデックスする',
+        unsupportedSubtitle: 'このマシンの Happier を更新してください',
+        unsupportedFooter: 'このマシンはアーカイブのインデックス対応を報告していないため、この設定を適用できません。その他の検索は引き続き利用できます。',
+    },
     indexContents: {
       groupTitle: "インデックス内容",
       title: "検索可能な内容",
@@ -2439,13 +2491,14 @@ export const ja = {
         backendsSubtitle: "設定済みバックエンドとカスタム起動先。",
       },
       enableInjection: {
-        title: "ガイダンス注入を有効化",
+        title: "Happier 実行の指示",
+        subtitle: "オフにすると、ネイティブ優先ルーティングと Happier 実行の仕組みがコーディングエージェントのシステムプロンプトから削除されます。",
       },
       characterBudget: {
-        title: "文字数上限",
+        title: "カスタムルールの文字数上限",
         subtitle: ({ value }: { value: string }) => `${value} 文字`,
-        promptTitle: "文字数上限",
-        promptBody: "システムプロンプトに追加する最大文字数。",
+        promptTitle: "カスタムルールの文字数上限",
+        promptBody: "システムプロンプト内のカスタム実行ルールに使用する最大文字数。",
       },
       rules: {
         groupTitle: "ガイダンスルール",
@@ -5523,7 +5576,7 @@ localTailscale: {
       "ArrowUp/ArrowDown で、このセッション内のみの送信履歴を巡回するか、全セッションの履歴を巡回するかを選択します。",
     historyScopePerSessionOption: "セッションごと",
     historyScopeGlobalOption: "グローバル",
-      commandPalette: "コマンドパレット",
+      commandPalette: "検索",
       commandPaletteEnabled: "ショートカットで開く",
       commandPaletteDisabled: "クイックコマンドアクセスは無効",
       hideInactiveSessions: "非アクティブセッションを非表示",
@@ -6177,7 +6230,15 @@ localTailscale: {
         temporaryThrottle: "一時的な制限",
       },
     },
-    composerBanners: {
+        pendingActivation: {
+            waiting_offline: { title: 'このマシン用にメッセージをキューへ保存しました', body: 'このマシンとデーモンがオンラインに戻ると処理されます。' },
+            waiting: { title: '再開を待っています', body: 'デーモンがこのセッションを再開する間、メッセージは安全にキューへ保存されています。' },
+            failed: { title: 'セッションを再開できませんでした', body: 'メッセージは引き続き安全にキューへ保存されています。準備ができたら再試行してください。' },
+            queued: { title: 'メッセージをキューへ保存しました', body: 'この非アクティブなセッションにはキュー内のメッセージがあります。準備ができたら再開してください。' },
+            queued_offline: { title: '手動再開待ちのメッセージ', body: 'このセッションを再開するまでキューに残ります。' },
+            actions: { retry: '再試行', resume: '再開', process_when_online: 'オンライン時に処理', keepQueued: 'キューに残す', autoResumeOptions: '自動再開オプション' },
+        },
+	    composerBanners: {
         showBannerAction: 'バナーを表示',
         hideBannerAction: 'バナーを非表示',
     },
@@ -6380,9 +6441,6 @@ localTailscale: {
 	      },},
 	    resuming: "再開中...",
 	    resumeFailed: "セッションの再開に失敗しました",
-	    pendingQueuedResumeFailedTitle: "メッセージはキューに保存されました",
-	    pendingQueuedResumeFailedBody:
-	      "メッセージは保留キューに保存されましたが、Happier はこのセッションを再開できませんでした。再試行して開始してください。",
 	    invalidLinkTitle: "無効なセッションリンク",
 	    invalidLinkDescription: "セッションリンクが見つからないか無効です。URL を確認してもう一度お試しください。",
 	    resumeSupportNoteChecking:
@@ -6768,13 +6826,27 @@ localTailscale: {
     },
   },
 
+    universalSearch: {
+        commitsUpdateRequired: 'コミットを検索するには、このマシンの Happier を更新してください。',
+    moreResultsAvailable: 'さらに結果があります。検索条件を絞り込んでください。',
+    sections: {
+      sessions: 'セッション',
+      projects: 'プロジェクト',
+      settings: '設定',
+      messages: 'メッセージ',
+      files: 'ファイル',
+      commits: 'コミット',
+    },
+  },
+
   commandPalette: {
     placeholder: "コマンドを入力または検索...",
     noCommandsFound: "コマンドが見つかりません",
+    activationFailed: "そのコマンドを実行できませんでした。",
         shortcutsHelpTitle: 'キーボードショートカット',
         shortcutsHelpBody: ({ shortcuts }: { shortcuts: string }) => `有効なショートカット:\n${shortcuts}`,
         shortcutsHelpEmpty: 'このデバイスで有効なショートカットはありません。',
-        shortcutsHelpCommandPalette: 'コマンドパレットを開く',
+        shortcutsHelpCommandPalette: '検索を開く',
         shortcutsHelpHelp: 'キーボードショートカットを開く',
         shortcutsHelpNewSession: '新規セッション',
         commands: {
@@ -7159,6 +7231,14 @@ localTailscale: {
     viewOptions: '表示オプション',
     searchSessions: 'セッションを検索',
     searchSessionsPlaceholder: 'セッションを検索...',
+    searchEverythingFor: ({ query }: { query: string }) => `すべてから「${query}」を検索`,
+    searchGroupInThisView: 'この表示内',
+    searchGroupOtherMatches: 'その他の一致',
+    searchMatchTranscript: '会話内容に一致',
+    searchMatchHiddenByFilters: 'フィルターで非表示',
+    searchMatchArchived: 'アーカイブ済み',
+    searchMatchExternal: '外部',
+    searchMatchAnotherMachine: '別のマシン',
     filterByTags: 'タグで絞り込み',
     folders: 'フォルダー',
     addFolder: 'フォルダーを追加',
@@ -7380,7 +7460,8 @@ localTailscale: {
     viewSessionLogTitle: "セッションログを表示",
     viewSessionLogSubtitle: "このセッションのライブログ末尾を開く",
     pinSession: "セッションをピン留め",
-    unpinSession: "ピン留め解除",
+        unpinSession: "ピン留め解除",
+        pinLimitExceeded: ({ count }: { count: number }) => `${count.toLocaleString()} 件までセッションをピン留めできます。別のセッションのピン留めを解除して、もう一度お試しください。`,
     copyResumeCommand: "再開コマンドをコピー",
     resumeCommand: ({ sessionId }: { sessionId: string }) => `happier resume ${sessionId}`,
     viewMachine: "マシンを表示",
@@ -9888,6 +9969,16 @@ settingsSession: {
         title: '詳細',
     },
     messageSending: {
+      inactiveResumePolicyTitle: '送信後の自動再開',
+      inactiveResumePolicySubtitle: '非アクティブなセッションへ送信した後の Happier の動作を選択します。',
+      inactiveResumePolicy: {
+        whenAvailableTitle: '今すぐ、またはマシン復帰時',
+        whenAvailableSubtitle: '到達可能ならすぐ再開し、そうでなければデーモン再接続時に処理します。',
+        onlineOnlyTitle: 'マシンがオンラインの場合のみ',
+        onlineOnlySubtitle: '送信時に一度だけ試します。利用できない場合はメッセージをキューに残します。',
+        manualTitle: '自動では再開しない',
+        manualSubtitle: 'セッションを再開するまで、常にメッセージをキューに残します。',
+      },
       title: "メッセージ送信",
       footer:
         "エージェント実行中にメッセージを送信したときの挙動を設定します。",
@@ -11541,6 +11632,8 @@ settingsSession: {
     notAvailable: "利用不可",
     linkNewDevice: "QRをスキャンして新しいデバイスをリンク",
     linkNewDeviceSubtitle: "新しいデバイスに表示されたQRコードをスキャンします",
+    addAnotherHome: "別のホームを追加",
+    addAnotherHomeSubtitle: "現在のホームを切り替えずにQRコードをスキャンします",
     profile: "プロフィール",
     name: "名前",
     github: "GitHub",
@@ -12054,6 +12147,8 @@ settingsSession: {
     welcomePrimarySubtitle: "ワンタップ。フォーム不要。鍵はこの端末に保管されます。",
 
     welcomeSecondaryButton: "ログイン — すでに Happier を使っています",
+    continueWithKey: "シークレットキーを使う",
+    useDifferentHome: "別のHomeを使う",
     welcomeSecondarySubtitle: "QRコードをスキャンするか、シークレットキーを入力してください",
 
     // Unified onboarding redesign — returning-user copy variants.
@@ -12275,6 +12370,8 @@ settingsSession: {
           relayCustomUrlSubtitle: 'すでに動かしているRelayのURLを使います',
           authRestoreTitle: 'このデバイスを復元または追加',
           authRestoreSubtitle: 'QRコードかリンクを使ってこのデバイスを接続します',
+          addHomeTitle: '別のホームを追加',
+          addHomeSubtitle: '現在のホームを離れずにQRコードをスキャンしてホームを追加します',
           authSecretKeyTitle: '秘密鍵でログイン',
           authSecretKeySubtitle: '秘密鍵を入力してHappierにサインインします',
           authLostAccessTitle: 'アクセスを失いましたか？',
@@ -13155,12 +13252,15 @@ settingsSession: {
       ...pluginAccountReleaseSelectionTranslations.ja,
       ...pluginMachineMatrixTranslations.ja,
       ...pluginInvocationLogTranslations.ja,
+      ...pluginMarketplaceDiscoverTranslations.ja,
       ...eventAutomationComposerTranslations.ja,
     title: "プラグイン カタログ",
-    subtitle: "厳選されたプラグイン記述子を確認し、この端末でインストール済みプラグインを管理できます。",
+    subtitle: "npm と設定済みソースからプラグインを見つけ、このマシンにインストール済みのプラグインを管理します。",
     appPanelsTitle: "プラグインパネル",
     appPanelsSubtitle: "インストール済みプラグインが追加したアプリパネルを開きます。",
     executionOriginReleaseContentConflict: "リリース内容が一致しません。新しいバージョンを公開してください。",
+    administrationMachineTitle: "管理マシン",
+    executionOriginTitle: "実行元",
     readOnlyProjectionUnavailable: "キャッシュされたプラグインの詳細は読み取り専用です。この端末には接続できますが、プラグインレジストリを読み込めませんでした。プラグインを管理するには再試行してください。",
     readOnlyAccountRecovery: "プラグインのアカウント詳細は利用できますが、互換性のあるプラグインのインストールが利用可能になるまで、この端末固有の詳細は利用できません。",
     readOnlySnapshot: "この端末が切断されている間、キャッシュされたプラグインの詳細は読み取り専用です。プラグインを管理するには再接続してください。",
@@ -13185,12 +13285,15 @@ settingsSession: {
     pendingChangesTitle: "あなたの判断待ち",
     pendingChangesFooter: "このマシンで準備されたプラグイン変更です。エージェントは準備できますが、承認できるのはあなただけです。",
     pendingChangesReviewHint: "何かを信頼する前に、完全なレビューを表示します。",
+    pendingChangeReviewAction: "レビュー",
+    pendingChangeRejectHint: "準備された変更を破棄します。インストールも信頼もされません。",
     pendingChangeSourceRootSubtitle: ({ path }: { path: string }) => `プラグインフォルダー: ${path}`,
     pendingChangeInstallSubtitle: ({ pluginId, source }: { pluginId: string; source: string }) => `${source} からの ${pluginId}`,
     pendingChangeApplying: "この変更はすでに決定され、適用中です。",
     pendingChangeExpired: "この変更は判断される前に期限切れになりました。もう一度依頼してください。",
     pendingChangeRejected: "プラグイン変更は拒否されました。",
-    pendingChangeConfirmRejectBody: "準備された変更は破棄されます。何もインストールも信頼もされません。",
+    pendingChangeConfirmRejectBody: ({ machine, server }: { machine: string; server: string }) => `準備された変更は ${machine}（${server}）で破棄されます。何もインストールも信頼もされません。`,
+    pendingChangeCommitted: "この変更はすでに決定され、適用されました。",
     pendingChangeFailed: ({ outcome }: { outcome: string }) => `プラグイン変更は適用されませんでした (${outcome})。`,
     developmentCreateDirectoryTitle: "プラグインフォルダー",
     developmentCreateDirectoryBody: "選択したマシン上の新しい絶対パスを入力してください。フォルダーは未作成である必要があります。",
@@ -13220,10 +13323,24 @@ settingsSession: {
     diagnosticsSnapshotEmptySubtitle: "この端末から現在のレジストリ診断が報告されると、ここに表示されます。",
     catalogUrlLabel: "カタログ URL",
     loadCatalog: "カタログを読み込む",
+    discoverTitle: "プラグインを見つける",
+    discoverSearchLabel: "プラグインを検索",
+    discoverSearchPlaceholder: "すべてのマーケットプレイスソースをまとめて検索",
+    discoverSearch: "検索",
+    discoverSourceFilterLabel: "マーケットプレイスソースのフィルター",
+    discoverSourceAll: "すべて",
+    discoverLoadMore: "さらに読み込む",
+    discoverRevisionChanged: "追加読み込みの間にマーケットプレイスのインデックスが変わりました。もう一度検索して最新の結果を表示してください。",
+    discoverEmptyTitle: "プラグインが見つかりません",
+    discoveredVia: ({ source }: { source: string }) => `${source} で発見`,
+    sourceKindCurated: "厳選マーケットプレイス — 推奨であり許可ではありません",
+    sourceKindUser: "あなたのマーケットプレイスソース",
+    sourceKindCommunityNpm: "公開 npm レジストリ",
+    communityNpmSourceTitle: "コミュニティ npm",
     installAndTrust: "インストールして信頼",
     marketplaceWithdrawnTitle: "マーケットプレイスから取り下げ済み",
-    marketplaceWithdrawnBody: "この掲載は選定済みマーケットプレイスから取り下げられました。新規インストールと更新はブロックされています。",
-    marketplaceWithdrawnInstalledBody: "この掲載は選定済みマーケットプレイスから取り下げられました。新規インストールと更新はブロックされています。インストール済みのプラグインは、無効化またはアンインストールするまで有効なままです。",
+    marketplaceWithdrawnBody: "この掲載は選定済みマーケットプレイスから取り下げられました。この掲載からの新規インストールはブロックされています。",
+    marketplaceWithdrawnInstalledBody: "この掲載は選定済みマーケットプレイスから取り下げられました。この掲載からの新規インストールはブロックされています。インストール済みのプラグインは有効なままで、選択した更新ルールに従って更新されます。",
     trustPolicy: {
       localTrusted: "ローカルで信頼済み",
       trusted: "信頼済み",
@@ -13254,6 +13371,9 @@ settingsSession: {
     marketplaceInstallReviewRawCredentialAccess: ({ details }: { details: string }) => `生の Voice 認証情報アクセス:\n${details}`,
     marketplaceInstallReviewRawCredentialAccessItem: ({ contribution, credential, source, realm, phase, request }: { contribution: string; credential: string; source: string; realm: string; phase: string; request: string }) =>
       `${contribution}: ${credential}。ソース ${source}、ランタイム ${realm}、フェーズ ${phase}、リクエスト ${request}。${realm} ランタイムのプラグインコードは選択した認証情報を直接受け取り、使用またはコピーできます。`,
+    marketplaceInstallReviewRequestInterceptors: ({ details }: { details: string }) => `リクエストポリシー（URL/メソッド書き換えの対象）：\n${details}`,
+    marketplaceInstallReviewRequestInterceptorItem: ({ id, origins, methods, priority }: { id: string; origins: string; methods: string; priority: string }) =>
+      `${id}: オリジン ${origins}; メソッド ${methods}; 優先度 ${priority}`,
     marketplaceInstallReviewBody: ({ identity, verification, executableRealms, contributions, uiArtifacts, requiredAccess, optionalAccess, compatibility }: { identity: string; verification: string; executableRealms: string; contributions: string; uiArtifacts: string; requiredAccess: string; optionalAccess: string; compatibility: string }) => `識別情報:\n${identity}\n\n検証シグナル:\n${verification}\n\n実行可能コード: ${executableRealms}\nコントリビューション: ${contributions}\nUI アーティファクト: ${uiArtifacts}\n\n信頼されたデーモンおよび React Native コードは、アプリまたはプロセスの権限で実行され、ファイル、ネットワーク、環境、プロセスを直接使用できます。以下のホストアクセスは Happier が仲介するサービスを示すものであり、実行可能なプラグインコードのサンドボックスではありません。\n\n必須の開示と協調サービス:\n${requiredAccess}\n\n任意のホスト所有リソース（既定ではオフ）:\n${optionalAccess}\n\n互換性と更新:\n${compatibility}`,
     marketplaceInstallDecisionFailed: ({ outcome }: { outcome: string }) => `プラグインはインストールされませんでした（${outcome}）。`,
     marketplaceChangeDecisionFailed: ({ action, outcome }: { action: string; outcome: string }) => `${action}に失敗しました（${outcome}）。`,
@@ -13267,6 +13387,7 @@ settingsSession: {
     marketplaceCommunityUnreviewedBody: "このサードパーティ製 npm パッケージは Happier による審査を受けていません。「インストールして信頼」は、デーモンがこの正確なバージョンと整合性を検証した後、宣言された実行可能コードとホストアクセスを承認します。信頼されたデーモンおよび React Native コードはアプリまたはプロセスの権限で実行され、表示されるホストアクセスはサンドボックスではありません。",
     genericSettingsTitle: "プラグイン設定",
     genericSettingsFooter: "このマシン上で、このプラグイン用にローカル保存されます。",
+    genericSettingsAccountFooter: "このプラグイン用にアカウント全体で同期されます。",
     genericSettingsLoading: "プラグイン設定を読み込み中",
     genericSettingsUnavailable: "このマシンではプラグイン設定を利用できません。",
     genericSettingsLoadError: "プラグイン設定を読み込めませんでした。",
@@ -13276,6 +13397,7 @@ settingsSession: {
     registriesFooter: "レジストリへのサインインはパッケージアクセスのみを制御します。レジストリを削除またはサインアウトしても、インストール済みで信頼済みのプラグインは利用できます。",
     registriesAdd: "レジストリを追加",
     registriesAddTitle: "プライベートレジストリを追加",
+    registriesOriginTitle: "レジストリのオリジン",
     registriesAddOriginBody: "認証情報を含まない HTTPS レジストリのオリジンを入力してください。",
     registriesInvalidOriginTitle: "レジストリのオリジンが無効です",
     registriesInvalidOriginBody: "パス、クエリ、フラグメント、認証情報を含まない HTTPS オリジンを使用してください。",
@@ -13319,6 +13441,8 @@ settingsSession: {
     },
     registriesErrorTitle: "レジストリ操作に失敗しました",
     registriesErrorBody: "レジストリ一覧を更新して、もう一度お試しください。",
+    registriesConflictTitle: "レジストリ設定が変更されました",
+    registriesConflictBody: "この操作の適用前にレジストリ設定が変更されました。更新された一覧を確認して、もう一度お試しください。",
     registriesInvalidProfileTitle: "レジストリ設定が無効です",
     registriesInvalidProfileBody: "レジストリ名とパッケージスコープを確認して、もう一度お試しください。",
     registriesNoMachine: "プライベートレジストリを管理するマシンを選択してください。",
@@ -13435,6 +13559,7 @@ settingsSession: {
         missingRequirement: 'このデバイスでは、このプラグインビューに必要な要件が満たされていません。',
     },
     personalHome: {
+        settings: personalHomeSettingsTranslations.ja,
         bootstrap: {
             title: 'パーソナルホームを準備しています',
             ensuringHomeStatus: 'ローカルホームを準備しています。',

@@ -4,7 +4,10 @@ import type { SessionListRenderableSession } from '@/sync/domains/session/listin
 import type { Session } from '@/sync/domains/state/storageTypes';
 import type { StorageState } from '@/sync/store/types';
 
-import { createSessionListSearchTextSelector } from './useSessionListSearchTextByKey';
+import {
+    buildCanonicalSessionListSearchText,
+    createSessionListSearchTextSelector,
+} from './useSessionListSearchTextByKey';
 
 function createRenderable(
     overrides: Partial<SessionListRenderableSession> & Pick<SessionListRenderableSession, 'id'>,
@@ -37,6 +40,22 @@ function createState(overrides: Partial<StorageState>): StorageState {
 }
 
 describe('createSessionListSearchTextSelector', () => {
+    it('exposes the same metadata normalization for archived and active session surfaces', () => {
+        const session = createRenderable({
+            id: 'session1',
+            metadata: {
+                name: 'Build lane',
+                summaryText: 'Parser follow-up',
+                path: '/workspace/project',
+                host: 'builder',
+                machineId: 'machine-a',
+            },
+        });
+
+        expect(buildCanonicalSessionListSearchText({ sessionId: session.id, renderable: session }))
+            .toBe('session1\nBuild lane\nParser follow-up\n/workspace/project\nbuilder\nmachine-a');
+    });
+
     it('reuses cached text without reading rows on an empty session-list delta tick', () => {
         let metadataReads = 0;
         const renderable = createRenderable({ id: 'session1' });
@@ -120,5 +139,56 @@ describe('createSessionListSearchTextSelector', () => {
 
         expect(result['server1:session1']).toContain('/private/repo');
         expect(result['server1:session1']).not.toContain('/must-not-index');
+    });
+
+    it('does not index hydrated transcript or tool-call text into the immediate local haystack', () => {
+        const selector = createSessionListSearchTextSelector([
+            { type: 'session', sessionId: 'session1', serverId: 'server1', serverName: undefined },
+        ], true);
+        const result = selector(createState({
+            sessionListRenderables: {
+                session1: createRenderable({
+                    id: 'session1',
+                    metadata: { name: 'Canonical metadata title', path: '/workspace/project' },
+                }),
+            },
+            sessionMessages: {
+                session1: {
+                    messages: [
+                        { id: 'message-1', kind: 'user-text', text: 'hydrated-transcript-only-term' },
+                        {
+                            id: 'message-2',
+                            kind: 'tool-call',
+                            tool: { name: 'shell', description: 'tool-description-only-term' },
+                        },
+                    ],
+                },
+            },
+        }));
+
+        expect(result['server1:session1']).toContain('Canonical metadata title');
+        expect(result['server1:session1']).not.toContain('hydrated-transcript-only-term');
+        expect(result['server1:session1']).not.toContain('tool-description-only-term');
+    });
+
+    it('does not index pending or discarded message text into the immediate local haystack', () => {
+        const selector = createSessionListSearchTextSelector([
+            { type: 'session', sessionId: 'session1', serverId: 'server1', serverName: undefined },
+        ], true);
+        const result = selector(createState({
+            sessionListRenderables: {
+                session1: createRenderable({ id: 'session1', metadata: { name: 'Metadata only' } }),
+            },
+            sessionPending: {
+                session1: {
+                    messages: [{ id: 'pending-1', text: 'pending-only-term' }],
+                    discarded: [{ id: 'discarded-1', text: 'discarded-only-term' }],
+                },
+            },
+        }));
+
+        expect(result['server1:session1']).toContain('Metadata only');
+        expect(result['server1:session1']).not.toContain('pending-only-term');
+        expect(result['server1:session1']).not.toContain('discarded-only-term');
     });
 });

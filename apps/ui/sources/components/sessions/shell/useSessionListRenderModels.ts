@@ -32,6 +32,11 @@ import {
     hasActiveSessionListHeaderFilters,
     type SessionListHeaderFilterInput,
 } from './sessionListFilters';
+import {
+    appendSessionListSearchOtherMatches,
+    resolveSessionListSearchOutsideMatches,
+    type SessionListSearchOutsideMatch,
+} from './search/sessionListSearchGroups';
 import type { SessionListProjectHeaderViewModelState } from './sessionListProjectHeaderViewModels';
 import type { VisibleSessionListPaneState } from '@/hooks/session/useVisibleSessionListPaneState';
 import type { WorkspaceScopeBase } from '@/sync/domains/workspaces/workspaceScope';
@@ -108,6 +113,15 @@ function countCollapsedSessionListGroups(collapsedGroupKeys: Readonly<Record<str
     return groups;
 }
 
+function buildSessionListItemKeySet(items: ReadonlyArray<SessionListIndexItem>): ReadonlySet<string> {
+    const keys = new Set<string>();
+    for (const item of items) {
+        if (item.type !== 'session' || !item.serverId) continue;
+        keys.add(sessionTagKey(item.serverId, item.sessionId));
+    }
+    return keys;
+}
+
 function measureSessionListRenderDerivation<T>(
     name: string,
     fields: () => Record<string, number>,
@@ -171,6 +185,12 @@ function resolveCachedSessionListReachabilityRenderablesForItems(input: Readonly
     return next.size === 0 ? EMPTY_SESSION_LIST_REACHABILITY_RENDERABLES_BY_KEY : next;
 }
 
+export type SessionListSearchOtherMatches = Readonly<{
+    matches: ReadonlyArray<SessionListSearchOutsideMatch>;
+    inThisViewTitle: string;
+    otherMatchesTitle: string;
+}>;
+
 export function useSessionListRenderModels(input: Readonly<{
     paneState: VisibleSessionListPaneState;
     collapsedGroupKeys: Readonly<Record<string, boolean>>;
@@ -181,6 +201,11 @@ export function useSessionListRenderModels(input: Readonly<{
     pinnedKeySet: ReadonlySet<string>;
     sessionTags: Readonly<Record<string, string[]>>;
     headerFilters?: SessionListHeaderFilterInput;
+    /**
+     * Transcript matches outside this list's own sessions, grouped after the in-view
+     * results. Supplying them groups results; it never mutates the active filters.
+     */
+    searchOtherMatches?: SessionListSearchOtherMatches | null;
     selectedSessionId: string | null;
     showServerBadge: boolean;
     showPinnedServerBadge: boolean;
@@ -241,11 +266,25 @@ export function useSessionListRenderModels(input: Readonly<{
     }, [headerFiltersActive, input.collapsedGroupKeys, input.paneState.visibleSessionListIndex]);
     const filteredListItems = React.useMemo(() => {
         if (!visibleListItems || !input.headerFilters) return visibleListItems;
-        return filterSessionListItemsForHeaderControls(visibleListItems, {
+        const filtered = filterSessionListItemsForHeaderControls(visibleListItems, {
             ...input.headerFilters,
             sessionTags: normalizedShellState.sessionTags,
         });
-    }, [input.headerFilters, normalizedShellState.sessionTags, visibleListItems]);
+        const otherMatches = input.searchOtherMatches;
+        if (!otherMatches || otherMatches.matches.length === 0) return filtered;
+        const outsideMatches = resolveSessionListSearchOutsideMatches({
+            candidateSessionKeys: buildSessionListItemKeySet(visibleListItems),
+            currentViewSessionKeys: buildSessionListItemKeySet(filtered),
+            matchedSessionTargets: otherMatches.matches,
+        });
+        if (outsideMatches.length === 0) return filtered;
+        return appendSessionListSearchOtherMatches({
+            filteredItems: filtered,
+            outsideMatches,
+            inThisViewTitle: otherMatches.inThisViewTitle,
+            otherMatchesTitle: otherMatches.otherMatchesTitle,
+        });
+    }, [input.headerFilters, input.searchOtherMatches, normalizedShellState.sessionTags, visibleListItems]);
     const listItems = (filteredListItems ?? []) as Array<SessionListIndexItem>;
     const existingDraftBySessionKey = React.useMemo(() => {
         const drafts = new Map<string, ExistingSessionDraftProjection>();

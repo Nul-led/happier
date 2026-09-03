@@ -3,6 +3,8 @@ import {
     useMachineAdministrationTargetSelection,
     type MachineAdministrationTargetSelectionV1,
 } from '@/sync/domains/machines/administration/useTargetSelection';
+import { isMachineAdministrationCandidateSelectable } from '@/sync/domains/machines/administration/targetSelection';
+import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
 
 /**
  * Exact daemon-memory request target: the machine whose local index holds the
@@ -23,8 +25,20 @@ export type DaemonMemorySearchTargetV1 = Readonly<{
  * of querying an arbitrary daemon.
  */
 export function resolveDaemonMemorySearchTarget(
-    selection: Pick<MachineAdministrationTargetSelectionV1, 'resolveExecutionTarget'>,
+    selection: Pick<MachineAdministrationTargetSelectionV1, 'resolveExecutionTarget' | 'pickerRows'>,
+    requestedTarget?: Readonly<{ serverId: string; machineId: string }> | null,
 ): DaemonMemorySearchTargetV1 | null {
+    if (requestedTarget) {
+        const requestedServerId = String(requestedTarget.serverId ?? '').trim();
+        const requestedMachineId = String(requestedTarget.machineId ?? '').trim();
+        if (!requestedServerId || !requestedMachineId) return null;
+        const row = selection.pickerRows.find((candidate) => (
+            areServerProfileIdentifiersEquivalent(candidate.serverId, requestedServerId)
+            && candidate.candidate.target.machineId === requestedMachineId
+            && isMachineAdministrationCandidateSelectable(candidate.candidate)
+        ));
+        return row ? { serverId: row.serverId, machineId: requestedMachineId } : null;
+    }
     const resolved = selection.resolveExecutionTarget();
     if (!resolved) return null;
     const serverId = String(resolved.serverId ?? '').trim();
