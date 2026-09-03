@@ -306,7 +306,7 @@ describe('UnauthenticatedSplitShell', () => {
         expect(screenNoBack.findAllByTestId('unauth-shell-back-chevron')).toEqual([]);
     });
 
-    it('invokes onOpenRelayCustomFlow when the welcome footer Relay link is pressed', async () => {
+    it('does not expose the focused Home as a welcome auth authority and keeps footer links touchable', async () => {
         mockLayout('split');
         const onOpenRelayCustomFlow = vi.fn();
         const screen = await renderScreen(
@@ -320,8 +320,18 @@ describe('UnauthenticatedSplitShell', () => {
             </UnauthenticatedSplitShell>,
         );
 
-        screen.pressByTestId('welcome-footer-relay-action');
-        expect(onOpenRelayCustomFlow).toHaveBeenCalledTimes(1);
+        expect(screen.findAllByTestId('welcome-footer-relay-action')).toEqual([]);
+        expect(onOpenRelayCustomFlow).not.toHaveBeenCalled();
+        for (const testID of [
+            'welcome-footer-github-action',
+            'welcome-footer-discord-action',
+            'welcome-footer-docs-action',
+        ]) {
+            expect(flattenStyle(screen.findByTestId(testID)?.props.style)).toMatchObject({
+                minWidth: 44,
+                minHeight: 44,
+            });
+        }
     });
 });
 

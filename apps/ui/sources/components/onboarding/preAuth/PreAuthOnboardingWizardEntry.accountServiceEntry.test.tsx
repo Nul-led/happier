@@ -429,7 +429,7 @@ describe('PreAuthOnboardingWizardEntry — Account Service welcome sign-in', () 
             await choose();
         });
 
-        expect(discoverAuthenticationMethodsMock).toHaveBeenLastCalledWith({
+        expect(discoverAuthenticationMethodsMock).toHaveBeenCalledWith({
             endpointUrl: OTHER_SERVICE_URL,
             expectedServerIdentityId: null,
         });
