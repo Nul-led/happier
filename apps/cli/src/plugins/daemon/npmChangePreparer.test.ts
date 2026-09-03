@@ -798,7 +798,10 @@ describe('createDaemonNpmPluginChangePreparer', () => {
     expect(after.source.resolvedVersion).toBe('1.2.4');
     expect(after.install.trust).toEqual(before.install.trust);
     expect(after.install.optionalAccess).toEqual(before.install.optionalAccess);
-    expect(after.install.optionalAccess?.[0]?.selectedAtMs).toBe(10);
+    // A review-free update reuses the selection time the reviewed install
+    // stamped; it does not restamp it from the update's own clock.
+    expect(after.install.optionalAccess?.[0]?.selectedAtMs)
+      .toBe(before.install.optionalAccess?.[0]?.selectedAtMs);
     // A review-free update preserves the exact principal the user reviewed;
     // it must not replace catalog presentation or registry-signature evidence
     // with facts derived from an update that had no new human review.

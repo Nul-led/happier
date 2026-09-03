@@ -125,7 +125,6 @@ describe('requestPluginDevelopmentChange', () => {
         appliedGeneration: 'generation-derived',
         pendingSurfaces: [],
       });
-    let interaction = 0;
 
     await expect(requestPluginDevelopmentChange(
       { kind: 'development', projectRoot: '/tmp/plugin.ts' },
@@ -134,7 +133,6 @@ describe('requestPluginDevelopmentChange', () => {
         confirm,
         requestChange,
         decideChange,
-        nowMs: () => interaction,
       },
     )).resolves.toEqual({ ok: true, generation: { desired: 'generation-derived', applied: 'generation-derived', pendingSurfaces: [] } });
 
@@ -177,7 +175,6 @@ describe('requestPluginDevelopmentChange', () => {
         appliedGeneration: 'generation-derived',
         pendingSurfaces: [],
       });
-    let interaction = 0;
 
     await expect(requestPluginDevelopmentChange(
       { kind: 'development', projectRoot: '/tmp/plugin.ts' },
@@ -186,7 +183,6 @@ describe('requestPluginDevelopmentChange', () => {
         confirm,
         requestChange,
         decideChange,
-        nowMs: () => interaction,
       },
     )).resolves.toEqual({ ok: true, generation: { desired: 'generation-derived', applied: 'generation-derived', pendingSurfaces: [] } });
 

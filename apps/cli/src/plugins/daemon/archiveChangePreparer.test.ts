@@ -756,6 +756,9 @@ describe('createDaemonArchivePluginChangePreparer', () => {
             adopt: async () => { throw new Error('adoption failed'); },
           }),
         },
+        // The decision carries no timestamp, so a persisted selection time can
+        // only have come from this daemon-owned clock.
+        nowMs: () => 13,
       }),
       createPendingChangeId: () => 'pending-archive-adoption',
     });

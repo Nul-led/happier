@@ -178,6 +178,57 @@ describe('plugin search query and result schemas', () => {
     });
   });
 
+  /**
+   * The row's activation target is the incumbent semantic command, so the
+   * result parser must refuse anything that union refuses. A row whose
+   * `command` is `null`, `{}`, a missing discriminator or an unknown key is a
+   * value no activation owner can ever run; admitting it here would push a
+   * shape failure past the boundary that is supposed to catch it.
+   */
+  it('refuses a row whose command is not a semantic command', () => {
+    const row = { id: 'entry-1', title: 'Fix the crash' };
+    const parseCommand = (command: unknown) => PluginSearchResultV1Schema.safeParse({
+      items: [{ ...row, command }],
+      truncated: false,
+    }).success;
+    expect(parseCommand(null)).toBe(false);
+    expect(parseCommand({})).toBe(false);
+    expect(parseCommand('open-entry')).toBe(false);
+    expect(parseCommand({ kind: 'executeAction' })).toBe(false);
+    expect(parseCommand({ kind: 'openSurface' })).toBe(false);
+    expect(parseCommand({ kind: 'navigate', destination: 'triage' })).toBe(false);
+    expect(parseCommand({ kind: 'executeAction', action: 'open-entry', href: '/x' })).toBe(false);
+    expect(parseCommand({ kind: 'openSurface', destination: 'triage', subPath: '../escape' })).toBe(false);
+  });
+
+  it('accepts both members of the incumbent semantic command union', () => {
+    const row = { id: 'entry-1', title: 'Fix the crash' };
+    const parsed = PluginSearchResultV1Schema.safeParse({
+      items: [
+        { ...row, command: { kind: 'executeAction', action: 'open-entry', input: { id: 7 } } },
+        {
+          ...row,
+          id: 'entry-2',
+          command: {
+            kind: 'openSurface',
+            destination: { pluginId: 'triage', localId: 'entry-details' },
+            instanceKey: 'entry-2',
+          },
+        },
+      ],
+      truncated: false,
+    });
+    expect(parsed.success).toBe(true);
+    expect(parsed.success && parsed.data.items.map((item) => item.command)).toEqual([
+      { kind: 'executeAction', action: 'open-entry', input: { id: 7 } },
+      {
+        kind: 'openSurface',
+        destination: { pluginId: 'triage', localId: 'entry-details' },
+        instanceKey: 'entry-2',
+      },
+    ]);
+  });
+
   it('refuses arbitrary activation payloads, scores and unbounded results', () => {
     const item = {
       id: 'entry-1',

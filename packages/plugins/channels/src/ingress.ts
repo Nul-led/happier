@@ -5059,7 +5059,13 @@ export async function runConversationIngressDueWorkForInvocation(input: Readonly
   const page = await collection.query({
     index: CHANNEL_STATE_INDEX_ID.byIngressDue,
     prefix: [CHANNEL_STATE_RECORD_KIND.ingressObligation],
-    range: { upper: now },
+    // The canonical ordinal index sorts a null due-at key (terminal and
+    // attention-retained rows) ahead of every numeric due-at key, so an
+    // unbounded-below range lets retained null-due rows satisfy `upper` and
+    // fill the whole page, starving genuinely due obligations behind them.
+    // Every admitted due-at is a nonnegative safe integer, so 0 is the exact
+    // due domain and excludes the null keys.
+    range: { lower: 0, upper: now },
     order: 'asc',
     limit,
   }, { signal: context.signal });

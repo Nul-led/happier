@@ -195,6 +195,10 @@ _.env.pipeline.production.local
 /packages/plugin-sdk/tsconfig.facade-inference-current.json
 /packages/plugin-sdk/src/**/*.d.ts
 /packages/plugin-sdk/src/**/*.d.ts.map
+# SDK test-lane owned author roots. The public author build materializes plugin
+# dependencies into whatever root it builds, and `examples/**` must stay free of
+# them so cross-package source tests resolve the workspace SDK.
+/packages/plugin-sdk/.example-builds/
 /packages/protocol/src/**/*.d.ts.map
 /packages/protocol/.released-account-scoped-reader-*/
 /apps/ui/scripts/icons/codemod*.mjs

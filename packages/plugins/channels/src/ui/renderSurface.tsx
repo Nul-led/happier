@@ -2348,6 +2348,19 @@ function validObservationAge(value: string): number | undefined {
   return isValidObservationAge(parsed) ? parsed : undefined;
 }
 
+/**
+ * The one predicate behind `ResourceFreshnessNotice`. A caller that has to
+ * reserve layout for the notice asks here instead of restating the rule, so
+ * there is never a second opinion about whether the Resource has something to
+ * disclose.
+ */
+function resourceFreshnessNoticeApplies(resource: ResourcePresentation): boolean {
+  return resource.pending === 'refresh'
+    || resource.freshness === 'stale'
+    || resource.error !== undefined
+    || resource.subscription === 'ended';
+}
+
 function ResourceFreshnessNotice(props: Readonly<{
   resource: ResourcePresentation;
   onRefresh: () => void;
@@ -2355,6 +2368,7 @@ function ResourceFreshnessNotice(props: Readonly<{
   subject?: 'binding' | 'connection';
   testIDPrefix?: string;
 }>): React.ReactElement | null {
+  if (!resourceFreshnessNoticeApplies(props.resource)) return null;
   const subject = props.subject ?? 'connection';
   const testIDPrefix = props.testIDPrefix ?? 'channels-resource';
   const bindingSubject = subject === 'binding';
@@ -2422,6 +2436,38 @@ function ResourceFreshnessNotice(props: Readonly<{
     );
   }
   return null;
+}
+
+/**
+ * One presentation for "what you are editing changed underneath you".
+ *
+ * The binding editor and the connection policy editor state the same fact and
+ * offer the same explicit Reload, so they share this owner instead of growing
+ * two similar-but-different banners with drifting copy and affordances.
+ */
+function SourceChangedWhileEditingNotice(props: Readonly<{
+  title: string;
+  description: string;
+  onReload: () => void;
+  t: Translate;
+  testID?: string;
+  reloadTestID?: string;
+}>): React.ReactElement {
+  return (
+    <Banner
+      {...(props.testID === undefined ? {} : { testID: props.testID })}
+      tone="warning"
+      title={props.title}
+      description={props.description}
+      action={(
+        <Action.Refresh
+          {...(props.reloadTestID === undefined ? {} : { testID: props.reloadTestID })}
+          title={props.t('plugins.channels.surface.reload', 'Reload')}
+          onRefresh={props.onReload}
+        />
+      )}
+    />
+  );
 }
 
 function BindingEnablementFailureNotice(props: Readonly<{
@@ -6178,25 +6224,25 @@ function BindingEditJourney(props: Readonly<{
   })();
 
   const currentSummaryNotice = summaryChanged ? (
-    <Banner
-      tone="warning"
+    <SourceChangedWhileEditingNotice
       title={props.t('plugins.channels.surface.bindingEditSummaryChangedTitle', 'This binding changed while you were editing')}
       description={props.t(
         'plugins.channels.surface.bindingEditSummaryChangedDescription',
         'Your draft is retained, but saving is locked until you reload the current binding summary and exact detail.',
       )}
-      action={<Action.Refresh title={props.t('plugins.channels.surface.reload', 'Reload')} onRefresh={requestReload} />}
+      onReload={requestReload}
+      t={props.t}
     />
   ) : null;
   const connectionNotice = connectionChanged || !providerControlsAvailable ? (
-    <Banner
-      tone="warning"
+    <SourceChangedWhileEditingNotice
       title={props.t('plugins.channels.surface.bindingEditConnectionChangedTitle', 'Current provider connection details are unavailable')}
       description={props.t(
         'plugins.channels.surface.bindingEditConnectionChangedDescription',
         'Your draft is retained. Reload the current connection and re-resolve provider-dependent choices before saving.',
       )}
-      action={<Action.Refresh title={props.t('plugins.channels.surface.reload', 'Reload')} onRefresh={requestReload} />}
+      onReload={requestReload}
+      t={props.t}
     />
   ) : null;
 
@@ -7811,21 +7857,52 @@ type ConnectionPolicyDraft = Readonly<{
   revision: number;
   enabled: boolean;
   maximumObservationAgeMs: string;
+  /**
+   * The exact saved policy this draft started from. It is the dirtiness
+   * authority: without it a rebase cannot tell an untouched editor from one
+   * holding work that has not been written yet.
+   */
+  base: Readonly<{ enabled: boolean; maximumObservationAgeMs: string }>;
 }>;
 
 function connectionPolicyDraft(connection: ChannelsConnection): ConnectionPolicyDraft {
-  return {
-    revision: connection.revision,
+  const base = Object.freeze({
     enabled: connection.enabled,
     maximumObservationAgeMs: String(connection.maximumObservationAgeMs),
+  });
+  return {
+    revision: connection.revision,
+    enabled: base.enabled,
+    maximumObservationAgeMs: base.maximumObservationAgeMs,
+    base,
   };
 }
 
+function connectionPolicyDraftIsDirty(draft: ConnectionPolicyDraft): boolean {
+  return draft.enabled !== draft.base.enabled
+    || draft.maximumObservationAgeMs !== draft.base.maximumObservationAgeMs;
+}
+
+/**
+ * A newer revision rebases an untouched editor silently — there is nothing to
+ * lose and nothing worth interrupting for. A dirty editor keeps its draft and
+ * stays behind that revision, which is exactly what
+ * `connectionPolicyDraftSourceChanged` then discloses: saving against a
+ * revision the person never read would overwrite the other writer's change.
+ */
 function currentConnectionPolicyDraft(
   draft: ConnectionPolicyDraft,
   connection: ChannelsConnection,
 ): ConnectionPolicyDraft {
-  return draft.revision === connection.revision ? draft : connectionPolicyDraft(connection);
+  if (draft.revision === connection.revision) return draft;
+  return connectionPolicyDraftIsDirty(draft) ? draft : connectionPolicyDraft(connection);
+}
+
+function connectionPolicyDraftSourceChanged(
+  draft: ConnectionPolicyDraft,
+  connection: ChannelsConnection,
+): boolean {
+  return draft.revision !== connection.revision;
 }
 
 type UnknownOutcomeReconciliationPhase =
@@ -7919,15 +7996,13 @@ function ConnectionRow(props: Readonly<{
   const label = connectionLabel(props.connection);
   const continuityDescriptions = connectionContinuityDescriptions(props.connection, props.t);
 
+  const sourceChanged = connectionPolicyDraftSourceChanged(currentDraft, props.connection);
+
   React.useEffect(() => {
-    if (draft.revision === props.connection.revision) return;
-    setDraft(connectionPolicyDraft(props.connection));
-  }, [
-    draft.revision,
-    props.connection.enabled,
-    props.connection.maximumObservationAgeMs,
-    props.connection.revision,
-  ]);
+    // Commit the rebase decision that render already made. A dirty editor is
+    // returned unchanged here, so React bails out and the draft survives.
+    setDraft((previous) => currentConnectionPolicyDraft(previous, props.connection));
+  }, [props.connection]);
 
   const resetMutationExecution = React.useCallback(() => {
     mutationPendingRef.current = false;
@@ -7954,8 +8029,19 @@ function ConnectionRow(props: Readonly<{
     }));
   }, [props.connection]);
 
+  /**
+   * The explicit way out of a source change: the retained draft is replaced by
+   * the current saved policy, so the person reads what is actually stored
+   * before deciding again. It also rereads the Resource, which is what makes a
+   * still-newer revision visible immediately.
+   */
+  const reloadPolicyDraft = React.useCallback(() => {
+    setDraft(connectionPolicyDraft(props.connection));
+    requestRefresh();
+  }, [props.connection, requestRefresh]);
+
   const save = React.useCallback(async (maximumObservationAgeMs: number) => {
-    if (updateUnavailable || mutationOutcomeUnknown || mutationPendingRef.current) return;
+    if (updateUnavailable || mutationOutcomeUnknown || sourceChanged || mutationPendingRef.current) return;
     mutationPendingRef.current = true;
     let outcomeUnknown = false;
     try {
@@ -7979,6 +8065,7 @@ function ConnectionRow(props: Readonly<{
     props.connection.revision,
     props.onRefresh,
     executePolicy,
+    sourceChanged,
     updateUnavailable,
   ]);
 
@@ -8031,9 +8118,11 @@ function ConnectionRow(props: Readonly<{
             execution={policyExecution}
             providerDependentOperationsAvailable={providerDependentOperationsAvailable}
             resource={props.resource}
+            sourceChanged={sourceChanged}
             onEnabledChange={onEnabledChange}
             onMaximumObservationAgeMsChange={onMaximumObservationAgeMsChange}
             onRefresh={requestRefresh}
+            onReload={reloadPolicyDraft}
             onSave={save}
             t={props.t}
           />
@@ -8154,9 +8243,12 @@ function ConnectionPolicyEditor(props: Readonly<{
   execution: PluginActionExecution;
   providerDependentOperationsAvailable: boolean;
   resource: ResourcePresentation;
+  /** The saved policy advanced past the revision this draft was read from. */
+  sourceChanged: boolean;
   onEnabledChange: (enabled: boolean) => void;
   onMaximumObservationAgeMsChange: (maximumObservationAgeMs: string) => void;
   onRefresh: () => void;
+  onReload: () => void;
   onSave: (maximumObservationAgeMs: number) => Promise<void>;
   t: Translate;
 }>): React.ReactElement {
@@ -8165,6 +8257,7 @@ function ConnectionPolicyEditor(props: Readonly<{
   const outcomeUnknown = props.execution.status === 'outcomeUnknown';
   const saving = props.execution.status === 'pending';
   const mutationUnavailable = outcomeUnknown;
+  const saveUnavailable = updateUnavailable || mutationUnavailable || props.sourceChanged;
 
   React.useEffect(() => {
     setValidationIssue(undefined);
@@ -11943,6 +12036,23 @@ function SessionConversationsSurface(props: Readonly<{
         testID="channels-session-conversations-list"
         style={{ flex: 1 }}
         contentContainerStyle={{ paddingBottom: theme.spacing.large }}
+        // A hydrated list is authoritative until it is replaced. Refresh work,
+        // staleness, a failed read and a retired subscription are disclosed
+        // above the retained rows instead of replacing them.
+        header={resourceFreshnessNoticeApplies(resource) ? (
+          <Stack
+            gap="small"
+            style={{ paddingHorizontal: theme.spacing.large, paddingTop: theme.spacing.small }}
+          >
+            <ResourceFreshnessNotice
+              resource={resource}
+              onRefresh={refresh}
+              subject="binding"
+              testIDPrefix="channels-session-conversations-resource"
+              t={t}
+            />
+          </Stack>
+        ) : null}
         renderItem={(presentation) => (
           <Stack
             gap="small"

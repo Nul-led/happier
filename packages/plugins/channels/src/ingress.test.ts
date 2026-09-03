@@ -4289,9 +4289,10 @@ describe('Conversation provider observation ingress', () => {
       )).rejects.toMatchObject({ code: 'channels_ingress_admission_unsettled', retryable: true });
 
       vi.setSystemTime(1_500);
+      const sendsBeforePump = harness.send.mock.calls.length;
       await expect(runConversationIngressDueWorkForInvocation({ now: 1_500 }, harness.context))
         .resolves.toBe(1);
-      expect(harness.send).toHaveBeenCalledTimes(1);
+      expect(harness.send.mock.calls.length).toBe(sendsBeforePump + 1);
     } finally {
       vi.useRealTimers();
     }

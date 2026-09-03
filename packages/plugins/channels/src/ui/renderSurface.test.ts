@@ -2,7 +2,7 @@
 
 import { cloneElement, type ReactElement } from 'react';
 import { PluginError, type JsonValue } from '@happier-dev/plugin-sdk';
-import type { RenderContext, ResourceContent } from '@happier-dev/plugin-sdk/ui';
+import type { RenderContext, ResourceContent, ResourceSubscriptionEvent } from '@happier-dev/plugin-sdk/ui';
 import {
   CONVERSATION_MANAGEMENT_ACTION_IDS_V1,
   CONVERSATION_PROVIDERS_CONTRIBUTION_POINT_ID_V1,
@@ -5688,6 +5688,180 @@ describe('Channels binding deletion presentation', () => {
   });
 });
 
+describe('Channels connection policy editing across a source change', () => {
+  function connectionsResourceAtRevision(input: Readonly<{
+    revision: number;
+    enabled: boolean;
+    maximumObservationAgeMs: number;
+    digestDigit: string;
+  }>): ResourceContent {
+    return jsonResource({
+      connections: [{
+        connectionId: 'connection-1',
+        revision: input.revision,
+        authorityEpoch: 1,
+        providerPluginId: providerSetupOperation.contributor.pluginId,
+        selectedMachineId: 'machine-1',
+        selectedTransport: 'checkpointedPull',
+        integrationPrincipalLabel: 'Example conversation',
+        enabled: input.enabled,
+        deletionState: 'none',
+        maximumObservationAgeMs: input.maximumObservationAgeMs,
+        attention: {
+          historyGap: null,
+          pollFailure: null,
+          bestEffortBeforeDurableAdmission: false,
+          oldTransportStopUnconfirmed: false,
+          endpointRetargetOwed: false,
+          acceptedPossibleLoss: false,
+          outwardDelivery: {
+            retryDue: false,
+            notDelivered: false,
+            partial: false,
+            outcomeUnknown: false,
+          },
+        },
+      }],
+    }, input.digestDigit);
+  }
+
+  const observationAgeLabel = 'Maximum observation age in milliseconds';
+
+  it('keeps an in-progress policy edit when the connection changes elsewhere and locks saving until an explicit reload', async () => {
+    // A background reread used to silently rebase the draft: the edit the
+    // person was typing vanished with no notice, and Save would then have
+    // written against a revision they never saw.
+    let current = connectionsResourceAtRevision({
+      revision: 1,
+      enabled: true,
+      maximumObservationAgeMs: 60_000,
+      digestDigit: 'b',
+    });
+    const executeAction = vi.fn(async () => {
+      throw new Error('A source-changed policy editor must not submit.');
+    });
+    const fixture = await createPluginUiTestkit({
+      identity: {
+        pluginId: 'happier.channels',
+        pluginVersion: '0.0.0',
+        viewId: 'channels-account',
+        generation: 'channels-connection-source-changed',
+        sessionId: 'session-1',
+      },
+      surface: renderSurface,
+      surfaceContext: createChannelsSurfaceContext(),
+      adapter: createChannelsSemanticAdapter(),
+      handlers: {
+        selectActionInput: async () => ({ kind: 'cancelled' as const }),
+        executeAction,
+        readResource: async ({ resource }) => {
+          const localId = typeof resource === 'string' ? resource : resource.localId;
+          if (localId === BINDINGS_RESOURCE.localId) return bindingsResource;
+          if (localId === CONNECTIONS_RESOURCE.localId) return current;
+          throw new Error(`Unexpected Resource: ${localId}`);
+        },
+      },
+    });
+
+    try {
+      await pressByTestId('channels-connection-connection-1');
+      await enterTextByAccessibleLabel(observationAgeLabel, '90000');
+      expect(document.querySelector('[data-testid="channels-connection-source-changed"]')).toBeNull();
+
+      // Another writer advances the connection while the edit is open.
+      current = connectionsResourceAtRevision({
+        revision: 2,
+        enabled: false,
+        maximumObservationAgeMs: 120_000,
+        digestDigit: 'c',
+      });
+      await pressByTestId('channels-detail-resource-refresh');
+
+      const field = Array.from(document.querySelectorAll<HTMLInputElement>('input')).find((candidate) => (
+        candidate.getAttribute('aria-label') === observationAgeLabel
+      ));
+      expect(field?.value).toBe('90000');
+      const notice = document.querySelector<HTMLElement>('[data-testid="channels-connection-source-changed"]');
+      expect(notice).not.toBeNull();
+      const save = document.querySelector<HTMLElement>('[data-testid="channels-connection-save"]');
+      expect(save?.getAttribute('aria-disabled')).toBe('true');
+      await act(async () => { save?.click(); });
+      expect(executeAction).not.toHaveBeenCalled();
+
+      // Reload is the explicit way out: the draft rebases onto the current
+      // policy, the notice clears and saving is admitted again.
+      await pressByTestId('channels-connection-source-changed-reload');
+      await vi.waitFor(() => {
+        expect(document.querySelector('[data-testid="channels-connection-source-changed"]')).toBeNull();
+      });
+      const reloaded = Array.from(document.querySelectorAll<HTMLInputElement>('input')).find((candidate) => (
+        candidate.getAttribute('aria-label') === observationAgeLabel
+      ));
+      expect(reloaded?.value).toBe('120000');
+      expect(document.querySelector('[data-testid="channels-connection-save"]')?.getAttribute('aria-disabled'))
+        .not.toBe('true');
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  it('rebases a clean policy editor onto a newer revision without a source-changed notice', async () => {
+    // The notice exists for lost work. With nothing edited there is nothing to
+    // lose, so a background reread stays invisible.
+    let current = connectionsResourceAtRevision({
+      revision: 1,
+      enabled: true,
+      maximumObservationAgeMs: 60_000,
+      digestDigit: 'b',
+    });
+    const fixture = await createPluginUiTestkit({
+      identity: {
+        pluginId: 'happier.channels',
+        pluginVersion: '0.0.0',
+        viewId: 'channels-account',
+        generation: 'channels-connection-clean-rebase',
+        sessionId: 'session-1',
+      },
+      surface: renderSurface,
+      surfaceContext: createChannelsSurfaceContext(),
+      adapter: createChannelsSemanticAdapter(),
+      handlers: {
+        selectActionInput: async () => ({ kind: 'cancelled' as const }),
+        executeAction: async () => {
+          throw new Error('A clean rebase must not invoke an Action.');
+        },
+        readResource: async ({ resource }) => {
+          const localId = typeof resource === 'string' ? resource : resource.localId;
+          if (localId === BINDINGS_RESOURCE.localId) return bindingsResource;
+          if (localId === CONNECTIONS_RESOURCE.localId) return current;
+          throw new Error(`Unexpected Resource: ${localId}`);
+        },
+      },
+    });
+
+    try {
+      await pressByTestId('channels-connection-connection-1');
+      current = connectionsResourceAtRevision({
+        revision: 2,
+        enabled: true,
+        maximumObservationAgeMs: 120_000,
+        digestDigit: 'c',
+      });
+      await pressByTestId('channels-detail-resource-refresh');
+
+      expect(document.querySelector('[data-testid="channels-connection-source-changed"]')).toBeNull();
+      const field = Array.from(document.querySelectorAll<HTMLInputElement>('input')).find((candidate) => (
+        candidate.getAttribute('aria-label') === observationAgeLabel
+      ));
+      expect(field?.value).toBe('120000');
+      expect(document.querySelector('[data-testid="channels-connection-save"]')?.getAttribute('aria-disabled'))
+        .not.toBe('true');
+    } finally {
+      await fixture.dispose();
+    }
+  });
+});
+
 describe('Channels connection lifecycle actions', () => {
   it('makes an occurrence conflict terminal over an older blocked poll and leaves deletion as the available exit', async () => {
     const resource = connectionsResourceWithIngressConflict();
@@ -7677,6 +7851,91 @@ describe('Channels Session destination', () => {
       // Mounting it here would offer Account-wide binding mutation on a Session.
       expect(mount.container.textContent).not.toContain('Conversation connections');
       expect(mount.container.querySelector('[data-testid="channels-session-conversations"]')).not.toBeNull();
+    } finally {
+      mount.unmount();
+    }
+  });
+
+  it('discloses lost live updates and a failed refresh while keeping the last known conversations', async () => {
+    // Before this the Session destination showed a hydrated list with no way
+    // to tell whether it was still current, and a failed refresh either said
+    // nothing at all or replaced a good list with a bare error.
+    let deliver: ((event: ResourceSubscriptionEvent) => void) | null = null;
+    let failReads = false;
+    const surface = createSessionConversationsContext('session-under-test');
+    const baseHostApi = createHostApiStub(surface);
+    const hostApi = createHostApiStub(surface, {
+      version: () => ({
+        ...baseHostApi.version(),
+        methods: ['readResource', 'watchResource'],
+      }),
+      readResource: async (resource) => {
+        const localId = typeof resource === 'string' ? resource : resource.localId;
+        if (localId === 'session-conversations-v1') {
+          if (failReads) {
+            throw new PluginError({ code: 'unavailable', message: 'The daemon transport is unavailable.' });
+          }
+          return sessionConversationsResource;
+        }
+        if (localId === CONNECTIONS_RESOURCE.localId) return connectionsResource;
+        throw new Error(`Unexpected Resource: ${localId}`);
+      },
+      watchResource: (async (
+        resource: unknown,
+        listener: (event: ResourceSubscriptionEvent) => void,
+      ) => {
+        const localId = typeof resource === 'string'
+          ? resource
+          : (resource as { localId: string }).localId;
+        if (localId === 'session-conversations-v1') deliver = listener;
+        return { dispose: () => {} };
+      }) as never,
+    });
+    const context = Object.freeze({
+      plugin: Object.freeze({ id: 'happier.channels', version: '0.0.0' }),
+      surface,
+      hostApi,
+      signal: new AbortController().signal,
+    } satisfies RenderContext);
+    const entry = renderSurface(context) as ReactElement<{ dataClient?: PluginUiDataClient }>;
+    const mount = await mountThroughReactNativeWebAsync(cloneElement(entry, { dataClient: emptyDataClient }));
+
+    try {
+      await vi.waitFor(() => {
+        expect(mount.container.textContent).toContain('Example conversation');
+        expect(deliver).not.toBeNull();
+      });
+
+      // The subscription retires: the hydrated list is still shown, and the
+      // destination says so instead of presenting it as live.
+      await act(async () => {
+        deliver?.({ version: 1, subscriptionId: 'sub-1', kind: 'complete', diagnostics: [] });
+      });
+      const ended = await vi.waitFor(() => {
+        const element = mount.container.querySelector<HTMLElement>(
+          '[data-testid="channels-session-conversations-resource-live-updates-ended"]',
+        );
+        expect(element).not.toBeNull();
+        return element as HTMLElement;
+      });
+      expect(mount.container.textContent).toContain('Example conversation');
+
+      // Refreshing fails. The last known list is authoritative-until-replaced
+      // and stays, with the staleness stated rather than the whole destination
+      // collapsing into an error.
+      failReads = true;
+      const retry = ended.querySelector<HTMLElement>('[role="button"]')
+        ?? mount.container.querySelector<HTMLElement>('[role="button"]');
+      expect(retry).not.toBeNull();
+      await act(async () => { retry?.click(); });
+
+      await vi.waitFor(() => {
+        expect(mount.container.querySelector(
+          '[data-testid="channels-session-conversations-resource-stale"]',
+        )).not.toBeNull();
+      });
+      expect(mount.container.textContent).toContain('Example conversation');
+      expect(mount.container.querySelector('[data-testid="channels-session-conversations-error"]')).toBeNull();
     } finally {
       mount.unmount();
     }

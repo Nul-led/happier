@@ -279,7 +279,6 @@ describe('createDaemonPathPluginChangePreparer', () => {
       }),
       createPendingChangeId: () => `pending-cause-${pendingId += 1}`,
     });
-    let interactionId = 0;
     const apply = async (request: PluginChangeRequest): Promise<void> => {
       const result = await service.requestPluginChange(request);
       if (result.kind === 'reviewRequired') {
@@ -1194,6 +1193,7 @@ describe('createDaemonPathPluginChangePreparer', () => {
   });
 
   it('requires separate source-root and package trust confirmations before activating a one-file development plugin', async () => {
+    const approvalWindowStartMs = Date.now();
     const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-plugin-one-file-trust-home-'));
     const sourceRoot = await mkdtemp(join(tmpdir(), 'happier-plugin-one-file-trust-source-'));
     roots.push(happyHomeDir, sourceRoot);
@@ -1272,7 +1272,6 @@ describe('createDaemonPathPluginChangePreparer', () => {
       observedDecisions.push(result);
       return result;
     });
-    let interaction = 0;
 
     await expect(requestUserPluginChange({
       request: { kind: 'development', sourceRootPath: sourcePath },
@@ -1282,7 +1281,6 @@ describe('createDaemonPathPluginChangePreparer', () => {
       confirm: confirmations,
       requestChange,
       decideChange,
-      nowMs: () => interaction,
     })).resolves.toMatchObject({
       kind: 'committed',
       pluginId: 'acme.one-file-trust',
@@ -1309,13 +1307,11 @@ describe('createDaemonPathPluginChangePreparer', () => {
       expect.stringContaining('Trust this plugin development source root?'),
       expect.stringContaining('Install & Trust One file trust'),
     ]);
-    await expect(createPluginRegistryStateStore({ happyHomeDir }).read()).resolves.toMatchObject({
-      plugins: {
-        'acme.one-file-trust': {
-          install: { trust: { approvedAtMs: 2 } },
-        },
-      },
-    });
+    // The decision carried no timestamp of its own, so the persisted approval
+    // time can only have come from the daemon clock at apply time.
+    const trustedState = await createPluginRegistryStateStore({ happyHomeDir }).read();
+    expect(trustedState.plugins['acme.one-file-trust']?.install.trust?.approvedAtMs)
+      .toBeGreaterThanOrEqual(approvalWindowStartMs);
     expect(await readFile(counterPath, 'utf8')).toBe('module\nactivate\n');
     expect(preparedCandidates).toHaveLength(1);
     const preparedModules = Reflect.get(
@@ -1326,6 +1322,7 @@ describe('createDaemonPathPluginChangePreparer', () => {
   });
 
   it('persists package trust while optional access remains selection-only across edits', async () => {
+    const approvalWindowStartMs = Date.now();
     const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-plugin-one-file-optional-home-'));
     const sourceRoot = await mkdtemp(join(tmpdir(), 'happier-plugin-one-file-optional-source-'));
     roots.push(happyHomeDir, sourceRoot);
@@ -1389,20 +1386,16 @@ describe('createDaemonPathPluginChangePreparer', () => {
       optionalSelections: [{ accessId: 'project-sessions', selected: true }],
     })).resolves.toMatchObject({ kind: 'committed', pluginId: 'acme.one-file-optional' });
 
-    await expect(createPluginRegistryStateStore({ happyHomeDir }).read()).resolves.toMatchObject({
-      plugins: {
-        'acme.one-file-optional': {
-          install: {
-            trust: { approvedAtMs: 22 },
-            optionalAccess: [{
-              accessId: 'project-sessions',
-              capability: 'sessions',
-              selectedAtMs: 22,
-            }],
-          },
-        },
-      },
-    });
+    // Both stamps come from the daemon clock at apply time, and a selection is
+    // recorded as of the same approval it belongs to.
+    const approvedState = await createPluginRegistryStateStore({ happyHomeDir }).read();
+    const approvedInstall = approvedState.plugins['acme.one-file-optional']?.install;
+    expect(approvedInstall?.trust?.approvedAtMs).toBeGreaterThanOrEqual(approvalWindowStartMs);
+    expect(approvedInstall?.optionalAccess).toMatchObject([{
+      accessId: 'project-sessions',
+      capability: 'sessions',
+      selectedAtMs: approvedInstall?.trust?.approvedAtMs,
+    }]);
 
     await writeSource('updated');
     await expect(service.requestPluginChange({
@@ -1411,12 +1404,16 @@ describe('createDaemonPathPluginChangePreparer', () => {
       sourceRootPath: sourcePath,
       changedPaths: ['plugin.ts'],
     })).resolves.toMatchObject({ kind: 'committed', pluginId: 'acme.one-file-optional' });
+    // A source-only edit reuses the reviewed approval rather than restamping it.
     await expect(createPluginRegistryStateStore({ happyHomeDir }).read()).resolves.toMatchObject({
       plugins: {
         'acme.one-file-optional': {
           install: {
-            trust: { approvedAtMs: 22 },
-            optionalAccess: [{ accessId: 'project-sessions', selectedAtMs: 22 }],
+            trust: { approvedAtMs: approvedInstall?.trust?.approvedAtMs },
+            optionalAccess: [{
+              accessId: 'project-sessions',
+              selectedAtMs: approvedInstall?.optionalAccess?.[0]?.selectedAtMs,
+            }],
           },
         },
       },
@@ -2356,19 +2353,14 @@ describe('createDaemonPathPluginChangePreparer', () => {
       decision: 'installAndTrust',
       optionalSelections: [{ accessId: 'project-sessions', selected: true }],
     })).resolves.toMatchObject({ kind: 'committed', pluginId: 'acme.descriptor' });
-    await expect(createPluginRegistryStateStore({ happyHomeDir }).read()).resolves.toMatchObject({
-      plugins: {
-        'acme.descriptor': {
-          install: {
-            optionalAccess: [{
-              accessId: 'project-sessions',
-              capability: 'sessions',
-              selectedAtMs: 7,
-            }],
-          },
-        },
-      },
-    });
+    const descriptorInstall = (await createPluginRegistryStateStore({ happyHomeDir }).read())
+      .plugins['acme.descriptor']?.install;
+    expect(descriptorInstall?.optionalAccess).toMatchObject([{
+      accessId: 'project-sessions',
+      capability: 'sessions',
+      // Stamped by the daemon at apply time, matching the approval it belongs to.
+      selectedAtMs: descriptorInstall?.trust?.approvedAtMs,
+    }]);
   });
 
   it('reuses source trust for later development replacements without another review', async () => {
