@@ -6,6 +6,7 @@ import type { BrowserIrohPageLifecycle } from './pageLifecycleRelease';
 import {
     createBrowserIrohSharedEndpointOwner,
     type BrowserIrohEndpointBinder,
+    type BrowserIrohEndpointStreamHandle,
 } from './sharedEndpointOwner';
 import {
     createBrowserIrohWorkerConnectionHandler,
@@ -62,7 +63,13 @@ function createChannel() {
     return { workerPort, clientPort };
 }
 
-function createHarness() {
+function createHarness(options: Readonly<{
+    openStream?: (input: Readonly<{
+        streamKind: 'home' | 'machine';
+        endpointId: string;
+        relayUrls: readonly string[];
+    }>) => Promise<BrowserIrohEndpointStreamHandle>;
+}> = {}) {
     let stored: Uint8Array | null = null;
     let clears = 0;
     const keyStore: BrowserIrohEndpointKeyStore = {
@@ -93,7 +100,7 @@ function createHarness() {
                     if (!applied.includes(url)) applied.push(url);
                 }
             },
-            openStream: async ({ endpointId }) => ({
+            openStream: options.openStream ?? (async ({ endpointId }) => ({
                 remoteEndpointId: endpointId,
                 observedPath: 'relay',
                 read: async (maxBytes) => {
@@ -112,7 +119,7 @@ function createHarness() {
                 close: async () => {
                     streamCalls.push('close');
                 },
-            }),
+            })),
             closeConnection: async () => {},
             close: async () => {
                 closes.push(endpointId);
@@ -173,6 +180,30 @@ function createHarness() {
 }
 
 describe('sync/runtime/browserIroh/workerConnection', () => {
+    it('closes a stream handle that arrives after its open request was cancelled', async () => {
+        let settleOpen!: (value: BrowserIrohEndpointStreamHandle) => void;
+        const pendingOpen = new Promise<BrowserIrohEndpointStreamHandle>((resolve) => {
+            settleOpen = resolve;
+        });
+        const close = vi.fn(async () => undefined);
+        const harness = createHarness({ openStream: async () => await pendingOpen });
+        const tab = harness.connectTab();
+        const lease = await tab.acquireLease([RELAY_A]);
+        const controller = new AbortController();
+        const opening = lease.openStream({
+            streamKind: 'machine', endpointId: 'target', relayUrls: [RELAY_A], signal: controller.signal,
+        });
+        controller.abort(new Error('cancelled'));
+
+        await expect(opening).rejects.toThrow('cancelled');
+        settleOpen({
+            remoteEndpointId: 'target', observedPath: 'relay',
+            read: async () => ({ bytes: new Uint8Array(), done: true }),
+            write: async () => {}, finishWrite: async () => {}, cancel: () => {}, close,
+        });
+        await vi.waitFor(() => expect(close).toHaveBeenCalledTimes(1));
+    });
+
     it('keeps incremental stream handles opaque and scoped to the acquiring tab', async () => {
         const harness = createHarness();
         const tabA = harness.connectTab();

@@ -1878,12 +1878,17 @@ describe('bootstrapMachineSyncRuntime', () => {
                 stop: stopPeerMediationLoopbackServer,
             };
         });
-        const ingressClose = vi.fn(async () => { lifecycleOrder.push('ingress:stop'); });
-        const acquireWorkspaceSyncMachineIngress = vi.fn(async () => ({
-            port: 48191,
-            localCapability: 'a'.repeat(64),
-            close: ingressClose,
-        }));
+        const ingressCloses: Array<ReturnType<typeof vi.fn>> = [];
+        const acquireWorkspaceSyncMachineIngress = vi.fn(async () => {
+            const close = vi.fn(async () => undefined);
+            ingressCloses.push(close);
+            queueMicrotask(() => { void close(); });
+            return {
+                port: 48191,
+                localCapability: 'a'.repeat(64),
+                close,
+            };
+        });
         const machineIrohRuntime = {
             available: true as const,
             endpoint: { endpointId: 'a'.repeat(64), directAddresses: ['127.0.0.1:7777'] },
@@ -2021,13 +2026,27 @@ describe('bootstrapMachineSyncRuntime', () => {
         await expect(admission.resolveApplicationTarget({
             handshake: {
                 flow: 'workspace_sync',
+                operationId: 'operation-2',
+                initiator: {
+                    kind: 'machine',
+                    machineId: 'machine-source',
+                    endpointId: 'b'.repeat(64),
+                },
+                target: { machineId: 'machine-1', endpointId: 'a'.repeat(64) },
+            },
+            authenticatedRemoteEndpointId: 'b'.repeat(64),
+        } as never)).resolves.toEqual({ port: 48191, localCapability: 'a'.repeat(64) });
+        await vi.waitFor(() => expect(ingressCloses.every((close) => close.mock.calls.length === 1)).toBe(true));
+        await expect(admission.resolveApplicationTarget({
+            handshake: {
+                flow: 'workspace_sync',
                 operationId: 'operation-account-client',
                 initiator: { kind: 'account_client', endpointId: 'c'.repeat(64) },
                 target: { machineId: 'machine-1', endpointId: 'a'.repeat(64) },
             },
             authenticatedRemoteEndpointId: 'c'.repeat(64),
         } as never)).resolves.toBeNull();
-        expect(acquireWorkspaceSyncMachineIngress).toHaveBeenCalledTimes(1);
+        expect(acquireWorkspaceSyncMachineIngress).toHaveBeenCalledTimes(2);
         expect(daemonState).toMatchObject({
             status: 'running',
             peerMediation: {
@@ -2046,13 +2065,14 @@ describe('bootstrapMachineSyncRuntime', () => {
 
         await result.stopMachineIrohAcceptor();
         await result.stopPeerMediationLoopbackServer();
+        expect(ingressCloses).toHaveLength(2);
+        for (const close of ingressCloses) expect(close).toHaveBeenCalledOnce();
         expect(daemonState?.peerMediation?.iroh).toBeUndefined();
         expect(lifecycleOrder).toEqual([
             'loopback:start',
             'acceptor:start',
             'tunnels:stop',
             'acceptor:stop',
-            'ingress:stop',
             'loopback:stop',
         ]);
         expect(stopPeerMediationLoopbackServer).toHaveBeenCalledOnce();

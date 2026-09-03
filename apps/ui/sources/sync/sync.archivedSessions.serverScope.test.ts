@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Sync imports persistence, which instantiates MMKV. Mock it for deterministic tests.
 const kvStore = vi.hoisted(() => new Map<string, string>());
@@ -96,6 +96,16 @@ describe('sync archived session fetch server-scope guards', () => {
         kvStore.clear();
         appStateAddListener.mockClear();
         fetchAndApplySessionsSpy.mockReset();
+    });
+
+    afterEach(async () => {
+        // vi.resetModules() creates a fresh Sync singleton for the next case, but
+        // it does not retire timers/listeners owned by the previous singleton.
+        // Retire that Account/server lifetime before dropping the module so a
+        // deferred archived fetch cannot publish into the next test.
+        const { sync } = await import('./sync');
+        (sync as any).resetServerScopedRuntimeState();
+        (sync as any).credentials = undefined;
     });
 
     it('passes a scope guard and suppresses stale archived apply callbacks after a server switch', async () => {

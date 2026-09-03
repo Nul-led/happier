@@ -732,13 +732,11 @@ export async function createProductionDaemonWorkspaceSyncRuntime(
       stopPromise ??= (async () => {
         unsubscribe();
         await authorityTail.catch(() => undefined);
-        const cleanupResults = await Promise.allSettled([
-          runtime.stop(),
-          targetAuthority.releaseAllRetainedBootstraps(),
-        ]);
-        const failures = cleanupResults.flatMap((result) => (
-          result.status === 'rejected' ? [result.reason] : []
-        ));
+        const failures: unknown[] = [];
+        await runtime.stop().catch((error: unknown) => { failures.push(error); });
+        await targetAuthority.releaseAllRetainedBootstraps().catch((error: unknown) => {
+          failures.push(error);
+        });
         if (failures.length === 1) throw failures[0];
         if (failures.length > 1) {
           throw new AggregateError(failures, 'Workspace sync daemon runtime cleanup failed');

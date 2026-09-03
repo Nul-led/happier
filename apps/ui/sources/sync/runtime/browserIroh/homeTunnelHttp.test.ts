@@ -122,6 +122,26 @@ async function expectHttpErrorCode(pending: Promise<unknown>, code: string): Pro
 }
 
 describe('sync/runtime/browserIroh/homeTunnelHttp', () => {
+    it('passes the request signal to a pending Home stream open', async () => {
+        const controller = new AbortController();
+        let receivedSignal: AbortSignal | undefined;
+        const requester = createBrowserIrohHomeHttpRequester({
+            expectedRemoteEndpointId: HOME_ENDPOINT_ID,
+            openStream: async (signal) => {
+                receivedSignal = signal;
+                return await new Promise((_resolve, reject) => {
+                    signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
+                });
+            },
+        });
+        const pending = requester('https://home.example.test/v1/slow-open', { signal: controller.signal });
+        await vi.waitFor(() => expect(receivedSignal).toBeDefined());
+
+        controller.abort(new Error('cancel Home open'));
+        expect(receivedSignal?.aborted).toBe(true);
+        await expect(pending).rejects.toThrow('cancel Home open');
+    });
+
     it('serializes reusable HTTP requests on one caller-owned stream until explicit close', async () => {
         const fake = createFakeHomeStream();
         const connection = createBrowserIrohHttpConnectionRequester({

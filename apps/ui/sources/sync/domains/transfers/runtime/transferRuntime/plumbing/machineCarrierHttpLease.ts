@@ -96,6 +96,12 @@ export async function resolveMachineCarrierRoute(machineId: string, serverId?: s
         return { kind: 'standard' };
     }
     const browserHost = isBrowserIrohHost();
+    // Browser Iroh has no direct transport. This is pre-selection eligibility,
+    // so an endpoint with only native direct hints stays on the existing
+    // standard route instead of selecting a carrier that cannot dial it.
+    if (browserHost && targetEndpoint.relayUrls.length === 0) {
+        return { kind: 'standard' };
+    }
     if (!browserHost && !await probeIrohMachineHttpLifecycleAvailability()) {
         return { kind: 'standard' };
     }

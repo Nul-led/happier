@@ -1499,10 +1499,10 @@ export function createWorkspaceSyncTargetAuthority(
     },
 
     releaseAllRetainedBootstraps: async () => {
-      const results = await Promise.allSettled(
-        [...retained.keys()].map(async (authorityKey) => await discardRetained(authorityKey)),
-      );
-      const failures = results.flatMap((result) => result.status === 'rejected' ? [result.reason] : []);
+      const failures: unknown[] = [];
+      for (const authorityKey of [...retained.keys()]) {
+        await discardRetained(authorityKey).catch((error: unknown) => { failures.push(error); });
+      }
       if (failures.length === 1) throw failures[0];
       if (failures.length > 1) {
         throw new AggregateError(failures, 'Workspace sync target authority shutdown failed');

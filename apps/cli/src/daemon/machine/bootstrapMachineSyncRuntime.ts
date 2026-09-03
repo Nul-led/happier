@@ -680,7 +680,6 @@ export async function bootstrapMachineSyncRuntime(
   let activeMachineIrohRuntime: DaemonMachineIrohRuntime | undefined;
   let stopPeerMediationLoopbackServer: () => Promise<void> = async () => {};
   let stopMachineIrohAcceptor: () => Promise<void> = async () => {};
-  const activeWorkspaceIrohIngresses = new Set<Readonly<{ close(): Promise<void> }>>();
   let cleanupMachineLiveStreamRelay: (() => void) | null = null;
   let cleanupPeerTcpTunnelRelay: (() => void) | null = null;
   let resumeMachineConnectionPublications = async (): Promise<void> => {};
@@ -1276,13 +1275,7 @@ export async function bootstrapMachineSyncRuntime(
       ...(params.machineIrohRuntime ? { machineIrohRuntime: params.machineIrohRuntime } : {}),
       directPeerServerLifecycle: params.directPeerServerLifecycle,
       ...(params.acquireWorkspaceSyncMachineIngress
-        ? {
-            acquireWorkspaceSyncMachineIngress: async (request) => {
-              const ingress = await params.acquireWorkspaceSyncMachineIngress!(request);
-              activeWorkspaceIrohIngresses.add(ingress);
-              return ingress;
-            },
-          }
+        ? { acquireWorkspaceSyncMachineIngress: params.acquireWorkspaceSyncMachineIngress }
         : {}),
       ...(params.getServerFeaturesSnapshot
         ? { getServerFeaturesSnapshot: params.getServerFeaturesSnapshot }
@@ -1311,12 +1304,6 @@ export async function bootstrapMachineSyncRuntime(
             await params.machineIrohRuntime!.stopAttemptAcceptor().catch((error) => {
               logger.warn('[DAEMON RUN] Failed to stop Iroh machine acceptor', error);
             });
-            await Promise.all([...activeWorkspaceIrohIngresses].map(async (ingress) => {
-              await ingress.close().catch((error) => {
-                logger.warn('[DAEMON RUN] Failed to close workspace Iroh ingress', error);
-              });
-            }));
-            activeWorkspaceIrohIngresses.clear();
             await connectedApiMachine.updateDaemonState(removeMachineIrohEndpoint, {
               allowWhileQuiescing: true,
             }).catch((error) => {
