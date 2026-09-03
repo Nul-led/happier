@@ -58,7 +58,7 @@ export type BrowserIrohHomeTunnelWebSocketOptions = Readonly<{
     url: string;
     /** The exact EndpointId selected from the canonical Home descriptor. */
     endpointId: string;
-    openStream: () => Promise<BrowserIrohStream>;
+    openStream: (signal?: AbortSignal) => Promise<BrowserIrohStream>;
     randomBytes?: (length: number) => Uint8Array;
 }>;
 
@@ -142,6 +142,7 @@ export class BrowserIrohHomeTunnelWebSocket {
     private settled = false;
     private errorReported = false;
     private released = false;
+    private readonly opening = new AbortController();
 
     constructor(options: BrowserIrohHomeTunnelWebSocketOptions) {
         this.url = options.url;
@@ -196,6 +197,7 @@ export class BrowserIrohHomeTunnelWebSocket {
         const wasOpen = this.readyState === BrowserIrohHomeTunnelWebSocket.OPEN;
         this.readyState = BrowserIrohHomeTunnelWebSocket.CLOSING;
         if (!wasOpen) {
+            this.opening.abort(new Error('Browser Iroh WebSocket closed while its stream was opening'));
             // Nothing was ever upgraded, so there is no close frame to send and
             // no negotiated status to report: closing a connection that never
             // opened fails it, exactly as a platform `WebSocket` reports.
@@ -217,7 +219,7 @@ export class BrowserIrohHomeTunnelWebSocket {
 
     private async start(options: BrowserIrohHomeTunnelWebSocketOptions): Promise<void> {
         try {
-            const opened = await options.openStream();
+            const opened = await options.openStream(this.opening.signal);
             this.stream = opened;
             if (this.settled) {
                 await this.releaseStream(false);
@@ -482,7 +484,7 @@ export class BrowserIrohHomeTunnelWebSocket {
 export function createBrowserIrohHomeTunnelWebSocketFactory(
     input: Readonly<{
         endpointId: string;
-        openStream: () => Promise<BrowserIrohStream>;
+        openStream: (signal?: AbortSignal) => Promise<BrowserIrohStream>;
         randomBytes?: (length: number) => Uint8Array;
     }>,
 ): (url: string) => BrowserIrohHomeTunnelWebSocket {

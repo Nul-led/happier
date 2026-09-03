@@ -84,6 +84,10 @@ async function runCommand(
                 });
                 return { v: 1, kind: 'streamOpened', requestId, ...opened };
             }
+            case 'cancelRequest':
+                // Open-request cancellation is coordinated by the connection
+                // handler, which retains custody of a late stream handle.
+                return { v: 1, kind: 'requestCancelled', requestId };
             case 'readStream': {
                 const read = await owner.readStream({
                     clientId,
@@ -132,6 +136,8 @@ export function createBrowserIrohWorkerConnectionHandler(
 ): (port: BrowserIrohMessagePort) => void {
     return (port) => {
         const clientId = newClientId();
+        const activeOpenRequests = new Set<string>();
+        const cancelledOpenRequests = new Set<string>();
         port.addEventListener('message', (event) => {
             const command = parseBrowserIrohClientCommand(event.data);
             if (command === null) {
@@ -147,7 +153,26 @@ export function createBrowserIrohWorkerConnectionHandler(
                 } satisfies BrowserIrohWorkerReply);
                 return;
             }
+            if (command.kind === 'cancelRequest') {
+                if (activeOpenRequests.has(command.targetRequestId)) {
+                    cancelledOpenRequests.add(command.targetRequestId);
+                }
+                port.postMessage({
+                    v: 1,
+                    kind: 'requestCancelled',
+                    requestId: command.requestId,
+                } satisfies BrowserIrohWorkerReply);
+                return;
+            }
+            if (command.kind === 'openStream') activeOpenRequests.add(command.requestId);
             void runCommand(owner, clientId, command).then((reply) => {
+                if (command.kind === 'openStream') activeOpenRequests.delete(command.requestId);
+                if (command.kind === 'openStream' && cancelledOpenRequests.delete(command.requestId)) {
+                    if (reply.kind === 'streamOpened') {
+                        void owner.closeStream({ clientId, streamId: reply.streamId }).catch(() => undefined);
+                    }
+                    return;
+                }
                 port.postMessage(reply);
             });
         });

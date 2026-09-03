@@ -24,6 +24,49 @@ type TargetMachineCarrierSnapshot = Readonly<{
   daemonStateVersion: number;
 }>;
 
+function abortReason(signal: AbortSignal): unknown {
+  return signal.reason ?? Object.assign(new Error('The workspace machine tunnel open was aborted.'), { name: 'AbortError' });
+}
+
+async function awaitNativeTunnelOpen<T extends Readonly<{ close: () => Promise<void> }>>(
+  opening: Promise<T>,
+  signal: AbortSignal | undefined,
+): Promise<T> {
+  if (!signal) return await opening;
+  if (signal.aborted) {
+    void opening.then(async (late) => await late.close()).catch(() => undefined);
+    throw abortReason(signal);
+  }
+
+  return await new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener('abort', onAbort);
+      // The native ABI cannot cancel an admitted dial. Keep ownership in this
+      // closure until a late handle arrives and its lifecycle is closed.
+      void opening.then(async (late) => await late.close()).catch(() => undefined);
+      reject(abortReason(signal));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    opening.then(
+      (tunnel) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener('abort', onAbort);
+        resolve(tunnel);
+      },
+      (error: unknown) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
 /**
  * Creates the Lane 08 source-side opener over Lane 06's native tunnel
  * lifecycle. Authentication and descriptor pinning complete before the
@@ -125,13 +168,14 @@ export function createWorkspaceMachineCarrierTunnelOpen(input: Readonly<{
         trustRoots: input.resolveTrustRoots(),
         nowMs: (input.nowMs ?? Date.now)(),
       });
-      const tunnel = await input.runtime.openTunnel({
+      request.signal?.throwIfAborted();
+      const tunnel = await awaitNativeTunnelOpen(input.runtime.openTunnel({
         alpn: 'happier/machine/1',
         remoteEndpointId: verified.remoteEndpointId,
         flow: handshake.flow,
         operationId: handshake.operationId,
         handshake,
-      }, currentEndpoint.data);
+      }, currentEndpoint.data), request.signal);
       if (tunnel.remoteEndpointId !== verified.remoteEndpointId) {
         await tunnel.close().catch(() => undefined);
         throw new MachineCarrierError(

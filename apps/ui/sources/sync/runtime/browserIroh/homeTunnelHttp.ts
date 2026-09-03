@@ -128,7 +128,7 @@ export type BrowserIrohHomeHttpRequester = (
 
 export type BrowserIrohHomeHttpRequesterOptions = Readonly<{
     /** Opens one stream for one request; the caller owns the lease it comes from. */
-    openStream: () => Promise<BrowserIrohStream>;
+    openStream: (signal?: AbortSignal) => Promise<BrowserIrohStream>;
     /** The exact EndpointId selected from the Home descriptor. */
     expectedRemoteEndpointId: string;
 }>;
@@ -310,7 +310,7 @@ export function createBrowserIrohHomeHttpRequester(
         const signal = request.signal;
         if (signal.aborted) throw abortReason(signal);
 
-        const stream = await options.openStream();
+        const stream = await options.openStream(signal);
         return await carryRequest({
             stream,
             request,

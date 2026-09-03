@@ -406,7 +406,13 @@ describe('createProductionDaemonWorkspaceSyncRuntime', () => {
       reason: 'relationship_committed',
     });
 
-    await production.stop();
+    const runtimeStopFailure = new Error('runtime stop failed');
+    const authorityStopFailure = new Error('authority stop failed');
+    runtime.stop.mockRejectedValueOnce(runtimeStopFailure);
+    targetAuthority.releaseAllRetainedBootstraps.mockRejectedValueOnce(authorityStopFailure);
+    const stopError = await production.stop().then(() => null, (error: unknown) => error);
+    expect(stopError).toBeInstanceOf(AggregateError);
+    expect((stopError as AggregateError).errors).toEqual([runtimeStopFailure, authorityStopFailure]);
     expect(unsubscribeSettings).toHaveBeenCalledOnce();
     expect(runtime.stop).toHaveBeenCalledOnce();
     expect(targetAuthority.releaseAllRetainedBootstraps).toHaveBeenCalledOnce();

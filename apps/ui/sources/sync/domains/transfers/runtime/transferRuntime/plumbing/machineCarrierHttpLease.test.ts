@@ -159,6 +159,23 @@ describe('resolveMachineCarrierRoute', () => {
         boundaries.browserHostEligible.mockReturnValue(false);
     });
 
+    it('keeps the standard route when a browser target has no configured relay', async () => {
+        boundaries.browserHostEligible.mockReturnValue(true);
+        const { resolveMachineCarrierRoute } = await import('./machineCarrierHttpLease');
+        await expect(resolveMachineCarrierRoute('machine-1', 'server-1')).resolves.toMatchObject({
+            kind: 'iroh_peer',
+            carrierKind: 'browser_stream',
+        });
+        boundaries.replaceEndpoint('server-1', {
+            endpointId: 'a'.repeat(64),
+            directAddresses: ['127.0.0.1:48123'],
+            relayUrls: [],
+        });
+
+        await expect(resolveMachineCarrierRoute('machine-1', 'server-1')).resolves.toEqual({ kind: 'standard' });
+        expect(boundaries.acquireBrowserStream).not.toHaveBeenCalled();
+    });
+
     it('pins deferred acquisition to the server resolved at route time when focus moves before acquisition', async () => {
         boundaries.requestGrant.mockImplementationOnce(async ({ request }) => ({
             ok: true,

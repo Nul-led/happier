@@ -8,6 +8,72 @@ import {
 } from './workspaceSyncSidecarLifecycle';
 
 describe('WorkspaceSyncSidecarLifecycle', () => {
+  it.each(['resolve', 'broker', 'spawn'] as const)(
+    'waits for an in-flight %s acquisition and retires every late sidecar resource',
+    async (blockedStage) => {
+      let releaseStage!: () => void;
+      let stageReached!: () => void;
+      const stageGate = new Promise<void>((resolve) => { releaseStage = resolve; });
+      const reached = new Promise<void>((resolve) => { stageReached = resolve; });
+      const waitAtStage = async (stage: typeof blockedStage): Promise<void> => {
+        if (blockedStage !== stage) return;
+        stageReached();
+        await stageGate;
+      };
+      const processStop = vi.fn(async () => undefined);
+      const brokerClose = vi.fn(async () => undefined);
+      const createBroker = vi.fn(async () => {
+        await waitAtStage('broker');
+        return {
+          bootstrapDescriptor: new Uint8Array([1]),
+          waitForReady: async () => undefined,
+          command: async () => [],
+          close: brokerClose,
+        };
+      });
+      const spawn = vi.fn(async () => {
+        await waitAtStage('spawn');
+        return {
+          pid: 42,
+          waitForTermination: async () => await new Promise<never>(() => {}),
+          stop: processStop,
+        };
+      });
+      const lifecycle = new WorkspaceSyncSidecarLifecycle({
+        resolveRuntime: vi.fn(async () => {
+          await waitAtStage('resolve');
+          return {
+            managerPath: '/verified/manager', agentPath: '/verified/agent',
+            dataDir: '/private/data', brokerDir: '/private/broker',
+            manifest: { engineVersion: '1', protocolEpoch: 'external-stream-v1' },
+          };
+        }),
+        createBroker,
+        openExternalStream: vi.fn(),
+        spawn,
+        ensurePrivateDirectory: vi.fn(async () => undefined),
+        randomBytes: () => new Uint8Array(32), randomId: () => 'opaque-id',
+        onRestartReady: async () => undefined,
+        shutdownGraceMs: 0,
+      });
+
+      const starting = lifecycle.start();
+      await reached;
+      let stopSettled = false;
+      const stopping = lifecycle.stop().finally(() => { stopSettled = true; });
+      await Promise.resolve();
+      expect(stopSettled).toBe(false);
+      releaseStage();
+
+      await expect(starting).rejects.toMatchObject({ code: 'engine_unavailable' });
+      await expect(stopping).resolves.toBeUndefined();
+      expect(createBroker).toHaveBeenCalledTimes(blockedStage === 'resolve' ? 0 : 1);
+      expect(spawn).toHaveBeenCalledTimes(blockedStage === 'spawn' ? 1 : 0);
+      expect(brokerClose).toHaveBeenCalledTimes(blockedStage === 'resolve' ? 0 : 1);
+      expect(processStop).toHaveBeenCalledTimes(blockedStage === 'spawn' ? 1 : 0);
+    },
+  );
+
   it('starts one verified sidecar and delivers the complete broker bootstrap only on descriptor 3', async () => {
     let terminate!: () => void;
     const waitForTermination = new Promise<void>((resolve) => { terminate = resolve; });

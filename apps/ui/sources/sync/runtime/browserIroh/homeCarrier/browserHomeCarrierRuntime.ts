@@ -91,9 +91,12 @@ function createCarrier(params: Readonly<{
     });
     publishIrohHomeTransportDiagnostics(diagnostics);
 
-    const openStream = async (): Promise<BrowserIrohStream> => {
+    const openStream = async (signal?: AbortSignal): Promise<BrowserIrohStream> => {
         try {
-            const stream = await lease.openStream({ streamKind: 'home', endpointId, relayUrls });
+            const stream = await lease.openStream({
+                streamKind: 'home', endpointId, relayUrls,
+                ...(signal ? { signal } : {}),
+            });
             observedPath = stream.observedPath;
             diagnostics = projectIrohHomeTransportDiagnosticsReady(diagnostics, {
                 // The browser stream type permits relay only. Keep the explicit

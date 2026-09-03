@@ -101,6 +101,7 @@ function engineUnavailable(error: unknown): WorkspaceSyncEngineError {
 export class WorkspaceSyncSidecarLifecycle {
   private readonly supervisor: SupervisedProcess;
   private readonly reconciliationContext = new AsyncLocalStorage<boolean>();
+  private spawnAttempt: Promise<Readonly<{ pid: number; waitForTermination(): Promise<TerminationEvent> }>> | null = null;
   private activeProcess: WorkspaceSyncSidecarProcess | null = null;
   private activeBroker: WorkspaceSyncSidecarBroker | null = null;
   private currentReadiness: Readiness | null = null;
@@ -120,7 +121,14 @@ export class WorkspaceSyncSidecarLifecycle {
         artifacts: { captureStderr: true, stderrLabel: 'workspace-sync-mutagen' },
         terminateGraceMs: 5_000,
       },
-      spawn: async () => await this.spawnOne(),
+      spawn: () => {
+        const attempt = this.spawnOne();
+        const tracked = attempt.finally(() => {
+          if (this.spawnAttempt === tracked) this.spawnAttempt = null;
+        });
+        this.spawnAttempt = tracked;
+        return tracked;
+      },
       onTermination: async (event) => await this.onTermination(event),
     });
   }
@@ -150,6 +158,7 @@ export class WorkspaceSyncSidecarLifecycle {
     if (this.stopping) return;
     this.stopping = true;
     const cleanupFailures: unknown[] = [];
+    const spawnAttempt = this.spawnAttempt;
     this.supervisor.markStopRequested({ reason: 'shutdown', requestedAtMs: Date.now() });
     const broker = this.activeBroker;
     const process = this.activeProcess;
@@ -181,6 +190,7 @@ export class WorkspaceSyncSidecarLifecycle {
     await broker?.close().catch((error: unknown) => {
       cleanupFailures.push(error);
     });
+    await spawnAttempt?.catch(() => undefined);
     const unavailable = engineUnavailable(new Error('sidecar lifecycle stopped'));
     this.currentReadiness?.reject(unavailable);
     this.currentAuthenticatedReadiness?.reject(unavailable);
@@ -208,8 +218,11 @@ export class WorkspaceSyncSidecarLifecycle {
     let process: WorkspaceSyncSidecarProcess | null = null;
     try {
       const runtime = await this.dependencies.resolveRuntime();
+      this.assertNotStopping();
       await this.dependencies.ensurePrivateDirectory(runtime.dataDir);
+      this.assertNotStopping();
       await this.dependencies.ensurePrivateDirectory(runtime.brokerDir);
+      this.assertNotStopping();
       const launchSecret = this.dependencies.randomBytes(32);
       if (launchSecret.byteLength !== 32) throw new Error('sidecar launch secret must be 32 bytes');
       broker = await this.dependencies.createBroker({
@@ -219,6 +232,7 @@ export class WorkspaceSyncSidecarLifecycle {
         launchSecret,
         openExternalStream: this.dependencies.openExternalStream,
       });
+      this.assertNotStopping();
       const startupDeadlineMs = this.dependencies.startupDeadlineMs
         ?? WORKSPACE_SYNC_SIDECAR_STARTUP_DEADLINE_MS;
       let startupTimer: ReturnType<typeof setTimeout> | undefined;
@@ -246,8 +260,7 @@ export class WorkspaceSyncSidecarLifecycle {
           );
           throw error;
         }
-        this.activeBroker = broker;
-        this.activeProcess = process;
+        this.assertNotStopping();
         termination = process.waitForTermination();
         const startup = (async () => {
           await broker.waitForReady(process.pid);
@@ -263,6 +276,9 @@ export class WorkspaceSyncSidecarLifecycle {
       } finally {
         if (startupTimer !== undefined) clearTimeout(startupTimer);
       }
+      this.assertNotStopping();
+      this.activeBroker = broker;
+      this.activeProcess = process;
       this.authenticated = true;
       this.currentAuthenticatedReadiness?.resolve();
       this.currentAuthenticatedReadiness = null;
@@ -293,6 +309,10 @@ export class WorkspaceSyncSidecarLifecycle {
       this.currentAuthenticatedReadiness = null;
       throw unavailable;
     }
+  }
+
+  private assertNotStopping(): void {
+    if (this.stopping) throw new Error('sidecar lifecycle is stopping');
   }
 
   private async onTermination(event: TerminationEvent): Promise<void> {

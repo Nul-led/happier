@@ -99,6 +99,72 @@ describe('createWorkspaceMachineCarrierTunnelOpen', () => {
     });
   });
 
+  it('settles promptly on cancellation while a native dial is pending and closes a late tunnel handle', async () => {
+    const signingKeyPair = tweetnacl.sign.keyPair();
+    const localEndpointId = 'a'.repeat(64);
+    const targetEndpointId = 'b'.repeat(64);
+    const target = {
+      id: 'machine-target',
+      daemonStateVersion: 7,
+      daemonState: { peerMediation: { iroh: { endpoint: { endpointId: targetEndpointId, relayUrls: ['https://relay.example.test'] } } } },
+    };
+    const mintGrant = vi.fn(async (request: DirectRouteGrantRequestV2) => {
+      const { kind, ttlMs: _ttlMs, ...binding } = request;
+      const payload = {
+        ...binding,
+        grantId: 'grant-cancel', accountId: 'account-1', iat: 1_000, exp: 301_000,
+        aud: 'happier-daemon-route-grant' as const, proofKind: kind,
+      };
+      return {
+        payload,
+        signature: {
+          keyId: 'key-1', alg: 'Ed25519' as const,
+          valueBase64Url: base64url(tweetnacl.sign.detached(
+            Buffer.from(createDirectRouteGrantSigningInputV2(payload), 'utf8'),
+            signingKeyPair.secretKey,
+          )),
+        },
+      };
+    });
+    let settleDial!: (value: {
+      localPort: number;
+      localCapability: string;
+      remoteEndpointId: string;
+      observedPath: 'relay';
+      close: () => Promise<void>;
+    }) => void;
+    const pendingDial = new Promise<Parameters<typeof settleDial>[0]>((resolve) => {
+      settleDial = resolve;
+    });
+    const close = vi.fn(async () => undefined);
+    const openTunnel = vi.fn(() => pendingDial);
+    const open = createWorkspaceMachineCarrierTunnelOpen({
+      accountId: 'account-1', localMachineId: 'machine-source',
+      runtime: { available: true, endpoint: { endpointId: localEndpointId }, openTunnel } as never,
+      resolveTrustRoots: () => [{ keyId: 'key-1', publicKey: base64url(signingKeyPair.publicKey) }],
+      readTargetMachine: async () => target,
+      mintGrant,
+      nowMs: () => 2_000,
+    });
+    const controller = new AbortController();
+    const reason = new Error('broker closed');
+    const opening = open({
+      operationId: 'operation-cancel', sourceMachineId: 'machine-source',
+      targetMachineId: 'machine-target', flow: 'workspace_sync', signal: controller.signal,
+    });
+    await vi.waitFor(() => expect(openTunnel).toHaveBeenCalledTimes(1));
+
+    controller.abort(reason);
+    await expect(opening).rejects.toBe(reason);
+    expect(close).not.toHaveBeenCalled();
+
+    settleDial({
+      localPort: 48123, localCapability: 'd'.repeat(64), remoteEndpointId: targetEndpointId,
+      observedPath: 'relay', close,
+    });
+    await vi.waitFor(() => expect(close).toHaveBeenCalledTimes(1));
+  });
+
   it('fails closed without a stable exact descriptor revision and never opens a native tunnel', async () => {
     const openTunnel = vi.fn();
     const open = createWorkspaceMachineCarrierTunnelOpen({

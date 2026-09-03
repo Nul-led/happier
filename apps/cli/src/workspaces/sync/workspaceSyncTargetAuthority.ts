@@ -514,13 +514,28 @@ export function createWorkspaceSyncTargetAuthority(
   ): Promise<void> => {
     const entry = retained.get(authorityKey);
     if (!entry) return;
+    const cleanupFailures: unknown[] = [];
     const ingressClosers = [...(activeIngresses.get(authorityKey) ?? [])];
-    activeIngresses.delete(authorityKey);
-    await Promise.allSettled(ingressClosers.map(async (close) => await close()));
-    if (outcome === 'commit') await entry.materializationCustody?.commit();
-    else await entry.materializationCustody?.abort();
-    retained.delete(authorityKey);
-    await entry.handle.release().catch(() => undefined);
+    const ingressResults = await Promise.allSettled(ingressClosers.map(async (close) => await close()));
+    for (const result of ingressResults) {
+      if (result.status === 'rejected') cleanupFailures.push(result.reason);
+    }
+    try {
+      if (outcome === 'commit') await entry.materializationCustody?.commit();
+      else await entry.materializationCustody?.abort();
+    } catch (error) {
+      cleanupFailures.push(error);
+    }
+    await entry.handle.release().catch((error: unknown) => {
+      cleanupFailures.push(error);
+    });
+    if (cleanupFailures.length === 0) {
+      retained.delete(authorityKey);
+      activeIngresses.delete(authorityKey);
+      return;
+    }
+    if (cleanupFailures.length === 1) throw cleanupFailures[0];
+    throw new AggregateError(cleanupFailures, 'Workspace sync target authority cleanup failed');
   };
 
   /** A retained relationship fence must survive only while its still-enabled relationship owns the endpoint. */
@@ -1484,8 +1499,13 @@ export function createWorkspaceSyncTargetAuthority(
     },
 
     releaseAllRetainedBootstraps: async () => {
-      for (const authorityKey of [...retained.keys()]) {
-        await discardRetained(authorityKey);
+      const results = await Promise.allSettled(
+        [...retained.keys()].map(async (authorityKey) => await discardRetained(authorityKey)),
+      );
+      const failures = results.flatMap((result) => result.status === 'rejected' ? [result.reason] : []);
+      if (failures.length === 1) throw failures[0];
+      if (failures.length > 1) {
+        throw new AggregateError(failures, 'Workspace sync target authority shutdown failed');
       }
     },
   };

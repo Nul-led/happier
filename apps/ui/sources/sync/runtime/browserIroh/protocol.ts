@@ -64,6 +64,7 @@ export type BrowserIrohClientCommand =
         endpointId: string;
         relayUrls: readonly string[];
     }>
+    | Readonly<{ v: 1; kind: 'cancelRequest'; requestId: string; targetRequestId: string }>
     | Readonly<{ v: 1; kind: 'readStream'; requestId: string; streamId: string; maxBytes: number }>
     | Readonly<{ v: 1; kind: 'writeStream'; requestId: string; streamId: string; bytes: Uint8Array }>
     | Readonly<{ v: 1; kind: 'finishStreamWrite'; requestId: string; streamId: string }>
@@ -82,6 +83,7 @@ export type BrowserIrohWorkerReply =
         appliedRelayUrls: readonly string[];
     }>
     | Readonly<{ v: 1; kind: 'released'; requestId: string }>
+    | Readonly<{ v: 1; kind: 'requestCancelled'; requestId: string }>
     | Readonly<{
         v: 1;
         kind: 'relaysConfigured';
@@ -179,6 +181,12 @@ export function parseBrowserIrohClientCommand(value: unknown): BrowserIrohClient
             ) return null;
             return { v: 1, kind: 'openStream', requestId, leaseId, streamKind, endpointId, relayUrls };
         }
+        case 'cancelRequest': {
+            if (!hasExactKeys(record, ['v', 'kind', 'requestId', 'targetRequestId'])) return null;
+            const targetRequestId = readNonEmptyString(record, 'targetRequestId');
+            if (targetRequestId === null) return null;
+            return { v: 1, kind: 'cancelRequest', requestId, targetRequestId };
+        }
         case 'readStream': {
             if (!hasExactKeys(record, ['v', 'kind', 'requestId', 'streamId', 'maxBytes'])) return null;
             const streamId = readNonEmptyString(record, 'streamId');
@@ -272,6 +280,7 @@ export function parseBrowserIrohWorkerReply(value: unknown): BrowserIrohWorkerRe
         case 'streamWriteFinished':
         case 'streamCancelled':
         case 'streamClosed':
+        case 'requestCancelled':
             if (!hasExactKeys(record, ['v', 'kind', 'requestId'])) return null;
             return { v: 1, kind: record.kind, requestId };
         case 'released':

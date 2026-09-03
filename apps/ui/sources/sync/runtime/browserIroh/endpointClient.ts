@@ -54,6 +54,7 @@ export type BrowserIrohLease = Readonly<{
         streamKind: BrowserIrohStreamKind;
         endpointId: string;
         relayUrls: readonly string[];
+        signal?: AbortSignal;
     }>) => Promise<BrowserIrohStream>;
     release: () => Promise<void>;
 }>;
@@ -230,6 +231,7 @@ export function createBrowserIrohEndpointClient(
 
     async function send(
         build: (requestId: string) => BrowserIrohClientCommand,
+        signal?: AbortSignal,
     ): Promise<BrowserIrohWorkerReply> {
         // A worker script that could not load will not load on the next command
         // either; reconnecting would only produce a second silent port.
@@ -238,13 +240,30 @@ export function createBrowserIrohEndpointClient(
         }
         const active = ensureConnection();
         const requestId = newRequestId();
-        const reply = new Promise<BrowserIrohWorkerReply>((resolve) => {
+        if (signal?.aborted) throw signal.reason;
+        let detachAbort: (() => void) | null = null;
+        const reply = new Promise<BrowserIrohWorkerReply>((resolve, reject) => {
             pending.set(requestId, resolve);
+            if (signal) {
+                const onAbort = () => {
+                    if (!pending.delete(requestId)) return;
+                    active.port.postMessage({
+                        v: 1,
+                        kind: 'cancelRequest',
+                        requestId: newRequestId(),
+                        targetRequestId: requestId,
+                    } satisfies BrowserIrohClientCommand);
+                    reject(signal.reason);
+                };
+                signal.addEventListener('abort', onAbort, { once: true });
+                detachAbort = () => signal.removeEventListener('abort', onAbort);
+            }
         });
         active.port.postMessage(build(requestId));
         try {
             return await reply;
         } finally {
+            detachAbort?.();
             pending.delete(requestId);
         }
     }
@@ -324,7 +343,7 @@ export function createBrowserIrohEndpointClient(
                 leaseId: acquired.leaseId,
                 endpointId: acquired.endpointId,
                 appliedRelayUrls: acquired.appliedRelayUrls,
-                openStream: async ({ streamKind, endpointId, relayUrls }) => streamHandle(requireReply(
+                openStream: async ({ streamKind, endpointId, relayUrls, signal }) => streamHandle(requireReply(
                     await send((requestId) => ({
                         v: 1,
                         kind: 'openStream',
@@ -333,7 +352,7 @@ export function createBrowserIrohEndpointClient(
                         streamKind,
                         endpointId,
                         relayUrls: [...relayUrls],
-                    })),
+                    }), signal),
                     'streamOpened',
                 )),
                 release: async () => {

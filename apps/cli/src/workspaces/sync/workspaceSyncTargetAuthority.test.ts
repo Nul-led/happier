@@ -200,6 +200,86 @@ async function waitForCondition(predicate: () => boolean | Promise<boolean>, tim
 }
 
 describe('workspace sync target authority', () => {
+  it('settles every retained bootstrap during shutdown and preserves failed custody for retry', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-authority-sweep-'));
+    const alphaRoot = join(fixture, 'alpha');
+    const betaRoot = join(fixture, 'beta');
+    const gammaRoot = join(fixture, 'gamma');
+    await Promise.all([mkdir(alphaRoot), mkdir(betaRoot), mkdir(gammaRoot)]);
+    await Promise.all([
+      writeFile(join(betaRoot, 'existing.txt'), 'beta'),
+      writeFile(join(gammaRoot, 'existing.txt'), 'gamma'),
+    ]);
+    const firstFailure = new Error('first materialization abort failed');
+    const firstAbort = vi.fn()
+      .mockRejectedValueOnce(firstFailure)
+      .mockResolvedValueOnce(undefined);
+    const secondAbort = vi.fn(async () => undefined);
+    let materializationIndex = 0;
+    const harness = createAuthorityHarness({
+      getSettingsSnapshot: () => snapshot(alphaRoot, betaRoot, {
+        includeRelationship: false,
+        extraRefs: [{ id: 'workspace-gamma', machineId: 'machine-b', rootPath: gammaRoot }],
+      }),
+      materializeRemoteSeed: async () => ({
+        receipt: { v: 1, previousTargetName: null },
+        commit: async () => undefined,
+        abort: materializationIndex++ === 0 ? firstAbort : secondAbort,
+      }),
+    });
+    try {
+      const betaPreflight = await harness.authority.preflightHandoffTargetReplacementHere({
+        v: 1, serverId: 'server-1', machineId: 'machine-b', operationId: 'copy-op-1', targetPath: betaRoot,
+      });
+      if (betaPreflight.type !== 'approval_required') throw new Error('expected beta approval');
+      const gammaPreflight = await harness.authority.preflightHandoffTargetReplacementHere({
+        v: 1, serverId: 'server-1', machineId: 'machine-b', operationId: 'copy-op-2', targetPath: gammaRoot,
+      });
+      if (gammaPreflight.type !== 'approval_required') throw new Error('expected gamma approval');
+      await harness.authority.prepareBootstrapHere(copyOncePrepareRequest({
+        targetReplacementApproval: betaPreflight.approval,
+      }));
+      await harness.authority.prepareBootstrapHere(copyOncePrepareRequest({
+        bootstrapOperationId: 'bootstrap-op-2',
+        owner: {
+          kind: 'copy_once',
+          operation: {
+            v: 1,
+            operationId: 'copy-op-2',
+            controllerMachineId: 'machine-a',
+            alphaWorkspaceRefId: 'workspace-alpha',
+            betaWorkspaceRefId: 'workspace-gamma',
+            contentPolicy,
+          },
+        },
+        targetWorkspaceRefId: 'workspace-gamma',
+        targetReplacementApproval: gammaPreflight.approval,
+      }));
+
+      await expect(harness.authority.releaseAllRetainedBootstraps()).rejects.toBe(firstFailure);
+      expect(firstAbort).toHaveBeenCalledOnce();
+      expect(secondAbort).toHaveBeenCalledOnce();
+      const betaOwnership = await harness.rootOwnershipManager.tryAcquire({
+        ownerId: 'post-sweep-beta', canonicalRoot: await realpath(betaRoot), operation: 'handoff',
+      });
+      expect('kind' in betaOwnership).toBe(false);
+      if (!('kind' in betaOwnership)) await betaOwnership.release();
+      const gammaOwnership = await harness.rootOwnershipManager.tryAcquire({
+        ownerId: 'post-sweep-gamma', canonicalRoot: await realpath(gammaRoot), operation: 'handoff',
+      });
+      expect('kind' in gammaOwnership).toBe(false);
+      if (!('kind' in gammaOwnership)) await gammaOwnership.release();
+
+      await expect(harness.authority.releaseAllRetainedBootstraps()).resolves.toBeUndefined();
+      expect(firstAbort).toHaveBeenCalledTimes(2);
+      expect(secondAbort).toHaveBeenCalledOnce();
+    } finally {
+      await harness.authority.releaseAllRetainedBootstraps().catch(() => undefined);
+      await harness.cleanup();
+      await rm(fixture, { recursive: true, force: true });
+    }
+  });
+
   it('stamps a non-empty handoff target proof under arbitration and releases before returning', async () => {
     const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-target-preflight-'));
     const alphaRoot = join(fixture, 'alpha');

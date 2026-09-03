@@ -86,6 +86,7 @@ export function createBrowserMachineCarrierEndpointBinding(
                 streamKind: 'machine',
                 endpointId,
                 relayUrls,
+                ...(signal ? { signal } : {}),
             });
             return {
                 // The transport's proven peer, which the seam checks against the

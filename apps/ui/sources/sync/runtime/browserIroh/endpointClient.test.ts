@@ -49,6 +49,57 @@ function createPageLifecycleStub() {
 }
 
 describe('sync/runtime/browserIroh/endpointClient', () => {
+    it('cancels a pending stream open promptly through the existing worker request id', async () => {
+        const sent: Array<Record<string, unknown>> = [];
+        let receive: ((event: { data: unknown }) => void) | null = null;
+        const connection: BrowserIrohWorkerConnection = {
+            port: {
+                postMessage: (message) => {
+                    const command = message as Record<string, unknown>;
+                    sent.push(command);
+                    if (command.kind === 'acquireLease') {
+                        queueMicrotask(() => receive?.({ data: {
+                            v: 1,
+                            kind: 'leaseAcquired',
+                            requestId: command.requestId,
+                            leaseId: 'lease-1',
+                            endpointId: 'local-endpoint',
+                            appliedRelayUrls: ['https://relay.happier.test'],
+                        } }));
+                    }
+                },
+                addEventListener: (_type, listener) => {
+                    receive = listener;
+                },
+            },
+            onFailure: () => {},
+        };
+        const client = createBrowserIrohEndpointClient(() => connection, null);
+        const lease = await client.acquireLease(['https://relay.happier.test']);
+        const controller = new AbortController();
+        const reason = new Error('request cancelled');
+        const opening = lease.openStream({
+            streamKind: 'home',
+            endpointId: 'remote-endpoint',
+            relayUrls: ['https://relay.happier.test'],
+            signal: controller.signal,
+        });
+        const openCommand = sent.find((command) => command.kind === 'openStream');
+        if (!openCommand) throw new Error('expected open command');
+
+        controller.abort(reason);
+        const promptly = await Promise.race([
+            opening.then(() => 'resolved', (error: unknown) => error),
+            new Promise<'still-pending'>((resolve) => setTimeout(() => resolve('still-pending'), 20)),
+        ]);
+        expect(promptly).toBe(reason);
+        expect(sent).toContainEqual(expect.objectContaining({
+            kind: 'cancelRequest',
+            targetRequestId: openCommand.requestId,
+        }));
+
+    });
+
     it('does not connect a worker or load an asset on an HTTPS-only startup', () => {
         // An ineligible host resolves to unavailable without touching the
         // SharedWorker at all: the packaged wasm assets are never requested.
