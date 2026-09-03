@@ -160,7 +160,7 @@ describe('filterSessionListItemsForHeaderControls', () => {
         ]);
     });
 
-    it('preserves the active controls anchor header instead of the first primary header', () => {
+    it('returns no header-only remainder when nothing matches', () => {
         const pinnedHeader: Extract<SessionListIndexItem, { type: 'header' }> = {
             type: 'header',
             title: 'Pinned',
@@ -181,11 +181,10 @@ describe('filterSessionListItemsForHeaderControls', () => {
             selectedTags: [],
             sessionTags: {},
             searchableTextBySessionKey: {},
-            controlsAnchorKey: 'active',
         });
 
-        expect(result.map((item) => item.type === 'session' ? item.sessionId : item.title)).toEqual([
-            'Active',
-        ]);
+        // The stable search chrome owns the field's lifetime, so no header is kept
+        // alive purely to host it; the list-level no-results message reports zero hits.
+        expect(result).toEqual([]);
     });
 });

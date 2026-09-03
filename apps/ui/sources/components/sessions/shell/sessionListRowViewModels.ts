@@ -1,4 +1,7 @@
-import type { SessionListIndexItem } from '@/sync/domains/sessionList/sessionListIndex';
+import type {
+    SessionListContextualSearchReason,
+    SessionListIndexItem,
+} from '@/sync/domains/sessionList/sessionListIndex';
 import { resolveSessionListSecondaryLineMode } from '@/sync/domains/session/listing/deriveSessionListActivity';
 import {
     areSessionListRenderablesEqual,
@@ -32,6 +35,39 @@ import {
     type ExternalSessionIdentityPresentation,
 } from '../presentation/externalSessionIdentityPresentation';
 import { readExternalSessionLink } from '@/sync/domains/session/external/readExternalSessionLink';
+
+function appendUniqueSearchReason(
+    reasons: SessionListContextualSearchReason[],
+    reason: SessionListContextualSearchReason,
+): void {
+    if (!reasons.includes(reason)) reasons.push(reason);
+}
+
+function resolveContextualSearchSubtitle(input: Readonly<{
+    item: Extract<SessionListIndexItem, { type: 'session' }>;
+    session: SessionListRenderableSession | null;
+}>): string | null {
+    if (!input.item.contextualSearchReasons?.length) return null;
+
+    const reasons = [...input.item.contextualSearchReasons];
+    if (input.session?.archivedAt != null) appendUniqueSearchReason(reasons, 'archived');
+    if (readExternalSessionLink(input.session?.metadata)) appendUniqueSearchReason(reasons, 'external');
+
+    const sourceMachineId = String(input.item.contextualSearchSourceMachineId ?? '').trim();
+    const sessionMachineId = String(input.session?.metadata?.machineId ?? '').trim();
+    if (sourceMachineId && sessionMachineId && sourceMachineId !== sessionMachineId) {
+        appendUniqueSearchReason(reasons, 'another-machine');
+    }
+
+    const labelByReason = {
+        transcript: t('sessionsList.searchMatchTranscript'),
+        'hidden-by-filters': t('sessionsList.searchMatchHiddenByFilters'),
+        archived: t('sessionsList.searchMatchArchived'),
+        external: t('sessionsList.searchMatchExternal'),
+        'another-machine': t('sessionsList.searchMatchAnotherMachine'),
+    } as const;
+    return reasons.map((reason) => labelByReason[reason]).join(' · ');
+}
 
 export type SessionReachableDisplay = Readonly<{
     machineId: string | null;
@@ -181,6 +217,7 @@ export function buildSessionListRowViewModel(input: BuildSessionListRowViewModel
         })
         : null;
     const sessionName = session ? getSessionName(session) : '';
+    const contextualSearchSubtitle = resolveContextualSearchSubtitle({ item, session });
 
     const rowViewModel: SessionListRowViewModel = {
         groupKey,
@@ -189,10 +226,13 @@ export function buildSessionListRowViewModel(input: BuildSessionListRowViewModel
         sessionStatus,
         externalSessionRuntime,
         externalSessionIdentity,
+        // A row whose canonical renderable has not landed yet is still materializing.
+        // It renders the identity transition affordance rather than a blank row that
+        // reads as a real session with no name.
         isIdentityLoading: session ? resolveRowIdentityLoading({
             session,
             title: sessionName,
-        }) : false,
+        }) : true,
         nextRuntimeFreshnessAtMs: resolveEarliestFreshnessAtMs(
             session ? resolveNextRuntimeFreshnessAtMs(session, runtimeNowMs) : null,
             externalSessionRuntime?.externalAgent.nextExpiryAtMs ?? null,
@@ -206,7 +246,8 @@ export function buildSessionListRowViewModel(input: BuildSessionListRowViewModel
         isFirst,
         isLast,
         isSingle: isFirst && isLast,
-        subtitleOverride: item.groupKind === 'project' && item.variant === 'no-path' ? null : (subtitle || null),
+        subtitleOverride: contextualSearchSubtitle
+            ?? (item.groupKind === 'project' && item.variant === 'no-path' ? null : (subtitle || null)),
         subtitleEllipsizeMode,
         pinned,
         showServerBadge: pinned ? input.showPinnedServerBadge : input.showServerBadge,

@@ -43,6 +43,7 @@ type QueuedMutation =
 export type HomeSearchIndexer = Readonly<{
     ready(): boolean;
     whenReady(): Promise<void>;
+    whenIdle(): Promise<void>;
     reconcile(): Promise<{ indexed: number; removed: number }>;
     notify(message: HomeSearchCanonicalMessage): void;
     removeMessages(messageIds: readonly string[]): void;
@@ -53,13 +54,14 @@ export type HomeSearchIndexer = Readonly<{
 
 const RECONCILE_PAGE_SIZE = 250;
 
-/** Serializes the full startup projection and live after-commit mutations over one FTS database. */
+/** Serializes the full startup projection and live after-commit mutations over one FTS database.
+ *  Pre-settlement catch-up is owned by the search lifecycle; deliveries before the lifecycle
+ *  settles the startup projection are refused instead of buffered. */
 export function createHomeSearchIndexer(params: Readonly<{
     db: HomeSearchDb;
     readCanonicalMessagesPage: HomeSearchCanonicalPageReader;
     onFailure?: (error: unknown) => void;
 }>): HomeSearchIndexer {
-    const pendingBeforeStart: QueuedMutation[] = [];
     let started = false;
     let stopped = false;
     let isReady = false;
@@ -92,8 +94,9 @@ export function createHomeSearchIndexer(params: Readonly<{
                 });
                 return;
             }
-            pendingBeforeStart.push(mutation);
-            return;
+            // Pre-settlement catch-up is owned by the search lifecycle's bounded dirty
+            // projection; buffering events here retained unbounded message snapshots.
+            throw new Error('Personal Home search mutations may be delivered only after the lifecycle settles the startup projection');
         }
         tail = tail.then(() => applyMutation(mutation)).catch(markFailed);
     };
@@ -105,13 +108,15 @@ export function createHomeSearchIndexer(params: Readonly<{
         let afterId: string | undefined;
         do {
             const page = await params.readCanonicalMessagesPage({ afterId, limit: RECONCILE_PAGE_SIZE });
+            const indexedMessages: HomeSearchMessage[] = [];
             for (const row of page.messages) {
                 const message = toIndexedMessage(row);
                 if (message.text.trim()) {
-                    params.db.upsert(message);
-                    indexed += 1;
+                    indexedMessages.push(message);
                 }
             }
+            params.db.upsertMany(indexedMessages);
+            indexed += indexedMessages.length;
             if (page.nextAfterId && page.nextAfterId === afterId) throw new Error('Canonical transcript pagination did not advance');
             afterId = page.nextAfterId;
         } while (afterId);
@@ -121,6 +126,7 @@ export function createHomeSearchIndexer(params: Readonly<{
     return {
         ready: () => isReady,
         whenReady: () => initialReconcile ?? Promise.resolve(),
+        whenIdle: () => tail,
         async reconcile() {
             const work = tail.then(runReconcile);
             tail = work.then(() => undefined).catch(markFailed);
@@ -137,7 +143,6 @@ export function createHomeSearchIndexer(params: Readonly<{
             if (started || stopped) return;
             started = true;
             tail = tail.then(runReconcile).then(() => {
-                for (const mutation of pendingBeforeStart.splice(0)) applyMutation(mutation);
                 isReady = true;
             }).catch(markFailed);
             initialReconcile = tail;

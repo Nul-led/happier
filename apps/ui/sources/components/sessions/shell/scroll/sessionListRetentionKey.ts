@@ -1,5 +1,16 @@
 import type { SessionListStorageFilter } from '@/sync/domains/session/sessionStorageKind';
 
-export function buildSessionListRetentionKey(storageKind: SessionListStorageFilter | undefined): string {
-    return `sessions-list:${storageKind ?? 'all'}`;
+function encodeRetentionKeyPart(value: string): string {
+    return `${value.length}:${value}`;
+}
+
+export function buildSessionListRetentionKey(
+    storageKind: SessionListStorageFilter | undefined,
+    sourceScopeKey: string,
+): string {
+    return [
+        'sessions-list',
+        encodeRetentionKeyPart(storageKind ?? 'all'),
+        encodeRetentionKeyPart(sourceScopeKey),
+    ].join(':');
 }

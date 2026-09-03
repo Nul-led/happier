@@ -1,12 +1,12 @@
 import React from 'react';
-import { Animated, Easing, View, Pressable, Platform, Image as ReactNativeImage, type StyleProp, type TextStyle, type ViewProps, type ViewStyle } from 'react-native';
+import { View, Pressable, Platform, Image as ReactNativeImage, type StyleProp, type ViewProps, type ViewStyle } from 'react-native';
 import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
 import { useLocalSettingMutable, useSettingMutable } from '@/sync/domains/state/storage';
 import { useUnistyles } from 'react-native-unistyles';
 import { RecoveryKeyReminderBanner } from '@/components/account/RecoveryKeyReminderBanner';
 import { UpdateBanner } from '@/components/ui/feedback/UpdateBanner';
 import { DropdownMenu, type DropdownMenuItem } from '@/components/ui/forms/dropdown/DropdownMenu';
-import { Text, TextInput } from '@/components/ui/text/Text';
+import { Text } from '@/components/ui/text/Text';
 import { Eyebrow } from '@/components/ui/text/Eyebrow';
 import { TabBadge } from '@/components/ui/navigation/tabBadge/TabBadge';
 import { t } from '@/text';
@@ -24,6 +24,7 @@ import type { RegisterSessionFolderDropTarget } from './useSessionListViewState'
 import { useWorkspaceFavicon } from './useWorkspaceFavicon';
 import { resolveWorkspaceRootTreeRowId } from './drop-resolution/treeRowId';
 import { Icon } from '@/components/ui/icons/Icon';
+import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
 
 const ORDERING_MENU_IDS = {
     custom: 'custom',
@@ -43,34 +44,14 @@ const ORDERING_MENU_IDS = {
     sessionListStorageFilterPersisted: 'sessionListStorageFilterPersisted',
     sessionListStorageFilterDirect: 'sessionListStorageFilterDirect',
 } as const;
+const HEADER_ACTION_TARGET_SIZE = resolveMinimumInteractiveTargetSize(Platform.OS);
+const HEADER_ACTION_TARGET_STYLE = {
+    minWidth: HEADER_ACTION_TARGET_SIZE,
+    minHeight: HEADER_ACTION_TARGET_SIZE,
+};
 
-const TAG_FILTER_ITEM_PREFIX = 'session-list-tag-filter:';
-const SEARCH_INPUT_EXPANDED_WIDTH = 188;
-const SEARCH_INPUT_COLLAPSED_WIDTH = 16;
-const SEARCH_INPUT_ANIMATION_MS = 170;
-const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
-const WEB_NO_FOCUS_OUTLINE_STYLE = {
-    outline: 'none',
-    outlineStyle: 'none',
-    outlineWidth: 0,
-    outlineColor: 'transparent',
-    boxShadow: 'none',
-} as unknown as ViewStyle;
-const SEARCH_INPUT_CHROME_RESET_STYLE = {
-    outline: 'none',
-    outlineStyle: 'none',
-    outlineWidth: 0,
-    outlineColor: 'transparent',
-    outlineOffset: 0,
-    boxShadow: 'none',
-    borderWidth: 0,
-    borderColor: 'transparent',
-    backgroundColor: 'transparent',
-    appearance: 'none',
-    WebkitAppearance: 'none',
-} as unknown as TextStyle;
 
-function stopPressEventPropagation(event: unknown): void {
+export function stopPressEventPropagation(event: unknown): void {
     if (!event || typeof event !== 'object' || !('stopPropagation' in event)) {
         return;
     }
@@ -80,11 +61,6 @@ function stopPressEventPropagation(event: unknown): void {
     }
 }
 
-function resolveTagFromItemId(itemId: string): string | null {
-    if (!itemId.startsWith(TAG_FILTER_ITEM_PREFIX)) return null;
-    const tag = itemId.slice(TAG_FILTER_ITEM_PREFIX.length);
-    return tag.length > 0 ? tag : null;
-}
 
 type MeasuredSessionFolderDropTarget = Readonly<
     | {
@@ -149,7 +125,7 @@ function useMeasuredDropTargetRegistration(params: Readonly<{
     return { ref, onLayout };
 }
 
-const SessionListOrderingMenuButton = React.memo(function SessionListOrderingMenuButton(props: Readonly<{
+export const SessionListOrderingMenuButton = React.memo(function SessionListOrderingMenuButton(props: Readonly<{
     placement?: 'top' | 'bottom' | 'left' | 'right';
     onMenuOpenChange?: (open: boolean) => void;
 }>) {
@@ -283,7 +259,7 @@ const SessionListOrderingMenuButton = React.memo(function SessionListOrderingMen
             trigger={({ toggle }) => (
                 <Pressable
                     testID="session-list-ordering-menu-trigger"
-                    style={styles.headerActionButton}
+                    style={[styles.headerActionButton, HEADER_ACTION_TARGET_STYLE]}
                     onPress={(event) => {
                         stopPressEventPropagation(event);
                         toggle();
@@ -291,7 +267,6 @@ const SessionListOrderingMenuButton = React.memo(function SessionListOrderingMen
                     accessibilityRole="button"
                     accessibilityLabel={t('settingsSession.sessionList.orderingTitle')}
                     accessibilityState={{ selected: hasActiveStorageFilter }}
-                    hitSlop={8}
                 >
                     <View>
                         <Icon name="funnel-simple" size={16} color={actionIconColor} />
@@ -306,231 +281,6 @@ const SessionListOrderingMenuButton = React.memo(function SessionListOrderingMen
                 </Pressable>
             )}
         />
-    );
-});
-
-export const SessionListHeaderControls = React.memo(function SessionListHeaderControls(props: Readonly<{
-    allKnownTags: ReadonlyArray<string>;
-    selectedTags: ReadonlyArray<string>;
-    searchQuery: string;
-    searchOpen?: boolean;
-    searchTrailingAccessory?: React.ReactNode;
-    onSelectedTagsChange: (tags: string[]) => void;
-    onSearchQueryChange: (query: string) => void;
-    onSearchFocusChange?: (focused: boolean) => void;
-    onMenuOpenChange?: (open: boolean) => void;
-}>) {
-    const {
-        allKnownTags,
-        onMenuOpenChange,
-        onSearchQueryChange,
-        onSelectedTagsChange,
-        onSearchFocusChange,
-        searchOpen = false,
-        searchQuery,
-        searchTrailingAccessory,
-        selectedTags,
-    } = props;
-    const styles = sessionListStyles;
-    const { theme } = useUnistyles();
-    const inputRef = React.useRef<React.ElementRef<typeof TextInput> | null>(null);
-    const searchAnimation = React.useRef(new Animated.Value(searchQuery.trim().length > 0 ? 1 : 0)).current;
-    const [searchFocused, setSearchFocused] = React.useState(false);
-    // Keep a local input echo so native TextInput receives the typed value synchronously even if the virtualized header prop lags.
-    const [searchInputValue, setSearchInputValue] = React.useState(searchQuery);
-    const [tagMenuOpen, setTagMenuOpen] = React.useState(false);
-    const iconColor = theme.colors.text.secondary;
-    const activeIconColor = theme.colors.accent.blue;
-    const searchIsOpen = searchOpen || searchFocused || searchInputValue.trim().length > 0;
-    const selectedTagSet = React.useMemo(() => new Set(selectedTags), [selectedTags]);
-
-    React.useEffect(() => {
-        setSearchInputValue(searchQuery);
-    }, [searchQuery]);
-
-    React.useEffect(() => {
-        if (!searchIsOpen) return;
-        inputRef.current?.focus?.();
-    }, [searchIsOpen]);
-
-    React.useEffect(() => {
-        Animated.timing(searchAnimation, {
-            toValue: searchIsOpen ? 1 : 0,
-            duration: SEARCH_INPUT_ANIMATION_MS,
-            easing: Easing.out(Easing.cubic),
-            useNativeDriver: false,
-        }).start();
-    }, [searchAnimation, searchIsOpen]);
-
-    const animatedSearchShellStyle = React.useMemo(() => ({
-        width: searchAnimation.interpolate({
-            inputRange: [0, 1],
-            outputRange: [SEARCH_INPUT_COLLAPSED_WIDTH, SEARCH_INPUT_EXPANDED_WIDTH],
-        }),
-    }), [searchAnimation]);
-    const animatedSearchChromeStyle = React.useMemo(() => ({
-        opacity: searchAnimation,
-    }), [searchAnimation]);
-
-    const handleOpenSearch = React.useCallback((event?: unknown) => {
-        stopPressEventPropagation(event);
-        onSearchFocusChange?.(true);
-        setSearchFocused(true);
-    }, [onSearchFocusChange]);
-
-    const handleSearchFocus = React.useCallback(() => {
-        onSearchFocusChange?.(true);
-        setSearchFocused(true);
-    }, [onSearchFocusChange]);
-
-    const handleSearchBlur = React.useCallback(() => {
-        onSearchFocusChange?.(false);
-        setSearchFocused(false);
-    }, [onSearchFocusChange]);
-
-    const handleSearchQueryChange = React.useCallback((query: string) => {
-        setSearchInputValue(query);
-        onSearchQueryChange(query);
-    }, [onSearchQueryChange]);
-
-    const handleSearchKeyPress = React.useCallback((event: { nativeEvent?: { key?: string } }) => {
-        if (event.nativeEvent?.key !== 'Escape') return;
-        setSearchInputValue('');
-        onSearchQueryChange('');
-        onSearchFocusChange?.(false);
-        setSearchFocused(false);
-    }, [onSearchFocusChange, onSearchQueryChange]);
-
-    const handleTagMenuOpenChange = React.useCallback((open: boolean) => {
-        setTagMenuOpen(open);
-        onMenuOpenChange?.(open);
-    }, [onMenuOpenChange]);
-
-    const tagItems = React.useMemo((): DropdownMenuItem[] => allKnownTags.map((tag) => {
-        const selected = selectedTagSet.has(tag);
-        return {
-            id: `${TAG_FILTER_ITEM_PREFIX}${tag}`,
-            title: tag,
-            icon: <Icon name="tag" size={14} color={selected ? activeIconColor : iconColor} />,
-            rightElement: selected
-                ? <Icon name="check" size={14} color={activeIconColor} />
-                : null,
-        };
-    }), [activeIconColor, allKnownTags, iconColor, selectedTagSet]);
-
-    const handleTagSelect = React.useCallback((itemId: string) => {
-        const tag = resolveTagFromItemId(itemId);
-        if (!tag) return;
-        const nextTags = selectedTagSet.has(tag)
-            ? selectedTags.filter((item) => item !== tag)
-            : [...selectedTags, tag];
-        onSelectedTagsChange(nextTags);
-    }, [onSelectedTagsChange, selectedTagSet, selectedTags]);
-
-    return (
-        <View style={styles.headerControls}>
-            <AnimatedPressable
-                testID="session-list-search-trigger"
-                accessibilityRole={searchIsOpen ? undefined : 'button'}
-                accessibilityLabel={searchIsOpen ? undefined : t('sessionsList.searchSessions')}
-                onPress={searchIsOpen ? undefined : handleOpenSearch}
-                hitSlop={searchIsOpen ? undefined : 8}
-                style={[
-                    styles.headerSearchShell,
-                    WEB_NO_FOCUS_OUTLINE_STYLE,
-                    animatedSearchShellStyle,
-                    searchIsOpen ? styles.headerSearchShellExpanded : null,
-                ]}
-            >
-                <Animated.View
-                    pointerEvents="none"
-                    style={[styles.headerSearchShellBackdrop, animatedSearchChromeStyle]}
-                />
-                <Animated.View
-                    pointerEvents="none"
-                    style={[styles.headerSearchShellBorder, animatedSearchChromeStyle]}
-                />
-                <Icon
-                    name="magnifying-glass"
-                    size={16}
-                    color={searchIsOpen ? activeIconColor : iconColor}
-                    style={styles.headerSearchIcon}
-                />
-                {searchIsOpen ? (
-                    <View style={styles.headerSearchInputContainer}>
-                        <TextInput
-                            ref={inputRef}
-                            testID="session-list-search-input"
-                            accessibilityLabel={t('sessionsList.searchSessions')}
-                            placeholder={t('sessionsList.searchSessionsPlaceholder')}
-                            placeholderTextColor={theme.colors.text.tertiary}
-                            value={searchInputValue}
-                            onChangeText={handleSearchQueryChange}
-                            onFocus={handleSearchFocus}
-                            onBlur={handleSearchBlur}
-                            onKeyPress={handleSearchKeyPress}
-                            autoFocus={true}
-                            returnKeyType="search"
-                            autoCorrect={false}
-                            style={[styles.headerSearchInput, SEARCH_INPUT_CHROME_RESET_STYLE]}
-                        />
-                    </View>
-                ) : null}
-                {searchIsOpen && searchTrailingAccessory !== undefined ? (
-                    <View
-                        testID="session-list-search-trailing-accessory"
-                        pointerEvents="none"
-                        accessibilityElementsHidden={true}
-                        importantForAccessibility="no-hide-descendants"
-                        style={styles.headerSearchTrailingAccessory}
-                    >
-                        {searchTrailingAccessory}
-                    </View>
-                ) : null}
-            </AnimatedPressable>
-            {allKnownTags.length > 0 ? (
-                <DropdownMenu
-                    open={tagMenuOpen}
-                    onOpenChange={handleTagMenuOpenChange}
-                    items={tagItems}
-                    onSelect={handleTagSelect}
-                    selectedId={selectedTags[0] ?? null}
-                    variant="slim"
-                    search={allKnownTags.length > 8}
-                    searchPlaceholder={t('sessionTags.searchOrAddPlaceholder')}
-                    closeOnSelect={false}
-                    showCategoryTitles={false}
-                    matchTriggerWidth={false}
-                    maxWidthCap={220}
-                    popoverPortalWebTarget="body"
-                    placement="bottom"
-                    popoverAnchorAlign="end"
-                    trigger={({ toggle }) => (
-                        <Pressable
-                            testID="session-list-tag-filter-trigger"
-                            style={styles.headerActionButton}
-                            onPress={(event) => {
-                                stopPressEventPropagation(event);
-                                toggle();
-                            }}
-                            accessibilityRole="button"
-                            accessibilityLabel={t('sessionsList.filterByTags')}
-                            hitSlop={8}
-                        >
-                            <Icon
-                                name="tag"
-                                size={16}
-                                color={selectedTags.length > 0 ? activeIconColor : iconColor}
-                            />
-                        </Pressable>
-                    )}
-                />
-            ) : null}
-            <SessionListOrderingMenuButton
-                placement="bottom"
-                onMenuOpenChange={onMenuOpenChange}
-            />
-        </View>
     );
 });
 
@@ -790,9 +540,8 @@ export const CollapsibleSectionHeader = React.memo(function CollapsibleSectionHe
     title: string;
     collapsed: boolean;
     onPress: () => void;
-    showOrderingMenu?: boolean;
+    isPrimaryHeader?: boolean;
     testID?: string;
-    headerControls?: Omit<React.ComponentProps<typeof SessionListHeaderControls>, 'onMenuOpenChange'>;
     rootMeasurement?: Readonly<{
         active: boolean;
         ref: React.Ref<View>;
@@ -804,11 +553,9 @@ export const CollapsibleSectionHeader = React.memo(function CollapsibleSectionHe
     const { theme } = useUnistyles();
     const isWeb = Platform.OS === 'web';
     const [isHovered, setIsHovered] = React.useState(false);
-    const [isOrderingMenuOpen, setIsOrderingMenuOpen] = React.useState(false);
     const headerChevronColor = theme.colors.text.secondary;
-    const isPrimaryHeader = props.showOrderingMenu === true;
-    const showChevron = !isWeb || props.collapsed || isHovered || isOrderingMenuOpen;
-    const showOrderingMenu = props.showOrderingMenu === true;
+    const isPrimaryHeader = props.isPrimaryHeader === true;
+    const showChevron = !isWeb || props.collapsed || isHovered;
     return (
         <Pressable
             ref={props.rootMeasurement?.ref}
@@ -839,14 +586,6 @@ export const CollapsibleSectionHeader = React.memo(function CollapsibleSectionHe
                         />
                     </View>
                 </View>
-                {showOrderingMenu && props.headerControls ? (
-                    <SessionListHeaderControls
-                        {...props.headerControls}
-                        onMenuOpenChange={setIsOrderingMenuOpen}
-                    />
-                ) : showOrderingMenu ? (
-                    <SessionListOrderingMenuButton placement="bottom" onMenuOpenChange={setIsOrderingMenuOpen} />
-                ) : null}
             </View>
         </Pressable>
     );

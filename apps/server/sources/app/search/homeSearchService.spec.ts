@@ -9,7 +9,7 @@ describe('Home search service', () => {
     it('fails closed for encrypted homes and exposes identity on plain hits', async () => {
         const root = await mkdtemp(join(tmpdir(), 'happier-home-service-'));
         const encrypted = createHomeSearchService({ db: null, homeServerIdentityId: 'srv_test', storagePolicy: 'e2ee' });
-        expect(encrypted.capability()).toMatchObject({ enabled: false, provider: 'daemon' });
+        expect(encrypted.capability()).toEqual({ enabled: false, reason: 'index_unavailable' });
         expect(encrypted.search({ v: 1, query: 'x', scope: { type: 'global' }, mode: 'auto' })).toMatchObject({ ok: false, errorCode: 'memory_disabled' });
 
         const path = join(root, 'plain.sqlite');
@@ -32,11 +32,52 @@ describe('Home search service', () => {
             storagePolicy: 'plaintext_only',
             isReady: () => ready,
         });
-        expect(service.capability()).toEqual({ enabled: false, provider: 'home', reason: 'indexing' });
+        expect(service.capability()).toEqual({ enabled: false, reason: 'indexing' });
         expect(service.search({ v: 1, query: 'x', scope: { type: 'global' }, mode: 'auto' })).toMatchObject({ ok: false, errorCode: 'memory_index_missing' });
 
         ready = true;
-        expect(service.capability()).toEqual({ enabled: true, provider: 'home' });
+        expect(service.capability()).toEqual({ enabled: true });
+        index.close();
+    });
+
+    it('applies contextual Session eligibility before the Home result limit', async () => {
+        const root = await mkdtemp(join(tmpdir(), 'happier-home-service-eligibility-'));
+        const index = await openHomeSearchDb({ dbPath: join(root, 'search.sqlite') });
+        for (let value = 1; value <= 3; value += 1) {
+            index.upsert({
+                id: `active-message-${value}`,
+                sessionId: `active-${value}`,
+                seq: 1,
+                createdAtMs: 100 + value,
+                text: 'shared eligibility term',
+            });
+        }
+        index.upsert({
+            id: 'archived-message',
+            sessionId: 'archived-target',
+            seq: 1,
+            createdAtMs: 1,
+            text: 'shared eligibility term',
+        });
+        const service = createHomeSearchService({
+            db: index,
+            homeServerIdentityId: 'srv_test',
+            storagePolicy: 'plaintext_only',
+        });
+
+        expect(service.search({
+            v: 1,
+            query: 'eligibility',
+            scope: { type: 'global' },
+            mode: 'auto',
+            maxResults: 2,
+            eligibleSessionIds: ['archived-target'],
+        }, {
+            visibleSessionIds: ['active-1', 'active-2', 'active-3', 'archived-target'],
+        })).toEqual(expect.objectContaining({
+            ok: true,
+            hits: [expect.objectContaining({ sessionId: 'archived-target' })],
+        }));
         index.close();
     });
 });

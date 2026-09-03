@@ -64,6 +64,7 @@ export function buildSessionFromListRenderable(
         pendingVersion: renderable.pendingVersion,
         pendingCount: renderable.pendingCount,
         pendingBlockedCount: renderable.pendingBlockedCount,
+        pendingActivationAuthorization: renderable.pendingActivationAuthorization ?? null,
         lastViewedSessionSeq: renderable.hasUnreadMessages === true ? 0 : seq,
         pendingPermissionRequestCount: typeof renderable.hasPendingPermissionRequests === 'boolean'
             ? renderable.hasPendingPermissionRequests ? 1 : 0

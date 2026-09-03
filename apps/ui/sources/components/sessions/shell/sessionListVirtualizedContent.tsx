@@ -19,7 +19,6 @@ import { NewSessionDraftsSection } from './NewSessionDraftsSection';
 
 export type SessionListVirtualizedNode = Readonly<{
     id: string;
-    kind?: 'item' | 'filteredNoResults';
     rowViewModel?: SessionListRowViewModel | null;
 }>;
 
@@ -46,6 +45,9 @@ const WEB_LIST_UPDATE_CELLS_BATCHING_PERIOD_MS = 50;
 const WEB_LIST_WINDOW_SIZE = 3;
 const WEB_LIST_SCROLL_EVENT_THROTTLE_MS = 32;
 const NATIVE_LIST_SCROLL_EVENT_THROTTLE_MS = 16;
+// Row taps must work while the session-search keyboard is open ('handled'), and a
+// deliberate list drag dismisses it. Interactive dismissal is iOS-only behaviour.
+const SESSION_LIST_KEYBOARD_DISMISS_MODE = Platform.OS === 'ios' ? 'interactive' : 'on-drag';
 
 const sessionListNodeKeyExtractor = (item: SessionListVirtualizedNode): string => item.id;
 
@@ -275,6 +277,8 @@ export const SessionListVirtualizedContent = React.memo(function SessionListVirt
                 onLayout={props.onLayout}
                 onContentSizeChange={props.onContentSizeChange}
                 scrollEventThrottle={WEB_LIST_SCROLL_EVENT_THROTTLE_MS}
+                keyboardShouldPersistTaps="handled"
+                keyboardDismissMode={SESSION_LIST_KEYBOARD_DISMISS_MODE}
                 ListHeaderComponent={headerComponent as any}
                 ListFooterComponent={footerComponent as any}
                 // First-page-sized web lists avoid React Native Web VirtualizedList's
@@ -322,6 +326,8 @@ export const SessionListVirtualizedContent = React.memo(function SessionListVirt
             onLayout={props.onLayout}
             onContentSizeChange={props.onContentSizeChange}
             scrollEventThrottle={isWeb ? WEB_LIST_SCROLL_EVENT_THROTTLE_MS : NATIVE_LIST_SCROLL_EVENT_THROTTLE_MS}
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode={SESSION_LIST_KEYBOARD_DISMISS_MODE}
             ListHeaderComponent={headerComponent as any}
             ListFooterComponent={footerComponent as any}
             // Session rows carry drag state, images, menus, and focus. Keep

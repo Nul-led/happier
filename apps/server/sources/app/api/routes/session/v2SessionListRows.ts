@@ -20,6 +20,7 @@ import {
     requiresSessionMetadataOwnerAccountMode,
     type SessionMetadataOwnerAccountMode,
 } from "@/app/session/metadata/sessionMetadataRecipientProjection";
+import { mapPendingActivationAuthorization } from "@/app/session/pending/pendingActivationAuthorization";
 
 export function createSessionRollbackEligibleTurnsSelect(
     params: Readonly<{ limit?: number }> = {},
@@ -102,6 +103,10 @@ const V2_SESSION_LIST_ROW_BASE_SELECT = {
     pendingCount: true,
     pendingBlockedCount: true,
     pendingVersion: true,
+    pendingActivationRequestId: true,
+    pendingActivationRequestedAt: true,
+    pendingActivationStatus: true,
+    pendingActivationFailureCode: true,
     dataEncryptionKey: true,
     active: true,
     lastActiveAt: true,
@@ -116,6 +121,28 @@ const {
     ...V2_SESSION_OWNER_ROW_SELECT
 } = V2_SESSION_LIST_ROW_BASE_SELECT;
 
+const {
+    turns: _legacySelectTurns,
+    pendingActivationRequestId: _legacySelectPendingActivationRequestId,
+    pendingActivationRequestedAt: _legacySelectPendingActivationRequestedAt,
+    pendingActivationStatus: _legacySelectPendingActivationStatus,
+    pendingActivationFailureCode: _legacySelectPendingActivationFailureCode,
+    ...V2_SESSION_LIST_ROW_LEGACY_SELECT
+} = V2_SESSION_LIST_ROW_BASE_SELECT;
+
+export const SESSION_LIST_PROJECTION_FALLBACK_COLUMNS: readonly string[] =
+    Object.keys(V2_SESSION_LIST_ROW_BASE_SELECT).filter(
+        (column) => !(column in V2_SESSION_LIST_ROW_LEGACY_SELECT),
+    );
+
+const SESSION_LIST_PROJECTION_FALLBACK_COLUMN_SET = new Set(SESSION_LIST_PROJECTION_FALLBACK_COLUMNS);
+
+export function omitSessionListProjectionFallbackColumns(select: Prisma.SessionSelect): Prisma.SessionSelect {
+    return Object.fromEntries(
+        Object.entries(select).filter(([column]) => !SESSION_LIST_PROJECTION_FALLBACK_COLUMN_SET.has(column)),
+    );
+}
+
 export type V2SessionListRow = Prisma.SessionGetPayload<{
     select: typeof V2_SESSION_LIST_ROW_BASE_SELECT;
 }>;
@@ -124,7 +151,11 @@ export type V2SessionOwnerRow = Prisma.SessionGetPayload<{
     select: typeof V2_SESSION_OWNER_ROW_SELECT;
 }>;
 
-export type V2SessionListRowCompat = V2SessionListRow;
+type V2SessionListLegacyRow = Prisma.SessionGetPayload<{
+    select: typeof V2_SESSION_LIST_ROW_LEGACY_SELECT;
+}>;
+
+export type V2SessionListRowCompat = V2SessionListRow | V2SessionListLegacyRow;
 type V2SessionRowCompat = V2SessionListRowCompat | V2SessionOwnerRow;
 
 export function createV2SessionListVisibilityWhere(params: Readonly<{ userId: string }>): Prisma.SessionWhereInput {
@@ -144,6 +175,16 @@ export function createV2SessionListVisibilityWhere(params: Readonly<{ userId: st
 export function createV2SessionListRowSelect(params: Readonly<{ userId: string }>) {
     return {
         ...V2_SESSION_LIST_ROW_BASE_SELECT,
+        shares: {
+            where: { sharedWithUserId: params.userId },
+            select: V2_SESSION_LIST_SHARE_SELECT,
+        },
+    } as const satisfies Prisma.SessionSelect;
+}
+
+export function createV2SessionListLegacyRowSelect(params: Readonly<{ userId: string }>) {
+    return {
+        ...V2_SESSION_LIST_ROW_LEGACY_SELECT,
         shares: {
             where: { sharedWithUserId: params.userId },
             select: V2_SESSION_LIST_SHARE_SELECT,
@@ -374,6 +415,9 @@ export function mapV2SessionListRow(params: Readonly<{
         pendingCount: hasLiveFacts ? row.pendingCount : 0,
         pendingBlockedCount: hasLiveFacts ? row.pendingBlockedCount : 0,
         pendingVersion: hasLiveFacts ? row.pendingVersion : 0,
+        ...(hasLiveFacts
+            ? { pendingActivationAuthorization: mapPendingActivationAuthorization(row) }
+            : {}),
         dataEncryptionKey: isOwner
             ? encodeSessionDataEncryptionKey(row.dataEncryptionKey)
             : (viewerShare?.encryptedDataKey ? Buffer.from(viewerShare.encryptedDataKey).toString("base64") : null),

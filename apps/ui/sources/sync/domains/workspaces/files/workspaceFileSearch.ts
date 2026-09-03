@@ -1,6 +1,10 @@
 import Fuse from 'fuse.js';
 
 import type { FileSearchItem } from '@/sync/domains/fileSystem/fileSearchItem';
+import {
+    captureActiveServerAccountScopeLifetime,
+    type ActiveServerAccountScopeLifetime,
+} from '@/sync/domains/scope/activeServerAccountScope';
 import { tryBuildWorkspaceCacheKey, type WorkspaceScopeBase } from '@/sync/domains/workspaces/workspaceScope';
 import { machineFilesystemListDirectory } from '@/sync/ops/machineFileBrowser';
 import { machineRipgrep } from '@/sync/ops/machineRipgrep';
@@ -9,11 +13,21 @@ import { AsyncLock } from '@/utils/system/lock';
 type WorkspaceCache = {
     files: FileSearchItem[];
     fuse: Fuse<FileSearchItem> | null;
+    initialized: boolean;
     lastRefresh: number;
     refreshLock: AsyncLock;
 };
 
 const FILE_INDEX_FALLBACK_LIMIT = 5000;
+
+export class WorkspaceFileSearchUnavailableError extends Error {
+    readonly code = 'WORKSPACE_FILE_SEARCH_UNAVAILABLE';
+
+    constructor() {
+        super('Workspace file search is unavailable');
+        this.name = 'WorkspaceFileSearchUnavailableError';
+    }
+}
 
 function createWorkspaceFileSearchAbortError(): Error {
     const error = new Error('Workspace file search was aborted');
@@ -57,7 +71,7 @@ function normalizeRepoRelativePath(value: string): string {
 }
 
 function shouldSkipFallbackPath(name: string): boolean {
-    return name.startsWith('.') || name === 'node_modules';
+    return name === '.git' || name === 'node_modules';
 }
 
 function escapeRipgrepGlob(input: string): string {
@@ -133,6 +147,31 @@ function createFuse(files: FileSearchItem[], threshold: number = 0.3): Fuse<File
 }
 
 const workspaceCaches = new Map<string, WorkspaceCache>();
+let boundAccountLifetime: ActiveServerAccountScopeLifetime | null = null;
+let boundAccountRetirement: Readonly<{ dispose(): void }> | null = null;
+
+function bindWorkspaceFileSearchToActiveAccountLifetime(): ActiveServerAccountScopeLifetime | null {
+    const lifetime = captureActiveServerAccountScopeLifetime();
+    if (!lifetime || lifetime === boundAccountLifetime) return lifetime;
+
+    boundAccountRetirement?.dispose();
+    workspaceCaches.clear();
+    boundAccountLifetime = lifetime;
+    boundAccountRetirement = lifetime.onRetire(() => {
+        workspaceCaches.clear();
+        if (boundAccountLifetime === lifetime) {
+            boundAccountLifetime = null;
+            boundAccountRetirement = null;
+        }
+    });
+    return lifetime;
+}
+
+function throwIfWorkspaceFileSearchAccountRetired(lifetime: ActiveServerAccountScopeLifetime | null): void {
+    if (lifetime && !lifetime.isCurrent()) {
+        throw new WorkspaceFileSearchUnavailableError();
+    }
+}
 
 function getOrCreateWorkspaceCache(workspaceCacheKey: string): WorkspaceCache {
     const existing = workspaceCaches.get(workspaceCacheKey);
@@ -140,6 +179,7 @@ function getOrCreateWorkspaceCache(workspaceCacheKey: string): WorkspaceCache {
     const created: WorkspaceCache = {
         files: [],
         fuse: null,
+        initialized: false,
         lastRefresh: 0,
         refreshLock: new AsyncLock(),
     };
@@ -170,7 +210,7 @@ async function buildFileItemsFromRipgrep(
     throwIfWorkspaceFileSearchAborted(signal);
     const res = await machineRipgrep(
         address.machineId,
-        ['--files', '--follow'],
+        ['--files', '--follow', '--hidden', '--glob', '!**/.git/**'],
         address.rootPath,
         {
             serverId: address.serverId,
@@ -198,7 +238,7 @@ async function buildFileItemsFromRipgrepGlob(
 
     const res = await machineRipgrep(
         address.machineId,
-        ['--files', '--follow', '--hidden', '--iglob', pattern],
+        ['--files', '--follow', '--hidden', '--glob', '!**/.git/**', '--iglob', pattern],
         address.rootPath,
         {
             serverId: address.serverId,
@@ -227,23 +267,31 @@ async function buildFileItemsFromDirectoryFallback(
     const files: FileSearchItem[] = [];
     const queue: string[] = [''];
     const visited = new Set<string>(['']);
+    let answered = false;
 
     while (queue.length > 0 && files.length < FILE_INDEX_FALLBACK_LIMIT) {
         throwIfWorkspaceFileSearchAborted(signal);
         const directoryPath = queue.shift() ?? '';
         const absPath = joinPathAbsolute(input.rootPath, directoryPath);
-        const response = await machineFilesystemListDirectory(
-            input.machineId,
-            { path: absPath, includeFiles: true },
-            {
-                serverId: input.serverId,
-                ...(signal ? { signal } : {}),
-            },
-        );
+        let response: Awaited<ReturnType<typeof machineFilesystemListDirectory>> | undefined;
+        try {
+            response = await machineFilesystemListDirectory(
+                input.machineId,
+                { path: absPath, includeFiles: true },
+                {
+                    serverId: input.serverId,
+                    ...(signal ? { signal } : {}),
+                },
+            );
+        } catch (error) {
+            if (signal?.aborted) throw error;
+            continue;
+        }
         throwIfWorkspaceFileSearchAborted(signal);
         if (!response.ok || !Array.isArray(response.entries)) {
             continue;
         }
+        answered = true;
 
         for (const entry of response.entries) {
             throwIfWorkspaceFileSearchAborted(signal);
@@ -284,26 +332,28 @@ async function buildFileItemsFromDirectoryFallback(
         }
     }
 
-    if (files.length === 0) return null;
-    return files;
+    return answered ? files : null;
 }
 
 async function ensureCacheValid(input: Readonly<{
     scope: WorkspaceScopeBase;
     workspaceCacheKey: string;
+    accountLifetime: ActiveServerAccountScopeLifetime | null;
     signal?: AbortSignal;
 }>): Promise<void> {
     const cache = getOrCreateWorkspaceCache(input.workspaceCacheKey);
     const now = Date.now();
     throwIfWorkspaceFileSearchAborted(input.signal);
+    throwIfWorkspaceFileSearchAccountRetired(input.accountLifetime);
 
     // Cache is invalidated explicitly by SCM snapshot updates and user refresh actions.
-    if (cache.files.length > 0) {
+    if (cache.initialized) {
         return;
     }
 
     const refresh = cache.refreshLock.inLock(async () => {
         throwIfWorkspaceFileSearchAborted(input.signal);
+        throwIfWorkspaceFileSearchAccountRetired(input.accountLifetime);
         const nowInner = Date.now();
         // Skip refresh if we re-indexed very recently; avoids hammering ripgrep on each keystroke.
         if (nowInner - cache.lastRefresh < 1000) return;
@@ -323,11 +373,13 @@ async function ensureCacheValid(input: Readonly<{
             files = await buildFileItemsFromDirectoryFallback(address, input.signal);
         }
         throwIfWorkspaceFileSearchAborted(input.signal);
-        if (!files || files.length === 0) return;
+        throwIfWorkspaceFileSearchAccountRetired(input.accountLifetime);
+        if (!files) throw new WorkspaceFileSearchUnavailableError();
 
         cache.files = files;
+        cache.initialized = true;
         cache.lastRefresh = now;
-        cache.fuse = createFuse(files);
+        cache.fuse = files.length > 0 ? createFuse(files) : null;
     });
     await awaitWorkspaceFileSearchWork(refresh, input.signal);
 }
@@ -365,9 +417,12 @@ export async function searchWorkspaceFiles(input: Readonly<{
     query: string;
     limit?: number;
     threshold?: number;
+    resultType?: FileSearchItem['fileType'];
     signal?: AbortSignal;
 }>): Promise<FileSearchItem[]> {
     throwIfWorkspaceFileSearchAborted(input.signal);
+    const accountLifetime = bindWorkspaceFileSearchToActiveAccountLifetime();
+    throwIfWorkspaceFileSearchAccountRetired(accountLifetime);
     // Fails closed on a scope that names no workspace, exactly as the empty-key guard this
     // replaces did — an unaddressable workspace has no index to search.
     const workspaceCacheKey = tryBuildWorkspaceCacheKey(input.scope);
@@ -376,9 +431,11 @@ export async function searchWorkspaceFiles(input: Readonly<{
     await ensureCacheValid({
         scope: input.scope,
         workspaceCacheKey,
+        accountLifetime,
         ...(input.signal ? { signal: input.signal } : {}),
     });
     throwIfWorkspaceFileSearchAborted(input.signal);
+    throwIfWorkspaceFileSearchAccountRetired(accountLifetime);
 
     const cache = getOrCreateWorkspaceCache(workspaceCacheKey);
     const limit = typeof input.limit === 'number' && Number.isFinite(input.limit)
@@ -386,18 +443,24 @@ export async function searchWorkspaceFiles(input: Readonly<{
         : 10;
 
     if (!cache.fuse || cache.files.length === 0) return [];
+    const searchableFiles = input.resultType
+        ? cache.files.filter((item) => item.fileType === input.resultType)
+        : cache.files;
+    if (searchableFiles.length === 0) return [];
 
     const query = String(input.query ?? '').trim();
     if (!query) {
         throwIfWorkspaceFileSearchAborted(input.signal);
-        return cache.files.slice(0, limit);
+        return searchableFiles.slice(0, limit);
     }
 
     const threshold = typeof input.threshold === 'number' && Number.isFinite(input.threshold)
         ? Math.max(0, Math.min(1, input.threshold))
         : 0.3;
 
-    const fuse = threshold === 0.3 ? cache.fuse : createFuse(cache.files, threshold);
+    const fuse = input.resultType
+        ? createFuse(searchableFiles, threshold)
+        : threshold === 0.3 ? cache.fuse : createFuse(cache.files, threshold);
     const results = fuse.search(query, { limit });
     if (results.length > 0) {
         throwIfWorkspaceFileSearchAborted(input.signal);
@@ -406,6 +469,7 @@ export async function searchWorkspaceFiles(input: Readonly<{
 
     const globItems = await buildFileItemsFromRipgrepGlob(input.scope, query, limit, input.signal);
     throwIfWorkspaceFileSearchAborted(input.signal);
+    throwIfWorkspaceFileSearchAccountRetired(accountLifetime);
     if (!globItems || globItems.length === 0) return [];
 
     const known = new Set(cache.files.map((f) => f.fullPath));
@@ -418,9 +482,13 @@ export async function searchWorkspaceFiles(input: Readonly<{
         }
     }
     if (changed) {
+        throwIfWorkspaceFileSearchAccountRetired(accountLifetime);
         cache.fuse = createFuse(cache.files);
     }
 
     throwIfWorkspaceFileSearchAborted(input.signal);
-    return globItems.slice(0, limit);
+    const matchingGlobItems = input.resultType
+        ? globItems.filter((item) => item.fileType === input.resultType)
+        : globItems;
+    return matchingGlobItems.slice(0, limit);
 }

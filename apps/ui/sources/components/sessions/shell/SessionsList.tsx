@@ -6,6 +6,7 @@ import type { SessionListStorageFilter } from '@/sync/domains/session/sessionSto
 import { sessionListStyles } from './sessionListStyles';
 import { SessionListDropOverlay } from './drag/SessionListDropOverlay';
 import { SessionListVirtualizedContent } from './sessionListVirtualizedContent';
+import { SessionListSearchChrome } from './search/SessionListSearchChrome';
 import { preloadEnrichedMarkdownRuntime } from '@/components/markdown/enriched/preloadEnrichedMarkdownRuntime';
 import { useSessionListViewStateFromPaneState } from './useSessionListViewState';
 import { useSessionListScrollRetention } from './scroll/useSessionListScrollRetention';
@@ -21,6 +22,7 @@ import {
 } from './surface/sessionListSurfaceOwnership';
 import { SessionListSelectionStoreProvider } from './selection/SessionListSelectionContext';
 import { SessionListSelectionActionBarHost } from './selection/SessionListSelectionActionBar';
+import { KeyboardAwareScreen } from '@/components/ui/keyboardAvoidance/KeyboardAwareScreen';
 import {
     readRetainedSessionListPaneState,
     retainSessionListPaneState,
@@ -150,6 +152,7 @@ function VisibleSessionsListViewContent(
         [maxWidthStyle, styles.contentContainer],
     );
     const safeArea = useChromeSafeAreaInsets();
+    const sourceScopeKey = useSessionListPaneSourceScopeKey();
     const surfaceOwnership = props.surfaceOwnership;
     const surfaceDataActiveRef = React.useRef(surfaceOwnership.dataActive);
     surfaceDataActiveRef.current = surfaceOwnership.dataActive;
@@ -165,8 +168,8 @@ function VisibleSessionsListViewContent(
         scrollToOffset,
     } = viewState;
     const retentionKey = React.useMemo(
-        () => buildSessionListRetentionKey(props.storageKind),
-        [props.storageKind],
+        () => buildSessionListRetentionKey(props.storageKind, sourceScopeKey),
+        [props.storageKind, sourceScopeKey],
     );
     const scrollRetention = useSessionListScrollRetention({
         retentionKey,
@@ -224,12 +227,18 @@ function VisibleSessionsListViewContent(
 
     return (
         <SessionListSelectionStoreProvider store={viewState.sessionListSelectionStore}>
-        <View style={styles.container} {...(viewState.keyboardZoneProps as Record<string, unknown>)}>
+        <KeyboardAwareScreen
+            testID="sessions-list-keyboard-frame"
+            mode="form"
+            style={styles.container}
+            {...(viewState.keyboardZoneProps as Record<string, unknown>)}
+        >
             <View
                 ref={viewState.treeViewportRef as React.Ref<View>}
                 onLayout={handleTreeViewportLayout}
                 style={contentContainerStyle}
             >
+                <SessionListSearchChrome {...viewState.searchChrome} />
                 <SyncPerformanceReactProfiler id="sessions.list.virtualized">
                     <SessionListVirtualizedContent
                         listRef={viewState.virtualizedListRef}
@@ -276,7 +285,7 @@ function VisibleSessionsListViewContent(
                     onRequestMoveToFolder={viewState.onRequestBulkMoveToFolder}
                 />
             </View>
-        </View>
+        </KeyboardAwareScreen>
         </SessionListSelectionStoreProvider>
     );
 }

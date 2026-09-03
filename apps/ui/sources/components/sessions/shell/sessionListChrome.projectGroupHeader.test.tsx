@@ -316,7 +316,7 @@ describe('ProjectGroupHeader menu items', () => {
                 title="Today"
                 collapsed={false}
                 onPress={vi.fn()}
-                showOrderingMenu={true}
+                isPrimaryHeader={true}
             />,
         );
 
@@ -370,7 +370,7 @@ describe('ProjectGroupHeader menu items', () => {
                 title="Active"
                 collapsed={false}
                 onPress={vi.fn()}
-                showOrderingMenu={true}
+                isPrimaryHeader={true}
             />,
         );
 
@@ -701,7 +701,7 @@ describe('ProjectGroupHeader menu items', () => {
                 title="Active"
                 collapsed={false}
                 onPress={vi.fn()}
-                showOrderingMenu={true}
+                isPrimaryHeader={true}
             />,
         );
 
@@ -959,7 +959,7 @@ describe('ProjectGroupHeader menu items', () => {
                 title="Active"
                 collapsed={false}
                 onPress={vi.fn()}
-                showOrderingMenu={true}
+                isPrimaryHeader={true}
             />,
         );
         const dateScreen = await renderScreen(

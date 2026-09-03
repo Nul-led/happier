@@ -41,6 +41,55 @@ function rowKey(item: Pick<SessionListSessionIndexItem, 'serverId' | 'sessionId'
 }
 
 describe('buildSessionListRowViewModels', () => {
+    it('projects contextual search provenance through the ordinary session-row subtitle', () => {
+        const item = {
+            type: 'session',
+            sessionId: 'sess_search_match',
+            serverId: 'server_a',
+            storageKind: 'persisted',
+            groupKey: 'search:other-matches',
+            groupKind: 'active',
+            contextualSearchReasons: ['transcript', 'hidden-by-filters'] as const,
+            contextualSearchSourceMachineId: 'machine-b',
+        } satisfies SessionListIndexItem;
+        const session = {
+            ...createRenderableSession(item.sessionId),
+            archivedAt: 123,
+            metadata: {
+                ...createRenderableSession(item.sessionId).metadata!,
+                externalSessionV1: {
+                    v: 1 as const,
+                    agentId: 'opencode',
+                    machineId: 'machine-a',
+                    remoteSessionId: 'remote-session',
+                    source: { kind: 'opencodeServer' as const, directory: '/repo/stable' },
+                },
+            },
+        };
+
+        const [row] = buildSessionListRowViewModels({
+            listItems: [item],
+            reachableSessionDisplayById: new Map(),
+            rowRenderableByKey: new Map([[rowKey(item), session]]),
+            relativeNowMs: 1_000,
+            runtimeNowMs: 1_000,
+            hasMultipleMachines: false,
+            pinnedSessionKeys: new Set(),
+            sessionTags: {},
+            selectedSessionId: null,
+            showServerBadge: false,
+            showPinnedServerBadge: false,
+        });
+
+        expect(row?.subtitleOverride).toBe([
+            t('sessionsList.searchMatchTranscript'),
+            t('sessionsList.searchMatchHiddenByFilters'),
+            t('sessionsList.searchMatchArchived'),
+            t('sessionsList.searchMatchExternal'),
+            t('sessionsList.searchMatchAnotherMachine'),
+        ].join(' · '));
+    });
+
     it('projects the repository-owned existing-session draft onto its exact row', () => {
         const item = {
             type: 'session',

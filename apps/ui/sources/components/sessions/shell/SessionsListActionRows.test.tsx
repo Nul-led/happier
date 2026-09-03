@@ -13,6 +13,7 @@ const routeState = vi.hoisted(() => ({
     params: { pluginId: 'acme.review', destinationId: 'review-panel' },
 }));
 const activatePluginAppPage = vi.hoisted(() => vi.fn());
+const openUniversalSearch = vi.hoisted(() => vi.fn());
 const surfaceState = vi.hoisted(() => ({
     platformOS: 'web' as 'web' | 'ios' | 'android',
     isTablet: false,
@@ -51,6 +52,9 @@ vi.mock('expo-router', () => ({
 }));
 vi.mock('@/components/appShell/plugins/pluginAppPageNavigation', () => ({
     usePluginAppPageCatalogActivationHandler: () => activatePluginAppPage,
+}));
+vi.mock('@/components/appShell/search/UniversalSearchRuntimeContext', () => ({
+    useUniversalSearchRuntime: () => ({ open: openUniversalSearch, buildCommands: vi.fn() }),
 }));
 vi.mock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
@@ -109,6 +113,9 @@ async function renderActionRowStyle(): Promise<Record<string, number>> {
 
 describe('SessionsListActionRows', () => {
     beforeEach(() => {
+        routeState.push.mockReset();
+        activatePluginAppPage.mockReset();
+        openUniversalSearch.mockReset();
         surfaceState.platformOS = 'web';
         surfaceState.isTablet = false;
         surfaceState.sessionListDensity = 'narrow';
@@ -138,8 +145,6 @@ describe('SessionsListActionRows', () => {
     });
 
     it('renders ordinary mobile discovery for an admitted App right-sidebar destination', async () => {
-        routeState.push.mockReset();
-        activatePluginAppPage.mockReset();
         const { SessionsListActionRows } = await import('./SessionsListActionRows');
         const screen = await renderScreen(<SessionsListActionRows externalSessionsEnabled={false} />);
         const row = screen.findByTestId(
@@ -154,9 +159,27 @@ describe('SessionsListActionRows', () => {
         );
     });
 
+    it('delegates the built-in Search destination to the universal open owner', async () => {
+        compactDestinationState.value = [{
+            kind: 'builtin',
+            id: 'search',
+            title: 'Search',
+            icon: 'magnifying-glass',
+            group: 'sessions',
+            order: -1,
+            routePath: '/search',
+            availability: 'available',
+        }] as const;
+        const { SessionsListActionRows } = await import('./SessionsListActionRows');
+        const screen = await renderScreen(<SessionsListActionRows externalSessionsEnabled={false} />);
+
+        screen.findByTestId('sessions-search-all-button')?.props.onPress();
+
+        expect(openUniversalSearch).toHaveBeenCalledTimes(1);
+        expect(routeState.push).not.toHaveBeenCalled();
+    });
+
     it('delegates an admitted compact app page to the launch-input route owner', async () => {
-        routeState.push.mockReset();
-        activatePluginAppPage.mockReset();
         const { SessionsListActionRows } = await import('./SessionsListActionRows');
         const screen = await renderScreen(<SessionsListActionRows externalSessionsEnabled={false} />);
         const row = screen.findByTestId('compact-app-destination:plugin:acme.notes:notes');

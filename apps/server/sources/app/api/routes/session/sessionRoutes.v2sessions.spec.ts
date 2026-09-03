@@ -109,7 +109,12 @@ function pagedSessionRow(
         thinking: false,
         thinkingAt: null,
         pendingCount: 0,
+        pendingBlockedCount: 0,
         pendingVersion: 0,
+        pendingActivationRequestId: null,
+        pendingActivationRequestedAt: null,
+        pendingActivationStatus: null,
+        pendingActivationFailureCode: null,
         dataEncryptionKey: null,
         active: overrides.active ?? false,
         lastActiveAt: overrides.lastActiveAt ?? createdAt,
@@ -194,6 +199,40 @@ describe("sessionRoutes v2 sessions snapshot", () => {
             hasNext: false,
         });
         expect(accountFindUnique).not.toHaveBeenCalled();
+    });
+
+    it("projects a live waiting activation authorization and suppresses a stale fence", async () => {
+        sessionFindMany
+            .mockResolvedValueOnce([
+                {
+                    ...pagedSessionRow("waiting", { lastActiveAt: new Date(1_000) }),
+                    pendingActivationRequestId: "pending-1",
+                    pendingActivationRequestedAt: new Date(2_000),
+                    pendingActivationStatus: "waiting",
+                },
+                {
+                    ...pagedSessionRow("stale", { lastActiveAt: new Date(3_000) }),
+                    pendingActivationRequestId: "pending-2",
+                    pendingActivationRequestedAt: new Date(2_000),
+                    pendingActivationStatus: "waiting",
+                },
+            ])
+            .mockResolvedValueOnce([]);
+
+        const route = await createSessionRouteTestBuilder("GET", "/v2/sessions");
+        const { response: rawResponse } = await route.invoke({ query: { limit: 2 } });
+        const response = V2SessionListResponseSchema.parse(rawResponse);
+
+        expect(response.sessions.find((session: { id: string }) => session.id === "waiting")).toMatchObject({
+            id: "waiting",
+            pendingActivationAuthorization: {
+                requestId: "pending-1",
+                requestedAt: 2_000,
+                status: "waiting",
+            },
+        });
+        expect(response.sessions.find((session: { id: string }) => session.id === "stale"))
+            .not.toHaveProperty("pendingActivationAuthorization");
     });
 
     it("coalesces owned layout-one projection to one Account-currentness read per page", async () => {

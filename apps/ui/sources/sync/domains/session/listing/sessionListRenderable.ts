@@ -2,6 +2,7 @@ import type { AgentState, Metadata, Session } from '@/sync/domains/state/storage
 import {
     SessionSharedMetadataV1Schema,
     type ExternalAgentObservationSnapshotV1,
+    type PendingActivationAuthorizationV1,
     type PrimaryTurnStatusV1,
     type SessionRuntimeIssueV1,
 } from '@happier-dev/protocol';
@@ -84,6 +85,7 @@ export interface SessionListRenderableSession {
     pendingVersion?: number;
     pendingCount?: number;
     pendingBlockedCount?: number;
+    pendingActivationAuthorization?: PendingActivationAuthorizationV1 | null;
     lastViewedSessionSeq?: number | null;
     latestTurnId?: string | null;
     latestTurnStatus?: PrimaryTurnStatusV1 | null;
@@ -487,6 +489,7 @@ export function buildSessionListRenderableFromSession(
         pendingVersion: session.pendingVersion,
         pendingCount: session.pendingCount,
         pendingBlockedCount: session.pendingBlockedCount,
+        pendingActivationAuthorization: session.pendingActivationAuthorization ?? null,
         lastViewedSessionSeq: normalizeLastViewedSessionSeq(session.lastViewedSessionSeq),
         latestTurnId: readSessionLatestTurnId(session),
         latestTurnStatus,
@@ -720,6 +723,7 @@ export function areSessionListRenderablesEqual(
         && (previous.pendingVersion ?? null) === (next.pendingVersion ?? null)
         && (previous.pendingCount ?? null) === (next.pendingCount ?? null)
         && (previous.pendingBlockedCount ?? null) === (next.pendingBlockedCount ?? null)
+        && JSON.stringify(previous.pendingActivationAuthorization ?? null) === JSON.stringify(next.pendingActivationAuthorization ?? null)
         && (previous.lastViewedSessionSeq ?? null) === (next.lastViewedSessionSeq ?? null)
         && (previous.latestTurnId ?? null) === (next.latestTurnId ?? null)
         && (previous.latestTurnStatus ?? null) === (next.latestTurnStatus ?? null)
@@ -860,6 +864,7 @@ export function didSessionListRenderableWarmCacheFieldsChange(
     if ((previous.pendingCount ?? null) !== (next.pendingCount ?? null)) return true;
     if ((previous.pendingBlockedCount ?? null) !== (next.pendingBlockedCount ?? null)) return true;
     if ((previous.pendingVersion ?? null) !== (next.pendingVersion ?? null)) return true;
+    if (JSON.stringify(previous.pendingActivationAuthorization ?? null) !== JSON.stringify(next.pendingActivationAuthorization ?? null)) return true;
     if ((previous.latestTurnId ?? null) !== (next.latestTurnId ?? null)) return true;
     if ((previous.runtimeActivityState ?? null) !== (next.runtimeActivityState ?? null)) return true;
     if ((previous.runtimeActivityActiveCount ?? null) !== (next.runtimeActivityActiveCount ?? null)) return true;
@@ -911,6 +916,7 @@ export function isSessionListRenderableWarmCacheProgressOnlyChange(
     if ((previous.pendingCount ?? null) !== (next.pendingCount ?? null)) return false;
     if ((previous.pendingBlockedCount ?? null) !== (next.pendingBlockedCount ?? null)) return false;
     if ((previous.pendingVersion ?? null) !== (next.pendingVersion ?? null)) return false;
+    if (JSON.stringify(previous.pendingActivationAuthorization ?? null) !== JSON.stringify(next.pendingActivationAuthorization ?? null)) return false;
     if ((previous.lastViewedSessionSeq ?? null) !== (next.lastViewedSessionSeq ?? null)) return false;
     if ((previous.latestTurnId ?? null) !== (next.latestTurnId ?? null)) return false;
     if ((previous.latestTurnStatus ?? null) !== (next.latestTurnStatus ?? null)) return false;

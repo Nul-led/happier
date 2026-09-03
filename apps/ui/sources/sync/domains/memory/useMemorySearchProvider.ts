@@ -2,7 +2,18 @@ import * as React from 'react';
 
 import { HomeSearchCapabilitiesSchema } from '@happier-dev/protocol';
 
-import { useServerFeaturesRuntimeSnapshot } from '@/sync/domains/features/featureDecisionRuntime';
+import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot';
+import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
+import {
+    useServerFeaturesRuntimeSnapshot,
+    useServerFeaturesSnapshotForServerId,
+} from '@/sync/domains/features/featureDecisionRuntime';
+
+import {
+    resolveDaemonMemorySearchTarget,
+    useDaemonMemorySearchTargetSelection,
+    type DaemonMemorySearchTargetV1,
+} from './resolveDaemonMemorySearchTarget';
 
 export type MemorySearchProviderId = 'home' | 'daemon';
 
@@ -14,23 +25,49 @@ export type MemorySearchProviderId = 'home' | 'daemon';
  */
 export type HomeMemorySearchReadiness = 'ready' | 'indexing' | 'unavailable' | 'unknown';
 
+/**
+ * Why a query cannot be issued right now. It is a diagnostic for the section-local
+ * state a consumer renders, never a wire enum.
+ */
+export type MemorySearchUnavailableReason =
+    | 'home_indexing'
+    | 'home_unavailable'
+    | 'home_unknown'
+    | 'daemon_no_target';
+
 export type MemorySearchProvider = Readonly<{
-    provider: MemorySearchProviderId;
+    /** `null` when neither transcript provider is admitted for the current context. */
+    provider: MemorySearchProviderId | null;
+    /** Exact Home target for a `home` provider decision; requests and results key to it. */
+    homeServerId: string | null;
     homeReadiness: HomeMemorySearchReadiness | null;
+    /**
+     * Exact daemon request target for a `daemon` decision: the explicitly selected
+     * usable machine and the server scope that routes to it. `null` means no usable
+     * explicit target, never an arbitrary first machine.
+     */
+    daemonTarget: DaemonMemorySearchTargetV1 | null;
+    /** The only authorization to issue a transcript request for this context. */
     queryAvailable: boolean;
+    unavailableReason: MemorySearchUnavailableReason | null;
 }>;
 
-/**
- * Provider selection is a functional active-Home decision. The strict server
- * capability identifies the actual search provider even when the profile was
- * adopted through QR, Account Directory, or manual configuration. Missing or
- * unsupported capability shapes safely retain the daemon provider.
- */
-export function resolveMemorySearchProvider(input: Readonly<{
-    capability: unknown;
-}>): MemorySearchProviderId {
-    const parsed = HomeSearchCapabilitiesSchema.safeParse(input.capability);
-    return parsed.success && parsed.data.provider === 'home' ? 'home' : 'daemon';
+const NO_MEMORY_SEARCH_PROVIDER: MemorySearchProvider = Object.freeze({
+    provider: null,
+    homeServerId: null,
+    homeReadiness: null,
+    daemonTarget: null,
+    queryAvailable: false,
+    unavailableReason: null,
+});
+
+function resolveHomeUnavailableReason(
+    readiness: HomeMemorySearchReadiness,
+): MemorySearchUnavailableReason | null {
+    if (readiness === 'indexing') return 'home_indexing';
+    if (readiness === 'unavailable') return 'home_unavailable';
+    if (readiness === 'unknown') return 'home_unknown';
+    return null;
 }
 
 export function resolveHomeMemorySearchReadiness(capability: unknown): HomeMemorySearchReadiness {
@@ -38,28 +75,108 @@ export function resolveHomeMemorySearchReadiness(capability: unknown): HomeMemor
     if (!parsed.success) return 'unknown';
     if (parsed.data.reason === 'indexing') return 'indexing';
     if (parsed.data.reason === 'index_unavailable') return 'unavailable';
-    if (parsed.data.enabled && parsed.data.provider === 'home') return 'ready';
+    if (parsed.data.enabled) return 'ready';
     return 'unknown';
 }
 
-export function useMemorySearchProvider(): MemorySearchProvider {
+/**
+ * One exclusive, contextual transcript-provider decision shared by every search
+ * consumer. Home plaintext search is admitted by the server-represented `search`
+ * feature plus the Home's own readiness capability; daemon-local memory search is
+ * admitted by `memory.search` plus the explicitly selected usable machine. The
+ * capability is diagnostic only — it never authorizes a provider on its own — and
+ * the two providers are never queried together for one target.
+ *
+ * `provider` names the admitted source kind; `queryAvailable` is the only
+ * authorization to issue a request. A Home that is admitted but still indexing, or
+ * a daemon with no explicitly selected usable machine, therefore keeps its truthful
+ * `unavailableReason` instead of silently querying the other source.
+ */
+export function useMemorySearchProvider(target?: Readonly<{ serverId?: string | null; machineId?: string | null }>): MemorySearchProvider {
+    const activeServer = useActiveServerSnapshot();
+    const requestedServerId = String(target?.serverId ?? '').trim();
+    // The Home decision reads the same runtime (focused-Home) snapshot as the
+    // capability below, so feature and readiness always describe one Home.
+    const homeSearchFeatureEnabled = useFeatureEnabled('search', requestedServerId
+        ? { scopeKind: 'spawn', serverId: requestedServerId }
+        : { scopeKind: 'runtime' });
+    const daemonMemorySearchEnabled = useFeatureEnabled('memory.search');
     // This fetch must be independent of profile provenance: its result is the
     // authority used to choose the provider.
     const featuresSnapshot = useServerFeaturesRuntimeSnapshot({ enabled: true });
+    const scopedFeaturesSnapshot = useServerFeaturesSnapshotForServerId(requestedServerId, {
+        enabled: requestedServerId.length > 0,
+    });
+    const activeServerId = requestedServerId || String(activeServer.serverId ?? '').trim();
+    // Daemon memory search targets the explicitly selected usable machine, never an
+    // arbitrary first machine and never an automatic all-machine fanout.
+    const daemonTargetSelection = useDaemonMemorySearchTargetSelection();
+    const daemonTarget = daemonMemorySearchEnabled
+        ? resolveDaemonMemorySearchTarget(daemonTargetSelection)
+        : null;
+    const daemonServerId = daemonTarget?.serverId ?? null;
+    const daemonMachineId = daemonTarget?.machineId ?? null;
 
     return React.useMemo(() => {
-        const capability = featuresSnapshot.status === 'ready'
-            ? featuresSnapshot.features.capabilities.homeSearch
+        const effectiveFeaturesSnapshot = requestedServerId ? scopedFeaturesSnapshot : featuresSnapshot;
+        const capability = effectiveFeaturesSnapshot.status === 'ready'
+            ? effectiveFeaturesSnapshot.features.capabilities.homeSearch
             : undefined;
-        const provider = resolveMemorySearchProvider({ capability });
-        if (provider === 'daemon') {
-            return { provider, homeReadiness: null, queryAvailable: true };
-        }
-        const homeReadiness = resolveHomeMemorySearchReadiness(capability);
-        return {
-            provider,
+        const nextDaemonTarget = requestedServerId
+            ? target?.machineId
+                ? { serverId: requestedServerId, machineId: target.machineId }
+                : null
+            : daemonServerId && daemonMachineId
+                ? { serverId: daemonServerId, machineId: daemonMachineId }
+                : null;
+        const resolvedHomeReadiness = resolveHomeMemorySearchReadiness(capability);
+        const homeAdmitted = homeSearchFeatureEnabled
+            && activeServerId.length > 0
+            && resolvedHomeReadiness !== 'unknown';
+        const homeReadiness = homeAdmitted ? resolvedHomeReadiness : null;
+        const readyHome: MemorySearchProvider = {
+            provider: 'home',
+            homeServerId: activeServerId,
             homeReadiness,
+            daemonTarget: null,
             queryAvailable: homeReadiness === 'ready',
+            unavailableReason: homeReadiness === null ? null : resolveHomeUnavailableReason(homeReadiness),
         };
-    }, [featuresSnapshot]);
+        // 1. An admitted, ready Home owns the context outright.
+        if (homeAdmitted && homeReadiness === 'ready') return readyHome;
+        // 2. Otherwise the daemon, and only with an explicitly selected usable machine.
+        if (daemonMemorySearchEnabled && nextDaemonTarget) {
+            return {
+                provider: 'daemon',
+                homeServerId: null,
+                homeReadiness: null,
+                daemonTarget: nextDaemonTarget,
+                queryAvailable: true,
+                unavailableReason: null,
+            };
+        }
+        // 3. Otherwise the truthful section-local state of whichever source is admitted.
+        if (homeAdmitted) return readyHome;
+        if (daemonMemorySearchEnabled) {
+            return {
+                provider: 'daemon',
+                homeServerId: null,
+                homeReadiness: null,
+                daemonTarget: null,
+                queryAvailable: false,
+                unavailableReason: 'daemon_no_target',
+            };
+        }
+        return NO_MEMORY_SEARCH_PROVIDER;
+    }, [
+        activeServerId,
+        daemonMachineId,
+        daemonMemorySearchEnabled,
+        daemonServerId,
+        featuresSnapshot,
+        homeSearchFeatureEnabled,
+        requestedServerId,
+        scopedFeaturesSnapshot,
+        target?.machineId,
+    ]);
 }

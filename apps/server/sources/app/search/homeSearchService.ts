@@ -3,7 +3,7 @@ import {
     type MemorySearchQueryV1,
     type MemorySearchResultV1,
 } from '@happier-dev/protocol';
-import { resolveHomeSearchCapability } from './homeSearchCapability';
+import { isPlainHomeStoragePolicy, resolveHomeSearchCapability } from './homeSearchCapability';
 import type { HomeSearchDb } from './homeSearchDb';
 
 export type HomeSearchService = Readonly<{
@@ -25,9 +25,9 @@ export function createHomeSearchService(params: Readonly<{
     onFailure?: (error: unknown) => void;
 }>): HomeSearchService {
     const capability = () => resolveHomeSearchCapability({
-        storagePolicy: params.storagePolicy,
-        indexReady: params.db !== null,
-        indexing: params.isReady ? !params.isReady() : false,
+        indexReady: isPlainHomeStoragePolicy(params.storagePolicy) && params.db !== null,
+        indexing: isPlainHomeStoragePolicy(params.storagePolicy)
+            && (params.isReady ? !params.isReady() : false),
     });
 
     return {
@@ -39,7 +39,7 @@ export function createHomeSearchService(params: Readonly<{
             }
             const currentCapability = capability();
             if (!currentCapability.enabled || !params.db) {
-                if (currentCapability.reason === 'non_plain_home') {
+                if (!isPlainHomeStoragePolicy(params.storagePolicy)) {
                     return {
                         v: 1,
                         ok: false,
@@ -58,6 +58,9 @@ export function createHomeSearchService(params: Readonly<{
             }
             const db = params.db;
             try {
+                const eligibleSessionIds = parsed.data.eligibleSessionIds === undefined
+                    ? undefined
+                    : [...new Set(parsed.data.eligibleSessionIds)];
                 if (
                     context?.visibleSessionIds
                     && parsed.data.scope.type === 'session'
@@ -65,10 +68,28 @@ export function createHomeSearchService(params: Readonly<{
                 ) {
                     return { v: 1, ok: true, hits: [] };
                 }
+                if (
+                    eligibleSessionIds
+                    && parsed.data.scope.type === 'session'
+                    && !eligibleSessionIds.includes(parsed.data.scope.sessionId)
+                ) {
+                    return { v: 1, ok: true, hits: [] };
+                }
+                const visibleSessionIds = parsed.data.scope.type === 'global'
+                    ? context?.visibleSessionIds
+                    : undefined;
+                const visibleSessionIdSet = visibleSessionIds === undefined
+                    ? undefined
+                    : new Set(visibleSessionIds);
+                const searchableSessionIds = eligibleSessionIds === undefined
+                    ? visibleSessionIds
+                    : visibleSessionIdSet === undefined
+                        ? eligibleSessionIds
+                        : eligibleSessionIds.filter((sessionId) => visibleSessionIdSet.has(sessionId));
                 const hits = db.search({
                     query: parsed.data.query,
                     sessionId: parsed.data.scope.type === 'session' ? parsed.data.scope.sessionId : undefined,
-                    sessionIds: parsed.data.scope.type === 'global' ? context?.visibleSessionIds : undefined,
+                    sessionIds: searchableSessionIds,
                     maxResults: parsed.data.maxResults,
                 });
                 const minScore = parsed.data.minScore ?? 0;

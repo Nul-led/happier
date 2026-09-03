@@ -9,7 +9,7 @@ import {
 } from '@happier-dev/protocol';
 
 import { machineRpcWithServerScope } from '@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc';
-import { SESSION_MACHINE_TARGET_UNAVAILABLE_ERROR_CODE } from '@/sync/runtime/sessionMachineRpcErrorCodes';
+import { applyMemorySearchSessionEligibility } from './applyMemorySearchSessionEligibility';
 
 export async function searchDaemonMemory(args: Readonly<{
     serverId: string | null | undefined;
@@ -17,10 +17,23 @@ export async function searchDaemonMemory(args: Readonly<{
     query: string;
     scope: MemorySearchScope;
     mode: MemorySearchMode;
+    eligibleSessionIds?: readonly string[];
     maxResults?: number;
     minScore?: number;
     timeoutMs?: number;
+    /**
+     * Caller cancellation. It is handed to the incumbent machine-RPC
+     * cancellation path rather than a second transport, so a superseded query
+     * stops waiting locally and relays the cancel for an issued call.
+     */
+    signal?: AbortSignal;
 }>): Promise<MemorySearchResultV1> {
+    if (args.signal?.aborted) {
+        const error = new Error('Daemon memory search was cancelled');
+        error.name = 'AbortError';
+        throw error;
+    }
+
     const serverId = typeof args.serverId === 'string' ? args.serverId.trim() : '';
     const machineId = typeof args.machineId === 'string' ? args.machineId.trim() : '';
     const query = args.query.trim();
@@ -43,18 +56,20 @@ export async function searchDaemonMemory(args: Readonly<{
                 query,
                 scope: args.scope,
                 mode: args.mode,
+                ...(args.eligibleSessionIds !== undefined ? { eligibleSessionIds: args.eligibleSessionIds } : {}),
                 ...(typeof args.maxResults === 'number' ? { maxResults: args.maxResults } : {}),
                 ...(typeof args.minScore === 'number' ? { minScore: args.minScore } : {}),
             },
             ...(typeof args.timeoutMs === 'number' ? { timeoutMs: args.timeoutMs } : {}),
+            ...(args.signal ? { signal: args.signal } : {}),
         });
-        return MemorySearchResultV1Schema.parse(raw);
+        return applyMemorySearchSessionEligibility(
+            MemorySearchResultV1Schema.parse(raw),
+            args.eligibleSessionIds,
+        );
     } catch (error) {
         const errorCode = readRpcErrorCode(error);
-        if (
-            errorCode === RPC_ERROR_CODES.METHOD_NOT_AVAILABLE
-            || errorCode === SESSION_MACHINE_TARGET_UNAVAILABLE_ERROR_CODE
-        ) {
+        if (errorCode === RPC_ERROR_CODES.METHOD_NOT_AVAILABLE) {
             return {
                 v: 1,
                 ok: false,

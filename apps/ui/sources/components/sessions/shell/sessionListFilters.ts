@@ -8,7 +8,6 @@ export type SessionListHeaderFilterInput = Readonly<{
     selectedTags: ReadonlyArray<string>;
     searchableTextBySessionKey: Readonly<Record<string, string>>;
     memoryMatchedSessionKeys?: ReadonlySet<string>;
-    controlsAnchorKey?: string | null;
 }>;
 
 export type SessionListHeaderFilterState = SessionListHeaderFilterInput & Readonly<{
@@ -61,30 +60,6 @@ export function hasActiveSessionListHeaderFilters(input: Pick<SessionListHeaderF
     return input.searchQuery.trim().length > 0 || input.selectedTags.length > 0;
 }
 
-function isPrimarySessionListHeader(item: Extract<SessionListIndexItem, { type: 'header' }>): boolean {
-    return isSessionListPrimaryHeaderKind(item.headerKind);
-}
-
-export function getSessionListHeaderControlsAnchorKey(item: Extract<SessionListIndexItem, { type: 'header' }>): string {
-    const groupKey = String(item.groupKey ?? '').trim();
-    if (groupKey) return groupKey;
-    return [
-        String(item.headerKind ?? '').trim(),
-        String(item.serverId ?? '').trim(),
-        String(item.title ?? '').trim(),
-    ].join('\u0001');
-}
-
-function ensureHeaderIncludedInOriginalOrder(
-    items: ReadonlyArray<SessionListIndexItem>,
-    result: ReadonlyArray<SessionListIndexItem>,
-    header: Extract<SessionListIndexItem, { type: 'header' }>,
-): SessionListIndexItem[] {
-    if (result.includes(header)) return result as SessionListIndexItem[];
-    const resultSet = new Set(result);
-    return items.filter((item) => item === header || resultSet.has(item));
-}
-
 export function filterSessionListItemsForHeaderControls(
     items: ReadonlyArray<SessionListIndexItem>,
     input: SessionListHeaderFilterState,
@@ -95,16 +70,10 @@ export function filterSessionListItemsForHeaderControls(
     const selectedTags = new Set(input.selectedTags);
     const result: SessionListIndexItem[] = [];
     let pendingHeaders: Extract<SessionListIndexItem, { type: 'header' }>[] = [];
-    let fallbackHeader: Extract<SessionListIndexItem, { type: 'header' }> | null = null;
-    let anchorHeader: Extract<SessionListIndexItem, { type: 'header' }> | null = null;
 
     for (const item of items) {
         if (item.type === 'header') {
-            if (isPrimarySessionListHeader(item)) {
-                fallbackHeader ??= item;
-                if (input.controlsAnchorKey && getSessionListHeaderControlsAnchorKey(item) === input.controlsAnchorKey) {
-                    anchorHeader = item;
-                }
+            if (isSessionListPrimaryHeaderKind(item.headerKind)) {
                 pendingHeaders = [item];
             } else {
                 pendingHeaders.push(item);
@@ -127,8 +96,7 @@ export function filterSessionListItemsForHeaderControls(
         result.push(item);
     }
 
-    const preservedHeader = anchorHeader ?? fallbackHeader;
-    if (!preservedHeader) return result;
-    if (result.length === 0) return [preservedHeader];
-    return ensureHeaderIncludedInOriginalOrder(items, result, preservedHeader);
+    // No header is preserved for an empty result: the stable search chrome owns the
+    // field's lifetime, and the list-level no-results message reports the outcome.
+    return result;
 }

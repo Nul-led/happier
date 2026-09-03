@@ -11,10 +11,30 @@ import {
     type HomeSearchCapability,
 } from './homeSearchCapability';
 import { openHomeSearchDb, type HomeSearchDb } from './homeSearchDb';
-import { createHomeSearchIndexer, type HomeSearchCanonicalPageReader, type HomeSearchIndexer } from './homeSearchIndexer';
+import {
+    createHomeSearchIndexer,
+    type HomeSearchCanonicalMessage,
+    type HomeSearchCanonicalPageReader,
+    type HomeSearchIndexer,
+} from './homeSearchIndexer';
 import { createHomeSearchService } from './homeSearchService';
 
 type HomeSearchInvalidationReason = 'restore' | 'erase' | 'corruption' | 'explicit-repair';
+
+/**
+ * Bound on distinct canonical identities retained while the derived projection is unsettled.
+ * It protects process memory — each retained upsert keeps a full canonical message snapshot —
+ * and never caps user content: exceeding it discards the dirty projection, and one additional
+ * canonical paged reconciliation restores exactness. The value only trades a rare extra
+ * reconciliation against unbounded retained snapshots during long startup/rebuild windows.
+ */
+export const HOME_SEARCH_CATCHUP_DIRTY_IDENTITY_LIMIT = 1_000;
+
+/** Coalesced catch-up state for one canonical identity; the last committed op per identity wins. */
+type HomeSearchDirtyOp =
+    | Readonly<{ kind: 'upsert'; message: HomeSearchCanonicalMessage }>
+    | Readonly<{ kind: 'remove-message'; messageId: string }>
+    | Readonly<{ kind: 'remove-session'; sessionId: string }>;
 
 export type HomeSearchLifecycle = Readonly<{
     capability(): HomeSearchCapability;
@@ -51,7 +71,15 @@ export function startHomeSearchLifecycle(params: Readonly<{
     openDb?: typeof openHomeSearchDb;
 }>): HomeSearchLifecycle {
     const plainHome = isPlainHomeStoragePolicy(params.storagePolicy);
-    const pendingMutations: SessionTranscriptMutation[] = [];
+    // Bounded coalesced catch-up for mutations committed while the derived projection is not
+    // settled (before attach, during rebuild, and until the post-reconcile flush completes).
+    // Ordered by each identity's last committed mutation. Applying those final operations in
+    // last-occurrence order preserves overlap between a session removal and later message
+    // recreation while retaining at most one operation per canonical identity.
+    const dirty = new Map<string, HomeSearchDirtyOp>();
+    let dirtyOverflow = false;
+    let settledIndexer: HomeSearchIndexer | null = null;
+    let catchUpPromise: Promise<void> | null = null;
     let homeServerIdentityId = typeof params.homeServerIdentityId === 'string' ? params.homeServerIdentityId : '';
     let db: HomeSearchDb | null = null;
     let indexer: HomeSearchIndexer | null = null;
@@ -66,13 +94,74 @@ export function startHomeSearchLifecycle(params: Readonly<{
         else if (mutation.kind === 'remove-messages') target.removeMessages(mutation.messageIds);
         else target.removeSession(mutation.sessionId);
     };
-    const flushPendingMutations = (target: HomeSearchIndexer) => {
-        for (const mutation of pendingMutations.splice(0)) deliverMutation(target, mutation);
+    const recordDirty = (key: string, op: HomeSearchDirtyOp) => {
+        if (!dirty.has(key) && dirty.size >= HOME_SEARCH_CATCHUP_DIRTY_IDENTITY_LIMIT) {
+            // Coalescing no longer protects process memory. Discard the projection; the flush
+            // falls back to the existing canonical paged reconciliation for an exact result.
+            dirty.clear();
+            dirtyOverflow = true;
+        }
+        // Map#set does not move an existing key. Move it explicitly so cross-identity
+        // operations replay in their last committed order (for example, remove-session then
+        // recreate-message), rather than the order in which each identity first became dirty.
+        dirty.delete(key);
+        dirty.set(key, op);
+    };
+    const bufferMutation = (mutation: SessionTranscriptMutation) => {
+        if (mutation.kind === 'upsert') recordDirty(`message:${mutation.message.id}`, { kind: 'upsert', message: mutation.message });
+        else if (mutation.kind === 'remove-messages') {
+            for (const messageId of mutation.messageIds) recordDirty(`message:${messageId}`, { kind: 'remove-message', messageId });
+        } else recordDirty(`session:${mutation.sessionId}`, { kind: 'remove-session', sessionId: mutation.sessionId });
+    };
+    const discardDirtyCatchUp = () => {
+        dirty.clear();
+        dirtyOverflow = false;
+    };
+    const flushCatchUp = (target: HomeSearchIndexer): Promise<void> => {
+        if (catchUpPromise) return catchUpPromise;
+        const work = (async () => {
+            while (indexer === target && !stopped) {
+                if (dirtyOverflow) {
+                    dirtyOverflow = false;
+                    dirty.clear();
+                    await target.reconcile();
+                    continue;
+                }
+                const pending = [...dirty.values()];
+                dirty.clear();
+                for (const op of pending) {
+                    deliverMutation(target, op.kind === 'upsert'
+                        ? { kind: 'upsert', message: op.message }
+                        : op.kind === 'remove-message'
+                            ? { kind: 'remove-messages', messageIds: [op.messageId] }
+                            : { kind: 'remove-session', sessionId: op.sessionId });
+                }
+                // Deliveries append to the indexer's serialization tail. Do not advertise the
+                // lifecycle as settled until every SQLite effect has completed; mutations that
+                // commit during this drain remain in `dirty` and are consumed by the next loop.
+                await target.whenIdle();
+                if (!target.ready()) return;
+                if (dirtyOverflow || dirty.size > 0) continue;
+                settledIndexer = target;
+                return;
+            }
+        })().finally(() => {
+            if (catchUpPromise === work) catchUpPromise = null;
+        });
+        catchUpPromise = work;
+        return work;
     };
     const applyMutation = (mutation: SessionTranscriptMutation) => {
         if (stopped || !plainHome) return;
-        if (!indexer || rebuildPromise) {
-            pendingMutations.push(mutation);
+        if (!indexer) {
+            // Retain catch-up only while startup or a rebuild is actively able to produce a
+            // replacement indexer. Once that finite transition fails, canonical reconciliation
+            // on the next explicit repair is the source of truth; detached mutations are dropped.
+            if (started && (!failed || rebuildPromise)) bufferMutation(mutation);
+            return;
+        }
+        if (indexer !== settledIndexer || rebuildPromise || catchUpPromise) {
+            bufferMutation(mutation);
             return;
         }
         deliverMutation(indexer, mutation);
@@ -86,9 +175,15 @@ export function startHomeSearchLifecycle(params: Readonly<{
         if (stopped || !plainHome) return Promise.resolve();
         if (rebuildPromise) return rebuildPromise;
         failed = true;
+        // Recovery starts from canonical transcript rows. Dirty events retained before this
+        // boundary may belong to the failed projection and must not be replayed over the new
+        // canonical snapshot. Mutations committed after this point are buffered normally while
+        // the replacement projection reconciles.
+        discardDirtyCatchUp();
         const work = Promise.resolve().then(async () => {
             const previousIndexer = indexer;
             indexer = null;
+            settledIndexer = null;
             await previousIndexer?.stop();
             db?.close();
             db = null;
@@ -96,6 +191,7 @@ export function startHomeSearchLifecycle(params: Readonly<{
             if (!stopped) await openAndStart(false);
         }).catch(() => {
             failed = true;
+            if (!indexer) discardDirtyCatchUp();
         }).finally(() => {
             if (rebuildPromise === work) rebuildPromise = null;
         });
@@ -112,6 +208,12 @@ export function startHomeSearchLifecycle(params: Readonly<{
         }
     };
 
+    const handleQueryFailure = (error: unknown) => {
+        // An ordinary request failure is local to that request. Only evidence that the
+        // rebuildable SQLite projection is corrupt changes provider readiness.
+        if (isRebuildableIndexError(error)) handleFailure(error);
+    };
+
     const attach = (nextDb: HomeSearchDb) => {
         db = nextDb;
         const nextIndexer = createHomeSearchIndexer({
@@ -120,7 +222,6 @@ export function startHomeSearchLifecycle(params: Readonly<{
             onFailure: handleFailure,
         });
         indexer = nextIndexer;
-        flushPendingMutations(nextIndexer);
         nextIndexer.start();
         return nextIndexer;
     };
@@ -149,12 +250,14 @@ export function startHomeSearchLifecycle(params: Readonly<{
             failed = false;
             const nextIndexer = attach(nextDb);
             await nextIndexer.whenReady();
-            // Reconciliation can overlap canonical commits. Apply anything buffered
-            // after attach before advertising the rebuilt projection as settled.
-            if (indexer === nextIndexer) flushPendingMutations(nextIndexer);
+            // Reconciliation can overlap canonical commits. Catch up everything coalesced
+            // while this projection was unsettled; an overflowed projection re-derives its
+            // exact state through the existing canonical paged reconciliation.
+            if (indexer === nextIndexer) await flushCatchUp(nextIndexer);
             if (indexer === nextIndexer && nextIndexer.ready()) failed = false;
         } catch (error) {
             handleFailure(error);
+            if (!indexer) discardDirtyCatchUp();
         }
     }
 
@@ -163,17 +266,16 @@ export function startHomeSearchLifecycle(params: Readonly<{
         homeServerIdentityId,
         storagePolicy: params.storagePolicy,
         isReady: () => !failed && Boolean(indexer?.ready()),
-        onFailure: handleFailure,
+        onFailure: handleQueryFailure,
     });
 
     return {
         capability() {
-            if (!plainHome) return resolveHomeSearchCapability({ storagePolicy: params.storagePolicy, indexReady: false });
+            if (!plainHome) return resolveHomeSearchCapability({ indexReady: false });
             if (stopped || failed || rebuildPromise) {
-                return { enabled: false, provider: 'home', reason: 'index_unavailable' };
+                return { enabled: false, reason: 'index_unavailable' };
             }
             return resolveHomeSearchCapability({
-                storagePolicy: params.storagePolicy,
                 indexReady: db !== null,
                 indexing: !indexer?.ready(),
             });

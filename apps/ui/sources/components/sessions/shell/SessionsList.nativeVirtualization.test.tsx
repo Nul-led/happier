@@ -18,6 +18,8 @@ let sessionMruOrderV1: string[] = [];
 const setSessionMruOrderV1 = vi.fn();
 const readMachineTargetForSessionMock = vi.hoisted(() => vi.fn());
 const navigateToSessionSpy = vi.hoisted(() => vi.fn());
+const routerPushSpy = vi.hoisted(() => vi.fn());
+const openUniversalSearchSpy = vi.hoisted(() => vi.fn());
 const fetchMoreSessionsMock = vi.hoisted(() => vi.fn(async () => undefined));
 const refreshSessionsMock = vi.hoisted(() => vi.fn<() => Promise<undefined>>(async () => undefined));
 const markSessionListScrollActivityMock = vi.hoisted(() => vi.fn());
@@ -29,6 +31,13 @@ const keyboardShortcutHandlersRef = vi.hoisted(() => ({
 }));
 let mockPathname = '';
 let platformOs: 'ios' | 'android' = 'ios';
+
+vi.mock('@/components/appShell/search/UniversalSearchRuntimeContext', () => ({
+    useUniversalSearchRuntime: () => ({
+        open: openUniversalSearchSpy,
+        buildCommands: vi.fn(),
+    }),
+}));
 
 let sessionTagsV1: Record<string, string[]> = {};
 let sessionListOrderingModeV1: 'custom' | 'created' | 'updated' = 'custom';
@@ -195,8 +204,16 @@ vi.mock('react-native-worklets', () => ({
 }));
 
 vi.mock('@/constants/Typography', () => ({
+    FontWeights: {
+        regular: '400',
+        semiBold: '500',
+        bold: '600',
+    },
     Typography: {
         default: () => ({}),
+        mono: () => ({}),
+        pillLabel: () => ({}),
+        rowMeta: () => ({}),
     },
 }));
 
@@ -272,6 +289,7 @@ vi.mock('@/components/ui/status/StatusDot', () => ({
 
 vi.mock('@/utils/platform/responsive', () => ({
     useIsTablet: () => false,
+    useDeviceType: () => 'phone',
     getDeviceType: () => 'phone',
 }));
 
@@ -309,6 +327,12 @@ installSessionShellCommonModuleMocks({
         return createExpoRouterMock({
             get pathname() {
                 return mockPathname;
+            },
+            router: {
+                push: routerPushSpy,
+                replace: vi.fn(),
+                back: vi.fn(),
+                setParams: vi.fn(),
             },
         }).module;
     },
@@ -678,6 +702,8 @@ describe('SessionsList (native virtualization)', () => {
         setSessionPinOp.mockClear();
         setSessionTagAssignmentsOp.mockClear();
         navigateToSessionSpy.mockClear();
+        routerPushSpy.mockClear();
+        openUniversalSearchSpy.mockClear();
         fetchMoreSessionsMock.mockClear();
         refreshSessionsMock.mockReset();
         refreshSessionsMock.mockResolvedValue(undefined);
@@ -776,7 +802,7 @@ describe('SessionsList (native virtualization)', () => {
     it.each([
         { headerKind: 'attention' as const, groupKind: 'attention' as const, title: 'Needs Attention' },
         { headerKind: 'working' as const, groupKind: 'working' as const, title: 'Working' },
-    ])('shows the header controls on the $headerKind placement group when it is the first visible section', async ({ headerKind, groupKind, title }) => {
+    ])('renders exactly one stable search chrome above the list for the $headerKind group', async ({ headerKind, groupKind, title }) => {
         mockVisibleSessionListViewData = [
             {
                 type: 'header',
@@ -798,7 +824,8 @@ describe('SessionsList (native virtualization)', () => {
 
         const screen = await renderSessionsList();
 
-        expect(screen.findAllByTestId('session-list-search-trigger')).toHaveLength(1);
+        expect(screen.findAllByTestId('session-list-search-chrome')).toHaveLength(1);
+        expect(screen.findAllHostsByTestId('session-list-search-trigger')).toHaveLength(1);
         expect(screen.findAll((node) =>
             String(node.type) === 'DropdownMenu'
             && Array.isArray((node.props as any)?.items)
@@ -914,7 +941,7 @@ describe('SessionsList (native virtualization)', () => {
         expect(remounted.findAllByTestId('session-list-session:sess_b')).toHaveLength(1);
     });
 
-    it('keeps the header search control anchored to the section that opened it', async () => {
+    it('keeps one stable search field across multiple primary sections while typing', async () => {
         mockVisibleSessionListViewData = [
             {
                 type: 'header',
@@ -951,27 +978,85 @@ describe('SessionsList (native virtualization)', () => {
         ];
 
         const screen = await renderSessionsList();
-        const searchTriggers = screen.findAllByTestId('session-list-search-trigger');
-        expect(searchTriggers).toHaveLength(2);
+        // The chrome is a sibling of the one virtualized list, not per-section header data.
+        expect(screen.findAllHostsByTestId('session-list-search-trigger')).toHaveLength(1);
 
         await act(async () => {
             expectPresent(
-                searchTriggers[1],
-                'expected active header search trigger',
+                screen.findByTestId('session-list-search-trigger'),
+                'expected collapsed search trigger',
             ).props.onPress?.({ stopPropagation: vi.fn() });
         });
 
-        const input = expectPresent(
+        const inputOnOpen = expectPresent(
             screen.findByTestId('session-list-search-input'),
-            'expected expanded top header search input',
+            'expected expanded search input',
         );
-        await act(async () => {
-            input.props.onChangeText?.('sess_b');
-        });
 
-        expect(screen.findAllByTestId('session-list-search-input').length).toBeGreaterThan(0);
+        // First character: the list rebuilds around the field; the field itself must not.
+        await act(async () => {
+            inputOnOpen.props.onChangeText?.('s');
+        });
+        const inputAfterFirstChar = screen.findByTestId('session-list-search-input');
+        expect(inputAfterFirstChar).toBe(inputOnOpen);
+        expect(inputAfterFirstChar.props.value).toBe('s');
+
+        // Subsequent characters, including a query that empties the list.
+        await act(async () => {
+            inputAfterFirstChar.props.onChangeText?.('sess_b');
+        });
+        expect(screen.findByTestId('session-list-search-input')).toBe(inputOnOpen);
         expect(screen.findAllByTestId('session-list-session:sess_a')).toHaveLength(0);
         expect(screen.findAllByTestId('session-list-session:sess_b')).toHaveLength(1);
+
+        await act(async () => {
+            screen.findByTestId('session-list-search-input').props.onChangeText?.('zzz-no-results');
+        });
+        expect(screen.findByTestId('session-list-search-input')).toBe(inputOnOpen);
+        expect(screen.findAllByTestId('session-list-session:sess_a')).toHaveLength(0);
+        expect(screen.findAllByTestId('session-list-session:sess_b')).toHaveLength(0);
+        expect(screen.findAllByTestId('session-list-filtered-no-results').length).toBeGreaterThan(0);
+
+        // Clearing keeps the same field mounted and restores the prior list state.
+        await act(async () => {
+            screen.findByTestId('session-list-search-input').props.onChangeText?.('');
+        });
+        expect(screen.findByTestId('session-list-search-input')).toBe(inputOnOpen);
+        expect(screen.findAllByTestId('session-list-session:sess_a')).toHaveLength(1);
+        expect(screen.findAllByTestId('session-list-session:sess_b')).toHaveLength(1);
+
+        await act(async () => {
+            screen.findByTestId('session-list-search-input').props.onChangeText?.('sess_a');
+        });
+        expect(screen.findByTestId('session-list-search-input')).toBe(inputOnOpen);
+        expect(screen.findAllByTestId('session-list-session:sess_a')).toHaveLength(1);
+        expect(screen.findAllByTestId('session-list-session:sess_b')).toHaveLength(0);
+    });
+
+    it('escalates the contextual query through the canonical Search opener with the query preserved', async () => {
+        const screen = await renderSessionsList();
+        await act(async () => {
+            expectPresent(
+                screen.findByTestId('session-list-search-trigger'),
+                'expected collapsed search trigger',
+            ).props.onPress?.({ stopPropagation: vi.fn() });
+        });
+        await act(async () => {
+            screen.findByTestId('session-list-search-input').props.onChangeText?.('vector');
+        });
+
+        const escalation = expectPresent(
+            screen.findByTestId('session-list-search-everything'),
+            'expected Search everything escalation row',
+        );
+        expect(escalation.props.accessibilityRole).toBe('button');
+
+        await act(async () => {
+            escalation.props.onPress?.({ stopPropagation: vi.fn() });
+        });
+
+        expect(openUniversalSearchSpy).toHaveBeenCalledWith('vector');
+        expect(routerPushSpy).not.toHaveBeenCalled();
     });
 
     it('keeps focused search open when clearing the last character after no results', async () => {
@@ -1011,20 +1096,20 @@ describe('SessionsList (native virtualization)', () => {
         ];
 
         const screen = await renderSessionsList();
-        const searchTriggers = screen.findAllByTestId('session-list-search-trigger');
-        expect(searchTriggers).toHaveLength(2);
+        const searchTriggers = screen.findAllHostsByTestId('session-list-search-trigger');
+        expect(searchTriggers).toHaveLength(1);
 
         await act(async () => {
             expectPresent(
-                searchTriggers[1],
-                'expected active header search trigger',
+                searchTriggers[0],
+                'expected stable search trigger',
             ).props.onPress?.({ stopPropagation: vi.fn() });
         });
 
         await act(async () => {
             expectPresent(
                 screen.findByTestId('session-list-search-input'),
-                'expected expanded active header search input',
+                'expected expanded search input',
             ).props.onChangeText?.('z');
         });
 
@@ -2188,5 +2273,29 @@ describe('SessionsList (native virtualization)', () => {
         const queriedSessionIds = readMachineTargetForSessionMock.mock.calls.map(([sessionId]) => sessionId);
         expect(queriedSessionIds).not.toContain('sess_a');
         expect(queriedSessionIds).toContain('sess_b');
+    });
+
+    it('seats the stable chrome and the sole virtualized list inside the non-scroll keyboard-aware frame', async () => {
+        const screen = await renderSessionsList();
+
+        const frame = screen.findHostByTestId('sessions-list-keyboard-frame');
+        expect(frame).not.toBeNull();
+
+        const hasAncestorWithFrame = (node: { parent: any }): boolean => {
+            let current = node.parent;
+            while (current !== null && current !== undefined) {
+                if (current.props?.testID === 'sessions-list-keyboard-frame') return true;
+                current = current.parent;
+            }
+            return false;
+        };
+
+        // The stable search chrome and the virtualized rows both live inside
+        // ONE non-scroll keyboard-aware frame, so the keyboard resizes the
+        // viewport around them instead of scrolling a nested container.
+        const chrome = screen.root.findByProps({ testID: 'session-list-search-chrome' });
+        expect(hasAncestorWithFrame(chrome)).toBe(true);
+        const row = screen.root.findByProps({ testID: 'session-list-session:sess_a' });
+        expect(hasAncestorWithFrame(row)).toBe(true);
     });
 });

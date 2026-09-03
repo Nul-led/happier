@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { Pressable, View, Platform } from 'react-native';
 import { VirtualizedSectionList } from '@/components/ui/lists/virtualized/VirtualizedSectionList';
+import { KeyboardAwareScreen } from '@/components/ui/keyboardAvoidance/KeyboardAwareScreen';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -21,8 +22,19 @@ import { sync } from '@/sync/sync';
 import { Icon } from '@/components/ui/icons/Icon';
 import { useIsFocused } from '@react-navigation/native';
 import { useSessionListPaneSourceScopeKey } from '@/components/sessions/shell/sessionListPaneRetention';
+import { SessionListSearchChrome } from '@/components/sessions/shell/search/SessionListSearchChrome';
+import { hasPendingArchivedTranscriptMatch } from '@/components/sessions/shell/search/archivedTranscriptMatchState';
+import { useSessionListHeaderFilterRetention } from '@/components/sessions/shell/search/useSessionListHeaderFilterRetention';
+import {
+    useSessionListMemorySearchAugmentationForContext,
+    useSessionListMemorySearchContext,
+} from '@/components/sessions/shell/search/useSessionListMemorySearchAugmentation';
+import { useSessionListNavigationActions } from '@/components/sessions/shell/useSessionListNavigationActions';
+import { sessionTagKey } from '@/components/sessions/shell/sessionTagUtils';
+import { buildSessionListRetentionKey } from '@/components/sessions/shell/scroll/sessionListRetentionKey';
 import { useSessionNavigationCursorPublisher } from '@/sync/domains/session/navigation/useSessionNavigationCursorPublisher';
 import type { SessionListLikeItem } from '@/sync/domains/session/navigation/sessionNavigationOrder';
+import { buildCanonicalSessionListSearchText } from '@/components/sessions/shell/useSessionListSearchTextByKey';
 
 type ArchivedScreenSession = Session | (SessionListRenderableSession & { serverId?: string });
 
@@ -120,6 +132,9 @@ const styles = StyleSheet.create((theme) => ({
     },
 }));
 
+const EMPTY_ARCHIVED_TAGS: ReadonlyArray<string> = [];
+function noopSelectedTagsChange(): void {}
+
 function canManageArchive(session: ArchivedScreenSession): boolean {
     // Owner sessions have no accessLevel set; shared sessions require admin.
     return !session.accessLevel || session.accessLevel === 'admin';
@@ -135,6 +150,29 @@ function getArchivedSessionKey(session: ArchivedScreenSession): string {
     const serverId = String(session.serverId ?? '').trim();
     const sessionId = String(session.id ?? '').trim();
     return serverId && sessionId ? `${serverId}:${sessionId}` : sessionId;
+}
+
+function buildArchivedSearchHaystack(session: ArchivedScreenSession): string {
+    return buildCanonicalSessionListSearchText({
+        sessionId: session.id,
+        renderable: session,
+        session: 'dataEncryptionKey' in session ? session as Session : null,
+    }).toLocaleLowerCase();
+}
+
+function archivedSessionMatchesSearch(
+    session: ArchivedScreenSession,
+    searchTokens: ReadonlyArray<string>,
+    transcriptMatchedSessionKeys: ReadonlySet<string>,
+): boolean {
+    if (searchTokens.length === 0) return true;
+    const serverId = String(session.serverId ?? '').trim();
+    const sessionId = String(session.id ?? '').trim();
+    if (serverId && sessionId && transcriptMatchedSessionKeys.has(sessionTagKey(serverId, sessionId))) {
+        return true;
+    }
+    const haystack = buildArchivedSearchHaystack(session);
+    return searchTokens.every((token) => haystack.includes(token));
 }
 
 function isHiddenInactiveSession(session: ArchivedScreenSession, pinnedSessionKeysV1: ReadonlyArray<string>): boolean {
@@ -166,10 +204,40 @@ export default function ArchivedSessionsScreen() {
     const sessionListRowStateByServerId = useSessionListRowStateByServerId();
     const hideInactiveSessions = useSetting('hideInactiveSessions') === true;
     const pinnedSessionKeysV1 = useSessionOrganizationPinnedSessionKeys();
-
+    const memorySearchContext = useSessionListMemorySearchContext();
+    const searchRetentionKey = React.useMemo(() => buildSessionListRetentionKey(
+        'all',
+        `${sessionNavigationSourceScopeKey}\u0000archived\u0000transcript:${memorySearchContext.activeScopeKey}`,
+    ), [memorySearchContext.activeScopeKey, sessionNavigationSourceScopeKey]);
+    const { searchQuery, setSearchQuery } = useSessionListHeaderFilterRetention(searchRetentionKey);
+    const { handleOpenUniversalSearch } = useSessionListNavigationActions();
+    const searchTokens = React.useMemo(() => (
+        searchQuery.trim().toLocaleLowerCase().split(/\s+/).map((token) => token.trim()).filter(Boolean)
+    ), [searchQuery]);
     React.useEffect(() => {
         void sync.fetchArchivedSessions().catch(() => undefined);
     }, []);
+
+    const [completedSearchInventoryScopeKey, setCompletedSearchInventoryScopeKey] = React.useState('');
+    const requestedSearchInventoryScopeRef = React.useRef('');
+    React.useEffect(() => {
+        if (!isFocused || searchTokens.length === 0) return;
+        if (requestedSearchInventoryScopeRef.current === searchRetentionKey) return;
+        requestedSearchInventoryScopeRef.current = searchRetentionKey;
+        let disposed = false;
+        void sync.fetchAllArchivedSessions().then(() => {
+            if (!disposed && requestedSearchInventoryScopeRef.current === searchRetentionKey) {
+                setCompletedSearchInventoryScopeKey(searchRetentionKey);
+            }
+        }).catch(() => {
+            if (requestedSearchInventoryScopeRef.current === searchRetentionKey) {
+                requestedSearchInventoryScopeRef.current = '';
+            }
+        });
+        return () => {
+            disposed = true;
+        };
+    }, [isFocused, searchRetentionKey, searchTokens.length]);
 
     const handleLoadMoreSessions = React.useCallback(() => {
         const requests = [sync.fetchMoreArchivedSessions()];
@@ -225,24 +293,75 @@ export default function ArchivedSessionsScreen() {
             .sort((a, b) => b.updatedAt - a.updatedAt);
     }, [allSessions, hideInactiveSessions, pinnedSessionKeysV1]);
 
+    // Same stable chrome and same explicit transcript request adapter as the main
+    // session list, under this screen's archived/hidden corpus. The eligibility
+    // travels to the canonical Home/daemon query owner so it is applied before
+    // provider result limiting; this screen does not create an archived engine.
+    const eligibleTranscriptSessionIds = React.useMemo(
+        () => [...new Set([...archivedSessions, ...hiddenInactiveSessions].map((session) => session.id))],
+        [archivedSessions, hiddenInactiveSessions],
+    );
+    const transcriptSearch = useSessionListMemorySearchAugmentationForContext(
+        {
+            searchQuery,
+            enabled: isFocused && completedSearchInventoryScopeKey === searchRetentionKey,
+            eligibleSessionIds: eligibleTranscriptSessionIds,
+        },
+        memorySearchContext,
+    );
+    const transcriptMatchedSessionTargets = transcriptSearch.memoryMatchedSessionTargets;
+    const transcriptMatchedSessionKeys = React.useMemo(
+        () => new Set(transcriptMatchedSessionTargets.map((target) => target.sessionKey)),
+        [transcriptMatchedSessionTargets],
+    );
+
     const sections = React.useMemo<ArchivedSessionsSection[]>(() => {
+        const matchingHidden = hiddenInactiveSessions.filter(
+            (session) => archivedSessionMatchesSearch(session, searchTokens, transcriptMatchedSessionKeys),
+        );
+        const matchingArchived = archivedSessions.filter(
+            (session) => archivedSessionMatchesSearch(session, searchTokens, transcriptMatchedSessionKeys),
+        );
         const out: ArchivedSessionsSection[] = [];
-        if (hiddenInactiveSessions.length > 0) {
+        if (matchingHidden.length > 0) {
             out.push({
                 title: t('settingsFeatures.hiddenInactiveSessionsSectionTitle'),
                 kind: 'hidden',
-                data: hiddenInactiveSessions,
+                data: matchingHidden,
             });
         }
-        if (archivedSessions.length > 0) {
+        if (matchingArchived.length > 0) {
             out.push({
                 title: t('sessionInfo.archivedSessions'),
                 kind: 'archived',
-                data: archivedSessions,
+                data: matchingArchived,
             });
         }
         return out;
-    }, [archivedSessions, hiddenInactiveSessions]);
+    }, [archivedSessions, hiddenInactiveSessions, searchTokens, transcriptMatchedSessionKeys]);
+
+    // A transcript match whose canonical session record has not landed on this screen
+    // yet is still resolving. Saying "no results" while that is true would be untrue,
+    // so the screen reports the transition instead.
+    const hasPendingTranscriptMatches = React.useMemo(() => {
+        if (transcriptMatchedSessionTargets.length === 0) return false;
+        const rendered = new Set<string>();
+        for (const section of sections) {
+            for (const session of section.data) rendered.add(getArchivedSessionKey(session));
+        }
+        const known = new Set<string>();
+        for (const session of allSessions) known.add(getArchivedSessionKey(session));
+        for (const session of cachedArchivedSessions) known.add(getArchivedSessionKey(session));
+        const eligible = new Set<string>();
+        for (const session of archivedSessions) eligible.add(getArchivedSessionKey(session));
+        for (const session of hiddenInactiveSessions) eligible.add(getArchivedSessionKey(session));
+        return hasPendingArchivedTranscriptMatch({
+            targetKeys: transcriptMatchedSessionTargets.map((target) => target.sessionKey),
+            knownSessionKeys: known,
+            eligibleSessionKeys: eligible,
+            renderedSessionKeys: rendered,
+        });
+    }, [allSessions, archivedSessions, cachedArchivedSessions, hiddenInactiveSessions, sections, transcriptMatchedSessionTargets]);
 
     // The rows this screen opens, in render order. These are session records rather than
     // list rows, so the owning server is lifted onto the row shape the ordering owner reads;
@@ -296,6 +415,7 @@ export default function ArchivedSessionsScreen() {
             return (
                 <Pressable
                     key={getArchivedSessionKey(item)}
+                    testID={`archived-session-row:${getArchivedSessionKey(item)}`}
                     style={[
                         styles.sessionCard,
                         isSingle ? styles.sessionCardSingle : isFirst ? styles.sessionCardFirst : isLast ? styles.sessionCardLast : null,
@@ -313,6 +433,7 @@ export default function ArchivedSessionsScreen() {
                     </View>
                     {section.kind === 'archived' && canManageArchive(item) ? (
                         <Pressable
+                            testID={`archived-session-unarchive:${getArchivedSessionKey(item)}`}
                             style={styles.actionButton}
                             onPress={() => handleUnarchive(item)}
                             accessibilityRole="button"
@@ -343,11 +464,25 @@ export default function ArchivedSessionsScreen() {
     }, []);
 
     return (
-        <View style={styles.container}>
+        <KeyboardAwareScreen testID="archived-sessions-keyboard-frame" mode="form" style={styles.container}>
             <View style={contentContainerStyle}>
+                <SessionListSearchChrome
+                    allKnownTags={EMPTY_ARCHIVED_TAGS}
+                    selectedTags={EMPTY_ARCHIVED_TAGS}
+                    searchQuery={searchQuery}
+                    onSelectedTagsChange={noopSelectedTagsChange}
+                    onSearchQueryChange={setSearchQuery}
+                    onSearchEverything={handleOpenUniversalSearch}
+                />
                 {sections.length === 0 ? (
                     <View style={styles.emptyContainer}>
-                        <Text style={styles.emptyText}>{t('sessionHistory.empty')}</Text>
+                        <Text testID="archived-sessions-empty-state" style={styles.emptyText}>
+                            {searchTokens.length === 0
+                                ? t('sessionHistory.empty')
+                                : transcriptSearch.isSearchingMemory || hasPendingTranscriptMatches
+                                    ? t('common.loading')
+                                    : t('directSessions.browseNoSearchResults')}
+                        </Text>
                     </View>
                 ) : (
                     <VirtualizedSectionList
@@ -362,9 +497,11 @@ export default function ArchivedSessionsScreen() {
                             ? { onWheel: stopScrollEventPropagationOnWeb, onTouchMove: stopScrollEventPropagationOnWeb }
                             : undefined}
                         contentContainerStyle={listContentContainerStyle}
+                        keyboardShouldPersistTaps="handled"
+                        keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
                     />
                 )}
             </View>
-        </View>
+        </KeyboardAwareScreen>
     );
 }

@@ -90,7 +90,7 @@ describe('startApi Home search production composition', () => {
             await vi.waitFor(async () => {
                 const ready = await app.inject({ method: 'GET', url: '/v1/features' });
                 expect(ready.json()).toMatchObject({
-                    capabilities: { homeSearch: { enabled: true, provider: 'home' } },
+                    capabilities: { homeSearch: { enabled: true } },
                 });
             });
 
@@ -262,7 +262,7 @@ describe('startApi Home search production composition', () => {
             await vi.waitFor(async () => {
                 const ready = await app.inject({ method: 'GET', url: '/v1/features' });
                 expect(ready.json()).toMatchObject({
-                    capabilities: { homeSearch: { enabled: true, provider: 'home' } },
+                    capabilities: { homeSearch: { enabled: true } },
                 });
             });
 
@@ -329,6 +329,43 @@ describe('startApi Home search production composition', () => {
         }
     }, 120_000);
 
+    it('builds no Home search lifecycle, route, or capability when the search feature is disabled', async () => {
+        const previous = process.env.HAPPIER_FEATURE_SEARCH__ENABLED;
+        process.env.HAPPIER_FEATURE_SEARCH__ENABLED = '0';
+        const findManySpy = vi.spyOn(db.sessionMessage, 'findMany');
+        const { startApi } = await import('@/app/api/api');
+        const app = await startApi();
+        try {
+            const account = await db.account.create({
+                data: { publicKey: `home-search-api-disabled-${randomUUID()}`, encryptionMode: 'plain' },
+                select: { id: true },
+            });
+            const token = await auth.createToken(account.id, undefined, { kind: 'account', authority: 'present_user' });
+
+            const features = await app.inject({ method: 'GET', url: '/v1/features' });
+            expect(features.json()).toMatchObject({ features: { search: { enabled: false } } });
+            expect(features.json().capabilities).not.toHaveProperty('homeSearch');
+
+            const response = await app.inject({
+                method: 'POST',
+                url: '/v1/home/search',
+                headers: { authorization: `Bearer ${token}` },
+                payload: { v: 1, query: 'quokka', scope: { type: 'global' }, mode: 'auto' },
+            });
+            expect(response.statusCode).toBe(404);
+            // No derived projection is constructed at all: the disabled feature is not a
+            // route-only gate over a running index.
+            expect(findManySpy).not.toHaveBeenCalled();
+            expect(shutdownHandlers.has('home-search')).toBe(false);
+        } finally {
+            findManySpy.mockRestore();
+            if (previous === undefined) delete process.env.HAPPIER_FEATURE_SEARCH__ENABLED;
+            else process.env.HAPPIER_FEATURE_SEARCH__ENABLED = previous;
+            await stopHomeSearch();
+            await app.close();
+        }
+    }, 120_000);
+
     it('listens before reconciliation and keeps canonical writes available when initial indexing fails', async () => {
         let releaseCanonicalRead!: () => void;
         let canonicalReadStarted!: () => void;
@@ -347,7 +384,7 @@ describe('startApi Home search production composition', () => {
             await canonicalReadEntered;
             const indexing = await app.inject({ method: 'GET', url: '/v1/features' });
             expect(indexing.json()).toMatchObject({
-                capabilities: { homeSearch: { enabled: false, provider: 'home', reason: 'indexing' } },
+                capabilities: { homeSearch: { enabled: false, reason: 'indexing' } },
             });
             const unauthorized = await app.inject({
                 method: 'POST',
@@ -360,7 +397,7 @@ describe('startApi Home search production composition', () => {
             await vi.waitFor(async () => {
                 const features = await app.inject({ method: 'GET', url: '/v1/features' });
                 expect(features.json()).toMatchObject({
-                    capabilities: { homeSearch: { enabled: false, provider: 'home', reason: 'index_unavailable' } },
+                    capabilities: { homeSearch: { enabled: false, reason: 'index_unavailable' } },
                 });
             });
 

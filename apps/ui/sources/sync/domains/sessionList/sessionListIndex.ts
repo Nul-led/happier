@@ -56,7 +56,21 @@ export type SessionListIndexItem =
         folderId?: string | null;
         folderDepth?: number;
         workspace?: SessionFolderWorkspaceRefV1;
+        /**
+         * Host-derived provenance for a contextual session-list search row.
+         * This stays on the ordinary session item so search cannot become a
+         * second row/controller path.
+         */
+        contextualSearchReasons?: readonly SessionListContextualSearchReason[];
+        contextualSearchSourceMachineId?: string | null;
     }>;
+
+export type SessionListContextualSearchReason =
+    | 'transcript'
+    | 'hidden-by-filters'
+    | 'archived'
+    | 'external'
+    | 'another-machine';
 
 export type SessionListItemOrganizationEligibilityReason =
     | 'eligible'
@@ -136,6 +150,8 @@ export function areSessionListIndexItemsEqual(
             && previous.serverName === next.serverName
             && (previous.folderId ?? null) === (next.folderId ?? null)
             && (previous.folderDepth ?? null) === (next.folderDepth ?? null)
+            && (previous.contextualSearchSourceMachineId ?? null) === (next.contextualSearchSourceMachineId ?? null)
+            && (previous.contextualSearchReasons ?? []).join('\u0001') === (next.contextualSearchReasons ?? []).join('\u0001')
             && areWorkspaceRefsEqual(previous.workspace ?? null, next.workspace ?? null);
     }
 

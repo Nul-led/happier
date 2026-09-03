@@ -16,12 +16,14 @@ import type { SessionListRenderableSession } from '@/sync/domains/session/listin
 import type { SessionListReachabilityRenderable } from '@/sync/domains/state/storage';
 import { buildSessionOrganizationProjectionFromLegacyTestSettings } from './sessionOrganizationProjectionTestFixture';
 import { createUseSettingMock, createUseSettingMutableMockFromReader } from '@/dev/testkit/mocks/storage';
+import { HappyError } from '@/utils/errors/errors';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 let capturedRootFlatListProps: any | null = null;
 const capturedRootVirtualizedListProps = vi.hoisted(() => ({ current: null as any }));
 const routerPushSpy = vi.fn();
+const modalAlertSpy = vi.hoisted(() => vi.fn());
 let hideInactiveSessions = false;
 const setSessionPinOp = vi.hoisted(() => vi.fn(async () => undefined));
 const setSessionTagAssignmentsOp = vi.hoisted(() => vi.fn(async () => undefined));
@@ -178,7 +180,9 @@ installSessionShellCommonModuleMocks({
         const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
         return createTextModuleMock({ translate: (key) => key });
     },
-    modal: async () => (await import('@/dev/testkit/mocks/modal')).createModalModuleMock().module,
+    modal: async () => (await import('@/dev/testkit/mocks/modal')).createModalModuleMock({
+        spies: { alert: modalAlertSpy },
+    }).module,
     storage: async (importOriginal) => {
         const { createStorageModuleMock } = await import('@/dev/testkit/mocks/storage');
         return createStorageModuleMock({
@@ -553,6 +557,7 @@ describe('SessionsList pinning + per-group ordering', () => {
         setWorkspaceRefsV1.mockClear();
         setSessionPinOp.mockClear();
         setSessionTagAssignmentsOp.mockClear();
+        modalAlertSpy.mockClear();
         resolveSessionOrganizationMutationScopeOp.mockReset();
         resolveSessionOrganizationMutationScopeOp.mockImplementation(async (serverId: string) => ({
             ok: true,
@@ -883,6 +888,26 @@ describe('SessionsList pinning + per-group ordering', () => {
             sessionKey: 'server_a:sess_a',
             pinned: true,
         }));
+    });
+
+    it('shows actionable pin errors instead of silently rolling the row back', async () => {
+        setSessionPinOp.mockRejectedValueOnce(new HappyError(
+            'You can pin up to 1,000 sessions. Unpin another session and try again.',
+            false,
+        ));
+        const screen = await renderSessionsList();
+        const row = expectPresent(findSessionItem(screen, 'sess_a'), 'expected sess_a session row');
+
+        await act(async () => {
+            invokeTestInstanceHandler(row, 'onTogglePinned', undefined, 'expected sess_a session row');
+            await Promise.resolve();
+            await Promise.resolve();
+        });
+
+        expect(modalAlertSpy).toHaveBeenCalledWith(
+            'common.error',
+            'You can pin up to 1,000 sessions. Unpin another session and try again.',
+        );
     });
 
     it('keeps the list action silent when organization mutation scope is unavailable', async () => {

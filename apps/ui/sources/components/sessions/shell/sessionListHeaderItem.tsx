@@ -8,7 +8,7 @@ import { t } from '@/text';
 import type { TreeDropOverlaySharedValues } from '@/components/ui/treeDragDrop';
 
 import type { SessionListProjectHeaderViewModel } from './sessionListProjectHeaderViewModels';
-import { CollapsibleSectionHeader, FolderGroupHeader, ProjectGroupHeader, SessionListHeaderControls } from './sessionListChrome';
+import { CollapsibleSectionHeader, FolderGroupHeader, ProjectGroupHeader } from './sessionListChrome';
 import type { RegisterSessionFolderDropTarget } from './useSessionListViewState';
 import {
     SessionListHeaderFrame,
@@ -73,7 +73,6 @@ type SessionListHeaderItemProps = Readonly<{
     onFolderDragUpdate?: (event: UseSessionInlineDragDropResultEvent) => void;
     onFolderDragCancel?: (event: UseSessionInlineDragCancelEvent) => void;
     onFolderDropResult?: (event: UseSessionInlineDragDropResultEvent) => void;
-    headerControls?: Omit<React.ComponentProps<typeof SessionListHeaderControls>, 'onMenuOpenChange'>;
 }>;
 
 export const SessionListHeaderItem = React.memo((props: SessionListHeaderItemProps) => {
@@ -215,9 +214,8 @@ export const SessionListHeaderItem = React.memo((props: SessionListHeaderItemPro
             title={headerViewState.title}
             collapsed={headerViewState.collapsed}
             onPress={headerActionHandlers.onToggleCollapse}
-            showOrderingMenu={isPrimaryHeader}
+            isPrimaryHeader={isPrimaryHeader}
             testID={headerTestIdKey ? `session-list-header:${headerTestIdKey}` : undefined}
-            headerControls={props.headerControls}
             rootMeasurement={props.item.headerKind === 'attention' ? {
                 active: stageSpotlightProps.active,
                 ref: stageSpotlightRef,

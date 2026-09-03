@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import { openHomeSearchDb } from './homeSearchDb';
 
@@ -22,7 +23,10 @@ describe('Home search FTS5 owner', () => {
             await writeFile(entrypoint, [
                 `import { openHomeSearchDb } from ${JSON.stringify(homeSearchDbPath)};`,
                 `const db = await openHomeSearchDb({ dbPath: ${JSON.stringify(join(root, 'search.sqlite'))} });`,
-                `db.upsert({ id: 'bun-proof', sessionId: 's-1', seq: 1, createdAtMs: 1, text: 'packaged bun fts proof' });`,
+                `db.upsertMany([`,
+                `  { id: 'bun-proof', sessionId: 's-1', seq: 1, createdAtMs: 1, text: 'packaged bun fts proof' },`,
+                `  { id: 'bun-neighbor', sessionId: 's-1', seq: 2, createdAtMs: 2, text: 'neighboring runtime row' },`,
+                `]);`,
                 `const hits = db.search({ query: 'packaged' });`,
                 `db.close();`,
                 `if (hits.length !== 1 || hits[0]?.id !== 'bun-proof') throw new Error('Packaged Bun FTS5 search failed');`,
@@ -73,6 +77,30 @@ describe('Home search FTS5 owner', () => {
         expect(db.search({ query: 'new' })).toHaveLength(1);
         db.remove('m-1');
         expect(db.search({ query: 'new' })).toEqual([]);
+        db.close();
+    });
+
+    it('rolls back every message in a bulk-upsert page when one write fails', async () => {
+        const root = await mkdtemp(join(tmpdir(), 'happier-home-search-bulk-rollback-'));
+        const dbPath = join(root, 'search.sqlite');
+        const db = await openHomeSearchDb({ dbPath });
+        const failureInjector = new DatabaseSync(dbPath);
+        failureInjector.exec(`
+            CREATE TRIGGER fail_second_bulk_message
+            BEFORE INSERT ON home_search_messages
+            WHEN NEW.id = 'm-poisoned'
+            BEGIN
+                SELECT RAISE(ABORT, 'injected bulk-upsert failure');
+            END;
+        `);
+        failureInjector.close();
+
+        expect(() => db.upsertMany([
+            { id: 'm-first', sessionId: 's-1', seq: 1, createdAtMs: 1, text: 'must roll back' },
+            { id: 'm-poisoned', sessionId: 's-1', seq: 2, createdAtMs: 2, text: 'trigger failure' },
+        ])).toThrow('injected bulk-upsert failure');
+        expect(db.count()).toBe(0);
+        expect(db.search({ query: 'must' })).toEqual([]);
         db.close();
     });
 
@@ -153,6 +181,23 @@ describe('Home search FTS5 owner', () => {
         db.close();
     });
 
+    it('centers snippets on canonically equivalent Unicode matches while preserving pristine text', async () => {
+        const root = await mkdtemp(join(tmpdir(), 'happier-home-search-snippet-normalized-'));
+        const db = await openHomeSearchDb({ dbPath: join(root, 'search.sqlite') });
+        const pristineMatch = 'Cafe\u0301';
+        const pristineText = `${'before '.repeat(40)}${pristineMatch} ${'after '.repeat(39)}after`;
+        db.upsert({
+            id: 'm-normalized', sessionId: 's-1', seq: 1, createdAtMs: 1,
+            text: pristineText,
+        });
+
+        const hit = db.search({ query: 'CAFÉ' })[0]!;
+        expect(hit.text).toBe(pristineText);
+        expect(hit.snippet).toContain(pristineMatch);
+        expect(hit.snippet).not.toContain('CAFÉ');
+        db.close();
+    });
+
     it('maps lower FTS ranks to distinct higher bounded relevance scores', async () => {
         const root = await mkdtemp(join(tmpdir(), 'happier-home-search-rank-'));
         const db = await openHomeSearchDb({ dbPath: join(root, 'search.sqlite') });
@@ -163,6 +208,18 @@ describe('Home search FTS5 owner', () => {
         expect(hits.map((hit) => hit.id)).toEqual(['strong', 'weak']);
         expect(hits[0]!.score).toBeGreaterThan(hits[1]!.score);
         expect(hits.every((hit) => hit.score > 0 && hit.score <= 1)).toBe(true);
+        db.close();
+    });
+
+    it('searches visibility sets larger than a portable SQLite bind-variable batch', async () => {
+        const root = await mkdtemp(join(tmpdir(), 'happier-home-search-visible-sessions-'));
+        const db = await openHomeSearchDb({ dbPath: join(root, 'search.sqlite') });
+        db.upsert({ id: 'weak', sessionId: 's-0', seq: 1, createdAtMs: 1, text: 'visibility amid unrelated filler words' });
+        db.upsert({ id: 'strong', sessionId: 's-32999', seq: 1, createdAtMs: 2, text: 'visibility visibility visibility' });
+
+        const visibleSessionIds = Array.from({ length: 33_000 }, (_, index) => `s-${index}`);
+        expect(db.search({ query: 'visibility', sessionIds: visibleSessionIds, maxResults: 1 }))
+            .toEqual([expect.objectContaining({ id: 'strong', sessionId: 's-32999' })]);
         db.close();
     });
 });

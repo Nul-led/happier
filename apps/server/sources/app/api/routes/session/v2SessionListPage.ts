@@ -17,10 +17,12 @@ import type {
 } from "@/app/session/metadata/sessionMetadataRecipientProjection";
 import {
     createV2SessionListRowSelect,
+    createV2SessionListLegacyRowSelect,
     createV2SessionListVisibilityWhere,
     getV2SessionListEffectiveActivityAt,
     mapV2SessionListRow,
     type V2SessionListRowCompat,
+    SESSION_LIST_PROJECTION_FALLBACK_COLUMNS,
 } from "./v2SessionListRows";
 
 type V2SessionListMeaningfulActivityCursor = Readonly<{
@@ -41,26 +43,26 @@ export async function findV2SessionListRows(params: Readonly<{
 }>): Promise<V2SessionListRowCompat[]> {
     const { userId, orderBy, take, where } = params;
     const visibilityWhere = createV2SessionListVisibilityWhere({ userId });
-    const select = createV2SessionListRowSelect({ userId });
+    const read = (select: Prisma.SessionSelect) => usesEffectiveActivityOrdering(orderBy)
+        ? findV2SessionListRowsByEffectiveActivity({ select, visibilityWhere, where, take, userId })
+        : findV2SessionListRowsWithSelect({ orderBy, select, visibilityWhere, where, take, userId });
 
-    if (usesEffectiveActivityOrdering(orderBy)) {
-        return await findV2SessionListRowsByEffectiveActivity({
-            select,
-            visibilityWhere,
-            where,
-            take,
-            userId,
-        });
+    return await runWithSessionListProjectionFallback(
+        () => read(createV2SessionListRowSelect({ userId })),
+        () => read(createV2SessionListLegacyRowSelect({ userId })),
+    );
+}
+
+export async function runWithSessionListProjectionFallback<T>(
+    primary: () => Promise<T>,
+    legacy: () => Promise<T>,
+): Promise<T> {
+    try {
+        return await primary();
+    } catch (error) {
+        if (!isMissingAttentionProjectionColumnError(error)) throw error;
+        return await legacy();
     }
-
-    return await findV2SessionListRowsWithSelect({
-        orderBy,
-        select,
-        visibilityWhere,
-        where,
-        take,
-        userId,
-    });
 }
 
 async function findV2SessionListRowsWithSelect(params: Readonly<{
@@ -392,14 +394,28 @@ export function mergeSessionWhereInputs(
 }
 
 const MISSING_ROLLBACK_TURN_COLUMN_PATTERN = /SessionTurn|rollbackState/i;
+const MISSING_SESSION_PROJECTION_COLUMN_PATTERN = SESSION_LIST_PROJECTION_FALLBACK_COLUMNS.length > 0
+    ? new RegExp(SESSION_LIST_PROJECTION_FALLBACK_COLUMNS.join("|"), "i")
+    : null;
 
 export function isMissingAttentionProjectionColumnError(error: unknown): boolean {
     if (!error || typeof error !== "object") return false;
     const record = error as Record<string, unknown>;
     const code = typeof record.code === "string" ? record.code : "";
-    const message = typeof record.message === "string" ? record.message : String(error);
-    if (code !== "P2022" && !/column|field|no such/i.test(message)) {
+    const serialized = serializeProjectionError(error);
+    if (code !== "P2022" && !/column|field|no such/i.test(serialized)) {
         return false;
     }
-    return MISSING_ROLLBACK_TURN_COLUMN_PATTERN.test(message);
+    return MISSING_ROLLBACK_TURN_COLUMN_PATTERN.test(serialized)
+        || MISSING_SESSION_PROJECTION_COLUMN_PATTERN?.test(serialized) === true;
+}
+
+function serializeProjectionError(error: object): string {
+    const record = error as Record<string, unknown>;
+    const message = typeof record.message === "string" ? record.message : String(error);
+    try {
+        return `${message}\n${JSON.stringify(error)}`;
+    } catch {
+        return message;
+    }
 }

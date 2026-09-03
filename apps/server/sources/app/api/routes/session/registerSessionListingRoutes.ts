@@ -19,12 +19,14 @@ import {
     parseStoredSessionRuntimeIssue,
     readSessionTranscriptAuthorityFields,
     readSessionTurnRollbackEligibleStarts,
+    omitSessionListProjectionFallbackColumns,
 } from "./v2SessionListRows";
 import {
     createV2SessionListCursorWhere,
     createV2SessionListPage,
     findV2SessionListRows,
     isMissingAttentionProjectionColumnError,
+    runWithSessionListProjectionFallback,
     mapV2SessionListRows,
     resolveV2SessionListCursorForVisibleRows,
     V2_ACTIVE_SESSION_LIST_ORDER_BY,
@@ -58,6 +60,7 @@ import {
 import {
     enforceCurrentAccountStoredContentCompatibilityForHttpRequest,
 } from "@/app/clientCompatibility/accountStoredContentCompatibility";
+import { mapPendingActivationAuthorization } from "@/app/session/pending/pendingActivationAuthorization";
 
 const SESSION_METADATA_PRIVACY_UPGRADE_REQUIRED_RESPONSE_SCHEMA = z.object({
     error: z.literal("Session metadata privacy upgrade required"),
@@ -163,11 +166,15 @@ const V1_SESSION_ROW_SELECT = {
     pendingCount: true,
     pendingBlockedCount: true,
     pendingVersion: true,
+    pendingActivationRequestId: true,
+    pendingActivationRequestedAt: true,
+    pendingActivationStatus: true,
+    pendingActivationFailureCode: true,
     active: true,
     lastActiveAt: true,
 } as const satisfies Prisma.SessionSelect;
 
-function createV1SessionShareSelect(): Prisma.SessionShareSelect {
+function createV1SessionShareSelect(sessionSelect: Prisma.SessionSelect = V1_SESSION_ROW_SELECT): Prisma.SessionShareSelect {
     return {
         accessLevel: true,
         canApprovePermissions: true,
@@ -175,12 +182,21 @@ function createV1SessionShareSelect(): Prisma.SessionShareSelect {
         sharedByUserId: true,
         sharedByUser: { select: PROFILE_SELECT },
         session: {
-            select: V1_SESSION_ROW_SELECT,
+            select: sessionSelect,
         },
     };
 }
 
+const V1_SESSION_ROW_LEGACY_SELECT = omitSessionListProjectionFallbackColumns(V1_SESSION_ROW_SELECT);
+
 async function findV1SessionListRows(userId: string) {
+    return await runWithSessionListProjectionFallback(
+        () => findV1SessionListRowsWithSelect(userId, V1_SESSION_ROW_SELECT),
+        () => findV1SessionListRowsWithSelect(userId, V1_SESSION_ROW_LEGACY_SELECT),
+    );
+}
+
+async function findV1SessionListRowsWithSelect(userId: string, sessionSelect: Prisma.SessionSelect) {
     const [ownedBranches, shareBranches] = await Promise.all([
             Promise.all(createSessionTranscriptPublicationRecencyQueryBranches().map((branch) =>
                 collectSessionTranscriptVisibleRowsBeforeTake({
@@ -195,7 +211,7 @@ async function findV1SessionListRows(userId: string) {
                             orderBy: [...branch.orderBy],
                             ...(page.skip === undefined ? {} : { skip: page.skip }),
                             ...(page.take === undefined ? {} : { take: page.take }),
-                            select: V1_SESSION_ROW_SELECT,
+                            select: sessionSelect,
                         }),
                     isOwner: () => true,
                     readPublication: (session) => session,
@@ -216,7 +232,7 @@ async function findV1SessionListRows(userId: string) {
                             orderBy: branch.orderBy.map((orderBy) => ({ session: orderBy })),
                             ...(page.skip === undefined ? {} : { skip: page.skip }),
                             ...(page.take === undefined ? {} : { take: page.take }),
-                            select: createV1SessionShareSelect(),
+                            select: createV1SessionShareSelect(sessionSelect),
                         }),
                     isOwner: () => false,
                     readPublication: (share) => share.session,
@@ -263,6 +279,10 @@ const V2_SESSION_BY_ID_SELECT = {
     pendingCount: true,
     pendingBlockedCount: true,
     pendingVersion: true,
+    pendingActivationRequestId: true,
+    pendingActivationRequestedAt: true,
+    pendingActivationStatus: true,
+    pendingActivationFailureCode: true,
     active: true,
     lastActiveAt: true,
     shares: {
@@ -276,6 +296,10 @@ const V2_SESSION_BY_ID_SELECT = {
 
 const {
     turns: _v2SessionByIdLegacyTurns,
+    pendingActivationRequestId: _v2SessionByIdLegacyPendingActivationRequestId,
+    pendingActivationRequestedAt: _v2SessionByIdLegacyPendingActivationRequestedAt,
+    pendingActivationStatus: _v2SessionByIdLegacyPendingActivationStatus,
+    pendingActivationFailureCode: _v2SessionByIdLegacyPendingActivationFailureCode,
     ...V2_SESSION_BY_ID_LEGACY_SELECT
 } = V2_SESSION_BY_ID_SELECT;
 
@@ -423,6 +447,9 @@ export function registerSessionListingRoutes(app: Fastify) {
                         pendingCount: hasLiveFacts ? v.pendingCount : 0,
                         pendingBlockedCount: hasLiveFacts ? v.pendingBlockedCount : 0,
                         pendingVersion: hasLiveFacts ? v.pendingVersion : 0,
+                        ...(hasLiveFacts
+                            ? { pendingActivationAuthorization: mapPendingActivationAuthorization(v) }
+                            : {}),
                         dataEncryptionKey: encodeSessionDataEncryptionKey(v.dataEncryptionKey),
                         lastMessage: null,
                     };
@@ -467,6 +494,9 @@ export function registerSessionListingRoutes(app: Fastify) {
                     pendingCount: hasLiveFacts ? v.pendingCount : 0,
                     pendingBlockedCount: hasLiveFacts ? v.pendingBlockedCount : 0,
                     pendingVersion: hasLiveFacts ? v.pendingVersion : 0,
+                    ...(hasLiveFacts
+                        ? { pendingActivationAuthorization: mapPendingActivationAuthorization(v) }
+                        : {}),
                     dataEncryptionKey:
                         v.encryptionMode === "plain"
                             ? null
@@ -903,6 +933,9 @@ export function registerSessionListingRoutes(app: Fastify) {
                 pendingCount: hasLiveFacts ? session.pendingCount : 0,
                 pendingBlockedCount: hasLiveFacts ? session.pendingBlockedCount : 0,
                 pendingVersion: hasLiveFacts ? session.pendingVersion : 0,
+                ...(hasLiveFacts
+                    ? { pendingActivationAuthorization: mapPendingActivationAuthorization(session) }
+                    : {}),
                 dataEncryptionKey: session.accountId === userId
                     ? encodeSessionDataEncryptionKey(session.dataEncryptionKey)
                     : (session.shares[0]?.encryptedDataKey ? Buffer.from(session.shares[0].encryptedDataKey).toString('base64') : null),

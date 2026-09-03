@@ -259,33 +259,29 @@ describe('Home search indexer', () => {
         db.close();
     }, 60_000);
 
-    it('buffers committed writes until the paged startup projection finishes and has no timer', async () => {
-        const root = await mkdtemp(join(tmpdir(), 'happier-home-indexer-buffer-'));
+    it('refuses deliveries before the lifecycle settles the startup projection and applies live deliveries after', async () => {
+        const root = await mkdtemp(join(tmpdir(), 'happier-home-indexer-settle-'));
         const db = await openHomeSearchDb({ dbPath: join(root, 'search.sqlite') });
-        let releaseFirstPage!: () => void;
-        const firstPage = new Promise<void>((resolve) => { releaseFirstPage = resolve; });
-        const pageLimits: number[] = [];
         const indexer = createHomeSearchIndexer({
             db,
-            readCanonicalMessagesPage: async ({ afterId, limit }) => {
-                pageLimits.push(limit);
-                if (!afterId) await firstPage;
-                return afterId
-                    ? { messages: [] }
-                    : {
-                        messages: [{ id: 'm-1', sessionId: 's-1', seq: 1, createdAtMs: 1, content: { t: 'plain', v: { role: 'assistant', content: { type: 'text', text: 'startup row' } } } }],
-                        nextAfterId: 'm-1',
-                    };
-            },
+            readCanonicalMessagesPage: pagedReader(() => [
+                { id: 'm-1', sessionId: 's-1', seq: 1, createdAtMs: 1, content: { t: 'plain', v: { role: 'assistant', content: { type: 'text', text: 'startup row' } } } },
+            ]),
         });
+        // Pre-settlement catch-up is owned by the search lifecycle's bounded dirty projection;
+        // silent indexer-side buffering retained an unbounded event list.
+        expect(() => indexer.notify({ id: 'm-2', sessionId: 's-1', seq: 2, createdAtMs: 2, content: { t: 'plain', v: { role: 'assistant', content: { type: 'text', text: 'early row' } } } }))
+            .toThrowError(/settles the startup projection/iu);
         indexer.start();
-        indexer.notify({ id: 'm-2', sessionId: 's-1', seq: 2, createdAtMs: 2, content: { t: 'plain', v: { role: 'assistant', content: { type: 'text', text: 'live row' } } } });
-        expect(indexer.ready()).toBe(false);
-        releaseFirstPage();
         await indexer.whenReady();
-        expect(pageLimits.every((limit) => limit > 0 && limit <= 500)).toBe(true);
+        expect(db.search({ query: 'early' })).toEqual([]);
         expect(db.search({ query: 'startup' })).toHaveLength(1);
-        expect(db.search({ query: 'live' })).toHaveLength(1);
+
+        indexer.notify({ id: 'm-2', sessionId: 's-1', seq: 2, createdAtMs: 2, content: { t: 'plain', v: { role: 'assistant', content: { type: 'text', text: 'first live row' } } } });
+        indexer.notify({ id: 'm-3', sessionId: 's-1', seq: 3, createdAtMs: 3, content: { t: 'plain', v: { role: 'assistant', content: { type: 'text', text: 'second settled row' } } } });
+        await indexer.whenIdle();
+        expect(db.search({ query: 'first live' })).toHaveLength(1);
+        expect(db.search({ query: 'second settled' })).toHaveLength(1);
         await indexer.stop();
         db.close();
     });

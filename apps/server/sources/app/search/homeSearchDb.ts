@@ -34,6 +34,7 @@ export type HomeSearchHit = Readonly<{
 export type HomeSearchDb = Readonly<{
     path: string;
     upsert(message: HomeSearchMessage): void;
+    upsertMany(messages: readonly HomeSearchMessage[]): void;
     remove(messageId: string): void;
     removeSession(sessionId: string): void;
     clear(): void;
@@ -81,6 +82,61 @@ function buildFtsQuery(value: string): Readonly<{ match: string; snippetTerms: s
 }
 
 const SNIPPET_WINDOW_CHARS = 160;
+// SQLite guarantees at least 999 host parameters. Reserve bindings for MATCH and LIMIT.
+const HOME_SEARCH_SESSION_ID_BATCH_SIZE = 900;
+
+type HomeSearchSegmenter = Readonly<{
+    segment(value: string): Iterable<Readonly<{ segment: string; index: number }>>;
+}>;
+type HomeSearchSegmenterConstructor = new (
+    locale: string,
+    options: Readonly<{ granularity: 'grapheme' }>,
+) => HomeSearchSegmenter;
+
+// The server's Node/Bun runtimes provide Segmenter, while the package's retained
+// compiler lib predates its declaration. Keep that standard-library seam narrow.
+const HomeSearchSegmenter = (Intl as typeof Intl & Readonly<{
+    Segmenter: HomeSearchSegmenterConstructor;
+}>).Segmenter;
+const HOME_SEARCH_SNIPPET_SEGMENTER = new HomeSearchSegmenter('und', { granularity: 'grapheme' });
+
+type NormalizedSnippetSegment = Readonly<{
+    normalizedStart: number;
+    normalizedEnd: number;
+    sourceStart: number;
+    sourceEnd: number;
+}>;
+
+function normalizeSnippetText(text: string): Readonly<{
+    text: string;
+    segments: readonly NormalizedSnippetSegment[];
+}> {
+    let normalizedText = '';
+    const segments: NormalizedSnippetSegment[] = [];
+    for (const part of HOME_SEARCH_SNIPPET_SEGMENTER.segment(text)) {
+        const normalizedPart = part.segment.normalize('NFKC').toLowerCase();
+        if (!normalizedPart) continue;
+        const normalizedStart = normalizedText.length;
+        normalizedText += normalizedPart;
+        segments.push({
+            normalizedStart,
+            normalizedEnd: normalizedText.length,
+            sourceStart: part.index,
+            sourceEnd: part.index + part.segment.length,
+        });
+    }
+    return { text: normalizedText, segments };
+}
+
+function sourceRangeForNormalizedMatch(
+    segments: readonly NormalizedSnippetSegment[],
+    normalizedStart: number,
+    normalizedEnd: number,
+): Readonly<{ start: number; end: number }> | null {
+    const first = segments.find((segment) => normalizedStart >= segment.normalizedStart && normalizedStart < segment.normalizedEnd);
+    const last = segments.find((segment) => normalizedEnd > segment.normalizedStart && normalizedEnd <= segment.normalizedEnd);
+    return first && last ? { start: first.sourceStart, end: last.sourceEnd } : null;
+}
 
 function moveByCodePoints(text: string, from: number, count: number): number {
     let index = from;
@@ -101,15 +157,19 @@ function moveByCodePoints(text: string, from: number, count: number): number {
 
 /** Renders the user-visible snippet from the pristine message text so segmented index text never leaks into results. */
 function buildSnippet(text: string, terms: readonly string[]): string {
-    const haystack = text.toLowerCase();
+    const haystack = normalizeSnippetText(text);
     let matchStart = -1;
     let matchLength = 0;
     let matchedTerm = '';
     for (const term of terms) {
-        const found = haystack.indexOf(term.toLowerCase());
-        if (found >= 0 && (matchStart < 0 || found < matchStart)) {
-            matchStart = found;
-            matchLength = term.length;
+        const normalizedTerm = term.normalize('NFKC').toLowerCase();
+        const found = haystack.text.indexOf(normalizedTerm);
+        const sourceRange = found >= 0
+            ? sourceRangeForNormalizedMatch(haystack.segments, found, found + normalizedTerm.length)
+            : null;
+        if (sourceRange && (matchStart < 0 || sourceRange.start < matchStart)) {
+            matchStart = sourceRange.start;
+            matchLength = sourceRange.end - sourceRange.start;
             matchedTerm = term;
         }
     }
@@ -209,36 +269,49 @@ export async function openHomeSearchDb(params: Readonly<{ dbPath?: string; dataD
     const deleteSessionFts = db.prepare('DELETE FROM home_search_fts WHERE session_id = ?');
     const countMessages = db.prepare('SELECT count(*) AS count FROM home_search_messages');
 
+    const writeUpsert = (message: HomeSearchMessage) => {
+        const text = sanitizeStoredText(message.text);
+        if (!message.id || !message.sessionId || !text) return;
+        upsert.run(
+            message.id,
+            message.sessionId,
+            message.seq,
+            message.createdAtMs,
+            message.updatedAtMs ?? null,
+            message.role ?? null,
+            text,
+        );
+        deleteFts.run(message.id);
+        insertFts.run(
+            message.id,
+            message.sessionId,
+            message.seq,
+            message.createdAtMs,
+            message.role ?? null,
+            segmentCjkRuns(normalizeFtsText(text)),
+        );
+    };
+    const inWriteTransaction = (write: () => void) => {
+        db.exec('BEGIN IMMEDIATE');
+        try {
+            write();
+            db.exec('COMMIT');
+        } catch (error) {
+            db.exec('ROLLBACK');
+            throw error;
+        }
+    };
+
     const result: HomeSearchDb = {
         path,
         upsert(message) {
-            const text = sanitizeStoredText(message.text);
-            if (!message.id || !message.sessionId || !text) return;
-            db.exec('BEGIN IMMEDIATE');
-            try {
-                upsert.run(
-                    message.id,
-                    message.sessionId,
-                    message.seq,
-                    message.createdAtMs,
-                    message.updatedAtMs ?? null,
-                    message.role ?? null,
-                    text,
-                );
-                deleteFts.run(message.id);
-                insertFts.run(
-                    message.id,
-                    message.sessionId,
-                    message.seq,
-                    message.createdAtMs,
-                    message.role ?? null,
-                    segmentCjkRuns(normalizeFtsText(text)),
-                );
-                db.exec('COMMIT');
-            } catch (error) {
-                db.exec('ROLLBACK');
-                throw error;
-            }
+            inWriteTransaction(() => writeUpsert(message));
+        },
+        upsertMany(messages) {
+            if (messages.length === 0) return;
+            inWriteTransaction(() => {
+                for (const message of messages) writeUpsert(message);
+            });
         },
         remove(messageId) {
             db.exec('BEGIN IMMEDIATE');
@@ -279,27 +352,47 @@ export async function openHomeSearchDb(params: Readonly<{ dbPath?: string; dataD
         search(input) {
             const parsedQuery = buildFtsQuery(input.query);
             if (!parsedQuery.match) return [];
-            const whereParts: string[] = [];
-            const args: HomeSearchSqliteValue[] = [parsedQuery.match];
-            if (input.sessionId) {
-                whereParts.push('f.session_id = ?');
-                args.push(input.sessionId);
-            } else if (input.sessionIds) {
-                if (input.sessionIds.length === 0) return [];
-                whereParts.push(`f.session_id IN (${input.sessionIds.map(() => '?').join(',')})`);
-                args.push(...input.sessionIds);
+            const limit = boundedLimit(input.maxResults);
+            const queryBatch = (sessionIds?: readonly string[]): Array<Record<string, unknown>> => {
+                const whereParts: string[] = [];
+                const args: HomeSearchSqliteValue[] = [parsedQuery.match];
+                if (input.sessionId) {
+                    whereParts.push('f.session_id = ?');
+                    args.push(input.sessionId);
+                } else if (sessionIds) {
+                    whereParts.push(`f.session_id IN (${sessionIds.map(() => '?').join(',')})`);
+                    args.push(...sessionIds);
+                }
+                const where = whereParts.length > 0 ? ` AND ${whereParts.join(' AND ')}` : '';
+                args.push(limit);
+                return db.prepare(`
+                    SELECT f.id, f.session_id AS sessionId, f.seq, f.created_at_ms AS createdAtMs,
+                        f.role, m.text, bm25(home_search_fts) AS rank
+                    FROM home_search_fts f
+                    JOIN home_search_messages m ON m.id = f.id
+                    WHERE home_search_fts MATCH ?${where}
+                    ORDER BY rank ASC, f.created_at_ms DESC, f.seq DESC, f.id ASC
+                    LIMIT ?
+                `).all(...args) as Array<Record<string, unknown>>;
+            };
+
+            let rows: Array<Record<string, unknown>>;
+            if (input.sessionIds && !input.sessionId) {
+                const sessionIds = [...new Set(input.sessionIds)];
+                if (sessionIds.length === 0) return [];
+                rows = [];
+                for (let offset = 0; offset < sessionIds.length; offset += HOME_SEARCH_SESSION_ID_BATCH_SIZE) {
+                    rows.push(...queryBatch(sessionIds.slice(offset, offset + HOME_SEARCH_SESSION_ID_BATCH_SIZE)));
+                }
+                rows.sort((left, right) => Number(left.rank) - Number(right.rank)
+                    || Number(right.createdAtMs) - Number(left.createdAtMs)
+                    || Number(right.seq) - Number(left.seq)
+                    || String(left.id).localeCompare(String(right.id)));
+                rows = rows.slice(0, limit);
+            } else {
+                rows = queryBatch();
             }
-            const where = whereParts.length > 0 ? ` AND ${whereParts.join(' AND ')}` : '';
-            args.push(boundedLimit(input.maxResults));
-            const rows = db.prepare(`
-                SELECT f.id, f.session_id AS sessionId, f.seq, f.created_at_ms AS createdAtMs,
-                    f.role, m.text, bm25(home_search_fts) AS rank
-                FROM home_search_fts f
-                JOIN home_search_messages m ON m.id = f.id
-                WHERE home_search_fts MATCH ?${where}
-                ORDER BY rank ASC, f.created_at_ms DESC, f.seq DESC
-                LIMIT ?
-            `).all(...args) as Array<Record<string, unknown>>;
+
             return rows.map((row) => {
                 const rank = Number(row.rank);
                 const score = Number.isFinite(rank) ? 1 / (1 + Math.exp(rank)) : 0;

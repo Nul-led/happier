@@ -1,8 +1,13 @@
 import * as React from 'react';
+import { captureActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
 
 type RetainedSessionListHeaderFilters = {
     searchQuery: string;
     selectedTags: string[];
+};
+
+type SessionListHeaderFilterState = RetainedSessionListHeaderFilters & {
+    retentionKey: string;
 };
 
 const retainedHeaderFiltersByKey = new Map<string, RetainedSessionListHeaderFilters>();
@@ -37,44 +42,80 @@ export function useSessionListHeaderFilterRetention(retentionKey: string): Reado
         () => getRetainedHeaderFilters(retentionKey),
         [retentionKey],
     );
-    const [searchQuery, setSearchQueryState] = React.useState(() => retainedFilters.searchQuery);
-    const [selectedHeaderTags, setSelectedHeaderTagsState] = React.useState(() => retainedFilters.selectedTags);
+    const [state, setState] = React.useState<SessionListHeaderFilterState>(() => ({
+        retentionKey,
+        searchQuery: retainedFilters.searchQuery,
+        selectedTags: retainedFilters.selectedTags,
+    }));
+    React.useEffect(() => {
+        // Retention is useful across a route remount inside one Account lifetime,
+        // but private query/tag state must not survive that Account's retirement.
+        // Keep this callback registered after unmount so an inactive route entry is
+        // retired with its owning Account rather than becoming restorable later.
+        const lifetime = captureActiveServerAccountScopeLifetime();
+        lifetime?.onRetire(() => {
+            if (retainedHeaderFiltersByKey.get(retentionKey) === retainedFilters) {
+                retainedHeaderFiltersByKey.delete(retentionKey);
+            }
+        });
+    }, [retainedFilters, retentionKey]);
+    let currentState = state;
+    if (state.retentionKey !== retentionKey) {
+        // A provider/Home/machine/list-scope transition retires the prior query
+        // instead of keeping a restorable private value for an obsolete owner.
+        retainedHeaderFiltersByKey.delete(state.retentionKey);
+        currentState = {
+            retentionKey,
+            searchQuery: retainedFilters.searchQuery,
+            selectedTags: retainedFilters.selectedTags,
+        };
+        setState(currentState);
+    }
 
     const setSearchQuery = React.useCallback<React.Dispatch<React.SetStateAction<string>>>((value) => {
-        setSearchQueryState((current) => {
+        setState((current) => {
+            const currentQuery = current.retentionKey === retentionKey
+                ? current.searchQuery
+                : retainedFilters.searchQuery;
             const next = typeof value === 'function'
-                ? (value as (previous: string) => string)(current)
+                ? (value as (previous: string) => string)(currentQuery)
                 : value;
             retainedFilters.searchQuery = next;
-            return next;
+            return {
+                retentionKey,
+                searchQuery: next,
+                selectedTags: current.retentionKey === retentionKey
+                    ? current.selectedTags
+                    : retainedFilters.selectedTags,
+            };
         });
-    }, [retainedFilters]);
+    }, [retainedFilters, retentionKey]);
 
     const setSelectedHeaderTags = React.useCallback<React.Dispatch<React.SetStateAction<string[]>>>((value) => {
-        setSelectedHeaderTagsState((current) => {
+        setState((current) => {
+            const currentTags = current.retentionKey === retentionKey
+                ? current.selectedTags
+                : retainedFilters.selectedTags;
             const next = typeof value === 'function'
-                ? (value as (previous: string[]) => string[])(current)
+                ? (value as (previous: string[]) => string[])(currentTags)
                 : value;
             if (!stringArraysEqual(retainedFilters.selectedTags, next)) {
                 retainedFilters.selectedTags = [...next];
             }
-            return next;
+            return {
+                retentionKey,
+                searchQuery: current.retentionKey === retentionKey
+                    ? current.searchQuery
+                    : retainedFilters.searchQuery,
+                selectedTags: next,
+            };
         });
-    }, [retainedFilters]);
-
-    React.useEffect(() => {
-        retainedFilters.searchQuery = searchQuery;
-    }, [retainedFilters, searchQuery]);
-
-    React.useEffect(() => {
-        if (stringArraysEqual(retainedFilters.selectedTags, selectedHeaderTags)) return;
-        retainedFilters.selectedTags = [...selectedHeaderTags];
-    }, [retainedFilters, selectedHeaderTags]);
+    }, [retainedFilters, retentionKey]);
 
     return React.useMemo(() => ({
-        searchQuery,
+        searchQuery: currentState.searchQuery,
         setSearchQuery,
-        selectedHeaderTags,
+        selectedHeaderTags: currentState.selectedTags,
         setSelectedHeaderTags,
-    }), [searchQuery, selectedHeaderTags, setSearchQuery, setSelectedHeaderTags]);
+    }), [currentState.searchQuery, currentState.selectedTags, setSearchQuery, setSelectedHeaderTags]);
 }

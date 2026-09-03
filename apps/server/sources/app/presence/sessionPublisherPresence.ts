@@ -28,6 +28,11 @@ import { SESSION_TRANSCRIPT_PUBLICATION_SELECT } from "@/app/session/sessionTran
 import { inTx } from "@/storage/inTx";
 import type { Tx } from "@/storage/inTx";
 import { AsyncLock } from "@/utils/runtime/lock";
+import {
+    clearPendingActivationAuthorizationForPublisherActivityData,
+    mapPendingActivationAuthorization,
+    type PendingActivationTarget,
+} from "@/app/session/pending/pendingActivationAuthorization";
 
 export interface SessionPublisherBinding {
     readonly accountId: string;
@@ -183,6 +188,7 @@ const sessionActivityBadgeSelect = {
     ...SESSION_TRANSCRIPT_PUBLICATION_SELECT,
     pendingCount: true,
     pendingBlockedCount: true,
+    pendingVersion: true,
     lastViewedSessionSeq: true,
     pendingPermissionRequestCount: true,
     pendingUserActionRequestCount: true,
@@ -190,6 +196,10 @@ const sessionActivityBadgeSelect = {
     lastRuntimeIssue: true,
     active: true,
     archivedAt: true,
+    pendingActivationRequestId: true,
+    pendingActivationRequestedAt: true,
+    pendingActivationStatus: true,
+    pendingActivationFailureCode: true,
 } as const;
 
 export type ExpireSessionPublisherCandidate = Readonly<{
@@ -204,6 +214,12 @@ export type ExpireSessionPublisherResult =
         activeAt: Date;
         participantCursors: readonly SessionParticipantCursor[];
         badgeAttentionChanged: boolean;
+        activationHint?: Readonly<{
+            activationTarget: PendingActivationTarget;
+            pendingCount: number;
+            pendingBlockedCount: number;
+            pendingVersion: number;
+        }>;
       }>
     | Readonly<{ status: "stale"; sessionId: string }>;
 
@@ -247,6 +263,7 @@ export async function expireSessionPublisherCandidates(params: Readonly<{
             }
 
             const participantCursors = await markSessionParticipantsChanged({ tx, sessionId: candidate.sessionId });
+            const authorization = mapPendingActivationAuthorization(session);
             results.push({
                 status: "expired",
                 sessionId: candidate.sessionId,
@@ -256,6 +273,19 @@ export async function expireSessionPublisherCandidates(params: Readonly<{
                     session satisfies SessionActivityBadgeInputs,
                     { ...session, active: false },
                 ),
+                ...(authorization?.status === "waiting"
+                    ? {
+                        activationHint: {
+                            activationTarget: {
+                                accountId: session.accountId,
+                                requestId: authorization.requestId,
+                            },
+                            pendingCount: session.pendingCount,
+                            pendingBlockedCount: session.pendingBlockedCount,
+                            pendingVersion: session.pendingVersion,
+                        },
+                    }
+                    : {}),
             });
         }
         return results;
@@ -369,6 +399,7 @@ export function createSessionPublisherPresence(options: Readonly<{ now?: () => D
                 lastActiveAt: committedFence,
                 publisherGeneration,
                 publisherGenerationLastActiveAt: committedFence,
+                ...clearPendingActivationAuthorizationForPublisherActivityData(),
             },
         });
         if (updated.count !== 1) throw new RegistrationContentionError();
@@ -464,6 +495,7 @@ export function createSessionPublisherPresence(options: Readonly<{ now?: () => D
                         active: true,
                         lastActiveAt: committedFence,
                         publisherGenerationLastActiveAt: committedFence,
+                        ...clearPendingActivationAuthorizationForPublisherActivityData(),
                     },
                 });
                 if (updated.count !== 1) return { status: "superseded" };

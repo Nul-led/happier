@@ -2,14 +2,17 @@ import { MemorySearchQueryV1Schema, MemorySearchResultV1Schema, type MemorySearc
 import type { Fastify } from '@/app/api/types';
 import { resolveApiHotEndpointRateLimit } from '@/app/api/utils/apiRateLimitCatalog';
 import { requirePresentUser } from '@/app/api/utils/requirePresentUser';
+import { createServerFeatureGatedRouteApp } from '@/app/features/catalog/serverFeatureGate';
 import type { HomeSearchCapability } from './homeSearchCapability';
 
 /** Registers the single authenticated Personal Home search operation. */
 export function registerHomeSearchRoutes(app: Fastify, params: Readonly<{
     service: Readonly<{ capability(): HomeSearchCapability; search(query: MemorySearchQueryV1, context?: Readonly<{ visibleSessionIds?: readonly string[] }>): MemorySearchResultV1 }>;
     resolveVisibleSessionIds: (userId: string) => Promise<readonly string[]>;
+    env?: NodeJS.ProcessEnv;
 }>): void {
-    app.post('/v1/home/search', {
+    const gated = createServerFeatureGatedRouteApp(app, 'search', params.env ?? process.env);
+    gated.post('/v1/home/search', {
         schema: {
             body: MemorySearchQueryV1Schema,
             response: { 200: MemorySearchResultV1Schema },

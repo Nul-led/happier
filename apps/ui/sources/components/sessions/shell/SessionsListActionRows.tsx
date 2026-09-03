@@ -8,12 +8,14 @@ import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { Icon } from '@/components/ui/icons/Icon';
 import {
     BROWSE_EXISTING_SESSIONS_DESTINATION_ID,
+    SEARCH_DESTINATION_ID,
     isCompactAppDestinationCurrent,
     isCompactAppDestinationVisible,
     useCompactAppDestinations,
 } from '@/components/appShell/destinations/compactAppDestinationCatalog';
 import { CompactAppDestinationBadge } from '@/components/appShell/destinations/CompactAppDestinationBadge';
 import { usePluginAppPageCatalogActivationHandler } from '@/components/appShell/plugins/pluginAppPageNavigation';
+import { useUniversalSearchRuntime } from '@/components/appShell/search/UniversalSearchRuntimeContext';
 import { ITEM_GROUP_HEADER_NO_TITLE_PADDING_TOP_PX } from '@/components/ui/lists/itemGroupSpacing';
 import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
 import { useSetting } from '@/sync/domains/state/storage';
@@ -47,6 +49,7 @@ export const SessionsListActionRows = React.memo(function SessionsListActionRows
     const pathname = usePathname();
     const params = useGlobalSearchParams();
     const activatePluginAppPage = usePluginAppPageCatalogActivationHandler();
+    const universalSearch = useUniversalSearchRuntime();
     const { theme } = useUnistyles();
     const styles = stylesheet;
     // These rows are the first entries of the session list, not a separate control strip, so they
@@ -79,6 +82,7 @@ export const SessionsListActionRows = React.memo(function SessionsListActionRows
         isCompactAppDestinationVisible(destination)
         && (
             destination.kind === 'plugin'
+            || destination.id === SEARCH_DESTINATION_ID
             || destination.id === BROWSE_EXISTING_SESSIONS_DESTINATION_ID
         )
     )), [compactDestinations]);
@@ -94,7 +98,9 @@ export const SessionsListActionRows = React.memo(function SessionsListActionRows
                 <Item
                     key={destination.id}
                     testID={destination.kind === 'builtin'
-                        ? 'external-sessions-browse-button'
+                        ? destination.id === SEARCH_DESTINATION_ID
+                            ? 'sessions-search-all-button'
+                            : 'external-sessions-browse-button'
                         : `compact-app-destination:${destination.id}`}
                     title={destination.title}
                     subtitle={destination.kind === 'plugin' && destination.availability === 'unavailable'
@@ -120,6 +126,10 @@ export const SessionsListActionRows = React.memo(function SessionsListActionRows
                     selected={isCompactAppDestinationCurrent(destination, { pathname, params })}
                     onPress={destination.availability === 'available'
                         ? () => {
+                            if (destination.id === SEARCH_DESTINATION_ID) {
+                                universalSearch.open();
+                                return;
+                            }
                             if (destination.kind === 'plugin' && destination.container === 'appPage') {
                                 activatePluginAppPage(destination);
                                 return;
