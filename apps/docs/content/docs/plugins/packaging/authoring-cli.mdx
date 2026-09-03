@@ -19,8 +19,11 @@ hdev plugins dev
 ```
 
 `hdev plugins create <name> [--id <plugin.id>] [--name <display name>]
-[--ui hostedWeb|reactNative]` creates the normal code-defined TypeScript
-package. React Native is the executable UI option with supported client
+[--ui hostedWeb|reactNative] [--template session-agent]` creates the normal
+code-defined TypeScript package. `--template session-agent` scaffolds a custom
+persistent Session Agent instead of the default action package — one Agent
+declaration plus a distinct, import-safe Session-runner leaf — and takes no
+`--ui`. React Native is the executable UI option with supported client
 realms. A hosted-web scaffold emits a real packaged artifact whose runtime
 availability is reported per host rather than as a single global answer: a host
 either names the one frame adapter it constructed or reports a typed

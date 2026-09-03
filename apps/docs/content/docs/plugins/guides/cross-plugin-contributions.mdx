@@ -18,12 +18,17 @@ inside `@happier-dev/plugin-sdk`. Use the exact package and `/v1` entrypoint the
 target feature documents, then verify that `pluginContributionPoints` and
 `targetedPluginContributions` are **Available** in the installed SDK's
 `capability-matrix.json`. Do not guess a package name from a feature label or
-copy its declarations into your plugin. The maintained
+copy its declarations into your plugin. The maintained repository
 [`operation-only-channel-provider`](https://github.com/happier-dev/happier/tree/v0.3/packages/plugin-sdk/examples/operation-only-channel-provider)
-package is the beginner Channels provider reference. The installed
-`examples/action-contract-producer` and `examples/action-contract-consumer`
+package is the beginner Channels provider reference, and the repository
+[`action-contract-producer`](https://github.com/happier-dev/happier/tree/v0.3/packages/plugin-sdk/examples/action-contract-producer)
+and
+[`action-contract-consumer`](https://github.com/happier-dev/happier/tree/v0.3/packages/plugin-sdk/examples/action-contract-consumer)
 pair shows package discovery, target observation, and contributor binding from
-public entrypoints.
+public entrypoints. These examples are maintained source code, not installed
+or published packages: a loaded development stack validates them, and any
+published copy inside a released SDK is release-owned, not the maintained
+source.
 
 ## Everyday target and contributor authors
 
@@ -60,10 +65,6 @@ import {
 const connectionTest = ConversationProvidersContributionProtocolV1.operations.connectionTest;
 const declaration = connectionTest.declaration;
 
-if (declaration.input.kind !== 'protocolDefined') {
-  throw new TypeError('connectionTest must use its protocol-defined input');
-}
-
 export const connectionTestAction = {
   inputSchema: declaration.input.schema.jsonSchema,
   resultSchema: declaration.resultSchema.jsonSchema,
@@ -75,7 +76,10 @@ export const connectionTestBinding = connectionTest.bind('acme/connection-test')
 ```
 
 `declaration` is frozen authoring evidence. It owns the role's input mode,
-result schema, required Action surfaces, and danger level. For a
+result schema, required Action surfaces, and danger level. A role's input mode
+is fixed by the feature protocol itself, so code consuming the maintained
+protocol value never guards on it — admission rejects a mismatched input
+schema instead. For a
 `contributorDefined` input, the contributor supplies its own input schema; it
 still uses the role's result, surface, and danger facts. Do not copy those
 facts into a second table, reach through a raw manifest, or discover a role by

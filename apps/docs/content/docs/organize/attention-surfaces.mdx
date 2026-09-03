@@ -39,6 +39,16 @@ Happier can deliver attention through these channels:
 
 These are channels, not separate systems. Happier builds the attention state once, then each surface renders the amount of detail it is allowed to show.
 
+## Webhook destinations
+
+A webhook payload carries session titles, preview text, and the channel signature, and it is sent from the machine your sessions run on. Happier therefore checks the destination before every delivery:
+
+- A destination on the public internet must use **HTTPS**. A plain `http://` public URL is refused.
+- A destination on your own machine or local network is delivered only when the URL you configured **names it directly** — for example `http://127.0.0.1:8123/api/webhook/...` or a `localhost` address. A public-looking hostname that resolves to a loopback, private, link-local, or otherwise non-routable address is refused, so DNS cannot redirect a delivery into your local network.
+- The address checked is the address connected to, and **redirects are not followed**. If your receiver moves, configure the new URL as the channel destination.
+
+A refused destination is not delivered and does not retry. If a webhook channel stops arriving after configuring it, check that the URL is HTTPS and points where you expect.
+
 ## Privacy modes
 
 Surfaces can use one of three preview modes:

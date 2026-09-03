@@ -1,5 +1,6 @@
 import { definePlugin } from '@happier-dev/plugin-sdk';
 import {
+  CONVERSATION_CORE_PLUGIN_ID_V1,
   ConversationProviderSetupResultV1Schema,
   ConversationProvidersContributionProtocolV1,
 } from '@happier-dev/channels-protocol/v1';
@@ -77,7 +78,7 @@ const plugin = definePlugin({
     },
   },
   contributesTo: {
-    'happier.channels': {
+    [CONVERSATION_CORE_PLUGIN_ID_V1]: {
       providers: {
         acme: ConversationProvidersContributionProtocolV1.contribute({
           operations: {

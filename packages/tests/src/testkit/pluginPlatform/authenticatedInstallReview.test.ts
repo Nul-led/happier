@@ -676,8 +676,9 @@ describe('decideAuthenticatedPluginInstallReview', () => {
           at: 140,
         }],
       });
+    // The decision payload carries no timestamp, so this clock is read only
+    // for the RPC start/timeout diagnostics below.
     const nowMs = vi.fn()
-      .mockReturnValueOnce(42)
       .mockReturnValueOnce(100)
       .mockReturnValueOnce(200);
 
@@ -744,8 +745,9 @@ describe('decideAuthenticatedPluginInstallReview', () => {
         ok: false,
         error: 'operation has timed out',
       });
+    // The decision payload carries no timestamp, so this clock is read only
+    // for the RPC start/timeout diagnostics below.
     const nowMs = vi.fn()
-      .mockReturnValueOnce(42)
       .mockReturnValueOnce(100)
       .mockReturnValueOnce(200);
 

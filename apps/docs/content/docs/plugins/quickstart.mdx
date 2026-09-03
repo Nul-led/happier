@@ -15,6 +15,12 @@ For every authoring command and the exact review-decision lifecycle, see the
 > installation are release-owned evidence. Source checks do not imply loaded
 > platform proof, and neither one implies a published SDK release.
 
+Authoring commands here use `hdev`, the development-lane CLI — that is the one
+default path for plugin source development. The same `plugins` command surface
+exists on the published `happier` CLI: use that lane to validate an installed
+plugin against a published release, and expect published copies of the
+examples to name `happier` instead.
+
 ## Create and develop
 
 ```bash
@@ -46,6 +52,18 @@ current packaged QA before a Preview support claim. Read the per-host state from
 [Hosted web UI](/plugins/ui/hosted-web#build-and-runtime-availability) rather
 than assuming either answer.
 
+For a custom persistent Session Agent, use the dedicated scaffold instead:
+
+```bash
+hdev plugins create my-agent --template session-agent
+```
+
+It emits the same public `definePlugin(...)` shape as the maintained
+[`session-agent`](https://github.com/happier-dev/happier/tree/v0.3/packages/plugin-sdk/examples/session-agent)
+repository example — one Agent declaration plus a distinct, import-safe
+Session-runner leaf — with a smaller behavior body to replace. The template
+takes no `--ui`.
+
 `plugins dev` is the automatic watcher flow: after trust, the CLI observes the
 source closure and submits each captured batch to the daemon. After submission,
 the daemon-owned candidate lifecycle materializes declared development
@@ -57,13 +75,16 @@ the development module only as the activation entry and calls its generated
 This normal create-to-dev loop prepares dependencies automatically; do not run
 `hdev plugins dev install .` first. That command prepares an
 external-author fixture. If the SDK must resolve through an approved registry
-origin, use `hdev plugins dev --sdk-registry <origin>`. Installed SDK
-packages include copyable public patterns under
-`node_modules/@happier-dev/plugin-sdk/examples/`; choose the smallest matching
-example and verify imports against the maintained
-[SDK entrypoint map](/plugins/api/sdk-entrypoints). Before selecting a
-contribution or service family, read the installed
-`node_modules/@happier-dev/plugin-sdk/capability-matrix.json`: it is the sole
+origin, use `hdev plugins dev --sdk-registry <origin>`. The copyable public
+patterns live in the maintained repository examples under
+[`packages/plugin-sdk/examples/`](https://github.com/happier-dev/happier/tree/v0.3/packages/plugin-sdk/examples);
+choose the smallest matching example and verify imports against the maintained
+[SDK entrypoint map](/plugins/api/sdk-entrypoints). Any copy an installed SDK
+may carry under `node_modules/` is a release-owned snapshot, not the maintained
+source. Before selecting a
+contribution or service family, check the generated
+[availability page](/plugins/manifest/availability), rendered from the SDK's
+`capability-matrix.json`: it is the sole
 availability authority. A `deferred` row is not supported or advertised for
 ordinary author use; do not rely on it; consult its unblock condition. This
 does not change the current prepublication hold.

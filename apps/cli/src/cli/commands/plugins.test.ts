@@ -3769,7 +3769,7 @@ describe('handlePluginsCommand', () => {
             desiredGeneration?: string | null;
             appliedGeneration?: string | null;
           };
-        }>).toMatchObject({
+        }>()).toMatchObject({
           ok: true,
           kind: 'plugins_update',
           data: {

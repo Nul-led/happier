@@ -67,9 +67,11 @@ Session-capable custom Agent, it also needs a distinct named
 one.
 
 For a complete minimal custom Session package rather than this shape-only
-excerpt, start with
-[`session-agent`](https://github.com/happier-dev/happier/tree/v0.3/packages/plugin-sdk/examples/session-agent).
-From its package root, its maintained author loop is:
+excerpt, scaffold the same shape with
+`hdev plugins create <name> --template session-agent`, or start from the
+maintained
+[`session-agent`](https://github.com/happier-dev/happier/tree/v0.3/packages/plugin-sdk/examples/session-agent)
+repository example. From its package root, its maintained author loop is:
 
 ```bash
 hdev plugins dev typecheck .

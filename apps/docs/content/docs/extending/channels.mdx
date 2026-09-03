@@ -59,11 +59,13 @@ rather than at the first silent failure:
   thread), and **Read Message History**. Setup computes the bot's effective
   permissions at the exact destination, names any missing permission, and its
   guidance links an invite carrying exactly those permissions.
-- **Telegram** reads the bot identity from the token. A bot in a shared group
-  also needs BotFather **Group Privacy** disabled — setup observes whether the
-  bot may read all group messages, and every later connection test restates
-  the *current* capability, so flipping privacy back on after setup surfaces
-  on the next test instead of silently narrowing what the channel receives.
+- **Telegram** reads the bot identity from the token. A shared conversation is
+  a group or supergroup, and you point setup at it by its public @username —
+  broadcast channels are not supported. A bot in a shared group also needs
+  BotFather **Group Privacy** disabled — setup observes whether the bot may
+  read all group messages, and every later connection test restates the
+  *current* capability, so flipping privacy back on after setup surfaces on
+  the next test instead of silently narrowing what the channel receives.
 - **GitHub** verifies the selected repository against the credential and then
   exercises the exact issue-comment collection the channel polls, so a token
   with repository access but without the **Issues** permission is refused at
@@ -86,8 +88,9 @@ connects one repository at a time: setup verifies the selected repository
 against your GitHub Connected Account credential. Each conversation is a single
 issue or pull request in that repository — you point a binding at it by number.
 Comments on that issue or pull request arrive as channel messages, and replies
-are posted back as comments on it; a reply longer than one GitHub comment is
-split across several. GitHub has no webhook delivery in this preview: inbound
+are posted back as comments on it. The provider splits a reply across several
+comments once it exceeds Happier's provider safety ceiling of 65,536 UTF-8
+bytes per comment. GitHub has no webhook delivery in this preview: inbound
 messages arrive through checkpointed polling, so a connected machine needs to
 wake up for the poll to advance.
 
