@@ -14,9 +14,9 @@ import {
     useMemorySearchProvider,
     type MemorySearchProvider,
 } from '@/sync/domains/memory/useMemorySearchProvider';
-import { captureActiveServerAccountScopeCurrentness } from '@/sync/domains/scope/activeServerAccountScope';
+import type { ServerCredentialAccountScopeBinding } from '@/sync/domains/scope/useServerCredentialAccountScopes';
+import { useServerCredentialAccountScopes } from '@/sync/domains/scope/useServerCredentialAccountScopes';
 import { serverAccountScopeKeySuffix } from '@/sync/domains/scope/serverAccountScope';
-import { useActiveServerAccountScope } from '@/sync/store/hooks';
 
 import { sessionTagKey } from '../sessionTagUtils';
 
@@ -69,12 +69,14 @@ export function buildSessionListMemorySearchScopeKey(input: Readonly<{
     provider: 'home' | 'daemon' | null;
     serverId: string;
     machineId: string | null;
+    credentialRevision?: number;
 }>): string {
     return [
         `account:${input.accountScope ? serverAccountScopeKeySuffix(input.accountScope) : 'none'}`,
         `provider:${encodeScopePart(input.provider)}`,
         `server:${encodeScopePart(input.serverId)}`,
         `machine:${encodeScopePart(input.provider === 'daemon' ? input.machineId : null)}`,
+        `credential:${input.credentialRevision ?? -1}`,
     ].join('|');
 }
 
@@ -85,23 +87,29 @@ export type SessionListMemorySearchContext = Readonly<{
     machineId: string | null;
     activeScopeKey: string;
     accountId: string | null;
+    accountBinding: ServerCredentialAccountScopeBinding | null;
 }>;
 
 export function useSessionListMemorySearchContext(
     target?: Readonly<{ serverId?: string | null }>,
 ): SessionListMemorySearchContext {
-    const accountScope = useActiveServerAccountScope();
     const providerDecision = useMemorySearchProvider(target);
     const isHomeProvider = providerDecision.provider === 'home';
     const machineId = providerDecision.daemonTarget?.machineId ?? null;
     const serverId = isHomeProvider
         ? providerDecision.homeServerId ?? ''
         : providerDecision.daemonTarget?.serverId ?? '';
+    const credentialBindings = useServerCredentialAccountScopes([serverId]);
+    const accountBinding = serverId ? credentialBindings.get(serverId) ?? null : null;
+    const accountScope = accountBinding
+        ? { serverId, accountId: accountBinding.accountId }
+        : null;
     const activeScopeKey = buildSessionListMemorySearchScopeKey({
         accountScope,
         provider: providerDecision.provider,
         serverId,
         machineId,
+        credentialRevision: accountBinding?.revision,
     });
     return React.useMemo(() => ({
         providerDecision,
@@ -109,8 +117,9 @@ export function useSessionListMemorySearchContext(
         serverId,
         machineId,
         activeScopeKey,
-        accountId: accountScope?.accountId ?? null,
-    }), [accountScope?.accountId, activeScopeKey, isHomeProvider, machineId, providerDecision, serverId]);
+        accountId: accountBinding?.accountId ?? null,
+        accountBinding,
+    }), [accountBinding, activeScopeKey, isHomeProvider, machineId, providerDecision, serverId]);
 }
 
 function isAbortSupersession(error: unknown, signal: AbortSignal): boolean {
@@ -184,7 +193,7 @@ export function useSessionListMemorySearchAugmentationForContext(
     input: SessionListMemorySearchAugmentationInput,
     context: SessionListMemorySearchContext,
 ): SessionListMemorySearchAugmentationState {
-    const { accountId, activeScopeKey, isHomeProvider, machineId, providerDecision, serverId } = context;
+    const { accountBinding, accountId, activeScopeKey, isHomeProvider, machineId, providerDecision, serverId } = context;
     const queryAvailable = providerDecision.queryAvailable;
     const unavailableReason = providerDecision.unavailableReason;
     const normalizedQuery = input.searchQuery.trim();
@@ -212,11 +221,14 @@ export function useSessionListMemorySearchAugmentationForContext(
 
         const controller = new AbortController();
         const signal = controller.signal;
-        const accountCurrentness = captureActiveServerAccountScopeCurrentness();
-        const retirement = accountCurrentness.onRetire(() => controller.abort());
+        if (!accountBinding || !accountBinding.isCurrent()) {
+            setState((current) => resolveIdleMemorySearchState(current, activeScopeKey));
+            return;
+        }
+        const retirement = accountBinding.onRetire(() => controller.abort());
         const isCurrentRequest = () => (
             !signal.aborted
-            && accountCurrentness.isCurrent()
+            && accountBinding.isCurrent()
             && activeScopeKeyRef.current === activeScopeKey
         );
 
@@ -336,6 +348,7 @@ export function useSessionListMemorySearchAugmentationForContext(
         };
     }, [
         activeScopeKey,
+        accountBinding,
         accountId,
         input.enabled,
         input.eligibleSessionIds,

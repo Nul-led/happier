@@ -319,6 +319,13 @@ function isRecord(value) {
     return value != null && typeof value === 'object' && !Array.isArray(value);
 }
 
+export function assertPersonalHomeQaCertificationStatus({ requireComplete = false, verificationStatus } = {}) {
+    if (!requireComplete || verificationStatus === 'complete') {
+        return;
+    }
+    throw new Error(`Personal Home certification requires complete verification; got ${String(verificationStatus ?? 'missing')}.`);
+}
+
 export function validateTauriPersonalHomeQaProbeResult(value, scenario) {
     if (!isRecord(value) || value.ok !== true || value.scenario !== scenario) {
         throw new Error(`Configured Personal Home QA ${scenario} probe did not report its expected existing boundary.`);
@@ -571,8 +578,9 @@ async function readBuildIdentity() {
 
 async function main(argv = process.argv.slice(2)) {
     const plan = buildTauriPersonalHomeQaPlan({ env: process.env });
+    const requireComplete = argv.includes('--require-complete');
     if (argv.includes('--help') || argv.includes('-h')) {
-        process.stdout.write('Usage: node ./apps/ui/scripts/qa/tauriPersonalHomeMcpQa.mjs [--json]\n');
+        process.stdout.write('Usage: node ./apps/ui/scripts/qa/tauriPersonalHomeMcpQa.mjs [--json] [--require-complete]\n');
         return;
     }
     if (argv.includes('--json')) {
@@ -724,6 +732,7 @@ async function main(argv = process.argv.slice(2)) {
         verificationStatus,
     };
     await writeTextArtifact(join(plan.artifactRoot, '99-summary.json'), `${JSON.stringify(summary, null, 2)}\n`);
+    assertPersonalHomeQaCertificationStatus({ requireComplete, verificationStatus });
     process.stdout.write(`${JSON.stringify({ ok: true, artifactRoot: plan.artifactRoot, verificationStatus }, null, 2)}\n`);
 }
 

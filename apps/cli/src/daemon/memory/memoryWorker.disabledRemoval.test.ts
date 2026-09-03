@@ -38,7 +38,7 @@ function countRows(dbPath: string, sql: string, ...bindings: unknown[]): number 
 describe('memoryWorker retained removal while disabled', () => {
   const envBackup = snapshotEnvValues(['HAPPIER_HOME_DIR', 'HAPPIER_SERVER_URL', 'HAPPIER_WEBAPP_URL']);
   let homeDir: string | undefined;
-  const startedWorkers = new Set<Readonly<{ stop: () => void }>>();
+  const startedWorkers = new Set<Readonly<{ stop: () => void | Promise<void> }>>();
 
   beforeEach(async () => {
     homeDir = await createTempDir('happier-memory-disabled-removal-');
@@ -54,7 +54,7 @@ describe('memoryWorker retained removal while disabled', () => {
     let cleanupError: unknown;
     for (const worker of startedWorkers) {
       try {
-        worker.stop();
+        await worker.stop();
       } catch (error) {
         cleanupError ??= error;
       }

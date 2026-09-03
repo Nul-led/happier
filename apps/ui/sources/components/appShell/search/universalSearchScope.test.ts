@@ -3,10 +3,10 @@ import { buildUniversalSearchScopeChoices, buildUniversalSearchScopeKeyFromSeed 
 
 describe('Universal Search local scope', () => {
     it('keeps an invocation-seeded Home independent from focused Home changes', () => {
-        const seed = { accountId: 'account', serverId: 'home-b' } as const;
+        const seed = { accountId: 'account', serverId: 'home-b', sessionId: null, machineId: null, rootPath: null } as const;
         const key = buildUniversalSearchScopeKeyFromSeed(seed);
-        expect(key).toBe(buildUniversalSearchScopeKeyFromSeed({ accountId: 'account', serverId: 'home-b' }));
-        expect(key).not.toBe(buildUniversalSearchScopeKeyFromSeed({ accountId: 'account', serverId: 'home-a' }));
+        expect(key).toBe(buildUniversalSearchScopeKeyFromSeed({ accountId: 'account', serverId: 'home-b', sessionId: null, machineId: null, rootPath: null }));
+        expect(key).not.toBe(buildUniversalSearchScopeKeyFromSeed({ accountId: 'account', serverId: 'home-a', sessionId: null, machineId: null, rootPath: null }));
     });
 
     it('projects exact Home and workspace alternatives without mutating global focus or fanout', () => {
@@ -55,8 +55,8 @@ describe('Universal Search local scope', () => {
     });
 
     it('changes the resolver identity for an exact workspace transition so stale dynamic work is fenced', () => {
-        const before = buildUniversalSearchScopeKeyFromSeed({ serverId: 'home-b', machineId: 'machine-b', rootPath: '/repo/one', sessionId: 's1' });
-        const after = buildUniversalSearchScopeKeyFromSeed({ serverId: 'home-b', machineId: 'machine-b', rootPath: '/repo/two', sessionId: 's1' });
+        const before = buildUniversalSearchScopeKeyFromSeed({ accountId: 'account-b', serverId: 'home-b', machineId: 'machine-b', rootPath: '/repo/one', sessionId: 's1' });
+        const after = buildUniversalSearchScopeKeyFromSeed({ accountId: 'account-b', serverId: 'home-b', machineId: 'machine-b', rootPath: '/repo/two', sessionId: 's1' });
         expect(after).not.toBe(before);
     });
 });

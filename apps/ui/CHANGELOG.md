@@ -21,6 +21,14 @@
 
 This development release delivers the latest fixes and improvements for Happier's public dev channel.
 
+- **Workspace-aware session handoff** — choose a finite copy, a continuously updated relationship,
+  or no workspace move. Happier now uses its verified external Mutagen engine for reconciliation and
+  keeps relationship intent in daemon-owned settings. **Keep updated** preserves destination-only
+  files; **Mirror exactly** removes them only after its explicit destination-bound confirmation.
+- **Safe mixed-version handoff** — older daemons that cannot execute a workspace action return the
+  operation-scoped `workspace_sync_update_required` result while unrelated Machine operations stay
+  available.
+
 ## Version 0.2.1 - 2026-04-05
 
 This is a massive release. Here's everything that changed.

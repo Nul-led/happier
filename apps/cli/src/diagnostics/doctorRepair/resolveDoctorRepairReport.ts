@@ -525,7 +525,10 @@ async function resolveAuthContext(params: Readonly<{
     // get no sub until first login.
     const lastSub = String(lastTokenSubByServerId[profile.id] ?? '').trim();
     const hasCredentials = lastSub.length > 0;
-    const machineId = resolveMachineIdForServerFromSettings(settings, profile.id, lastSub || null);
+    // Unreadable settings yield no server profiles at all, so this callback only
+    // runs with settings present; the empty fallback keeps the machine-id owner's
+    // "no recorded machine" answer rather than reading through a null snapshot.
+    const machineId = resolveMachineIdForServerFromSettings(settings ?? {}, profile.id, lastSub || null);
     const isActive = profile.id === effectiveActiveServerId;
     return {
       serverId: profile.id,

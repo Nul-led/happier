@@ -124,6 +124,8 @@ describe('session history navigation', () => {
         fetchMoreSessionsSpy.mockReset();
         sessionUnarchiveWithServerScopeSpy.mockReset();
         sessionUnarchiveWithServerScopeSpy.mockResolvedValue({ success: true, archivedAt: null });
+        universalSearchRuntime.open.mockClear();
+        universalSearchRuntime.buildCommands.mockClear();
         modalAlertSpy.mockReset();
         capturedSectionListProps = null;
         hideInactiveSessions = false;
@@ -333,6 +335,21 @@ describe('session history navigation', () => {
             'server-a:shared-archived-session',
             'server-b:shared-archived-session',
         ]));
+    });
+
+    it('does not admit another Home archived row with the same session id into the selected Home transcript query', async () => {
+        const { buildArchivedTranscriptEligibleSessionIds } = await import('@/app/(app)/session/archived');
+
+        expect(buildArchivedTranscriptEligibleSessionIds([
+            {
+                id: 'shared-archived-session',
+                serverId: 'home-b',
+                archivedAt: 190,
+                updatedAt: 190,
+                active: false,
+                metadata: { name: 'Home B archived session' },
+            },
+        ], 'home-a')).toEqual([]);
     });
 
     it('shows inactive sessions before archived sessions on the archived screen when hide inactive sessions is enabled', async () => {

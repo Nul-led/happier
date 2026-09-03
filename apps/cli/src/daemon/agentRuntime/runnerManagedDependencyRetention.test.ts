@@ -301,7 +301,7 @@ describe('live Runner Agent managed-dependency retention', () => {
                 canonicalPath: '/tmp/acme-provider',
               },
             },
-            updatePolicy: 'manual',
+            updatePolicy: 'reviewEveryUpdate',
             optionalAccess: [],
           },
         },

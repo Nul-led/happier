@@ -609,7 +609,7 @@ describe('public managed Provider explicit-start production operation', () => {
       durableRevision: 1,
       runningSessionDisposition: 'retainRunningSessions',
     });
-    const admittedLease = controller.tryAcquireRuntimeRegistry?.();
+    const admittedLease = controller.tryAcquireRuntimeRegistry();
     if (!admittedLease) throw new Error('Expected the admitted registry lease');
 
     await controller.adoptPreparedRuntimeRegistry({

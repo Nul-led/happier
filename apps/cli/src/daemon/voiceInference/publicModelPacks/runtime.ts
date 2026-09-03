@@ -353,7 +353,7 @@ export function createDaemonPublicVoiceModelPackRuntime(params: Readonly<{
         ? await params.readPluginFinalPolicyCurrentGenerations()
         : undefined;
       const lease = injectedPolicy === undefined
-        ? pluginReloadController.tryAcquireRuntimeRegistry?.() ?? null
+        ? pluginReloadController.tryAcquireRuntimeRegistry()
         : null;
       const currentPluginGenerations = injectedPolicy
         ?? lease?.registry.pluginFinalPolicyCurrentGenerationsById

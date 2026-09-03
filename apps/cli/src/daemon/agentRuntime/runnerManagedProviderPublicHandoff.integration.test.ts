@@ -1515,7 +1515,6 @@ describe('representative public Provider-to-SVC09 handoff', () => {
                 cancelByPlugin: vi.fn(async () => undefined),
             },
             getPermissionMode: () => 'default',
-            setThinking: () => undefined,
             memoryRecallGuidanceEnabled: false,
         } as never);
         cleanups.push(async () => {

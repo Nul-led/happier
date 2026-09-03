@@ -457,9 +457,11 @@ export function resolveTauriMcpQaRunMode({ argv = [], env = process.env } = {}) 
   const runWizardEnv = readBooleanEnv(env.HAPPIER_TAURI_QA_RUN_WIZARD, true);
   const runSelectedScenario = !keepRunning && (requestedScenario !== 'wizard' || (!args.includes('--no-wizard') && runWizardEnv));
   const teeLogs = args.includes('--tee-logs') || readBooleanEnv(env.HAPPIER_TAURI_QA_TEE_LOGS, false);
+  const requireCompleteVerification = args.includes('--require-complete');
 
   return {
     keepRunning,
+    requireCompleteVerification,
     runWizard: requestedScenario === 'wizard' && runSelectedScenario,
     runSelectedScenario,
     requestedScenario,
@@ -691,6 +693,7 @@ export async function resolveTauriMcpQaPlan({
       ? {
           id: 'personal-home',
           script: 'scripts/qa/tauriPersonalHomeMcpQa.mjs',
+          ...(runMode.requireCompleteVerification ? { args: ['--require-complete'] } : {}),
           envOverrides: qaScenarioEnvOverrides,
         }
     : {
@@ -843,6 +846,7 @@ function printUsage() {
     '  --activity-surfaces  Run the native desktop activity-surfaces QA capture',
     '  --desktop-sidebar-chrome  Run the native desktop sidebar chrome QA capture',
     '  --personal-home  Run the loaded Desktop Personal Home bootstrap scenario',
+    '  --require-complete  Fail selected Personal Home QA unless verificationStatus is complete',
     '  --no-wizard  Do not run the one-shot onboarding wizard capture',
     '  --tee-logs  Also print child process logs to stdout/stderr',
     '',
@@ -852,8 +856,8 @@ function printUsage() {
   ].join('\n');
 }
 
-async function runWizardQaCapture({ cwd, env, scriptPath }) {
-  const child = spawn(process.execPath, [scriptPath], {
+async function runWizardQaCapture({ cwd, env, scriptPath, args = [] }) {
+  const child = spawn(process.execPath, [scriptPath, ...args], {
     cwd,
     env,
     stdio: 'inherit',
@@ -1025,6 +1029,7 @@ async function main(argv = process.argv.slice(2)) {
       cwd: plan.cwd,
       env: qaEnv,
       scriptPath: join(plan.cwd, plan.qaScenario.script),
+      args: plan.qaScenario.args ?? [],
     });
 
     cleanup();

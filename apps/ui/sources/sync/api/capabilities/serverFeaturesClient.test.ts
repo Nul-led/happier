@@ -593,6 +593,68 @@ describe('serverFeaturesClient', () => {
         expect(featuresFetchMock.mock.calls.length).toBe(2);
     });
 
+    it('refreshes transitional Home indexing snapshots and stops retrying once Home search settles', async () => {
+        const indexingPayload = FeaturesResponseSchema.parse({
+            features: {},
+            capabilities: {
+                homeSearch: { enabled: false, reason: 'indexing' },
+            },
+        });
+        const readyPayload = FeaturesResponseSchema.parse({
+            features: {},
+            capabilities: {
+                homeSearch: { enabled: true },
+            },
+        });
+
+        featuresFetchMock
+            .mockResolvedValueOnce(createResponse(200, indexingPayload))
+            .mockResolvedValueOnce(createResponse(200, readyPayload));
+
+        const {
+            getServerFeaturesSnapshot,
+            getServerFeaturesSnapshotRetryDelayMs,
+            primeServerFeaturesSnapshot,
+            resetServerFeaturesClientForTests,
+        } = await import('./serverFeaturesClient');
+        resetServerFeaturesClientForTests();
+        useFrozenServerFeaturesClock();
+
+        const indexing = await getServerFeaturesSnapshot({ force: true, timeoutMs: 50 });
+        expect(indexing).toMatchObject({
+            status: 'ready',
+            features: { capabilities: { homeSearch: { enabled: false, reason: 'indexing' } } },
+        });
+
+        setFrozenServerFeaturesClock(new Date(frozenServerFeaturesTime.getTime() + 4_000));
+        expect(getServerFeaturesSnapshotRetryDelayMs({ snapshot: indexing })).toBe(1_000);
+
+        setFrozenServerFeaturesClock(frozenServerFeaturesTimeAfterErrorTtl);
+        const settled = await getServerFeaturesSnapshot({ timeoutMs: 50 });
+        expect(settled).toMatchObject({
+            status: 'ready',
+            features: { capabilities: { homeSearch: { enabled: true } } },
+        });
+        expect(featuresFetchMock).toHaveBeenCalledTimes(2);
+        expect(getServerFeaturesSnapshotRetryDelayMs({ snapshot: settled })).toBeNull();
+
+        const unavailable = {
+            status: 'ready' as const,
+            features: FeaturesResponseSchema.parse({
+                features: {},
+                capabilities: {
+                    homeSearch: { enabled: false, reason: 'index_unavailable' },
+                },
+            }),
+        };
+        primeServerFeaturesSnapshot({ snapshot: unavailable });
+        expect(getServerFeaturesSnapshotRetryDelayMs({ snapshot: unavailable })).toBeNull();
+
+        setFrozenServerFeaturesClock(new Date(frozenServerFeaturesTimeAfterErrorTtl.getTime() + 6_000));
+        expect(await getServerFeaturesSnapshot({ timeoutMs: 50 })).toBe(unavailable);
+        expect(featuresFetchMock).toHaveBeenCalledTimes(2);
+    });
+
     it('retries a server-switch abort without caching a timeout error', async () => {
         const payload = {
             features: {

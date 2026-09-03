@@ -31,6 +31,14 @@ export function resolveUiPostinstallTasks({ env }) {
             'vendor-tiptap-webview-bundle',
             'vendor-mermaid-webview-bundle',
         )
+
+        // The browser Iroh assets (Lane 06 A7.2/A8) are deliberately absent
+        // here. Every other vendored asset is target-agnostic, but the browser
+        // wasm endpoint is web-only and ~4.9MB: install time has no target, so
+        // vendoring it could only write to the shared source `public/` tree that
+        // the Tauri and native exports copy verbatim. Its producer is
+        // `tools/iroh/buildBrowserIrohAssets.mjs --output-dir <web output>`,
+        // run by the web release build against its own export output.
     }
 
     return tasks

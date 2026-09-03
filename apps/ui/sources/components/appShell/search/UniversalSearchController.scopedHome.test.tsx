@@ -98,11 +98,17 @@ vi.mock('@/sync/domains/memory/searchHomeMemory', () => ({
     searchHomeMemory: harness.searchHomeMemory,
 }));
 vi.mock('@/auth/storage/tokenStorage', () => ({
+    TokenStorage: {
+        getCredentialsForServerUrl: async (_url: string, options: { serverId?: string }) => ({
+            token: options.serverId === 'home-b' ? 'account-1' : 'account-a',
+        }),
+    },
     subscribeHomeCredentialMutations: (listener: (event: { kind: 'credentials_set' | 'credentials_removed'; serverId: string; serverUrl: string }) => void) => {
         harness.homeCredentialMutationListeners.add(listener);
         return () => harness.homeCredentialMutationListeners.delete(listener);
     },
 }));
+vi.mock('@/utils/auth/parseToken', () => ({ parseToken: (token: string) => token }));
 vi.mock('@/sync/domains/memory/searchDaemonMemory', () => ({ searchDaemonMemory: vi.fn() }));
 vi.mock('@/sync/ops/sessionMachineTarget', () => ({ readMachineControlTargetForSession: () => null }));
 vi.mock('@/hooks/server/useServerProfilesGeneration', () => ({ useServerProfilesGeneration: () => 1 }));
@@ -114,9 +120,11 @@ vi.mock('@/sync/domains/server/serverProfiles', () => ({
         isSelectionExplicit: true,
     }),
     listServerProfiles: () => [
-        { id: 'home-a', name: 'Home A' },
-        { id: 'home-b', name: 'Home B' },
+        { id: 'home-a', name: 'Home A', serverUrl: 'https://home-a.example.test' },
+        { id: 'home-b', name: 'Home B', serverUrl: 'https://home-b.example.test' },
     ],
+    getServerProfileById: (serverId: string) => ({ id: serverId, name: serverId, serverUrl: `https://${serverId}.example.test` }),
+    resolveServerProfileScopeIdForIdentifier: (serverId: string) => serverId,
     areServerProfileIdentifiersEquivalent: (left: string, right: string) => left === right,
 }));
 

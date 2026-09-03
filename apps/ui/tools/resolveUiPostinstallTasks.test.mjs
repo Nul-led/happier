@@ -30,3 +30,19 @@ test('UI postinstall vendors the TipTap WebView bundle with other web assets', (
 
     assert.ok(tasks.includes('vendor-tiptap-webview-bundle'));
 });
+
+test('UI postinstall never packages browser Iroh assets, however it is asked', () => {
+    // Lane 06 A8: browser Iroh assets are staged per build target, into the web
+    // output that build owns. Install time has no target, so a postinstall step
+    // could only write to the shared source `public/` tree — where a later Tauri
+    // or native export would inherit ~4.9MB of browser-only wasm. The producer
+    // is `tools/iroh/buildBrowserIrohAssets.mjs --output-dir <web output>`, run
+    // by the web release build.
+    for (const env of [
+        { HAPPIER_UI_VENDOR_WEB_ASSETS: '1' },
+        { HAPPIER_UI_VENDOR_WEB_ASSETS: '1', HAPPIER_UI_VENDOR_BROWSER_IROH: '1' },
+        { HAPPIER_UI_VENDOR_WEB_ASSETS: '0', HAPPIER_UI_VENDOR_BROWSER_IROH: '1' },
+    ]) {
+        assert.ok(!resolveUiPostinstallTasks({ env }).includes('vendor-browser-iroh-wasm'));
+    }
+});

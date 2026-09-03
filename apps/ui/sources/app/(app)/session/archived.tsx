@@ -152,6 +152,19 @@ function getArchivedSessionKey(session: ArchivedScreenSession): string {
     return serverId && sessionId ? `${serverId}:${sessionId}` : sessionId;
 }
 
+export function buildArchivedTranscriptEligibleSessionIds(
+    sessions: ReadonlyArray<ArchivedScreenSession>,
+    serverId: string,
+): string[] {
+    const exactServerId = serverId.trim();
+    if (!exactServerId) return [];
+    return [...new Set(
+        sessions
+            .filter((session) => String(session.serverId ?? '').trim() === exactServerId)
+            .map((session) => session.id),
+    )];
+}
+
 function buildArchivedSearchHaystack(session: ArchivedScreenSession): string {
     return buildCanonicalSessionListSearchText({
         sessionId: session.id,
@@ -298,8 +311,11 @@ export default function ArchivedSessionsScreen() {
     // travels to the canonical Home/daemon query owner so it is applied before
     // provider result limiting; this screen does not create an archived engine.
     const eligibleTranscriptSessionIds = React.useMemo(
-        () => [...new Set([...archivedSessions, ...hiddenInactiveSessions].map((session) => session.id))],
-        [archivedSessions, hiddenInactiveSessions],
+        () => buildArchivedTranscriptEligibleSessionIds(
+            [...archivedSessions, ...hiddenInactiveSessions],
+            memorySearchContext.serverId,
+        ),
+        [archivedSessions, hiddenInactiveSessions, memorySearchContext.serverId],
     );
     const transcriptSearch = useSessionListMemorySearchAugmentationForContext(
         {

@@ -23,8 +23,11 @@ import {
 } from '@/components/ui/selectionList';
 import { useAllSessions } from '@/sync/store/hooks';
 import { useSetting } from '@/sync/domains/state/storage';
-import { subscribeHomeCredentialMutations } from '@/auth/storage/tokenStorage';
 import { captureActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
+import {
+    useServerCredentialAccountScopes,
+    type ServerCredentialAccountScopeBinding,
+} from '@/sync/domains/scope/useServerCredentialAccountScopes';
 import { searchDaemonMemory } from '@/sync/domains/memory/searchDaemonMemory';
 import { searchHomeMemory } from '@/sync/domains/memory/searchHomeMemory';
 import { useMemorySearchProvider } from '@/sync/domains/memory/useMemorySearchProvider';
@@ -76,31 +79,18 @@ type PendingActivation = () => Promise<unknown>;
 
 function useUniversalSearchDynamicCache(
     scope: UniversalSearchScopeSeed,
-    homeCredentialRevision: number,
+    credentialBinding: ServerCredentialAccountScopeBinding | null,
 ): SelectionListDynamicSectionCache {
-    const key = `${scope.serverId ?? ''}\u0000${scope.accountId ?? ''}\u0000${homeCredentialRevision}`;
+    const key = `${scope.serverId ?? ''}\u0000${scope.accountId ?? ''}\u0000${credentialBinding?.revision ?? -1}`;
     const cache = React.useMemo(() => createDefaultDynamicSectionCache(), [key]);
     React.useEffect(() => {
-        const lifetime = captureActiveServerAccountScopeLifetime();
-        const retirement = lifetime
-            && lifetime.scope.serverId === scope.serverId
-            && lifetime.scope.accountId === scope.accountId
-            ? lifetime.onRetire(() => cache.clear())
-            : null;
+        const retirement = credentialBinding?.onRetire(() => cache.clear()) ?? null;
         return () => {
             retirement?.dispose();
             cache.clear();
         };
-    }, [cache, homeCredentialRevision, key, scope.accountId, scope.serverId]);
+    }, [cache, credentialBinding, key]);
     return cache;
-}
-
-function useHomeCredentialRevision(serverId: string | null | undefined): number {
-    const [revision, setRevision] = React.useState(0);
-    React.useEffect(() => subscribeHomeCredentialMutations((event) => {
-        if (event.serverId === serverId) setRevision((current) => current + 1);
-    }), [serverId]);
-    return revision;
 }
 
 function settingsPageById(nodes: readonly ResolvedSettingsPageNode[]): ReadonlyMap<string, ResolvedSettingsPageNode> {
@@ -150,9 +140,23 @@ export function UniversalSearchController(props: UniversalSearchControllerProps)
     const committedResultRef = React.useRef<UniversalSearchResult | null>(null);
     const committedPluginActivationRef = React.useRef<PendingActivation | null>(null);
     const committedScopeRef = React.useRef<UniversalSearchScopeSeed | null>(null);
+    const profilesGeneration = useServerProfilesGeneration();
+    const profiles = React.useMemo(() => listServerProfiles(), [profilesGeneration]);
+    const credentialBindings = useServerCredentialAccountScopes(profiles.map((profile) => profile.id));
+    const selectedCredentialBinding = scope.serverId
+        ? credentialBindings.get(scope.serverId) ?? null
+        : null;
+    const selectedCredentialIsCurrent = selectedCredentialBinding?.isCurrent() === true
+        && selectedCredentialBinding.accountId === scope.accountId;
+    React.useEffect(() => {
+        if (!scope.serverId || !selectedCredentialBinding || scope.accountId === selectedCredentialBinding.accountId) return;
+        setScope((current) => current.serverId === scope.serverId
+            ? { ...current, accountId: selectedCredentialBinding.accountId }
+            : current);
+    }, [scope.accountId, scope.serverId, selectedCredentialBinding]);
     const memoryProvider = useMemorySearchProvider({ serverId: scope.serverId, machineId: scope.machineId });
-    const homeCredentialRevision = useHomeCredentialRevision(memoryProvider.homeServerId);
-    const dynamicSectionCache = useUniversalSearchDynamicCache(scope, homeCredentialRevision);
+    const homeCredentialRevision = selectedCredentialBinding?.revision ?? -1;
+    const dynamicSectionCache = useUniversalSearchDynamicCache(scope, selectedCredentialBinding);
     const navigateToSession = useNavigateToSession();
     const router = useRouter();
     const openProject = useOpenProject();
@@ -202,6 +206,7 @@ export function UniversalSearchController(props: UniversalSearchControllerProps)
     }), [settingsById, settingsCatalog]);
 
     const transcript = React.useMemo<UniversalSearchSource>(() => {
+        if (scope.serverId && !selectedCredentialIsCurrent) return { status: 'absent' };
         const unavailableReason = memoryProvider.unavailableReason;
         if (!memoryProvider.provider) return { status: 'absent' };
         const resolverKey = memoryProvider.provider === 'home'
@@ -269,7 +274,7 @@ export function UniversalSearchController(props: UniversalSearchControllerProps)
                     : []);
             },
         };
-    }, [homeCredentialRevision, memoryProvider, scope.accountId, sessionNameByTarget]);
+    }, [homeCredentialRevision, memoryProvider, scope.accountId, scope.serverId, selectedCredentialIsCurrent, sessionNameByTarget]);
 
     const activeSession = React.useMemo(
         () => sessions.find((session) => session.id === scope.sessionId && (!scope.serverId || session.serverId === scope.serverId)) ?? null,
@@ -358,17 +363,19 @@ export function UniversalSearchController(props: UniversalSearchControllerProps)
         onCommitActivation: (activate) => { committedPluginActivationRef.current = activate; },
     }), [accountScopeKey, currentUiContextReader, pluginNavigationBinding?.openSurface, pluginProjection, pluginScopeIsCurrent]);
 
-    useServerProfilesGeneration();
+    const accountIdByServerId = React.useMemo(() => new Map(
+        [...credentialBindings].map(([serverId, binding]) => [serverId, binding.accountId]),
+    ), [credentialBindings]);
     const scopeChoices = React.useMemo(() => buildUniversalSearchScopeChoices({
-        accountId: scope.accountId ?? null,
-        profiles: listServerProfiles(),
+        accountIdByServerId,
+        profiles,
         workspaces: workspaceRefs,
         sessions,
         readMachineTarget: readMachineControlTargetForSession,
-    }), [scope.accountId, sessions, workspaceRefs]);
+    }), [accountIdByServerId, profiles, sessions, workspaceRefs]);
     const scopeKey = buildUniversalSearchScopeKeyFromSeed(scope);
     const currentScopeLabel = scopeChoices.find((choice) => choice.key === scopeKey)?.label
-        ?? listServerProfiles().find((profile) => profile.id === scope.serverId)?.name
+        ?? profiles.find((profile) => profile.id === scope.serverId)?.name
         ?? scope.rootPath
         ?? '';
     const scopeSection = React.useMemo(() => scopeChoices.length > 1 ? [{
@@ -420,19 +427,23 @@ export function UniversalSearchController(props: UniversalSearchControllerProps)
     }), [sections]);
 
     const isBuiltInTargetCurrent = React.useCallback((target: UniversalSearchResult['target']) => {
-        const currentLifetime = captureActiveServerAccountScopeLifetime();
         const targetServerId = 'serverId' in target ? target.serverId : null;
         return isUniversalSearchTargetCurrent({
             target,
-            accountScope: targetServerId && listServerProfiles().some((profile) => profile.id === targetServerId)
-                ? { serverId: targetServerId, current: scope.accountId === null || currentLifetime?.scope.accountId === scope.accountId }
+            accountScope: targetServerId && profiles.some((profile) => profile.id === targetServerId)
+                ? {
+                    serverId: targetServerId,
+                    current: selectedCredentialBinding?.serverId === targetServerId
+                        && selectedCredentialBinding.accountId === scope.accountId
+                        && selectedCredentialBinding.isCurrent(),
+                }
                 : null,
             workspaces: workspaceRefs,
             settingsPages: settingsById,
             resolveSessionWorkspaceTarget: resolveWorkspaceTargetForSession,
             isWorkspaceScopeReachable,
         });
-    }, [scope.accountId, settingsById, workspaceRefs]);
+    }, [profiles, scope.accountId, selectedCredentialBinding, settingsById, workspaceRefs]);
 
     const handleSelect = React.useCallback((optionId: string, _option: SelectionListOption) => {
         const nextScope = committedScopeRef.current;

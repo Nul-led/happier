@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -8,6 +8,7 @@ import {
     buildTauriPersonalHomeQaPlan,
     inspectPersonalHomePreservationEvidence,
     inspectPersonalHomeRuntimeEvidence,
+    assertPersonalHomeQaCertificationStatus,
     validateTauriPersonalHomeQaProbeResult,
     verifyAnonymousSignupRefused,
     verifyPersonalHomeSessionEvidence,
@@ -57,6 +58,24 @@ test('personal-home loaded QA records externally supplied failure probes without
     assert.deepEqual(plan.bootstrapMutationInterruptionProbe, { configured: true });
     assert.equal(JSON.stringify(plan).includes('existingDaemonFailureProbe'), false);
     assert.equal(JSON.stringify(plan).includes('existingBootstrapMutationProbe'), false);
+});
+
+test('personal-home loaded QA certification mode rejects partial verification without changing diagnostic partial reporting', () => {
+    assert.doesNotThrow(() => assertPersonalHomeQaCertificationStatus({
+        requireComplete: false,
+        verificationStatus: 'partial',
+    }));
+    assert.doesNotThrow(() => assertPersonalHomeQaCertificationStatus({
+        requireComplete: true,
+        verificationStatus: 'complete',
+    }));
+    assert.throws(
+        () => assertPersonalHomeQaCertificationStatus({
+            requireComplete: true,
+            verificationStatus: 'partial',
+        }),
+        /requires complete verification/u,
+    );
 });
 
 test('personal-home loaded QA only accepts external probes that prove the intended scoped boundary', () => {
@@ -109,6 +128,11 @@ test('preservation evidence fingerprints config/master-secret and requires the d
         masterSecretSha256: '2bb80d537b1da3e38bd30361aa855686bde0eacd7162fef6a25fe97bf527a25b',
         purpose: 'personal-home',
     });
+    await rm(join(configDir, 'server.env'));
+    await assert.rejects(
+        inspectPersonalHomePreservationEvidence({ env: { HOME: homeDir } }),
+        /ENOENT/u,
+    );
 });
 
 test('anonymous signup evidence performs a valid fresh-key attempt and requires the live signup-disabled response', async () => {

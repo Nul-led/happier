@@ -128,6 +128,53 @@ describe('metro.config.js (web)', () => {
         ).toBe(false);
     });
 
+    it('never prefers native platform files when it resolves for web', () => {
+        // Metro hardcodes `preferNativePlatform: true`
+        // (`metro/src/node-haste/DependencyGraph.js`), so `foo.native.ts` beats
+        // `foo.ts` on EVERY platform unless the resolution context says
+        // otherwise. Expo CLI supplies that correction
+        // (`preferNativePlatform: platform !== 'web'` in
+        // `@expo/cli/.../withMetroMultiPlatform.js`), but it lives in Expo
+        // CLI's own pipeline, not in this config — so anything that bundles
+        // with this config directly through Metro gets NATIVE resolution for a
+        // web bundle. That pulled `react-native-keyboard-controller`'s
+        // `bindings.native.ts`, and with it React Native's native renderer and
+        // `InitializeCore`, into a web bundle, which throws
+        // "__fbBatchedBridgeConfig is not set, cannot invoke native modules"
+        // before any app code runs.
+        //
+        // The platform contract belongs to this config, so it states it here
+        // rather than depending on which tool happens to be driving Metro.
+        const uiDir = getUiDir();
+        const config = loadMetroConfig(uiDir);
+
+        const observed: Array<{ platform: string | null; preferNativePlatform: unknown }> = [];
+        const capture = (platform: string | null) => {
+            config.resolver.resolveRequest(
+                {
+                    originModulePath: join(uiDir, 'index.ts'),
+                    resolveRequest: (context: { preferNativePlatform?: unknown }) => {
+                        observed.push({ platform, preferNativePlatform: context.preferNativePlatform });
+                        return { type: 'empty' };
+                    },
+                    preferNativePlatform: true,
+                },
+                'react-native-keyboard-controller',
+                platform,
+            );
+        };
+
+        capture('web');
+        capture('ios');
+        capture('android');
+
+        expect(observed).toEqual([
+            { platform: 'web', preferNativePlatform: false },
+            { platform: 'ios', preferNativePlatform: true },
+            { platform: 'android', preferNativePlatform: true },
+        ]);
+    });
+
     it('watches the monorepo root node_modules (SHA-1 hashing for hoisted deps)', () => {
         const uiDir = getUiDir();
         const repoRoot = resolve(uiDir, '..', '..');

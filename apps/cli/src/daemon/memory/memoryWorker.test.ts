@@ -53,7 +53,7 @@ describe('memoryWorker', () => {
     const s = await stat(join(configuration.activeServerDir, 'memory', 'memory.sqlite'));
     expect(s.isFile()).toBe(true);
 
-    worker.stop();
+    await worker.stop();
   });
 
   it('loads persisted settings when the worker starts so status matches the saved machine configuration', async () => {
@@ -71,7 +71,7 @@ describe('memoryWorker', () => {
     expect(worker.getSettings().enabled).toBe(true);
     expect(worker.getTier1DbPath()).toBeTruthy();
 
-    worker.stop();
+    await worker.stop();
   });
 
   it('creates the deep sqlite DB when enabled in deep mode', async () => {
@@ -91,7 +91,7 @@ describe('memoryWorker', () => {
     const s = await stat(join(configuration.activeServerDir, 'memory', 'deep.sqlite'));
     expect(s.isFile()).toBe(true);
 
-    worker.stop();
+    await worker.stop();
   });
 
   it('resolves embeddings diagnostics on settings reload even before any session indexing runs', async () => {
@@ -132,7 +132,7 @@ describe('memoryWorker', () => {
       usingFallback: false,
     });
 
-    worker.stop();
+    await worker.stop();
   });
 
   it('deletes DBs when disabled with deleteOnDisable=true', async () => {
@@ -158,7 +158,7 @@ describe('memoryWorker', () => {
     await expect(stat(join(configuration.activeServerDir, 'memory', 'memory.sqlite'))).rejects.toBeTruthy();
     await expect(stat(join(dummyCacheDir, 'dummy.bin'))).rejects.toBeTruthy();
     expect(worker.getWorkerStatus()).toMatchObject({ state: 'disabled', currentSessionId: null, currentPhase: null });
-    worker.stop();
+    await worker.stop();
   });
 
   it('reports delete-on-disable filesystem failures to the settings caller', async () => {
@@ -187,7 +187,7 @@ describe('memoryWorker', () => {
     });
 
     await expect(worker.reloadSettings()).rejects.toThrow('memory_delete_failed');
-    worker.stop();
+    await worker.stop();
   });
 
   it('ingests committed memory summary system records into the tier-1 index', async () => {
@@ -254,7 +254,7 @@ describe('memoryWorker', () => {
     expect(result.hits.length).toBe(1);
     expect(result.hits[0]!.sessionId).toBe('sess-1');
 
-    worker.stop();
+    await worker.stop();
   }, 60_000);
 
   it('indexes transcript text into the deep index when ensureUpToDate is called', async () => {
@@ -316,7 +316,7 @@ describe('memoryWorker', () => {
     expect(result.hits.length).toBeGreaterThan(0);
     expect(result.hits[0]!.sessionId).toBe('sess-1');
 
-    worker.stop();
+    await worker.stop();
   });
 
   it('uses the role-filtered transcript message API for default deep indexing', async () => {
@@ -418,7 +418,7 @@ describe('memoryWorker', () => {
     }));
     expect(fetchEncryptedTranscriptPageAfterSeq).not.toHaveBeenCalled();
 
-    worker.stop();
+    await worker.stop();
   });
 
   it('logs retryable selected-transcript fetch failures through the shared server endpoint classifier', async () => {
@@ -520,13 +520,24 @@ describe('memoryWorker', () => {
       '[memoryWorker] Failed to fetch/decrypt transcript page (best-effort)',
     );
 
-    worker.stop();
+    await worker.stop();
   });
 
   it('continues background deep indexing for recently updated inactive sessions when backfill policy is new_only', async () => {
     vi.useFakeTimers();
     const argvBackup = process.argv.slice();
     try {
+      process.argv = ['node', 'happier', 'daemon', 'start-sync'];
+      vi.doMock('@/configuration', async () => {
+        const actual = await vi.importActual<typeof import('@/configuration')>('@/configuration');
+        return {
+          ...actual,
+          configuration: {
+            ...actual.configuration,
+            isDaemonProcess: true,
+          },
+        };
+      });
       let observedSeq = 1;
       const fetchSessionsPage = vi.fn(async ({ activeOnly }: { activeOnly?: boolean }) => ({
         sessions: activeOnly
@@ -560,6 +571,12 @@ describe('memoryWorker', () => {
           nextCursor: null,
         })),
       }));
+      vi.doMock('@/session/systemRecords/memory/fetchMemorySystemRecords', () => ({
+        fetchMemorySummaryShardSystemRecords: async () => [],
+      }));
+      vi.doMock('@/session/systemRecords/memory/commitMemorySystemRecords', () => ({
+        commitMemorySystemRecords: async () => {},
+      }));
 
       const { writeMemorySettingsToDisk } = await import('@/settings/memorySettings');
       await writeMemorySettingsToDisk({
@@ -580,17 +597,6 @@ describe('memoryWorker', () => {
       ];
       let secondPageRequested = false;
 
-      process.argv = ['node', 'happier', 'daemon', 'start-sync'];
-      vi.doMock('@/configuration', async () => {
-        const actual = await vi.importActual<typeof import('@/configuration')>('@/configuration');
-        return {
-          ...actual,
-          configuration: {
-            ...actual.configuration,
-            isDaemonProcess: true,
-          },
-        };
-      });
       const { startMemoryWorker } = await import('./memoryWorker');
       const credentials: Credentials = { token: 't', encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) } };
       const worker = await startMemoryWorker({
@@ -620,9 +626,6 @@ describe('memoryWorker', () => {
       });
       observedSeq = 2;
 
-      // Let the asynchronous inventory flight settle before advancing the
-      // worker tick; one large fake-timer jump can run every tick before the
-      // inventory promise publishes its candidates.
       await vi.advanceTimersByTimeAsync(5_000);
       for (let attempt = 0; attempt < 20 && !secondPageRequested; attempt += 1) {
         await vi.advanceTimersByTimeAsync(500);

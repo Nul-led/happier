@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { applyEnvValues, restoreEnvValues, snapshotEnvValues } from '@/testkit/env/envSnapshot';
+import { createDeferred } from '@/testkit/async/deferred';
 import { createTempDir, removeTempDir } from '@/testkit/fs/tempDir';
 import type { Credentials } from '@/persistence';
 
@@ -516,14 +517,8 @@ describe('memoryWorker archived eligibility and derived-index removal', () => {
   });
 
   it('waits for in-flight indexing before purging a removed Session', async () => {
-    let releaseTranscript: (() => void) | null = null;
-    const transcriptStarted = new Promise<void>((resolve) => {
-      releaseTranscript = resolve;
-    });
-    let markTranscriptStarted: (() => void) | null = null;
-    const transcriptGate = new Promise<void>((resolve) => {
-      markTranscriptStarted = resolve;
-    });
+    const transcriptRelease = createDeferred();
+    const transcriptStarted = createDeferred();
     vi.doMock('@/session/transport/http/sessionsHttp', () => ({
       fetchSessionsPage: vi.fn(async () => ({ sessions: [], nextCursor: null, hasNext: false })),
       fetchSessionById: vi.fn(async () => sessionRow('removed-in-flight', { archivedAt: null })),
@@ -532,8 +527,8 @@ describe('memoryWorker archived eligibility and derived-index removal', () => {
       { indexMode: 'deep', backfillPolicy: 'all_history' },
       {
         fetchDecryptedTranscriptPageAfterSeq: async () => {
-          markTranscriptStarted?.();
-          await transcriptStarted;
+          transcriptStarted.resolve();
+          await transcriptRelease.promise;
           return [{
             seq: 1,
             createdAtMs: 1,
@@ -546,7 +541,7 @@ describe('memoryWorker archived eligibility and derived-index removal', () => {
     );
 
     const indexing = worker.ensureUpToDate('removed-in-flight');
-    await transcriptGate;
+    await transcriptStarted.promise;
     let removalSettled = false;
     const removal = worker.removeSessions(['removed-in-flight']).then(() => {
       removalSettled = true;
@@ -554,7 +549,7 @@ describe('memoryWorker archived eligibility and derived-index removal', () => {
     await Promise.resolve();
     const removalSettledBeforeRelease = removalSettled;
 
-    releaseTranscript?.();
+    transcriptRelease.resolve();
     await Promise.all([indexing, removal]);
 
     expect(removalSettledBeforeRelease).toBe(false);

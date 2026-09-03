@@ -23,7 +23,7 @@ test('apps/ui package.json exposes shared stack-owned Tauri dev entrypoints', as
   assert.equal(scripts['tauri:mcp:desktop-sidebar-chrome:qa'], 'node ./scripts/qa/tauriDesktopSidebarChromeMcpQa.mjs');
   assert.equal(scripts['test:native-e2e:activity-surfaces'], 'yarn -s ensure:workspace:built && node ./scripts/tauriMcpQa.mjs --activity-surfaces');
   assert.equal(scripts['test:native-e2e:desktop-sidebar-chrome'], 'yarn -s ensure:workspace:built && node ./scripts/tauriMcpQa.mjs --desktop-sidebar-chrome');
-  assert.equal(scripts['test:native-e2e:personal-home'], 'yarn -s ensure:workspace:built && node ./scripts/tauriMcpQa.mjs --personal-home');
+  assert.equal(scripts['test:native-e2e:personal-home'], 'yarn -s ensure:workspace:built && node ./scripts/tauriMcpQa.mjs --personal-home --require-complete');
   assert.equal(scripts['tauri:mcp:server'], 'npx -y @hypothesi/tauri-mcp-server');
   assert.equal(scripts['tauri:mcp:cli'], 'npx -y -p @hypothesi/tauri-mcp-cli tauri-mcp');
   assert.equal(scripts['tauri:mcp:session:start'], 'npx -y -p @hypothesi/tauri-mcp-cli tauri-mcp driver-session start --port 9225');

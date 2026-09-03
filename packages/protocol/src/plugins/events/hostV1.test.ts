@@ -4,8 +4,12 @@ import {
   AGENT_SESSION_RUNTIME_EVENT_KINDS_V1,
 } from '../../runtime/index.js';
 import {
+  AUTOMATION_RUN_CANCELLED_AFTER_DISPATCH_PERMITTED_CAUSE_V1,
+  AUTOMATION_RUN_CANCELLED_WHILE_RUNNING_CAUSE_V1,
+  AutomationRunStateChangedHostEventV1Schema,
   HOST_EVENT_CATALOG_V1,
   HAPPIER_AUTOMATION_RUN_STATE_CHANGED_HOST_EVENT_ID_V1,
+  isAuthoritativeAutomationRunCancellationCauseV1,
   type HostEventEnvelopeV1,
   type HostEventPayloadByIdV1,
   type HostEventTargetV1,
@@ -208,5 +212,45 @@ describe('Host Events V1 catalog', () => {
     }>>().toMatchTypeOf<HostEventTargetV1>();
     expectTypeOf<RuntimeAccountTarget>().not.toMatchTypeOf<HostEventTargetV1>();
     expectTypeOf<RuntimeAccountEnvelope>().not.toMatchTypeOf<HostEventEnvelopeV1>();
+  });
+});
+
+describe('authoritative Automation Run cancellation causes', () => {
+  it('recognizes exactly the causes that mean the present user cancelled this Run', () => {
+    expect(isAuthoritativeAutomationRunCancellationCauseV1(
+      AUTOMATION_RUN_CANCELLED_AFTER_DISPATCH_PERMITTED_CAUSE_V1,
+    )).toBe(true);
+    // Session targets keep no dispatch vocabulary, so their running
+    // cancellation carries its own cause. A reader that only knew the
+    // dispatch cause would silently downgrade the user's intent to a stale
+    // attempt and never discard the exact Automation input.
+    expect(isAuthoritativeAutomationRunCancellationCauseV1(
+      AUTOMATION_RUN_CANCELLED_WHILE_RUNNING_CAUSE_V1,
+    )).toBe(true);
+    expect(AUTOMATION_RUN_CANCELLED_WHILE_RUNNING_CAUSE_V1)
+      .not.toBe(AUTOMATION_RUN_CANCELLED_AFTER_DISPATCH_PERMITTED_CAUSE_V1);
+  });
+
+  it('treats an absent or unknown bounded cause as non-authoritative', () => {
+    expect(isAuthoritativeAutomationRunCancellationCauseV1(undefined)).toBe(false);
+    expect(isAuthoritativeAutomationRunCancellationCauseV1('someLaterProducerCause')).toBe(false);
+  });
+
+  it('keeps every authoritative cause inside the bounded transition-cause wire bound', () => {
+    for (const cause of [
+      AUTOMATION_RUN_CANCELLED_AFTER_DISPATCH_PERMITTED_CAUSE_V1,
+      AUTOMATION_RUN_CANCELLED_WHILE_RUNNING_CAUSE_V1,
+    ]) {
+      expect(AutomationRunStateChangedHostEventV1Schema.safeParse({
+        runId: 'run-1',
+        automationId: 'automation-1',
+        runCause: { kind: 'manual' },
+        previousState: 'running',
+        currentState: 'outcome_uncertain',
+        transitionedAt: 1,
+        claimedByMachineId: 'machine-1',
+        transitionCause: cause,
+      }).success).toBe(true);
+    }
   });
 });

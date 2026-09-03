@@ -18,6 +18,11 @@ const storageState = vi.hoisted(() => ({ sessions: {} as Record<string, { id: st
 const selectionHolder = vi.hoisted(() => ({
     controller: null as MachineAdministrationTargetSelectionMockController | null,
 }));
+const credentialMutationListeners = vi.hoisted(() => new Set<(event: { serverId: string; serverUrl: string; kind: 'credentials_set' | 'credentials_removed' }) => void>());
+const credentialAccounts = vi.hoisted(() => new Map<string, string>([
+    ['server-a', 'account-a'],
+    ['home-b', 'account-b'],
+]));
 
 vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc', () => ({
     machineRpcWithServerScope: machineRpcWithServerScopeMock,
@@ -40,6 +45,25 @@ vi.mock('@/sync/domains/state/storageStore', () => ({
 vi.mock('@/sync/store/hooks', () => ({
     useActiveServerAccountScope: () => accountScopeState.current,
 }));
+vi.mock('@/hooks/server/useServerProfilesGeneration', () => ({ useServerProfilesGeneration: () => 1 }));
+vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>(),
+    areServerProfileIdentifiersEquivalent: (left: string, right: string) => left === right,
+    getServerProfileById: (serverId: string) => ({ id: serverId, serverUrl: `https://${serverId}.example.test` }),
+    resolveServerProfileScopeIdForIdentifier: (serverId: string) => serverId,
+}));
+vi.mock('@/auth/storage/tokenStorage', () => ({
+    TokenStorage: {
+        getCredentialsForServerUrl: async (_url: string, options: { serverId?: string }) => ({
+            token: credentialAccounts.get(options.serverId ?? '') ?? '',
+        }),
+    },
+    subscribeHomeCredentialMutations: (listener: (event: { serverId: string; serverUrl: string; kind: 'credentials_set' | 'credentials_removed' }) => void) => {
+        credentialMutationListeners.add(listener);
+        return () => credentialMutationListeners.delete(listener);
+    },
+}));
+vi.mock('@/utils/auth/parseToken', () => ({ parseToken: (token: string) => token }));
 
 vi.mock('@/hooks/server/useFeatureEnabled', () => ({
     useFeatureEnabled: (featureId: string) => (
@@ -168,6 +192,10 @@ afterEach(() => {
     featureRuntimeState.homeSearch = undefined;
     storageState.sessions = {};
     selectionHolder.controller?.reset();
+    credentialMutationListeners.clear();
+    credentialAccounts.clear();
+    credentialAccounts.set('server-a', 'account-a');
+    credentialAccounts.set('home-b', 'account-b');
     standardCleanup();
 });
 
@@ -541,8 +569,13 @@ describe('useSessionListMemorySearchAugmentation', () => {
         const hook = await renderMemoryAugmentationHook({ searchQuery: 'vector' });
         await flushHookEffects({ advanceTimersMs: 300, cycles: 3 });
 
-        accountScopeState.current = { serverId: 'server-a', accountId: 'account-b' };
-        const switched = await hook.rerender({ searchQuery: 'vector' });
+        credentialAccounts.set('server-a', 'account-b');
+        await act(async () => {
+            for (const listener of credentialMutationListeners) {
+                listener({ kind: 'credentials_set', serverId: 'server-a', serverUrl: 'https://server-a.example.test' });
+            }
+        });
+        const switched = hook.getCurrent();
 
         expect([...switched.memoryMatchedSessionKeys]).toEqual([]);
         expect(switched.lastSuccessfulQuery).toBeUndefined();

@@ -820,6 +820,16 @@ function resolvePackageNameShadowedByArtifactAssetExt(context, moduleName) {
 
 const defaultResolveRequest = config.resolver.resolveRequest;
 config.resolver.resolveRequest = (context, moduleName, platform) => {
+  // Expo CLI normally projects this platform fact before delegating to Metro,
+  // but other legitimate consumers of the canonical config (release/proof
+  // builders using Metro's public runBuild API) reach this resolver directly.
+  // Metro's raw default is `true` on every platform, which makes a web build
+  // prefer `.native.*` files and can initialize React Native's native bridge in
+  // Chromium. Keep the decision at the app's one resolver owner so every web
+  // build has identical platform semantics regardless of its driver.
+  if (platform === "web" && context?.preferNativePlatform !== false) {
+    context = { ...context, preferNativePlatform: false };
+  }
   const generatedWorkletResolution = resolveGeneratedWorkletModule(moduleName);
   if (generatedWorkletResolution) return generatedWorkletResolution;
 

@@ -26,6 +26,10 @@ const TTL_UNSUPPORTED_INVALID_PAYLOAD_MS = 10 * 60 * 1000;
 const TTL_ERROR_NETWORK_MS = 5 * 1000;
 const TTL_ERROR_TIMEOUT_MS = 5 * 1000;
 const TTL_ERROR_RESPONSE_STATUS_MS = 30 * 1000;
+// A successfully parsed Home descriptor can still describe an active indexing
+// transition. Reuse the existing short retry window for transient feature
+// observations; this protects readiness freshness without a Search-owned poller.
+const TTL_TRANSITIONAL_FEATURE_MS = TTL_ERROR_NETWORK_MS;
 
 const FORCE_COOLDOWN_ENDPOINT_MISSING_MS = 60 * 1000;
 
@@ -110,7 +114,11 @@ function isEndpointMissing(status: number): boolean {
 }
 
 function getCacheTtlMs(snapshot: ServerFeaturesSnapshot): number {
-    if (snapshot.status === 'ready') return TTL_READY_MS;
+    if (snapshot.status === 'ready') {
+        return snapshot.features.capabilities.homeSearch?.reason === 'indexing'
+            ? TTL_TRANSITIONAL_FEATURE_MS
+            : TTL_READY_MS;
+    }
     if (snapshot.status === 'unsupported') {
         return snapshot.reason === 'endpoint_missing'
             ? TTL_UNSUPPORTED_ENDPOINT_MISSING_MS
@@ -525,7 +533,12 @@ export function getServerFeaturesSnapshotRetryDelayMs(params: {
     serverId?: string;
     snapshot: ServerFeaturesSnapshot;
 }): number | null {
-    if (params.snapshot.status !== 'error') return null;
+    const shouldRetry = params.snapshot.status === 'error'
+        || (
+            params.snapshot.status === 'ready'
+            && params.snapshot.features.capabilities.homeSearch?.reason === 'indexing'
+        );
+    if (!shouldRetry) return null;
     const cached = cache.get(getCacheKey(params.serverId));
     if (cached?.kind !== 'success' || cached.value !== params.snapshot) {
         return getCacheTtlMs(params.snapshot);

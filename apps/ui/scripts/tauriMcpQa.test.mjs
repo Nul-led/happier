@@ -87,7 +87,7 @@ test('tauri MCP QA can switch the one-shot loaded scenario to personal-home with
     const scriptsDir = dirname(fileURLToPath(import.meta.url));
     const scriptPath = join(scriptsDir, 'tauriMcpQa.mjs');
 
-    const { stdout } = await execFileAsync(process.execPath, [scriptPath, '--json', '--personal-home'], {
+    const { stdout } = await execFileAsync(process.execPath, [scriptPath, '--json', '--personal-home', '--require-complete'], {
         cwd: dirname(scriptsDir),
         env: { ...process.env },
         encoding: 'utf8',
@@ -99,8 +99,24 @@ test('tauri MCP QA can switch the one-shot loaded scenario to personal-home with
     assert.equal(payload.plan.runWizard, false);
     assert.equal(payload.plan.qaScenario?.id, 'personal-home');
     assert.equal(payload.plan.qaScenario?.script, 'scripts/qa/tauriPersonalHomeMcpQa.mjs');
+    assert.deepEqual(payload.plan.qaScenario?.args, ['--require-complete']);
     assert.equal(payload.plan.qaScenario?.envOverrides?.HAPPIER_STACK_STACK, undefined);
     assert.equal(payload.plan.qaScenario?.envOverrides?.HAPPIER_STACK_TAURI_IDENTIFIER, undefined);
+});
+
+test('tauri MCP QA personal-home diagnostics can still report partial evidence without certification mode', async () => {
+    const scriptsDir = dirname(fileURLToPath(import.meta.url));
+    const scriptPath = join(scriptsDir, 'tauriMcpQa.mjs');
+
+    const { stdout } = await execFileAsync(process.execPath, [scriptPath, '--json', '--personal-home'], {
+        cwd: dirname(scriptsDir),
+        env: { ...process.env },
+        encoding: 'utf8',
+    });
+
+    const payload = JSON.parse(stdout);
+    assert.equal(payload.plan.qaScenario?.id, 'personal-home');
+    assert.equal(payload.plan.qaScenario?.args, undefined);
 });
 
 test('tauri MCP QA personal-home execution fails closed before launch without a dedicated runtime attestation', async () => {

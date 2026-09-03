@@ -1,17 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import { createDeferred } from '@/testkit/async/deferred';
 import { startSingleFlightIntervalLoop } from './singleFlightIntervalLoop';
-
-function createDeferred(): { promise: Promise<void>; resolve: () => void } {
-  let resolve: (() => void) | null = null;
-  const promise = new Promise<void>((res) => {
-    resolve = () => res();
-  });
-  if (!resolve) {
-    throw new Error('Failed to create deferred');
-  }
-  return { promise, resolve };
-}
 
 describe('startSingleFlightIntervalLoop', () => {
   it('never overlaps task executions (single-flight)', async () => {
@@ -72,17 +62,18 @@ describe('startSingleFlightIntervalLoop', () => {
     vi.useFakeTimers();
     try {
       const active = createDeferred();
-      let taskSignal: AbortSignal | null = null;
+      const taskSignal = createDeferred<AbortSignal>();
       const loop = startSingleFlightIntervalLoop({
         intervalMs: 60_000,
         task: async (signal) => {
-          taskSignal = signal;
+          taskSignal.resolve(signal);
           await active.promise;
         },
       });
 
       loop.trigger();
       await vi.advanceTimersByTimeAsync(1);
+      const observedSignal = await taskSignal.promise;
 
       let stopSettled = false;
       const stopPromise = Promise.resolve(loop.stop()).then(() => {
@@ -90,7 +81,7 @@ describe('startSingleFlightIntervalLoop', () => {
       });
       await Promise.resolve();
 
-      expect(taskSignal?.aborted).toBe(true);
+      expect(observedSignal.aborted).toBe(true);
       expect(stopSettled).toBe(false);
 
       active.resolve();

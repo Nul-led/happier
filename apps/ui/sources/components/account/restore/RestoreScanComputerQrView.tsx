@@ -437,6 +437,7 @@ export const RestoreScanComputerQrView = React.memo(function RestoreScanComputer
                     const targetFeatureSnapshot = await probeServerFeaturesAtUrl({
                         endpointUrl: target.endpointUrl,
                         runtimeOrigin: target.runtimeOrigin,
+                        ...(target.homeCarrier ? { homeCarrier: target.homeCarrier } : {}),
                         serverId: storedProfile.id,
                         force: true,
                         signal: attempt.controller.signal,
@@ -597,6 +598,7 @@ export const RestoreScanComputerQrView = React.memo(function RestoreScanComputer
                     const targetFeatureSnapshot = await probeServerFeaturesAtUrl({
                         endpointUrl: target.endpointUrl,
                         runtimeOrigin: target.runtimeOrigin,
+                        ...(target.homeCarrier ? { homeCarrier: target.homeCarrier } : {}),
                         serverId: target.serverId ?? link.invite.home.homeServerIdentityId,
                         force: true,
                         signal: attempt.controller.signal,
