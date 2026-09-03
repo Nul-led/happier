@@ -5,21 +5,63 @@ description: Publish and observe manifest-declared plugin events.
 
 ## Availability
 
-The `events` declaration family and `/events` type entrypoint are source-level
-public API. `context.services.events` remains deferred in the
-[capability matrix](/plugins/manifest/availability). It is not supported or
-advertised for ordinary author use; do not rely on it; consult its unblock
-condition. The examples below describe the deferred contract, not a current
-ordinary-author workflow.
+The `events` declaration family and `/events` type entrypoint are available in
+the current Developer Preview source contract. That same entrypoint also carries
+Automation Event authoring helpers: setup-result schema construction,
+history-gap-reset Action schemas, and checkpointed Event admission helpers.
+Those helpers call the canonical Automation Actions; they are not the deferred
+plugin pub/sub `EventsService` lifecycle.
 
-## Deferred contract reference
+Treat `context.services.events` as a separate service availability question.
+The [capability matrix](/plugins/manifest/availability) remains the authority
+for source availability, loaded-platform proof, and release evidence.
 
-The following shapes are what a maintained external development-source proof
-must exercise through the current loaded development stack. Each event has a
-plugin-local id and an optional payload schema. The host combines the trusted
-plugin id and local id into structured `{ pluginId, localId }` identity.
+## Event identity
 
-## Emit an owned event
+Each event has a plugin-local id and an optional payload schema. The host
+combines the trusted plugin id and local id into structured
+`{ pluginId, localId }` identity.
+
+## Automation Event sources
+
+An Automation Event source declares an Event with `automation.v: 1` and an
+ordinary same-plugin setup Action. The declaration names every observation
+transport the source supports, and each trigger on that source selects one of
+them: a GitHub-style source can declare both checkpointed pull and durable
+push, with one trigger per transport.
+
+For durable provider feeds, prefer `checkpointedPull`: poll the upstream
+source, call `admitCheckpointedPluginEventObservationV1(...)`, and advance the
+provider cursor only after it returns `checkpointSafe`.
+
+A provider that observes through a long-lived connection — a Discord Gateway
+session, for example — declares the `socket` transport instead and admits each
+observed occurrence with `admitSessionSocketPluginEventObservationV1(...)`,
+exported from this same `/events` entrypoint. A socket trigger has no provider
+cursor and promises no replay: admission still dedupes by occurrence identity,
+and an unsettled result leaves retry custody with the connection owner. While
+the connection is idle, project its transport truth (ready, reconnecting, or a
+history gap) through `projectPluginEventSourceConnectionStatusV1(...)` so the
+Automation source status reflects the real connection instead of a stale row.
+
+If the daemon restarts or a provider delivery arrives before durable push is
+available, the source must be able to observe the same occurrence again. For a
+GitHub-style webhook, parse the redelivered provider delivery into the same
+stable `occurrenceId`; do not use the webhook attempt id as the Automation
+dedupe key. The host owns Event admission, trigger/run persistence, source
+status, and catalog reconciliation; the plugin owns only upstream observation
+and its provider cursor. Declaring the Event itself stays inside the
+`automation.v: 1` declaration — generic webhook ingress is a delivery
+transport for an already-declared Event, never the declaration path.
+
+The maintained
+[`automation-event-source`](https://github.com/happier-dev/happier/tree/v0.3/packages/plugin-sdk/examples/automation-event-source)
+example shows the checkpointed-pull lifecycle. The maintained
+[`operation-only-channel-provider`](https://github.com/happier-dev/happier/tree/v0.3/packages/plugin-sdk/examples/operation-only-channel-provider)
+example shows how Channels providers bind provider Actions to a feature-owned
+protocol without declaring their own target.
+
+## Emit an owned plugin event
 
 `emit` accepts the current plugin's local event id:
 
@@ -56,10 +98,18 @@ the publisher's event id.
 
 Strict semantic host lifecycle events use `context.services.events.host.subscribe(...)` with a catalog-defined event id and either a current-session or explicit-session target. Raw Agent/provider messages are not exposed through this service.
 
-## Delivery semantics if enabled
+## Delivery semantics
 
-The typed contract has bounded delivery: it does not promise replay, history,
-global ordering across publishers, or transcript persistence. Dispose dynamic
-subscriptions with their owner and isolate subscriber failures from publisher
-correctness. Those semantics do not make the service supported or advertised
-for ordinary authors while its matrix row remains deferred.
+Plugin pub/sub Events have bounded delivery: they do not promise replay,
+history, global ordering across publishers, or transcript persistence. Dispose
+dynamic subscriptions with their owner and isolate subscriber failures from
+publisher correctness.
+
+Automation Event helpers have a different contract: they settle one observed
+provider occurrence against the Automation owner and report whether the
+provider-side checkpoint can advance. Durable push is a Developer Preview
+transport whose delivery is best effort until the provider durably commits the
+event: a lost pre-commit delivery is not retried automatically, and GitHub
+does not redeliver on its own. Design upstream observation so the same
+occurrence can be recovered through an independently requested provider
+redelivery or the next checkpointed pull.

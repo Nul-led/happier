@@ -7,6 +7,7 @@
     "env",
     "feature-env",
     "rate-limits",
+    "iroh-relay",
     "local-service-previews",
     "observability",
     "auth",

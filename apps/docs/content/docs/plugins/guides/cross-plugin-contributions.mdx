@@ -18,7 +18,9 @@ inside `@happier-dev/plugin-sdk`. Use the exact package and `/v1` entrypoint the
 target feature documents, then verify that `pluginContributionPoints` and
 `targetedPluginContributions` are **Available** in the installed SDK's
 `capability-matrix.json`. Do not guess a package name from a feature label or
-copy its declarations into your plugin. The installed
+copy its declarations into your plugin. The maintained
+[`operation-only-channel-provider`](https://github.com/happier-dev/happier/tree/v0.3/packages/plugin-sdk/examples/operation-only-channel-provider)
+package is the beginner Channels provider reference. The installed
 `examples/action-contract-producer` and `examples/action-contract-consumer`
 pair shows package discovery, target observation, and contributor binding from
 public entrypoints.
@@ -101,10 +103,12 @@ host-normalized manifest form and is not author input.
 
 ## Feature-protocol authors (advanced)
 
-Only the independently published feature-protocol package owns its protocol
-schema and generic constructors. Define one only when a real feature has its
-own domain vocabulary, public `/v1` contract, maintained target, and maintained
-contributor proof. Ordinary plugins consume that feature-owned value instead.
+Only the feature-protocol package owns its protocol schema and generic
+constructors. Define one only when a real feature has its own domain
+vocabulary, public `/v1` contract, maintained target, and maintained
+contributor proof; today Channels Protocol is unpublished prepublication
+development at `0.0.0`, not an independently published npm package.
+Ordinary plugins consume that feature-owned value instead.
 
 Descriptor, operation, and embedded-surface roles are public authoring
 contracts. A feature protocol declares the roles; a target observes only the

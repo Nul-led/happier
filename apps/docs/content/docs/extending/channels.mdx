@@ -48,6 +48,28 @@ channel at it.
 | Telegram | `telegram-bot-credential` | The Telegram bot API |
 | GitHub | `github-connected-account` | The GitHub REST API over checkpointed polling |
 
+Each provider also checks provider-side permissions at setup, so a credential
+that authenticates but cannot actually reach the conversation is refused there
+rather than at the first silent failure:
+
+- **Discord** requires the application's privileged **Message Content
+  Intent** to be enabled — setup reads the application flags and fails closed
+  when it cannot confirm them — and the bot invited to the server with
+  **View Channels**, **Send Messages** (or **Send Messages in Threads** for a
+  thread), and **Read Message History**. Setup computes the bot's effective
+  permissions at the exact destination, names any missing permission, and its
+  guidance links an invite carrying exactly those permissions.
+- **Telegram** reads the bot identity from the token. A bot in a shared group
+  also needs BotFather **Group Privacy** disabled — setup observes whether the
+  bot may read all group messages, and every later connection test restates
+  the *current* capability, so flipping privacy back on after setup surfaces
+  on the next test instead of silently narrowing what the channel receives.
+- **GitHub** verifies the selected repository against the credential and then
+  exercises the exact issue-comment collection the channel polls, so a token
+  with repository access but without the **Issues** permission is refused at
+  connection time. Replies post as issue comments, so the credential needs
+  write access to that same collection.
+
 Connecting a Discord or Telegram conversation runs a **pairing challenge** that
 you then finalize —
 or cancel. You choose the conversation to connect; whoever claims it proves who
@@ -83,8 +105,18 @@ model are about failure rather than success:
 
 - **Blocked ingress** can be retried, rather than the message being lost.
 - **A blocked poll** can be retried the same way.
-- **Ambiguous delivery** — where Happier cannot tell which binding an outbound
-  message belongs to — is resolved explicitly instead of guessed.
+- **Ambiguous delivery** — where Happier cannot tell whether an outbound
+  message reached the conversation — is resolved explicitly instead of
+  guessed: you record it as accepted or discard it. Happier never resends an
+  ambiguous delivery on its own.
+
+What Happier keeps is bounded to what recovery still needs. Inbound message
+content is retained while its admission obligations are live, then reduced to
+a compact replay-evidence shell and deleted once the transport's replay window
+has passed. An outbound delivery that reaches a terminal state is kept for a
+thirty-day recovery window so a failure can be resolved; an ambiguous partial
+delivery keeps only a fingerprint of its content but stays visible until you
+resolve it, and delivered content is deleted when its window elapses.
 
 Two collections sync with your account: the channel state itself, and the
 delivery records. Between them they are what lets a retry know what already went

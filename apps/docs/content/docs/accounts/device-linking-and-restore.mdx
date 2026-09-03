@@ -117,6 +117,23 @@ The requester-displayed QR uses the same short lifetime, Home identity binding, 
 binding, sealed credential response, and non-focusing adoption as the phone-scans-computer flow.
 It does not add a comparison code or another approval prompt.
 
+### QR codes from older Happier versions
+
+> **Development status:** This compatibility behavior is implemented in current development
+> builds and has not shipped in a supported release yet.
+
+Current development builds recognize released QR V1 invitations only to explain how to recover.
+They show: “This QR was created by an older version of Happier. Update Happier on the other device
+and create a new QR.” You can then choose **Scan a new QR** or **Cancel**.
+
+Recognition does not start or poll enrollment, transfer or save credentials, restore the old
+six-digit comparison or direct **Approve**/**Reject** flow, convert the invitation to V2, or retain
+or log its secret. Malformed or unknown QR data remains a separate invalid or unsupported result;
+it does not receive the older-QR explanation.
+
+Current development builds create only V2 invitations. V2 linking remains automatic and
+code-free: update the device that created the old QR, then create and scan a new one.
+
 ### Connect a terminal
 
 1. Start terminal login from the CLI

@@ -43,7 +43,7 @@ For supported Agents, the Agent runtime state also moves with the session so the
 Session handoff does not automatically:
 
 - log an Agent CLI into the target machine
-- merge or overwrite the target workspace unless you explicitly enable workspace transfer
+- change the destination workspace unless you chose a workspace action that says it will
 - make unsupported Agents suddenly resumable across machines
 
 If the target side cannot satisfy the Agent/runtime and exact Provider-connection requirements, the handoff cannot complete.
@@ -93,64 +93,230 @@ Use Keep direct when you want the target machine to keep following the Agent-nat
 
 Use Convert to Happier when you want to move out of the machine-bound direct model and let Happier own the session going forward.
 
-## Workspace transfer
+## Your files are a separate decision
 
-Workspace transfer is optional.
+Moving a session and moving its files are two different things, and Happier keeps them
+separate on purpose.
 
-By default, Happier keeps the target workspace unchanged unless you turn transfer on.
+Handoff moves the *session*: the id, the transcript, the ownership. What happens to the
+*workspace* — the folder the session runs in — is a choice you make in the same modal, and
+it can outlive the handoff. "Copy once" ends when the copy lands. The synced modes create a
+**workspace sync relationship** between the two folders that keeps running afterwards, until
+you stop it.
 
-When enabled, the handoff modal lets you choose:
+<Callout type="info">
+Workspace sync is new on the 0.3 development line. It needs the managed sync engine component
+installed on both machines; where that component is unavailable, workspace sync reports
+**Component Unavailable**. The selected workspace action stops, but you can choose **No workspace
+action** and still move the session. See
+[The sync engine, and its licence](#the-sync-engine-and-its-licence).
+</Callout>
 
-- whether to transfer the workspace
-- what to do if the target path already exists
-- how ignored files should be handled
+### Choosing what happens to the workspace
 
-### Conflict policies
+The workspace choice sits in the handoff modal, under **Session handoff**. Three options are
+in front of you:
 
-Current conflict options:
+- **Keep destination updated** — the default, and the right answer most of the time. Source
+  changes reach the destination; files that exist only at the destination are preserved
+  rather than treated as drift.
+- **Copy once** — materialize the workspace on the destination once, then stop. No ongoing
+  relationship is created.
+- **No workspace action** — move the session and leave the destination folder exactly as it
+  is. Use this when the destination already has the right files.
 
-- Create sibling copy
-- Replace existing path
+**Advanced** discloses the two modes that need a deliberate choice:
 
-`Replace existing path` requires explicit confirmation when the destination already exists.
+- **Mirror exactly** — the destination becomes an exact replica, which means files that exist
+  only there may be permanently removed.
+- **Keep both in sync** — two-way. Changes on either side converge, and anything that cannot
+  be reconciled is surfaced as a conflict.
 
-### Ignored files
+Advanced is also where workspace content selection and ignored-file handling live.
 
-Current ignored-file options:
+If a sync relationship already exists between these two folders, it appears in the same menu
+by name and endpoints, showing the mode it was actually created with. Pick it to continue
+that relationship instead of creating a second one.
 
-- Exclude ignored files
-- Include selected ignored files
+### One confirmation for the destination
 
-If you choose Include selected ignored files, you can provide include globs such as:
+Ordinary copy and safe-sync modes proceed without a prompt when the destination is missing or
+empty. If the destination already contains files that must be replaced, Happier asks once after
+the destination machine inspects that exact folder. The confirmation names both machines and
+paths, shows the sync mode you chose, explains the replacement, and the action says
+**Replace destination files**.
 
-- `dist/**`
-- `.env.local`
+**Mirror exactly** can delete files you never asked it to touch, so it always asks — even when
+the destination is missing or empty today, because it authorizes removing destination-only
+files for as long as the relationship runs. The confirmation names the source machine and path,
+the destination machine and path, the sync mode you chose, and says plainly that
+destination-only files may be permanently removed. If the destination is already non-empty, the
+same confirmation also explains that its current contents will be replaced. Confirming it says
+**Mirror and allow removals**.
 
-### Safe-by-default path checks
+That is the whole approval. Pressing the handoff button afterwards does not raise a second,
+vaguer "are you sure" on top of it.
 
-Happier blocks workspace transfer for unsafe source paths such as:
+### What gets copied
 
-- the filesystem root
-- your home directory
-- the shorthand home path (`~`)
+Under **Workspace content** you choose between:
 
-In those cases, the handoff UI forces workspace transfer off instead of attempting to copy an unsafe or excessively broad workspace.
+- **Version-controlled files** — the workspace's Git selection and its exclusions, evaluated
+  on the machine that owns the files.
+- **All files** — the full authorized folder, which is what a non-Git workspace needs.
+
+For a Git workspace, Happier materializes the **repository root**, not just the folder the
+session happened to start in, and then resumes the session at the same path *relative* to
+that root. A session started in `packages/api` inside a repository comes back in
+`packages/api` on the destination, with the repository around it. That also means the sync
+relationship owns the repository root.
+
+If the Git selection cannot be evaluated and verified for a workspace, handoff fails and says so. It does
+not quietly widen to copying every file.
+
+Ignored files are handled separately: **Exclude ignored files**, or **Include selected
+ignored files** with globs such as `dist/**` or `.env.local`.
+
+### Preparing the destination folder
+
+Happier inspects the exact destination before it stops the session on the source:
+
+- **Missing or empty destination** — prepared and populated with no extra approval for Copy once
+  or Keep destination updated. Mirror exactly still asks once because it authorizes future
+  removal of destination-only files.
+- **Non-empty destination** — one approval, naming the destination machine and path, telling
+  you its files will be replaced. For Mirror exactly, replacement and future removals are combined
+  in that same approval rather than asked twice. If the destination changes between your approval
+  and the work actually running, Happier stops and reports it rather than replacing something you
+  did not look at.
+
+Some paths are refused outright, for both the source and the destination: the filesystem
+root, your home directory, the `~` shorthand, a blank path, and anything that is not an
+absolute path. Handoff will not sync a folder that broad.
+
+## Living with a synced workspace
+
+A relationship appears as a row in Projects, in session details, and in Settings — the same
+row in all three, showing the workspaces, the direction, one plain-language status, when it
+last synchronized, and whether anything needs attention. Every row opens details.
+
+The actions on a relationship are:
+
+- **Sync now** — ask for a cycle immediately instead of waiting for the next one.
+- **Pause** / **Resume** — stop and restart reconciliation without discarding the
+  relationship.
+- **Open on \<machine\>** — open either endpoint folder on the machine that owns it.
+- **Stop syncing** — remove the relationship. Sync stops; the files in *both* workspaces stay
+  exactly where they are. Happier does not delete a workspace when a relationship ends.
+
+Status always comes from the controller machine — the one that owns the relationship. When
+that machine cannot be reached, the row says so rather than guessing, and the other endpoint
+does not start syncing on its own.
+
+Direction follows the relationship, not the latest handoff. A one-way relationship
+(**Keep destination updated**, **Mirror exactly**) always flows from its source to its
+destination; handing the session back to the original machine does not silently reverse it.
+**Keep both in sync** has no direction at all — either side can change, and both converge.
+
+## Conflicts
+
+A conflict is one path that changed on both sides in a way the engine will not decide for
+you. Conflicts are surfaced on the session and open a details view built around the decision
+you have to make.
+
+The view leads with the relationship — its mode, its live status, its two endpoints with
+their machine names and current folders — then the conflicts themselves, with a refresh
+action. Counts are honest: if the list is bounded, it tells you how many more conflicts exist
+beyond the ones shown rather than implying you are looking at all of them.
+
+Opening one conflict shows both versions, with a text diff where both sides are readable, and
+an explicit state where they are not — binary, too large, missing, or changed since the list
+was built. Then you choose: **Keep Local Version** or **Keep Remote Version** (or the endpoint
+names, when neither side is local to you).
+
+What that choice does, and what it will not do:
+
+- The version you did not keep is removed **only after** Happier verifies it has not changed
+  since you looked at it.
+- If it *did* change, nothing is deleted. The conflict refreshes in place and tells you to
+  review the newer versions before choosing again.
+- If a file has no current fingerprint, it cannot be removed safely, so that choice is not
+  offered at all — with an explanation, rather than a button that fails.
+- Choosing between two ordinary files does not ask for an extra confirmation. The choice *is*
+  the decision.
+- Removing a **directory** does ask, because the removal is recursive. A conflict at the
+  workspace root is refused outright.
+
+At the bottom of the view, a closed **Diagnostics** disclosure holds the raw material for a
+support conversation: relationship and machine identifiers, the live folder paths on each
+side, and the engine's own mode, state and error code. Open it and everything in it is
+selectable and copyable. It stays out of the way until you ask for it.
+
+## How the files travel
+
+Happier moves workspace bytes between the two machines over its own authenticated,
+encrypted machine connection, direct when the network allows it and relayed when it does not.
+There is nothing to configure and no transport to pick — you will not find a Mutagen, Iroh or
+broker choice anywhere in the product, because those are implementation details of one
+automatic path. If that path is unavailable, the relationship pauses and says so; it never
+quietly falls back to a slower or less private route.
+
+## The sync engine, and its licence
+
+Happier's own source is MIT-licensed, and that does not change.
+
+Reconciliation is done by a fork of [Mutagen](https://mutagen.io), which Happier maintains,
+builds and releases **separately** from Happier itself. It is not embedded in Happier's source
+packages, installers or release archives. Happier installs it the same way it installs its
+other managed runtime components: a pinned version, verified before it runs, and refused if
+the version, build identity, signature or checksums do not match what Happier expects.
+
+The engine artifact is **mixed MIT + SSPL** — not MIT-only — and its release carries the
+Mutagen licence, the SSPL text, third-party notices, and its exact provenance: fork commit,
+source tag, build tags and checksums. If your organization cares how SSPL-covered components
+reach your machines, read those terms yourself; this page describes how Happier is put
+together and is not legal advice.
+
+## Data from the retired replication engine
+
+The 0.3 line replaces an earlier workspace replication engine. Data left behind by that
+engine is never executed — the new engine fails closed rather than trying to interpret it.
+
+The same refusal protects the handoff itself. If one machine still runs a Happier version that
+offers the retired workspace transfer, a handoff that tries to use it fails with an
+update-required error and moves nothing. Update Happier on both machines, or choose
+**No workspace action** — the session itself still moves.
+
+When Happier recognizes retired data on a machine, it moves it into a private quarantine
+folder and disables workspace sync on that machine. The UI then shows you the quarantine
+path, copyable, with **Open Folder** where the platform supports it.
+
+Happier does not delete that folder for you. Removing it is a deliberate, offline step:
+
+<Steps>
+
+### Stop every Happier daemon that can use that data directory
+
+### Remove exactly the quarantine folder shown in the UI, using your operating system
+
+### Restart the daemons, then reinspect from the same screen
+
+</Steps>
+
+If Happier cannot classify what it found — an unexpected shape, a symlink, a permissions
+mismatch — it leaves the data completely untouched and reports the path instead. It will not
+guess, and it will not delete on a guess.
 
 ## Session handoff settings
 
-You can set default handoff behavior in:
+Defaults live in **Settings → Session → Session handoff**:
 
-- Settings -> Session -> Session handoff
-
-Those defaults include:
-
-- whether workspace transfer is enabled by default
-- the default workspace conflict policy
-- the default ignored-file mode
-- ignored-file include globs
+- the default workspace sync mode
+- under Advanced, the advanced sync behavior and workspace content selection
+- the ignored-file mode and its include globs
 - the default target mode for direct-session handoff
 
-The modal still lets you override those defaults for an individual handoff.
+The handoff modal always lets you override them for one handoff.
 
 Related guide:
 
@@ -196,12 +362,12 @@ Related guide:
 
 ## What you see during handoff
 
-When you start handoff, Happier shows a progress modal while it:
+When you start handoff, Happier shows a progress modal that moves through three plain stages
+— **Preparing**, **Moving**, **Ready** — while it prepares the target machine, moves the
+session state, resumes the session there, and updates ownership.
 
-- prepares the target machine
-- moves the session state
-- resumes the session on the target
-- updates the session ownership
+Technical phases, byte counts and engine terminology stay under Details, where you can open
+them if you need them.
 
 After completion:
 
@@ -229,11 +395,11 @@ Use Keep direct when the provider-backed ownership model is still what you want 
 
 Use Convert to Happier when you started from a provider-native session but now want Happier to own the transcript and future continuity.
 
-### Move the session but leave the target workspace alone
+### Move the session but leave the destination workspace alone
 
-Leave workspace transfer off. This is the safest default when:
+Choose **No workspace action**. This is the safest choice when:
 
-- the target already has the right files
+- the destination already has the right files
 - you want session continuity without file copying
 - the source path is broad or machine-specific
 
@@ -247,12 +413,31 @@ Usually one of these is true:
 - the machine is the current owner
 - the Agent does not support handoff for this session
 
-### Workspace transfer is disabled
+### Handoff will not start with a workspace action selected
 
-This usually means:
+Happier refuses a source or destination path it considers unsafe to synchronize: a filesystem
+root, your home directory, the `~` shorthand, a blank path, or a path that is not absolute.
+Choose a narrower folder, or choose **No workspace action**.
 
-- your defaults have workspace transfer off, or
-- Happier detected an unsafe source path such as `~` or a filesystem root
+### Workspace sync says the component is unavailable
+
+The managed sync engine is not installed for that machine's platform. The session, the
+handoff, and everything unrelated to workspace sync remain available, but the selected workspace
+action cannot continue. Retry after the component is available, or choose **No workspace action**
+to move only the session. See [The sync engine, and its licence](#the-sync-engine-and-its-licence).
+
+### Workspace sync is disabled on one machine
+
+That machine still holds data from the retired replication engine. Happier quarantined it and
+disabled sync there deliberately; clearing it is the offline step described in
+[Data from the retired replication engine](#data-from-the-retired-replication-engine).
+
+### A workspace action fails and asks for an update
+
+The machine on the other side still runs a Happier version that offers the retired workspace
+transfer. Happier refuses the workspace action instead of running retired workspace code.
+Update Happier on both machines and retry, or choose **No workspace action** to move only
+the session.
 
 ### The handoff action is missing
 

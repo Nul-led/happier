@@ -10,14 +10,14 @@ presentation-only `context.ui`. Use the service that owns the capability:
 | Task | Owner |
 | --- | --- |
 | Invoke a declared action or inspect action availability | `context.services.actions` |
-| Emit or subscribe to declared plugin/host events | `context.services.events` (deferred) |
+| Emit or subscribe to declared plugin/host events | `context.services.events` when the service is available; Automation Event source authoring uses `/events` helpers and canonical Automation Actions instead. |
 | Make a host-authorized HTTP request | `context.services.http` |
 | Ask a question, request approval, or confirm with a present user | `context.services.interactions` |
-| Work with Provider connections, catalogs, or model selection | `context.services.providers` (deferred) |
-| Discover/read plugin resources or prompt assets | `context.services.resources` (deferred) |
+| Work with Provider connections, catalogs, or model selection | `context.services.providers` |
+| Discover/read plugin resources or prompt assets | `context.services.resources` |
 | Use MCP server/client and discovery capabilities | `context.services.mcp` |
 
-The context also declares filesystem (currently deferred), exec, settings, storage, secrets,
+The context also declares filesystem, exec, settings, storage, secrets,
 notifications, sessions, managed services, and Connected Accounts where their
 declarations and current availability permit them. Check
 `context.services.availability(...)` when an owner can be absent, pass the

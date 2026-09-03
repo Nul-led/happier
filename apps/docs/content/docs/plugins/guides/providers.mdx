@@ -10,12 +10,10 @@ credential materialization.
 
 ## Availability
 
-Provider declarations, managed runtimes, and the `/providers` type entrypoint
-are available in the current source contract. `context.services.providers`
-remains deferred in the [capability matrix](/plugins/manifest/availability)
-until a maintained external development-source plugin proves lifecycle and real
-invocation in the current loaded development stack, including currentness. It
-is not supported or advertised for ordinary author use while deferred.
+Provider declarations, managed runtimes, the `/providers` type entrypoint, and
+`context.services.providers` are available in the current source contract. The
+[capability matrix](/plugins/manifest/availability) records loaded-platform and
+release evidence separately from source availability.
 
 ## Descriptor-only Provider
 
@@ -28,8 +26,7 @@ descriptor itself is the contribution.
 
 Choose this only when the Provider needs one host-supervised local service.
 Add the declaration's cold `managedRuntime` facet and one matching runtime.
-`definePlugin` registers that runtime; manual ABI authors use exactly one
-`api.providers.register(localId, runtime)` call for the same local id.
+`definePlugin` registers that runtime for the same local id.
 
 The runtime uses its `context.managedServices` service to supervise or attach
 the exact service handle, waits for health, and returns service-path endpoints.

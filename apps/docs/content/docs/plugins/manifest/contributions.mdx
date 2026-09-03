@@ -14,7 +14,7 @@ description: Contribution families that a plugin can declare for projection and 
 | `commands` | Declarative CLI entries around actions | manifest action reference |
 | `hooks` | Host extension points | `hooks.<id>.handler` |
 | activation cleanup | Plugin-owned resources from a successful activation | cleanup function returned by `setup` |
-| `events` | Plugin-authored event ids and payload schemas | The declaration family is available; `context.services.events` remains deferred for ordinary author use in the current generated matrix. |
+| `events` | Plugin-authored event ids and payload schemas | The declaration family and `context.services.events` are available in the current generated matrix. |
 | `agents` | AI agent declarations and runtime metadata | custom Agents: `agents.<id>.factory`; declarative ACP: host-owned |
 | `providers` | Model-provider declarations, catalogs, connection facts, and an optional cold managed-runtime facet | ordinary Providers are descriptor-only; a managed Provider uses `providers.<id>.runtime` |
 | `connectedAccountDescriptors` | A plugin-produced account service and authentication modes | `connectedAccountDescriptors.<id>.runtime` |
@@ -30,6 +30,7 @@ description: Contribution families that a plugin can declare for projection and 
 | `voiceModelPacks` | Immutable STT/TTS model and voice assets for host-owned engines | none; declarative data only |
 | `voiceProviders` | Conversation, STT, and TTS providers with strict settings, catalogs, limits, and credential declarations | `voiceProviders.<id>.runtime` when the declared realm needs one |
 | `sessionHeaderActions` | Declarative Session-header actions | manifest action reference |
+| `searchProviders` | Declarative universal-Search providers | manifest action reference |
 
 The generated `capability-matrix.json` in a proven published SDK artifact is the
 availability authority for that exact artifact. This catalog describes shapes
@@ -88,6 +89,60 @@ or more `contentClasses`; it can further narrow matching with normalized
 not a renderer, route, placement, or host-projection binding. The referenced
 view independently declares its direct V2 `container`, `target`, and `renderer`;
 the viewer only associates matching openable content with that existing view.
+
+## Search providers
+
+`contributes.searchProviders` declares a provider for the universal Search
+surface. Each row is a local `id` and one `action`: a same-plugin Action id.
+
+```jsonc
+{
+  "searchProviders": [{ "id": "entries", "action": "entries/search-v1" }]
+}
+```
+
+Everything else comes from that Action, so nothing here is restated. The
+referenced Action must be declared by the same plugin as a `safe`, `global`,
+`ui`-surface read with no ordinary placement (`placementBindings: []`), and it
+must declare the canonical search schemas:
+
+```ts
+import {
+  PluginSearchQueryV1Schema,
+  PluginSearchResultV1Schema,
+} from '@happier-dev/plugin-sdk';
+```
+
+The Action receives `{ query, limit }` and returns `{ items, truncated }`. Each
+item carries a provider-stable `id`, a `title`, an optional `subtitle` and
+`icon` token, and one `command` from the ordinary
+`executeAction | openSurface` semantic union. `truncated` is required so a
+bounded answer is never presented as a complete one.
+
+The host owns everything a provider does not declare: debounce, minimum query
+length, empty-query policy (no request is made on an empty query), section
+order, row caps, loading, empty and error states, row rendering, focus,
+virtualization, and activation. Cancellation reaches the Action handler through
+its ordinary `context.signal`, and a disabled, updated, uninstalled, or retired
+plugin loses its section before a stale row can be activated.
+
+Results carry no callbacks, URLs, router paths, relevance scores, HTML, preview
+metadata, pagination cursors, or React components. Provider order is preserved
+exactly as returned; scores from different providers are never compared because
+no score crosses the wire.
+
+### `searchProviders` is not `composerReferences`
+
+The two families answer different questions and must not be merged or aliased:
+
+| | `composerReferences` | `searchProviders` |
+| --- | --- | --- |
+| Question | "what context should this message carry?" | "which entities match what I typed?" |
+| Result | reference candidates resolved to model-facing text | host-rendered entity rows |
+| Effect of picking one | inserted into the composer draft | opened or executed through its declared command |
+| Trigger | a composer trigger character | the universal Search surface |
+
+A plugin that wants both declares both.
 
 ## Handler id matching
 
@@ -277,61 +332,6 @@ Both runtime kinds use the same non-disposable
 runtime. `definePlugin(...)` generates the matching low-level registration. The
 local id and runtime kind must match the cold declaration. Missing, duplicate,
 extra, wrong-kind, or wrong-realm registrations fail before graph publication.
-
-The next two snippets are low-level ABI equivalents for host conformance; an
-ordinary author keeps the same declaration and runtime in one
-`definePlugin({ voiceProviders: { ... } })` source owner.
-
-Conversation client leaf:
-
-```ts
-import type { PluginApi } from '@happier-dev/plugin-sdk';
-import type { RealtimeVoiceProviderRuntime } from '@happier-dev/plugin-sdk/voice/client';
-
-declare const browserConversation: RealtimeVoiceProviderRuntime;
-const runtime: Parameters<PluginApi['voiceProviders']['register']>[1] = browserConversation;
-
-export function activate(api: Pick<PluginApi, 'voiceProviders'>): void {
-  api.voiceProviders.register(
-    'browser-conversation',
-    runtime,
-  );
-}
-```
-
-Daemon speech leaf with independently selectable STT and TTS contributions:
-
-```ts
-import type { PluginApi } from '@happier-dev/plugin-sdk';
-import type { SpeechProviderRuntime } from '@happier-dev/plugin-sdk/voice/speech';
-
-type RegisteredVoiceProviderRuntime = Parameters<PluginApi['voiceProviders']['register']>[1];
-
-const stt = {
-  kind: 'speech',
-  async transcribe(request, context) {
-    context.signal.throwIfAborted();
-    return { requestId: request.requestId, text: 'transcript' };
-  },
-} satisfies SpeechProviderRuntime;
-
-const tts = {
-  kind: 'speech',
-  async synthesize(request, context) {
-    context.signal.throwIfAborted();
-    return {
-      requestId: request.requestId,
-      bytes: new Uint8Array([82, 73, 70, 70]),
-      mimeType: 'audio/wav',
-    };
-  },
-} satisfies RegisteredVoiceProviderRuntime;
-
-export function bindSpeech(api: Pick<PluginApi, 'voiceProviders'>): void {
-  api.voiceProviders.register('speech-stt', stt);
-  api.voiceProviders.register('speech-tts', tts);
-}
-```
 
 The public-authoring fixture in
 `packages/plugin-sdk/examples/public-authoring/` contains full strict

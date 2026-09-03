@@ -1,0 +1,192 @@
+---
+title: Search
+description: Find commands, sessions, projects, messages, settings, files, and commits from one place, and open the exact thing you found.
+---
+
+Twenty sessions, four worktrees, and a half-remembered decision from last
+Tuesday: Happier's Search exists so none of that requires remembering where
+something lives. Open one surface, type a few words, and jump straight to the
+command, message, or file you meant.
+
+<Callout type="info">
+  Search replaces the old commands-only palette in the **Happier 0.3
+  development channel**, which is the channel this page describes. It is not
+  yet part of a released stable version. On earlier releases the same shortcut
+  opens a commands-only list and `/search` can still be transcript-only.
+</Callout>
+
+## Opening Search
+
+There is one Search and several ways in, all reaching the same surface:
+
+- **Shortcut** — <kbd>Alt</kbd>+<kbd>K</kbd> on web, or
+  <kbd>Mod</kbd>+<kbd>K</kbd> elsewhere, opens Search almost anywhere. The
+  command is called **Open Search** and can be rebound or disabled under
+  [Keyboard shortcuts](/apps/keyboard-shortcuts).
+- **Sidebar** — the **Search** row in the session list's sidebar, directly
+  above **Browse Existing Sessions**.
+- **Native** — the Search action in the phone and tablet apps opens Search as a
+  full-screen overlay; on devices with a hardware keyboard the same shortcut
+  works.
+- **Deep link** — `happier:///search` opens the same Search surface directly,
+  so a bookmark or history entry lands in the same place.
+- **From the session list** — when you have typed into the session list's own
+  search field, a quiet **Search everything for …** action escalates the same
+  query into Search.
+
+## What you can find
+
+Results are grouped by what they are, and each group answers at its own pace —
+local groups are instant while remote ones fill in as they arrive:
+
+- **Commands** — built-in commands and Actions contributed by trusted plugins.
+- **Sessions** — your sessions, including archived or not-currently-loaded ones
+  when their owning source permits.
+- **Projects** — projects and workspaces from your account's synced
+  projections.
+- **Messages** — matches inside session transcripts, from the transcript
+  source described [below](#where-message-results-come-from).
+- **Settings** — settings pages, matched on their titles and keywords.
+- **Files** — files in the exact workspace you currently have open.
+- **Commits** — commits reachable from the current Git branch or the current
+  Sapling parent set in that workspace.
+- **Plugin results** — entities from trusted plugins that provide a search
+  provider, such as [Triage](/code/review-comments) issues and pull requests.
+
+## Nothing typed yet? Start from what you had open
+
+Opening Search and hovering over the results before you type costs nothing
+remote: an empty query shows recent sessions, recent projects, and suggested
+commands from what is already on the device. Not a ranking system — just the
+things you had open. The moment you type, the wider groups join in.
+
+## Where message results come from
+
+Happier can search transcripts in two distinct ways, and which one answers a
+given query depends on your context — never both at once:
+
+- **Personal Home search**. If you use a
+  [Personal Home](/self-hosting/self-host-runtime), its plaintext transcripts
+  are searchable as soon as the Home has finished building its search index.
+  This is on by default; a server operator can turn it off. Each match points
+  to one message and shows text centered around the match. A short message may
+  fit in full, but the result is not guaranteed to contain the complete
+  verbatim message.
+- **Local memory search**. Otherwise, machines where you have turned on
+  [local memory search](/organize/local-memory-search) answer from their own
+  machine-local index. Results can be message chunks or short generated
+  summaries — a faithful excerpt, not always the verbatim text.
+
+Both are opt-out or opt-in per source exactly as described above, and both are
+**your** data on machines you control. Personal Home search keeps its derived
+index on that Home and serves it through an authenticated, visibility-filtered
+Home endpoint; local memory search keeps its derived index on the selected
+machine. Happier does not copy every Home and machine into one central index or
+offer a server-side endpoint that aggregates every Search domain.
+
+## Scope is deliberate
+
+Search stays close to your current context instead of fanning out everywhere:
+
+- message search runs against your **current Personal Home**, or the machine
+  you explicitly selected for local memory search — never every machine you
+  own at once;
+- files search **the exact workspace you have open** — no other repository, no
+  other machine. Commit search stays within that workspace's current Git branch
+  or current Sapling parent set.
+
+Search starts with the exact context you opened it from. If another reachable
+Home or workspace is available, use the compact scope control to search that
+target explicitly. This changes only the open Search surface—not the Home or
+session focused elsewhere in Happier. **Search everything for …** preserves
+the Home selected in the session list.
+
+When the current context cannot answer, the relevant group says so honestly
+rather than quietly searching somewhere else. There is no all-machine or
+all-backend sweep, by design: breadth comes from choosing another context, not
+from Search silently widening it.
+
+## When a group can't answer
+
+Groups fail independently, and each states its own situation while the rest of
+Search keeps working:
+
+- **Indexing** — while a Personal Home builds its index, Search uses an
+  otherwise eligible explicitly selected local-memory machine. If there is no
+  such machine, the Messages group reports the Home's indexing state.
+- **Offline** — a machine or Home that cannot be reached reports that instead
+  of pretending to have no matches.
+- **Disabled** — if transcript search is unavailable for your context (the
+  feature is off, or no machine has local memory enabled), the group explains
+  what to enable rather than showing an empty result.
+- **Partial coverage** — local memory search keeps its index within a disk
+  budget, so the oldest indexed content can be evicted. Coverage under a
+  budget is honest, not complete.
+
+## Archived sessions
+
+Local memory search **excludes archived sessions by default**. Turning on
+**Search archived sessions** for a machine makes its archived sessions
+eligible, and turning it off removes them from that machine's search index.
+The control lives with the machine's memory settings under
+**Settings → Local Memory Search**.
+
+Two honest details about that switch. First, enabling it does not
+retroactively index everything: what gets indexed still follows the machine's
+backfill choice (**New only**, **Last 30 days**, or **All history**).
+Second, the switch only applies where a machine's Happier build supports it —
+if a machine has not reported support, Happier says an update is needed there
+instead of letting you believe a setting was applied that was not.
+
+## Opening a result
+
+A result remembers exactly where it came from: which Home, which machine,
+which session, which workspace. Opening it takes you to *that* target — search
+messages while thinking about Home A, tap a result, and Home A opens even if
+your focus moved to Home B while results were loading. If the target has since
+disappeared or gone offline, Search tells you that rather than opening
+something else that happens to look similar.
+
+## Plugin-provided results
+
+Trusted plugins can contribute search providers, and their results render as
+ordinary Search rows: the plugin supplies typed data and a declared target,
+while Happier draws the rows and handles selection, keyboard, and
+accessibility. A plugin's rows disappear safely when the plugin is disabled,
+updated, or removed. Results are bounded, and when a plugin's answer was
+truncated it says so instead of posing as the complete list.
+
+## Settings configures, Search searches
+
+Settings pages are a search *result*, not a search *entry*: you configure
+transcript search where its sources live — **Settings → Local Memory Search**
+for a machine's index, **Settings → Features** for availability — and then
+search from Search, the sidebar, or the session list like everywhere else.
+
+## When it goes wrong
+
+- **The shortcut does nothing** — check that **Open Search** is enabled and
+  bound under [Keyboard shortcuts](/apps/keyboard-shortcuts); both the shortcut
+  registry and Search itself can be turned off there.
+- **No message results anywhere** — see
+  [Where message results come from](#where-message-results-come-from): enable
+  local memory search on a machine, or check with your server operator that
+  Personal Home search is available.
+- **A machine finds nothing it used to** — confirm that machine is online and
+  still has memory search enabled, and check whether its archived or backfill
+  settings changed; disk-budget eviction can also retire the oldest content.
+- **A file or commit result is missing** — files only search the workspace you
+  currently have open. Commits also stay within its current Git branch or
+  current Sapling parent set. Open the intended workspace and branch or parent,
+  then search.
+
+## Related
+
+- [Local memory search](/organize/local-memory-search) — the machine-local
+  transcript index and its settings.
+- [Organizing sessions](/organize/session-organization) — folders, tags, and
+  pins, the other half of finding your way back.
+- [Keyboard shortcuts](/apps/keyboard-shortcuts) — every rebindable shortcut,
+  including Open Search.
+- [Feature flags](/extras/feature-flags) — the server-side availability of
+  transcript search features.

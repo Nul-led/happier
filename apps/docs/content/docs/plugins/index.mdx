@@ -100,9 +100,10 @@ reading a guide about one.
 - Keep Agent-specific behavior inside the plugin-owned Agent runtime leaf.
 - Do not write Happier transcript rows, session rows, or execution-run state directly from agent code.
 
-The SDK is one package-level **Developer Preview** source contract. The
-workspace package is private at `0.0.0` on a prepublication hold, so this is
-not an installable public release or a released-semver compatibility promise.
+The SDK is one package-level **Developer Preview** source contract. In this
+checkout, `@happier-dev/plugin-sdk` is a private workspace package versioned
+`0.0.0` on a prepublication hold, so this documentation is not claiming a
+published npm package or a released-semver compatibility promise.
 Use the current public entrypoint inventory and capability matrix for the
 authoring contract; do not infer a different stability tier per export.
 Preview status does not waive correctness, install safety, lifecycle cleanup,

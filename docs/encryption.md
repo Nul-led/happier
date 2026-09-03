@@ -527,6 +527,11 @@ generic KV API. The draft routes carry an explicit content envelope and enforce 
 This keeps one draft document and synchronization contract without weakening the different key
 ownership of Account-scoped and Session-scoped data.
 
+Snapshot hydration distinguishes a temporarily unavailable existing-Session key/context from an
+invalid envelope or payload. It may skip only the unavailable Session record while continuing to
+materialize other Account drafts; malformed or mode-incompatible content fails the snapshot so it
+cannot be silently classified as a local key-loading condition.
+
 ## On-wire formats (mode-aware fields)
 
 ```mermaid
@@ -916,6 +921,33 @@ Feature gates:
 
 Do not gate plaintext behavior on raw env vars or `capabilities` fields.
 
+### Plaintext Personal Home search
+
+Plaintext Personal Homes can maintain `derived/search.sqlite`, a Home-local
+FTS projection rebuilt from canonical plain Session messages. It is derived,
+replaceable state: startup reconciliation, live transcript mutations, restore,
+explicit repair, and recognized SQLite corruption rebuild it through the Home
+search lifecycle. The projection does not become a second transcript authority
+and does not copy Account ACL or sharing state.
+
+`POST /v1/home/search` is the one source-specific Home search endpoint. It is
+feature-gated by `search`, authenticates a present user, resolves that user's
+currently visible Session ids through the canonical authorization owner, and
+passes those ids into the Home database query. Authorization therefore remains
+query-time even though the plaintext-derived index can contain rows for other
+users' Sessions. The endpoint is not a Universal Search aggregation service.
+
+Home results are message-granular. The shared memory-search `summary` field
+contains a match-centered snippet rendered from pristine message text, falling
+back to the whole text only when it fits; callers must not describe it as a
+guaranteed full verbatim message.
+
+E2EE Session content is never admitted to this Home index. A non-plaintext Home
+does not construct the lifecycle, advertise Home-search readiness, or expose a
+usable Home search route. `capabilities.homeSearch` reports readiness only; it
+does not authorize search and does not weaken the Account/Session envelope
+rules above.
+
 ### Account-mode transition status
 
 Account mode and Session transcript mode are separate: an Account transition does not
@@ -990,20 +1022,12 @@ provisioning response with HMAC-SHA-256. The requesting terminal keeps that secr
 short-lived pending state and does not include it in the relay auth request. Current approval writers
 require this v3 context and never emit an unbound legacy response.
 
-Readers retain v1/v2 compatibility only for a previously issued request that has no v3 context. Once
-a request carries v3 context, an absent, malformed, expired, or unauthenticated response fails closed
-instead of falling back to legacy material. Users can require v3 for every accepted response:
+Current terminal pairing is v3-only. An absent, malformed, expired, or unauthenticated v3 response
+fails closed; the reader does not reinterpret it as legacy v1/v2 material. `auth request --json`
+persists the complete v3 context in private pending-auth state so `auth wait` cannot accidentally
+lose the binding. Historical unbound terminal requests must be replaced with a fresh v3 request.
 
-```bash
-HAPPIER_TERMINAL_PAIRING_REQUIRE=v3 happier auth
-```
-
-`v3` is a minimum accepted pairing-protocol requirement: legacy v1/v2 responses are rejected, and
-future supported versions may satisfy the same or a stronger requirement. Unknown values fail
-closed with a configuration error. `auth request --json` persists the requirement and complete v3
-context in private pending-auth state so `auth wait` cannot accidentally lose the binding.
-
-Native-app QR pairing can provide relay-independent authentication once enforcement is active
+Native-app QR pairing provides relay-independent authentication
 because the secret travels camera-to-app. Web pairing cannot make the same guarantee against a
 hostile self-hosted relay: that relay also serves the JavaScript which receives the secret, so the
 web flow necessarily trusts its web origin.
@@ -1019,8 +1043,8 @@ The terminal-v3 provisioning union has one semantic owner and exactly two curren
 
 Persisted `Account.encryptionMode`, together with available consistent data-key material, determines
 which result is permitted. A requester capability may reject an unsupported result but cannot choose
-or downgrade it. Legacy recovery-secret credentials remain reader-only compatibility material: a
-current writer never exports a new raw or unbound legacy secret.
+or downgrade it. Existing Account recovery credentials can remain readable at their own storage
+boundary, but terminal pairing neither reads nor writes a raw or unbound legacy response.
 
 ## External Sessions secure refresh and publication
 

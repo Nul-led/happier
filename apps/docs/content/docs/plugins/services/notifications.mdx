@@ -11,12 +11,10 @@ for every contribution family.
 ## Availability
 
 The Developer Preview source API has maintained external-author source-consumer
-evidence. Loaded availability remains deferred; consult the matrix unblock
-condition before relying on the capability in a current product runtime. The
-capability becomes loaded-platform available only after the current development
-stack proves real invocation, replacement, disable, and uninstall currentness.
-The nonbundled action-contract pair is that external source-consumer evidence,
-but it is not loaded-stack proof.
+evidence and is available in the current source contract. The capability matrix
+records loaded-platform and release evidence separately from source
+availability. The nonbundled action-contract pair is external source-consumer
+evidence, not a loaded-stack or release proof.
 
 ## Declare a category and a channel
 
@@ -65,11 +63,12 @@ notificationChannels: {
 },
 ```
 
-`examples/action-contract-producer` in the SDK package is a conformance
-reference for this flow. It declares the category and channel, registers the
-sender through normal activation, and sends through the service from an Action.
-It proves the public external-author source seam, but not loaded-platform
-availability.
+The repository's
+[`action-contract-producer`](https://github.com/happier-dev/happier/tree/v0.3/packages/plugin-sdk/examples/action-contract-producer)
+example is a conformance reference for this flow. It declares the category and
+channel, registers the sender through normal activation, and sends through the
+service from an Action. It proves the public external-author source seam, but
+not loaded-platform or release availability.
 
 ## Send from an invoked handler
 

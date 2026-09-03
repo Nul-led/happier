@@ -416,6 +416,24 @@ untrusted content that contains it is defanged like `Recent transcript:` and `Su
 The seed retires on provider **acceptance**, not composition, so a rejected or cancelled first
 dispatch does not lose the context.
 
+Acceptance and retirement are two writes, and only the first is durable at the moment it happens.
+The provider's acceptance settles the Pending row through the incumbent durable delivery path;
+retiring `replaySeedV1` is a separate metadata write that can fail, and the hold that retries it is
+runtime-local. So the seed records **which Pending row it was composed into** —
+`replaySeedV1.dispatchedToLocalId`, written before dispatch — and the next admission asks the
+Pending owner whether that exact row reached provider-accepted resolution. Accepted completes the
+lost retirement; rejected, blocked or still-owed leaves the seed live for the next dispatch; an
+unreadable durable status withholds the seed for that one input rather than guessing either way.
+This is not a second acceptance fact: the association records only where the seed went, and
+`readDurableProviderInputAcceptanceV1` derives the outcome from the committed transcript row and the
+server's own pending projection. An input that is accepted after the dispatch-time refit dropped the
+seed releases the association first, so that acceptance cannot retire a seed it never carried.
+
+While a retirement keeps failing, no further provider input is admitted. The park wakes on queue
+growth, on the incumbent Session metadata/reconnect wake, or on shutdown, and each wake grants
+exactly one retry. The metadata wake is what makes an already-queued follow-up recoverable: queue
+growth alone required yet another prompt to arrive before the blocked one could dispatch.
+
 ## Feature gate
 
 `sessions.agentSwitching`, server-represented, `defaultFailMode: 'fail_closed'`, depends on

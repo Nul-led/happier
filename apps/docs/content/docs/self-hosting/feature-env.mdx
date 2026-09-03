@@ -4,8 +4,8 @@ description: Every HAPPIER_FEATURE_* variable the server reads, generated from t
 ---
 
 This is the complete list of environment variables the server reads to decide
-what it advertises and how much of it a client may use. There are **159**, of
-which **54** are on/off switches and the rest are limits, timeouts,
+what it advertises and how much of it a client may use. There are **160**, of
+which **55** are on/off switches and the rest are limits, timeouts,
 policies and header names.
 
 Two kinds of variable are mixed together here on purpose, because the server
@@ -168,6 +168,12 @@ Core local-services product gates (server-represented + default-allow). Exposure
 | `HAPPIER_FEATURE_PROVIDERS__ENABLED` | Switch |
 | `HAPPIER_FEATURE_PROVIDERS_LOCAL_DISCOVERY__ENABLED` | Switch |
 | `HAPPIER_FEATURE_PROVIDERS_LOCAL_MODEL_MANAGEMENT__ENABLED` | Switch |
+
+### Search
+
+| Variable | Kind |
+| --- | --- |
+| `HAPPIER_FEATURE_SEARCH__ENABLED` | Switch |
 
 ### Browser
 

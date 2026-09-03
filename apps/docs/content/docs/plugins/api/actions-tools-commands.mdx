@@ -313,12 +313,9 @@ Tools expose plugin actions to tool-capable surfaces. The manifest owns tool met
 
 Use tools when the operation is meant to be called by agents or MCP-compatible tool clients.
 
-> **Development status:** Tools remain deferred. They are not supported or
-> advertised for ordinary author use; do not rely on them. A maintained external
-> development-source plugin must invoke its Tool Action through the real daemon
-> MCP catalog in the current loaded development stack and prove lifecycle, real
-> invocation, and replacement, disable, and uninstall currentness before the
-> capability matrix can advertise Tools as available.
+> **Development status:** Tools are available in the current source contract.
+> The capability matrix records loaded-platform and release evidence separately;
+> do not treat an unrecorded loaded proof as a published release claim.
 
 ### Worked tool example
 
@@ -382,13 +379,9 @@ export const { manifest, activate } = definePlugin({
 Commands expose CLI-facing entries. Command declarations specify their path, visibility, availability, and canonical action reference; they do not register a parallel command handler.
 
 > **Development status:** Command declarations and canonical host-catalog
-> wiring exist in current source, but Commands remain deferred. They are not
-> supported or advertised for ordinary author use; do not rely on them. A
-> maintained external development-source plugin must invoke its Command Action
-> through the canonical plugin command catalog in the current loaded development
-> stack and prove lifecycle, real invocation, and replacement, disable, and
-> uninstall currentness before a published capability matrix or this guide can
-> advertise Commands as available.
+> wiring are available in the current source contract. The capability matrix
+> records loaded-platform and release evidence separately; do not treat an
+> unrecorded loaded proof as a published release claim.
 
 ### Current-UI commands
 

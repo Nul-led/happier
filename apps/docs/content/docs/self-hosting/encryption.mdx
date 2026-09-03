@@ -7,7 +7,7 @@ Happier supports explicit **end-to-end encrypted (E2EE)** and **plaintext** stor
 modes. In E2EE mode, clients encrypt content locally and the server stores ciphertext.
 In plaintext mode, the live server can read the stored value.
 
-For some self-hosted or enterprise deployments, you may want to **opt out of E2EE for storage** so the server can store session content as **plaintext** (for example to enable future server-side indexing/search).
+For some self-hosted or enterprise deployments, you may want to **opt out of E2EE for storage** so the server can store session content as **plaintext**, including for Personal Home transcript search.
 
 This page explains the **server operator** configuration and what it means for **end users**.
 
@@ -32,6 +32,31 @@ flow remains activation-closed until all required account-data domains and compo
 checks land. Do not enable a production keyless rollout merely because these
 environment variables or `/v1/features` fields exist.
 :::
+
+## Plaintext Personal Home search
+
+A plaintext Personal Home can build a local full-text index from its canonical
+plain Session messages. The index is rebuildable derived state on that Home:
+startup reconciliation and live message changes maintain it, and restore,
+explicit repair, or recognized database corruption rebuilds it. It is not a
+second transcript authority and it does not copy sharing or access-control
+records into the index.
+
+Search requests go to the Home's authenticated, feature-gated search endpoint.
+For each request, the server resolves the signed-in user's currently visible
+Sessions and filters the index query to those Session ids. This Home endpoint
+searches transcripts only; it is not an endpoint that aggregates commands,
+settings, files, commits, plugins, or every Home and machine.
+
+Each result identifies one matching message and includes text centered around
+the match. Short messages may fit in full, but callers must not assume the
+result contains the complete verbatim message.
+
+E2EE Session content is never added to the Home index. Home search readiness is
+diagnostic rather than authorization: authentication, Session visibility, the
+server's `search` feature decision, and the plaintext storage boundary all
+still have to admit the request. See [Search](/organize/search) for how this
+source composes with the app's wider Search surface.
 
 ## Storage policy (server-wide)
 

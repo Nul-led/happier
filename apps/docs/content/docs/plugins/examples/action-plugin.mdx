@@ -34,6 +34,6 @@ export const { manifest, activate } = definePlugin({
 
 If the action needs plugin-owned state or diagnostics, use
 `context.services.storage`, `context.services.settings`, or
-`context.services.logger`. The Events invocation service remains deferred in
-the current capability matrix and is not an ordinary author service. User interaction and
-presentation use `context.ui`. Do not read host internals directly.
+`context.services.logger`. Use `context.services.events` for event semantics,
+and keep user interaction and presentation on `context.ui`. Do not read host
+internals directly.

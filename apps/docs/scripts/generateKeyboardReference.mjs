@@ -81,7 +81,7 @@ const GROUPS = [
   {
     title: 'Everything else',
     commands: {
-      'commandPalette.open': 'Open the command palette',
+      'commandPalette.open': 'Open Search',
       'shortcutsHelp.open': 'Show this list in the app',
       'settings.open': 'Open settings',
     },
@@ -151,13 +151,13 @@ export async function renderKeyboardReferenceMarkdown({
     return rows.length ? `### ${group.title}\n\n| Action | Default |\n| --- | --- |\n${rows.join('\n')}` : null;
   }).filter(Boolean);
 
-  const off = [
-    shortcutsOn ? null : 'the shortcut registry',
-    paletteOn ? null : 'the command palette',
-  ].filter(Boolean);
-  const gateNotice = off.length
-    ? `${off.length === 2 ? 'Both' : 'This'} ${off.length === 2 ? 'features are' : 'feature is'} **off by default**: turn on ${off.join(' and ')} under **Settings → Keyboard shortcuts** before any binding below does anything.`
-    : 'Shortcuts are on by default.';
+  const gateNotice = !shortcutsOn
+    ? paletteOn
+      ? 'The general shortcut registry is **off by default**, so other commands remain off. Open Search has its own switch, and its enabled binding still works.'
+      : 'Two independent controls are **off by default**: Open Search has its own switch, while the general shortcut registry controls other commands. Turn on the control for the shortcuts you want to use.'
+    : paletteOn
+      ? 'Shortcuts are on by default.'
+      : 'Open Search is **off by default** through its own switch. Other enabled commands still follow the general shortcut registry.';
 
   const covered = new Set(GROUPS.flatMap((g) => Object.keys(g.commands)));
   const uncovered = [...commands.keys()].filter((id) => !covered.has(id));
@@ -170,7 +170,7 @@ export async function renderKeyboardReferenceMarkdown({
 
   return `---
 title: Keyboard shortcuts
-description: Every rebindable shortcut and the command palette, with the defaults for web and native.
+description: Every rebindable shortcut and Search, with the defaults for web and native.
 ---
 
 Happier has ${commands.size} keyboard commands. Every one can be rebound, and the defaults
@@ -186,10 +186,11 @@ binding is written literally as \`Ctrl\`, it is Control on every platform
 including macOS — that is deliberate, because the key is standing in for a
 platform convention rather than for "the modifier key".
 
-## The command palette
+## Search
 
-The fastest way to reach anything without remembering a binding. It searches
-built-in commands, your custom prompts and Happier actions in one list.
+The fastest way to reach anything without remembering a binding. Search finds
+built-in commands, sessions, projects, settings pages, messages, workspace
+files and commits in one grouped list.
 
 ${formatBindings(commands.get('commandPalette.open'))}
 
@@ -205,13 +206,13 @@ relying on you leaving the field first.
 
 **Settings → Keyboard shortcuts** lists every command with its current binding
 and lets you set your own. Conflicts are detected as you assign them, and your
-choices are stored per device rather than synced, so a laptop and a desktop can
-differ.
+choices sync with your account, so a binding changed on one connected device
+can follow you to the others.
 
 ## Related
 
 - [Session settings](/sessions/session-settings)
-- [Prompts, skills, templates, and registries](/extending/prompts-and-skills) — what else the palette can reach.
+- [Prompts, skills, templates, and registries](/extending/prompts-and-skills) — what else Search can reach.
 `;
 }
 

@@ -84,7 +84,9 @@ launch, steering and send, stop and cancel.
 
 An inactive **Happier** session is a different case again. If it is resumable and
 its machine is reachable, Happier can resume it first and then give you those
-controls.
+controls. In development builds, its composer also remains available while the
+machine or daemon is offline: sending persists the message in Pending and can
+park a request for the owning daemon to resume it when available.
 
 ## When the machine is offline
 
@@ -92,7 +94,25 @@ For a **direct** session, the transcript cannot refresh, live following stops,
 and takeover waits until the machine reconnects.
 
 For a **Happier** session, the transcript is already in Happier, so it stays
-readable and stays in your list.
+readable and stays in your list. For a resumable session in development builds,
+the composer remains usable while the offline status stays visible. A banner
+distinguishes waiting for an offline machine, waiting for a reachable daemon,
+queue-only input, and terminal start failure. From it you can **Retry**,
+**Resume**, or **Process when online**, **Keep queued**, or open **Auto-resume options**. Terminal failure waits for an
+explicit retry rather than retrying forever after reconnects.
+
+Go to **Settings → Session → Message sending** to find **Automatic resume after
+sending**. Its default, **Only if machine is online**, tries once while the exact
+machine is reachable and otherwise keeps new input queued without a later start.
+Choose **Now or when machine returns** to park daemon activation, or **Never
+automatically** to keep all new input queued. Modern
+unattended activation also requires Pending Input V2 on the server and activation
+capability from the exact target machine; older or mixed components keep the
+existing direct-wake fallback.
+
+This never bypasses Direct-session ownership. Direct and other external sessions
+remain unavailable for takeover while their machine is offline and continue to
+use their existing safeguards when it returns.
 
 ## What each agent supports
 

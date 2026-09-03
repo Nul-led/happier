@@ -65,6 +65,29 @@ perform plugin-domain parsing and return the bounded result shape. Do not
 repeat signature verification, persist a second delivery record, or retry by
 calling the endpoint yourself.
 
+## Durable push and redelivery
+
+Webhook ingress is the host-owned verified delivery boundary, not an Automation
+Event durability boundary by itself. Durable push is a Developer Preview
+transport with a best-effort window. After the host durably commits a verified
+delivery, queueing, deduplication, retry, and Automation occurrence
+idempotency are durable. Before that commit — a rejected delivery, a daemon
+failure mid-handling — Happier holds no custody of it and nothing retries
+automatically. Design the provider side so the same upstream occurrence can be
+recovered through an independently requested provider redelivery or the next
+checkpointed pull, and keep checkpointed pull as the authoritative transport
+whenever completeness matters.
+
+For GitHub, redelivery is never automatic: it happens only when you or a
+provider operator requests one, and only to the unchanged endpoint URL. A
+redelivered attempt can present the same provider event again under a new
+attempt id. Parse the delivery into a stable domain occurrence id, such as
+repository + event type + provider delivery id or the provider's own immutable
+object/update id, and feed that id to the Automation Event admission helper.
+Never use the webhook attempt number or a local receipt as the Automation
+dedupe key. Advance your provider cursor only after the Event helper returns a
+checkpoint-safe result.
+
 ## Test the public boundary
 
 Use `definePluginWebhookTestFixture` to construct the same schema-checked

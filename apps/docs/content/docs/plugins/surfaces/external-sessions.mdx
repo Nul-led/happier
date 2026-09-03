@@ -722,7 +722,7 @@ not replace it with a private hint, native-resume alias, or generic metadata bag
 This callback does not choose the target Agent, existing/resume identity,
 transcript storage or authority, directory admission, Connected Services,
 Pending/admission behavior, runtime services, or spawn/control lifecycle. Do
-not return `SpawnSessionOptions`, `BackendSessionLaunchHintsV1`,
+not return `SpawnSessionOptions`, `AgentSessionLaunchHintsV1`,
 `resumePlanOptions`, session-state updates, source/session identities, generic
 metadata, or other launch hints. The host privately maps the accepted fields,
 then rechecks both the originating generation and a current spawnable primary

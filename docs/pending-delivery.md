@@ -1,5 +1,23 @@
 # Pending delivery architecture
 
+## Current Queue V2 activation ownership
+
+This section describes development behavior that is not yet a released contract. Pending Queue V2 remains the sole durable owner of message custody, ordering, and exact-row actions. An inactive-session activation request is a small session-level authorization for the current eligible `send_now` row; it is not another message-delivery state machine.
+
+- The resumable inactive composer remains usable while its exact target machine or daemon is offline. Sending persists the message in Pending, while the session continues to present its offline status.
+- The account preference **Automatic resume after sending** (`sessionInactiveResumePolicy`) has one three-state owner. `when_available` persists `send_now` and therefore authorizes the daemon; `online_only` persists `enqueue` and makes at most one user-present UI resume attempt when the exact machine is currently reachable; `manual` only persists `enqueue`. The default is `online_only`.
+- The `online_only` attempt never delegates to the daemon and never changes the row to `send_now`. If reachability changes or the attempt fails, Pending custody remains without authorization for a later unattended start.
+- The banner action **Process when online** reuses the exact-row Pending `send_now` mutation for the displayed message. It does not change the account preference or create a second activation path.
+- The server transaction that mutates Pending rows is the only writer of the current activation authorization. It arms one exact request, clears only that request when its row no longer asks to send now, and never silently retargets older queued input.
+- `Session.lastActiveAt` is the lifecycle fence. An authorization at or before that value is stale and is not projected, so newer session activity invalidates an old start request without a second client-owned clock.
+- The Pending activation hint is lossy notification only. The durable server-owned session authorization is authoritative, and the daemon consults it both after a live hint and during one finite reconnect scan.
+- The daemon on the session's exact owning machine is the sole unattended starter for modern activation. It re-reads the session and exact Pending row, applies the existing external-session safeguards, and then uses the existing inactive-session resume path. This mechanism does not take over an external or Direct session.
+- Machine or daemon unreachability leaves the authorization waiting. A genuine terminal start failure is recorded as failed and is not retried until the user explicitly chooses **Retry** or **Resume**. There is no periodic polling, unbounded retry loop, or exactly-once delivery guarantee.
+- Becoming active, resolving the exact Pending row, or choosing an action that moves away from activation clears that exact authorization. **Keep queued** changes the exact row away from `send_now`; **Auto-resume options** leads to the account preference for future sends.
+- Modern delegation requires server Pending Input V2 support and activation capability from the session's exact target machine. Older or mixed components retain the existing direct-wake fallback rather than treating unattended daemon activation as available.
+
+The durable banner derives the user-facing state from this ownership: waiting while the machine is offline, waiting while the daemon is reachable, queued without activation, or terminal start failure. Pending owns the payload; the server owns activation authorization; session activity fences staleness; and the daemon owns unattended process start.
+
 > **Superseded attempt-design record (2026-07-14).** Queue V2 is the only active pending-delivery system. `attempt_v1` will not be activated: its runtime/protocol branches are removed after the live exact-selector contract is extracted, and its schema/migrations are squashed or forward-contracted from bounded persistence evidence. Current authority and markers: `../remote-dev/.project/plans/pending-delivery-attempt-v1-and-session-lifecycle-reliability-unification.md`. Everything below this notice is historical design evidence, not implementation or cutover instruction.
 
 ## Historical attempt design

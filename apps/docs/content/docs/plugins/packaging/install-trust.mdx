@@ -86,27 +86,47 @@ run:
 hdev plugins update com.example.my-plugin
 ```
 
-For an approved curated npm channel with the `automatic` policy, this explicit
-command selects a compatible newer release and can apply it without another
-trust prompt only while the reviewed source binding, package identity, host
-access, executable realms, and compatibility projection remain compatible.
-`automatic` does not poll registries or install updates in the background.
+Every installed plugin has one update policy, chosen in **Settings ->
+Plugins** under **Update policy**. There are exactly three, with no aliases:
+
+- **Pinned** — the update is refused until you choose another policy.
+- **Review every update** — the newest compatible candidate is staged and
+  presented to you for the same review as a first install.
+- **Review sensitive changes** — the update applies without a new review only
+  while every trust fact is unchanged: the same trusted npm registry origin,
+  package, and registry profile still authorize the candidate, and the
+  manifest changed nothing review-sensitive — no new executable realm, no
+  changed host access, Connected Account purpose access, declared
+  integrations, raw-credential disclosure, or request interceptors. The
+  candidate must also publish compatibility metadata; one that cannot be
+  evaluated is refused rather than silently taken. When any of these facts
+  changes, the full review reopens. A review-free update preserves the
+  already-reviewed registry/package principal; an unverified catalog publisher
+  label or a rotated registry signing key does not replace it.
+
+`reviewSensitiveChanges` is an npm-only policy: archive and development
+sources offer **Pinned** and **Review every update**. No policy polls
+registries or installs anything in the background — Happier selects and
+stages a newer release only when you run `plugins update` or request the
+update in **Settings -> Plugins**.
 
 To replace an archive or select an exact npm version yourself, use
-`plugins install`. The daemon recognizes the existing plugin identity, applies
-the source's update policy, and preserves the last applied generation if the
-candidate fails validation:
+`plugins install`. The daemon recognizes the existing plugin identity,
+reviews the candidate under the applicable update policy, and preserves the
+last applied generation if the candidate fails validation:
 
 ```bash
 hdev plugins pack . --out ../my-plugin-0.2.0.tgz
 hdev plugins install ../my-plugin-0.2.0.tgz --kind archive
 ```
 
-A new archive is a one-off source and requires review. An eligible trusted npm
-channel or approved development source can reuse its existing update policy
-only while the source identity and reviewed authority remain compatible.
-Source substitution, widened executable realms, or widened required host access
-requires review again.
+A new archive is a one-off source and requires review, and so is an exact npm
+version you select yourself. Update requests carry no source of their own:
+`plugins update` rebuilds the artifact request from the plugin's trust record
+— the same registry origin, package, and registry profile it was trusted from
+— so it cannot be pointed at a different source. Widened executable realms,
+widened required host access, or any other review-sensitive change reopens
+the full review.
 
 Restore the retained prior generation through the same daemon owner:
 

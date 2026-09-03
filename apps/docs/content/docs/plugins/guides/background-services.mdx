@@ -5,8 +5,8 @@ description: Register daemon-generation background work without adding a second 
 
 Use `backgroundServices` for daemon/machine work that is not an action,
 Session turn, Agent factory, or event handler. A `definePlugin` declaration
-pairs a cold row with one runner; manual ABI authors register the same local id
-through `api.backgroundServices.register(...)`.
+pairs a cold row with one runner; the runner registration itself is generated,
+so there is no separate registration call to maintain.
 
 ```ts
 backgroundServices: [{
@@ -21,8 +21,7 @@ backgroundServices: [{
 The host starts the runner after generation commit and retires it on
 replacement, disable/uninstall, or daemon shutdown. Do not use event activation
 as a background scheduler, and do not build a runner-owned polling loop to
-imitate one: the `events` declaration family and `context.services.events`
-remain deferred for ordinary author use (see [Events](/plugins/api/events)).
-Honor `context.signal`, let failures surface as
+imitate one: use the Events service for event semantics, not for plugin-owned
+background lifecycle. Honor `context.signal`, let failures surface as
 diagnostics, and avoid a plugin-owned watcher, timer registry, or service
 lifecycle cache.

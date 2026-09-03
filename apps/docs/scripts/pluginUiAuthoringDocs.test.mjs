@@ -188,7 +188,7 @@ test('labels public Triage source fixtures as specialist conformance evidence ra
     const readme = normalizedSource(join(exampleRoot, 'README.md'));
     const packageJson = JSON.parse(readFileSync(join(exampleRoot, 'package.json'), 'utf8'));
 
-    assert.match(readme, /held conformance fixture/iu);
+    assert.match(readme, /public Developer Preview/iu);
     assert.match(readme, /rather than a starter template/u);
     assert.doesNotMatch(readme, /This copyable/u);
     assert.match(packageJson.description, /public Developer Preview fixture/iu);
@@ -220,7 +220,7 @@ test('maps maintained UI references without turning cold-manifest fixtures into 
   const source = normalizedSource(examplesIndexDocPath);
 
   for (const requiredSource of [
-    '`happier plugins create` and `definePlugin(...)` remain the normal authoring path',
+    '`hdev plugins create` and `definePlugin(...)` remain the normal authoring path',
     '`react-native-installed`',
     '`react-native-dev-hot-reload`',
     '`projects-tasks`',
@@ -229,10 +229,37 @@ test('maps maintained UI references without turning cold-manifest fixtures into 
     '`production-hosted-reference`',
     '`descriptor-only`',
     '`multi-mode-fallback`',
+    // The maintained feature references must stay discoverable from this
+    // index; dropping a row would leave the example unreachable from docs.
+    '`operation-only-channel-provider`',
+    '`automation-event-source`',
   ]) {
     assert.match(source, new RegExp(requiredSource.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'), 'u'));
   }
 
+  for (const exampleName of [
+    'descriptor-only',
+    'hosted-web',
+    'multi-mode-fallback',
+    'operation-only-channel-provider',
+    'automation-event-source',
+    'production-hosted-reference',
+    'projects-tasks',
+    'react-native-dev-hot-reload',
+    'react-native-installed',
+  ]) {
+    assert.match(
+      source,
+      new RegExp(
+        `\\]\\(https://github\\.com/happier-dev/happier/tree/v0\\.3/packages/plugin-sdk/examples/${exampleName}\\)`,
+        'u',
+      ),
+    );
+  }
+
+  // The cold-manifest conformance references must keep their deliberate
+  // not-a-template marker; the maintained feature references instead name
+  // themselves as maintained cross-plugin references.
   for (const exampleName of [
     'descriptor-only',
     'hosted-web',
@@ -242,16 +269,15 @@ test('maps maintained UI references without turning cold-manifest fixtures into 
     'react-native-dev-hot-reload',
     'react-native-installed',
   ]) {
-    assert.match(
-      source,
-      new RegExp(
-        `\\]\\(https://github\\.com/happier-dev/happier/tree/main/packages/plugin-sdk/examples/${exampleName}\\)`,
-        'u',
-      ),
-    );
     const readme = normalizedSource(
       join(repoRoot, 'packages', 'plugin-sdk', 'examples', exampleName, 'README.md'),
     );
     assert.match(readme, /not an ordinary authoring template/u);
+  }
+  for (const exampleName of ['operation-only-channel-provider', 'automation-event-source']) {
+    const readme = normalizedSource(
+      join(repoRoot, 'packages', 'plugin-sdk', 'examples', exampleName, 'README.md'),
+    );
+    assert.match(readme, /maintained (?:public cross-plugin reference|external-plugin example)/iu);
   }
 });

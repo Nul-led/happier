@@ -9,10 +9,11 @@ without reproducing a symbol-level API dump. The publisher generates a
 symbol-level inventory from those same sources when an SDK artifact is ready;
 that generated output is not a second authoring owner.
 
-The SDK is one package-level **Developer Preview** source contract, and the
-workspace package is private at `0.0.0` on a prepublication hold. Treat these
-paths as current source contracts, not as an offer to install a published
-package or a released-semver stability promise. The generated inventory maps
+The SDK is one package-level **Developer Preview** source contract. In this
+checkout, `@happier-dev/plugin-sdk` is a private workspace package versioned
+`0.0.0` on a prepublication hold. Treat these paths as current source
+contracts, not as an offer to install a published package or a released-semver
+stability promise. The generated inventory maps
 the public surface; it does not create a separate stability tier per export.
 
 ## Import rules
@@ -59,7 +60,7 @@ the public surface; it does not create a separate stability tier per export.
 | `@happier-dev/plugin-sdk/browser` | Public browser target and Action descriptors plus the toolchain compatibility packet; browser Actions bind canonical Actions to declared targets. | `import type * as Browser from '@happier-dev/plugin-sdk/browser';` |
 | `@happier-dev/plugin-sdk/collections` | Daemon-realm Account collection definitions, references, queries, and collection service types. | `import type * as Collections from '@happier-dev/plugin-sdk/collections';` |
 | `@happier-dev/plugin-sdk/connected-accounts` | Daemon-realm Connected Account references, purpose bindings, health, and materialization result types. | `import type * as ConnectedAccounts from '@happier-dev/plugin-sdk/connected-accounts';` |
-| `@happier-dev/plugin-sdk/events` | Event contribution and event-service types plus the canonical Automation Event authoring surfaces: the setup-result JSON-schema constructor and validators, history-gap-reset Action schemas, and the checkpointed Event admission helper. | `import type * as Events from '@happier-dev/plugin-sdk/events';` |
+| `@happier-dev/plugin-sdk/events` | Event contribution types, event-service types, and the Automation Event authoring helpers used by the maintained automation-event-source example: setup-result schema construction, history-gap-reset Action schemas, and checkpointed Event admission. The helpers are distinct from the plugin pub/sub `EventsService` lifecycle. | `import type * as Events from '@happier-dev/plugin-sdk/events';` |
 | `@happier-dev/plugin-sdk/exec` | Host-mediated executable and process-service types for daemon code. | `import type * as Exec from '@happier-dev/plugin-sdk/exec';` |
 | `@happier-dev/plugin-sdk/exec/protocol-clients` | Typed process-protocol client contracts used with the host exec service. | `import type * as ProtocolClients from '@happier-dev/plugin-sdk/exec/protocol-clients';` |
 | `@happier-dev/plugin-sdk/first-party/connected-accounts` | Focused Happier-owned Connected Account policy facts for maintained first-party integrations; ordinary plugins use `/connected-accounts`. | `import type * as FirstPartyConnectedAccounts from '@happier-dev/plugin-sdk/first-party/connected-accounts';` |

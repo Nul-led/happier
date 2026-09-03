@@ -7,15 +7,109 @@ Invoked handlers access storage through `context.services.storage`. Agent
 session code uses only storage explicitly exposed in its bounded native runtime
 context.
 
-Use storage for plugin-owned values that must survive at the documented scope.
-Do not use it as another owner for queued input, session/transcript state,
-activity, permissions, install state, or process lifecycle.
+Use storage for plugin-owned, non-secret values that must survive at the
+specific scope the host exposes. Do not use it as another owner for queued
+input, session/transcript state, activity, permissions, install state, or
+process lifecycle.
+
+## Scopes
+
+| Scope | API | Lifetime |
+| --- | --- | --- |
+| Ephemeral | `storage.ephemeral` | Invocation-local scratch state. Do not rely on it after the handler returns. |
+| Daemon session | `storage.daemonSession` | Plugin data scoped to the current daemon/session runtime context. |
+| Daemon | `storage.daemon` | Manifest-declared daemon database storage for local machine data. |
+| Account | `storage.account` | Account Data, present only when `storage.account` is admitted and currently available. |
+
+There is no separate "synced storage" service. Account storage is the portable
+Account scope; daemon and daemon-session storage remain local to the machine or
+runtime scope that provided them.
+
+## Generic key-value storage
+
+`ephemeral` and `daemonSession` expose ordinary key-value transactions:
+`get`, `set`, `delete`, `list`, and `transaction`. They are host-authoritative
+and serializable inside their scope, but they do not expose per-key compare and
+swap. Use narrow keys and version your own values when you may need to migrate
+them.
+
+## Account key-value storage
+
+`storage.account` is optional on the service bag because Account Data can be
+unavailable or not admitted. If the plugin cannot proceed without it, declare
+`storage.account` HostAccess and use `requireAccountStorage(...)` from
+`@happier-dev/plugin-sdk/storage` at the call site so malformed direct
+invocations fail closed.
+
+Account KV exposes `account.kv.get`, `set`, `delete`, `list`, and
+`transaction`. Each live value or logical deletion has an author-visible
+`version`; every `set` must name `expectedVersion: 'absent'` or a concrete
+version, and every `delete` must name a concrete version. A deleted key remains
+visible as `{ version, deleted: true }` so a stale `expectedVersion: 'absent'`
+write cannot resurrect it. Revive a key only by writing against the tombstone's
+current version.
+
+Account KV limits are the Protocol-owned `PLUGIN_ACCOUNT_STORAGE_LIMITS_V1`:
+256 logical keys per row, 256 UTF-8 bytes per key, 64 KiB per value, 512 KiB per
+row, and an encrypted ciphertext ceiling derived from that row limit. The
+server and host adapter enforce the limit and return typed failures; do not
+split one authoritative record across hidden keys to evade it.
+
+## Account Collections
+
+Use Account Collections for structured Account data that needs row identity,
+indexes, bounded queries, UI list consumption, or schema migration. A plugin
+accesses a declared collection with `storage.account.collection(definition)`.
+Rows use CAS too: `put` accepts `expectedRevision: 'absent' | number`, while
+`delete`, `forget`, and batch `assert` require a concrete row revision.
+
+Logical deletes leave tombstones so stale writers cannot recreate a row as if it
+had never existed. `forget(rowId, { expectedRevision })` physically reclaims a
+live row or tombstone only when your plugin owns the retention/replay proof;
+the host advances absence currentness in the same transaction. Retention is
+routed, not self-service: the host owns the safety windows that keep deleted
+rows and retired contracts replayable, so a plugin cannot shorten them — it can
+only forget an exact row revision once it owns that proof. Queries return
+bounded pages and content-free watch invalidations; watch listeners must reread
+rather than treating invalidations as row streams.
+
+Read `collection.limits()` instead of assuming capacity. The effective limits
+combine the connected deployment policy with the collection's admitted quota;
+`measureBatch()` reports encoded batch cost through the same
+seal-and-serialize path as `batch`. The Protocol hard ceilings include 200 query
+rows and 100 mutation rows per call; deployment policy may be lower.
+
+See [Account Collections migrations](/plugins/guides/account-collections) and
+the maintained [`projects-tasks`](https://github.com/happier-dev/happier/tree/v0.3/packages/plugin-sdk/examples/projects-tasks)
+example for the row/query shape.
+
+## Account mode, erase, and encryption
+
+Account storage is bound to the Account's encryption mode by the host, and
+persisted `Account.encryptionMode` — never key presence — is the mode
+authority. Plain Accounts use `{ t: 'plain', v }`; end-to-end encrypted
+Accounts use `{ t: 'encrypted', c }` with an Account-scoped cipher domain. A
+mode/content mismatch is rejected before disclosure or mutation, and plaintext
+Accounts do not require client E2EE key material to read their plain envelope.
+
+Erasing plugin Account data is a separate, present-user Account action. It
+reaches the plugin's Account settings, key-value data, Collections (rows,
+contracts, indexes, and relations), and qualified Account-secret bindings; it
+never deletes another machine's daemon-local data. It reports completed and
+pending destinations and is safely retryable, so state on an unreachable
+machine stays truthfully pending rather than being relabeled as deleted.
+Disabling or uninstalling a plugin never erases its data by itself.
+
+Do not put secrets in storage. Use [Secrets](/plugins/services/secrets) or a
+Connected Account materialization instead.
 
 ## Rules
 
 - Do not store secrets in ordinary plugin storage.
 - Use narrow keys and versioned values for data you may migrate.
+- Use Account KV `expectedVersion` or Collection `expectedRevision` rather than
+  last-write-wins updates.
 - Handle write failures without deleting the previous value.
+- Keep logical tombstones until you own the replay/retention proof to forget
+  them.
 - Dispose dynamic watches/subscriptions when their owner ends.
-- Storage is host-scoped at the scope exposed by the invocation context. The
-  SDK does not provide a separate "synced storage" service.

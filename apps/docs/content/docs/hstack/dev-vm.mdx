@@ -71,7 +71,39 @@ hstack dev-vm stop
 ```
 
 Starting also mounts the guest home when `autoMount` is enabled. Stopping
-unmounts it before stopping Lima.
+unmounts it before stopping Lima. When `start` actually boots a stopped guest,
+it also launches a non-blocking skill synchronization in the background. A
+repeated `start` while the guest is already running does not launch another
+synchronization.
+
+## Synchronize Agent skills
+
+The development VM can mirror the current macOS user's Agent skill roots into
+the matching paths in the managed guest:
+
+- `~/.codex/skills`
+- `~/.agents/skills`
+- `~/.claude/skills`
+
+Run the synchronization explicitly when you want to wait for completion and
+see any error:
+
+```bash
+hstack dev-vm skills sync
+```
+
+The checkout-local form is:
+
+```bash
+yarn dev-vm skills sync
+```
+
+Each source root that exists on macOS is an exact, one-way projection into the
+guest. Links are materialized as files and directories so Mac-only absolute
+paths do not become broken guest links. A missing source root is skipped, and
+a dangling or cyclic source link is omitted without blocking the other skills.
+The command starts the retained VM when necessary; the automatic run after
+`hstack dev-vm start` is detached so VM startup does not wait for file transfer.
 
 ## Activate an execution host
 
@@ -195,6 +227,9 @@ leave a stale identity behind.
   inaccessible SSHFS entry before remounting.
 - **Mount directory is not empty:** choose an empty absolute directory with
   `--mount-dir`; hstack will not mount over existing files.
+- **A skill is missing after synchronization:** inspect the structured output
+  from `hstack dev-vm skills sync --json`. The `skippedLinks` field names
+  dangling or cyclic links that cannot be materialized in Linux.
 
 All commands accept `--json` where the controller returns structured status.
 Run `hstack dev-vm --help` for the full development-only surface, including

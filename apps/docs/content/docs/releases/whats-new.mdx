@@ -75,12 +75,16 @@ See [PRs & Issues](/code/prs-and-issues).
 ## Conversation channels
 
 Connect a **Discord** or **Telegram** conversation to a session or an automation,
-so people who do not use Happier can still talk to your agents. See
+so people who do not use Happier can still talk to your agents. Conversation
+channels are part of the current Developer Preview: the source and bundled
+providers are present, while loaded-platform and authenticated provider
+journeys remain release gates. See
 [Conversation channels](/extending/channels).
 
 ## Automations do more than schedules
 
-Automations can now own multiple independently enabled automatic triggers with
+Automations — still an experiment you enable from Settings — can now own
+multiple independently enabled automatic triggers with
 OR semantics. Beyond cron and interval schedules, plugins can contribute typed
 events. GitHub, for example, contributes repository push, issue opened, pull
 request opened and pull request merged events. They can be observed either by a

@@ -67,6 +67,30 @@ answers `404 { error: 'not_found' }` and the lifecycle mutation never runs — a
 a gate. That route is the only place the switch becomes durable, so one gate at that choke point
 refuses the operation for every caller, UI or not.
 
+### Search feature id
+
+`search` gates Personal Home plaintext transcript search: the Home derived-index lifecycle and its
+authenticated query route. It is server-represented, `defaultFailMode: 'fail_closed'`, and declares
+no dependencies — in particular it does **not** depend on `memory.search`, which gates only
+daemon-local memory indexing/search and its settings surfaces.
+
+Its server value is produced by `resolveSearchFeature`
+(`apps/server/sources/app/features/searchFeature.ts`), registered in `serverFeatureRegistry.ts`,
+reading `parseBooleanEnv(env[FEATURE_ENV_KEYS.searchEnabled], true)`. It is therefore **enabled by
+default**, with `HAPPIER_FEATURE_SEARCH__ENABLED` as the operator opt-out, in the same default-on +
+`fail_closed` shape as `sessions.agentSwitching`.
+
+Admission is a lifecycle decision, not only a route check: `resolveHomeSearchRuntimeConfig`
+(`apps/server/sources/app/search/homeSearchCapability.ts`) returns `null` when the feature is off,
+so no derived index is opened, no reconciliation runs, `registerHomeSearchRoutes` is never called,
+and `/v1/features` omits `capabilities.homeSearch` entirely. There is no `feature_disabled`
+capability reason.
+
+`capabilities.homeSearch` is diagnostic only — readiness, `indexing`, and `index_unavailable`. It
+never authorizes the route or the client provider decision: the UI requires the `search` bit **and**
+a ready capability before choosing the Home provider (`useMemorySearchProvider`). The universal
+search shell itself is ungated; only the Home transcript section depends on this feature.
+
 ### Provider feature dependencies
 
 The first-class model-provider program uses these canonical ids:

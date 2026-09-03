@@ -3,12 +3,10 @@ title: Filesystem service
 description: Use typed, scoped paths for plugin runtime files.
 ---
 
-The `/fs` type entrypoint and `filesystem` HostAccess declaration are available
-in the current source contract. `context.services.fs` remains deferred in the
-[capability matrix](/plugins/manifest/availability) until a maintained external
-development-source plugin proves lifecycle and real invocation in the current
-loaded development stack, including currentness. It is not supported or
-advertised for ordinary author use while deferred.
+The `/fs` type entrypoint, `filesystem` HostAccess declaration, and
+`context.services.fs` are available in the current source contract. The
+[capability matrix](/plugins/manifest/availability) records loaded-platform and
+release evidence separately from source availability.
 
 A `PluginPath` names a supported root plus a relative path:
 

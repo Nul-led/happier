@@ -79,6 +79,10 @@ yarn test:db-contract:docker
 yarn --cwd apps/server test:db-contract
 ```
 
+CI runs `yarn --cwd apps/server schema:sync:check` before provider-specific DB contract execution.
+The check reports generated Postgres, MySQL, and SQLite schema drift; it does not repair or migrate a
+database.
+
 ### 4) Core E2E
 
 End-to-end suites in `packages/tests` against real server/socket contracts.
@@ -158,30 +162,19 @@ Notes:
 - Artifacts are written under `packages/tests/.project/logs/e2e/mobile-maestro/`.
 - Override Maestro binary (if needed): `HAPPIER_E2E_MAESTRO_BIN=/path/to/maestro`.
 
-### 4e) WSREPL Lima matrix (macOS/Linux hosts)
+### 4e) Real workspace sync
 
-The Lima host↔guest WSREPL matrix is exposed as an opt-in tests-owned lane.
+The real workspace-sync lane builds the Iroh relay fixture and runs the daemon-owned Mutagen
+workspace synchronization path, including its broker and remote machine carrier.
 
 **Root command:**
 ```bash
-yarn test:e2e:ui:wsrepl:lima -- happier-wsrepl-qa
+yarn test:workspace-sync:real
 ```
 
-**Package-local command:**
-```bash
-yarn workspace @happier-dev/tests test:ui:e2e:wsrepl:lima -- happier-wsrepl-qa
-```
-
-**Harness self-tests:**
-```bash
-yarn test:e2e:ui:wsrepl:lima:self
-```
-
-Notes:
-- This lane is intentionally not part of the default GitHub-hosted PR matrix yet. Use it locally or on a self-hosted runner with Lima available.
-- The tests workspace now owns the lane entrypoint, the raw WSREPL Lima harness, and the Lima bootstrap helper: `packages/tests/scripts/run-wsrepl-lima-matrix.mjs`, `packages/tests/scripts/wsrepl-lima-matrix.sh`, `packages/tests/scripts/lima-vm.sh`.
-- The stack copies under `apps/stack/scripts/provision/` are compatibility shims only and are excluded from the published stack package.
-- Pass VM names and existing WSREPL env overrides after `--`. The wrapper always runs the underlying harness from `apps/stack/`, so existing report paths and relative script calls remain stable.
+The lane requires freshly built Mutagen manager, agent, broker client, and process-custody binaries.
+Its runner fails during preflight when any required binary is absent; it never turns an unavailable
+real prerequisite into a skipped test.
 
 ### 5) Providers
 
@@ -312,7 +305,7 @@ yarn test:db-contract:docker
 - Core (full): `yarn workspace @happier-dev/tests test`
 - Core fast: `yarn workspace @happier-dev/tests test:core:fast`
 - Core slow: `yarn workspace @happier-dev/tests test:core:slow`
-- UI WSREPL Lima matrix (macOS/Linux host): `yarn workspace @happier-dev/tests test:ui:e2e:wsrepl:lima -- happier-wsrepl-qa`
+- Real workspace sync (source-built Mutagen and Iroh): `yarn test:workspace-sync:real`
 - Providers: `yarn workspace @happier-dev/tests test:agents`
 - Stress: `yarn workspace @happier-dev/tests test:stress`
 

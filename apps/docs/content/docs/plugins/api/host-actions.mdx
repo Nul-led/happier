@@ -127,7 +127,8 @@ No field hints are published. Use the typed input accepted by `execute`.
 - `actionId` (text): Action id — Optional when optionsSourceId is provided directly.
 - `fieldPath` (text): Field path — Dot-path for the action input field.
 - `optionsSourceId` (text): Options source id — Direct options source lookup when known.
-- `sessionId` (text): Session id — Needed for session-scoped option sources.
+- `sessionId` (text): Session id — Omit to use the current invoking Session. Set only for an intentional authorized cross-Session target.
+- `draftInput` (json): Partial action input — Partial input for dependent options, for example &#123;"backendTargetKeys":["agent:pi"]&#125; when resolving a model, configuration, or connected service.
 - `query` (text): Query filter — Optional search text to filter the returned options.
 - `limit` (text): Limit — Maximum number of options to return.
 
@@ -2151,6 +2152,19 @@ No field hints are published. Use the typed input accepted by `execute`.
 
 No field hints are published. Use the typed input accepted by `execute`.
 
+## `plugin.webhook.endpoint.convergeTarget`
+
+**Converge webhook endpoint target** — Manage one Account-owned webhook endpoint through the canonical Webhook ingress owner.
+
+- Safety: `danger`; side effect: `write`.
+- Approval: `none` result; `deferred` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: none.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
 ## `plugin.webhook.endpoint.credential.configure`
 
 **Configure webhook credential** — Manage one Account-owned webhook endpoint through the canonical Webhook ingress owner.
@@ -4120,6 +4134,7 @@ No field hints are published. Use the typed input accepted by `execute`.
 - `permissionMode` (select): Permission mode — Permission mode. Allowed values: read_only | default | workspace_write | yolo.
 - `modelId` (text): Model id — Optional model applied to every started run (same vocabulary as session spawn). Omit for the backend default.
 - `configOptions` (json): Config options (e.g. reasoning effort) — Optional agent config-option overrides applied to every started run, e.g. &#123;"reasoning_effort":"high"&#125;. Merged canonically; a conflict with sessionConfigOptionOverrides fails.
+- `connectedServices` (json): Connected services (json) — Optional blanket connected-services selection for every target. An exact connectedServicesByBackendTargetKey entry overrides it.
 - `connectedServicesByBackendTargetKey` (textarea): Connected services per target (json) — Optional connected-services selection per backend target key. Accepts a simple string ("&lt;service&gt;:group:&lt;id&gt;", "&lt;service&gt;:&lt;profileId&gt;", "&lt;service&gt;:native"), an array, or the full object; omitted targets use session-spawn defaulting (literal). Enumerate valid selections via the shared session-spawn options source.
 
 ## `subagents.plan.start`
@@ -4137,6 +4152,7 @@ No field hints are published. Use the typed input accepted by `execute`.
 - `instructions` (textarea, required): Instructions — What you want the planner(s) to do.
 - `modelId` (text): Model id — Optional model applied to every started run (same vocabulary as session spawn). Omit for the backend default.
 - `configOptions` (json): Config options (e.g. reasoning effort) — Optional agent config-option overrides applied to every started run, e.g. &#123;"reasoning_effort":"high"&#125;. Merged canonically; a conflict with sessionConfigOptionOverrides fails.
+- `connectedServices` (json): Connected services (json) — Optional blanket connected-services selection for every target. An exact connectedServicesByBackendTargetKey entry overrides it.
 - `connectedServicesByBackendTargetKey` (textarea): Connected services per target (json) — Optional connected-services selection per backend target key. Accepts a simple string ("&lt;service&gt;:group:&lt;id&gt;", "&lt;service&gt;:&lt;profileId&gt;", "&lt;service&gt;:native"), an array, or the full object; omitted targets use session-spawn defaulting (literal). Enumerate valid selections via the shared session-spawn options source.
 
 ## `transcript.follow`
@@ -4315,3 +4331,5 @@ No field hints are published. Use the typed input accepted by `execute`.
 
 - `backendTargetKeys` (multiselect, required): Agent backend targets — Select Agent backend targets for the Happier-managed voice agent run; this is not parallelism capacity.
 - `instructions` (textarea, required): Instructions — Initial instructions for the voice agent run.
+- `connectedServices` (json): Connected services (json) — Optional blanket connected-services selection for every target. An exact connectedServicesByBackendTargetKey entry overrides it.
+- `connectedServicesByBackendTargetKey` (json): Connected services per target (json) — Optional per-target override using the exact selected backend target key.

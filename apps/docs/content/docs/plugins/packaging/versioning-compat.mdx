@@ -24,9 +24,10 @@ Package SemVer does not replace the manifest, host, or runtime compatibility fie
 
 ## Current Developer Preview source contract
 
-The SDK is one package-level **Developer Preview** source contract. The
-workspace package is private at `0.0.0` on a prepublication hold, so this
-documentation does not claim that an external package can be installed or that
+The SDK is one package-level **Developer Preview** source contract. In this
+checkout, `@happier-dev/plugin-sdk` is a private workspace package versioned
+`0.0.0` on a prepublication hold, so this documentation does not claim that an
+external package can be installed or that
 a released semver policy is already in effect. The source inventory identifies
 public routes; it does not assign a different stability tier per export. No
 public version is established by the current source tree.
@@ -43,8 +44,9 @@ public version is established by the current source tree.
 
 ## SDK package SemVer after publication
 
-No package in the current private `0.0.0` source state has a released SemVer
-contract. When an SDK package is prepared for publication, its package API is
+No package in the current private-workspace, `0.0.0` source state has a
+released SemVer contract. When an SDK package is prepared for publication, its
+package API is
 reviewed separately from the manifest schema, host range, and runtime ABI. The
 release preparation compares the release source's public API inventory and
 reachable declaration report with the previous published release, rather than
@@ -78,8 +80,9 @@ undocumented package subpath.
 
 ## Current publication status
 
-The workspace package is private at `0.0.0` on a prepublication hold.
-Publication requires the consolidated public API, source-consumer, platform,
+In this checkout, `@happier-dev/plugin-sdk` is a private workspace package
+versioned `0.0.0` on a prepublication hold. Publication requires the
+consolidated public API, source-consumer, platform,
 compatibility, and human approval gates. This guide does not promise
 when that work will make an artifact available.
 

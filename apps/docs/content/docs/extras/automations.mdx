@@ -82,7 +82,10 @@ operationally:
 - **Durable push** — the source calls a webhook endpoint Happier owns.
   Delivery does not depend on one of your machines being awake, and the
   endpoint records the moment observation started so earlier events are not
-  replayed at you.
+  replayed at you. This transport is a Developer Preview and best effort
+  until a delivery is durably committed: one that arrives while Happier
+  cannot commit it is not held or retried, and GitHub does not redeliver on
+  its own. When a missed occurrence matters, choose checkpointed pull.
 - **Live socket** — a provider connection such as Discord Gateway observes
   events while its machine is connected. Happier resumes the provider session
   when the provider permits it; if that session cannot be resumed, the trigger
@@ -109,6 +112,14 @@ secret, rotate the endpoint credential from its webhook settings rather than
 creating a second automation — a new secret means editing the same GitHub
 webhook again.
 
+Two limits matter before you rely on webhook delivery. Happier holds a
+delivery durably only after it has verified and committed it, so a delivery
+lost in that window is gone unless the source sends it again — and GitHub
+never resends on its own; a redelivery happens only when you request one for
+that specific delivery, to the same URL. And when completeness matters more
+than latency, checkpointed pull is the transport that records a cursor as it
+goes and reports a history gap when a missed range is no longer available.
+
 An event trigger can also carry a **filter**, and a maximum observation age —
 past which an event is considered too old to act on rather than triggering a
 run late.
@@ -117,25 +128,37 @@ Plugins may optionally replace the generic setup form with their own setup
 surface. That surface only collects the same strict setup input; Happier still
 owns the trigger, admission, deduplication, and Run history.
 
-### When this turn finishes
+### Session lifecycle events
 
-From an active Session turn, choose **When this turn finishes…** to create a new
-Automation or add a one-off trigger to an existing compatible Automation. The
-trigger names that exact parent turn, not whichever turn happens to be current
-later. Successful completion admits one Run. Failure or cancellation admits no
-execution Run, and the Automation screen shows the outcome derived from the
-source Session.
+A Session lifecycle trigger can react when a parent turn completes
+successfully, fails, is cancelled or stopped, or needs your attention. Select
+one or more of those events, then choose how long the trigger remains active:
 
-If the turn changes before you save, the editor asks you to use the current
-turn instead. The server remains the authority, so closing the app or taking a
-machine offline does not move completion into a client-side watcher.
+- **Current turn only** binds to the exact active parent turn and can run once.
+- **First matching event** waits for the first selected event in that Session.
+- **Next matches** runs for the number of matching occurrences you choose.
+- **Every matching event** keeps running while the trigger and Automation are
+  enabled.
+
+From an active Session, the **When this Session…** shortcut opens the same
+Automation editor with the source and current turn already selected. It can
+create a new Automation or add the lifecycle trigger to an existing compatible
+Automation. If the turn changes before you save a current-turn trigger, the
+editor asks you to use the new current turn instead.
+
+Happier records each occurrence by its durable Session, turn, and request
+identity. Earlier events are not backfilled, reconnecting does not create a
+duplicate Run, and pausing or deleting the trigger prevents future matches.
+The server remains the authority, so closing the app or taking a machine
+offline does not move matching into a client-side watcher.
 
 For plugin authors using 0.3 development builds, the separate
 `@happier/runtime/turn-start`, `@happier/runtime/turn-complete`,
 `@happier/runtime/turn-failed`, and `@happier/runtime/turn-cancelled` Host Event
 hooks are daemon-local, in-memory, best-effort notifications. They are not
-replayed and do not create Automation Runs. The durable exact-turn trigger
-above is admitted from the persisted Session turn settlement instead.
+replayed and do not create Automation Runs. Durable lifecycle triggers are
+admitted from persisted Session settlement and minimal pending-request
+identity instead.
 
 ### Conversation bindings
 

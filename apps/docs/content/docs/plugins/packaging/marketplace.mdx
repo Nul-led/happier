@@ -1,9 +1,39 @@
 ---
 title: Marketplace distribution
-description: Marketplace-oriented plugin packaging and trust considerations.
+description: How marketplace sources recommend npm plugin packages, and what they never decide.
 ---
 
-Marketplace distribution uses the same manifest-first and trust-first model as local plugins.
+Marketplace distribution uses the same manifest-first and trust-first model as
+local plugins. A marketplace source is a discovery index over npm artifacts —
+not an artifact registry, certification authority, or signing infrastructure
+of its own. It recommends exact npm packages; the registry artifact remains
+the thing that is downloaded, reviewed, and trusted.
+
+## What a source is and does
+
+Every listing pins an exact npm package, version, registry origin, and SRI
+integrity value, and installing it fetches exactly that artifact. Happier
+ships no publisher PKI, certification, review-receipt, or global revocation
+network behind a listing. Curation shapes what this machine discovers and
+recommends; it never decides trust by itself, never acts as hidden
+authorization for one exact release, and never disables code you already
+installed.
+
+When an npm-compatible registry supplies its native registry signature,
+Happier verifies that acquisition evidence over the exact package, version,
+and SRI. The signing key belongs to the registry: it is not a certification of
+the catalog's publisher label and key rotation does not change the trusted
+plugin publisher. Catalog publisher names remain unverified discovery and
+presentation metadata.
+
+Two kinds of source ship today:
+
+- **Community npm** — built in and always on: direct keyword discovery over
+  the public npm registry, with no configuration.
+- **Marketplace sources** — the curated Happier catalog seeded on this
+  machine, plus any catalog document you add with `hdev plugins marketplace
+  sources add`. Each entry points at an npm artifact, optionally bound to a
+  private registry profile.
 
 ## Requirements
 
@@ -18,22 +48,43 @@ Marketplace entries should provide enough metadata for Happier to show:
 
 ## Community npm discovery
 
-Community discovery searches npm's `happier-plugin` keyword only for candidate
-package names and versions. Happier then reads the exact version from its npm
-packument; it does not rely on custom fields returned by search or download
-archives merely to browse listings.
+Community discovery searches npm's `happier-plugin` keyword for candidate
+package names and versions, combined with your search text. Happier then reads
+each candidate's exact version metadata from the registry; it does not rely on
+custom fields returned by search results to describe a listing.
 
 `hdev plugins pack` emits the closed
 `happier.marketplaceDiscovery` projection beside the generated compatibility
 projection. npm supplies the package coordinate and `dist.integrity`; the
 projection supplies the manifest-derived display, summary, and exact manifest
-digest. Happier rejects a listing if those generated projections disagree, and
+digest. A package is listed only when those published projections agree, and
 the install path rechecks the selected SRI and manifest digest against the
-staged archive.
+staged archive before anything runs.
+
+## Every first install is reviewed
+
+Community npm listings and the marketplace sources you add are unreviewed,
+and every first install — from any source, including the curated catalog —
+reaches the full **Install & Trust** decision from
+[Install and trust](/plugins/packaging/install-trust). A curated listing the
+publisher withdraws cannot be newly installed, but withdrawal is a discovery
+fact: installed plugins keep working and keep updating under their own
+policy.
+
+## Private and custom registries
+
+Listings can point at any npm-compatible registry. Configure access with
+`hdev plugins registry add` and its `login`, `test`, `logout`, `remove`, and
+`list` companions, then bind the profile to a marketplace source or select it
+for a direct install. The profile supplies the registry origin, credentials,
+and network reach for the artifact, and the review shows the exact origin a
+package came from.
 
 ## Executable trust
 
-Executable marketplace installs should require explicit trust before daemon code runs.
+Executable marketplace installs require explicit trust before daemon code
+runs. Presence in any source — curated, user, or community — never
+substitutes for that decision.
 
 ## Compatibility
 

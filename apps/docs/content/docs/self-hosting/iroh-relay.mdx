@@ -1,0 +1,146 @@
+---
+title: Iroh transport relay
+description: Run the stock Iroh relay profile that carries encrypted Home and Machine traffic when a direct path is unavailable.
+---
+
+Run an Iroh transport relay when native Happier clients and daemons need a
+publicly reachable rendezvous and forwarding service. This is separate from the
+Happier relay that stores and synchronizes session data: the Iroh relay is a
+stateless transport process and has no Happier application authority.
+
+## Availability
+
+This page describes the managed profile in the current **0.3 development
+source**. It does not claim that an Iroh relay image is available in a stable or
+preview release. Use an image produced by the repository publisher and deploy
+it by immutable digest.
+
+Native Iroh connectivity exists in the current development source, and so does
+browser Home connectivity: in this development source a browser carries Home
+HTTP and Socket.IO over Iroh when the Home publishes an exact endpoint and at
+least one configured relay. Browser Machine transfers are not activated. This
+is development-source behavior; it is not claimed for a stable or preview
+release. The browser form is relay-only and shows **Secure relay**, never
+**Direct**. A browser is never a Home, and this adds no gateway, local-loopback
+emulation, JavaScript relay, or browser Mutagen workspace-sync engine.
+
+The managed profile runs stock `iroh-relay` 1.1.0 with forwarding and QUIC
+address discovery (QAD) enabled. A forwarding-disabled, QAD-only profile is
+useful for operator tests, but it is not the managed product path.
+
+## What you need first
+
+- An immutable `happierdev/iroh-relay` or
+  `ghcr.io/happier-dev/iroh-relay` image reference in
+  `registry/repository@sha256:digest` form.
+- A TLS certificate chain and private key for the relay, stored as
+  `certs/default.crt` and `certs/default.key` beside the deployment Compose
+  file.
+- Public TCP ports 80 and 443, and UDP port 7842.
+- Measured link and instance capacity from which to choose the relay's receive
+  token-bucket settings.
+
+The repository's
+[deployment README](https://github.com/happier-dev/happier/blob/dev/deploy/iroh-relay/README.md)
+links the Compose file and pinned configuration and carries the complete build
+notes.
+
+## Run the managed profile
+
+Set these values in the environment used by Docker Compose:
+
+```bash
+HAPPIER_IROH_RELAY_IMAGE=registry/repository@sha256:digest
+HAPPIER_IROH_RELAY_RX_BYTES_PER_SECOND=<measured-positive-integer>
+HAPPIER_IROH_RELAY_RX_MAX_BURST_BYTES=<measured-positive-integer>
+```
+
+Then start the deployment from a checkout:
+
+```bash
+docker compose -f deploy/iroh-relay/compose.yaml up -d
+```
+
+The two receive settings are upstream token-bucket controls. Derive them from
+the capacity of the deployed link and instance; they are not Happier account
+quotas. All three variables must be non-empty or Compose stops before it starts
+the container, and the relay exits during startup if either receive value is
+not a positive integer.
+
+Compose only checks that the image variable is set. It does not look inside the
+reference, so pinning the digest is your responsibility: a mutable tag would
+start without complaint. The trustworthy image is the one the repository
+publisher pushed with its SBOM and provenance attestations; take the digest
+from that publication rather than from a tag that can move underneath you.
+
+The process exposes aggregate upstream metrics on container port 9090. The
+provided Compose profile deliberately does not publish that port. Attach a
+private metrics network or collector if you scrape it.
+
+## Trust and path selection
+
+The managed profile accepts every EndpointId authenticated by Iroh and forwards
+opaque encrypted transport. That admission grants transport only. The relay
+does not receive the Happier database, application secrets, payload inspection,
+or operation-level accounting. Home authentication and signed Machine grants
+remain mandatory at the endpoints.
+
+Native clients choose a working direct or relayed path automatically. Normal
+users do not choose between those paths, and path changes do not change the
+Home URL, credentials, or session identity. Direct-versus-relay details and
+EndpointIds are technical diagnostics, not routine connection controls.
+
+The applied native policy is either automatic or disabled. Automatic uses the
+relay URLs explicitly configured for the endpoint and lets Iroh choose direct
+or relayed reachability; disabled contacts no Iroh relay. In both cases,
+the connection succeeds only when Iroh authenticates the remote peer as the
+exact EndpointId selected from the Home or Machine descriptor. Relay URLs and
+direct-address hints help find that endpoint but never prove its identity.
+
+## Optional private admission
+
+The managed profile has no admission callback. Happier Server does not provide
+a default callback route.
+
+A private deployment may use the stock HTTP callback only when an external
+service owns a complete allowlist for every Home, Machine, and account-client
+EndpointId the relay must carry. Configure all three values together:
+
+```bash
+HAPPIER_IROH_RELAY_ADMISSION_URL=https://admission.example.com/check
+HAPPIER_IROH_RELAY_ADMISSION_TOKEN=<service-credential>
+HAPPIER_IROH_RELAY_PRIVATE_ALLOWLIST_COMPLETE=true
+```
+
+The callback receives the authenticated identity in the `X-Iroh-NodeId`
+header. This exact header applies to the pinned 1.1.0 relay and should be
+re-checked before upgrading Iroh. Do not build this callback from a partial
+Home-only or Machine-only registry: the relay cannot infer application roles,
+and an incomplete list denies legitimate endpoints. A public-client shared
+token is not supported.
+
+## When it goes wrong
+
+- **Compose stops before it starts the container.** One of the three required
+  variables is unset or empty. Compose does not look at the image reference
+  itself, so also confirm you pinned a digest rather than a tag such as
+  `latest` or `preview`.
+- **The relay exits while reading receive limits.** Both token-bucket values
+  must be positive integers derived from measured capacity.
+- **TLS startup fails.** Confirm that `default.crt` contains the certificate
+  chain and that `default.key` is its private key, mounted read-only under the
+  deployment's `certs` directory.
+- **A private callback denies every connection.** Confirm that all three
+  admission values are present, that the URL is absolute HTTPS, and that the
+  callback reads `X-Iroh-NodeId`.
+- **The diagnostics show a relayed path.** This is not an authentication or
+  application-policy failure by itself. Check endpoint authentication or
+  signed Machine-grant errors separately.
+
+## Related
+
+- [How Happier fits together](/self-hosting/how-it-works) — the application
+  relay, clients, and machine daemon.
+- [Security](/security) — what the application relay can and cannot read.
+- [Observability](/self-hosting/observability) — monitoring the Happier Server
+  deployment.

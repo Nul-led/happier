@@ -100,11 +100,37 @@ local-only behavior; it does not send draft records through generic Account KV r
 server reserves the draft KV prefix so old generic-KV clients cannot read or overwrite typed draft
 rows.
 
+### Workspace-sync handoff rollout
+
+Workspace handoff is operation-scoped across UI, daemon, and Machine RPC versions. A current
+client may send the canonical `none`, `copy_once`, `create_relationship`, or existing
+`relationship` action only to a daemon that understands that exact action. A predecessor daemon
+that cannot execute the requested workspace action returns
+`workspace_sync_update_required`; the client keeps the connection and unrelated Machine/session
+operations usable and asks for that daemon to be updated. It must not reinterpret the request as a
+legacy file-transfer job or report a successful handoff without the workspace result.
+
+The current daemon remains the sole relationship-settings writer and uses the external Mutagen
+sidecar as the sole reconciliation engine. Mutagen session identifiers and private broker details
+are daemon-local implementation state, not wire or persistence compatibility contracts. A missing
+verified external engine artifact is an `engine_unavailable` failure for the requested workspace
+operation; it does not authorize a fallback to the retired replication engine.
+
 The first capable client imports the retired local existing-Session text/semantic stores and the
 singleton new-Session draft into the canonical draft repository. It removes each legacy value only
 after the corresponding canonical record is durably acknowledged, so an interrupted import remains
 recoverable. The legacy readers are migration adapters, not parallel writers, and may be removed
 when supported persisted local state no longer requires them.
+
+During supported 0.2/0.3 coexistence, the draft authoring map remains closed except for explicitly
+enumerated compatibility keys. The 0.2 reader accepts and preserves the 0.3 `executionTarget`,
+`organizationPlacement`, `agentTarget`, `modelSelection`, and `runtimeDescriptorV1` fields but does
+not treat them as 0.2 execution authority. The 0.3 reader validates and preserves the published 0.2
+`machineId`, `serverId`, `agentId`, `backendTarget`, `modelId`, and `codexBackendMode` fields; its UI
+projects only exact safe equivalents into canonical execution, Agent, and native-model selections.
+Canonical 0.3 fields, including explicit clears, win over predecessor values, and each version's
+writers continue to emit only their native catalog. Remove these reader bridges only after
+0.2/0.3 coexistence and persisted drafts from the other catalog are no longer supported inputs.
 
 Draft documents preserve bounded unknown extension fields as JSON. This lets a client without a
 newer composer contribution edit fields it understands without deleting newer semantic data; it

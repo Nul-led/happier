@@ -14,6 +14,7 @@ This folder documents how Happier works internally, with a focus on protocol, ba
 - testing.md: Repository test lanes, placement rules, and e2e conventions.
 - binary-runtime.md: Binary-safe runtime rules and bundled internal workspace packaging.
 - backend-architecture.md: Internal backend structure, data flow, and key subsystems.
+- search.md: Universal Search and Commands — owners, data flow, target scoping, feature vs capability roles, privacy/storage, plugin provider seam, and intentional exclusions.
 - deployment.md: How to deploy the backend and required infrastructure.
 - cli-architecture.md: CLI and daemon architecture and how they interact with the server.
 - ios-simulator-helper.md: iOS simulator helper architecture, trust chain, and the private-framework App Store / TOS posture.

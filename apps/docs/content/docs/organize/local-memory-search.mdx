@@ -16,7 +16,7 @@ Use it when you want Happier to answer questions such as:
 When local memory search is enabled on a machine, Happier can:
 
 - build and maintain a **local derived index** from that machine’s transcripts
-- search that index from the app/web UI
+- search it from [Search](/organize/search) and the session list’s search field
 - open the matching session at the relevant conversation point
 - let coding and voice agents use memory tools for recall instead of guessing from model memory
 
@@ -24,20 +24,25 @@ This is intentionally **device-local**. It is not a server-side global search in
 
 ## Where to find it
 
-In the app/web UI:
+Local memory search is configured per machine under **Settings → Local Memory
+Search**: pick the machine, enable memory search for it, and choose its
+indexing options. The `memory.search` feature must be enabled in **Settings →
+Features** before those settings appear.
 
-1. Open **Settings → Memory search**
-2. Pick the machine you want to configure
-3. Enable memory search for that machine
+Searching happens in the same places everything else is searchable —
+[Search](/organize/search) and the session list’s search field. There is no
+separate Local Memory Search screen: transcript matches appear as a Messages
+group beside the other results, and session-list matches surface as normal
+session rows.
 
-To search:
+## Two transcript search sources
 
-1. Open **Local Memory Search**
-2. Pick the machine
-3. Enter a query
-4. Open a result to jump back into the matching session context
-
-If you do not see the feature yet, enable the `memory.search` feature in **Settings → Features**.
+Local memory search is one of two transcript sources Search can consult, and
+for any given query one or the other answers — never both at once. A Personal
+Home’s plaintext transcripts are searchable directly when the Home search
+feature is enabled; otherwise a machine with local memory search answers from
+its own index. [Search](/organize/search) describes how the choice is made and
+how the two result shapes differ.
 
 ## Important model: machine-local, not account-global
 
@@ -95,6 +100,19 @@ When you turn local memory search on, you can choose how much history Happier sh
 If you want the fastest, lowest-risk rollout, start with **New only**.
 
 If you want older conversations to be searchable immediately, use **Last 30 days** or **All history**.
+
+### Archived sessions
+
+Archived sessions are **excluded from a machine’s index by default**. Turn on
+**Search archived sessions** in that machine’s memory settings to make them
+eligible; turning it off again removes already-indexed archived content from
+that machine’s search.
+
+Two honest details. Enabling the switch does not backfill everything on its
+own — what gets indexed still follows the backfill choice above. And the
+switch only takes effect where the machine’s Happier build supports it: when
+a machine has not reported support, Happier shows that an update is needed
+there instead of applying a setting it cannot honor.
 
 ## Memory hint generation
 
@@ -238,6 +256,7 @@ Use **Custom remote** only if you intentionally want to bring your own embedding
 
 ## Related guides
 
+- [Search](/organize/search) — where searching happens and what else it covers
 - [Daemon](/apps/daemon)
 - [App](/apps/app)
 - [Feature matrix](/agents/feature-matrix)

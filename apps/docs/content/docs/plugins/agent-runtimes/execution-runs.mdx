@@ -5,16 +5,117 @@ description: Implement bounded Agent execution through AgentExecutionRunRuntime.
 
 An execution-run-only `AgentRuntime` registers an `executionRuns` factory for host-owned tasks that are not ordinary interactive sessions. `AgentRuntime` is an exclusive union — `sessions` or `executionRuns`, never both — so this factory is the whole registration for an execution-only Agent; a session-capable Agent instead registers a `sessions` factory and the host derives its finite Runs.
 
-```ts
-import type { AgentRuntime } from '@happier-dev/plugin-sdk/agents/runtime';
+## Code-defined runtime binding
 
-export const runtime: AgentRuntime = {
+Unlike a Session Agent, an execution-run-only Agent needs no separate runner
+leaf: the code-defined entry supplies the factory and generated activation
+binds it, so one module can hold the whole runtime. It imports only public SDK
+types and owns no process-global state:
+
+```ts
+import { definePlugin } from '@happier-dev/plugin-sdk';
+import type {
+  AgentExecutionRunEvent,
+  AgentRuntimeFactory,
+} from '@happier-dev/plugin-sdk/agents/runtime';
+
+/** The events this leaf publishes, before the host stamps identity and ordering. */
+type RunEventInput = AgentExecutionRunEvent extends infer Event
+  ? Event extends AgentExecutionRunEvent
+    ? Omit<Event, 'sequence' | 'runId' | 'emittedAtMs'>
+    : never
+  : never;
+
+// Keep the declaration snippet executable. Replace the emit calls with the
+// Agent's real bounded work; the lifecycle rules below stay the same.
+const createExampleExecutionRunRuntime: AgentRuntimeFactory = () => ({
   executionRuns: {
-    async open(request, context) {
-      return createExecutionRun({ request, context });
-    }
-  }
-};
+    open(request) {
+      const listeners = new Set<(event: AgentExecutionRunEvent) => void>();
+      const history: AgentExecutionRunEvent[] = [];
+      let sequence = 0;
+      let terminal = false;
+      const emit = (event: RunEventInput): void => {
+        if (terminal) return;
+        if (
+          event.kind === 'run-complete'
+          || event.kind === 'run-failed'
+          || event.kind === 'run-cancelled'
+        ) {
+          terminal = true;
+        }
+        const published = Object.freeze({
+          ...event,
+          sequence: ++sequence,
+          runId: request.runId,
+          emittedAtMs: Date.now(),
+        }) as AgentExecutionRunEvent;
+        history.push(published);
+        for (const listener of [...listeners]) listener(published);
+      };
+
+      emit({ kind: 'run-start' });
+      emit({ kind: 'output-delta', channel: 'assistant', text: 'Working…' });
+      emit({ kind: 'run-complete' });
+
+      return {
+        async send() {
+          return {
+            status: 'unsupported',
+            diagnostic: {
+              code: 'example_execution_run_input_unsupported',
+              severity: 'error' as const,
+              message: 'This bounded run accepts no further input.',
+            },
+          };
+        },
+        async stop() {
+          return { status: 'notRunning' };
+        },
+        watch(listener) {
+          // Subscribers receive every event already published before they
+          // attach, so a Run that terminalizes before open() settles still
+          // delivers its terminal fact.
+          for (const event of history) listener(event);
+          if (!terminal) listeners.add(listener);
+          return {
+            dispose: () => {
+              listeners.delete(listener);
+            },
+          };
+        },
+        async dispose() {
+          listeners.clear();
+        },
+      };
+    },
+  },
+});
+
+export const { manifest, activate } = definePlugin({
+  id: 'com.example.runs',
+  version: '0.1.0',
+  entrypoints: { daemon: './dist/index.js' },
+  agents: {
+    example: {
+      declaration: {
+        title: 'Example execution runs',
+        runtime: { kind: 'custom' },
+        primary: 'executionRuns',
+        capabilities: {
+          executionRuns: {
+            open: ['create'],
+            checkpoint: false,
+            stop: true,
+          },
+        },
+      },
+      factory: createExampleExecutionRunRuntime,
+      // No `sessionRunnerFactory`: an execution-run-only Agent has no Session
+      // runner leaf to locate, and the strict declaration rejects one.
+    },
+  },
+});
 ```
 
 `AgentExecutionRunRuntime` implements:
@@ -24,9 +125,19 @@ export const runtime: AgentRuntime = {
 - `watch(listener)` returning a `Disposable`
 - `dispose()`
 
-Events carry a monotonically increasing sequence and one of the public run-start, progress, output, checkpoint, complete, failed, or cancelled shapes. Keep raw Agent protocol messages inside the adapter.
+Events carry a monotonically increasing `sequence`, the `runId`, and one of the
+public shapes: `run-start`, `run-progress`, `output-delta` (assistant or
+reasoning text), `checkpoint`, and exactly one terminal `run-complete`,
+`run-failed`, or `run-cancelled`. `watch` synchronously replays every event
+already published before returning, and a terminal event is published exactly
+once. Keep raw Agent protocol messages inside the adapter.
 
 The host owns public run state, cancellation admission, status projection, and persistence. When sessions and execution-runs use the same Agent protocol, share the native adapter and parsing logic rather than maintaining competing protocol implementations.
+
+For bounded work driven by one host input, `createFiniteExecutionRunHostRuntime`
+is the public helper that owns event ordering, replay, cancellation settlement,
+terminalization, and disposal; supply its `execute` callback and keep
+provider-native details inside the Agent adapter.
 
 For a Session-capable Agent, register only `sessions`. The host automatically
 derives a finite Run projection from the same Session factory and owns sequence
