@@ -47,6 +47,14 @@ export type PluginProjectionEditableSettingValueType =
     | 'array'
     | 'null';
 
+type PluginProjectionEditableSettingPresentation = Readonly<
+    Omit<NonNullable<PluginProjectedSettingsFieldV2['presentation']>, 'options'> & {
+        options?: readonly NonNullable<
+            NonNullable<PluginProjectedSettingsFieldV2['presentation']>['options']
+        >[number][];
+    }
+>;
+
 export type PluginProjectionEditableSettingField = Readonly<{
     key: string;
     control: PluginProjectionEditableSettingControl;
@@ -64,7 +72,7 @@ export type PluginProjectionEditableSettingField = Readonly<{
     clearWhenEmpty: string;
     defaultBooleanValue?: boolean;
     defaultValue?: PluginProjectedSettingsFieldV2['defaultValue'];
-    presentation?: PluginProjectedSettingsFieldV2['presentation'];
+    presentation?: PluginProjectionEditableSettingPresentation;
     availability?: PluginProjectedSettingsFieldV2['availability'];
     analytics?: PluginProjectedSettingsFieldV2['analytics'];
 }>;
@@ -84,10 +92,25 @@ export type PluginProjectionEditableSettingsGroup = Readonly<{
     fields: readonly PluginProjectionEditableSettingField[];
 }>;
 
+export type ResolvedPluginProjectionEditableSettingOption = Readonly<
+    Omit<NonNullable<PluginProjectionEditableSettingPresentation['options']>[number], 'title' | 'description'> & {
+        title: string;
+        description?: string;
+    }
+>;
+
+export type ResolvedPluginProjectionEditableSettingPresentation = Readonly<
+    Omit<PluginProjectionEditableSettingPresentation, 'placeholder' | 'options'> & {
+        placeholder?: string;
+        options?: readonly ResolvedPluginProjectionEditableSettingOption[];
+    }
+>;
+
 export type ResolvedPluginProjectionEditableSettingField = Readonly<
-    Omit<PluginProjectionEditableSettingField, 'title' | 'subtitle'> & {
+    Omit<PluginProjectionEditableSettingField, 'title' | 'subtitle' | 'presentation'> & {
         title: string;
         subtitle?: string | null;
+        presentation?: ResolvedPluginProjectionEditableSettingPresentation;
     }
 >;
 
@@ -357,39 +380,39 @@ export function resolvePluginProjectionEditableSettingsGroup(
                 })),
             })),
         },
-        fields: group.fields.map((field) => {
+        fields: group.fields.map(({ title, subtitle, presentation: fieldPresentation, ...fieldRest }) => {
             const availability: PluginProjectionEditableSettingField['availability'] =
-                field.availability?.disabledWhen !== undefined
+                fieldRest.availability?.disabledWhen !== undefined
                 ? {
-                    ...field.availability,
-                    disabledReason: localize(group.pluginId, field.availability.disabledReason),
+                    ...fieldRest.availability,
+                    disabledReason: localize(group.pluginId, fieldRest.availability.disabledReason),
                 }
-                : field.availability;
-            const presentation: PluginProjectionEditableSettingField['presentation'] = field.presentation
-                ? {
-                    ...field.presentation,
-                    ...(field.presentation.placeholder === undefined
+                : fieldRest.availability;
+            const presentation: ResolvedPluginProjectionEditableSettingPresentation | undefined = fieldPresentation
+                ? (({ placeholder, options, ...presentationRest }) => ({
+                    ...presentationRest,
+                    ...(placeholder === undefined
                         ? {}
-                        : { placeholder: localize(group.pluginId, field.presentation.placeholder) }),
-                    ...(field.presentation.options === undefined
+                        : { placeholder: localize(group.pluginId, placeholder) }),
+                    ...(options === undefined
                         ? {}
                         : {
-                            options: field.presentation.options.map((option) => ({
-                                ...option,
-                                title: localize(group.pluginId, option.title),
-                                ...(option.description === undefined
+                            options: options.map(({ title: optionTitle, description, ...optionRest }) => ({
+                                ...optionRest,
+                                title: localize(group.pluginId, optionTitle),
+                                ...(description === undefined
                                     ? {}
-                                    : { description: localize(group.pluginId, option.description) }),
+                                    : { description: localize(group.pluginId, description) }),
                             })),
                         }),
-                }
+                }))(fieldPresentation)
                 : undefined;
             return {
-                ...field,
-                title: localize(group.pluginId, field.title),
-                ...(field.subtitle === undefined || field.subtitle === null
-                    ? { subtitle: field.subtitle }
-                    : { subtitle: localize(group.pluginId, field.subtitle) }),
+                ...fieldRest,
+                title: localize(group.pluginId, title),
+                ...(subtitle === undefined || subtitle === null
+                    ? { subtitle }
+                    : { subtitle: localize(group.pluginId, subtitle) }),
                 ...(availability === undefined ? {} : { availability }),
                 ...(presentation === undefined ? {} : { presentation }),
             };
@@ -551,9 +574,10 @@ export function readProjectedAgentUiBehaviorDescriptors(
         const ui = entry.ui;
         if (!ui) continue;
         if (!ui.behavior && !ui.session && !ui.message && !ui.components) continue;
+        if (!entry.identity) continue;
         descriptorsByAgentId[agentId] = {
             kind: 'plugin.ui.v1',
-            pluginId: entry.identity?.pluginId ?? agentId,
+            pluginId: entry.identity.pluginId,
             agentId,
             version: 1,
             ...(ui.behavior ? { behavior: ui.behavior } : {}),

@@ -92,7 +92,6 @@ function buildSelectableProviderEntries(entries: readonly AgentSetupEntry[], sco
 }>): AgentsLogoMultiSelectEntry[] {
     return entries.map((entry) => ({
         agentId: entry.agentId,
-        setupAgentId: entry.catalogAgentId ?? null,
         icon: (
             <AgentCatalogIdentityIcon
                 entry={entry}
@@ -708,7 +707,13 @@ export const AgentSetupFlow = React.memo(function AgentSetupFlow(props: Readonly
                         const selected = selectedAgentIds.includes(entry.agentId);
                         if (!selected) return null;
 
-                        const status = entry.catalogAgentId ? installQueue.resolveStatus(entry.catalogAgentId).status : 'idle';
+                        // Install status is keyed by the id the queue installed
+                        // under, which is the Agent's own operational id when it
+                        // contributes a CLI. A bundled backing id exists only for
+                        // built-ins and would strand every external Agent at
+                        // "queued" for the whole install.
+                        const runtimeAgentId = resolveAgentSetupRuntimeId(entry);
+                        const status = runtimeAgentId ? installQueue.resolveStatus(runtimeAgentId).status : 'idle';
                         return (
                             <View key={entry.agentId} style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
                                 <AgentCatalogIdentityIcon

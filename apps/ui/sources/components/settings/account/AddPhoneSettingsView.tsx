@@ -12,13 +12,12 @@ import { t } from '@/text';
 import { useFeatureDecision } from '@/hooks/server/useFeatureDecision';
 import { Typography } from '@/constants/Typography';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
-import { CopiedPill } from '@/components/ui/copy/CopiedPill';
-import { useTemporaryCopyFeedback } from '@/components/ui/copy/useTemporaryCopyFeedback';
-import { setClipboardStringSafe } from '@/utils/ui/clipboard';
 import {
     formatEnrollmentExpiry,
     formatHomeEnrollmentTargetLabel,
+    resolveHomeEnrollmentPresentation,
 } from '@/auth/pairing/pairingPresentation';
+import { PairingLinkDisclosure } from '@/components/auth/pairing/PairingLinkDisclosure';
 
 const ADD_PHONE_QR_SIZE = 240;
 
@@ -57,15 +56,6 @@ const stylesheet = StyleSheet.create((theme) => ({
         width: '100%',
         paddingVertical: 10,
     },
-    linkRow: {
-        marginTop: 8,
-        borderWidth: 1,
-        borderColor: theme.colors.border.default,
-        borderRadius: 12,
-        paddingHorizontal: 14,
-        paddingVertical: 10,
-        backgroundColor: theme.colors.surface.base,
-    },
     identityRow: {
         marginTop: 14,
         alignItems: 'center',
@@ -83,19 +73,6 @@ const stylesheet = StyleSheet.create((theme) => ({
         lineHeight: 20,
         textAlign: 'center',
         ...Typography.default('semiBold'),
-    },
-    linkText: {
-        fontSize: 12,
-        color: theme.colors.text.secondary,
-        lineHeight: 16,
-        ...Typography.mono(),
-    },
-    linkWarning: {
-        marginBottom: 8,
-        fontSize: 13,
-        color: theme.colors.text.secondary,
-        lineHeight: 18,
-        ...Typography.default(),
     },
     qrUnavailable: {
         width: '100%',
@@ -171,17 +148,15 @@ export const AddPhoneSettingsView = React.memo(function AddPhoneSettingsView() {
     });
 
     const [cancelling, setCancelling] = React.useState(false);
-    const [showLink, setShowLink] = React.useState(false);
-    const copyFeedback = useTemporaryCopyFeedback();
+    const enrollmentPresentation = resolveHomeEnrollmentPresentation({
+        kind: 'trusted_home_display',
+        phase: presentation.phase,
+    });
     const presentationContext = 'context' in presentation ? presentation.context : null;
     const targetLabel = presentationContext
         ? formatHomeEnrollmentTargetLabel(presentationContext.target.descriptor)
         : null;
     const visibleDeepLink = presentation.phase === 'ready' ? presentation.deepLink : null;
-
-    React.useEffect(() => {
-        setShowLink(false);
-    }, [visibleDeepLink]);
 
     const startPairingWithAlert = React.useCallback(async () => {
         const res = await startPairing();
@@ -240,7 +215,7 @@ export const AddPhoneSettingsView = React.memo(function AddPhoneSettingsView() {
 
                     {canRenderPairing ? (
                         <>
-                            {targetLabel && presentationContext ? (
+                            {enrollmentPresentation.contextualFacts !== 'none' && targetLabel && presentationContext ? (
                                 <View style={styles.identityRow}>
                                     <Text style={styles.identityLabel}>{t('common.home')}</Text>
                                     <Text style={styles.identityValue} numberOfLines={2}>{targetLabel}</Text>
@@ -295,48 +270,14 @@ export const AddPhoneSettingsView = React.memo(function AddPhoneSettingsView() {
                                 </View>
                             ) : null}
 
-                            {visibleDeepLink && showLink ? (
-                                <View testID="add-phone-pairing-link" style={styles.linkRow}>
-                                    <Text style={styles.linkWarning}>
-                                        {t('connect.pairingLinkSecurityWarning')}
-                                    </Text>
-                                    <Text style={styles.linkText} numberOfLines={3}>
-                                        {visibleDeepLink}
-                                    </Text>
-                                    <CopiedPill visible={copyFeedback.isCopied()} testID="add-phone-pairing-link-copy-feedback" />
-                                    <View style={styles.linkActionsRow}>
-                                        <View style={styles.actionButton}>
-                                            <RoundButton
-                                                testID="add-phone-copy-link"
-                                                size="small"
-                                                title={t('common.copy')}
-                                                display="inverted"
-                                                action={async () => {
-                                                    const copied = await setClipboardStringSafe(visibleDeepLink);
-                                                    if (!copied) {
-                                                        await Modal.alertAsync(t('common.error'), t('items.failedToCopyToClipboard'));
-                                                        return;
-                                                    }
-                                                    copyFeedback.markCopied();
-                                                }}
-                                            />
-                                        </View>
-                                    </View>
-                                </View>
+                            {visibleDeepLink ? (
+                                <PairingLinkDisclosure
+                                    testIDPrefix="add-phone-pairing-link"
+                                    link={visibleDeepLink}
+                                />
                             ) : null}
 
                             <View style={styles.linkActionsRow}>
-                                {visibleDeepLink && !showLink ? (
-                                    <View style={styles.actionButton}>
-                                        <RoundButton
-                                            testID="add-phone-show-link"
-                                            size="small"
-                                            title={t('connect.showPairingLink')}
-                                            action={async () => setShowLink(true)}
-                                            display="inverted"
-                                        />
-                                    </View>
-                                ) : null}
                                 {presentation.phase === 'generating'
                                     || presentation.phase === 'ready'
                                     || presentation.phase === 'expired'
@@ -374,16 +315,18 @@ export const AddPhoneSettingsView = React.memo(function AddPhoneSettingsView() {
                                 <View
                                     testID="add-phone-request-card"
                                     style={styles.requestCard}
-                                    accessibilityLiveRegion="polite"
+                                    accessibilityLiveRegion={enrollmentPresentation.liveRegion}
                                 >
-                                    <Text style={styles.requestTitle}>{t('connect.securingCredentials')}</Text>
-                                    <Text style={styles.requestBody}>{t('common.loading')}</Text>
+                                    <Text style={styles.requestTitle}>{t(enrollmentPresentation.primaryTranslationKey)}</Text>
+                                    {enrollmentPresentation.activity ? (
+                                        <ActivitySpinner size="small" color={theme.colors.text.primary} />
+                                    ) : null}
                                 </View>
                             ) : null}
 
                             {presentation.phase === 'succeeded' ? (
-                                <View testID="add-phone-complete" style={styles.requestCard} accessibilityLiveRegion="polite">
-                                    <Text style={styles.requestTitle}>{t('common.success')}</Text>
+                                <View testID="add-phone-complete" style={styles.requestCard} accessibilityLiveRegion={enrollmentPresentation.liveRegion}>
+                                    <Text style={styles.requestTitle}>{t(enrollmentPresentation.primaryTranslationKey)}</Text>
                                     <Text style={styles.requestBody}>
                                         {t('connect.requestingDeviceLabel')}: {presentation.requestedDeviceLabel ?? t('connect.deviceLabel')}
                                     </Text>
@@ -394,15 +337,15 @@ export const AddPhoneSettingsView = React.memo(function AddPhoneSettingsView() {
                             ) : null}
 
                             {presentation.phase === 'expired' ? (
-                                <View testID="add-phone-expired" style={styles.requestCard} accessibilityLiveRegion="polite">
-                                    <Text style={styles.requestTitle}>{t('connect.pairingQrExpired')}</Text>
+                                <View testID="add-phone-expired" style={styles.requestCard} accessibilityLiveRegion={enrollmentPresentation.liveRegion}>
+                                    <Text style={styles.requestTitle}>{t(enrollmentPresentation.primaryTranslationKey)}</Text>
                                 </View>
                             ) : null}
 
                             {presentation.phase === 'invalid_request' ? (
-                                <View testID="add-phone-invalid-request" style={styles.requestCard} accessibilityLiveRegion="polite">
+                                <View testID="add-phone-invalid-request" style={styles.requestCard} accessibilityLiveRegion={enrollmentPresentation.liveRegion}>
                                     <Text style={styles.requestTitle}>{t('common.error')}</Text>
-                                    <Text style={styles.requestBody}>{t('errors.operationFailed')}</Text>
+                                    <Text style={styles.requestBody}>{t(enrollmentPresentation.primaryTranslationKey)}</Text>
                                 </View>
                             ) : null}
                         </>

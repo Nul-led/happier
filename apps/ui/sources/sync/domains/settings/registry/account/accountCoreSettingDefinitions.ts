@@ -73,6 +73,7 @@ export const ACCOUNT_CORE_SETTING_ANALYTICS = defineAccountSettingAnalytics({
     sessionPendingQueueDrainMode: { trackCurrentState: true, trackChanges: true, valueKind: 'enum', privacy: 'safe', identityScope: 'person' },
     sessionPendingQueueDeliveryTiming: { trackCurrentState: true, trackChanges: true, valueKind: 'enum', privacy: 'safe', identityScope: 'person' },
     sessionBusySteerSendPolicy: { trackCurrentState: true, trackChanges: true, valueKind: 'enum', privacy: 'safe', identityScope: 'person' },
+    sessionInactiveResumePolicy: { trackCurrentState: true, trackChanges: true, valueKind: 'enum', privacy: 'safe', identityScope: 'person' },
     sessionNonSteerableSendPrompt: { trackCurrentState: true, trackChanges: true, valueKind: 'enum', privacy: 'safe', identityScope: 'person' },
     sessionProviderUsageGaugeMode: { trackCurrentState: true, trackChanges: true, valueKind: 'enum', privacy: 'safe', identityScope: 'person' },
     sessionProviderUsageGaugeWindowMode: { trackCurrentState: true, trackChanges: true, valueKind: 'enum', privacy: 'safe', identityScope: 'person' },

@@ -42,8 +42,13 @@ vi.mock('@/components/sessions/agentInput/components/AgentInputSuggestionView', 
     FileMentionSuggestion: () => null,
 }));
 
+vi.mock('@/components/sessions/presentation/SessionAgentCatalogIdentityIcon', () => ({
+    SessionAgentCatalogIdentityIcon: () => null,
+}));
+
 vi.mock('@/components/ui/icons/Icon', () => ({
     Icon: () => null,
+    ICON_SIZE: { xs: 14, sm: 16, md: 20, lg: 24, xl: 29 },
 }));
 
 vi.mock('@/sync/domains/state/storage', async () => {

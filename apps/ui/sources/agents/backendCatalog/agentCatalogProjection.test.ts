@@ -99,6 +99,30 @@ describe('agentCatalogProjection', () => {
         }]);
     });
 
+    it('binds an installed external Agent to its canonical qualified target key so enablement is reachable', () => {
+        const params = {
+            enabledAgentIds: [],
+            backendEnabledByTargetKey: { 'agent:acme.agent/native': false },
+            mergedBackendProjectionById: {},
+            mergedProviderProjectionById: {
+                'acme.native': {
+                    agentId: 'acme.native',
+                    qualifiedId: 'acme.agent/native',
+                    identity: { pluginId: 'acme.agent', localId: 'native' },
+                    channel: 'plugin' as const,
+                    isBuiltIn: false,
+                },
+            },
+        };
+
+        expect(resolveAgentCatalogProjection('acme.native', params)).toEqual(expect.objectContaining({
+            agentId: 'acme.native',
+            identity: { pluginId: 'acme.agent', localId: 'native' },
+            backendTargetKey: 'agent:acme.agent/native',
+            enabled: false,
+        }));
+    });
+
     it('does not inherit bundled auth-probe safety for an installed plugin Agent with a colliding local id', () => {
         const projection = resolveAgentCatalogProjection('claude', {
             enabledAgentIds: ['claude'],
@@ -197,7 +221,7 @@ describe('agentCatalogProjection', () => {
         }));
     });
 
-    it('projects bundled UI behavior from an explicit backing Agent without collapsing an external identity', () => {
+    it('projects bundled UI behavior from an explicit backing Agent without borrowing its auth contract', () => {
         const params = {
             enabledAgentIds: ['acme.agent.backend'],
             mergedBackendProjectionById: {
@@ -236,7 +260,7 @@ describe('agentCatalogProjection', () => {
             backendTargetKey: 'backend:acme.agent.backend',
             descriptor: expect.objectContaining({ agentId: 'claude' }),
             behavior: expect.objectContaining({ agentId: 'claude' }),
-            authPlugin: expect.objectContaining({ agentId: 'claude' }),
+            authPlugin: null,
         }));
     });
 
@@ -303,7 +327,7 @@ describe('agentCatalogProjection', () => {
             backendTargetKey: 'backend:acme.backend.only',
             descriptor: expect.objectContaining({ agentId: 'claude' }),
             behavior: expect.objectContaining({ agentId: 'claude' }),
-            authPlugin: expect.objectContaining({ agentId: 'claude' }),
+            authPlugin: null,
         }));
     });
 

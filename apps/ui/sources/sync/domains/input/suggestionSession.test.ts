@@ -108,22 +108,29 @@ describe('composer session suggestion source (D-7, D-8)', () => {
                 title: 'Session same-server',
             }),
         ]);
-        expect(items[0]).not.toHaveProperty('serverId');
+        // The opaque session id stays the only durable reference, but each row carries
+        // the exact server (and machine) scope it was projected for so its Agent mark
+        // can resolve machine-qualified catalog identity instead of guessing.
+        expect(items[0]).toMatchObject({ serverId: 'server-a' });
     });
 
-    describe('the provider a row draws a logo for', () => {
-        function agentIdFor(flavor: unknown) {
+    describe('the Agent identity a row carries', () => {
+        function itemFor(metadata: Record<string, unknown>) {
             const [item] = projectComposerSessionSuggestionItems(
                 state({
                     byServer: {
                         'server-a': [renderable('peer', {
-                            metadata: { name: 'Session peer', path: '/repo', flavor },
+                            metadata: { name: 'Session peer', path: '/repo', ...metadata },
                         })],
                     },
                 }),
                 { serverId: 'server-a', currentSessionId: null },
             );
-            return item?.agentId;
+            return item;
+        }
+
+        function agentIdFor(flavor: unknown) {
+            return itemFor({ flavor })?.agentId;
         }
 
         it('resolves the session flavor to a registry provider', () => {
@@ -131,14 +138,64 @@ describe('composer session suggestion source (D-7, D-8)', () => {
             expect(agentIdFor('claude')).toBe('claude');
         });
 
-        /**
-         * A flavor this build has no registry entry for must stay unresolved rather than
-         * collapse onto the default provider: the row would then show a confident logo for
-         * an agent that is not the one running in that session.
-         */
-        it('leaves a provider this build does not know unresolved', () => {
-            expect(agentIdFor('some-future-agent')).toBeNull();
+        it('keeps a session that declares no Agent unresolved', () => {
             expect(agentIdFor(undefined)).toBeNull();
+            expect(agentIdFor('')).toBeNull();
+        });
+
+        it('preserves an external Agent identity declared by the runtime descriptor', () => {
+            expect(itemFor({
+                runtimeDescriptorV1: {
+                    v: 1,
+                    agentId: 'acme.native/agent',
+                    agent: {},
+                },
+            })?.agentId).toBe('acme.native/agent');
+        });
+
+        it('reads layout-v1 identity from the canonical shared presentation envelope', () => {
+            const [item] = projectComposerSessionSuggestionItems(
+                state({
+                    byServer: {
+                        'server-a': [renderable('peer', {
+                            metadataLayoutVersion: 1,
+                            accessLevel: 'view',
+                            metadata: {
+                                v: 1,
+                                agentPresentation: { agentId: 'acme.native/agent' },
+                            },
+                        })],
+                    },
+                }),
+                { serverId: 'server-a', currentSessionId: null },
+            );
+
+            expect(item?.agentId).toBe('acme.native/agent');
+        });
+
+        /**
+         * Machine-qualified identity presentation needs the scope the Agent mark resolves
+         * against: the machine the session runs on and the exact server scope the row
+         * was projected for.
+         */
+        it('threads the machine and server scope the Agent mark resolves against', () => {
+            expect(itemFor({
+                runtimeDescriptorV1: {
+                    v: 1,
+                    agentId: 'acme.native/agent',
+                    agent: {},
+                },
+                machineId: 'machine-1',
+            })).toMatchObject({
+                agentId: 'acme.native/agent',
+                machineId: 'machine-1',
+                serverId: 'server-a',
+            });
+            expect(itemFor({ flavor: 'codex' })).toMatchObject({
+                agentId: 'codex',
+                machineId: null,
+                serverId: 'server-a',
+            });
         });
     });
 

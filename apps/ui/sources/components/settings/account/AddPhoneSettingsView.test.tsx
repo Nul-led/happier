@@ -271,15 +271,18 @@ describe('AddPhoneSettingsView', () => {
 
         const screen = await renderScreen(<AddPhoneSettingsView />);
         expect(screen.findAllByTestId('add-phone-pairing-link')).toHaveLength(0);
-        const showLinkButton = screen.findByTestId('add-phone-show-link');
+        const showLinkButton = screen.findByTestId('add-phone-pairing-link-details');
         expect(showLinkButton).toBeTruthy();
+        expect(showLinkButton?.props.accessibilityState).toMatchObject({ expanded: false });
 
         await act(async () => {
-            await showLinkButton!.props.action();
+            showLinkButton!.props.onPress();
         });
         expect(screen.findByTestId('add-phone-pairing-link')).toBeTruthy();
+        expect(screen.findByTestId('add-phone-pairing-link-details')?.props.accessibilityState)
+            .toMatchObject({ expanded: true });
         expect(screen.getTextContent()).toContain('connect.pairingLinkSecurityWarning');
-        const copyLinkButton = screen.findByTestId('add-phone-copy-link');
+        const copyLinkButton = screen.findByTestId('add-phone-pairing-link-copy');
         expect(copyLinkButton).toBeTruthy();
         await act(async () => {
             await copyLinkButton!.props.action();
@@ -335,6 +338,8 @@ describe('AddPhoneSettingsView', () => {
         expect(screen.findByTestId('add-phone-approve')).toBeNull();
         expect(screen.findByTestId('add-phone-reject')).toBeNull();
         expect(screen.findByTestId('add-phone-complete')).toBeTruthy();
+        expect(screen.findByTestId('add-phone-pairing-link-details')).toBeNull();
+        expect(screen.findByTestId('add-phone-pairing-link')).toBeNull();
         expect(screen.getTextContent()).toContain('stack.example.test');
         expect(screen.getTextContent()).toContain('connect.requestingDeviceLabel');
         expect(screen.getTextContent()).toContain('Phone');
@@ -443,13 +448,13 @@ describe('AddPhoneSettingsView', () => {
 
         // The exact secret-bearing link stays behind the existing warning/disclosure.
         expect(screen.findAllByTestId('add-phone-pairing-link')).toHaveLength(0);
-        const showLinkButton = screen.findByTestId('add-phone-show-link');
+        const showLinkButton = screen.findByTestId('add-phone-pairing-link-details');
         expect(showLinkButton).toBeTruthy();
         await act(async () => {
-            await showLinkButton!.props.action();
+            showLinkButton!.props.onPress();
         });
         expect(screen.getTextContent()).toContain('connect.pairingLinkSecurityWarning');
-        const copyLinkButton = screen.findByTestId('add-phone-copy-link');
+        const copyLinkButton = screen.findByTestId('add-phone-pairing-link-copy');
         expect(copyLinkButton).toBeTruthy();
         await act(async () => {
             await copyLinkButton!.props.action();

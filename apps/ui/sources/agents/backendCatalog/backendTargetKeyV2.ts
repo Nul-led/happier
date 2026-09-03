@@ -3,23 +3,39 @@ import {
     PersistedBackendTargetRefV2Schema,
     buildBackendTargetKeyV2,
     parseBackendTargetKeyV2,
+    parseQualifiedPluginContributionKey,
     readBackendTargetRefV2,
     type BackendTargetKeyV2,
     type BackendTargetRefV2Input,
     type PersistedBackendTargetRefV2,
+    type PluginContributionIdentityV1,
 } from '@happier-dev/protocol';
 
 import { BUNDLED_CANONICAL_AGENT_CONTRIBUTION_IDENTITIES } from '@/agents/registry/generatedBundledPluginEntries';
 
-function formatCanonicalBackendTargetKeyV2(target: PersistedBackendTargetRefV2): BackendTargetKeyV2 {
+function resolveAgentIdentityForBackendId(backendId: string): PluginContributionIdentityV1 | null {
     // One bundled Agent carries exactly one canonical binding key: the qualified
     // contribution identity. The retired `backend:<bundledId>` spelling must
     // rekey onto it so persisted selections join current targets.
-    const bundledIdentity = target.kind === 'backend' && !target.configuredBackendId
-        ? BUNDLED_CANONICAL_AGENT_CONTRIBUTION_IDENTITIES[target.backendId as keyof typeof BUNDLED_CANONICAL_AGENT_CONTRIBUTION_IDENTITIES] ?? null
+    const bundledIdentity = BUNDLED_CANONICAL_AGENT_CONTRIBUTION_IDENTITIES[
+        backendId as keyof typeof BUNDLED_CANONICAL_AGENT_CONTRIBUTION_IDENTITIES
+    ] ?? null;
+    if (bundledIdentity) return bundledIdentity;
+    // An installed Agent's host routing id *is* its qualified contribution key,
+    // so `backend:<pluginId>/<localId>` names the same Agent as the canonical
+    // `agent:` target. Without this, a Voice selection, remembered engine, or
+    // persisted run target spelled in backend vocabulary never joins the
+    // qualified target the rest of the app writes. Bundled ids carry no `/`, so
+    // this branch only reaches installed Agents.
+    return parseQualifiedPluginContributionKey(backendId);
+}
+
+function formatCanonicalBackendTargetKeyV2(target: PersistedBackendTargetRefV2): BackendTargetKeyV2 {
+    const agentIdentity = target.kind === 'backend' && !target.configuredBackendId
+        ? resolveAgentIdentityForBackendId(target.backendId)
         : null;
-    if (bundledIdentity) {
-        return buildBackendTargetKeyV2({ kind: 'agent', identity: bundledIdentity });
+    if (agentIdentity) {
+        return buildBackendTargetKeyV2({ kind: 'agent', identity: agentIdentity });
     }
     return buildBackendTargetKeyV2(target);
 }

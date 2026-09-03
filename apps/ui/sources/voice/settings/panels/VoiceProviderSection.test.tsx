@@ -36,6 +36,19 @@ const passiveSetupBoundary = vi.hoisted(() => ({
     ),
 }));
 const rawCredentialReadiness = vi.hoisted(() => vi.fn(async () => 'ready' as const));
+const projectedPluginText = vi.hoisted(() => vi.fn((pluginId: string, value: string | Readonly<{ key: string; fallback: string }>) => (
+    typeof value === 'string' ? value : `${pluginId}:${value.key}`
+)));
+
+vi.mock('@/components/appShell/plugins/AppShellPluginUiProjection', async () => {
+    const { getConnectedServiceRegistrySnapshot } = await import(
+        '@/sync/domains/connectedServices/connectedServiceRegistry'
+    );
+    return {
+        useProjectedPluginLocalizedTextResolver: () => projectedPluginText,
+        useProjectedConnectedServicesRegistry: getConnectedServiceRegistrySnapshot,
+    };
+});
 
 vi.mock('@/voice/credentials/rawCredentialAuthorizationClient', () => ({
     inspectRawCredentialAuthorizationReadiness: rawCredentialReadiness,
@@ -66,6 +79,7 @@ function createActiveAccountLifetime(accountId: string): Readonly<{
 }
 
 afterEach(() => {
+    projectedPluginText.mockClear();
     activeAccountLifetimeBoundary.value = null;
     passiveSetupBoundary.invoke.mockReset();
     passiveSetupBoundary.invoke.mockResolvedValue({ supported: false, reason: 'error' });
@@ -2398,8 +2412,10 @@ describe('VoiceProviderSection', () => {
             },
         );
         const registry = createDefaultVoiceProviderRegistry();
-        const sttDeclaration = registry.get('happier.voice.google/gemini-stt')?.declaration;
-        const ttsDeclaration = registry.get('happier.voice.google/google-cloud-tts')?.declaration;
+        const sttEntry = registry.get('happier.voice.google/gemini-stt');
+        const ttsEntry = registry.get('happier.voice.google/google-cloud-tts');
+        const sttDeclaration = sttEntry?.kind === 'voice.speech-engine.v1' ? sttEntry.declaration : null;
+        const ttsDeclaration = ttsEntry?.kind === 'voice.speech-engine.v1' ? ttsEntry.declaration : null;
         if (sttDeclaration?.kind !== 'speech' || ttsDeclaration?.kind !== 'speech') {
             throw new Error('expected current Google speech declarations');
         }
@@ -2563,15 +2579,18 @@ describe('VoiceProviderSection', () => {
                 schemaVersion: 1,
                 fields: [{
                     id: 'voice',
-                    title: 'Provider voice',
-                    description: 'Applied to the next provider session.',
+                    title: { key: 'settings.voice.title', fallback: 'Provider voice' },
+                    description: {
+                        key: 'settings.voice.description',
+                        fallback: 'Applied to the next provider session.',
+                    },
                     schema: { type: 'string', enum: ['calm', 'bright'] },
                     default: 'calm',
                     presentation: {
                         control: 'select',
                         options: [
-                            { value: 'calm', title: 'Calm' },
-                            { value: 'bright', title: 'Bright' },
+                            { value: 'calm', title: { key: 'settings.voice.calm', fallback: 'Calm' } },
+                            { value: 'bright', title: { key: 'settings.voice.bright', fallback: 'Bright' } },
                         ],
                     },
                 }],
@@ -2638,7 +2657,11 @@ describe('VoiceProviderSection', () => {
         const select = findTestInstanceByTypeWithProps(tree, 'DropdownMenu' as any, {
             selectedId: JSON.stringify('calm'),
         });
-        expect(select?.props.itemTrigger.title).toBe('Provider voice');
+        expect(select?.props.itemTrigger.title).toBe('acme.synthetic-configurable:settings.voice.title');
+        expect(select?.props.items.map((item: Readonly<{ title: string }>) => item.title)).toEqual([
+            'acme.synthetic-configurable:settings.voice.calm',
+            'acme.synthetic-configurable:settings.voice.bright',
+        ]);
         await act(async () => select?.props.onSelect(JSON.stringify('bright')));
         expect(setVoice).toHaveBeenCalledWith(expect.objectContaining({
             providerId,

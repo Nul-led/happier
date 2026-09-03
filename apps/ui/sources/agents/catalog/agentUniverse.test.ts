@@ -1,33 +1,31 @@
 import { describe, expect, it, vi } from 'vitest';
 
 const agentsPackageState = vi.hoisted(() => ({
-    AGENT_IDS: ['claude', 'codex', 'gemini'] as const,
-    CANONICAL_AGENT_IDS: ['claude', 'codex', 'gemini'] as const,
-    getAgentCatalogDefinition: vi.fn(),
+    definitions: [
+        { id: 'claude' },
+        { id: 'codex' },
+        { id: 'gemini' },
+    ] as const,
 }));
 
-// Intentionally omit getAllAgentCatalogDefinitions to mirror minimal mocks used elsewhere in the UI test suite.
-vi.mock('@happier-dev/agents', () => ({
-    ...agentsPackageState,
+vi.mock('@happier-dev/agents', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@happier-dev/agents')>(),
+    getAllAgentCatalogDefinitions: () => agentsPackageState.definitions,
 }));
 
 describe('agentUniverse', () => {
-    it('keeps the provider backend target key canonical when a provider declares a settings backend id', async () => {
-        agentsPackageState.getAgentCatalogDefinition.mockReturnValue({
-            id: 'antigravity',
-            settingsBackendId: 'antigravity-localharness',
-        });
-
+    it('canonicalizes a bundled Agent id to its qualified Agent target', async () => {
         vi.resetModules();
         const { buildAgentUniverseBackendTargetKey } = await import('./agentUniverse');
 
-        expect(buildAgentUniverseBackendTargetKey('antigravity')).toBe('backend:antigravity');
+        expect(buildAgentUniverseBackendTargetKey('antigravity'))
+            .toBe('agent:happier.agent.antigravity/antigravity');
     });
 
-    it('falls back to AGENT_IDS when getAllAgentCatalogDefinitions is unavailable', async () => {
+    it('reads the complete universe from the canonical Agent catalog', async () => {
         vi.resetModules();
         const { listAgentUniverseIds } = await import('./agentUniverse');
 
-        expect(listAgentUniverseIds()).toEqual([...agentsPackageState.AGENT_IDS]);
+        expect(listAgentUniverseIds()).toEqual(['claude', 'codex', 'gemini']);
     });
 });

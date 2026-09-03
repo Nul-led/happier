@@ -1,10 +1,12 @@
 import * as React from 'react';
 
+import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
     createModalModuleMock,
     createResolvedAgentCatalogEntryFixture,
+    flushHookEffects,
     renderScreen,
 } from '@/dev/testkit';
 import { AgentCatalogIdentityIcon } from '@/agents/presentation/AgentCatalogIdentityIcon';
@@ -207,6 +209,10 @@ describe('AgentSetupFlow', () => {
         tauriDesktopState.value = true;
         modalMock.spies.confirm.mockClear();
         capabilitiesState.invoke.mockClear();
+        capabilitiesState.invoke.mockImplementation(async () => ({
+            supported: true as const,
+            response: { ok: true as const, result: null },
+        }));
         authenticationStateInput.mockClear();
         administrationTargetState.resolveExecutionTarget.mockReset();
         administrationTargetState.resolveExecutionTarget.mockReturnValue({
@@ -330,6 +336,51 @@ describe('AgentSetupFlow', () => {
             props: { steps: Array<{ code: string }> };
         };
         expect(handoff.props.steps[0]?.code).toContain('--providers acme.review.provider --yes');
+    });
+
+    it('reports wizard install progress for an installable external Agent through its operational id', async () => {
+        // The wizard progress list must read the same setup runtime id the queue
+        // installs under. Reading a bundled backing id instead leaves every
+        // external Agent pinned at "queued" for the whole install.
+        const pendingInstall: { resolve: (() => void) | null } = { resolve: null };
+        capabilitiesState.invoke.mockImplementation(() => new Promise((resolve) => {
+            pendingInstall.resolve = () => resolve({ supported: true as const, response: { ok: true as const, result: null } });
+        }));
+        const wizardPrimary: { current: { onPress: () => void | Promise<void> } | null } = { current: null };
+
+        const { AgentSetupFlow } = await import('./AgentSetupFlow');
+        const screen = await renderScreen(React.createElement(AgentSetupFlow, {
+            presentation: 'wizard',
+            onWizardPrimaryChange: (next) => { wizardPrimary.current = next; },
+            agentEntries: [createResolvedAgentCatalogEntryFixture({
+                agentId: 'acme.review.provider',
+                overrides: {
+                    catalogAgentId: null,
+                    title: 'Acme Review',
+                    cli: {
+                        executable: { binaryName: 'acme-review', sourcePreference: 'system-first' },
+                        install: { manual: { kind: 'none' } },
+                        auth: { support: 'unsupported', loginLaunches: [] },
+                    },
+                },
+            })],
+        }));
+        await flushHookEffects();
+
+        // The install never settles, so the wizard stays in its progress phase
+        // (`hasStarted` with no queue yet) — the exact state this list reports.
+        await act(async () => {
+            void wizardPrimary.current?.onPress();
+        });
+        await flushHookEffects();
+
+        expect(screen.findByTestId('provider-setup-wizard-install-status')).toBeTruthy();
+        expect(screen.getTextContent()).toContain('settingsAgents.setup.activeStatus');
+        expect(screen.getTextContent()).not.toContain('settingsNotifications.badges.queuedTitle');
+
+        await act(async () => {
+            pendingInstall.resolve?.();
+        });
     });
 
     it('preserves explicit provider entries instead of filtering them through the built-in setup recommendation list', async () => {

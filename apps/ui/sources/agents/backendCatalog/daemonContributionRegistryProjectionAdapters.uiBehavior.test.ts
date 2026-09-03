@@ -53,6 +53,24 @@ function projectionWithExternalAgent(): PluginProjectionV2 {
                 channel: 'plugin',
                 providerOwnedEnvironmentKeys: [],
             },
+            'acme.malformed': {
+                id: 'acme.malformed',
+                title: 'Malformed identity',
+                channel: 'plugin',
+                providerOwnedEnvironmentKeys: [],
+                ui: {
+                    behavior: {
+                        permissions: {
+                            footer: {
+                                usePermissionUpdates: true,
+                                forceReadOnlyAfterStop: false,
+                                supportsExecPolicyAmendment: true,
+                                stopHandling: 'denyOnly',
+                            },
+                        },
+                    },
+                },
+            },
         },
         backendsById: {},
         actionsById: {},

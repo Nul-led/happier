@@ -16,10 +16,13 @@ import {
   resolveRequiredRecipientContractApprovalDigestV1,
   type VoiceCredentialSourceSelection,
 } from '@happier-dev/protocol';
-import type {
-  PluginProjectionEditableSettingField,
-  PluginProjectionEditableSettingsGroup,
+import {
+  resolvePluginProjectionEditableSettingsGroup,
+  type PluginProjectionEditableSettingField,
+  type ResolvedPluginProjectionEditableSettingField,
+  type ResolvedPluginProjectionEditableSettingsGroup,
 } from '@/agents/backendCatalog/daemonContributionRegistryProjectionAdapters';
+import { useProjectedPluginLocalizedTextResolver } from '@/components/appShell/plugins/AppShellPluginUiProjection';
 import { useSettings } from '@/sync/domains/state/storage';
 import { useMachineCliDetectionTarget, useProfile } from '@/sync/store/hooks';
 import {
@@ -144,8 +147,8 @@ function serializeDeclarativeSettingDraft(control: string, value: unknown): stri
 
 function VoiceDeclarativeTextSettingField(props: Readonly<{
   pluginId: string;
-  group: PluginProjectionEditableSettingsGroup;
-  field: PluginProjectionEditableSettingField;
+  group: ResolvedPluginProjectionEditableSettingsGroup;
+  field: ResolvedPluginProjectionEditableSettingField;
   value: unknown;
   onChangeValue: (value: unknown) => void;
 }>) {
@@ -201,12 +204,6 @@ function normalizePlatform(platform: string): 'web' | 'ios' | 'android' | 'macos
     || platform === 'linux'
     ? platform
     : 'unknown';
-}
-
-function localizedText(value: string | Readonly<{ key: string; fallback: string }>): string {
-  if (typeof value === 'string') return value;
-  const translated = tLoose(value.key);
-  return translated === value.key ? value.fallback : translated;
 }
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
@@ -299,6 +296,7 @@ export function VoiceProviderSection(props: {
     registry.getRevision ?? (() => 0),
   );
   const { theme } = useUnistyles();
+  const localizePluginText = useProjectedPluginLocalizedTextResolver();
   const accountSettings = useSettings();
   const accountProfile = useProfile();
   const activeAccountScopeLifetime = captureActiveServerAccountScopeLifetime();
@@ -407,15 +405,8 @@ export function VoiceProviderSection(props: {
       ? row.entry.declaration.credentials ?? null
       : null;
     let sourceSelection: (
-      | Readonly<{
-          kind: 'none' | 'savedSecret';
-          connectedAccountEligibility: VoiceConnectedAccountTargetEligibility;
-        }>
-      | Readonly<{
-          kind: 'connectedAccount';
-          target: Extract<VoiceCredentialSourceSelection, Readonly<{ kind: 'connectedAccount' }>>['target'];
-          connectedAccountEligibility: VoiceConnectedAccountTargetEligibility;
-        }>
+      VoiceCredentialSourceSelection
+      & Readonly<{ connectedAccountEligibility: VoiceConnectedAccountTargetEligibility }>
     ) | null = null;
     if (contribution && credentialDeclaration) {
       try {
@@ -775,16 +766,17 @@ export function VoiceProviderSection(props: {
   const selectedExternalHasConnectedAccount = selectedExternalCredentials?.sources.some(
     (source) => source.kind === 'connectedAccount',
   ) === true;
+  const selectedExternalSourceSelection = selectedExternalRow?.sourceSelection ?? null;
   const selectedExternalRawReviewGrants = (
     (platform === 'web' || platform === 'ios' || platform === 'android')
     && selectedExternalDeclaration
     && selectedExternalContribution
-    && selectedExternalRow?.sourceSelection
+    && selectedExternalSourceSelection
   ) ? (['prepare', 'connection'] as const).flatMap((phase) => (
       resolveSelectedVoiceCredentialRawGrants({
         declaration: selectedExternalDeclaration,
         contribution: selectedExternalContribution,
-        selection: selectedExternalRow.sourceSelection,
+        selection: selectedExternalSourceSelection,
         access: { realm: platform, phase },
       })
     )).sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right))) : [];
@@ -810,19 +802,52 @@ export function VoiceProviderSection(props: {
   const selectedDeclarativeConfig = selectedDeclarativeSettingsRow
     ? readVoiceProviderSettingsConfig(voice, selectedDeclarativeSettingsRow.providerId)
     : null;
-  const declarativeSettingsGroup: PluginProjectionEditableSettingsGroup | null = selectedDeclarativeSettingsRow
+  const declarativeSettingsGroup: ResolvedPluginProjectionEditableSettingsGroup | null = selectedDeclarativeSettingsRow
     && selectedDeclarativeSettings
     && selectedDeclarativeSettingsSource
-    ? {
-      id: selectedDeclarativeSettingsRow.providerId,
-      pluginId: selectedDeclarativeSettingsSource.pluginId,
-      version: 1,
-      title: tLoose(selectedDeclarativeSettingsRow.titleKey),
-      scope: { kind: 'account' },
-      presentation: { sections: [], subagentSections: [] },
-      target: { kind: 'plugin' },
-      fields: [],
-    }
+    ? resolvePluginProjectionEditableSettingsGroup({
+        id: selectedDeclarativeSettingsRow.providerId,
+        pluginId: selectedDeclarativeSettingsSource.pluginId,
+        version: 1,
+        title: tLoose(selectedDeclarativeSettingsRow.titleKey),
+        scope: { kind: 'account' },
+        presentation: { sections: [], subagentSections: [] },
+        target: { kind: 'plugin' },
+        fields: selectedDeclarativeSettings.fields.map((field): PluginProjectionEditableSettingField => {
+          const control = field.presentation?.control ?? 'auto';
+          const schemaType = field.schema.type;
+          const valueType: PluginProjectionEditableSettingField['valueType'] =
+            schemaType === 'boolean'
+            || schemaType === 'number'
+            || schemaType === 'integer'
+            || schemaType === 'object'
+            || schemaType === 'array'
+            || schemaType === 'null'
+            || schemaType === 'string'
+              ? schemaType
+              : control === 'switch'
+                ? 'boolean'
+                : control === 'number'
+                  ? 'number'
+                  : 'string';
+          return {
+            key: field.id,
+            control,
+            valueType,
+            valueSchema: field.schema,
+            title: field.title,
+            subtitle: field.description ?? null,
+            secretCustody: null,
+            redaction: 'none',
+            clearWhenEmpty: 'persist',
+            defaultValue: field.default,
+            ...(control === 'switch' && typeof field.default === 'boolean'
+              ? { defaultBooleanValue: field.default }
+              : {}),
+            ...(field.presentation ? { presentation: field.presentation } : {}),
+          };
+        }),
+      }, localizePluginText)
     : null;
   const writeExternalSetting = (fieldId: string, value: unknown): void => {
     if (!selectedDeclarativeSettingsRow || !isRecord(selectedDeclarativeConfig)) return;
@@ -1101,9 +1126,15 @@ export function VoiceProviderSection(props: {
                       : selectedDeclarativeSettings.connectedServicesBinding.agent
                   }
                   serviceIds={selectedDeclarativeSettings.connectedServicesBinding.serviceIds}
-                  title={localizedText(selectedDeclarativeSettings.connectedServicesBinding.title)}
+                  title={localizePluginText(
+                    selectedDeclarativeSettingsSource.pluginId,
+                    selectedDeclarativeSettings.connectedServicesBinding.title,
+                  )}
                   subtitle={selectedDeclarativeSettings.connectedServicesBinding.description
-                    ? localizedText(selectedDeclarativeSettings.connectedServicesBinding.description)
+                    ? localizePluginText(
+                        selectedDeclarativeSettingsSource.pluginId,
+                        selectedDeclarativeSettings.connectedServicesBinding.description,
+                      )
                     : undefined}
                   value={selectedDeclarativeConfig[selectedDeclarativeSettings.connectedServicesBinding.id]}
                   onChange={(value) => writeExternalSetting(
@@ -1113,71 +1144,40 @@ export function VoiceProviderSection(props: {
                 />
               )
               : null}
-            {selectedDeclarativeSettings.fields.map((field) => {
+            {declarativeSettingsGroup.fields.map((field) => {
               const control = field.presentation?.control;
               if (!control || field.presentation?.hidden === true) return null;
-              const schemaType = field.schema.type;
-              const valueType: PluginProjectionEditableSettingField['valueType'] =
-                schemaType === 'boolean'
-                  || schemaType === 'number'
-                  || schemaType === 'integer'
-                  || schemaType === 'object'
-                  || schemaType === 'array'
-                  || schemaType === 'null'
-                  || schemaType === 'string'
-                  ? schemaType
-                  : control === 'switch'
-                    ? 'boolean'
-                    : control === 'number'
-                      ? 'number'
-                      : 'string';
-              const projectedField: PluginProjectionEditableSettingField = {
-                key: field.id,
-                control,
-                valueType,
-                valueSchema: field.schema,
-                title: localizedText(field.title),
-                subtitle: field.description ? localizedText(field.description) : null,
-                secretCustody: null,
-                redaction: 'none',
-                clearWhenEmpty: 'persist',
-                defaultValue: field.default,
-                ...(control === 'switch' && typeof field.default === 'boolean'
-                  ? { defaultBooleanValue: field.default }
-                  : {}),
-                ...(field.presentation ? { presentation: field.presentation } : {}),
-              };
               if (control === 'select') return (
                 <PluginSettingSelectField
-                  key={field.id}
+                  key={field.key}
                   pluginId={selectedDeclarativeSettingsSource.pluginId}
                   group={declarativeSettingsGroup}
-                  field={projectedField}
-                  value={selectedDeclarativeConfig[field.id]}
+                  field={field}
+                  value={selectedDeclarativeConfig[field.key]}
                   disabled={false}
                   popoverBoundaryRef={props.popoverBoundaryRef}
-                  onChangeValue={(value) => writeExternalSetting(field.id, value)}
+                  onChangeValue={(value) => writeExternalSetting(field.key, value)}
                 />
               );
               if (control === 'switch') return (
                 <PluginSettingSwitchField
-                  key={field.id}
+                  key={field.key}
                   pluginId={selectedDeclarativeSettingsSource.pluginId}
                   group={declarativeSettingsGroup}
-                  field={projectedField}
-                  value={selectedDeclarativeConfig[field.id] === true}
+                  field={field}
+                  value={selectedDeclarativeConfig[field.key] === true}
                   disabled={false}
-                  onChangeValue={(_field, value) => writeExternalSetting(field.id, value)}
+                  onChangeValue={(_field, value) => writeExternalSetting(field.key, value)}
                 />
               );
               return (
                 <VoiceDeclarativeTextSettingField
-                  key={field.id}
+                  key={field.key}
                   pluginId={selectedDeclarativeSettingsSource.pluginId}
                   group={declarativeSettingsGroup}
-                  field={projectedField}
-                  value={selectedDeclarativeConfig[field.id]}
-                  onChangeValue={(value) => writeExternalSetting(field.id, value)}
+                  field={field}
+                  value={selectedDeclarativeConfig[field.key]}
+                  onChangeValue={(value) => writeExternalSetting(field.key, value)}
                 />
               );
             })}

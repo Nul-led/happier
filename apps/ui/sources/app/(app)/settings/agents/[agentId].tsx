@@ -18,7 +18,10 @@ import { useApplySettings } from '@/sync/store/settingsWriters';
 import {
     resolveBundledAgentIdFromContributionIdentity,
 } from '@/agents/catalog/catalog';
-import { useDaemonMergedProjectionInputs } from '@/agents/backendCatalog/useDaemonMergedProjectionInputs';
+import {
+    useDaemonMergedProjectionInputs,
+    type DaemonMergedProjectionPhase,
+} from '@/agents/backendCatalog/useDaemonMergedProjectionInputs';
 import type { PluginProjectionEntry } from '@/agents/backendCatalog/daemonContributionRegistryProjectionAdapters';
 import {
     getResolvedAgentCatalogEntries,
@@ -84,6 +87,7 @@ import {
 import { isMachineAdministrationExecutionTargetCurrent } from '@/sync/domains/machines/administration/operationCurrentness';
 import { isAdministrationScopedPluginSettingsTargetCurrent } from '@/sync/domains/machines/administration/scopedPluginSettingsTarget';
 import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
+import { publishMachineContributionRegistryProjectionInvalidation } from '@/sync/ops/machineContributionRegistryProjection';
 
 function resolveQualifiedAgentProjectionId(params: Readonly<{
     routeAgent: ExternalSessionsQualifiedAgent | null;
@@ -159,6 +163,34 @@ const AgentSettingsNotFound = React.memo(function AgentSettingsNotFound(props: R
                         {t('settingsAgents.notFoundSubtitle')}
                     </Text>
                 </View>
+            </ItemGroup>
+        </ItemList>
+    );
+});
+
+const AgentSettingsProjectionStatus = React.memo(function AgentSettingsProjectionStatus(props: Readonly<{
+    phase: Exclude<DaemonMergedProjectionPhase, 'ready'>;
+    targetSelection: MachineAdministrationTargetSelectionV1;
+    onRetry?: () => void;
+}>) {
+    const loading = props.phase === 'loading';
+    const retryable = props.phase === 'error' && props.onRetry !== undefined;
+    return (
+        <ItemList style={{ paddingTop: 0 }}>
+            <MachineAdministrationTargetSelector
+                selection={props.targetSelection}
+                testIDPrefix="settings.agents.administration.target"
+            />
+            <ItemGroup>
+                <Item
+                    testID="settings.agents.projection.status"
+                    title={loading ? t('common.loading') : t('common.unavailable')}
+                    detail={retryable ? t('common.retry') : undefined}
+                    loading={loading}
+                    mode={retryable ? undefined : 'info'}
+                    showChevron={retryable}
+                    onPress={retryable ? props.onRetry : undefined}
+                />
             </ItemGroup>
         </ItemList>
     );
@@ -295,6 +327,10 @@ const AgentSettingsFallbackScreenInner = React.memo(function AgentSettingsFallba
 
     return (
         <ItemList style={{ paddingTop: 0 }}>
+            <MachineAdministrationTargetSelector
+                selection={props.targetSelection}
+                testIDPrefix="settings.agents.administration.target"
+            />
             <AgentContributedSettingsSection
                 pluginSettingsProjection={props.pluginSettingsProjection}
                 targetSelection={props.targetSelection}
@@ -963,9 +999,17 @@ export default React.memo(function AgentSettingsScreen() {
         serverId: executionTarget?.serverId ?? null,
         enabled: executionTarget !== null,
     });
-    const daemonMergedProjectionInputs = daemonMergedProjection.phase === 'ready'
-        ? daemonMergedProjection.inputs
-        : null;
+    // The hook already fences target and Account scope changes while retaining
+    // same-scope LKG inputs through refresh/error. These inputs are inert
+    // presentation metadata; effectful daemon operations remain phase-gated.
+    const daemonMergedProjectionInputs = daemonMergedProjection.inputs;
+    const retryDaemonProjection = React.useCallback(() => {
+        if (!executionTarget) return;
+        publishMachineContributionRegistryProjectionInvalidation({
+            machineId: executionTarget.machine.id,
+            serverId: executionTarget.serverId,
+        });
+    }, [executionTarget]);
     const legacyCompatAgentRedirectId = React.useMemo(() => resolveLegacyCompatAgentRouteRedirect({
         agentId: hasQualifiedAgentRoute ? '' : normalizedAgentId,
         daemonMergedProjectionInputs,
@@ -977,7 +1021,12 @@ export default React.memo(function AgentSettingsScreen() {
         && executionTarget !== null;
 
     if (waitingForLegacyCompatProjection) {
-        return null;
+        return (
+            <AgentSettingsProjectionStatus
+                phase="loading"
+                targetSelection={administrationTargetSelection}
+            />
+        );
     }
     if (!hasQualifiedAgentRoute && isLegacyCompatAgentType(normalizedAgentId)) {
         if (legacyCompatAgentRedirectId) {
@@ -1043,12 +1092,9 @@ export default React.memo(function AgentSettingsScreen() {
     const compatibilityAgentId = projection?.catalogAgentId ?? null;
     const cliAgentId = projection?.cli ? projection.agentId : null;
     const currentAgentCapabilities = React.useMemo(() => readCurrentProjectedAgentCapabilities({
-        projection: daemonMergedProjection.phase === 'ready'
-            ? daemonMergedProjectionInputs?.pluginProjectionV2
-            : null,
+        projection: daemonMergedProjectionInputs?.pluginProjectionV2,
         agentId: resolvedAgentProjectionId,
     }), [
-        daemonMergedProjection.phase,
         daemonMergedProjectionInputs?.pluginProjectionV2,
         resolvedAgentProjectionId,
     ]);
@@ -1108,7 +1154,16 @@ export default React.memo(function AgentSettingsScreen() {
     }
 
     if (!projection) {
-        return <AgentSettingsNotFound theme={theme} targetSelection={administrationTargetSelection} />;
+        if (daemonMergedProjection.phase === 'ready') {
+            return <AgentSettingsNotFound theme={theme} targetSelection={administrationTargetSelection} />;
+        }
+        return (
+            <AgentSettingsProjectionStatus
+                phase={daemonMergedProjection.phase}
+                targetSelection={administrationTargetSelection}
+                onRetry={daemonMergedProjection.phase === 'error' ? retryDaemonProjection : undefined}
+            />
+        );
     }
     if (!currentAgentCapabilities && !projection.cli) {
         return (

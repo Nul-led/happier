@@ -12,11 +12,9 @@ import {
 } from '@happier-dev/protocol';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 
-import {
-    FileMentionSuggestion,
-    SessionMentionAgentLogo,
-} from '@/components/sessions/agentInput/components/AgentInputSuggestionView';
+import { FileMentionSuggestion } from '@/components/sessions/agentInput/components/AgentInputSuggestionView';
 import { Icon } from '@/components/ui/icons/Icon';
+import { SessionAgentCatalogIdentityIcon } from '@/components/sessions/presentation/SessionAgentCatalogIdentityIcon';
 import { resolvePluginUiIconName } from '@/components/plugins/surfaces/iconToken/resolvePluginUiIconToken';
 import { searchFiles, type FileItem, type FileSuggestionScope } from '@/sync/domains/input/suggestionFile';
 import {
@@ -323,12 +321,18 @@ async function resolveSessionSuggestions(
             label: item.title,
             description: item.workspaceLabel ?? item.agentLabel ?? item.id,
             // Which agent is running in a session is what a user scans this list for, so the
-            // row carries that session's provider logo rather than the kind's shared glyph.
-            // An unresolvable flavor keeps the glyph: a wrong logo is worse than a generic one.
+            // row carries that session's machine-qualified catalog mark rather than the kind's
+            // shared glyph. The projection carries the exact declared identity (external plugin
+            // Agents included) plus the machine/server scope the mark resolves against; the
+            // canonical icon stays neutral when the catalog cannot resolve it. A session that
+            // declares no Agent at all keeps the glyph: a wrong mark is worse than a generic one.
             ...(item.agentId
                 ? {
-                    icon: React.createElement(SessionMentionAgentLogo, {
+                    icon: React.createElement(SessionAgentCatalogIdentityIcon, {
                         agentId: item.agentId,
+                        machineId: item.machineId,
+                        serverId: item.serverId,
+                        size: 16,
                         testID: `composer-session-agent-logo-${item.id}`,
                     }),
                 }

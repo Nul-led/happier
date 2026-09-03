@@ -13,6 +13,10 @@ import { normalizeComposerBannerCollapseRecord } from '@/components/sessions/com
 import type { BusySteerSendPolicy, MessageSendMode } from '@/sync/domains/session/control/submitMode';
 import type { NewSessionPresentationModeV1 } from '@/sync/domains/settings/registry/account/accountSessionCreationSettingDefinitions';
 import { Icon, type IconName } from '@/components/ui/icons/Icon';
+import {
+    SESSION_INACTIVE_RESUME_POLICY_VALUES,
+    type SessionInactiveResumePolicy,
+} from '@happier-dev/protocol';
 
 type PendingQueueDrainMode = 'one_at_a_time' | 'drain_all';
 type PendingQueueDeliveryTiming = 'after_foreground_ready' | 'after_runtime_idle';
@@ -27,6 +31,7 @@ export const SessionComposerSettingsView = React.memo(function SessionComposerSe
     const [nonSteerableSendPrompt, setNonSteerableSendPrompt] = useSettingMutable('sessionNonSteerableSendPrompt');
     const [pendingQueueDrainMode, setPendingQueueDrainMode] = useSettingMutable('sessionPendingQueueDrainMode');
     const [pendingQueueDeliveryTiming, setPendingQueueDeliveryTiming] = useSettingMutable('sessionPendingQueueDeliveryTiming');
+    const [sessionInactiveResumePolicy, setSessionInactiveResumePolicy] = useSettingMutable('sessionInactiveResumePolicy');
     const [agentInputEnterToSend, setAgentInputEnterToSend] = useSettingMutable('agentInputEnterToSend');
     const [agentInputEnterToSendNative, setAgentInputEnterToSendNative] = useSettingMutable('agentInputEnterToSendNative');
     const [agentInputHistoryScope, setAgentInputHistoryScope] = useSettingMutable('agentInputHistoryScope');
@@ -40,6 +45,7 @@ export const SessionComposerSettingsView = React.memo(function SessionComposerSe
     const hiddenBannerCount = Object.keys(normalizeComposerBannerCollapseRecord(collapsedBannerKinds)).length;
     const [openHistoryScopeMenu, setOpenHistoryScopeMenu] = React.useState(false);
     const [openNewSessionPresentationMenu, setOpenNewSessionPresentationMenu] = React.useState(false);
+    const [openInactiveResumePolicyMenu, setOpenInactiveResumePolicyMenu] = React.useState(false);
     const enterToSendEnabled = Platform.OS === 'web' ? agentInputEnterToSend : agentInputEnterToSendNative;
     const setEnterToSendEnabled = Platform.OS === 'web' ? setAgentInputEnterToSend : setAgentInputEnterToSendNative;
     const enterToSendSubtitle = enterToSendEnabled
@@ -84,6 +90,28 @@ export const SessionComposerSettingsView = React.memo(function SessionComposerSe
             subtitle: t('settingsSession.messageSending.pendingSubtitle'),
         },
     ];
+    const inactiveResumePolicyOptions = SESSION_INACTIVE_RESUME_POLICY_VALUES.map((policy) => {
+        switch (policy) {
+            case 'when_available':
+                return {
+                    id: policy,
+                    title: t('settingsSession.messageSending.inactiveResumePolicy.whenAvailableTitle'),
+                    subtitle: t('settingsSession.messageSending.inactiveResumePolicy.whenAvailableSubtitle'),
+                };
+            case 'online_only':
+                return {
+                    id: policy,
+                    title: t('settingsSession.messageSending.inactiveResumePolicy.onlineOnlyTitle'),
+                    subtitle: t('settingsSession.messageSending.inactiveResumePolicy.onlineOnlySubtitle'),
+                };
+            case 'manual':
+                return {
+                    id: policy,
+                    title: t('settingsSession.messageSending.inactiveResumePolicy.manualTitle'),
+                    subtitle: t('settingsSession.messageSending.inactiveResumePolicy.manualSubtitle'),
+                };
+        }
+    });
     const busySteerOptions: Array<{ key: BusySteerSendPolicy; title: string; subtitle: string }> = [
         {
             key: 'steer_immediately',
@@ -283,6 +311,35 @@ export const SessionComposerSettingsView = React.memo(function SessionComposerSe
                         showChevron={false}
                     />
                 ))}
+                <DropdownMenu
+                    open={openInactiveResumePolicyMenu}
+                    onOpenChange={setOpenInactiveResumePolicyMenu}
+                    variant="selectable"
+                    search={false}
+                    selectedId={sessionInactiveResumePolicy}
+                    showCategoryTitles={false}
+                    matchTriggerWidth={true}
+                    connectToTrigger={true}
+                    rowKind="item"
+                    popoverBoundaryRef={popoverBoundaryRef}
+                    itemTrigger={{
+                        title: t('settingsSession.messageSending.inactiveResumePolicyTitle'),
+                        subtitle: t('settingsSession.messageSending.inactiveResumePolicySubtitle'),
+                        icon: <Icon name="arrow-clockwise" size={29} color={theme.colors.accent.blue} />,
+                    }}
+                    items={inactiveResumePolicyOptions.map((option) => ({
+                        ...option,
+                        icon: (
+                            <View style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}>
+                                <Icon name="arrow-clockwise" size={20} color={theme.colors.text.secondary} />
+                            </View>
+                        ),
+                    }))}
+                    onSelect={(id) => {
+                        setSessionInactiveResumePolicy(id as SessionInactiveResumePolicy);
+                        setOpenInactiveResumePolicyMenu(false);
+                    }}
+                />
             </ItemGroup>
             {messageSendMode === 'agent_queue' || messageSendMode === 'server_pending' ? (
                 <ItemGroup title={t('settingsSession.messageSending.busySteerPolicyTitle')} footer={t('settingsSession.messageSending.busySteerPolicyFooter')}>

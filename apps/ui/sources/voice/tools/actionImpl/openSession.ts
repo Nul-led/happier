@@ -5,6 +5,9 @@ import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { router } from 'expo-router';
 import { resolveVoiceSessionIdFromTitle, resolveVoiceSessionRef } from './sessionReference';
 import { setPrimaryActionSessionId } from './sessionTargets';
+import { Platform } from 'react-native';
+import { resolveRoutineServerSelectionScope } from '@/sync/domains/server/selection/serverSelectionScope';
+import { isDesktopHost } from '@/utils/platform/desktopHost';
 
 export async function openSessionForVoiceTool(params: Readonly<{
   sessionId?: string | null;
@@ -51,7 +54,7 @@ export async function openSessionForVoiceTool(params: Readonly<{
       try {
         const switched = await setActiveServerAndSwitch({
           serverId: targetServerId,
-          scope: 'device',
+          scope: resolveRoutineServerSelectionScope(Platform.OS, isDesktopHost()),
           refreshAuth: auth?.refreshFromActiveServer ?? null,
         });
         if (switched === 'blocked') {

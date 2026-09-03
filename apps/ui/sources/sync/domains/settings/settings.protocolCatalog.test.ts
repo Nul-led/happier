@@ -135,6 +135,7 @@ describe('Protocol-owned Account Settings catalog', () => {
         }
 
         expect(PROTOCOL_ACCOUNT_SETTING_ARTIFACTS.defaults).toMatchObject({
+            executionRunsGuidanceEnabled: true,
             scmCommitStrategy: 'atomic',
             filesDiffRendererMode: 'pierre',
             transcriptGroupingMode: 'turns',

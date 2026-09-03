@@ -82,8 +82,6 @@ export function createVoiceRawCredentialReviewDetailRows(
   const { authorization, review } = inspection;
   const publisher = review.publisher.status === 'bundled_first_party'
     ? review.publisher.identity
-    : review.publisher.status === 'unverified'
-      ? review.publisher.displayName
     : 'unavailable';
   const distribution = review.distribution.kind === 'npm'
     ? `${review.distribution.packageName} · ${review.distribution.registryOrigin}`
@@ -105,15 +103,6 @@ export function createVoiceRawCredentialReviewDetailRows(
       value: t('settingsVoice.externalCredentials.recipientApprovalPublisher', {
         trust: review.publisher.status,
         identity: publisher,
-      }),
-    },
-    {
-      key: 'package-signature',
-      value: t('settingsVoice.externalCredentials.recipientApprovalPackageSignature', {
-        status: review.packageSignature.status,
-        keyId: review.packageSignature.status === 'verified'
-          ? review.packageSignature.keyId
-          : 'unavailable',
       }),
     },
     {

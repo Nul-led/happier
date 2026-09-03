@@ -1,4 +1,7 @@
 import {
+    buildBackendTargetKeyV2,
+    readBackendTargetRefV2,
+    SessionDraftPredecessorAuthoringValueV1Schema,
     SYNCED_SESSION_AUTHORING_FIELD_IDS_V1,
     SyncedSessionAuthoringValueV1Schema,
     type SyncedSessionAuthoringFieldIdV1,
@@ -29,6 +32,56 @@ export function projectSyncedSessionAuthoringFields(value: unknown): Partial<Syn
         }
     }
     return projected as Partial<SyncedSessionAuthoringValueV1>;
+}
+
+/**
+ * Projects the published 0.2 draft vocabulary into the safe canonical subset.
+ * This is a reader bridge only: 0.3 writers still emit catalogued 0.3 fields.
+ */
+export function projectPredecessorSessionDraftAuthoringFields(
+    value: unknown,
+    updatedAt: number,
+): Partial<SyncedSessionAuthoringValueV1> {
+    if (!isRecord(value)) return {};
+
+    const machineId = SessionDraftPredecessorAuthoringValueV1Schema.shape.machineId.safeParse(value.machineId);
+    const serverId = SessionDraftPredecessorAuthoringValueV1Schema.shape.serverId.safeParse(value.serverId);
+    const agentId = SessionDraftPredecessorAuthoringValueV1Schema.shape.agentId.safeParse(value.agentId);
+    const backendTarget = SessionDraftPredecessorAuthoringValueV1Schema.shape.backendTarget.safeParse(value.backendTarget);
+    const modelId = SessionDraftPredecessorAuthoringValueV1Schema.shape.modelId.safeParse(value.modelId);
+
+    let canonicalBackendTarget = null;
+    if (backendTarget.success && backendTarget.data) {
+        try {
+            canonicalBackendTarget = readBackendTargetRefV2(backendTarget.data);
+        } catch {
+            canonicalBackendTarget = null;
+        }
+    }
+    const agentTarget = resolveAgentExecutionTargetForPersistedSelection({
+        backendTarget: canonicalBackendTarget,
+        fallbackAgentId: agentId.success ? agentId.data : null,
+    });
+    const executionTarget = machineId.success && machineId.data && serverId.success && serverId.data
+        ? { machineId: machineId.data, serverId: serverId.data }
+        : undefined;
+    const modelSelection = modelId.success && modelId.data && agentTarget
+        ? {
+            v: 1 as const,
+            ref: {
+                agentTargetKey: buildBackendTargetKeyV2(agentTarget),
+                providerConnectionId: null,
+                modelId: modelId.data,
+            },
+            updatedAt,
+        }
+        : undefined;
+
+    return {
+        ...(executionTarget ? { executionTarget } : {}),
+        ...(agentTarget ? { agentTarget } : {}),
+        ...(modelSelection ? { modelSelection } : {}),
+    };
 }
 
 /**

@@ -1,6 +1,6 @@
-import { resolveAgentIdFromFlavor, type AgentId } from '@/agents/registry/registryCore';
 import type { SessionListRenderableSession } from '@/sync/domains/session/listing/sessionListRenderable';
 import { isUserFacingSession } from '@/sync/domains/session/listing/isUserFacingSession';
+import { readSessionPresentationAgentId } from '@/sync/domains/session/presentation/readSessionPresentationAgentId';
 import { storage } from '@/sync/domains/state/storage';
 import { resolveServerIdForSessionIdFromLocalState } from '@/sync/runtime/orchestration/serverScopedRpc/resolveServerIdForSessionIdFromLocalCache';
 import { formatPathRelativeToHome } from '@/utils/sessions/formatPathRelativeToHome';
@@ -11,9 +11,10 @@ import { getSessionName } from '@/utils/sessions/sessionUtils';
  *
  * The canonical session-list row projection already scopes renderables by server.
  * This is a narrow, imperative projection over that owner: it never reads a whole
- * Session record, transcript, thinking state, presence, or a machine identity.
- * A candidate is therefore only a display row plus the opaque same-server session
- * identity the structured-input writer persists.
+ * Session record, transcript, thinking state, or presence. A candidate is a display
+ * row, the opaque same-server session identity the structured-input writer persists,
+ * and the exact Agent identity plus machine/server scope its machine-qualified Agent
+ * mark resolves against.
  */
 export type ComposerSessionSuggestionItem = Readonly<{
     id: string;
@@ -21,16 +22,19 @@ export type ComposerSessionSuggestionItem = Readonly<{
     workspaceLabel: string | null;
     agentLabel: string | null;
     /**
-     * The provider the picker row draws a logo for, resolved from the same
-     * `metadata.flavor` that `agentLabel` carries raw.
+     * The session's exact declared Agent identity, or `null` when it declares none.
      *
-     * Resolved HERE rather than at the row, because this projection is the only
-     * module that knows the string came from `flavor` — and because `AgentIcon`
-     * needs a registry-validated id, so an unresolvable flavor has to stay
-     * distinguishable. `null` means this build has no entry for that provider and
-     * the row keeps the kind's generic glyph.
+     * The canonical Session presentation reader interprets the active metadata layout:
+     * legacy owner metadata retains its supported Agent identity resolution, while
+     * layout-v1 reads the strict shared Agent presentation envelope. The resulting exact
+     * identity is carried to the machine-scoped catalog, which resolves the mark or uses
+     * its neutral fallback.
      */
-    agentId: AgentId | null;
+    agentId: string | null;
+    /** The machine the session runs on, for machine-qualified catalog marks. */
+    machineId: string | null;
+    /** The exact server scope this row was projected for. */
+    serverId: string;
     updatedAt: number;
     active: boolean;
 }>;
@@ -76,7 +80,10 @@ function normalizeTrimmed(value: unknown): string | null {
     return trimmed.length > 0 ? trimmed : null;
 }
 
-function projectSession(session: SessionListRenderableSession): ComposerSessionSuggestionItem {
+function projectSession(
+    session: SessionListRenderableSession,
+    serverId: string,
+): ComposerSessionSuggestionItem {
     const metadata = session.metadata ?? null;
     const path = normalizeTrimmed(metadata?.path);
     const flavor = normalizeTrimmed(metadata?.flavor);
@@ -85,7 +92,12 @@ function projectSession(session: SessionListRenderableSession): ComposerSessionS
         title: getSessionName(session),
         workspaceLabel: path ? formatPathRelativeToHome(path, metadata?.homeDir ?? undefined) : null,
         agentLabel: flavor,
-        agentId: resolveAgentIdFromFlavor(flavor),
+        // Layout-specific identity interpretation belongs to the shared Session
+        // presentation reader. In particular, layout-v1 reads only the strict
+        // shared Agent presentation envelope rather than owner-only flavor data.
+        agentId: readSessionPresentationAgentId(session),
+        machineId: normalizeTrimmed(metadata?.machineId),
+        serverId,
         updatedAt: typeof session.updatedAt === 'number' ? session.updatedAt : 0,
         active: session.active === true,
     };
@@ -119,7 +131,7 @@ export function projectComposerSessionSuggestionItems(
         if (!id || id === currentSessionId || seen.has(id)) continue;
         if (session.archivedAt != null || !isUserFacingSession(session)) continue;
         seen.add(id);
-        projected.push(projectSession(session));
+        projected.push(projectSession(session, serverId));
     }
 
     return projected.sort((left, right) => (right.updatedAt - left.updatedAt) || left.id.localeCompare(right.id));

@@ -48,7 +48,10 @@ vi.mock('react-native-mmkv', () => {
     return { MMKV };
 });
 
-vi.mock('@/sync/domains/scope/activeServerAccountScope', () => ({
+// Only the active-scope read is stubbed; the module's real lifetime capture and
+// retirement logic stays live for every other consumer in this graph.
+vi.mock('@/sync/domains/scope/activeServerAccountScope', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/sync/domains/scope/activeServerAccountScope')>(),
     getActiveServerAccountScope: () => activeScopeState.value,
 }));
 

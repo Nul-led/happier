@@ -90,6 +90,12 @@ describe('resolveCompactAppDestinations', () => {
         })).toEqual([
             expect.objectContaining({
                 kind: 'builtin',
+                id: 'search',
+                routePath: '/search',
+                availability: 'available',
+            }),
+            expect.objectContaining({
+                kind: 'builtin',
                 id: 'browseExistingSessions',
                 routePath: '/external/browse',
                 availability: 'available',
@@ -114,6 +120,7 @@ describe('resolveCompactAppDestinations', () => {
             browseExistingSessionsEnabled: false,
             pages: [unavailable],
         })).toEqual([
+            expect.objectContaining({ id: 'search' }),
             expect.objectContaining({
                 kind: 'plugin',
                 id: 'plugin:acme.notes:notes',
@@ -130,6 +137,7 @@ describe('resolveCompactAppDestinations', () => {
             pages: [],
             rightSidebarTabs: [appSidebarTab],
         })).toEqual([
+            expect.objectContaining({ id: 'search' }),
             expect.objectContaining({
                 kind: 'plugin',
                 container: 'rightSidebarTab',
@@ -142,11 +150,13 @@ describe('resolveCompactAppDestinations', () => {
     });
 
     it('matches compact selection by the exact host-issued route and qualified panel identity', () => {
-        const [pageDestination, panelDestination] = resolveCompactAppDestinations({
+        const destinations = resolveCompactAppDestinations({
             browseExistingSessionsEnabled: false,
             pages: [page],
             rightSidebarTabs: [appSidebarTab],
         });
+        const pageDestination = destinations.find((destination) => destination.id === page.id)!;
+        const panelDestination = destinations.find((destination) => destination.id === appSidebarTab.id)!;
 
         expect(isCompactAppDestinationCurrent(pageDestination!, {
             pathname: '/plugins/acme.notes/notes/history',
@@ -195,6 +205,7 @@ describe('compact App destination presentation policy', () => {
             group: destination.group,
             badge: destination.kind === 'plugin' ? destination.badge : undefined,
         }))).toEqual([
+            { id: 'search', group: 'sessions', badge: undefined },
             { id: 'browseExistingSessions', group: 'sessions', badge: undefined },
             { id: 'plugin:acme.review:review', group: 'sessions', badge: { label: 'Preview', tone: 'accent' } },
             { id: 'plugin:acme.notes:notes', group: 'plugins', badge: { label: 'New', tone: 'success' } },
@@ -224,6 +235,7 @@ describe('compact App destination presentation policy', () => {
 
         expect(destinations.map((destination) => destination.id)).toEqual([
             'plugin:acme.notes:notes',
+            'search',
             'browseExistingSessions',
             'plugin:acme.review:review',
         ]);
@@ -233,6 +245,39 @@ describe('compact App destination presentation policy', () => {
                 availability: 'unavailable',
                 unavailableReason: 'feature_disabled',
             });
+    });
+
+    it('keeps Search immediately above Browse when saved order reverses and splits the protected pair', () => {
+        const review = Object.freeze({
+            ...page,
+            id: 'plugin:acme.review:review',
+            pluginId: 'acme.review',
+            descriptorId: 'review',
+            localId: 'review',
+            label: 'Review',
+            routePath: '/plugins/acme.review/review',
+        }) as unknown as PluginAppPage;
+
+        const destinations = resolveCompactAppDestinations({
+            browseExistingSessionsEnabled: true,
+            pages: [page, review],
+            preferences: {
+                orderedDestinationIds: [
+                    'browseExistingSessions',
+                    'plugin:acme.review:review',
+                    'search',
+                    'plugin:acme.notes:notes',
+                ],
+                hiddenDestinationIds: [],
+            },
+        });
+
+        expect(destinations.map((destination) => destination.id)).toEqual([
+            'search',
+            'browseExistingSessions',
+            'plugin:acme.review:review',
+            'plugin:acme.notes:notes',
+        ]);
     });
 });
 
@@ -253,6 +298,7 @@ describe('useCompactAppDestinations', () => {
         const probe = screen.tree.findByType('CompactCatalogProbe' as never);
 
         expect(probe.props.destinations).toEqual([
+            expect.objectContaining({ id: 'search', routePath: '/search' }),
             expect.objectContaining({
                 kind: 'plugin',
                 destination: { pluginId: 'acme.notes', localId: 'notes' },

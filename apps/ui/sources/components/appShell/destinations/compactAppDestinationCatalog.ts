@@ -21,6 +21,8 @@ import { t } from '@/text';
 
 /** The stable host-owned identity for the existing Sessions-list launcher. */
 export const BROWSE_EXISTING_SESSIONS_DESTINATION_ID = 'browseExistingSessions';
+/** The stable host-owned identity for Universal Search. */
+export const SEARCH_DESTINATION_ID = 'search';
 
 export type CompactAppDestinationVisibility = 'visible' | 'hidden';
 export type CompactAppDestinationPreferencesV1 = Readonly<{
@@ -30,14 +32,14 @@ export type CompactAppDestinationPreferencesV1 = Readonly<{
 
 export type CompactAppBuiltinDestination = Readonly<{
     kind: 'builtin';
-    id: typeof BROWSE_EXISTING_SESSIONS_DESTINATION_ID;
+    id: typeof SEARCH_DESTINATION_ID | typeof BROWSE_EXISTING_SESSIONS_DESTINATION_ID;
     title: string;
     icon: IconName;
     group: 'sessions';
     order: number;
     /** Hidden destinations remain catalogued for their exact route/tombstone owner. */
     visibility?: CompactAppDestinationVisibility;
-    routePath: '/external/browse';
+    routePath: '/search' | '/external/browse';
     availability: 'available';
 }>;
 
@@ -148,6 +150,17 @@ export function resolveCompactAppDestinations(input: Readonly<{
 }>): readonly CompactAppDestination[] {
     const destinations: CompactAppDestination[] = [];
 
+    destinations.push(Object.freeze({
+        kind: 'builtin',
+        id: SEARCH_DESTINATION_ID,
+        title: t('tools.names.search'),
+        icon: 'magnifying-glass',
+        group: 'sessions',
+        order: -1,
+        routePath: '/search',
+        availability: 'available',
+    }));
+
     if (input.browseExistingSessionsEnabled) {
         destinations.push(Object.freeze({
             kind: 'builtin',
@@ -207,11 +220,11 @@ export function resolveCompactAppDestinations(input: Readonly<{
     }
 
     const compareHostDefaults = (left: CompactAppDestination, right: CompactAppDestination): number => {
-        // Browse Existing Sessions is a host-owned anchor. A plugin rank can
-        // influence only its peer group; it cannot force itself ahead of this
-        // existing host destination.
+        // Search and Browse Existing Sessions are host-owned anchors. A plugin
+        // rank can influence only its peer group; it cannot force itself ahead
+        // of either established application destination.
         if (left.kind === 'builtin' || right.kind === 'builtin') {
-            if (left.kind === right.kind) return left.id.localeCompare(right.id);
+            if (left.kind === right.kind) return left.order - right.order || left.id.localeCompare(right.id);
             return left.kind === 'builtin' ? -1 : 1;
         }
         const groupRank = (destination: CompactAppPluginDestination) => (
@@ -239,6 +252,17 @@ export function resolveCompactAppDestinations(input: Readonly<{
         if (rightOrder === undefined) return -1;
         return leftOrder - rightOrder;
     });
+    const searchIndex = userOrdered.findIndex((destination) => destination.id === SEARCH_DESTINATION_ID);
+    const browseIndex = userOrdered.findIndex(
+        (destination) => destination.id === BROWSE_EXISTING_SESSIONS_DESTINATION_ID,
+    );
+    if (searchIndex >= 0 && browseIndex >= 0 && searchIndex + 1 !== browseIndex) {
+        const searchDestination = userOrdered.splice(searchIndex, 1)[0]!;
+        const resolvedBrowseIndex = userOrdered.findIndex(
+            (destination) => destination.id === BROWSE_EXISTING_SESSIONS_DESTINATION_ID,
+        );
+        userOrdered.splice(resolvedBrowseIndex, 0, searchDestination);
+    }
     const hiddenIds = new Set(input.preferences?.hiddenDestinationIds ?? []);
 
     return Object.freeze(userOrdered.map((destination, order) => Object.freeze({

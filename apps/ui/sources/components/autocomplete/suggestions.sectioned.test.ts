@@ -1,3 +1,4 @@
+import * as React from 'react';
 import type { ReactElement } from 'react';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -81,13 +82,19 @@ vi.mock('@/sync/domains/input/slashCommands/promptInvocationSuggestion', () => (
 // module can load and the test never reaches its first behavior assertion.
 vi.mock('@/components/sessions/agentInput/components/AgentInputSuggestionView', () => ({
     FileMentionSuggestion: () => null,
-    // Stubbed for the same reason: it draws a registry image asset, and the session
-    // rows here are asserted by the props the registry hands it, not by what it paints.
-    SessionMentionAgentLogo: () => null,
+}));
+
+// Session rows carry the canonical machine-qualified catalog mark. Stubbed for the
+// same reason as the visual leaves above: the rows here are asserted by the props
+// the registry hands it (identity + machine/server scope), not by what it paints.
+vi.mock('@/components/sessions/presentation/SessionAgentCatalogIdentityIcon', () => ({
+    SessionAgentCatalogIdentityIcon: (props: Record<string, unknown>) =>
+        React.createElement('SessionAgentCatalogIdentityIcon', props),
 }));
 
 vi.mock('@/components/ui/icons/Icon', () => ({
     Icon: () => null,
+    ICON_SIZE: { xs: 14, sm: 16, md: 20, lg: 24, xl: 29 },
 }));
 
 vi.mock(
@@ -703,6 +710,8 @@ describe('sectioned composer suggestions (EU-3)', () => {
             workspaceLabel: '~/projects/app',
             agentLabel: 'codex',
             agentId: 'codex',
+            machineId: 'machine-1',
+            serverId: 'server-a',
             updatedAt: 10,
             active: true,
         } as const;
@@ -745,20 +754,45 @@ describe('sectioned composer suggestions (EU-3)', () => {
                     sessions: [
                         PEER_SESSION,
                         { ...PEER_SESSION, id: 'cmslj08960ku1tmhrd0v4a0b8', title: 'Claude Work', agentLabel: 'claude', agentId: 'claude' },
+                        // An external plugin Agent: the exact declared id passes through so the
+                        // machine-scoped catalog resolves its own brand instead of collapsing to null.
+                        { ...PEER_SESSION, id: 'cmslj08960ku1tmhrd0v4a0c9', title: 'Acme Bot', agentLabel: 'acme.native', agentId: 'acme.native' },
                     ],
                 },
             });
 
             expect(suggestions.map(
                 (suggestion) => (suggestion.icon as ReactElement<{ agentId: string }> | undefined)?.props.agentId,
-            )).toEqual(['codex', 'claude']);
+            )).toEqual(['codex', 'claude', 'acme.native']);
         });
 
-        it('leaves the row to the kind glyph when the provider is not one this build knows', async () => {
+        it('hands the row its machine-qualified identity scope', async () => {
             const { getSuggestions } = await importSuggestions();
 
             const suggestions = await getSuggestions('s1', '@session:', {
-                catalogs: { sessions: [{ ...PEER_SESSION, agentLabel: 'some-future-agent', agentId: null }] },
+                catalogs: {
+                    sessions: [
+                        { ...PEER_SESSION, agentId: 'acme.native', machineId: 'machine-1', serverId: 'server-a' },
+                    ],
+                },
+            });
+
+            expect(suggestions[0]?.icon).toBeDefined();
+            expect(suggestions[0]?.icon).toMatchObject({
+                props: {
+                    agentId: 'acme.native',
+                    machineId: 'machine-1',
+                    serverId: 'server-a',
+                    testID: `composer-session-agent-logo-${PEER_SESSION.id}`,
+                },
+            });
+        });
+
+        it('leaves the row to the kind glyph when the session declares no Agent', async () => {
+            const { getSuggestions } = await importSuggestions();
+
+            const suggestions = await getSuggestions('s1', '@session:', {
+                catalogs: { sessions: [{ ...PEER_SESSION, agentLabel: null, agentId: null }] },
             });
 
             expect(suggestions[0]?.kind).toBe('session');

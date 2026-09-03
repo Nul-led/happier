@@ -24,6 +24,7 @@ export const SETTINGS_ROUTES = {
     plugins: '/settings/plugins',
     pluginPanels: '/settings/plugins/panels',
     pluginWebhooks: '/settings/plugins/webhooks',
+    pluginSources: '/settings/plugins/sources',
     prompts: '/settings/prompts',
     promptsTemplates: '/settings/prompts/templates',
     promptsFolders: '/settings/prompts/folders',

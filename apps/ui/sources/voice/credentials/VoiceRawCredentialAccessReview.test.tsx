@@ -97,12 +97,7 @@ const review = Object.freeze({
     packageName: '@acme/voice',
     registryOrigin: 'https://registry.npmjs.org',
   }),
-  publisher: Object.freeze({
-    status: 'unverified' as const,
-    id: 'acme',
-    displayName: 'Acme',
-  }),
-  packageSignature: Object.freeze({ status: 'verified' as const, keyId: 'registry-signing-key' }),
+  publisher: Object.freeze({ status: 'unavailable' as const }),
   contribution: Object.freeze({ identity: contribution, name: 'Browser Voice' }),
   credentialSlot: Object.freeze({ id: 'api_key', name: 'API key', purpose: 'voice.browser' }),
 });
@@ -212,10 +207,8 @@ describe('VoiceRawCredentialAccessReview', () => {
     expect(sheet).not.toBeNull();
     expect(JSON.stringify(sheet?.props.detailRows)).toContain('@acme/voice');
     expect(JSON.stringify(sheet?.props.detailRows)).toContain('https://registry.npmjs.org');
-    expect(JSON.stringify(sheet?.props.detailRows)).toContain('Acme');
-    expect(JSON.stringify(sheet?.props.detailRows)).toContain('unverified');
-    expect(JSON.stringify(sheet?.props.detailRows)).toContain('registry-signing-key');
-    expect(JSON.stringify(sheet?.props.detailRows)).toContain('recipientApprovalPackageSignature');
+    expect(JSON.stringify(sheet?.props.detailRows)).not.toContain('registry-signing-key');
+    expect(JSON.stringify(sheet?.props.detailRows)).not.toContain('recipientApprovalPackageSignature');
     expect(JSON.stringify(sheet?.props.detailRows)).not.toContain('verified publisher');
     expect(JSON.stringify(sheet?.props.detailRows)).toContain('authorization');
     expect(JSON.stringify(sheet?.props.detailRows)).not.toContain('secret-value');

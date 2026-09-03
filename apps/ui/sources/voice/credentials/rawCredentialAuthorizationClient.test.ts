@@ -58,8 +58,6 @@ function review() {
     plugin: { id: contribution.pluginId, name: 'Acme Voice', version: '2.0.0' },
     package: { identity: '@acme/voice' },
     distribution: { kind: 'unavailable' as const },
-    publisher: { status: 'unavailable' as const },
-    packageSignature: { status: 'unavailable' as const },
     contribution: { identity: contribution, name: 'Browser Voice' },
     credentialSlot: { id: 'api_key', name: 'API key', purpose: 'voice.browser' },
   };

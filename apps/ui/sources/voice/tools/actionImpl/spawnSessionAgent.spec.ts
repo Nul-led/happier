@@ -90,4 +90,105 @@ describe('resolveVoiceToolSpawnBackendTarget (RU-02 customAcp ingress-only)', ()
     if (!res.ok) return;
     expect(res.backendTarget.backendId).toBe('acme-agent');
   });
+
+  it('accepts the canonical qualified target key of an installed external Agent named by the current projection', () => {
+    // `agent:<pluginId>/<localId>` is the key the Agent catalog, settings and
+    // review-engine list all publish for an installed Agent. Voice must resolve
+    // it through the same host catalog instead of failing closed on an identity
+    // the Protocol reader alone cannot route.
+    const backendTargetKey = buildBackendTargetKeyV2({
+      kind: 'agent',
+      identity: { pluginId: 'acme.agent', localId: 'native' },
+    });
+
+    const res = resolveVoiceToolSpawnBackendTarget({
+      state: {},
+      backendTargetKey,
+      daemonMergedProjectionInputs: {
+        mergedProviderProjectionById: {
+          'acme.native': {
+            agentId: 'acme.native',
+            identity: { pluginId: 'acme.agent', localId: 'native' },
+          },
+        },
+        mergedBackendProjectionById: {},
+      } as never,
+    });
+
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.backendTarget).toEqual({ kind: 'backend', backendId: 'acme.native' });
+  });
+
+  it('accepts a qualified external target key together with the Agent local id it addresses', () => {
+    const backendTargetKey = buildBackendTargetKeyV2({
+      kind: 'agent',
+      identity: { pluginId: 'acme.agent', localId: 'native' },
+    });
+
+    const res = resolveVoiceToolSpawnBackendTarget({
+      state: {},
+      agentId: 'native',
+      backendTargetKey,
+      daemonMergedProjectionInputs: {
+        mergedProviderProjectionById: {
+          'acme.native': {
+            agentId: 'acme.native',
+            identity: { pluginId: 'acme.agent', localId: 'native' },
+          },
+        },
+        mergedBackendProjectionById: {},
+      } as never,
+    });
+
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.backendTarget).toEqual({ kind: 'backend', backendId: 'acme.native' });
+  });
+
+  it('rejects a qualified external target key when the requested Agent id addresses another Agent', () => {
+    const backendTargetKey = buildBackendTargetKeyV2({
+      kind: 'agent',
+      identity: { pluginId: 'acme.agent', localId: 'native' },
+    });
+
+    expect(resolveVoiceToolSpawnBackendTarget({
+      state: {},
+      agentId: 'other',
+      backendTargetKey,
+      daemonMergedProjectionInputs: {
+        mergedProviderProjectionById: {
+          'acme.native': {
+            agentId: 'acme.native',
+            identity: { pluginId: 'acme.agent', localId: 'native' },
+          },
+        },
+        mergedBackendProjectionById: {},
+      } as never,
+    })).toMatchObject({
+      ok: false,
+      errorCode: 'invalid_parameters',
+      agentId: 'other',
+      backendTargetKey,
+    });
+  });
+
+  it('keeps the qualified identity losslessly when no current projection names its routing id', () => {
+    // `backend:<pluginId>/<localId>` is the same Agent as the `agent:` key: the
+    // canonical key owner maps it straight back to the identity. Preserve it
+    // instead of dropping a legitimate target while the projection is unloaded.
+    const backendTargetKey = buildBackendTargetKeyV2({
+      kind: 'agent',
+      identity: { pluginId: 'acme.agent', localId: 'native' },
+    });
+
+    const res = resolveVoiceToolSpawnBackendTarget({
+      state: {},
+      backendTargetKey,
+    });
+
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.backendTarget).toEqual({ kind: 'backend', backendId: 'acme.agent/native' });
+  });
 });

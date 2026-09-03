@@ -1,10 +1,16 @@
 import { DEFAULT_AGENT_ID } from '@happier-dev/agents';
 import type { AgentId } from '@/agents/catalog/catalog';
 import {
+    BackendTargetKeyV2Schema,
+    agentRoutingIdAddressesContributionIdentityV1,
     buildQualifiedPluginContributionKey,
+    parseBackendTargetKeyV2,
     readBackendTargetRefV2,
     readLegacyConfiguredAcpBackendId,
     type BackendTargetRefV2,
+    type BackendTargetRefV2Input,
+    type PersistedBackendTargetRefV2,
+    type PluginContributionIdentityV1,
 } from '@happier-dev/protocol';
 
 import { isBundledAgentId } from '@/agents/registry/registryCore';
@@ -14,6 +20,42 @@ import { resolvePersistedAgentIdForBackendTarget } from '@/agents/backendCatalog
 import { resolvePreferredBackendTargetFromProjection } from '@/agents/backendCatalog/resolvePreferredBackendTargetFromProjection';
 import type { DaemonMergedProjectionInputs } from '@/agents/backendCatalog/loadDaemonMergedProjectionInputs';
 import { resolveOperationalBackendTargetForAgentSelection } from '@/agents/backendCatalog/getResolvedBackendCatalogEntries';
+
+/**
+ * The one operational backend target for a selected Agent.
+ *
+ * A qualified Agent selection is routed through the host catalog, which owns
+ * the identity→routing-id projection. When no current projection names it, the
+ * qualified contribution key is itself a lossless routing id — the canonical
+ * key owner maps `backend:<pluginId>/<localId>` straight back to the identity —
+ * so the selection is preserved rather than collapsed or dropped.
+ */
+function resolveOperationalBackendTarget(
+  target: PersistedBackendTargetRefV2,
+  daemonMergedProjectionInputs?: DaemonMergedProjectionInputs | null,
+): BackendTargetRefV2 {
+  return resolveOperationalBackendTargetForAgentSelection({
+    backendTarget: target,
+    mergedProviderProjectionById: daemonMergedProjectionInputs?.mergedProviderProjectionById,
+  }) ?? {
+    kind: 'backend',
+    backendId: target.kind === 'agent'
+      ? buildQualifiedPluginContributionKey(target.identity)
+      : target.backendId,
+  };
+}
+
+/**
+ * Reads a requested target key without requiring host catalog resolution, so a
+ * qualified external Agent keeps its exact `{ pluginId, localId }` identity
+ * instead of failing closed on the Protocol reader's bundled-only mapping.
+ */
+function readRequestedBackendTarget(backendTargetKey: string): PersistedBackendTargetRefV2 {
+  const canonicalKey = BackendTargetKeyV2Schema.safeParse(backendTargetKey);
+  return canonicalKey.success
+    ? parseBackendTargetKeyV2(canonicalKey.data)
+    : readBackendTargetRefV2(backendTargetKey as BackendTargetRefV2Input);
+}
 
 export function resolveSpawnBackendTargetFromState(
   state: any,
@@ -28,15 +70,7 @@ export function resolveSpawnBackendTargetFromState(
     acpCatalogSettingsV1: settings.acpCatalogSettingsV1 ?? undefined,
     daemonMergedProjectionInputs: opts?.daemonMergedProjectionInputs ?? null,
   });
-  return resolveOperationalBackendTargetForAgentSelection({
-    backendTarget: preferredTarget,
-    mergedProviderProjectionById: opts?.daemonMergedProjectionInputs?.mergedProviderProjectionById,
-  }) ?? {
-    kind: 'backend',
-    backendId: preferredTarget.kind === 'agent'
-      ? buildQualifiedPluginContributionKey(preferredTarget.identity)
-      : preferredTarget.backendId,
-  };
+  return resolveOperationalBackendTarget(preferredTarget, opts?.daemonMergedProjectionInputs);
 }
 
 export function resolveSpawnAgentIdFromState(state: any): AgentId {
@@ -67,9 +101,19 @@ export function resolveVoiceToolSpawnBackendTarget(params: Readonly<{
   // `isBundledAgentId` here. This resolver only checks that the requested id and an explicit
   // backend target key describe the same target.
   let parsedBackendTarget: BackendTargetRefV2 | null = null;
+  // Set only when the request named a qualified Agent contribution outright.
+  // That key already carries the exact routing authority, so its validation and
+  // its operational projection are both owned above rather than re-derived from
+  // the flat backend id below.
+  let requestedAgentIdentity: PluginContributionIdentityV1 | null = null;
   if (requestedBackendTargetKey) {
     try {
-      const canonicalBackendTarget = readBackendTargetRefV2(requestedBackendTargetKey);
+      const requestedTarget = readRequestedBackendTarget(requestedBackendTargetKey);
+      requestedAgentIdentity = requestedTarget.kind === 'agent' ? requestedTarget.identity : null;
+      const canonicalBackendTarget = resolveOperationalBackendTarget(
+        requestedTarget,
+        params.daemonMergedProjectionInputs ?? null,
+      );
       const isConfiguredTarget = Boolean(canonicalBackendTarget.configuredBackendId);
       const isCanonicalBackendKey = requestedBackendTargetKey.startsWith('backend:');
       const requiresExplicitRuntimeCarrier =
@@ -95,6 +139,24 @@ export function resolveVoiceToolSpawnBackendTarget(params: Readonly<{
           }
         }
         parsedBackendTarget = canonicalBackendTarget;
+      } else if (requestedAgentIdentity) {
+        // A qualified key names the Agent exactly. An accompanying Agent id is
+        // accepted only when it addresses that same identity — its projected
+        // routing id, its local id, or the qualified key itself.
+        if (
+          requestedAgentId
+          && requestedAgentId !== canonicalBackendTarget.backendId
+          && !agentRoutingIdAddressesContributionIdentityV1(requestedAgentId, requestedAgentIdentity)
+        ) {
+          return {
+            ok: false,
+            errorCode: 'invalid_parameters',
+            errorMessage: 'invalid_parameters',
+            agentId: requestedAgentId,
+            backendTargetKey: requestedBackendTargetKey,
+          };
+        }
+        parsedBackendTarget = canonicalBackendTarget;
       } else {
         if (!requiresExplicitRuntimeCarrier && requestedAgentId && requestedAgentId !== canonicalBackendTarget.backendId) {
           return {
@@ -117,7 +179,7 @@ export function resolveVoiceToolSpawnBackendTarget(params: Readonly<{
     }
   }
 
-  if (parsedBackendTarget && requestedAgentId) {
+  if (parsedBackendTarget && requestedAgentId && !requestedAgentIdentity) {
     if (parsedBackendTarget.configuredBackendId) {
       const configuredBackendId = parsedBackendTarget.configuredBackendId ?? parsedBackendTarget.backendId;
       // For configured backends, accept only the explicit compat-encoded configured carrier.

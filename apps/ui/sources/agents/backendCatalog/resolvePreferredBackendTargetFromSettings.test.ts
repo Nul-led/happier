@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { AcpBackendDefinitionV1 } from '@happier-dev/protocol';
 
 import { resolvePreferredBackendTarget } from './resolvePreferredBackendTarget';
 import { resolvePreferredBackendTargetFromSettings } from './resolvePreferredBackendTargetFromSettings';
@@ -6,6 +7,23 @@ import { BUNDLED_CANONICAL_AGENT_CONTRIBUTION_IDENTITIES } from '@/agents/regist
 
 const CLAUDE_TARGET = { kind: 'agent' as const, identity: BUNDLED_CANONICAL_AGENT_CONTRIBUTION_IDENTITIES.claude };
 const CODEX_TARGET = { kind: 'agent' as const, identity: BUNDLED_CANONICAL_AGENT_CONTRIBUTION_IDENTITIES.codex };
+const REVIEW_BOT_ACP_BACKEND = {
+    id: 'review-bot',
+    name: 'review-bot',
+    title: 'Review Bot',
+    command: 'review-bot',
+    args: [],
+    env: {},
+    capabilities: {
+        supportsLoadSession: false,
+        supportsModes: 'unknown',
+        supportsModels: 'unknown',
+        supportsConfigOptions: 'unknown',
+        promptImageSupport: 'unknown',
+    },
+    createdAt: 1,
+    updatedAt: 1,
+} satisfies AcpBackendDefinitionV1;
 
 describe('resolvePreferredBackendTargetFromSettings', () => {
     it('prefers a parseable lastUsedBackendTarget from settings', () => {
@@ -48,11 +66,9 @@ describe('resolvePreferredBackendTargetFromSettings', () => {
             backendEnabledByTargetKey: {},
             acpCatalogSettingsV1: {
                 v: 2,
-                backends: [
-                    { id: 'review-bot', name: 'review-bot', title: 'Review Bot' },
-                ],
+                backends: [REVIEW_BOT_ACP_BACKEND],
             },
-        } as any)).toEqual(CODEX_TARGET);
+        })).toEqual(CODEX_TARGET);
     });
 
     it('keeps a stored configured backend target when ACP catalog availability exists without merged projection', () => {
@@ -62,11 +78,9 @@ describe('resolvePreferredBackendTargetFromSettings', () => {
             backendEnabledByTargetKey: {},
             acpCatalogSettingsV1: {
                 v: 2,
-                backends: [
-                    { id: 'review-bot', name: 'review-bot', title: 'Review Bot' },
-                ],
+                backends: [REVIEW_BOT_ACP_BACKEND],
             },
-        } as any)).toEqual({ kind: 'backend', backendId: 'review-bot', configuredBackendId: 'review-bot' });
+        })).toEqual({ kind: 'backend', backendId: 'review-bot', configuredBackendId: 'review-bot' });
     });
 
     it('does not treat empty availability inputs as a stale-backend signal', () => {
@@ -78,13 +92,14 @@ describe('resolvePreferredBackendTargetFromSettings', () => {
         })).toEqual({ kind: 'backend', backendId: 'review-bot', configuredBackendId: 'review-bot' });
     });
 
-    it('does not synthesize non-built-in backend ids from settings-only availability inputs without merged projection truth', () => {
+    it('does not treat an externally qualified Agent id as a settings-only built-in default', () => {
         expect(resolvePreferredBackendTargetFromSettings({
-            lastUsedAgent: 'claude',
-            enabledAgentIds: ['acme.review.backend'],
+            lastUsedAgent: 'acme.review.agent',
+            defaultBuiltInAgentId: 'codex',
+            enabledAgentIds: ['acme.review.agent', 'codex'],
             backendEnabledByTargetKey: { 'backend:acme.review.backend': true },
             acpCatalogSettingsV1: { v: 2, backends: [] },
-        })).toEqual(CLAUDE_TARGET);
+        })).toEqual(CODEX_TARGET);
     });
 
     it('still prefers a merged-projection configured backend target when the legacy customAcp carrier has no stored concrete backend target', () => {
@@ -92,9 +107,7 @@ describe('resolvePreferredBackendTargetFromSettings', () => {
             lastUsedAgent: 'customAcp',
             acpCatalogSettingsV1: {
                 v: 2,
-                backends: [
-                    { id: 'review-bot', name: 'review-bot', title: 'Review Bot' },
-                ],
+                backends: [REVIEW_BOT_ACP_BACKEND],
             },
             daemonMergedProjectionInputs: {
                 discoveredBackendIds: ['review-bot'],
@@ -116,9 +129,7 @@ describe('resolvePreferredBackendTargetFromSettings', () => {
             backendEnabledByTargetKey: {},
             acpCatalogSettingsV1: {
                 v: 2,
-                backends: [
-                    { id: 'review-bot', name: 'review-bot', title: 'Review Bot' },
-                ],
+                backends: [REVIEW_BOT_ACP_BACKEND],
             },
             daemonMergedProjectionInputs: {
                 discoveredBackendIds: [],

@@ -59,6 +59,10 @@ const mockAgentCatalogProjection = vi.hoisted(
     } | null>(() => null),
 );
 const machineContributionRegistryProjectionDescribeMock = vi.hoisted(() => vi.fn());
+const machineProjectionRevisionState = vi.hoisted(() => ({
+    revision: 0,
+    listeners: new Set<() => void>(),
+}));
 const machinePluginSessionHooksRpcMock = vi.hoisted(() => vi.fn());
 const administrationTargetState = vi.hoisted(() => ({
     selectedTarget: {
@@ -266,9 +270,13 @@ function buildHeadlessAgentSettingsProjection(): PluginProjectionV2 {
                 title: 'Acme Headless settings',
                 scope: { kind: 'account' },
                 presentation: { sections: [], subagentSections: [] },
+                // The exact qualified identity the daemon projects for this
+                // Agent. A local id is a contributor-local token, never the
+                // host routing id, so the settings target must name `provider`
+                // rather than the `acme.headless.provider` routing key.
                 target: {
                     kind: 'agent',
-                    agent: { pluginId: 'acme.headless', localId: 'acme.headless.provider' },
+                    agent: { pluginId: 'acme.headless', localId: 'provider' },
                 },
                 fields: [],
             },
@@ -563,6 +571,7 @@ vi.mock('@/sync/store/settingsWriters', () => ({
 
 vi.mock('@/sync/domains/server/serverProfiles', () => ({
     getActiveServerSnapshot: () => activeServerSnapshot,
+    loadHomeViewState: () => null,
     listServerProfiles: () => [{ id: 'server1', serverUrl: 'http://localhost:3000', webappUrl: 'http://localhost:8081', name: 'server1' }],
     getServerProfileById: (serverId: string) => {
         const serverIdentityId = serverIdentityByProfileId[serverId];
@@ -590,8 +599,15 @@ vi.mock('@/sync/domains/server/selection/serverSelectionResolution', () => ({
 vi.mock('@/sync/ops/machineContributionRegistryProjection', () => ({
     machineContributionRegistryProjectionDescribe: (...args: unknown[]) =>
         machineContributionRegistryProjectionDescribeMock(...args),
-    getMachineContributionRegistryProjectionRevision: () => 0,
-    subscribeMachineContributionRegistryProjectionInvalidation: () => () => {},
+    getMachineContributionRegistryProjectionRevision: () => machineProjectionRevisionState.revision,
+    subscribeMachineContributionRegistryProjectionInvalidation: (_scope: unknown, listener: () => void) => {
+        machineProjectionRevisionState.listeners.add(listener);
+        return () => machineProjectionRevisionState.listeners.delete(listener);
+    },
+    publishMachineContributionRegistryProjectionInvalidation: () => {
+        machineProjectionRevisionState.revision += 1;
+        for (const listener of machineProjectionRevisionState.listeners) listener();
+    },
     // This screen does not exercise daemon-scoped plugin Settings I/O. Keep
     // the canonical Settings/secret/watch runtime boundary explicitly
     // unavailable instead of leaving a partial module mock with absent
@@ -1029,6 +1045,8 @@ describe('PluginAgentSettingsScreen', () => {
             };
         });
         machineContributionRegistryProjectionDescribeMock.mockReset();
+        machineProjectionRevisionState.revision = 0;
+        machineProjectionRevisionState.listeners.clear();
         machineContributionRegistryProjectionDescribeMock.mockResolvedValue({
             supported: false,
             reason: 'not-supported',
@@ -1193,6 +1211,47 @@ describe('PluginAgentSettingsScreen', () => {
         expect(machineContributionRegistryProjectionDescribeMock).toHaveBeenCalledWith('m3', expect.objectContaining({
             serverId: 'server2',
         }));
+    });
+
+    it('shows projection loading instead of claiming an external Agent is absent during a cold load', async () => {
+        mockProviderId = 'acme.review.provider';
+        machineContributionRegistryProjectionDescribeMock.mockImplementation(() => new Promise(() => {}));
+
+        const screen = await renderPluginAgentSettingsScreen();
+        await flushHookEffects();
+
+        expect(screen.findByTestId('settings.agents.projection.status')?.props).toMatchObject({
+            title: 'common.loading',
+            loading: true,
+        });
+        expect(screen.getTextContent()).not.toContain('settingsAgents.notFoundTitle');
+        expect(screen.findByType('MachineAdministrationTargetSelector')).toBeTruthy();
+    });
+
+    it('keeps the same-target last-known Agent detail visible while projection refresh fails', async () => {
+        mockProviderId = 'acme.review.provider';
+        machineContributionRegistryProjectionDescribeMock.mockResolvedValueOnce({
+            supported: true,
+            projection: PLUGIN_PROVIDER_DAEMON_PROJECTION_FIXTURE,
+        });
+
+        const screen = await renderPluginAgentSettingsScreen();
+        await flushHookEffects({ cycles: 3, turns: 2 });
+        expect(screen.findAllByType('Item' as any).some(
+            (node: any) => node.props?.title === 'Acme Review Provider',
+        )).toBe(true);
+
+        machineContributionRegistryProjectionDescribeMock.mockRejectedValueOnce(new Error('projection unavailable'));
+        machineProjectionRevisionState.revision += 1;
+        await act(async () => {
+            for (const listener of machineProjectionRevisionState.listeners) listener();
+        });
+        await flushHookEffects({ cycles: 3, turns: 2 });
+
+        expect(screen.findAllByType('Item' as any).some(
+            (node: any) => node.props?.title === 'Acme Review Provider',
+        )).toBe(true);
+        expect(screen.getTextContent()).not.toContain('settingsAgents.notFoundTitle');
     });
 
     it('opens Agent browse with the selected machine, server, and qualified Agent scope', async () => {
@@ -1622,6 +1681,8 @@ describe('PluginAgentSettingsScreen', () => {
         }));
         const loadingItems = screen.findAllByType('Item' as any);
         expect(loadingItems.some((node: any) => node.props?.title === 'Acme Review Provider')).toBe(false);
+        expect(loadingItems.some((node: any) => node.props?.title === 'common.loading')).toBe(true);
+        expect(screen.getTextContent()).not.toContain('settingsAgents.notFoundTitle');
         expect(useCLIDetectionMock).not.toHaveBeenCalledWith('m3', expect.objectContaining({
             autoDetect: true,
         }));
@@ -1717,14 +1778,19 @@ describe('PluginAgentSettingsScreen', () => {
         mockProviderId = 'acme.headless.provider';
         mockAgentCatalogProjection.mockReturnValue({
             agentId: 'acme.headless.provider',
+            qualifiedId: 'acme.headless/provider',
+            // An installed Agent always carries its qualified identity: that is
+            // what binds its contributed settings, and it is the exact fact the
+            // detail screen compares instead of a local id.
+            identity: { pluginId: 'acme.headless', localId: 'provider' },
             catalogAgentId: null,
             iconAgentId: 'claude',
             title: 'Acme Headless Provider',
             subtitle: 'Plugin provider',
             iconName: 'stack-simple',
             isBuiltIn: false,
-            backendTargetKey: null,
-            enabled: null,
+            backendTargetKey: 'agent:acme.headless/provider',
+            enabled: true,
             authPlugin: null,
             backendEntry: null,
         });
@@ -1743,6 +1809,7 @@ describe('PluginAgentSettingsScreen', () => {
         const settingsSection = screen.findByType(PluginDetailGenericSettingsSection);
         expect(settingsSection.props).toMatchObject({ pluginId: 'acme.headless' });
         expect(settingsSection.props.projection.editableSettingsGroups).toHaveLength(1);
+        expect(screen.findByType('MachineAdministrationTargetSelector')).toBeTruthy();
     });
 
     it('renders qualified Connected Account purposes on the no-CLI Agent screen', async () => {
@@ -2490,6 +2557,7 @@ describe('PluginAgentSettingsScreen', () => {
         // the canonical External Sessions section is composed alongside it.
         const items = screen.findAllByType('Item' as any);
         expect(items.some((node: any) => node.props?.title === 'Acme Transcripts')).toBe(true);
+        expect(screen.findByType('MachineAdministrationTargetSelector')).toBeTruthy();
         expect(screen.findByTestId('settings-external-sessions-manage-all')).toBeTruthy();
         // The machine declares External Sessions while its daemon projects no
         // Agent for it, so the honest state is the same error the primary

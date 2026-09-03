@@ -39,6 +39,34 @@ describe('resolveBackendTargetKeyV2', () => {
             .toBe('backend:totally-custom-plugin-agent');
     });
 
+    it('derives one canonical qualified key for an installed Agent routing id', () => {
+        const fromAgentIdentity = resolveBackendTargetKeyV2({
+            kind: 'agent',
+            identity: { pluginId: 'examples.session-agent', localId: 'session-agent' },
+        });
+        const fromRoutingIdRef = resolveBackendTargetKeyV2({
+            kind: 'backend',
+            backendId: 'examples.session-agent/session-agent',
+        });
+        const fromRoutingIdKey = resolveBackendTargetKeyV2('backend:examples.session-agent/session-agent');
+
+        expect(fromAgentIdentity).toBe('agent:examples.session-agent/session-agent');
+        expect(fromRoutingIdRef).toBe(fromAgentIdentity);
+        expect(fromRoutingIdKey).toBe(fromAgentIdentity);
+        expect(backendTargetKeysMatch(
+            { kind: 'builtInAgent', agentId: 'examples.session-agent/session-agent' },
+            { kind: 'agent', identity: { pluginId: 'examples.session-agent', localId: 'session-agent' } },
+        )).toBe(true);
+    });
+
+    it('keeps a configured instance of an installed Agent distinct from its Agent key', () => {
+        expect(resolveBackendTargetKeyV2({
+            kind: 'backend',
+            backendId: 'examples.session-agent/session-agent',
+            configuredBackendId: 'instance-1',
+        })).toBe('backend:examples.session-agent/session-agent:configured:instance-1');
+    });
+
     it('matches persisted legacy keys against their canonical Agent target', () => {
         expect(backendTargetKeysMatch('backend:claude', 'agent:happier.agent.claude/claude')).toBe(true);
         expect(backendTargetKeysMatch('backend:codex', 'agent:happier.agent.codex/codex')).toBe(true);

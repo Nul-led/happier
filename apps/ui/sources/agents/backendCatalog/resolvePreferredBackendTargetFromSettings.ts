@@ -1,6 +1,6 @@
 import type { PersistedBackendTargetRefV2 } from '@happier-dev/protocol';
 
-import { DEFAULT_AGENT_ID, isBundledAgentId, type AgentId } from '@/agents/catalog/catalog';
+import { DEFAULT_AGENT_ID, isBundledAgentId, type AgentId, type BundledAgentId } from '@/agents/catalog/catalog';
 import { getEnabledAgentIds } from '@/agents/catalog/enabled';
 import { getResolvedBackendCatalogEntries } from '@/agents/backendCatalog/getResolvedBackendCatalogEntries';
 import type { DaemonMergedProjectionInputs } from './loadDaemonMergedProjectionInputs';
@@ -48,13 +48,14 @@ export function resolvePreferredBackendTargetFromSettings(params: Readonly<{
         || hasNonEmptyRecord(params.backendEnabledByTargetKey ?? undefined)
         || hasCatalogBackends;
 
-    const explicitEnabledAgentIds = Array.isArray(params.enabledAgentIds)
-        ? params.enabledAgentIds.filter((agentId): agentId is AgentId => isBundledAgentId(agentId))
-        : null;
-
-    const enabledBuiltInAgentIds = (explicitEnabledAgentIds ?? getEnabledAgentIds({
-        backendEnabledByTargetKey: params.backendEnabledByTargetKey as Record<string, boolean> | null | undefined,
-    })).filter((agentId) => !isLegacyCompatAgentType(agentId));
+    const enabledAgentIds = Array.isArray(params.enabledAgentIds)
+        ? params.enabledAgentIds
+        : getEnabledAgentIds({
+            backendEnabledByTargetKey: params.backendEnabledByTargetKey as Record<string, boolean> | null | undefined,
+        });
+    const enabledBuiltInAgentIds = enabledAgentIds.filter((agentId): agentId is BundledAgentId => (
+        isBundledAgentId(agentId) && !isLegacyCompatAgentType(agentId)
+    ));
 
     const availableBackendTargets = hasAvailabilityInputs
         ? hasCatalogBackends

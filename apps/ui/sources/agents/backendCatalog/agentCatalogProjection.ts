@@ -141,12 +141,21 @@ function resolveProviderTargetKeyFromSettingsBackend(
     agentId: string,
     isBuiltIn: boolean,
     settingsBackendProjection: MergedBackendProjectionEntry | null,
+    identity: PluginContributionIdentityV1 | null,
 ): string | null {
     if (isBuiltIn && isBundledAgentId(agentId)) {
         return resolveProviderTargetKey(agentId, isBuiltIn);
     }
     if (settingsBackendProjection?.backendId) {
         return resolveBackendTargetKeyV2({ kind: 'backend', backendId: settingsBackendProjection.backendId });
+    }
+    // An installed Agent's canonical binding key is its qualified contribution
+    // identity — the exact key the selectable-target catalog already publishes
+    // and every enablement/permission/model writer already uses. Reporting
+    // `null` here left the same Agent with no reachable enable state, default
+    // permission mode, or Models entry on its own detail screen.
+    if (identity) {
+        return resolveBackendTargetKeyV2({ kind: 'agent', identity });
     }
     return resolveProviderTargetKey(agentId, isBuiltIn);
 }
@@ -312,6 +321,7 @@ function resolveAgentLocalAuthPlugin(
     agentId: string,
     behaviorProviderId: AgentId | null,
     mergedProviderProjection: MergedProviderProjectionEntry | null,
+    isBuiltIn: boolean,
 ): AgentLocalAuthPlugin | null {
     if (mergedProviderProjection?.cli) {
         return createProjectedAgentLocalAuthPlugin({
@@ -319,7 +329,11 @@ function resolveAgentLocalAuthPlugin(
             cli: mergedProviderProjection.cli,
         });
     }
-    return behaviorProviderId ? getAgentLocalAuthPlugin(behaviorProviderId) : null;
+    // A bundled catalog backing may lend presentation/behavior to an external
+    // Agent, but it is not that Agent's executable or authentication contract.
+    // External auth exists only when the Agent's own projection contributes CLI
+    // metadata above; otherwise setup/settings must remain truthfully empty.
+    return isBuiltIn && behaviorProviderId ? getAgentLocalAuthPlugin(behaviorProviderId) : null;
 }
 
 export function getResolvedAgentCatalogEntries(params: Readonly<{
@@ -345,11 +359,17 @@ export function getResolvedAgentCatalogEntries(params: Readonly<{
         const behaviorProviderId = resolveBehaviorProviderId(agentId, mergedProviderProjection, settingsBackendProjection);
         const behaviorProjection = resolveBundledAgentUiBehaviorProjection(behaviorProviderId);
         const iconAgentId = resolveProviderIconAgentId(mergedProviderProjection, settingsBackendProjection, behaviorProviderId);
-        const backendTargetKey = resolveProviderTargetKeyFromSettingsBackend(agentId, isBuiltIn, settingsBackendProjection);
+        const identity = mergedProviderProjection?.identity ?? null;
+        const backendTargetKey = resolveProviderTargetKeyFromSettingsBackend(
+            agentId,
+            isBuiltIn,
+            settingsBackendProjection,
+            identity,
+        );
         return {
             agentId,
             qualifiedId: mergedProviderProjection?.qualifiedId ?? agentId,
-            identity: mergedProviderProjection?.identity ?? null,
+            identity,
             installedPackage: mergedProviderProjection?.installedPackage ?? null,
             projectionGeneration: mergedProviderProjection?.projectionGeneration ?? null,
             catalogAgentId: behaviorProviderId,
@@ -367,7 +387,7 @@ export function getResolvedAgentCatalogEntries(params: Readonly<{
             isBuiltIn,
             descriptor: behaviorProjection?.descriptor ?? null,
             behavior: behaviorProjection?.behavior ?? null,
-            authPlugin: resolveAgentLocalAuthPlugin(agentId, behaviorProviderId, mergedProviderProjection),
+            authPlugin: resolveAgentLocalAuthPlugin(agentId, behaviorProviderId, mergedProviderProjection, isBuiltIn),
             cli: mergedProviderProjection?.cli ?? null,
             cliAuthBackgroundCheckSafe: resolveCliAuthBackgroundCheckSafe(agentId, mergedProviderProjection),
             connectedAccounts: mergedProviderProjection?.connectedAccounts ?? [],
@@ -398,11 +418,17 @@ export function resolveAgentCatalogProjection(agentId: string, params: Readonly<
     const behaviorProviderId = resolveBehaviorProviderId(normalizedProviderId, mergedProviderProjection, settingsBackendProjection);
     const behaviorProjection = resolveBundledAgentUiBehaviorProjection(behaviorProviderId);
     const iconAgentId = resolveProviderIconAgentId(mergedProviderProjection, settingsBackendProjection, behaviorProviderId);
-    const backendTargetKey = resolveProviderTargetKeyFromSettingsBackend(normalizedProviderId, isBuiltIn, settingsBackendProjection);
+    const identity = mergedProviderProjection?.identity ?? null;
+    const backendTargetKey = resolveProviderTargetKeyFromSettingsBackend(
+        normalizedProviderId,
+        isBuiltIn,
+        settingsBackendProjection,
+        identity,
+    );
     return {
         agentId: normalizedProviderId,
         qualifiedId: mergedProviderProjection?.qualifiedId ?? normalizedProviderId,
-        identity: mergedProviderProjection?.identity ?? null,
+        identity,
         installedPackage: mergedProviderProjection?.installedPackage ?? null,
         projectionGeneration: mergedProviderProjection?.projectionGeneration ?? null,
         catalogAgentId: behaviorProviderId,
@@ -420,7 +446,7 @@ export function resolveAgentCatalogProjection(agentId: string, params: Readonly<
         isBuiltIn,
         descriptor: behaviorProjection?.descriptor ?? null,
         behavior: behaviorProjection?.behavior ?? null,
-        authPlugin: resolveAgentLocalAuthPlugin(normalizedProviderId, behaviorProviderId, mergedProviderProjection),
+        authPlugin: resolveAgentLocalAuthPlugin(normalizedProviderId, behaviorProviderId, mergedProviderProjection, isBuiltIn),
         cli: mergedProviderProjection?.cli ?? null,
         cliAuthBackgroundCheckSafe: resolveCliAuthBackgroundCheckSafe(normalizedProviderId, mergedProviderProjection),
         connectedAccounts: mergedProviderProjection?.connectedAccounts ?? [],

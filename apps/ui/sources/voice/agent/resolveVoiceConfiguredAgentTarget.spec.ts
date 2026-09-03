@@ -150,7 +150,10 @@ describe('resolveVoiceConfiguredAgentTarget', () => {
   });
 
   it('retains the maximum valid external identity instead of narrowing it to a backend-sized id', async () => {
-    const pluginId = `p${'l'.repeat(255)}`;
+    // Exactly MAX_PLUGIN_IDENTIFIER_BYTES on both halves. A canonical Plugin id
+    // is a dotted namespace, so the maximum *valid* id must carry a dot; a
+    // dotless 256-byte string is not an identity this corridor can ever see.
+    const pluginId = `p${'l'.repeat(253)}.x`;
     const localId = `a${'g'.repeat(255)}`;
     const identity = { pluginId, localId } as const;
     const agentId = 'max-identity-agent';
