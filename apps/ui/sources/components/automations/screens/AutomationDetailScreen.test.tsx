@@ -1963,6 +1963,53 @@ describe('AutomationDetailScreen', () => {
         });
     });
 
+    it('explains the temporary action lock during an authoritative refresh while navigation stays available', async () => {
+        automationRunsState.list = [{
+            id: 'cached-run', automationId: 'a1', revision: 1,
+            triggerId: null, triggerRetired: false, state: 'succeeded',
+            cause: { kind: 'manual', invokedAt: 10 }, dueAt: 10,
+            claimedAt: null, startedAt: null, finishedAt: 11,
+            claimedByMachineId: null, leaseExpiresAt: null, attempt: 1,
+            errorCode: null, producedSessionId: null, executionDispatchState: null,
+            executionAttempt: 0, replyHandoffState: 'none', replyHandoffAttempt: 0,
+            replyHandoffDueAt: null, createdAt: 10, updatedAt: 11,
+        }];
+        const detailRefresh = createDeferred();
+        syncSpies.refreshAutomationDefinitionDetail.mockImplementationOnce(() => detailRefresh.promise);
+        const { AutomationDetailScreen } = await import('./AutomationDetailScreen');
+
+        const screen = await renderScreen(React.createElement(AutomationDetailScreen));
+        await act(async () => {
+            await Promise.resolve();
+        });
+
+        // The actions are locked while the authoritative read is in flight.
+        // Silence would read as a broken screen, so the lock states its own
+        // reason politely — it is expected progress, not an error.
+        expect(findTestInstanceByTypeContainingText(screen, 'Pressable', 'Run now')?.props.disabled).toBe(true);
+        const refreshing = screen.findByProps({ testID: 'automation-detail-mutations-refreshing' });
+        expect(refreshing.props.accessibilityLiveRegion).toBe('polite');
+        expect(refreshing.props.accessibilityRole).not.toBe('alert');
+        expect(refreshing.props.title).toBe('automations.detail.mutationsRefreshingTitle');
+        expect(refreshing.props.subtitle).toBe('automations.detail.mutationsRefreshingSubtitle');
+        // The failure alert is a different fact and must not appear here.
+        expect(screen.findAllByProps({ testID: 'automation-detail-stale-refresh-error' })).toHaveLength(0);
+        // Reading stays possible throughout: cached history remains rendered
+        // and its rows keep their open action.
+        const cachedRunRow = findTestInstanceByTypeContainingText(screen, 'Pressable', 'Succeeded');
+        expect(cachedRunRow).toBeDefined();
+        expect(cachedRunRow?.props.disabled).not.toBe(true);
+
+        await act(async () => {
+            detailRefresh.resolve();
+            await detailRefresh.promise;
+            await Promise.resolve();
+        });
+
+        expect(findTestInstanceByTypeContainingText(screen, 'Pressable', 'Run now')?.props.disabled).toBe(false);
+        expect(screen.findAllByProps({ testID: 'automation-detail-mutations-refreshing' })).toHaveLength(0);
+    });
+
     it('shows an announced inline retry when Run history fails instead of claiming the history is empty', async () => {
         syncSpies.fetchAutomationRuns.mockRejectedValueOnce(new Error('history unavailable'));
         const { AutomationDetailScreen } = await import('./AutomationDetailScreen');

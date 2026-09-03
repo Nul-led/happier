@@ -1145,6 +1145,24 @@ export function AutomationDetailScreen() {
                 ))}
 
                 <ItemGroup title={t('automations.detail.actionsGroupTitle')}>
+                    {/*
+                      * The lock below is expected progress, not a failure, so
+                      * it is announced politely and only while the
+                      * authoritative read is actually in flight. The failure
+                      * case has its own assertive alert above.
+                      */}
+                    {!mutationsEnabled && !refreshFailed ? (
+                        <Item
+                            testID="automation-detail-mutations-refreshing"
+                            title={t('automations.detail.mutationsRefreshingTitle')}
+                            subtitle={t('automations.detail.mutationsRefreshingSubtitle')}
+                            subtitleLines={0}
+                            mode="info"
+                            loading
+                            showChevron={false}
+                            accessibilityLiveRegion="polite"
+                        />
+                    ) : null}
                     <Item
                         testID="automation-detail-run-now"
                         title={t('automations.detail.runNowTitle')}

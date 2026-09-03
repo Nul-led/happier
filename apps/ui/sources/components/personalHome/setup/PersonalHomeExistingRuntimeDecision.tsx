@@ -26,11 +26,11 @@ export const PersonalHomeExistingRuntimeDecision = React.memo(function PersonalH
         <View testID="personal-home-existing-runtime-decision" style={styles.root}>
             <Text style={styles.body}>{t('personalHome.bootstrap.existingRuntimeBody')}</Text>
             <View style={styles.actions}>
-                <Pressable ref={props.primaryActionRef} testID="personal-home-use-existing" accessibilityRole="button" accessibilityLabel={t('personalHome.bootstrap.useExisting')} onPress={props.onUseExisting} style={[styles.button, { backgroundColor: theme.colors.button.primary.background, borderColor: theme.colors.button.primary.background }]}>
+                <Pressable ref={props.primaryActionRef} testID="personal-home-use-existing" accessibilityRole="button" accessibilityLabel={t('personalHome.bootstrap.useExisting')} accessibilityHint={t('personalHome.bootstrap.useExistingDetail')} onPress={props.onUseExisting} style={[styles.button, { backgroundColor: theme.colors.button.primary.background, borderColor: theme.colors.button.primary.background }]}>
                     <Text style={[styles.title, { color: theme.colors.button.primary.tint }]}>{t('personalHome.bootstrap.useExisting')}</Text>
                     <Text style={[styles.subtitle, { color: theme.colors.button.primary.tint }]}>{t('personalHome.bootstrap.useExistingDetail')}</Text>
                 </Pressable>
-                <Pressable testID="personal-home-use-another" accessibilityRole="button" accessibilityLabel={t('personalHome.bootstrap.useAnother')} onPress={props.onUseAnotherHome} style={styles.button}>
+                <Pressable testID="personal-home-use-another" accessibilityRole="button" accessibilityLabel={t('personalHome.bootstrap.useAnother')} accessibilityHint={t('personalHome.bootstrap.useAnotherDetail')} onPress={props.onUseAnotherHome} style={styles.button}>
                     <Text style={styles.title}>{t('personalHome.bootstrap.useAnother')}</Text>
                     <Text style={styles.subtitle}>{t('personalHome.bootstrap.useAnotherDetail')}</Text>
                 </Pressable>

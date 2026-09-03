@@ -112,12 +112,14 @@ export function useMemorySearchProvider(target?: Readonly<{ serverId?: string | 
     // arbitrary first machine and never an automatic all-machine fanout.
     const daemonTargetSelection = useDaemonMemorySearchTargetSelection();
     const daemonTarget = daemonMemorySearchEnabled
-        ? resolveDaemonMemorySearchTarget(
-            daemonTargetSelection,
-            requestedServerId && target?.machineId
-                ? { serverId: requestedServerId, machineId: target.machineId }
-                : null,
-        )
+        ? requestedServerId
+            ? target?.machineId
+                ? resolveDaemonMemorySearchTarget(
+                    daemonTargetSelection,
+                    { serverId: requestedServerId, machineId: target.machineId },
+                )
+                : null
+            : resolveDaemonMemorySearchTarget(daemonTargetSelection)
         : null;
     const daemonServerId = daemonTarget?.serverId ?? null;
     const daemonMachineId = daemonTarget?.machineId ?? null;

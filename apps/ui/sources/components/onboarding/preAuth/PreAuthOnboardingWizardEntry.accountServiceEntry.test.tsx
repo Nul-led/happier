@@ -407,9 +407,38 @@ describe('PreAuthOnboardingWizardEntry — Account Service welcome sign-in', () 
         await renderEntry();
 
         const entry = capturedAccountServiceEntry();
-        expect(entry?.status).toBe('unavailable');
+        expect(entry?.status).toBe('unsupported');
         expect(entry?.discovery).toBeNull();
         expect(startOAuthMock).not.toHaveBeenCalled();
+    });
+
+    it('changes the selected sign-in service only after the entered endpoint proves Account Service support', async () => {
+        await renderEntry();
+        modalPromptMock.mockResolvedValueOnce(OTHER_SERVICE_URL);
+        discoverAuthenticationMethodsMock.mockResolvedValueOnce({
+            ...supportedDiscovery(),
+            endpointUrl: OTHER_SERVICE_URL,
+            canonicalServerUrl: OTHER_SERVICE_URL,
+            serverIdentityId: OTHER_SERVICE_IDENTITY,
+        });
+
+        const choose = wizardControllerMock.lastProps
+            ?.onChooseAccountService as () => Promise<void>;
+        expect(typeof choose).toBe('function');
+        await act(async () => {
+            await choose();
+        });
+
+        expect(discoverAuthenticationMethodsMock).toHaveBeenLastCalledWith({
+            endpointUrl: OTHER_SERVICE_URL,
+            expectedServerIdentityId: null,
+        });
+        const { getAccountServiceEndpointSnapshot } = await import('@/sync/domains/server/serverProfiles');
+        expect(getAccountServiceEndpointSnapshot()).toMatchObject({
+            url: OTHER_SERVICE_URL,
+            serverIdentityId: OTHER_SERVICE_IDENTITY,
+            source: 'user',
+        });
     });
 
     it('presents and executes key sign-in for a key-only selected service without reading the active Home', async () => {

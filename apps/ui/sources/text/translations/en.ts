@@ -1301,6 +1301,8 @@ export const en = {
             machineAssignmentsTitle: 'Machine assignments',
             machineAssignmentsFooter: 'Enable at least one machine for this automation to run.',
             refreshFailed: 'Failed to refresh automation.',
+            mutationsRefreshingTitle: 'Checking for the latest version',
+            mutationsRefreshingSubtitle: 'Actions are unavailable for a moment so a change is never made against an outdated automation. Run history stays open.',
             runFailed: 'Failed to run automation.',
             deleteFailed: 'Failed to delete automation.',
             assignmentsUpdateFailed: 'Failed to update machine assignments.',
@@ -12546,6 +12548,14 @@ settingsSession: {
 
         welcomeSecondaryButton: 'Login — I already use Happier',
         continueWithKey: 'Use a key',
+        chooseSignInService: 'Choose sign-in service',
+        signInServiceUrlPrompt: 'Advanced: enter the address of the service you use to sign in and find your Homes.',
+        signInServiceInvalidAddress: 'Enter a valid http or https address.',
+        signInServiceUnavailableTitle: 'Can’t reach your sign-in service',
+        signInServiceUnavailableBody: ({ serverUrl }: { serverUrl: string }) =>
+            `We can’t connect to ${serverUrl}. Retry or choose another sign-in service.`,
+        signInServiceUnsupportedTitle: 'Sign-in service not supported',
+        signInServiceUnsupportedBody: 'This address is a Home, or it does not offer account sign-in. Choose another sign-in service.',
         useDifferentHome: 'Use a different Home',
         welcomeSecondarySubtitle: 'Scan a QR code, or enter your secret key',
 

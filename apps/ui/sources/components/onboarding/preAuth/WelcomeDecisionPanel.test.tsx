@@ -139,7 +139,7 @@ describe('WelcomeDecisionPanel', () => {
         expect(primaryStyle.paddingVertical).toBe(10);
         expect(textBlockStyle.gap).toBe(0);
         expect(screen.findByTestId('welcome-primary-start')?.props.accessibilityHint)
-            .toBe("Create a new account with a new recovery key");
+            .toBe('One tap. No form. Your key lives here.');
 
         await screen.pressByTestIdAsync('welcome-primary-start');
         await screen.pressByTestIdAsync('welcome-scan-existing-home');

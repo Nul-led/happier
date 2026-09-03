@@ -60,6 +60,7 @@ export type WelcomeDecisionPanelProps = Readonly<{
     onContinueWithAccountServiceProvider?: (providerId: string) => Promise<void> | void;
     /** Key sign-in on the selected sign-in service. Never touches the focused Home. */
     onContinueWithAccountServiceKey?: () => Promise<void> | void;
+    onChooseAccountService?: () => Promise<void> | void;
     onCreateAccount: () => Promise<void> | void;
     onCreateAccountViaProvider: (providerId: string) => Promise<void> | void;
     onLoginWithKeylessProvider: (providerId: string) => Promise<void> | void;
@@ -213,6 +214,7 @@ function DecisionButton(props: DecisionButtonProps) {
                 testID={props.testID}
                 accessibilityRole="button"
                 accessibilityLabel={props.title}
+                accessibilityHint={props.subtitle}
                 onPressIn={() => setIsPressed(true)}
                 onPressOut={() => setIsPressed(false)}
                 onPress={() => {
@@ -230,6 +232,7 @@ function DecisionButton(props: DecisionButtonProps) {
             testID={props.testID}
             accessibilityRole="button"
             accessibilityLabel={props.title}
+            accessibilityHint={props.subtitle}
             onHoverIn={() => setIsHovered(true)}
             onHoverOut={() => setIsHovered(false)}
             onPressIn={() => setIsPressed(true)}
@@ -282,6 +285,7 @@ export const WelcomeDecisionPanel = React.memo(function WelcomeDecisionPanel(pro
         && !!continueWithAccountServiceKey
         && (accountServiceEntry.discovery?.keyLoginAvailable ?? false);
     const accountServiceSignInAvailable = accountServiceProviderIds.length > 0 || accountServiceKeyLoginAvailable;
+    const accountServiceModeActive = accountServiceEntry !== undefined;
     const renderHomeEntryActions = (scanPrimary = false) => (
         <>
             <DecisionButton
@@ -327,7 +331,53 @@ export const WelcomeDecisionPanel = React.memo(function WelcomeDecisionPanel(pro
             );
         }
 
-        if (options.serverAvailability === 'loading' || accountServiceEntry?.status === 'loading') {
+        if (accountServiceModeActive && accountServiceEntry.status !== 'ready') {
+            const unsupported = accountServiceEntry.status === 'unsupported';
+            return (
+                <View
+                    testID={accountServiceEntry.status === 'loading'
+                        ? 'welcome-auth-loading'
+                        : 'welcome-account-service-recovery'}
+                    style={styles.statusBlock}
+                >
+                    {accountServiceEntry.status === 'loading' ? (
+                        <ActivitySpinner color={theme.colors.text.primary} />
+                    ) : (
+                        <>
+                            <Text accessibilityRole="header" style={styles.statusTitle}>
+                                {unsupported
+                                    ? t('welcome.signInServiceUnsupportedTitle')
+                                    : t('welcome.signInServiceUnavailableTitle')}
+                            </Text>
+                            <Text style={styles.statusText}>
+                                {unsupported
+                                    ? t('welcome.signInServiceUnsupportedBody')
+                                    : t('welcome.signInServiceUnavailableBody', { serverUrl: accountServiceEntry.endpoint.url })}
+                            </Text>
+                        </>
+                    )}
+                    <View style={styles.statusActions}>
+                        {accountServiceEntry.status !== 'loading' ? (
+                            <DecisionButton
+                                testID="welcome-account-service-retry"
+                                title={t('common.retry')}
+                                onPress={accountServiceEntry.retry}
+                            />
+                        ) : null}
+                        {props.onChooseAccountService ? (
+                            <DecisionButton
+                                testID="welcome-account-service-choose"
+                                title={t('welcome.chooseSignInService')}
+                                onPress={props.onChooseAccountService}
+                            />
+                        ) : null}
+                        {renderHomeEntryActions()}
+                    </View>
+                </View>
+            );
+        }
+
+        if (options.serverAvailability === 'loading') {
             return (
                 <View testID="welcome-auth-loading" style={styles.statusBlock}>
                     <ActivitySpinner color={theme.colors.text.primary} />
@@ -493,7 +543,7 @@ export const WelcomeDecisionPanel = React.memo(function WelcomeDecisionPanel(pro
                     {isReturningUser ? returningGreeting.subtitle : t('welcome.welcomeQuestionSubtitle')}
                 </Text>
             </View>
-            {!accountServiceSignInAvailable && options.showAuthActions && primaryAction === null ? (
+            {!accountServiceModeActive && !accountServiceSignInAvailable && options.showAuthActions && primaryAction === null ? (
                 <Text testID="welcome-signup-disabled" style={[styles.statusText, styles.signupDisabledNotice]}>
                     {t('errors.signupDisabled')}
                 </Text>

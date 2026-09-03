@@ -300,8 +300,11 @@ export function ExactTurnAutomationDestinationScreen(props: Readonly<{
             <SurfaceStateCard
                 testID="exact-turn-automation-refresh-failed"
                 kind="warning"
-                title={t('common.error')}
-                reason={t('automations.exactTurn.unavailable')}
+                // A failed read is not "there is no active parent turn". The
+                // alert names the refresh that failed so Retry reads as the
+                // recovery it is.
+                title={t('automations.exactTurn.refreshFailedTitle')}
+                reason={t('automations.exactTurn.refreshFailedBody')}
                 action={{
                     label: t('common.retry'),
                     onPress: () => {

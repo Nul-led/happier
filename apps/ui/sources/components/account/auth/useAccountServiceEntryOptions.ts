@@ -18,9 +18,11 @@ export type AccountServiceEntryOptions = Readonly<{
      * a stable-identity mismatch, and a malformed advertisement. Callers keep their existing
      * entry path in that case rather than offering a sign-in the service cannot complete.
      */
-    status: 'loading' | 'ready' | 'unavailable';
+    status: 'loading' | 'ready' | 'unavailable' | 'unsupported';
     /** The service's own advertised methods. Non-null only while `status` is `ready`. */
     discovery: AccountDirectoryAuthMethodDiscovery | null;
+    /** Re-runs discovery against this exact selected endpoint. */
+    retry: () => void;
 }>;
 
 /**
@@ -41,9 +43,10 @@ export function useAccountServiceEntryOptions(): AccountServiceEntryOptions {
     const endpointUrl = endpoint.url;
     const expectedServerIdentityId = endpoint.serverIdentityId ?? null;
     const [resolved, setResolved] = React.useState<Readonly<{
-        status: 'loading' | 'ready' | 'unavailable';
+        status: 'loading' | 'ready' | 'unavailable' | 'unsupported';
         discovery: AccountDirectoryAuthMethodDiscovery | null;
     }>>({ status: 'loading', discovery: null });
+    const [retryGeneration, setRetryGeneration] = React.useState(0);
 
     React.useEffect(() => {
         let cancelled = false;
@@ -57,7 +60,9 @@ export function useAccountServiceEntryOptions(): AccountServiceEntryOptions {
                 if (cancelled) return;
                 setResolved(discovery.kind === 'supported_account_service'
                     ? { status: 'ready', discovery }
-                    : { status: 'unavailable', discovery: null });
+                    : discovery.kind === 'not_account_service'
+                        ? { status: 'unsupported', discovery: null }
+                        : { status: 'unavailable', discovery: null });
             } catch {
                 if (!cancelled) setResolved({ status: 'unavailable', discovery: null });
             }
@@ -65,11 +70,14 @@ export function useAccountServiceEntryOptions(): AccountServiceEntryOptions {
         return () => {
             cancelled = true;
         };
-    }, [endpointUrl, expectedServerIdentityId]);
+    }, [endpointUrl, expectedServerIdentityId, retryGeneration]);
+
+    const retry = React.useCallback(() => setRetryGeneration((generation) => generation + 1), []);
 
     return React.useMemo(() => ({
         endpoint,
         status: resolved.status,
         discovery: resolved.discovery,
-    }), [endpoint, resolved]);
+        retry,
+    }), [endpoint, resolved, retry]);
 }
