@@ -22,7 +22,7 @@ import { useHydrateSessionForRoute } from '@/hooks/session/useHydrateSessionForR
 import { HappyError } from '@/utils/errors/errors';
 import { resolveProfileById } from '@/sync/domains/profiles/profileUtils';
 import { getProfileDisplayName } from '@/components/profiles/profileDisplay';
-import { DEFAULT_AGENT_ID, getAgentCore } from '@/agents/catalog/catalog';
+import { getAgentCore, isBundledAgentId } from '@/agents/catalog/catalog';
 import { resolveAgentIdFromSessionMetadata } from '@happier-dev/agents';
 import { formatAgentLikeIdForDisplay } from '@/agents/catalog/formatAgentLikeIdForDisplay';
 import { getAgentVendorResumeId } from '@/agents/runtime/resumeCapabilities';
@@ -236,8 +236,10 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
     // Check if CLI version is outdated
     const isCliOutdated = metadata?.version && !isVersionSupported(metadata.version, MINIMUM_CLI_VERSION);
     const canManageSharing = !session.accessLevel || session.accessLevel === 'admin';
-    const agentId = readSessionPresentationAgentId(session) ?? DEFAULT_AGENT_ID;
-    const core = getAgentCore(agentId);
+    // A session whose Agent the presentation reader cannot name has no brand to
+    // show. Substituting the product default would present it as Claude's.
+    const agentId = readSessionPresentationAgentId(session);
+    const core = isBundledAgentId(agentId) ? getAgentCore(agentId) : null;
     const daemonProjectionMachineId = React.useMemo(() => {
         const raw = typeof (metadata as any)?.machineId === 'string' ? (metadata as any).machineId : '';
         const trimmed = String(raw ?? '').trim();

@@ -9,6 +9,7 @@ import {
     type SelectionListKeyboardNavParams,
     type SelectionListKeyboardNavApi,
 } from '../useSelectionListKeyboardNav';
+import type { SelectionListVirtualizedOptionSource } from '../_types';
 
 /**
  * The production composition: the surface owns roving focus (so it can read the
@@ -51,6 +52,31 @@ function makeParams(overrides: Partial<Params> = {}): Params {
         onClearInput: vi.fn(),
         quickActionShortcuts: [],
         ...overrides,
+    };
+}
+
+function makeVirtualizedSource(
+    ids: ReadonlyArray<string>,
+    disabled: ReadonlySet<number> = new Set(),
+): SelectionListVirtualizedOptionSource {
+    const focusable = (index: number) => index >= 0 && index < ids.length && !disabled.has(index);
+    return {
+        items: ids.map((_, optionIndex) => ({ kind: 'option' as const, optionIndex, positionInSet: optionIndex + 1 })),
+        optionCount: ids.length,
+        stateKey: ids.join('|'),
+        getOption: (index) => ({ id: ids[index] ?? '', label: ids[index] ?? '' }),
+        getOptionId: (index) => ids[index] ?? '',
+        findOptionIndexById: (id) => ids.indexOf(id),
+        getFirstFocusableOptionIndex: () => ids.findIndex((_, index) => focusable(index)),
+        getNextFocusableOptionIndex: (current, direction) => {
+            for (let distance = 1; distance <= ids.length; distance += 1) {
+                const index = (current + direction * distance + ids.length) % ids.length;
+                if (focusable(index)) return index;
+            }
+            return -1;
+        },
+        isFocusableOptionIndex: focusable,
+        getHeader: () => ({ id: 'unused' }),
     };
 }
 
@@ -117,6 +143,50 @@ describe('useSelectionListKeyboardNav (base)', () => {
         const harness = await renderHook(() => useSelectionListKeyboardNav(makeParams()));
         await act(async () => { harness.getCurrent().handleKey(makeKeyEvent({ key: 'ArrowUp' }).event); });
         expect(harness.getCurrent().focusedIndex).toBe(2);
+    });
+
+    it.each([
+        { key: 'Home', expectedIndex: 0 },
+        { key: 'End', expectedIndex: 2 },
+    ])('$key moves to the $expectedIndex boundary and consumes the event', async ({ key, expectedIndex }) => {
+        const harness = await renderHook(() => useSelectionListKeyboardNav(makeParams()));
+        await act(async () => { harness.getCurrent().setFocusedIndex(1); });
+        const { event, preventDefault } = makeKeyEvent({ key });
+
+        let consumed = false;
+        await act(async () => { consumed = harness.getCurrent().handleKey(event); });
+
+        expect(consumed).toBe(true);
+        expect(preventDefault).toHaveBeenCalledOnce();
+        expect(harness.getCurrent().focusedIndex).toBe(expectedIndex);
+    });
+
+    it.each(['Home', 'End'])('%s preserves IME composition and native text handling', async (key) => {
+        const harness = await renderHook(() => useSelectionListKeyboardNav(makeParams({ isComposing: true })));
+        const { event, preventDefault } = makeKeyEvent({ key });
+
+        let consumed = true;
+        await act(async () => { consumed = harness.getCurrent().handleKey(event); });
+
+        expect(consumed).toBe(false);
+        expect(preventDefault).not.toHaveBeenCalled();
+        expect(harness.getCurrent().focusedIndex).toBe(0);
+    });
+
+    it('Home and End use the direct virtualized source boundaries and skip disabled rows', async () => {
+        const source = makeVirtualizedSource(
+            ['provider:disabled-first', 'provider:one', 'provider:two', 'provider:disabled-last'],
+            new Set([0, 3]),
+        );
+        const harness = await renderHook(() => useSelectionListKeyboardNav(makeParams({
+            flatVisibleOptionIds: [],
+            virtualizedOptionSource: source,
+        })));
+
+        await act(async () => { harness.getCurrent().handleKey(makeKeyEvent({ key: 'End' }).event); });
+        expect(harness.getCurrent().focusedOptionId).toBe('provider:two');
+        await act(async () => { harness.getCurrent().handleKey(makeKeyEvent({ key: 'Home' }).event); });
+        expect(harness.getCurrent().focusedOptionId).toBe('provider:one');
     });
 
     it('Enter activates the focused option id', async () => {
@@ -222,5 +292,48 @@ describe('useSelectionListKeyboardNav (base)', () => {
         await act(async () => { harness.getCurrent().setFocusedIndex(2); });
         await harness.rerender(makeParams({ flatVisibleOptionIds: ['a'] }));
         expect(harness.getCurrent().focusedIndex).toBe(0);
+    });
+
+    it('preserves the fully namespaced focused option across insertion and reordering', async () => {
+        const harness = await renderHook<ReturnType<typeof useSelectionListKeyboardNav>, Params>(
+            (props) => useSelectionListKeyboardNav(props),
+            {
+                initialProps: makeParams({
+                    inputValue: 'query',
+                    flatVisibleOptionIds: ['commands:open', 'messages:target', 'files:readme'],
+                }),
+            },
+        );
+        await act(async () => { harness.getCurrent().setFocusedIndex(1); });
+        expect(harness.getCurrent().focusedOptionId).toBe('messages:target');
+
+        await harness.rerender(makeParams({
+            inputValue: 'query',
+            flatVisibleOptionIds: ['files:new', 'files:readme', 'messages:target', 'commands:open'],
+        }));
+
+        expect(harness.getCurrent().focusedOptionId).toBe('messages:target');
+        expect(harness.getCurrent().focusedIndex).toBe(2);
+    });
+
+    it('chooses the nearest surviving position when the focused option is removed', async () => {
+        const harness = await renderHook<ReturnType<typeof useSelectionListKeyboardNav>, Params>(
+            (props) => useSelectionListKeyboardNav(props),
+            {
+                initialProps: makeParams({
+                    inputValue: 'query',
+                    flatVisibleOptionIds: ['commands:first', 'messages:removed', 'files:last'],
+                }),
+            },
+        );
+        await act(async () => { harness.getCurrent().setFocusedIndex(1); });
+
+        await harness.rerender(makeParams({
+            inputValue: 'query',
+            flatVisibleOptionIds: ['commands:first', 'files:last'],
+        }));
+
+        expect(harness.getCurrent().focusedOptionId).toBe('files:last');
+        expect(harness.getCurrent().focusedIndex).toBe(1);
     });
 });

@@ -1,4 +1,5 @@
 import type * as React from 'react';
+import type { SelectionListDynamicSectionCache } from './selectionListDynamicSectionCache';
 
 /**
  * Type definitions for the SelectionList primitive.
@@ -256,6 +257,8 @@ export type SelectionListSection = Readonly<{
 export type SelectionListDynamicSectionResolveResult = Readonly<{
     options: ReadonlyArray<SelectionListOption>;
     emptyHint?: string;
+    /** Optional non-activatable status shown after a successful nonempty result set. */
+    resultHint?: string;
     /**
      * RUX-1 Issue 6: when set, the resolver successfully ran but the target
      * does not exist (e.g. ENOENT for a typo'd path). Distinct from `throw`
@@ -321,6 +324,26 @@ export type SelectionListDynamicSection = Readonly<{
      * `false` preserves the legacy three-tier behavior.
      */
     disableSubtitleRanking?: boolean;
+    /**
+     * Who decides which resolved rows are shown for the current query.
+     *
+     * - `'host'` (default): canonical SelectionList matching/ranking narrows
+     *   the resolver's rows, exactly as every incumbent consumer expects.
+     * - `'provider'`: the resolver's canonical executor already filtered and
+     *   ranked the rows (full-text/semantic transcript search, SCM queries,
+     *   plugin providers), so its order and membership are preserved verbatim.
+     *   Re-running host matching there drops legitimately relevant rows whose
+     *   displayed label/subtitle does not literally contain the query.
+     */
+    resultFiltering?: 'host' | 'provider';
+    /**
+     * Motion applied when a successful resolver seed replaces the section's rows.
+     *
+     * Directory/path pickers retain the default `'drill'` spatial transition.
+     * High-frequency query providers use `'none'` so every keystroke remains a
+     * local result update rather than presenting as navigation into a new place.
+     */
+    resultTransition?: 'drill' | 'none';
     /**
      * RUX-11.2: when `true`, the render-plan emits the loading entry with
      * skeleton rows on the FIRST fetch (no prior data cached) so users see
@@ -576,6 +599,23 @@ export type SelectionListOptionPresentation = 'row' | 'card';
 export type SelectionListProps = Readonly<{
     /** Root step. Pushes accumulate above this. */
     rootStep: SelectionListStep;
+    /**
+     * Controlled mirror of the consumer's active step. While defined:
+     *   - a step whose id is mounted is refreshed in place (content rebuild,
+     *     never navigation, never remount, query and focus preserved);
+     *   - `null` pops the list back to the root;
+     *   - an unmounted id is pushed.
+     *
+     * Pushed steps are snapshots, so a route-sized consumer that owns its own
+     * step state republishes the active step here to keep hydration and
+     * pagination flowing into it. Leave undefined for fully uncontrolled lists.
+     */
+    syncActiveStep?: SelectionListStep | null;
+    /**
+     * Called when the mounted step ID changes (mount, push, pop, drain). Not
+     * called for same-id content refreshes, which are not navigation.
+     */
+    onActiveStepChange?: (step: SelectionListStep) => void;
     /** Accessible name for the owned listbox. */
     listAccessibilityLabel?: string;
     /** Currently-selected option id (rendered with selected style). Optional. */
@@ -596,6 +636,22 @@ export type SelectionListProps = Readonly<{
     inputMode?: SelectionListInputMode;
     /** Tokenization adapter; controls how typed input maps to filter / dynamic seed / walk-up. */
     inputBehavior?: SelectionListInputBehavior;
+    /**
+     * Optional cache owner for dynamic results. Universal Search injects an
+     * auth-lifetime cache so private rows and activation closures never enter
+     * the process-wide picker cache; existing pickers retain the default.
+     */
+    dynamicSectionCache?: SelectionListDynamicSectionCache;
+    /**
+     * Where the canonical search/value input sits relative to the results.
+     *
+     * `'top'` (default) is the incumbent composition. `'bottom'` seats the very
+     * same input — one query, one ref, one `aria-controls`/`aria-activedescendant`
+     * relationship, one scroll owner — beneath the results, for keyboard-seated
+     * surfaces where the field must stay directly above the software keyboard.
+     * It never creates a second TextInput or a second query state.
+     */
+    inputPlacement?: 'top' | 'bottom';
     /** Optional element rendered to the left of the input (e.g. folder icon). */
     inputPrefix?: React.ReactNode;
     /**
@@ -627,6 +683,15 @@ export type SelectionListProps = Readonly<{
      * Ignored on native so opening a popover/modal never summons the software keyboard.
      */
     autoFocusInputOnWeb?: boolean;
+    /**
+     * Focus the search/value input on iOS/Android, summoning the software keyboard.
+     *
+     * Deliberately separate from the web opt-in rather than one platform-blind flag: a picker or
+     * popover opening on a phone must NOT raise the keyboard, while a surface the user explicitly
+     * opened to type into — the keyboard-seated universal Search plane — must. Each caller states
+     * the platform intent it actually wants.
+     */
+    autoFocusInputOnNative?: boolean;
     /** Disable internal step transitions for testing. */
     disableTransitions?: boolean;
     /** Stable testID root (default 'selection-list'). */

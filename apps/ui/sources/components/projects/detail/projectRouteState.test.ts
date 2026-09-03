@@ -6,6 +6,7 @@ import {
     PROJECT_ROUTE_ROOT_SENTINEL,
     PROJECT_ROUTE_WORKTREE_ID_QUERY_PARAM,
     buildProjectRouteHref,
+    resolveProjectOpenHref,
     migrateProjectRouteSegmentToMobileSurface,
     readProjectRouteWorktreeSelection,
     resolveProjectRouteSegment,
@@ -103,5 +104,27 @@ describe('projectRouteState', () => {
         expect(resolveProjectRouteSegment(undefined, 'terminal')).toBe('details');
         expect(resolveProjectRouteSegment(undefined, 'git')).toBe('git');
         expect(resolveProjectRouteSegment(undefined, undefined)).toBe('files');
+    });
+
+    it('opens a project through the persisted mobile surface and worktree policy', () => {
+        expect(resolveProjectOpenHref({
+            workspaceRef,
+            deviceType: 'phone',
+            cockpitEnabled: true,
+            rememberedRightTabId: null,
+            persistedMobileSurface: 'git',
+            persistedActiveRootPath: '/Users/test/repo/.worktrees/feature-auth',
+            persistedWorktreeId: 'gitwt_feature',
+        })).toBe('/projects/wr_1/git?worktreeId=gitwt_feature');
+
+        expect(resolveProjectOpenHref({
+            workspaceRef,
+            deviceType: 'phone',
+            cockpitEnabled: false,
+            rememberedRightTabId: null,
+            persistedMobileSurface: 'git',
+            persistedActiveRootPath: '/Users/test/repo/.worktrees/feature-auth',
+            persistedWorktreeId: 'gitwt_feature',
+        })).toBe('/projects/wr_1/git?worktreeId=gitwt_feature');
     });
 });

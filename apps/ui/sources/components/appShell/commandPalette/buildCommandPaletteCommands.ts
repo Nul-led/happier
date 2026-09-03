@@ -215,17 +215,6 @@ export function buildCommandPaletteCommands(
     }
   }
 
-  if (features.memorySearchEnabled) {
-    cmds.push({
-      id: 'memory-search',
-      title: t('commandPalette.commands.memorySearchTitle'),
-      subtitle: t('commandPalette.commands.memorySearchSubtitle'),
-      icon: 'magnifying-glass',
-      category: t('commandPalette.commands.navigationCategory'),
-      action: () => nav.push('/search'),
-    });
-  }
-
   if (features.petsCompanionEnabled === true) {
     const petCategory = t('commandPalette.pets.category');
     const petControls = params.petControls;
@@ -282,6 +271,7 @@ export function buildCommandPaletteCommands(
     const label = readSessionLabel(session);
     cmds.push({
       id: `session-${sessionId}`,
+      kind: 'recentSession',
       title: label.title,
       subtitle: label.subtitle,
       icon: 'clock',

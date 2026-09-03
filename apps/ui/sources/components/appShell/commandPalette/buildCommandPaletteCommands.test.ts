@@ -248,7 +248,7 @@ describe('buildCommandPaletteCommands', () => {
       expect.objectContaining({ id: 'session-voice-history-hidden' }),
     ]));
     expect(commands).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'session-ordinary-recent' }),
+      expect.objectContaining({ id: 'session-ordinary-recent', kind: 'recentSession' }),
     ]));
   });
 
@@ -760,8 +760,7 @@ describe('buildCommandPaletteCommands', () => {
     expect(commandTitles(cmds)).not.toEqual(expect.arrayContaining(['Start review run']));
   });
 
-  it('includes a memory search navigation command when enabled', async () => {
-    const pushes: string[] = [];
+  it('does not include the retired standalone memory-search command', async () => {
     mockedState = { createSessionActionDraft: createSessionActionDraftSpy, settings: {} };
 
     const cmds = buildCommandPaletteCommands({
@@ -770,7 +769,7 @@ describe('buildCommandPaletteCommands', () => {
       activeSessionId: null,
       features: { executionRunsEnabled: false, voiceEnabled: false, memorySearchEnabled: true },
       nav: {
-        push: (path) => pushes.push(path),
+        push: () => {},
         openNewSession: () => {},
         navigateToSession: () => {},
       },
@@ -779,10 +778,7 @@ describe('buildCommandPaletteCommands', () => {
       alert: async () => {},
     });
 
-    const cmd = cmds.find((c) => c.id === 'memory-search');
-    expect(cmd).toBeTruthy();
-    await cmd!.action();
-    expect(pushes).toEqual(['/search']);
+    expect(cmds.some((command) => command.id === 'memory-search')).toBe(false);
   });
 
   it('uses effective registry shortcut labels and omits stale display-only labels', async () => {
@@ -809,27 +805,6 @@ describe('buildCommandPaletteCommands', () => {
     expect(cmds.find((command) => command.id === 'new-session')?.shortcut).toBe('Cmd+P');
     expect(cmds.find((command) => command.id === 'settings')?.shortcut).toBeUndefined();
     expect(cmds.some((command) => command.shortcut === '⌘N' || command.shortcut === '⌘,')).toBe(false);
-  });
-
-  it('omits the memory search navigation command when disabled', async () => {
-    mockedState = { createSessionActionDraft: createSessionActionDraftSpy, settings: {} };
-
-    const cmds = buildCommandPaletteCommands({
-      sessionsById: {},
-      isDev: false,
-      activeSessionId: null,
-      features: { executionRunsEnabled: false, voiceEnabled: false, memorySearchEnabled: false },
-      nav: {
-        push: () => {},
-        openNewSession: () => {},
-        navigateToSession: () => {},
-      },
-      auth: { logout: async () => {} },
-      actions: { execute: async () => ({ ok: true, result: {} }) },
-      alert: async () => {},
-    });
-
-    expect(cmds.some((c) => c.id === 'memory-search')).toBe(false);
   });
 
   it('navigates to the terminal QR scanner from the connect terminal command', async () => {

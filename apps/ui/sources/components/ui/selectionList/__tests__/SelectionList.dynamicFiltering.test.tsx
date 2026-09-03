@@ -87,6 +87,69 @@ describe('RUX-1 Issue 8: dynamic-section transitionKey wrapper', () => {
     });
 });
 
+/**
+ * Universal Search: a resolver whose canonical executor already filtered and
+ * ranked its rows (FTS, semantic, SCM, plugin providers) declares
+ * `resultFiltering: 'provider'`. Host matching must then not re-filter its
+ * rows — a transcript hit is legitimately relevant without its displayed
+ * label or subtitle literally containing the query — and the resolver's own
+ * order must survive.
+ */
+describe('SelectionList dynamic-section resultFiltering policy', () => {
+    it('keeps provider-filtered rows that do not literally match the query, in resolver order', async () => {
+        const { act } = await import('react-test-renderer');
+        const root = dynamicStep({
+            id: 'dyn',
+            title: 'MESSAGES',
+            debounceMs: 0,
+            resultFiltering: 'provider',
+            resolve: async () => ({
+                options: [
+                    { id: 'hit-2', label: 'Refactoring the daemon worker' },
+                    { id: 'hit-1', label: 'Cache eviction notes' },
+                ],
+            }),
+        });
+        const { SelectionList } = await import('../SelectionList');
+        const screen = await renderScreen(
+            <SelectionList {...defaultProps(root)} inputValue="budget" />,
+        );
+        await act(async () => {
+            vi.advanceTimersByTime(1);
+            await Promise.resolve();
+            await Promise.resolve();
+        });
+        expect(screen.findByTestId('sl:root:option:hit-2')).not.toBeNull();
+        expect(screen.findByTestId('sl:root:option:hit-1')).not.toBeNull();
+    });
+
+    it('still applies host matching when the section omits the policy (default host)', async () => {
+        const { act } = await import('react-test-renderer');
+        const root = dynamicStep({
+            id: 'dyn',
+            title: 'MESSAGES',
+            debounceMs: 0,
+            resolve: async () => ({
+                options: [
+                    { id: 'hit-2', label: 'Refactoring the daemon worker' },
+                    { id: 'hit-1', label: 'Cache eviction notes' },
+                ],
+            }),
+        });
+        const { SelectionList } = await import('../SelectionList');
+        const screen = await renderScreen(
+            <SelectionList {...defaultProps(root)} inputValue="budget" />,
+        );
+        await act(async () => {
+            vi.advanceTimersByTime(1);
+            await Promise.resolve();
+            await Promise.resolve();
+        });
+        expect(screen.findByTestId('sl:root:option:hit-2')).toBeNull();
+        expect(screen.findByTestId('sl:root:option:hit-1')).toBeNull();
+    });
+});
+
 describe('SelectionList dynamic-section row filtering (R9 blocker 3)', () => {
     it('narrows dynamic success rows by the input filter (substring on label, case-insensitive)', async () => {
         const { act } = await import('react-test-renderer');

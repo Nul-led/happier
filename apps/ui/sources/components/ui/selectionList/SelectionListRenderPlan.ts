@@ -34,6 +34,8 @@ export type SectionRenderPlan = Readonly<{
     isStale?: boolean;
     /** Loading/error/empty/notFound hint copy, when applicable. */
     hint?: string;
+    /** Non-activatable status rendered after successful result rows. */
+    resultHint?: string;
     /** Loading skeleton row count when dynamicState === 'loading'. */
     skeletonRowCount?: number;
     /**
@@ -232,7 +234,18 @@ export function synthesizeSelectionListRenderPlan(
                 // user sees the cached results immediately on popover
                 // reopen instead of a one-frame empty flash.
                 const cachedStale = state.lastSuccessOptions ?? [];
-                if (cachedStale.length === 0) continue;
+                if (cachedStale.length === 0) {
+                    if (descriptor.showSkeletonsOnFirstLoad !== true) continue;
+                    plan.push({
+                        ...baseEntry,
+                        options: [],
+                        dynamicState: 'loading',
+                        isStale: false,
+                        skeletonRowCount: descriptor.loadingSkeletonRows
+                            ?? SELECTION_LIST_DEFAULT_LOADING_SKELETON_ROWS,
+                    });
+                    continue;
+                }
                 plan.push({
                     ...baseEntry,
                     options: cachedStale,
@@ -273,14 +286,15 @@ export function synthesizeSelectionListRenderPlan(
                 continue;
             }
             case 'error': {
-                const message = state.error?.message;
                 plan.push({
                     ...baseEntry,
                     options: state.options,
                     dynamicState: 'error',
-                    // Only forward the resolver's message when it's non-empty;
-                    // otherwise the body falls back to the i18n-keyed label.
-                    hint: message && message.length > 0 ? message : undefined,
+                    // Resolver errors can contain transport details, paths, or
+                    // credentials. Keep the Error available to diagnostics in
+                    // the dynamic-state owner, but present only the canonical
+                    // localized fallback at this user-visible boundary.
+                    hint: undefined,
                     isStale: state.options.length > 0,
                 });
                 continue;
@@ -298,11 +312,17 @@ export function synthesizeSelectionListRenderPlan(
                     });
                     continue;
                 }
-                const filteredOptions = filterDynamicOptionsByQuery(
-                    state.options,
-                    filterQuery,
-                    descriptor.disableSubtitleRanking === true,
-                );
+                // `resultFiltering: 'provider'` sections were already filtered
+                // and ranked by their canonical executor; host matching would
+                // drop relevant rows (a transcript excerpt need not repeat the
+                // query in its title) and reorder provider relevance.
+                const filteredOptions = descriptor.resultFiltering === 'provider'
+                    ? state.options
+                    : filterDynamicOptionsByQuery(
+                        state.options,
+                        filterQuery,
+                        descriptor.disableSubtitleRanking === true,
+                    );
                 if (filteredOptions.length === 0) {
                     if (state.emptyHint !== undefined && state.emptyHint.length > 0) {
                         plan.push({
@@ -317,11 +337,14 @@ export function synthesizeSelectionListRenderPlan(
                 plan.push({
                     ...baseEntry,
                     options: filteredOptions,
+                    resultHint: state.resultHint,
                     // RUX-1 Issue 8: surface the resolver seed so the body
                     // can animate content swaps when the seed changes
                     // (e.g. drilling into a child directory in the path
                     // picker) instead of snapping the new rows in place.
-                    transitionKey: state.seed,
+                    transitionKey: descriptor.resultTransition === 'none'
+                        ? undefined
+                        : state.seed,
                 });
                 continue;
             }

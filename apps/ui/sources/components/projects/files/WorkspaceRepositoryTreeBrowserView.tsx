@@ -133,7 +133,6 @@ export const WorkspaceRepositoryTreeBrowserView = React.memo((props: WorkspaceRe
     }, []);
 
     React.useEffect(() => {
-        let cancelled = false;
         const q = searchQuery.trim();
         if (showChangedOnly) {
             setSearchResults([]);
@@ -147,6 +146,10 @@ export const WorkspaceRepositoryTreeBrowserView = React.memo((props: WorkspaceRe
         }
 
         setIsSearching(true);
+        // The AbortSignal is what actually cancels the machine RPC; the timeout only debounces
+        // keystrokes. Dropping stale results with a boolean while the remote search kept
+        // running wasted the machine it ran on.
+        const controller = new AbortController();
         const handle = setTimeout(() => {
             void (async () => {
                 try {
@@ -158,18 +161,22 @@ export const WorkspaceRepositoryTreeBrowserView = React.memo((props: WorkspaceRe
                         scope: workspaceScope,
                         query: q,
                         limit: 200,
+                        signal: controller.signal,
                     });
-                    if (cancelled) return;
                     setSearchResults(results);
+                } catch {
+                    // A superseded search rejects with its abort error; the newer query owns
+                    // the results and spinner from here.
                 } finally {
-                    if (cancelled) return;
-                    setIsSearching(false);
+                    if (!controller.signal.aborted) {
+                        setIsSearching(false);
+                    }
                 }
             })();
         }, 120);
 
         return () => {
-            cancelled = true;
+            controller.abort();
             clearTimeout(handle);
         };
     }, [searchQuery, showChangedOnly, treeReloadNonce, workspaceScope]);

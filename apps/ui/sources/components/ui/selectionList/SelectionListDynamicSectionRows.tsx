@@ -185,6 +185,23 @@ export function SelectionListEmptyHintRow(props: Readonly<{
     );
 }
 
+/** Visible result-coverage hint; SelectionList's canonical status region announces it. */
+export function SelectionListResultHintRow(props: Readonly<{
+    hint: string;
+    testID: string | undefined;
+    measureMode: boolean;
+}>): React.ReactElement {
+    const styles = dynamicRowStyles;
+    return (
+        <View
+            testID={props.testID}
+            style={styles.emptyHintRow}
+        >
+            <Text style={styles.emptyHintText}>{props.hint}</Text>
+        </View>
+    );
+}
+
 const sectionWrapStyles = StyleSheet.create(() => ({
     sectionWrap: {
         flexDirection: 'column',
@@ -503,6 +520,13 @@ function renderSelectionListSectionElement(
                     >
                         {virtualizedNode}
                     </VirtualizedTransitionShell>
+                    {sectionPlan.resultHint ? (
+                        <SelectionListResultHintRow
+                            hint={sectionPlan.resultHint}
+                            testID={selectionListTestId(sectionTestId, 'resultHint')}
+                            measureMode={false}
+                        />
+                    ) : null}
                 </View>
             );
         }
@@ -512,6 +536,13 @@ function renderSelectionListSectionElement(
                 style={[wrapperStyle, wrapStyles.virtualizedSectionWrap]}
             >
                 {virtualizedNode}
+                {sectionPlan.resultHint ? (
+                    <SelectionListResultHintRow
+                        hint={sectionPlan.resultHint}
+                        testID={selectionListTestId(sectionTestId, 'resultHint')}
+                        measureMode={false}
+                    />
+                ) : null}
             </View>
         );
     }
@@ -565,6 +596,15 @@ function renderSelectionListSectionElement(
                     rowOffset={ctx.optionRowOffsetBySectionId?.get(sectionPlan.id)}
                 />
             )}
+            {sectionPlan.resultHint ? (
+                <SelectionListResultHintRow
+                    hint={sectionPlan.resultHint}
+                    testID={measureMode
+                        ? undefined
+                        : selectionListTestId(sectionTestId, 'resultHint')}
+                    measureMode={measureMode}
+                />
+            ) : null}
         </SelectionListScrollOffsetFrame>
     );
 }

@@ -1,4 +1,5 @@
 import React from 'react';
+import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Pressable } from 'react-native';
 
@@ -10,6 +11,7 @@ const navigateToSessionSpy = vi.fn();
 const flatListMock = createCapturingFlatListMock({ renderItems: true });
 const fetchArchivedSessionsSpy = vi.hoisted(() => vi.fn(async () => {}));
 const fetchMoreArchivedSessionsSpy = vi.hoisted(() => vi.fn(async () => {}));
+const fetchAllArchivedSessionsSpy = vi.hoisted(() => vi.fn(async () => {}));
 const fetchMoreSessionsSpy = vi.hoisted(() => vi.fn(async () => {}));
 const sessionUnarchiveWithServerScopeSpy = vi.hoisted(() => vi.fn(async () => ({ success: true, archivedAt: null })));
 const modalAlertSpy = vi.hoisted(() => vi.fn());
@@ -89,6 +91,7 @@ vi.mock('@/sync/sync', () => ({
     sync: {
         fetchArchivedSessions: fetchArchivedSessionsSpy,
         fetchMoreArchivedSessions: fetchMoreArchivedSessionsSpy,
+        fetchAllArchivedSessions: fetchAllArchivedSessionsSpy,
         fetchMoreSessions: fetchMoreSessionsSpy,
     },
 }));
@@ -102,6 +105,7 @@ describe('session history navigation', () => {
         navigateToSessionSpy.mockReset();
         fetchArchivedSessionsSpy.mockReset();
         fetchMoreArchivedSessionsSpy.mockReset();
+        fetchAllArchivedSessionsSpy.mockReset();
         fetchMoreSessionsSpy.mockReset();
         sessionUnarchiveWithServerScopeSpy.mockReset();
         sessionUnarchiveWithServerScopeSpy.mockResolvedValue({ success: true, archivedAt: null });
@@ -192,7 +196,7 @@ describe('session history navigation', () => {
         const ArchivedSessionsScreen = (await import('@/app/(app)/session/archived')).default;
         const screen = await renderScreen(React.createElement(ArchivedSessionsScreen));
 
-        const row = screen.tree.findAllByType(Pressable)[0];
+        const row = screen.findByTestId('archived-session-row:server-archived:session-archived-1');
         expect(row).toBeTruthy();
 
         await pressTestInstanceAsync(row!, 'archived session row');
@@ -205,6 +209,21 @@ describe('session history navigation', () => {
         await renderScreen(React.createElement(ArchivedSessionsScreen));
 
         expect(fetchArchivedSessionsSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('completes the archived paging inventory once when metadata search begins', async () => {
+        const ArchivedSessionsScreen = (await import('@/app/(app)/session/archived')).default;
+        const screen = await renderScreen(React.createElement(ArchivedSessionsScreen));
+
+        await pressTestInstanceAsync(
+            screen.findByTestId('session-list-search-trigger')!,
+            'archived search trigger',
+        );
+        await act(async () => {
+            screen.findByTestId('session-list-search-input')?.props.onChangeText?.('needle');
+        });
+
+        expect(fetchAllArchivedSessionsSpy).toHaveBeenCalledTimes(1);
     });
 
     it('loads more archived and hidden inactive pages when the archived route reaches the end', async () => {
@@ -224,9 +243,9 @@ describe('session history navigation', () => {
         const ArchivedSessionsScreen = (await import('@/app/(app)/session/archived')).default;
         const screen = await renderScreen(React.createElement(ArchivedSessionsScreen));
 
-        const unarchiveButton = screen.tree
-            .findAllByType(Pressable)
-            .find((node) => node.props.accessibilityRole === 'button');
+        const unarchiveButton = screen.findByTestId(
+            'archived-session-unarchive:server-archived:session-archived-1',
+        );
         expect(unarchiveButton).toBeTruthy();
 
         await pressTestInstanceAsync(unarchiveButton!, 'archived session unarchive button');

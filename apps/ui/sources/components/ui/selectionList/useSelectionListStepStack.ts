@@ -20,6 +20,13 @@ export type SelectionListStepStackApi = Readonly<{
      * is a different destination and drains the stack. See the reducer for why.
      */
     adoptRootStep: (rootStep: SelectionListStep) => void;
+    /**
+     * Mirror the consumer's controlled active step (see
+     * `SelectionListProps.syncActiveStep`). `null` pops back to the root, a
+     * mounted same-id entry is refreshed in place, and an unmounted id pushes.
+     * See the reducer for the exact fixpoint contract.
+     */
+    syncActiveStep: (step: SelectionListStep | null) => void;
     currentStep: SelectionListStep;
     canPop: boolean;
 }>;
@@ -27,7 +34,8 @@ export type SelectionListStepStackApi = Readonly<{
 type StepStackAction =
     | { type: 'push'; step: SelectionListStep }
     | { type: 'pop' }
-    | { type: 'adoptRoot'; rootStep: SelectionListStep };
+    | { type: 'adoptRoot'; rootStep: SelectionListStep }
+    | { type: 'syncActiveStep'; step: SelectionListStep | null };
 
 function stepStackReducer(
     state: SelectionListStepStackState,
@@ -66,6 +74,34 @@ function stepStackReducer(
             }
             return { stack: [action.rootStep], direction: 'replace' };
         }
+        case 'syncActiveStep': {
+            // Controlled mirror of a route-sized consumer's active step (see
+            // `SelectionListProps.syncActiveStep`). Three facts, each a fixpoint
+            // when nothing changes:
+            //   - `null` means the consumer LEFT the pushed step: pop back to the
+            //     root with a backward direction so the cross-slide matches a pop.
+            //   - a step whose id is already mounted is a CONTENT refresh of that
+            //     entry — same contract as a rebuilt adopted root — so hydration
+            //     and pagination keep flowing into a mounted pushed step without
+            //     navigation, remount, or query/focus loss.
+            //   - an unmounted id is the consumer activating a step directly; push
+            //     it with a forward direction.
+            if (action.step === null) {
+                if (state.stack.length <= 1) return state;
+                return { stack: state.stack.slice(0, 1), direction: 'backward' };
+            }
+            const index = state.stack.findIndex((entry) => entry.id === action.step.id);
+            if (index < 0) {
+                return { stack: [...state.stack, action.step], direction: 'forward' };
+            }
+            if (state.stack[index] === action.step) return state;
+            return {
+                stack: state.stack.map((entry, position) => (
+                    position === index ? action.step : entry
+                )),
+                direction: state.direction,
+            };
+        }
     }
 }
 
@@ -96,12 +132,15 @@ export function useSelectionListStepStack(rootStep: SelectionListStep): Selectio
     const adoptRootStep = React.useCallback((nextRoot: SelectionListStep) => {
         dispatch({ type: 'adoptRoot', rootStep: nextRoot });
     }, []);
+    const syncActiveStep = React.useCallback((step: SelectionListStep | null) => {
+        dispatch({ type: 'syncActiveStep', step });
+    }, []);
 
     const currentStep = state.stack[state.stack.length - 1] ?? rootStep;
     const canPop = state.stack.length > 1;
 
     return React.useMemo(
-        () => ({ state, pushStep, popStep, adoptRootStep, currentStep, canPop }),
-        [state, pushStep, popStep, adoptRootStep, currentStep, canPop],
+        () => ({ state, pushStep, popStep, adoptRootStep, syncActiveStep, currentStep, canPop }),
+        [state, pushStep, popStep, adoptRootStep, syncActiveStep, currentStep, canPop],
     );
 }

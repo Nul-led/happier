@@ -3,7 +3,9 @@ import type { WorkspaceRefV1 } from '@/sync/domains/workspaces/workspaceRefModel
 import { resolveWorkspaceRefDisplayName } from '@/components/projects/resolveWorkspaceRefDisplayName';
 import {
     migrateProjectRouteSegmentToMobileSurface,
+    resolveProjectMobileSurfaceIntent,
     resolveProjectLegacyRouteSegmentFromState,
+    resolveProjectRoutePathForSurface,
     type ProjectMobileSurface,
 } from '@/components/workspaceCockpit/project/projectCockpitState';
 
@@ -214,6 +216,55 @@ export function resolveProjectRouteSegment(
     persistedSegment?: string | null,
 ): ProjectRouteSegment {
     return resolveProjectLegacyRouteSegmentFromState(activeTabId, readProjectRouteStringParam(persistedSegment ?? undefined));
+}
+
+/**
+ * Canonical policy for opening an existing project from a list-like surface.
+ * It preserves the last project surface and worktree on phones; wider layouts
+ * keep the project root as their stable entry point.
+ */
+export function resolveProjectOpenHref(input: Readonly<{
+    workspaceRef: WorkspaceRefV1;
+    deviceType: 'phone' | 'tablet';
+    cockpitEnabled: boolean;
+    rememberedRightTabId?: string | null;
+    persistedMobileSurface?: string | null;
+    persistedActiveRootPath?: string | null;
+    persistedWorktreeId?: string | null;
+}>): string {
+    if (input.deviceType !== 'phone') {
+        return `/projects/${encodeURIComponent(input.workspaceRef.id)}`;
+    }
+
+    const activeRootPath = readProjectRouteStringParam(input.persistedActiveRootPath ?? undefined)
+        ?? input.workspaceRef.rootPath;
+    const activeWorktreeId = readProjectRouteStringParam(input.persistedWorktreeId ?? undefined);
+    if (input.cockpitEnabled) {
+        return resolveProjectRoutePathForSurface({
+            workspaceRefId: input.workspaceRef.id,
+            surface: resolveProjectMobileSurfaceIntent({
+                routeKind: 'index',
+                activeRightTabId: input.rememberedRightTabId,
+                persistedSurface: input.persistedMobileSurface,
+            }),
+            ...resolveProjectRouteSelectionQuery({
+                activeRootPath,
+                defaultRootPath: input.workspaceRef.rootPath,
+                activeWorktreeId,
+            }),
+        });
+    }
+
+    return buildProjectRouteHref({
+        workspaceRefId: input.workspaceRef.id,
+        segment: resolveProjectRouteSegment(
+            input.rememberedRightTabId,
+            input.persistedMobileSurface,
+        ),
+        activeRootPath,
+        defaultRootPath: input.workspaceRef.rootPath,
+        activeWorktreeId,
+    });
 }
 
 function resolvePathBasename(rawPath: string): string | null {

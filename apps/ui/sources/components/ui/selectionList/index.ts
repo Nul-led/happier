@@ -34,6 +34,10 @@ export {
 
 export { SelectionList } from './SelectionList';
 export { SelectionListScreen, type SelectionListScreenProps } from './SelectionListScreen';
+export {
+    createDefaultDynamicSectionCache,
+    type SelectionListDynamicSectionCache,
+} from './selectionListDynamicSectionCache';
 export { renderSelectionListAccessory } from './renderSelectionListAccessory';
 export { resolvePopoverSelectionListHeightBehavior } from './resolvePopoverSelectionListHeightBehavior';
 export {

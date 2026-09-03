@@ -1,5 +1,6 @@
 import * as React from 'react';
 import {
+    AccessibilityInfo,
     Platform,
     type LayoutChangeEvent,
     TextInput as RNTextInput,
@@ -11,6 +12,7 @@ import { StyleSheet } from 'react-native-unistyles';
 
 import { resolveItemGroupColumnCountForWidth } from '@/components/ui/lists/itemGroupColumnLayout';
 import { SlideTransitionSwitch } from '@/components/ui/motion/SlideTransitionSwitch';
+import { Text } from '@/components/ui/text/Text';
 import { useReducedMotionPreference } from '@/hooks/ui/useReducedMotionPreference';
 import { t } from '@/text';
 
@@ -39,10 +41,14 @@ import type {
     SelectionListKeyboardHint,
     SelectionListOption,
     SelectionListProps,
+    SelectionListSectionDescriptor,
     SelectionListStep,
 } from './_types';
 import { useSelectionListAutocomplete } from './useSelectionListAutocomplete';
-import { useSelectionListDynamicSections } from './useSelectionListDynamicSections';
+import {
+    useSelectionListDynamicSections,
+    type DynamicSectionState,
+} from './useSelectionListDynamicSections';
 import {
     useSelectionListKeyboardNav,
     useSelectionListRovingFocus,
@@ -86,6 +92,12 @@ const stylesheet = StyleSheet.create((theme) => ({
         flexShrink: 1,
         flexBasis: 'auto',
     },
+    statusAnnouncement: {
+        position: 'absolute',
+        width: 1,
+        height: 1,
+        overflow: 'hidden',
+    },
 }));
 
 /**
@@ -96,9 +108,60 @@ const stylesheet = StyleSheet.create((theme) => ({
 type MeasuredStepBodyHeight = Readonly<{ stepId: string; height: number }>;
 
 const IS_WEB = Platform.OS === 'web';
+const IS_IOS = Platform.OS === 'ios';
 const STABILIZED_HEIGHT_SHRINK_DELAY_MS = 180;
 /** Section id for the synthetic, filter-bypassing `buildInputRow` row. */
 const SELECTION_LIST_INPUT_ROW_SECTION_ID = 'selection-list:input-row';
+
+function useSelectionListStatusAnnouncement(
+    sections: ReadonlyArray<SelectionListSectionDescriptor>,
+    states: ReadonlyMap<string, DynamicSectionState>,
+): string | null {
+    const previousSignaturesRef = React.useRef<ReadonlyMap<string, string>>(new Map());
+    const [announcement, setAnnouncement] = React.useState<string | null>(null);
+
+    React.useEffect(() => {
+        const previousSignatures = previousSignaturesRef.current;
+        const nextSignatures = new Map<string, string>();
+        let nextAnnouncement: string | null = null;
+        let changed = false;
+
+        for (const section of sections) {
+            if (section.kind !== 'dynamic') continue;
+            const state = states.get(section.id);
+            if (!state) continue;
+            const signature = `${state.seed ?? ''}\u0000${state.status}\u0000${state.options.length}\u0000${state.resultHint ?? ''}`;
+            nextSignatures.set(section.id, signature);
+            if (previousSignatures.get(section.id) === signature) continue;
+            changed = true;
+
+            const title = section.title?.trim() ?? '';
+            if (state.status === 'loading') {
+                nextAnnouncement = title.length > 0
+                    ? `${title} · ${t('common.loading')}`
+                    : t('common.loading');
+            } else if (state.status === 'success') {
+                const resultStatus = state.options.length === 0
+                    ? title.length > 0
+                        ? `${title} · ${t('selectionList.emptyMatch')}`
+                        : t('selectionList.emptyMatch')
+                    : title.length > 0
+                        ? `${state.options.length} · ${title}`
+                        : String(state.options.length);
+                nextAnnouncement = state.resultHint
+                    ? `${resultStatus} · ${state.resultHint}`
+                    : resultStatus;
+            }
+            // Errors remain section-local. Their existing calm inline alert is
+            // the one announcement source for that failure.
+        }
+
+        previousSignaturesRef.current = nextSignatures;
+        if (changed) setAnnouncement(nextAnnouncement);
+    }, [sections, states]);
+
+    return announcement;
+}
 
 /**
  * FR4-2: option-bearing sections contribute focusable rows. Sections in
@@ -190,6 +253,24 @@ export function SelectionList(props: SelectionListProps): React.ReactElement {
         lastRootStepRef.current = props.rootStep;
         stack.adoptRootStep(props.rootStep);
     }
+    // Phase 1A — consumer-owned active-step mirror. A route-sized consumer that
+    // keeps its own notion of the active step (e.g. an Event choice feeding a
+    // pushed destination step) republishes that step's latest content here:
+    // a mounted same-id entry is refreshed in place exactly like an adopted
+    // root, `null` pops back to the root, and an unmounted id pushes. This is
+    // how hydration and pagination keep flowing into a MOUNTED pushed step —
+    // pushed steps are snapshots, so without this mirror a destination list
+    // could never grow while the user is on it. Dispatched during render for
+    // the same reason as `adoptRootStep` above. `undefined` means the prop is
+    // absent and the list stays fully uncontrolled.
+    const lastSyncedActiveStepRef = React.useRef<SelectionListStep | null | undefined>(undefined);
+    if (
+        props.syncActiveStep !== undefined
+        && lastSyncedActiveStepRef.current !== props.syncActiveStep
+    ) {
+        lastSyncedActiveStepRef.current = props.syncActiveStep;
+        stack.syncActiveStep(props.syncActiveStep);
+    }
     const detectedKeyboard = useHardwareKeyboard();
     const detectedReducedMotion = useReducedMotionPreference();
     const keyboardHintsEnabled = props.keyboardHintsEnabled ?? detectedKeyboard;
@@ -206,6 +287,19 @@ export function SelectionList(props: SelectionListProps): React.ReactElement {
     );
 
     const currentStep = stack.currentStep;
+    // Consumer awareness of which step is active. Fired when the mounted step
+    // ID changes (mount, push, pop, drain, root adoption to a new id) — never
+    // for same-id content refreshes, which are not navigation. The step object
+    // is read through a ref so a content refresh that lands between renders is
+    // reported with the latest bytes.
+    const activeStepRef = React.useRef(currentStep);
+    activeStepRef.current = currentStep;
+    const onActiveStepChangeRef = React.useRef(props.onActiveStepChange);
+    onActiveStepChangeRef.current = props.onActiveStepChange;
+    const activeStepId = currentStep.id;
+    React.useEffect(() => {
+        onActiveStepChangeRef.current?.(activeStepRef.current);
+    }, [activeStepId]);
     const virtualizedOptionSource = currentStep.virtualizedOptionSource;
     const virtualizedOptionSourceStateKey = virtualizedOptionSource?.stateKey;
     // Per-step input mode: a pushed step may declare its own `inputMode`
@@ -260,7 +354,20 @@ export function SelectionList(props: SelectionListProps): React.ReactElement {
         dynamicSections,
         inputValue,
         inputBehavior,
+        ...(props.dynamicSectionCache ? { cache: props.dynamicSectionCache } : {}),
     });
+    const statusAnnouncement = useSelectionListStatusAnnouncement(
+        currentStep.sections,
+        dynamicSectionStates,
+    );
+    React.useEffect(() => {
+        if (!IS_IOS || statusAnnouncement === null) return;
+        try {
+            AccessibilityInfo.announceForAccessibility(statusAnnouncement);
+        } catch {
+            // Accessibility announcements are best effort on native platforms.
+        }
+    }, [statusAnnouncement]);
 
     // Resolve sections to render via the pure synthesizer (R14 extraction).
     const buildInputRow = currentStep.buildInputRow;
@@ -933,10 +1040,13 @@ export function SelectionList(props: SelectionListProps): React.ReactElement {
      */
     const renderMeasureHost = measureNativeHeight || !disableTransitions;
 
+    const autoFocusInput = IS_WEB
+        ? props.autoFocusInputOnWeb === true
+        : props.autoFocusInputOnNative === true;
     React.useEffect(() => {
-        if (!IS_WEB || props.autoFocusInputOnWeb !== true || !showSearchHeader) return;
+        if (!autoFocusInput || !showSearchHeader) return;
         searchInputRef.current?.focus?.();
-    }, [currentStep.id, props.autoFocusInputOnWeb, showSearchHeader]);
+    }, [autoFocusInput, currentStep.id, showSearchHeader]);
 
     // FR3-4: headerless keyboard host. When the search header is omitted
     // (inputless list chips: session-mode, transcript-storage, recipient,
@@ -953,58 +1063,46 @@ export function SelectionList(props: SelectionListProps): React.ReactElement {
         ? {}
         : { onKeyDown: handleKeyPress };
 
-    return (
-        <SelectionListInputAttentionContext.Provider value={requestInputAttention}>
+    // One canonical input node, positioned by `inputPlacement`. Both placements
+    // render the SAME element — same query state, ref, key handler, listbox id
+    // and active-descendant wiring — so a keyboard-seated surface cannot drift
+    // into a second input or a second query owner.
+    const searchHeaderZone = showSearchHeader ? (
         <View
-            testID={resolvedTestId}
-            style={containerStyle}
-            pointerEvents={measuredPopoverHeight.hidden ? 'none' : undefined}
-            onLayout={stabilizeHeight || columns !== undefined ? handleContainerLayout : undefined}
-            {...headerlessKeyHandler}
+            testID={selectionListTestId(resolvedTestId, 'headerFrame')}
+            collapsable={false}
+            onLayout={measureNativeHeight ? measuredPopoverHeight.onHeaderLayout : undefined}
         >
-            {renderMeasureHost ? (
-                <SelectionListMeasureHost
-                    rootTestID={resolvedTestId}
-                    onMeasureLayout={handleBodyMeasureLayout}
-                    measureMaxHeight={props.maxHeight}
-                >
-                    {measureBody}
-                </SelectionListMeasureHost>
-            ) : null}
-            {showSearchHeader ? (
-                <View
-                    testID={selectionListTestId(resolvedTestId, 'headerFrame')}
-                    collapsable={false}
-                    onLayout={measureNativeHeight ? measuredPopoverHeight.onHeaderLayout : undefined}
-                >
-                    <SelectionListSearchHeader
-                        testID={selectionListTestId(resolvedTestId, 'header')}
-                        inputTestID={props.inputTestID}
-                        value={inputValue}
-                        onChangeText={setInputValue}
-                        placeholder={currentStep.inputPlaceholder ?? ''}
-                        canPop={stack.canPop}
-                        backLabel={currentStep.backLabel ?? props.rootStep.title}
-                        onPopStep={stack.popStep}
-                        onKeyPress={handleKeyPress}
-                        // Native soft-keyboard return commits the value when this
-                        // step is in value mode (web commits via the keydown
-                        // listener instead; the header guards against double-fire).
-                        onSubmitEditing={inputMode === 'value' ? handleCommitInputValue : undefined}
-                        ghostSuffix={autocomplete.ghostSuffix}
-                        inputValueEllipsizeMode={props.inputValueEllipsizeMode}
-                        inputPrefix={props.inputPrefix}
-                        inputSuffix={props.inputSuffix}
-                        inputRef={searchInputRef}
-                        onCaretAtEndChange={setCaretAtEnd}
-                        onIsComposingChange={setIsComposing}
-                        listboxId={listboxId}
-                        popupRole={popupA11yPattern}
-                        activeDescendantId={activeDescendantId}
-                        attentionNonce={inputAttentionNonce}
-                    />
-                </View>
-            ) : null}
+            <SelectionListSearchHeader
+                testID={selectionListTestId(resolvedTestId, 'header')}
+                inputTestID={props.inputTestID}
+                value={inputValue}
+                onChangeText={setInputValue}
+                placeholder={currentStep.inputPlaceholder ?? ''}
+                canPop={stack.canPop}
+                backLabel={currentStep.backLabel ?? props.rootStep.title}
+                onPopStep={stack.popStep}
+                onKeyPress={handleKeyPress}
+                // Native soft-keyboard return commits the value when this
+                // step is in value mode (web commits via the keydown
+                // listener instead; the header guards against double-fire).
+                onSubmitEditing={inputMode === 'value' ? handleCommitInputValue : undefined}
+                ghostSuffix={autocomplete.ghostSuffix}
+                inputValueEllipsizeMode={props.inputValueEllipsizeMode}
+                inputPrefix={props.inputPrefix}
+                inputSuffix={props.inputSuffix}
+                inputRef={searchInputRef}
+                onCaretAtEndChange={setCaretAtEnd}
+                onIsComposingChange={setIsComposing}
+                listboxId={listboxId}
+                popupRole={popupA11yPattern}
+                activeDescendantId={activeDescendantId}
+                attentionNonce={inputAttentionNonce}
+            />
+        </View>
+    ) : null;
+
+    const contentZone = (
             <View
                 testID={selectionListTestId(resolvedTestId, 'content')}
                 style={useContentSizedFrame ? styles.contentSized : styles.content}
@@ -1039,19 +1137,66 @@ export function SelectionList(props: SelectionListProps): React.ReactElement {
                     </SelectionListAnimatedHeight>
                 )}
             </View>
-            {keyboardHintsEnabled ? (
-                <View
-                    testID={selectionListTestId(resolvedTestId, 'footerFrame')}
-                    collapsable={false}
-                    onLayout={measureNativeHeight ? measuredPopoverHeight.onFooterLayout : undefined}
+    );
+
+    const footerZone = keyboardHintsEnabled ? (
+        <View
+            testID={selectionListTestId(resolvedTestId, 'footerFrame')}
+            collapsable={false}
+            onLayout={measureNativeHeight ? measuredPopoverHeight.onFooterLayout : undefined}
+        >
+            <SelectionListFooter
+                testID={selectionListTestId(resolvedTestId, 'footer')}
+                hints={footerHints}
+                hardwareKeyboardAvailable={keyboardHintsEnabled}
+            />
+        </View>
+    ) : null;
+
+    // Bottom placement seats the input last so it stays directly above the
+    // software keyboard; the results region above it remains the single scroll
+    // owner in both placements.
+    const seatInputAtBottom = props.inputPlacement === 'bottom';
+
+    return (
+        <SelectionListInputAttentionContext.Provider value={requestInputAttention}>
+        <View
+            testID={resolvedTestId}
+            style={containerStyle}
+            pointerEvents={measuredPopoverHeight.hidden ? 'none' : undefined}
+            onLayout={stabilizeHeight || columns !== undefined ? handleContainerLayout : undefined}
+            {...headerlessKeyHandler}
+        >
+            {renderMeasureHost ? (
+                <SelectionListMeasureHost
+                    rootTestID={resolvedTestId}
+                    onMeasureLayout={handleBodyMeasureLayout}
+                    measureMaxHeight={props.maxHeight}
                 >
-                    <SelectionListFooter
-                        testID={selectionListTestId(resolvedTestId, 'footer')}
-                        hints={footerHints}
-                        hardwareKeyboardAvailable={keyboardHintsEnabled}
-                    />
+                    {measureBody}
+                </SelectionListMeasureHost>
+            ) : null}
+            {statusAnnouncement !== null && !IS_IOS ? (
+                <View
+                    testID={selectionListTestId(resolvedTestId, 'status')}
+                    style={styles.statusAnnouncement}
+                    accessible
+                    accessibilityLabel={statusAnnouncement}
+                    accessibilityLiveRegion="polite"
+                    pointerEvents="none"
+                    {...({
+                        role: 'status',
+                        'aria-live': 'polite',
+                        'aria-atomic': true,
+                    } as Record<string, unknown>)}
+                >
+                    <Text>{statusAnnouncement}</Text>
                 </View>
             ) : null}
+            {seatInputAtBottom ? null : searchHeaderZone}
+            {contentZone}
+            {footerZone}
+            {seatInputAtBottom ? searchHeaderZone : null}
         </View>
         </SelectionListInputAttentionContext.Provider>
     );

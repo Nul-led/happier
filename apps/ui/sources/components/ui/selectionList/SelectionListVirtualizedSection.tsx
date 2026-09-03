@@ -233,6 +233,7 @@ export function SelectionListVirtualizedSection(
                     getItemType={(option: SelectionListOption) => (option.openStep ? 'drilldown' : 'option')}
                     estimatedItemSize={SELECTION_LIST_VIRTUALIZED_ROW_ESTIMATED_HEIGHT_PX}
                     recycleItems={false}
+                    keyboardShouldPersistTaps="handled"
                     showsVerticalScrollIndicator={props.showsVerticalScrollIndicator === true}
                 />
             </View>

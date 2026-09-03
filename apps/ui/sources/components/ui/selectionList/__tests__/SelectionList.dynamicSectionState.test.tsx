@@ -13,9 +13,9 @@ vi.mock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
     return createReactNativeWebMock({
         Platform: {
-            OS: 'ios',
-            select: <T,>(values: { ios?: T; default?: T; web?: T }) =>
-                values.ios ?? values.default ?? values.web,
+            OS: 'android',
+            select: <T,>(values: { android?: T; default?: T; web?: T }) =>
+                values.android ?? values.default ?? values.web,
         },
     });
 });
@@ -61,6 +61,64 @@ afterEach(() => {
 });
 
 describe('SelectionList dynamic-section state rendering (Phase 2.2 mapping)', () => {
+    it('projects one polite bounded provider status from loading through result settlement', async () => {
+        const { act } = await import('react-test-renderer');
+        let settle: ((value: { options: Array<{ id: string; label: string }> }) => void) | undefined;
+        const root = makeStep({
+            id: 'dyn',
+            title: 'MESSAGES',
+            debounceMs: 0,
+            resolve: () => new Promise((resolve) => { settle = resolve; }),
+        });
+        const { SelectionList } = await import('../SelectionList');
+        const screen = await renderScreen(<SelectionList {...defaultProps(root)} inputValue="query" />);
+
+        await act(async () => {
+            vi.advanceTimersByTime(1);
+        });
+        const loadingStatus = screen.findByTestId('sl:status');
+        expect(loadingStatus?.props.role).toBe('status');
+        expect(loadingStatus?.props['aria-live']).toBe('polite');
+        expect(loadingStatus?.props.accessibilityLiveRegion).toBe('polite');
+        expect(screen.getTextContent()).toContain('MESSAGES · Loading...');
+
+        await act(async () => {
+            settle?.({
+                options: [
+                    { id: 'message:one', label: 'One' },
+                    { id: 'message:two', label: 'Two' },
+                ],
+            });
+            await Promise.resolve();
+            await Promise.resolve();
+        });
+        expect(screen.getTextContent()).toContain('2 · MESSAGES');
+        expect(screen.tree.root.findAllByProps({ accessibilityLiveRegion: 'polite' })).toHaveLength(1);
+    });
+
+    it('announces a settled provider with no matches without turning it into an error alert', async () => {
+        const { act } = await import('react-test-renderer');
+        const root = makeStep({
+            id: 'dyn',
+            title: 'FILES',
+            debounceMs: 0,
+            resolve: async () => ({ options: [] }),
+        });
+        const { SelectionList } = await import('../SelectionList');
+        const screen = await renderScreen(<SelectionList {...defaultProps(root)} inputValue="query" />);
+
+        await act(async () => {
+            vi.advanceTimersByTime(1);
+            await Promise.resolve();
+            await Promise.resolve();
+        });
+
+        const status = screen.findByTestId('sl:status');
+        expect(status?.props.role).toBe('status');
+        expect(status?.props.role).not.toBe('alert');
+        expect(screen.getTextContent()).toContain('FILES · No matches');
+    });
+
     it('renders loading skeleton rows while the resolver is pending', async () => {
         const { act } = await import('react-test-renderer');
         const root = makeStep({
@@ -85,7 +143,7 @@ describe('SelectionList dynamic-section state rendering (Phase 2.2 mapping)', ()
         expect(loadingMarker).not.toBeNull();
     });
 
-    it('renders an inline error row when the resolver rejects', async () => {
+    it('renders a localized inline error without exposing the resolver message', async () => {
         const { act } = await import('react-test-renderer');
         const root = makeStep({
             id: 'dyn',
@@ -103,7 +161,8 @@ describe('SelectionList dynamic-section state rendering (Phase 2.2 mapping)', ()
         const errorRow = screen.findByTestId('sl:section:dyn:error');
         expect(errorRow).not.toBeNull();
         const text = screen.getTextContent();
-        expect(text).toContain('boom');
+        expect(text).toContain('Something went wrong');
+        expect(text).not.toContain('boom');
     });
 
     it('renders the descriptor emptyHint when resolver succeeds with zero options', async () => {
@@ -124,6 +183,40 @@ describe('SelectionList dynamic-section state rendering (Phase 2.2 mapping)', ()
         const emptyHint = screen.findByTestId('sl:section:dyn:emptyHint');
         expect(emptyHint).not.toBeNull();
         expect(screen.getTextContent()).toContain('No matches available');
+    });
+
+    it('renders a result hint after successful options without making the hint an option', async () => {
+        const { act } = await import('react-test-renderer');
+        const root = makeStep({
+            id: 'dyn',
+            title: 'DYN',
+            debounceMs: 0,
+            resultFiltering: 'provider',
+            resolve: async () => ({
+                options: [{ id: 'result', label: 'Result' }],
+                resultHint: 'More results are available',
+            }),
+        });
+        const { SelectionList } = await import('../SelectionList');
+        const screen = await renderScreen(<SelectionList {...defaultProps(root)} inputValue="x" />);
+        await act(async () => {
+            vi.advanceTimersByTime(1);
+            await Promise.resolve();
+            await Promise.resolve();
+        });
+
+        const hint = screen.findByTestId('sl:section:dyn:resultHint') as unknown as {
+            props?: {
+                onPress?: unknown;
+                disabled?: unknown;
+            };
+        } | null;
+        expect(hint).not.toBeNull();
+        expect(hint?.props?.onPress).toBeUndefined();
+        expect(screen.getTextContent()).toContain('More results are available');
+        const status = screen.findByTestId('sl:status');
+        expect(status?.props.accessibilityLabel).toContain('More results are available');
+        expect(screen.tree.root.findAllByProps({ accessibilityLiveRegion: 'polite' })).toHaveLength(1);
     });
 
     it('lets Tab descend into an explicitly focused value-mode dynamic row even when ghost text is suppressed', async () => {

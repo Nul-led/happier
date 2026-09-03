@@ -22,6 +22,7 @@ export type DynamicSectionState = Readonly<{
     status: DynamicSectionStatus;
     options: ReadonlyArray<SelectionListOption>;
     emptyHint?: string;
+    resultHint?: string;
     error?: Error;
     /** The seed used for the most recently dispatched (or last successful) request. */
     seed?: string;
@@ -394,6 +395,7 @@ export function useSelectionListDynamicSections(params: {
                         options: makeSkeletonOptions(skeletonCount),
                         seed,
                         lastSuccessOptions: lastSuccess,
+                        resultHint: previous?.resultHint,
                     });
                     return next;
                 });
@@ -429,6 +431,7 @@ export function useSelectionListDynamicSections(params: {
                             status: 'success',
                             options: result.options,
                             emptyHint: result.emptyHint,
+                            resultHint: result.resultHint,
                             seed,
                             lastSuccessOptions,
                             notFound: result.notFound === true ? true : undefined,
@@ -455,6 +458,7 @@ export function useSelectionListDynamicSections(params: {
                             options: stale,
                             error,
                             emptyHint: previous?.emptyHint,
+                            resultHint: previous?.resultHint,
                             seed,
                             lastSuccessOptions: stale,
                         });

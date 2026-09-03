@@ -27,6 +27,7 @@ import {
     SelectionListErrorRow,
     SelectionListLoadingSkeletonRow,
     SelectionListNotFoundRow,
+    SelectionListResultHintRow,
     selectionListDynamicRowStyles,
 } from './SelectionListDynamicSectionRows';
 import { SelectionListColumnRow } from './SelectionListColumnRow';
@@ -151,6 +152,12 @@ export type SelectionListBodyVirtualizedItem =
           rowKey: string;
           sectionId: string;
           hint: string;
+      }>
+    | Readonly<{
+          kind: 'result-hint';
+          rowKey: string;
+          sectionId: string;
+          hint: string;
       }>;
 
 /**
@@ -269,6 +276,14 @@ export function flattenRenderPlanForVirtualizedList(
                 sectionId: sectionPlan.id,
                 option,
                 isStale,
+            });
+        }
+        if (sectionPlan.resultHint !== undefined && sectionPlan.resultHint.length > 0) {
+            rows.push({
+                kind: 'result-hint',
+                rowKey: `${sectionPlan.id}::resultHint`,
+                sectionId: sectionPlan.id,
+                hint: sectionPlan.resultHint,
             });
         }
     }
@@ -511,6 +526,17 @@ function renderVirtualizedListRow(
             <SelectionListEmptyHintRow
                 hint={item.hint}
                 testID={measureMode ? undefined : selectionListTestId(sectionTestId, 'emptyHint')}
+            />
+        ), ctx.a11yPattern);
+    }
+
+    if (item.kind === 'result-hint') {
+        const sectionTestId = selectionListTestId(ctx.rootTestID, 'section', item.sectionId);
+        return renderFlatListboxSectionGroup((
+            <SelectionListResultHintRow
+                hint={item.hint}
+                testID={measureMode ? undefined : selectionListTestId(sectionTestId, 'resultHint')}
+                measureMode={measureMode}
             />
         ), ctx.a11yPattern);
     }
@@ -758,6 +784,7 @@ function SelectionListBodyFlattenedVirtualized(props: SelectionListBodyVirtualiz
                 getItemType={(item: SelectionListBodyVirtualizedItem) => item.kind}
                 estimatedItemSize={SELECTION_LIST_VIRTUALIZED_ROW_ESTIMATED_HEIGHT_PX}
                 recycleItems={false}
+                keyboardShouldPersistTaps="handled"
                 showsVerticalScrollIndicator={props.showsVerticalScrollIndicator === true}
                 onEndReached={onEndReached}
                 onEndReachedThreshold={props.pagination ? 0.35 : undefined}
@@ -914,6 +941,7 @@ function SelectionListBodyDirectVirtualizedSource(props: SelectionListBodyVirtua
                 getItemType={(item: SelectionListVirtualizedOptionSourceItem) => item.kind}
                 estimatedItemSize={SELECTION_LIST_VIRTUALIZED_ROW_ESTIMATED_HEIGHT_PX}
                 recycleItems={false}
+                keyboardShouldPersistTaps="handled"
                 showsVerticalScrollIndicator={props.showsVerticalScrollIndicator === true}
                 onEndReached={onEndReached}
                 onEndReachedThreshold={props.pagination ? 0.35 : undefined}

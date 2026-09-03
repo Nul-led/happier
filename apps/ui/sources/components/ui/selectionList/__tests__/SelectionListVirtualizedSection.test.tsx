@@ -75,9 +75,10 @@ describe('SelectionListVirtualizedSection', () => {
 
     it('renders FlashList path when row count exceeds the threshold (auto mode)', async () => {
         legendListState.reset();
+        const { VirtualizedList } = await import('@/components/ui/lists/virtualized/VirtualizedList');
         const { SelectionListVirtualizedSection } = await import('../SelectionListVirtualizedSection');
         const section = makeSection(60);
-        await renderScreen(
+        const screen = await renderScreen(
             <SelectionListVirtualizedSection
                 section={section}
                 stepId="root"
@@ -88,6 +89,8 @@ describe('SelectionListVirtualizedSection', () => {
             />,
         );
         expect(legendListState.props).not.toBeNull();
+        expect(screen.tree.root.findByType(VirtualizedList as React.ComponentType<any>).props.keyboardShouldPersistTaps)
+            .toBe('handled');
         expect(legendListState.props?.recycleItems).toBe(false);
         expect(Array.isArray(legendListState.props.data)).toBe(true);
         expect(legendListState.props.data.length).toBe(60);

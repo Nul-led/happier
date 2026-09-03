@@ -6,7 +6,13 @@ import { Modal } from '@/modal';
 import {
     presentFirstKeyCredentialLifecycle,
 } from '@/components/account/presentFirstKeyCredentialLifecycle';
-import { CommandPalette } from './CommandPalette';
+import { UniversalSearchModal } from '@/components/appShell/search/UniversalSearchModal';
+import {
+    UniversalSearchRuntimeProvider,
+    resolveUniversalSearchInvocationScope,
+    type UniversalSearchRuntime,
+    type UniversalSearchScopeSeed,
+} from '@/components/appShell/search/UniversalSearchRuntimeContext';
 import { useAuth } from '@/auth/context/AuthContext';
 import { storage } from '@/sync/domains/state/storage';
 import { useShallow } from 'zustand/react/shallow';
@@ -19,6 +25,7 @@ import { resetDesktopActivityOverlayPosition } from '@/activity/adapters/desktop
 import { requestCodexPetRefresh } from '@/components/settings/pets/petSettingsCommandEvents';
 import {
     type CompactAppDestination,
+    SEARCH_DESTINATION_ID,
     useCompactAppDestinations,
 } from '@/components/appShell/destinations/compactAppDestinationCatalog';
 import {
@@ -38,6 +45,7 @@ import {
 } from '@/components/plugins/reactNative/clientExecutableContributions';
 import { usePluginAppPageCatalogActivationHandler } from '@/components/appShell/plugins/pluginAppPageNavigation';
 import { useSessionMachineControlTarget } from '@/components/sessions/model/useSessionMachineTarget';
+import { readMachineControlTargetForSession } from '@/sync/ops/sessionMachineTarget';
 import { useDaemonMergedProjectionInputs } from '@/agents/backendCatalog/useDaemonMergedProjectionInputs';
 import { captureActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
 import { useApplyLocalSettings, useApplySettings } from '@/sync/store/settingsWriters';
@@ -49,6 +57,7 @@ import { useOptionalCurrentUiContextReader } from '@/components/appShell/current
 import { normalizeSessionId } from '@/sync/domains/session/normalizeSessionId';
 import { projectParameterFreeRoute } from '@/track/parameterFreeRouteProjection';
 import { useResolveNewSessionOrdinaryEntryRoute } from '@/components/sessions/new/navigation/newSessionOrdinaryEntryRoute';
+import { UNIVERSAL_SEARCH_ROUTE } from '@/components/appShell/search/universalSearchRoutePresentation';
 
 export function readActiveSessionIdFromRoute(
     segments: readonly string[],
@@ -60,9 +69,6 @@ export function readActiveSessionIdFromRoute(
     if (!sessionId || projectParameterFreeRoute([sessionId]).segments[0] === ':id') return null;
     return sessionId;
 }
-
-const EMPTY_KEYBOARD_HANDLERS: KeyboardShortcutHandlers = {};
-const EMPTY_ENABLED_WHEN_DISABLED_COMMAND_IDS: readonly [] = [];
 
 /**
  * The root palette has an exact machine only when either the current Session
@@ -184,17 +190,6 @@ function useCommandPalettePluginActionPresentation(activeSessionId: string | nul
 }
 
 export function CommandPaletteProvider({ children }: { children: React.ReactNode }) {
-    if (Platform.OS !== 'web') {
-        return (
-            <KeyboardShortcutProvider
-                handlers={EMPTY_KEYBOARD_HANDLERS}
-                enabledWhenDisabledCommandIds={EMPTY_ENABLED_WHEN_DISABLED_COMMAND_IDS}
-            >
-                {children}
-            </KeyboardShortcutProvider>
-        );
-    }
-
     return <WebCommandPaletteProvider>{children}</WebCommandPaletteProvider>;
 }
 
@@ -220,6 +215,16 @@ function WebCommandPaletteProvider({ children }: { children: React.ReactNode }) 
         () => readActiveSessionIdFromRoute(segments, routeParams.id),
         [routeParams.id, segments],
     );
+    const universalSearchRouteActive = useMemo(
+        () => projectParameterFreeRoute(segments).segments[0] === 'search',
+        [segments],
+    );
+    const universalSearchRouteOpenRequestedRef = React.useRef(universalSearchRouteActive);
+    React.useEffect(() => {
+        if (!universalSearchRouteActive) {
+            universalSearchRouteOpenRequestedRef.current = false;
+        }
+    }, [universalSearchRouteActive]);
     const pluginActionPresentation = useCommandPalettePluginActionPresentation(activeSessionId);
     const executionRunsEnabled = useFeatureEnabled('execution.runs');
     const voiceEnabled = useFeatureEnabled('voice');
@@ -341,7 +346,7 @@ function WebCommandPaletteProvider({ children }: { children: React.ReactNode }) 
             shortcutLabels,
             petControls,
             ...(pluginActionPresentation ? { pluginActionPresentation } : {}),
-            compactAppDestinations,
+            compactAppDestinations: compactAppDestinations.filter((destination) => destination.id !== SEARCH_DESTINATION_ID),
             onActivateCompactAppDestination: activateCompactAppDestination,
             nav: {
                 push: (path) => router.push(path as any),
@@ -363,17 +368,59 @@ function WebCommandPaletteProvider({ children }: { children: React.ReactNode }) 
             },
         });
     }, [activeSessionId, executionRunsEnabled, voiceEnabled, memorySearchEnabled, petsCompanionEnabled, compactAppDestinations, activateCompactAppDestination, shortcutLabels, petControls, pluginActionPresentation, router, openNewSession, navigateToSession, logout, actionExecutor]);
+    const buildCommandsRef = React.useRef(buildCommands);
+    buildCommandsRef.current = buildCommands;
+    const readCurrentCommands = useCallback(() => buildCommandsRef.current(), []);
 
-    const showCommandPalette = useCallback(() => {
-        if (Platform.OS !== 'web' || !commandPaletteEnabled) return;
-
+    const showCommandPalette = useCallback((initialQuery?: string, requestedScope?: UniversalSearchScopeSeed) => {
+        const activeAccountScope = captureActiveServerAccountScopeLifetime()?.scope;
+        const activeSession = activeSessionId
+            ? (storage.getState().sessions as Record<string, { serverId?: string } | undefined>)[activeSessionId]
+            : null;
+        const activeMachineTarget = activeSessionId ? readMachineControlTargetForSession(activeSessionId) : null;
+        const invocationScope = resolveUniversalSearchInvocationScope({
+            requestedScope,
+            ambientScope: {
+                accountId: activeAccountScope?.accountId ?? null,
+                serverId: activeSession?.serverId ?? activeAccountScope?.serverId ?? null,
+                sessionId: activeSessionId,
+                machineId: activeMachineTarget?.machineId ?? null,
+                rootPath: activeMachineTarget?.basePath ?? null,
+            },
+        });
+        if (Platform.OS !== 'web') {
+            if (universalSearchRouteActive || universalSearchRouteOpenRequestedRef.current) return;
+            universalSearchRouteOpenRequestedRef.current = true;
+            router.push({
+                pathname: UNIVERSAL_SEARCH_ROUTE,
+                params: {
+                    ...(initialQuery?.trim() ? { q: initialQuery.trim() } : {}),
+                    ...(invocationScope.sessionId ? { sessionId: invocationScope.sessionId } : {}),
+                    ...(invocationScope.accountId ? { accountId: invocationScope.accountId } : {}),
+                    ...(invocationScope.serverId ? { serverId: invocationScope.serverId } : {}),
+                    ...(invocationScope.machineId ? { machineId: invocationScope.machineId } : {}),
+                    ...(invocationScope.rootPath ? { rootPath: invocationScope.rootPath } : {}),
+                },
+            } as never);
+            return;
+        }
         Modal.show({
-            component: CommandPalette,
+            component: UniversalSearchModal,
+            webPlacement: 'top',
             props: {
                 commands: buildCommands(),
-            }
+                readCurrentCommands,
+                ...(initialQuery?.trim() ? { initialQuery: initialQuery.trim() } : {}),
+                ...(activeSessionId ? { activeSessionId } : {}),
+                initialScope: invocationScope,
+            },
         });
-    }, [buildCommands, commandPaletteEnabled]);
+    }, [activeSessionId, buildCommands, readCurrentCommands, router, universalSearchRouteActive]);
+
+    const universalSearchRuntime = useMemo<UniversalSearchRuntime>(() => ({
+        open: showCommandPalette,
+        buildCommands,
+    }), [buildCommands, showCommandPalette]);
 
     const keyboardHandlers = useMemo<KeyboardShortcutHandlers>(
         () => ({
@@ -390,11 +437,13 @@ function WebCommandPaletteProvider({ children }: { children: React.ReactNode }) 
         [commandPaletteEnabled],
     );
     return (
-        <KeyboardShortcutProvider
-            handlers={keyboardHandlers}
-            enabledWhenDisabledCommandIds={keyboardEnabledWhenDisabledCommandIds}
-        >
-            {children}
-        </KeyboardShortcutProvider>
+        <UniversalSearchRuntimeProvider value={universalSearchRuntime}>
+            <KeyboardShortcutProvider
+                handlers={keyboardHandlers}
+                enabledWhenDisabledCommandIds={keyboardEnabledWhenDisabledCommandIds}
+            >
+                {children}
+            </KeyboardShortcutProvider>
+        </UniversalSearchRuntimeProvider>
     );
 }

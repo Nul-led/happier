@@ -1,15 +1,18 @@
+import type { IconName } from '@/components/ui/icons/Icon';
+
+/**
+ * One admitted command produced by `buildCommandPaletteCommands`. It is the
+ * catalog's output shape, not a presentation model: rows, matching, selection
+ * and keyboard behavior belong to SelectionList.
+ */
 export interface Command {
     id: string;
+    /** Construction-owned semantic used by Search to avoid duplicate empty-state recents. */
+    kind?: 'recentSession';
     title: string;
     subtitle?: string;
-    icon?: string;
+    icon?: IconName;
     shortcut?: string;
     category?: string;
     action: () => void | Promise<void>;
-}
-
-export interface CommandCategory {
-    id: string;
-    title: string;
-    commands: Command[];
 }

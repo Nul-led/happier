@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { Platform } from 'react-native';
 
-import { DEFAULT_AGENT_ID, getAgentCore } from '@/agents/catalog/catalog';
+import { getAgentCore, isBundledAgentId } from '@/agents/catalog/catalog';
 import { formatAgentLikeIdForDisplay } from '@/agents/catalog/formatAgentLikeIdForDisplay';
 import { useLocalSettingMutable, useSession, useSessionProjectScmStatus, useSetting } from '@/sync/domains/state/storage';
 import { useSessionReachableMachineTarget } from '@/components/sessions/model/useSessionMachineReachability';
@@ -82,15 +82,18 @@ export const SessionCockpitTabBar = React.memo((props: SessionCockpitTabBarProps
     const openTabsBadgeEnabled = useSetting('tabBarOpenTabsBadgeEnabled');
     const [pinnedSurfaceIds, setPinnedSurfaceIds] = useLocalSettingMutable('sessionCockpitPinnedSurfaceIds');
     const [moreOpen, setMoreOpen] = React.useState(false);
+    // A session whose Agent cannot be named has no brand for this tab. The
+    // catalog identity owner already renders that neutrally; substituting the
+    // product default would label another Agent's session Claude.
     const agentId = React.useMemo(
-        () => (session ? readSessionPresentationAgentId(session) : null) ?? DEFAULT_AGENT_ID,
+        () => (session ? readSessionPresentationAgentId(session) : null) ?? '',
         [session],
     );
     // The session's reachable machine target scopes catalog identity resolution;
     // the same owner the Session header uses, so the capsule and the header
     // cannot resolve one session's Agent through two different machines.
     const reachableMachineTarget = useSessionReachableMachineTarget(props.sessionId);
-    const agentCore = getAgentCore(agentId);
+    const agentCore = isBundledAgentId(agentId) ? getAgentCore(agentId) : null;
     const gitBadge = resolveGitTabBadge(gitBadgeMode, scmStatus);
     const minimumInteractiveTargetSize = resolveMinimumInteractiveTargetSize(Platform.OS);
 

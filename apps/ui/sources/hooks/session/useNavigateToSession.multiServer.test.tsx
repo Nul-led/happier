@@ -72,7 +72,7 @@ describe('useNavigateToSession (multi-server)', () => {
         expect(setActiveServerAndSwitchSpy).toHaveBeenCalledTimes(1);
         expect(setActiveServerAndSwitchSpy).toHaveBeenCalledWith({
             serverId: 'other',
-            scope: 'device',
+            scope: 'tab',
             refreshAuth: expect.any(Function),
         });
         expect(routerNavigateSpy).toHaveBeenCalledTimes(1);
@@ -110,7 +110,7 @@ describe('useNavigateToSession (multi-server)', () => {
 
         expect(setActiveServerAndSwitchSpy).toHaveBeenCalledWith({
             serverId: 'same',
-            scope: 'device',
+            scope: 'tab',
             refreshAuth: expect.any(Function),
         });
         expect(routerNavigateSpy).toHaveBeenCalledTimes(1);
@@ -142,7 +142,7 @@ describe('useNavigateToSession (multi-server)', () => {
         expect(resolveSessionTargetServerIdSpy).not.toHaveBeenCalled();
         expect(setActiveServerAndSwitchSpy).toHaveBeenCalledWith({
             serverId: 'preferred-server',
-            scope: 'device',
+            scope: 'tab',
             refreshAuth: expect.any(Function),
         });
         expect(routerNavigateSpy).toHaveBeenCalledWith('/session/sess_789?serverId=preferred-server', expect.any(Object));
@@ -174,7 +174,7 @@ describe('useNavigateToSession (multi-server)', () => {
         expect(resolveSessionTargetServerIdSpy).not.toHaveBeenCalled();
         expect(setActiveServerAndSwitchSpy).toHaveBeenCalledWith({
             serverId: 'preferred-server',
-            scope: 'device',
+            scope: 'tab',
             refreshAuth: expect.any(Function),
         });
         expect(routerNavigateSpy).toHaveBeenCalledWith('/session/sess_999?serverId=preferred-server', expect.any(Object));
@@ -189,7 +189,7 @@ describe('useNavigateToSession (multi-server)', () => {
 
         expect(setActiveServerAndSwitchSpy).toHaveBeenLastCalledWith({
             serverId: 'preferred-updated',
-            scope: 'device',
+            scope: 'tab',
             refreshAuth: expect.any(Function),
         });
         expect(routerNavigateSpy).toHaveBeenLastCalledWith('/session/sess_999?serverId=preferred-updated', expect.any(Object));

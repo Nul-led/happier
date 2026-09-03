@@ -12,8 +12,6 @@ import { CenteredInfoTile } from '@/components/ui/lists/CenteredInfoTile';
 import { getMachineDisplayName } from '@/utils/sessions/machineUtils';
 import {
     useAllMachines,
-    useLocalSetting,
-    useProjectLastMobileSurfacesByWorkspaceRefId,
     useSettingMutable,
 } from '@/sync/domains/state/storage';
 import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot';
@@ -22,36 +20,22 @@ import { Modal } from '@/modal';
 import { findWorkspaceRefByScope, upsertWorkspaceRefByScope } from '@/sync/domains/workspaces/workspaceRefs';
 import { workspaceListDirectory } from '@/sync/ops/workspaceFileSystem';
 import { resolveMachineActionCandidates } from '@/utils/sessions/resolveMachineActionCandidates';
-import { useOptionalAppPaneContext } from '@/components/appShell/panes/AppPaneProvider';
-import { useDeviceType } from '@/utils/platform/responsive';
-import { useMobileWorkspaceExperienceState } from '@/components/workspaceCockpit/useMobileWorkspaceExperienceState';
 
 import type { WorkspaceRefV1 } from '@/sync/domains/workspaces/workspaceRefModel';
 
 import { buildProjectsListGroups } from './projectsListGrouping';
-import { buildProjectPaneScopeId } from './detail/projectPaneScope';
-import {
-    buildProjectRouteHref,
-    resolveProjectRouteSegment,
-    resolveProjectRouteSelectionQuery,
-} from './detail/projectRouteState';
 import { ProjectsListItemMenu } from './ProjectsListItemMenu';
 import { resolveWorkspaceRefDisplayName } from './resolveWorkspaceRefDisplayName';
-import { resolveProjectMobileSurfaceIntent, resolveProjectRoutePathForSurface } from '@/components/workspaceCockpit/project/projectCockpitState';
 import { Icon } from '@/components/ui/icons/Icon';
+import { useOpenProject } from './useOpenProject';
 
 export const ProjectsListView = React.memo(() => {
     const { theme } = useUnistyles();
     const router = useRouter();
-    const deviceType = useDeviceType();
-    const paneContext = useOptionalAppPaneContext();
-    const { cockpitEnabled } = useMobileWorkspaceExperienceState();
+    const openProject = useOpenProject();
     const activeServer = useActiveServerSnapshot();
     const allMachines = useAllMachines();
     const addFirstMachines = React.useMemo(() => resolveMachineActionCandidates(allMachines), [allMachines]);
-    const lastMobileSurfaceByWorkspaceRefId = useProjectLastMobileSurfacesByWorkspaceRefId();
-    const lastActiveRootPathByWorkspaceRefId = useLocalSetting('projectLastActiveRootPathByWorkspaceRefId');
-    const lastActiveWorktreeIdByWorkspaceRefId = useLocalSetting('projectLastActiveWorktreeIdByWorkspaceRefId');
 
     const [workspaceRefsV1, setWorkspaceRefsV1] = useSettingMutable('workspaceRefsV1');
     const [pinnedWorkspaceRefIdsV1, setPinnedWorkspaceRefIdsV1] = useSettingMutable('pinnedWorkspaceRefIdsV1');
@@ -67,53 +51,6 @@ export const ProjectsListView = React.memo(() => {
             pinnedWorkspaceRefIds: Array.isArray(pinnedWorkspaceRefIdsV1) ? pinnedWorkspaceRefIdsV1 : [],
         });
     }, [activeServer.serverId, pinnedWorkspaceRefIdsV1, workspaceRefsV1]);
-
-    const handleOpenWorkspace = React.useCallback((workspaceRef: WorkspaceRefV1) => {
-        if (deviceType !== 'phone') {
-            router.push(`/projects/${encodeURIComponent(workspaceRef.id)}`);
-            return;
-        }
-
-        const scopeId = buildProjectPaneScopeId(workspaceRef.id);
-        const rememberedRightTabId = paneContext?.state.scopes[scopeId]?.right?.activeTabId;
-        const persistedSegment = typeof lastMobileSurfaceByWorkspaceRefId[workspaceRef.id] === 'string'
-            ? lastMobileSurfaceByWorkspaceRefId[workspaceRef.id]
-            : null;
-        const persistedRootPath = lastActiveRootPathByWorkspaceRefId?.[workspaceRef.id];
-        const persistedWorktreeId = lastActiveWorktreeIdByWorkspaceRefId?.[workspaceRef.id];
-        const activeRootPath = typeof persistedRootPath === 'string' && persistedRootPath.trim().length > 0
-            ? persistedRootPath
-            : workspaceRef.rootPath;
-        const activeWorktreeId = typeof persistedWorktreeId === 'string' ? persistedWorktreeId : null;
-        if (cockpitEnabled) {
-            const surface = resolveProjectMobileSurfaceIntent({
-                routeKind: 'index',
-                activeRightTabId: rememberedRightTabId,
-                persistedSurface: typeof persistedSegment === 'string' ? persistedSegment : null,
-            });
-            router.push(resolveProjectRoutePathForSurface({
-                workspaceRefId: workspaceRef.id,
-                surface,
-                ...resolveProjectRouteSelectionQuery({
-                    activeRootPath,
-                    defaultRootPath: workspaceRef.rootPath,
-                    activeWorktreeId,
-                }),
-            }));
-            return;
-        }
-        const segment = resolveProjectRouteSegment(
-            rememberedRightTabId,
-            typeof persistedSegment === 'string' ? persistedSegment : null,
-        );
-        router.push(buildProjectRouteHref({
-            workspaceRefId: workspaceRef.id,
-            segment,
-            activeRootPath,
-            defaultRootPath: workspaceRef.rootPath,
-            activeWorktreeId,
-        }));
-    }, [cockpitEnabled, deviceType, lastActiveRootPathByWorkspaceRefId, lastActiveWorktreeIdByWorkspaceRefId, lastMobileSurfaceByWorkspaceRefId, paneContext?.state.scopes, router]);
 
     const handleAddProjectToMachine = React.useCallback(async (machineId: string) => {
         const serverId = String(activeServer.serverId ?? '').trim();
@@ -266,7 +203,7 @@ export const ProjectsListView = React.memo(() => {
                                     onRemove={handleRemoveProject}
                                 />
                             )}
-                            onPress={() => handleOpenWorkspace(workspaceRef)}
+                            onPress={() => { openProject(workspaceRef.id); }}
                         />
                     ))}
                 </ItemGroup>
@@ -311,7 +248,7 @@ export const ProjectsListView = React.memo(() => {
                                         onRemove={handleRemoveProject}
                                     />
                                 )}
-                                onPress={() => handleOpenWorkspace(workspaceRef)}
+                                onPress={() => { openProject(workspaceRef.id); }}
                             />
                         ))}
                     </ItemGroup>

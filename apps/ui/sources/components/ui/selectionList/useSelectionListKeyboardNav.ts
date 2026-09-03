@@ -183,6 +183,9 @@ function resolveDefaultFocusedIndex(
 type RovingFocusState = Readonly<{
     /** The seed identity this position was resolved for; see `resolveFocusSeedKey`. */
     seedKey: string;
+    /** Canonical focused identity, kept with its last position as one atomic focus state. */
+    optionId: string | null;
+    /** Last source-local position, used only to choose the nearest row if `optionId` disappears. */
     index: number;
     explicit: boolean;
 }>;
@@ -237,25 +240,46 @@ function resolveReseededFocusedIndex(
     const {
         flatVisibleOptionIds,
         preferredFocusedOptionId,
-        inputMode,
         virtualizedOptionSource,
     } = params;
     if (virtualizedOptionSource) {
+        if (previous.optionId !== null) {
+            const survivingIndex = virtualizedOptionSource.findOptionIndexById(previous.optionId);
+            if (virtualizedOptionSource.isFocusableOptionIndex(survivingIndex)) {
+                return survivingIndex;
+            }
+        }
         const defaultIndex = resolveDefaultFocusedIndex(
             flatVisibleOptionIds,
             preferredFocusedOptionId,
             virtualizedOptionSource,
         );
-        if (inputMode !== 'value' || !previous.explicit) return defaultIndex;
-        return virtualizedOptionSource.isFocusableOptionIndex(previous.index)
-            ? previous.index
-            : defaultIndex;
+        if (!previous.explicit && preferredFocusedOptionId) return defaultIndex;
+        let nearestIndex = -1;
+        let nearestDistance = Number.POSITIVE_INFINITY;
+        for (const item of virtualizedOptionSource.items) {
+            if (item.kind !== 'option') continue;
+            if (!virtualizedOptionSource.isFocusableOptionIndex(item.optionIndex)) continue;
+            const distance = Math.abs(item.optionIndex - previous.index);
+            if (
+                distance < nearestDistance
+                || (distance === nearestDistance && item.optionIndex < nearestIndex)
+            ) {
+                nearestDistance = distance;
+                nearestIndex = item.optionIndex;
+            }
+        }
+        return nearestIndex >= 0 ? nearestIndex : defaultIndex;
     }
     if (flatVisibleOptionIds.length === 0) return -1;
-    // Value mode preserves a POSITION the user deliberately aimed at while the
-    // rows underneath it churn (a path picker re-lists on every keystroke);
-    // every other case returns to the default row.
-    if (inputMode !== 'value' || !previous.explicit) {
+    if (previous.optionId !== null) {
+        const survivingIndex = flatVisibleOptionIds.indexOf(previous.optionId);
+        if (survivingIndex >= 0) return survivingIndex;
+    }
+    // A value-mode step may deliberately publish a new preferred row as input
+    // changes. Otherwise preserve the user's last position when the exact row
+    // disappeared, selecting the nearest navigable successor/predecessor.
+    if (!previous.explicit && preferredFocusedOptionId) {
         return resolveDefaultFocusedIndex(flatVisibleOptionIds, preferredFocusedOptionId);
     }
     if (previous.index < 0) return 0;
@@ -301,66 +325,85 @@ export function useSelectionListRovingFocus(
         ],
     );
 
-    const [state, setState] = React.useState<RovingFocusState>(() => ({
-        seedKey,
-        index: resolveDefaultFocusedIndex(
+    const [state, setState] = React.useState<RovingFocusState>(() => {
+        const index = resolveDefaultFocusedIndex(
             flatVisibleOptionIds,
             preferredFocusedOptionId,
             virtualizedOptionSource,
-        ),
-        explicit: false,
-    }));
+        );
+        return {
+            seedKey,
+            index,
+            optionId: virtualizedOptionSource
+                ? virtualizedOptionSource.isFocusableOptionIndex(index)
+                    ? virtualizedOptionSource.getOptionId(index)
+                    : null
+                : flatVisibleOptionIds[index] ?? null,
+            explicit: false,
+        };
+    });
 
     let current = state;
+
     if (state.seedKey !== seedKey) {
+        const index = resolveReseededFocusedIndex(state, {
+            flatVisibleOptionIds,
+            preferredFocusedOptionId,
+            inputMode,
+            inputValue,
+            ...(virtualizedOptionSource === undefined ? {} : { virtualizedOptionSource }),
+        });
         current = {
             seedKey,
-            index: resolveReseededFocusedIndex(state, {
-                flatVisibleOptionIds,
-                preferredFocusedOptionId,
-                inputMode,
-                inputValue,
-                ...(virtualizedOptionSource === undefined ? {} : { virtualizedOptionSource }),
-            }),
-            explicit: false,
+            index,
+            optionId: virtualizedOptionSource
+                ? virtualizedOptionSource.isFocusableOptionIndex(index)
+                    ? virtualizedOptionSource.getOptionId(index)
+                    : null
+                : flatVisibleOptionIds[index] ?? null,
+            explicit: state.explicit,
         };
         setState(current);
     }
 
     const setFocusedIndex = React.useCallback((index: number) => {
+        const optionId = virtualizedOptionSource
+            ? virtualizedOptionSource.isFocusableOptionIndex(index)
+                ? virtualizedOptionSource.getOptionId(index)
+                : null
+            : flatVisibleOptionIds[index] ?? null;
         setState((previous) => (
-            previous.index === index && previous.explicit
+            previous.index === index && previous.optionId === optionId && previous.explicit
                 ? previous
-                : { seedKey: previous.seedKey, index, explicit: true }
+                : { seedKey: previous.seedKey, index, optionId, explicit: true }
         ));
-    }, []);
+    }, [flatVisibleOptionIds, virtualizedOptionSource]);
 
     const updateFocusedIndex = React.useCallback((resolveNext: (index: number) => number) => {
         setState((previous) => {
             const index = resolveNext(previous.index);
-            return previous.index === index && previous.explicit
+            const optionId = virtualizedOptionSource
+                ? virtualizedOptionSource.isFocusableOptionIndex(index)
+                    ? virtualizedOptionSource.getOptionId(index)
+                    : null
+                : flatVisibleOptionIds[index] ?? null;
+            return previous.index === index && previous.optionId === optionId && previous.explicit
                 ? previous
-                : { seedKey: previous.seedKey, index, explicit: true };
+                : { seedKey: previous.seedKey, index, optionId, explicit: true };
         });
-    }, []);
+    }, [flatVisibleOptionIds, virtualizedOptionSource]);
 
     const clearExplicitRowFocus = React.useCallback(() => {
         setState((previous) => (
             previous.explicit
-                ? { seedKey: previous.seedKey, index: previous.index, explicit: false }
+                ? { ...previous, explicit: false }
                 : previous
         ));
     }, []);
 
     const focusedIndex = current.index;
     const hasExplicitRowFocus = current.explicit;
-    const focusedOptionId = virtualizedOptionSource
-        ? virtualizedOptionSource.isFocusableOptionIndex(focusedIndex)
-            ? virtualizedOptionSource.getOptionId(focusedIndex)
-            : null
-        : focusedIndex >= 0 && focusedIndex < flatVisibleOptionIds.length
-            ? flatVisibleOptionIds[focusedIndex] ?? null
-            : null;
+    const focusedOptionId = current.optionId;
 
     return React.useMemo(() => ({
         focusedIndex,
@@ -416,6 +459,8 @@ function resolveFocusableOptionId(
  *  - **ArrowUp / ArrowDown**: `resolveArrowTarget` first (multi-column row
  *    movement), else advance the flat focused option with modulo wrap. Always
  *    consumed.
+ *  - **Home / End**: move to the first / last navigable row unless an IME is
+ *    composing, in which case native text handling is preserved.
  *  - **Enter**: while composing → propagate. Otherwise, if a row is focused →
  *    activate it (consumed). Else if `inputMode === 'value'` → commit raw input
  *    (consumed). Otherwise consumed but no-op.
@@ -607,6 +652,30 @@ export function useSelectionListKeyboardNav(
                     const base = current < 0 ? length : current;
                     return (base - 1 + length) % length;
                 });
+                return consume(event);
+            }
+            case 'Home': {
+                if (isComposing === true) return false;
+                const first = virtualizedOptionSource
+                    ? virtualizedOptionSource.getFirstFocusableOptionIndex()
+                    : flatVisibleOptionIds.length > 0 ? 0 : -1;
+                if (first >= 0) setFocusedIndex(first);
+                return consume(event);
+            }
+            case 'End': {
+                if (isComposing === true) return false;
+                let last = flatVisibleOptionIds.length - 1;
+                if (virtualizedOptionSource) {
+                    last = -1;
+                    for (let index = virtualizedOptionSource.items.length - 1; index >= 0; index -= 1) {
+                        const item = virtualizedOptionSource.items[index];
+                        if (item?.kind !== 'option') continue;
+                        if (!virtualizedOptionSource.isFocusableOptionIndex(item.optionIndex)) continue;
+                        last = item.optionIndex;
+                        break;
+                    }
+                }
+                if (last >= 0) setFocusedIndex(last);
                 return consume(event);
             }
             case 'Enter': {

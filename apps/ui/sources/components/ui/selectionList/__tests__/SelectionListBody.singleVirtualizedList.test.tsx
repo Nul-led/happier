@@ -8,6 +8,7 @@ import type {
     SelectionListOption,
     SelectionListProps,
     SelectionListStep,
+    SelectionListVirtualizedOptionSource,
 } from '../_types';
 
 vi.mock('react-native', async () => {
@@ -71,6 +72,43 @@ describe('SelectionListBody single virtualized-list multi-section restructure (R
         vi.unstubAllEnvs();
     });
 
+    it('keeps row taps handled for a direct virtualized option source while the keyboard is open', async () => {
+        const options = makeOptions(3, 'direct');
+        const source: SelectionListVirtualizedOptionSource = {
+            items: options.map((_, optionIndex) => ({
+                kind: 'option',
+                optionIndex,
+                positionInSet: optionIndex + 1,
+            })),
+            optionCount: options.length,
+            stateKey: 'direct-v1',
+            getOption: (index) => options[index]!,
+            getOptionId: (index) => options[index]?.id ?? '',
+            findOptionIndexById: (id) => options.findIndex((option) => option.id === id),
+            getFirstFocusableOptionIndex: () => 0,
+            getNextFocusableOptionIndex: (current, direction) => (
+                (current + direction + options.length) % options.length
+            ),
+            isFocusableOptionIndex: (index) => index >= 0 && index < options.length,
+            getHeader: () => ({ id: 'unused' }),
+        };
+        const { VirtualizedList } = await import('@/components/ui/lists/virtualized/VirtualizedList');
+        const { SelectionList } = await import('../SelectionList');
+        const screen = await renderScreen(
+            <SelectionList
+                {...defaultProps({
+                    id: 'root',
+                    inputPlaceholder: 'Search',
+                    sections: [],
+                    virtualizedOptionSource: source,
+                }, { maxHeight: 300 })}
+            />,
+        );
+
+        expect(screen.tree.root.findByType(VirtualizedList as React.ComponentType<any>).props.keyboardShouldPersistTaps)
+            .toBe('handled');
+    });
+
     it.each([
         {
             name: 'fallback identity',
@@ -120,14 +158,20 @@ describe('SelectionListBody single virtualized-list multi-section restructure (R
 
         const input = screen.findByTestId('sl:header:input');
         const row = screen.findByTestId(expectedId);
-        const matchingIds = screen.tree.root.findAll((node) => node.props?.id === expectedId);
+        // Composite owners forward `id` to one host row. Count the host tree
+        // that maps to DOM nodes; counting both levels reports a duplicate
+        // that browsers never receive.
+        const matchingHostIds = screen.tree.root.findAll((node) => (
+            typeof node.type === 'string' && node.props?.id === expectedId
+        ));
 
         expect(input?.props['aria-activedescendant']).toBe(expectedId);
         expect(row?.props.id).toBe(expectedId);
-        expect(matchingIds).toHaveLength(1);
+        expect(matchingHostIds).toHaveLength(1);
     });
 
     it('mounts exactly ONE FlashList covering both sections (no nested FlashList-in-ScrollView) when two sections are force-virtualized', async () => {
+        const { VirtualizedList } = await import('@/components/ui/lists/virtualized/VirtualizedList');
         const root: SelectionListStep = {
             id: 'root',
             inputPlaceholder: 'Search',
@@ -158,6 +202,8 @@ describe('SelectionListBody single virtualized-list multi-section restructure (R
         // overwrites `state.props` per render; the data array must include
         // entries from BOTH sections.)
         expect(legendListState.props).not.toBeNull();
+        expect(screen.tree.root.findByType(VirtualizedList as React.ComponentType<any>).props.keyboardShouldPersistTaps)
+            .toBe('handled');
         expect(legendListState.props?.recycleItems).toBe(false);
         for (const sectionId of ['first', 'second']) {
             const section = screen.findByTestId(`sl:section:${sectionId}`);

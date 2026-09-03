@@ -81,11 +81,16 @@ describe('SelectionList accessibility contract (Phase 2.10)', () => {
 
         const input = screen.findByTestId('sl:header:input');
         const row = screen.findByTestId(expectedId);
-        const matchingIds = screen.tree.root.findAll((node) => node.props?.id === expectedId);
+        // ReactTestRenderer exposes both a composite row owner and its host
+        // node when props are forwarded. Only host nodes become DOM elements
+        // and therefore participate in id uniqueness.
+        const matchingHostIds = screen.tree.root.findAll((node) => (
+            typeof node.type === 'string' && node.props?.id === expectedId
+        ));
 
         expect(input?.props['aria-activedescendant']).toBe(expectedId);
         expect(row?.props.id).toBe(expectedId);
-        expect(matchingIds).toHaveLength(1);
+        expect(matchingHostIds).toHaveLength(1);
     });
 
     it('exposes role=listbox on the body container with an id consumed by the input combobox', async () => {

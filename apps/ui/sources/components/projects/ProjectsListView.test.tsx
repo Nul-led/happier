@@ -105,7 +105,9 @@ vi.mock('@/sync/domains/state/storage', async (importOriginal) => {
     const { createPartialStorageModuleMock } = await import('@/dev/testkit/mocks/storage');
     return createPartialStorageModuleMock(importOriginal, {
         useAllMachines: () => machinesMock,
-        useSetting: (key: string) => accountSettingsMock[key],
+        useSetting: (key: string) => key === 'workspaceRefsV1'
+            ? workspaceRefsV1Mock
+            : accountSettingsMock[key],
         useLocalSetting: (key: string) => localSettingsMock[key],
         useProjectLastMobileSurfacesByWorkspaceRefId: () => projectLastMobileSurfacesByWorkspaceRefIdMock,
         useSettingMutable: (key: string) => {

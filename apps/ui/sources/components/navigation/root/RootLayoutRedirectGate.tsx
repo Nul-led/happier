@@ -19,6 +19,8 @@ import { upsertActivateAndSwitchServer } from '@/sync/domains/server/activeServe
 import { fireAndForget } from '@/utils/system/fireAndForget';
 import { Modal } from '@/modal';
 import { t } from '@/text';
+import { resolveRoutineServerSelectionScope } from '@/sync/domains/server/selection/serverSelectionScope';
+import { isDesktopHost } from '@/utils/platform/desktopHost';
 import {
     doesOnboardingJourneyOwnTransientDemoServer,
     useOnboardingJourneySessionActive,
@@ -115,7 +117,7 @@ export function RootLayoutRedirectGate({ children }: { children: React.ReactNode
                             await upsertActivateAndSwitchServer({
                                 serverUrl,
                                 source: 'url',
-                                scope: 'device',
+                                scope: resolveRoutineServerSelectionScope(Platform.OS, isDesktopHost()),
                                 refreshAuth: refreshAfterSwitch,
                             });
                         },

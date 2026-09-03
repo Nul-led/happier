@@ -14,6 +14,7 @@ import { shouldSwitchToServerUrl } from '@/sync/domains/server/url/serverUrlOver
 import { isDesktopActivityOverlayWindowContext } from '@/activity/adapters/desktop/runtime/isDesktopActivityOverlayWindowContext';
 import { useNotificationResponseRouting } from '@/activity/notifications/runtime/useNotificationResponseRouting';
 import { invokeDesktopHost, isDesktopHost } from '@/utils/platform/desktopHost';
+import { resolveRoutineServerSelectionScope } from '@/sync/domains/server/selection/serverSelectionScope';
 
 /**
  * Owns every navigation/auth-driven side effect from the app root layout.
@@ -99,7 +100,7 @@ export function RootLayoutNavigationEffects(): React.ReactElement | null {
                         await upsertActivateAndSwitchServer({
                             serverUrl: pendingTerminalConnect.serverUrl,
                             source: 'url',
-                            scope: 'device',
+                            scope: resolveRoutineServerSelectionScope(Platform.OS, isDesktopHost()),
                             refreshAuth,
                         });
                     } catch {

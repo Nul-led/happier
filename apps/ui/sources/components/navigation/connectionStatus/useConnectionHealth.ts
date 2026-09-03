@@ -9,7 +9,6 @@ import {
     useAllMachines,
     useMachineListByServerId,
     useMachineListStatusByServerId,
-    useSettings,
     useEndpointConnectivity,
     useSocketStatus,
     useSyncError,
@@ -40,12 +39,11 @@ export function useConnectionHealth() {
     const allMachines = useAllMachines();
     const machineListByServerId = useMachineListByServerId();
     const machineListStatusByServerId = useMachineListStatusByServerId();
-    const accountSettings = useSettings();
     const {
         serverSelectionGroups,
         serverSelectionActiveTargetKind,
         serverSelectionActiveTargetId,
-    } = useHomeViewSelectionSettings(accountSettings);
+    } = useHomeViewSelectionSettings();
 
     const activeServerSnapshot = useActiveServerSnapshot();
     const serverProfiles = React.useMemo(() => {

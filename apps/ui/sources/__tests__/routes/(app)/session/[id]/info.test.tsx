@@ -465,10 +465,11 @@ vi.mock('@/agents/catalog/catalog', async (importOriginal) => {
     return {
         ...actual,
         DEFAULT_AGENT_ID: 'claude',
-        getAgentCore: () => ({
-            availability: { experimental: false },
-            ...mockAgentCore,
-        }),
+        // Only a bundled Agent has catalog presentation. A stub that answers for
+        // every id would hand this screen a brand it cannot actually have.
+        getAgentCore: (agentId: string) => (actual.isBundledAgentId(agentId)
+            ? { availability: { experimental: false }, ...mockAgentCore }
+            : null),
         resolveAgentIdFromFlavor: (flavor: string | null | undefined) => mockResolveAgentIdFromFlavor(flavor),
     };
 });
@@ -969,6 +970,43 @@ describe('/session/[id]/info', () => {
             .filter((node: any) => node.props?.title === 'sessionInfo.aiProvider');
         expect(aiProviderItems).toHaveLength(1);
         expect(aiProviderItems[0]?.props?.subtitle).toBe('Claude (daemon)');
+    });
+
+    it('shows no substituted Agent brand for a session whose Agent is unreadable', async () => {
+        // Nothing in this session names its Agent, so the screen has no brand to
+        // show. Presenting the product default would tell the user the session
+        // belongs to Claude.
+        mockResolveAgentIdFromFlavor.mockReturnValue(undefined);
+        mockSession = {
+            id: 'session-unknown-agent',
+            serverId: 'server-session-info',
+            active: false,
+            accessLevel: null,
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+            seq: 1,
+            metadata: {
+                machineId: 'machine-projection-1',
+                host: 'host-a',
+                path: '/tmp/session',
+                homeDir: '/home/me',
+            },
+        };
+
+        const screen = await renderInfoScreen();
+        await flushHookEffects({ cycles: 10 });
+
+        const avatars = screen.root.findAllByProps({ testID: 'session-info-avatar' });
+        expect(avatars.length).toBeGreaterThan(0);
+        for (const avatar of avatars) {
+            expect(avatar.props.flavor ?? null).toBeNull();
+        }
+
+        const aiProviderItems = screen
+            .findAllByType('Item' as any)
+            .filter((node: any) => node.props?.title === 'sessionInfo.aiProvider');
+        expect(aiProviderItems).toHaveLength(1);
+        expect(aiProviderItems[0]?.props?.subtitle).not.toBe('agentInput.agent.claude');
     });
 
     it('defers raw dev JSON rendering until a section is opened', async () => {

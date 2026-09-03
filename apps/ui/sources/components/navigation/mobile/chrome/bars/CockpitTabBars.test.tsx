@@ -362,6 +362,29 @@ describe('cockpit tab bars', () => {
         expect(screen.findByTestId('session-cockpit-tab-chat-agent-icon')?.props.agentId).toBe('claude');
     });
 
+    it('names no Agent on the chat tab when the session Agent is unreadable', async () => {
+        // A shared owner that publishes no Agent presentation leaves the chrome
+        // with no Agent to name. Falling back to the product default would put
+        // Claude's name and mark on another Agent's session.
+        sessionMetadataState.metadataLayoutVersion = 1;
+        sessionMetadataState.metadata = { v: 1 };
+        translationPrefix = 'en';
+        const { SessionCockpitTabBar } = await import('./SessionCockpitTabBar');
+
+        const screen = await renderScreen(
+            <SessionCockpitTabBar
+                sessionId="sess_1"
+                activeSurface="chat"
+                terminalTabAvailable={false}
+                openDetailsTabCount={0}
+                onSurfacePress={() => {}}
+            />,
+        );
+
+        expect(screen.getTextContent()).not.toContain('en:agentInput.agent.claude');
+        expect(screen.findByTestId('session-cockpit-tab-chat-agent-icon')?.props.agentId).not.toBe('claude');
+    });
+
     it('renders an external Agent through the machine-scoped catalog identity owner', async () => {
         sessionMetadataState.metadataLayoutVersion = 1;
         sessionMetadataState.metadata = {

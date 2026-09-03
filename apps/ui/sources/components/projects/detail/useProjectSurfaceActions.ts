@@ -9,6 +9,7 @@ import type { WorkspaceRefV1 } from '@/sync/domains/workspaces/workspaceRefModel
 import { t } from '@/text';
 import { deferOnWeb } from '@/utils/platform/deferOnWeb';
 import { useProjectRouteRouterRef } from './useProjectRouteRouterRef';
+import { createProjectCommitDetailsTab, createProjectFileDetailsTab } from './projectDetailsTabBuilders';
 
 export function useProjectSurfaceActions(params: Readonly<{
     scopeId: string;
@@ -20,29 +21,14 @@ export function useProjectSurfaceActions(params: Readonly<{
     const routerRef = useProjectRouteRouterRef();
 
     const openFileInDetails = React.useCallback((fullPath: string) => {
-        const fileName = fullPath.split('/').pop() ?? fullPath;
         deferOnWeb(() => {
-            pane.openDetailsTab({
-                key: `file:${fullPath}`,
-                kind: 'file',
-                title: fileName,
-                resource: { kind: 'file', path: fullPath },
-            });
+            pane.openDetailsTab(createProjectFileDetailsTab(fullPath));
         });
     }, [pane]);
 
     const openFileInDetailsPinned = React.useCallback((fullPath: string) => {
-        const fileName = fullPath.split('/').pop() ?? fullPath;
         deferOnWeb(() => {
-            pane.openDetailsTab(
-                {
-                    key: `file:${fullPath}`,
-                    kind: 'file',
-                    title: fileName,
-                    resource: { kind: 'file', path: fullPath },
-                },
-                { intent: 'pinned' },
-            );
+            pane.openDetailsTab(createProjectFileDetailsTab(fullPath), { intent: 'pinned' });
         });
     }, [pane]);
 
@@ -89,15 +75,10 @@ export function useProjectSurfaceActions(params: Readonly<{
     }, [params.activeRootPath, params.workspaceRef.machineId, params.workspaceRef.serverId, routerRef]);
 
     const openCommitInDetails = React.useCallback((sha: string) => {
-        const safeSha = sha.trim().split(/\s+/)[0] ?? '';
-        if (!safeSha) return;
+        const tab = createProjectCommitDetailsTab(sha);
+        if (!tab) return;
         deferOnWeb(() => {
-            pane.openDetailsTab({
-                key: `commit:${safeSha}`,
-                kind: 'commit',
-                title: safeSha.slice(0, 7),
-                resource: { kind: 'commit', sha: safeSha },
-            });
+            pane.openDetailsTab(tab);
         });
     }, [pane]);
 

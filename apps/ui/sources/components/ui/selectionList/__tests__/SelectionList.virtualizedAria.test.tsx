@@ -96,11 +96,17 @@ describe('SelectionList virtualized row ARIA parity (R9 blocker 4)', () => {
 
         const input = screen.findByTestId('sl:header:input');
         const row = screen.findByTestId(expectedId);
-        const matchingIds = screen.tree.root.findAll((node) => node.props?.id === expectedId);
+        // Count rendered host nodes, not composite owners that forward the
+        // same prop. ReactTestRenderer exposes both `Item` and its host row;
+        // only the latter becomes a DOM element and participates in id
+        // uniqueness / aria-activedescendant resolution.
+        const matchingHostIds = screen.tree.root.findAll((node) => (
+            typeof node.type === 'string' && node.props?.id === expectedId
+        ));
 
         expect(input?.props['aria-activedescendant']).toBe(expectedId);
         expect(row?.props.id).toBe(expectedId);
-        expect(matchingIds).toHaveLength(1);
+        expect(matchingHostIds).toHaveLength(1);
     });
 
     it('virtualized rows expose role="option" + aria-selected + id matching the plain path', async () => {

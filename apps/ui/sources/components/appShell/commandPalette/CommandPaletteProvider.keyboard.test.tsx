@@ -7,6 +7,7 @@ import type { Settings } from '@/sync/domains/settings/settings';
 
 const testState = vi.hoisted(() => ({
     routerPush: vi.fn(),
+    modalShow: vi.fn(),
     keyboardHandlers: null as KeyboardShortcutHandlers | null,
     settings: {
         commandPaletteEnabled: true,
@@ -92,7 +93,7 @@ vi.mock('@/components/settings/pets/petSettingsCommandEvents', () => ({
 vi.mock('@/modal', () => ({
     Modal: {
         alertAsync: vi.fn(async () => {}),
-        show: vi.fn(),
+        show: testState.modalShow,
     },
 }));
 
@@ -124,6 +125,7 @@ describe('CommandPaletteProvider keyboard shortcuts', () => {
         vi.resetModules();
         vi.clearAllMocks();
         testState.keyboardHandlers = null;
+        testState.modalShow.mockReset();
         testState.settings = {
             commandPaletteEnabled: true,
             keyboardShortcutsV2Enabled: true,
@@ -156,5 +158,27 @@ describe('CommandPaletteProvider keyboard shortcuts', () => {
                 draftOrigin: 'ordinary',
             },
         });
+    });
+
+    it('keeps Search available when only its keyboard shortcut is disabled', async () => {
+        testState.settings.commandPaletteEnabled = false;
+        const { useUniversalSearchRuntime } = await import('@/components/appShell/search/UniversalSearchRuntimeContext');
+        const { CommandPaletteProvider } = await import('./CommandPaletteProvider');
+
+        function OpenSearch(): React.ReactElement {
+            const search = useUniversalSearchRuntime();
+            return React.createElement('OpenSearch', { onPress: () => search.open('needle') });
+        }
+
+        const screen = await renderScreen(
+            <CommandPaletteProvider><OpenSearch /></CommandPaletteProvider>,
+        );
+        screen.findByType('OpenSearch')?.props.onPress();
+
+        expect(testState.keyboardHandlers?.['commandPalette.open']).toBeUndefined();
+        expect(testState.modalShow).toHaveBeenCalledWith(expect.objectContaining({
+            props: expect.objectContaining({ initialQuery: 'needle' }),
+            webPlacement: 'top',
+        }));
     });
 });

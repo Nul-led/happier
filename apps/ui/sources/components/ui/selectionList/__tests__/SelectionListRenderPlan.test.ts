@@ -14,6 +14,88 @@ import type { DynamicSectionState } from '../useSelectionListDynamicSections';
  * These tests pin the contract independent of the React orchestrator.
  */
 describe('SelectionListRenderPlan (R14 extracted)', () => {
+    it('renders an opted-in first-load skeleton during the initial idle state instead of the global empty state', async () => {
+        const { synthesizeSelectionListRenderPlan } = await import('../SelectionListRenderPlan');
+        const states = new Map<string, DynamicSectionState>();
+        states.set('remote', {
+            status: 'idle',
+            options: [],
+            lastSuccessOptions: undefined,
+        });
+
+        const plan = synthesizeSelectionListRenderPlan({
+            sections: [{
+                kind: 'dynamic',
+                id: 'remote',
+                showSkeletonsOnFirstLoad: true,
+                loadingSkeletonRows: 2,
+                resolve: async () => ({ options: [] }),
+            }],
+            inputValue: 'query',
+            filterQuery: 'query',
+            dynamicSectionStates: states,
+        });
+
+        expect(plan).toEqual([expect.objectContaining({
+            id: 'remote',
+            dynamicState: 'loading',
+            skeletonRowCount: 2,
+        })]);
+    });
+
+    it('does not expose a resolver Error message in the user-visible error plan', async () => {
+        const { synthesizeSelectionListRenderPlan } = await import('../SelectionListRenderPlan');
+        const states = new Map<string, DynamicSectionState>();
+        states.set('remote', {
+            status: 'error',
+            options: [],
+            error: new Error('token abc123 failed at /private/internal/path'),
+            lastSuccessOptions: undefined,
+        });
+
+        const plan = synthesizeSelectionListRenderPlan({
+            sections: [{
+                kind: 'dynamic',
+                id: 'remote',
+                resolve: async () => ({ options: [] }),
+            }],
+            inputValue: 'query',
+            filterQuery: 'query',
+            dynamicSectionStates: states,
+        });
+
+        expect(plan[0]).toEqual(expect.objectContaining({
+            id: 'remote',
+            dynamicState: 'error',
+            hint: undefined,
+        }));
+    });
+
+    it('lets high-frequency query sections opt out of seed-driven drill transitions', async () => {
+        const { synthesizeSelectionListRenderPlan } = await import('../SelectionListRenderPlan');
+        const states = new Map<string, DynamicSectionState>();
+        states.set('remote', {
+            status: 'success',
+            seed: 'second query',
+            options: [{ id: 'result', label: 'Result' }],
+            lastSuccessOptions: undefined,
+        });
+
+        const plan = synthesizeSelectionListRenderPlan({
+            sections: [{
+                kind: 'dynamic',
+                id: 'remote',
+                resultFiltering: 'provider',
+                resultTransition: 'none',
+                resolve: async () => ({ options: [] }),
+            }],
+            inputValue: 'second query',
+            filterQuery: 'second query',
+            dynamicSectionStates: states,
+        });
+
+        expect(plan[0]?.transitionKey).toBeUndefined();
+    });
     it('filters static sections by the current query and preserves order', async () => {
         const { synthesizeSelectionListRenderPlan } = await import('../SelectionListRenderPlan');
         const plan = synthesizeSelectionListRenderPlan({
@@ -121,7 +203,7 @@ describe('SelectionListRenderPlan (R14 extracted)', () => {
         expect(plan[0].options.map((o) => o.id)).toEqual(['stale']);
     });
 
-    it('emits an error entry with the resolver message when present', async () => {
+    it('emits an error entry without forwarding the resolver message', async () => {
         const { synthesizeSelectionListRenderPlan } = await import('../SelectionListRenderPlan');
         const states = new Map<string, DynamicSectionState>();
         states.set('dyn', {
@@ -146,7 +228,7 @@ describe('SelectionListRenderPlan (R14 extracted)', () => {
         });
         expect(plan).toHaveLength(1);
         expect(plan[0].dynamicState).toBe('error');
-        expect(plan[0].hint).toBe('Network down');
+        expect(plan[0].hint).toBeUndefined();
         expect(plan[0].isStale).toBe(true);
     });
 
@@ -200,6 +282,32 @@ describe('SelectionListRenderPlan (R14 extracted)', () => {
             dynamicSectionStates: states,
         });
         expect(plan).toHaveLength(0);
+    });
+
+    it('retains a success-only result hint beside nonempty provider-filtered options', async () => {
+        const { synthesizeSelectionListRenderPlan } = await import('../SelectionListRenderPlan');
+        const states = new Map<string, DynamicSectionState>();
+        states.set('dyn', {
+            status: 'success',
+            options: [{ id: 'semantic', label: 'Provider result' }],
+            resultHint: 'More results are available',
+            lastSuccessOptions: undefined,
+        });
+        const plan = synthesizeSelectionListRenderPlan({
+            sections: [{
+                kind: 'dynamic',
+                id: 'dyn',
+                resolve: async () => ({ options: [] }),
+                resultFiltering: 'provider',
+            }],
+            inputValue: 'query',
+            filterQuery: 'query',
+            dynamicSectionStates: states,
+        });
+
+        expect(plan).toHaveLength(1);
+        expect(plan[0].options.map((option) => option.id)).toEqual(['semantic']);
+        expect(plan[0].resultHint).toBe('More results are available');
     });
 
     it('exposes filterDynamicOptionsByQuery as a referentially-stable identity for empty queries', async () => {
