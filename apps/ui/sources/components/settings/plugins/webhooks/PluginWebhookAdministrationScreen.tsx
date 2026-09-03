@@ -109,7 +109,6 @@ const WebhookEndpointSection = React.memo(function WebhookEndpointSection(props:
 
     const movePendingDeliveries = React.useCallback(async (params: Readonly<{
         endpointRevision: number;
-        previousTargetMaterialization: PluginMachineMaterializationRefV1;
         targetMaterialization: PluginMachineMaterializationRefV1;
     }>): Promise<void> => {
         let cursor: string | undefined;
@@ -119,7 +118,6 @@ const WebhookEndpointSection = React.memo(function WebhookEndpointSection(props:
                 {
                     webhookEndpointId: endpoint.webhookEndpointId,
                     endpointRevision: params.endpointRevision,
-                    previousTargetMaterialization: params.previousTargetMaterialization,
                     targetMaterialization: params.targetMaterialization,
                     ...(cursor ? { cursor } : {}),
                     pageSize: 500,
@@ -194,7 +192,6 @@ const WebhookEndpointSection = React.memo(function WebhookEndpointSection(props:
             if (movePending) {
                 await movePendingDeliveries({
                     endpointRevision: result.revision,
-                    previousTargetMaterialization: result.previousTargetMaterialization,
                     targetMaterialization: result.targetMaterialization,
                 });
             }
@@ -213,7 +210,6 @@ const WebhookEndpointSection = React.memo(function WebhookEndpointSection(props:
         try {
             await movePendingDeliveries({
                 endpointRevision: endpoint.revision,
-                previousTargetMaterialization: endpoint.pendingTargetTransfer.previousTargetMaterialization,
                 targetMaterialization: endpoint.targetMaterialization,
             });
             await props.refresh();

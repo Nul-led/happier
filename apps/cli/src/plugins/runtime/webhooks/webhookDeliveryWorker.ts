@@ -250,6 +250,12 @@ export async function processClaimedPluginWebhookDeliveryV1(params: Readonly<{
   ]);
   let result: PluginWebhookActionResultV1;
   let automationAdmissionUnresolved: PluginWebhookAutomationAdmissionUnresolvedV1 | null = null;
+  /**
+   * True only when the Action itself returned a schema-valid result. A thrown,
+   * cancelled or timed-out handler leaves a host-derived retry marker, which is
+   * not a result worth spending a final settlement attempt on.
+   */
+  let actionAuthoredResult = false;
   try {
     const executed = await runWithPluginWebhookInvocationReferenceV1({
       referenceWithoutLease: {
@@ -273,6 +279,7 @@ export async function processClaimedPluginWebhookDeliveryV1(params: Readonly<{
     });
     result = executed.result;
     automationAdmissionUnresolved = executed.automationAdmissionUnresolved;
+    actionAuthoredResult = true;
   } catch {
     result = { kind: 'retry', code: handlerTimedOut ? 'handler_timeout' : 'handler_error' };
   } finally {
@@ -282,29 +289,49 @@ export async function processClaimedPluginWebhookDeliveryV1(params: Readonly<{
     await renewalLoop;
   }
   if (params.signal?.aborted) return daemonStopped();
-  if (custodyFailure) return custodyFailure;
   if (handlerTimedOut) {
     result = { kind: 'retry', code: 'handler_timeout' };
     automationAdmissionUnresolved = null;
+    actionAuthoredResult = false;
   }
+  // The last lease the server acknowledged. Settlement addresses that exact
+  // identity, so a reassigned or expired row is refused by its compare-and-set
+  // rather than overwritten here.
   const settlementLease = { leaseId: lease.leaseId, revision: lease.revision };
-  if (result.kind === 'settled') {
-    return await params.transport.complete({
-      deliveryId: params.claim.deliveryId,
-      target,
-      lease: settlementLease,
-      result,
-      ...(params.signal ? { signal: params.signal } : {}),
-    });
+  const settle = async (): Promise<PluginWebhookSettleResultV1> => (
+    result.kind === 'settled'
+      ? await params.transport.complete({
+        deliveryId: params.claim.deliveryId,
+        target,
+        lease: settlementLease,
+        result,
+        ...(params.signal ? { signal: params.signal } : {}),
+      })
+      : await params.transport.fail({
+        deliveryId: params.claim.deliveryId,
+        target,
+        lease: settlementLease,
+        result,
+        ...(result.kind === 'retry' && automationAdmissionUnresolved
+          ? { automationAdmissionUnresolved }
+          : {}),
+        ...(params.signal ? { signal: params.signal } : {}),
+      })
+  );
+  if (!custodyFailure) return await settle();
+  // Custody was questioned while the Action ran, but the Action still produced
+  // its own result under `executionStartedAt`. A renewal refusal proves the
+  // server would not *extend* this lease — for a retired plugin generation or
+  // endpoint it never proves the lease already expired. Discarding the result
+  // here strands the row until expiry and then re-runs the same delivery, so
+  // make exactly one final attempt against the last acknowledged lease and let
+  // the server's exact delivery/target/installation/lease/revision CAS decide.
+  // No receipt, retry loop or extra state: refusal returns the same contained
+  // custody answer this path has always returned.
+  if (!actionAuthoredResult || lease.expiresAtMs <= Date.now()) return custodyFailure;
+  try {
+    return await settle();
+  } catch {
+    return custodyFailure;
   }
-  return await params.transport.fail({
-    deliveryId: params.claim.deliveryId,
-    target,
-    lease: settlementLease,
-    result,
-    ...(result.kind === 'retry' && automationAdmissionUnresolved
-      ? { automationAdmissionUnresolved }
-      : {}),
-    ...(params.signal ? { signal: params.signal } : {}),
-  });
 }

@@ -9,6 +9,10 @@ import {
 } from '@happier-dev/protocol';
 
 import { logger } from '@/ui/logger';
+import type {
+  PinnedHttpStreamRequest,
+  PinnedHttpStreamResponse,
+} from '@/network/pinnedHttp';
 import { dispatchActivityNotificationAsync } from './dispatchActivityNotification';
 import type { ActivityNotificationEvent } from './activityNotificationEvent';
 
@@ -19,16 +23,33 @@ vi.mock('@/ui/logger', () => ({
 }));
 
 describe('dispatchActivityNotificationAsync', () => {
+  // `fetch` stays stubbed as a guard: webhook delivery must go through the
+  // pinned transport, so any call here is a regression back to unpinned dispatch.
   const fetchSpy = vi.fn();
+  const webhookRequests: PinnedHttpStreamRequest[] = [];
+  const webhookNetwork = {
+    resolveAddresses: async () => ['93.184.216.34'],
+    openPinnedStream: async (request: PinnedHttpStreamRequest): Promise<PinnedHttpStreamResponse> => {
+      webhookRequests.push(request);
+      return Object.freeze({
+        status: 202,
+        headers: {},
+        contentLength: 0,
+        read: async () => null,
+        cancel: () => undefined,
+      });
+    },
+  };
+
+  function webhookRequestBody(request: PinnedHttpStreamRequest | undefined): Record<string, unknown> {
+    return JSON.parse(Buffer.from(request?.body ?? new Uint8Array()).toString('utf8'));
+  }
 
   beforeEach(() => {
     vi.stubGlobal('fetch', fetchSpy);
     vi.mocked(logger.debug).mockReset();
     fetchSpy.mockReset();
-    fetchSpy.mockResolvedValue({
-      ok: true,
-      status: 202,
-    });
+    webhookRequests.length = 0;
   });
 
   afterEach(() => {
@@ -51,6 +72,7 @@ describe('dispatchActivityNotificationAsync', () => {
 
     await dispatchActivityNotificationAsync({
       settings,
+      webhookNetwork,
       expoPushSender: { sendToAllDevicesAsync },
       event: {
         topic: 'ready',
@@ -67,6 +89,7 @@ describe('dispatchActivityNotificationAsync', () => {
       { sessionId: 'session-1' },
       { sound: 'happier_soft.wav', priority: 'high', androidSoundId: 'soft' },
     );
+    expect(webhookRequests).toHaveLength(0);
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
@@ -290,6 +313,7 @@ describe('dispatchActivityNotificationAsync', () => {
 
     const result = await dispatchActivityNotificationAsync({
       settings,
+      webhookNetwork,
       expoPushSender: { sendToAllDevicesAsync },
       dedupeWindowMs: 0,
       event: {
@@ -370,6 +394,7 @@ describe('dispatchActivityNotificationAsync', () => {
 
     const result = await dispatchActivityNotificationAsync({
       settings,
+      webhookNetwork,
       expoPushSender: { sendToAllDevicesAsync },
       nowMs: () => Date.parse('2026-05-03T12:00:00.000Z'),
       event: {
@@ -383,6 +408,7 @@ describe('dispatchActivityNotificationAsync', () => {
 
     expect(result).toEqual({ attemptedChannels: 0, deliveredChannels: 0 });
     expect(sendToAllDevicesAsync).not.toHaveBeenCalled();
+    expect(webhookRequests).toHaveLength(0);
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
@@ -420,6 +446,7 @@ describe('dispatchActivityNotificationAsync', () => {
 
     const result = await dispatchActivityNotificationAsync({
       settings,
+      webhookNetwork,
       expoPushSender: { sendToAllDevicesAsync },
       nowMs: () => Date.parse('2026-05-03T12:00:00.000Z'),
       event: {
@@ -433,7 +460,8 @@ describe('dispatchActivityNotificationAsync', () => {
 
     expect(result).toEqual({ attemptedChannels: 1, deliveredChannels: 1 });
     expect(sendToAllDevicesAsync).not.toHaveBeenCalled();
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(webhookRequests).toHaveLength(1);
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it('suppresses webhook delivery during quiet hours when policy opts in', async () => {
@@ -471,6 +499,7 @@ describe('dispatchActivityNotificationAsync', () => {
 
     const result = await dispatchActivityNotificationAsync({
       settings,
+      webhookNetwork,
       expoPushSender: { sendToAllDevicesAsync },
       nowMs: () => Date.parse('2026-05-03T12:00:00.000Z'),
       event: {
@@ -484,6 +513,7 @@ describe('dispatchActivityNotificationAsync', () => {
 
     expect(result).toEqual({ attemptedChannels: 0, deliveredChannels: 0 });
     expect(sendToAllDevicesAsync).not.toHaveBeenCalled();
+    expect(webhookRequests).toHaveLength(0);
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
@@ -514,6 +544,7 @@ describe('dispatchActivityNotificationAsync', () => {
 
     const result = await dispatchActivityNotificationAsync({
       settings,
+      webhookNetwork,
       expoPushSender: { sendToAllDevicesAsync },
       event: {
         topic: 'ready',
@@ -560,6 +591,7 @@ describe('dispatchActivityNotificationAsync', () => {
 
     const result = await dispatchActivityNotificationAsync({
       settings,
+      webhookNetwork,
       expoPushSender: { sendToAllDevicesAsync },
       event: {
         topic: 'ready',
@@ -593,6 +625,7 @@ describe('dispatchActivityNotificationAsync', () => {
 
     const result = await dispatchActivityNotificationAsync({
       settings,
+      webhookNetwork,
       expoPushSender: { sendToAllDevicesAsync },
       event: {
         topic: 'ready',
@@ -620,6 +653,7 @@ describe('dispatchActivityNotificationAsync', () => {
 
     await dispatchActivityNotificationAsync({
       settings,
+      webhookNetwork,
       expoPushSender: { sendToAllDevicesAsync },
       event: {
         topic: 'ready',
@@ -654,6 +688,7 @@ describe('dispatchActivityNotificationAsync', () => {
 
     await dispatchActivityNotificationAsync({
       settings,
+      webhookNetwork,
       expoPushSender: { sendToAllDevicesAsync },
       event: {
         topic: 'permission_request',
@@ -686,6 +721,7 @@ describe('dispatchActivityNotificationAsync', () => {
 
     await dispatchActivityNotificationAsync({
       settings,
+      webhookNetwork,
       expoPushSender: { sendToAllDevicesAsync },
       event: {
         topic: 'permission_request',
@@ -721,6 +757,7 @@ describe('dispatchActivityNotificationAsync', () => {
 
     const result = await dispatchActivityNotificationAsync({
       settings,
+      webhookNetwork,
       expoPushSender: { sendToAllDevicesAsync },
       liveActivityRemoteSender: {
         serverId: 'server-a',
@@ -792,6 +829,7 @@ describe('dispatchActivityNotificationAsync', () => {
 
     const result = await dispatchActivityNotificationAsync({
       settings,
+      webhookNetwork,
       liveActivityRemoteSender: {
         serverId: 'server-a',
         sendLiveActivityRemoteUpdateAsync,
@@ -836,6 +874,7 @@ describe('dispatchActivityNotificationAsync', () => {
 
     await dispatchActivityNotificationAsync({
       settings,
+      webhookNetwork,
       liveActivityRemoteSender: {
         serverId: 'server-a',
         sendLiveActivityRemoteUpdateAsync,
@@ -882,6 +921,7 @@ describe('dispatchActivityNotificationAsync', () => {
 
     const result = await dispatchActivityNotificationAsync({
       settings,
+      webhookNetwork,
       expoPushSender: { sendToAllDevicesAsync },
       liveActivityRemoteSender: {
         serverId: 'server-a',
@@ -944,6 +984,7 @@ describe('dispatchActivityNotificationAsync', () => {
 
     await dispatchActivityNotificationAsync({
       settings,
+      webhookNetwork,
       expoPushSender: { sendToAllDevicesAsync },
       event: {
         topic: 'ready',
@@ -955,17 +996,17 @@ describe('dispatchActivityNotificationAsync', () => {
     });
 
     expect(sendToAllDevicesAsync).not.toHaveBeenCalled();
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
-    const [url, init] = fetchSpy.mock.calls[0] ?? [];
-    expect(url).toBe('https://hooks.example.test/happier');
-    expect(init).toMatchObject({
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-happier-signature-256': expect.stringMatching(/^sha256=[a-f0-9]{64}$/),
-      },
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(webhookRequests).toHaveLength(1);
+    const request = webhookRequests[0];
+    expect(request?.url).toBe('https://hooks.example.test/happier');
+    expect(request?.method).toBe('POST');
+    expect(request?.validatedAddresses).toEqual(['93.184.216.34']);
+    expect(request?.headers).toMatchObject({
+      'content-type': 'application/json',
+      'x-happier-signature-256': expect.stringMatching(/^sha256=[a-f0-9]{64}$/),
     });
-    const payload = JSON.parse(String(init.body));
+    const payload = webhookRequestBody(request);
     expect(payload.content).toEqual({
       title: 'Deploy fix',
       body: 'Gemini is waiting for your command',
@@ -998,6 +1039,7 @@ describe('dispatchActivityNotificationAsync', () => {
 
     await dispatchActivityNotificationAsync({
       settings,
+      webhookNetwork,
       expoPushSender: { sendToAllDevicesAsync },
       event: {
         topic: 'permission_request',
@@ -1010,14 +1052,11 @@ describe('dispatchActivityNotificationAsync', () => {
     });
 
     expect(sendToAllDevicesAsync).not.toHaveBeenCalled();
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
-    const [, init] = fetchSpy.mock.calls[0] ?? [];
-    const payload = JSON.parse(String(init.body));
-    expect(init).toMatchObject({
-      headers: {
-        'content-type': 'application/json',
-        'x-happier-signature-256': expect.stringMatching(/^sha256=[a-f0-9]{64}$/),
-      },
+    expect(webhookRequests).toHaveLength(1);
+    const payload = webhookRequestBody(webhookRequests[0]);
+    expect(webhookRequests[0]?.headers).toMatchObject({
+      'content-type': 'application/json',
+      'x-happier-signature-256': expect.stringMatching(/^sha256=[a-f0-9]{64}$/),
     });
     expect(payload.request).toMatchObject({
       requestId: 'request-9',
@@ -1059,6 +1098,7 @@ describe('dispatchActivityNotificationAsync', () => {
 
     await dispatchActivityNotificationAsync({
       settings,
+      webhookNetwork,
       settingsSecretsReadKeys: [settingsSecretsKey],
       expoPushSender: { sendToAllDevicesAsync },
       event: {
@@ -1071,13 +1111,10 @@ describe('dispatchActivityNotificationAsync', () => {
     });
 
     expect(sendToAllDevicesAsync).not.toHaveBeenCalled();
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
-    const [, init] = fetchSpy.mock.calls[0] ?? [];
-    expect(init).toMatchObject({
-      headers: {
-        'content-type': 'application/json',
-        'x-happier-signature-256': expect.stringMatching(/^sha256=[a-f0-9]{64}$/),
-      },
+    expect(webhookRequests).toHaveLength(1);
+    expect(webhookRequests[0]?.headers).toMatchObject({
+      'content-type': 'application/json',
+      'x-happier-signature-256': expect.stringMatching(/^sha256=[a-f0-9]{64}$/),
     });
   });
 
@@ -1107,6 +1144,7 @@ describe('dispatchActivityNotificationAsync', () => {
 
     await dispatchActivityNotificationAsync({
       settings,
+      webhookNetwork,
       expoPushSender: { sendToAllDevicesAsync },
       event: {
         topic: 'ready',

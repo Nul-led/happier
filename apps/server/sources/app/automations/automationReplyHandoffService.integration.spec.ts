@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
     automationReplyHandoffIdForRunV1,
     deriveAutomationOccurrenceKeyV1,
+    MAX_AUTOMATION_SOURCE_RETRY_AFTER_MS,
 } from "@happier-dev/protocol";
 
 import { db } from "@/storage/db";
@@ -213,7 +214,7 @@ describe("Automation reply handoff service", () => {
         });
     });
 
-    it("normalizes zero and omitted retry hints to the durable cadence while preserving positive hints and terminal settlement", async () => {
+    it("derives the durable retry cadence from the persisted attempt while preserving positive provider hints and terminal settlement", async () => {
         await seedReadyHandoff();
 
         const firstClaim = await claimNextAutomationReplyHandoff({ now: NOW });
@@ -236,7 +237,7 @@ describe("Automation reply handoff service", () => {
             outcome: { kind: "retry", retryAfterMs: 0 },
         })).resolves.toEqual({ applied: true });
         const secondRetryAt = new Date(
-            firstRetryAt.getTime() + EXPECTED_AUTOMATION_REPLY_HANDOFF_RETRY_AFTER_MS,
+            firstRetryAt.getTime() + 2 * EXPECTED_AUTOMATION_REPLY_HANDOFF_RETRY_AFTER_MS,
         );
         await expect(findNextAutomationReplyHandoffDueAt({ now: firstRetryAt })).resolves.toEqual(secondRetryAt);
 
@@ -249,7 +250,7 @@ describe("Automation reply handoff service", () => {
             outcome: { kind: "retry" },
         })).resolves.toEqual({ applied: true });
         const thirdRetryAt = new Date(
-            secondRetryAt.getTime() + EXPECTED_AUTOMATION_REPLY_HANDOFF_RETRY_AFTER_MS,
+            secondRetryAt.getTime() + 4 * EXPECTED_AUTOMATION_REPLY_HANDOFF_RETRY_AFTER_MS,
         );
         await expect(findNextAutomationReplyHandoffDueAt({ now: secondRetryAt })).resolves.toEqual(thirdRetryAt);
 
@@ -286,6 +287,29 @@ describe("Automation reply handoff service", () => {
             replyHandoffDueAt: null,
             replyHandoffReceiptEnvelope: JSON.stringify(ACCEPTED_RECEIPT_ENVELOPE),
         });
+    });
+
+    it("caps an attempt-derived retry delay at the Protocol 24-hour maximum", async () => {
+        await seedReadyHandoff({ attempt: 40 });
+
+        const claim = await claimNextAutomationReplyHandoff({ now: NOW });
+        expect(claim).toMatchObject({ attempt: 41 });
+        if (!claim) return;
+        await expect(settleAutomationReplyHandoff({
+            claim,
+            now: NOW,
+            outcome: { kind: "retry" },
+        })).resolves.toEqual({ applied: true });
+        const cappedRetryAt = new Date(NOW.getTime() + MAX_AUTOMATION_SOURCE_RETRY_AFTER_MS);
+        await expect(db.automationRun.findUniqueOrThrow({
+            where: { id: RUN_ID },
+            select: { replyHandoffState: true, replyHandoffAttempt: true, replyHandoffDueAt: true },
+        })).resolves.toEqual({
+            replyHandoffState: "ready",
+            replyHandoffAttempt: 41,
+            replyHandoffDueAt: cappedRetryAt,
+        });
+        await expect(findNextAutomationReplyHandoffDueAt({ now: NOW })).resolves.toEqual(cappedRetryAt);
     });
 
     it("fails closed without blocking a ready handoff or retaining an immediate wake when E2EE Account currentness is inconsistent", async () => {

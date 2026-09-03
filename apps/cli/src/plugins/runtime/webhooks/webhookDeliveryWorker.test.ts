@@ -200,18 +200,25 @@ describe('plugin webhook claimed delivery worker', () => {
         target,
       },
       credentials: { token: 'token', encryption: null },
-      transport: { renew, complete: vi.fn(), fail: vi.fn() },
+      transport: {
+        renew,
+        complete: vi.fn(async () => ({ kind: 'settled' as const, state: 'succeeded' as const })),
+        fail: vi.fn(),
+      },
       execute,
     });
 
     await vi.advanceTimersByTimeAsync(55);
-    await expect(processing).resolves.toEqual({ kind: 'leaseLost' });
+    // Custody loss withdraws the live reference immediately, so nothing the
+    // Action does afterwards can reach the host under this delivery. The
+    // final settlement attempt is a separate, exact-lease server decision.
+    await expect(processing).resolves.toEqual({ kind: 'settled', state: 'succeeded' });
     expect(referenceBeforeLoss).toMatchObject({ lease: { leaseId: 'lease-1', revision: 8 } });
     expect(referenceAfterLoss).toBeNull();
     expect(readCurrentPluginWebhookInvocationReferenceV1()).toBeNull();
   });
 
-  it('contains a rejected renewal as unavailable custody, aborts the Action, and never settles', async () => {
+  it('contains a rejected renewal as unavailable custody, aborts the Action, and never settles a resultless attempt', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
     const renewalError = new Error('renewal transport failed');
@@ -223,6 +230,9 @@ describe('plugin webhook claimed delivery worker', () => {
     let referenceBeforeFailure: ReturnType<typeof readCurrentPluginWebhookInvocationReferenceV1> = null;
     let referenceAfterFailure: ReturnType<typeof readCurrentPluginWebhookInvocationReferenceV1> = null;
     let actionSignal: AbortSignal | undefined;
+    // The handler is cancelled and throws instead of returning. There is no
+    // plugin-authored result to preserve, so the contained custody answer
+    // stands and the durable server recovery owner makes the next transition.
     const execute = vi.fn(async (_actionId, _input, options?: Readonly<{ signal?: AbortSignal }>) => {
       actionSignal = options?.signal;
       referenceBeforeFailure = readCurrentPluginWebhookInvocationReferenceV1();
@@ -234,7 +244,7 @@ describe('plugin webhook claimed delivery worker', () => {
           resolve();
         }, { once: true });
       });
-      return { kind: 'settled' as const, disposition: 'accepted' as const };
+      throw new Error('handler cancelled without a result');
     });
     const unhandledRejections: unknown[] = [];
     const captureUnhandledRejection = (reason: unknown) => {
@@ -280,6 +290,102 @@ describe('plugin webhook claimed delivery worker', () => {
     } finally {
       process.removeListener('unhandledRejection', captureUnhandledRejection);
     }
+  });
+
+  it('makes one exact final settlement attempt for a known result after a renewal reports the lease lost', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    // Renewal refuses because the plugin generation stopped being current, not
+    // because this worker stopped holding the lease. The Action already
+    // produced a schema-valid result under `executionStartedAt`; dropping it
+    // here leaves the row claimed until the lease expires and then re-runs the
+    // same delivery. Only the server's exact delivery/target/installation/
+    // lease/revision CAS can decide, so ask it once.
+    const renew = vi.fn()
+      .mockResolvedValueOnce({ kind: 'renewed' as const, revision: 8, expiresAtMs: 100 })
+      .mockResolvedValueOnce({ kind: 'leaseLost' as const });
+    const complete = vi.fn(async () => ({ kind: 'settled' as const, state: 'succeeded' as const }));
+    const fail = vi.fn();
+    const execute = vi.fn(async (_actionId, _input, options?: Readonly<{ signal?: AbortSignal }>) => {
+      await new Promise<void>((resolve) => options?.signal?.addEventListener('abort', () => resolve(), { once: true }));
+      return { kind: 'settled' as const, disposition: 'accepted' as const };
+    });
+
+    const processing = processClaimedPluginWebhookDeliveryV1({
+      claim: {
+        kind: 'delivery',
+        deliveryId: 'delivery-known-result',
+        endpoint: {
+          webhookEndpointId: 'wh_ep_AAECAwQFBgcICQoLDA0ODw',
+          revision: 3,
+          webhookContribution: { pluginId: 'acme.github', localId: 'github-events' },
+          handlerActionLocalId: 'handle-webhook',
+          sourceInstanceId: 'source-1',
+        },
+        attempt: 1,
+        replay: 0,
+        receivedAtMs: 1,
+        envelope: { t: 'plain', v: content },
+        lease: { leaseId: 'lease-known-result', revision: 7, firstClaimAtMs: 0, expiresAtMs: 100, maxClaimUntilMs: 600_000 },
+        pluginVersion: '1.0.0',
+        target,
+      },
+      credentials: { token: 'token', encryption: null },
+      transport: { renew, complete, fail },
+      execute,
+    });
+
+    await vi.advanceTimersByTimeAsync(55);
+    await expect(processing).resolves.toEqual({ kind: 'settled', state: 'succeeded' });
+    expect(complete).toHaveBeenCalledTimes(1);
+    expect(complete).toHaveBeenCalledWith(expect.objectContaining({
+      deliveryId: 'delivery-known-result',
+      target,
+      lease: { leaseId: 'lease-known-result', revision: 8 },
+    }));
+    expect(fail).not.toHaveBeenCalled();
+    expect(readCurrentPluginWebhookInvocationReferenceV1()).toBeNull();
+  });
+
+  it('returns the server lease verdict when the one final settlement attempt is refused', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const renew = vi.fn()
+      .mockResolvedValueOnce({ kind: 'renewed' as const, revision: 8, expiresAtMs: 100 })
+      .mockResolvedValueOnce({ kind: 'leaseLost' as const });
+    const complete = vi.fn(async () => ({ kind: 'leaseLost' as const }));
+    const execute = vi.fn(async (_actionId, _input, options?: Readonly<{ signal?: AbortSignal }>) => {
+      await new Promise<void>((resolve) => options?.signal?.addEventListener('abort', () => resolve(), { once: true }));
+      return { kind: 'settled' as const, disposition: 'accepted' as const };
+    });
+
+    const processing = processClaimedPluginWebhookDeliveryV1({
+      claim: {
+        kind: 'delivery',
+        deliveryId: 'delivery-refused-settlement',
+        endpoint: {
+          webhookEndpointId: 'wh_ep_AAECAwQFBgcICQoLDA0ODw',
+          revision: 3,
+          webhookContribution: { pluginId: 'acme.github', localId: 'github-events' },
+          handlerActionLocalId: 'handle-webhook',
+          sourceInstanceId: 'source-1',
+        },
+        attempt: 1,
+        replay: 0,
+        receivedAtMs: 1,
+        envelope: { t: 'plain', v: content },
+        lease: { leaseId: 'lease-refused', revision: 7, firstClaimAtMs: 0, expiresAtMs: 100, maxClaimUntilMs: 600_000 },
+        pluginVersion: '1.0.0',
+        target,
+      },
+      credentials: { token: 'token', encryption: null },
+      transport: { renew, complete, fail: vi.fn() },
+      execute,
+    });
+
+    await vi.advanceTimersByTimeAsync(55);
+    await expect(processing).resolves.toEqual({ kind: 'leaseLost' });
+    expect(complete).toHaveBeenCalledTimes(1);
   });
 
   it('contains an initial execution-start renewal rejection before dispatch and never settles', async () => {

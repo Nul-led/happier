@@ -12,7 +12,6 @@ vi.mock("./automationReplyHandoffService", () => ({
     claimNextAutomationReplyHandoff: mocks.claimNextAutomationReplyHandoff,
     findNextAutomationReplyHandoffDueAt: mocks.findNextAutomationReplyHandoffDueAt,
     settleAutomationReplyHandoff: mocks.settleAutomationReplyHandoff,
-    DEFAULT_AUTOMATION_REPLY_HANDOFF_RETRY_AFTER_MS: 10_000,
 }));
 
 import {
@@ -169,7 +168,7 @@ describe("Automation reply handoff worker diagnostics", () => {
 
         expect(mocks.settleAutomationReplyHandoff).toHaveBeenNthCalledWith(1, expect.objectContaining({
             claim: expect.objectContaining({ handoffId: "handoff-1", attempt: 1 }),
-            outcome: { kind: "retry", retryAfterMs: 10_000 },
+            outcome: { kind: "retry" },
         }));
         expect(mocks.settleAutomationReplyHandoff).toHaveBeenNthCalledWith(2, expect.objectContaining({
             claim: expect.objectContaining({ handoffId: "handoff-1", attempt: 2 }),
@@ -189,7 +188,7 @@ describe("Automation reply handoff worker diagnostics", () => {
         await runAutomationReplyHandoffWorkerPass({ now: RETRY_AT, dispatch });
 
         expect(mocks.settleAutomationReplyHandoff).toHaveBeenNthCalledWith(1, expect.objectContaining({
-            outcome: { kind: "retry", retryAfterMs: 10_000 },
+            outcome: { kind: "retry" },
         }));
         expect(mocks.settleAutomationReplyHandoff).toHaveBeenNthCalledWith(2, expect.objectContaining({
             outcome: { kind: "blocked" },

@@ -2,6 +2,7 @@ import {
     AutomationAccountCurrentnessWitnessV1Schema,
     AutomationReplyHandoffSettlementV1Schema,
     AutomationStoredContentEnvelopeV1Schema,
+    MAX_AUTOMATION_SOURCE_RETRY_AFTER_MS,
     sameAutomationAccountContentIdentityV1,
     sameAutomationAccountCurrentnessWitnessV1,
     nextAutomationReplyHandoffIdForRunV1,
@@ -35,9 +36,11 @@ import type { AutomationRunItem } from "./automationTypes";
 
 export const DEFAULT_AUTOMATION_REPLY_HANDOFF_LEASE_DURATION_MS = 30_000;
 /**
- * Durable retry cadence when a retrying daemon or Action does not supply a
- * positive timing hint. The Protocol schema remains the upper-bound owner for
- * supplied hints.
+ * Base durable retry cadence when a retrying daemon or Action does not supply
+ * a positive timing hint: the first retry waits this long and each later
+ * hint-less retry doubles it, capped by the Protocol-owned 24-hour maximum
+ * (`MAX_AUTOMATION_SOURCE_RETRY_AFTER_MS`). The Protocol schema remains the
+ * upper-bound owner for supplied hints.
  */
 export const DEFAULT_AUTOMATION_REPLY_HANDOFF_RETRY_AFTER_MS = 10_000;
 
@@ -118,15 +121,32 @@ function isRetryOutcomeWithoutHint(value: unknown): value is Readonly<{ kind: "r
 }
 
 function normalizeAutomationReplyHandoffRetryOutcome(value: unknown): unknown {
+    // Zero is the settlement schema's "no cadence preference" hint: the wake
+    // is derived from the persisted attempt instead of being honored.
     return isRetryOutcomeWithoutHint(value)
-        ? { kind: "retry", retryAfterMs: DEFAULT_AUTOMATION_REPLY_HANDOFF_RETRY_AFTER_MS }
+        ? { kind: "retry", retryAfterMs: 0 }
         : value;
 }
 
-function resolveAutomationReplyHandoffRetryAfterMs(retryAfterMs: number): number {
-    return retryAfterMs === 0
-        ? DEFAULT_AUTOMATION_REPLY_HANDOFF_RETRY_AFTER_MS
-        : retryAfterMs;
+/**
+ * Resolves the durable wake for one retry settlement. A positive supplied
+ * hint is the provider's explicit cadence and is honored up to the same
+ * Protocol-owned 24-hour maximum the settlement schema enforces. Without a
+ * hint, each persisted attempt doubles the default cadence so an unreachable
+ * target is not re-attempted every few seconds forever while the same handoff
+ * stays open until it is accepted, suppressed, or blocked.
+ */
+function resolveAutomationReplyHandoffRetryDelayMs(input: Readonly<{
+    /** Persisted `replyHandoffAttempt` of the delivery that just failed. */
+    attempt: number;
+    retryAfterMs: number;
+}>): number {
+    if (input.retryAfterMs > 0) {
+        return Math.min(input.retryAfterMs, MAX_AUTOMATION_SOURCE_RETRY_AFTER_MS);
+    }
+    const derivedDelayMs = DEFAULT_AUTOMATION_REPLY_HANDOFF_RETRY_AFTER_MS
+        * 2 ** Math.max(0, input.attempt - 1);
+    return Math.min(derivedDelayMs, MAX_AUTOMATION_SOURCE_RETRY_AFTER_MS);
 }
 
 function handoffCandidateWhere(candidate: AutomationReplyHandoffCandidate): Prisma.AutomationRunWhereInput {
@@ -913,7 +933,10 @@ export async function settleAutomationReplyHandoff(params: Readonly<{
             data = {
                 replyHandoffState: "ready",
                 replyHandoffDueAt: new Date(
-                    params.now.getTime() + resolveAutomationReplyHandoffRetryAfterMs(outcome.data.retryAfterMs),
+                    params.now.getTime() + resolveAutomationReplyHandoffRetryDelayMs({
+                        attempt: candidate.replyHandoffAttempt,
+                        retryAfterMs: outcome.data.retryAfterMs,
+                    }),
                 ),
                 replyHandoffReceiptEnvelope: null,
                 updatedAt: params.now,

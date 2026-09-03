@@ -44,10 +44,6 @@ export async function readPluginWebhookAccountStatusV1(params: Readonly<{
                 targetMachineInstallationId: true,
                 targetMaterializationId: true,
                 targetPluginVersion: true,
-                previousTargetMachineId: true,
-                previousTargetMachineInstallationId: true,
-                previousTargetMaterializationId: true,
-                previousTargetPluginVersion: true,
                 route: {
                     select: {
                         opaqueRouteId: true,
@@ -117,21 +113,22 @@ export async function readPluginWebhookAccountStatusV1(params: Readonly<{
             const count = (state: string, predicate: (attemptCount: number) => boolean = () => true) => endpointCounts
                 .filter((item) => item.state === state && predicate(item.attemptCount))
                 .reduce((total, item) => total + item._count._all, 0);
-            const eligibleTransferCount = row.previousTargetMachineId
-                && row.previousTargetMachineInstallationId
-                && row.previousTargetMaterializationId
-                && row.previousTargetPluginVersion
-                ? transferCounts
-                    .filter((item) => (
-                        item.endpointId === row.id
-                        && item.targetMachineId === row.previousTargetMachineId
-                        && item.targetMachineInstallationId === row.previousTargetMachineInstallationId
-                        && item.targetMaterializationId === row.previousTargetMaterializationId
+            // Every movable row frozen away from where this endpoint now
+            // delivers, aggregated across however many times the target moved.
+            // `delivery.movePending` moves all of them, so counting only the
+            // immediately prior target would under-report the offered work.
+            const eligibleTransferCount = transferCounts
+                .filter((item) => (
+                    item.endpointId === row.id
+                    && !(
+                        item.targetMachineId === row.targetMachineId
+                        && item.targetMachineInstallationId === row.targetMachineInstallationId
+                        && item.targetMaterializationId === row.targetMaterializationId
                         && item.targetPluginId === row.pluginId
-                        && item.targetPluginVersion === row.previousTargetPluginVersion
-                    ))
-                    .reduce((total, item) => total + item._count._all, 0)
-                : 0;
+                        && item.targetPluginVersion === row.targetPluginVersion
+                    )
+                ))
+                .reduce((total, item) => total + item._count._all, 0);
             endpoints.push({
                 webhookEndpointId: row.id,
                 revision: row.revision,
@@ -163,15 +160,8 @@ export async function readPluginWebhookAccountStatusV1(params: Readonly<{
                     deadLetter: count("dead_letter"),
                     oldestPendingAtMs: oldest,
                 },
-                ...(eligibleTransferCount > 0 && row.previousTargetMachineId && row.previousTargetMaterializationId ? {
-                    pendingTargetTransfer: {
-                        previousTargetMaterialization: {
-                            machineId: row.previousTargetMachineId,
-                            materializationId: row.previousTargetMaterializationId,
-                            pluginId: row.pluginId,
-                        },
-                        eligibleDeliveryCount: eligibleTransferCount,
-                    },
+                ...(eligibleTransferCount > 0 ? {
+                    pendingTargetTransfer: { eligibleDeliveryCount: eligibleTransferCount },
                 } : {}),
                 ...(row.routingKind === "accountEndpoint" && row.route.previousCredential?.acceptUntil ? {
                     credentialRotation: {

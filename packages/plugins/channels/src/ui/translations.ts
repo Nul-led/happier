@@ -19,6 +19,8 @@ export const CHANNELS_UI_TRANSLATIONS = Object.freeze({
     "plugins.channels.surface.bindingEditResultDeliveryUnavailableTitle": "This Automation cannot return a final result",
     "plugins.channels.surface.bindingEditResultDeliveryUnavailableDescription": "Keep this draft and choose \"Do not reply\" before saving. The Automation still runs; only the reply back to the conversation is unavailable.",
     "plugins.channels.surface.bindingEditRevokeSender": "Revoke {principal}",
+    "plugins.channels.surface.connectionSourceChangedTitle": "This connection changed while you were editing",
+    "plugins.channels.surface.connectionSourceChangedDescription": "Your unsaved changes are still here, and saving is locked so they cannot overwrite the newer policy. Reload to replace them with the current connection policy.",
     "plugins.channels.surface.connectionRetest": "Test connection",
     "plugins.channels.surface.connectionRetesting": "Testing connection…",
     "plugins.channels.surface.connectionRetestReadyTitle": "The connection is working",

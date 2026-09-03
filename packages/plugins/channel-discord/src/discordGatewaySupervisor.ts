@@ -62,12 +62,14 @@ type PendingTransportFact = ConversationTransportFactReportInputV1['fact'];
 type WorkerStopIntent = 'reconcile' | 'explicit' | 'generationRetired' | 'authorityUnavailable';
 
 /**
- * Why an authoritative listing/reading failure justifies a continuity-loss
- * fact for a resumable worker it stops: the connection's reconciliation
- * authority was unreachable, so the worker's received-but-unsettled progress
- * and held resume coordinates could not be proven continuous before the stop.
+ * Why stopping a still-resumable session justifies a continuity-loss fact in
+ * exactly two cases: an authoritative listing/reading failure, and generation
+ * retirement. Both discard the worker's process-local resume coordinates, so
+ * the replacement session can only Identify fresh and may miss everything
+ * Discord dispatched in the interval; queueing the existing gap through the
+ * pending fact owner is the continuity proof the replacement cannot make.
  */
-const AUTHORITY_UNAVAILABLE_GAP_FACT = Object.freeze({
+const UNPROVEN_CONTINUITY_GAP_FACT = Object.freeze({
   kind: 'historyGap',
   reason: 'applicationAdmissionLost',
 } as const);
@@ -381,16 +383,17 @@ export function createDiscordGatewaySupervisor(options: DiscordGatewaySupervisor
         ? result.transportFact
         : undefined;
     if (transportFact !== undefined) addFact(entry.snapshot, transportFact);
-    // Only an authoritative listing/reading failure converts the worker's
-    // continuity disclosure into a gap fact. Explicit stops report their own
-    // stopConfirmed custody, and a replaced or retired generation is not a
-    // reconciliation-authority loss.
+    // Only an authoritative listing/reading failure or generation retirement
+    // converts the worker's continuity disclosure into a gap fact: both lose
+    // the held resume coordinates with no continuity successor. Explicit
+    // stops report their own stopConfirmed custody instead, and a worker
+    // replaced by reconciliation is a deliberate same-loop restart.
     if (
-      entry.stopIntent === 'authorityUnavailable'
+      (entry.stopIntent === 'authorityUnavailable' || entry.stopIntent === 'generationRetired')
       && result.kind === 'stopped'
       && result.unprovenContinuity === true
     ) {
-      addFact(entry.snapshot, AUTHORITY_UNAVAILABLE_GAP_FACT);
+      addFact(entry.snapshot, UNPROVEN_CONTINUITY_GAP_FACT);
     }
     const providerReadinessFact = providerReadinessFactFromWorkerResult(result);
     if (providerReadinessFact !== undefined) addFact(entry.snapshot, providerReadinessFact);

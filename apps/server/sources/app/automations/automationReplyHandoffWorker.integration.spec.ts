@@ -221,6 +221,43 @@ describe("Automation reply handoff worker", () => {
         });
     });
 
+    it("doubles the retry delay across consecutive unavailable attempts instead of repeating a fixed cadence", async () => {
+        await seedReadyHandoff();
+        const unavailableDispatch = async () =>
+            ({ kind: "unavailable" as const, code: "targetUnavailable" as const });
+
+        await runAutomationReplyHandoffWorkerPass({ now: NOW, dispatch: unavailableDispatch });
+        const firstRetryAt = new Date(NOW.getTime() + DEFAULT_AUTOMATION_REPLY_HANDOFF_RETRY_AFTER_MS);
+        await expect(db.automationRun.findUniqueOrThrow({
+            where: { id: RUN_ID },
+            select: {
+                replyHandoffState: true,
+                replyHandoffAttempt: true,
+                replyHandoffDueAt: true,
+            },
+        })).resolves.toEqual({
+            replyHandoffState: "ready",
+            replyHandoffAttempt: 1,
+            replyHandoffDueAt: firstRetryAt,
+        });
+
+        await runAutomationReplyHandoffWorkerPass({ now: firstRetryAt, dispatch: unavailableDispatch });
+        await expect(db.automationRun.findUniqueOrThrow({
+            where: { id: RUN_ID },
+            select: {
+                replyHandoffState: true,
+                replyHandoffAttempt: true,
+                replyHandoffDueAt: true,
+            },
+        })).resolves.toEqual({
+            replyHandoffState: "ready",
+            replyHandoffAttempt: 2,
+            replyHandoffDueAt: new Date(
+                firstRetryAt.getTime() + 2 * DEFAULT_AUTOMATION_REPLY_HANDOFF_RETRY_AFTER_MS,
+            ),
+        });
+    });
+
     it("makes an unavailable Action durable attention instead of retrying a contract failure", async () => {
         await seedReadyHandoff();
 

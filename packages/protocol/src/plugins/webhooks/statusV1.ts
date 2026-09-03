@@ -55,8 +55,13 @@ export const PluginWebhookEndpointStatusV1Schema = z.object({
     deadLetter: CountSchema,
     oldestPendingAtMs: TimestampSchema.nullable(),
   }).strict(),
+  /**
+   * Movable rows frozen away from `targetMaterialization`, aggregated across
+   * however many times this endpoint moved. There is no single predecessor to
+   * name once the target has moved more than once, and `movePending` needs
+   * none: it selects by difference from the current target.
+   */
   pendingTargetTransfer: z.object({
-    previousTargetMaterialization: PluginMachineMaterializationRefV1Schema,
     eligibleDeliveryCount: CountSchema,
   }).strict().optional(),
   credentialRotation: z.object({

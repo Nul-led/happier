@@ -219,10 +219,15 @@ export const PluginWebhookEndpointConvergeTargetResultV1Schema = z.union([
   }).strict(),
 ]);
 
+/**
+ * `targetMaterialization` is the endpoint's current target at
+ * `endpointRevision`; every movable row frozen anywhere else moves to it. The
+ * operation names no predecessor: an endpoint that moved A -> B -> C still owns
+ * rows frozen to A, and naming one predecessor would strand them.
+ */
 export const PluginWebhookDeliveryMovePendingInputV1Schema = z.object({
   webhookEndpointId: PluginWebhookEndpointIdV1Schema,
   endpointRevision: PluginWebhookRevisionV1Schema,
-  previousTargetMaterialization: PluginMachineMaterializationRefV1Schema,
   targetMaterialization: PluginMachineMaterializationRefV1Schema,
   cursor: z.string().min(1).max(512).optional(),
   pageSize: z.number().int().min(1).max(500).default(500),

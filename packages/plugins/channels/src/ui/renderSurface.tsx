@@ -6990,7 +6990,11 @@ function BindingsContent(props: BindingsContentProps): React.ReactElement {
             )}
           />
         )}
-        footer={props.connectionsContent === undefined ? null : (
+        // Connections are a full second half of this page, not an action bar.
+        // As the List's fixed footer they sat outside the scroller and were
+        // unreachable below the flexed binding list; as end content they scroll
+        // with the bindings in the one scroller this page has.
+        endContent={props.connectionsContent === undefined ? undefined : (
           <Stack gap="large" style={{ padding: theme.spacing.large }}>
             {props.connectionsContent}
           </Stack>
@@ -8264,7 +8268,7 @@ function ConnectionPolicyEditor(props: Readonly<{
   }, [props.connection.revision]);
 
   const save = React.useCallback(async () => {
-    if (updateUnavailable || mutationUnavailable) return;
+    if (saveUnavailable) return;
     const parsedAge = validObservationAge(props.draft.maximumObservationAgeMs);
     if (parsedAge === undefined) {
       setValidationIssue(`${props.t(
@@ -8279,7 +8283,7 @@ function ConnectionPolicyEditor(props: Readonly<{
 
     setValidationIssue(undefined);
     await props.onSave(parsedAge);
-  }, [mutationUnavailable, props.draft.maximumObservationAgeMs, props.onSave, props.t, updateUnavailable]);
+  }, [props.draft.maximumObservationAgeMs, props.onSave, props.t, saveUnavailable]);
 
   const status = connectionStatus(props.connection, props.t);
   const label = connectionLabel(props.connection);
@@ -8307,6 +8311,22 @@ function ConnectionPolicyEditor(props: Readonly<{
       </Stack>
 
       <ResourceFreshnessNotice resource={props.resource} onRefresh={props.onRefresh} t={props.t} />
+      {props.sourceChanged ? (
+        <SourceChangedWhileEditingNotice
+          testID="channels-connection-source-changed"
+          reloadTestID="channels-connection-source-changed-reload"
+          title={props.t(
+            'plugins.channels.surface.connectionSourceChangedTitle',
+            'This connection changed while you were editing',
+          )}
+          description={props.t(
+            'plugins.channels.surface.connectionSourceChangedDescription',
+            'Your unsaved changes are still here, and saving is locked so they cannot overwrite the newer policy. Reload to replace them with the current connection policy.',
+          )}
+          onReload={props.onReload}
+          t={props.t}
+        />
+      ) : null}
       <ConnectionContinuityDisclosures connection={props.connection} t={props.t} />
       {props.providerDependentOperationsAvailable ? (
         <ConnectionHistoryGapBaselineControls
@@ -8468,7 +8488,7 @@ function ConnectionPolicyEditor(props: Readonly<{
           ? props.t('plugins.channels.surface.saving', 'Saving…')
           : props.t('plugins.channels.surface.save', 'Save changes')}
         busy={saving}
-        disabled={updateUnavailable || mutationUnavailable}
+        disabled={saveUnavailable}
         onPress={save}
       />
     </Stack>

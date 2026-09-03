@@ -1693,6 +1693,14 @@ async function mutatePluginCollectionInTx(input: Readonly<{
     accountId: string;
     request: PluginCollectionMutationRequestV1;
     deployment: PluginDataCollectionsCapabilities;
+    /**
+     * Physical retirement deletes the row that would otherwise carry the
+     * retired revision, so the requested collection cannot be invalidated at
+     * row scope. This owner remains the single AccountChange publisher for the
+     * whole transaction and only widens that one collection; relation-nullified
+     * collections keep their exact hints.
+     */
+    physicallyRetiresRequestedRow?: boolean;
 }>): Promise<PluginCollectionMutationResultV1> {
     // Collection mutations share the Account-first transition fence with every
     // mode-bound writer. The returned currentness is the sole encryption-mode
@@ -1984,7 +1992,10 @@ async function mutatePluginCollectionInTx(input: Readonly<{
     ));
     for (const collection of orderedChanges) {
         const rows = [...collection.rows.entries()];
-        const hint = rows.length <= 200
+        const retiredCollection = input.physicallyRetiresRequestedRow === true
+            && collection.resolved.contract.pluginId === resolved.contract.pluginId
+            && collection.resolved.contract.collectionId === resolved.contract.collectionId;
+        const hint = rows.length <= 200 && !retiredCollection
             ? {
                 pluginDomain: "dataCollection" as const,
                 pluginId: collection.resolved.contract.pluginId,
@@ -2116,10 +2127,14 @@ export async function forgetPluginCollection(input: Readonly<{
             select: { id: true },
         });
         if (row.deletedAt === null) {
+            // The canonical mutation transaction owns this retirement's whole
+            // publication: the logical delete, every relation nullification it
+            // cascades, and the retired collection's full-scope invalidation.
             const deleted = await mutatePluginCollectionInTx({
                 tx,
                 accountId: input.accountId,
                 deployment: readPluginsFeatureEnv(process.env).collectionLimits,
+                physicallyRetiresRequestedRow: true,
                 request: {
                     pluginId: request.pluginId,
                     collectionId: request.collectionId,
@@ -2137,28 +2152,26 @@ export async function forgetPluginCollection(input: Readonly<{
             if (deleted.results[0]!.revision !== retiredRevision) {
                 throw new PluginCollectionMutationOperationError("collection_contract_inconsistent");
             }
+        } else {
+            // Retiring an existing tombstone performs no logical mutation, so
+            // this transaction publishes the one invalidation the advanced
+            // absence epoch owes its readers.
+            const hint = {
+                pluginDomain: "dataCollection",
+                pluginId: resolved.contract.pluginId,
+                collectionId: resolved.contract.collectionId,
+                contractDigest: resolved.contract.contractDigest,
+                revision: retiredRevision,
+                full: true,
+            } as const;
+            await markAccountChanged(tx, {
+                accountId: input.accountId,
+                kind: "pluginDomain",
+                entityId: buildPluginDomainAccountChangeEntityId(hint),
+                hint,
+            });
         }
         await tx.pluginCollectionRow.delete({ where: { id: row.id } });
-        await markAccountChanged(tx, {
-            accountId: input.accountId,
-            kind: "pluginDomain",
-            entityId: buildPluginDomainAccountChangeEntityId({
-                pluginDomain: "dataCollection",
-                pluginId: resolved.contract.pluginId,
-                collectionId: resolved.contract.collectionId,
-                contractDigest: resolved.contract.contractDigest,
-                revision: retiredRevision,
-                full: true,
-            }),
-            hint: {
-                pluginDomain: "dataCollection",
-                pluginId: resolved.contract.pluginId,
-                collectionId: resolved.contract.collectionId,
-                contractDigest: resolved.contract.contractDigest,
-                revision: retiredRevision,
-                full: true,
-            },
-        });
         return PluginCollectionForgetResultV1Schema.parse({ status: "forgotten" });
     });
 }

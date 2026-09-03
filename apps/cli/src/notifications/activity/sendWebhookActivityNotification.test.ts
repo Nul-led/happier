@@ -1,3 +1,6 @@
+import { createServer, type IncomingMessage } from 'node:http';
+import { once } from 'node:events';
+
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -227,5 +230,36 @@ describe('sendWebhookActivityNotificationAsync', () => {
 
     expect(transport.requests).toHaveLength(1);
     expect(transport.requests[0]?.validatedAddresses).toEqual(['127.0.0.1']);
+  });
+
+  it('reaches a real receiver over the default transport', async () => {
+    const received: Array<Readonly<{ headers: IncomingMessage['headers']; body: string }>> = [];
+    const server = createServer(async (request, response) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      received.push({ headers: request.headers, body: Buffer.concat(chunks).toString('utf8') });
+      response.statusCode = 202;
+      response.end();
+    });
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Expected a TCP address');
+
+    try {
+      // No injected transport: this exercises the real DNS admission and the
+      // real pinned socket owner, not a stub of them.
+      await sendWebhookActivityNotificationAsync({
+        channel: webhookChannel(`http://127.0.0.1:${address.port}/happier`),
+        event: READY_EVENT,
+      });
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+
+    expect(received).toHaveLength(1);
+    expect(received[0]?.headers['content-type']).toBe('application/json');
+    expect(received[0]?.headers['x-happier-signature-256']).toMatch(/^sha256=[a-f0-9]{64}$/);
+    expect(JSON.parse(received[0]?.body ?? '{}').topic).toBe('ready');
   });
 });

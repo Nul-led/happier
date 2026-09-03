@@ -1439,6 +1439,92 @@ describe('Discord Gateway supervisor', () => {
     await supervisor.dispose();
   });
 
+  it('reports the continuity gap of a resumable worker whose runner generation retired before the replacement runner admits', async () => {
+    const current = snapshot();
+    const reportedFacts: unknown[] = [];
+    const events: string[] = [];
+    const workerResults: DiscordGatewayWorkerResult[] = [];
+    const workerStops: Array<() => void> = [];
+    const workerFactory = vi.fn(() => {
+      events.push('worker');
+      return {
+        result: new Promise<DiscordGatewayWorkerResult>((resolve) => {
+          workerStops.push(() => resolve(workerResults.shift() ?? { kind: 'stopped' }));
+        }),
+        stop: vi.fn(() => workerStops.at(-1)?.()),
+      };
+    });
+    const supervisor = createDiscordGatewaySupervisor({ workerFactory });
+    const executeCore = async (action: Readonly<{ localId: string }>, actionInput: unknown) => {
+      if (action.localId === CONVERSATION_CORE_PROVIDER_ACTION_IDS_V1.connectionsList) {
+        return { [current.connectionId]: current };
+      }
+      if (action.localId === CONVERSATION_CORE_PROVIDER_ACTION_IDS_V1.transportFactReport) {
+        events.push('fact');
+        reportedFacts.push(actionInput);
+        return { kind: 'recorded' };
+      }
+      throw new Error(`Unexpected core Action ${action.localId}`);
+    };
+    const harnessInput = {
+      supervisor,
+      connectedAccounts: {
+        materialize: vi.fn(async () => ({ kind: 'environment' as const, env: { DISCORD_BOT_TOKEN: 'bot-token' } })),
+        watch: vi.fn(() => ({ dispose: vi.fn() })),
+      },
+      http: {
+        request: vi.fn(async (request: Readonly<{ url: string }>) => response(
+          request.url.endsWith('/oauth2/applications/@me')
+            ? { id: 'application-1', flags: 0, flags_new: '0' }
+            : { id: 'bot-1', username: 'Happier Bot', bot: true },
+        )),
+        openWebSocket: vi.fn(),
+      },
+      executeCore,
+    } as const;
+
+    // One activation-local supervisor serves every background runner
+    // generation, exactly like the plugin's activation bindings: the host can
+    // retire a runner and start the next one against the same instance.
+    const retiredSignal = new AbortController();
+    const { background: retiredBackground } = supervisorBackgroundHarness({
+      ...harnessInput,
+      signal: retiredSignal.signal,
+    });
+    const retiredRun = supervisor.run(retiredBackground);
+    await vi.waitFor(() => expect(workerFactory).toHaveBeenCalledTimes(1));
+
+    // The runner retires while the worker still holds Discord resume
+    // coordinates. Those coordinates are process-local and die with the
+    // retired runner, so the replacement runner can only Identify fresh and
+    // may miss everything dispatched in the interval: the existing
+    // history-gap fact must be queued through the pending fact owner before
+    // the replacement admits.
+    workerResults.push({ kind: 'stopped', unprovenContinuity: true });
+    retiredSignal.abort(new Error('Discord Gateway runner generation retired.'));
+    await retiredRun;
+
+    const replacementSignal = new AbortController();
+    const { background: replacementBackground } = supervisorBackgroundHarness({
+      ...harnessInput,
+      signal: replacementSignal.signal,
+    });
+    const replacementRun = supervisor.run(replacementBackground);
+    await vi.waitFor(() => expect(workerFactory).toHaveBeenCalledTimes(2));
+
+    expect(reportedFacts).toEqual([
+      {
+        connectionId: 'connection-1',
+        authorityEpoch: 7,
+        fact: { kind: 'historyGap', reason: 'applicationAdmissionLost' },
+      },
+    ]);
+    expect(events).toEqual(['worker', 'fact', 'worker']);
+    replacementSignal.abort(new Error('Replacement runner test complete.'));
+    await replacementRun;
+    await supervisor.dispose();
+  });
+
   it('retries an authentication-failed connection after the host reports a Connected Account credential resync', async () => {
     // Gateway close 4004 means the selected bot token is wrong. Repairing it
     // inside the same Connected Account changes nothing the core reconciliation

@@ -7,7 +7,6 @@ import { warn } from "@/utils/logging/log";
 
 import {
     claimNextAutomationReplyHandoff,
-    DEFAULT_AUTOMATION_REPLY_HANDOFF_RETRY_AFTER_MS,
     findNextAutomationReplyHandoffDueAt,
     settleAutomationReplyHandoff,
 } from "./automationReplyHandoffService";
@@ -91,13 +90,14 @@ function isRetryableUnavailable(
 
 function ambiguousContractOutcome(
     claim: Readonly<{ attempt: number }>,
-): Readonly<{ kind: "retry"; retryAfterMs: number }> | Readonly<{ kind: "blocked" }> {
+): Readonly<{ kind: "retry" }> | Readonly<{ kind: "blocked" }> {
     // The first invocation may have committed custody before returning an
     // invalid result. Rejoin that exact frozen handoff once. A second invalid
     // result cannot become valid through unattended repetition, so it enters
-    // the existing recoverable blocked custody.
+    // the existing recoverable blocked custody. The retry wake is derived by
+    // the settlement owner from the persisted attempt.
     return claim.attempt === 1
-        ? { kind: "retry", retryAfterMs: DEFAULT_AUTOMATION_REPLY_HANDOFF_RETRY_AFTER_MS }
+        ? { kind: "retry" }
         : { kind: "blocked" };
 }
 
@@ -154,7 +154,9 @@ export async function runAutomationReplyHandoffWorkerPass(params: Readonly<{
             outcome: result.data.code === "contractInvalid"
                 ? ambiguousContractOutcome(claim)
                 : isRetryableUnavailable(result.data.code)
-                    ? { kind: "retry", retryAfterMs: DEFAULT_AUTOMATION_REPLY_HANDOFF_RETRY_AFTER_MS }
+                    // No synthesized cadence hint: the settlement owner derives
+                    // the bounded wake from the persisted attempt.
+                    ? { kind: "retry" }
                     : { kind: "blocked" },
         })
         : await settleAutomationReplyHandoff({

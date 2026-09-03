@@ -3278,6 +3278,7 @@ describe("plugin collection UI query route", () => {
         };
 
         let observedAbsenceEpoch = -1;
+        let cursorBeforeForget = -1;
         await withPluginDataApp(async (app) => {
             const snapshotResponse = await app.inject({
                 method: "POST",
@@ -3296,6 +3297,10 @@ describe("plugin collection UI query route", () => {
             const snapshot = PluginCollectionGetResultV1Schema.parse(snapshotResponse.json());
             expect(snapshot.row?.revision).toBe(3);
             observedAbsenceEpoch = snapshot.absenceEpoch;
+            cursorBeforeForget = (await db.account.findUniqueOrThrow({
+                where: { id: accountId },
+                select: { seq: true },
+            })).seq;
 
             const forgetResponse = await app.inject({
                 method: "POST",
@@ -3325,14 +3330,19 @@ describe("plugin collection UI query route", () => {
                 rowId: "task-forget-live",
             },
         })).resolves.toBe(0);
+        // One successful live forget is one Collection change. The retirement
+        // widens that collection's invalidation to full scope because the row
+        // carrying the retired revision is gone, and it allocates exactly one
+        // Account cursor, so a connected client wakes and re-reads once.
         await expect(db.accountChange.findFirstOrThrow({
             where: {
                 accountId,
                 kind: "pluginDomain",
                 entityId: `pluginDomain/${PLUGIN_ID}/data-collection/${COLLECTION_ID}`,
             },
-            select: { hint: true },
+            select: { cursor: true, hint: true },
         })).resolves.toEqual({
+            cursor: cursorBeforeForget + 1,
             hint: {
                 pluginDomain: "dataCollection",
                 pluginId: PLUGIN_ID,
@@ -3342,6 +3352,10 @@ describe("plugin collection UI query route", () => {
                 full: true,
             },
         });
+        await expect(db.account.findUniqueOrThrow({
+            where: { id: accountId },
+            select: { seq: true },
+        })).resolves.toEqual({ seq: cursorBeforeForget + 1 });
         await expect(mutatePluginCollection({
             accountId,
             request: {
@@ -4086,6 +4100,37 @@ describe("plugin collection UI query route", () => {
                 deletedAt: null,
             },
         })).resolves.toBe(0);
+        // Retirement widens only the retired collection. The relation-nullified
+        // collection keeps its own exact invalidation at the revision the
+        // cleanup wrote, so its readers still wake.
+        await expect(db.accountChange.findMany({
+            where: { accountId, kind: "pluginDomain" },
+            orderBy: { entityId: "asc" },
+            select: { entityId: true, hint: true },
+        })).resolves.toEqual([
+            {
+                entityId: `pluginDomain/${NULLIFY_RELATION_COLLECTION_MANIFEST.id}/data-collection/projects`,
+                hint: {
+                    pluginDomain: "dataCollection",
+                    pluginId: NULLIFY_RELATION_COLLECTION_MANIFEST.id,
+                    collectionId: "projects",
+                    contractDigest: projectRef.contractDigest,
+                    revision: 2,
+                    full: true,
+                },
+            },
+            {
+                entityId: `pluginDomain/${NULLIFY_RELATION_COLLECTION_MANIFEST.id}/data-collection/tasks`,
+                hint: {
+                    pluginDomain: "dataCollection",
+                    pluginId: NULLIFY_RELATION_COLLECTION_MANIFEST.id,
+                    collectionId: "tasks",
+                    contractDigest: taskRef.contractDigest,
+                    revision: 2,
+                    rowIds: ["task-a"],
+                },
+            },
+        ]);
     });
 
     it("rejects a stale absent writer after physical forget and accepts a fresh observed epoch", async () => {

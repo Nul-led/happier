@@ -185,6 +185,18 @@ describe("plugin webhook durable delivery admission", () => {
                 routingKind: "accountEndpoint",
             },
         });
+        // Durable admission rechecks that the verified request's credential is
+        // still one this route accepts, so the fixture must own the credential
+        // version `admissionParams()` presents.
+        const currentCredential = await db.pluginWebhookCredential.create({
+            data: {
+                routeId: route.id,
+                credentialVersionId: "credential-1",
+                verifierKind: "github_hmac_sha256_v1",
+                encryptedSecret: new Uint8Array([1]),
+                state: "current",
+            },
+        });
         const endpoint = await db.pluginWebhookEndpoint.create({
             data: {
                 id: "wh_ep_AAECAwQFBgcICQoLDA0ODw",
@@ -204,7 +216,10 @@ describe("plugin webhook durable delivery admission", () => {
                 targetPluginVersion: "1.0.0",
             },
         });
-        await db.pluginWebhookRoute.update({ where: { id: route.id }, data: { accountEndpointId: endpoint.id } });
+        await db.pluginWebhookRoute.update({
+            where: { id: route.id },
+            data: { accountEndpointId: endpoint.id, currentCredentialId: currentCredential.id },
+        });
         return { account, route, endpoint };
     }
 
@@ -531,11 +546,6 @@ describe("plugin webhook durable delivery admission", () => {
             accountId: "account-delivery",
             webhookEndpointId: "wh_ep_AAECAwQFBgcICQoLDA0ODw",
             endpointRevision: 2,
-            previousTargetMaterialization: {
-                machineId: "machine-1",
-                materializationId: "materialization-1",
-                pluginId: "acme.github",
-            },
             targetMaterialization: {
                 machineId: "machine-2",
                 materializationId: "materialization-2",
@@ -581,11 +591,6 @@ describe("plugin webhook durable delivery admission", () => {
             accountId: "account-delivery",
             webhookEndpointId: "wh_ep_AAECAwQFBgcICQoLDA0ODw",
             endpointRevision: 3,
-            previousTargetMaterialization: {
-                machineId: "machine-2",
-                materializationId: "materialization-2",
-                pluginId: "acme.github",
-            },
             targetMaterialization: {
                 machineId: "machine-3",
                 materializationId: "materialization-3",

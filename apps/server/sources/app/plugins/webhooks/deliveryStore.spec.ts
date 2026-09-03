@@ -364,10 +364,6 @@ describe("plugin webhook delivery pending-target movement", () => {
             targetMachineInstallationId: "installation-2",
             targetMaterializationId: "materialization-2",
             targetPluginVersion: "1.0.0",
-            previousTargetMachineId: "machine-1",
-            previousTargetMachineInstallationId: "installation-1",
-            previousTargetMaterializationId: "materialization-1",
-            previousTargetPluginVersion: "1.0.0",
         });
         mocks.resolveTarget.mockResolvedValue({ kind: "current", materialization: {} });
         mocks.delivery.findMany.mockResolvedValue([
@@ -383,11 +379,6 @@ describe("plugin webhook delivery pending-target movement", () => {
             accountId: "account-1",
             webhookEndpointId: "wh_ep_AAECAwQFBgcICQoLDA0ODw",
             endpointRevision: 3,
-            previousTargetMaterialization: {
-                machineId: "machine-1",
-                materializationId: "materialization-1",
-                pluginId: "acme.github",
-            },
             targetMaterialization: {
                 machineId: "machine-2",
                 materializationId: "materialization-2",
@@ -404,5 +395,40 @@ describe("plugin webhook delivery pending-target movement", () => {
         expect(mocks.delivery.updateMany).not.toHaveBeenCalledWith(expect.objectContaining({
             where: expect.objectContaining({ id: "delivery-2" }),
         }));
+    });
+
+    it("selects and moves by difference from the current target rather than a named predecessor", async () => {
+        const currentTarget = {
+            targetMachineId: "machine-2",
+            targetMachineInstallationId: "installation-2",
+            targetMaterializationId: "materialization-2",
+            targetPluginId: "acme.github",
+            targetPluginVersion: "1.0.0",
+        };
+
+        await movePendingPluginWebhookDeliveriesV1({
+            accountId: "account-1",
+            webhookEndpointId: "wh_ep_AAECAwQFBgcICQoLDA0ODw",
+            endpointRevision: 3,
+            targetMaterialization: {
+                machineId: "machine-2",
+                materializationId: "materialization-2",
+                pluginId: "acme.github",
+            },
+            pageSize: 3,
+        });
+
+        expect(mocks.delivery.findMany).toHaveBeenCalledWith(expect.objectContaining({
+            where: expect.objectContaining({
+                endpointId: "endpoint-1",
+                state: { in: ["queued", "claimed", "dead_letter"] },
+                payloadBytes: { gt: 0n },
+                NOT: currentTarget,
+            }),
+        }));
+        for (const call of mocks.delivery.updateMany.mock.calls) {
+            expect(call[0].where).toMatchObject({ NOT: currentTarget });
+            expect(call[0].data).toMatchObject(currentTarget);
+        }
     });
 });

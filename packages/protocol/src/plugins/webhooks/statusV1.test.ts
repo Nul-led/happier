@@ -195,10 +195,7 @@ describe('plugin webhook Account status contracts', () => {
         sourceInstanceId: 'source-1', routing: 'accountEndpoint', readiness: 'ready', targetStatus: 'current',
         publicUrl: 'https://server.example/v1/plugins/webhooks/opaque', createdAt: 1,
         queue: { queued: 2, retrying: 0, claimed: 0, deadLetter: 1, oldestPendingAtMs: 1 },
-        pendingTargetTransfer: {
-          previousTargetMaterialization: { machineId: 'machine-1', materializationId: 'materialization-1', pluginId: 'acme.github' },
-          eligibleDeliveryCount: 3,
-        },
+        pendingTargetTransfer: { eligibleDeliveryCount: 3 },
         credentialRotation: {
           previousCredentialVersionId: 'credential-v1',
           previousAcceptUntilMs: 2,

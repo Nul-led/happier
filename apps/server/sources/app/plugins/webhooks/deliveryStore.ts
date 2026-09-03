@@ -82,7 +82,6 @@ export async function movePendingPluginWebhookDeliveriesV1(params: Readonly<{
     accountId: string;
     webhookEndpointId: string;
     endpointRevision: number;
-    previousTargetMaterialization: PluginMachineMaterializationRefV1;
     targetMaterialization: PluginMachineMaterializationRefV1;
     cursor?: string;
     pageSize?: number;
@@ -107,27 +106,23 @@ export async function movePendingPluginWebhookDeliveriesV1(params: Readonly<{
                 targetMachineInstallationId: true,
                 targetMaterializationId: true,
                 targetPluginVersion: true,
-                previousTargetMachineId: true,
-                previousTargetMachineInstallationId: true,
-                previousTargetMaterializationId: true,
-                previousTargetPluginVersion: true,
             },
         });
-        if (!endpoint || !endpoint.enabled || endpoint.revokedAt !== null) return { kind: "unavailable" };
-        if (endpoint.revision !== params.endpointRevision) return { kind: "revisionConflict" };
         if (
-            endpoint.pluginId !== params.targetMaterialization.pluginId
-            || endpoint.pluginId !== params.previousTargetMaterialization.pluginId
-        ) return { kind: "incompatible" };
+            !endpoint
+            || !endpoint.enabled
+            || endpoint.revokedAt !== null
+            || endpoint.pluginId === null
+            || endpoint.targetMachineId === null
+            || endpoint.targetMachineInstallationId === null
+            || endpoint.targetMaterializationId === null
+            || endpoint.targetPluginVersion === null
+        ) return { kind: "unavailable" };
+        if (endpoint.revision !== params.endpointRevision) return { kind: "revisionConflict" };
+        if (endpoint.pluginId !== params.targetMaterialization.pluginId) return { kind: "incompatible" };
         if (
             endpoint.targetMachineId !== params.targetMaterialization.machineId
             || endpoint.targetMaterializationId !== params.targetMaterialization.materializationId
-            || endpoint.previousTargetMachineId !== params.previousTargetMaterialization.machineId
-            || endpoint.previousTargetMaterializationId !== params.previousTargetMaterialization.materializationId
-            || endpoint.targetMachineInstallationId === null
-            || endpoint.targetPluginVersion === null
-            || endpoint.previousTargetMachineInstallationId === null
-            || endpoint.previousTargetPluginVersion === null
         ) return { kind: "targetMismatch" };
         const current = await resolveCurrentClaimablePluginMachineMaterializationTx({
             tx,
@@ -142,17 +137,27 @@ export async function movePendingPluginWebhookDeliveriesV1(params: Readonly<{
         });
         if (current.kind !== "current") return { kind: "unavailable" };
 
+        // Eligibility is "frozen somewhere other than where this endpoint now
+        // delivers", not "frozen at the immediately previous target". An
+        // endpoint that moved A -> B -> C still owns rows frozen to A, and
+        // claim will never grant them because it only offers work whose exact
+        // frozen target is currently claimable. Selecting by the recorded
+        // predecessor alone would leave those rows with no operation able to
+        // reach them.
+        const currentTargetWhere = {
+            targetMachineId: endpoint.targetMachineId,
+            targetMachineInstallationId: endpoint.targetMachineInstallationId,
+            targetMaterializationId: endpoint.targetMaterializationId,
+            targetPluginId: endpoint.pluginId,
+            targetPluginVersion: endpoint.targetPluginVersion,
+        } as const;
         const scanned = await tx.pluginWebhookDelivery.findMany({
             where: {
                 endpointId: endpoint.id,
                 accountId: params.accountId,
-                targetMachineId: params.previousTargetMaterialization.machineId,
-                targetMachineInstallationId: endpoint.previousTargetMachineInstallationId,
-                targetMaterializationId: params.previousTargetMaterialization.materializationId,
-                targetPluginId: params.previousTargetMaterialization.pluginId,
-                targetPluginVersion: endpoint.previousTargetPluginVersion,
                 state: { in: ["queued", "claimed", "dead_letter"] },
                 payloadBytes: { gt: 0n },
+                NOT: currentTargetWhere,
                 ...(afterId ? { id: { gt: afterId } } : {}),
             },
             orderBy: { id: "asc" },
@@ -174,24 +179,16 @@ export async function movePendingPluginWebhookDeliveriesV1(params: Readonly<{
                     revision: row.revision,
                     state: row.state,
                     payloadBytes: { gt: 0n },
-                    targetMachineId: params.previousTargetMaterialization.machineId,
-                    targetMachineInstallationId: endpoint.previousTargetMachineInstallationId,
-                    targetMaterializationId: params.previousTargetMaterialization.materializationId,
-                    targetPluginId: params.previousTargetMaterialization.pluginId,
-                    targetPluginVersion: endpoint.previousTargetPluginVersion,
+                    // Same difference predicate as the scan: a row another
+                    // page or writer already moved no longer matches, so
+                    // repeating a cursor stays monotonic.
+                    NOT: currentTargetWhere,
                 },
-                data: {
-                    targetMachineId: endpoint.targetMachineId,
-                    targetMachineInstallationId: endpoint.targetMachineInstallationId,
-                    targetMaterializationId: endpoint.targetMaterializationId,
-                    targetPluginId: endpoint.pluginId,
-                    targetPluginVersion: endpoint.targetPluginVersion,
-                    revision: { increment: 1 },
-                },
+                data: { ...currentTargetWhere, revision: { increment: 1 } },
             });
             moved += updated.count;
         }
-        if (moved > 0 && endpoint.pluginId !== null) {
+        if (moved > 0) {
             await markPluginWebhookAccountChangedInTxV1(tx, {
                 accountId: params.accountId,
                 pluginId: endpoint.pluginId,
