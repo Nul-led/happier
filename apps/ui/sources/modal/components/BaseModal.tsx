@@ -142,6 +142,8 @@ interface BaseModalProps {
     showBackdrop?: boolean;
     zIndexBase?: number;
     webPlacement?: 'auto' | 'top';
+    /** The overlay scrolls by default; bounded modal bodies may own their one scroll region. */
+    scrollHost?: 'overlay' | 'body';
     webPortalTarget?: ModalPortalTarget;
     focusReturnRef?: FocusReturnRef;
 }
@@ -155,6 +157,7 @@ export function BaseModal({
     showBackdrop = true,
     zIndexBase,
     webPlacement = 'auto',
+    scrollHost = 'overlay',
     webPortalTarget = null,
     focusReturnRef,
 }: BaseModalProps) {
@@ -222,6 +225,9 @@ export function BaseModal({
 
         const handleKeyDown = (event: KeyboardEvent) => {
             if (event.key === 'Escape') {
+                // Escape participates in IME candidate/composition control.
+                // Do not let the modal dismissal layer consume that keystroke.
+                if (event.isComposing || event.keyCode === 229) return;
                 if (!onClose) return;
                 event.preventDefault();
                 event.stopPropagation();
@@ -302,7 +308,7 @@ export function BaseModal({
             inset: 0,
             outline: 'none',
             zIndex: baseZ + 1,
-            overflowY: 'auto',
+            overflowY: scrollHost === 'overlay' ? 'auto' : 'hidden',
         };
 
         const visuallyHiddenStyle: React.CSSProperties = {
@@ -504,20 +510,31 @@ export function BaseModal({
                         ]}
                     >
                         <ModalBoundaryProvider>
-                            <ScrollView
-                                style={styles.scrollContainer}
-                                contentContainerStyle={styles.scrollContent}
-                                showsVerticalScrollIndicator={false}
-                                keyboardShouldPersistTaps="handled"
-                                centerContent={true}
-                            >
-                                <View
-                                    pointerEvents={interactivePointerEvents.nativePointerEvents}
-                                    style={[styles.scrollContentInner, interactivePointerEvents.webStyle]}
+                            {scrollHost === 'overlay' ? (
+                                <ScrollView
+                                    style={styles.scrollContainer}
+                                    contentContainerStyle={styles.scrollContent}
+                                    showsVerticalScrollIndicator={false}
+                                    keyboardShouldPersistTaps="handled"
+                                    centerContent={true}
                                 >
-                                    {children}
+                                    <View
+                                        pointerEvents={interactivePointerEvents.nativePointerEvents}
+                                        style={[styles.scrollContentInner, interactivePointerEvents.webStyle]}
+                                    >
+                                        {children}
+                                    </View>
+                                </ScrollView>
+                            ) : (
+                                <View style={[styles.scrollContainer, styles.scrollContent]}>
+                                    <View
+                                        pointerEvents={interactivePointerEvents.nativePointerEvents}
+                                        style={[styles.scrollContentInner, interactivePointerEvents.webStyle]}
+                                    >
+                                        {children}
+                                    </View>
                                 </View>
-                            </ScrollView>
+                            )}
                         </ModalBoundaryProvider>
                     </OverlayMotionFrame>
                     <OverlayPortalHost />

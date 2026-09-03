@@ -279,6 +279,7 @@ describe('ModalCardFrame', () => {
                 }),
             ]),
         );
+        expect(screen.findAllByType('ScrollView')).toHaveLength(0);
     });
 
     it('marks the card container as a modal card boundary on web (so backdrop clicks can dismiss without swallowing inner clicks)', async () => {

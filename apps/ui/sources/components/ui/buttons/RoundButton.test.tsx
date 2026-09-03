@@ -61,4 +61,64 @@ describe('RoundButton', () => {
             : (styleOutput ?? {});
         expect(flattened.opacity).toBe(0.35);
     });
+
+    it('keeps labels single-line by default and allows a bounded multiline opt-in', async () => {
+        const { RoundButton } = await import('./RoundButton');
+        const defaultScreen = await renderScreen(<RoundButton title="Default label" testID="default-round-button" />);
+        const multilineScreen = await renderScreen(
+            <RoundButton
+                title="Mirror workspace and allow destination-only files to be removed"
+                titleNumberOfLines={2}
+                testID="multiline-round-button"
+            />,
+        );
+
+        const defaultLabel = defaultScreen.tree.root.find((node) => node.props.children === 'Default label');
+        const multilineLabel = multilineScreen.tree.root.find((node) => (
+            node.props.children === 'Mirror workspace and allow destination-only files to be removed'
+        ));
+
+        expect(defaultLabel.props.numberOfLines).toBe(1);
+        expect(multilineLabel.props.numberOfLines).toBe(2);
+    });
+
+    it('lets a consequence-bearing label wrap completely instead of truncating at a line cap', async () => {
+        const { RoundButton } = await import('./RoundButton');
+        // Long enough that a two-line cap truncates it at the narrow widths and large
+        // text sizes this action is confirmed at.
+        const label = 'Mirror workspace and allow destination-only files to be permanently removed';
+        const screen = await renderScreen(
+            <RoundButton
+                title={label}
+                titleNumberOfLines="complete"
+                accessibilityLabel={label}
+                testID="complete-round-button"
+            />,
+        );
+
+        const completeLabel = screen.tree.root.find((node) => node.props.children === label);
+        expect(completeLabel.props.numberOfLines).toBeUndefined();
+        // The full sentence stays the accessible name, not a shortened stand-in.
+        expect(screen.findByTestId('complete-round-button')?.props.accessibilityLabel).toBe(label);
+    });
+
+    it('centres a wrapping label without disturbing the single-line default', async () => {
+        const { RoundButton } = await import('./RoundButton');
+        const defaultScreen = await renderScreen(<RoundButton title="Short" testID="single" />);
+        const wrappedScreen = await renderScreen(
+            <RoundButton title="A much longer destructive confirmation" titleNumberOfLines="complete" testID="wrapped" />,
+        );
+
+        const flatten = (style: unknown): Record<string, unknown> => (Array.isArray(style)
+            ? style.reduce((acc: Record<string, unknown>, next) => ({ ...acc, ...(flatten(next)) }), {})
+            : ((style as Record<string, unknown> | null | undefined) ?? {}));
+
+        const defaultLabel = defaultScreen.tree.root.find((node) => node.props.children === 'Short');
+        const wrappedLabel = wrappedScreen.tree.root.find((node) => (
+            node.props.children === 'A much longer destructive confirmation'
+        ));
+
+        expect(flatten(defaultLabel.props.style).textAlign).toBeUndefined();
+        expect(flatten(wrappedLabel.props.style).textAlign).toBe('center');
+    });
 });

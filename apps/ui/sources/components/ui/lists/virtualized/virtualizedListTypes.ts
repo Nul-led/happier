@@ -210,6 +210,8 @@ export type VirtualizedSectionListProps<T> = Readonly<{
     onRefresh?: () => void;
     refreshControl?: React.ReactElement;
     recycleItems?: boolean;
+    keyboardShouldPersistTaps?: VirtualizedListProps<T>['keyboardShouldPersistTaps'];
+    keyboardDismissMode?: VirtualizedListProps<T>['keyboardDismissMode'];
     webScrollHandlers?: VirtualizedListProps<T>['webScrollHandlers'];
     estimatedItemSize?: number;
 }>;

@@ -87,4 +87,25 @@ describe('VirtualizedSectionList', () => {
         expect(legendMock.refHandle.scrollToIndex).toHaveBeenCalledWith({ index: 2 });
         expect(legendMock.refHandle.clearCaches).toHaveBeenCalledWith({ mode: 'sizes' });
     });
+
+    it('forwards keyboard persistence and dismiss mode so row taps survive the soft keyboard', async () => {
+        // Legend backend.
+        const legend = await renderSectionList({
+            keyboardShouldPersistTaps: 'handled',
+            keyboardDismissMode: 'interactive',
+        });
+        const legendProps = legend.findAllByType('LegendSectionList' as any)[0]!.props;
+        expect(legendProps.keyboardShouldPersistTaps).toBe('handled');
+        expect(legendProps.keyboardDismissMode).toBe('interactive');
+
+        // Explicit flat backend.
+        const flat = await renderSectionList({
+            backendPreference: 'flat',
+            keyboardShouldPersistTaps: 'handled',
+            keyboardDismissMode: 'on-drag',
+        });
+        const flatProps = flat.findAllByType('SectionList' as any)[0]!.props;
+        expect(flatProps.keyboardShouldPersistTaps).toBe('handled');
+        expect(flatProps.keyboardDismissMode).toBe('on-drag');
+    });
 });

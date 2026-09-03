@@ -127,6 +127,7 @@ describe('CustomModal', () => {
             },
             onRequestClose,
             focusReturnRef,
+            webPlacement: 'top',
             chrome: {
                 kind: 'card',
                 leading: chromeLeading,
@@ -156,6 +157,8 @@ describe('CustomModal', () => {
         expect(screen.findByType(ChromeModal).props.label).toBe('browse');
         expect(screen.findByType('BaseModal' as any).props.accessibilityLabel).toBe('Browse provider sessions');
         expect(screen.findByType('BaseModal' as any).props.focusReturnRef).toBe(focusReturnRef);
+        expect(screen.findByType('BaseModal' as any).props.webPlacement).toBe('top');
+        expect(screen.findByType('BaseModal' as any).props.scrollHost).toBe('body');
 
         act(() => {
             modalCardFrame.props.onClose();

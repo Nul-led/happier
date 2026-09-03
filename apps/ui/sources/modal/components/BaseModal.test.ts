@@ -165,6 +165,14 @@ describe('BaseModal (web)', () => {
         expect((dialogShell?.props as any)?.style?.overflowY).toBe('auto');
     });
 
+    it('disables overlay scrolling when the bounded modal body owns the sole scroll region', async () => {
+        const { BaseModal } = await import('./BaseModal');
+        const screen = await renderBaseModalScreen(BaseModal, { scrollHost: 'body' });
+
+        const dialogShell = screen.findAll((node) => (node.props as any)?.role === 'dialog')?.[0];
+        expect((dialogShell?.props as any)?.style?.overflowY).toBe('hidden');
+    });
+
     it('omits the overlay when showBackdrop is false', async () => {
         const { BaseModal } = await import('./BaseModal');
         const screen = await renderBaseModalScreen(BaseModal, { showBackdrop: false });
@@ -431,5 +439,33 @@ describe('BaseModal (web)', () => {
         }
 
         expect(onClose).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not dismiss on Escape while an IME composition is active', async () => {
+        const { BaseModal } = await import('./BaseModal');
+        const onClose = vi.fn();
+        const originalDocument = (globalThis as any).document;
+        const listeners = new Map<string, ((event: { key: string; isComposing?: boolean; preventDefault: () => void; stopPropagation: () => void }) => void)[]>();
+        (globalThis as any).document = {
+            body: { style: { pointerEvents: 'auto' } },
+            activeElement: null,
+            addEventListener: (type: string, callback: (event: { key: string; isComposing?: boolean; preventDefault: () => void; stopPropagation: () => void }) => void) => {
+                listeners.set(type, [...(listeners.get(type) ?? []), callback]);
+            },
+            removeEventListener: vi.fn(),
+        };
+
+        try {
+            await renderBaseModalScreen(BaseModal, { onClose });
+            act(() => {
+                for (const callback of listeners.get('keydown') ?? []) {
+                    callback({ key: 'Escape', isComposing: true, preventDefault: vi.fn(), stopPropagation: vi.fn() });
+                }
+            });
+        } finally {
+            (globalThis as any).document = originalDocument;
+        }
+
+        expect(onClose).not.toHaveBeenCalled();
     });
 });

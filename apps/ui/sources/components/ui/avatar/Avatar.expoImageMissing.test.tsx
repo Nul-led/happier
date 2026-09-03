@@ -40,13 +40,11 @@ vi.mock('react-native-unistyles', async () => {
     });
 });
 
-vi.mock('@/agents/catalog/catalog', () => ({
-    DEFAULT_AGENT_ID: 'codex',
+// The catalog is internal logic, and the testkit's own fixtures read it, so only
+// the presentation leaves this case is about are overridden on top of the real module.
+vi.mock('@/agents/catalog/catalog', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('@/agents/catalog/catalog')>()),
     resolveAgentIdFromFlavor: () => null,
-    getAgentAvatarOverlaySizes: () => ({ circleSize: 16, iconSize: 12 }),
-    getAgentIconSource: () => null,
-    getAgentIconTintColor: () => undefined,
-    getAgentIconSvgXml: () => null,
 }));
 
 describe('Avatar (expo-image missing)', () => {

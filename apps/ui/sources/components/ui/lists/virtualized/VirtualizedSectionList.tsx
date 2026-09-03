@@ -73,6 +73,8 @@ function VirtualizedSectionListInner<T>(
         refreshing: props.refreshing,
         onRefresh: props.onRefresh,
         refreshControl: props.refreshControl,
+        keyboardShouldPersistTaps: props.keyboardShouldPersistTaps,
+        keyboardDismissMode: props.keyboardDismissMode,
     };
 
     if (useLegend) {

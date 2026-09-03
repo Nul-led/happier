@@ -9,7 +9,6 @@ import { useSetting } from '@/sync/domains/state/storage';
 import { StyleSheet } from 'react-native-unistyles';
 import { shadowLevelStyle } from '@/shadowElevation';
 import {
-    DEFAULT_AGENT_ID,
     resolveAgentIdFromFlavor,
     getAgentAvatarOverlaySizes,
 } from '@/agents/catalog/catalog';
@@ -81,22 +80,21 @@ export const Avatar = React.memo((props: AvatarProps) => {
             />
         );
 
-        const showFlavorOverlay = Boolean(showFlavorIcons && agentId);
-        if (showFlavorOverlay || hasUnreadMessages) {
-            const iconAgentId = agentId ?? DEFAULT_AGENT_ID;
-            const { circleSize, iconSize } = getAgentAvatarOverlaySizes(iconAgentId, size);
+        const overlayAgentId = showFlavorIcons ? agentId : null;
+        if (overlayAgentId || hasUnreadMessages) {
+            const { circleSize, iconSize } = getAgentAvatarOverlaySizes(overlayAgentId ?? '', size);
 
             return (
                 <View style={[styles.container, { width: size, height: size }]}>
                     {imageElement}
-                    {showFlavorOverlay && (
+                    {overlayAgentId && (
                         <View style={[styles.flavorIcon, {
                             width: circleSize,
                             height: circleSize,
                             alignItems: 'center',
                             justifyContent: 'center',
                         }]}>
-                            <AgentIcon agentId={iconAgentId} size={iconSize} />
+                            <AgentIcon agentId={overlayAgentId} size={iconSize} />
                         </View>
                     )}
                     {unreadBadgeElement}
@@ -118,21 +116,24 @@ export const Avatar = React.memo((props: AvatarProps) => {
         AvatarComponent = AvatarGradient;
     }
 
-    const iconAgentId = agentId ?? DEFAULT_AGENT_ID;
-    const { circleSize, iconSize } = getAgentAvatarOverlaySizes(iconAgentId, size);
+    // An Agent the catalog carries no presentation for — an installed Agent, or a
+    // session whose Agent is unreadable — has no mark to show. Wearing the default
+    // Agent's mark would claim the session belongs to that Agent, so it stays bare.
+    const overlayAgentId = showFlavorIcons ? agentId : null;
+    const { circleSize, iconSize } = getAgentAvatarOverlaySizes(overlayAgentId ?? '', size);
 
-    if (showFlavorIcons || hasUnreadMessages) {
+    if (overlayAgentId || hasUnreadMessages) {
         return (
             <View style={[styles.container, { width: size, height: size }]}>
                 <AvatarComponent {...avatarProps} size={size} />
-                {showFlavorIcons && (
+                {overlayAgentId && (
                     <View style={[styles.flavorIcon, {
                         width: circleSize,
                         height: circleSize,
                         alignItems: 'center',
                         justifyContent: 'center',
                     }]}>
-                        <AgentIcon agentId={iconAgentId} size={iconSize} />
+                        <AgentIcon agentId={overlayAgentId} size={iconSize} />
                     </View>
                 )}
                 {unreadBadgeElement}

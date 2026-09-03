@@ -217,6 +217,8 @@ export function CustomModal({ config, onClose, showBackdrop = true, visible, zIn
             showBackdrop={showBackdrop}
             zIndexBase={zIndexBase}
             webPortalTarget={config.webPortalTarget ?? null}
+            webPlacement={config.webPlacement}
+            scrollHost={chrome?.scrollHost ?? 'overlay'}
         >
             {chrome ? (
                 <ModalCardFrame

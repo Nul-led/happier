@@ -215,6 +215,49 @@ describe('apps/ui/metro.config.js (Expo resolution fallbacks)', () => {
         });
     });
 
+    it('resolves browser-safe Personal Home leaves without pulling the Node runtime barrel', () => {
+        process.env.HAPPIER_STACK_STACK = 'qa-test';
+        delete process.env.CI;
+        delete process.env.EXPO_NO_METRO_WORKSPACE_ROOT;
+        delete process.env.HAPPIER_UI_METRO_NARROW_WATCH_FOLDERS;
+
+        const config = requireFreshMetroConfig();
+
+        expect(config.resolver.resolveRequest(
+            {},
+            '@happier-dev/cli-common/firstPartyRuntime/personalHome/bootstrap',
+            'web',
+        )).toEqual({
+            type: 'sourceFile',
+            filePath: path.resolve(
+                __dirname,
+                '../../../../packages/cli-common/src/firstPartyRuntime/personalHome/bootstrap.ts',
+            ),
+        });
+        expect(config.resolver.resolveRequest(
+            {},
+            '@happier-dev/cli-common/firstPartyRuntime/personalHome/runtimeSpec',
+            'web',
+        )).toEqual({
+            type: 'sourceFile',
+            filePath: path.resolve(
+                __dirname,
+                '../../../../packages/cli-common/src/firstPartyRuntime/personalHome/personalHomeRuntimeSpec.ts',
+            ),
+        });
+        expect(config.resolver.resolveRequest(
+            {},
+            '@happier-dev/cli-common/firstPartyRuntime/personalHome/signupPolicy',
+            'web',
+        )).toEqual({
+            type: 'sourceFile',
+            filePath: path.resolve(
+                __dirname,
+                '../../../../packages/cli-common/src/firstPartyRuntime/personalHomeSignupPolicy.ts',
+            ),
+        });
+    });
+
     it('ignores internal workspace dist publications while continuing to watch source', () => {
         process.env.HAPPIER_STACK_STACK = 'qa-test';
         delete process.env.CI;

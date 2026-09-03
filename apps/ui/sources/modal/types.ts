@@ -18,6 +18,8 @@ export interface BaseModalConfig {
     accessibilityLabel?: string;
     webPortalTarget?: ModalPortalTarget;
     focusReturnRef?: FocusReturnRef;
+    /** Web-only placement within the full-screen modal shell. */
+    webPlacement?: 'auto' | 'top';
 }
 
 export interface AlertModalConfig extends BaseModalConfig {

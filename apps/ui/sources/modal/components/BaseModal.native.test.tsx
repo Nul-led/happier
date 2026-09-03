@@ -154,4 +154,18 @@ describe('BaseModal (native)', () => {
         expect(nativeBackState.pressHardwareBack()).toBe(true);
         expect(onClose).toHaveBeenCalledTimes(1);
     });
+
+    it('does not add an outer ScrollView when the bounded modal body owns scrolling', async () => {
+        const { BaseModal } = await import('./BaseModal');
+
+        const screen = await renderScreen(
+            React.createElement(BaseModal, {
+                visible: true,
+                scrollHost: 'body',
+                children: React.createElement('Child'),
+            }),
+        );
+
+        expect(screen.findAllByType('ScrollView' as any)).toHaveLength(0);
+    });
 });

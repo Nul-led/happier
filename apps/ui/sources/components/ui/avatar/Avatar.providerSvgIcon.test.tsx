@@ -87,15 +87,6 @@ vi.mock('./AvatarBrutalist', () => ({
     AvatarBrutalist: (props: any) => React.createElement('AvatarBrutalist', props),
 }));
 
-vi.mock('@/agents/catalog/catalog', () => ({
-    DEFAULT_AGENT_ID: 'claude',
-    resolveAgentIdFromFlavor: () => 'qwen',
-    getAgentAvatarOverlaySizes: () => ({ circleSize: 16, iconSize: 12 }),
-    getAgentIconSource: () => 1,
-    getAgentIconTintColor: () => undefined,
-    getAgentIconSvgXml: () => '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"><path d="M0 0h1v1H0z"/></svg>',
-}));
-
 describe('Avatar provider svg icons', () => {
     it('renders an SvgXml overlay for svg-backed provider logos', async () => {
         const { Avatar } = await import('./Avatar');

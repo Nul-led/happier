@@ -65,6 +65,18 @@ export const RoundButton = React.memo((props: {
     display?: RoundButtonDisplay,
     title?: any,
     /**
+     * How much of the title the pill may show.
+     *
+     * Ordinary buttons stay on their single line. `2` is the bounded opt-in for a
+     * label that occasionally runs long, and `'complete'` is the mode a
+     * consequence-bearing label uses: it wraps to as many lines as its words need,
+     * because a destructive action truncated to "Mirror workspace and allow
+     * destination-only files to be…" asks for consent to a sentence the reader
+     * cannot finish — and translations and large text sizes are exactly where that
+     * happens.
+     */
+    titleNumberOfLines?: 1 | 2 | 'complete',
+    /**
      * A mark drawn before the title, inside the same fill.
      *
      * The button still hugs its content — the mark widens it rather than sitting in
@@ -134,6 +146,10 @@ export const RoundButton = React.memo((props: {
 
     const size = sizes[props.size || 'large'];
     const display = displays[props.display || 'default'];
+    const titleLines = props.titleNumberOfLines ?? 1;
+    // `undefined` is React Native's "as many lines as it takes"; `0` is not portable
+    // across the platforms this primitive renders on.
+    const titleNumberOfLines = titleLines === 'complete' ? undefined : titleLines;
     return (
         <HappierPressable
             testID={props.testID}
@@ -192,9 +208,14 @@ export const RoundButton = React.memo((props: {
                                 color: display.textColor,
                                 fontSize: size.fontSize,
                             },
+                            // A wrapped label is a paragraph inside a centred pill, so
+                            // its second line centres under the first rather than
+                            // hanging off the leading edge. Single-line buttons are
+                            // already centred by the container and are unaffected.
+                            titleLines === 1 ? null : { textAlign: 'center' as const },
                             props.textStyle
                         ]}
-                        numberOfLines={1}
+                        numberOfLines={titleNumberOfLines}
                     >
                         {props.title}
                     </Text>
