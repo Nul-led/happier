@@ -560,14 +560,20 @@ export const PreAuthOnboardingWizardEntry = React.memo(function PreAuthOnboardin
                 await Modal.alert(t('common.error'), t('errors.operationFailed'));
                 return;
             }
-            const target = captureHomeExternalAuthTarget({
+            const capturedTarget = captureHomeExternalAuthTarget({
                 serverId: snapshot.serverId,
                 serverUrl,
             });
-            if (!target.serverId || !target.serverUrl) {
+            const capturedServerId = capturedTarget.serverId;
+            const capturedServerUrl = capturedTarget.serverUrl;
+            if (!capturedServerId || !capturedServerUrl) {
                 await Modal.alert(t('common.error'), t('errors.operationFailed'));
                 return;
             }
+            const target = {
+                serverId: capturedServerId,
+                serverUrl: capturedServerUrl,
+            };
 
             if (Platform.OS !== 'web') {
                 const pendingWritten = await TokenStorage.setPendingExternalAuth(

@@ -800,6 +800,49 @@ describe("authRoutes (pairing auth) (integration)", () => {
         }
     });
 
+    it("accepts default requester-displayed reverse invite material under the production start policy", async () => {
+        delete process.env.AUTH_PAIRING_TTL_SECONDS;
+        const account = await db.account.create({ data: { publicKey: `pk-${Date.now()}-reverse-start-default` }, select: { id: true } });
+        const token = await createPresentUserToken(account.id);
+        const app = createTestApp();
+        authRoutes(app as any);
+        await app.ready();
+
+        const reverse = createHomeQrReverseInviteV2({
+            home: {
+                v: 1,
+                homeServerIdentityId: localHomeServerIdentityId,
+                canonicalServerUrl: "https://home.example",
+                revision: 1,
+                endpoints: [{ kind: "https", url: "https://home.example" }],
+            },
+            // A real requester renders before the enrolled device scans and starts the row.
+            // Keep a small elapsed interval so this test proves the default remains valid
+            // after that handoff rather than only at zero latency.
+            nowMs: Date.now() - 1_000,
+        });
+
+        const start = await app.inject({
+            method: "POST",
+            url: "/v1/auth/pairing/start",
+            headers: { authorization: `Bearer ${token}` },
+            payload: {
+                direction: reverse.invite.direction,
+                secretHash: Buffer.from(deriveHomeQrRendezvousVerifierV2(reverse.qrSecret)).toString("base64url"),
+                pairId: reverse.invite.pairId,
+                expiresAtMs: reverse.invite.expiresAtMs,
+            },
+        });
+
+        expect(start.statusCode).toBe(200);
+        expect(start.json()).toEqual({
+            pairId: reverse.invite.pairId,
+            expiresAt: new Date(reverse.invite.expiresAtMs).toISOString(),
+        });
+
+        await app.close();
+    });
+
     it("accepts the A6 requester-displayed proposed tuple with exact expiry, idempotent retries, typed conflicts, and present-user authority", async () => {
         process.env.AUTH_PAIRING_TTL_SECONDS = "600";
         const account = await db.account.create({ data: { publicKey: `pk-${Date.now()}-reverse-start` }, select: { id: true } });

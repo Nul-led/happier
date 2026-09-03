@@ -6,7 +6,7 @@ import { StatusDot } from '@/components/ui/status/StatusDot';
 import { StatusPill, type StatusPillVariant } from '@/components/ui/status/StatusPill';
 import { Popover } from '@/components/ui/popover';
 import { FloatingOverlay } from '@/components/ui/overlays/FloatingOverlay';
-import { useSocketStatus, useSyncError, useLastSyncAt, useMachineListStatusByServerId, useSettings } from '@/sync/domains/state/storage';
+import { useSocketStatus, useSyncError, useLastSyncAt, useMachineListStatusByServerId } from '@/sync/domains/state/storage';
 import { useHomeViewSelectionSettingsMutable } from '@/hooks/server/useHomeViewSelectionSettings';
 import {
     areServerProfileIdentifiersEquivalent,
@@ -31,7 +31,11 @@ import { useConnectionTargetActions } from '@/components/navigation/connection/u
 import { Text } from '@/components/ui/text/Text';
 import { useConnectionHealth } from '@/components/navigation/connectionStatus/useConnectionHealth';
 import { resolveMachineConnectionSummary } from '@/components/navigation/connectionStatus/resolveMachineConnectionSummary';
-import { retryActiveServerConnection } from '@/sync/runtime/orchestration/connectionManager';
+import {
+    getAppliedActiveServerId,
+    retryActiveServerConnection,
+    subscribeAppliedActiveServer,
+} from '@/sync/runtime/orchestration/connectionManager';
 import { resolveSocketErrorClassification } from '@/sync/runtime/connectivity/resolveSocketErrorClassification';
 import { selectSyncErrorForServer } from '@/sync/runtime/connectivity/syncErrorScope';
 import { runGuardedNavigation } from '@/utils/navigation/runGuardedNavigation';
@@ -45,6 +49,13 @@ import { resolveRoutineServerSelectionScope } from '@/sync/domains/server/select
 import { resolveServerSelectionGroupActivation } from '@/sync/domains/server/selection/serverSelectionActivation';
 import { TokenStorage } from '@/auth/storage/tokenStorage';
 import { isDesktopHost } from '@/utils/platform/desktopHost';
+import {
+    readIrohHomeTransportDiagnostics,
+    subscribeIrohHomeTransportDiagnostics,
+} from '@/sync/runtime/irohHomeTransportDiagnostics';
+import { resolveHomeConnectionSummary } from '@/components/navigation/connectionStatus/resolveHomeConnectionSummary';
+import { setClipboardStringSafe } from '@/utils/ui/clipboard';
+import type { DoctorSnapshotHomeTransportDiagnostics } from '@happier-dev/protocol';
 
 type Variant = 'sidebar' | 'header';
 const RELAY_SETTINGS_ROUTE = '/settings/server';
@@ -201,6 +212,27 @@ const stylesheet = StyleSheet.create((theme) => ({
         color: theme.colors.text.primary,
         ...Typography.default(),
     },
+    technicalDetails: {
+        marginHorizontal: 16,
+        marginTop: 12,
+        padding: 12,
+        borderRadius: 10,
+        backgroundColor: theme.colors.surface.inset,
+        borderWidth: 1,
+        borderColor: theme.colors.border.default,
+        gap: 8,
+    },
+    technicalDetailsTitle: {
+        fontSize: 12,
+        color: theme.colors.text.secondary,
+        ...Typography.default('semiBold'),
+    },
+    technicalDetailsValue: {
+        fontSize: 11,
+        lineHeight: 16,
+        color: theme.colors.text.secondary,
+        ...Typography.mono(),
+    },
     popoverActionsRow: {
         flexDirection: 'row',
         justifyContent: 'flex-end',
@@ -259,6 +291,12 @@ const stylesheet = StyleSheet.create((theme) => ({
         alignItems: 'center',
         justifyContent: 'space-between',
     },
+    copyDiagnosticsButton: {
+        minHeight: minimumInteractiveTargetSize,
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+    },
     detailsDisclosureText: {
         fontSize: 13,
         color: theme.colors.text.secondary,
@@ -273,6 +311,87 @@ function formatTime(ts: number | null): string {
     } catch {
         return '—';
     }
+}
+
+type TransportDetailRow = Readonly<{ key: string; label: string; value: string }>;
+
+/**
+ * Advanced transport facts, presented as labeled rows rather than a raw JSON
+ * dump so support and expert users can read, translate, and scan them. The
+ * exact same rows compose the copyable report; there is no second formatter.
+ */
+function buildTransportDetailRows(params: Readonly<{
+    canonicalServerUrl: string;
+    runtimeOrigin: string | null;
+    diagnostics: DoctorSnapshotHomeTransportDiagnostics | null;
+    carrier: 'https' | 'iroh' | undefined;
+}>): readonly TransportDetailRow[] {
+    const rows: TransportDetailRow[] = [];
+    if (params.canonicalServerUrl) {
+        rows.push({
+            key: 'canonicalAddress',
+            label: t('connectionStatus.labels.canonicalAddress'),
+            value: params.canonicalServerUrl,
+        });
+    }
+    if (params.runtimeOrigin && params.runtimeOrigin !== params.canonicalServerUrl) {
+        rows.push({
+            key: 'runtimeOrigin',
+            label: t('connectionStatus.labels.runtimeOrigin'),
+            value: params.runtimeOrigin,
+        });
+    }
+    const diagnostics = params.diagnostics;
+    if (diagnostics?.remoteEndpointId) {
+        rows.push({
+            key: 'endpointId',
+            label: t('connectionStatus.labels.endpointId'),
+            value: diagnostics.remoteEndpointId,
+        });
+    }
+    const observedPath = diagnostics?.current?.observedPath ?? diagnostics?.lastKnown?.observedPath ?? null;
+    const carrier = diagnostics?.current?.carrier ?? diagnostics?.lastKnown?.carrier ?? params.carrier ?? null;
+    if (observedPath || carrier) {
+        const pathLabel = observedPath === 'direct'
+            ? t('connectionStatus.values.pathDirect')
+            : observedPath === 'relay'
+                ? t('connectionStatus.values.pathRelay')
+                : t('status.unknown');
+        rows.push({
+            key: 'connectionPath',
+            label: t('connectionStatus.labels.connectionPath'),
+            value: carrier ? `${carrier === 'iroh' ? 'Iroh' : 'HTTPS'} · ${pathLabel}` : pathLabel,
+        });
+    }
+    const configuration = diagnostics?.effectiveConfiguration;
+    if (configuration) {
+        rows.push({
+            key: 'relayConfiguration',
+            label: t('connectionStatus.labels.relayConfiguration'),
+            value: configuration.policy === 'disabled'
+                ? t('connectionStatus.values.relayDisabled')
+                : t('connectionStatus.values.relayAutomatic', {
+                    relays: configuration.relayUrls.join(', ') || t('status.unknown'),
+                    direct: configuration.directAddressCount,
+                }),
+        });
+    }
+    if (diagnostics?.diagnosticError) {
+        const { code, message } = diagnostics.diagnosticError;
+        rows.push({
+            key: 'transportError',
+            label: t('connectionStatus.labels.transportError'),
+            value: message ? `${code}: ${message}` : code,
+        });
+    }
+    if (diagnostics?.lastTransitionAtMs !== undefined) {
+        rows.push({
+            key: 'lastTransition',
+            label: t('connectionStatus.labels.lastTransition'),
+            value: formatTime(diagnostics.lastTransitionAtMs),
+        });
+    }
+    return rows;
 }
 
 function resolveStatusPresentation(
@@ -413,20 +532,25 @@ export const ConnectionStatusControl = React.memo(function ConnectionStatusContr
     const syncError = useSyncError();
     const lastSyncAt = useLastSyncAt();
     const connectionHealth = useConnectionHealth();
-    const accountSettings = useSettings();
     const {
         serverSelectionGroups,
         serverSelectionActiveTargetKind,
         serverSelectionActiveTargetId,
         setHomeViewSelectionSettings,
-    } = useHomeViewSelectionSettingsMutable(accountSettings);
+    } = useHomeViewSelectionSettingsMutable();
 
     const [open, setOpen] = React.useState(false);
     const [detailsExpanded, setDetailsExpanded] = React.useState(false);
+    const [diagnosticsCopied, setDiagnosticsCopied] = React.useState(false);
     const [pendingServerId, setPendingServerId] = React.useState<string | null>(null);
     const anchorRef = React.useRef<React.ElementRef<typeof View> | null>(null);
     const serverProfilesGeneration = useServerProfilesGeneration();
     const activeServerSnapshot = useActiveServerSnapshot();
+    const appliedServerId = React.useSyncExternalStore(
+        React.useCallback((listener) => subscribeAppliedActiveServer(() => listener()), []),
+        getAppliedActiveServerId,
+        getAppliedActiveServerId,
+    );
 
     const textSize = props.textSize ?? (props.variant === 'sidebar' ? 11 : 12);
     const dotSize = props.dotSize ?? 6;
@@ -443,18 +567,43 @@ export const ConnectionStatusControl = React.memo(function ConnectionStatusContr
     const activeServerId = activeServerSnapshot.serverId;
     const machineListStatusByServerId = useMachineListStatusByServerId();
     const authStatusByServerId = useServerAuthStatusByServerId(servers);
-    const activeSyncError = React.useMemo(() => {
-        return selectSyncErrorForServer(syncError, activeServerId);
-    }, [activeServerId, syncError]);
-
     // Keep the trigger on the applied Home until the focus transaction commits.
     // The pending target row carries the connecting state, so cached/live facts
     // from the current Home are never presented under the requested Home's name.
-    const displayServerId = activeServerId;
+    const displayServerId = appliedServerId || activeServerId;
+    const displayUsesActiveSnapshot = areServerProfileIdentifiersEquivalent(displayServerId, activeServerId);
+    const activeSyncError = React.useMemo(() => {
+        return selectSyncErrorForServer(syncError, displayServerId);
+    }, [displayServerId, syncError]);
     const displayServerProfile = React.useMemo(() => {
         return servers.find((server) => server.id === displayServerId || resolveServerProfileScopeId(server) === displayServerId) ?? null;
     }, [displayServerId, servers]);
-    const displayServerUrl = displayServerProfile?.serverUrl ?? activeServerSnapshot.serverUrl;
+    const displayServerUrl = displayServerProfile?.serverUrl
+        ?? (displayUsesActiveSnapshot ? activeServerSnapshot.serverUrl : '');
+    const diagnosticsHomeIdentity = displayServerProfile?.serverIdentityId ?? displayServerId;
+    const readTransportDiagnostics = React.useCallback(() => detailsExpanded
+        ? readIrohHomeTransportDiagnostics().find(
+            (entry) => entry.homeServerIdentityId === diagnosticsHomeIdentity,
+        ) ?? null
+        : null, [detailsExpanded, diagnosticsHomeIdentity]);
+    const subscribeTransportDiagnostics = React.useCallback((listener: () => void) => (
+        detailsExpanded ? subscribeIrohHomeTransportDiagnostics(listener) : () => undefined
+    ), [detailsExpanded]);
+    // Only the open Advanced section observes transport facts. Routine health
+    // remains owned by useConnectionHealth and path changes stay silent while
+    // Details is collapsed.
+    const transportDiagnostics = React.useSyncExternalStore(
+        subscribeTransportDiagnostics,
+        readTransportDiagnostics,
+        readTransportDiagnostics,
+    );
+    React.useEffect(() => {
+        setDiagnosticsCopied(false);
+    }, [activeServerSnapshot.generation, diagnosticsHomeIdentity]);
+    const toggleDetails = React.useCallback(() => {
+        setDiagnosticsCopied(false);
+        setDetailsExpanded((expanded) => !expanded);
+    }, []);
     const activeServerLabel = React.useMemo(() => {
         const active = displayServerProfile;
         const name = String(active?.name ?? '').trim();
@@ -593,7 +742,7 @@ export const ConnectionStatusControl = React.memo(function ConnectionStatusContr
                     ? t('server.signedOut')
                     : pendingServerId === target.serverId
                         ? t('status.connecting')
-                        : target.serverId === activeServerId
+                        : areServerProfileIdentifiersEquivalent(target.serverId, displayServerId)
                             ? t(connectionHealth.statusLabelKey)
                             : projectionStatus === 'idle'
                                 ? t('status.connected')
@@ -607,7 +756,7 @@ export const ConnectionStatusControl = React.memo(function ConnectionStatusContr
             };
         }
         return result;
-    }, [activeServerId, authStatusByServerId, connectionHealth.statusLabelKey, machineListStatusByServerId, pendingServerId, serverTargets]);
+    }, [authStatusByServerId, connectionHealth.statusLabelKey, displayServerId, machineListStatusByServerId, pendingServerId, serverTargets]);
     const targetActions = useConnectionTargetActions({
         targets: serverTargets,
         activeTargetKey,
@@ -628,6 +777,78 @@ export const ConnectionStatusControl = React.memo(function ConnectionStatusContr
             message: classified.message,
         };
     }, [activeSyncError]);
+
+    // First popover layer: this Home's identity and whether it is reachable
+    // right now. Socket, machine, and transport facts stay behind Advanced.
+    const homeSummary = React.useMemo(() => resolveHomeConnectionSummary({
+        healthKind: connectionHealth.kind,
+        syncErrorKind: syncErrorPresentation?.kind ?? null,
+        syncErrorRetryable: syncErrorPresentation?.retryable ?? null,
+    }), [connectionHealth.kind, syncErrorPresentation]);
+
+    const homeSummaryPresentation = resolveStatusPresentation(theme, homeSummary.statusKey);
+
+    const machineSubtitle = React.useMemo(() => {
+        const summary = resolveMachineConnectionSummary({
+            machineCount: connectionHealth.machineCount,
+            onlineCount: connectionHealth.onlineCount,
+            hasUnknownMachines: connectionHealth.hasUnknownMachines,
+            primaryMachineLabel: connectionHealth.primaryMachineLabel,
+        });
+        switch (summary.kind) {
+            case 'unknown':
+                return t('status.unknown');
+            case 'none':
+                return t('systemStatus.machines.none');
+            case 'single':
+                return summary.label;
+            case 'multiple':
+                return summary.offlineCount === 0
+                    ? `${summary.onlineCount} ${t('status.online')}`
+                    : `${summary.onlineCount} ${t('status.online')} · ${summary.offlineCount} ${t('status.offline')}`;
+        }
+    }, [
+        connectionHealth.hasUnknownMachines,
+        connectionHealth.machineCount,
+        connectionHealth.onlineCount,
+        connectionHealth.primaryMachineLabel,
+    ]);
+
+    const canonicalServerUrl = displayServerProfile?.canonicalServerUrl ?? displayServerUrl;
+    const transportDetailRows = React.useMemo(() => buildTransportDetailRows({
+        canonicalServerUrl,
+        runtimeOrigin: displayUsesActiveSnapshot ? activeServerSnapshot.runtimeOrigin ?? null : null,
+        diagnostics: transportDiagnostics,
+        carrier: displayUsesActiveSnapshot ? activeServerSnapshot.carrier : undefined,
+    }), [
+        activeServerSnapshot.carrier,
+        activeServerSnapshot.runtimeOrigin,
+        canonicalServerUrl,
+        displayUsesActiveSnapshot,
+        transportDiagnostics,
+    ]);
+
+    const handleCopyDiagnostics = React.useCallback(() => {
+        const report = [
+            `${t('connectionStatus.title')}: ${activeServerLabel} — ${t(homeSummary.statusLabelKey)}`,
+            ...transportDetailRows.map((row) => `${row.label}: ${row.value}`),
+            `${t('systemStatus.ui.socket')}: ${socketStatus.status}`,
+            `${t('settings.machines')}: ${machineSubtitle}`,
+            `${t('connectionStatus.labels.lastSync')}: ${formatTime(lastSyncAt)}`,
+            ...(syncErrorPresentation ? [`${t('connectionStatus.labels.lastError')}: ${syncErrorPresentation.message}`] : []),
+        ].join('\n');
+        fireAndForget(setClipboardStringSafe(report).then((copied) => {
+            if (copied) setDiagnosticsCopied(true);
+        }), { tag: 'ConnectionStatusControl.copyDiagnostics' });
+    }, [
+        activeServerLabel,
+        homeSummary.statusLabelKey,
+        lastSyncAt,
+        machineSubtitle,
+        socketStatus.status,
+        syncErrorPresentation,
+        transportDetailRows,
+    ]);
 
     const handleRestoreAccount = React.useCallback(() => {
         const result = runGuardedNavigation(() => router.push('/restore'));
@@ -655,8 +876,15 @@ export const ConnectionStatusControl = React.memo(function ConnectionStatusContr
         setDetailsExpanded(false);
     }, [router]);
     const popoverMinWidth = props.variant === 'sidebar' && Platform.OS === 'web' ? POPOVER_MIN_WIDTH : undefined;
-    const collapsedStatusLabel = t(connectionHealth.statusLabelKey);
+    const collapsedStatusLabel = t(homeSummary.statusLabelKey);
     const collapsedStatusColor = connectionHealth.color;
+    // DESIGN.md forbids color as the only carrier of meaning. For states that
+    // truly need attention (canonical health tone), the collapsed trigger swaps
+    // its bare dot for a warning glyph carrying the same status color — one
+    // quiet non-color cue. Routine connected/connecting stays dot-only and
+    // transport-neutral; detail remains inside the popover.
+    const collapsedShowsAttentionCue =
+        connectionHealth.tone === 'attention' || connectionHealth.tone === 'danger';
 
     return (
         <>
@@ -669,19 +897,31 @@ export const ConnectionStatusControl = React.memo(function ConnectionStatusContr
                 <Pressable
                     style={styles.statusContainer}
                     onPress={() => setOpen((currentOpen) => {
-                        if (currentOpen) setDetailsExpanded(false);
+                        if (currentOpen) {
+                            setDetailsExpanded(false);
+                            setDiagnosticsCopied(false);
+                        }
                         return !currentOpen;
                     })}
                     accessibilityRole="button"
                     accessibilityLabel={`${activeServerLabel}, ${collapsedStatusLabel}`}
                     accessibilityState={{ expanded: open }}
                 >
-                    <StatusDot
-                        color={collapsedStatusColor}
-                        isPulsing={connectionHealth.isPulsing}
-                        size={dotSize}
-                        style={{ marginRight: 4 }}
-                    />
+                    {collapsedShowsAttentionCue ? (
+                        <Icon
+                            name="warning"
+                            size={dotSize + 4}
+                            color={collapsedStatusColor}
+                            style={{ marginRight: 4 }}
+                        />
+                    ) : (
+                        <StatusDot
+                            color={collapsedStatusColor}
+                            isPulsing={connectionHealth.isPulsing}
+                            size={dotSize}
+                            style={{ marginRight: 4 }}
+                        />
+                    )}
                     <Text
                         style={[styles.statusText, { color: collapsedStatusColor, fontSize: textSize }]}
                         numberOfLines={1}
@@ -713,6 +953,7 @@ export const ConnectionStatusControl = React.memo(function ConnectionStatusContr
                         onRequestClose={() => {
                             setOpen(false);
                             setDetailsExpanded(false);
+                            setDiagnosticsCopied(false);
                         }}
                     >
                     {({ maxHeight }) => (
@@ -727,6 +968,36 @@ export const ConnectionStatusControl = React.memo(function ConnectionStatusContr
                                 <View style={styles.popoverHeader}>
                                     <Text style={styles.popoverTitle}>{t('connectionStatus.title')}</Text>
                                 </View>
+
+                                <View style={styles.popoverStatusList}>
+                                    <ConnectionPopoverStatusRow
+                                        testID="connection-popover-home"
+                                        icon="house"
+                                        title={activeServerLabel}
+                                        subtitle={toServerUrlDisplay(displayServerUrl)}
+                                        statusLabel={t(homeSummary.statusLabelKey)}
+                                        statusColor={homeSummaryPresentation.color}
+                                        dotColor={homeSummaryPresentation.dotColor}
+                                        statusVariant={homeSummaryPresentation.pillVariant}
+                                    />
+                                </View>
+
+                                {homeSummary.action !== 'none' ? (
+                                    <View style={styles.popoverActionsRow}>
+                                        <Pressable
+                                            testID="connection-popover-primary-action"
+                                            onPress={homeSummary.action === 'restore' ? handleRestoreAccount : handleRetry}
+                                            style={styles.popoverActionButton}
+                                            accessibilityRole="button"
+                                        >
+                                            <Text style={styles.popoverActionButtonText}>
+                                                {homeSummary.action === 'restore'
+                                                    ? t('connect.restoreAccount')
+                                                    : t('common.retry')}
+                                            </Text>
+                                        </Pressable>
+                                    </View>
+                                ) : null}
 
                                 {targetActions.length > 0 ? (
                                     <View style={styles.popoverRelayBlock} testID="connection-target-list-section">
@@ -758,7 +1029,7 @@ export const ConnectionStatusControl = React.memo(function ConnectionStatusContr
                                     accessibilityRole="button"
                                     accessibilityLabel={t('common.details')}
                                     accessibilityState={{ expanded: detailsExpanded }}
-                                    onPress={() => setDetailsExpanded((expanded) => !expanded)}
+                                    onPress={toggleDetails}
                                     style={styles.detailsDisclosure}
                                 >
                                     <Text style={styles.detailsDisclosureText}>{t('common.details')}</Text>
@@ -773,7 +1044,7 @@ export const ConnectionStatusControl = React.memo(function ConnectionStatusContr
                                 <>
                                 {(() => {
                                     const relayStatusKey = resolveRelayStatusKey({
-                                        endpointStatus: (connectionHealth as any).endpointStatus,
+                                        endpointStatus: connectionHealth.endpointStatus,
                                         connectionHealthKind: connectionHealth.kind,
                                     });
                                     const endpointPresentation = resolveStatusPresentation(theme, relayStatusKey);
@@ -785,40 +1056,6 @@ export const ConnectionStatusControl = React.memo(function ConnectionStatusContr
                                         theme,
                                         resolveSocketStatusKey(socketStatus.status),
                                     );
-                                    const machineCount = typeof (connectionHealth as any).machineCount === 'number'
-                                        ? (connectionHealth as any).machineCount as number
-                                        : 0;
-                                    const onlineCount = typeof (connectionHealth as any).onlineCount === 'number'
-                                        ? (connectionHealth as any).onlineCount as number
-                                        : 0;
-                                    const hasUnknownMachines = Boolean((connectionHealth as any).hasUnknownMachines);
-                                    const primaryMachineLabel =
-                                        typeof (connectionHealth as any).primaryMachineLabel === 'string'
-                                            ? (connectionHealth as any).primaryMachineLabel as string
-                                            : null;
-                                    const machineSummary = resolveMachineConnectionSummary({
-                                        machineCount,
-                                        onlineCount,
-                                        hasUnknownMachines,
-                                        primaryMachineLabel,
-                                    });
-
-                                    const machineSubtitle = (() => {
-                                        switch (machineSummary.kind) {
-                                            case 'unknown':
-                                                return t('status.unknown');
-                                            case 'none':
-                                                return t('systemStatus.machines.none');
-                                            case 'single':
-                                                return machineSummary.label;
-                                            case 'multiple':
-                                                if (machineSummary.offlineCount === 0) {
-                                                    return `${machineSummary.onlineCount} ${t('status.online')}`;
-                                                }
-                                                return `${machineSummary.onlineCount} ${t('status.online')} · ${machineSummary.offlineCount} ${t('status.offline')}`;
-                                        }
-                                    })();
-
                                     const machinesPresentation = resolveStatusPresentation(
                                         theme,
                                         connectionHealth.kind === 'healthy'
@@ -898,25 +1135,42 @@ export const ConnectionStatusControl = React.memo(function ConnectionStatusContr
                                     ) : null}
                                 </View>
 
-                                {syncErrorPresentation ? (
-                                    <View style={styles.popoverActionsRow}>
-                                        {syncErrorPresentation.kind === 'auth' ? (
-                                            <Pressable
-                                                onPress={handleRestoreAccount}
-                                                style={styles.popoverActionButton}
-                                                accessibilityRole="button"
-                                            >
-                                                <Text style={styles.popoverActionButtonText}>{t('connect.restoreAccount')}</Text>
-                                            </Pressable>
-                                        ) : syncErrorPresentation.retryable !== false ? (
-                                            <Pressable
-                                                onPress={handleRetry}
-                                                style={styles.popoverActionButton}
-                                                accessibilityRole="button"
-                                            >
-                                                <Text style={styles.popoverActionButtonText}>{t('common.retry')}</Text>
-                                            </Pressable>
-                                        ) : null}
+                                {transportDetailRows.length > 0 ? (
+                                    <View style={styles.technicalDetails} testID="connection-transport-diagnostics">
+                                        <Text style={styles.technicalDetailsTitle}>
+                                            {t('terminal.connectionDetails')}
+                                        </Text>
+                                        {transportDetailRows.map((row) => (
+                                            <View key={row.key} style={styles.statusMetaRow}>
+                                                <Text style={styles.statusMetaLabel}>{row.label}</Text>
+                                                <Text
+                                                    style={[styles.technicalDetailsValue, { flexShrink: 1, textAlign: 'right' }]}
+                                                    selectable
+                                                >
+                                                    {row.value}
+                                                </Text>
+                                            </View>
+                                        ))}
+                                        <Pressable
+                                            testID="connection-copy-diagnostics"
+                                            accessibilityRole="button"
+                                            accessibilityLabel={diagnosticsCopied
+                                                ? t('connectionStatus.diagnosticsCopied')
+                                                : t('connectionStatus.copyDiagnostics')}
+                                            onPress={handleCopyDiagnostics}
+                                            style={styles.copyDiagnosticsButton}
+                                        >
+                                            <Icon
+                                                name={diagnosticsCopied ? 'check' : 'copy'}
+                                                size={14}
+                                                color={theme.colors.text.secondary}
+                                            />
+                                            <Text style={styles.detailsDisclosureText}>
+                                                {diagnosticsCopied
+                                                    ? t('connectionStatus.diagnosticsCopied')
+                                                    : t('connectionStatus.copyDiagnostics')}
+                                            </Text>
+                                        </Pressable>
                                     </View>
                                 ) : null}
                                 </>

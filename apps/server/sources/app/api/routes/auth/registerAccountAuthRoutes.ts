@@ -286,9 +286,69 @@ export function registerAccountAuthRoutes(app: Fastify): void {
         }
 
         const publicKeyHex = privacyKit.encodeHex(publicKey);
-        const now = new Date();
         const accountAuthPolicy = resolveAccountAuthRequestPolicyFromEnv(process.env);
+        const classifyCurrentCompletion = async () => await inTx(async (tx) => {
+            const now = new Date();
+            const pairing = await tx.authPairingSession.findFirst({
+                where: {
+                    id: pairId,
+                    flow: "direct_qr",
+                    accountId: request.userId,
+                    requestedPublicKey: request.body.publicKey,
+                },
+                select: { approvalStatus: true, expiresAt: true },
+            });
+            if (!pairing) return { status: "wrong_binding" } as const;
+
+            const authRequest = await tx.accountAuthRequest.findUnique({
+                where: { publicKey: publicKeyHex },
+                select: {
+                    createdAt: true,
+                    response: true,
+                    responseAccountId: true,
+                    tokenEncrypted: true,
+                },
+            });
+            if (!authRequest) return { status: "not_found" } as const;
+            if (now.getTime() - authRequest.createdAt.getTime() > accountAuthPolicy.ttlMs) {
+                return { status: "expired" } as const;
+            }
+
+            const hasResponse = authRequest.response !== null;
+            const hasResponseAccount = authRequest.responseAccountId !== null;
+            const hasEncryptedToken = authRequest.tokenEncrypted !== null;
+            const hasCompleteResponse = hasResponse && hasResponseAccount && hasEncryptedToken;
+            const isCompleted = hasCompleteResponse
+                && authRequest.responseAccountId === request.userId;
+            if (pairing.approvalStatus === "approved") {
+                return isCompleted
+                    ? { status: "already_completed" } as const
+                    : { status: "inconsistent" } as const;
+            }
+            if (pairing.approvalStatus !== null || hasCompleteResponse) {
+                return { status: "wrong_binding" } as const;
+            }
+            if (hasResponse || hasResponseAccount || hasEncryptedToken) {
+                return { status: "inconsistent" } as const;
+            }
+            if (pairing.expiresAt.getTime() < now.getTime()) {
+                return { status: "expired" } as const;
+            }
+            return { status: "inconsistent" } as const;
+        });
         const outcome = await inTx(async (tx) => {
+            const now = new Date();
+            const pairing = await tx.authPairingSession.findFirst({
+                where: {
+                    id: pairId,
+                    flow: "direct_qr",
+                    accountId: request.userId,
+                    requestedPublicKey: request.body.publicKey,
+                },
+                select: { id: true, approvalStatus: true, expiresAt: true },
+            });
+            if (!pairing) return { status: "wrong_binding" } as const;
+
             const authRequest = await tx.accountAuthRequest.findUnique({
                 where: { publicKey: publicKeyHex },
             });
@@ -320,25 +380,23 @@ export function registerAccountAuthRoutes(app: Fastify): void {
             const hasResponse = authRequest.response !== null;
             const hasResponseAccount = authRequest.responseAccountId !== null;
             const hasEncryptedToken = authRequest.tokenEncrypted !== null;
-            if (hasResponse && hasResponseAccount && hasEncryptedToken) {
-                return { status: "already_completed" } as const;
+            const hasCompleteResponse = hasResponse && hasResponseAccount && hasEncryptedToken;
+            const isCompleted = hasCompleteResponse
+                && authRequest.responseAccountId === request.userId;
+            if (pairing.approvalStatus === "approved") {
+                return isCompleted
+                    ? { status: "already_completed" } as const
+                    : { status: "inconsistent" } as const;
+            }
+            if (pairing.approvalStatus !== null || hasCompleteResponse) {
+                return { status: "wrong_binding" } as const;
             }
             if (hasResponse || hasResponseAccount || hasEncryptedToken) {
                 return { status: "inconsistent" } as const;
             }
-
-            const pairing = await tx.authPairingSession.findFirst({
-                where: {
-                    id: pairId,
-                    flow: "direct_qr",
-                    accountId: request.userId,
-                    requestedPublicKey: request.body.publicKey,
-                    approvalStatus: null,
-                    expiresAt: { gte: now },
-                },
-                select: { id: true },
-            });
-            if (!pairing) return { status: "wrong_binding" } as const;
+            if (pairing.expiresAt.getTime() < now.getTime()) {
+                return { status: "expired" } as const;
+            }
 
             const token = await auth.createTokenInTx(
                 tx,
@@ -385,17 +443,10 @@ export function registerAccountAuthRoutes(app: Fastify): void {
                 if (finalized.count !== 1) throw new DirectQrCompletionConflictError();
                 return { status: "success" } as const;
             }
-            const raced = await tx.accountAuthRequest.findUnique({
-                where: { id: authRequest.id },
-                select: { response: true, responseAccountId: true, tokenEncrypted: true },
-            });
-            if (raced && raced.response !== null && raced.responseAccountId !== null && raced.tokenEncrypted !== null) {
-                return { status: "already_completed" } as const;
-            }
-            return { status: "inconsistent" } as const;
+            throw new DirectQrCompletionConflictError();
         }).catch((error: unknown) => {
             if (!(error instanceof DirectQrCompletionConflictError)) throw error;
-            return { status: "inconsistent" } as const;
+            return classifyCurrentCompletion();
         });
 
         if (outcome.status === "success") {

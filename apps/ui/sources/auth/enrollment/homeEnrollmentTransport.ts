@@ -172,9 +172,20 @@ export async function resolveHomeEnrollmentTransport(
                 endpointUrl = canonicalEndpointUrl;
                 runtimeOrigin = approvedApplicationOrigin(lease.runtimeOrigin);
                 carrier = 'iroh';
+                let released = false;
                 let closePromise: Promise<void> | null = null;
                 close = () => {
-                    closePromise ??= lease.release();
+                    if (released) return Promise.resolve();
+                    closePromise ??= lease.release().then(
+                        () => {
+                            released = true;
+                            closePromise = null;
+                        },
+                        (error: unknown) => {
+                            closePromise = null;
+                            throw error;
+                        },
+                    );
                     return closePromise;
                 };
                 if (!runtimeOrigin || lease.endpointId !== irohEndpoint.endpointId) {

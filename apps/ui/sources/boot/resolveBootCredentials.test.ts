@@ -102,7 +102,9 @@ describe('resolveBootCredentials', () => {
 
         const { setServerUrl, getServerUrl } = await import('@/sync/domains/server/serverConfig');
         const { getActiveServerSnapshot } = await import('@/sync/domains/server/serverRuntime');
+        const { getDeviceDefaultServerId } = await import('@/sync/domains/server/serverProfiles');
         setServerUrl('https://other.example.test');
+        const deviceDefaultBefore = getDeviceDefaultServerId();
 
         getCredentialsForServerUrlMock.mockResolvedValue({ token: 'stack-token', secret: 'stack-secret' });
 
@@ -113,6 +115,7 @@ describe('resolveBootCredentials', () => {
         });
         expect(getCredentialsMock).not.toHaveBeenCalled();
         expect(getServerUrl()).toBe('http://localhost:24731');
+        expect(getDeviceDefaultServerId()).toBe(deviceDefaultBefore);
     });
 
     it('keeps the current server and credentials when active custody blocks a web server override', async () => {

@@ -3,12 +3,11 @@ import { View } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 
 import { useAuth } from '@/auth/context/AuthContext';
-import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
-import { serverFetch } from '@/sync/http/client';
+import { createServerFetchAtEndpoint } from '@/sync/http/client';
 import { Modal } from '@/modal';
 import { t } from '@/text';
 import { formatOperationFailedDebugMessage } from '@/utils/errors/formatOperationFailedDebugMessage';
-import { readConfiguredServerUrlEnv } from '@/sync/domains/server/readConfiguredServerUrlEnv';
+import { TokenStorage } from '@/auth/storage/tokenStorage';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import {
     presentFirstKeyCredentialLifecycle,
@@ -35,21 +34,24 @@ export default function MtlsCallbackScreen() {
                     return;
                 }
 
-                const snapshot = getActiveServerSnapshot();
-                const rawServerUrl = snapshot.serverUrl ? String(snapshot.serverUrl).trim() : '';
-                const serverUrl = rawServerUrl.replace(/\/+$/, '') || readConfiguredServerUrlEnv().replace(/\/+$/, '');
-                if (!serverUrl) {
+                const pendingState = await TokenStorage.readPendingExternalAuthContinuationState();
+                const pending = pendingState.value;
+                const serverId = String(pending?.serverId ?? '').trim();
+                const serverUrl = String(pending?.serverUrl ?? '').trim().replace(/\/+$/, '');
+                if (pendingState.serverMismatch || pending?.provider !== 'mtls' || !serverId || !serverUrl) {
                     await Modal.alert(t('common.error'), t('errors.operationFailed'));
                     router.replace('/');
                     return;
                 }
+                const target = { serverId, serverUrl };
+                const requestAtTarget = createServerFetchAtEndpoint({ endpointUrl: serverUrl, serverId });
 
                 const controller = new AbortController();
                 const timeoutMs = 15000;
                 const timer = setTimeout(() => controller.abort(), timeoutMs);
                 try {
-                    const res = await serverFetch(
-                        `${serverUrl}/v1/auth/mtls/claim`,
+                    const res = await requestAtTarget(
+                        '/v1/auth/mtls/claim',
                         {
                             method: 'POST',
                             headers: { 'content-type': 'application/json' },
@@ -66,15 +68,16 @@ export default function MtlsCallbackScreen() {
                     }
 
                     const token = String(json.token);
+                    const finishCredentialCustody = async () => {
+                        await TokenStorage.clearPendingExternalAuth(target);
+                        if (!mounted) return;
+                        router.replace('/');
+                    };
                     await presentFirstKeyCredentialLifecycle({
                         run: async () =>
-                            await auth.loginWithCredentials({
-                                token,
-                            }),
-                        onCompleted: () => {
-                            if (!mounted) return;
-                            router.replace('/');
-                        },
+                            await auth.loginWithCredentials({ token }, { target }),
+                        onCompleted: finishCredentialCustody,
+                        onFinishCompleted: finishCredentialCustody,
                     });
                 } finally {
                     clearTimeout(timer);

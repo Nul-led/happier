@@ -44,6 +44,18 @@ function createTestApp() {
     return trackApp(typed);
 }
 
+function scheduleProviderDisableAfterFinalizeHandlerStarts(app: any): void {
+    app.addHook("preHandler", (request: { url: string }, _reply: unknown, done: () => void) => {
+        if (request.url.includes("/v1/auth/external/github/finalize")) {
+            process.env.AUTH_SIGNUP_PROVIDERS = "github";
+            setImmediate(() => {
+                process.env.AUTH_SIGNUP_PROVIDERS = "gitlab";
+            });
+        }
+        done();
+    });
+}
+
 function applyDirectoryOAuthEnv(
     harness: LightSqliteHarness,
     overrides: Record<string, string | undefined> = {},
@@ -100,7 +112,10 @@ async function requestDirectoryParams(
     query: Record<string, string | undefined>,
 ) {
     const search = new URLSearchParams();
-    for (const [key, value] of Object.entries(query)) {
+    const withDefaults = query.purpose === "account_directory" && query.canonicalServerUrl === undefined
+        ? { canonicalServerUrl: CANONICAL_SERVER_URL, ...query }
+        : query;
+    for (const [key, value] of Object.entries(withDefaults)) {
         if (value !== undefined) search.set(key, value);
     }
     return await app.inject({
@@ -168,11 +183,13 @@ describe("connectRoutes (Account Directory OAuth purpose)", () => {
             credentialTarget: string;
             endpointUrl: string;
             endpointServerIdentityId: string;
+            canonicalServerUrl: string;
         };
         expect(paramsJson.purpose).toBe("account_directory");
         expect(paramsJson.credentialTarget).toBe("account_directory");
         expect(paramsJson.endpointUrl).toBe(SERVING_ENDPOINT_URL);
         expect(paramsJson.endpointServerIdentityId).toBe(serverIdentityId);
+        expect(paramsJson.canonicalServerUrl).toBe(CANONICAL_SERVER_URL);
 
         const verifiedState = await auth.verifyOauthStateToken(
             new URL(paramsJson.url).searchParams.get("state")!,
@@ -185,6 +202,7 @@ describe("connectRoutes (Account Directory OAuth purpose)", () => {
         expect(verifiedState!.proofHash).toBe(DIRECTORY_PROOF_HASH);
         expect(verifiedState!.endpointUrl).toBe(SERVING_ENDPOINT_URL);
         expect(verifiedState!.endpointServerIdentityId).toBe(serverIdentityId);
+        expect(verifiedState!.canonicalServerUrl).toBe(CANONICAL_SERVER_URL);
 
         await app.close();
     });
@@ -338,6 +356,7 @@ describe("connectRoutes (Account Directory OAuth purpose)", () => {
             purpose: "account_directory",
             endpointUrl: SERVING_ENDPOINT_URL,
             endpointServerIdentityId: serverIdentityId,
+            canonicalServerUrl: CANONICAL_SERVER_URL,
         });
         const verified = await auth.verifyOauthStateToken(state);
         expect(verified).toMatchObject({
@@ -349,6 +368,7 @@ describe("connectRoutes (Account Directory OAuth purpose)", () => {
             proofHash: DIRECTORY_PROOF_HASH,
             endpointUrl: SERVING_ENDPOINT_URL,
             endpointServerIdentityId: serverIdentityId,
+            canonicalServerUrl: CANONICAL_SERVER_URL,
         });
     });
 
@@ -390,6 +410,7 @@ describe("connectRoutes (Account Directory OAuth purpose)", () => {
                 v: 2,
                 purpose: "account_directory",
                 proofHash: DIRECTORY_PROOF_HASH,
+                canonicalServerUrl: CANONICAL_SERVER_URL,
             });
         }
 
@@ -430,7 +451,163 @@ describe("connectRoutes (Account Directory OAuth purpose)", () => {
         await app.close();
     });
 
-    it("creates a first-time keyed Directory account through params, callback, and the canonical keyed finalize route", async () => {
+    it.each([
+        ["public endpoint", { HAPPIER_PUBLIC_SERVER_URL: "https://changed.example.test" }],
+        ["canonical audience", { HAPPIER_CANONICAL_SERVER_URL: "https://changed.internal.example.test" }],
+        ["server identity", { HAPPIER_SERVER_IDENTITY_ID: "srv_changed_after_callback" }],
+    ] as const)("rejects keyless finalization after the current %s changes", async (_label, changedEnv) => {
+        applyDirectoryOAuthEnv(harness);
+        stubGithubProviderNetwork();
+        const serverIdentityId = await getOrCreateServerIdentityId(process.env);
+        await seedLinkedAccount({ providerUserId: "123" });
+
+        const app = createTestApp();
+        connectRoutes(app as any);
+        await app.ready();
+
+        const paramsRes = await requestDirectoryParams(app, {
+            purpose: "account_directory",
+            mode: "keyless",
+            proofHash: DIRECTORY_PROOF_HASH,
+            endpointUrl: SERVING_ENDPOINT_URL,
+            endpointServerIdentityId: serverIdentityId,
+        });
+        const callbackRes = await runCallback(
+            app,
+            (paramsRes.json() as { url: string }).url,
+        );
+        const pending = new URL(callbackRes.headers.location!)
+            .searchParams.get("pending");
+        expect(pending).toMatch(/^oauth_pending_/);
+
+        Object.assign(process.env, changedEnv);
+        const finalizeRes = await app.inject({
+            method: "POST",
+            url: "/v1/auth/external/github/finalize-keyless",
+            headers: { "content-type": "application/json" },
+            payload: { pending, proof: DIRECTORY_PROOF },
+        });
+
+        expect(finalizeRes.statusCode).toBe(400);
+        expect(finalizeRes.json()).toEqual({ error: "invalid-pending" });
+        expect(await db.repeatKey.findUnique({
+            where: { key: pending! },
+        })).toBeNull();
+
+        await app.close();
+    });
+
+    it("atomically consumes one linked keyless Directory continuation across concurrent finalization", async () => {
+        applyDirectoryOAuthEnv(harness);
+        stubGithubProviderNetwork();
+        const serverIdentityId = await getOrCreateServerIdentityId(process.env);
+        const account = await seedLinkedAccount({ providerUserId: "123" });
+
+        const app = createTestApp();
+        connectRoutes(app as any);
+        await app.ready();
+
+        const paramsRes = await requestDirectoryParams(app, {
+            purpose: "account_directory",
+            mode: "keyless",
+            proofHash: DIRECTORY_PROOF_HASH,
+            endpointUrl: SERVING_ENDPOINT_URL,
+            endpointServerIdentityId: serverIdentityId,
+        });
+        const callbackRes = await runCallback(
+            app,
+            (paramsRes.json() as { url: string }).url,
+        );
+        const pending = new URL(callbackRes.headers.location!)
+            .searchParams.get("pending");
+        expect(pending).toMatch(/^oauth_pending_/);
+
+        const responses = await Promise.all([
+            app.inject({
+                method: "POST",
+                url: "/v1/auth/external/github/finalize-keyless",
+                headers: { "content-type": "application/json" },
+                payload: { pending, proof: DIRECTORY_PROOF },
+            }),
+            app.inject({
+                method: "POST",
+                url: "/v1/auth/external/github/finalize-keyless",
+                headers: { "content-type": "application/json" },
+                payload: { pending, proof: DIRECTORY_PROOF },
+            }),
+        ]);
+        const winner = responses.find((response) => response.statusCode === 200);
+        const loser = responses.find((response) => response.statusCode !== 200);
+
+        expect(responses.map((response) => response.statusCode).sort()).toEqual([
+            200,
+            400,
+        ]);
+        expect(loser?.json()).toEqual({ error: "invalid-pending" });
+        expect(winner?.json()).toMatchObject({ success: true });
+        expect(await auth.verifyToken(
+            (winner?.json() as { token: string }).token,
+        )).toMatchObject({
+            userId: account.id,
+            authTokenKind: "account_directory",
+            authority: "present_user",
+        });
+
+        await app.close();
+    });
+
+    it("keeps an unlinked Directory keyless continuation keyless and requests a fresh keyed sign-in", async () => {
+        applyDirectoryOAuthEnv(harness);
+        stubGithubProviderNetwork({
+            id: 987,
+            login: "unlinked-directory-user",
+        });
+        const serverIdentityId = await getOrCreateServerIdentityId(process.env);
+
+        const app = createTestApp();
+        connectRoutes(app as any);
+        await app.ready();
+
+        const paramsRes = await requestDirectoryParams(app, {
+            purpose: "account_directory",
+            mode: "keyless",
+            proofHash: DIRECTORY_PROOF_HASH,
+            endpointUrl: SERVING_ENDPOINT_URL,
+            endpointServerIdentityId: serverIdentityId,
+        });
+        expect(paramsRes.statusCode).toBe(200);
+
+        const callbackRes = await runCallback(
+            app,
+            (paramsRes.json() as { url: string }).url,
+        );
+        expect(callbackRes.statusCode).toBe(302);
+        const redirect = new URL(callbackRes.headers.location!);
+        expect(redirect.searchParams.get("mode")).toBe("keyless");
+        const pending = redirect.searchParams.get("pending");
+        expect(pending).toMatch(/^oauth_pending_/);
+
+        const finalizeRes = await app.inject({
+            method: "POST",
+            url: "/v1/auth/external/github/finalize-keyless",
+            headers: { "content-type": "application/json" },
+            payload: {
+                pending,
+                proof: DIRECTORY_PROOF,
+            },
+        });
+        expect(finalizeRes.statusCode).toBe(403);
+        expect(finalizeRes.json()).toEqual({
+            error: "keyed-authentication-required",
+        });
+        expect(await db.repeatKey.findUnique({
+            where: { key: pending! },
+        })).toBeNull();
+
+        await app.close();
+    });
+
+    it("creates a first-time keyed Directory account and bootstraps its same-service Home through the canonical OAuth route", async () => {
         applyDirectoryOAuthEnv(harness);
         stubGithubProviderNetwork({
             id: 789,
@@ -525,16 +702,595 @@ describe("connectRoutes (Account Directory OAuth purpose)", () => {
             authTokenKind: "account_directory",
             authority: "present_user",
         });
+        const account = await db.account.findUnique({
+            where: {
+                publicKey: privacyKit.encodeHex(
+                    new Uint8Array(keyPair.publicKey),
+                ),
+            },
+            select: {
+                id: true,
+                encryptionMode: true,
+                preferredHomeServerIdentityId: true,
+            },
+        });
+        expect(account).toMatchObject({
+            id: verified!.userId,
+            encryptionMode: "e2ee",
+            preferredHomeServerIdentityId: serverIdentityId,
+        });
+        await expect(db.accountHomeDirectoryEntry.findMany({
+            where: { accountId: verified!.userId },
+            select: {
+                homeServerIdentityId: true,
+                canonicalServerUrl: true,
+            },
+        })).resolves.toEqual([{
+            homeServerIdentityId: serverIdentityId,
+            canonicalServerUrl: CANONICAL_SERVER_URL,
+        }]);
+        await expect(db.accountDirectoryLink.findMany({
+            where: { accountId: verified!.userId },
+            select: {
+                issuerServerIdentityId: true,
+                issuerSubjectId: true,
+            },
+        })).resolves.toEqual([{
+            issuerServerIdentityId: serverIdentityId,
+            issuerSubjectId: verified!.userId,
+        }]);
+
+        await app.close();
+    });
+
+    it("rejects keyed finalization after the current Directory target changes", async () => {
+        applyDirectoryOAuthEnv(harness);
+        stubGithubProviderNetwork({ id: 791, login: "directory-keyed-stale-target" });
+        const serverIdentityId = await getOrCreateServerIdentityId(process.env);
+        const keyPair = tweetnacl.sign.keyPair.fromSeed(
+            new Uint8Array(32).fill(37),
+        );
+        const publicKey = privacyKit.encodeBase64(
+            new Uint8Array(keyPair.publicKey),
+        );
+
+        const app = createTestApp();
+        connectRoutes(app as any);
+        await app.ready();
+
+        const paramsRes = await requestDirectoryParams(app, {
+            purpose: "account_directory",
+            mode: "keyed",
+            publicKey,
+            endpointUrl: SERVING_ENDPOINT_URL,
+            endpointServerIdentityId: serverIdentityId,
+        });
+        const callbackRes = await runCallback(
+            app,
+            (paramsRes.json() as { url: string }).url,
+        );
+        const pending = new URL(callbackRes.headers.location!)
+            .searchParams.get("pending");
+        expect(pending).toMatch(/^oauth_pending_/);
+
+        process.env.HAPPIER_PUBLIC_SERVER_URL = "https://changed.example.test";
+        const challenge = new Uint8Array(32).fill(39);
+        const finalizeRes = await app.inject({
+            method: "POST",
+            url: "/v1/auth/external/github/finalize",
+            headers: { "content-type": "application/json" },
+            payload: {
+                pending,
+                publicKey,
+                challenge: privacyKit.encodeBase64(challenge),
+                signature: privacyKit.encodeBase64(
+                    new Uint8Array(
+                        tweetnacl.sign.detached(challenge, keyPair.secretKey),
+                    ),
+                ),
+            },
+        });
+
+        expect(finalizeRes.statusCode).toBe(400);
+        expect(finalizeRes.json()).toEqual({ error: "invalid-pending" });
+        expect(await db.repeatKey.findUnique({
+            where: { key: pending! },
+        })).toBeNull();
+
+        await app.close();
+    });
+
+    it("rejects keyless Directory finalization after the provider is disabled in current server policy", async () => {
+        applyDirectoryOAuthEnv(harness);
+        stubGithubProviderNetwork();
+        const serverIdentityId = await getOrCreateServerIdentityId(process.env);
+        await seedLinkedAccount({ providerUserId: "123" });
+
+        const app = createTestApp();
+        connectRoutes(app as any);
+        scheduleProviderDisableAfterFinalizeHandlerStarts(app);
+        await app.ready();
+
+        const paramsRes = await requestDirectoryParams(app, {
+            purpose: "account_directory",
+            mode: "keyless",
+            proofHash: DIRECTORY_PROOF_HASH,
+            endpointUrl: SERVING_ENDPOINT_URL,
+            endpointServerIdentityId: serverIdentityId,
+        });
+        expect(paramsRes.statusCode).toBe(200);
+        const callbackRes = await runCallback(
+            app,
+            (paramsRes.json() as { url: string }).url,
+        );
+        const pending = new URL(callbackRes.headers.location!)
+            .searchParams.get("pending");
+        expect(pending).toMatch(/^oauth_pending_/);
+
+        const finalizeRes = await app.inject({
+            method: "POST",
+            url: "/v1/auth/external/github/finalize-keyless",
+            headers: { "content-type": "application/json" },
+            payload: { pending, proof: DIRECTORY_PROOF },
+        });
+
+        expect(finalizeRes.statusCode).toBe(403);
+        expect(finalizeRes.json()).toEqual({
+            error: "signup-provider-disabled",
+        });
+        expect((finalizeRes.json() as { token?: unknown }).token)
+            .toBeUndefined();
+        // No authority is consumed by a rejected policy decision.
+        expect(await db.repeatKey.findUnique({
+            where: { key: pending! },
+        })).not.toBeNull();
+
+        await app.close();
+    });
+
+    it("rejects keyed Directory finalization after the provider is disabled in current server policy", async () => {
+        applyDirectoryOAuthEnv(harness);
+        stubGithubProviderNetwork({
+            id: 793,
+            login: "directory-keyed-disabled-provider",
+        });
+        const serverIdentityId = await getOrCreateServerIdentityId(process.env);
+        const keyPair = tweetnacl.sign.keyPair.fromSeed(
+            new Uint8Array(32).fill(41),
+        );
+        const publicKey = privacyKit.encodeBase64(
+            new Uint8Array(keyPair.publicKey),
+        );
+
+        const app = createTestApp();
+        connectRoutes(app as any);
+        scheduleProviderDisableAfterFinalizeHandlerStarts(app);
+        await app.ready();
+
+        const paramsRes = await requestDirectoryParams(app, {
+            purpose: "account_directory",
+            mode: "keyed",
+            publicKey,
+            endpointUrl: SERVING_ENDPOINT_URL,
+            endpointServerIdentityId: serverIdentityId,
+        });
+        expect(paramsRes.statusCode).toBe(200);
+        const callbackRes = await runCallback(
+            app,
+            (paramsRes.json() as { url: string }).url,
+        );
+        const pending = new URL(callbackRes.headers.location!)
+            .searchParams.get("pending");
+        expect(pending).toMatch(/^oauth_pending_/);
+
+        const challenge = new Uint8Array(32).fill(43);
+        const finalizeRes = await app.inject({
+            method: "POST",
+            url: "/v1/auth/external/github/finalize",
+            headers: { "content-type": "application/json" },
+            payload: {
+                pending,
+                publicKey,
+                challenge: privacyKit.encodeBase64(challenge),
+                signature: privacyKit.encodeBase64(
+                    new Uint8Array(
+                        tweetnacl.sign.detached(challenge, keyPair.secretKey),
+                    ),
+                ),
+            },
+        });
+
+        expect(finalizeRes.statusCode).toBe(403);
+        expect(finalizeRes.json()).toEqual({
+            error: "signup-provider-disabled",
+        });
+        expect((finalizeRes.json() as { token?: unknown }).token)
+            .toBeUndefined();
+        expect(await db.repeatKey.findUnique({
+            where: { key: pending! },
+        })).not.toBeNull();
         expect(await db.account.findUnique({
             where: {
                 publicKey: privacyKit.encodeHex(
                     new Uint8Array(keyPair.publicKey),
                 ),
             },
-            select: { id: true, encryptionMode: true },
-        })).toMatchObject({
-            id: verified!.userId,
-            encryptionMode: "e2ee",
+            select: { id: true },
+        })).toBeNull();
+
+        await app.close();
+    });
+
+    it("atomically consumes one first-time keyed Directory continuation across concurrent finalization", async () => {
+        applyDirectoryOAuthEnv(harness);
+        stubGithubProviderNetwork({
+            id: 790,
+            login: "directory-keyed-concurrent-user",
+        });
+        const serverIdentityId = await getOrCreateServerIdentityId(process.env);
+        const keyPair = tweetnacl.sign.keyPair.fromSeed(
+            new Uint8Array(32).fill(33),
+        );
+        const publicKey = privacyKit.encodeBase64(
+            new Uint8Array(keyPair.publicKey),
+        );
+
+        const app = createTestApp();
+        connectRoutes(app as any);
+        await app.ready();
+
+        const paramsRes = await requestDirectoryParams(app, {
+            purpose: "account_directory",
+            mode: "keyed",
+            publicKey,
+            endpointUrl: SERVING_ENDPOINT_URL,
+            endpointServerIdentityId: serverIdentityId,
+        });
+        const callbackRes = await runCallback(
+            app,
+            (paramsRes.json() as { url: string }).url,
+        );
+        const pending = new URL(callbackRes.headers.location!)
+            .searchParams.get("pending");
+        expect(pending).toMatch(/^oauth_pending_/);
+        const challenge = new Uint8Array(32).fill(35);
+        const payload = {
+            pending,
+            publicKey,
+            challenge: privacyKit.encodeBase64(challenge),
+            signature: privacyKit.encodeBase64(
+                new Uint8Array(
+                    tweetnacl.sign.detached(challenge, keyPair.secretKey),
+                ),
+            ),
+        };
+
+        const responses = await Promise.all([
+            app.inject({
+                method: "POST",
+                url: "/v1/auth/external/github/finalize",
+                headers: { "content-type": "application/json" },
+                payload,
+            }),
+            app.inject({
+                method: "POST",
+                url: "/v1/auth/external/github/finalize",
+                headers: { "content-type": "application/json" },
+                payload,
+            }),
+        ]);
+        const winner = responses.find((response) => response.statusCode === 200);
+        const loser = responses.find((response) => response.statusCode !== 200);
+
+        expect(responses.map((response) => response.statusCode).sort()).toEqual([
+            200,
+            400,
+        ]);
+        expect(loser?.json()).toEqual({ error: "invalid-pending" });
+        expect(await auth.verifyToken(
+            (winner?.json() as { token: string }).token,
+        )).toMatchObject({
+            authTokenKind: "account_directory",
+            authority: "present_user",
+        });
+
+        await app.close();
+    });
+
+    it("writes no fresh Account state when exact pending custody is lost during identity preparation", async () => {
+        applyDirectoryOAuthEnv(harness);
+        const avatarUrl = "https://avatars.example.test/pending-race.png";
+        stubGithubProviderNetwork({
+            id: 791,
+            login: "directory-keyed-lost-pending-user",
+            avatar_url: avatarUrl,
+        });
+        const serverIdentityId = await getOrCreateServerIdentityId(process.env);
+        const keyPair = tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(36));
+        const publicKey = privacyKit.encodeBase64(new Uint8Array(keyPair.publicKey));
+        const publicKeyHex = privacyKit.encodeHex(new Uint8Array(keyPair.publicKey));
+
+        const app = createTestApp();
+        connectRoutes(app as any);
+        await app.ready();
+
+        const paramsRes = await requestDirectoryParams(app, {
+            purpose: "account_directory",
+            mode: "keyed",
+            publicKey,
+            endpointUrl: SERVING_ENDPOINT_URL,
+            endpointServerIdentityId: serverIdentityId,
+        });
+        const callbackRes = await runCallback(app, (paramsRes.json() as { url: string }).url);
+        const pending = new URL(callbackRes.headers.location!).searchParams.get("pending");
+        expect(pending).toMatch(/^oauth_pending_/);
+
+        globalThis.fetch = (async (url: unknown) => {
+            if (url === avatarUrl) {
+                await db.repeatKey.deleteMany({ where: { key: pending! } });
+                return { ok: false } as Response;
+            }
+            throw new Error(`Unexpected fetch: ${String(url)}`);
+        }) as typeof fetch;
+
+        const challenge = new Uint8Array(32).fill(37);
+        const finalizeRes = await app.inject({
+            method: "POST",
+            url: "/v1/auth/external/github/finalize",
+            headers: { "content-type": "application/json" },
+            payload: {
+                pending,
+                publicKey,
+                username: "directory-lost-pending",
+                challenge: privacyKit.encodeBase64(challenge),
+                signature: privacyKit.encodeBase64(new Uint8Array(
+                    tweetnacl.sign.detached(challenge, keyPair.secretKey),
+                )),
+            },
+        });
+
+        expect(finalizeRes.statusCode).toBe(400);
+        expect(finalizeRes.json()).toEqual({ error: "invalid-pending" });
+        expect(await db.account.findUnique({ where: { publicKey: publicKeyHex } })).toBeNull();
+        expect(await db.accountIdentity.count({ where: { provider: "github", providerUserId: "791" } })).toBe(0);
+        expect(await db.accountHomeDirectoryEntry.count()).toBe(0);
+        expect(await db.accountDirectoryLink.count()).toBe(0);
+
+        await app.close();
+    });
+
+    it("writes no existing Account or identity state when exact pending custody is lost during identity preparation", async () => {
+        applyDirectoryOAuthEnv(harness);
+        const avatarUrl = "https://avatars.example.test/existing-pending-race.png";
+        stubGithubProviderNetwork({
+            id: 792,
+            login: "directory-existing-lost-pending-user",
+            avatar_url: avatarUrl,
+        });
+        const serverIdentityId = await getOrCreateServerIdentityId(process.env);
+        const keyPair = tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(38));
+        const publicKey = privacyKit.encodeBase64(new Uint8Array(keyPair.publicKey));
+        const publicKeyHex = privacyKit.encodeHex(new Uint8Array(keyPair.publicKey));
+        const account = await db.account.create({
+            data: { publicKey: publicKeyHex, encryptionMode: "plain" },
+            select: { id: true, username: true, updatedAt: true },
+        });
+
+        const app = createTestApp();
+        connectRoutes(app as any);
+        await app.ready();
+
+        const paramsRes = await requestDirectoryParams(app, {
+            purpose: "account_directory",
+            mode: "keyed",
+            publicKey,
+            endpointUrl: SERVING_ENDPOINT_URL,
+            endpointServerIdentityId: serverIdentityId,
+        });
+        const callbackRes = await runCallback(app, (paramsRes.json() as { url: string }).url);
+        const pending = new URL(callbackRes.headers.location!).searchParams.get("pending");
+        expect(pending).toMatch(/^oauth_pending_/);
+
+        globalThis.fetch = (async (url: unknown) => {
+            if (url === avatarUrl) {
+                await db.repeatKey.deleteMany({ where: { key: pending! } });
+                return { ok: false } as Response;
+            }
+            throw new Error(`Unexpected fetch: ${String(url)}`);
+        }) as typeof fetch;
+
+        const challenge = new Uint8Array(32).fill(39);
+        const finalizeRes = await app.inject({
+            method: "POST",
+            url: "/v1/auth/external/github/finalize",
+            headers: { "content-type": "application/json" },
+            payload: {
+                pending,
+                publicKey,
+                username: "directory-existing-lost-pending",
+                challenge: privacyKit.encodeBase64(challenge),
+                signature: privacyKit.encodeBase64(new Uint8Array(
+                    tweetnacl.sign.detached(challenge, keyPair.secretKey),
+                )),
+            },
+        });
+
+        expect(finalizeRes.statusCode).toBe(400);
+        expect(finalizeRes.json()).toEqual({ error: "invalid-pending" });
+        await expect(db.account.findUniqueOrThrow({
+            where: { id: account.id },
+            select: { username: true, updatedAt: true },
+        })).resolves.toEqual({ username: account.username, updatedAt: account.updatedAt });
+        expect(await db.accountIdentity.count({ where: { accountId: account.id } })).toBe(0);
+        expect(await db.accountHomeDirectoryEntry.count({ where: { accountId: account.id } })).toBe(0);
+        expect(await db.accountDirectoryLink.count({ where: { accountId: account.id } })).toBe(0);
+
+        await app.close();
+    });
+
+    it("atomically consumes one same-account keyed Directory continuation across concurrent reauthentication", async () => {
+        applyDirectoryOAuthEnv(harness);
+        stubGithubProviderNetwork({ id: 791, login: "directory-keyed-reauth" });
+        const serverIdentityId = await getOrCreateServerIdentityId(process.env);
+        const keyPair = tweetnacl.sign.keyPair.fromSeed(
+            new Uint8Array(32).fill(37),
+        );
+        const publicKey = privacyKit.encodeBase64(
+            new Uint8Array(keyPair.publicKey),
+        );
+        const publicKeyHex = privacyKit.encodeHex(
+            new Uint8Array(keyPair.publicKey),
+        );
+        const account = await db.account.create({
+            data: {
+                publicKey: publicKeyHex,
+                encryptionMode: "e2ee",
+            },
+            select: { id: true },
+        });
+        await db.accountIdentity.create({
+            data: {
+                accountId: account.id,
+                provider: "github",
+                providerUserId: "791",
+                providerLogin: "directory-keyed-reauth",
+            },
+        });
+
+        const app = createTestApp();
+        connectRoutes(app as any);
+        await app.ready();
+
+        const paramsRes = await requestDirectoryParams(app, {
+            purpose: "account_directory",
+            mode: "keyed",
+            publicKey,
+            endpointUrl: SERVING_ENDPOINT_URL,
+            endpointServerIdentityId: serverIdentityId,
+        });
+        const callbackRes = await runCallback(
+            app,
+            (paramsRes.json() as { url: string }).url,
+        );
+        const pending = new URL(callbackRes.headers.location!)
+            .searchParams.get("pending");
+        expect(pending).toMatch(/^oauth_pending_/);
+        const challenge = new Uint8Array(32).fill(39);
+        const payload = {
+            pending,
+            publicKey,
+            challenge: privacyKit.encodeBase64(challenge),
+            signature: privacyKit.encodeBase64(
+                new Uint8Array(
+                    tweetnacl.sign.detached(challenge, keyPair.secretKey),
+                ),
+            ),
+        };
+
+        const responses = await Promise.all([
+            app.inject({
+                method: "POST",
+                url: "/v1/auth/external/github/finalize",
+                headers: { "content-type": "application/json" },
+                payload,
+            }),
+            app.inject({
+                method: "POST",
+                url: "/v1/auth/external/github/finalize",
+                headers: { "content-type": "application/json" },
+                payload,
+            }),
+        ]);
+        const winner = responses.find((response) => response.statusCode === 200);
+        const loser = responses.find((response) => response.statusCode !== 200);
+
+        expect(responses.map((response) => response.statusCode).sort()).toEqual([
+            200,
+            400,
+        ]);
+        expect(loser?.json()).toEqual({ error: "invalid-pending" });
+        expect(await auth.verifyToken(
+            (winner?.json() as { token: string }).token,
+        )).toMatchObject({
+            userId: account.id,
+            authTokenKind: "account_directory",
+            authority: "present_user",
+        });
+
+        await app.close();
+    });
+
+    it("atomically consumes one linked keyed Directory continuation across concurrent finalization", async () => {
+        applyDirectoryOAuthEnv(harness);
+        stubGithubProviderNetwork();
+        const serverIdentityId = await getOrCreateServerIdentityId(process.env);
+        const account = await seedLinkedAccount({ providerUserId: "123" });
+        const keyPair = tweetnacl.sign.keyPair.fromSeed(
+            new Uint8Array(32).fill(41),
+        );
+        const publicKey = privacyKit.encodeBase64(
+            new Uint8Array(keyPair.publicKey),
+        );
+
+        const app = createTestApp();
+        connectRoutes(app as any);
+        await app.ready();
+
+        const paramsRes = await requestDirectoryParams(app, {
+            purpose: "account_directory",
+            mode: "keyed",
+            publicKey,
+            endpointUrl: SERVING_ENDPOINT_URL,
+            endpointServerIdentityId: serverIdentityId,
+        });
+        const callbackRes = await runCallback(
+            app,
+            (paramsRes.json() as { url: string }).url,
+        );
+        const pending = new URL(callbackRes.headers.location!)
+            .searchParams.get("pending");
+        expect(pending).toMatch(/^oauth_pending_/);
+        const challenge = new Uint8Array(32).fill(43);
+        const payload = {
+            pending,
+            publicKey,
+            challenge: privacyKit.encodeBase64(challenge),
+            signature: privacyKit.encodeBase64(
+                new Uint8Array(
+                    tweetnacl.sign.detached(challenge, keyPair.secretKey),
+                ),
+            ),
+        };
+
+        const responses = await Promise.all([
+            app.inject({
+                method: "POST",
+                url: "/v1/auth/external/github/finalize",
+                headers: { "content-type": "application/json" },
+                payload,
+            }),
+            app.inject({
+                method: "POST",
+                url: "/v1/auth/external/github/finalize",
+                headers: { "content-type": "application/json" },
+                payload,
+            }),
+        ]);
+        const winner = responses.find((response) => response.statusCode === 200);
+        const loser = responses.find((response) => response.statusCode !== 200);
+
+        expect(responses.map((response) => response.statusCode).sort()).toEqual([
+            200,
+            400,
+        ]);
+        expect(loser?.json()).toEqual({ error: "invalid-pending" });
+        expect(winner?.json()).toMatchObject({ success: true });
+        expect(await auth.verifyToken(
+            (winner?.json() as { token: string }).token,
+        )).toMatchObject({
+            userId: account.id,
+            authTokenKind: "account_directory",
+            authority: "present_user",
         });
 
         await app.close();

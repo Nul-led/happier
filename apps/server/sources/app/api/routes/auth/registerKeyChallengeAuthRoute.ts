@@ -32,6 +32,11 @@ import {
 import { resolveApiHotEndpointRateLimit } from "@/app/api/utils/apiRateLimitCatalog";
 import { resolveConfiguredCanonicalServerUrl } from "@/app/serverUrls/effectiveServerUrls";
 import { getOrCreateServerIdentityId } from "@/app/serverIdentity/serverIdentity";
+import {
+    ensureSameServiceHomeBootstrapForNewAccountInTx,
+    prepareSameServiceHomeBootstrapForNewAccount,
+} from "@/app/accountDirectory/accountDirectoryService";
+import { inTx } from "@/storage/inTx";
 
 const KEY_CHALLENGE_V2_TTL_MS = 5 * 60_000;
 const ACCOUNT_DIRECTORY_CHALLENGE_ID_PREFIX = "account_directory:";
@@ -482,27 +487,77 @@ function registerKeyChallengeAuthRoutesForPurpose(
             }
         }
 
-        // Important: avoid unnecessary writes during authentication. This route is hit on token refresh and during
-        // reconnect flows; a write here can amplify SQLite lock contention and wedge the UI.
-        const user =
-            existingAccount
-                ? existingAccount
-                : await db.account.upsert({
-                      where: { publicKey: publicKeyHex },
-                      update: {},
-                      create: {
-                          publicKey: publicKeyHex,
-                          encryptionMode: effectiveDefaultEncryptionMode,
-                          ...(contentKeyBinding ? {
-                              contentPublicKey:
-                                  contentKeyBinding.contentPublicKey,
-                              contentPublicKeySig:
-                                  contentKeyBinding
-                                      .contentPublicKeySignature,
-                          } : {}),
-                      },
-                  });
-        if (contentKeyBinding) {
+        const sameServiceBootstrapPreparation =
+            !existingAccount && purpose.tokenKind === "account_directory"
+                ? await prepareSameServiceHomeBootstrapForNewAccount({})
+                : null;
+        if (
+            sameServiceBootstrapPreparation?.status === "not_dual_role"
+            && sameServiceBootstrapPreparation.reason === "server_identity_mismatch"
+        ) {
+            throw new Error("Same-service Home descriptor identity mismatch");
+        }
+
+        // Existing-account authentication remains read-mostly. Fresh Account
+        // creation, same-service composition, and token issuance share one
+        // transaction, so the exact write winner exclusively owns the
+        // fresh-only bootstrap authorization.
+        const freshAccountWrite = existingAccount
+            ? null
+            : await inTx(async (tx) => {
+                const proposedAccountId = randomUUID();
+                const user = await tx.account.upsert({
+                    where: { publicKey: publicKeyHex },
+                    update: {},
+                    create: {
+                        id: proposedAccountId,
+                        publicKey: publicKeyHex,
+                        encryptionMode: effectiveDefaultEncryptionMode,
+                        ...(contentKeyBinding ? {
+                            contentPublicKey: contentKeyBinding.contentPublicKey,
+                            contentPublicKeySig: contentKeyBinding.contentPublicKeySignature,
+                        } : {}),
+                    },
+                });
+                const createdByThisRequest = user.id === proposedAccountId;
+                if (contentKeyBinding) {
+                    const admission = await admitAccountContentKey(tx, {
+                        accountId: user.id,
+                        contentPublicKey: contentKeyBinding.contentPublicKey,
+                        contentPublicKeySignature: contentKeyBinding.contentPublicKeySignature,
+                    });
+                    if (admission.status === "key_mismatch") {
+                        return { status: "key_mismatch" as const };
+                    }
+                    if (
+                        admission.status === "account_not_found"
+                        || admission.status === "invalid_binding"
+                    ) {
+                        return { status: "invalid_binding" as const };
+                    }
+                }
+                if (createdByThisRequest && sameServiceBootstrapPreparation) {
+                    await ensureSameServiceHomeBootstrapForNewAccountInTx(tx, {
+                        accountId: user.id,
+                        preparation: sameServiceBootstrapPreparation,
+                    });
+                }
+                const token = await auth.createTokenInTx(
+                    tx,
+                    user.id,
+                    undefined,
+                    { kind: purpose.tokenKind, authority: "present_user" },
+                );
+                return { status: "written" as const, user, token };
+            });
+        if (freshAccountWrite?.status === "key_mismatch") {
+            return reply.code(409).send({ error: "content_public_key_mismatch" });
+        }
+        if (freshAccountWrite?.status === "invalid_binding") {
+            return reply.code(400).send({ error: "Invalid contentPublicKeySig" });
+        }
+        const user = existingAccount ?? freshAccountWrite!.user;
+        if (contentKeyBinding && existingAccount) {
             const admission = await admitAccountContentKey(db, {
                 accountId: user.id,
                 contentPublicKey:
@@ -564,14 +619,16 @@ function registerKeyChallengeAuthRoutesForPurpose(
         }
         return reply.send({
             success: true,
-            token: await auth.createToken(
-                user.id,
-                undefined,
-                {
-                    kind: purpose.tokenKind,
-                    authority: "present_user",
-                },
-            )
+            token: freshAccountWrite?.status === "written"
+                ? freshAccountWrite.token
+                : await auth.createToken(
+                    user.id,
+                    undefined,
+                    {
+                        kind: purpose.tokenKind,
+                        authority: "present_user",
+                    },
+                ),
         });
     });
 }

@@ -30,9 +30,10 @@ import {
 } from "@/app/encryption/accountEncryptionMode";
 import {
     normalizeHttpUrl,
-    resolveConfiguredPublicServerUrl,
 } from "@/app/serverUrls/effectiveServerUrls";
-import { getOrCreateServerIdentityId } from "@/app/serverIdentity/serverIdentity";
+import {
+    resolveCurrentAccountDirectoryOAuthTarget,
+} from "./oauthExternal/accountDirectoryOAuthTarget";
 
 export function connectAuthExternalRoutes(app: Fastify) {
     //
@@ -67,6 +68,7 @@ export function connectAuthExternalRoutes(app: Fastify) {
                             .optional(),
                     endpointUrl: z.string().optional(),
                     endpointServerIdentityId: z.string().optional(),
+                    canonicalServerUrl: z.string().optional(),
                 })
                 .refine((q) => {
                     if (q.purpose === "account_encryption_first_key") {
@@ -84,7 +86,8 @@ export function connectAuthExternalRoutes(app: Fastify) {
                             && !q.proofHash;
                         return (isKeyless || isKeyed)
                             && Boolean(q.endpointUrl)
-                            && Boolean(q.endpointServerIdentityId);
+                            && Boolean(q.endpointServerIdentityId)
+                            && Boolean(q.canonicalServerUrl);
                     }
                     if (q.mode === "keyless") return Boolean(q.proofHash);
                     if (typeof q.proofHash === "string" && q.proofHash.trim()) return true;
@@ -193,6 +196,7 @@ export function connectAuthExternalRoutes(app: Fastify) {
             | Readonly<{
                 endpointUrl: string;
                 endpointServerIdentityId: string;
+                canonicalServerUrl: string;
                 expiresAt: Date;
             }>
             | null = null;
@@ -200,27 +204,34 @@ export function connectAuthExternalRoutes(app: Fastify) {
             const requestedEndpointUrl = normalizeHttpUrl(
                 request.query.endpointUrl ?? "",
             );
-            const publicServerUrl =
-                resolveConfiguredPublicServerUrl(process.env);
             const requestedServerIdentityId = String(
                 request.query.endpointServerIdentityId ?? "",
             ).trim();
-            const actualServerIdentityId =
-                await getOrCreateServerIdentityId(process.env);
+            const requestedCanonicalServerUrl = normalizeHttpUrl(
+                request.query.canonicalServerUrl ?? "",
+            );
+            const currentTarget =
+                await resolveCurrentAccountDirectoryOAuthTarget(process.env);
             if (
                 !requestedEndpointUrl
-                || !publicServerUrl
-                || requestedEndpointUrl !== publicServerUrl
+                || !currentTarget
+                || requestedEndpointUrl !== currentTarget.endpointUrl
                 || !requestedServerIdentityId
-                || requestedServerIdentityId !== actualServerIdentityId
+                || requestedServerIdentityId
+                    !== currentTarget.endpointServerIdentityId
+                || !requestedCanonicalServerUrl
+                || requestedCanonicalServerUrl
+                    !== currentTarget.canonicalServerUrl
             ) {
                 return reply
                     .code(400)
                     .send({ error: "invalid-account-directory-target" });
             }
             accountDirectoryTarget = {
-                endpointUrl: publicServerUrl,
-                endpointServerIdentityId: actualServerIdentityId,
+                endpointUrl: currentTarget.endpointUrl,
+                endpointServerIdentityId:
+                    currentTarget.endpointServerIdentityId,
+                canonicalServerUrl: currentTarget.canonicalServerUrl,
                 expiresAt: new Date(
                     Date.now()
                     + resolveOauthStateAttemptTtlMsFromEnv(process.env),
@@ -305,6 +316,8 @@ export function connectAuthExternalRoutes(app: Fastify) {
                         endpointUrl: accountDirectoryTarget.endpointUrl,
                         endpointServerIdentityId:
                             accountDirectoryTarget.endpointServerIdentityId,
+                        canonicalServerUrl:
+                            accountDirectoryTarget.canonicalServerUrl,
                         attemptExpiresAt:
                             accountDirectoryTarget.expiresAt,
                     }
@@ -320,6 +333,8 @@ export function connectAuthExternalRoutes(app: Fastify) {
                     endpointUrl: accountDirectoryTarget.endpointUrl,
                     endpointServerIdentityId:
                         accountDirectoryTarget.endpointServerIdentityId,
+                    canonicalServerUrl:
+                        accountDirectoryTarget.canonicalServerUrl,
                     expiresAt:
                         accountDirectoryTarget.expiresAt.toISOString(),
                 }

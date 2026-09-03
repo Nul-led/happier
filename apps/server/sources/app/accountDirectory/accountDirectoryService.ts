@@ -196,11 +196,12 @@ async function upsertAccountHomeDirectoryEntryInTx(
         where,
         select: HOME_DIRECTORY_ENTRY_SELECT,
     });
-    const isFirstDirectoryEntry = !existing
-        && await tx.accountHomeDirectoryEntry.findFirst({
+    const shouldAutoPrefer = account.preferredHomeServerIdentityId === null
+        && !existing
+        && (await tx.accountHomeDirectoryEntry.findFirst({
             where: { accountId: params.accountId },
             select: { homeServerIdentityId: true },
-        }) === null;
+        })) === null;
     let row: HomeDirectoryEntryRow;
     if (!existing) {
         row = await tx.accountHomeDirectoryEntry.create({
@@ -231,7 +232,7 @@ async function upsertAccountHomeDirectoryEntryInTx(
         }
     }
     let preferredHomeServerIdentityId = account.preferredHomeServerIdentityId ?? null;
-    if (isFirstDirectoryEntry && preferredHomeServerIdentityId === null) {
+    if (shouldAutoPrefer) {
         const preferred = await tx.account.updateMany({
             where: { id: params.accountId, preferredHomeServerIdentityId: null },
             data: { preferredHomeServerIdentityId: params.homeServerIdentityId },

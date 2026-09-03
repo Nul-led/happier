@@ -5,12 +5,17 @@ import { z } from "zod";
 import { type Fastify } from "../../../types";
 import { connectExternalIdentity } from "@/app/auth/providers/identity";
 import { auth } from "@/app/auth/auth";
+import { isAuthSignupProviderEnabled } from "@/app/auth/authPolicy";
 import { Context } from "@/context";
 import { decryptString } from "@/modules/encrypt";
 import { findOAuthProviderById } from "@/app/oauth/providers/registry";
 import { db } from "@/storage/db";
 import { validateUsername } from "@/app/social/usernamePolicy";
-import { loadValidOAuthPending, deleteOAuthPendingBestEffort } from "../connectRoutes.oauthPending";
+import {
+    consumeValidOAuthPendingInTx,
+    loadValidOAuthPending,
+    deleteOAuthPendingBestEffort,
+} from "../connectRoutes.oauthPending";
 import { authPendingSchema } from "./oauthExternalSchemas";
 import { readAuthOauthKeylessFeatureEnv } from "@/app/features/catalog/readFeatureEnv";
 import { resolveKeylessAutoProvisionEligibility } from "@/app/auth/keyless/resolveKeylessAutoProvisionEligibility";
@@ -18,6 +23,8 @@ import { resolveKeylessAccountsAvailability } from "@/app/features/e2ee/resolveK
 import { deriveAccountEncryptionCurrentnessFromRow } from "@/app/encryption/accountContentKeyAdmission";
 import { shouldDenyPublicSignupProvisioningAction } from "@/app/integrations/publicUrl/publicSignupProvisioningPolicy";
 import { deleteAccountForErasure } from "@/app/plugins/data/accountDataErase";
+import { inTx } from "@/storage/inTx";
+import { isCurrentAccountDirectoryOAuthTarget } from "./accountDirectoryOAuthTarget";
 
 function sha256Hex(value: string): string {
     return createHash("sha256").update(value, "utf8").digest("hex");
@@ -35,7 +42,13 @@ export function registerExternalAuthFinalizeKeylessRoute(app: Fastify) {
             response: {
                 200: z.object({ success: z.literal(true), token: z.string().min(1) }),
                 400: z.object({ error: z.enum(["invalid-pending", "invalid-proof", "username-required", "invalid-username"]) }),
-                403: z.object({ error: z.enum(["keyless-disabled", "not-eligible", "e2ee-required"]) }),
+                403: z.object({ error: z.enum([
+                    "keyless-disabled",
+                    "not-eligible",
+                    "e2ee-required",
+                    "keyed-authentication-required",
+                    "signup-provider-disabled",
+                ]) }),
                 404: z.object({ error: z.literal("unsupported-provider") }),
                 409: z.object({ error: z.enum(["restore-required", "username-taken"]) }),
             },
@@ -80,6 +93,13 @@ export function registerExternalAuthFinalizeKeylessRoute(app: Fastify) {
         if (isAccountDirectoryPurpose && !isAccountDirectory) {
             return reply.code(400).send({ error: "invalid-pending" });
         }
+        if (
+            isAccountDirectory
+            && !await isCurrentAccountDirectoryOAuthTarget(parsedValue)
+        ) {
+            await deleteOAuthPendingBestEffort(pendingKey);
+            return reply.code(400).send({ error: "invalid-pending" });
+        }
         const pendingFormat =
             pendingVersion === 2
                 ? ("v2" as const)
@@ -109,6 +129,14 @@ export function registerExternalAuthFinalizeKeylessRoute(app: Fastify) {
                             : "keyless-disabled",
                     });
             }
+        } else if (!isAuthSignupProviderEnabled(process.env, providerId)) {
+            // Account Directory continuations are admitted by the signup
+            // provider policy in both modes. Consume that same canonical
+            // decision from current server policy here, so a provider disabled
+            // after authorization start returns the keyed finalizer's typed
+            // failure without consuming the pending continuation or minting a
+            // restricted credential.
+            return reply.code(403).send({ error: "signup-provider-disabled" });
         }
 
         const proof = request.body.proof.toString();
@@ -151,6 +179,12 @@ export function registerExternalAuthFinalizeKeylessRoute(app: Fastify) {
             where: { provider: providerId, providerUserId },
             select: { accountId: true },
         });
+        if (
+            isAccountDirectory
+            && !isAuthSignupProviderEnabled(process.env, providerId)
+        ) {
+            return reply.code(403).send({ error: "signup-provider-disabled" });
+        }
         if (existingIdentity) {
             const existingAccount = await db.account.findUnique({
                 where: { id: existingIdentity.accountId },
@@ -174,27 +208,52 @@ export function registerExternalAuthFinalizeKeylessRoute(app: Fastify) {
                 await db.repeatKey.deleteMany({ where: { key: pendingKey } });
                 return reply.code(409).send({ error: "restore-required" });
             }
+            if (isAccountDirectory) {
+                if (!isAuthSignupProviderEnabled(process.env, providerId)) {
+                    return reply.code(403).send({ error: "signup-provider-disabled" });
+                }
+                const token = await inTx(async (tx) => {
+                    const consumed = await consumeValidOAuthPendingInTx(
+                        tx,
+                        pending,
+                    );
+                    if (!consumed) return null;
+                    return await auth.createTokenInTx(
+                        tx,
+                        existingIdentity.accountId,
+                        undefined,
+                        // Canonical closed provenance: the restricted
+                        // directory kind always travels with present_user
+                        // authority.
+                        {
+                            kind: "account_directory",
+                            authority: "present_user",
+                        },
+                    );
+                });
+                if (!token) {
+                    return reply.code(400).send({ error: "invalid-pending" });
+                }
+                return reply.send({ success: true, token });
+            }
+
             await db.repeatKey.deleteMany({ where: { key: pendingKey } });
             const token = await auth.createToken(
                 existingIdentity.accountId,
                 undefined,
-                isAccountDirectory
-                    ? // Canonical closed provenance: the restricted directory kind
-                      // always travels with present_user authority.
-                      {
-                        kind: "account_directory",
-                        authority: "present_user",
-                      }
-                    : {
-                        kind: "account",
-                        authority: "present_user",
-                    },
+                {
+                    kind: "account",
+                    authority: "present_user",
+                },
             );
             return reply.send({ success: true, token });
         }
 
         if (isAccountDirectory) {
-            return reply.code(403).send({ error: "not-eligible" });
+            await db.repeatKey.deleteMany({ where: { key: pendingKey } });
+            return reply.code(403).send({
+                error: "keyed-authentication-required",
+            });
         }
 
         const blocked = shouldDenyPublicSignupProvisioningAction({

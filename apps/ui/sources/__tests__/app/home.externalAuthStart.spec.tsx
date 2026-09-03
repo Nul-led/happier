@@ -147,6 +147,7 @@ const serverRuntimeState = vi.hoisted(() => ({
 const invokeDesktopHostSpy = vi.hoisted(() => vi.fn<(command: string, args?: Record<string, unknown>) => Promise<unknown>>(async () => undefined));
 vi.mock('@/utils/platform/desktopHost', () => ({
     isDesktopHost: () => tauriDesktopState.value,
+    desktopHostKind: () => tauriDesktopState.value ? 'tauri' : null,
     invokeDesktopHost: (command: string, args?: Record<string, unknown>) => invokeDesktopHostSpy(command, args),
 }));
 
@@ -651,5 +652,57 @@ describe('Home external auth start', () => {
             }),
         );
 
+    });
+
+    it('keeps the captured Home target between pending storage and OAuth params', async () => {
+        const Home = await loadHome();
+        let releasePending!: (stored: boolean) => void;
+        tokenStorageMock.setPendingExternalAuth.mockImplementationOnce(
+            async () => await new Promise<boolean>((resolve) => {
+                releasePending = resolve;
+            }),
+        );
+        const provider = {
+            id: 'github',
+            getExternalAuthUrl: vi.fn(async () => 'https://oauth.example.test/auth'),
+        };
+        getAuthProviderMock.mockReturnValue(provider);
+        mockGithubAuthFeatures('login', 'keyless');
+
+        const screen = await renderScreen(<Home />);
+        await flushHookEffects({ cycles: 3, turns: 3 });
+        await advanceWizardToAuth(screen);
+        await flushHookEffects({ cycles: 2, turns: 2 });
+
+        const loginButton = findActionButton(screen, 'welcome-create-account');
+        const started = act(async () => {
+            await loginButton.props.action();
+        });
+        await vi.waitFor(() => {
+            expect(tokenStorageMock.setPendingExternalAuth).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    serverId: 'server-a',
+                    serverUrl: 'http://api.example.test',
+                }),
+                {
+                    serverId: 'server-a',
+                    serverUrl: 'http://api.example.test',
+                },
+            );
+        });
+        serverRuntimeState.serverUrl = 'https://home-b.example.test';
+        releasePending(true);
+        await started;
+
+        expect(provider.getExternalAuthUrl).toHaveBeenCalledWith(
+            expect.objectContaining({ mode: 'keyless' }),
+            expect.objectContaining({
+                target: {
+                    serverId: 'server-a',
+                    serverUrl: 'http://api.example.test',
+                },
+                request: expect.any(Function),
+            }),
+        );
     });
 });

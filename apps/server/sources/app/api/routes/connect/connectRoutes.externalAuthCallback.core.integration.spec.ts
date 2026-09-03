@@ -276,6 +276,7 @@ describe("connectRoutes (GitHub callback) external auth flow (integration)", () 
             purpose: "account_directory",
             endpointUrl,
             endpointServerIdentityId,
+            canonicalServerUrl: endpointUrl,
         });
         const paramsRes = await app.inject({
             method: "GET",
@@ -288,6 +289,7 @@ describe("connectRoutes (GitHub callback) external auth flow (integration)", () 
             credentialTarget: string;
             endpointUrl: string;
             endpointServerIdentityId: string;
+            canonicalServerUrl: string;
             expiresAt: string;
         };
         expect(paramsBody).toMatchObject({
@@ -295,6 +297,7 @@ describe("connectRoutes (GitHub callback) external auth flow (integration)", () 
             credentialTarget: "account_directory",
             endpointUrl,
             endpointServerIdentityId,
+            canonicalServerUrl: endpointUrl,
         });
         expect(Date.parse(paramsBody.expiresAt)).toBeGreaterThan(Date.now());
         const authorizeUrl = new URL(paramsBody.url);
@@ -306,6 +309,7 @@ describe("connectRoutes (GitHub callback) external auth flow (integration)", () 
             purpose: "account_directory",
             endpointUrl,
             endpointServerIdentityId,
+            canonicalServerUrl: endpointUrl,
         });
 
         const callbackRes = await app.inject({
@@ -319,6 +323,7 @@ describe("connectRoutes (GitHub callback) external auth flow (integration)", () 
         expect(redirect.searchParams.get("credentialTarget")).toBe("account_directory");
         expect(redirect.searchParams.get("endpointUrl")).toBe(endpointUrl);
         expect(redirect.searchParams.get("endpointServerIdentityId")).toBe(endpointServerIdentityId);
+        expect(redirect.searchParams.get("canonicalServerUrl")).toBe(endpointUrl);
         const pendingKey = redirect.searchParams.get("pending");
         expect(pendingKey).toBeTruthy();
 
@@ -331,6 +336,7 @@ describe("connectRoutes (GitHub callback) external auth flow (integration)", () 
             purpose: "account_directory",
             endpointUrl,
             endpointServerIdentityId,
+            canonicalServerUrl: endpointUrl,
             proofHash,
         });
         expect(await db.account.count()).toBe(0);

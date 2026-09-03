@@ -19,6 +19,8 @@ import {
 } from '@/utils/path/terminalConnectUrl';
 import { consumeTerminalConnectWebBootstrapHash } from '@/utils/path/terminalConnectWebBootstrap';
 import { fireAndForget } from '@/utils/system/fireAndForget';
+import { resolveRoutineServerSelectionScope } from '@/sync/domains/server/selection/serverSelectionScope';
+import { isDesktopHost } from '@/utils/platform/desktopHost';
 
 export default function TerminalConnectScreen() {
     const router = useRouter();
@@ -122,7 +124,7 @@ export default function TerminalConnectScreen() {
                     await upsertActivateAndSwitchServer({
                         serverUrl: effectiveTarget,
                         source: 'url',
-                        scope: 'device',
+                        scope: resolveRoutineServerSelectionScope(Platform.OS, isDesktopHost()),
                         refreshAuth: auth.refreshFromActiveServer,
                     });
                 } catch {

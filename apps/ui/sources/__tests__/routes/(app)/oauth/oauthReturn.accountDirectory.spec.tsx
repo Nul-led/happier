@@ -1080,7 +1080,7 @@ describe('oauth/[provider] return (Account Directory)', () => {
         }
     });
 
-    it('keeps an unauthenticated entry requester on the approval continuation instead of authenticated Home settings', async () => {
+    it('hands an unauthenticated entry requester to the approval continuation instead of authenticated Home settings', async () => {
         const now = Date.now();
         const endpoint = 'https://directory.example.test';
         const identity = 'srv_directory_1';
@@ -1128,12 +1128,14 @@ describe('oauth/[provider] return (Account Directory)', () => {
             // The unauthenticated journey owns the wait; routing it into authenticated Home
             // settings would strand a requester that cannot list or decide approvals there.
             expect(replaceSpy).not.toHaveBeenCalledWith('/settings/server');
-            expect(tree.root.findAllByProps({
-                testID: 'oauth-account-directory-approval-waiting',
-            }).length).toBeGreaterThan(0);
-            expect(tree.root.findByProps({
-                testID: 'oauth-account-directory-approval-cancel',
-            })).toBeTruthy();
+            // This callback fixture replaces the internal enrollment owner, so it cannot publish
+            // that owner's resumable value. Assert the callback-to-presenter handoff here; the
+            // real owner and every waiting/recovery outcome are exercised by the dedicated
+            // AccountServiceOAuthJourney approval suite.
+            expect(tree.root.findAll((node) => (
+                typeof node.props.testID === 'string'
+                && node.props.testID.startsWith('oauth-account-directory-approval-')
+            )).length).toBeGreaterThan(0);
             expect(setActiveServerAndSwitchSpy).not.toHaveBeenCalled();
         } finally {
             act(() => tree.unmount());
@@ -1840,11 +1842,23 @@ describe('oauth/[provider] return (Account Directory)', () => {
         const { HomeDeviceApprovalSection } = await import(
             '@/components/settings/server/sections/HomeDeviceApprovalSection'
         );
-        const settings = await renderScreen(<HomeDeviceApprovalSection homes={[homeB!]} />);
+        // `/settings/server` is a multi-Home status surface here: Home A remains
+        // focused, while the retained continuation binds its retry/cancel card
+        // to Home B. With no B credential yet, it must not expose a self-approval
+        // action for B's Home-owned request.
+        const settings = await renderScreen(<HomeDeviceApprovalSection homes={[focused, homeB!]} />);
         try {
             await vi.waitFor(() => {
                 expect(settings.findByTestId('settings.server.homeEnrollment.pending.retry')).toBeTruthy();
             });
+            expect(profiles.getActiveServerSnapshot()).toMatchObject({
+                serverId: activeBefore.serverId,
+                serverUrl: activeBefore.serverUrl,
+            });
+            expect(settings.findByTestId('settings.server.homeEnrollment.pending')?.props.accessibilityLabel)
+                .toContain('Home B');
+            expect(settings.findByTestId('settings.server.homeApprovals.approval-1.approve'))
+                .toBeNull();
             const retry = settings.findByTestId('settings.server.homeEnrollment.pending.retry')!;
             await act(async () => {
                 retry.props.onPress();

@@ -11,6 +11,7 @@ export const oauthStateAttemptSchema = z.object({
     purpose: z.literal("account_directory").optional(),
     endpointUrl: z.string().url().optional(),
     endpointServerIdentityId: z.string().trim().min(1).optional(),
+    canonicalServerUrl: z.string().url().optional(),
 });
 
 export const connectPendingSchema = z.object({
@@ -50,14 +51,17 @@ const authPendingV2Schema = authPendingSharedSchema.extend({
     purpose: z.literal("account_directory").optional(),
     endpointUrl: z.string().url().optional(),
     endpointServerIdentityId: z.string().trim().min(1).optional(),
+    canonicalServerUrl: z.string().url().optional(),
 }).strict().superRefine((value, ctx) => {
     const isAccountDirectory = value.purpose === "account_directory";
     const hasEndpointUrl = value.endpointUrl !== undefined;
     const hasEndpointServerIdentityId =
         value.endpointServerIdentityId !== undefined;
+    const hasCanonicalServerUrl = value.canonicalServerUrl !== undefined;
     if (
         isAccountDirectory !== hasEndpointUrl
         || isAccountDirectory !== hasEndpointServerIdentityId
+        || isAccountDirectory !== hasCanonicalServerUrl
     ) {
         ctx.addIssue({
             code: "custom",

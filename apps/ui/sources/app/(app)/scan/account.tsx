@@ -23,6 +23,7 @@ export default function ScanAccountQrScreen() {
         >
             <ScanAuthQrScreen
                 allowedUrlKind="account"
+                homeQrEntryIntent="add_home"
                 fallbackHref="/"
                 testIDPrefix="scan-account"
                 title={t('connect.linkNewDeviceTitle')}

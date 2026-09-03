@@ -1,6 +1,9 @@
 import fastify, { errorCodes, type FastifyBodyParser, type FastifyInstance } from "fastify";
 import type { FastifyCorsOptions } from "@fastify/cors";
-import { ACCOUNT_STORED_CONTENT_COMPATIBILITY_HTTP_HEADER } from "@happier-dev/protocol";
+import {
+    ACCOUNT_STORED_CONTENT_COMPATIBILITY_HTTP_HEADER,
+    SERVER_HTTP_REQUEST_MAX_BODY_UTF8_BYTES_V1,
+} from "@happier-dev/protocol";
 import { log, logger } from "@/utils/logging/log";
 import { serializerCompiler, validatorCompiler, ZodTypeProvider } from "fastify-type-provider-zod";
 import { onShutdown } from "@/utils/process/shutdown";
@@ -57,7 +60,8 @@ import { resolveHomeSearchDbPath } from "@/app/search/homeSearchDb";
 import { getOrCreateServerIdentityId } from "@/app/serverIdentity/serverIdentity";
 import { db } from "@/storage/db";
 import { createV2SessionListVisibilityWhere } from "./routes/session/v2SessionListRows";
-import { registerIrohRelayAdmissionRoutes } from "@/app/iroh/irohRelayAdmissionRoutes";
+import type { HomeConnectionDescriptorContinuityStore } from '@/app/features/homeConnectionDescriptorContinuity';
+import { readHomeConnectionDescriptor } from '@/app/features/homeConnectionDescriptorPublication';
 
 export function resolveApiListenHost(env: Record<string, string | undefined>): string {
     const host = (env.HAPPIER_SERVER_HOST ?? env.HAPPY_SERVER_HOST ?? '').toString().trim();
@@ -108,8 +112,26 @@ export function enableContentTypeParsers(app: Pick<FastifyInstance, 'addContentT
 
 export function registerApiRoutes(typed: Fastify, params: Readonly<{
     resolveHomeSearchCapability?: () => ReturnType<HomeSearchLifecycle['capability']> | undefined;
+    homeConnectionDescriptorContinuityStore?: HomeConnectionDescriptorContinuityStore | null;
 }> = {}): void {
-    authRoutes(typed);
+    const hasLifecycleSelectedDescriptorOwner = Object.prototype.hasOwnProperty.call(
+        params,
+        'homeConnectionDescriptorContinuityStore',
+    );
+    const resolveHomeConnectionDescriptor = hasLifecycleSelectedDescriptorOwner
+        ? async () => {
+            const continuityStore = params.homeConnectionDescriptorContinuityStore;
+            if (!continuityStore) return undefined;
+            return readHomeConnectionDescriptor({
+                env: process.env,
+                continuityStore,
+                visibility: 'authenticated',
+            });
+        }
+        : undefined;
+    authRoutes(typed, {
+        ...(resolveHomeConnectionDescriptor ? { resolveHomeConnectionDescriptor } : {}),
+    });
     pushRoutes(typed);
     sessionRoutes(typed);
     accountRoutes(typed);
@@ -120,7 +142,10 @@ export function registerApiRoutes(typed: Fastify, params: Readonly<{
     accessKeysRoutes(typed);
     devRoutes(typed);
     versionRoutes(typed);
-    featuresRoutes(typed, { resolveHomeSearchCapability: params.resolveHomeSearchCapability });
+    featuresRoutes(typed, {
+        resolveHomeSearchCapability: params.resolveHomeSearchCapability,
+        homeConnectionDescriptorContinuityStore: params.homeConnectionDescriptorContinuityStore,
+    });
     bugReportDiagnosticsRoutes(typed);
     sessionPendingRoutes(typed);
     voiceRoutes(typed);
@@ -145,10 +170,11 @@ export function registerApiRoutes(typed: Fastify, params: Readonly<{
     });
     registerExternalActionRoutes(typed);
     registerReviewCommentRoutes(typed);
-    registerIrohRelayAdmissionRoutes(typed);
 }
 
-export async function startApi() {
+export async function startApi(params: Readonly<{
+    homeConnectionDescriptorContinuityStore?: HomeConnectionDescriptorContinuityStore | null;
+}> = {}) {
 
     // Configure
     log('Starting API...');
@@ -157,7 +183,7 @@ export async function startApi() {
     const trustProxy = resolveApiTrustProxy(process.env);
     const app = fastify({
         loggerInstance: logger,
-        bodyLimit: 1024 * 1024 * 100, // 100MB
+        bodyLimit: SERVER_HTTP_REQUEST_MAX_BODY_UTF8_BYTES_V1,
         forceCloseConnections: 'idle',
         ...(typeof trustProxy !== "undefined" ? { trustProxy } : null),
     });
@@ -195,6 +221,7 @@ export async function startApi() {
     // Routes
     registerApiRoutes(typed, {
         resolveHomeSearchCapability: homeSearch ? () => homeSearch.capability() : undefined,
+        homeConnectionDescriptorContinuityStore: params.homeConnectionDescriptorContinuityStore,
     });
     if (homeSearch) {
         registerHomeSearchRoutes(typed, {

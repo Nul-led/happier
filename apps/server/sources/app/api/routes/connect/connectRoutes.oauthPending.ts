@@ -37,6 +37,21 @@ export async function loadValidOAuthPending(key: string): Promise<{ key: string;
     return { key: pending.key, value: pending.value };
 }
 
+export async function consumeValidOAuthPendingInTx(
+    tx: Tx,
+    pending: Readonly<{ key: string; value: string }>,
+): Promise<boolean> {
+    if (!isSafeOAuthPendingKey(pending.key)) return false;
+    const consumed = await tx.repeatKey.deleteMany({
+        where: {
+            key: pending.key,
+            value: pending.value,
+            expiresAt: { gt: new Date() },
+        },
+    });
+    return consumed.count === 1;
+}
+
 export type AccountEncryptionFirstKeyStepUpConsumeResult =
     | Readonly<{
         ok: true;

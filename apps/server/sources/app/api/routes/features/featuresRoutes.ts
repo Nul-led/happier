@@ -1,5 +1,6 @@
 import {
     ServerRetentionPolicyV2Schema,
+    type HomeConnectionDescriptorV1,
     type HomeSearchCapabilities,
 } from '@happier-dev/protocol';
 import type { FastifyReply, FastifyRequest } from 'fastify';
@@ -14,20 +15,16 @@ import {
 import { readCachedServerIdentityIdForHotPath } from "@/app/serverIdentity/serverIdentity";
 import { readRetentionPolicyFromEnv } from '@/app/retention/config/readRetentionPolicyFromEnv';
 import { retentionPolicyToPublicPolicy } from '@/app/retention/config/retentionPolicyToPublicPolicy';
-import { getHomeIrohEndpointState, type HomeIrohEndpointState } from '@/app/iroh/homeIrohEndpoint';
-import {
-    resolveAuthenticatedHomeConnectionDescriptor,
-    resolvePublishedHomeConnectionDescriptor,
-} from '@/app/features/homeConnectionDescriptorPublication';
-import {
-    resolveConfiguredCanonicalServerUrl,
-    resolveConfiguredPublicServerUrl,
-} from '@/app/serverUrls/effectiveServerUrls';
+import type { HomeIrohEndpointState } from '@/app/iroh/homeIrohEndpoint';
+import { readHomeConnectionDescriptor } from '@/app/features/homeConnectionDescriptorPublication';
+import type { HomeConnectionDescriptorContinuityStore } from '@/app/features/homeConnectionDescriptorContinuity';
 
 export function featuresRoutes(app: Fastify, params: Readonly<{
     resolveHomeSearchCapability?: () => HomeSearchCapabilities | undefined;
     /** Narrow injected Home Iroh state resolver for route tests; production reads the live owner. */
     resolveHomeIrohEndpointState?: () => HomeIrohEndpointState | Promise<HomeIrohEndpointState>;
+    /** Startup-selected durable owner; null/absent means descriptor publication is unavailable. */
+    homeConnectionDescriptorContinuityStore?: HomeConnectionDescriptorContinuityStore | null;
 }> = {}) {
     const featuresRateLimit = resolveApiHotEndpointRateLimit(process.env, "features");
     const sendFeaturesResponse = async (
@@ -40,22 +37,22 @@ export function featuresRoutes(app: Fastify, params: Readonly<{
         const homeSearch = params.resolveHomeSearchCapability?.();
         // Request-time read: the descriptor always reflects the current
         // endpoint lifecycle and is never cached beyond this response.
-        const homeIrohState = await (params.resolveHomeIrohEndpointState?.() ?? getHomeIrohEndpointState());
-        const descriptorFacts = {
-            homeServerIdentityId: serverIdentityId,
-            canonicalServerUrl: resolveConfiguredCanonicalServerUrl(process.env),
-            publicServerUrl: resolveConfiguredPublicServerUrl(process.env) ?? null,
-            minimumOuterRevisionExclusive: homeIrohState.snapshot?.revision ?? null,
-            iroh: homeIrohState,
-        } as const;
-        const homeConnectionDescriptor = descriptorVisibility === 'authenticated'
-            ? resolveAuthenticatedHomeConnectionDescriptor(descriptorFacts)
-            : resolvePublishedHomeConnectionDescriptor(descriptorFacts);
+        const resolvedHomeConnectionDescriptor: HomeConnectionDescriptorV1 | undefined =
+            params.homeConnectionDescriptorContinuityStore
+                ? await readHomeConnectionDescriptor({
+                    env: process.env,
+                    continuityStore: params.homeConnectionDescriptorContinuityStore,
+                    visibility: descriptorVisibility,
+                    ...(params.resolveHomeIrohEndpointState
+                        ? { resolveIrohEndpointState: params.resolveHomeIrohEndpointState }
+                        : {}),
+                })
+                : undefined;
         reply.header("Cache-Control", "no-store");
         return reply.send(applyPublicSignupProvisioningRestrictionsToFeaturesPayload({
             payload: {
                 ...payload,
-                ...(homeConnectionDescriptor ? { homeConnectionDescriptor } : {}),
+                ...(resolvedHomeConnectionDescriptor ? { homeConnectionDescriptor: resolvedHomeConnectionDescriptor } : {}),
                 capabilities: {
                     ...payload.capabilities,
                     serverIdentity: { serverIdentityId },

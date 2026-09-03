@@ -30,7 +30,7 @@ export default function RestoreShowQrRoute() {
             testID="unauth-shell-route-restore-show-qr"
         >
             <View testID="restore-route-content" style={styles.content}>
-                <RestoreQrView embedded onBack={handleBack} />
+                <RestoreQrView entryIntent="enter_home" embedded onBack={handleBack} />
             </View>
         </UnauthenticatedSplitShell>
     );

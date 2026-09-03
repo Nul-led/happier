@@ -68,6 +68,7 @@ export type AccountServiceApprovalOutcome =
     | 'rejected'
     | 'expired'
     | 'partial_commit'
+    | 'service_replaced'
     | 'failed';
 
 type AccountServiceApprovalPresentation =
@@ -161,6 +162,48 @@ function approvalOutcome(result: HomeLoginContinuationResult | null): AccountSer
     return 'failed';
 }
 
+function approvalCopy(
+    presentation: AccountServiceApprovalPresentation,
+    pending: ReturnType<typeof getPendingPreferredHomeEnrollment>,
+): Readonly<{ title: string; body: string }> {
+    switch (presentation) {
+        case 'waiting': {
+            const expiry = pending?.kind === 'approval_required'
+                ? ` ${t('connect.expiresAtLabel')}: ${formatEnrollmentExpiry(pending.expiresAtMs)}`
+                : '';
+            return {
+                title: t('settingsAccount.accountServiceOAuth.stages.waitingApproval'),
+                body: `${t('settingsAccount.accountServiceOAuth.approvalWait.waitingBody')}${expiry}`,
+            };
+        }
+        case 'unavailable':
+            return {
+                title: t('settingsAccount.accountServiceOAuth.errors.homeEnrollment.title'),
+                body: t('connect.homeEnrollmentRetryBody'),
+            };
+        case 'rejected':
+            return {
+                title: t('approvals.status.rejected'),
+                body: t('settingsAccount.accountServiceOAuth.errors.homeEnrollment.body'),
+            };
+        case 'expired':
+            return {
+                title: t('approvals.status.expired'),
+                body: t('settingsAccount.accountServiceOAuth.approvalWait.expiredBody'),
+            };
+        case 'cancelled':
+            return {
+                title: t('settingsAccount.accountServiceOAuth.approvalWait.cancelledTitle'),
+                body: t('settingsAccount.accountServiceOAuth.approvalWait.cancelledBody'),
+            };
+        case 'service_replaced':
+            return failureCopy('identity_changed');
+        case 'partial_commit':
+        case 'failed':
+            return failureCopy('home_enrollment_failed');
+    }
+}
+
 export function AccountServiceOAuthJourney(props: Readonly<{
     state: AccountServiceOAuthJourneyState;
     onRecovery: () => void;
@@ -193,7 +236,7 @@ export function AccountServiceOAuthJourney(props: Readonly<{
     );
     // The selection subscription only invalidates this presentation. Endpoint equality and
     // replacement authority remain in the canonical Account Service selection owner.
-    React.useSyncExternalStore(
+    const selectedAccountServiceEndpoint = React.useSyncExternalStore(
         subscribeAccountServiceEndpoint,
         resolveSelectedAccountServiceEndpoint,
         resolveSelectedAccountServiceEndpoint,
@@ -204,6 +247,15 @@ export function AccountServiceOAuthJourney(props: Readonly<{
     React.useEffect(() => {
         if (!approvalActive) setApprovalPresentation('waiting');
     }, [approvalActive]);
+
+    React.useEffect(() => {
+        if (!approvalActive || approvalPresentation !== 'waiting') return;
+        if (pendingEnrollment?.kind === 'transport_unavailable') {
+            setApprovalPresentation('unavailable');
+        } else if (!pendingEnrollment) {
+            setApprovalPresentation('failed');
+        }
+    }, [approvalActive, approvalPresentation, pendingEnrollment]);
 
     const applyApprovalResult = React.useCallback((result: HomeLoginContinuationResult | null) => {
         if (result?.kind === 'approval_required') {
@@ -225,13 +277,20 @@ export function AccountServiceOAuthJourney(props: Readonly<{
     const resumeApproval = React.useCallback(async (): Promise<'success' | 'transient'> => {
         try {
             const result = await resumePendingPreferredHomeEnrollment();
+            if (
+                pendingEnrollment
+                && !isSelectedAccountServiceKey(pendingEnrollment.serviceKey)
+            ) {
+                setApprovalPresentation('service_replaced');
+                return 'success';
+            }
             applyApprovalResult(result);
             return result?.kind === 'transport_unavailable' ? 'transient' : 'success';
         } catch {
-            setApprovalPresentation('unavailable');
-            return 'transient';
+            setApprovalPresentation('failed');
+            return 'success';
         }
-    }, [applyApprovalResult]);
+    }, [applyApprovalResult, pendingEnrollment]);
 
     useAccountDirectoryActivePolling(
         resumeApproval,
@@ -244,21 +303,28 @@ export function AccountServiceOAuthJourney(props: Readonly<{
         if (!approvalActive || !pendingEnrollment) return;
         if (isSelectedAccountServiceKey(pendingEnrollment.serviceKey)) return;
         void cancelPendingPreferredHomeEnrollment(pendingEnrollment).finally(() => {
-            setApprovalPresentation('cancelled');
+            setApprovalPresentation('service_replaced');
         });
-    }, [approvalActive, pendingEnrollment]);
+    }, [approvalActive, pendingEnrollment, selectedAccountServiceEndpoint]);
 
     const cancelApproval = React.useCallback(async () => {
-        await cancelPendingPreferredHomeEnrollment(
-            pendingEnrollment ?? undefined,
-        );
-        setApprovalPresentation('cancelled');
+        try {
+            await cancelPendingPreferredHomeEnrollment(
+                pendingEnrollment ?? undefined,
+            );
+            setApprovalPresentation('cancelled');
+        } catch {
+            setApprovalPresentation('failed');
+        }
     }, [pendingEnrollment]);
 
     const finishApproval = React.useCallback(() => {
         if (approvalPresentation === 'waiting' || approvalPresentation === 'unavailable') return;
         props.onApprovalOutcome?.(approvalPresentation);
     }, [approvalPresentation, props.onApprovalOutcome]);
+    const currentApprovalCopy = approvalActive
+        ? approvalCopy(approvalPresentation, pendingEnrollment)
+        : null;
 
     React.useEffect(() => {
         if (!isError) return;
@@ -304,32 +370,10 @@ export function AccountServiceOAuthJourney(props: Readonly<{
                 kind={isError || (approvalActive && approvalPresentation !== 'waiting')
                     ? 'error'
                     : 'loading'}
-                title={failure?.title ?? (approvalActive
-                    ? approvalPresentation === 'waiting'
-                        ? t('settingsAccount.accountServiceOAuth.stages.waitingApproval')
-                        : approvalPresentation === 'unavailable'
-                            ? t('settingsAccount.accountServiceOAuth.errors.homeEnrollment.title')
-                            : approvalPresentation === 'rejected'
-                                ? t('approvals.status.rejected')
-                                : approvalPresentation === 'expired'
-                                    ? t('approvals.status.expired')
-                                    : approvalPresentation === 'cancelled'
-                                        ? t('settingsAccount.accountServiceOAuth.approvalWait.cancelledTitle')
-                                        : t('settingsAccount.accountServiceOAuth.errors.homeEnrollment.title')
-                    : stageTitle(stage!))}
-                reason={failure?.body ?? (approvalActive
-                    ? approvalPresentation === 'waiting'
-                        ? `${t('settingsAccount.accountServiceOAuth.approvalWait.waitingBody')}${pendingEnrollment?.kind === 'approval_required'
-                            ? ` ${t('connect.expiresAtLabel')}: ${formatEnrollmentExpiry(pendingEnrollment.expiresAtMs)}`
-                            : ''}`
-                        : approvalPresentation === 'unavailable'
-                            ? t('connect.homeEnrollmentRetryBody')
-                            : approvalPresentation === 'expired'
-                                ? t('settingsAccount.accountServiceOAuth.approvalWait.expiredBody')
-                                : approvalPresentation === 'cancelled'
-                                    ? t('settingsAccount.accountServiceOAuth.approvalWait.cancelledBody')
-                                    : t('settingsAccount.accountServiceOAuth.errors.homeEnrollment.body')
-                    : t('settingsAccount.accountServiceOAuth.focusedHomePreserved'))}
+                title={failure?.title ?? currentApprovalCopy?.title ?? stageTitle(stage!)}
+                reason={failure?.body
+                    ?? currentApprovalCopy?.body
+                    ?? t('settingsAccount.accountServiceOAuth.focusedHomePreserved')}
                 accessibilitySemantics={isError || (approvalActive && approvalPresentation !== 'waiting') ? 'alert' : 'status'}
             />
             {isError ? (

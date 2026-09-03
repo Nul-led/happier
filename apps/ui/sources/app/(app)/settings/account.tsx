@@ -99,6 +99,7 @@ import { AccountDeletedLocalCleanupError, completeAccountDeletion } from '@/comp
 import { SettingsHistorySection } from '@/components/settings/account/SettingsHistorySection';
 import { AccountServiceSettingsSection } from '@/components/settings/account/AccountServiceSettingsSection';
 import { getServerProfileById } from '@/sync/domains/server/serverProfiles';
+import { ADD_HOME_RESTORE_PATH } from '@/auth/pairing/homeQrEntryIntent';
 
 type AccountEncryptionModePresentation = Readonly<{
     scope: string | null;
@@ -443,15 +444,25 @@ export default React.memo(() => {
                             />
                         ) : null}
                         {showLinkNewDevice ? (
-                            <Item
-                                testID="settings-account-link-new-device"
-                                title={t('settingsAccount.linkNewDevice')}
-                                subtitle={isConnecting ? t('common.scanning') : t('settingsAccount.linkNewDeviceSubtitle')}
-                                icon={<Icon name="qr-code" size={29} color={theme.colors.accent.blue} />}
-                                onPress={connectAccount}
-                                disabled={isConnecting}
-                                showChevron={false}
-                            />
+                            <>
+                                <Item
+                                    testID="settings-account-add-home"
+                                    title={t('settingsAccount.addAnotherHome')}
+                                    subtitle={t('settingsAccount.addAnotherHomeSubtitle')}
+                                    icon={<Icon name="house" size={29} color={theme.colors.accent.blue} />}
+                                    onPress={() => router.push(ADD_HOME_RESTORE_PATH)}
+                                    showChevron={false}
+                                />
+                                <Item
+                                    testID="settings-account-link-new-device"
+                                    title={t('settingsAccount.linkNewDevice')}
+                                    subtitle={isConnecting ? t('common.scanning') : t('settingsAccount.linkNewDeviceSubtitle')}
+                                    icon={<Icon name="qr-code" size={29} color={theme.colors.accent.blue} />}
+                                    onPress={connectAccount}
+                                    disabled={isConnecting}
+                                    showChevron={false}
+                                />
+                            </>
                         ) : null}
                     </ItemGroup>
                 ) : null}
@@ -891,6 +902,10 @@ export default React.memo(() => {
                                                                     ),
                                                                 returnTo:
                                                                     '/settings/account',
+                                                                target: {
+                                                                    serverId: activeServer.serverId,
+                                                                    serverUrl: activeServer.serverUrl,
+                                                                },
                                                             });
                                                         if (
                                                             externalAuth.kind

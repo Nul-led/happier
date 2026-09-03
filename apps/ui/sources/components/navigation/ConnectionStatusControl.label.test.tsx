@@ -10,6 +10,17 @@ import { installConnectionStatusControlCommonModuleMocks } from './connectionSta
     }
 ).IS_REACT_ACT_ENVIRONMENT = true;
 
+const connectionHealthMock = vi.hoisted(() => ({
+    current: {
+        kind: 'no_machine',
+        tone: 'attention',
+        color: '#ff9900',
+        isPulsing: false,
+        statusLabelKey: 'status.actionRequired',
+        machineLabelKey: 'newSession.noMachinesFound',
+    } as Record<string, unknown>,
+}));
+
 installConnectionStatusControlCommonModuleMocks({
     reactNative: async () => {
         const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
@@ -200,13 +211,7 @@ vi.mock('@/components/navigation/connection/ConnectionTargetList', () => ({
 }));
 
 vi.mock('@/components/navigation/connectionStatus/useConnectionHealth', () => ({
-    useConnectionHealth: () => ({
-        kind: 'no_machine',
-        color: '#ff9900',
-        isPulsing: false,
-        statusLabelKey: 'status.actionRequired',
-        machineLabelKey: 'newSession.noMachinesFound',
-    }),
+    useConnectionHealth: () => connectionHealthMock.current,
 }));
 
 describe('ConnectionStatusControl (label)', () => {
@@ -252,12 +257,34 @@ describe('ConnectionStatusControl (label)', () => {
         );
     });
 
-    it('uses the action-required status color when the server is connected but no machines are available', async () => {
+    it('shows one visible non-color warning cue carrying the action-required color', async () => {
         const { ConnectionStatusControl } = await import('./ConnectionStatusControl');
+        const { Icon } = await import('@/components/ui/icons/Icon');
 
         const screen = await renderScreen(React.createElement(ConnectionStatusControl, { variant: 'header' }));
 
+        const warningCue = screen.findAllByType(Icon).find((node) => node.props.name === 'warning');
+        expect(warningCue).toBeTruthy();
+        expect(warningCue!.props.color).toBe('#ff9900');
+    });
+
+    it('keeps the healthy connected trigger quiet with no warning cue', async () => {
+        connectionHealthMock.current = {
+            kind: 'healthy',
+            tone: 'positive',
+            color: '#00ff00',
+            isPulsing: false,
+            statusLabelKey: 'status.connected',
+            machineLabelKey: 'status.online',
+        };
+        const { ConnectionStatusControl } = await import('./ConnectionStatusControl');
+        const { Icon } = await import('@/components/ui/icons/Icon');
+
+        const screen = await renderScreen(React.createElement(ConnectionStatusControl, { variant: 'header' }));
+
+        const warningCue = screen.findAllByType(Icon).find((node) => node.props.name === 'warning');
+        expect(warningCue).toBeUndefined();
         const dot = screen.findByType('StatusDot' as any);
-        expect(dot.props.color).toBe('#ff9900');
+        expect(dot.props.color).toBe('#00ff00');
     });
 });

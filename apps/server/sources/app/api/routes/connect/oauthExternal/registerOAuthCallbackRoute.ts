@@ -23,6 +23,7 @@ import {
     resolveOAuthPendingTtlMsFromEnv,
     resolveWebAppOAuthReturnUrlFromEnv,
 } from "./oauthExternalConfig";
+import { isCurrentAccountDirectoryOAuthTarget } from "./accountDirectoryOAuthTarget";
 import { OAUTH_NOT_CONFIGURED_ERROR } from "./oauthExternalErrors";
 import { oauthExternalRateLimitCallbackPerIp } from "./oauthExternalRateLimits";
 import { oauthStateAttemptSchema } from "./oauthExternalSchemas";
@@ -98,16 +99,28 @@ export function registerOAuthCallbackRoute(app: Fastify) {
             && typeof attemptParsed.data.endpointServerIdentityId === "string"
             && attemptParsed.data.endpointServerIdentityId
                 === oauthState.endpointServerIdentityId
+            && typeof attemptParsed.data.canonicalServerUrl === "string"
+            && attemptParsed.data.canonicalServerUrl
+                === oauthState.canonicalServerUrl
                 ? {
                     endpointUrl: attemptParsed.data.endpointUrl,
                     endpointServerIdentityId:
                         attemptParsed.data.endpointServerIdentityId,
+                    canonicalServerUrl:
+                        attemptParsed.data.canonicalServerUrl,
                 }
                 : null;
+        const accountDirectoryTargetIsCurrent = accountDirectoryTarget
+            ? await isCurrentAccountDirectoryOAuthTarget(
+                accountDirectoryTarget,
+                process.env,
+            )
+            : false;
         if (
             isAccountDirectory !==
                 (attemptParsed.data.purpose === "account_directory")
             || (isAccountDirectory && !accountDirectoryTarget)
+            || (accountDirectoryTarget && !accountDirectoryTargetIsCurrent)
         ) {
             return reply.redirect(buildRedirectUrl(fallbackWebAppUrl, {
                 flow: oauthState.flow,
@@ -138,6 +151,8 @@ export function registerOAuthCallbackRoute(app: Fastify) {
                         endpointUrl: accountDirectoryTarget.endpointUrl,
                         endpointServerIdentityId:
                             accountDirectoryTarget.endpointServerIdentityId,
+                        canonicalServerUrl:
+                            accountDirectoryTarget.canonicalServerUrl,
                     }
                 : flow === "auth" && authMode === "keyless"
                     ? { flow, mode: "keyless" }
@@ -366,25 +381,12 @@ export function registerOAuthCallbackRoute(app: Fastify) {
                     });
 
                     if (accountDirectoryTarget) {
-                        const directoryRedirectParams = {
-                            ...redirectBaseParams,
-                            mode: isAlreadyLinked
-                                ? "keyless"
-                                : "keyed",
-                        };
-                        if (usernameRequired) {
-                            return reply.redirect(buildRedirectUrl(webAppUrl, {
-                                ...directoryRedirectParams,
-                                status: "username_required",
-                                reason:
-                                    usernameReason
-                                    ?? "invalid_login",
-                                login,
-                                pending: pendingKey,
-                            }));
-                        }
+                        // Do not change authentication mode inside a live
+                        // continuation. An unlinked keyless Directory attempt
+                        // is completed once with the typed keyed-required
+                        // result; the client then starts a fresh keyed attempt.
                         return reply.redirect(buildRedirectUrl(webAppUrl, {
-                            ...directoryRedirectParams,
+                            ...redirectBaseParams,
                             pending: pendingKey,
                         }));
                     }

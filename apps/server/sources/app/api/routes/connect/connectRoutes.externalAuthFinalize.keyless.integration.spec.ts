@@ -270,6 +270,9 @@ describe("connectRoutes (external auth finalize keyless) (integration)", () => {
         harness.resetEnv({
             AUTH_SIGNUP_PROVIDERS: "github",
             HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "optional",
+            HAPPIER_CANONICAL_SERVER_URL: "https://accounts.example.test",
+            HAPPIER_PUBLIC_SERVER_URL: "https://accounts.example.test",
+            HAPPIER_SERVER_IDENTITY_ID: "srv_accounts_1",
         });
 
         const e2eeAccount = await db.account.create({
@@ -312,6 +315,7 @@ describe("connectRoutes (external auth finalize keyless) (integration)", () => {
             provider: "github",
             endpointUrl: "https://accounts.example.test",
             endpointServerIdentityId: "srv_accounts_1",
+            canonicalServerUrl: "https://accounts.example.test",
             proofHash,
             profileEnc: privacyKit.encodeBase64(
                 encryptString([...pendingPrefix, "profile"], JSON.stringify(githubProfile)),

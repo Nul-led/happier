@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-const deletion = vi.hoisted(() => vi.fn(async () => ({ status: "deleted" as const })));
+import type { deleteAccountForErasure } from "@/app/plugins/data/accountDataErase";
+const deletion = vi.hoisted(() => vi.fn<typeof deleteAccountForErasure>(
+    async (): Promise<Awaited<ReturnType<typeof deleteAccountForErasure>>> => ({ status: "deleted" }),
+));
 vi.mock("@/app/plugins/data/accountDataErase", () => ({ deleteAccountForErasure: deletion }));
 import { registerAccountErasureRoute } from "./registerAccountErasureRoute";
 

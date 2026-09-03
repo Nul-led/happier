@@ -4,16 +4,23 @@ import tweetnacl from "tweetnacl";
 import { z } from "zod";
 
 import { type Fastify } from "../../../types";
-import { connectExternalIdentity } from "@/app/auth/providers/identity";
+import {
+    connectExternalIdentity,
+    prepareExternalIdentityConnection,
+} from "@/app/auth/providers/identity";
 import { auth } from "@/app/auth/auth";
-import { resolveAuthPolicyFromEnv } from "@/app/auth/authPolicy";
+import { isAuthSignupProviderEnabled } from "@/app/auth/authPolicy";
 import { accountDisabledKey, disableAccount } from "@/app/auth/accountDisable";
 import { Context } from "@/context";
 import { decryptString } from "@/modules/encrypt";
 import { findOAuthProviderById } from "@/app/oauth/providers/registry";
 import { db } from "@/storage/db";
 import { validateUsername } from "@/app/social/usernamePolicy";
-import { deleteOAuthPendingBestEffort, loadValidOAuthPending } from "../connectRoutes.oauthPending";
+import {
+    consumeValidOAuthPendingInTx,
+    deleteOAuthPendingBestEffort,
+    loadValidOAuthPending,
+} from "../connectRoutes.oauthPending";
 import { isProviderResetEnabled } from "./oauthExternalConfig";
 import {
     PROVIDER_ALREADY_LINKED_ERROR,
@@ -32,6 +39,11 @@ import {
 } from "@/app/encryption/accountContentKeyAdmission";
 import { deleteAccountForErasure } from "@/app/plugins/data/accountDataErase";
 import { inTx } from "@/storage/inTx";
+import { isCurrentAccountDirectoryOAuthTarget } from "./accountDirectoryOAuthTarget";
+import {
+    ensureSameServiceHomeBootstrapForNewAccountInTx,
+    prepareSameServiceHomeBootstrapForNewAccount,
+} from "@/app/accountDirectory/accountDirectoryService";
 
 export function registerExternalAuthFinalizeRoute(app: Fastify) {
     app.post("/v1/auth/external/:provider/finalize", {
@@ -55,8 +67,12 @@ export function registerExternalAuthFinalizeRoute(app: Fastify) {
         const provider = findOAuthProviderById(process.env, providerId);
         if (!provider) return reply.code(404).send({ error: "unsupported-provider" });
 
-        const policy = resolveAuthPolicyFromEnv(process.env);
-        if (!policy.signupProviders.includes(providerId)) {
+        // Current server policy, not the policy captured at authorization
+        // start. This is the same canonical decision the keyless finalizer
+        // consumes for Account Directory continuations, so a provider disabled
+        // after authorization start fails both modes identically before any
+        // pending state is consumed or a token is minted.
+        if (!isAuthSignupProviderEnabled(process.env, providerId)) {
             return reply.code(403).send({ error: "signup-provider-disabled" });
         }
 
@@ -132,6 +148,13 @@ export function registerExternalAuthFinalizeRoute(app: Fastify) {
             && (parsedValue as { authMode?: unknown }).authMode
                 === "keyed";
         if (isAccountDirectory && !isKeyedAccountDirectory) {
+            await deleteOAuthPendingBestEffort(pendingKey);
+            return reply.code(400).send({ error: "invalid-pending" });
+        }
+        if (
+            isKeyedAccountDirectory
+            && !await isCurrentAccountDirectoryOAuthTarget(parsedValue)
+        ) {
             await deleteOAuthPendingBestEffort(pendingKey);
             return reply.code(400).send({ error: "invalid-pending" });
         }
@@ -220,18 +243,35 @@ export function registerExternalAuthFinalizeRoute(app: Fastify) {
             select: { id: true, accountId: true, showOnProfile: true },
         });
 
+        if (
+            isAccountDirectory
+            && !isAuthSignupProviderEnabled(process.env, providerId)
+        ) {
+            return reply.code(403).send({ error: "signup-provider-disabled" });
+        }
+
         if (isAccountDirectory && alreadyLinked) {
-            await db.repeatKey.deleteMany({ where: { key: pendingKey } });
-            const token = await auth.createToken(
-                alreadyLinked.accountId,
-                undefined,
-                // Canonical closed provenance: the restricted directory kind
-                // always travels with present_user authority.
-                {
-                    kind: "account_directory",
-                    authority: "present_user",
-                },
-            );
+            const token = await inTx(async (tx) => {
+                const consumed = await consumeValidOAuthPendingInTx(
+                    tx,
+                    pending,
+                );
+                if (!consumed) return null;
+                return await auth.createTokenInTx(
+                    tx,
+                    alreadyLinked.accountId,
+                    undefined,
+                    // Canonical closed provenance: the restricted directory
+                    // kind always travels with present_user authority.
+                    {
+                        kind: "account_directory",
+                        authority: "present_user",
+                    },
+                );
+            });
+            if (!token) {
+                return reply.code(400).send({ error: "invalid-pending" });
+            }
             return reply.send({ success: true, token });
         }
 
@@ -486,6 +526,216 @@ export function registerExternalAuthFinalizeRoute(app: Fastify) {
             return reply.send({ success: true, token });
         }
 
+        if (isAccountDirectory && !existingAccount && !alreadyLinked) {
+            const sameServiceBootstrapPreparation = await prepareSameServiceHomeBootstrapForNewAccount({});
+            if (
+                sameServiceBootstrapPreparation.status === "not_dual_role"
+                && sameServiceBootstrapPreparation.reason === "server_identity_mismatch"
+            ) {
+                throw new Error("Same-service Home descriptor identity mismatch");
+            }
+
+            const proposedAccountId = randomUUID();
+            let preparedIdentityConnection: Awaited<
+                ReturnType<typeof prepareExternalIdentityConnection>
+            >;
+            try {
+                preparedIdentityConnection = await prepareExternalIdentityConnection({
+                    providerId,
+                    ctx: Context.create(proposedAccountId),
+                    profile: pendingProfile,
+                    accessToken,
+                    refreshToken,
+                    preferredUsername: desiredUsername,
+                });
+            } catch (error) {
+                if (error instanceof Error && error.message === "not-eligible") {
+                    await deleteOAuthPendingBestEffort(pendingKey);
+                    return reply.code(403).send({ error: "not-eligible" });
+                }
+                if (error instanceof Error && error.message === PROVIDER_ALREADY_LINKED_ERROR) {
+                    await deleteOAuthPendingBestEffort(pendingKey);
+                    return reply.code(409).send({ error: PROVIDER_ALREADY_LINKED_ERROR, provider: providerId });
+                }
+                throw error;
+            }
+
+            let freshDirectoryWrite;
+            try {
+                freshDirectoryWrite = await inTx(async (tx) => {
+                    // The current policy decision and exact pending delete are
+                    // the first transaction operations. Every durable effect
+                    // below rolls back if either authority has gone stale.
+                    if (!isAuthSignupProviderEnabled(process.env, providerId)) {
+                        return { status: "provider_disabled" as const };
+                    }
+                    const consumed = await consumeValidOAuthPendingInTx(tx, pending);
+                    if (!consumed) return { status: "invalid_pending" as const };
+
+                    const account = await tx.account.create({
+                        data: {
+                            id: proposedAccountId,
+                            publicKey: publicKeyHex,
+                            username: desiredUsername,
+                            ...(contentKeyBinding ? {
+                                contentPublicKey: contentKeyBinding.contentPublicKey,
+                                contentPublicKeySig: contentKeyBinding.contentPublicKeySignature,
+                            } : {}),
+                        },
+                    });
+                    if (contentKeyBinding) {
+                        const admission = await admitAccountContentKey(tx, {
+                            accountId: account.id,
+                            contentPublicKey: contentKeyBinding.contentPublicKey,
+                            contentPublicKeySignature: contentKeyBinding.contentPublicKeySignature,
+                        });
+                        if (admission.status === "key_mismatch") {
+                            throw new Error("content_public_key_mismatch");
+                        }
+                        if (
+                            admission.status === "account_not_found"
+                            || admission.status === "invalid_binding"
+                        ) {
+                            throw new Error("invalid_content_public_key_binding");
+                        }
+                    }
+
+                    await preparedIdentityConnection.connectInTx(tx);
+                    await ensureSameServiceHomeBootstrapForNewAccountInTx(tx, {
+                        accountId: account.id,
+                        preparation: sameServiceBootstrapPreparation,
+                    });
+                    const token = await auth.createTokenInTx(
+                        tx,
+                        account.id,
+                        undefined,
+                        { kind: "account_directory", authority: "present_user" },
+                    );
+                    return { status: "written" as const, token };
+                });
+            } catch (error) {
+                if (error instanceof Error && error.message === "content_public_key_mismatch") {
+                    return reply.code(409).send({ error: "content_public_key_mismatch" });
+                }
+                if (error instanceof Error && error.message === "invalid_content_public_key_binding") {
+                    return reply.code(400).send({ error: "invalid-signature" });
+                }
+                if (error instanceof Error && error.message === "not-eligible") {
+                    await deleteOAuthPendingBestEffort(pendingKey);
+                    return reply.code(403).send({ error: "not-eligible" });
+                }
+                if (error instanceof Error && error.message === PROVIDER_ALREADY_LINKED_ERROR) {
+                    await deleteOAuthPendingBestEffort(pendingKey);
+                    return reply.code(409).send({ error: PROVIDER_ALREADY_LINKED_ERROR, provider: providerId });
+                }
+                throw error;
+            }
+
+            if (freshDirectoryWrite.status === "provider_disabled") {
+                return reply.code(403).send({ error: "signup-provider-disabled" });
+            }
+            if (freshDirectoryWrite.status === "invalid_pending") {
+                return reply.code(400).send({ error: "invalid-pending" });
+            }
+            return reply.send({ success: true, token: freshDirectoryWrite.token });
+        }
+
+        if (isAccountDirectory && existingAccount && !alreadyLinked) {
+            let preparedIdentityConnection: Awaited<
+                ReturnType<typeof prepareExternalIdentityConnection>
+            >;
+            try {
+                preparedIdentityConnection = await prepareExternalIdentityConnection({
+                    providerId,
+                    ctx: Context.create(existingAccount.id),
+                    profile: pendingProfile,
+                    accessToken,
+                    refreshToken,
+                    preferredUsername: desiredUsername,
+                });
+            } catch (error) {
+                if (error instanceof Error && error.message === "not-eligible") {
+                    await deleteOAuthPendingBestEffort(pendingKey);
+                    return reply.code(403).send({ error: "not-eligible" });
+                }
+                if (error instanceof Error && error.message === PROVIDER_ALREADY_LINKED_ERROR) {
+                    await deleteOAuthPendingBestEffort(pendingKey);
+                    return reply.code(409).send({ error: PROVIDER_ALREADY_LINKED_ERROR, provider: providerId });
+                }
+                throw error;
+            }
+
+            let existingDirectoryWrite;
+            try {
+                existingDirectoryWrite = await inTx(async (tx) => {
+                    if (!isAuthSignupProviderEnabled(process.env, providerId)) {
+                        return { status: "provider_disabled" as const };
+                    }
+                    const consumed = await consumeValidOAuthPendingInTx(tx, pending);
+                    if (!consumed) return { status: "invalid_pending" as const };
+
+                    if (contentKeyBinding) {
+                        const admission = await admitAccountContentKey(tx, {
+                            accountId: existingAccount.id,
+                            contentPublicKey: contentKeyBinding.contentPublicKey,
+                            contentPublicKeySignature: contentKeyBinding.contentPublicKeySignature,
+                        });
+                        if (admission.status === "key_mismatch") {
+                            throw new Error("content_public_key_mismatch");
+                        }
+                        if (
+                            admission.status === "account_not_found"
+                            || admission.status === "invalid_binding"
+                        ) {
+                            throw new Error("invalid_content_public_key_binding");
+                        }
+                    }
+
+                    await tx.account.update({
+                        where: { id: existingAccount.id },
+                        data: {
+                            updatedAt: new Date(),
+                            ...(!existingAccount.username
+                                ? { username: desiredUsername }
+                                : {}),
+                        },
+                    });
+                    await preparedIdentityConnection.connectInTx(tx);
+                    const token = await auth.createTokenInTx(
+                        tx,
+                        existingAccount.id,
+                        undefined,
+                        { kind: "account_directory", authority: "present_user" },
+                    );
+                    return { status: "written" as const, token };
+                });
+            } catch (error) {
+                if (error instanceof Error && error.message === "content_public_key_mismatch") {
+                    return reply.code(409).send({ error: "content_public_key_mismatch" });
+                }
+                if (error instanceof Error && error.message === "invalid_content_public_key_binding") {
+                    return reply.code(400).send({ error: "invalid-signature" });
+                }
+                if (error instanceof Error && error.message === "not-eligible") {
+                    await deleteOAuthPendingBestEffort(pendingKey);
+                    return reply.code(403).send({ error: "not-eligible" });
+                }
+                if (error instanceof Error && error.message === PROVIDER_ALREADY_LINKED_ERROR) {
+                    await deleteOAuthPendingBestEffort(pendingKey);
+                    return reply.code(409).send({ error: PROVIDER_ALREADY_LINKED_ERROR, provider: providerId });
+                }
+                throw error;
+            }
+
+            if (existingDirectoryWrite.status === "provider_disabled") {
+                return reply.code(403).send({ error: "signup-provider-disabled" });
+            }
+            if (existingDirectoryWrite.status === "invalid_pending") {
+                return reply.code(400).send({ error: "invalid-pending" });
+            }
+            return reply.send({ success: true, token: existingDirectoryWrite.token });
+        }
+
         const accountWrite = await inTx(async (tx) => {
             const proposedAccountId = randomUUID();
             const accountCandidate = await tx.account.upsert({
@@ -559,7 +809,9 @@ export function registerExternalAuthFinalizeRoute(app: Fastify) {
                 accessToken,
                 refreshToken,
             });
-            await db.repeatKey.deleteMany({ where: { key: pendingKey } });
+            if (!isAccountDirectory) {
+                await db.repeatKey.deleteMany({ where: { key: pendingKey } });
+            }
         } catch (error) {
             if (error instanceof Error && error.message === "not-eligible") {
                 if (accountWrite.createdByThisFinalize) {
@@ -584,17 +836,10 @@ export function registerExternalAuthFinalizeRoute(app: Fastify) {
         const token = await auth.createToken(
             account.id,
             undefined,
-            isAccountDirectory
-                ? // Canonical closed provenance: the restricted directory kind
-                  // always travels with present_user authority.
-                  {
-                    kind: "account_directory",
-                    authority: "present_user",
-                  }
-                : {
-                    kind: "account",
-                    authority: "present_user",
-                },
+            {
+                kind: "account",
+                authority: "present_user",
+            },
         );
         return reply.send({ success: true, token });
     });

@@ -39,16 +39,18 @@ vi.mock('@/modal', async () => {
 const loginWithCredentialsMock = vi.fn<
     (...args: unknown[]) => Promise<AuthCredentialLifecycleResult>
 >(async () => ({ kind: 'completed' }));
+const clearPendingExternalAuthMock = vi.fn(async (_options?: unknown) => true);
 vi.mock('@/auth/context/AuthContext', () => ({
     useAuth: () => ({ loginWithCredentials: loginWithCredentialsMock }),
 }));
 
 vi.mock('@/sync/domains/server/serverRuntime', () => ({
-    getActiveServerSnapshot: () => ({ serverId: 'server-a', serverUrl: 'https://api.example.test', generation: 1 }),
+    getActiveServerSnapshot: () => ({ serverId: 'server-b', serverUrl: 'https://other.example.test', generation: 2 }),
 }));
 
 vi.mock('@/sync/domains/server/readConfiguredServerUrlEnv', () => ({
     readConfiguredServerUrlEnv: () => '',
+    readConfiguredServerUrlEnvRaw: () => '',
 }));
 
 vi.mock('@/auth/storage/tokenStorage', () => ({
@@ -56,6 +58,11 @@ vi.mock('@/auth/storage/tokenStorage', () => ({
         getCredentials: vi.fn(async () => null),
         getCredentialsForServerUrl: vi.fn(async () => null),
         invalidateCredentialsTokenForServerUrl: vi.fn(async () => false),
+        readPendingExternalAuthContinuationState: vi.fn(async () => ({
+            value: { provider: 'mtls', serverId: 'server-a', serverUrl: 'https://api.example.test' },
+            serverMismatch: false,
+        })),
+        clearPendingExternalAuth: (options?: unknown) => clearPendingExternalAuthMock(options),
     },
 }));
 
@@ -112,7 +119,15 @@ describe('MtlsCallbackScreen', () => {
         });
 
         expect(fetchMock).not.toHaveBeenCalled();
-        expect(loginWithCredentialsMock).toHaveBeenCalledWith({ token: 'mtls-token' });
+        expect(runtimeFetchMock.mock.calls.some(([input]) => String(input).includes('https://api.example.test/v1/auth/mtls/claim'))).toBe(true);
+        expect(loginWithCredentialsMock).toHaveBeenCalledWith(
+            { token: 'mtls-token' },
+            { target: { serverId: 'server-a', serverUrl: 'https://api.example.test' } },
+        );
+        expect(clearPendingExternalAuthMock).toHaveBeenCalledWith({
+            serverId: 'server-a',
+            serverUrl: 'https://api.example.test',
+        });
         expect(routerReplaceMock).toHaveBeenCalledWith('/');
     });
 
@@ -132,9 +147,11 @@ describe('MtlsCallbackScreen', () => {
             await new Promise<void>((resolve) => queueMicrotask(resolve));
         });
 
-        expect(loginWithCredentialsMock).toHaveBeenCalledWith({
-            token: 'replacement-token',
-        });
+        expect(loginWithCredentialsMock).toHaveBeenCalledWith(
+            { token: 'replacement-token' },
+            { target: { serverId: 'server-a', serverUrl: 'https://api.example.test' } },
+        );
+        expect(clearPendingExternalAuthMock).not.toHaveBeenCalled();
         expect(routerReplaceMock).not.toHaveBeenCalled();
         expect(modalAlertMock).not.toHaveBeenCalled();
     });

@@ -25,6 +25,7 @@ type ExternalAuthorizeFlowParams =
               AccountEncryptionMigrateExternalAuthBindingDigestV1;
           endpointUrl?: string;
           endpointServerIdentityId?: string;
+          canonicalServerUrl?: string;
           attemptExpiresAt?: Date;
           webAppOAuthReturnUrl?: string | null;
       }>
@@ -65,6 +66,7 @@ export async function createExternalAuthorizeUrl(params: ExternalAuthorizeFlowPa
                                 purpose: params.purpose,
                                 endpointUrl: params.endpointUrl,
                                 endpointServerIdentityId: params.endpointServerIdentityId,
+                                canonicalServerUrl: params.canonicalServerUrl,
                             }
                             : {}),
                         ...(params.webAppOAuthReturnUrl ? { webAppOAuthReturnUrl: params.webAppOAuthReturnUrl } : {}),
@@ -96,6 +98,7 @@ export async function createExternalAuthorizeUrl(params: ExternalAuthorizeFlowPa
                       endpointUrl: params.endpointUrl,
                       endpointServerIdentityId:
                           params.endpointServerIdentityId,
+                      canonicalServerUrl: params.canonicalServerUrl,
                   } : {}),
               })
             : await auth.createOauthStateToken({

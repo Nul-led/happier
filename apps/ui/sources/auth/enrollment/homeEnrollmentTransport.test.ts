@@ -175,6 +175,26 @@ describe('resolveHomeEnrollmentTransport', () => {
         expect(releaseSpy).toHaveBeenCalledTimes(1);
     });
 
+    it('retries native enrollment lease cleanup after a failed release attempt', async () => {
+        releaseSpy
+            .mockRejectedValueOnce(new Error('native release failed'))
+            .mockResolvedValueOnce(undefined);
+        const result = await resolveHomeEnrollmentTransport({
+            v: 1,
+            homeServerIdentityId: 'srv_home_b',
+            canonicalServerUrl: 'http://localhost:3010',
+            revision: 7,
+            endpoints: [{ kind: 'iroh', endpointId: 'iroh-home-b' }],
+        });
+
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+        await expect(result.transport.close()).rejects.toThrow('native release failed');
+        await expect(result.transport.close()).resolves.toBeUndefined();
+        await expect(result.transport.close()).resolves.toBeUndefined();
+        expect(releaseSpy).toHaveBeenCalledTimes(2);
+    });
+
     it('prefers Iroh before an available HTTPS endpoint for a mixed descriptor', async () => {
         const descriptor = {
             v: 1 as const,

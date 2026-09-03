@@ -12,6 +12,7 @@ import { resolveAuthFeature } from "@/app/features/authFeature";
 import { resolveAuthMethodRegistry } from "@/app/auth/methods/registry";
 import { z } from "zod";
 import { registerHomeLoginRoute } from "@/app/accountDirectory/accountDirectoryRoutes";
+import type { HomeConnectionDescriptorResolver } from "@/app/accountDirectory/accountDirectoryService";
 import { registerHomeLoginApprovalRoutes } from "./homeApprovalGate";
 
 function hasAnyViableNonKeyChallengeAuthMethod(env: NodeJS.ProcessEnv): boolean {
@@ -25,7 +26,9 @@ function hasAnyViableNonKeyChallengeAuthMethod(env: NodeJS.ProcessEnv): boolean 
     });
 }
 
-export function authRoutes(app: Fastify): void {
+export function authRoutes(app: Fastify, params: Readonly<{
+    resolveHomeConnectionDescriptor?: HomeConnectionDescriptorResolver;
+}> = {}): void {
     app.get(
         "/v1/auth/ping",
         {
@@ -68,5 +71,9 @@ export function authRoutes(app: Fastify): void {
     registerAccountAuthRoutes(app);
     registerPairingAuthRoutes(app);
     registerHomeLoginApprovalRoutes(app);
-    registerHomeLoginRoute(app);
+    registerHomeLoginRoute(app, {
+        ...(params.resolveHomeConnectionDescriptor
+            ? { resolveHomeConnectionDescriptor: params.resolveHomeConnectionDescriptor }
+            : {}),
+    });
 }

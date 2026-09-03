@@ -107,7 +107,8 @@ export async function prepareGithubConnect(
     // Step 4 is returned to the caller so a larger auth finalization can own
     // one mutation boundary. Network/blob preparation above never runs while
     // that database transaction is open.
-    return { connectInTx: async (tx) => {
+    return {
+        connectInTx: async (tx) => {
         const currentUser = await tx.account.findUnique({
             where: { id: userId },
             select: { username: true },
@@ -192,7 +193,8 @@ export async function prepareGithubConnect(
                 recipientFilter: { type: 'user-scoped-only' }
             });
         });
-    }};
+        },
+    };
 }
 
 export async function githubConnect(

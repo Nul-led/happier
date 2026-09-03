@@ -1377,7 +1377,7 @@ describe(
         });
 
         it(
-            "atomically migrates every required domain, records Settings history, and removes cross-mode usage residue",
+            "atomically migrates every required domain, creates no Settings history, and removes cross-mode usage residue",
             async () => {
                 const fixture =
                     await createMigrationFixture();
@@ -1469,21 +1469,11 @@ describe(
                         fixture.target.automationTemplate,
                     templateVersion: 1,
                 });
-                expect(state.snapshots).toEqual([
-                    {
-                        version: 0,
-                        settingsDbValue: SOURCE_SETTINGS,
-                        encryptionMode: "e2ee",
-                        contentKind: "encrypted",
-                    },
-                    {
-                        version: 1,
-                        settingsDbValue:
-                            state.account.settings,
-                        encryptionMode: "plain",
-                        contentKind: "plain",
-                    },
-                ]);
+                // The approved transition rule: an E2EE-to-plain rewrite must not
+                // create encrypted previous-history that a plain Account cannot
+                // reopen, so the Settings rewrite records no snapshots at all.
+                // Normal same-mode Settings writes keep recording history.
+                expect(state.snapshots).toEqual([]);
                 expect(state.usageRecords).toEqual([]);
                 expect(state.usageSources).toEqual([]);
 

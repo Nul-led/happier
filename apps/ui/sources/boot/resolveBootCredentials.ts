@@ -14,6 +14,7 @@ import {
 import { activateStackRuntimeServer, readStackRuntimeServerUrl } from '@/sync/domains/server/stackRuntimeServer';
 import { invokeDesktopHost, isDesktopHost } from '@/utils/platform/desktopHost';
 import { guardAccountEncryptionFirstKeyCredentialMutation } from '@/sync/ops/account/accountEncryptionFirstKeyExternalAuth';
+import { resolveRoutineServerSelectionScope } from '@/sync/domains/server/selection/serverSelectionScope';
 
 function resolveBootServerUrlFromTerminalConnectHash(): string | null {
     if (typeof window === 'undefined') return null;
@@ -170,6 +171,7 @@ async function resolveAndPersistStackDesktopBootCredentials(
 }
 
 export async function resolveBootCredentials(platformOs: string): Promise<AuthCredentials | null> {
+    const routineSelectionScope = resolveRoutineServerSelectionScope(platformOs, isDesktopHost());
     const webServerOverride = platformOs === 'web'
         ? readWebServerUrlOverrideFromLocation()
         : null;
@@ -184,13 +186,13 @@ export async function resolveBootCredentials(platformOs: string): Promise<AuthCr
         }
         if (webServerOverride) {
             bootstrapActiveServerFromWebLocation({
-                scope: 'device',
+                scope: routineSelectionScope,
             });
         }
         const bootServerProfile = upsertAndActivateServer({
             serverUrl: bootServerUrl,
             source: 'url',
-            scope: 'device',
+            scope: routineSelectionScope,
         });
         const credentials = await TokenStorage.getCredentialsForServerUrl(bootServerUrl, {
             serverId: bootServerProfile.id,

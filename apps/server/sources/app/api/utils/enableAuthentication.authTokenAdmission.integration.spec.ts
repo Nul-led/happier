@@ -71,27 +71,41 @@ describe("authentication token admission (integration)", () => {
         await harness.close();
     });
 
-    it("keeps a published pre-marker Home token on ordinary routes but never admits it to Directory routes", async () => {
+    it("keeps published pre-marker account and terminal tokens on ordinary routes but never admits either to Directory routes", async () => {
         const account = await db.account.create({ data: { publicKey: "auth-admission-legacy" }, select: { id: true } });
         const generator = await privacyKit.createPersistentTokenGenerator({ service: "handy", seed: process.env.HANDY_MASTER_SECRET! });
-        const legacyToken = await generator.new({ user: account.id, extras: { tokenEpoch: 0 } });
+        const legacyTokens = [
+            {
+                token: await generator.new({ user: account.id, extras: { tokenEpoch: 0 } }),
+                expectedKind: "account",
+            },
+            {
+                token: await generator.new({
+                    user: account.id,
+                    extras: { tokenEpoch: 0, session: "released-terminal-request" },
+                }),
+                expectedKind: "terminal",
+            },
+        ] as const;
         const app = createApp();
         try {
-            const ordinaryResponse = await app.inject({
-                method: "GET",
-                url: "/ordinary",
-                headers: { authorization: `Bearer ${legacyToken}` },
-            });
-            const directoryResponse = await app.inject({
-                method: "GET",
-                url: "/directory",
-                headers: { authorization: `Bearer ${legacyToken}` },
-            });
+            for (const legacy of legacyTokens) {
+                const ordinaryResponse = await app.inject({
+                    method: "GET",
+                    url: "/ordinary",
+                    headers: { authorization: `Bearer ${legacy.token}` },
+                });
+                const directoryResponse = await app.inject({
+                    method: "GET",
+                    url: "/directory",
+                    headers: { authorization: `Bearer ${legacy.token}` },
+                });
 
-            expect(ordinaryResponse.statusCode).toBe(200);
-            expect(ordinaryResponse.json()).toEqual({ tokenKind: "account" });
-            expect(directoryResponse.statusCode).toBe(401);
-            expect(directoryResponse.json()).toEqual({ error: "invalid_token" });
+                expect(ordinaryResponse.statusCode).toBe(200);
+                expect(ordinaryResponse.json()).toEqual({ tokenKind: legacy.expectedKind });
+                expect(directoryResponse.statusCode).toBe(401);
+                expect(directoryResponse.json()).toEqual({ error: "invalid_token" });
+            }
         } finally {
             await app.close();
         }

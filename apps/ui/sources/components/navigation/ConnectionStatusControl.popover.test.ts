@@ -62,6 +62,8 @@ const authMocks = vi.hoisted(() => ({
 const connectionMocks = vi.hoisted(() => ({
     switchConnectionToActiveServer: vi.fn(async (_params?: unknown): Promise<unknown> => null),
     retryActiveServerConnection: vi.fn(async () => undefined),
+    appliedServerId: '',
+    appliedListeners: new Set<() => void>(),
 }));
 
 const modalMocks = vi.hoisted(() => ({
@@ -83,6 +85,15 @@ const routerMocks = vi.hoisted(() => ({
 
 const syncMocks = vi.hoisted(() => ({
     retryNow: vi.fn(),
+}));
+
+const irohDiagnosticsState = vi.hoisted(() => ({
+    values: [] as Array<Record<string, unknown>>,
+    listeners: new Set<() => void>(),
+}));
+
+const clipboardMock = vi.hoisted(() => ({
+    setClipboardStringSafe: vi.fn(async (_value: string) => true),
 }));
 
 const settingsState = vi.hoisted(() => ({
@@ -160,7 +171,11 @@ installConnectionStatusControlCommonModuleMocks({
     },
     text: async () => {
         const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
-        return createTextModuleMock({ translate: (key) => key });
+        return createTextModuleMock({
+            translate: (key, params) => params
+                ? `${key}(${Object.entries(params).map(([name, value]) => `${name}=${String(value)}`).join(',')})`
+                : key,
+        });
     },
     storage: async () => {
         const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
@@ -170,6 +185,7 @@ installConnectionStatusControlCommonModuleMocks({
             useLastSyncAt: () => connectionState.lastSyncAt,
             useMachineListStatusByServerId: () => machineListStatusState.byServerId,
             useSettings: () => settingsState,
+            useSetting: (key: keyof typeof settingsState) => settingsState[key],
             useSettingMutable: (key: keyof typeof settingsState) => [
                 settingsState[key],
                 (value: unknown) => {
@@ -204,6 +220,7 @@ vi.mock('@/constants/Typography', () => ({
     },
     Typography: {
         default: () => ({}),
+        mono: () => ({}),
     },
 }));
 
@@ -266,6 +283,27 @@ vi.mock('@/sync/sync', () => ({
 vi.mock('@/sync/runtime/orchestration/connectionManager', () => ({
     switchConnectionToActiveServer: connectionMocks.switchConnectionToActiveServer,
     retryActiveServerConnection: connectionMocks.retryActiveServerConnection,
+    getAppliedActiveServerId: () => connectionMocks.appliedServerId,
+    subscribeAppliedActiveServer: (listener: () => void) => {
+        connectionMocks.appliedListeners.add(listener);
+        return () => connectionMocks.appliedListeners.delete(listener);
+    },
+}));
+
+vi.mock('@/sync/runtime/nativeIrohTunnels/runtime', () => ({
+    readIrohHomeTransportDiagnostics: () => irohDiagnosticsState.values,
+}));
+
+vi.mock('@/sync/runtime/irohHomeTransportDiagnostics', () => ({
+    readIrohHomeTransportDiagnostics: () => irohDiagnosticsState.values,
+    subscribeIrohHomeTransportDiagnostics: (listener: () => void) => {
+        irohDiagnosticsState.listeners.add(listener);
+        return () => irohDiagnosticsState.listeners.delete(listener);
+    },
+}));
+
+vi.mock('@/utils/ui/clipboard', () => ({
+    setClipboardStringSafe: clipboardMock.setClipboardStringSafe,
 }));
 
 vi.mock('@/utils/platform/desktopHost', () => ({
@@ -310,6 +348,8 @@ afterEach(() => {
     connectionMocks.switchConnectionToActiveServer.mockResolvedValue(null);
     connectionMocks.retryActiveServerConnection.mockReset();
     connectionMocks.retryActiveServerConnection.mockResolvedValue(undefined);
+    connectionMocks.appliedServerId = '';
+    connectionMocks.appliedListeners.clear();
     modalMocks.confirm.mockReset();
     syncMocks.retryNow.mockReset();
     tokenStorageMock.getCredentialsForServerUrl.mockReset();
@@ -322,6 +362,9 @@ afterEach(() => {
     connectionState.socketStatus = 'connected';
     connectionState.syncError = null;
     connectionState.lastSyncAt = null;
+    irohDiagnosticsState.values = [];
+    irohDiagnosticsState.listeners.clear();
+    clipboardMock.setClipboardStringSafe.mockClear();
     machineListStatusState.byServerId = {};
     connectionHealthState.kind = 'no_machine';
     connectionHealthState.color = '#ff9900';
@@ -417,6 +460,21 @@ describe('ConnectionStatusControl (native popover config)', () => {
     });
 
     it('puts the Home list first and keeps technical connection facts behind one disclosure', async () => {
+        const profiles = await import('@/sync/domains/server/serverProfiles');
+        const activeProfile = profiles.listServerProfiles().find((profile) => profile.name === 'Happier Cloud');
+        if (!activeProfile) throw new Error('expected default Happier Cloud profile');
+        irohDiagnosticsState.values = [{
+            homeServerIdentityId: profiles.resolveServerProfileScopeId(activeProfile),
+            remoteEndpointId: 'iroh-endpoint-123',
+            state: 'connected',
+            current: { carrier: 'iroh', observedPath: 'relay' },
+            effectiveConfiguration: {
+                policy: 'automatic',
+                relayUrls: ['https://relay.example.test'],
+                directAddressCount: 1,
+            },
+            lastTransitionAtMs: 1_700_000_000_000,
+        }];
         const ConnectionStatusControl = await importConnectionStatusControl();
         let tree: renderer.ReactTestRenderer | undefined;
         const screen = await renderScreen(React.createElement(ConnectionStatusControl, { variant: 'sidebar' }));
@@ -443,6 +501,7 @@ describe('ConnectionStatusControl (native popover config)', () => {
         expect(tree!.root.findAllByProps({ testID: 'connection-popover-relay' })).toHaveLength(0);
         expect(tree!.root.findAllByProps({ testID: 'connection-popover-realtime' })).toHaveLength(0);
         expect(tree!.root.findAllByProps({ testID: 'connection-popover-machines' })).toHaveLength(0);
+        expect(screen.getTextContent()).not.toContain('iroh-endpoint-123');
 
         await act(async () => {
             await pressTestInstanceAsync(detailsDisclosure);
@@ -452,6 +511,8 @@ describe('ConnectionStatusControl (native popover config)', () => {
         expect(tree!.root.findAllByProps({ testID: 'connection-popover-relay' }).length).toBeGreaterThan(0);
         expect(tree!.root.findAllByProps({ testID: 'connection-popover-realtime' }).length).toBeGreaterThan(0);
         expect(tree!.root.findAllByProps({ testID: 'connection-popover-machines' }).length).toBeGreaterThan(0);
+        expect(screen.getTextContent()).toContain('iroh-endpoint-123');
+        expect(screen.getTextContent()).toContain('relay.example.test');
         expect(screen.getTextContent()).not.toContain('connectionStatus.labels.transport');
         expect(screen.getTextContent()).not.toContain('connectionStatus.labels.connectionMode');
     });
@@ -504,6 +565,7 @@ describe('ConnectionStatusControl (native popover config)', () => {
             const local = profiles.upsertServerProfile({ serverUrl: 'https://local.example.test', name: 'Local' });
             const company = profiles.upsertServerProfile({ serverUrl: 'https://company.example.test', name: 'Company' });
             profiles.setActiveServerId(local.id, { scope: 'device' });
+            connectionMocks.appliedServerId = local.id;
             settingsState.serverSelectionGroups = [
                 {
                     id: 'grp-dev',
@@ -546,7 +608,7 @@ describe('ConnectionStatusControl (native popover config)', () => {
         }
     });
 
-    it('keeps the pending Home row in the same list during a deferred switch', async () => {
+    it('keeps the trigger and details on the applied Home while another Home is staged', async () => {
         const previousScope = process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE;
         const scope = `test_${Date.now()}_${Math.random().toString(16).slice(2)}`;
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = scope;
@@ -557,6 +619,7 @@ describe('ConnectionStatusControl (native popover config)', () => {
             const local = profiles.upsertServerProfile({ serverUrl: 'https://local.example.test', name: 'Local' });
             const company = profiles.upsertServerProfile({ serverUrl: 'https://company.example.test', name: 'Company' });
             profiles.setActiveServerId(local.id, { scope: 'device' });
+            connectionMocks.appliedServerId = local.id;
             settingsState.serverSelectionGroups = [{
                 id: 'grp-dev',
                 name: 'Dev Group',
@@ -564,42 +627,35 @@ describe('ConnectionStatusControl (native popover config)', () => {
                 presentation: 'grouped',
             }];
 
-            let releaseConnection!: () => void;
-            connectionMocks.switchConnectionToActiveServer.mockImplementationOnce(() => new Promise<void>((resolve) => {
-                releaseConnection = resolve;
-            }));
-
             const ConnectionStatusControl = await importConnectionStatusControl();
             const screen = await renderScreen(React.createElement(ConnectionStatusControl, { variant: 'sidebar' }));
+            await act(async () => {
+                for (const listener of connectionMocks.appliedListeners) listener();
+            });
             const trigger = screen.findByProps({ accessibilityRole: 'button' });
             await act(async () => {
                 await pressTestInstanceAsync(trigger);
             });
-
-            const companyItem = findAction(`target-use-server-${company.id}`);
-            expect(companyItem).toBeTruthy();
-
-            await act(async () => {
-                companyItem?.onPress?.();
-                await Promise.resolve();
-            });
-
-            const pendingCompany = findAction(`target-use-server-${company.id}`);
-            expect(pendingCompany?.label).toBe('Company');
-            expect(pendingCompany?.subtitle).toBe('status.connecting');
-            expect(trigger.props.accessibilityLabel).toContain('Local');
-            expect(trigger.props.accessibilityLabel).not.toContain('Company');
-
             await act(async () => {
                 await pressTestInstanceAsync(screen.findByTestId('connection-details-disclosure'));
             });
-            expect(screen.getTextContent()).toContain('local.example.test');
-            expect(screen.getTextContent()).not.toContain('company.example.test');
 
             await act(async () => {
-                releaseConnection();
-                await Promise.resolve();
+                // Model the reachable production boundary directly: selection is
+                // staged to Company while full Sync remains applied to Local.
+                profiles.setActiveServerId(company.id, { scope: 'device' });
+                await vi.waitFor(() => {
+                    expect(profiles.areServerProfileIdentifiersEquivalent(
+                        profiles.getActiveServerSnapshot().serverId,
+                        company.id,
+                    )).toBe(true);
+                });
             });
+
+            expect(trigger.props.accessibilityLabel).toContain('Local');
+            expect(trigger.props.accessibilityLabel).not.toContain('Company');
+            expect(screen.getTextContent()).toContain('local.example.test');
+            expect(screen.getTextContent()).not.toContain('company.example.test');
             await act(async () => {
                 screen.tree.unmount();
             });
@@ -1161,6 +1217,219 @@ describe('ConnectionStatusControl (native popover config)', () => {
         await act(async () => {
             tree?.unmount();
         });
+    });
+
+    it('shows restore-account from endpoint authentication state even without a separate sync error', async () => {
+        connectionState.syncError = null;
+        connectionHealthState.kind = 'auth_required';
+        connectionHealthState.endpointStatus = 'auth_failed';
+
+        const ConnectionStatusControl = await importConnectionStatusControl();
+        const screen = await renderScreen(React.createElement(ConnectionStatusControl, { variant: 'sidebar' }));
+        await act(async () => pressTestInstanceAsync(screen.findByProps({ accessibilityRole: 'button' })));
+        await act(async () => pressTestInstanceAsync(screen.findByTestId('connection-details-disclosure')));
+
+        expect(screen.getTextContent()).toContain('connect.restoreAccount');
+        await act(async () => screen.tree?.unmount());
+    });
+
+    it('answers Home identity, truthful status, and the applicable action in the first popover layer', async () => {
+        connectionHealthState.kind = 'auth_required';
+        connectionHealthState.endpointStatus = 'auth_failed';
+
+        const ConnectionStatusControl = await importConnectionStatusControl();
+        const screen = await renderScreen(React.createElement(ConnectionStatusControl, { variant: 'sidebar' }));
+        await act(async () => pressTestInstanceAsync(screen.findByProps({ accessibilityRole: 'button' })));
+
+        // No Details expansion: identity, state, and recovery are answered first.
+        const homeRow = screen.findByTestId('connection-popover-home');
+        expect(homeRow).toBeTruthy();
+        const joined = screen.getTextContent();
+        expect(joined).toContain('Happier Cloud');
+        expect(joined).toContain('connectionStatus.summary.signInAgain');
+        expect(screen.findByTestId('connection-popover-primary-action')).toBeTruthy();
+        expect(joined).toContain('connect.restoreAccount');
+        expect(joined).toContain('server.changeServer');
+
+        await act(async () => screen.tree?.unmount());
+    });
+
+    it('reports the Home as connected in the first layer while only machines need attention', async () => {
+        connectionHealthState.kind = 'machine_offline';
+        connectionHealthState.statusLabelKey = 'status.actionRequired';
+
+        const ConnectionStatusControl = await importConnectionStatusControl();
+        const screen = await renderScreen(React.createElement(ConnectionStatusControl, { variant: 'sidebar' }));
+        await act(async () => pressTestInstanceAsync(screen.findByProps({ accessibilityRole: 'button' })));
+
+        const joined = screen.getTextContent();
+        expect(joined).toContain('connectionStatus.summary.connected');
+        expect(joined).not.toContain('connectionStatus.summary.unavailable');
+        expect(screen.tree?.root.findAllByProps({ testID: 'connection-popover-primary-action' })).toHaveLength(0);
+
+        await act(async () => screen.tree?.unmount());
+    });
+
+    it('reports an unavailable Home with a retry in the first layer', async () => {
+        connectionHealthState.kind = 'server_unreachable';
+
+        const ConnectionStatusControl = await importConnectionStatusControl();
+        const screen = await renderScreen(React.createElement(ConnectionStatusControl, { variant: 'sidebar' }));
+        await act(async () => pressTestInstanceAsync(screen.findByProps({ accessibilityRole: 'button' })));
+
+        expect(screen.getTextContent()).toContain('connectionStatus.summary.unavailable');
+        await act(async () => pressTestInstanceAsync(screen.findByTestId('connection-popover-primary-action')));
+        expect(connectionMocks.retryActiveServerConnection).toHaveBeenCalled();
+
+        await act(async () => screen.tree?.unmount());
+    });
+
+    it('keeps the collapsed trigger free of transport vocabulary', async () => {
+        const ConnectionStatusControl = await importConnectionStatusControl();
+        const screen = await renderScreen(React.createElement(ConnectionStatusControl, { variant: 'header' }));
+
+        const trigger = screen.findByProps({ accessibilityRole: 'button' });
+        const triggerLabel = String(trigger.props.accessibilityLabel);
+        for (const transportTerm of ['iroh', 'relay', 'socket', 'https', 'direct', 'tunnel']) {
+            expect(triggerLabel.toLowerCase()).not.toContain(transportTerm);
+        }
+        expect(triggerLabel).toContain('Happier Cloud');
+        expect(triggerLabel).toContain('connectionStatus.summary.connected');
+        expect(triggerLabel).not.toContain('status.actionRequired');
+
+        await act(async () => screen.tree?.unmount());
+    });
+
+    it('presents browser Iroh as secure relay and refreshes open Details from the diagnostics owner', async () => {
+        const profiles = await import('@/sync/domains/server/serverProfiles');
+        const activeProfile = profiles.listServerProfiles().find((profile) => profile.name === 'Happier Cloud');
+        if (!activeProfile) throw new Error('expected default Happier Cloud profile');
+        const homeServerIdentityId = profiles.resolveServerProfileScopeId(activeProfile);
+        irohDiagnosticsState.values = [{
+            homeServerIdentityId,
+            remoteEndpointId: 'browser-endpoint-123',
+            state: 'connecting',
+            current: { carrier: 'iroh' },
+            effectiveConfiguration: {
+                policy: 'automatic',
+                relayUrls: ['https://relay.example.test'],
+                directAddressCount: 0,
+            },
+            lastTransitionAtMs: 1_700_000_000_000,
+        }];
+
+        const ConnectionStatusControl = await importConnectionStatusControl();
+        const screen = await renderScreen(React.createElement(ConnectionStatusControl, { variant: 'sidebar' }));
+        await act(async () => pressTestInstanceAsync(screen.findByProps({ accessibilityRole: 'button' })));
+        await act(async () => pressTestInstanceAsync(screen.findByTestId('connection-details-disclosure')));
+
+        expect(screen.getTextContent()).toContain('browser-endpoint-123');
+        expect(screen.getTextContent()).toContain('Iroh · status.unknown');
+        expect(screen.getTextContent()).toContain('connectionStatus.labels.lastTransition');
+
+        irohDiagnosticsState.values = [{
+            ...irohDiagnosticsState.values[0],
+            state: 'connected',
+            current: { carrier: 'iroh', observedPath: 'relay' },
+            lastKnown: { carrier: 'iroh', observedPath: 'relay' },
+            lastTransitionAtMs: 1_700_000_001_000,
+        }];
+        await act(async () => {
+            for (const listener of irohDiagnosticsState.listeners) listener();
+        });
+
+        const joined = screen.getTextContent();
+        expect(joined).toContain('Iroh · connectionStatus.values.pathRelay');
+        expect(joined).not.toContain('connectionStatus.values.pathDirect');
+
+        await act(async () => screen.tree?.unmount());
+    });
+
+    it('keeps canonical and runtime origins with endpoint and relay diagnostics behind Details, with a copy affordance', async () => {
+        const profiles = await import('@/sync/domains/server/serverProfiles');
+        const activeProfile = profiles.listServerProfiles().find((profile) => profile.name === 'Happier Cloud');
+        if (!activeProfile) throw new Error('expected default Happier Cloud profile');
+        irohDiagnosticsState.values = [{
+            homeServerIdentityId: profiles.resolveServerProfileScopeId(activeProfile),
+            remoteEndpointId: 'iroh-endpoint-123',
+            state: 'connected',
+            current: { carrier: 'iroh', observedPath: 'direct' },
+            effectiveConfiguration: {
+                policy: 'automatic',
+                relayUrls: ['https://relay.example.test'],
+                directAddressCount: 2,
+            },
+            diagnosticError: { code: 'transport_stalled', message: 'no usable path', atMs: 1_700_000_000_000 },
+        }];
+
+        const ConnectionStatusControl = await importConnectionStatusControl();
+        const screen = await renderScreen(React.createElement(ConnectionStatusControl, { variant: 'sidebar' }));
+        await act(async () => pressTestInstanceAsync(screen.findByProps({ accessibilityRole: 'button' })));
+
+        expect(screen.getTextContent()).not.toContain('connectionStatus.labels.endpointId');
+
+        await act(async () => pressTestInstanceAsync(screen.findByTestId('connection-details-disclosure')));
+
+        const joined = screen.getTextContent();
+        expect(joined).toContain('connectionStatus.labels.canonicalAddress');
+        expect(joined).toContain('connectionStatus.labels.endpointId');
+        expect(joined).toContain('iroh-endpoint-123');
+        expect(joined).toContain('connectionStatus.labels.connectionPath');
+        expect(joined).toContain('connectionStatus.values.pathDirect');
+        expect(joined).toContain('connectionStatus.labels.relayConfiguration');
+        expect(joined).toContain('relay.example.test');
+        expect(joined).toContain('connectionStatus.labels.transportError');
+        expect(joined).toContain('transport_stalled: no usable path');
+        expect(joined).toContain('connectionStatus.labels.lastSync');
+
+        const copyButton = screen.findByTestId('connection-copy-diagnostics');
+        if (!copyButton) throw new Error('expected diagnostics copy action');
+        expect(copyButton.props.accessibilityRole).toBe('button');
+        expect(copyButton.props.accessibilityLabel).toBe('connectionStatus.copyDiagnostics');
+        await act(async () => pressTestInstanceAsync(copyButton));
+        expect(clipboardMock.setClipboardStringSafe).toHaveBeenCalled();
+        const copied = String(clipboardMock.setClipboardStringSafe.mock.calls.at(-1)?.[0] ?? '');
+        expect(copied).toContain('iroh-endpoint-123');
+        expect(copied).toContain('relay.example.test');
+        expect(screen.getTextContent()).toContain('connectionStatus.diagnosticsCopied');
+        const copiedButton = screen.findByTestId('connection-copy-diagnostics');
+        if (!copiedButton) throw new Error('expected diagnostics copied action');
+        expect(copiedButton.props.accessibilityLabel)
+            .toBe('connectionStatus.diagnosticsCopied');
+
+        await act(async () => screen.tree?.unmount());
+    });
+
+    it('reads current same-Home diagnostics on rerender instead of retaining the opening snapshot', async () => {
+        const profiles = await import('@/sync/domains/server/serverProfiles');
+        const activeProfile = profiles.listServerProfiles().find((profile) => profile.name === 'Happier Cloud');
+        if (!activeProfile) throw new Error('expected default Happier Cloud profile');
+        const homeServerIdentityId = profiles.resolveServerProfileScopeId(activeProfile);
+        irohDiagnosticsState.values = [{
+            homeServerIdentityId,
+            remoteEndpointId: 'endpoint-before',
+            state: 'connected',
+        }];
+
+        const ConnectionStatusControl = await importConnectionStatusControl();
+        const element = React.createElement(ConnectionStatusControl, { variant: 'sidebar' });
+        const screen = await renderScreen(element);
+        await act(async () => pressTestInstanceAsync(screen.findByProps({ accessibilityRole: 'button' })));
+        await act(async () => pressTestInstanceAsync(screen.findByTestId('connection-details-disclosure')));
+        expect(screen.getTextContent()).toContain('endpoint-before');
+
+        irohDiagnosticsState.values = [{
+            homeServerIdentityId,
+            remoteEndpointId: 'endpoint-after',
+            state: 'connected',
+        }];
+        await act(async () => screen.tree?.update(
+            React.createElement(ConnectionStatusControl, { variant: 'sidebar', textSize: 13 }),
+        ));
+
+        expect(screen.getTextContent()).toContain('endpoint-after');
+        expect(screen.getTextContent()).not.toContain('endpoint-before');
+        await act(async () => screen.tree?.unmount());
     });
 
     it('does not show relay unknown when endpoint connectivity is idle but the connection is otherwise healthy', async () => {

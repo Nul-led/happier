@@ -9,13 +9,22 @@ import * as privacyKit from "privacy-kit";
 import tweetnacl from "tweetnacl";
 import {
     ACCOUNT_API_TOKENS_LIST_HTTP_PATH_V1,
+    createHomeCredentialDestinationDigestV1,
     createKeyChallengeV2SigningInput,
+    encodeBase64,
+    type HomeLoginAssertionV1,
     type KeyChallengeV2IssueResponse,
 } from "@happier-dev/protocol";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { auth } from "@/app/auth/auth";
 import { getOrCreateServerIdentityId } from "@/app/serverIdentity/serverIdentity";
+import {
+    resetHomeConnectionDescriptorRevisionOwnerForTests,
+} from "@/app/features/homeConnectionDescriptorPublication";
+import type {
+    HomeConnectionDescriptorContinuityStore,
+} from "@/app/features/homeConnectionDescriptorContinuity";
 import { db } from "@/storage/db";
 import {
     createLightSqliteHarness,
@@ -26,6 +35,7 @@ import { registerApiRoutes } from "./api";
 import type { Fastify as TypedFastify } from "./types";
 import { enableAuthentication } from "./utils/enableAuthentication";
 import { resolveApiRateLimitPluginOptions } from "./utils/apiRateLimitPolicy";
+import { canonicalHomeLoginAssertionBytes } from "@/app/accountDirectory/accountDirectorySigner";
 
 const DIRECTORY_PROOF = "directory-composition-proof";
 const DIRECTORY_PROOF_HASH = createHash("sha256")
@@ -35,6 +45,12 @@ const SERVING_ENDPOINT_URL = "https://accounts-composition.example.test";
 
 function encodeOwned(bytes: Uint8Array): string {
     return privacyKit.encodeBase64(new Uint8Array(bytes));
+}
+
+function copyOwnedBytes(bytes: Uint8Array): Uint8Array<ArrayBuffer> {
+    const copy = new Uint8Array(bytes.byteLength);
+    copy.set(bytes);
+    return copy;
 }
 
 function createDirectoryKeyLoginPayload(
@@ -53,7 +69,9 @@ function createDirectoryKeyLoginPayload(
     };
 }
 
-function createProductionCompositionApp() {
+function createProductionCompositionApp(params: Readonly<{
+    homeConnectionDescriptorContinuityStore?: HomeConnectionDescriptorContinuityStore | null;
+}> = {}) {
     const app = Fastify({ logger: false });
     app.register(
         import("@fastify/rate-limit"),
@@ -63,7 +81,7 @@ function createProductionCompositionApp() {
     app.setSerializerCompiler(serializerCompiler);
     const typed = app.withTypeProvider<ZodTypeProvider>() as unknown as TypedFastify;
     enableAuthentication(typed);
-    registerApiRoutes(typed);
+    registerApiRoutes(typed, params);
     return app;
 }
 
@@ -85,9 +103,11 @@ describe("API auth-token composition (integration)", () => {
 
     afterEach(async () => {
         harness.resetEnv();
+        resetHomeConnectionDescriptorRevisionOwnerForTests();
         vi.unstubAllGlobals();
         await db.repeatKey.deleteMany();
         await db.accountIdentity.deleteMany();
+        await db.accountDirectoryLink.deleteMany();
         await db.account.deleteMany();
     });
 
@@ -231,6 +251,7 @@ describe("API auth-token composition (integration)", () => {
                 proofHash: DIRECTORY_PROOF_HASH,
                 endpointUrl: SERVING_ENDPOINT_URL,
                 endpointServerIdentityId: serverIdentityId,
+                canonicalServerUrl: SERVING_ENDPOINT_URL,
             });
             const paramsResponse = await app.inject({
                 method: "GET",
@@ -243,12 +264,14 @@ describe("API auth-token composition (integration)", () => {
                 credentialTarget: string;
                 endpointUrl: string;
                 endpointServerIdentityId: string;
+                canonicalServerUrl: string;
             };
             expect(paramsBody).toMatchObject({
                 purpose: "account_directory",
                 credentialTarget: "account_directory",
                 endpointUrl: SERVING_ENDPOINT_URL,
                 endpointServerIdentityId: serverIdentityId,
+                canonicalServerUrl: SERVING_ENDPOINT_URL,
             });
             const authorizeUrl = paramsBody.url;
             const state = new URL(authorizeUrl).searchParams.get("state");
@@ -268,6 +291,8 @@ describe("API auth-token composition (integration)", () => {
                 .toBe(SERVING_ENDPOINT_URL);
             expect(callbackRedirect.searchParams.get("endpointServerIdentityId"))
                 .toBe(serverIdentityId);
+            expect(callbackRedirect.searchParams.get("canonicalServerUrl"))
+                .toBe(SERVING_ENDPOINT_URL);
             const pending = callbackRedirect.searchParams.get("pending");
             expect(pending).toMatch(/^oauth_pending_/);
 
@@ -361,6 +386,90 @@ describe("API auth-token composition (integration)", () => {
             expect(homeResponse.json()).toEqual({
                 error: "present_user_required",
             });
+        } finally {
+            await app.close();
+        }
+    });
+
+    it("uses the lifecycle-selected descriptor continuity owner for Home-login redemption", async () => {
+        const canonicalServerUrl = "https://home-descriptor-owner.example.test";
+        harness.resetEnv({
+            HAPPIER_CANONICAL_SERVER_URL: canonicalServerUrl,
+            HAPPIER_PUBLIC_SERVER_URL: canonicalServerUrl,
+            HAPPIER_HOME_DEVICE_APPROVAL_REQUIRED: "0",
+        });
+        resetHomeConnectionDescriptorRevisionOwnerForTests();
+
+        const homeServerIdentityId = await getOrCreateServerIdentityId(process.env);
+        const descriptor = {
+            v: 1 as const,
+            homeServerIdentityId,
+            canonicalServerUrl,
+            revision: 1,
+            endpoints: [{ kind: "https" as const, url: canonicalServerUrl }],
+        };
+        const issuerKeyPair = tweetnacl.sign.keyPair();
+        const clientKeyPair = tweetnacl.box.keyPair();
+        const account = await db.account.create({
+            data: { publicKey: "api-descriptor-owner-account" },
+            select: { id: true },
+        });
+        const issuerServerIdentityId = "srv_descriptor_owner_issuer";
+        const issuerSigningKeyId = createHash("sha256")
+            .update(issuerKeyPair.publicKey)
+            .digest("hex");
+        await db.accountDirectoryLink.create({
+            data: {
+                accountId: account.id,
+                issuerServerIdentityId,
+                issuerSubjectId: account.id,
+                issuerSigningKeyId,
+                issuerSigningPublicKey: copyOwnedBytes(issuerKeyPair.publicKey),
+            },
+        });
+        const nowMs = Date.now();
+        const unsignedAssertion: Omit<HomeLoginAssertionV1, "signatureBase64Url"> = {
+            v: 1,
+            purpose: "happier.home-login",
+            issuerServerIdentityId,
+            issuerSubjectId: account.id,
+            audienceHomeServerIdentityId: homeServerIdentityId,
+            credentialDestinationDigestBase64Url: createHomeCredentialDestinationDigestV1(descriptor),
+            clientBoxPublicKeyBase64: encodeOwned(clientKeyPair.publicKey),
+            issuedAtMs: nowMs,
+            expiresAtMs: nowMs + 120_000,
+            keyId: issuerSigningKeyId,
+        };
+        const assertion: HomeLoginAssertionV1 = {
+            ...unsignedAssertion,
+            signatureBase64Url: encodeBase64(
+                tweetnacl.sign.detached(
+                    canonicalHomeLoginAssertionBytes(unsignedAssertion),
+                    issuerKeyPair.secretKey,
+                ),
+                "base64url",
+            ),
+        };
+        const lifecycleStore: HomeConnectionDescriptorContinuityStore = {
+            read: async () => {
+                throw new Error("lifecycle descriptor owner unavailable");
+            },
+            write: async (continuity) => ({ status: "committed", continuity }),
+        };
+        const app = createProductionCompositionApp({
+            homeConnectionDescriptorContinuityStore: lifecycleStore,
+        });
+
+        try {
+            await app.ready();
+            const response = await app.inject({
+                method: "POST",
+                url: "/v1/auth/home-login",
+                payload: { v: 1, assertion },
+            });
+
+            expect(response.statusCode).toBe(503);
+            expect(response.json()).toEqual({ error: "home_unavailable" });
         } finally {
             await app.close();
         }

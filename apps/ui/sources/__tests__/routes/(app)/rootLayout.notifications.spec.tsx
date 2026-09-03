@@ -252,7 +252,7 @@ describe('App RootLayout notifications', () => {
         expect(mockState.upsertActivateAndSwitchServerSpy).toHaveBeenCalledWith({
             serverUrl: 'https://company.example.test',
             source: 'url',
-            scope: 'device',
+            scope: 'tab',
             refreshAuth: expect.any(Function),
         });
         expect(mockState.replaceSpy).toHaveBeenCalledWith('/terminal/connect#key=abc123&server=https%3A%2F%2Fcompany.example.test');
@@ -350,7 +350,7 @@ describe('App RootLayout notifications', () => {
 
         expect(mockState.setActiveServerAndSwitchSpy).toHaveBeenCalledWith({
             serverId: 'server-2',
-            scope: 'device',
+            scope: 'tab',
             refreshAuth: expect.any(Function),
         });
         expect(mockState.pushSpy).toHaveBeenCalledWith('/session/s_456');
@@ -448,7 +448,7 @@ describe('App RootLayout notifications', () => {
 
         expect(mockState.setActiveServerAndSwitchSpy).toHaveBeenCalledWith({
             serverId: 'server-2',
-            scope: 'device',
+            scope: 'tab',
             refreshAuth: expect.any(Function),
         });
         expect(mockState.sessionAllowSpy).toHaveBeenCalledWith('s_allow_2', 'p_allow_2', undefined, undefined, 'approved');
@@ -582,7 +582,7 @@ describe('App RootLayout notifications', () => {
         expect(mockState.upsertActivateAndSwitchServerSpy).toHaveBeenCalledWith({
             serverUrl: 'https://new.example.test',
             source: 'notification',
-            scope: 'device',
+            scope: 'tab',
             refreshAuth: expect.any(Function),
         });
         expect(mockState.pushSpy).toHaveBeenCalledWith('/session/s_allow_5');

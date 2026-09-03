@@ -890,6 +890,236 @@ describe("authRoutes (account auth request) (integration)", () => {
         })).toEqual(persisted);
     });
 
+    it("answers already_completed only for the exact completed pairing", async () => {
+        const requester = createAccountKeypair();
+        const requesterPublicKeyHex = privacyKit.encodeHex(requester.publicKeyRaw);
+        const account = await db.account.create({
+            data: { publicKey: null, encryptionMode: "plain" },
+            select: { id: true },
+        });
+        const otherAccount = await db.account.create({
+            data: { publicKey: null, encryptionMode: "plain" },
+            select: { id: true },
+        });
+        const token = await auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" });
+        const otherToken = await auth.createToken(otherAccount.id, undefined, { kind: "account", authority: "present_user" });
+        const completedPairId = await createDirectQrContext({
+            accountId: account.id,
+            publicKeyBase64: requester.publicKeyBase64,
+        });
+        const foreignPairId = await createDirectQrPairing({
+            accountId: otherAccount.id,
+            publicKeyBase64: requester.publicKeyBase64,
+        });
+        const pendingPairId = await createDirectQrPairing({
+            accountId: account.id,
+            publicKeyBase64: requester.publicKeyBase64,
+        });
+        const app = createTestApp();
+        authRoutes(app as any);
+        await app.ready();
+        const complete = (params: Readonly<{ pairId: string; bearer?: string }>) => app.inject({
+            method: "POST",
+            url: "/v1/auth/account/response",
+            headers: { authorization: `Bearer ${params.bearer ?? token}` },
+            payload: {
+                pairId: params.pairId,
+                publicKey: requester.publicKeyBase64,
+                response: createProvisioningResponse({ kind: "tokenOnly", recipientPublicKey: requester.publicKeyRaw }),
+                homeServerIdentityId: HOME_SERVER_IDENTITY_ID,
+                responseKind: "tokenOnly",
+            },
+        });
+
+        expect((await complete({ pairId: completedPairId })).statusCode).toBe(200);
+        const persisted = await db.accountAuthRequest.findUnique({
+            where: { publicKey: requesterPublicKeyHex },
+            select: { response: true, responseAccountId: true, tokenEncrypted: true },
+        });
+
+        // Neither a nonexistent pairing, another account's pairing, nor another
+        // pending pairing for the same requester key inherits that completion.
+        for (const attempt of [
+            { pairId: "no-such-pairing-row" },
+            { pairId: foreignPairId, bearer: otherToken },
+            { pairId: pendingPairId },
+        ]) {
+            const rejected = await complete(attempt);
+            expect(rejected.statusCode).toBe(404);
+            expect(rejected.json()).toEqual({ error: "Request not found" });
+        }
+        for (const pairId of [foreignPairId, pendingPairId]) {
+            expect(await db.authPairingSession.findUnique({
+                where: { id: pairId },
+                select: { approvalStatus: true, decidedAt: true },
+            })).toEqual({ approvalStatus: null, decidedAt: null });
+        }
+        expect(await db.accountAuthRequest.findUnique({
+            where: { publicKey: requesterPublicKeyHex },
+            select: { response: true, responseAccountId: true, tokenEncrypted: true },
+        })).toEqual(persisted);
+
+        // The exact pairing keeps rejoining its own immutable committed result,
+        // including after the short-lived invite row itself expires.
+        await db.authPairingSession.update({
+            where: { id: completedPairId },
+            data: { expiresAt: new Date(Date.now() - 1_000) },
+        });
+        const exactRetry = await complete({ pairId: completedPairId });
+        expect(exactRetry.statusCode).toBe(409);
+        expect(exactRetry.json()).toEqual({ error: "already_completed" });
+        expect(await db.accountAuthRequest.findUnique({
+            where: { publicKey: requesterPublicKeyHex },
+            select: { response: true, responseAccountId: true, tokenEncrypted: true },
+        })).toEqual(persisted);
+
+        await app.close();
+    });
+
+    it("completes only one pairing when two pairings for the same requester key race", async () => {
+        const requester = createAccountKeypair();
+        const requesterPublicKeyHex = privacyKit.encodeHex(requester.publicKeyRaw);
+        const account = await db.account.create({
+            data: { publicKey: null, encryptionMode: "plain" },
+            select: { id: true },
+        });
+        const token = await auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" });
+        const pairIdA = await createDirectQrContext({
+            accountId: account.id,
+            publicKeyBase64: requester.publicKeyBase64,
+        });
+        const pairIdB = await createDirectQrPairing({
+            accountId: account.id,
+            publicKeyBase64: requester.publicKeyBase64,
+        });
+        const app = createTestApp();
+        authRoutes(app as any);
+        await app.ready();
+        const complete = (pairId: string) => app.inject({
+            method: "POST",
+            url: "/v1/auth/account/response",
+            headers: { authorization: `Bearer ${token}` },
+            payload: {
+                pairId,
+                publicKey: requester.publicKeyBase64,
+                response: createProvisioningResponse({ kind: "tokenOnly", recipientPublicKey: requester.publicKeyRaw }),
+                homeServerIdentityId: HOME_SERVER_IDENTITY_ID,
+                responseKind: "tokenOnly",
+            },
+        });
+
+        const [resultA, resultB] = await Promise.all([complete(pairIdA), complete(pairIdB)]);
+        expect([resultA.statusCode, resultB.statusCode].sort()).toEqual([200, 404]);
+        const winnerPairId = resultA.statusCode === 200 ? pairIdA : pairIdB;
+        const loserPairId = resultA.statusCode === 200 ? pairIdB : pairIdA;
+        const loser = resultA.statusCode === 200 ? resultB : resultA;
+        expect(loser.json()).toEqual({ error: "Request not found" });
+        expect(await db.authPairingSession.findUnique({
+            where: { id: winnerPairId },
+            select: { approvalStatus: true },
+        })).toEqual({ approvalStatus: "approved" });
+        expect(await db.authPairingSession.findUnique({
+            where: { id: loserPairId },
+            select: { approvalStatus: true, decidedAt: true },
+        })).toEqual({ approvalStatus: null, decidedAt: null });
+        const persisted = await db.accountAuthRequest.findUnique({
+            where: { publicKey: requesterPublicKeyHex },
+            select: { response: true, responseAccountId: true, tokenEncrypted: true },
+        });
+        expect(persisted).toMatchObject({
+            response: expect.any(String),
+            responseAccountId: account.id,
+            tokenEncrypted: expect.any(String),
+        });
+
+        // A later retry of the losing pairing still never claims the winner's result.
+        const retry = await complete(loserPairId);
+        expect(retry.statusCode).toBe(404);
+        expect(retry.json()).toEqual({ error: "Request not found" });
+        expect(await db.accountAuthRequest.findUnique({
+            where: { publicKey: requesterPublicKeyHex },
+            select: { response: true, responseAccountId: true, tokenEncrypted: true },
+        })).toEqual(persisted);
+
+        await app.close();
+    });
+
+    it("rechecks pairing expiry when a serializable completion transaction retries", async () => {
+        harness.resetEnv({
+            HAPPIER_DB_TX_RETRY_BASE_DELAY_MS: "100",
+            HAPPIER_DB_TX_RETRY_MAX_DELAY_MS: "100",
+            HAPPIER_DB_TX_RETRY_JITTER_FACTOR: "0",
+        });
+        const requester = createAccountKeypair();
+        const requesterPublicKeyHex = privacyKit.encodeHex(requester.publicKeyRaw);
+        const account = await db.account.create({
+            data: { publicKey: null, encryptionMode: "plain" },
+            select: { id: true },
+        });
+        const token = await auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" });
+        const pairId = await createDirectQrContext({
+            accountId: account.id,
+            publicKeyBase64: requester.publicKeyBase64,
+        });
+        const app = createTestApp();
+        authRoutes(app as any);
+        await app.ready();
+
+        const originalTransaction = db.$transaction.bind(db) as any;
+        let injectedRetry = false;
+        const retryingTransaction = vi.fn(async (callback: any, options: any) => {
+            if (typeof callback !== "function" || injectedRetry) {
+                return originalTransaction(callback, options);
+            }
+            injectedRetry = true;
+            try {
+                return await originalTransaction(async (tx: any) => {
+                    await callback(tx);
+                    throw Object.assign(new Error("retry completion after expiry"), { code: "P2034" });
+                }, options);
+            } catch (error) {
+                // inTx waits at least 100 ms before the SQLite retry. Keep the row
+                // valid for the request-start timestamp but expired for that retry.
+                await db.authPairingSession.update({
+                    where: { id: pairId },
+                    data: { expiresAt: new Date(Date.now() + 50) },
+                });
+                throw error;
+            }
+        });
+        (db as any).$transaction = retryingTransaction;
+
+        try {
+            const response = await app.inject({
+                method: "POST",
+                url: "/v1/auth/account/response",
+                headers: { authorization: `Bearer ${token}` },
+                payload: {
+                    pairId,
+                    publicKey: requester.publicKeyBase64,
+                    response: createProvisioningResponse({ kind: "tokenOnly", recipientPublicKey: requester.publicKeyRaw }),
+                    homeServerIdentityId: HOME_SERVER_IDENTITY_ID,
+                    responseKind: "tokenOnly",
+                },
+            });
+
+            expect(injectedRetry).toBe(true);
+            expect(response.statusCode).toBe(404);
+            expect(response.json()).toEqual({ error: "Request not found" });
+            expect(await db.accountAuthRequest.findUnique({
+                where: { publicKey: requesterPublicKeyHex },
+                select: { response: true, responseAccountId: true, tokenEncrypted: true },
+            })).toEqual({ response: null, responseAccountId: null, tokenEncrypted: null });
+            expect(await db.authPairingSession.findUnique({
+                where: { id: pairId },
+                select: { approvalStatus: true, decidedAt: true },
+            })).toEqual({ approvalStatus: null, decidedAt: null });
+        } finally {
+            (db as any).$transaction = originalTransaction;
+            await app.close();
+        }
+    });
+
     it("makes direct-QR approval and explicit rejection mutually exclusive under a race", async () => {
         const requester = createAccountKeypair();
         const account = await db.account.create({

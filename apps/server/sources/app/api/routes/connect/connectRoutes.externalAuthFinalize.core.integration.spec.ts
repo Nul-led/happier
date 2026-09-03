@@ -333,6 +333,7 @@ describe("connectRoutes (external auth finalize) (integration)", () => {
                     provider: "github",
                     endpointUrl: "https://accounts.example.test",
                     endpointServerIdentityId: "srv_accounts_1",
+                    canonicalServerUrl: "https://accounts.example.test",
                     proofHash,
                     profileEnc: privacyKit.encodeBase64(
                         encryptString(

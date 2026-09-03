@@ -8,10 +8,10 @@ import { t } from '@/text';
 import { safeRouterBack } from '@/utils/navigation/safeRouterBack';
 
 import { useScannedAuthUrlProcessor } from '@/hooks/auth/useScannedAuthUrlProcessor';
+import type { HomeQrEntryIntent } from '@/auth/pairing/homeQrEntryIntent';
 import { QrCodeScannerView } from './QrCodeScannerView';
 
-type ScanAuthQrScreenProps = Readonly<{
-    allowedUrlKind: 'account' | 'terminal';
+type ScanAuthQrScreenBaseProps = Readonly<{
     fallbackHref: string;
     title: string;
     subtitle: string;
@@ -23,16 +23,34 @@ type ScanAuthQrScreenProps = Readonly<{
     testIDPrefix: string;
 }>;
 
+type ScanAuthQrScreenProps = ScanAuthQrScreenBaseProps & (
+    | Readonly<{
+        allowedUrlKind: 'account';
+        homeQrEntryIntent: HomeQrEntryIntent;
+    }>
+    | Readonly<{
+        allowedUrlKind: 'terminal';
+        homeQrEntryIntent?: never;
+    }>
+);
+
 export function ScanAuthQrScreen(props: ScanAuthQrScreenProps) {
     const router = useRouter();
     const navigation = useNavigation();
     const handleBack = React.useCallback(() => {
         safeRouterBack({ router, navigation, fallbackHref: props.fallbackHref });
     }, [navigation, props.fallbackHref, router]);
-    const { processAuthUrl } = useScannedAuthUrlProcessor({
-        allowedUrlKind: props.allowedUrlKind,
-        onSuccess: handleBack,
-    });
+    const processorOptions = props.allowedUrlKind === 'account'
+        ? {
+            allowedUrlKind: props.allowedUrlKind,
+            homeQrEntryIntent: props.homeQrEntryIntent,
+            onSuccess: handleBack,
+        } as const
+        : {
+            allowedUrlKind: props.allowedUrlKind,
+            onSuccess: handleBack,
+        } as const;
+    const { processAuthUrl } = useScannedAuthUrlProcessor(processorOptions);
 
     return (
         <QrCodeScannerView

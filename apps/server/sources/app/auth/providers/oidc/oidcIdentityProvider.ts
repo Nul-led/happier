@@ -131,38 +131,39 @@ export function createOidcIdentityProvider(instance: OidcAuthProviderInstanceCon
     const providerId = instance.id.toString().trim().toLowerCase();
 
     const prepareConnect: IdentityProvider["prepareConnect"] = async (params) => {
-            const userId = params.ctx.uid;
-            const providerUserId = extractSub(params.profile);
-            if (!providerUserId) {
-                throw new Error("invalid_profile");
-            }
+        const userId = params.ctx.uid;
+        const providerUserId = extractSub(params.profile);
+        if (!providerUserId) {
+            throw new Error("invalid_profile");
+        }
 
-            const eligibility = isEligible({ instance, profile: params.profile });
-            if (!eligibility.ok) {
-                throw new Error("not-eligible");
-            }
+        const eligibility = isEligible({ instance, profile: params.profile });
+        if (!eligibility.ok) {
+            throw new Error("not-eligible");
+        }
 
-            const providerLogin = extractLogin(params.profile, instance.claims);
-            const preferredUsername = params.preferredUsername?.toString().trim().toLowerCase() || null;
-            const refreshToken = params.refreshToken?.toString?.().trim?.() ?? "";
-            const tokenToPersist =
-                instance.storeRefreshToken && refreshToken
-                    ? (encryptString(["user", userId, providerId, "refresh_token"], refreshToken) as any)
-                    : null;
+        const providerLogin = extractLogin(params.profile, instance.claims);
+        const preferredUsername = params.preferredUsername?.toString().trim().toLowerCase() || null;
+        const refreshToken = params.refreshToken?.toString?.().trim?.() ?? "";
+        const tokenToPersist =
+            instance.storeRefreshToken && refreshToken
+                ? (encryptString(["user", userId, providerId, "refresh_token"], refreshToken) as any)
+                : null;
 
-            const alreadyLinked = await db.accountIdentity.findFirst({
-                where: {
-                    provider: providerId,
-                    providerUserId,
-                    NOT: { accountId: userId },
-                },
-                select: { id: true },
-            });
-            if (alreadyLinked) {
-                throw new Error("provider-already-linked");
-            }
+        const alreadyLinked = await db.accountIdentity.findFirst({
+            where: {
+                provider: providerId,
+                providerUserId,
+                NOT: { accountId: userId },
+            },
+            select: { id: true },
+        });
+        if (alreadyLinked) {
+            throw new Error("provider-already-linked");
+        }
 
-            return { connectInTx: async (tx) => {
+        return {
+            connectInTx: async (tx) => {
                 const account = await tx.account.findUnique({
                     where: { id: userId },
                     select: { username: true },
@@ -212,8 +213,9 @@ export function createOidcIdentityProvider(instance: OidcAuthProviderInstanceCon
                         data: { username: usernameToSet },
                     });
                 }
-            }};
+            },
         };
+    };
 
     return Object.freeze({
         id: providerId,

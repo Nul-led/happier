@@ -1,7 +1,15 @@
 import { readServerEnabledBit, type HomeSearchCapabilities } from "@happier-dev/protocol";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { HomeIrohEndpointState } from "@/app/iroh/homeIrohEndpoint";
+import {
+    createFileHomeConnectionDescriptorContinuityStore,
+    createSimpleCacheHomeConnectionDescriptorContinuityStore,
+    type HomeConnectionDescriptorContinuityStore,
+} from '@/app/features/homeConnectionDescriptorContinuity';
 
 import { createEnvReset } from "../../testkit/env";
 import { createRouteTestBuilder } from "../../testkit/routeTestBuilder";
@@ -36,15 +44,18 @@ type ServerIdentityRouteModuleMock = Readonly<{
     readCachedServerIdentityIdForHotPath: (env?: NodeJS.ProcessEnv) => string | null;
 }>;
 
+let descriptorContinuityDir = "";
+const descriptorContinuityPath = (): string => join(descriptorContinuityDir, "home.descriptor.json");
+
 async function getFeaturesPayload(
     requestOverrides: Record<string, unknown> = {},
     serverIdentityMock?: ServerIdentityRouteModuleMock,
     resolveHomeSearchCapability?: () => Readonly<{
         enabled: boolean;
-        provider: "home" | "daemon" | null;
-        reason?: "non_plain_home" | "index_unavailable" | "indexing";
+        reason?: "index_unavailable" | "indexing";
     }> | undefined,
     resolveHomeIrohEndpointState?: () => HomeIrohEndpointState,
+    continuityStoreOverride?: HomeConnectionDescriptorContinuityStore | null,
 ) {
     if (serverIdentityMock) {
         vi.doMock("@/app/serverIdentity/serverIdentity", () => serverIdentityMock);
@@ -54,7 +65,15 @@ async function getFeaturesPayload(
         method: "GET",
         path: "/v1/features",
         registerRoutes(app) {
-            featuresRoutes(app as any, { resolveHomeSearchCapability, resolveHomeIrohEndpointState });
+            featuresRoutes(app as any, {
+                resolveHomeSearchCapability,
+                resolveHomeIrohEndpointState,
+                homeConnectionDescriptorContinuityStore: continuityStoreOverride !== undefined
+                    ? continuityStoreOverride
+                    : resolveHomeIrohEndpointState
+                        ? createFileHomeConnectionDescriptorContinuityStore(descriptorContinuityPath())
+                        : null,
+            });
         },
     });
     const { response, reply } = await route.invoke(requestOverrides);
@@ -62,23 +81,25 @@ async function getFeaturesPayload(
 }
 
 describe("featuresRoutes", () => {
-    beforeEach(() => {
+    beforeEach(async () => {
         vi.resetModules();
         vi.doUnmock("@/app/serverIdentity/serverIdentity");
         resetPublicServerUrlInferenceCacheForTests();
         resetEnv();
+        descriptorContinuityDir = await mkdtemp(join(tmpdir(), "features-descriptor-"));
     });
 
-    afterEach(() => {
+    afterEach(async () => {
         vi.doUnmock("@/app/serverIdentity/serverIdentity");
         resetPublicServerUrlInferenceCacheForTests();
         resetEnv();
+        await rm(descriptorContinuityDir, { recursive: true, force: true });
+        descriptorContinuityDir = "";
     });
 
     it("projects the single Home search lifecycle from indexing to ready", async () => {
         let capability: HomeSearchCapabilities = {
             enabled: false,
-            provider: "home" as const,
             reason: "indexing" as const,
         };
         const resolveCapability = () => capability;
@@ -86,20 +107,18 @@ describe("featuresRoutes", () => {
         const indexing = await getFeaturesPayload({}, undefined, resolveCapability);
         expect(indexing.payload.capabilities.homeSearch).toEqual(capability);
 
-        capability = { enabled: true, provider: "home" };
+        capability = { enabled: true };
         const ready = await getFeaturesPayload({}, undefined, resolveCapability);
-        expect(ready.payload.capabilities.homeSearch).toEqual({ enabled: true, provider: "home" });
+        expect(ready.payload.capabilities.homeSearch).toEqual({ enabled: true });
     });
 
     it("advertises Home unavailability but makes no Home claim when no lifecycle is composed", async () => {
         const unavailable = await getFeaturesPayload({}, undefined, () => ({
             enabled: false,
-            provider: null,
             reason: "index_unavailable",
         }));
         expect(unavailable.payload.capabilities.homeSearch).toEqual({
             enabled: false,
-            provider: null,
             reason: "index_unavailable",
         });
 
@@ -185,6 +204,45 @@ describe("featuresRoutes", () => {
             failureReason: null,
         });
 
+        it("uses DB-backed continuity for generic PostgreSQL feature discovery without resolving Personal Home layout", async () => {
+            let persisted: string | null = null;
+            resetEnv({
+                DATABASE_URL: "postgresql://relay.example.test/happier",
+                HAPPIER_SERVER_FLAVOR: "full",
+                HAPPIER_DB_PROVIDER: "postgres",
+                HAPPIER_FILES_BACKEND: "s3",
+                HAPPIER_PUBLIC_SERVER_URL: "https://relay.example.test",
+                HAPPIER_SERVER_IDENTITY_ID: "srv_accountService",
+            });
+
+            const { payload } = await getFeaturesPayload(
+                {},
+                undefined,
+                undefined,
+                undefined,
+                createSimpleCacheHomeConnectionDescriptorContinuityStore({
+                    readSimpleCache: async () => persisted,
+                    compareAndSetSimpleCache: async (_key, expectedValue, value) => {
+                        if (persisted !== expectedValue) return false;
+                        persisted = value;
+                        return true;
+                    },
+                }),
+            );
+
+            expect(payload.capabilities.serverIdentity).toEqual({
+                serverIdentityId: "srv_accountService",
+            });
+            expect(payload.homeConnectionDescriptor).toEqual({
+                v: 1,
+                homeServerIdentityId: "srv_accountService",
+                canonicalServerUrl: "https://relay.example.test",
+                revision: 1,
+                endpoints: [{ kind: "https", url: "https://relay.example.test" }],
+            });
+            expect(JSON.parse(persisted!)).toMatchObject({ revision: 1 });
+        });
+
         it("publishes a public-safe canonical descriptor without private direct-address hints", async () => {
             resetEnv({ HAPPIER_SERVER_IDENTITY_ID: "srv_routeIrohHome" });
             const { payload, reply } = await getFeaturesPayload(
@@ -230,7 +288,11 @@ describe("featuresRoutes", () => {
                         request.userId = "account_1";
                         request.authTokenKind = "account";
                     });
-                    featuresRoutes(app as any, { resolveHomeIrohEndpointState: activeState });
+                    featuresRoutes(app as any, {
+                        resolveHomeIrohEndpointState: activeState,
+                        homeConnectionDescriptorContinuityStore:
+                            createFileHomeConnectionDescriptorContinuityStore(descriptorContinuityPath()),
+                    });
                 },
             });
 
@@ -270,6 +332,8 @@ describe("featuresRoutes", () => {
                     });
                     featuresRoutes(app as any, {
                         resolveHomeIrohEndpointState: activeState,
+                        homeConnectionDescriptorContinuityStore:
+                            createFileHomeConnectionDescriptorContinuityStore(descriptorContinuityPath()),
                     });
                 },
             });
@@ -326,7 +390,11 @@ describe("featuresRoutes", () => {
                 method: "GET",
                 path: "/v1/features",
                 registerRoutes(app) {
-                    featuresRoutes(app as any, { resolveHomeIrohEndpointState: () => state });
+                    featuresRoutes(app as any, {
+                        resolveHomeIrohEndpointState: () => state,
+                        homeConnectionDescriptorContinuityStore:
+                            createFileHomeConnectionDescriptorContinuityStore(descriptorContinuityPath()),
+                    });
                 },
             });
 

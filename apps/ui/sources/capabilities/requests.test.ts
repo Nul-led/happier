@@ -16,7 +16,8 @@ function resolvePackageDetectKey(agentId: string): string {
     return entry?.detectKey ?? agentId;
 }
 
-vi.mock('@happier-dev/agents', () => ({
+vi.mock('@happier-dev/agents', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@happier-dev/agents')>(),
     ...agentsPackageState,
     getAgentLocalCliConfig: (agentId: string) => ({
         agentId,
