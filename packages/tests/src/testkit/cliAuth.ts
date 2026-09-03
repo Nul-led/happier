@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { encodeBase64 } from './messageCrypto';
 import {
   createServerUrlComparableKey,
+  type HomeConnectionDescriptorV1,
   type MachineReplacementReason,
 } from '@happier-dev/protocol';
 import tweetnacl from 'tweetnacl';
@@ -77,6 +78,7 @@ async function seedCliCredentialsForServer(params: {
   token: string;
   credentials: Readonly<Record<string, unknown>>;
   replacementCandidate?: SeedReplacementCandidate;
+  homeConnectionDescriptor?: HomeConnectionDescriptorV1;
 }): Promise<{ serverId: string; machineId: string }> {
   const serverId = deriveServerIdFromUrl(params.serverUrl);
   const machineId = randomUUID();
@@ -109,6 +111,11 @@ async function seedCliCredentialsForServer(params: {
         createdAt: 0,
         updatedAt: 0,
         lastUsedAt: 0,
+        // Mirrors what the CLI login owner persists after the same Home
+        // identity authorizes the credential (apps/cli/src/ui/auth.ts).
+        ...(params.homeConnectionDescriptor
+          ? { homeConnectionDescriptor: params.homeConnectionDescriptor }
+          : null),
       },
     },
     machineIdByServerId: {
@@ -223,6 +230,7 @@ export async function seedCliAuthForTestAccount(params: {
   auth: TestAuth;
   mode: TestAccountCliAuthMode;
   replacementCandidate?: SeedReplacementCandidate;
+  homeConnectionDescriptor?: HomeConnectionDescriptorV1;
 }): Promise<{ serverId: string; machineId: string }> {
   return seedCliCredentialsForServer({
     cliHome: params.cliHome,
@@ -230,5 +238,8 @@ export async function seedCliAuthForTestAccount(params: {
     token: params.auth.token,
     credentials: buildTestAccountCliAuthCredentials({ auth: params.auth, mode: params.mode }),
     replacementCandidate: params.replacementCandidate,
+    ...(params.homeConnectionDescriptor
+      ? { homeConnectionDescriptor: params.homeConnectionDescriptor }
+      : {}),
   });
 }

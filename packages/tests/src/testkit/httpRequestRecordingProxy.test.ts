@@ -1,11 +1,14 @@
 import { once } from 'node:events';
+import { readFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
+import { request as httpsRequest } from 'node:https';
 import { connect, type Socket } from 'node:net';
 
 import { describe, expect, it } from 'vitest';
 
 import { startHttpRequestRecordingProxy } from './httpRequestRecordingProxy';
 import { withTimeoutMs } from './timing/withTimeout';
+import { createEphemeralTlsServerFixture } from './tls/ephemeralTlsServerFixture.mjs';
 
 function listen(server: ReturnType<typeof createServer>): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -38,6 +41,46 @@ async function waitForNoSockets(sockets: ReadonlySet<Socket>, label: string): Pr
 }
 
 describe('startHttpRequestRecordingProxy', () => {
+  it('can expose an HTTP target through HTTPS trusted by only the supplied fixture CA', async () => {
+    const target = createServer((req, res) => {
+      req.resume();
+      req.once('end', () => res.end('secure ingress'));
+    });
+    await listen(target);
+    const targetAddress = target.address();
+    if (!targetAddress || typeof targetAddress !== 'object') throw new Error('target server did not bind');
+    const tls = await createEphemeralTlsServerFixture();
+    const proxy = await startHttpRequestRecordingProxy({
+      targetBaseUrl: `http://127.0.0.1:${targetAddress.port}`,
+      tls: {
+        key: await readFile(tls.privateKeyPath),
+        cert: await readFile(tls.leafCertificatePath),
+      },
+    });
+
+    try {
+      const ca = await readFile(tls.caCertificatePath);
+      const payload = await new Promise<string>((resolve, reject) => {
+        const request = httpsRequest(proxy.baseUrl, {
+          ca,
+          rejectUnauthorized: true,
+        }, (response) => {
+          const chunks: Buffer[] = [];
+          response.on('data', (chunk: Buffer) => chunks.push(chunk));
+          response.once('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+        });
+        request.once('error', reject);
+        request.end();
+      });
+      expect(payload).toBe('secure ingress');
+      expect(proxy.baseUrl).toMatch(/^https:\/\/127\.0\.0\.1:/u);
+    } finally {
+      await proxy.stop().catch(() => {});
+      await tls.cleanup();
+      await closeServer(target);
+    }
+  });
+
   it('does not retain request bodies unless capture is explicitly enabled', async () => {
     const target = createServer((req, res) => {
       req.resume();
@@ -62,6 +105,134 @@ describe('startHttpRequestRecordingProxy', () => {
           body: null,
         }),
       ]);
+    } finally {
+      await proxy.stop().catch(() => {});
+      await closeServer(target);
+    }
+  });
+
+  it('retains upstream response bytes only when response capture is enabled, without breaking the forwarded body', async () => {
+    const target = createServer((req, res) => {
+      req.resume();
+      req.once('end', () => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ sealed: 'upstream-response-material' }));
+      });
+    });
+    await listen(target);
+    const targetAddress = target.address();
+    if (!targetAddress || typeof targetAddress !== 'object') throw new Error('target server did not bind');
+    const targetBaseUrl = `http://127.0.0.1:${targetAddress.port}`;
+
+    const silentProxy = await startHttpRequestRecordingProxy({ targetBaseUrl });
+    const capturingProxy = await startHttpRequestRecordingProxy({
+      targetBaseUrl,
+      captureResponseBody: true,
+    });
+    try {
+      const silent = await fetch(`${silentProxy.baseUrl}/v1/thing`);
+      expect(await silent.text()).toContain('upstream-response-material');
+      expect(silentProxy.entries()).toEqual([
+        expect.objectContaining({ statusCode: 200, responseBody: null }),
+      ]);
+
+      const captured = await fetch(`${capturingProxy.baseUrl}/v1/thing`);
+      expect(await captured.text()).toContain('upstream-response-material');
+      expect(capturingProxy.entries()).toEqual([
+        expect.objectContaining({
+          statusCode: 200,
+          responseBody: expect.objectContaining({
+            text: JSON.stringify({ sealed: 'upstream-response-material' }),
+            truncated: false,
+          }),
+        }),
+      ]);
+    } finally {
+      await silentProxy.stop().catch(() => {});
+      await capturingProxy.stop().catch(() => {});
+      await closeServer(target);
+    }
+  });
+
+  it('forwards a rewritten response body for eligible requests while recording the genuine upstream bytes', async () => {
+    const target = createServer((req, res) => {
+      req.resume();
+      req.once('end', () => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ path: req.url, origin: 'genuine' }));
+      });
+    });
+    await listen(target);
+    const targetAddress = target.address();
+    if (!targetAddress || typeof targetAddress !== 'object') throw new Error('target server did not bind');
+    const eligible: string[] = [];
+    const proxy = await startHttpRequestRecordingProxy({
+      targetBaseUrl: `http://127.0.0.1:${targetAddress.port}`,
+      captureResponseBody: true,
+      rewriteResponseBody: {
+        when: (request) => {
+          eligible.push(request.path);
+          return request.path === '/forged';
+        },
+        rewrite: (_request, upstreamBody) =>
+          JSON.stringify({ ...JSON.parse(upstreamBody), origin: 'forged' }),
+      },
+    });
+
+    try {
+      const forged = await fetch(`${proxy.baseUrl}/forged`);
+      expect(await forged.json()).toEqual({ path: '/forged', origin: 'forged' });
+      const passthrough = await fetch(`${proxy.baseUrl}/untouched`);
+      expect(await passthrough.json()).toEqual({ path: '/untouched', origin: 'genuine' });
+
+      // Eligibility is decided from the request, before anything is forwarded, so an
+      // ineligible request is never buffered.
+      expect(eligible).toEqual(['/forged', '/untouched']);
+      const recorded = proxy.entries();
+      expect(recorded.map((entry) => entry.path)).toEqual(['/forged', '/untouched']);
+      expect(JSON.parse(recorded[0]!.responseBody!.text)).toEqual({ path: '/forged', origin: 'genuine' });
+      expect(JSON.parse(recorded[1]!.responseBody!.text)).toEqual({ path: '/untouched', origin: 'genuine' });
+    } finally {
+      await proxy.stop().catch(() => {});
+      await closeServer(target);
+    }
+  });
+
+  it('fails an eligible response closed instead of buffering past the rewrite cap', async () => {
+    const target = createServer((req, res) => {
+      req.resume();
+      req.once('end', () => {
+        res.writeHead(200, { 'Content-Type': 'application/octet-stream' });
+        res.end(Buffer.alloc(4_096, 0x61));
+      });
+    });
+    await listen(target);
+    const targetAddress = target.address();
+    if (!targetAddress || typeof targetAddress !== 'object') throw new Error('target server did not bind');
+    const proxy = await startHttpRequestRecordingProxy({
+      targetBaseUrl: `http://127.0.0.1:${targetAddress.port}`,
+      rewriteResponseBody: {
+        when: (request) => request.path === '/oversized',
+        rewrite: () => 'never forwarded',
+        maxBufferedBytes: 512,
+      },
+    });
+
+    try {
+      const oversized = await fetch(`${proxy.baseUrl}/oversized`);
+      expect(oversized.status).toBe(502);
+      expect(await oversized.text()).toContain('buffer exceeded');
+
+      // A request the rewrite does not select is unaffected by the cap.
+      const streamed = await fetch(`${proxy.baseUrl}/streamed`);
+      expect(streamed.status).toBe(200);
+      expect((await streamed.arrayBuffer()).byteLength).toBe(4_096);
+
+      expect(proxy.entries().map((entry) => ({ path: entry.path, statusCode: entry.statusCode }))).toEqual([
+        { path: '/oversized', statusCode: 502 },
+        { path: '/streamed', statusCode: 200 },
+      ]);
+      expect(proxy.entries()[0]!.error).toContain('512');
     } finally {
       await proxy.stop().catch(() => {});
       await closeServer(target);

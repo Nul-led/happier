@@ -495,20 +495,36 @@ function normalizePrismaFieldAttributeOrder(line: string): string {
 
 function normalizePrismaModelAttributeOrder(lines: string[]): string[] {
   const result: string[] = [];
-  let pendingModelAttributes: string[] = [];
+  let pendingModelAttributes: string[][] = [];
   const flush = () => {
     if (pendingModelAttributes.length === 0) return;
-    result.push(...pendingModelAttributes.sort());
+    pendingModelAttributes.sort((left, right) => left.at(-1)!.localeCompare(right.at(-1)!));
+    result.push(...pendingModelAttributes.flat());
     pendingModelAttributes = [];
   };
 
-  for (const line of lines) {
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]!;
     if (line === "" && pendingModelAttributes.length > 0) {
       continue;
     }
     if (line.startsWith("@@")) {
-      pendingModelAttributes.push(line);
+      pendingModelAttributes.push([line]);
       continue;
+    }
+    if (line.startsWith("///")) {
+      const documentedAttribute = [line];
+      let nextIndex = index + 1;
+      while (nextIndex < lines.length && lines[nextIndex]!.startsWith("///")) {
+        documentedAttribute.push(lines[nextIndex]!);
+        nextIndex += 1;
+      }
+      if (nextIndex < lines.length && lines[nextIndex]!.startsWith("@@")) {
+        documentedAttribute.push(lines[nextIndex]!);
+        pendingModelAttributes.push(documentedAttribute);
+        index = nextIndex;
+        continue;
+      }
     }
     flush();
     result.push(line);
@@ -874,6 +890,13 @@ export async function startServerLight(params: {
   dataDirMode?: 'fresh' | 'reuse-existing';
   preserveExistingDataDir?: boolean;
   /**
+   * Pin the loopback port instead of allocating a random one. Required when a
+   * caller must render port-dependent runtime configuration (for example a
+   * Personal Home's canonical `http://127.0.0.1:<port>` auth audience) before
+   * the process starts, or must reuse the same origin across a restart.
+   */
+  port?: number;
+  /**
    * Test-only hook: override port selection to force EADDRINUSE scenarios.
    * Not part of the public API; used to validate retry behavior deterministically.
    */
@@ -955,7 +978,9 @@ export async function startServerLight(params: {
     });
   }
 
-  const portAllocator = params.__portAllocator ?? (async () => pickPortCandidate());
+  const pinnedPort = params.port;
+  const portAllocator = params.__portAllocator
+    ?? (pinnedPort !== undefined ? async () => pinnedPort : async () => pickPortCandidate());
   const maxAttempts = 5;
   let lastError: unknown = null;
 

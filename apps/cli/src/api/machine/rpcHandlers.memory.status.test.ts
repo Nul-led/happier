@@ -140,4 +140,60 @@ describe('rpcHandlers.memory (status)', () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  it('advertises the archived eligibility this daemon actually applies', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'happier-rpc-memory-status-archived-'));
+    try {
+      const tier1Path = join(dir, 'memory.sqlite');
+      await writeFile(tier1Path, Buffer.from('hello'), 'utf8');
+
+      const readStatusFor = async (includeArchivedSessions: boolean) => {
+        const handlers = new Map<string, (raw: unknown) => Promise<unknown>>();
+        registerMachineMemoryRpcHandlers({
+          rpcHandlerManager: {
+            registerHandler: (method: string, handler: (params: any) => Promise<any>) => {
+              handlers.set(method, handler);
+            },
+          } as any,
+          memoryWorker: {
+            stop: () => {},
+            reloadSettings: async () => {},
+            ensureUpToDate: async () => {},
+            removeSessions: async () => {},
+            applySessionArchivedState: async () => {},
+            getEmbeddingsDiagnostics: () => ({
+              mode: 'disabled',
+              presetId: null,
+              providerKind: null,
+              modelId: null,
+              runtimeState: 'unavailable',
+              usingFallback: false,
+            }),
+            getWorkerStatus: () => ({
+              state: 'idle',
+              lastTickAtMs: null,
+              lastInventoryAtMs: null,
+              currentSessionId: null,
+              currentPhase: null,
+            }),
+            getSettings: () => ({
+              v: 1,
+              enabled: true,
+              indexMode: 'hints' as const,
+              includeArchivedSessions,
+              embeddings: { mode: 'disabled', presetId: 'balanced', custom: null, blend: { ftsWeight: 0.7, embeddingWeight: 0.3 } },
+            }),
+            getTier1DbPath: () => tier1Path,
+            getDeepDbPath: () => null,
+          } as any,
+        });
+        return MemoryStatusV1Schema.parse(await handlers.get(RPC_METHODS.DAEMON_MEMORY_STATUS)!(null));
+      };
+
+      expect((await readStatusFor(false)).includeArchivedSessionsEffective).toBe(false);
+      expect((await readStatusFor(true)).includeArchivedSessionsEffective).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });

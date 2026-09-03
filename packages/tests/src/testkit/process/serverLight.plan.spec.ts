@@ -372,6 +372,47 @@ describe("startServerLight planning helpers", () => {
     expect(hasServerGeneratedProviderOutputs(rootDir, "sqlite")).toBe(true);
   });
 
+  it("accepts generated provider schemas when Prisma moves a documented model attribute with the attribute block", () => {
+    const rootDir = mkdtempSync(join(tmpdir(), "happier-server-generated-documented-model-attribute-"));
+    const sourceSchema = [
+      "datasource db { provider = \"postgresql\" }",
+      "model AutomationRun {",
+      "  id String @id",
+      "  accountId String",
+      "  occurrenceKey String?",
+      "  @@index([accountId])",
+      "  /// The nullable occurrence key owns idempotent rejoin.",
+      "  @@unique([accountId, occurrenceKey])",
+      "}",
+      "",
+    ].join("\n");
+    const generatedSchema = [
+      "datasource db { provider = \"postgresql\" }",
+      "model AutomationRun {",
+      "  id String @id",
+      "  accountId String",
+      "  occurrenceKey String?",
+      "  /// The nullable occurrence key owns idempotent rejoin.",
+      "  @@unique([accountId, occurrenceKey])",
+      "  @@index([accountId])",
+      "}",
+      "",
+    ].join("\n");
+
+    mkdirSync(resolve(rootDir, "apps", "server", "prisma", "sqlite"), { recursive: true });
+    mkdirSync(resolve(rootDir, "apps", "server", "generated", "sqlite-client"), { recursive: true });
+    mkdirSync(resolve(rootDir, "node_modules", ".prisma", "client"), { recursive: true });
+
+    writeFileSync(resolve(rootDir, "apps", "server", "prisma", "schema.prisma"), sourceSchema, "utf8");
+    writeFileSync(resolve(rootDir, "apps", "server", "prisma", "sqlite", "schema.prisma"), sourceSchema, "utf8");
+    writeFileSync(resolve(rootDir, "apps", "server", "generated", "sqlite-client", "index.js"), "export {};\n", "utf8");
+    writeFileSync(resolve(rootDir, "node_modules", ".prisma", "client", "default.js"), "module.exports={};\n", "utf8");
+    writeFileSync(resolve(rootDir, "node_modules", ".prisma", "client", "schema.prisma"), generatedSchema, "utf8");
+    writeFileSync(resolve(rootDir, "apps", "server", "generated", "sqlite-client", "schema.prisma"), generatedSchema, "utf8");
+
+    expect(hasServerGeneratedProviderOutputs(rootDir, "sqlite")).toBe(true);
+  });
+
   it("serializes generation and rechecks each requested provider", async () => {
     const generated = new Set<TestDbProvider>();
     const calls: TestDbProvider[] = [];

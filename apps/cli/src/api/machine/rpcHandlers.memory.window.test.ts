@@ -82,6 +82,10 @@ describe('rpcHandlers.memory (window retrieval)', () => {
       stop: () => {},
       reloadSettings: async () => {},
       ensureUpToDate: async () => {},
+      removeSessions: async () => {},
+      reconcileRetainedSessionAccess: async () => {},
+      listIndexedSessionIds: () => [],
+      applySessionArchivedState: async () => {},
       getWorkerStatus: () => ({
         state: 'idle',
         lastTickAtMs: null,
@@ -105,6 +109,7 @@ describe('rpcHandlers.memory (window retrieval)', () => {
         indexMode: 'hints' as const,
         defaultScope: { type: 'global' as const },
         backfillPolicy: 'new_only' as const,
+        includeArchivedSessions: false,
         deleteOnDisable: false,
         coveragePolicy: { type: 'full' as const },
         contentPolicy: {

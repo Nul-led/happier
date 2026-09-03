@@ -33,6 +33,14 @@ describe('rpcHandlers.memory (deep search routing)', () => {
         createdAtToMs: 2,
         text: 'We discussed Openclaw and deep memory search.',
       });
+      db.insertChunk({
+        sessionId: 'active-decoy',
+        seqFrom: 0,
+        seqTo: 2,
+        createdAtFromMs: 99,
+        createdAtToMs: 100,
+        text: 'We discussed Openclaw and deep memory search.',
+      });
       db.close();
 
       const handlers = new Map<string, (raw: unknown) => Promise<unknown>>();
@@ -46,6 +54,10 @@ describe('rpcHandlers.memory (deep search routing)', () => {
         stop: () => {},
         reloadSettings: async () => {},
         ensureUpToDate: async () => {},
+      removeSessions: async () => {},
+      reconcileRetainedSessionAccess: async () => {},
+      listIndexedSessionIds: () => [],
+      applySessionArchivedState: async () => {},
         getEmbeddingsDiagnostics: () => ({
           mode: 'disabled' as const,
           presetId: null,
@@ -132,7 +144,14 @@ describe('rpcHandlers.memory (deep search routing)', () => {
       const handler = handlers.get(RPC_METHODS.DAEMON_MEMORY_SEARCH);
       expect(handler).toBeTruthy();
 
-      const res = await handler!({ v: 1, query: 'openclaw', scope: { type: 'global' }, mode: 'deep' });
+      const res = await handler!({
+        v: 1,
+        query: 'openclaw',
+        scope: { type: 'global' },
+        mode: 'deep',
+        eligibleSessionIds: ['s1'],
+        maxResults: 1,
+      });
       const out = res as any;
       expect(out.ok).toBe(true);
       expect(out.hits?.[0]?.sessionId).toBe('s1');
@@ -172,6 +191,10 @@ describe('rpcHandlers.memory (deep search routing)', () => {
         stop: () => {},
         reloadSettings: async () => {},
         ensureUpToDate: async () => {},
+      removeSessions: async () => {},
+      reconcileRetainedSessionAccess: async () => {},
+      listIndexedSessionIds: () => [],
+      applySessionArchivedState: async () => {},
         getEmbeddingsDiagnostics: () => ({
           mode: 'preset' as const,
           presetId: 'balanced' as const,

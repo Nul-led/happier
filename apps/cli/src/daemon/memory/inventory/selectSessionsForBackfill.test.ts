@@ -22,6 +22,34 @@ describe('selectSessionsForBackfill', () => {
     expect(res.shouldStopPaging).toBe(true);
   });
 
+  it('uses the server page ordering field before stopping last_30_days pagination', () => {
+    const nowMs = 60 * 24 * 60 * 60 * 1000;
+    const thirtyOneDaysMs = 31 * 24 * 60 * 60 * 1000;
+
+    const res = selectSessionsForBackfill({
+      nowMs,
+      backfillPolicy: 'last_30_days',
+      sessions: [
+        {
+          id: 'recent-effective-activity',
+          meaningfulActivityAt: nowMs,
+          updatedAt: nowMs - thirtyOneDaysMs,
+        } as any,
+        {
+          id: 'also-recent-effective-activity',
+          meaningfulActivityAt: nowMs - 1_000,
+          updatedAt: nowMs,
+        } as any,
+      ],
+    });
+
+    expect(res.sessionIds).toEqual([
+      'recent-effective-activity',
+      'also-recent-effective-activity',
+    ]);
+    expect(res.shouldStopPaging).toBe(false);
+  });
+
   it('includes all sessions in all_history mode', () => {
     const nowMs = 1_000_000_000;
 

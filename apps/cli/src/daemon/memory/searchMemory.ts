@@ -29,6 +29,7 @@ export function searchTier1Memory(params: Readonly<{
     const hits = db.search({
       query: params.query.query,
       scope: params.query.scope,
+      eligibleSessionIds: params.query.eligibleSessionIds,
       maxResults,
     });
     return {
@@ -78,6 +79,7 @@ export async function searchTier2Memory(params: Readonly<{
     const candidates = db.search({
       query: params.query.query,
       scope: params.query.scope,
+      eligibleSessionIds: params.query.eligibleSessionIds,
       maxResults: candidateLimit,
     });
 

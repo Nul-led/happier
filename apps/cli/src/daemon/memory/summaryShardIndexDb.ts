@@ -1,9 +1,14 @@
-import { openSqliteDatabaseSync, type SqliteDatabaseSync } from '../persistence/sqliteSync';
+import {
+  openSqliteDatabaseSync,
+  resolveSqliteSupportedValueBatchSize,
+  type SqliteDatabaseSync,
+} from '../persistence/sqliteSync';
 import {
   createMemoryIndexQueueDb,
   ensureMemoryIndexQueueSchema,
 } from './queue/memoryIndexQueueDb';
 import type { MemoryIndexQueueDbHandle } from './queue/memoryIndexQueueTypes';
+import { tokenizeMemoryText } from './tokenizeMemoryText';
 
 export type MemorySearchScope =
   | Readonly<{ type: 'global' }>
@@ -41,9 +46,16 @@ export type SummaryShardIndexDbHandle = Readonly<{
     entities: ReadonlyArray<string>;
     decisions: ReadonlyArray<string>;
   }>) => void;
-  search: (args: Readonly<{ query: string; scope: MemorySearchScope; maxResults: number }>) => SummaryShardSearchHit[];
+  search: (args: Readonly<{
+    query: string;
+    scope: MemorySearchScope;
+    eligibleSessionIds?: readonly string[];
+    maxResults: number;
+  }>) => SummaryShardSearchHit[];
   getSummaryIndexStats: () => SummaryIndexStats;
   getLatestShardSeqTo: (args: Readonly<{ sessionId: string }>) => number;
+  /** Every Session id this index currently retains derived rows or progress for. */
+  listIndexedSessionIds: () => readonly string[];
   getSessionCursors: (args: Readonly<{ sessionId: string; nowMs: number }>) => Readonly<{
     lastObservedSeq: number;
     lastHintedSeq: number;
@@ -64,6 +76,14 @@ export type SummaryShardIndexDbHandle = Readonly<{
   markDeepIndexSuccess: (args: Readonly<{ sessionId: string; seqTo: number; nowMs: number }>) => void;
   markDeepIndexFailure: (args: Readonly<{ sessionId: string; nowMs: number; backoffBaseMs: number; backoffMaxMs: number }>) => void;
   deleteOldestSummaryShards: (args: Readonly<{ limit: number }>) => number;
+  /**
+   * Removes every tier-1 derived row for one Session: summary shards (and
+   * their cascaded terms), progress cursors, and queue/index state. Used when
+   * a Session is deleted, its access is revoked, or it leaves the configured
+   * eligibility; later re-admission must follow the then-current backfill
+   * policy, so the cursor is deliberately not retained.
+   */
+  deleteSessionIndexData: (args: Readonly<{ sessionId: string }>) => void;
   checkpointAndVacuum: () => void;
   close: () => void;
 }> & MemoryIndexQueueDbHandle;
@@ -74,26 +94,8 @@ function normalizeQuery(raw: string): string {
     .replace(/\s+/g, ' ');
 }
 
-function tokenize(text: string): string[] {
-  const normalized = String(text ?? '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, ' ')
-    .trim();
-  if (!normalized) return [];
-  const out: string[] = [];
-  const seen = new Set<string>();
-  for (const part of normalized.split(' ')) {
-    if (!part) continue;
-    if (seen.has(part)) continue;
-    seen.add(part);
-    out.push(part);
-  }
-  return out;
-}
-
 const HINT_RUN_WINDOW_MS = 60 * 60 * 1000;
 const MULTI_TERM_QUERY_MIN_MATCH_RATIO = 0.5;
-
 function nullableInt(value: unknown): number | null {
   if (value === null || value === undefined) return null;
   const n = typeof value === 'number' ? value : Number(value);
@@ -104,12 +106,24 @@ function intOrZero(value: unknown): number {
   return nullableInt(value) ?? 0;
 }
 
-function ensureSchemaV2(db: SqliteDatabaseSync): void {
+/**
+ * Bumped to 4 when summary terms moved to the canonical Unicode-aware
+ * tokenizer: v3 term rows were produced by an ASCII-only tokenizer and cannot
+ * be matched by current queries.
+ */
+const SUMMARY_INDEX_SCHEMA_VERSION = 4;
+
+function applyConnectionPragmas(db: SqliteDatabaseSync): void {
   db.exec(`PRAGMA journal_mode=WAL;`);
   db.exec(`PRAGMA synchronous=NORMAL;`);
+  // The daemon worker and per-query search openers share this file; wait for a
+  // writer (schema upgrade, eviction) instead of failing the caller outright.
+  db.exec(`PRAGMA busy_timeout=5000;`);
   db.exec(`PRAGMA foreign_keys=ON;`);
   db.exec(`PRAGMA auto_vacuum=INCREMENTAL;`);
+}
 
+function ensureSchemaTables(db: SqliteDatabaseSync): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS session_cursors (
       sessionId TEXT PRIMARY KEY,
@@ -164,39 +178,56 @@ function ensureSchemaV2(db: SqliteDatabaseSync): void {
 }
 
 function migrateV1ToV2(db: SqliteDatabaseSync): void {
-  db.exec(`PRAGMA foreign_keys=ON;`);
   db.exec(`ALTER TABLE session_cursors ADD COLUMN lastHintRunAtMs INTEGER NOT NULL DEFAULT 0;`);
   db.exec(`ALTER TABLE session_cursors ADD COLUMN hintRunWindowStartMs INTEGER NOT NULL DEFAULT 0;`);
   db.exec(`ALTER TABLE session_cursors ADD COLUMN hintRunWindowCount INTEGER NOT NULL DEFAULT 0;`);
-  db.exec(`CREATE INDEX IF NOT EXISTS summary_shards_by_session_seqTo ON summary_shards(sessionId, seqTo);`);
+}
+
+/**
+ * Re-derives every term row from the shard text the index already retains, so
+ * an index written by the retired ASCII-only tokenizer becomes searchable
+ * without discarding shards or replaying session cursors from the server.
+ */
+function rebuildSummaryTerms(db: SqliteDatabaseSync): void {
+  const shards = db
+    .prepare(`SELECT shardId, summary, keywordsText, entitiesText, decisionsText FROM summary_shards;`)
+    .all() as any[];
+  const insertTermStmt = db.prepare(`INSERT OR IGNORE INTO summary_terms (term, shardId) VALUES (?, ?);`);
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    db.exec('DELETE FROM summary_terms;');
+    for (const shard of shards) {
+      const shardId = Number(shard?.shardId);
+      if (!Number.isFinite(shardId)) continue;
+      const source = [shard?.summary, shard?.keywordsText, shard?.entitiesText, shard?.decisionsText]
+        .map((part) => String(part ?? ''))
+        .join(' ');
+      for (const term of tokenizeMemoryText(source)) {
+        insertTermStmt.run(term, shardId);
+      }
+    }
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
 }
 
 function ensureSchema(db: SqliteDatabaseSync): void {
+  applyConnectionPragmas(db);
   const versionRow = db.prepare('PRAGMA user_version').get() as any;
   const userVersion = typeof versionRow?.user_version === 'number' ? versionRow.user_version : 0;
-  if (userVersion === 0) {
-    ensureSchemaV2(db);
-    ensureMemoryIndexQueueSchema(db);
-    db.exec('PRAGMA user_version=3');
-    return;
+  if (userVersion > SUMMARY_INDEX_SCHEMA_VERSION) {
+    throw new Error(`Unsupported memory DB schema version: ${userVersion}`);
   }
-  if (userVersion === 1) {
-    migrateV1ToV2(db);
-    ensureMemoryIndexQueueSchema(db);
-    db.exec('PRAGMA user_version=3');
-    return;
-  }
-  if (userVersion === 2) {
-    ensureMemoryIndexQueueSchema(db);
-    db.exec('PRAGMA user_version=3');
-    return;
-  }
-  if (userVersion === 3) {
-    ensureSchemaV2(db);
-    ensureMemoryIndexQueueSchema(db);
-    return;
-  }
-  throw new Error(`Unsupported memory DB schema version: ${userVersion}`);
+
+  if (userVersion === 1) migrateV1ToV2(db);
+  ensureSchemaTables(db);
+  ensureMemoryIndexQueueSchema(db);
+
+  if (userVersion === SUMMARY_INDEX_SCHEMA_VERSION) return;
+  if (userVersion > 0) rebuildSummaryTerms(db);
+  db.exec(`PRAGMA user_version=${SUMMARY_INDEX_SCHEMA_VERSION}`);
 }
 
 export function openSummaryShardIndexDb(args: Readonly<{ dbPath: string }>): SummaryShardIndexDbHandle {
@@ -360,6 +391,14 @@ export function openSummaryShardIndexDb(args: Readonly<{ dbPath: string }>): Sum
       LIMIT ?
     );
   `);
+  const listIndexedSessionIdsStmt = db.prepare(`
+    SELECT sessionId FROM summary_shards
+    UNION
+    SELECT sessionId FROM session_cursors;
+  `);
+  const deleteSessionShardsStmt = db.prepare(`DELETE FROM summary_shards WHERE sessionId = ?;`);
+  const deleteSessionCursorStmt = db.prepare(`DELETE FROM session_cursors WHERE sessionId = ?;`);
+  const deleteSessionIndexStateStmt = db.prepare(`DELETE FROM memory_session_index_state WHERE sessionId = ?;`);
   const queueDb = createMemoryIndexQueueDb(db);
 
   return {
@@ -385,42 +424,69 @@ export function openSummaryShardIndexDb(args: Readonly<{ dbPath: string }>): Sum
         return;
       }
       const shardId = Number((res as any).lastInsertRowid);
-      const terms = tokenize([shard.summary, keywordsText, entitiesText, decisionsText].join(' '));
+      const terms = tokenizeMemoryText([shard.summary, keywordsText, entitiesText, decisionsText].join(' '));
       for (const term of terms) {
         insertTermStmt.run(term, shardId);
       }
     },
-    search: ({ query, scope, maxResults }) => {
+    search: ({ query, scope, eligibleSessionIds, maxResults }) => {
       const normalized = normalizeQuery(query);
       if (!normalized) return [];
 
       const limit = Math.max(1, Math.min(100, Math.floor(maxResults)));
-      const terms = tokenize(normalized);
+      const terms = tokenizeMemoryText(normalized);
       if (terms.length === 0) return [];
 
+      const eligibleIds = eligibleSessionIds === undefined
+        ? undefined
+        : [...new Set(eligibleSessionIds.map((id) => String(id).trim()).filter(Boolean))];
+      if (eligibleIds?.length === 0) return [];
+
       const placeholders = terms.map(() => '?').join(',');
-      const sql = `
-        SELECT
-          s.sessionId AS sessionId,
-          s.seqFrom AS seqFrom,
-          s.seqTo AS seqTo,
-          s.createdAtFromMs AS createdAtFromMs,
-          s.createdAtToMs AS createdAtToMs,
-          s.summary AS summary,
-          COUNT(*) AS hitCount
-        FROM summary_terms t
-          JOIN summary_shards s ON s.shardId = t.shardId
-        WHERE t.term IN (${placeholders})
-          ${scope.type === 'session' ? 'AND s.sessionId = ?' : ''}
-        GROUP BY s.shardId
-        ORDER BY hitCount DESC, s.createdAtToMs DESC
-        LIMIT ?;
-      `;
-      const stmt = db.prepare(sql);
-      const params: any[] = [...terms];
-      if (scope.type === 'session') params.push(scope.sessionId);
-      params.push(limit);
-      const rows = stmt.all(...params) as any[];
+      const sessionIdBatchSize = resolveSqliteSupportedValueBatchSize({
+        // Every term, the optional exact-session scope, and LIMIT are bound in
+        // addition to the variable eligible-Session collection.
+        fixedParameterCount: terms.length + (scope.type === 'session' ? 1 : 0) + 1,
+        parametersPerValue: 1,
+      });
+      const queryBatch = (sessionIds?: readonly string[]): any[] => {
+        const eligibilityPlaceholders = sessionIds?.map(() => '?').join(',');
+        const sql = `
+          SELECT
+            s.sessionId AS sessionId,
+            s.seqFrom AS seqFrom,
+            s.seqTo AS seqTo,
+            s.createdAtFromMs AS createdAtFromMs,
+            s.createdAtToMs AS createdAtToMs,
+            s.summary AS summary,
+            COUNT(*) AS hitCount
+          FROM summary_terms t
+            JOIN summary_shards s ON s.shardId = t.shardId
+          WHERE t.term IN (${placeholders})
+            ${scope.type === 'session' ? 'AND s.sessionId = ?' : ''}
+            ${eligibilityPlaceholders ? `AND s.sessionId IN (${eligibilityPlaceholders})` : ''}
+          GROUP BY s.shardId
+          ORDER BY hitCount DESC, s.createdAtToMs DESC
+          LIMIT ?;
+        `;
+        const params: any[] = [...terms];
+        if (scope.type === 'session') params.push(scope.sessionId);
+        if (sessionIds) params.push(...sessionIds);
+        params.push(limit);
+        return db.prepare(sql).all(...params) as any[];
+      };
+      let rows: any[];
+      if (eligibleIds) {
+        rows = [];
+        for (let offset = 0; offset < eligibleIds.length; offset += sessionIdBatchSize) {
+          rows.push(...queryBatch(eligibleIds.slice(offset, offset + sessionIdBatchSize)));
+        }
+        rows.sort((left, right) => Number(right.hitCount) - Number(left.hitCount)
+          || Number(right.createdAtToMs) - Number(left.createdAtToMs));
+        rows = rows.slice(0, limit);
+      } else {
+        rows = queryBatch();
+      }
 
       return rows.flatMap((row) => {
         const hitCount = Number(row.hitCount ?? 0);
@@ -619,6 +685,22 @@ export function openSummaryShardIndexDb(args: Readonly<{ dbPath: string }>): Sum
       if (n <= 0) return 0;
       const res = deleteOldestGlobalStmt.run(n) as any;
       return typeof res?.changes === 'number' && Number.isFinite(res.changes) ? Math.max(0, Math.trunc(res.changes)) : 0;
+    },
+    listIndexedSessionIds: () => {
+      const rows = listIndexedSessionIdsStmt.all() as Array<{ sessionId?: unknown }>;
+      const out: string[] = [];
+      for (const row of rows) {
+        const id = typeof row?.sessionId === 'string' ? row.sessionId.trim() : '';
+        if (id) out.push(id);
+      }
+      return out;
+    },
+    deleteSessionIndexData: ({ sessionId }) => {
+      const id = String(sessionId ?? '').trim();
+      if (!id) return;
+      deleteSessionShardsStmt.run(id);
+      deleteSessionCursorStmt.run(id);
+      deleteSessionIndexStateStmt.run(id);
     },
     checkpointAndVacuum: () => {
       db.exec(`PRAGMA wal_checkpoint(TRUNCATE);`);

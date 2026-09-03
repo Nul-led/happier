@@ -127,6 +127,10 @@ export function registerMachineMemoryRpcHandlers(params: Readonly<{
       v: 1,
       enabled: settings.enabled,
       indexMode: settings.indexMode,
+      // Presence proves this daemon implements the archived-eligibility
+      // setting; the value is the eligibility it actually applies. Older
+      // daemons omit it and must not be presented as applying the setting.
+      includeArchivedSessionsEffective: settings.includeArchivedSessions === true,
       hintsIndexReady,
       hintsIndexHasContent,
       deepIndexReady,

@@ -1,4 +1,9 @@
-import { openSqliteDatabaseSync, type SqliteDatabaseSync } from '../../persistence/sqliteSync';
+import {
+  openSqliteDatabaseSync,
+  resolveSqliteSupportedValueBatchSize,
+  type SqliteDatabaseSync,
+} from '../../persistence/sqliteSync';
+import { tokenizeMemoryText } from '../tokenizeMemoryText';
 
 export type DeepIndexSearchScope =
   | Readonly<{ type: 'global' }>
@@ -58,8 +63,21 @@ export type DeepIndexDbHandle = Readonly<{
     text: string;
   }>>;
   getDeepIndexStats: () => DeepIndexStats;
-  search: (args: Readonly<{ query: string; scope: DeepIndexSearchScope; maxResults: number }>) => DeepIndexSearchHit[];
+  /** Every Session id for which this deep index retains a chunk or embedding. */
+  listIndexedSessionIds: () => readonly string[];
+  search: (args: Readonly<{
+    query: string;
+    scope: DeepIndexSearchScope;
+    eligibleSessionIds?: readonly string[];
+    maxResults: number;
+  }>) => DeepIndexSearchHit[];
   deleteOldestChunks: (args: Readonly<{ limit: number }>) => number;
+  /**
+   * Removes every deep derived row for one Session: chunks (with their
+   * cascaded terms) and the embeddings keyed to those chunk ranges, which have
+   * no foreign key and would otherwise keep consuming the deep-index budget.
+   */
+  deleteSessionIndexData: (args: Readonly<{ sessionId: string }>) => void;
   checkpointAndVacuum: () => void;
   close: () => void;
 }>;
@@ -68,23 +86,6 @@ function normalizeQuery(raw: string): string {
   return String(raw ?? '')
     .trim()
     .replace(/\s+/g, ' ');
-}
-
-function tokenize(text: string): string[] {
-  const normalized = String(text ?? '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, ' ')
-    .trim();
-  if (!normalized) return [];
-  const out: string[] = [];
-  const seen = new Set<string>();
-  for (const part of normalized.split(' ')) {
-    if (!part) continue;
-    if (seen.has(part)) continue;
-    seen.add(part);
-    out.push(part);
-  }
-  return out;
 }
 
 function nullableInt(value: unknown): number | null {
@@ -97,12 +98,23 @@ function intOrZero(value: unknown): number {
   return nullableInt(value) ?? 0;
 }
 
-function ensureSchemaV1(db: SqliteDatabaseSync): void {
+/**
+ * Bumped to 2 when chunk terms moved to the canonical Unicode-aware tokenizer:
+ * v1 term rows were produced by an ASCII-only tokenizer and cannot be matched
+ * by current queries.
+ */
+const DEEP_INDEX_SCHEMA_VERSION = 2;
+function applyConnectionPragmas(db: SqliteDatabaseSync): void {
   db.exec(`PRAGMA journal_mode=WAL;`);
   db.exec(`PRAGMA synchronous=NORMAL;`);
+  // The daemon worker and per-query search openers share this file; wait for a
+  // writer (schema upgrade, eviction) instead of failing the caller outright.
+  db.exec(`PRAGMA busy_timeout=5000;`);
   db.exec(`PRAGMA foreign_keys=ON;`);
   db.exec(`PRAGMA auto_vacuum=INCREMENTAL;`);
+}
 
+function ensureSchemaTables(db: SqliteDatabaseSync): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS message_chunks (
       chunkId INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -152,16 +164,58 @@ function ensureSchemaV1(db: SqliteDatabaseSync): void {
   `);
 }
 
+/** Embeddings have no foreign key to their chunk, so orphans are swept here. */
+function deleteOrphanEmbeddings(db: SqliteDatabaseSync): void {
+  db.exec(`
+    DELETE FROM chunk_embeddings
+    WHERE NOT EXISTS (
+      SELECT 1
+      FROM message_chunks c
+      WHERE c.sessionId = chunk_embeddings.sessionId
+        AND c.seqFrom = chunk_embeddings.seqFrom
+        AND c.seqTo = chunk_embeddings.seqTo
+    );
+  `);
+}
+
+/**
+ * Re-derives every term row from the chunk text the index already retains, so
+ * an index written by the retired ASCII-only tokenizer becomes searchable
+ * without discarding chunks, embeddings, or session progress cursors.
+ */
+function rebuildChunkTerms(db: SqliteDatabaseSync): void {
+  const chunks = db.prepare(`SELECT chunkId, text FROM message_chunks;`).all() as any[];
+  const insertTermStmt = db.prepare(`INSERT OR IGNORE INTO chunk_terms (term, chunkId) VALUES (?, ?);`);
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    db.exec('DELETE FROM chunk_terms;');
+    for (const chunk of chunks) {
+      const chunkId = Number(chunk?.chunkId);
+      if (!Number.isFinite(chunkId)) continue;
+      for (const term of tokenizeMemoryText(String(chunk?.text ?? ''))) {
+        insertTermStmt.run(term, chunkId);
+      }
+    }
+    deleteOrphanEmbeddings(db);
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+}
+
 function ensureSchema(db: SqliteDatabaseSync): void {
+  applyConnectionPragmas(db);
   const versionRow = db.prepare('PRAGMA user_version').get() as any;
   const userVersion = typeof versionRow?.user_version === 'number' ? versionRow.user_version : 0;
-  if (userVersion === 0) {
-    ensureSchemaV1(db);
-    db.exec('PRAGMA user_version=1');
-    return;
+  if (userVersion > DEEP_INDEX_SCHEMA_VERSION) {
+    throw new Error(`Unsupported deep index DB schema version: ${userVersion}`);
   }
-  if (userVersion === 1) return;
-  throw new Error(`Unsupported deep index DB schema version: ${userVersion}`);
+
+  ensureSchemaTables(db);
+  if (userVersion === DEEP_INDEX_SCHEMA_VERSION) return;
+  if (userVersion > 0) rebuildChunkTerms(db);
+  db.exec(`PRAGMA user_version=${DEEP_INDEX_SCHEMA_VERSION}`);
 }
 
 export function openDeepIndexDb(args: Readonly<{ dbPath: string }>): DeepIndexDbHandle {
@@ -188,14 +242,23 @@ export function openDeepIndexDb(args: Readonly<{ dbPath: string }>): DeepIndexDb
     );
   `);
   const insertTermStmt = db.prepare(`INSERT OR IGNORE INTO chunk_terms (term, chunkId) VALUES (?, ?);`);
-  const deleteOldestStmt = db.prepare(`
-    DELETE FROM message_chunks
-    WHERE chunkId IN (
-      SELECT chunkId
-      FROM message_chunks
-      ORDER BY createdAtToMs ASC
-      LIMIT ?
-    );
+  const selectOldestChunkKeysStmt = db.prepare(`
+    SELECT chunkId, sessionId, seqFrom, seqTo
+    FROM message_chunks
+    ORDER BY createdAtToMs ASC
+    LIMIT ?;
+  `);
+  const deleteChunkByIdStmt = db.prepare(`DELETE FROM message_chunks WHERE chunkId = ?;`);
+  const deleteEmbeddingsForChunkStmt = db.prepare(`
+    DELETE FROM chunk_embeddings
+    WHERE sessionId = ? AND seqFrom = ? AND seqTo = ?;
+  `);
+  const deleteSessionChunksStmt = db.prepare(`DELETE FROM message_chunks WHERE sessionId = ?;`);
+  const deleteSessionEmbeddingsStmt = db.prepare(`DELETE FROM chunk_embeddings WHERE sessionId = ?;`);
+  const listIndexedSessionIdsStmt = db.prepare(`
+    SELECT sessionId FROM message_chunks
+    UNION
+    SELECT sessionId FROM chunk_embeddings;
   `);
 
   const upsertEmbeddingStmt = db.prepare(`
@@ -281,7 +344,7 @@ export function openDeepIndexDb(args: Readonly<{ dbPath: string }>): DeepIndexDb
       );
       if (!res || typeof (res as any).changes !== 'number' || (res as any).changes <= 0) return;
       const chunkId = Number((res as any).lastInsertRowid);
-      const terms = tokenize(text);
+      const terms = tokenizeMemoryText(text);
       for (const term of terms) {
         insertTermStmt.run(term, chunkId);
       }
@@ -373,36 +436,72 @@ export function openDeepIndexDb(args: Readonly<{ dbPath: string }>): DeepIndexDb
         latestIndexedMessageAtMs: nullableInt(stats?.latestIndexedMessageAtMs),
       };
     },
-    search: ({ query, scope, maxResults }) => {
+    listIndexedSessionIds: () => {
+      const rows = listIndexedSessionIdsStmt.all() as Array<{ sessionId?: unknown }>;
+      const out: string[] = [];
+      for (const row of rows) {
+        const sessionId = typeof row.sessionId === 'string' ? row.sessionId.trim() : '';
+        if (sessionId) out.push(sessionId);
+      }
+      return out;
+    },
+    search: ({ query, scope, eligibleSessionIds, maxResults }) => {
       const normalized = normalizeQuery(query);
       if (!normalized) return [];
       const limit = Math.max(1, Math.min(100, Math.floor(maxResults)));
-      const terms = tokenize(normalized);
+      const terms = tokenizeMemoryText(normalized);
       if (terms.length === 0) return [];
 
+      const eligibleIds = eligibleSessionIds === undefined
+        ? undefined
+        : [...new Set(eligibleSessionIds.map((id) => String(id).trim()).filter(Boolean))];
+      if (eligibleIds?.length === 0) return [];
+
       const placeholders = terms.map(() => '?').join(',');
-      const sql = `
-        SELECT
-          c.sessionId AS sessionId,
-          c.seqFrom AS seqFrom,
-          c.seqTo AS seqTo,
-          c.createdAtFromMs AS createdAtFromMs,
-          c.createdAtToMs AS createdAtToMs,
-          c.text AS text,
-          COUNT(*) AS hitCount
-        FROM chunk_terms t
-          JOIN message_chunks c ON c.chunkId = t.chunkId
-        WHERE t.term IN (${placeholders})
-          ${scope.type === 'session' ? 'AND c.sessionId = ?' : ''}
-        GROUP BY c.chunkId
-        ORDER BY hitCount DESC, c.createdAtToMs DESC
-        LIMIT ?;
-      `;
-      const stmt = db.prepare(sql);
-      const params: any[] = [...terms];
-      if (scope.type === 'session') params.push(String(scope.sessionId ?? '').trim());
-      params.push(limit);
-      const rows = stmt.all(...params) as any[];
+      const sessionIdBatchSize = resolveSqliteSupportedValueBatchSize({
+        // Every term, the optional exact-session scope, and LIMIT are bound in
+        // addition to the variable eligible-Session collection.
+        fixedParameterCount: terms.length + (scope.type === 'session' ? 1 : 0) + 1,
+        parametersPerValue: 1,
+      });
+      const queryBatch = (sessionIds?: readonly string[]): any[] => {
+        const eligibilityPlaceholders = sessionIds?.map(() => '?').join(',');
+        const sql = `
+          SELECT
+            c.sessionId AS sessionId,
+            c.seqFrom AS seqFrom,
+            c.seqTo AS seqTo,
+            c.createdAtFromMs AS createdAtFromMs,
+            c.createdAtToMs AS createdAtToMs,
+            c.text AS text,
+            COUNT(*) AS hitCount
+          FROM chunk_terms t
+            JOIN message_chunks c ON c.chunkId = t.chunkId
+          WHERE t.term IN (${placeholders})
+            ${scope.type === 'session' ? 'AND c.sessionId = ?' : ''}
+            ${eligibilityPlaceholders ? `AND c.sessionId IN (${eligibilityPlaceholders})` : ''}
+          GROUP BY c.chunkId
+          ORDER BY hitCount DESC, c.createdAtToMs DESC
+          LIMIT ?;
+        `;
+        const params: any[] = [...terms];
+        if (scope.type === 'session') params.push(String(scope.sessionId ?? '').trim());
+        if (sessionIds) params.push(...sessionIds);
+        params.push(limit);
+        return db.prepare(sql).all(...params) as any[];
+      };
+      let rows: any[];
+      if (eligibleIds) {
+        rows = [];
+        for (let offset = 0; offset < eligibleIds.length; offset += sessionIdBatchSize) {
+          rows.push(...queryBatch(eligibleIds.slice(offset, offset + sessionIdBatchSize)));
+        }
+        rows.sort((left, right) => Number(right.hitCount) - Number(left.hitCount)
+          || Number(right.createdAtToMs) - Number(left.createdAtToMs));
+        rows = rows.slice(0, limit);
+      } else {
+        rows = queryBatch();
+      }
 
       return rows.map((row) => {
         const hitCount = Number(row.hitCount ?? 0);
@@ -423,8 +522,43 @@ export function openDeepIndexDb(args: Readonly<{ dbPath: string }>): DeepIndexDb
     deleteOldestChunks: ({ limit }) => {
       const n = Number.isFinite(limit) ? Math.max(0, Math.trunc(limit)) : 0;
       if (n <= 0) return 0;
-      const res = deleteOldestStmt.run(n) as any;
-      return typeof res?.changes === 'number' && Number.isFinite(res.changes) ? Math.max(0, Math.trunc(res.changes)) : 0;
+      const doomed = (selectOldestChunkKeysStmt.all(n) as any[]).filter((row) => Number.isFinite(Number(row?.chunkId)));
+      if (doomed.length === 0) return 0;
+
+      // Terms cascade from the chunk row, but embeddings are keyed by
+      // (sessionId, seqFrom, seqTo) with no foreign key, so they are removed
+      // in the same transaction: otherwise they keep consuming the deep-index
+      // disk budget and would be reused for a later chunk re-indexed at the
+      // same sequence range with different text.
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        for (const row of doomed) {
+          deleteEmbeddingsForChunkStmt.run(
+            String(row.sessionId ?? ''),
+            Math.max(0, Math.trunc(Number(row.seqFrom))),
+            Math.max(0, Math.trunc(Number(row.seqTo))),
+          );
+          deleteChunkByIdStmt.run(Math.trunc(Number(row.chunkId)));
+        }
+        db.exec('COMMIT');
+      } catch (error) {
+        db.exec('ROLLBACK');
+        throw error;
+      }
+      return doomed.length;
+    },
+    deleteSessionIndexData: ({ sessionId }) => {
+      const id = String(sessionId ?? '').trim();
+      if (!id) return;
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        deleteSessionEmbeddingsStmt.run(id);
+        deleteSessionChunksStmt.run(id);
+        db.exec('COMMIT');
+      } catch (error) {
+        db.exec('ROLLBACK');
+        throw error;
+      }
     },
     checkpointAndVacuum: () => {
       db.exec(`PRAGMA wal_checkpoint(TRUNCATE);`);

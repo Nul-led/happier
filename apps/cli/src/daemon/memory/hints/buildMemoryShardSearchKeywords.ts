@@ -1,16 +1,9 @@
 import type { MemoryIndexableTranscriptItem } from '../transcript/indexableItem';
+import { tokenizeMemoryText } from '../tokenizeMemoryText';
 
 const MAX_MEMORY_SHARD_SEARCH_KEYWORDS = 128;
 const MAX_MEMORY_SHARD_SEARCH_KEYWORD_CHARS = 128;
-
-function tokenizeSearchKeywords(text: string): string[] {
-  return String(text ?? '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, ' ')
-    .trim()
-    .split(/\s+/)
-    .filter((term) => term.length >= 3);
-}
+const MIN_MEMORY_SHARD_SEARCH_KEYWORD_CHARS = 3;
 
 export function buildMemoryShardSearchKeywords(params: Readonly<{
   modelKeywords: readonly string[];
@@ -29,7 +22,7 @@ export function buildMemoryShardSearchKeywords(params: Readonly<{
 
   for (const keyword of params.modelKeywords) add(keyword);
   for (const item of params.items) {
-    for (const keyword of tokenizeSearchKeywords(item.text)) {
+    for (const keyword of tokenizeMemoryText(item.text, { minLength: MIN_MEMORY_SHARD_SEARCH_KEYWORD_CHARS })) {
       add(keyword);
       if (out.length >= MAX_MEMORY_SHARD_SEARCH_KEYWORDS) return out;
     }

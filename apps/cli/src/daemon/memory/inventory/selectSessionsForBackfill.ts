@@ -9,7 +9,16 @@ function readSessionId(row: RawSessionListRow): string | null {
 }
 
 function readUpdatedAtMs(row: RawSessionListRow): number {
-  const candidates = [(row as any)?.updatedAt, (row as any)?.activeAt, (row as any)?.createdAt];
+  // `/v2/sessions` and `/v2/archived-sessions` paginate by meaningfulActivityAt.
+  // The cut-off must read that same leading order field before deciding that no
+  // later page can contain an eligible row. Other timestamps are retained only
+  // for older servers whose additive list projection predates the field.
+  const candidates = [
+    (row as any)?.meaningfulActivityAt,
+    (row as any)?.updatedAt,
+    (row as any)?.activeAt,
+    (row as any)?.createdAt,
+  ];
   for (const raw of candidates) {
     const n = typeof raw === 'number' ? raw : Number(raw);
     if (Number.isFinite(n) && n > 0) return Math.trunc(n);

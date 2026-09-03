@@ -1,5 +1,6 @@
 import { once } from 'node:events';
 import { createServer, request as httpRequest, type IncomingMessage, type ServerResponse } from 'node:http';
+import { createServer as createHttpsServer } from 'node:https';
 import { connect, type Socket } from 'node:net';
 
 export const RECORDED_HTTP_PROXY_REQUEST_BODY_MAX_BYTES = 256 * 1024;
@@ -15,6 +16,13 @@ export type RecordedHttpProxyRequest = Readonly<{
   upgraded: boolean;
   error: string | null;
   body: Readonly<{
+    text: string;
+    byteLength: number;
+    truncated: boolean;
+    complete: boolean;
+  }> | null;
+  /** Upstream response bytes, retained only when `captureResponseBody` is enabled. */
+  responseBody: Readonly<{
     text: string;
     byteLength: number;
     truncated: boolean;
@@ -42,6 +50,12 @@ type MutableRecordedHttpProxyRequest = {
   upgraded: boolean;
   error: string | null;
   body: {
+    text: string;
+    byteLength: number;
+    truncated: boolean;
+    complete: boolean;
+  } | null;
+  responseBody: {
     text: string;
     byteLength: number;
     truncated: boolean;
@@ -79,8 +93,31 @@ function headerLinesFromRawHeaders(rawHeaders: readonly string[]): string {
 
 export async function startHttpRequestRecordingProxy(params: Readonly<{
   targetBaseUrl: string;
+  /** Expose the proxy through HTTPS while keeping its upstream target on loopback HTTP. */
+  tls?: Readonly<{ key: string | Buffer; cert: string | Buffer }>;
   delayRequestMs?: (request: RecordedHttpProxyRequest) => number | Promise<number>;
   captureRequestBody?: boolean | ((request: RecordedHttpProxyRequest) => boolean);
+  /**
+   * Retain the upstream response bytes each proxied request observed. Off by default so
+   * ordinary proxy use keeps streaming responses without buffering credential material.
+   */
+  captureResponseBody?: boolean;
+  /**
+   * Replace selected upstream response bodies before forwarding them, modelling an endpoint that
+   * answers with something other than what the real target said.
+   *
+   * `when` decides eligibility from the request alone, before the request is forwarded. Enabling
+   * rewrite therefore buffers only eligible responses — they are requested with
+   * `accept-encoding: identity` and held in memory up to `maxBufferedBytes` (default
+   * `RECORDED_HTTP_PROXY_REQUEST_BODY_MAX_BYTES`) so the hook sees decoded text. Every other
+   * request keeps streaming untouched. An eligible response larger than the cap fails closed with
+   * `502` instead of buffering without bound. `entries()` always records the genuine upstream bytes.
+   */
+  rewriteResponseBody?: Readonly<{
+    when: (request: RecordedHttpProxyRequest) => boolean;
+    rewrite: (request: RecordedHttpProxyRequest, upstreamBody: string) => string;
+    maxBufferedBytes?: number;
+  }>;
   beforeForwardResponse?: (
     request: RecordedHttpProxyRequest,
   ) => void | Promise<void>;
@@ -113,6 +150,7 @@ export async function startHttpRequestRecordingProxy(params: Readonly<{
       upgraded,
       error: null,
       body: null,
+      responseBody: null,
     };
     nextId += 1;
     entries.push(entry);
@@ -151,13 +189,107 @@ export async function startHttpRequestRecordingProxy(params: Readonly<{
     });
   };
 
+  const observeResponseBody = (
+    upstreamRes: IncomingMessage,
+    entry: MutableRecordedHttpProxyRequest,
+  ): void => {
+    const body = {
+      text: '',
+      byteLength: 0,
+      truncated: false,
+      complete: false,
+    };
+    entry.responseBody = body;
+    const bodyChunks: Buffer[] = [];
+    let recordedBodyByteLength = 0;
+    upstreamRes.on('data', (chunk: Buffer | string) => {
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      body.byteLength += bytes.byteLength;
+      const remaining = RECORDED_HTTP_PROXY_REQUEST_BODY_MAX_BYTES - recordedBodyByteLength;
+      if (remaining > 0) {
+        const recorded = bytes.subarray(0, remaining);
+        bodyChunks.push(recorded);
+        recordedBodyByteLength += recorded.byteLength;
+      }
+      body.truncated = body.byteLength > RECORDED_HTTP_PROXY_REQUEST_BODY_MAX_BYTES;
+    });
+    upstreamRes.once('end', () => {
+      body.text = Buffer.concat(bodyChunks).toString('utf8');
+      body.complete = true;
+    });
+  };
+
   const snapshot = (
     entry: MutableRecordedHttpProxyRequest,
   ): RecordedHttpProxyRequest => ({
     ...entry,
     headers: { ...entry.headers },
     body: entry.body ? { ...entry.body } : null,
+    responseBody: entry.responseBody ? { ...entry.responseBody } : null,
   });
+
+  /** Buffer an eligible upstream body up to the cap, rewrite it, and forward the replacement. */
+  const forwardRewrittenResponse = (
+    rewriter: NonNullable<typeof params.rewriteResponseBody>,
+    upstreamRes: IncomingMessage,
+    res: ServerResponse,
+    entry: MutableRecordedHttpProxyRequest,
+    statusCode: number,
+  ): void => {
+    if (params.captureResponseBody === true) observeResponseBody(upstreamRes, entry);
+    const maxBufferedBytes = rewriter.maxBufferedBytes
+      ?? RECORDED_HTTP_PROXY_REQUEST_BODY_MAX_BYTES;
+    const chunks: Buffer[] = [];
+    let bufferedByteLength = 0;
+    let overflowed = false;
+    upstreamRes.on('data', (chunk: Buffer | string) => {
+      if (overflowed) return;
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      bufferedByteLength += bytes.byteLength;
+      if (bufferedByteLength > maxBufferedBytes) {
+        // Fail closed rather than growing the buffer without bound.
+        overflowed = true;
+        chunks.length = 0;
+        upstreamRes.destroy();
+        if (!res.headersSent) res.statusCode = 502;
+        res.end('proxy response rewrite buffer exceeded');
+        finish(entry, {
+          statusCode: res.statusCode,
+          error: `rewritten response exceeded ${maxBufferedBytes} bytes`,
+        });
+        return;
+      }
+      chunks.push(bytes);
+    });
+    upstreamRes.once('error', (error) => finish(entry, { error: error.message }));
+    upstreamRes.once('end', () => {
+      if (overflowed) return;
+      const upstreamBody = Buffer.concat(chunks).toString('utf8');
+      let forwarded = upstreamBody;
+      try {
+        forwarded = rewriter.rewrite(snapshot(entry), upstreamBody);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (!res.headersSent) res.statusCode = 502;
+        res.end('proxy response rewrite failed');
+        finish(entry, { statusCode: res.statusCode, error: message });
+        return;
+      }
+      const forwardedBytes = Buffer.from(forwarded, 'utf8');
+      const forwardedHeaders: Record<string, string | string[] | number> = {};
+      for (const [key, value] of Object.entries(upstreamRes.headers)) {
+        if (value === undefined) continue;
+        const lowered = key.toLowerCase();
+        if (lowered === 'content-length' || lowered === 'transfer-encoding') continue;
+        forwardedHeaders[key] = value;
+      }
+      forwardedHeaders['content-length'] = forwardedBytes.byteLength;
+      res.writeHead(statusCode, upstreamRes.statusMessage, forwardedHeaders);
+      res.end(forwardedBytes);
+      finish(entry, { statusCode });
+    });
+    upstreamRes.resume();
+  };
 
   const finish = (entry: ReturnType<typeof begin>, patch?: { statusCode?: number | null; error?: string | null }) => {
     if (entry.endedAtMs !== null) return;
@@ -166,7 +298,7 @@ export async function startHttpRequestRecordingProxy(params: Readonly<{
     entry.endedAtMs = Date.now();
   };
 
-  const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
+  const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
     const entry = begin(req, false);
     let captureRequestBody = false;
     try {
@@ -185,7 +317,21 @@ export async function startHttpRequestRecordingProxy(params: Readonly<{
       return;
     }
 
+    const rewriter = params.rewriteResponseBody;
+    let rewriteResponseBody: typeof rewriter = undefined;
+    try {
+      if (rewriter?.when(snapshot(entry))) rewriteResponseBody = rewriter;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      res.statusCode = 502;
+      res.end('proxy rewrite eligibility failed');
+      finish(entry, { statusCode: 502, error: message });
+      return;
+    }
     const headers = { ...req.headers, host: target.host };
+    // A rewritten body is composed from decoded text, so ask upstream for identity encoding.
+    // Only eligible requests pay that cost; every other request streams as it did before.
+    if (rewriteResponseBody) headers['accept-encoding'] = 'identity';
     const upstream = httpRequest({
       protocol: target.protocol,
       hostname: target.hostname,
@@ -205,7 +351,12 @@ export async function startHttpRequestRecordingProxy(params: Readonly<{
             finish(entry, { statusCode });
             return;
           }
+          if (rewriteResponseBody) {
+            forwardRewrittenResponse(rewriteResponseBody, upstreamRes, res, entry, statusCode);
+            return;
+          }
           res.writeHead(statusCode, upstreamRes.statusMessage, upstreamRes.headers);
+          if (params.captureResponseBody === true) observeResponseBody(upstreamRes, entry);
           upstreamRes.pipe(res);
           upstreamRes.once('end', () => finish(entry, { statusCode }));
           upstreamRes.once('error', (error) => finish(entry, { error: error.message }));
@@ -231,7 +382,10 @@ export async function startHttpRequestRecordingProxy(params: Readonly<{
     res.once('close', () => finish(entry, { statusCode: res.statusCode || null }));
     if (captureRequestBody) observeRequestBody(req, entry);
     req.pipe(upstream);
-  });
+  };
+  const server = params.tls
+    ? createHttpsServer(params.tls, handleRequest)
+    : createServer(handleRequest);
 
   server.on('connection', (socket) => {
     trackSocket(socket);
@@ -271,7 +425,7 @@ export async function startHttpRequestRecordingProxy(params: Readonly<{
   if (!address || typeof address !== 'object') throw new Error('http request recording proxy missing address');
 
   return {
-    baseUrl: `http://127.0.0.1:${address.port}`,
+    baseUrl: `${params.tls ? 'https' : 'http'}://127.0.0.1:${address.port}`,
     entries: () => entries.map(snapshot),
     clear: () => {
       entries.length = 0;

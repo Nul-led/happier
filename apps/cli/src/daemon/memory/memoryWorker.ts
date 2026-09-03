@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 
 import type { SessionSummaryShardV1 } from '@happier-dev/protocol';
@@ -27,7 +27,6 @@ import { runMemoryHintsExecutionRun } from './hints/runMemoryHintsExecutionRun';
 import { commitMemorySystemRecords } from '@/session/systemRecords/memory/commitMemorySystemRecords';
 import { fetchMemorySummaryShardSystemRecords } from '@/session/systemRecords/memory/fetchMemorySystemRecords';
 import { logServerEndpointFailure } from '@/api/client/serverEndpointFailureLog';
-import { chunkTranscriptRows } from './deepIndex/chunkTranscriptRows';
 import { syncDeepIndexForSessionsOnce } from './deepIndex/syncDeepIndexForSessionsOnce';
 import { resolveEmbeddingsProvider } from './deepIndex/embeddings/resolveEmbeddingsProvider';
 import { ensurePrivateInferenceDirectory, resolveInferenceCacheDir } from '@/daemon/inference/inferencePaths';
@@ -36,21 +35,48 @@ import {
   resolveOperationalMemoryEmbeddingsSettings,
   type OperationalMemoryEmbeddingsDiagnostics,
 } from './resolveOperationalMemoryEmbeddingsSettings';
-import { selectSessionsForBackfill } from './inventory/selectSessionsForBackfill';
+import {
+  INITIAL_MEMORY_INVENTORY_STATE,
+  refreshMemoryInventoryOnce,
+  resolveMemoryInventorySessionEligibility,
+  type MemoryInventoryRefresh,
+  type MemoryInventoryPage,
+  type MemoryInventoryScope,
+  type MemoryInventoryState,
+} from './inventory/refreshMemoryInventory';
+import { removeMemorySessionIndexes } from './removeMemorySessionIndexes';
 import { enforceMemoryDiskBudgets } from './enforceMemoryDiskBudgets';
 import { deriveSettingsSecretsReadKeysForCredentials } from '@/settings/secrets/settingsSecretsKey';
 import type { EmbeddingsProviderResolution } from './deepIndex/embeddings/embeddingsProviderTypes';
 import { fetchMemorySemanticTranscriptPage } from './transcript/fetchSemanticPage';
-import {
-  extractMemoryIndexableTranscriptItemFromDecryptedRow,
-} from './transcript/extractIndexableItem';
 import { isLegacyUnclassifiedTranscriptRow } from './transcript/legacyUnclassifiedTranscriptRows';
 import { AccountEncryptionMaterialUnavailableError } from '@/api/client/encryptionKey';
 
 export type MemoryWorkerHandle = Readonly<{
-  stop: () => void;
+  stop: () => void | Promise<void>;
   reloadSettings: () => Promise<void>;
   ensureUpToDate: (sessionId?: string) => Promise<void>;
+  /**
+   * The memory-owner removal operation for Sessions that were deleted, whose
+   * access was revoked, or that are no longer eligible. It clears the derived
+   * indexes and every worker-local candidate/observed/backfill/crypto fact.
+   * It rejects when the purge fails so a caller consuming a durable change
+   * fact never acknowledges its cursor before the removal succeeded.
+   */
+  removeSessions: (sessionIds: readonly string[]) => Promise<void>;
+  /** Re-checks the finite retained set after the Account changes cursor is lost. */
+  reconcileRetainedSessionAccess: () => Promise<void>;
+  /**
+   * Every Session identity the derived index still retains. Consumers of a
+   * durable access reset reconcile exactly this finite set against current
+   * Account access, including while memory is disabled and the long-lived DB
+   * handles are closed.
+   */
+  listIndexedSessionIds: () => readonly string[];
+  /** Live archive-state transition from the incumbent Session update seam. */
+  applySessionArchivedState: (
+    change: Readonly<{ sessionId: string; archived: boolean }>,
+  ) => Promise<void>;
   getSettings: () => MemorySettingsV1;
   getEmbeddingsDiagnostics: () => OperationalMemoryEmbeddingsDiagnostics;
   getWorkerStatus: () => Readonly<{
@@ -71,14 +97,6 @@ function bestEffortChmod700(dir: string): void {
   } catch {
     // best-effort
   }
-}
-
-function readSessionCreatedAtMs(raw: unknown): number {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return 0;
-  const createdAt = (raw as Record<string, unknown>).createdAt;
-  const n = typeof createdAt === 'number' ? createdAt : Number(createdAt);
-  if (!Number.isFinite(n) || n <= 0) return 0;
-  return Math.trunc(n);
 }
 
 function logMemoryWorkerServerEndpointFailure(operation: string, error: unknown): void {
@@ -110,9 +128,14 @@ export async function startMemoryWorker(params: Readonly<{
   let candidateSessionIds: string[] = [];
   let candidateCursor = 0;
   const candidateAllowInitialBackfillSessionIds = new Set<string>();
-  let inventoryCursor: string | null = null;
-  let inventoryHasNext = true;
+  let inventoryState: MemoryInventoryState = INITIAL_MEMORY_INVENTORY_STATE;
   let inventoryBackfillPolicy: MemorySettingsV1['backfillPolicy'] = 'new_only';
+  let inventoryIncludeArchivedSessions = DEFAULT_MEMORY_SETTINGS.includeArchivedSessions;
+  /**
+   * True while archived eligibility is desired off but the exclusion has not
+   * been completed, so archived rows can still be searchable here.
+   */
+  let archivedExclusionPending = false;
   const inventorySeenSessionIds = new Set<string>();
   const candidateObservedSeqBySessionId = new Map<string, number>();
   const sessionCryptoContextCache = new Map<string, SessionStoredContentCryptoContext>();
@@ -126,6 +149,12 @@ export async function startMemoryWorker(params: Readonly<{
     currentSessionId: null,
     currentPhase: null,
   };
+  const activeIndexOperations = new Set<Readonly<{
+    sessionIds: ReadonlySet<string>;
+    promise: Promise<void>;
+  }>>();
+  const removingSessionIds = new Set<string>();
+  let stopPromise: Promise<void> | null = null;
 
   const resolveSessionCryptoContext = async (
     sessionId: string,
@@ -224,44 +253,270 @@ export async function startMemoryWorker(params: Readonly<{
       },
     } as const);
 
-  const stopLoop = (): void => {
-    inventoryLoop?.stop();
+  const stopLoop = async (): Promise<void> => {
+    const inventoryLoopToStop = inventoryLoop;
     inventoryLoop = null;
     inventoryLoopIntervalMs = null;
-    workLoop?.stop();
+    const workLoopToStop = workLoop;
     workLoop = null;
     workLoopIntervalMs = null;
     candidateSessionIds = [];
     candidateCursor = 0;
     candidateAllowInitialBackfillSessionIds.clear();
     candidateObservedSeqBySessionId.clear();
-    inventoryCursor = null;
-    inventoryHasNext = true;
+    inventoryState = INITIAL_MEMORY_INVENTORY_STATE;
     inventoryBackfillPolicy = 'new_only';
+    inventoryIncludeArchivedSessions = DEFAULT_MEMORY_SETTINGS.includeArchivedSessions;
     inventorySeenSessionIds.clear();
+    await Promise.all([
+      inventoryLoopToStop?.stop(),
+      workLoopToStop?.stop(),
+    ]);
   };
 
-  const stop = () => {
-    if (stopped) return;
-    stopped = true;
-    stopLoop();
-    try {
-      tier1?.close();
-    } catch {
-      // best-effort
+  const stop = (): Promise<void> => {
+    if (stopPromise) return stopPromise;
+    stopPromise = (async () => {
+      stopped = true;
+      await stopLoop();
+      await Promise.allSettled([...activeIndexOperations].map((operation) => operation.promise));
+      try {
+        tier1?.close();
+      } catch {
+        // best-effort
+      }
+      tier1 = null;
+      try {
+        deep?.close();
+      } catch {
+        // best-effort
+      }
+      deep = null;
+    })();
+    return stopPromise;
+  };
+
+  const fetchMemoryInventoryPage = async (args: Readonly<{
+    scope: MemoryInventoryScope;
+    cursor?: string;
+    limit: number;
+  }>): Promise<MemoryInventoryPage> => {
+    return await fetchSessionsPage({
+      token: params.credentials.token,
+      ...(args.cursor === undefined ? {} : { cursor: args.cursor }),
+      ...(args.scope === 'archived' ? { archivedOnly: true } : { activeOnly: false }),
+      limit: args.limit,
+    });
+  };
+
+  /**
+   * The one eligibility/inventory pass every policy and `ensureUpToDate` use.
+   * `apply` replaces the candidate set for the snapshot policy and extends it
+   * while paging, so no branch can inventory a scope the settings exclude.
+   */
+  const refreshInventory = async (options?: Readonly<{ apply?: boolean }>): Promise<MemoryInventoryRefresh> => {
+    const refresh = await refreshMemoryInventoryOnce({
+      backfillPolicy: settings.backfillPolicy,
+      includeArchivedSessions: settings.includeArchivedSessions,
+      enabledAtMs: settings.enabledAtMs ?? 0,
+      pageLimit: settings.worker.sessionListPageLimit,
+      nowMs: Date.now(),
+      state: inventoryState,
+      seenSessionIds: inventorySeenSessionIds,
+      fetchSessionsPage: fetchMemoryInventoryPage,
+    });
+
+    if (options?.apply === false) return refresh;
+
+    if (refresh.mode === 'snapshot') {
+      candidateAllowInitialBackfillSessionIds.clear();
+      candidateObservedSeqBySessionId.clear();
+      inventorySeenSessionIds.clear();
+      candidateSessionIds = [...refresh.sessionIds];
+      candidateCursor = 0;
+      for (const [sessionId, seq] of refresh.observedSeqBySessionId) {
+        candidateObservedSeqBySessionId.set(sessionId, seq);
+      }
+      for (const sessionId of refresh.allowInitialBackfillSessionIds) {
+        candidateAllowInitialBackfillSessionIds.add(sessionId);
+      }
+    } else {
+      candidateAllowInitialBackfillSessionIds.clear();
+      for (const sessionId of refresh.sessionIds) {
+        inventorySeenSessionIds.add(sessionId);
+        candidateObservedSeqBySessionId.set(sessionId, refresh.observedSeqBySessionId.get(sessionId) ?? 0);
+        candidateSessionIds.push(sessionId);
+      }
     }
-    tier1 = null;
-    try {
-      deep?.close();
-    } catch {
-      // best-effort
+
+    inventoryState = refresh.state;
+    inventoryBackfillPolicy = settings.backfillPolicy;
+    inventoryIncludeArchivedSessions = settings.includeArchivedSessions;
+    return refresh;
+  };
+
+  const forgetWorkerSessionState = (sessionIds: readonly string[]): void => {
+    const doomed = new Set(sessionIds);
+    if (doomed.size === 0) return;
+    candidateSessionIds = candidateSessionIds.filter((id) => !doomed.has(id));
+    candidateCursor = candidateSessionIds.length === 0
+      ? 0
+      : candidateCursor % candidateSessionIds.length;
+    for (const sessionId of doomed) {
+      candidateAllowInitialBackfillSessionIds.delete(sessionId);
+      candidateObservedSeqBySessionId.delete(sessionId);
+      inventorySeenSessionIds.delete(sessionId);
+      sessionCryptoContextCache.delete(sessionId);
     }
-    deep = null;
+  };
+
+  const withRetainedIndexHandles = <T>(
+    use: (handles: Readonly<{
+      tier1: SummaryShardIndexDbHandle | null;
+      deep: DeepIndexDbHandle | null;
+    }>) => T,
+  ): T => {
+    let retainedTier1: SummaryShardIndexDbHandle | null = tier1;
+    let retainedDeep: DeepIndexDbHandle | null = deep;
+    let closeTier1 = false;
+    let closeDeep = false;
+    try {
+      if (!retainedTier1 && existsSync(paths.tier1DbPath)) {
+        retainedTier1 = openSummaryShardIndexDb({ dbPath: paths.tier1DbPath });
+        closeTier1 = true;
+      }
+      if (!retainedDeep && existsSync(paths.deepDbPath)) {
+        retainedDeep = openDeepIndexDb({ dbPath: paths.deepDbPath });
+        closeDeep = true;
+      }
+      return use({ tier1: retainedTier1, deep: retainedDeep });
+    } finally {
+      if (closeDeep) retainedDeep?.close();
+      if (closeTier1) retainedTier1?.close();
+    }
+  };
+
+  const removeSessions = async (sessionIds: readonly string[]): Promise<void> => {
+    const normalized = [...new Set(sessionIds.map((id) => id.trim()).filter((id) => id.length > 0))];
+    if (normalized.length === 0) return;
+    const doomed = new Set(normalized);
+    for (const sessionId of doomed) removingSessionIds.add(sessionId);
+    forgetWorkerSessionState(normalized);
+    const loopToResume = workLoop;
+    loopToResume?.pause();
+    try {
+      const conflicting = [...activeIndexOperations]
+        .filter((operation) => [...operation.sessionIds].some((sessionId) => doomed.has(sessionId)))
+        .map((operation) => operation.promise);
+      await Promise.allSettled(conflicting);
+      const removed = withRetainedIndexHandles((handles) => (
+        removeMemorySessionIndexes({ ...handles, sessionIds: normalized })
+      ));
+      forgetWorkerSessionState(removed);
+    } finally {
+      for (const sessionId of doomed) removingSessionIds.delete(sessionId);
+      if (!stopped && settings.enabled && workLoop === loopToResume) loopToResume?.resume();
+    }
+  };
+
+  const listIndexedSessionIds = (): readonly string[] => {
+    return withRetainedIndexHandles((handles) => {
+      const retained = new Set<string>();
+      for (const sessionId of handles.tier1?.listIndexedSessionIds() ?? []) retained.add(sessionId);
+      for (const sessionId of handles.deep?.listIndexedSessionIds() ?? []) retained.add(sessionId);
+      return [...retained];
+    });
+  };
+
+  const reconcileRetainedSessionAccess = async (): Promise<void> => {
+    const unavailable: string[] = [];
+    for (const sessionId of listIndexedSessionIds()) {
+      const session = await fetchSessionById({
+        token: params.credentials.token,
+        sessionId,
+      });
+      if (!session) unavailable.push(sessionId);
+    }
+    await removeSessions(unavailable);
+  };
+
+  const applySessionArchivedState = async (
+    change: Readonly<{ sessionId: string; archived: boolean }>,
+  ): Promise<void> => {
+    if (!change.archived) return;
+    if (settings.includeArchivedSessions) return;
+    await removeSessions([change.sessionId]);
+  };
+
+  /**
+   * Catch-up for archive transitions missed while the daemon was down or while
+   * archived eligibility was on. It reads the archived listing only when the
+   * derived index still retains Sessions that could be affected, and it covers
+   * that finite retained set completely: paging stops when nothing retained can
+   * still be archived or when the listing is exhausted. It rejects when the
+   * exclusion could not be completed, so the caller never advertises an
+   * eligibility this daemon is not applying.
+   */
+  const reconcileArchivedExclusion = async (): Promise<void> => {
+    if (!tier1) return;
+    if (settings.includeArchivedSessions) return;
+    const indexed = new Set(listIndexedSessionIds());
+    if (indexed.size === 0) return;
+
+    let cursor: string | undefined;
+    for (;;) {
+      const result = await fetchMemoryInventoryPage({
+        scope: 'archived',
+        ...(cursor === undefined ? {} : { cursor }),
+        limit: settings.worker.sessionListPageLimit,
+      });
+      const doomed = result.sessions
+        .map((session) => (typeof (session as { id?: unknown }).id === 'string'
+          ? String((session as { id?: unknown }).id).trim()
+          : ''))
+        .filter((sessionId) => sessionId.length > 0 && indexed.has(sessionId));
+      if (doomed.length > 0) {
+        await removeSessions(doomed);
+        for (const sessionId of doomed) indexed.delete(sessionId);
+      }
+      if (indexed.size === 0) return;
+      if (!result.hasNext || !result.nextCursor) return;
+      if (result.nextCursor === cursor) {
+        // A listing that cannot advance leaves the retained set undecided.
+        throw new Error('memory_archived_reconciliation_cursor_stalled');
+      }
+      cursor = result.nextCursor;
+    }
+  };
+
+  /**
+   * Applies the desired archived eligibility. Turning it off is only applied
+   * once the complete exclusion succeeded; until then this daemon still serves
+   * archived rows and keeps reporting archived-inclusive eligibility, and the
+   * next settings application retries.
+   */
+  const applyArchivedEligibility = async (): Promise<void> => {
+    if (settings.includeArchivedSessions) {
+      archivedExclusionPending = false;
+      return;
+    }
+    archivedExclusionPending = true;
+    try {
+      await reconcileArchivedExclusion();
+      archivedExclusionPending = false;
+    } catch (error) {
+      logger.debug('[memoryWorker] Archived exclusion reconciliation incomplete; retrying on the next settings application', {
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
   };
 
   const syncHintsForSessions = async (
     sessionIds: readonly string[],
-    options?: Readonly<{ allowInitialBackfillWhenUninitializedSessionIds?: readonly string[] }>,
+    options?: Readonly<{
+      allowInitialBackfillWhenUninitializedSessionIds?: readonly string[];
+      initialCursorSeqBySessionId?: ReadonlyMap<string, number>;
+    }>,
   ): Promise<void> => {
     if (stopped) return;
     if (!settings.enabled) return;
@@ -273,7 +528,8 @@ export async function startMemoryWorker(params: Readonly<{
       ...(options?.allowInitialBackfillWhenUninitializedSessionIds
         ? { allowInitialBackfillWhenUninitializedSessionIds: options.allowInitialBackfillWhenUninitializedSessionIds }
         : {}),
-      initialCursorSeqBySessionId: candidateObservedSeqBySessionId,
+      initialCursorSeqBySessionId:
+        options?.initialCursorSeqBySessionId ?? candidateObservedSeqBySessionId,
       tier1,
       settings: {
         enabled: settings.enabled,
@@ -443,13 +699,99 @@ export async function startMemoryWorker(params: Readonly<{
     });
   };
 
+  const syncEligibleSessions = async (input: Readonly<{
+    sessionIds: readonly string[];
+    observedSeqBySessionId: ReadonlyMap<string, number>;
+    allowInitialBackfillSessionIds: readonly string[];
+  }>): Promise<void> => {
+    if (!tier1 || input.sessionIds.length === 0) return;
+    const allowInitialBackfill = new Set(input.allowInitialBackfillSessionIds);
+    const historicalContentBlocked = new Set<string>();
+    const admittedSessionIds: string[] = [];
+
+    const nowMs = Date.now();
+    for (const sessionId of input.sessionIds) {
+      if (settings.backfillPolicy === 'new_only' && !allowInitialBackfill.has(sessionId)) {
+        const observedSeq = input.observedSeqBySessionId.get(sessionId);
+        if (typeof observedSeq !== 'number' || !Number.isFinite(observedSeq)) continue;
+        const seeded = tier1.trySeedSessionCursorsIfMissing({
+          sessionId,
+          nowMs,
+          lastHintedSeq: Math.max(0, Math.trunc(observedSeq)),
+          lastDeepIndexedSeq: Math.max(0, Math.trunc(observedSeq)),
+        });
+        if (seeded) historicalContentBlocked.add(sessionId);
+      } else {
+        // Establish the tier-1 retained identity before any deep chunk write.
+        // Zero keeps historical backfill eligible while closing the deep-only
+        // ordering window for newly admitted Sessions.
+        tier1.trySeedSessionCursorsIfMissing({
+          sessionId,
+          nowMs,
+          lastHintedSeq: 0,
+          lastDeepIndexedSeq: 0,
+        });
+      }
+      admittedSessionIds.push(sessionId);
+    }
+
+    if (admittedSessionIds.length === 0) return;
+
+    await syncHintsForSessions(admittedSessionIds, {
+      allowInitialBackfillWhenUninitializedSessionIds: input.allowInitialBackfillSessionIds,
+      initialCursorSeqBySessionId: input.observedSeqBySessionId,
+    });
+
+    // Hints mode ingests committed summaries itself. Deep mode retains that
+    // useful tier-1 projection, but only after the same eligibility decision
+    // has established whether historical content is allowed.
+    if (settings.indexMode === 'deep') {
+      for (const sessionId of admittedSessionIds) {
+        if (!historicalContentBlocked.has(sessionId)) {
+          await ingestCommittedSummaryShards(sessionId);
+        }
+      }
+    }
+    await syncDeepForSessions(admittedSessionIds);
+  };
+
+  const runTrackedSyncEligibleSessions = (input: Readonly<{
+    sessionIds: readonly string[];
+    observedSeqBySessionId: ReadonlyMap<string, number>;
+    allowInitialBackfillSessionIds: readonly string[];
+  }>): Promise<void> => {
+    const sessionIds = input.sessionIds.filter((sessionId) => !removingSessionIds.has(sessionId));
+    if (sessionIds.length === 0) return Promise.resolve();
+    const included = new Set(sessionIds);
+    const operation: {
+      sessionIds: ReadonlySet<string>;
+      promise: Promise<void>;
+    } = {
+      sessionIds: included,
+      promise: Promise.resolve(),
+    };
+    operation.promise = syncEligibleSessions({
+      ...input,
+      sessionIds,
+      allowInitialBackfillSessionIds: input.allowInitialBackfillSessionIds.filter((id) => included.has(id)),
+    }).finally(() => {
+      activeIndexOperations.delete(operation);
+    });
+    activeIndexOperations.add(operation);
+    return operation.promise;
+  };
+
   const applySettings = async (next: MemorySettingsV1): Promise<void> => {
     settings = next;
     if (stopped) return;
 
     if (!settings.enabled) {
       embeddingsDiagnostics = buildUnavailableMemoryEmbeddingsDiagnostics(settings.embeddings);
-      stopLoop();
+      // Nothing is searchable while memory is disabled, so no exclusion is
+      // outstanding.
+      archivedExclusionPending = false;
+      await stopLoop();
+      await Promise.allSettled([...activeIndexOperations].map((operation) => operation.promise));
       if (tier1) {
         try {
           tier1.close();
@@ -467,8 +809,24 @@ export async function startMemoryWorker(params: Readonly<{
         deep = null;
       }
       if (settings.deleteOnDisable) {
-        await rm(paths.memoryDir, { recursive: true, force: true }).catch(() => {});
+        try {
+          await rm(paths.memoryDir, { recursive: true, force: true });
+        } catch (error) {
+          workerStatus = {
+            ...workerStatus,
+            state: 'error',
+            currentSessionId: null,
+            currentPhase: null,
+          };
+          throw error;
+        }
       }
+      workerStatus = {
+        ...workerStatus,
+        state: 'disabled',
+        currentSessionId: null,
+        currentPhase: null,
+      };
       return;
     }
 
@@ -479,10 +837,13 @@ export async function startMemoryWorker(params: Readonly<{
     bestEffortChmod700(paths.memoryDir);
     ensurePrivateInferenceDirectory(paths.modelsDir);
 
-    if (inventoryBackfillPolicy !== settings.backfillPolicy) {
+    if (
+      inventoryBackfillPolicy !== settings.backfillPolicy
+      || inventoryIncludeArchivedSessions !== settings.includeArchivedSessions
+    ) {
       inventoryBackfillPolicy = settings.backfillPolicy;
-      inventoryCursor = null;
-      inventoryHasNext = true;
+      inventoryIncludeArchivedSessions = settings.includeArchivedSessions;
+      inventoryState = INITIAL_MEMORY_INVENTORY_STATE;
       inventorySeenSessionIds.clear();
       candidateSessionIds = [];
       candidateCursor = 0;
@@ -510,89 +871,33 @@ export async function startMemoryWorker(params: Readonly<{
     }
 
     await refreshEmbeddingsDiagnostics();
+    await applyArchivedEligibility();
 
     // Background indexing runs only in daemon mode.
     if (configuration.isDaemonProcess) {
       const inventoryIntervalMs = Math.max(5_000, Math.trunc(settings.worker.inventoryRefreshIntervalMs));
       if (!inventoryLoop || inventoryLoopIntervalMs !== inventoryIntervalMs) {
-        inventoryLoop?.stop();
+        await inventoryLoop?.stop();
         inventoryLoopIntervalMs = inventoryIntervalMs;
         inventoryLoop = startSingleFlightIntervalLoop({
           intervalMs: inventoryIntervalMs,
           task: async () => {
             if (stopped) return;
             if (!settings.enabled) return;
-            workerStatus = { ...workerStatus, state: 'inventorying', lastInventoryAtMs: Date.now(), currentPhase: 'inventory' };
-            if (settings.backfillPolicy === 'new_only') {
-              const page = await fetchSessionsPage({
-                token: params.credentials.token,
-                activeOnly: false,
-                limit: settings.worker.sessionListPageLimit,
-              });
-              const enabledAtMs = Math.max(0, Math.trunc(settings.enabledAtMs ?? 0));
-              candidateAllowInitialBackfillSessionIds.clear();
-              candidateObservedSeqBySessionId.clear();
-              candidateSessionIds = page.sessions
-                .map((session) => {
-                  const id = typeof session.id === 'string' ? String(session.id).trim() : '';
-                  if (!id) return null;
-                  const seq = typeof session.seq === 'number' && Number.isFinite(session.seq)
-                    ? Math.max(0, Math.trunc(session.seq))
-                    : 0;
-                  candidateObservedSeqBySessionId.set(id, seq);
-                  if (enabledAtMs > 0 && readSessionCreatedAtMs(session) >= enabledAtMs) {
-                    candidateAllowInitialBackfillSessionIds.add(id);
-                  }
-                  return id;
-                })
-                .filter((id): id is string => Boolean(id));
-              candidateCursor = 0;
-              inventoryCursor = null;
-              inventoryHasNext = true;
-              inventorySeenSessionIds.clear();
-              inventoryBackfillPolicy = settings.backfillPolicy;
-              return;
+            const reportsInventory = workerStatus.state !== 'indexing';
+            if (reportsInventory) {
+              workerStatus = { ...workerStatus, state: 'inventorying', lastInventoryAtMs: Date.now(), currentPhase: 'inventory' };
             }
-
-            candidateAllowInitialBackfillSessionIds.clear();
-            const cursor = inventoryHasNext ? inventoryCursor ?? undefined : undefined;
-            const page = await fetchSessionsPage({
-              token: params.credentials.token,
-              cursor,
-              activeOnly: false,
-              limit: settings.worker.sessionListPageLimit,
-            });
-
-            const selected = selectSessionsForBackfill({
-              sessions: page.sessions,
-              backfillPolicy: settings.backfillPolicy,
-              nowMs: Date.now(),
-            });
-
-            for (const id of selected.sessionIds) {
-              if (inventorySeenSessionIds.has(id)) continue;
-              inventorySeenSessionIds.add(id);
-              const row = page.sessions.find((session) => session.id === id);
-              const seq = typeof row?.seq === 'number' && Number.isFinite(row.seq)
-                ? Math.max(0, Math.trunc(row.seq))
-                : 0;
-              candidateObservedSeqBySessionId.set(id, seq);
-              candidateSessionIds.push(id);
-            }
-
-            if (inventoryHasNext) {
-              if (selected.shouldStopPaging) {
-                inventoryCursor = null;
-                inventoryHasNext = false;
-              } else {
-                inventoryCursor = page.nextCursor;
-                inventoryHasNext = Boolean(page.hasNext);
-              }
-            } else {
-              inventoryCursor = null;
+            if (archivedExclusionPending) await applyArchivedEligibility();
+            await refreshInventory();
+            if (reportsInventory && workerStatus.currentPhase === 'inventory') {
+              workerStatus = { ...workerStatus, state: 'idle', currentPhase: null };
             }
           },
           onError: (error) => {
+            if (workerStatus.currentPhase === 'inventory') {
+              workerStatus = { ...workerStatus, state: 'error', currentSessionId: null, currentPhase: null };
+            }
             logger.debug('[memoryWorker] Inventory refresh failed (best-effort)', {
               message: error instanceof Error ? error.message : String(error),
             });
@@ -603,7 +908,7 @@ export async function startMemoryWorker(params: Readonly<{
 
       const tickIntervalMs = Math.max(500, Math.trunc(settings.worker.tickIntervalMs));
       if (!workLoop || workLoopIntervalMs !== tickIntervalMs) {
-        workLoop?.stop();
+        await workLoop?.stop();
         workLoopIntervalMs = tickIntervalMs;
         workLoop = startSingleFlightIntervalLoop({
           intervalMs: tickIntervalMs,
@@ -611,31 +916,41 @@ export async function startMemoryWorker(params: Readonly<{
             if (stopped) return;
             if (!settings.enabled) return;
             if (!tier1) return;
-            if (candidateSessionIds.length === 0) return;
-            workerStatus = { ...workerStatus, state: 'indexing', lastTickAtMs: Date.now(), currentPhase: 'tick' };
+            if (candidateSessionIds.length > 0) {
+              workerStatus = { ...workerStatus, state: 'indexing', lastTickAtMs: Date.now(), currentPhase: 'tick' };
 
-            const maxSessions = Math.max(1, Math.trunc(settings.worker.maxSessionsPerTick));
-            const sessionIds: string[] = [];
-            const allowInitialBackfillWhenUninitializedSessionIds: string[] = [];
-            for (let i = 0; i < maxSessions; i += 1) {
-              if (candidateSessionIds.length === 0) break;
-              const idx = candidateCursor % candidateSessionIds.length;
-              const id = candidateSessionIds[idx];
-              candidateCursor = (candidateCursor + 1) % candidateSessionIds.length;
-              if (!id) continue;
-              sessionIds.push(id);
-              if (candidateAllowInitialBackfillSessionIds.has(id)) {
-                allowInitialBackfillWhenUninitializedSessionIds.push(id);
+              const maxSessions = Math.max(1, Math.trunc(settings.worker.maxSessionsPerTick));
+              const sessionIds: string[] = [];
+              const allowInitialBackfillWhenUninitializedSessionIds: string[] = [];
+              for (let i = 0; i < maxSessions; i += 1) {
+                if (candidateSessionIds.length === 0) break;
+                const idx = candidateCursor % candidateSessionIds.length;
+                const id = candidateSessionIds[idx];
+                candidateCursor = (candidateCursor + 1) % candidateSessionIds.length;
+                if (!id) continue;
+                sessionIds.push(id);
+                if (candidateAllowInitialBackfillSessionIds.has(id)) {
+                  allowInitialBackfillWhenUninitializedSessionIds.push(id);
+                }
+              }
+
+              if (sessionIds.length > 0) {
+                workerStatus = { ...workerStatus, currentSessionId: sessionIds[0] ?? null };
+                const observedSeqBySessionId = new Map<string, number>();
+                for (const sessionId of sessionIds) {
+                  const observedSeq = candidateObservedSeqBySessionId.get(sessionId);
+                  if (observedSeq !== undefined) observedSeqBySessionId.set(sessionId, observedSeq);
+                }
+                await runTrackedSyncEligibleSessions({
+                  sessionIds,
+                  observedSeqBySessionId,
+                  allowInitialBackfillSessionIds: allowInitialBackfillWhenUninitializedSessionIds,
+                });
               }
             }
 
-            if (sessionIds.length === 0) return;
-            workerStatus = { ...workerStatus, currentSessionId: sessionIds[0] ?? null };
-            await syncHintsForSessions(sessionIds, { allowInitialBackfillWhenUninitializedSessionIds });
-            await syncDeepForSessions(sessionIds);
-            workerStatus = { ...workerStatus, state: 'idle', currentSessionId: null, currentPhase: null };
-
             if (tier1) {
+              workerStatus = { ...workerStatus, state: 'indexing', currentSessionId: null, currentPhase: 'budget' };
               const mbToBytes = (mb: number): number => Math.max(0, Math.trunc(mb)) * 1024 * 1024;
               await enforceMemoryDiskBudgets({
                 tier1,
@@ -648,8 +963,10 @@ export async function startMemoryWorker(params: Readonly<{
                 },
               });
             }
+            workerStatus = { ...workerStatus, state: 'idle', currentSessionId: null, currentPhase: null };
           },
           onError: (error) => {
+            workerStatus = { ...workerStatus, state: 'error', currentSessionId: null, currentPhase: null };
             logger.debug('[memoryWorker] Tick failed (best-effort)', {
               message: error instanceof Error ? error.message : String(error),
             });
@@ -672,74 +989,43 @@ export async function startMemoryWorker(params: Readonly<{
     if (!settings.enabled) return;
     if (!tier1) return;
     if (!_sessionId) {
-      const page = await fetchSessionsPage({
-        token: params.credentials.token,
-        activeOnly: false,
-        limit: settings.worker.sessionListPageLimit,
+      // Same eligibility/inventory owner as the background loop, so an
+      // explicit refresh can never inventory a scope the settings exclude.
+      const refresh = await refreshInventory({ apply: false });
+      if (refresh.sessionIds.length === 0) return;
+      await runTrackedSyncEligibleSessions({
+        sessionIds: refresh.sessionIds,
+        observedSeqBySessionId: refresh.observedSeqBySessionId,
+        allowInitialBackfillSessionIds: refresh.allowInitialBackfillSessionIds,
       });
-      const sessionIds = page.sessions
-        .map((session) => typeof session.id === 'string' ? session.id.trim() : '')
-        .filter((sessionId) => sessionId.length > 0);
-      if (sessionIds.length === 0) return;
-      await syncHintsForSessions(sessionIds);
-      await syncDeepForSessions(sessionIds);
       return;
     }
 
-    await ingestCommittedSummaryShards(_sessionId);
-
-    const rows = await deps.fetchDecryptedTranscriptPageAfterSeq({
+    const session = await fetchSessionById({
+      token: params.credentials.token,
       sessionId: _sessionId,
-      afterSeq: 0,
-      limit: 500,
     });
-
-    if (settings.indexMode === 'deep' && deep) {
-      const indexable = rows
-        .map((row, index) => extractMemoryIndexableTranscriptItemFromDecryptedRow({
-          sessionId: _sessionId,
-          row,
-          index,
-          contentPolicy: settings.contentPolicy,
-        }))
-        .filter((item): item is NonNullable<typeof item> => item !== null)
-        .map((item) => ({
-          seq: item.seq,
-          createdAtMs: item.createdAtMs,
-          text: item.text,
-          role: item.role === 'user' ? 'user' as const : 'agent' as const,
-        }));
-      for (const chunk of chunkTranscriptRows({
-        rows: indexable,
-        settings: {
-          maxChunkChars: settings.deep.maxChunkChars,
-          maxChunkMessages: settings.deep.maxChunkMessages,
-          minChunkMessages: settings.deep.minChunkMessages,
-        },
-      })) {
-        deep.insertChunk({
-          sessionId: _sessionId,
-          seqFrom: chunk.seqFrom,
-          seqTo: chunk.seqTo,
-          createdAtFromMs: chunk.createdAtFromMs,
-          createdAtToMs: chunk.createdAtToMs,
-          text: chunk.text,
-        });
-      }
-      const lastSeq = rows.length > 0 ? rows[rows.length - 1]!.seq : 0;
-      tier1.markDeepIndexSuccess({ sessionId: _sessionId, seqTo: lastSeq, nowMs: Date.now() });
+    const eligibility = session
+      ? resolveMemoryInventorySessionEligibility({
+          session,
+          backfillPolicy: settings.backfillPolicy,
+          includeArchivedSessions: settings.includeArchivedSessions,
+          enabledAtMs: settings.enabledAtMs ?? 0,
+          nowMs: Date.now(),
+        })
+      : null;
+    if (!eligibility) {
+      await removeSessions([_sessionId]);
+      return;
     }
 
-    if (configuration.isDaemonProcess) {
-      const allowInitialBackfillWhenUninitializedSessionIds: string[] = [];
-      if (settings.backfillPolicy === 'new_only' && settings.enabledAtMs > 0) {
-        const raw = await fetchSessionById({ token: params.credentials.token, sessionId: _sessionId });
-        if (raw && readSessionCreatedAtMs(raw) >= settings.enabledAtMs) {
-          allowInitialBackfillWhenUninitializedSessionIds.push(_sessionId);
-        }
-      }
-      await syncHintsForSessions([_sessionId], { allowInitialBackfillWhenUninitializedSessionIds });
-    }
+    await runTrackedSyncEligibleSessions({
+      sessionIds: [eligibility.sessionId],
+      observedSeqBySessionId: new Map([[eligibility.sessionId, eligibility.observedSeq]]),
+      allowInitialBackfillSessionIds: eligibility.allowInitialBackfill
+        ? [eligibility.sessionId]
+        : [],
+    });
   };
 
   await reloadSettings();
@@ -748,7 +1034,17 @@ export async function startMemoryWorker(params: Readonly<{
     stop,
     reloadSettings,
     ensureUpToDate,
-    getSettings: () => settings,
+    removeSessions,
+    reconcileRetainedSessionAccess,
+    applySessionArchivedState,
+    listIndexedSessionIds,
+    // The archived eligibility this daemon actually applies: an exclusion that
+    // has not completed still leaves archived rows searchable here.
+    getSettings: () => (
+      archivedExclusionPending
+        ? { ...settings, includeArchivedSessions: true }
+        : settings
+    ),
     getEmbeddingsDiagnostics: () => embeddingsDiagnostics,
     getWorkerStatus: () => workerStatus,
     getTier1DbPath: () => (tier1 ? paths.tier1DbPath : null),
