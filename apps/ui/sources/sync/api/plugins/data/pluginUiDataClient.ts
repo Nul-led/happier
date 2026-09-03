@@ -307,7 +307,7 @@ export function createPluginUiDataClient(input: Readonly<{
                 assertCurrent(input.accountLifetime, options.signal);
                 if (outcome.status === 'forgotten') return Object.freeze({ rowId, forgotten: true as const });
                 if (outcome.status === 'conflict') {
-                    throw dataError(COLLECTION_CONFLICT_CODE, 'Collection forget conflicted with a newer row revision or absence epoch');
+                    throw dataError(COLLECTION_CONFLICT_CODE, 'Collection forget conflicted with a newer row revision');
                 }
                 if (outcome.status === 'rejected') throw rejectedError(outcome);
                 throw unavailableError(outcome.reason);

@@ -13,11 +13,10 @@ import {
     type PluginSurfaceContributedActionTransport,
 } from '@/components/plugins/surfaces/pluginSurfaceActionDispatch';
 import {
-    launchPluginSurfaceAction,
-} from '@/components/plugins/surfaces/launchPluginSurfaceAction';
-import {
-    createPluginActionCurrentIntentHandler,
-} from '@/components/plugins/surfaces/pluginSurfaceFeedback';
+    dispatchPluginResolvedSemanticCommand,
+    isCurrentPluginSemanticCommandProjection,
+    resolveCurrentPluginSemanticCommandScope,
+} from '@/components/plugins/surfaces/dispatchPluginResolvedSemanticCommand';
 import {
     resolvePluginUiClientActionRegistration,
 } from '@/components/plugins/reactNative/clientExecutableContributions';
@@ -76,42 +75,6 @@ export type PluginSessionHeaderActionPresentation = Readonly<{
 
 const EMPTY_PLUGIN_SESSION_HEADER_ACTION_PRESENTATIONS: readonly PluginSessionHeaderActionPresentation[] = Object.freeze([]);
 
-/**
- * Session header Actions are semantic commands, not a second scope resolver.
- * The registered Session scope already owns whether its retained projection is
- * current and exactly which machine/server/generation admitted it. Keep a
- * retained descriptor displayable, but do not treat it as interaction
- * authority after that owner revokes the scope.
- */
-function resolveCurrentSessionHeaderActionScope(
-    projection: PluginUiProjectionModel,
-    scopedLaunchFacts: PluginSurfaceScopedLaunchFacts | null | undefined,
-): PluginSurfaceScopedLaunchFacts | null {
-    if (
-        !scopedLaunchFacts
-        || scopedLaunchFacts.interactionEnabled !== true
-        || !scopedLaunchFacts.machineId
-        || scopedLaunchFacts.machineId.trim().length === 0
-        || scopedLaunchFacts.generation === null
-        || !Number.isFinite(scopedLaunchFacts.generation)
-        || projection.generation !== scopedLaunchFacts.generation
-    ) {
-        return null;
-    }
-    return scopedLaunchFacts;
-}
-
-/** Client-target Actions retain the Session projection's currentness without a daemon address. */
-function isCurrentSessionHeaderActionProjection(
-    projection: PluginUiProjectionModel,
-    scopedLaunchFacts: PluginSurfaceScopedLaunchFacts | null | undefined,
-): boolean {
-    return scopedLaunchFacts?.interactionEnabled === true
-        && scopedLaunchFacts.generation !== null
-        && Number.isFinite(scopedLaunchFacts.generation)
-        && projection.generation === scopedLaunchFacts.generation;
-}
-
 function readTitle(action: PluginUiSessionHeaderActionProjection): Readonly<{
     key: string | null;
     fallback: string;
@@ -150,8 +113,8 @@ export function resolvePluginSessionHeaderActionPresentations(params: Readonly<{
     if (!projection) {
         return EMPTY_PLUGIN_SESSION_HEADER_ACTION_PRESENTATIONS;
     }
-    const scopedAuthority = resolveCurrentSessionHeaderActionScope(projection, params.scopedLaunchFacts);
-    const projectionCurrent = isCurrentSessionHeaderActionProjection(
+    const scopedAuthority = resolveCurrentPluginSemanticCommandScope(projection, params.scopedLaunchFacts);
+    const projectionCurrent = isCurrentPluginSemanticCommandProjection(
         projection,
         params.scopedLaunchFacts,
     );
@@ -274,89 +237,19 @@ export async function dispatchPluginSessionHeaderAction(params: Readonly<{
         return null;
     }
 
-    const semanticAction = action.command;
-    if (semanticAction.kind === 'openSurface') {
-        if (!params.openSurface) {
-            return { ok: false, code: 'unavailable', reason: 'plugin_ui_surface_open_unavailable' };
-        }
-        return await params.openSurface({
-            destination: semanticAction.destination,
-            ...(semanticAction.input === undefined ? {} : { input: semanticAction.input }),
-            ...(semanticAction.subPath === undefined ? {} : { subPath: semanticAction.subPath }),
-            ...(semanticAction.instanceKey === undefined ? {} : { instanceKey: semanticAction.instanceKey }),
-        });
-    }
-
-    const scopedAuthority = resolveCurrentSessionHeaderActionScope(
+    return await dispatchPluginResolvedSemanticCommand({
         projection,
-        params.scopedLaunchFacts,
-    );
-    const resolveContributedAction = createPluginUiProjectedActionResolver(projection.actionsById);
-    const projectedAction = resolveContributedAction(semanticAction.action);
-    if (!isPluginProjectedActionExecutable(projectedAction)) {
-        return { ok: false, code: 'unavailable', reason: 'plugin_ui_action_unavailable' };
-    }
-    const scopedMachineId = scopedAuthority?.machineId;
-    const scopedGeneration = scopedAuthority?.generation;
-    const clientProjectionGeneration = isCurrentSessionHeaderActionProjection(
-        projection,
-        params.scopedLaunchFacts,
-    )
-        ? params.scopedLaunchFacts?.generation
-        : null;
-    if (
-        projectedAction?.execution.target === 'daemon'
-        && (!scopedAuthority || !scopedMachineId || typeof scopedGeneration !== 'number')
-    ) {
-        return { ok: false, code: 'unavailable', reason: 'plugin_ui_action_unavailable' };
-    }
-    const isCurrent = params.scopeIsCurrent ?? (() => true);
-    const requestCurrentIntent = projectedAction?.execution.target === 'client'
-        && typeof clientProjectionGeneration === 'number'
-        ? createPluginActionCurrentIntentHandler({
-            requester: {
-                pluginId: projectedAction.pluginId,
-                contributionId: projectedAction.id,
-                generationId: String(clientProjectionGeneration),
-                invocationId: `ui-action:${clientProjectionGeneration}`,
-            },
-            isCurrent,
-            pluginUiProjection: projection,
-        })
-        : undefined;
-    const launched = await launchPluginSurfaceAction({
         callerPluginId: action.pluginId,
-        action: semanticAction.action,
-        ...(semanticAction.input === undefined ? {} : { input: semanticAction.input }),
-        resolveContributedAction,
-        ...(projectedAction?.execution.target === 'daemon'
-            ? {
-                contributedAction: {
-                    machineId: scopedMachineId!,
-                    serverId: scopedAuthority!.serverId,
-                    expectedGeneration: String(scopedGeneration),
-                    ...(params.sessionId ? { sessionId: params.sessionId } : {}),
-                    ...(params.execute ? { execute: params.execute } : {}),
-                },
-            }
-            : {}),
-        ...(projectedAction?.execution.target === 'client'
-            && typeof clientProjectionGeneration === 'number'
-            && Number.isInteger(clientProjectionGeneration)
-            && clientProjectionGeneration >= 0
-            ? {
-                clientAction: {
-                    projectionGeneration: clientProjectionGeneration,
-                    ...(params.sessionId ? { sessionId: params.sessionId } : {}),
-                    ...(params.openSurface ? { openSurface: params.openSurface } : {}),
-                    ...(requestCurrentIntent ? { requestCurrentIntent } : {}),
-                    ...(params.readCurrentUiContext
-                        ? { currentUiContext: params.readCurrentUiContext }
-                        : {}),
-                },
-            }
-            : {}),
-        ...(params.scopeIsCurrent ? { isCurrent: params.scopeIsCurrent } : {}),
+        command: action.command,
+        ...(params.scopedLaunchFacts === undefined
+            ? {}
+            : { scopedLaunchFacts: params.scopedLaunchFacts }),
+        ...(params.scopeIsCurrent === undefined ? {} : { scopeIsCurrent: params.scopeIsCurrent }),
+        ...(params.sessionId === undefined ? {} : { sessionId: params.sessionId }),
+        ...(params.execute === undefined ? {} : { execute: params.execute }),
+        ...(params.openSurface === undefined ? {} : { openSurface: params.openSurface }),
+        ...(params.readCurrentUiContext === undefined
+            ? {}
+            : { readCurrentUiContext: params.readCurrentUiContext }),
     });
-    return launched.outcome;
 }

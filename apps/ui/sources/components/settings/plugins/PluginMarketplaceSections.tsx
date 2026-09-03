@@ -489,7 +489,7 @@ export function DiscoverListingsSection(props: Readonly<{
     const { theme } = useUnistyles();
 
     return (
-        <ItemGroup title={t('settingsPlugins.discoverTitle')} footer={t('settingsPlugins.subtitle')}>
+        <ItemGroup title={t('settingsPlugins.discoverTitle')}>
             {props.entries.map((entry) => {
                 const listingTestID = `settings.plugins.marketplace.entry.${entry.sourceId}.${entry.id}`;
                 const installed = props.installedPluginById.get(entry.id) ?? null;

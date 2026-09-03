@@ -259,6 +259,26 @@ describe('PluginMarketplaceSourcesScreen', () => {
         );
     });
 
+    it('presents a definite daemon validation rejection as an ordinary operation failure', async () => {
+        mocks.setMarketplaceSourceEnabled.mockResolvedValueOnce({ status: 'unavailable' });
+
+        const screen = await renderSettingsView(React.createElement(PluginMarketplaceSourcesScreen));
+        const sourceRow = screen.findRow('settings.plugins.sources.source.marketplace:user');
+        await act(async () => {
+            sourceRow?.props.rightElement.props.onValueChange(false);
+            await flushHookEffects();
+        });
+
+        expect(mocks.alertAsync).toHaveBeenCalledWith(
+            t('common.error'),
+            t('settingsPlugins.sourceAdministration.operationFailed'),
+        );
+        expect(mocks.alertAsync).not.toHaveBeenCalledWith(
+            t('settingsPlugins.sourceAdministration.operationOutcomeUnknownTitle'),
+            t('settingsPlugins.sourceAdministration.operationOutcomeUnknownBody'),
+        );
+    });
+
     it('exposes the enable switch for a curated source while keeping edit and removal user-only', async () => {
         const screen = await renderSettingsView(React.createElement(PluginMarketplaceSourcesScreen));
 

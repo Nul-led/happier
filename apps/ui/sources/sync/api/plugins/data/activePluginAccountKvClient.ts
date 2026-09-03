@@ -270,9 +270,9 @@ export function createActivePluginAccountKvClient(input: Readonly<{
     };
 
     // transaction() itself is non-reentrant. Service set/delete calls remain
-    // separate logical mutations while a callback is pending; the shared
-    // dependency/write-set rebase owner resolves disjoint physical conflicts
-    // without replaying either callback.
+    // separate logical mutations while a callback is pending, so they advance
+    // the same physical row: a transaction that loses its one CAS reports a
+    // typed conflict for the author to retry rather than being replayed.
     let explicitTransactionOpen = false;
 
     const mutate = async <T>(
@@ -290,8 +290,6 @@ export function createActivePluginAccountKvClient(input: Readonly<{
             assertStillCurrent(prepared);
             assertAccountKvAdmitted();
             const row = clonePluginAccountKvRowV1(snapshot.row);
-            const dependencyKeys = new Set<string>();
-            const writeKeys = new Set<string>();
             const transactionSignals = new Set<AbortSignal>();
             let active = true;
             let mutated = false;
@@ -315,7 +313,6 @@ export function createActivePluginAccountKvClient(input: Readonly<{
                 ): Promise<AccountKvEntry<TValue> | null> {
                     assertActive(getOptions?.signal);
                     const normalized = inRowAlgebra(() => normalizePluginAccountKvLogicalKeyV1(key));
-                    dependencyKeys.add(normalized);
                     const entry = readPluginAccountKvEntryV1(row, normalized);
                     return entry
                         ? inRowAlgebra(() => projectPluginAccountKvEntryV1<TValue>(entry)) as AccountKvEntry<TValue>
@@ -328,8 +325,6 @@ export function createActivePluginAccountKvClient(input: Readonly<{
                 ): Promise<Readonly<{ version: number }>> {
                     assertActive(setOptions.signal);
                     const normalized = inRowAlgebra(() => normalizePluginAccountKvLogicalKeyV1(key));
-                    dependencyKeys.add(normalized);
-                    writeKeys.add(normalized);
                     const previous = inRowAlgebra(() => assertPluginAccountKvExpectedVersionV1(
                         row,
                         normalized,
@@ -347,8 +342,6 @@ export function createActivePluginAccountKvClient(input: Readonly<{
                 ): Promise<Readonly<{ version: number; deleted: true }>> {
                     assertActive(deleteOptions.signal);
                     const normalized = inRowAlgebra(() => normalizePluginAccountKvLogicalKeyV1(key));
-                    dependencyKeys.add(normalized);
-                    writeKeys.add(normalized);
                     const previous = inRowAlgebra(() => assertPluginAccountKvExpectedVersionV1(
                         row,
                         normalized,
@@ -379,20 +372,13 @@ export function createActivePluginAccountKvClient(input: Readonly<{
                             ? { signal: mergedSignal.signal }
                             : undefined;
                         await inRowAlgebraAsync(async () => await commitPluginAccountKvMutationV1({
-                            initialSnapshot: snapshot,
+                            snapshot,
                             pendingRow: row,
-                            dependencyKeys: [...dependencyKeys],
-                            writeKeys: [...writeKeys],
                             assertCurrent: () => {
                                 assertSignalActive(mergedSignal.signal);
                                 assertStillCurrent(prepared);
                                 assertAccountKvAdmitted();
                             },
-                            readLatest: async () => await readSnapshot({
-                                pluginId: input.pluginId,
-                                operation: prepared,
-                                ...(commitOptions ? { options: commitOptions } : {}),
-                            }),
                             write: async (currentSnapshot, currentRow) => await writeSnapshot({
                                 pluginId: input.pluginId,
                                 operation: prepared,

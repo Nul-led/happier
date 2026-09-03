@@ -2334,6 +2334,26 @@ describe('AppShellPluginUiProjectionProvider', () => {
         expect(getConnectedServiceRegistrySnapshot()).toMatchObject({ status: 'ready' });
     });
 
+    it('keeps an Availability materialization on the union axis after its machine leaves live inventory', async () => {
+        const pluginId = 'acme.orphaned-materialization';
+        installSelectedAppScopePluginFixture({
+            machineId: 'machine-orphan',
+            pluginId,
+        });
+        storageState.machines = [];
+
+        const { AppShellPluginUiProjectionProvider } = await import('./AppShellPluginUiProjection');
+        const screen = await renderScreen(
+            <AppShellPluginUiProjectionProvider><ProjectionProbe /></AppShellPluginUiProjectionProvider>,
+        );
+        await flushHookEffects({ cycles: 5 });
+
+        expect(screen.findByType('ProjectionProbe' as never).props.value).toMatchObject({
+            machineId: 'machine-orphan',
+            interactionEnabled: false,
+        });
+    });
+
     it('keeps the scheduled union refresh on its own cadence while machine presence heartbeats replace machine records', async () => {
         vi.useFakeTimers();
         vi.setSystemTime(new Date('2026-07-13T00:00:00Z'));

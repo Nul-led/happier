@@ -487,6 +487,41 @@ type MarketplaceCapabilitySnapshot = Readonly<{
     };
 }>;
 
+/**
+ * The two operation ceilings derived from one current daemon capability fact.
+ *
+ * Source and npm-registry administration call their exact daemon RPCs and do
+ * not consume the contribution-registry projection. Plugin lifecycle and
+ * discovery do consume that projection, so they retain the stronger ceiling.
+ * Keeping both answers here prevents individual screens from independently
+ * deciding what a loading or failed projection means.
+ */
+export function resolvePluginDaemonOperationsAvailability(params: Readonly<{
+    hasExactExecutionTarget: boolean;
+    daemonTransportOnline: boolean;
+    capabilityStateIsCurrent: boolean;
+    capabilityState: ReturnType<typeof useMachineCapabilitiesCache>['state'];
+    projectionPhase: DaemonMergedProjectionPhase;
+}>): Readonly<{
+    administration: boolean;
+    projection: boolean;
+}> {
+    const snapshot = params.capabilityState.status === 'loaded'
+        ? params.capabilityState.snapshot
+        : null;
+    const toolPlugins = snapshot
+        ? (snapshot as MarketplaceCapabilitySnapshot).response.results[MARKETPLACE_CAPABILITY_ID]
+        : null;
+    const administration = params.hasExactExecutionTarget
+        && params.daemonTransportOnline
+        && params.capabilityStateIsCurrent
+        && toolPlugins?.ok === true;
+    return {
+        administration,
+        projection: administration && params.projectionPhase === 'ready',
+    };
+}
+
 export function readInstalledPlugins(
     state: ReturnType<typeof useMachineCapabilitiesCache>['state'],
 ): readonly InstalledPluginEntry[] {

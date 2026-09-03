@@ -5,7 +5,10 @@ import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
-import { HOST_PRIVATE_PLUGIN_INSTALL_DECISION_RPC_METHOD } from '@happier-dev/protocol/marketplace/internal';
+import {
+  HOST_PRIVATE_PLUGIN_INSTALL_DECISION_RPC_METHOD,
+  HostPrivateMarketplaceSourceRegistryMutationResponseV1Schema,
+} from '@happier-dev/protocol/marketplace/internal';
 import { createEnvKeyScope } from '@/testkit/env/envScope';
 
 import { registerMachineMarketplaceSourcesRpcHandlers } from './rpcHandlers.marketplaceSources';
@@ -255,14 +258,15 @@ describe('rpcHandlers (marketplace sources)', () => {
       await expect(mutate({ kind: 'remove', sourceId: betaSourceId })).resolves.not.toMatchObject({
         sources: expect.arrayContaining([expect.objectContaining({ id: betaSourceId })]),
       });
-      await expect(mutate({
+      const invalidMutationResponse = await mutate({
         kind: 'upsert',
         input: {
           sourceUrl: 'https://evil.example.test/catalog.json',
           title: 'Attacker curated source',
           origin: 'curated',
         },
-      })).resolves.toEqual({
+      });
+      expect(HostPrivateMarketplaceSourceRegistryMutationResponseV1Schema.parse(invalidMutationResponse)).toEqual({
         ok: false,
         errorCode: 'invalid_request',
         error: 'invalid_request',

@@ -11,6 +11,7 @@ import {
     readPendingPluginChangeStatus,
     readPendingPluginChanges,
     readPluginChangeKind,
+    resolvePluginDaemonOperationsAvailability,
     resolvePluginReadOnlySnapshotNotice,
     type InstalledPluginEntry,
 } from './pluginMarketplaceModel';
@@ -151,6 +152,51 @@ describe('installed plugin lifecycle capabilities', () => {
 });
 
 describe('installed marketplace catalog formatting', () => {
+    it.each(['loading', 'error'] as const)(
+        'keeps direct administration available while the merged projection is %s',
+        (projectionPhase) => {
+            const capabilityState = {
+                status: 'loaded' as const,
+                snapshot: {
+                    response: {
+                        protocolVersion: 1 as const,
+                        results: {
+                            'tool.plugins': { ok: true as const, checkedAt: 1, data: {} },
+                        },
+                    },
+                },
+            };
+
+            expect(resolvePluginDaemonOperationsAvailability({
+                hasExactExecutionTarget: true,
+                daemonTransportOnline: true,
+                capabilityStateIsCurrent: true,
+                capabilityState,
+                projectionPhase,
+            })).toEqual({ administration: true, projection: false });
+        },
+    );
+
+    it('fails both operation ceilings closed without a current reachable daemon capability', () => {
+        expect(resolvePluginDaemonOperationsAvailability({
+            hasExactExecutionTarget: true,
+            daemonTransportOnline: false,
+            capabilityStateIsCurrent: true,
+            capabilityState: {
+                status: 'loaded',
+                snapshot: {
+                    response: {
+                        protocolVersion: 1,
+                        results: {
+                            'tool.plugins': { ok: true, checkedAt: 1, data: {} },
+                        },
+                    },
+                },
+            },
+            projectionPhase: 'ready',
+        })).toEqual({ administration: false, projection: false });
+    });
+
     it('resolves all four management labels from the current translation function on each render', () => {
         expect(createPluginSettingsViews((key) => key)[0]?.label).toBe('settingsPlugins.views.installed');
         expect(createPluginSettingsViews((key) => `es:${key}`)[0]?.label).toBe('es:settingsPlugins.views.installed');

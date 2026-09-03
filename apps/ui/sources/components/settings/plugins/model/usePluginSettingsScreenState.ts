@@ -70,6 +70,7 @@ import {
     readPendingPluginChangeDecisionId,
     readPendingPluginChangeListingId,
     readPendingPluginChanges,
+    resolvePluginDaemonOperationsAvailability,
     readPendingPluginChangeReview,
     readPendingPluginChangeStatus,
     readPluginDevelopChange,
@@ -151,6 +152,8 @@ export type PluginSettingsScreenState = Readonly<{
     canRunDiscoverActions: boolean;
     canRefreshInstalledPlugins: boolean;
     daemonOperationsAvailable: boolean;
+    /** Exact daemon administration RPCs; independent of contribution projection readiness. */
+    daemonAdministrationAvailable: boolean;
     developmentCreateAvailable: boolean;
     developmentSourceInstallAvailable: boolean;
     developmentPlugins: readonly DevelopmentPluginEntry[];
@@ -429,11 +432,15 @@ export function usePluginSettingsScreenState(): PluginSettingsScreenState {
             daemonCacheFreshnessKey,
         )
         : null;
-    const daemonOperationsAvailable = executionTarget !== null
-        && daemonTransportOnline
-        && machineCapabilities.state.status === 'loaded'
-        && currentDaemonCapabilitiesState === machineCapabilities.state
-        && daemonMergedProjection.phase === 'ready';
+    const daemonOperationAvailability = resolvePluginDaemonOperationsAvailability({
+        hasExactExecutionTarget: executionTarget !== null,
+        daemonTransportOnline,
+        capabilityStateIsCurrent: currentDaemonCapabilitiesState === machineCapabilities.state,
+        capabilityState: machineCapabilities.state,
+        projectionPhase: daemonMergedProjection.phase,
+    });
+    const daemonAdministrationAvailable = daemonOperationAvailability.administration;
+    const daemonOperationsAvailable = daemonOperationAvailability.projection;
     const mutationAuthorityKey = daemonOperationsAvailable && selectedMachineScopeKey
         ? `${selectedMachineScopeKey}:${daemonCacheFreshnessKey}`
         : null;
@@ -456,7 +463,7 @@ export function usePluginSettingsScreenState(): PluginSettingsScreenState {
      */
     const marketplaceSourceRegistryAdministration = useMarketplaceSourceRegistryAdministration({
         scopeKey: selectedMachineScopeKey,
-        enabled: daemonOperationsAvailable,
+        enabled: daemonAdministrationAvailable,
         executionTarget,
         resolveCurrentExecutionTarget,
     });
@@ -1723,6 +1730,7 @@ export function usePluginSettingsScreenState(): PluginSettingsScreenState {
         canRunDiscoverActions,
         canRefreshInstalledPlugins,
         daemonOperationsAvailable,
+        daemonAdministrationAvailable,
         developmentCreateAvailable,
         developmentSourceInstallAvailable,
         developmentPlugins,

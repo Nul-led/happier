@@ -58,7 +58,7 @@ export function PluginDetailHeader(props: Readonly<{
     const { theme } = useUnistyles();
     const styles = stylesheet;
     const statusLabel = props.projection?.status?.label ?? (props.installed.enabled ? t('common.enabled') : t('common.disabled'));
-    const description = props.projection?.description ?? props.installed.description ?? t('settingsPlugins.subtitle');
+    const description = props.projection?.description ?? props.installed.description;
 
     return (
         <View testID={`settings.plugins.detail.${props.installed.pluginId}.header`} style={styles.container}>
@@ -71,7 +71,7 @@ export function PluginDetailHeader(props: Readonly<{
             </View>
             <View style={styles.content}>
                 <Text style={styles.title} accessibilityRole="header">{props.projection?.title ?? props.installed.title}</Text>
-                <Text style={styles.subtitle}>{description}</Text>
+                {description ? <Text style={styles.subtitle}>{description}</Text> : null}
                 <Text style={styles.meta}>{[props.installed.pluginId, statusLabel, props.installed.version].join(' | ')}</Text>
             </View>
         </View>

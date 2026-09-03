@@ -407,7 +407,7 @@ describe('Plugin UI Data client', () => {
             .rejects.toMatchObject({ code: 'plugin_account_kv_invalid' });
     });
 
-    it('rebases a per-key mutation when only another key changed in the aggregate row', async () => {
+    it('reports a typed conflict without rebasing when another key advanced the physical row', async () => {
         let readCount = 0;
         let writeCount = 0;
         const { client, accountKvWrites } = await loadClient({
@@ -415,67 +415,46 @@ describe('Plugin UI Data client', () => {
                 readCount += 1;
                 return new Response(JSON.stringify({
                     status: 'present',
-                    revision: readCount === 1 ? 4 : 5,
+                    revision: 4,
                     content: {
                         t: 'plain',
-                        v: {
-                            v: 1,
-                            values: {
-                                other: readCount === 1
-                                    ? { version: 0, value: 'before' }
-                                    : { version: 1, value: 'after' },
-                            },
-                        },
+                        v: { v: 1, values: { other: { version: 0, value: 'before' } } },
                     },
                 }), { status: 200, headers: { 'Content-Type': 'application/json' } });
             },
             accountKvWrite: () => {
                 writeCount += 1;
-                return new Response(JSON.stringify(
-                    writeCount === 1
-                        ? { status: 'conflict', revision: 5 }
-                        : { status: 'updated', revision: 6 },
-                ), { status: 200, headers: { 'Content-Type': 'application/json' } });
+                return new Response(
+                    JSON.stringify({ status: 'conflict', revision: 5 }),
+                    { status: 200, headers: { 'Content-Type': 'application/json' } },
+                );
             },
         });
 
-        await expect(client.accountKv.set('target', 'mine', {
-            expectedVersion: 'absent',
-        })).resolves.toEqual({ version: 0 });
+        // A rebasing implementation would reread revision 5, overlay `target`
+        // and commit a second time. The approved contract does not: one read,
+        // one CAS, and the author owns the retry.
+        await expect(client.accountKv.set('target', 'mine', { expectedVersion: 'absent' }))
+            .rejects.toMatchObject({ name: 'PluginError', code: 'plugin_account_kv_conflict' });
 
-        expect(accountKvWrites).toEqual([
-            {
-                expectedRevision: 4,
-                content: {
-                    t: 'plain',
-                    v: {
-                        v: 1,
-                        values: {
-                            other: { version: 0, value: 'before' },
-                            target: { version: 0, value: 'mine' },
-                        },
+        expect(accountKvWrites).toEqual([{
+            expectedRevision: 4,
+            content: {
+                t: 'plain',
+                v: {
+                    v: 1,
+                    values: {
+                        other: { version: 0, value: 'before' },
+                        target: { version: 0, value: 'mine' },
                     },
                 },
             },
-            {
-                expectedRevision: 5,
-                content: {
-                    t: 'plain',
-                    v: {
-                        v: 1,
-                        values: {
-                            other: { version: 1, value: 'after' },
-                            target: { version: 0, value: 'mine' },
-                        },
-                    },
-                },
-            },
-        ]);
-        expect(readCount).toBe(2);
-        expect(writeCount).toBe(2);
+        }]);
+        expect(readCount).toBe(1);
+        expect(writeCount).toBe(1);
     });
 
-    it('conflicts when a transaction read dependency changes before its derived write commits', async () => {
+    it('invokes a transaction callback once and never re-enters it after a physical conflict', async () => {
         let readCount = 0;
         let writeCount = 0;
         const callback = vi.fn(async (transaction: AccountKvTransaction) => {
@@ -514,13 +493,15 @@ describe('Plugin UI Data client', () => {
         });
 
         await expect(client.accountKv.transaction(callback))
-            .rejects.toMatchObject({ code: 'plugin_account_kv_conflict' });
+            .rejects.toMatchObject({ name: 'PluginError', code: 'plugin_account_kv_conflict' });
+        // One snapshot, one callback invocation, one CAS: a replaying or
+        // rereading implementation would move at least one of these counters.
         expect(callback).toHaveBeenCalledOnce();
+        expect(readCount).toBe(1);
         expect(writeCount).toBe(1);
-        expect(readCount).toBe(2);
     });
 
-    it('allows overlapping service mutations on disjoint keys to rebase', async () => {
+    it('serializes overlapping service mutations and gives the loser a typed conflict', async () => {
         let releaseInitialReads!: () => void;
         const initialReadsStarted = new Promise<void>((resolve) => {
             releaseInitialReads = resolve;
@@ -531,19 +512,12 @@ describe('Plugin UI Data client', () => {
         const { client, accountKvWrites } = await loadClient({
             accountKvRead: async () => {
                 readCount += 1;
-                if (readCount <= 2) {
-                    if (readCount === 2) releaseInitialReads();
-                    await initialReadsStarted;
-                    return new Response(JSON.stringify({ status: 'absent' }), {
-                        status: 200,
-                        headers: { 'Content-Type': 'application/json' },
-                    });
-                }
-                return new Response(JSON.stringify({
-                    status: 'present',
-                    revision: 0,
-                    content: persisted,
-                }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+                if (readCount === 2) releaseInitialReads();
+                await initialReadsStarted;
+                return new Response(JSON.stringify({ status: 'absent' }), {
+                    status: 200,
+                    headers: { 'Content-Type': 'application/json' },
+                });
             },
             accountKvWrite: (body) => {
                 writeCount += 1;
@@ -555,39 +529,33 @@ describe('Plugin UI Data client', () => {
                         headers: { 'Content-Type': 'application/json' },
                     });
                 }
-                if (writeCount === 2) {
-                    return new Response(JSON.stringify({ status: 'conflict', revision: 0 }), {
-                        status: 200,
-                        headers: { 'Content-Type': 'application/json' },
-                    });
-                }
-                persisted = request.content;
-                return new Response(JSON.stringify({ status: 'updated', revision: 1 }), {
+                return new Response(JSON.stringify({ status: 'conflict', revision: 0 }), {
                     status: 200,
                     headers: { 'Content-Type': 'application/json' },
                 });
             },
         });
 
+        // Both mutations observe the same absent row, so the second one loses
+        // the single physical CAS. Disjoint logical keys do not make it safe to
+        // rebase and retry behind the author's back: the loser is told.
         const outcomes = await Promise.allSettled([
             client.accountKv.set('first', 1, { expectedVersion: 'absent' }),
             client.accountKv.set('second', 2, { expectedVersion: 'absent' }),
         ]);
 
-        expect(outcomes).toEqual([
-            { status: 'fulfilled', value: { version: 0 } },
-            { status: 'fulfilled', value: { version: 0 } },
-        ]);
-        expect(accountKvWrites).toHaveLength(3);
+        expect(outcomes.filter((outcome) => outcome.status === 'fulfilled'))
+            .toEqual([{ status: 'fulfilled', value: { version: 0 } }]);
+        const rejected = outcomes.find((outcome) => outcome.status === 'rejected');
+        expect(rejected).toMatchObject({
+            reason: { name: 'PluginError', code: 'plugin_account_kv_conflict' },
+        });
+        expect(accountKvWrites).toHaveLength(2);
+        expect(writeCount).toBe(2);
+        expect(readCount).toBe(2);
         expect(persisted).toEqual({
             t: 'plain',
-            v: {
-                v: 1,
-                values: {
-                    first: { version: 0, value: 1 },
-                    second: { version: 0, value: 2 },
-                },
-            },
+            v: { v: 1, values: { first: { version: 0, value: 1 } } },
         });
     });
 
@@ -661,7 +629,15 @@ describe('Plugin UI Data client', () => {
         resumeTransaction();
 
         const [transactionOutcome] = await Promise.allSettled([explicitTransaction]);
-        expect(transactionOutcome).toEqual({ status: 'fulfilled', value: undefined });
+        // The service calls really are separate logical mutations: each one
+        // read, committed and advanced the physical row while the callback was
+        // still open. That is exactly why the enclosing transaction — still
+        // holding the snapshot it opened on — loses its one CAS and reports a
+        // typed conflict instead of being replayed onto the newer row.
+        expect(transactionOutcome).toMatchObject({
+            status: 'rejected',
+            reason: { name: 'PluginError', code: 'plugin_account_kv_conflict' },
+        });
         expect(independentOutcome).toEqual({ status: 'fulfilled', value: { version: 0 } });
         expect(persistedContent).toEqual({
             t: 'plain',
@@ -670,7 +646,6 @@ describe('Plugin UI Data client', () => {
                 values: {
                     'callback-service-write': { version: 0, value: 3 },
                     'independent-write': { version: 1, deleted: true },
-                    'transaction-write': { version: 0, value: 1 },
                 },
             },
         });
@@ -767,7 +742,9 @@ describe('Plugin UI Data client', () => {
         })).rejects.toMatchObject({ code: 'plugin_account_kv_conflict' });
 
         expect(accountKvWrites).toHaveLength(1);
-        expect(readCount).toBe(2);
+        // The row the transaction saw is the only row it writes against: no
+        // second read is spent looking for a rebase opportunity.
+        expect(readCount).toBe(1);
         expect(accountKvWrites[0]).toMatchObject({
             expectedRevision: 'absent',
             content: {

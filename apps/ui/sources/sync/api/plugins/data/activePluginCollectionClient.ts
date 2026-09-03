@@ -648,6 +648,9 @@ function mapMutationError(value: unknown): ActivePluginCollectionUnavailableV1 |
             return unavailable('account-content-mismatch');
         case 'collection_mutation_invalid':
         case 'collection_quota_exceeded':
+        // The row identity spent every revision its persisted column can hold.
+        // That is a refused write, not an unavailable Collection.
+        case 'collection_revision_exhausted':
             return rejected(parsed.data.error);
     }
     return unavailable('response-invalid');
@@ -898,50 +901,44 @@ export function createActivePluginCollectionClient<
         }
     };
 
+    /**
+     * Retention-only physical reclamation, witnessed solely by the exact row
+     * revision the caller already proved unreachable. The server advances
+     * Collection absence currentness inside the same transaction, and a direct
+     * read cannot see a tombstone — so re-reading before retrying could never
+     * resolve a revision conflict, only spin on it. One request, one answer.
+     */
     const forget = async (
         rowId: string,
         expectedRevision: number,
         options?: ActivePluginCollectionOperationOptionsV1,
     ): Promise<ActivePluginCollectionForgetOutcomeV1> => {
-        // The freshness epoch is Collection-wide, so an unrelated concurrent
-        // forget can legitimately invalidate it. Retry only that typed race.
-        // An exact live revision is the retention-only atomic retire arm;
-        // a newer revision remains an immediate conflict.
-        for (;;) {
-            const current = await get(rowId, options);
-            if (current.status !== 'ready') return current;
-            if (current.row !== null && current.row.revision !== expectedRevision) {
-                return { status: 'conflict' };
-            }
-            const prepared = await prepareCollectionOperation(options, params.accountLifetime);
-            if (prepared.status === 'unavailable') return prepared;
-            try {
-                const body = PluginCollectionForgetRequestV1Schema.safeParse({
-                    pluginId: params.contract.pluginId,
-                    collectionId: params.contract.collectionId,
-                    writerContext: {
-                        schemaVersion: params.contract.schemaVersion,
-                        contractDigest: params.contract.contractDigest,
-                    },
-                    rowId,
-                    expectedRevision,
-                    expectedAbsenceEpoch: current.absenceEpoch,
-                });
-                if (!body.success) return rejected('collection_mutation_invalid');
-                const response = await requestCollectionOperation({
-                    operation: prepared.operation,
-                    path: PLUGIN_COLLECTION_FORGET_HTTP_PATH_V1,
-                    body: body.data,
-                    options,
-                });
-                if (response.status === 'unavailable') return response;
-                if (!response.ok) return mapMutationError(response.body);
-                const result = PluginCollectionForgetResultV1Schema.safeParse(response.body);
-                if (!result.success) return unavailable('response-invalid');
-                if (result.data.status === 'forgotten') return result.data;
-            } finally {
-                await prepared.operation.release();
-            }
+        const body = PluginCollectionForgetRequestV1Schema.safeParse({
+            pluginId: params.contract.pluginId,
+            collectionId: params.contract.collectionId,
+            writerContext: {
+                schemaVersion: params.contract.schemaVersion,
+                contractDigest: params.contract.contractDigest,
+            },
+            rowId,
+            expectedRevision,
+        });
+        if (!body.success) return rejected('collection_mutation_invalid');
+        const prepared = await prepareCollectionOperation(options, params.accountLifetime);
+        if (prepared.status === 'unavailable') return prepared;
+        try {
+            const response = await requestCollectionOperation({
+                operation: prepared.operation,
+                path: PLUGIN_COLLECTION_FORGET_HTTP_PATH_V1,
+                body: body.data,
+                options,
+            });
+            if (response.status === 'unavailable') return response;
+            if (!response.ok) return mapMutationError(response.body);
+            const result = PluginCollectionForgetResultV1Schema.safeParse(response.body);
+            return result.success ? result.data : unavailable('response-invalid');
+        } finally {
+            await prepared.operation.release();
         }
     };
 

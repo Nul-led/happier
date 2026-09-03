@@ -2,6 +2,7 @@ import * as React from 'react';
 
 import {
     arePluginMachineExecutionOriginsEqual,
+    type PluginMachineMaterializationV1,
     type PluginMachineExecutionOriginV1,
 } from '@happier-dev/protocol';
 import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot';
@@ -192,28 +193,33 @@ export type AppShellPluginProjectionTarget = Readonly<{ machineId: string; serve
 export function resolveAppShellPluginProjectionTargets(params: Readonly<{
     activeServerId: string | null;
     machines: ReadonlyArray<Machine>;
+    materializationMachineIds?: readonly string[];
     nowMs?: number;
 }>): readonly AppShellPluginProjectionTarget[] {
     const nowMs = params.nowMs ?? Date.now();
     const serverId = params.activeServerId && params.activeServerId.trim().length > 0
         ? params.activeServerId
         : null;
-    return Object.freeze(params.machines
+    const machineIds = new Set(params.machines
         .filter((machine) => (
             typeof machine.id === 'string'
             && machine.id.trim().length > 0
             && isMachineOnline(machine, nowMs)
         ))
-        .map((machine) => Object.freeze({ machineId: machine.id, serverId }))
+        .map((machine) => machine.id));
+    for (const materializationMachineId of params.materializationMachineIds ?? []) {
+        const machineId = materializationMachineId.trim();
+        if (machineId) machineIds.add(machineId);
+    }
+    return Object.freeze([...machineIds]
+        .map((machineId) => Object.freeze({ machineId, serverId }))
         .sort((left, right) => left.machineId.localeCompare(right.machineId)));
 }
 
 function resolveAppShellPluginExecutionOriginPluginIds(
-    reader: ReturnType<typeof useActivePluginAccountAvailabilityReader>,
+    materializations: readonly PluginMachineMaterializationV1[],
 ): readonly string[] {
-    const admission = reader?.readMaterializations();
-    if (admission?.kind !== 'available') return [];
-    return Object.freeze([...new Set(admission.materializations.map((materialization) => materialization.pluginId))]
+    return Object.freeze([...new Set(materializations.map((materialization) => materialization.pluginId))]
         .sort((left, right) => left.localeCompare(right)));
 }
 
@@ -374,9 +380,13 @@ export function AppShellPluginUiProjectionProvider(props: Readonly<{
     // directly into Administration's canonical exact-origin selection hook;
     // AppShell never infers release/content validity from a projection.
     const classifyRelease = useActivePluginAccountAvailabilityReleaseClassifier();
+    const executionOriginMaterializations = React.useMemo<readonly PluginMachineMaterializationV1[]>(() => {
+        const admission = availabilityReader?.readMaterializations();
+        return admission?.kind === 'available' ? admission.materializations : [];
+    }, [availabilityReader]);
     const executionOriginPluginIds = React.useMemo(
-        () => resolveAppShellPluginExecutionOriginPluginIds(availabilityReader),
-        [availabilityReader],
+        () => resolveAppShellPluginExecutionOriginPluginIds(executionOriginMaterializations),
+        [executionOriginMaterializations],
     );
     const executionOriginPluginIdsKey = executionOriginPluginIds.join('\n');
     const [reportedOriginsByPluginId, setReportedOriginsByPluginId] = React.useState<
@@ -414,7 +424,8 @@ export function AppShellPluginUiProjectionProvider(props: Readonly<{
     const projectionTargets = React.useMemo(() => resolveAppShellPluginProjectionTargets({
         activeServerId: activeServer.serverId,
         machines,
-    }), [activeServer.serverId, machines]);
+        materializationMachineIds: executionOriginMaterializations.map((materialization) => materialization.machineId),
+    }), [activeServer.serverId, executionOriginMaterializations, machines]);
     const [currentnessByMachineId, setCurrentnessByMachineId] = React.useState<
         ReadonlyMap<string, AppShellAccountScopedPluginUiCurrentnessReport>
     >(() => new Map());

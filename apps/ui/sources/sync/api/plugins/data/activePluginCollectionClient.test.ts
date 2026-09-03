@@ -628,23 +628,49 @@ describe('active Account Collection direct client', () => {
         ]);
     });
 
-    it('refreshes the Collection absence epoch after an unrelated concurrent forget', async () => {
-        let getCalls = 0;
+    it('settles an exact forget conflict in one request instead of re-reading a hidden tombstone', async () => {
         let forgetCalls = 0;
         const harness = await loadClient({
             responseForDataPath: (path) => {
-                if (path === '/v1/plugins/data/get') {
-                    getCalls += 1;
-                    return new Response(JSON.stringify({
-                        row: null,
-                        absenceEpoch: getCalls === 1 ? 3 : 4,
-                    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-                }
+                // A newer tombstone never appears in a direct read, so a
+                // freshness re-read cannot resolve a revision conflict. The
+                // exact-revision answer is final.
                 if (path === '/v1/plugins/data/forget') {
                     forgetCalls += 1;
-                    return new Response(JSON.stringify({
-                        status: forgetCalls === 1 ? 'conflict' : 'forgotten',
-                    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+                    return new Response(JSON.stringify({ status: 'conflict' }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' },
+                    });
+                }
+                throw new Error(`Unexpected Collection path: ${path}`);
+            },
+        });
+        const collection = harness.createActivePluginCollectionClient({ contract });
+
+        await expect(collection.forget('channel-1', 2)).resolves.toEqual({ status: 'conflict' });
+        expect(forgetCalls).toBe(1);
+        expect(JSON.parse(String(harness.transport.mock.calls.find(
+            ([path]) => path === '/v1/plugins/data/forget',
+        )?.[1]?.body))).toEqual({
+            pluginId: contract.pluginId,
+            collectionId: contract.collectionId,
+            writerContext: {
+                schemaVersion: contract.schemaVersion,
+                contractDigest: contract.contractDigest,
+            },
+            rowId: 'channel-1',
+            expectedRevision: 2,
+        });
+    });
+
+    it('forgets consecutive exact rows of one Collection without a shared caller witness', async () => {
+        const harness = await loadClient({
+            responseForDataPath: (path) => {
+                if (path === '/v1/plugins/data/forget') {
+                    return new Response(JSON.stringify({ status: 'forgotten' }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' },
+                    });
                 }
                 throw new Error(`Unexpected Collection path: ${path}`);
             },
@@ -652,15 +678,13 @@ describe('active Account Collection direct client', () => {
         const collection = harness.createActivePluginCollectionClient({ contract });
 
         await expect(collection.forget('channel-1', 2)).resolves.toEqual({ status: 'forgotten' });
-        expect(getCalls).toBe(2);
-        expect(forgetCalls).toBe(2);
-        const epochs = harness.transport.mock.calls
+        await expect(collection.forget('channel-2', 5)).resolves.toEqual({ status: 'forgotten' });
+        expect(harness.transport.mock.calls
             .filter(([path]) => path === '/v1/plugins/data/forget')
-            .map(([, init]) => JSON.parse(String(init?.body)).expectedAbsenceEpoch);
-        expect(epochs).toEqual([3, 4]);
+            .map(([, init]) => JSON.parse(String(init?.body)).expectedRevision)).toEqual([2, 5]);
     });
 
-    it('keeps an absent-create epoch conflict distinct from a retryable forget epoch race', async () => {
+    it('keeps an absent-create epoch conflict a caller-visible mutation conflict', async () => {
         const harness = await loadClient({
             responseForDataPath: (path) => {
                 if (path === '/v1/plugins/data/get') {
@@ -703,16 +727,10 @@ describe('active Account Collection direct client', () => {
         ]);
     });
 
-    it('lets a caller retry a response-lost forget through the same idempotent path', async () => {
+    it('lets a caller retry a response-lost forget through the same idempotent request', async () => {
         let forgetAttempts = 0;
         const harness = await loadClient({
             responseForDataPath: (path) => {
-                if (path === '/v1/plugins/data/get') {
-                    return new Response(JSON.stringify({ row: null, absenceEpoch: 11 + forgetAttempts }), {
-                        status: 200,
-                        headers: { 'Content-Type': 'application/json' },
-                    });
-                }
                 if (path === '/v1/plugins/data/forget') {
                     forgetAttempts += 1;
                     if (forgetAttempts === 1) throw new Error('response lost after committed forget');
@@ -730,10 +748,14 @@ describe('active Account Collection direct client', () => {
             status: 'unavailable',
         });
         await expect(collection.forget('channel-retry', 4)).resolves.toEqual({ status: 'forgotten' });
-        const epochs = harness.transport.mock.calls
+        const bodies = harness.transport.mock.calls
             .filter(([path]) => path === '/v1/plugins/data/forget')
-            .map(([, init]) => JSON.parse(String(init?.body)).expectedAbsenceEpoch);
-        expect(epochs).toEqual([11, 12]);
+            .map(([, init]) => JSON.parse(String(init?.body)));
+        expect(bodies).toEqual([
+            expect.objectContaining({ rowId: 'channel-retry', expectedRevision: 4 }),
+            expect.objectContaining({ rowId: 'channel-retry', expectedRevision: 4 }),
+        ]);
+        expect(bodies.every((body) => !('expectedAbsenceEpoch' in body))).toBe(true);
     });
 
     it('opens and seals only the current Account E2EE collection envelope', async () => {

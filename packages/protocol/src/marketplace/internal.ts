@@ -26,3 +26,8 @@ export {
   type PluginInstallationReviewRawCredentialAccess,
   type PluginInstallationReviewRequestInterceptor,
 } from './pluginInstallationReviewV1.js';
+
+export {
+  HostPrivateMarketplaceSourceRegistryMutationResponseV1Schema,
+  type HostPrivateMarketplaceSourceRegistryMutationResponseV1,
+} from './marketplaceSourceRegistryMutationResponseV1.js';

@@ -8,6 +8,7 @@ import { Icon } from '@/components/ui/icons/Icon';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
+import { buildActionRowAccessibilityLabel } from '@/components/ui/lists/actionRowAccessibility';
 import { Modal } from '@/modal';
 import { t } from '@/text';
 
@@ -80,7 +81,7 @@ export const PluginMarketplaceSourcesScreen = React.memo(function PluginMarketpl
     const state = usePluginSettingsScreenState();
     const [busySourceId, setBusySourceId] = React.useState<string | null>(null);
     const configuredSources = state.marketplaceSourceRegistry?.sources ?? [];
-    const mutationsDisabled = !state.daemonOperationsAvailable || busySourceId !== null;
+    const mutationsDisabled = !state.daemonAdministrationAvailable || busySourceId !== null;
 
     const add = React.useCallback(async () => {
         const draft = await readSourceDraft(null);
@@ -235,6 +236,10 @@ export const PluginMarketplaceSourcesScreen = React.memo(function PluginMarketpl
                                 <Item
                                     testID={`settings.plugins.sources.remove.${source.id}`}
                                     title={t('settingsPlugins.sourceAdministration.remove')}
+                                    accessibilityLabel={buildActionRowAccessibilityLabel([
+                                        t('settingsPlugins.sourceAdministration.remove'),
+                                        source.title,
+                                    ])}
                                     onPress={() => { void remove(source); }}
                                     disabled={mutationsDisabled}
                                     destructive
@@ -247,7 +252,7 @@ export const PluginMarketplaceSourcesScreen = React.memo(function PluginMarketpl
             </ItemGroup>
 
             <NpmRegistryProfilesSection
-                daemonOperationsAvailable={state.daemonOperationsAvailable}
+                daemonOperationsAvailable={state.daemonAdministrationAvailable}
                 targetSelection={state.administrationTargetSelection}
                 marketplaceSources={configuredSources}
                 onSetMarketplaceSourceProfile={state.setMarketplaceSourceProfile}
