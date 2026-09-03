@@ -16,7 +16,7 @@ import {
   type AccountSettingsUpdateV2Deps,
 } from '@/settings/accountSettings/updateAccountSettingsV2WithRetry';
 
-export async function previewLegacyProfileMigrationWithRetry(params: Readonly<{
+export async function previewLegacyProfileMigration(params: Readonly<{
   credentials: Credentials;
   sourceProfileId: string;
   reviewedMapping: LegacyProfileReviewedMappingV1;
@@ -54,7 +54,7 @@ export class ProviderSettingsMigrationError extends Error {
   }
 }
 
-export async function confirmLegacyProfileMigrationWithRetry(params: Readonly<{
+export async function confirmLegacyProfileMigration(params: Readonly<{
   credentials: Credentials;
   sourceProfileId: string;
   expectedSourceFingerprint: string;
@@ -80,7 +80,12 @@ export async function confirmLegacyProfileMigrationWithRetry(params: Readonly<{
   return { version: result.version, settings: result.settings };
 }
 
-export async function migrateProviderSettingsWithRetry(params: Readonly<{
+/**
+ * One semantic migration: the callback is evaluated once against the latest
+ * fetched version and exactly one CAS is submitted. A conflict is a terminal
+ * outcome, never a hidden re-run of the migration against the winner.
+ */
+export async function migrateProviderSettings(params: Readonly<{
   credentials: Credentials;
   acquireRegistryLease: () => Promise<Readonly<{
     registry: unknown;

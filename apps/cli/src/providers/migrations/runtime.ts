@@ -24,15 +24,15 @@ import {
 import { buildLegacyProfileMigrationContext } from './buildContext';
 import { authorizeLegacyProfileMigrationContext } from './authorizeContext';
 import {
-  confirmLegacyProfileMigrationWithRetry,
-  migrateProviderSettingsWithRetry,
-  previewLegacyProfileMigrationWithRetry,
+  confirmLegacyProfileMigration as confirmLegacyProfileMigrationOnce,
+  migrateProviderSettings,
+  previewLegacyProfileMigration as previewLegacyProfileMigrationOnce,
   ProviderSettingsMigrationError,
-} from '../settings/migrateWithRetry';
+} from '../settings/migration';
 
 const coordinator = createLegacyProfileMigrationCoordinator({
   acquireRegistryLease: acquireAuthoritativePluginRuntimeRegistryLease,
-  migrate: migrateProviderSettingsWithRetry,
+  migrate: migrateProviderSettings,
   processEnv: process.env,
 });
 
@@ -56,7 +56,7 @@ export function confirmLegacyProfileMigration(input: Readonly<{
   reviewedMapping: LegacyProfileReviewedMappingV1;
   migratedAt: number;
 }>): Promise<Readonly<{ version: number; settings: AccountSettings }>> {
-  return confirmLegacyProfileMigrationWithRetry({
+  return confirmLegacyProfileMigrationOnce({
     ...input,
   });
 }
@@ -66,7 +66,7 @@ export function previewLegacyProfileMigration(input: Readonly<{
   sourceProfileId: string;
   reviewedMapping: LegacyProfileReviewedMappingV1;
 }>) {
-  return previewLegacyProfileMigrationWithRetry({
+  return previewLegacyProfileMigrationOnce({
     ...input,
   });
 }
@@ -94,7 +94,7 @@ export async function confirmLegacyProfileMigrationConflict(input: Readonly<{
       contributionMap,
       () => `pc_migration_${randomUUID()}`,
     );
-    return await migrateProviderSettingsWithRetry({
+    return await migrateProviderSettings({
       credentials: input.credentials,
       acquireRegistryLease: async () => ({ registry: lease.registry, release: async () => undefined }),
       deriveContext: async (latestRawSettings, registry) => {

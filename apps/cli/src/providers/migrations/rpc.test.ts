@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { LegacyProfileMigrationSourceNotFoundError } from '@happier-dev/protocol';
 
-import { ProviderSettingsMigrationError } from '../settings/migrateWithRetry';
+import { ProviderSettingsMigrationError } from '../settings/migration';
 import { mapLegacyProfileMigrationFailure } from './rpc';
 
 describe('legacy profile migration RPC error mapping', () => {

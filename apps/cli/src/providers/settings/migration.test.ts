@@ -11,10 +11,10 @@ import {
 } from '@happier-dev/protocol';
 
 import {
-  confirmLegacyProfileMigrationWithRetry,
-  migrateProviderSettingsWithRetry,
-  previewLegacyProfileMigrationWithRetry,
-} from './migrateWithRetry';
+  confirmLegacyProfileMigration,
+  migrateProviderSettings,
+  previewLegacyProfileMigration,
+} from './migration';
 
 function migrationParams(connectionId: string) {
   return {
@@ -63,29 +63,37 @@ function context(connectionId: string): ProviderAccountSettingsMigrationContextV
   };
 }
 
-describe('migrateProviderSettingsWithRetry', () => {
+function guidedReviewedMapping() {
+  return {
+    connection: {
+      v: 1 as const, id: ProviderConnectionIdSchema.parse('pc-company'),
+      source: { kind: 'custom' as const, template: {
+        v: 1 as const, name: 'Company', endpointTemplates: [{
+          id: 'chat', protocol: 'openai-chat' as const, baseUrl: 'https://company.example/v1',
+          capabilities: { streaming: 'unknown' as const, toolRoundTrips: 'unknown' as const, statefulResponses: 'unknown' as const, reasoningControls: 'unknown' as const },
+        }], catalog: { source: 'manual' as const, manualModelPolicy: 'allowed' as const },
+      } },
+      role: 'named' as const, displayName: 'Company', displayNameMode: 'custom' as const,
+      deployment: { kind: 'external' as const },
+      revision: 0, createdAt: 1, updatedAt: 1,
+    },
+    credentialMoves: [], routingEnvironmentVariableNames: ['OPENAI_BASE_URL'], manualModelIds: [],
+  };
+}
+
+function guidedRawProfile() {
+  return {
+    profiles: [{ id: 'company', name: 'Company', environmentVariables: [{ name: 'OPENAI_BASE_URL', value: 'https://company.example/v1' }], createdAt: 1, updatedAt: 1 }],
+    lastUsedProfile: 'company',
+  };
+}
+
+describe('migrateProviderSettings', () => {
   it('previews a guided mapping from the latest raw account state without writing or returning settings', async () => {
-    const reviewedMapping = {
-      connection: {
-        v: 1 as const, id: ProviderConnectionIdSchema.parse('pc-company'),
-        source: { kind: 'custom' as const, template: {
-          v: 1 as const, name: 'Company', endpointTemplates: [{
-            id: 'chat', protocol: 'openai-chat' as const, baseUrl: 'https://company.example/v1',
-            capabilities: { streaming: 'unknown' as const, toolRoundTrips: 'unknown' as const, statefulResponses: 'unknown' as const, reasoningControls: 'unknown' as const },
-          }], catalog: { source: 'manual' as const, manualModelPolicy: 'allowed' as const },
-        } },
-        role: 'named' as const, displayName: 'Company', displayNameMode: 'custom' as const,
-        deployment: { kind: 'external' as const },
-        revision: 0, createdAt: 1, updatedAt: 1,
-      },
-      credentialMoves: [], routingEnvironmentVariableNames: ['OPENAI_BASE_URL'], manualModelIds: [],
-    };
-    const raw = {
-      profiles: [{ id: 'company', name: 'Company', environmentVariables: [{ name: 'OPENAI_BASE_URL', value: 'https://company.example/v1' }], createdAt: 1, updatedAt: 1 }],
-      lastUsedProfile: 'company',
-    };
+    const reviewedMapping = guidedReviewedMapping();
+    const raw = guidedRawProfile();
     let updateCalls = 0;
-    const result = await previewLegacyProfileMigrationWithRetry({
+    const result = await previewLegacyProfileMigration({
       credentials: credentials(), sourceProfileId: 'company', reviewedMapping,
       deps: {
         fetchSettings: async () => ({ content: { t: 'plain', v: raw }, version: 7 }),
@@ -107,7 +115,7 @@ describe('migrateProviderSettingsWithRetry', () => {
     expect(JSON.stringify(result)).not.toContain('OPENAI_BASE_URL');
   });
 
-  it('converges a CAS loser on the recorded winning connection without rewriting unrelated settings', async () => {
+  it('returns a typed terminal conflict after one CAS without re-running the migration against the CAS winner', async () => {
     const rawWinner = migrateProviderAccountSettingsV1(
       { schemaVersion: 7, unrelated: 'winner' },
       context('pc_winner'),
@@ -116,7 +124,7 @@ describe('migrateProviderSettingsWithRetry', () => {
     if (!rawWinner.ok) throw new Error('expected winner fixture');
 
     const updateCalls: Array<{ expectedVersion: number; content: AccountSettingsStoredContentEnvelope | null }> = [];
-    const result = await migrateProviderSettingsWithRetry({
+    await expect(migrateProviderSettings({
       credentials: credentials(),
       ...migrationParams('pc_loser_preallocated_once'),
       deps: {
@@ -137,50 +145,59 @@ describe('migrateProviderSettingsWithRetry', () => {
         resolveCachePath: () => '/unused/provider-settings-cache',
         writeCache: async () => undefined,
       },
-    });
+    })).rejects.toThrow('Account Settings mutation did not settle: conflict');
 
     expect(updateCalls).toHaveLength(1);
-    expect(result.version).toBe(2);
-    expect(result.outcomes).toEqual([
-      { sourceProfileId: 'deepseek', kind: 'connection', connectionId: 'pc_winner' },
-    ]);
-    expect(result.settings).toMatchObject({
-      schemaVersion: 7,
-      unrelated: 'winner',
-      providerSettingsV1: { connections: [{ id: 'pc_winner' }] },
+    expect(updateCalls[0]?.expectedVersion).toBe(1);
+    const submitted = updateCalls[0];
+    const submittedRoot = submitted?.content?.t === 'plain' ? record(submitted.content.v) : null;
+    expect(submittedRoot).toMatchObject({ schemaVersion: 7, unrelated: 'initial' });
+    expect(record(submittedRoot?.providerSettingsV1)).toMatchObject({
+      connections: [{ id: 'pc_loser_preallocated_once' }],
     });
   });
 
-  it('recomputes guided-confirmation source fingerprint on the CAS winner and refuses a changed binding atomically', async () => {
-    const reviewedMapping = {
-      connection: {
-        v: 1 as const, id: ProviderConnectionIdSchema.parse('pc-company'),
-        source: { kind: 'custom' as const, template: {
-          v: 1 as const, name: 'Company', endpointTemplates: [{
-            id: 'chat', protocol: 'openai-chat' as const, baseUrl: 'https://company.example/v1',
-            capabilities: { streaming: 'unknown' as const, toolRoundTrips: 'unknown' as const, statefulResponses: 'unknown' as const, reasoningControls: 'unknown' as const },
-          }], catalog: { source: 'manual' as const, manualModelPolicy: 'allowed' as const },
-        } },
-        role: 'named' as const, displayName: 'Company', displayNameMode: 'custom' as const,
-        deployment: { kind: 'external' as const },
-        revision: 0, createdAt: 1, updatedAt: 1,
-      },
-      credentialMoves: [], routingEnvironmentVariableNames: ['OPENAI_BASE_URL'], manualModelIds: [],
-    };
-    const raw = {
-      profiles: [{ id: 'company', name: 'Company', environmentVariables: [{ name: 'OPENAI_BASE_URL', value: 'https://company.example/v1' }], createdAt: 1, updatedAt: 1 }],
-      lastUsedProfile: 'company',
-    };
-    const fingerprint = createLegacyProfileMigrationSourceFingerprintV1({ rawSettings: raw, sourceProfileId: 'company', reviewedMapping });
+  it('refuses a changed guided source at its single evaluation without submitting a CAS', async () => {
+    const reviewedMapping = guidedReviewedMapping();
+    const displayedRaw = guidedRawProfile();
+    const fingerprint = createLegacyProfileMigrationSourceFingerprintV1({
+      rawSettings: displayedRaw, sourceProfileId: 'company', reviewedMapping,
+    });
     let updates = 0;
-    await expect(confirmLegacyProfileMigrationWithRetry({
+    await expect(confirmLegacyProfileMigration({
+      credentials: credentials(), sourceProfileId: 'company', expectedSourceFingerprint: fingerprint,
+      reviewedMapping, migratedAt: 20,
+      deps: {
+        fetchSettings: async () => ({
+          content: { t: 'plain', v: { ...displayedRaw, lastUsedProfile: null } },
+          version: 1,
+        }),
+        resolveAccountEncryptionMode: resolvePlainAccountEncryptionMode,
+        updateSettings: async (): Promise<AccountSettingsV2UpdateResponse> => {
+          updates += 1;
+          return { success: true, version: 2 };
+        },
+        resolveCachePath: () => '/unused/provider-settings-cache', writeCache: async () => undefined,
+      },
+    })).rejects.toMatchObject({ name: 'ProviderSettingsMigrationError', reason: 'legacy_profile_source_changed' });
+    expect(updates).toBe(0);
+  });
+
+  it('reports a concurrent guided-confirmation source change as a typed conflict without post-conflict callback replay', async () => {
+    const reviewedMapping = guidedReviewedMapping();
+    const raw = guidedRawProfile();
+    const fingerprint = createLegacyProfileMigrationSourceFingerprintV1({
+      rawSettings: raw, sourceProfileId: 'company', reviewedMapping,
+    });
+    const updates: Array<{ expectedVersion: number }> = [];
+    await expect(confirmLegacyProfileMigration({
       credentials: credentials(), sourceProfileId: 'company', expectedSourceFingerprint: fingerprint,
       reviewedMapping, migratedAt: 20,
       deps: {
         fetchSettings: async () => ({ content: { t: 'plain', v: raw }, version: 1 }),
         resolveAccountEncryptionMode: resolvePlainAccountEncryptionMode,
-        updateSettings: async (): Promise<AccountSettingsV2UpdateResponse> => {
-          updates += 1;
+        updateSettings: async (request): Promise<AccountSettingsV2UpdateResponse> => {
+          updates.push({ expectedVersion: request.expectedVersion });
           return {
             success: false, error: 'version-mismatch', currentVersion: 2,
             currentContent: { t: 'plain', v: { ...raw, lastUsedProfile: null } },
@@ -188,8 +205,8 @@ describe('migrateProviderSettingsWithRetry', () => {
         },
         resolveCachePath: () => '/unused/provider-settings-cache', writeCache: async () => undefined,
       },
-    })).rejects.toMatchObject({ reason: 'legacy_profile_source_changed' });
-    expect(updates).toBe(1);
+    })).rejects.toThrow('Account Settings mutation did not settle: conflict');
+    expect(updates).toEqual([{ expectedVersion: 1 }]);
   });
 
   it('lets one concurrent migrator win and returns conflict without replaying the other callback', async () => {
@@ -233,11 +250,11 @@ describe('migrateProviderSettingsWithRetry', () => {
     } as const;
 
     const [left, right] = await Promise.allSettled([
-      migrateProviderSettingsWithRetry({ credentials: credentials(), ...migrationParams('pc_left'), deps }),
-      migrateProviderSettingsWithRetry({ credentials: credentials(), ...migrationParams('pc_right'), deps }),
+      migrateProviderSettings({ credentials: credentials(), ...migrationParams('pc_left'), deps }),
+      migrateProviderSettings({ credentials: credentials(), ...migrationParams('pc_right'), deps }),
     ]);
 
-    const fulfilled = [left, right].find((result): result is PromiseFulfilledResult<Awaited<ReturnType<typeof migrateProviderSettingsWithRetry>>> => result.status === 'fulfilled');
+    const fulfilled = [left, right].find((result): result is PromiseFulfilledResult<Awaited<ReturnType<typeof migrateProviderSettings>>> => result.status === 'fulfilled');
     const rejected = [left, right].find((result): result is PromiseRejectedResult => result.status === 'rejected');
     expect(fulfilled).toBeDefined();
     expect(rejected?.reason).toEqual(expect.objectContaining({ message: expect.stringContaining('conflict') }));
@@ -261,7 +278,7 @@ describe('migrateProviderSettingsWithRetry', () => {
   it('returns an unrelated-settings conflict without replaying the migration callback', async () => {
     let updateAttempt = 0;
     let finalContent: AccountSettingsStoredContentEnvelope | null = null;
-    await expect(migrateProviderSettingsWithRetry({
+    await expect(migrateProviderSettings({
       credentials: credentials(),
       ...migrationParams('pc_after_unrelated_conflict'),
       deps: {
@@ -296,7 +313,7 @@ describe('migrateProviderSettingsWithRetry', () => {
     let releaseCount = 0;
     let updateCalls = 0;
 
-    await expect(migrateProviderSettingsWithRetry({
+    await expect(migrateProviderSettings({
       credentials: credentials(),
       deriveContext: () => context('pc_outcome_unknown'),
       acquireRegistryLease: async () => ({
@@ -322,46 +339,39 @@ describe('migrateProviderSettingsWithRetry', () => {
     expect(releaseCount).toBe(1);
   });
 
-  it('re-derives candidates from each CAS winner while retaining one registry lease', async () => {
-    const derivations: unknown[] = [];
+  it('derives context once from the fetched baseline and releases the registry lease exactly once across a terminal conflict', async () => {
+    const derivations: Array<Readonly<Record<string, unknown>>> = [];
+    let acquired = 0;
     let released = 0;
-    let updateAttempt = 0;
-    const result = await migrateProviderSettingsWithRetry({
+    await expect(migrateProviderSettings({
       credentials: credentials(),
-      acquireRegistryLease: async () => ({
-        registry: { generation: 'accepted-generation' },
-        release: async () => { released += 1; },
-      }),
-      deriveContext: (settings, registry) => {
-        derivations.push({ unrelated: settings.unrelated, registry });
-        return context(settings.unrelated === 'winner' ? 'pc_from_winner' : 'pc_initial');
+      acquireRegistryLease: async () => {
+        acquired += 1;
+        return {
+          registry: { generation: 'accepted-generation' },
+          release: async () => { released += 1; },
+        };
+      },
+      deriveContext: (settings) => {
+        derivations.push({ unrelated: settings.unrelated });
+        return context(settings.unrelated === 'initial' ? 'pc_initial' : 'pc_from_winner');
       },
       deps: {
         fetchSettings: async () => ({
           content: { t: 'plain', v: { schemaVersion: 7, unrelated: 'initial' } }, version: 1,
         }),
         resolveAccountEncryptionMode: resolvePlainAccountEncryptionMode,
-        updateSettings: async (request): Promise<AccountSettingsV2UpdateResponse> => {
-          updateAttempt += 1;
-          if (updateAttempt === 1) {
-            return {
-              success: false, error: 'version-mismatch', currentVersion: 2,
-              currentContent: { t: 'plain', v: { schemaVersion: 7, unrelated: 'winner' } },
-            };
-          }
-          return { success: true, version: 3 };
-        },
+        updateSettings: async (): Promise<AccountSettingsV2UpdateResponse> => ({
+          success: false, error: 'version-mismatch', currentVersion: 2,
+          currentContent: { t: 'plain', v: { schemaVersion: 7, unrelated: 'winner' } },
+        }),
         resolveCachePath: () => '/unused/provider-settings-cache',
         writeCache: async () => undefined,
       },
-    });
-    expect(derivations).toEqual([
-      { unrelated: 'initial', registry: { generation: 'accepted-generation' } },
-      { unrelated: 'winner', registry: { generation: 'accepted-generation' } },
-    ]);
-    expect(result.outcomes).toContainEqual({
-      sourceProfileId: 'deepseek', kind: 'connection', connectionId: 'pc_from_winner',
-    });
+    })).rejects.toThrow('Account Settings mutation did not settle: conflict');
+
+    expect(derivations).toEqual([{ unrelated: 'initial' }]);
+    expect(acquired).toBe(1);
     expect(released).toBe(1);
   });
 });

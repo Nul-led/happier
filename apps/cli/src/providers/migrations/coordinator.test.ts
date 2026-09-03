@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { createLegacyProfileMigrationCoordinator } from './coordinator';
-import { migrateProviderSettingsWithRetry } from '../settings/migrateWithRetry';
+import { migrateProviderSettings } from '../settings/migration';
 import { ProviderContributionV1Schema, type AccountSettingsStoredContentEnvelope, type AccountSettingsV2UpdateResponse } from '@happier-dev/protocol';
 
 const migrationContributionKey = 'happier.provider.deepseek/deepseek';
@@ -167,7 +167,7 @@ describe('legacy profile migration coordinator', () => {
     };
     const coordinator = createLegacyProfileMigrationCoordinator({
       acquireRegistryLease: async () => lease,
-      migrate: (params) => migrateProviderSettingsWithRetry({
+      migrate: (params) => migrateProviderSettings({
         ...params,
         deps: {
           fetchSettings: async () => ({ content: { t: 'plain', v: {} }, version: 1 }),
@@ -188,14 +188,14 @@ describe('legacy profile migration coordinator', () => {
     expect(releases).toBe(1);
   });
 
-  it('re-resolves DNS on every CAS attempt and drops a grant when the winning attempt becomes private', async () => {
+  it('resolves DNS once and returns a terminal conflict without rebuilding grants against the CAS winner', async () => {
     const registry = resolvedMigrationRegistry();
     let dnsAttempt = 0;
     let updateAttempt = 0;
     const attemptedContents: AccountSettingsStoredContentEnvelope[] = [];
     const coordinator = createLegacyProfileMigrationCoordinator({
       acquireRegistryLease: async () => ({ registry, release: async () => undefined }),
-      migrate: (params) => migrateProviderSettingsWithRetry({
+      migrate: (params) => migrateProviderSettings({
         ...params,
         deps: {
           fetchSettings: async () => ({ content: { t: 'plain', v: { favoriteProfiles: ['deepseek'] } }, version: 1 }),
@@ -203,15 +203,12 @@ describe('legacy profile migration coordinator', () => {
           updateSettings: async (request): Promise<AccountSettingsV2UpdateResponse> => {
             updateAttempt += 1;
             if (request.content) attemptedContents.push(request.content);
-            if (updateAttempt === 1) {
-              return {
-                success: false,
-                error: 'version-mismatch',
-                currentVersion: 2,
-                currentContent: { t: 'plain', v: { favoriteProfiles: ['deepseek'], concurrent: true } },
-              };
-            }
-            return { success: true, version: 3 };
+            return {
+              success: false,
+              error: 'version-mismatch',
+              currentVersion: 2,
+              currentContent: { t: 'plain', v: { favoriteProfiles: ['deepseek'], concurrent: true } },
+            };
           },
           resolveCachePath: () => '/unused/provider-migration-cache',
           writeCache: async () => undefined,
@@ -227,10 +224,13 @@ describe('legacy profile migration coordinator', () => {
       credentials: { token: 'token', encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) } },
       providersEnabled: true,
       machineId: 'machine-a',
-    })).resolves.toMatchObject({ status: 'complete', version: 3 });
-    expect(attemptedContents).toHaveLength(2);
+    })).resolves.toEqual({
+      status: 'deferred',
+      reason: 'Account Settings mutation did not settle: conflict',
+    });
+    expect(updateAttempt).toBe(1);
+    expect(attemptedContents).toHaveLength(1);
     expect(attemptedContents[0]).toMatchObject({ t: 'plain', v: { providerSettingsV1: { accountGrants: [{ connectionId: 'pc_deepseek' }] } } });
-    expect(attemptedContents[1]).toMatchObject({ t: 'plain', v: { concurrent: true, providerSettingsV1: { accountGrants: [] } } });
-    expect(dnsAttempt).toBe(2);
+    expect(dnsAttempt).toBe(1);
   });
 });

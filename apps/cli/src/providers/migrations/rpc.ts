@@ -13,7 +13,7 @@ import type {
   DaemonProviderProfileMigrationConflictConfirmResponseV1,
 } from '@happier-dev/protocol/rpc';
 
-import { ProviderSettingsMigrationError } from '../settings/migrateWithRetry';
+import { ProviderSettingsMigrationError } from '../settings/migration';
 import { confirmLegacyProfileMigration, confirmLegacyProfileMigrationConflict, previewLegacyProfileMigration } from './runtime';
 
 export function mapLegacyProfileMigrationFailure(error: unknown, sourceProfileId: string): ProviderErrorV1 {

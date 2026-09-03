@@ -189,20 +189,23 @@ describe('Agent Provider catalog observation', () => {
       source: 'dynamic', stale: false, models: [{ id: 'api-only' }],
     });
 
+    // Success and refusal are two arms of one lane result, so the waiter's
+    // unavailable answer stays part of the scheduled result type.
+    type LaneResult = Readonly<{ status: 'success' | 'error' }>;
     let releaseActive!: () => void;
-    const active = scheduler.runCatalog(
+    const active = scheduler.runCatalog<LaneResult>(
       'occupied',
       'manual_refresh',
-      () => new Promise<Readonly<{ status: 'success' }>>((resolve) => {
+      () => new Promise<LaneResult>((resolve) => {
         releaseActive = () => resolve({ status: 'success' });
       }),
-      { unavailable: () => ({ status: 'error' as const }) },
+      { unavailable: () => ({ status: 'error' }) },
     );
-    const queued = scheduler.runCatalog(
+    const queued = scheduler.runCatalog<LaneResult>(
       'queued',
       'manual_refresh',
-      async () => ({ status: 'success' as const }),
-      { unavailable: () => ({ status: 'error' as const }) },
+      async () => ({ status: 'success' }),
+      { unavailable: () => ({ status: 'error' }) },
     );
     await vi.waitFor(() => expect(releaseActive).toBeTypeOf('function'));
 
