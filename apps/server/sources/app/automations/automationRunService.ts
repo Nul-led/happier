@@ -2,6 +2,7 @@ import { afterTx, inTx, type Tx } from "@/storage/inTx";
 import { markAccountChanged } from "@/app/changes/markAccountChanged";
 import {
     AUTOMATION_RUN_CANCELLED_AFTER_DISPATCH_PERMITTED_CAUSE_V1,
+    AUTOMATION_RUN_CANCELLED_WHILE_RUNNING_CAUSE_V1,
     AutomationRunResultStoredV1Schema,
     deriveSessionCreationTagV1,
     parseAutomationRunExecutionRecipeV1,
@@ -1710,7 +1711,9 @@ export async function failAutomationRunFromV2(params: {
 export type CancelledAutomationRunTxResult = Readonly<{
     run: AutomationRunItem;
     previousState: AutomationRunItem["state"];
-    transitionCause?: typeof AUTOMATION_RUN_CANCELLED_AFTER_DISPATCH_PERMITTED_CAUSE_V1;
+    transitionCause?:
+        | typeof AUTOMATION_RUN_CANCELLED_AFTER_DISPATCH_PERMITTED_CAUSE_V1
+        | typeof AUTOMATION_RUN_CANCELLED_WHILE_RUNNING_CAUSE_V1;
 }>;
 
 /**
@@ -1727,6 +1730,13 @@ export async function cancelAutomationRunRowTx(params: Readonly<{
     previousRun: AutomationRunItem;
     accountEncryptionMode: "plain" | "e2ee";
     requireV2RunRepresentability?: boolean;
+    /**
+     * The caller is the present user's explicit per-Run cancellation rather
+     * than an Automation-owned settlement such as machine-assignment removal.
+     * Only that intent may be published as an authoritative cancellation the
+     * claiming machine acts on.
+     */
+    presentUserCancellation?: boolean;
 }>): Promise<CancelledAutomationRunTxResult | null> {
     const { previousRun } = params;
     if (
@@ -1758,6 +1768,20 @@ export async function cancelAutomationRunRowTx(params: Readonly<{
     const dispatchPermitted = previousRun.executionDispatchState === "dispatchPermitted";
     const outcomeUncertain = dispatchPermitted || previousRun.state === "running";
     const terminalState = outcomeUncertain ? "outcome_uncertain" : "cancelled";
+    // Released V2 has no uncertain terminal state, so this settlement would
+    // strand the Run in a shape the V2 projection cannot render at all. Refuse
+    // before any mutation: the Run stays invisible/not-found to that caller
+    // exactly as an unrepresentable Run already does at every other V2
+    // boundary, while queued and claimed Runs still settle cleanly cancelled.
+    if (params.requireV2RunRepresentability && outcomeUncertain) return null;
+    // A Session target keeps no dispatch vocabulary at all, so its running
+    // cancellation carries no dispatch fact to name. The claiming machine
+    // still needs the user's authoritative intent to discard the exact
+    // deterministic Automation input instead of abandoning a stale attempt.
+    const sessionTargetRunningCancellation = params.presentUserCancellation === true
+        && !dispatchPermitted
+        && previousRun.state === "running"
+        && previousRun.executionDispatchState === null;
     const updated = await params.tx.automationRun.updateMany({
         where: {
             id: previousRun.id,
@@ -1827,7 +1851,9 @@ export async function cancelAutomationRunRowTx(params: Readonly<{
         previousState: previousRun.state,
         ...(dispatchPermitted
             ? { transitionCause: AUTOMATION_RUN_CANCELLED_AFTER_DISPATCH_PERMITTED_CAUSE_V1 }
-            : {}),
+            : sessionTargetRunningCancellation
+                ? { transitionCause: AUTOMATION_RUN_CANCELLED_WHILE_RUNNING_CAUSE_V1 }
+                : {}),
     };
 }
 
@@ -1887,6 +1913,7 @@ export async function cancelAutomationRun(params: {
             previousRun: previousRun as AutomationRunItem,
             accountEncryptionMode: accountFence.account.currentness.encryptionMode,
             requireV2RunRepresentability: params.requireV2RunRepresentability,
+            presentUserCancellation: true,
         });
         if (!result) return null;
         await publishCancelledAutomationRunsTx({

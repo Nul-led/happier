@@ -23,13 +23,35 @@ export type HostEventScopeV1 =
 export type AutomationHostEventScopeV1 = Readonly<{ kind: 'account' }>;
 
 /**
- * The one authoritative cause a machine observer may act on: the user
- * cancelled a Run whose external execution was already permitted to dispatch,
- * so the Run can only be published as uncertain even though cancellation is
- * the authoritative intent.
+ * The user cancelled a Run whose external execution was already permitted to
+ * dispatch, so the Run can only be published as uncertain even though
+ * cancellation is the authoritative intent.
  */
 export const AUTOMATION_RUN_CANCELLED_AFTER_DISPATCH_PERMITTED_CAUSE_V1 =
   'cancelledAfterDispatchPermitted' as const;
+
+/**
+ * The user cancelled a running Session-target Run. Session targets carry no
+ * dispatch vocabulary at all, so their cancellation is published as uncertain
+ * with no dispatch fact to name. Without this cause a machine observer cannot
+ * separate the user's authoritative intent from an ordinary stale attempt,
+ * and the exact deterministic Automation input would stay pending.
+ */
+export const AUTOMATION_RUN_CANCELLED_WHILE_RUNNING_CAUSE_V1 =
+  'cancelledWhileRunning' as const;
+
+/**
+ * The one predicate over the causes that mean "the present user cancelled this
+ * Run". Readers must not re-derive this set: an unknown bounded cause from a
+ * newer producer degrades to ordinary lifecycle handling rather than borrowing
+ * cancellation authority.
+ */
+export function isAuthoritativeAutomationRunCancellationCauseV1(
+  cause: string | undefined,
+): boolean {
+  return cause === AUTOMATION_RUN_CANCELLED_AFTER_DISPATCH_PERMITTED_CAUSE_V1
+    || cause === AUTOMATION_RUN_CANCELLED_WHILE_RUNNING_CAUSE_V1;
+}
 
 export const AutomationRunStateChangedHostEventV1Schema = z.object({
   runId: z.string().min(1),

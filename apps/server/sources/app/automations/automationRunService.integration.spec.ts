@@ -600,7 +600,7 @@ describe("automationRunService (integration)", () => {
                 kind: "happier_automation_run_execution_input_v1",
                 targetType: "new_session",
                 templateVersion: 1,
-                templateCiphertext: TEST_TEMPLATE_ENVELOPE,
+                templateCiphertext: TEST_PLAIN_TEMPLATE_ENVELOPE,
                 origin: { kind: "scheduled", scheduledFor: Date.now() - 30_000 },
             })
             : params.targetKind === "newSession"

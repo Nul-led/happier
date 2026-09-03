@@ -344,4 +344,47 @@ describe("plugin webhook Account status projection", () => {
         expect(JSON.stringify(result)).not.toContain("payload");
         expect(JSON.stringify(result)).not.toContain("providerDeliveryId");
     });
+
+    it("counts every movable delivery frozen away from the current target, not only the immediately prior one", async () => {
+        await seedFixture({ providerConfirmedAt: NOW });
+        // Admitted two endpoint moves ago. It is exactly as unclaimable as the
+        // `machine-old` rows, and `delivery.movePending` moves it, so a status
+        // count that omits it under-reports the work the user is offered.
+        await db.pluginWebhookDelivery.create({
+            data: {
+                id: "delivery-ancient",
+                endpointId: ENDPOINT_ID,
+                accountId: ACCOUNT_ID,
+                routeId: "route-status",
+                deliveryIdentityDigest: "e".repeat(64),
+                verifierKind: "github_hmac_sha256_v1",
+                targetMachineId: "machine-ancient",
+                targetMachineInstallationId: "installation-ancient",
+                targetMaterializationId: "materialization-ancient",
+                targetPluginId: "acme.github",
+                targetPluginVersion: "1.0.0",
+                endpointRevision: 1,
+                endpointWebhookContributionId: "github-events",
+                endpointHandlerActionId: "handle-webhook",
+                endpointSourceInstanceId: "source-status",
+                payloadKind: "plain",
+                payload: { t: "plain", v: {} },
+                payloadBytes: 64n,
+                wireVersion: 1,
+                payloadVersion: 1,
+                state: "queued",
+                attemptCount: 0,
+                nextAttemptAt: NOW,
+                metadataDeleteAt: new Date(NOW.getTime() + 90 * 24 * 60 * 60 * 1_000),
+                receivedAt: NOW,
+            },
+        });
+
+        const result = await readPluginWebhookAccountStatusV1({
+            accountId: ACCOUNT_ID,
+            input: { pageSize: 50, deadLetterPageSize: 0 },
+        });
+
+        expect(result.endpoints[0]?.pendingTargetTransfer).toMatchObject({ eligibleDeliveryCount: 4 });
+    });
 });

@@ -1,5 +1,6 @@
 export {
   AUTOMATION_RUN_CANCELLED_AFTER_DISPATCH_PERMITTED_CAUSE_V1,
+  AUTOMATION_RUN_CANCELLED_WHILE_RUNNING_CAUSE_V1,
   HAPPIER_AUTOMATION_RUN_STATE_CHANGED_HOST_EVENT_ID_V1,
   HAPPIER_RUNTIME_HOST_EVENT_PREFIX_V1,
   HOST_EVENT_CATALOG_V1,
@@ -9,6 +10,7 @@ export {
   HostEventScopeV1Schema,
   HostEventTargetV1Schema,
   hostEventIdForSemanticEventV1,
+  isAuthoritativeAutomationRunCancellationCauseV1,
   parseHostEventPayloadV1,
   type AutomationRunStateChangedHostEventV1,
   type HostEventCatalogEntryV1,

@@ -1,4 +1,4 @@
-import { AUTOMATION_RUN_CANCELLED_AFTER_DISPATCH_PERMITTED_CAUSE_V1 } from '@happier-dev/protocol';
+import { isAuthoritativeAutomationRunCancellationCauseV1 } from '@happier-dev/protocol';
 
 import type { Update } from '@/api/types';
 import { abortAutomationRunForAuthoritativeCancellation } from './automationRunCancellation';
@@ -66,15 +66,17 @@ export function getAutomationRunInvalidationAction(params: Readonly<{
     || invalidation.attempt === params.active.attempt;
   if (stateIsCurrent && machineIsCurrent && attemptIsCurrent) return 'none';
 
-  // A Run cancelled after its dispatch was permitted can only be published as
-  // uncertain: the server cannot claim an outcome nothing established. The
-  // explicit transition cause is what still makes the user's cancellation authoritative
-  // here, so this machine stops the execution it started instead of merely
-  // abandoning a stale attempt. Any other uncertainty stays a generic abort.
+  // A Run cancelled once its target could already be doing work can only be
+  // published as uncertain: the server cannot claim an outcome nothing
+  // established. The explicit transition cause is what still makes the user's
+  // cancellation authoritative here, so this machine stops the execution it
+  // started and discards the exact Automation input it enqueued instead of
+  // merely abandoning a stale attempt. The Protocol owns which causes carry
+  // that authority; any other uncertainty stays a generic abort.
   const authoritativelyCancelled = invalidation.state === 'cancelled'
     || (
       invalidation.state === 'outcome_uncertain'
-      && invalidation.transitionCause === AUTOMATION_RUN_CANCELLED_AFTER_DISPATCH_PERMITTED_CAUSE_V1
+      && isAuthoritativeAutomationRunCancellationCauseV1(invalidation.transitionCause)
     );
   return authoritativelyCancelled ? 'authoritative-cancellation' : 'abort';
 }
