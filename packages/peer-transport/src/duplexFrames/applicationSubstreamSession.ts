@@ -3,14 +3,9 @@ import {
     decodePeerTcpTunnelBinaryFrameV2,
     encodePeerTcpTunnelBinaryFrameV2,
 } from '@happier-dev/protocol';
+import { peerTcpTunnelBinaryDecodeFailureReason } from './binaryCodec.js';
 import { substreamAbortFrame, isSchedulableTimeoutMs } from './primitives.js';
 import type { PeerTcpTunnelApplicationSubstreamSessionResult } from './types.js';
-
-function peerTcpTunnelBinaryDecodeFailureReason(reasonCode: string): 'encoded_frame_too_large' | 'decoded_payload_too_large' | 'frame_invalid' {
-    if (reasonCode === 'header_too_large') return 'encoded_frame_too_large';
-    if (reasonCode === 'payload_too_large') return 'decoded_payload_too_large';
-    return 'frame_invalid';
-}
 
 const DEFAULT_MAX_PENDING_APPLICATION_DISPATCHES = 8;
 const DEFAULT_MAX_PENDING_APPLICATION_DISPATCH_BYTES = 256 * 1024;

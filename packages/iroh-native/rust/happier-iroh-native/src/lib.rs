@@ -178,9 +178,9 @@ enum TestTopology {
     DirectOnly,
     RelayOnly {
         relay_url: String,
-        // The pinned test relay stops when this drop guard is released. Its
-        // concrete server type is deliberately erased so the lifecycle crate
-        // does not grow a second relay-server API.
+        // The one local relay owner stops when this drop guard is released.
+        // Its concrete type is erased so the lifecycle crate does not grow a
+        // second relay-server API.
         _relay_server: Box<dyn Any + Send>,
     },
 }
@@ -298,8 +298,7 @@ fn parse_relay_policy(value: &str) -> Result<RelayPolicy, &'static str> {
 }
 
 fn parse_cap_profile(value: &str) -> Result<IrohCapProfile, &'static str> {
-    IrohCapProfile::parse(value)
-        .map_err(|_| "capProfile must be homeInteractive, machineBulk, or workspaceSync")
+    IrohCapProfile::parse(value).map_err(|_| "capProfile must be homeInteractive or machineBulk")
 }
 
 fn key_path_option(value: &Option<String>) -> Result<Option<PathBuf>, &'static str> {
@@ -411,7 +410,6 @@ fn endpoint_config(
                 config.relay_policy = RelayPolicy::Automatic;
                 config.relay_urls = vec![relay_url.clone()];
                 config.disable_ip_transports = true;
-                config.insecure_relay_tls = true;
             }
         }
         return config;
@@ -464,8 +462,10 @@ fn force_relay_only_for_tests() -> Value {
     if test_fixture_has_active_endpoints() {
         return test_fixture_busy_response();
     }
-    let relay = runtime().block_on(iroh::test_utils::run_relay_server_with(false));
-    let (_, relay_url, relay_server) = match relay {
+    // One relay owner, shared with the Rust tunnel fixtures. It serves plain
+    // HTTP, so ordinary endpoints reach it with normal CA verification and a
+    // browser can consume the same URL.
+    let relay_server = match runtime().block_on(happier_iroh_core::LocalTestRelay::spawn()) {
         Ok(value) => value,
         Err(error) => {
             return error_response(
@@ -474,12 +474,13 @@ fn force_relay_only_for_tests() -> Value {
             )
         }
     };
+    let relay_url = relay_server.url_string();
     let mut fixture = state()
         .test_fixture
         .lock()
         .expect("test fixture lock poisoned");
     fixture.topology = TestTopology::RelayOnly {
-        relay_url: relay_url.to_string(),
+        relay_url,
         _relay_server: Box::new(relay_server),
     };
     fixture.observed_path = "unknown";
@@ -578,6 +579,10 @@ fn tunnel_start_error(error: happier_iroh_core::IrohError) -> Value {
         IrohError::LoopbackBindFailed => {
             error_response("loopback_bind_failed", "Home tunnel loopback bind failed")
         }
+        IrohError::EndpointIdentityMismatch => error_response(
+            "endpoint-identity-mismatch",
+            "Home tunnel remote identity does not match the requested endpoint",
+        ),
         IrohError::TransportTimeout => {
             error_response("transport_timeout", "Home tunnel transport timed out")
         }
@@ -615,6 +620,10 @@ fn machine_start_error(error: happier_iroh_core::IrohError) -> Value {
         IrohError::LoopbackBindFailed => error_response(
             "loopback-bind-failed",
             "machine tunnel loopback bind failed",
+        ),
+        IrohError::EndpointIdentityMismatch => error_response(
+            happier_iroh_core::MachineFailureCode::EndpointIdentityMismatch.as_str(),
+            "machine tunnel remote identity does not match the requested endpoint",
         ),
         _ => error_response("transport-unavailable", "machine transport is unavailable"),
     }
@@ -1010,13 +1019,8 @@ fn start_machine_tunnel(value: *const c_char) -> Value {
         return error_response("not-found", "endpoint is shut down");
     };
     let cap_profile = match parse_cap_profile(&input.cap_profile) {
-        Ok(profile @ (IrohCapProfile::MachineBulk | IrohCapProfile::WorkspaceSync)) => profile,
-        _ => {
-            return error_response(
-                "invalid-request",
-                "machine capProfile must be machineBulk or workspaceSync",
-            )
-        }
+        Ok(profile @ IrohCapProfile::MachineBulk) => profile,
+        _ => return error_response("invalid-request", "machine capProfile must be machineBulk"),
     };
     let relay_urls = match &config.relay {
         RelaySelection::Disabled => Vec::new(),
@@ -1603,6 +1607,15 @@ mod android {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn machine_tunnel_identity_mismatch_surfaces_the_existing_failure_code() {
+        let response = machine_start_error(happier_iroh_core::IrohError::EndpointIdentityMismatch);
+        assert_eq!(
+            response["error"]["code"],
+            happier_iroh_core::MachineFailureCode::EndpointIdentityMismatch.as_str()
+        );
+    }
 
     #[test]
     fn home_tunnel_failures_keep_their_native_category() {

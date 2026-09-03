@@ -42,3 +42,19 @@ test('extended DB E2E owns provider generation once and runs only database-relev
     assert.equal(upload.with['retention-days'], 7);
   }
 });
+
+test('provider DB contracts check generated schemas without repair before provider execution', () => {
+  const workflow = loadWorkflow();
+  for (const [jobName, provider] of [
+    ['db-contract-postgres', 'Postgres'],
+    ['db-contract-mysql', 'MySQL'],
+  ]) {
+    const steps = workflow.jobs[jobName].steps;
+    const checkIndex = steps.findIndex((step) => step.name === 'Check provider schema synchronization');
+    const runIndex = steps.findIndex((step) => step.name === `Run db contract suite (${provider})`);
+    assert.ok(checkIndex >= 0, `${jobName} must run the non-mutating schema check`);
+    assert.ok(checkIndex < runIndex, `${jobName} must check schema drift before provider tests`);
+    assert.equal(steps[checkIndex].run, 'yarn --cwd apps/server schema:sync:check');
+    assert.doesNotMatch(steps[checkIndex].run, /db push|migrate|repair/iu);
+  }
+});

@@ -330,6 +330,33 @@ test('release-npm derives unique preview prerelease versions from base versions'
   assert.doesNotMatch(allocator, /GITHUB_RUN_NUMBER/, 'workflow metadata must delegate allocation to the canonical allocator');
 });
 
+test('release-npm reuses caller-bound candidate versions instead of allocating replacements', async () => {
+  const workflow = parse(await loadWorkflow('release-npm.yml'));
+  const inputs = workflow?.on?.workflow_call?.inputs ?? {};
+  for (const name of ['cli_version', 'stack_version', 'server_version']) {
+    assert.equal(inputs[name]?.required, false);
+    assert.equal(inputs[name]?.default, '');
+    assert.equal(inputs[name]?.type, 'string');
+  }
+
+  const metadata = workflow?.jobs?.release?.steps?.find((step) => step.name === 'Resolve release metadata');
+  assert.equal(metadata?.env?.INPUT_CLI_VERSION, '${{ inputs.cli_version }}');
+  assert.equal(metadata?.env?.INPUT_STACK_VERSION, '${{ inputs.stack_version }}');
+  assert.equal(metadata?.env?.INPUT_SERVER_VERSION, '${{ inputs.server_version }}');
+  assert.match(metadata?.run ?? '', /--cli-version "\$INPUT_CLI_VERSION"/);
+  assert.match(metadata?.run ?? '', /--stack-version "\$INPUT_STACK_VERSION"/);
+  assert.match(metadata?.run ?? '', /--server-version "\$INPUT_SERVER_VERSION"/);
+
+  const orchestrator = parse(await loadWorkflow('release.yml'));
+  const publisher = orchestrator?.jobs?.publish_npm;
+  assert.ok(publisher?.needs?.includes('publish_cli_binaries'));
+  assert.ok(publisher?.needs?.includes('publish_hstack_binaries'));
+  assert.ok(publisher?.needs?.includes('publish_server_runtime'));
+  assert.equal(publisher?.with?.cli_version, '${{ needs.publish_cli_binaries.outputs.version }}');
+  assert.equal(publisher?.with?.stack_version, '${{ needs.publish_hstack_binaries.outputs.version }}');
+  assert.equal(publisher?.with?.server_version, '${{ needs.publish_server_runtime.outputs.version }}');
+});
+
 test('final release workflow does not mutate component versions after candidate approval', async () => {
   const orchestrator = await loadWorkflow('release.yml');
   const releaseNpm = await loadWorkflow('release-npm.yml');

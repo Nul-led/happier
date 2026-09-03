@@ -194,6 +194,26 @@ describe('IrohEndpointDescriptorV1 (canonical Iroh endpoint sub-descriptor)', ()
     }).success).toBe(true);
   });
 
+  it('rejects relay URLs that differ only by normalization, exactly like the native transport owner', () => {
+    // `RelaySelection::resolve`
+    // (packages/iroh-native/rust/happier-iroh-core/src/endpoint.rs) parses every
+    // hint with iroh's `RelayUrl` and rejects entries that normalize to the same
+    // relay. Admitting them here would publish a descriptor the transport owner
+    // refuses to bind, so the ambiguity has to fail at the producer instead.
+    for (const relayUrls of [
+      ['https://relay.example.test', 'https://relay.example.test/'],
+      ['https://relay.example.test/', 'https://RELAY.example.test/'],
+      ['https://relay.example.test:443/', 'https://relay.example.test/'],
+    ]) {
+      expect(IrohEndpointDescriptorV1Schema.safeParse({ ...VALID_DESCRIPTOR, relayUrls }).success).toBe(false);
+    }
+    // Two relays that merely share a host are still two distinct relays.
+    expect(IrohEndpointDescriptorV1Schema.safeParse({
+      ...VALID_DESCRIPTOR,
+      relayUrls: ['https://relay.example.test/', 'https://relay.example.test/backup'],
+    }).success).toBe(true);
+  });
+
   it('rejects non-canonical (leading-zero) ports on direct addresses', () => {
     expect(IrohEndpointDescriptorV1Schema.safeParse({
       ...VALID_DESCRIPTOR,

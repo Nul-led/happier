@@ -6,11 +6,14 @@
 //! not the subject (ALPN dispatch to the fixed two-ALPN consumer slots and the
 //! forced relay fixture).
 //!
-//! The forced-relay fixture requires the local relay test facility from the
-//! iroh `test-utils` feature and is compiled only under the
-//! `test-relay-fixture` cargo feature (never a release dependency).
+//! The forced-relay fixture uses the pinned stock relay server and is compiled
+//! only under the `test-relay-fixture` cargo feature (never a release
+//! dependency).
 #![cfg(test)]
 
+use crate::endpoint::{
+    CONSUMER_CHANNEL_CAPACITY, MAX_PENDING_HANDSHAKES, PRE_APPLICATION_CUSTODY_TIMEOUT,
+};
 use crate::{
     AcceptedIrohConnection, HomeAcceptor, HomeAcceptorConfig, HomeTunnel, HomeTunnelConfig,
     IrohAlpn, IrohEndpoint, IrohError, IrohObservedPath, RelayPolicy, TUNNEL_PREAMBLE,
@@ -184,6 +187,51 @@ async fn wait_for(timeout: Duration, mut probe: impl FnMut() -> bool) -> bool {
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
     probe()
+}
+
+/// The Home tunnel derives its remote identity from the authenticated QUIC
+/// connection and verifies it against the requested descriptor before the
+/// loopback origin is published. Mismatch classification is proved at the
+/// shared guard
+/// (`endpoint::tests::outgoing_tunnel_identity_guard_reports_authenticated_id_and_fails_closed_on_mismatch`);
+/// this test proves the Home start path is wired to it and reports the
+/// authenticated id rather than never deriving one.
+#[tokio::test]
+async fn home_tunnel_reports_the_authenticated_identity_not_the_requested_descriptor_copy() {
+    let (target_addr, _target, _target_accepted) = spawn_echo_target().await;
+    let server = IrohEndpoint::bind(&direct_endpoint_config()).await.unwrap();
+    let client = IrohEndpoint::bind(&direct_endpoint_config()).await.unwrap();
+    let direct_addr = server
+        .endpoint()
+        .addr()
+        .ip_addrs()
+        .next()
+        .copied()
+        .expect("server endpoint publishes a direct address");
+    let acceptor = HomeAcceptor::start(
+        &server,
+        HomeAcceptorConfig {
+            target: target_addr,
+            ..HomeAcceptorConfig::default()
+        },
+    )
+    .expect("acceptor starts with a loopback target");
+
+    let tunnel = HomeTunnel::start(
+        &client,
+        home_tunnel_config(server.id().to_string(), direct_addr),
+    )
+    .await
+    .expect("tunnel connects to the descriptor endpoint");
+
+    assert_eq!(tunnel.remote_endpoint_id(), server.id().to_string());
+    assert_ne!(tunnel.remote_endpoint_id(), client.id().to_string());
+
+    tunnel.stop();
+    acceptor.stop();
+    client.shutdown().await;
+    server.shutdown().await;
+    _target.abort();
 }
 
 /// Positive vertical: multiple local TCP streams traverse real
@@ -935,6 +983,187 @@ async fn unregistered_and_unknown_alpns_get_no_application_access() {
     _target.abort();
 }
 
+/// Pre-application custody at the endpoint: connections the dispatcher has
+/// accepted but not yet handed to a consumer are its own bounded resource. When
+/// the hand-over stalls, the accept side must backpressure instead of retaining
+/// unbounded handshake work, and endpoint shutdown must release everything still
+/// held.
+#[tokio::test]
+async fn pre_dispatch_custody_stays_bounded_under_stalled_handovers_and_shutdown_releases_it() {
+    let server = IrohEndpoint::bind(&direct_endpoint_config()).await.unwrap();
+    let direct_addr = server
+        .endpoint()
+        .addr()
+        .ip_addrs()
+        .next()
+        .copied()
+        .expect("server endpoint publishes a direct address");
+
+    // A registered consumer that never drains its queue: once the queue is
+    // full every further hand-over stalls inside the dispatcher.
+    let (home_tx, _stalled_home_rx) = mpsc::channel(CONSUMER_CHANNEL_CAPACITY);
+    let _registration = server
+        .register_consumer(IrohAlpn::HomeTunnel, home_tx)
+        .expect("home consumer registers");
+
+    let client = IrohEndpoint::bind(&direct_endpoint_config()).await.unwrap();
+    let remote = iroh::EndpointAddr::new(server.id()).with_ip_addr(direct_addr);
+    let mut dials = Vec::new();
+    for _ in 0..(MAX_PENDING_HANDSHAKES * 2) {
+        let endpoint = client.endpoint();
+        let remote = remote.clone();
+        dials.push(tokio::spawn(async move {
+            endpoint.connect(remote, crate::HOME_TUNNEL_ALPN).await.ok()
+        }));
+    }
+
+    let mut peak = 0usize;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while tokio::time::Instant::now() < deadline {
+        let pending = server.pending_handshakes();
+        peak = peak.max(pending);
+        assert!(
+            pending <= MAX_PENDING_HANDSHAKES,
+            "the endpoint must never hold more than {MAX_PENDING_HANDSHAKES} connections in pre-application custody (observed {pending})"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        peak > CONSUMER_CHANNEL_CAPACITY,
+        "the fixture must push past one consumer queue's worth of work for the bound to mean anything (peak {peak})"
+    );
+
+    server.shutdown().await;
+    assert!(
+        wait_for(Duration::from_secs(5), || server.pending_handshakes() == 0).await,
+        "endpoint shutdown must release every connection still in pre-application custody"
+    );
+
+    for dial in dials {
+        dial.abort();
+    }
+    client.shutdown().await;
+}
+
+/// An admitted Home connection that never opens an application stream is
+/// released after the bounded custody window instead of holding connection
+/// resources for as long as the peer likes. Nothing reaches the fixed loopback
+/// target, because no stream ever existed to reach it.
+#[tokio::test]
+async fn an_admitted_home_connection_that_opens_no_stream_drains_after_the_custody_window() {
+    let (target_addr, _target, mut target_accepted) = spawn_echo_target().await;
+    let server = IrohEndpoint::bind(&direct_endpoint_config()).await.unwrap();
+    let direct_addr = server
+        .endpoint()
+        .addr()
+        .ip_addrs()
+        .next()
+        .copied()
+        .expect("server endpoint publishes a direct address");
+    let acceptor = HomeAcceptor::start(
+        &server,
+        HomeAcceptorConfig {
+            target: target_addr,
+            ..HomeAcceptorConfig::default()
+        },
+    )
+    .expect("acceptor registers the Home consumer");
+    let client = IrohEndpoint::bind(&direct_endpoint_config()).await.unwrap();
+    let remote = iroh::EndpointAddr::new(server.id()).with_ip_addr(direct_addr);
+
+    let connection = client
+        .endpoint()
+        .connect(remote, crate::HOME_TUNNEL_ALPN)
+        .await
+        .expect("home dial connects");
+    assert!(
+        wait_for(Duration::from_secs(5), || acceptor
+            .status()
+            .connections_active
+            == 1)
+        .await,
+        "the connection must be admitted before the custody window is measured"
+    );
+
+    // The peer never opens a bidirectional application stream.
+    tokio::time::timeout(
+        PRE_APPLICATION_CUSTODY_TIMEOUT + Duration::from_secs(5),
+        connection.closed(),
+    )
+    .await
+    .expect("a connection that opens no application stream must be released");
+
+    assert!(
+        tokio::time::timeout(Duration::from_millis(250), target_accepted.recv())
+            .await
+            .is_err(),
+        "a connection without a first stream must never contact the fixed target"
+    );
+    assert_eq!(
+        acceptor.status().streams_accepted,
+        0,
+        "no stream was ever accepted"
+    );
+
+    acceptor.stop();
+    client.shutdown().await;
+    server.shutdown().await;
+    _target.abort();
+}
+
+/// Once a connection has opened its first application stream it keeps the
+/// existing long-lived semantics: the custody window does not become a
+/// connection-wide idle timeout, so a later stream still works after a gap
+/// longer than the window. This is what Socket.IO and Mutagen depend on.
+#[tokio::test]
+async fn a_home_connection_stays_usable_past_the_custody_window_after_its_first_stream() {
+    let (target_addr, _target, mut target_accepted) = spawn_echo_target().await;
+    let server = IrohEndpoint::bind(&direct_endpoint_config()).await.unwrap();
+    let direct_addr = server
+        .endpoint()
+        .addr()
+        .ip_addrs()
+        .next()
+        .copied()
+        .expect("server endpoint publishes a direct address");
+    let acceptor = HomeAcceptor::start(
+        &server,
+        HomeAcceptorConfig {
+            target: target_addr,
+            ..HomeAcceptorConfig::default()
+        },
+    )
+    .expect("acceptor registers the Home consumer");
+    let client = IrohEndpoint::bind(&direct_endpoint_config()).await.unwrap();
+    let remote = iroh::EndpointAddr::new(server.id()).with_ip_addr(direct_addr);
+
+    let connection = client
+        .endpoint()
+        .connect(remote, crate::HOME_TUNNEL_ALPN)
+        .await
+        .expect("home dial connects");
+    let first = raw_stream_roundtrip(&connection, b"first-stream", true)
+        .await
+        .expect("the first application stream moves bytes");
+    assert_eq!(first, b"first-stream");
+    assert!(target_accepted.recv().await.is_some());
+
+    // Idle for longer than the pre-application custody window.
+    tokio::time::sleep(PRE_APPLICATION_CUSTODY_TIMEOUT + Duration::from_secs(2)).await;
+
+    let later = raw_stream_roundtrip(&connection, b"later-stream", true)
+        .await
+        .expect("a connection that did application work stays usable past the custody window");
+    assert_eq!(later, b"later-stream");
+    assert_eq!(acceptor.status().streams_accepted, 2);
+
+    connection.close(0u32.into(), b"done");
+    acceptor.stop();
+    client.shutdown().await;
+    server.shutdown().await;
+    _target.abort();
+}
+
 /// Registration is exclusive per ALPN and fails typed on duplicates (a second
 /// accept owner), while a stopped acceptor fully releases its registration so
 /// the same still-live endpoint can start a fresh acceptor with no stale
@@ -1011,15 +1240,13 @@ async fn duplicate_registration_fails_typed_and_stop_releases_for_restart() {
 /// and only a local relay configured, Home tunnel bytes traverse the relay and
 /// both sides honestly report the observed relay path.
 ///
-/// Uses the pinned iroh 1.1 local relay test facility (`test-utils` feature);
-/// compiled only under the test-only `test-relay-fixture` cargo feature so it
-/// can never become a release behavior dependency.
+/// Uses the one local relay owner (`LocalTestRelay`), compiled only under the
+/// test-only `test-relay-fixture` cargo feature so it can never become a
+/// release behavior dependency.
 ///
 /// Sequencing contract (the boundaries that can otherwise wait forever):
-/// 1. The pinned test relay always serves HTTPS with a discarded self-signed
-///    certificate, so both endpoints bind with the fixture-only
-///    `insecure_relay_tls` trust bypass — the exact mechanism upstream iroh
-///    relay tests use. Production keeps normal CA verification.
+/// 1. The fixture relay serves plain HTTP, so both endpoints bind with ordinary
+///    CA verification: there is no TLS trust bypass anywhere in the tree.
 /// 2. `bind()` only binds sockets; relay connections come up in the
 ///    background. Both endpoints must await relay readiness (`online()`)
 ///    before the dial, bounded so an unreachable relay fails with a stable
@@ -1068,18 +1295,17 @@ mod relay_fixture {
         .unwrap_or_else(|_| {
             panic!(
                 "{role} endpoint must reach the local test relay within \
-                 {RELAY_ONLINE_TIMEOUT:?} (fixture relay TLS trust / relay map)"
+                 {RELAY_ONLINE_TIMEOUT:?} (fixture relay reachability / relay map)"
             )
         });
     }
 
     #[tokio::test]
     async fn forced_relay_carries_home_tunnel_bytes_and_reports_relay_path() {
-        // Local pinned-relay fixture; the server stops when the binding drops.
-        let (_relay_map, relay_url, _relay_server) = iroh::test_utils::run_relay_server_with(false)
-            .await
-            .expect("local relay");
-        let relay_url_string = relay_url.to_string();
+        // The one local relay owner; the server stops when the binding drops.
+        let relay = crate::LocalTestRelay::spawn().await.expect("local relay");
+        let relay_url = relay.url().clone();
+        let relay_url_string = relay.url_string();
 
         // Direct IP transports are removed: the relay is the only route.
         let relay_endpoint_config = || crate::EndpointConfig {
@@ -1087,8 +1313,6 @@ mod relay_fixture {
             relay_urls: vec![relay_url_string.clone()],
             caps: IrohCapProfile::HomeInteractive,
             disable_ip_transports: true,
-            // Fixture-only trust of the local test relay's self-signed cert.
-            insecure_relay_tls: true,
             ..crate::EndpointConfig::default()
         };
         let server = IrohEndpoint::bind(&relay_endpoint_config()).await.unwrap();
@@ -1190,15 +1414,13 @@ mod relay_fixture {
 
     #[tokio::test]
     async fn forced_relay_carries_authorized_machine_tunnel_bytes() {
-        let (_relay_map, relay_url, _relay_server) = iroh::test_utils::run_relay_server_with(false)
-            .await
-            .expect("local relay");
+        let relay = crate::LocalTestRelay::spawn().await.expect("local relay");
+        let relay_url = relay.url().clone();
         let config = || crate::EndpointConfig {
             relay_policy: RelayPolicy::Automatic,
             relay_urls: vec![relay_url.to_string()],
             caps: IrohCapProfile::MachineBulk,
             disable_ip_transports: true,
-            insecure_relay_tls: true,
             ..crate::EndpointConfig::default()
         };
         let server = IrohEndpoint::bind(&config()).await.unwrap();
@@ -1281,21 +1503,16 @@ mod relay_fixture {
 
     #[tokio::test]
     async fn one_client_endpoint_serves_two_homes_on_distinct_relays_concurrently() {
-        let (_relay_map_a, relay_a, _relay_server_a) =
-            iroh::test_utils::run_relay_server_with(false)
-                .await
-                .unwrap();
-        let (_relay_map_b, relay_b, _relay_server_b) =
-            iroh::test_utils::run_relay_server_with(false)
-                .await
-                .unwrap();
+        let relay_server_a = crate::LocalTestRelay::spawn().await.unwrap();
+        let relay_server_b = crate::LocalTestRelay::spawn().await.unwrap();
+        let relay_a = relay_server_a.url().clone();
+        let relay_b = relay_server_b.url().clone();
 
         let server_config = |relay: &iroh::RelayUrl| crate::EndpointConfig {
             relay_policy: RelayPolicy::Automatic,
             relay_urls: vec![relay.to_string()],
             caps: IrohCapProfile::HomeInteractive,
             disable_ip_transports: true,
-            insecure_relay_tls: true,
             ..crate::EndpointConfig::default()
         };
         let home_a = IrohEndpoint::bind(&server_config(&relay_a)).await.unwrap();
@@ -1313,7 +1530,6 @@ mod relay_fixture {
             relay_urls: vec![relay.to_string()],
             caps: IrohCapProfile::HomeInteractive,
             disable_ip_transports: true,
-            insecure_relay_tls: true,
             ..crate::EndpointConfig::default()
         };
         let client = manager

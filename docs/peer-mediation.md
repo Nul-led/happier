@@ -4,9 +4,9 @@ How Happier decides whether bytes between a device and a machine travel directly
 server, and who owns each step. This page is the internal counterpart to the operator guide at
 `apps/docs/content/docs/self-hosting/local-service-previews.mdx`.
 
-**Status of this page.** The Iroh machine-carrier contract was refreshed against the current 0.3
-development source on 2026-09-01. The remaining peer-mediation claims below were checked against
-implementing code on 2026-08-23.
+**Status of this page.** The Iroh Home and machine-carrier contracts were refreshed against the
+current 0.3 development source on 2026-09-02. The remaining peer-mediation claims below were
+checked against implementing code on 2026-08-23.
 Where the `PMS-1 … PMS-9` specification packets
 (`.project/plans/runtime-unification-v2/stages/stage-A/`) describe behaviour the code does not
 implement, this page documents the code and says so. The packets are the design authority; they are
@@ -25,15 +25,60 @@ after the ordinary Home identity and authenticated ping probes succeed; the cano
 continues to own credential scope, auth audience, profile identity, and reachability identity.
 
 The public `/v1/features` projection publishes the current Home Iroh descriptor without private
-direct-address hints. A trusted established-profile refresh reconciles newer observations through
-the existing profile owner while retaining private hints learned through authenticated Directory
-or QR corridors. It rejects an identity mismatch or an equal-revision conflict instead of creating
-a second descriptor authority.
+direct-address hints. After Home authentication, `/v1/features/authenticated` returns the exact
+descriptor, including trusted direct hints and explicit higher-revision endpoint retirement. CLI
+authentication fetches that exact projection before persisting the profile, and the daemon uses the
+same authenticated snapshot for refresh. The existing profile owner reconciles newer observations
+and rejects an identity mismatch or equal-revision conflict instead of creating a second descriptor
+authority. The server persists one outer `{ revision, contentKey }` continuity fact so an
+Iroh-to-HTTPS-only transition cannot regress across restart.
 
 Transport selection is automatic. Direct-versus-relay path facts remain native diagnostics and do
 not rebuild Home HTTP/Socket.IO clients or appear in routine connection labels. Standard HTTPS
 remains available where independently trusted; identity, authentication, integrity, ALPN, preamble,
 and stale-target failures remain fail-closed.
+
+The native carrier is active in the current 0.3 development source for Home and Machine traffic.
+Its single applied policy is `automatic` or `disabled`: `automatic` uses only the explicitly
+configured relay set while allowing Iroh to select direct or relayed reachability, and `disabled`
+contacts no relay. The dialer always authenticates the remote peer as the exact EndpointId selected
+from the descriptor. Relay URLs and direct-address hints only help reach that endpoint; neither can
+stand in for its authenticated identity. Diagnostics may describe a proven native path as `Direct`
+or `Secure relay`, while an unproven path stays `unknown`.
+
+Browser Iroh carries **Home HTTP and Socket.IO in the current development source**; finite Machine
+transfers over `happier/machine/1` are still unactivated in the browser. A browser cannot bind the
+native loopback listener, so its carrier is *semantic* rather than URL-addressed: no
+`runtimeOrigin` exists or is invented for it, and the canonical Home URL keeps describing identity,
+auth audience, reachability scope, and logging. The resolved transport therefore names either a
+runtime origin (independent HTTPS, or the loopback origin a native lease binds) or a Home carrier
+that moves the bytes itself — never both.
+
+Selection is automatic and narrow. The browser carrier is chosen only on a plain browser host
+(never Tauri or Electron, which run the same bundle but keep the native direct-or-relay carrier),
+and only when the canonical Home descriptor names an exact EndpointId plus at least one explicitly
+configured relay and a Home-scoped credential exists. The canonical owners are unchanged:
+`apps/ui/sources/sync/runtime/orchestration/serverScopedRpc/resolveServerScopedTransport.ts` and the
+focused-Home switch in `connectionManager.ts` resolve the carrier;
+`apps/ui/sources/sync/http/client.ts` keeps auth, compatibility, credential invalidation, generation
+checks, timeouts, reachability, and error classification, handing the carrier only a composed
+request; Engine.IO/Socket.IO keeps lifecycle, authentication, reconnect, and event de-duplication and
+merely receives a different underlying socket. An absolute cross-origin URL never uses the carrier,
+so a Home bearer cannot leave its Home. The wasm/worker path is loaded lazily behind one dynamic
+import, so HTTPS-only public use does not pay for it, and an architecture guard pins the exact
+approved consumers.
+
+Browser Iroh is relay-only: its UI says `Secure relay`, never `Direct`, and an unproven path stays
+`unknown`. It introduces no gateway, no fake loopback origin, no JavaScript relay, no second
+HTTP/Socket.IO owner, and no browser Mutagen / workspace-sync engine. Independently trusted HTTPS
+ingress remains eligible before the fail-closed identity/auth boundary; after a carrier is selected
+and its EndpointId proven, failure never retargets the request.
+
+The shared managed relay is the pinned stock `iroh-relay` with forwarding and QAD enabled. It
+authenticates Iroh EndpointIds and forwards opaque encrypted transport; Home authentication and V2
+Machine grants remain the application authority at the endpoints. Happier does not add a shared
+relay endpoint registry. A private callback is available only to a custom composition that already
+owns one complete allowlist for every endpoint class it intends to carry.
 
 ## 1. The model
 
@@ -101,11 +146,11 @@ Two consequences, both observable:
   `peer_mediation_grant_signing_unavailable` on both the `preview` and `publicPreview` nodes — the
   same code `resolvePeerMediationFeature` already emits for the same fact.
 
-Machines need no configuration: the daemon takes the public key from the server's own capability
-payload and drops expired entries
-(`apps/cli/src/daemon/machine/bootstrapMachineSyncRuntime.ts` filters on
-`key.expiresAt == null || key.expiresAt > input.nowMs`;
-`apps/cli/src/daemon/peer/mediation/rpc/startLoopback.ts`).
+Machines need no configuration: the daemon takes public keys from the authenticated, last-known-good
+server feature snapshot and drops expired entries. Long-lived Machine openers and target admission
+resolve those roots when each operation is verified, so feature readiness and signing-key rotation
+do not require rebuilding the workspace runtime (`createWorkspaceMachineCarrierTunnelOpen` and
+`maybeStartPeerMediationLoopback` in `apps/cli/src/daemon/**`).
 
 ### 2.2 The relay half adds two more gates
 

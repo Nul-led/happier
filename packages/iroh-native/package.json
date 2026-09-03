@@ -16,6 +16,11 @@
       "types": "./dist/nodeNative.d.ts",
       "import": "./dist/nodeNative.js",
       "default": "./dist/nodeNative.js"
+    },
+    "./test-controller": {
+      "types": "./dist/testController.d.ts",
+      "import": "./dist/testController.js",
+      "default": "./dist/testController.js"
     }
   },
   "files": ["dist", "native", "ios/HappierIrohNativeModule.swift", "ios/HappierIrohNative.podspec", "android/build.gradle", "android/src", "rust/Cargo.toml", "rust/Cargo.lock", "rust/happier-iroh-core", "rust/happier-iroh-native", "rust/happier-iroh-node", "scripts", "expo-module.config.json", "package.json", "README.md"],
@@ -26,10 +31,14 @@
     "test:home-iroh:real": "../../apps/stack/bin/hstack-exec --script=test:home-iroh:real:local",
     "test:home-iroh:real:local": "node scripts/run-home-iroh-real-integration.mjs",
     "verify:native": "node scripts/verify-node-addon-load.mjs",
+    "verify:browser-iroh-wasm": "../../apps/stack/bin/hstack-exec --script=verify:browser-iroh-wasm:local",
+    "verify:browser-iroh-wasm:local": "node scripts/verify-browser-iroh-wasm.mjs",
+    "test:browser-iroh:live": "../../apps/stack/bin/hstack-exec --script=test:browser-iroh:live:local",
+    "test:browser-iroh:live:local": "node scripts/run-browser-iroh-live.mjs",
     "verify:iroh-lock-parity": "node scripts/verify-iroh-lock-parity.mjs",
     "verify:native:bun": "bun scripts/verify-node-addon-load.mjs",
     "test": "../../apps/stack/bin/hstack-exec --script=test:local",
-    "test:local": "node ../../node_modules/vitest/vitest.mjs run --config ../../vitest.config.ts src && node --test scripts/run-home-iroh-real-integration.test.mjs",
+    "test:local": "node ../../node_modules/vitest/vitest.mjs run --config ../../vitest.config.ts src && node --test scripts/run-home-iroh-real-integration.test.mjs scripts/verify-browser-iroh-wasm.test.mjs",
     "typecheck": "../../apps/stack/bin/hstack-exec --script=typecheck:local",
     "typecheck:local": "node ../../scripts/workspaces/runTypeScriptCli.mjs -p tsconfig.json --noEmit"
   },

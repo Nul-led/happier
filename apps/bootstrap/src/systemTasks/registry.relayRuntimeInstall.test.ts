@@ -5,10 +5,19 @@ import { join } from 'node:path';
 
 import { resolveRelayRuntimeDefaults } from '@happier-dev/cli-common/firstPartyRuntime';
 import { executeSystemTask } from '@happier-dev/cli-common/systemTasks';
+import type { SystemTaskResult } from '@happier-dev/protocol';
 import { describe, expect, it } from 'vitest';
 
 import { createHsetupSystemTaskRegistry } from './registry.js';
 import { installOrUpdateRelayRuntimeDefault } from './relayRuntimeTasks.js';
+
+/** Surfaces the exact typed task failure instead of an opaque ok:true assertion. */
+function expectTaskOk(result: SystemTaskResult, label: string): void {
+  expect(
+    result.ok,
+    `${label} failed typed: ${result.ok ? 'ok' : `${result.error.code}: ${result.error.message}`}`,
+  ).toBe(true);
+}
 
 describe('bootstrap relay-runtime registry composition', () => {
   it('keeps a closed Personal Home signup policy through install/update and restart when the caller requests re-enabling it', { timeout: 120_000 }, async () => {
@@ -96,7 +105,9 @@ describe('bootstrap relay-runtime registry composition', () => {
         env: {
           HAPPIER_SERVER_HOST: '127.0.0.1',
           PORT: String(port),
-          HAPPIER_PUBLIC_SERVER_URL: canonicalServerUrl,
+          // Lane 03 execution amendment A5: the stable loopback audience rides the canonical
+          // URL owner; HAPPIER_PUBLIC_SERVER_URL is not a fixed Personal Home env key.
+          HAPPIER_CANONICAL_SERVER_URL: canonicalServerUrl,
           HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: 'plaintext_only',
           HAPPIER_FEATURE_ENCRYPTION__DEFAULT_ACCOUNT_MODE: 'plain',
           AUTH_ANONYMOUS_SIGNUP_ENABLED: '1',
@@ -114,11 +125,14 @@ describe('bootstrap relay-runtime registry composition', () => {
         now: () => 1700000000000,
         emitEvent: () => undefined,
       });
-      expect(installed.ok).toBe(true);
+      expectTaskOk(installed, 'relay.runtime.installOrUpdate.v1');
       const envPath = join(defaults.configDir, 'server.env');
       const installedEnv = readFileSync(envPath, 'utf8');
       expect(installedEnv.match(/^AUTH_ANONYMOUS_SIGNUP_ENABLED=0$/gmu) ?? []).toHaveLength(1);
       expect(installedEnv).not.toMatch(/^AUTH_ANONYMOUS_SIGNUP_ENABLED=(?:1|true)$/gmu);
+      // A5: the seeded legacy public-origin line equal to the canonical loopback audience is
+      // retired by the canonical installer and never re-added for a loopback-only Home.
+      expect(installedEnv).not.toMatch(/^HAPPIER_PUBLIC_SERVER_URL=/gmu);
 
       await new Promise<void>((resolve, reject) => {
         healthServer.once('error', reject);
@@ -136,7 +150,7 @@ describe('bootstrap relay-runtime registry composition', () => {
         now: () => 1700000000001,
         emitEvent: () => undefined,
       });
-      expect(restarted.ok).toBe(true);
+      expectTaskOk(restarted, 'relay.runtime.restart.v1');
       expect(readFileSync(systemctlLogPath, 'utf8')).toMatch(/--user restart happier-server\.service/u);
       const restartedEnv = readFileSync(envPath, 'utf8');
       expect(restartedEnv.match(/^AUTH_ANONYMOUS_SIGNUP_ENABLED=0$/gmu) ?? []).toHaveLength(1);

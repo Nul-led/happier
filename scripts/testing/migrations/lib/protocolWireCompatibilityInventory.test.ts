@@ -117,7 +117,8 @@ test('the plugin and hook ABI inventory pins hook catalogs and bridge lifecycle 
   assert.ok(entry.boundaryModules.includes('apps/cli/src/plugins/runtime/resolveExecutablePluginRuntimeRegistry.ts'));
   assert.ok(entry.proofTests.includes('packages/protocol/src/plugins/sourceSpecV1.test.ts'));
   assert.ok(entry.proofTests.includes('packages/protocol/src/plugins/hooks/catalog.test.ts'));
-  assert.ok(entry.proofTests.includes('packages/protocol/src/plugins/hooks/compatibilityReaders.test.ts'));
+  assert.ok(entry.proofTests.includes('packages/protocol/src/plugins/hooks/eventEnvelopeV1.test.ts'));
+  assert.ok(!entry.proofTests.includes('packages/protocol/src/plugins/hooks/compatibilityReaders.test.ts'));
   assert.ok(entry.proofTests.includes('apps/cli/src/plugins/manifest/read.test.ts'));
   assert.ok(entry.proofTests.includes('apps/cli/src/plugins/projection/registry/normalize/package.test.ts'));
   assert.ok(entry.proofTests.includes('apps/cli/src/plugins/manifest/daemonEntry.test.ts'));
@@ -197,7 +198,8 @@ test('the authoritative protocol wire compatibility inventory pins canonical run
   assert.ok(entry.boundaryModules.includes('apps/cli/src/api/machine/rpcHandlers.sessions.ts'));
   assert.ok(entry.boundaryModules.includes('apps/cli/src/api/session/external/linking/ensureExternalSessionLink.ts'));
   assert.ok(entry.boundaryModules.includes('apps/cli/src/daemon/processSupervision/sessionRunnerRespawnDescriptor.ts'));
-  assert.ok(entry.boundaryModules.includes('apps/ui/sources/sync/ops/sessionHandoffs.ts'));
+  assert.ok(entry.boundaryModules.includes('apps/ui/sources/sync/ops/buildSessionHandoffMetadataPatch.ts'));
+  assert.ok(!entry.boundaryModules.includes('apps/ui/sources/sync/ops/sessionHandoffs.ts'));
   assert.ok(entry.boundaryModules.includes('apps/ui/sources/sync/domains/state/storageTypes.ts'));
   assert.ok(entry.proofTests.includes('packages/protocol/src/sessions/metadata/runtimeDescriptorV1.test.ts'));
   assert.ok(entry.proofTests.includes('packages/protocol/src/sessions/metadata/compat/runtimeDescriptorMetadata.test.ts'));
@@ -207,7 +209,8 @@ test('the authoritative protocol wire compatibility inventory pins canonical run
   assert.ok(entry.proofTests.includes('apps/cli/src/rpc/handlers/spawnRuntimeSelection.test.ts'));
   assert.ok(entry.proofTests.includes('apps/cli/src/rpc/handlers/spawnSessionOptionsContract.test.ts'));
   assert.ok(entry.proofTests.includes('apps/cli/src/daemon/processSupervision/sessionRunnerRespawnDescriptor.test.ts'));
-  assert.ok(entry.proofTests.includes('apps/ui/sources/sync/ops/sessionHandoffs.test.ts'));
+  assert.ok(entry.proofTests.includes('apps/ui/sources/sync/ops/buildSessionHandoffMetadataPatch.test.ts'));
+  assert.ok(!entry.proofTests.includes('apps/ui/sources/sync/ops/sessionHandoffs.test.ts'));
   assert.ok(entry.proofTests.includes('apps/ui/sources/sync/domains/state/storageTypes.terminal.test.ts'));
 });
 

@@ -780,6 +780,12 @@ test('native launcher governs nested Vitest workers when automatic placement sel
     'printf "args:%s\\n" "$*"',
     '',
   ].join('\n'));
+  await executable(join(binDir, 'corepack'), [
+    '#!/bin/sh',
+    'printf "workers:%s:%s:%s:%s\\n" "${VITEST_MAX_THREADS-}" "${VITEST_MIN_THREADS-}" "${VITEST_MAX_FORKS-}" "${VITEST_MIN_FORKS-}"',
+    'printf "args:%s\\n" "$*"',
+    '',
+  ].join('\n'));
 
   const result = spawnSync('/bin/sh', [launcher, '--', 'vitest', 'run', 'fixture.test.ts'], {
     cwd: repoRoot,
@@ -812,6 +818,25 @@ test('native launcher governs nested Vitest workers when automatic placement sel
   assert.equal(explicit.status, 0, explicit.stderr);
   assert.match(explicit.stdout, /workers::::/);
   assert.match(explicit.stdout, /args:run --maxWorkers=6/);
+
+  const packageScript = spawnSync(
+    '/bin/sh',
+    [launcher, '--', 'corepack', 'yarn', '-s', 'test:migration:bundled-plugin-projections'],
+    {
+      cwd: repoRoot,
+      env: {
+        ...executionNeutralEnv,
+        HOME: root,
+        HAPPIER_STACK_STORAGE_DIR: storageDir,
+        PATH: `${binDir}:/usr/bin:/bin`,
+        TMPDIR: root,
+      },
+      encoding: 'utf8',
+    },
+  );
+  assert.equal(packageScript.status, 0, packageScript.stderr);
+  assert.match(packageScript.stdout, /workers:1:1:1:1/);
+  assert.match(packageScript.stdout, /^args:yarn -s test:migration:bundled-plugin-projections$/m);
 });
 
 test('native launcher exact target maps the repository-relative cwd and allocates a requested TTY on only the named healthy target', async () => {
@@ -1800,6 +1825,16 @@ test('native launcher keeps Linux control commands preferred and adapts recogniz
     env,
     encoding: 'utf8',
   });
+  const scriptedNonVitestTest = spawnSync('/bin/sh', [launcher, '--script=test:migration:bundled-plugin-projections'], {
+    cwd: repoRoot,
+    env,
+    encoding: 'utf8',
+  });
+  const directNonVitestTest = spawnSync('/bin/sh', [launcher, '--', 'yarn', '-s', 'test:migration:bundled-plugin-projections'], {
+    cwd: repoRoot,
+    env,
+    encoding: 'utf8',
+  });
   const scriptedTypecheck = spawnSync('/bin/sh', [launcher, '--script=typecheck:local'], {
     cwd: repoRoot,
     env,
@@ -1837,6 +1872,8 @@ test('native launcher keeps Linux control commands preferred and adapts recogniz
     search,
     typecheck,
     scriptedVitest,
+    scriptedNonVitestTest,
+    directNonVitestTest,
     scriptedTypecheck,
     quietVitest,
     explicitVitestWorkers,
@@ -1855,7 +1892,17 @@ test('native launcher keeps Linux control commands preferred and adapts recogniz
   assert.match(typecheck.stdout, /GOMAXPROCS=1.*nice -n 10.*runTypeScriptCli\.mjs/s);
   assert.doesNotMatch(typecheck.stdout, /--singleThreaded/);
   assert.match(scriptedVitest.stdout, /VITEST_MAX_THREADS=1.*nice -n 10.*corepack.*yarn.*test:local/s);
-  assert.match(scriptedVitest.stdout, /test:local.*--maxWorkers=1.*--minWorkers=1/s);
+  assert.doesNotMatch(scriptedVitest.stdout, /--maxWorkers|--minWorkers/);
+  assert.match(
+    scriptedNonVitestTest.stdout,
+    /VITEST_MAX_THREADS=1.*nice -n 10.*corepack.*yarn.*test:migration:bundled-plugin-projections/s,
+  );
+  assert.doesNotMatch(scriptedNonVitestTest.stdout, /--maxWorkers|--minWorkers/);
+  assert.match(
+    directNonVitestTest.stdout,
+    /nice -n 10.*yarn.*-s.*test:migration:bundled-plugin-projections/s,
+  );
+  assert.doesNotMatch(directNonVitestTest.stdout, /--maxWorkers|--minWorkers/);
   assert.match(scriptedTypecheck.stdout, /GOMAXPROCS=1.*nice -n 10.*corepack.*yarn.*typecheck:local/s);
   assert.match(quietVitest.stdout, /nice -n 10.*vitest/s);
   assert.doesNotMatch(quietVitest.stdout, /VITEST_MAX_THREADS=|--maxWorkers/);
@@ -1971,6 +2018,7 @@ test('native launcher bootstraps Yarn commands before dispatching them and leave
     '  *getconf*) printf "8 1 0.5 22000000 20 2 12000000 24000000 1000 8000000 0.1 0.2 0.3 4 5 linux\\n" ;;',
     '  *command\\ -v*) exit 0 ;;',
     '  *-MNf*|*-O\\ exit*) exit 0 ;;',
+    '  *remote_dependency_bootstrap.mjs*remote_validation_preparation.mjs*run-vitest-with-heartbeat.mjs*) printf "vitest-after-preparation:%s\\n" "$*" ;;',
     '  *remote_dependency_bootstrap.mjs*remote_validation_preparation.mjs*typecheck:local*) printf "typed-after-preparation:%s\\n" "$*" ;;',
     '  *remote_dependency_bootstrap.mjs*typecheck:local*) printf "typed-after-bootstrap:%s\\n" "$*" ;;',
     '  *typecheck:local*) printf "typed-without-bootstrap\\n"; exit 42 ;;',
@@ -2010,6 +2058,28 @@ test('native launcher bootstraps Yarn commands before dispatching them and leave
   assert.match(componentTyped.stdout, /remote_validation_preparation\.mjs/);
   assert.match(componentTyped.stdout, /--component-relative-dir=apps\/cli/);
 
+  const composedVitest = spawnSync('/bin/sh', [
+    launcher,
+    '--',
+    'yarn',
+    '--cwd',
+    'packages/tests',
+    'node',
+    'scripts/run-vitest-with-heartbeat.mjs',
+    '--config',
+    'vitest.core.slow.config.ts',
+    'suites/example.slow.e2e.test.ts',
+  ], {
+    cwd: repoRoot,
+    env,
+    encoding: 'utf8',
+  });
+  assert.equal(composedVitest.status, 0, composedVitest.stderr);
+  assert.match(composedVitest.stdout, /vitest-after-preparation/);
+  assert.match(composedVitest.stdout, /remote_validation_preparation\.mjs/);
+  assert.match(composedVitest.stdout, /--component-relative-dir=packages\/tests/);
+  assert.match(composedVitest.stdout, /run-vitest-with-heartbeat\.mjs.*--maxWorkers=[1-9][0-9]*.*--minWorkers=1/s);
+
   const raw = spawnSync('/bin/sh', [launcher, '--', 'rg', '-n', 'needle'], {
     cwd: repoRoot,
     env,
@@ -2026,8 +2096,8 @@ test('native launcher bootstraps Yarn commands before dispatching them and leave
   const admittedClasses = provenanceLines
     .filter((entry) => entry.phase === 'admitted')
     .map((entry) => entry.commandClass);
-  assert.deepEqual(admittedClasses, ['full-validation', 'targeted-validation', 'source-search']);
-  assert.equal(provenanceLines.filter((entry) => entry.phase === 'completed').length, 3);
+  assert.deepEqual(admittedClasses, ['full-validation', 'targeted-validation', 'targeted-validation', 'source-search']);
+  assert.equal(provenanceLines.filter((entry) => entry.phase === 'completed').length, 4);
   assert.equal(provenanceLines.every((entry) => entry.schemaVersion === 1), true);
   assert.equal(provenanceLines.every((entry) => !('commandArgs' in entry)), true);
   assert.equal(provenanceLines.every((entry) => (

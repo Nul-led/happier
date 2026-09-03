@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 
 import { getStackName, resolveActiveStackEnvFilePath } from '../paths/paths.mjs';
-import { preferStackLocalhostUrl } from '../paths/localhost_host.mjs';
+import { preferStackLocalhostHost, preferStackLocalhostUrl } from '../paths/localhost_host.mjs';
 import { resolvePublicServerUrl } from '../../tailscale.mjs';
 import { resolveServerPortFromEnv } from './port.mjs';
 import { normalizeUrlNoTrailingSlash } from '../net/url.mjs';
@@ -75,6 +75,31 @@ export function getWebappUrlEnvOverride({ env = process.env, stackName = null } 
   return { envWebappUrl };
 }
 
+// The stack-owned canonical server origin: the stable identity a stack's server signs and verifies
+// auth audiences against. It is deliberately distinct from the public ingress URL, which is inferred
+// per start (Tailscale/relay/LAN) and therefore mutable. Only an explicit operator public URL from the
+// stack env file, or the stack's own stable `<prefix>-<stack>.localhost` origin, can define it.
+export async function resolveStackCanonicalServerUrl({
+  env = process.env,
+  serverPort,
+  stackName = null,
+  envPublicUrl = null,
+} = {}) {
+  const name =
+    (stackName ?? '').toString().trim() ||
+    (env.HAPPIER_STACK_STACK ?? '').toString().trim() ||
+    getStackName(env);
+  const explicitPublicUrl = normalizeUrlNoTrailingSlash(
+    String(
+      envPublicUrl ?? getPublicServerUrlEnvOverride({ env, serverPort, stackName: name }).envPublicUrl ?? '',
+    ).trim(),
+  );
+  if (explicitPublicUrl) return explicitPublicUrl;
+
+  const host = await preferStackLocalhostHost({ stackName: name, env });
+  return normalizeUrlNoTrailingSlash(`http://${host || 'localhost'}:${serverPort}`);
+}
+
 export async function resolveServerUrls({ env = process.env, serverPort, allowEnable = true } = {}) {
   const internalServerUrl = `http://127.0.0.1:${serverPort}`;
   const stackName =
@@ -92,12 +117,19 @@ export async function resolveServerUrls({ env = process.env, serverPort, allowEn
   const publicServerUrl = normalizeUrlNoTrailingSlash(
     await preferStackLocalhostUrl(resolved.publicServerUrl, { stackName })
   );
+  const canonicalServerUrl = await resolveStackCanonicalServerUrl({
+    env,
+    serverPort,
+    stackName,
+    envPublicUrl,
+  });
   return {
     internalServerUrl,
     defaultPublicUrl,
     envPublicUrl,
     publicServerUrl,
     publicServerUrlSource: resolved.source,
+    canonicalServerUrl,
   };
 }
 

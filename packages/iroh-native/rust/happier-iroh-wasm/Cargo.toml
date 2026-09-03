@@ -1,0 +1,28 @@
+[package]
+name = "happier-iroh-wasm"
+version = "0.0.0"
+edition = "2021"
+
+# `cdylib` produces the browser artifact; `rlib` keeps the transport-independent
+# rules host-testable without a browser.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# The one canonical owner of endpoint identity, explicit relay selection, cap
+# profiles, ALPN, and the tunnel preamble. This crate adds a browser binding,
+# never a second set of transport rules.
+happier-iroh-core = { path = "../happier-iroh-core" }
+# Same zeroize owner the core key store uses, so an inbound seed leaves no
+# lingering plaintext copy on the Rust side of the boundary.
+zeroize = "1.9"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+iroh = { version = "=1.1.0", default-features = false, features = ["tls-ring"] }
+js-sys = "0.3"
+# Runtime-free future primitives only (`select!` and `Notify`): the browser
+# binding needs cancellation, not a second async runtime. Same tokio release the
+# core already builds for this target.
+tokio = { version = "1", default-features = false, features = ["macros", "sync"] }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"

@@ -87,3 +87,22 @@ test('every UI workspace dependency family triggers an app release without prete
     assert.equal(deriveVersionedComponentChanges(classified).app, true, changedPath);
   }
 });
+
+test('Iroh transport owners select every shipped consumer through the canonical release registry', () => {
+  for (const changedPath of [
+    'packages/iroh-native/src/adapter.ts',
+    'packages/peer-transport/src/duplexFrames/streamSession.ts',
+  ]) {
+    const classified = classifyChangedPaths([changedPath]);
+    const versioned = deriveVersionedComponentChanges(classified);
+
+    assert.equal(versioned.app, true, changedPath);
+    assert.equal(versioned.cli, true, changedPath);
+    assert.equal(versioned.server, true, changedPath);
+  }
+
+  const relay = deriveVersionedComponentChanges(classifyChangedPaths([
+    'deploy/iroh-relay/Dockerfile',
+  ]));
+  assert.equal(relay.server, true);
+});

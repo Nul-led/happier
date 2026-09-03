@@ -1,4 +1,7 @@
-use crate::endpoint::{ConsumerRegistration, ConsumerSlot};
+use crate::endpoint::{
+    accept_first_application_stream, verified_remote_endpoint_id, ConsumerRegistration,
+    ConsumerSlot, CONSUMER_CHANNEL_CAPACITY,
+};
 use crate::stream::pump_bidirectional;
 use crate::{
     snapshot_for_connection, validate_loopback_bind_addr, validate_loopback_target,
@@ -14,9 +17,6 @@ use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio::task::{JoinHandle, JoinSet};
-
-/// Bounded capacity of each Home consumer dispatch channel.
-const CONSUMER_CHANNEL_CAPACITY: usize = 16;
 
 /// Bounded resource-safety window for reading the one-byte tunnel preamble.
 /// A peer that neither sends a valid preamble nor closes within this budget
@@ -147,12 +147,26 @@ impl Drop for HomeAcceptor {
 /// everything the transport admitted and gives each stream one fixed-target
 /// TCP connection. Completed stream tasks are reaped as they finish. The
 /// dispatched connection's endpoint cap lease is released when this pump ends.
+///
+/// The connection's first stream must arrive inside the endpoint's
+/// pre-application custody window; after it has, the loop keeps waiting for
+/// further streams for as long as the peer holds the connection open, which is
+/// what long-lived Socket.IO sockets rely on.
 async fn pump_connection(
     accepted: AcceptedIrohConnection,
     target: SocketAddr,
     state: Arc<AcceptorState>,
 ) {
     let mut streams: JoinSet<()> = JoinSet::new();
+    let Some((send, recv)) = accept_first_application_stream(&accepted.connection).await else {
+        // No first stream: the connection is closed and dropping `accepted`
+        // (including its endpoint cap lease) drains the admission.
+        return;
+    };
+    let first_stream_state = Arc::clone(&state);
+    streams.spawn(async move {
+        pump_stream(send, recv, target, first_stream_state).await;
+    });
     loop {
         tokio::select! {
             opened = accepted.connection.accept_bi() => {
@@ -265,6 +279,7 @@ struct TunnelState {
 pub struct HomeTunnel {
     origin: String,
     local_addr: SocketAddr,
+    remote_endpoint_id: String,
     connection: iroh::endpoint::Connection,
     task: JoinHandle<()>,
     state: Arc<TunnelState>,
@@ -297,6 +312,12 @@ impl HomeTunnel {
             .await
             .map_err(|_| IrohError::TransportClosed)?;
         let connection = connecting.await.map_err(|_| IrohError::TransportClosed)?;
+        // The authenticated transport identity — not the requested descriptor
+        // copy — is the only honest remote identity this tunnel reports. A
+        // mismatch fails the start closed with the shared
+        // endpoint-identity-mismatch classification before any loopback
+        // listener is published, exactly as the machine tunnel does.
+        let remote_endpoint_id = verified_remote_endpoint_id(connection.remote_id(), endpoint_id)?;
         let listener = TcpListener::bind(config.bind_addr)
             .await
             .map_err(|_| IrohError::LoopbackBindFailed)?;
@@ -361,6 +382,7 @@ impl HomeTunnel {
         Ok(Self {
             origin: format!("http://{}:{}", local_addr.ip(), local_addr.port()),
             local_addr,
+            remote_endpoint_id,
             connection,
             task,
             state,
@@ -373,6 +395,13 @@ impl HomeTunnel {
 
     pub fn local_addr(&self) -> Result<SocketAddr> {
         Ok(self.local_addr)
+    }
+
+    /// The authenticated identity of the connected Home endpoint, verified
+    /// against the requested descriptor at start. Hosts report this instead of
+    /// echoing the requested descriptor string back to callers.
+    pub fn remote_endpoint_id(&self) -> &str {
+        &self.remote_endpoint_id
     }
 
     pub fn status(&self) -> HomeTunnelStatus {

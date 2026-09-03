@@ -1,0 +1,307 @@
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import test from 'node:test';
+
+import YAML from 'yaml';
+
+import { requiredWorkspaceSyncRealBinaryEnvironment } from '../../apps/cli/scripts/runWorkspaceSyncRealIntegration.mjs';
+
+const repoRoot = new URL('../..', import.meta.url).pathname;
+
+function readWorkflowText(name) {
+  return readFileSync(join(repoRoot, '.github', 'workflows', name), 'utf8');
+}
+
+function loadWorkflow(name) {
+  return YAML.parse(readWorkflowText(name), { prettyErrors: true });
+}
+
+function workspaceSyncRealJob() {
+  const job = loadWorkflow('tests.yml').jobs['workspace-sync-real'];
+  assert.ok(job, 'tests.yml must own the real workspace-sync CI lane');
+  return job;
+}
+
+function stepNamed(job, name) {
+  const step = job.steps.find((candidate) => candidate.name === name);
+  assert.ok(step, `the real workspace-sync lane must keep its "${name}" step`);
+  return step;
+}
+
+const GATED_ON_SELECTION = "github.event_name == 'workflow_call' || steps.changes.outputs.workspace_sync_real == 'true'";
+
+test('the real workspace-sync lane invokes the canonical runner exactly once', () => {
+  const job = workspaceSyncRealJob();
+  assert.equal(job.name, 'Workspace sync (Mutagen + Iroh real)');
+  assert.deepEqual(job.needs, ['trusted_ref_guard']);
+
+  const invocations = job.steps.filter((step) => String(step.run ?? '').includes('test:workspace-sync:real'));
+  assert.equal(invocations.length, 1, 'exactly one step may invoke the canonical real workspace-sync runner');
+  assert.equal(invocations[0].run.trim(), 'yarn test:workspace-sync:real');
+
+  assert.equal(
+    job.steps.some((step) => String(step.uses ?? '').startsWith('actions/upload-artifact@')),
+    false,
+    'the real workspace-sync lane must not upload broad logs that can retain credentials',
+  );
+
+  const rootScripts = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8')).scripts;
+  assert.equal(rootScripts['test:workspace-sync:real'], 'yarn workspace @happier-dev/cli test:workspace-sync:real');
+  const cliScripts = JSON.parse(readFileSync(join(repoRoot, 'apps/cli/package.json'), 'utf8')).scripts;
+  assert.match(cliScripts['test:workspace-sync:real'], /hstack-exec .*--script=test:workspace-sync:real:local/u);
+  assert.match(cliScripts['test:workspace-sync:real:local'], /runWorkspaceSyncRealIntegration\.mjs/u);
+});
+
+test('the required lane also proves the production signed release-acquisition path', () => {
+  const job = workspaceSyncRealJob();
+  const acquisition = stepNamed(job, 'Acquire the pinned engine from the external signed Mutagen release');
+
+  // The lane reuses the canonical opt-in live acquisition test rather than a copied
+  // downloader or a fake artifact, and spells the invocation exactly as the release
+  // gate does so the two required owners cannot drift into two commands.
+  assert.equal(
+    acquisition.run.trim(),
+    'set -euo pipefail\nyarn workspace @happier-dev/cli-common test:mutagen-engine:live',
+  );
+  assert.equal(acquisition.env.HAPPIER_TEST_MUTAGEN_ENGINE_LIVE_ACQUISITION, '1');
+  // Public verification only: the automatic workflow token plus the built-in Happier
+  // Minisign trust root. A repository secret here would be an unapproved topology.
+  assert.equal(acquisition.env.GITHUB_TOKEN, '${{ github.token }}');
+  assert.deepEqual(Object.keys(acquisition.env).sort(), ['GITHUB_TOKEN', 'HAPPIER_TEST_MUTAGEN_ENGINE_LIVE_ACQUISITION']);
+  assert.doesNotMatch(JSON.stringify(acquisition), /secrets\./u);
+  assert.equal(job.permissions?.contents, 'read');
+
+  // Exactly one lane in ordinary CI opts into the live acquisition, and it is this one.
+  const tests = loadWorkflow('tests.yml');
+  const optedIn = Object.entries(tests.jobs).filter(([, candidate]) =>
+    (candidate.steps ?? []).some((step) => JSON.stringify(step ?? {}).includes('HAPPIER_TEST_MUTAGEN_ENGINE_LIVE_ACQUISITION')),
+  );
+  assert.deepEqual(optedIn.map(([id]) => id), ['workspace-sync-real']);
+
+  // Source-built binaries and the released artifact prove different boundaries; the
+  // one required job keeps both. Neither may replace the other.
+  assert.ok(
+    job.steps.some((step) => String(step.run ?? '').includes('cmd/mutagen-sidecar')),
+    'the released artifact check must not displace the source-built broker/carrier integration',
+  );
+  assert.ok(job.steps.some((step) => String(step.run ?? '').trim() === 'yarn test:workspace-sync:real'));
+  assert.doesNotMatch(acquisition.run, /go build|gh release download/u);
+
+  // Ordinary unit lanes stay offline: the live test is inert unless explicitly opted in.
+  const liveTest = readFileSync(
+    join(repoRoot, 'packages/cli-common/src/firstPartyRuntime/mutagenEngineAcquisition.live.test.ts'),
+    'utf8',
+  );
+  assert.match(liveTest, /const liveAcquisitionEnabled = process\.env\.HAPPIER_TEST_MUTAGEN_ENGINE_LIVE_ACQUISITION\?\.trim\(\) === '1'/u);
+  assert.match(liveTest, /describe\.skipIf\(!liveAcquisitionEnabled\)/u);
+  const rootScripts = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8')).scripts;
+  for (const [name, script] of Object.entries(rootScripts)) {
+    if (!name.startsWith('test:')) continue;
+    assert.doesNotMatch(
+      String(script),
+      /HAPPIER_TEST_MUTAGEN_ENGINE_LIVE_ACQUISITION/u,
+      `root script ${name} must not enable the live network acquisition`,
+    );
+  }
+  const cliCommonScripts = JSON.parse(readFileSync(join(repoRoot, 'packages/cli-common/package.json'), 'utf8')).scripts;
+  assert.match(cliCommonScripts['test:mutagen-engine:live'], /hstack-exec .*--script=test:mutagen-engine:live:local/u);
+  assert.equal(
+    cliCommonScripts['test:mutagen-engine:live:local'],
+    'node scripts/runMutagenEngineLiveTest.mjs',
+    'the package-owned launcher must set the opt-in portably after hstack dispatch',
+  );
+  const liveLauncher = readFileSync(
+    join(repoRoot, 'packages/cli-common/scripts/runMutagenEngineLiveTest.mjs'),
+    'utf8',
+  );
+  assert.match(liveLauncher, /HAPPIER_TEST_MUTAGEN_ENGINE_LIVE_ACQUISITION:\s*'1'/u);
+  assert.match(liveLauncher, /mutagenEngineAcquisition\.live\.test\.ts/u);
+  assert.match(liveLauncher, /process\.execPath/u);
+  assert.match(liveLauncher, /stdio:\s*'inherit'/u);
+  assert.match(liveLauncher, /process\.kill\(process\.pid, signal\)/u);
+});
+
+test('the real workspace-sync lane supplies every executable input the canonical runner requires', () => {
+  const job = workspaceSyncRealJob();
+  const build = stepNamed(job, 'Build source workspace-sync prerequisites');
+
+  assert.equal(requiredWorkspaceSyncRealBinaryEnvironment.length, 4);
+  for (const name of requiredWorkspaceSyncRealBinaryEnvironment) {
+    assert.match(
+      build.run,
+      new RegExp(`echo "${name}=\\$\\{[a-z_]+_bin\\}"`, 'u'),
+      `the lane must export ${name} for the canonical runner`,
+    );
+  }
+
+  // Each executable comes from a source build; the lane must not pin or download a release asset.
+  assert.match(build.run, /go build -trimpath -tags "\$\{MUTAGEN_MANAGER_TAGS\}" -o "\$\{manager_bin\}" \.\/cmd\/mutagen-sidecar/u);
+  assert.match(build.run, /go build -trimpath -tags "\$\{MUTAGEN_AGENT_TAGS\}" -o "\$\{agent_bin\}" \.\/cmd\/mutagen-agent/u);
+  assert.match(build.run, /go build -trimpath -tags integration -o "\$\{broker_bin\}" \.\/pkg\/externalbroker\/integrationclient/u);
+  assert.match(build.run, /cd apps\/cli\/native\/processcustody/u);
+  assert.doesNotMatch(build.run, /gh release download|releases\/download/u);
+
+  const policy = stepNamed(job, 'Resolve Mutagen source policy');
+  assert.equal(policy.id, 'mutagen_policy');
+  assert.match(policy.run, /packages\/cli-common\/mutagen-engine\.json/u);
+  assert.equal(build.env.MUTAGEN_REMOTE, '${{ steps.mutagen_policy.outputs.remote }}');
+  assert.equal(build.env.MUTAGEN_COMMIT, '${{ steps.mutagen_policy.outputs.commit }}');
+  assert.equal(build.env.MUTAGEN_MANAGER_TAGS, '${{ steps.mutagen_policy.outputs.manager_tags }}');
+  assert.equal(build.env.MUTAGEN_AGENT_TAGS, '${{ steps.mutagen_policy.outputs.agent_tags }}');
+
+  const installGo = stepNamed(job, 'Install checksum-pinned Go toolchain');
+  assert.equal(installGo.env.GO_VERSION, '${{ steps.mutagen_policy.outputs.go_version }}');
+  assert.equal(installGo.env.GO_DISTRIBUTION_URL, '${{ steps.mutagen_policy.outputs.go_distribution_url }}');
+  assert.equal(installGo.env.GO_DISTRIBUTION_SHA256, '${{ steps.mutagen_policy.outputs.go_distribution_sha256 }}');
+  assert.match(installGo.run, /go\$\{GO_VERSION\}\.linux-amd64\.tar\.gz/u);
+  assert.match(installGo.run, /sha256sum --check --strict/u);
+  assert.match(installGo.run, /GITHUB_PATH/u);
+  assert.match(installGo.run, /GOROOT/u);
+  assert.equal(
+    job.steps.some((step) => String(step.uses ?? '').startsWith('actions/setup-go@')),
+    false,
+    'the source build must not bypass the policy digest through setup-go',
+  );
+
+  assert.match(policy.run, /policy\.toolchain\.distributionSha256\?\.\['linux-amd64'\]/u);
+  assert.match(policy.run, /\^\[0-9a-f\]\{64\}\$/u);
+  assert.match(policy.run, /goDistributionUrl\.protocol !== 'https:'/u);
+  assert.match(policy.run, /go_distribution_url/u);
+  assert.match(policy.run, /go_distribution_sha256/u);
+});
+
+test('only the real workspace-sync lane builds the Mutagen fork from source', () => {
+  const tests = loadWorkflow('tests.yml');
+  const builders = Object.entries(tests.jobs).filter(([, job]) =>
+    (job.steps ?? []).some((step) => String(step.run ?? '').includes('cmd/mutagen-sidecar')),
+  );
+  assert.deepEqual(builders.map(([id]) => id), ['workspace-sync-real'], 'a second Mutagen builder must not exist');
+});
+
+test('the real workspace-sync lane selects itself from Lane 08 change surfaces', () => {
+  const job = workspaceSyncRealJob();
+  assert.equal(job.if, '${{ !inputs.select_jobs_explicitly || inputs.run_workspace_sync_real }}');
+
+  const changes = stepNamed(job, 'Detect workspace sync-relevant changes');
+  assert.equal(changes.id, 'changes');
+  assert.equal(changes.if, "github.event_name != 'workflow_call'");
+  // Third-party actions in a required lane are pinned to an immutable commit, like every
+  // other action this job uses. `0e4a8c6` is the commit the annotated `v3` tag dereferences
+  // to (dorny/paths-filter v3.0.4).
+  assert.equal(changes.uses, 'dorny/paths-filter@0e4a8c6effa4802afeda77dc8d303f8176d7dfad');
+  const filters = YAML.parse(changes.with.filters).workspace_sync_real;
+  for (const path of [
+    // Subjects of the three real specs the canonical runner executes.
+    'apps/cli/src/workspaces/**',
+    'apps/cli/src/daemon/startup/**',
+    'apps/cli/src/daemon/peer/**',
+    'apps/cli/src/session/handoff/**',
+    // The carrier spec drives createTrackedSessionHandoffCoordinator directly.
+    // Bounded to the session-handoff files; actionOperations at large is not Lane 08.
+    'apps/cli/src/daemon/actionOperations/sessionHandoff*',
+    'apps/cli/src/daemon/actionOperations/*SessionHandoff*',
+    // Workspace transfer/export the handoff resolves, plus the git backend that
+    // implements it. scm-git is reached through the SCM registry at runtime, so
+    // no static import from the CLI ever names it.
+    'apps/cli/src/scm/workspace/**',
+    'apps/cli/src/scm/runtime.ts',
+    'apps/cli/src/scm/runtime*.test.ts',
+    'packages/plugins/scm-git/src/workspace/**',
+    'apps/cli/native/processcustody/**',
+    'apps/cli/scripts/runWorkspaceSyncRealIntegration.mjs',
+    'apps/cli/vitest.integration.config.ts',
+    // Owns test:workspace-sync:real:local, the only definition of what the lane runs.
+    'apps/cli/package.json',
+    'packages/cli-common/mutagen-engine.json',
+    'packages/cli-common/package.json',
+    'packages/cli-common/scripts/runMutagenEngineLiveTest.mjs',
+    // The daemon workspace-sync runtime resolves the Mutagen engine artifact
+    // target/paths and asserts its payload through this owner before launching.
+    'packages/cli-common/src/firstPartyRuntime/**',
+    // Signed release download, checksum/Minisign verification and the GitHub
+    // release reader the required acquisition step exercises end to end.
+    'packages/release-runtime/**',
+    'packages/iroh-native/**',
+    'packages/protocol/src/sessions/control/handoff/**',
+    // Account Settings owns rehydration of workspaceRefsV1 and
+    // workspaceSyncRelationshipsV1; both real specs parse and round-trip them.
+    'packages/protocol/src/account/settings/accountSettings.ts',
+    'packages/protocol/src/workspaces/workspaceRefV1.ts',
+    // The destructive-target handoff proof is raised and replayed through the Action
+    // approval owner, so the lane's target-replacement/mirror evidence depends on these
+    // exact files. Bounded to the handoff-carrying owners, not Actions at large.
+    'apps/cli/src/session/actions/createCliActionDeps.ts',
+    'packages/protocol/src/actions/actionExecutor.ts',
+    'packages/protocol/src/actions/actionSpecs.ts',
+    'packages/protocol/src/actions/executor/**',
+    '.github/workflows/tests.yml',
+    // Owns the manual selection this lane is reachable by.
+    '.github/workflows/tests-dispatch.yml',
+  ]) {
+    assert.ok(filters.includes(path), `Lane 08 change surface ${path} must select the real workspace-sync lane`);
+  }
+
+  // The coordinator selection stays bounded: broadening it to the whole
+  // actionOperations owner would run a 45-minute source-built lane for every
+  // unrelated action-operation change.
+  assert.equal(filters.includes('apps/cli/src/daemon/actionOperations/**'), false);
+
+  // Same bound on the Action approval surfaces: only the files that carry the handoff
+  // proof are listed. Whole-owner globs would run this 45-minute lane for every unrelated
+  // action spec, dep or executor change.
+  assert.equal(filters.includes('packages/protocol/src/actions/**'), false);
+  assert.equal(filters.includes('apps/cli/src/session/actions/**'), false);
+
+  // WorkspaceSyncRelationshipV1Schema needs no filter entry of its own only for
+  // as long as it stays inside the handoff prefix already listed above. Moving
+  // it elsewhere silently drops the lane's relationship coverage.
+  assert.match(
+    readFileSync(join(repoRoot, 'packages/protocol/src/sessions/control/handoff/workspaceSyncSchemas.ts'), 'utf8'),
+    /export const WorkspaceSyncRelationshipV1Schema\b/u,
+  );
+
+  // Every step that costs runner time (and the runner invocation itself) is gated on that selection.
+  for (const step of job.steps) {
+    if (step.name === 'Checkout' || step.name === 'Detect workspace sync-relevant changes') continue;
+    if (step.name === 'Skip workspace sync (no relevant changes)') {
+      assert.equal(step.if, "github.event_name != 'workflow_call' && steps.changes.outputs.workspace_sync_real != 'true'");
+      continue;
+    }
+    assert.equal(step.if, GATED_ON_SELECTION, `step "${step.name}" must obey the workspace-sync change selection`);
+  }
+});
+
+test('manual dispatch can select the real workspace-sync lane by name', () => {
+  const dispatch = loadWorkflow('tests-dispatch.yml');
+  assert.match(dispatch.on.workflow_dispatch.inputs.custom_checks.description, /workspace_sync_real/u);
+  assert.equal(
+    dispatch.jobs.resolve.outputs.run_workspace_sync_real,
+    '${{ steps.flags.outputs.run_workspace_sync_real }}',
+  );
+  assert.equal(
+    dispatch.jobs.tests.with.run_workspace_sync_real,
+    "${{ needs.resolve.outputs.run_workspace_sync_real == 'true' }}",
+  );
+
+  const raw = readWorkflowText('tests-dispatch.yml');
+  assert.match(raw, /if has workspace_sync_real; then run_workspace_sync_real=true; fi/u);
+  assert.doesNotMatch(raw, /wsrepl_lima/u, 'the retired WSREPL selection must not survive as a second owner');
+});
+
+test('ci_summary cannot report a false green for a selected real workspace-sync lane', () => {
+  const tests = loadWorkflow('tests.yml');
+  const summary = tests.jobs.ci_summary;
+  assert.ok(summary.needs.includes('workspace-sync-real'), 'ci_summary must depend on the real workspace-sync lane');
+
+  const collector = summary.steps.find((step) => step.name === 'Collect every lane conclusion');
+  assert.equal(
+    collector.env.CI_REQUIRED_LANES,
+    "${{ (!inputs.select_jobs_explicitly || inputs.run_workspace_sync_real) && 'workspace-sync-real' || '' }}",
+    'ci_summary must learn which lanes were actually selected',
+  );
+  // A required lane that is skipped, cancelled, or otherwise not successful is a failure.
+  assert.match(collector.run, /requiredLanes/u);
+  assert.match(collector.run, /result !== 'success' && result !== 'skipped'/u);
+  assert.match(collector.run, /requiredLanes\.has\(id\) \? result !== 'success'/u);
+});

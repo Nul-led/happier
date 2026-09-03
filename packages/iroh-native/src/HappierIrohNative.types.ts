@@ -13,7 +13,7 @@ export type NativeIrohModule = Readonly<{
     keyPath?: string;
     relayPolicy?: 'automatic' | 'disabled';
     relayUrls?: readonly string[];
-    capProfile?: 'homeInteractive' | 'machineBulk' | 'workspaceSync';
+    capProfile?: 'homeInteractive' | 'machineBulk';
   }) => Promise<{
     endpointHandle: string;
     endpointId: string;

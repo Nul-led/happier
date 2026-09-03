@@ -3,9 +3,29 @@ import {
     decodePeerTcpTunnelBinaryFrameV2,
     encodePeerTcpTunnelBinaryFrameV2,
     type PeerTcpTunnelDirectionV1,
+    type PeerTcpTunnelBinaryFrameDecodeFailureReasonV2,
     type PeerTcpTunnelBinaryFrameHeaderV2,
 } from '@happier-dev/protocol';
 import type { PeerTcpTunnelBinaryFrameForSessionResult, PeerTcpTunnelBinarySubstreamFrameResult, PeerTcpTunnelFrame } from './types.js';
+
+export type PeerTcpTunnelBinaryDecodeDenialReason = Extract<
+    PeerTcpTunnelBinaryFrameForSessionResult,
+    Readonly<{ ok: false }>
+>['reasonCode'];
+
+/**
+ * Transport policy owns the single translation from a protocol decode failure to a tunnel
+ * admission denial. Protocol decides whether bytes are a valid V2 frame; this seam decides
+ * which denial the peer is told. Every admitting caller — session codec, substream mux,
+ * application substreams, and CLI relay/route admission — uses this one mapping.
+ */
+export function peerTcpTunnelBinaryDecodeFailureReason(
+    reasonCode: PeerTcpTunnelBinaryFrameDecodeFailureReasonV2,
+): PeerTcpTunnelBinaryDecodeDenialReason {
+    if (reasonCode === 'header_too_large') return 'encoded_frame_too_large';
+    if (reasonCode === 'payload_too_large') return 'decoded_payload_too_large';
+    return 'frame_invalid';
+}
 
 function requireDirection(header: PeerTcpTunnelBinaryFrameHeaderV2): PeerTcpTunnelDirectionV1 | null {
     return header.direction ?? null;
@@ -202,9 +222,7 @@ export function decodePeerTcpTunnelBinaryFrameForSession(input: Readonly<{
         maxPayloadBytes: input.maxRawPayloadBytes,
     });
     if (!decoded.ok) {
-        if (decoded.reasonCode === 'header_too_large') return { ok: false, reasonCode: 'encoded_frame_too_large' };
-        if (decoded.reasonCode === 'payload_too_large') return { ok: false, reasonCode: 'decoded_payload_too_large' };
-        return { ok: false, reasonCode: 'frame_invalid' };
+        return { ok: false, reasonCode: peerTcpTunnelBinaryDecodeFailureReason(decoded.reasonCode) };
     }
 
     const { header, payload } = decoded;
@@ -284,9 +302,7 @@ export function decodePeerTcpTunnelBinarySubstreamFrame(input: Readonly<{
         maxPayloadBytes: input.maxRawPayloadBytes,
     });
     if (!decoded.ok) {
-        if (decoded.reasonCode === 'header_too_large') return { ok: false, reasonCode: 'encoded_frame_too_large' };
-        if (decoded.reasonCode === 'payload_too_large') return { ok: false, reasonCode: 'decoded_payload_too_large' };
-        return { ok: false, reasonCode: 'frame_invalid' };
+        return { ok: false, reasonCode: peerTcpTunnelBinaryDecodeFailureReason(decoded.reasonCode) };
     }
     const substreamId = decoded.header.substreamId;
     if (!substreamId) return { ok: false, reasonCode: 'frame_invalid' };

@@ -65,14 +65,18 @@ pub fn snapshot_for_incoming_addr(
     )
 }
 
-/// Builds a path snapshot from a live Iroh connection's currently selected
-/// network path. A post-handshake `Connection` has no pre-handshake address
-/// accessor; `Connection::paths()` is the genuine observation: the selected
-/// open path is `direct` for an IP path and `relay` for a relay path. With no
-/// visible selected path (including custom transports) the honest value is
-/// `unknown` — never a manufactured direct/relay claim.
-pub fn snapshot_for_connection(connection: &iroh::endpoint::Connection) -> IrohPathSnapshot {
-    let observed_path = connection
+/// Observes a live Iroh connection's currently selected network path. A
+/// post-handshake `Connection` has no pre-handshake address accessor;
+/// `Connection::paths()` is the genuine observation: the selected open path is
+/// `direct` for an IP path and `relay` for a relay path. With no visible
+/// selected path (including custom transports) the honest value is `unknown` —
+/// never a manufactured direct/relay claim.
+///
+/// Separate from [`snapshot_for_connection`] because a caller that only reports
+/// the path (the browser binding, which has no wall clock) must not have to
+/// stamp a timestamp to obtain it. The observation rule itself has one owner.
+pub fn observed_path_for_connection(connection: &iroh::endpoint::Connection) -> IrohObservedPath {
+    connection
         .paths()
         .iter()
         .find(|path| path.is_selected())
@@ -84,9 +88,13 @@ pub fn snapshot_for_connection(connection: &iroh::endpoint::Connection) -> IrohP
             } else {
                 IrohObservedPath::Unknown
             }
-        });
+        })
+}
+
+/// Builds a path snapshot from a live Iroh connection's observed path.
+pub fn snapshot_for_connection(connection: &iroh::endpoint::Connection) -> IrohPathSnapshot {
     IrohPathSnapshot::new(
-        observed_path,
+        observed_path_for_connection(connection),
         connection.remote_id().to_string(),
         crate::unix_ms(),
     )

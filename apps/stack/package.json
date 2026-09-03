@@ -17,7 +17,6 @@
     "docs/",
     "extras/",
     "scripts/",
-    "!scripts/provision/macos-lima-wsrepl-matrix.sh",
     "!scripts/provision/macos-lima-vm.sh"
   ],
   "bundledDependencies": [

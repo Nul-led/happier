@@ -38,69 +38,6 @@ test('public toolchain pack staging derives its required external inputs from on
   );
 });
 
-test('createPackSandbox stages every available capability-matrix proving consumer through its owner selector', async () => {
-  const capabilityMatrixCliUrl = new URL(
-    '../../../packages/plugin-sdk/scripts/capabilityMatrixCli.mjs',
-    import.meta.url,
-  );
-  const capabilityMatrixPackageRoot = fileURLToPath(new URL('../../../packages/plugin-sdk', import.meta.url));
-  const { resolveAvailableCapabilityMatrixProvingConsumerSourcePaths } = await import(capabilityMatrixCliUrl.href);
-  const sourcePaths = await resolveAvailableCapabilityMatrixProvingConsumerSourcePaths({
-    packageRoot: capabilityMatrixPackageRoot,
-  });
-
-  assert.ok(sourcePaths.length > 0, 'the capability matrix must name available public proving consumers');
-  const root = await mkdtemp(join(tmpdir(), 'pack-test-capability-matrix-proving-consumers-'));
-  let sandboxRoot = '';
-  try {
-    const monorepoRoot = await createHoistedRuntimePackFixture({ root });
-    await mkdir(join(monorepoRoot, 'packages', 'plugin-sdk', 'scripts'), { recursive: true });
-    await writeFile(
-      join(monorepoRoot, 'packages', 'plugin-sdk', 'scripts', 'capabilityMatrixCli.mjs'),
-      [
-        `import { resolveAvailableCapabilityMatrixProvingConsumerSourcePaths as resolveSourcePaths } from ${JSON.stringify(capabilityMatrixCliUrl.href)};`,
-        'export async function resolveAvailableCapabilityMatrixProvingConsumerSourcePaths() {',
-        `  return await resolveSourcePaths({ packageRoot: ${JSON.stringify(capabilityMatrixPackageRoot)} });`,
-        '}',
-        '',
-      ].join('\n'),
-    );
-    for (const sourcePath of sourcePaths) {
-      const fixtureSourcePath = join(monorepoRoot, sourcePath);
-      await mkdir(dirname(fixtureSourcePath), { recursive: true });
-      await writeFile(fixtureSourcePath, 'export const capabilityMatrixProvingConsumer = true;\n');
-    }
-    await mkdir(join(monorepoRoot, 'packages', 'plugin-ui'), { recursive: true });
-    await writeFile(
-      join(monorepoRoot, 'packages', 'plugin-ui', 'package.json'),
-      JSON.stringify({
-        name: '@happier-dev/plugin-ui',
-        bundledDependencies: ['@happier-dev/plugin-sdk', '@happier-dev/protocol'],
-      }),
-    );
-
-    sandboxRoot = await createPackSandbox({
-      monorepoRoot,
-      packageRelDir: 'packages/plugin-ui',
-    });
-
-    for (const sourcePath of sourcePaths) {
-      const stagedStats = await lstat(join(sandboxRoot, sourcePath)).catch((error) => {
-        if (error?.code === 'ENOENT') return null;
-        throw error;
-      });
-      assert.equal(
-        stagedStats?.isFile(),
-        true,
-        `Plugin UI prepack must retain capability-matrix proving consumer source: ${sourcePath}`,
-      );
-    }
-  } finally {
-    if (sandboxRoot) await rm(sandboxRoot, { recursive: true, force: true });
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
 async function writeFixtureRuntimeDependencyOwner(monorepoRoot) {
   await writeFile(
     join(
@@ -547,6 +484,200 @@ test('exportPackSandboxTarball transforms and validates a public SDK tarball onl
   }
 });
 
+test('exportPackSandboxTarball publishes shipped examples with the exact published dependency versions', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'pack-test-published-examples-'));
+  const sandboxRoot = join(root, 'sandbox');
+  const sandboxPackDir = join(sandboxRoot, 'packages', 'plugin-sdk');
+  const sandboxExampleDir = join(sandboxPackDir, 'examples', 'operation-only-channel-provider');
+  const sourceRoot = join(root, 'source');
+  const sourceExampleDir = join(sourceRoot, 'packages', 'plugin-sdk', 'examples', 'operation-only-channel-provider');
+  const destinationDir = join(root, 'destination');
+  const candidateVersion = '0.1.0-preview.3';
+  const tarballName = `happier-dev-plugin-sdk-${candidateVersion}.tgz`;
+  let packedExampleManifest = null;
+  let packedExampleReadme = '';
+  const sourceExampleManifest = {
+    name: '@example/happier-operation-only-channel-provider',
+    version: '0.1.0',
+    private: true,
+    scripts: {
+      build: 'happier plugins dev build .',
+      test: 'happier plugins test .',
+    },
+    dependencies: {
+      '@happier-dev/plugin-sdk': '0.0.0',
+      '@happier-dev/plugin-ui': '0.0.0',
+    },
+    devDependencies: { '@types/node': '25.0.10' },
+  };
+  const sourceExampleReadme = [
+    '# Operation-Only Channels Provider',
+    '',
+    '```sh',
+    'happier plugins dev build .',
+    'happier plugins test .',
+    '```',
+    '',
+  ].join('\n');
+  try {
+    await mkdir(sandboxExampleDir, { recursive: true });
+    await mkdir(sourceExampleDir, { recursive: true });
+    await mkdir(destinationDir);
+    const sourceManifest = {
+      name: '@happier-dev/plugin-sdk',
+      version: '0.0.0',
+      private: true,
+      happier: {
+        publicSdkRelease: {
+          posture: 'prepublish_hold',
+          supportPolicy: 'README.md#public-sdk-release-posture',
+          externalPublicationRequiresApproval: true,
+        },
+      },
+    };
+    await writeFile(join(sourceRoot, 'packages', 'plugin-sdk', 'package.json'), JSON.stringify(sourceManifest));
+    await writeFile(join(sandboxPackDir, 'package.json'), JSON.stringify(sourceManifest));
+    await writeFile(join(sourceExampleDir, 'package.json'), JSON.stringify(sourceExampleManifest));
+    await writeFile(join(sandboxExampleDir, 'package.json'), JSON.stringify(sourceExampleManifest));
+    await writeFile(join(sourceExampleDir, 'README.md'), sourceExampleReadme);
+    await writeFile(join(sandboxExampleDir, 'README.md'), sourceExampleReadme);
+
+    const exampleDependencyVersions = {
+      '@happier-dev/plugin-sdk': candidateVersion,
+      '@happier-dev/plugin-ui': candidateVersion,
+    };
+    await exportPackSandboxTarball({
+      monorepoRoot: sourceRoot,
+      packageRelDir: 'packages/plugin-sdk',
+      destinationDir,
+      packageVersion: candidateVersion,
+      publication: {
+        expectedPackageName: '@happier-dev/plugin-sdk',
+        exampleDependencyVersions,
+        requiredFiles: ['README.md'],
+        apiGovernance: { profileId: 'plugin-sdk' },
+      },
+      createPackSandboxImpl: async () => sandboxRoot,
+      preparePublicationApiGovernanceImpl: async () => ({
+        summary: {
+          status: 'dormant_pre_baseline',
+          previousVersion: null,
+          removedSymbolsAreBreaking: false,
+          humanReviewRequired: false,
+        },
+      }),
+      validatePublicationApiGovernanceImpl: async () => ({ status: 'current' }),
+      runCaptureImpl: async (command, args) => {
+        if (command === 'npm' && args[0] === 'run') {
+          assert.deepEqual(args, ['run', '--silent', 'prepare:api-governance']);
+          return '';
+        }
+        if (command === 'npm' && args.includes('--dry-run')) return 'dry-run';
+        if (command === 'npm') {
+          assert.deepEqual(args, ['pack', '--ignore-scripts']);
+          // The sandbox is removed once the export returns, so the candidate
+          // bytes are captured here, at the moment npm would read them.
+          packedExampleManifest = JSON.parse(await readFile(join(sandboxExampleDir, 'package.json'), 'utf8'));
+          packedExampleReadme = await readFile(join(sandboxExampleDir, 'README.md'), 'utf8');
+          await writeFile(join(sandboxPackDir, tarballName), 'candidate');
+          return tarballName;
+        }
+        if (command === 'tar' && args[0] === '-tf') {
+          return [
+            'package/package.json',
+            'package/README.md',
+            'package/examples/operation-only-channel-provider/package.json',
+            'package/examples/operation-only-channel-provider/README.md',
+          ].join('\n');
+        }
+        if (command === 'tar' && args[0] === '-xOf') {
+          const tarPath = args[2];
+          if (tarPath === 'package/package.json') {
+            return JSON.stringify({
+              name: '@happier-dev/plugin-sdk',
+              version: candidateVersion,
+              happier: { publicSdkRelease: { posture: 'developer_preview' } },
+              publishConfig: { access: 'public' },
+            });
+          }
+          if (tarPath === 'package/examples/operation-only-channel-provider/package.json') {
+            return JSON.stringify(packedExampleManifest);
+          }
+        }
+        throw new Error(`unexpected command: ${command} ${args.join(' ')}`);
+      },
+    });
+
+    assert.equal(packedExampleManifest.dependencies['@happier-dev/plugin-sdk'], candidateVersion);
+    assert.equal(packedExampleManifest.dependencies['@happier-dev/plugin-ui'], candidateVersion);
+    assert.equal(packedExampleManifest.devDependencies['@types/node'], '25.0.10');
+    assert.equal(packedExampleManifest.scripts.build, 'happier plugins dev build .');
+    assert.equal(packedExampleReadme, sourceExampleReadme);
+    assert.deepEqual(
+      JSON.parse(await readFile(join(sourceExampleDir, 'package.json'), 'utf8')),
+      sourceExampleManifest,
+    );
+    assert.equal(await readFile(join(sourceExampleDir, 'README.md'), 'utf8'), sourceExampleReadme);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('exportPackSandboxTarball refuses to ship an example internal dependency without a published rewrite', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'pack-test-example-rewrite-closed-'));
+  const sandboxRoot = join(root, 'sandbox');
+  const sandboxPackDir = join(sandboxRoot, 'packages', 'plugin-sdk');
+  const sandboxExampleDir = join(sandboxPackDir, 'examples', 'future-consumer');
+  const sourceRoot = join(root, 'source');
+  const destinationDir = join(root, 'destination');
+  try {
+    await mkdir(sandboxExampleDir, { recursive: true });
+    await mkdir(join(sourceRoot, 'packages', 'plugin-sdk'), { recursive: true });
+    await mkdir(destinationDir);
+    await writeFile(
+      join(sandboxPackDir, 'package.json'),
+      JSON.stringify({
+        name: '@happier-dev/plugin-sdk',
+        version: '0.0.0',
+        private: true,
+        happier: { publicSdkRelease: { posture: 'prepublish_hold' } },
+      }),
+    );
+    await writeFile(
+      join(sourceRoot, 'packages', 'plugin-sdk', 'package.json'),
+      JSON.stringify({ name: '@happier-dev/plugin-sdk', version: '0.0.0' }),
+    );
+    await writeFile(
+      join(sandboxExampleDir, 'package.json'),
+      JSON.stringify({
+        name: '@example/future-consumer',
+        dependencies: { '@happier-dev/not-a-published-package': '0.0.0' },
+      }),
+    );
+
+    await assert.rejects(
+      () => exportPackSandboxTarball({
+        monorepoRoot: sourceRoot,
+        packageRelDir: 'packages/plugin-sdk',
+        destinationDir,
+        packageVersion: '0.1.0-preview.3',
+        publication: {
+          expectedPackageName: '@happier-dev/plugin-sdk',
+          exampleDependencyVersions: { '@happier-dev/plugin-sdk': '0.1.0-preview.3' },
+          requiredFiles: ['README.md'],
+        },
+        createPackSandboxImpl: async () => sandboxRoot,
+        runCaptureImpl: async (command, args) => {
+          throw new Error(`unexpected command: ${command} ${args.join(' ')}`);
+        },
+      }),
+      /without a published rewrite/u,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('exportPackSandboxTarball aligns the staged Plugin SDK manifest before Plugin UI candidate preparation', async () => {
   const root = await mkdtemp(join(tmpdir(), 'pack-test-plugin-ui-candidate-alignment-'));
   const sandboxRoot = join(root, 'sandbox');
@@ -967,6 +1098,13 @@ test('exportPackSandboxTarball rejects API declaration drift introduced only in 
       'export interface Candidate { value: string; }\n',
     );
     await writeFile(join(sandboxPackDir, 'dist', 'index.js'), 'export {};\n');
+    // Governance compares prepared declarations against the author-owned
+    // source spec for each entrypoint, so the fixture owns one too.
+    await mkdir(join(sandboxPackDir, 'src'), { recursive: true });
+    await writeFile(
+      join(sandboxPackDir, 'src', 'index.public.ts'),
+      'export interface Candidate { value: string; }\n',
+    );
 
     await assert.rejects(
       () => exportPackSandboxTarball({
@@ -3317,16 +3455,12 @@ test('stack package exposes happier as a published binary', async () => {
   });
 });
 
-test('stack package excludes the WSREPL Lima test shims from published files', async () => {
+test('stack package keeps the generic local Lima provisioning helper unpublished', async () => {
   const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
   assert.ok(Array.isArray(pkg.files), 'expected stack package to declare published files');
   assert.ok(
-    pkg.files.includes('!scripts/provision/macos-lima-wsrepl-matrix.sh'),
-    'expected WSREPL Lima matrix shim to be excluded from the published stack package',
-  );
-  assert.ok(
     pkg.files.includes('!scripts/provision/macos-lima-vm.sh'),
-    'expected WSREPL Lima VM shim to be excluded from the published stack package',
+    'expected the local Lima VM helper to be excluded from the published stack package',
   );
 });
 

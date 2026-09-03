@@ -36,6 +36,10 @@ const VALID_TARGETS = ['cli', 'server', 'ui'];
 const INTERNAL_PACKAGE_PREFIX = '@happier-dev/';
 const PLUGINS_PACKAGE_PREFIX = '@happier-dev/plugins-';
 const INTERNAL_WORKSPACE_NAME_PATTERN = /^@happier-dev\/([A-Za-z0-9_][A-Za-z0-9._-]*)$/u;
+// Workspace source manifests pin internal workspace dependencies at this
+// placeholder (the shared source version). Publication owns rewriting those
+// bytes so shipped examples install real published dependency versions.
+const WORKSPACE_SOURCE_DEPENDENCY_VERSION = '0.0.0';
 
 function normalizePathForComparison(value) {
   return process.platform === 'win32' ? value.toLowerCase() : value;
@@ -411,34 +415,6 @@ async function resolvePackSandboxSourceRelDirsFromWorkspaceStaging({
       }
     }
   }
-  // Capability availability is only valid when its declared public proof
-  // consumer remains a regular source file. The matrix owns that inventory;
-  // pack converts its selected leaves to source directories for staging.
-  const capabilityMatrixCliPath = join(
-    monorepoRoot,
-    'packages',
-    'plugin-sdk',
-    'scripts',
-    'capabilityMatrixCli.mjs',
-  );
-  const capabilityMatrixProvingConsumerSourceRelDirs = [];
-  if (await pathExists(capabilityMatrixCliPath)) {
-    const { resolveAvailableCapabilityMatrixProvingConsumerSourcePaths } = await import(
-      pathToFileURL(capabilityMatrixCliPath).href,
-    );
-    if (typeof resolveAvailableCapabilityMatrixProvingConsumerSourcePaths !== 'function') {
-      throw new Error('[pack] capability matrix has no available proving-consumer source selector');
-    }
-    const sourcePaths = await resolveAvailableCapabilityMatrixProvingConsumerSourcePaths({
-      packageRoot: join(monorepoRoot, 'packages', 'plugin-sdk'),
-    });
-    for (const relativePath of sourcePaths) {
-      const relativeDir = relativePath.slice(0, relativePath.lastIndexOf('/'));
-      if (await pathExists(join(monorepoRoot, relativeDir))) {
-        capabilityMatrixProvingConsumerSourceRelDirs.push(relativeDir);
-      }
-    }
-  }
   // The CLI prepack publisher is a build owner, not a migration-tree utility.
   // Retain its entrypoint and canonical publisher module whenever a package
   // prepack reaches that owner from the temporary sandbox.
@@ -468,7 +444,6 @@ async function resolvePackSandboxSourceRelDirsFromWorkspaceStaging({
     ...bundledBuildWorkspaceRelDirs,
     ...runtimeWorkspaceRelDirs,
     ...publicToolchainConsumerSourceRelDirs,
-    ...capabilityMatrixProvingConsumerSourceRelDirs,
     ...canonicalBuildOwnerSourceRelDirs,
     ...canonicalApiGovernanceOwnerSourceRelDirs,
   ])].sort((left, right) => left.localeCompare(right));
@@ -1265,6 +1240,7 @@ function normalizePublicationConfig(publication, packageVersion) {
   return {
     expectedPackageName: normalizePublicationPackageName(publication.expectedPackageName),
     dependencyVersions: normalizePublicationDependencyVersions(publication.dependencyVersions),
+    exampleDependencyVersions: normalizePublicationDependencyVersions(publication.exampleDependencyVersions),
     requiredFiles: normalizePublicationRequiredFiles(publication.requiredFiles),
     expectedPeerDependencies: normalizeExpectedPeerDependencies(publication.expectedPeerDependencies),
     apiGovernance: normalizePublicationApiGovernance(publication.apiGovernance),
@@ -1368,7 +1344,50 @@ async function applyPublicationPackSandboxTransform({
       `${JSON.stringify({ ...workspaceManifest, version: dependencyVersion }, null, 2)}\n`,
     );
   }
+  await rewritePublishedExampleInputs({ sandboxPackDir, config });
   await removePackSandboxTestFiles(sandboxPackDir);
+}
+
+async function rewritePublishedExampleInputs({ sandboxPackDir, config }) {
+  const exampleRoot = join(sandboxPackDir, 'examples');
+  if (!(await pathExists(exampleRoot))) return;
+  for (const entry of await readdir(exampleRoot, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const exampleDir = join(exampleRoot, entry.name);
+    const manifestPath = join(exampleDir, 'package.json');
+    if (await pathExists(manifestPath)) {
+      const manifest = await readJson(manifestPath);
+      const nextManifest = { ...manifest };
+      for (const field of ['dependencies', 'devDependencies']) {
+        const entries = manifest[field];
+        if (entries === undefined) continue;
+        if (!isPlainRecord(entries)) {
+          throw new Error(
+            `[pack] example manifest ${field} must be an object when present: examples/${entry.name}`,
+          );
+        }
+        const nextEntries = { ...entries };
+        for (const [dependencyName, dependencyVersion] of Object.entries(entries)) {
+          if (!dependencyName.startsWith(INTERNAL_PACKAGE_PREFIX)) continue;
+          if (dependencyVersion !== WORKSPACE_SOURCE_DEPENDENCY_VERSION) continue;
+          const publishedVersion = config.exampleDependencyVersions[dependencyName];
+          if (publishedVersion === undefined) {
+            // The reader installs this example from the published tarball, so
+            // the release owner must either supply the exact published version
+            // of this dependency or keep the example out of the published
+            // package selection. Shipping the workspace source placeholder
+            // would hand the reader a manifest that cannot resolve.
+            throw new Error(
+              `[pack] example depends on internal package without a published rewrite: examples/${entry.name}: ${dependencyName}`,
+            );
+          }
+          nextEntries[dependencyName] = publishedVersion;
+        }
+        nextManifest[field] = nextEntries;
+      }
+      await writeFile(manifestPath, `${JSON.stringify(nextManifest, null, 2)}\n`);
+    }
+  }
 }
 
 async function preparePublicationCandidateToolchain({
@@ -1459,6 +1478,17 @@ function assertNoWorkspaceResolution(manifest) {
   }
 }
 
+async function readPublishedTarballJson({ tarballPath, tarPath, runCaptureImpl, sandboxPackDir, env }) {
+  const raw = await runCaptureImpl('tar', ['-xOf', tarballPath, tarPath], { cwd: sandboxPackDir, env });
+  try {
+    return JSON.parse(raw);
+  } catch (error) {
+    throw new Error(
+      `[pack] public tarball JSON file is invalid: ${tarPath}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
 async function validatePublicationTarball({
   tarballPath,
   tarPaths,
@@ -1507,6 +1537,27 @@ async function validatePublicationTarball({
   for (const [dependencyName, dependencyVersion] of Object.entries(config.dependencyVersions)) {
     if (manifest.dependencies?.[dependencyName] !== dependencyVersion) {
       throw new Error(`[pack] public tarball dependency did not retain exact version: ${dependencyName}`);
+    }
+  }
+  for (const tarPath of tarPaths) {
+    if (!/^package\/examples\/[^/]+\/package\.json$/u.test(tarPath)) continue;
+    const exampleManifest = await readPublishedTarballJson({ tarballPath, tarPath, runCaptureImpl, sandboxPackDir, env });
+    for (const field of ['dependencies', 'devDependencies']) {
+      const entries = exampleManifest[field];
+      if (entries === undefined) continue;
+      if (!isPlainRecord(entries)) {
+        throw new Error(`[pack] public tarball example ${field} must be an object when present: ${tarPath}`);
+      }
+      for (const [dependencyName, dependencyVersion] of Object.entries(entries)) {
+        if (
+          dependencyName.startsWith(INTERNAL_PACKAGE_PREFIX)
+          && dependencyVersion === WORKSPACE_SOURCE_DEPENDENCY_VERSION
+        ) {
+          throw new Error(
+            `[pack] public tarball example retains the workspace source dependency placeholder: ${tarPath}: ${dependencyName}`,
+          );
+        }
+      }
     }
   }
   for (const [peerName, peerVersion] of Object.entries(config.expectedPeerDependencies)) {

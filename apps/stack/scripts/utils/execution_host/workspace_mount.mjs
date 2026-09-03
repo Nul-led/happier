@@ -185,7 +185,7 @@ async function inspectMountHealth({ mounted, mountDir, boundary, platform, fileE
   return { ok: true, code: 'ready' };
 }
 
-async function resolveGuestHome({ profile, executor }) {
+export async function resolveExecutionHostGuestHome({ profile, executor }) {
   if (!executor?.capture) return '';
   const result = await executor.capture('limactl', [
     'shell', profile.instance, '--', 'sh', '-lc', 'printf %s "$HOME"',
@@ -286,7 +286,7 @@ export async function mountExecutionHostWorkspace({
   }
   // Lima rewrites this file on lifecycle changes. Passing its current path to
   // SSHFS intentionally avoids a copied/stale SSH identity.
-  const resolved = withGuestHome(ready, await resolveGuestHome({ profile, executor }));
+  const resolved = withGuestHome(ready, await resolveExecutionHostGuestHome({ profile, executor }));
   const child = await processBoundary.start('sshfs', [
     '-F', resolved.sshConfigFile,
     '-o', 'ControlMaster=no',

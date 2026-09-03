@@ -369,6 +369,117 @@ test('publication admission requires full stable checks and risk-selected server
   }
 });
 
+test('release admission requires the external signed Mutagen engine release gate', async () => {
+  const raw = await readFile(join(repoRoot, '.github', 'workflows', 'release.yml'), 'utf8');
+  const workflow = YAML.parse(raw);
+  const gateJobName = 'mutagen_engine_release_gate';
+  const gateJobNames = Object.entries(workflow.jobs)
+    .filter(([, job]) => (job.steps ?? []).some(
+      (step) => step.env?.HAPPIER_TEST_MUTAGEN_ENGINE_LIVE_ACQUISITION === '1',
+    ))
+    .map(([name]) => name);
+  assert.deepEqual(
+    gateJobNames,
+    [gateJobName],
+    'release.yml must keep exactly one Mutagen managed-component preflight gate',
+  );
+
+  const gate = workflow.jobs[gateJobName];
+  assert.deepEqual(gate.needs, ['plan'], 'the Mutagen gate must run after the release plan');
+  assert.equal(gate.permissions?.contents, 'read');
+  assert.equal(
+    gate.if,
+    undefined,
+    'the external release prerequisite is unconditional; no dry-run or publication-target waiver exists',
+  );
+  const checkouts = gate.steps.filter((step) => String(step.uses ?? '').startsWith('actions/checkout'));
+  assert.equal(checkouts.length, 1);
+  assert.equal(
+    checkouts[0].with.ref,
+    '${{ needs.plan.outputs.source_sha }}',
+    'the gate must acquire the exact source verified by the release plan, including dry runs',
+  );
+  assert.equal(checkouts[0].with.repository, '${{ github.repository }}');
+  assert.equal(checkouts[0].with['persist-credentials'], false);
+
+  const install = gate.steps.find((step) => String(step.uses ?? '').startsWith('./.github/actions/install-yarn-dependencies'));
+  assert.ok(install, 'the gate must install workspace dependencies through the existing shared action');
+  const liveRuns = gate.steps.filter((step) => step.env?.HAPPIER_TEST_MUTAGEN_ENGINE_LIVE_ACQUISITION === '1');
+  assert.equal(liveRuns.length, 1, 'the gate must run only the existing live acquisition test without duplicating its assertions');
+  assert.match(
+    liveRuns[0].run,
+    /yarn workspace @happier-dev\/cli-common test:mutagen-engine:live:local/u,
+  );
+  assert.equal(liveRuns[0].env?.HAPPIER_TEST_MUTAGEN_ENGINE_LIVE_ACQUISITION, '1');
+  assert.equal(liveRuns[0].env?.GITHUB_TOKEN, '${{ github.token }}', 'the live acquisition needs a token suitable for public release API access');
+
+  const admission = workflow.jobs.release_admission;
+  assert.ok(admission.needs.includes(gateJobName), 'release admission must wait for the Mutagen gate');
+  assert.equal(
+    admission.steps.at(-1).env?.MUTAGEN_ENGINE_GATE_RESULT,
+    `\${{ needs.${gateJobName}.result }}`,
+    'the gate result must reach the source-owned admission policy as a fact',
+  );
+
+  const { admitRelease } = await import('../pipeline/release/admit-release.mjs');
+  const admittedRelease = {
+    checksProfile: 'fast',
+    environment: 'preview',
+    publishServerRuntimeNeeded: false,
+    publishCliBinariesNeeded: false,
+    risks: { mysqlContract: false, platformServices: false, trustRoots: false },
+    gates: { mysql: 'skipped', platform: 'skipped', trustRoots: 'skipped', mutagenEngine: 'success' },
+  };
+  assert.deepEqual(admitRelease(admittedRelease), { admitted: true });
+  for (const failedGateResult of ['failure', 'cancelled', 'skipped']) {
+    assert.throws(
+      () => admitRelease({
+        ...admittedRelease,
+        gates: { ...admittedRelease.gates, mutagenEngine: failedGateResult },
+      }),
+      /Mutagen engine release gate/u,
+      `a ${failedGateResult} Mutagen gate must fail release admission`,
+    );
+  }
+  assert.throws(
+    () => admitRelease({
+      ...admittedRelease,
+      gates: { mysql: 'skipped', platform: 'skipped', trustRoots: 'skipped' },
+    }),
+    /Mutagen engine release gate/u,
+    'a missing Mutagen gate fact must fail closed',
+  );
+
+  // The pinned engine release is now published, immutable and Minisign-signed, so CI may
+  // verify the acquisition path users actually reach. It stays confined to the one required
+  // Lane 08 lane that already owns real workspace-sync evidence: every other CI lane must
+  // remain offline, and neither owner may grow a second spelling of the acquisition.
+  const testsWorkflow = YAML.parse(await readFile(join(repoRoot, '.github', 'workflows', 'tests.yml'), 'utf8'));
+  const ciConsumers = Object.entries(testsWorkflow.jobs).filter(([, job]) =>
+    (job.steps ?? []).some((step) => step.env?.HAPPIER_TEST_MUTAGEN_ENGINE_LIVE_ACQUISITION === '1'),
+  );
+  assert.deepEqual(
+    ciConsumers.map(([id]) => id),
+    ['workspace-sync-real'],
+    'only the required real workspace-sync lane may consume the external engine release in ordinary CI',
+  );
+  const ciRuns = ciConsumers[0][1].steps.filter((step) =>
+    step.env?.HAPPIER_TEST_MUTAGEN_ENGINE_LIVE_ACQUISITION === '1',
+  );
+  assert.equal(ciRuns.length, 1);
+  assert.match(ciRuns[0].run, /yarn workspace @happier-dev\/cli-common test:mutagen-engine:live/u);
+  const cliCommonPackage = JSON.parse(await readFile(join(repoRoot, 'packages/cli-common/package.json'), 'utf8'));
+  assert.equal(cliCommonPackage.scripts['test:mutagen-engine:live:local'], 'node scripts/runMutagenEngineLiveTest.mjs');
+  assert.equal(ciRuns[0].env?.HAPPIER_TEST_MUTAGEN_ENGINE_LIVE_ACQUISITION, '1');
+  assert.equal(ciRuns[0].env?.GITHUB_TOKEN, '${{ github.token }}');
+  const rootPackage = JSON.parse(await readFile(join(repoRoot, 'package.json'), 'utf8'));
+  assert.doesNotMatch(
+    String(rootPackage.scripts['test:release:contracts']),
+    /mutagen/u,
+    'the general release-contracts lane must not run the live network acquisition test',
+  );
+});
+
 test('one bound candidate identity flows through every publisher and post-publication verification', async () => {
   const raw = await readFile(join(repoRoot, '.github', 'workflows', 'release.yml'), 'utf8');
   const workflow = YAML.parse(raw);

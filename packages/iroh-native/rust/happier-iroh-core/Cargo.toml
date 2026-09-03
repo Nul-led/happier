@@ -7,17 +7,34 @@ edition = "2021"
 crate-type = ["lib"]
 
 [features]
-# Test-only: enables the pinned iroh local relay test facility for the
-# forced-relay fixture. Never a release behavior dependency.
-test-relay-fixture = ["iroh/test-utils"]
+# Test-only: runs the pinned stock relay server locally for the forced-relay
+# fixture. Never a release behavior dependency.
+test-relay-fixture = ["dep:iroh-relay"]
 
 [dependencies]
-# Keep the native transport and relay protocol on one audited release line.
-iroh = "=1.1.0"
-getrandom = "=0.3.3"
 serde_json = "1"
-tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "sync", "time"] }
 zeroize = { version = "1.9", features = ["zeroize_derive"] }
+
+# Keep the native transport and relay protocol on one audited release line.
+# Native hosts keep iroh's default features (metrics, portmapper, platform
+# datapath); the browser target drops the ones iroh itself excludes for wasm and
+# keeps only the mandatory crypto provider. Both are the same pinned `=1.1.0`
+# source and checksum, so `verify:iroh-lock-parity` still describes one release.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+iroh = "=1.1.0"
+# Test-fixture only (`test-relay-fixture`): the same pinned relay release the
+# deployment runs, used to serve one local plain-HTTP relay.
+iroh-relay = { version = "=1.1.0", features = ["server"], optional = true }
+# Only the native filesystem key store mints a fresh endpoint seed; a browser
+# endpoint always receives its persisted seed from the caller.
+getrandom = "=0.3.3"
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "sync", "time"] }
+
+# The browser build carries no native TCP/loopback modules, so tokio's `net`
+# feature (and its mio dependency, which has no wasm32 backend) is excluded.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+iroh = { version = "=1.1.0", default-features = false, features = ["tls-ring"] }
+tokio = { version = "1", features = ["io-util", "macros", "rt", "sync", "time"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

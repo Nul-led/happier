@@ -62,6 +62,7 @@ import { ensureEnvFileMutated, ensureEnvFilePruned, ensureEnvFileUpdated } from 
 import { listAllStackNames, stackExistsSync } from './utils/stack/stacks.mjs';
 import { writeDevAuthKey } from './utils/auth/dev_key.mjs';
 import { startDevServer } from './utils/dev/server.mjs';
+import { resolveStackCanonicalServerUrl } from './utils/server/urls.mjs';
 import { ensureDevExpoServer } from './utils/dev/expo_dev.mjs';
 import { requireDir } from './utils/proc/pm.mjs';
 import { waitForHttpOk } from './utils/server/server.mjs';
@@ -1258,6 +1259,7 @@ async function cmdCreateDevAuthSeed({ rootDir, argv }) {
         const serverPort = await pickNextFreeTcpPort(serverPortStart, { host: '127.0.0.1' });
         const internalServerUrl = `http://127.0.0.1:${serverPort}`;
         const publicServerUrl = await preferStackLocalhostUrl(`http://localhost:${serverPort}`, { stackName: name });
+        const canonicalServerUrl = await resolveStackCanonicalServerUrl({ serverPort, stackName: name });
 
         const logDir = join(getHappyStacksHomeDir(process.env), 'logs', 'dev-auth');
         await mkdir(logDir, { recursive: true }).catch(() => {});
@@ -1307,6 +1309,7 @@ async function cmdCreateDevAuthSeed({ rootDir, argv }) {
                 baseEnv: env,
                 serverPort,
                 internalServerUrl,
+                canonicalServerUrl,
                 publicServerUrl,
                 envPath: env.HAPPIER_STACK_ENV_FILE ?? '',
                 stackMode: true,

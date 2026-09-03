@@ -70,6 +70,8 @@ function fixture({ missingRolling = false } = {}) {
   const log = join(root, 'gh.log');
   const uploadCounter = join(root, 'upload-counter');
   const draftState = join(root, 'draft-state');
+  const staleOtherDraftState = join(root, 'stale-other-draft-state');
+  const staleOtherRefState = join(root, 'stale-other-ref-state');
   const publishedState = join(root, 'published-state');
   const channelRef = join(root, 'channel-ref');
   const stagingRef = join(root, 'staging-ref');
@@ -182,6 +184,7 @@ if [ "$1" = "api" ]; then
   esac
   case "$*" in
     *git/ref/tags/cli-v1.2.3-preview.4*) printf '%s\\n' ${JSON.stringify(targetSha)} ;;
+    *git/ref/tags/happier-rolling-staging-cli-preview-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb*) if [ -f ${JSON.stringify(staleOtherRefState)} ]; then cat ${JSON.stringify(staleOtherRefState)}; else not_found; fi ;;
     *git/ref/tags/happier-rolling-staging-*) if [ -f ${JSON.stringify(stagingRef)} ]; then cat ${JSON.stringify(stagingRef)}; else not_found; fi ;;
     *git/ref/tags/happier-rolling-backup-*) if [ -f ${JSON.stringify(backupRef)} ]; then cat ${JSON.stringify(backupRef)}; else not_found; fi ;;
     *git/ref/tags/cli-preview*) if [ -f ${JSON.stringify(channelRef)} ]; then cat ${JSON.stringify(channelRef)}; else not_found; fi ;;
@@ -202,7 +205,11 @@ if [ "$1" = "api" ]; then
       fi
       ;;
     *"releases?per_page=100"*)
-      if [ -f ${JSON.stringify(draftState)} ] && echo "$*" | grep -q "cli-preview"; then
+      if echo "$*" | grep -q 'startswith'; then
+        if [ -f ${JSON.stringify(staleOtherDraftState)} ]; then
+          printf '88\\thappier-rolling-staging-cli-preview-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\\n'
+        fi
+      elif [ -f ${JSON.stringify(draftState)} ] && echo "$*" | grep -q "cli-preview"; then
         printf '%s\\n' "77"
       fi
       ;;
@@ -258,6 +265,15 @@ if [ "$1" = "api" ]; then
         esac
       fi
       ;;
+    *releases/88*)
+      if echo "$*" | grep -q -- "-X DELETE"; then
+        rm -f ${JSON.stringify(staleOtherDraftState)}
+      elif [ -f ${JSON.stringify(staleOtherDraftState)} ]; then
+        printf '{"id":88,"tag_name":"happier-rolling-staging-cli-preview-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","name":"old staging","body":"","prerelease":true,"draft":true}\\n'
+      else
+        not_found
+      fi
+      ;;
     *releases/1*)
       if echo "$*" | grep -q -- "-X PATCH"; then
         tag_name=""; name=""
@@ -308,6 +324,7 @@ if [ "$1" = "api" ]; then
       tag="\${4##*/}"
       case "$tag" in
         cli-preview) rm -f ${JSON.stringify(channelRef)} ;;
+        happier-rolling-staging-cli-preview-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb) rm -f ${JSON.stringify(staleOtherRefState)} ;;
         happier-rolling-staging-*) rm -f ${JSON.stringify(stagingRef)} ;;
         happier-rolling-backup-*) rm -f ${JSON.stringify(backupRef)} ;;
       esac
@@ -330,6 +347,8 @@ exit 2
     staging,
     uploadCounter,
     draftState,
+    staleOtherDraftState,
+    staleOtherRefState,
     publishedState,
     channelRef,
     stagingRef,
@@ -360,6 +379,29 @@ test('rolling promotion dry-run shows private staging and whole-release backup c
   assert.match(output, /happier-rolling-staging-cli-preview-/);
   assert.match(output, /happier-rolling-backup-cli-preview/);
   assert.doesNotMatch(output, /releases\/assets\//);
+});
+
+test('rolling promotion removes an abandoned staging draft from an older target SHA', () => {
+  const testFixture = fixture();
+  try {
+    writeFileSync(testFixture.staleOtherDraftState, '1');
+    writeFileSync(testFixture.staleOtherRefState, oldSha);
+    execFileSync(process.execPath, args(), {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        PATH: `${testFixture.bin}:${process.env.PATH ?? ''}`,
+      },
+      encoding: 'utf8',
+    });
+    assert.equal(existsSync(testFixture.staleOtherDraftState), false);
+    assert.equal(existsSync(testFixture.staleOtherRefState), false);
+    const log = readFileSync(testFixture.log, 'utf8');
+    assert.match(log, /-X DELETE repos\/test\/test\/releases\/88/);
+    assert.match(log, /-X DELETE repos\/test\/test\/git\/refs\/tags\/happier-rolling-staging-cli-preview-b+/);
+  } finally {
+    rmSync(testFixture.root, { recursive: true, force: true });
+  }
 });
 
 test('existing rolling replacement stages privately, restores after publish failure, and exposes only audited bytes', () => {

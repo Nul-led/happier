@@ -5,7 +5,7 @@ import {
     type PeerTcpTunnelSubstreamCapsV2,
 } from '@happier-dev/protocol';
 import { substreamAbortFrame, isSchedulableTimeoutMs } from './primitives.js';
-import { encodePeerTcpTunnelBinaryFrameForSubstream, decodePeerTcpTunnelBinaryFrameForSubstreamSession } from './binaryCodec.js';
+import { encodePeerTcpTunnelBinaryFrameForSubstream, decodePeerTcpTunnelBinaryFrameForSubstreamSession, peerTcpTunnelBinaryDecodeFailureReason } from './binaryCodec.js';
 import { createPeerTcpTunnelStreamSession } from './streamSession.js';
 import type { PeerTcpTunnelStreamConnection, PeerTcpTunnelSubstreamMuxSessionResult } from './types.js';
 
@@ -229,9 +229,7 @@ export function createPeerTcpTunnelSubstreamMuxSession(input: Readonly<{
                 maxPayloadBytes: input.maxRawPayloadBytes,
             });
             if (!decoded.ok) {
-                if (decoded.reasonCode === 'header_too_large') return { ok: false, reasonCode: 'encoded_frame_too_large' };
-                if (decoded.reasonCode === 'payload_too_large') return { ok: false, reasonCode: 'decoded_payload_too_large' };
-                return { ok: false, reasonCode: 'frame_invalid' };
+                return { ok: false, reasonCode: peerTcpTunnelBinaryDecodeFailureReason(decoded.reasonCode) };
             }
             if (decoded.header.tunnelId !== input.tunnelId) {
                 return { ok: false, reasonCode: 'tunnel_id_mismatch' };

@@ -23,8 +23,7 @@ function createPackageJsonText(): string {
         'test:e2e:core:slow': 'yarn workspace @happier-dev/tests test:core:slow',
         'test:e2e:ui': 'yarn workspace @happier-dev/tests test:ui:e2e',
         'test:e2e:desktop:native': 'yarn workspace @happier-dev/app test:native-e2e:activity-surfaces',
-        'test:e2e:ui:wsrepl:lima': 'yarn workspace @happier-dev/tests test:ui:e2e:wsrepl:lima',
-        'test:e2e:ui:wsrepl:lima:self': 'yarn workspace @happier-dev/tests test:ui:e2e:wsrepl:lima:self',
+        'test:workspace-sync:real': 'yarn workspace @happier-dev/cli test:workspace-sync:real',
         'test:e2e:mobile': 'yarn workspace @happier-dev/tests test:mobile:e2e:android',
         'test:agents': 'yarn workspace @happier-dev/tests test:agents',
         'test:stress': 'yarn workspace @happier-dev/tests test:stress',
@@ -77,7 +76,7 @@ jobs:
       - run: yarn test:e2e:core:fast
       - run: yarn test:e2e:core:slow
       - run: yarn -s test:e2e:ui
-      - run: yarn -s test:e2e:ui:wsrepl:lima
+      - run: yarn test:workspace-sync:real
       - run: yarn -s test:e2e:mobile
       - run: yarn workspace @happier-dev/tests providers:run all smoke
       - run: yarn test:stress
@@ -96,8 +95,7 @@ yarn test:e2e:core:fast
 yarn test:e2e:core:slow
 yarn test:e2e:ui
 yarn test:e2e:desktop:native
-yarn test:e2e:ui:wsrepl:lima
-yarn test:e2e:ui:wsrepl:lima:self
+yarn test:workspace-sync:real
 yarn test:e2e:mobile
 yarn test:agents
 yarn test:stress
@@ -307,7 +305,7 @@ test('flags unknown root commands mentioned in docs or workflow', () => {
   assert.match(messages, /Docs reference unknown root command yarn test:imaginary/);
 });
 
-test('tracks optional workflow coverage for the WSREPL Lima UI lane', () => {
+test('tracks required workflow coverage for the real workspace-sync lane', () => {
   const report = collectWorkflowScriptParityReport({
     packageJsonText: createPackageJsonText(),
     workflowText: createWorkflowText(),
@@ -316,7 +314,7 @@ test('tracks optional workflow coverage for the WSREPL Lima UI lane', () => {
   });
 
   const messages = report.issues.map((issue) => issue.message).join('\n');
-  assert.doesNotMatch(messages, /test:e2e:ui:wsrepl:lima/);
+  assert.doesNotMatch(messages, /test:workspace-sync:real/);
 });
 
 test('requires the native desktop e2e root script and docs even though workflow coverage stays local-only', () => {

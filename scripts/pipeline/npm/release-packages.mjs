@@ -8,6 +8,7 @@ import { resolveWindowsCommandInvocation } from '../lib/windows/resolveWindowsCo
 import { resolvePackedTarball } from './resolvePackedTarball.mjs';
 import { resolveCliPublicationBuildSteps } from '../../../apps/cli/scripts/buildPublication.mjs';
 import { assertCliManagedRuntimeTarballPublication } from './cli-managed-runtime-tarball.mjs';
+import { publicSdkExampleDependencyVersions } from './public-sdk-example-dependency-publication.mjs';
 import {
   formatPublicReleaseChannel,
   formatPublicReleaseChannelChoices,
@@ -330,6 +331,10 @@ function publicSdkPublicationConfig(packageRelDir, version, peers) {
   if (packageRelDir === 'packages/plugin-sdk') {
     return {
       expectedPackageName: '@happier-dev/plugin-sdk',
+      // The published example dependency rewrite map has one owner, shared
+      // with the package selection test that proves no shipped example can
+      // reach publication with an unrewritable placeholder dependency.
+      exampleDependencyVersions: publicSdkExampleDependencyVersions(version),
       requiredFiles: ['API.md', 'api-declarations.md', 'api-surface.json', 'capability-matrix.json'],
       expectedPeerDependencies: peers,
       apiGovernance: { profileId: 'plugin-sdk' },

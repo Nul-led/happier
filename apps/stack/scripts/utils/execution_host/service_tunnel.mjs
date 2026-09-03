@@ -252,11 +252,16 @@ function buildForwards(projection, workspace) {
 }
 
 function pendingProjectedServices(projection) {
-  const expoTargetName = String(projection.runtime.placement?.expo ?? '').trim();
+  const expoTargetName = String(
+    projection.runtime.placement?.expo
+    ?? projection.runtime.expo?.remoteTarget
+    ?? '',
+  ).trim();
   if (!expoTargetName) return [];
   const expoTarget = projection.runtime.remoteTargets?.[expoTargetName];
-  return expoTarget?.services?.expo === true
-    && expoTarget?.serviceStatus?.expo === 'starting'
+  if (!expoTarget) return ['expo'];
+  return expoTarget.services?.expo === true
+    && expoTarget.serviceStatus?.expo === 'starting'
     ? ['expo']
     : [];
 }

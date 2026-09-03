@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  decodePeerTcpTunnelBinaryFrameHeaderV2,
   decodePeerTcpTunnelBinaryFrameV2,
   encodePeerTcpTunnelBinaryFrameV2,
   negotiatePeerTcpTunnelEncoding,
@@ -88,6 +89,84 @@ describe('Peer TCP tunnel V2 encoding', () => {
       maxHeaderBytes: 1,
       maxPayloadBytes: 1024,
     })).toEqual({ ok: false, reasonCode: 'header_too_large' });
+  });
+
+  it('routes on the bounded header alone before the payload has arrived', () => {
+    const payload = new TextEncoder().encode('pcm!');
+    const encoded = encodePeerTcpTunnelBinaryFrameV2({
+      header: {
+        version: 2,
+        kind: 'data',
+        tunnelId: 'tun_1',
+        substreamId: 'application.stream-1',
+        direction: 'client_to_daemon',
+        sequence: 0,
+        payloadLength: payload.byteLength,
+      },
+      payload,
+    });
+    const headerOnly = encoded.subarray(0, encoded.byteLength - payload.byteLength);
+
+    // The full decoder cannot admit a frame whose payload has not been received; routing
+    // must still be able to select the owning tunnel from the prefix alone.
+    expect(decodePeerTcpTunnelBinaryFrameV2({
+      frame: headerOnly,
+      maxHeaderBytes: 1024,
+      maxPayloadBytes: 1024,
+    })).toEqual({ ok: false, reasonCode: 'payload_length_mismatch' });
+
+    const routed = decodePeerTcpTunnelBinaryFrameHeaderV2({ frame: headerOnly, maxHeaderBytes: 1024 });
+    expect(routed).toMatchObject({
+      ok: true,
+      header: { tunnelId: 'tun_1', substreamId: 'application.stream-1', payloadLength: 4 },
+      payloadOffset: headerOnly.byteLength,
+    });
+  });
+
+  it('applies the same header magic, bounds, and schema semantics as the full frame decoder', () => {
+    const createRaw = (header: string): Uint8Array => {
+      const bytes = new TextEncoder().encode(header);
+      const frame = new Uint8Array(4 + bytes.byteLength);
+      new DataView(frame.buffer).setUint32(0, bytes.byteLength, false);
+      frame.set(bytes, 4);
+      return frame;
+    };
+    const validHeader = JSON.stringify({
+      version: 2,
+      kind: 'data',
+      tunnelId: 'tun_1',
+      direction: 'client_to_daemon',
+      sequence: 0,
+      payloadLength: 0,
+    });
+
+    const cases: ReadonlyArray<Readonly<{ frame: Uint8Array; maxHeaderBytes: number; reasonCode: string }>> = [
+      { frame: new Uint8Array([0, 0, 1]), maxHeaderBytes: 1024, reasonCode: 'frame_too_short' },
+      { frame: createRaw(validHeader), maxHeaderBytes: 1, reasonCode: 'header_too_large' },
+      { frame: createRaw(validHeader).subarray(0, 6), maxHeaderBytes: 1024, reasonCode: 'header_truncated' },
+      { frame: createRaw('{'), maxHeaderBytes: 1024, reasonCode: 'header_json_invalid' },
+      { frame: createRaw(''), maxHeaderBytes: 1024, reasonCode: 'header_json_invalid' },
+      { frame: createRaw('{}'), maxHeaderBytes: 1024, reasonCode: 'header_invalid' },
+      { frame: createRaw(JSON.stringify({ version: 1, kind: 'data', tunnelId: 'tun_1', payloadLength: 0 })), maxHeaderBytes: 1024, reasonCode: 'header_invalid' },
+    ];
+
+    for (const testCase of cases) {
+      expect(decodePeerTcpTunnelBinaryFrameHeaderV2({
+        frame: testCase.frame,
+        maxHeaderBytes: testCase.maxHeaderBytes,
+      })).toEqual({ ok: false, reasonCode: testCase.reasonCode });
+      // One owner decides header admission: the full decoder must reject identically.
+      expect(decodePeerTcpTunnelBinaryFrameV2({
+        frame: testCase.frame,
+        maxHeaderBytes: testCase.maxHeaderBytes,
+        maxPayloadBytes: 1024,
+      })).toEqual({ ok: false, reasonCode: testCase.reasonCode });
+    }
+
+    expect(decodePeerTcpTunnelBinaryFrameHeaderV2({
+      frame: createRaw(validHeader),
+      maxHeaderBytes: 1024,
+    })).toMatchObject({ ok: true, header: { tunnelId: 'tun_1' } });
   });
 
   it('carries ack, close, and abort metadata in the binary_frame_v2 header', () => {

@@ -302,8 +302,10 @@ async function main() {
   const localInternalServerUrl = resolvedUrls.internalServerUrl;
   const internalServerUrl = serverConnection.internalServerUrl;
   let publicServerUrl = serverConnection.publicServerUrl;
-  // The server challenge audience and every UI client must use the same canonical public origin.
-  // Local mobile stacks resolve that origin to a LAN-reachable address before either side starts.
+  // The public ingress origin is resolved per start (Tailscale/relay/LAN) and every UI client uses it.
+  // The server's signed auth audience uses the stack-owned canonical origin instead, so a changed
+  // ingress can never rotate it.
+  const canonicalServerUrl = resolvedUrls.canonicalServerUrl;
   const uiApiUrl = serverConnection.uiApiUrl;
   const serverConnectionSource = serverConnection.source;
   const restart = flags.has('--restart');
@@ -654,6 +656,7 @@ async function main() {
         serverPort,
         serverBindPort,
         internalServerUrl: serverBackendInternalUrl,
+        canonicalServerUrl,
         publicServerUrl,
         envPath,
         stackMode,

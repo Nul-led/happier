@@ -134,7 +134,7 @@ pub fn get_availability() -> IrohNodeAvailability {
 
 // These exports exist only in a deliberately feature-built test addon. The
 // ordinary/release crate graph cannot name them, so product runtime config
-// cannot reach the topology override or its insecure local-relay TLS trust.
+// cannot reach the topology override or the local relay it runs.
 #[cfg(feature = "test-relay-fixture")]
 #[napi]
 pub fn force_direct_only() -> Result<AsyncTask<JsonOpTask>> {

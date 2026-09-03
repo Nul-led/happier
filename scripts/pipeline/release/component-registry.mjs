@@ -18,7 +18,7 @@ export const components = Object.freeze({
   },
   server: {
     id: 'server',
-    changedPrefixes: ['apps/server/', 'packages/relay-server/', 'packages/privacy-kit/'],
+    changedPrefixes: ['apps/server/', 'deploy/iroh-relay/', 'packages/relay-server/', 'packages/privacy-kit/'],
   },
   stack: {
     id: 'stack',
@@ -31,6 +31,10 @@ export const components = Object.freeze({
   release_runtime: {
     id: 'release_runtime',
     changedPrefixes: ['packages/release-runtime/'],
+  },
+  iroh_transport: {
+    id: 'iroh_transport',
+    changedPrefixes: ['packages/iroh-native/', 'packages/peer-transport/'],
   },
   api_governance: {
     id: 'api_governance',
@@ -90,12 +94,12 @@ export const versionedComponents = Object.freeze({
   app: {
     id: 'app',
     baselineTagPrefix: 'ui-web-v',
-    changedWhen: ['ui', 'shared', 'cli_stack_shared', 'ui_dependencies'],
+    changedWhen: ['ui', 'shared', 'cli_stack_shared', 'ui_dependencies', 'iroh_transport'],
   },
   cli: {
     id: 'cli',
     baselineTagPrefix: 'cli-v',
-    changedWhen: ['cli', 'shared', 'cli_stack_shared'],
+    changedWhen: ['cli', 'shared', 'cli_stack_shared', 'iroh_transport'],
   },
   stack: {
     id: 'stack',
@@ -105,7 +109,7 @@ export const versionedComponents = Object.freeze({
   server: {
     id: 'server',
     baselineTagPrefix: 'server-v',
-    changedWhen: ['server', 'shared', 'cli_stack_shared'],
+    changedWhen: ['server', 'shared', 'cli_stack_shared', 'iroh_transport'],
   },
   plugin_sdk: {
     id: 'plugin_sdk',

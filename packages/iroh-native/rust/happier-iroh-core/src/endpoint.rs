@@ -1,20 +1,31 @@
-use crate::{
-    snapshot_for_incoming_addr, IrohAlpn, IrohCapProfile, IrohError, IrohPathSnapshot, Result,
-};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::{snapshot_for_incoming_addr, IrohAlpn, IrohPathSnapshot};
+use crate::{IrohCapProfile, IrohError, Result};
+#[cfg(not(target_arch = "wasm32"))]
 use std::collections::HashMap;
+#[cfg(not(target_arch = "wasm32"))]
 use std::fs;
 #[cfg(unix)]
 use std::io::Read;
+#[cfg(not(target_arch = "wasm32"))]
 use std::io::Write;
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::Mutex;
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::{Arc, MutexGuard};
+#[cfg(not(target_arch = "wasm32"))]
 use tokio::sync::mpsc;
+#[cfg(not(target_arch = "wasm32"))]
 use tokio::task::JoinSet;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
+#[cfg(not(target_arch = "wasm32"))]
 static ENDPOINT_KEY_STORE_LOCK: Mutex<()> = Mutex::new(());
+#[cfg(not(target_arch = "wasm32"))]
 static ENDPOINT_KEY_TEMP_NONCE: AtomicU64 = AtomicU64::new(1);
 
 /// Descriptor relay-URL bounds mirrored from the canonical protocol descriptor
@@ -65,15 +76,23 @@ impl RelaySelection {
             {
                 return Err(IrohError::InvalidDescriptor);
             }
+            // The canonical descriptor parser rejects duplicated hint entries
+            // rather than collapsing them, so the transport owner does too: two
+            // spellings of one relay are an ambiguous transport fact, and
+            // silently deduplicating them would hide a descriptor defect the
+            // producer must fix.
+            if urls.contains(&url) {
+                return Err(IrohError::InvalidDescriptor);
+            }
             urls.push(url);
         }
         match policy {
             RelayPolicy::Disabled => Ok(Self::Disabled),
-            RelayPolicy::Automatic => {
-                urls.sort();
-                urls.dedup();
-                Ok(Self::Custom(urls))
-            }
+            // Applied in exactly the configured order: relay preference belongs
+            // to the descriptor, not to this parser. Merging additional Homes'
+            // relays into one endpoint's live set stays with
+            // `IrohEndpoint::ensure_relay_urls`.
+            RelayPolicy::Automatic => Ok(Self::Custom(urls)),
         }
     }
 
@@ -93,6 +112,7 @@ impl RelaySelection {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Per-ALPN connection counters owned by the endpoint dispatcher.
 #[derive(Default)]
 pub(crate) struct SlotCounters {
@@ -105,23 +125,86 @@ pub(crate) struct SlotCounters {
 /// plus the per-ALPN counters. Created only through
 /// [`IrohEndpoint::register_consumer`]; there is no generic registry, only
 /// the fixed Home-tunnel and machine-carrier slots.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct ConsumerSlot {
     pub(crate) sender: mpsc::Sender<AcceptedIrohConnection>,
     pub(crate) counters: SlotCounters,
 }
 
+/// The endpoint's fixed consumer slots: exactly one per known ALPN.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) const ALPN_SLOT_COUNT: usize = 2;
+
+/// Bounded capacity of one ALPN consumer's dispatch channel. The endpoint owns
+/// this constant because its own pre-dispatch bound is derived from it; the
+/// Home and machine consumers create their channels with it.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) const CONSUMER_CHANNEL_CAPACITY: usize = 16;
+
+/// How many incoming connections the endpoint will hold in pre-application
+/// custody at once — connections that have been accepted but have not yet been
+/// handed to their ALPN consumer.
+///
+/// Derived from the accepted workload this endpoint can actually hand over: the
+/// fixed two ALPN consumer queues. Once every queue is full, one further queue's
+/// worth of handshakes is the most in-flight work a hand-over can absorb without
+/// simply retaining connections nobody is ready to serve. This is a transport
+/// resource boundary, not a per-device or per-peer quota: it counts work, not
+/// identities.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) const MAX_PENDING_HANDSHAKES: usize = CONSUMER_CHANNEL_CAPACITY * ALPN_SLOT_COUNT;
+
+/// The bounded window in which an incoming connection must stop being
+/// pre-application work: it must complete its handshake, reach its consumer, and
+/// open its first application stream within it.
+///
+/// It is the connection-level counterpart of the control budget the stream
+/// boundary already applies (`PREAMBLE_READ_TIMEOUT`, `MACHINE_CONTROL_TIMEOUT`)
+/// and exists because the transport layer will not do this for us: the
+/// `HomeInteractive` profile deliberately disables the QUIC idle timeout so
+/// long-lived Socket.IO owns its own liveness, which also means a connection
+/// that never does application work is never reclaimed by an idle timer.
+///
+/// Every current caller opens its first stream immediately after the connection
+/// is established: the Home supervisor probes through its loopback origin before
+/// it publishes the origin at all, and the machine carrier acquires its lease per
+/// transfer operation and runs the transfer engine straight after. The window
+/// stops applying at the first stream, so a lease that is acquired long before
+/// its first application request is the observable condition that would
+/// invalidate it.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) const PRE_APPLICATION_CUSTODY_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(10);
+
 /// Fixed two-ALPN dispatcher state: exactly one consumer slot per known ALPN.
+#[cfg(not(target_arch = "wasm32"))]
 struct DispatcherState {
-    slots: Mutex<[Option<Arc<ConsumerSlot>>; 2]>,
+    slots: Mutex<[Option<Arc<ConsumerSlot>>; ALPN_SLOT_COUNT]>,
     closed: AtomicBool,
+    shutdown_requested: tokio::sync::Notify,
+    finished: AtomicBool,
+    finished_changed: tokio::sync::Notify,
+    /// Connections accepted but not yet handed to a consumer. This is the
+    /// dispatcher's own bounded resource: it is both what the accept side
+    /// backpressures on and what status reads observe.
+    pending_handshakes: AtomicUsize,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl DispatcherState {
     fn new() -> Self {
         Self {
             slots: Mutex::new([None, None]),
             closed: AtomicBool::new(false),
+            shutdown_requested: tokio::sync::Notify::new(),
+            finished: AtomicBool::new(false),
+            finished_changed: tokio::sync::Notify::new(),
+            pending_handshakes: AtomicUsize::new(0),
         }
+    }
+
+    fn pending_handshakes(&self) -> usize {
+        self.pending_handshakes.load(Ordering::Acquire)
     }
 
     fn slot(&self, alpn: IrohAlpn) -> Option<Arc<ConsumerSlot>> {
@@ -157,12 +240,39 @@ impl DispatcherState {
         }
     }
 
-    /// Shuts the dispatcher down: no further registrations, every consumer
-    /// slot released so consumer loops observe channel closure.
-    fn close(&self) {
-        self.closed.store(true, Ordering::Relaxed);
+    /// Requests dispatcher shutdown and releases every consumer slot. The
+    /// dispatcher remains the owner of its handshake tasks until it has
+    /// cancelled and joined them.
+    fn request_shutdown(&self) {
+        self.closed.store(true, Ordering::Release);
         if let Ok(mut slots) = self.slots.lock() {
             *slots = [None, None];
+        }
+        self.shutdown_requested.notify_waiters();
+    }
+
+    async fn shutdown_requested(&self) {
+        loop {
+            let notified = self.shutdown_requested.notified();
+            if self.closed.load(Ordering::Acquire) {
+                return;
+            }
+            notified.await;
+        }
+    }
+
+    fn finish(&self) {
+        self.finished.store(true, Ordering::Release);
+        self.finished_changed.notify_waiters();
+    }
+
+    async fn wait_finished(&self) {
+        loop {
+            let notified = self.finished_changed.notified();
+            if self.finished.load(Ordering::Acquire) {
+                return;
+            }
+            notified.await;
         }
     }
 }
@@ -171,12 +281,14 @@ impl DispatcherState {
 /// keep it for their whole lifetime; stopping or dropping the consumer
 /// releases the endpoint slot so the ALPN can be registered again without a
 /// stale owner. Endpoint shutdown also releases every slot.
+#[cfg(not(target_arch = "wasm32"))]
 pub struct ConsumerRegistration {
     dispatcher: Arc<DispatcherState>,
     alpn: IrohAlpn,
     slot: Arc<ConsumerSlot>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl ConsumerRegistration {
     pub(crate) fn slot(&self) -> &Arc<ConsumerSlot> {
         &self.slot
@@ -187,19 +299,50 @@ impl ConsumerRegistration {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Drop for ConsumerRegistration {
     fn drop(&mut self) {
         self.dispatcher.release(self.alpn, &self.slot);
     }
 }
 
+/// Custody of one pre-application connection, held by its handshake task for
+/// exactly as long as that task exists. Releasing it on drop is what makes the
+/// count correct when the task finishes, fails, times out, or is aborted by
+/// endpoint shutdown.
+#[cfg(not(target_arch = "wasm32"))]
+struct PendingHandshake {
+    dispatcher: Arc<DispatcherState>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl PendingHandshake {
+    fn claim(dispatcher: &Arc<DispatcherState>) -> Self {
+        dispatcher.pending_handshakes.fetch_add(1, Ordering::AcqRel);
+        Self {
+            dispatcher: Arc::clone(dispatcher),
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for PendingHandshake {
+    fn drop(&mut self) {
+        self.dispatcher
+            .pending_handshakes
+            .fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 /// Dispatch channel sender registered for one ALPN consumer.
+#[cfg(not(target_arch = "wasm32"))]
 pub type IrohConsumerSender = mpsc::Sender<AcceptedIrohConnection>;
 
 /// One dispatched authenticated incoming connection for a registered ALPN
 /// consumer. The connection has completed the Iroh/TLS handshake, so
 /// `remote_endpoint_id` is the authenticated transport identity; `path` is
 /// the honest pre-handshake transport-address observation.
+#[cfg(not(target_arch = "wasm32"))]
 pub struct AcceptedIrohConnection {
     pub connection: iroh::endpoint::Connection,
     pub remote_endpoint_id: String,
@@ -207,10 +350,12 @@ pub struct AcceptedIrohConnection {
     _lease: ConnectionLease,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 struct ConnectionLease {
     slot: Arc<ConsumerSlot>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Drop for ConnectionLease {
     fn drop(&mut self) {
         self.slot
@@ -220,6 +365,7 @@ impl Drop for ConnectionLease {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl AcceptedIrohConnection {
     /// Builds the dispatched value for one admitted connection and records
     /// the admission in the slot counters, including the honest pre-handshake
@@ -243,8 +389,132 @@ impl AcceptedIrohConnection {
     }
 }
 
+/// Whether an endpoint of this build target serves inbound connections.
+///
+/// Native hosts run the endpoint's single accept/ALPN dispatcher, so they
+/// advertise the ALPNs that dispatcher can serve. The browser endpoint (A7) is
+/// dial-only: a browser is never a Home, daemon, or Machine, it has no
+/// acceptor, and the dispatcher itself is compiled out. Advertising an ALPN it
+/// cannot serve would leave a peer's handshake parked on an accept queue
+/// nobody drains instead of failing closed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InboundAlpnRole {
+    /// One accept/ALPN dispatcher serves both known ALPNs.
+    Dispatched,
+    /// No acceptor: nothing is advertised and every inbound handshake fails
+    /// ALPN negotiation at the transport boundary.
+    DialOnly,
+}
+
+/// The inbound role of this build target. This is the only place the
+/// browser/native acceptor difference is decided; `IrohEndpoint::bind` reads it
+/// so the browser build cannot advertise an ALPN by construction.
+pub const TARGET_INBOUND_ALPN_ROLE: InboundAlpnRole = if cfg!(target_arch = "wasm32") {
+    InboundAlpnRole::DialOnly
+} else {
+    InboundAlpnRole::Dispatched
+};
+
+/// The inbound ALPNs an endpoint in this role advertises. Outgoing connections
+/// select their ALPN per dial and are unaffected.
+pub fn inbound_alpns(role: InboundAlpnRole) -> Vec<Vec<u8>> {
+    match role {
+        InboundAlpnRole::Dispatched => {
+            vec![
+                crate::HOME_TUNNEL_ALPN.to_vec(),
+                crate::MACHINE_ALPN.to_vec(),
+            ]
+        }
+        InboundAlpnRole::DialOnly => Vec::new(),
+    }
+}
+
+/// A persistent one-way stop signal for the dial-only role's inbound owner.
+///
+/// The signal is a latched flag plus a wakeup rather than a bare notification,
+/// because the party that raises it cannot know whether the task is parked: a
+/// browser probe released without an explicit close stops its inbound owner
+/// from `Drop`. A lost edge would leave that task parked forever on an endpoint
+/// clone nobody else holds, so a stop raised before the wait is observed by the
+/// wait.
+#[derive(Debug, Default)]
+pub struct InboundStopSignal {
+    stopped: std::sync::atomic::AtomicBool,
+    changed: tokio::sync::Notify,
+}
+
+impl InboundStopSignal {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Raises the signal. Idempotent: stopping an already-stopped signal is a
+    /// no-op, so an explicit close followed by a drop is not an error.
+    pub fn stop(&self) {
+        self.stopped
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.changed.notify_waiters();
+    }
+
+    pub fn is_stopped(&self) -> bool {
+        self.stopped.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Resolves once the signal has been raised, whether that happened before
+    /// or during the wait.
+    pub async fn stopped(&self) {
+        loop {
+            // Registered before the flag is re-read, so a stop landing between
+            // the two is delivered to this registration instead of being lost.
+            let notified = self.changed.notified();
+            if self.is_stopped() {
+                return;
+            }
+            notified.await;
+        }
+    }
+}
+
+/// The dial-only role's inbound owner — the counterpart of the native
+/// accept/ALPN dispatcher, and the reason a browser endpoint needs no acceptor.
+///
+/// A browser endpoint still *receives* connection attempts over its relay, and
+/// iroh always installs a server config, so an attempt that nothing drains
+/// would sit on the endpoint's queue while the peer waits indefinitely.
+/// Advertising no ALPN is the honest declaration; this is the enforcement. It
+/// refuses every attempt immediately and never accepts one, so no incoming
+/// connection, ALPN negotiation, or application stream can ever exist on a
+/// browser endpoint.
+///
+/// The task holds its own endpoint clone, so it must be able to end without the
+/// endpoint being closed first: `stop` releases that clone when the owner is
+/// released implicitly (a generated `free`/GC drop) rather than through an
+/// explicit close. Closing the endpoint ends it too.
+///
+/// The caller owns spawning it, because the browser has no task runtime of its
+/// own; the policy stays here with the endpoint that owns inbound behavior.
+#[cfg(target_arch = "wasm32")]
+pub async fn refuse_inbound_until_closed(
+    endpoint: iroh::Endpoint,
+    stop: std::rc::Rc<InboundStopSignal>,
+) {
+    loop {
+        tokio::select! {
+            biased;
+            () = stop.stopped() => return,
+            incoming = endpoint.accept() => match incoming {
+                Some(incoming) => incoming.refuse(),
+                None => return,
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct EndpointConfig {
+    /// Native-host persistent key file. The browser target has no filesystem
+    /// key store; a browser endpoint always supplies `key_seed`.
+    #[cfg(not(target_arch = "wasm32"))]
     pub key_path: Option<PathBuf>,
     /// Native-host supplied installation identity. Mobile platform adapters
     /// keep this seed in Keychain/Keystore-backed storage and inject it only
@@ -260,15 +530,6 @@ pub struct EndpointConfig {
     /// traverse the configured relay. Never set by production runtime config;
     /// exposed only for the feature-gated forced-relay fixture.
     pub disable_ip_transports: bool,
-    /// Test-fixture only: trust the pinned iroh test relay's discarded
-    /// self-signed certificate (`CaTlsConfig::insecure_skip_verify`, the exact
-    /// upstream test-relay mechanism). The pinned iroh test relay always serves
-    /// HTTPS with a self-signed certificate it never exposes, so this is the
-    /// only way an endpoint can connect to it. The field exists only under the
-    /// test-only `test-relay-fixture` cargo feature: production builds cannot
-    /// name it and always keep normal CA verification.
-    #[cfg(feature = "test-relay-fixture")]
-    pub insecure_relay_tls: bool,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RelayPolicy {
@@ -291,14 +552,13 @@ impl Default for RelayPolicy {
 impl Default for EndpointConfig {
     fn default() -> Self {
         Self {
+            #[cfg(not(target_arch = "wasm32"))]
             key_path: None,
             key_seed: None,
             relay_policy: RelayPolicy::Automatic,
             relay_urls: Vec::new(),
             caps: IrohCapProfile::HomeInteractive,
             disable_ip_transports: false,
-            #[cfg(feature = "test-relay-fixture")]
-            insecure_relay_tls: false,
         }
     }
 }
@@ -341,9 +601,13 @@ pub struct IrohEndpoint {
     /// Incoming-service default. Outgoing connections select their own flow
     /// profile with `Endpoint::connect_with_opts`.
     caps: IrohCapProfile,
+    /// Fixture-only forced-relay mode. Native only: the browser build has no
+    /// IP transports to clear.
+    #[cfg(not(target_arch = "wasm32"))]
     disable_ip_transports: bool,
-    #[cfg(feature = "test-relay-fixture")]
-    insecure_relay_tls: bool,
+    /// Incoming accept/ALPN dispatch. Native only: a browser endpoint cannot
+    /// accept Iroh connections, so it has no accept owner to arbitrate.
+    #[cfg(not(target_arch = "wasm32"))]
     dispatcher: Arc<DispatcherState>,
 }
 
@@ -353,6 +617,15 @@ impl IrohEndpoint {
         // descriptor metadata and direct-only/relay-URL conflicts fail typed
         // and closed, never with ambient infrastructure as a fallback.
         let relay_selection = RelaySelection::resolve(&config.relay_policy, &config.relay_urls)?;
+        #[cfg(target_arch = "wasm32")]
+        // The browser has no filesystem key store and must not mint a fresh
+        // identity per load: A7.2 requires one persistent application/profile
+        // endpoint, so the caller always supplies the persisted seed.
+        let secret_key = match &config.key_seed {
+            Some(seed) => seed.secret_key(),
+            None => return Err(IrohError::EndpointConfigConflict),
+        };
+        #[cfg(not(target_arch = "wasm32"))]
         let secret_key = match (&config.key_path, &config.key_seed) {
             (Some(_), Some(_)) => return Err(IrohError::EndpointConfigConflict),
             (Some(path), None) => {
@@ -380,38 +653,39 @@ impl IrohEndpoint {
             RelaySelection::Disabled => iroh::RelayMode::Disabled,
             RelaySelection::Custom(urls) => iroh::RelayMode::custom(urls.iter().cloned()),
         };
+        // `mut` is used by the native fixture/TLS builder branches below.
+        #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
         let mut builder = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
             .secret_key(secret_key)
-            .alpns(vec![
-                crate::HOME_TUNNEL_ALPN.to_vec(),
-                crate::MACHINE_ALPN.to_vec(),
-            ])
+            // Inbound advertisement is owned by the target's inbound role: the
+            // native dispatcher's two ALPNs, or nothing at all in a browser
+            // that has no acceptor to serve them.
+            .alpns(inbound_alpns(TARGET_INBOUND_ALPN_ROLE))
             .relay_mode(relay_mode)
             .transport_config(config.caps.transport_config()?);
+        // The browser target has no IP transports to clear: iroh's wasm build
+        // is relay-only by construction, which is exactly what the fixture
+        // flag forces on native.
+        #[cfg(not(target_arch = "wasm32"))]
         if config.disable_ip_transports {
             builder = builder.clear_ip_transports();
-        }
-        #[cfg(feature = "test-relay-fixture")]
-        if config.insecure_relay_tls {
-            // Fixture-only TLS trust for the pinned iroh local test relay
-            // (self-signed cert, discarded by the helper). Never a release
-            // path: the field cannot even be named without the feature.
-            builder = builder.ca_tls_config(iroh::tls::CaTlsConfig::insecure_skip_verify());
         }
         let inner = builder
             .bind()
             .await
             .map_err(|_| IrohError::TransportClosed)?;
+        #[cfg(not(target_arch = "wasm32"))]
         let dispatcher = Arc::new(DispatcherState::new());
+        #[cfg(not(target_arch = "wasm32"))]
         spawn_incoming_dispatcher(inner.clone(), Arc::clone(&dispatcher));
         Ok(Self {
             inner,
             relay_policy: config.relay_policy,
             relay_urls: Mutex::new(relay_selection.relay_urls().to_vec()),
             caps: config.caps,
+            #[cfg(not(target_arch = "wasm32"))]
             disable_ip_transports: config.disable_ip_transports,
-            #[cfg(feature = "test-relay-fixture")]
-            insecure_relay_tls: config.insecure_relay_tls,
+            #[cfg(not(target_arch = "wasm32"))]
             dispatcher,
         })
     }
@@ -494,19 +768,10 @@ impl IrohEndpoint {
         Ok(())
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     async fn apply_compatible_config(&self, config: &EndpointConfig) -> Result<()> {
         if self.relay_policy != config.relay_policy
             || self.disable_ip_transports != config.disable_ip_transports
-            || {
-                #[cfg(feature = "test-relay-fixture")]
-                {
-                    self.insecure_relay_tls != config.insecure_relay_tls
-                }
-                #[cfg(not(feature = "test-relay-fixture"))]
-                {
-                    false
-                }
-            }
         {
             return Err(IrohError::EndpointConfigConflict);
         }
@@ -521,6 +786,7 @@ impl IrohEndpoint {
     /// registration is released when the returned guard is dropped and on
     /// endpoint shutdown; connections arriving for an unregistered or unknown
     /// ALPN are closed without application streams.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn register_consumer(
         &self,
         alpn: IrohAlpn,
@@ -538,57 +804,65 @@ impl IrohEndpoint {
         })
     }
 
+    /// Connections currently in pre-application custody: accepted by the
+    /// dispatcher but not yet handed to their ALPN consumer. Bounded by
+    /// [`MAX_PENDING_HANDSHAKES`].
+    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(test)]
+    pub(crate) fn pending_handshakes(&self) -> usize {
+        self.dispatcher.pending_handshakes()
+    }
+
     /// Explicit full teardown: closes the endpoint and waits until the close
     /// has finished. `iroh::Endpoint` is a shared handle whose `close` and
     /// `closed` operate on the shared state, so shutdown is ownership-correct
     /// through `&self`; the [`EndpointManager`] remains the single canonical
     /// lifecycle owner that decides when an identity is removed and shut down.
     pub async fn shutdown(&self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        self.dispatcher.request_shutdown();
         self.inner.close().await;
         self.inner.closed().await;
+        #[cfg(not(target_arch = "wasm32"))]
+        self.dispatcher.wait_finished().await;
     }
 }
 
 /// Spawns the endpoint's single incoming accept/ALPN dispatcher: exactly one
-/// loop consumes `Endpoint::accept`, inspects each negotiated ALPN exactly
-/// once (before the handshake completes), and dispatches the authenticated
-/// connection to the one registered consumer for that ALPN. Unknown or
-/// unregistered ALPNs are rejected without application streams. Handshake
-/// tasks are reaped as they complete instead of being retained for the
-/// lifetime of the endpoint.
+/// loop consumes `Endpoint::accept` and spawns one bounded pre-application
+/// handshake per incoming connection. Unknown or unregistered ALPNs are
+/// rejected without application streams. Handshake tasks are reaped as they
+/// complete instead of being retained for the lifetime of the endpoint.
+///
+/// The accept side is polled only while the endpoint holds fewer than
+/// [`MAX_PENDING_HANDSHAKES`] connections in pre-application custody. That is
+/// the backpressure: excess incoming work is simply not taken off the
+/// endpoint's accept queue, so it never becomes a retained handshake task and
+/// never reaches an application stream. The two branches can never both be
+/// disabled, because custody is only full while unreaped handshake tasks exist.
+#[cfg(not(target_arch = "wasm32"))]
 fn spawn_incoming_dispatcher(endpoint: iroh::Endpoint, state: Arc<DispatcherState>) {
     tokio::spawn(async move {
         let mut handshakes: JoinSet<()> = JoinSet::new();
         loop {
             tokio::select! {
-                incoming = endpoint.accept() => {
+                biased;
+                () = state.shutdown_requested() => break,
+                incoming = endpoint.accept(),
+                    if state.pending_handshakes() < MAX_PENDING_HANDSHAKES =>
+                {
                     let Some(incoming) = incoming else {
                         // The endpoint was closed: the dispatcher is done.
                         break;
                     };
-                    let Ok(mut accepting) = incoming.accept() else {
+                    let Ok(accepting) = incoming.accept() else {
                         continue;
                     };
-                    // Honest incoming transport address, observed before the
-                    // handshake completes.
-                    let incoming_addr = accepting.remote_addr();
-                    // Inspect the negotiated ALPN exactly once.
-                    let Ok(negotiated) = accepting.alpn().await else {
-                        continue;
-                    };
-                    let Ok(alpn) = IrohAlpn::parse(&negotiated) else {
-                        // Unknown ALPN: dropped here, which rejects the
-                        // connection before any application stream exists.
-                        continue;
-                    };
-                    let Some(slot) = state.slot(alpn) else {
-                        // Advertised but unregistered: no application access.
-                        continue;
-                    };
+                    let pending = PendingHandshake::claim(&state);
                     handshakes.spawn(dispatch_handshake(
                         accepting,
-                        incoming_addr,
-                        slot,
+                        Arc::clone(&state),
+                        pending,
                     ));
                 }
                 // Reap completed handshake tasks (and their retained results)
@@ -596,44 +870,97 @@ fn spawn_incoming_dispatcher(endpoint: iroh::Endpoint, state: Arc<DispatcherStat
                 Some(_) = handshakes.join_next(), if !handshakes.is_empty() => {}
             }
         }
-        // Aborts still-pending handshakes; each dropped `Accepting` rejects
-        // its pending connection.
-        drop(handshakes);
-        state.close();
+        // Cancel and join every still-pending handshake before reporting
+        // shutdown complete. This makes custody release observable to the
+        // endpoint owner instead of merely scheduling aborts in the background.
+        handshakes.shutdown().await;
+        state.request_shutdown();
+        state.finish();
     });
 }
 
-/// Completes one dispatched handshake and hands the authenticated connection
-/// to the registered consumer. Per-connection stream and receive-memory
-/// bounds are enforced by the endpoint's QUIC transport configuration.
+/// Completes one incoming connection's whole pre-application phase — ALPN
+/// inspection, handshake completion, and hand-over to the registered consumer —
+/// and holds one place in the endpoint's custody bound for exactly that long.
+/// Per-connection stream and receive-memory bounds are enforced by the
+/// endpoint's QUIC transport configuration.
+///
+/// The phase runs inside [`PRE_APPLICATION_CUSTODY_TIMEOUT`], so a peer that
+/// stalls its handshake releases its place instead of holding it indefinitely.
+/// The transport layer cannot do this: the `HomeInteractive` profile disables
+/// the QUIC idle timeout, and a peer's idle timeout is only negotiated once the
+/// handshake it is stalling has delivered its transport parameters.
+#[cfg(not(target_arch = "wasm32"))]
 async fn dispatch_handshake(
     accepting: iroh::endpoint::Accepting,
-    incoming_addr: iroh::endpoint::IncomingAddr,
-    slot: Arc<ConsumerSlot>,
+    state: Arc<DispatcherState>,
+    _pending: PendingHandshake,
 ) {
-    let Ok(connection) = accepting.await else {
-        // Handshake failure: nothing was admitted.
-        return;
-    };
-    slot.counters
-        .connections_active
-        .fetch_add(1, Ordering::Relaxed);
-    let accepted =
-        AcceptedIrohConnection::new_admitted(connection, &incoming_addr, Arc::clone(&slot));
-    match slot.sender.send(accepted).await {
-        Ok(()) => {
-            slot.counters
-                .connections_accepted
-                .fetch_add(1, Ordering::Relaxed);
+    let _ = tokio::time::timeout(PRE_APPLICATION_CUSTODY_TIMEOUT, async move {
+        let mut accepting = accepting;
+        // Honest incoming transport address, observed before the handshake
+        // completes.
+        let incoming_addr = accepting.remote_addr();
+        // Inspect the negotiated ALPN exactly once.
+        let Ok(negotiated) = accepting.alpn().await else {
+            return;
+        };
+        let Ok(alpn) = IrohAlpn::parse(&negotiated) else {
+            // Unknown ALPN: dropped here, which rejects the connection before
+            // any application stream exists.
+            return;
+        };
+        let Some(slot) = state.slot(alpn) else {
+            // Advertised but unregistered: no application access.
+            return;
+        };
+        let Ok(connection) = accepting.await else {
+            // Handshake failure: nothing was admitted.
+            return;
+        };
+        slot.counters
+            .connections_active
+            .fetch_add(1, Ordering::Relaxed);
+        let accepted =
+            AcceptedIrohConnection::new_admitted(connection, &incoming_addr, Arc::clone(&slot));
+        match slot.sender.send(accepted).await {
+            Ok(()) => {
+                slot.counters
+                    .connections_accepted
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            Err(undelivered) => {
+                // The consumer is gone: no application streams. The undelivered
+                // value's lease releases the admitted slot on drop.
+                let undelivered = undelivered.0;
+                undelivered
+                    .connection
+                    .close(0u32.into(), b"consumer_unavailable");
+                drop(undelivered);
+            }
         }
-        Err(undelivered) => {
-            // The consumer is gone: no application streams. The undelivered
-            // value's lease releases the admitted slot on drop.
-            let undelivered = undelivered.0;
-            undelivered
-                .connection
-                .close(0u32.into(), b"consumer_unavailable");
-            drop(undelivered);
+    })
+    .await;
+}
+
+/// Awaits an admitted connection's first bidirectional application stream
+/// inside the shared [`PRE_APPLICATION_CUSTODY_TIMEOUT`]. A connection that
+/// opens none is closed and released rather than retained.
+///
+/// This bounds only the *arrival* of the first stream. Whether that stream is
+/// valid stays with the per-stream preamble/control owners, and once it exists
+/// the connection keeps its existing long-lived semantics: there is deliberately
+/// no connection-wide idle timeout for Socket.IO and Mutagen to trip over.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) async fn accept_first_application_stream(
+    connection: &iroh::endpoint::Connection,
+) -> Option<(iroh::endpoint::SendStream, iroh::endpoint::RecvStream)> {
+    match tokio::time::timeout(PRE_APPLICATION_CUSTODY_TIMEOUT, connection.accept_bi()).await {
+        Ok(Ok(stream)) => Some(stream),
+        Ok(Err(_)) => None,
+        Err(_) => {
+            connection.close(0u32.into(), b"no_application_stream");
+            None
         }
     }
 }
@@ -641,6 +968,7 @@ async fn dispatch_handshake(
 /// Identity of a shared process endpoint: its persistent key path, or an
 /// ephemeral slot for keyless test/first-provisioning endpoints.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg(not(target_arch = "wasm32"))]
 pub enum EndpointIdentity {
     Keyed(PathBuf),
     /// Public identity derived from a mobile secure-store seed. The secret is
@@ -663,6 +991,7 @@ pub struct ResolvedEndpointConfig {
     pub caps: IrohCapProfile,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 struct ManagedEndpoint {
     endpoint: std::sync::Arc<IrohEndpoint>,
 }
@@ -671,12 +1000,14 @@ struct ManagedEndpoint {
 /// reuse a compatible bound endpoint instead of binding one UDP endpoint per
 /// lease; releasing a lease never shuts the shared endpoint down — only an
 /// explicit shutdown does.
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Default)]
 pub struct EndpointManager {
     endpoints: Mutex<HashMap<EndpointIdentity, ManagedEndpoint>>,
     next_ephemeral: Mutex<u64>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl EndpointManager {
     pub fn new() -> Self {
         Self::default()
@@ -785,6 +1116,7 @@ impl EndpointManager {
 /// A bound Iroh endpoint is only ever loopback-facing on this side: the Home
 /// acceptor target and the client tunnel listener are both loopback-only, and
 /// a fixed target needs a concrete port.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn validate_loopback_target(host: &str, port: u16) -> Result<()> {
     let ip: std::net::IpAddr = if host == "localhost" {
         std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
@@ -800,6 +1132,7 @@ pub fn validate_loopback_target(host: &str, port: u16) -> Result<()> {
 
 /// The client tunnel listener must bind a loopback address on any port
 /// (including the ephemeral port 0).
+#[cfg(not(target_arch = "wasm32"))]
 pub fn validate_loopback_bind_addr(addr: std::net::SocketAddr) -> Result<()> {
     if addr.ip().is_loopback() {
         Ok(())
@@ -815,6 +1148,24 @@ pub fn validate_endpoint_id(value: &str) -> Result<()> {
     iroh::EndpointId::from_str(value)
         .map(|_| ())
         .map_err(|_| IrohError::TransportClosed)
+}
+
+/// The one identity guard for outgoing tunnels: verifies the authenticated
+/// post-handshake transport identity of a dialed connection against the
+/// requested descriptor and returns the authenticated id for honest status
+/// reporting. A mismatch fails closed with `IrohError::EndpointIdentityMismatch`
+/// ("endpoint-identity-mismatch") before any loopback listener is published, so
+/// Home and machine tunnels can never disagree about what counts as the peer.
+/// The id conversion mirrors path.rs's `snapshot_for_connection`, so the
+/// reported identity and the path snapshot can never disagree.
+pub fn verified_remote_endpoint_id(
+    authenticated: iroh::EndpointId,
+    requested: iroh::EndpointId,
+) -> Result<String> {
+    if authenticated != requested {
+        return Err(IrohError::EndpointIdentityMismatch);
+    }
+    Ok(authenticated.to_string())
 }
 
 #[cfg(any(windows, test))]
@@ -1172,7 +1523,9 @@ fn load_posix_key(path: &Path) -> std::io::Result<Vec<u8>> {
 /// envelope under a protected current-user-only DACL. Corrupt existing bytes
 /// fail closed and are never rotated; this module never logs or serializes key
 /// material.
+#[cfg(not(target_arch = "wasm32"))]
 pub struct EndpointKeyStore;
+#[cfg(not(target_arch = "wasm32"))]
 impl EndpointKeyStore {
     pub fn ensure(path: &Path) -> Result<Vec<u8>> {
         // EndpointManager may race two first acquires for the same identity
@@ -1304,6 +1657,53 @@ mod tests {
 
         fs::create_dir_all(path).unwrap();
         fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    #[test]
+    fn outgoing_tunnel_identity_guard_reports_authenticated_id_and_fails_closed_on_mismatch() {
+        let requested = iroh::SecretKey::from_bytes(&[7u8; 32]).public();
+        let other = iroh::SecretKey::from_bytes(&[9u8; 32]).public();
+
+        // On an honest match the authenticated transport identity is reported
+        // verbatim — the same conversion path.rs uses for path snapshots.
+        assert_eq!(
+            verified_remote_endpoint_id(requested, requested).expect("matching identity"),
+            requested.to_string(),
+        );
+        // Any authenticated identity other than the requested target fails the
+        // dial closed with the shared identity-mismatch classification, for
+        // every tunnel that dials out.
+        assert_eq!(
+            verified_remote_endpoint_id(other, requested),
+            Err(IrohError::EndpointIdentityMismatch),
+        );
+    }
+
+    #[test]
+    fn a_dial_only_endpoint_advertises_no_inbound_alpn_while_a_dispatched_one_advertises_both() {
+        // The dispatched (native) role runs the accept/ALPN dispatcher, so it
+        // advertises exactly the two ALPNs that dispatcher can serve.
+        assert_eq!(
+            inbound_alpns(InboundAlpnRole::Dispatched),
+            vec![
+                crate::HOME_TUNNEL_ALPN.to_vec(),
+                crate::MACHINE_ALPN.to_vec()
+            ],
+        );
+        // The dial-only (browser) role has no acceptor at all, so it advertises
+        // nothing: a peer's inbound Home or machine handshake fails ALPN
+        // negotiation instead of waiting on an accept queue nobody drains.
+        assert_eq!(
+            inbound_alpns(InboundAlpnRole::DialOnly),
+            Vec::<Vec<u8>>::new()
+        );
+        // Every ALPN a dispatched endpoint advertises is one the dispatcher can
+        // actually parse and route.
+        for alpn in inbound_alpns(InboundAlpnRole::Dispatched) {
+            assert!(crate::IrohAlpn::parse(alpn.as_slice()).is_ok());
+        }
+        // This test target is native, and native keeps the acceptor.
+        assert_eq!(TARGET_INBOUND_ALPN_ROLE, InboundAlpnRole::Dispatched);
     }
 
     #[test]
@@ -1780,6 +2180,43 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    #[tokio::test]
+    async fn inbound_stop_signal_is_persistent_and_wakes_every_parked_waiter() {
+        use std::time::Duration;
+
+        // A stop raised before anyone waits must still be observed. The dial-only
+        // inbound owner is stopped from a `Drop` that cannot know whether its
+        // task is currently parked, so a lost edge would strand the task — and
+        // with it the endpoint clone it holds — forever.
+        let already_stopped = InboundStopSignal::new();
+        assert!(!already_stopped.is_stopped());
+        already_stopped.stop();
+        assert!(already_stopped.is_stopped());
+        tokio::time::timeout(Duration::from_secs(5), already_stopped.stopped())
+            .await
+            .expect("a stop that already happened must not block a later waiter");
+
+        // A stop raised while waiters are parked wakes all of them, and stopping
+        // twice is not an error.
+        let signal = Arc::new(InboundStopSignal::new());
+        let waiters = (0..3)
+            .map(|_| {
+                let signal = Arc::clone(&signal);
+                tokio::spawn(async move { signal.stopped().await })
+            })
+            .collect::<Vec<_>>();
+        tokio::task::yield_now().await;
+        assert!(!signal.is_stopped());
+        signal.stop();
+        signal.stop();
+        for waiter in waiters {
+            tokio::time::timeout(Duration::from_secs(5), waiter)
+                .await
+                .expect("a parked waiter must be woken by the stop")
+                .expect("the waiter task must not panic");
+        }
+    }
+
     #[test]
     fn endpoint_id_accepts_canonical_iroh_and_protocol_hex_forms() {
         let key = iroh::SecretKey::from_bytes(&[3u8; 32]);
@@ -1850,6 +2287,70 @@ mod tests {
                     .collect::<Vec<_>>()
             ),
             Err(IrohError::InvalidDescriptor)
+        );
+    }
+
+    #[test]
+    fn configured_relay_hints_keep_their_order_and_reject_duplicates_like_the_descriptor() {
+        // The canonical descriptor parser
+        // (`packages/protocol/src/connectivity/iroh/endpointDescriptorV1.ts`)
+        // rejects duplicated hint entries as an ambiguous transport fact, and
+        // compares them in the same normalized form this parser produces, so a
+        // descriptor it admits is always one this endpoint can bind. The
+        // transport owner mirrors that instead of silently collapsing them.
+        assert_eq!(
+            RelaySelection::resolve(
+                &RelayPolicy::Automatic,
+                &[
+                    "https://relay.example.test".to_owned(),
+                    "https://relay.example.test".to_owned(),
+                ],
+            ),
+            Err(IrohError::InvalidDescriptor),
+        );
+        // Two spellings that normalize to the same relay are the same
+        // duplicate: the endpoint cannot hold both. These are the exact vectors
+        // the descriptor parity test uses on the protocol side.
+        for equivalent in [
+            ["https://relay.example.test", "https://relay.example.test/"],
+            ["https://relay.example.test/", "https://RELAY.example.test/"],
+            [
+                "https://relay.example.test:443/",
+                "https://relay.example.test/",
+            ],
+        ] {
+            assert_eq!(
+                RelaySelection::resolve(&RelayPolicy::Automatic, &equivalent.map(str::to_owned),),
+                Err(IrohError::InvalidDescriptor),
+                "{equivalent:?} normalize to one relay and must be rejected",
+            );
+        }
+        // Two relays that merely share a host are still two distinct relays.
+        assert!(RelaySelection::resolve(
+            &RelayPolicy::Automatic,
+            &[
+                "https://relay.example.test/".to_owned(),
+                "https://relay.example.test/backup".to_owned(),
+            ],
+        )
+        .is_ok());
+        // Distinct relays are applied in exactly the configured order; the
+        // transport owner does not reorder a Home's preference.
+        let selection = RelaySelection::resolve(
+            &RelayPolicy::Automatic,
+            &[
+                "https://zulu.example.test".to_owned(),
+                "https://alpha.example.test".to_owned(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            selection
+                .relay_urls()
+                .iter()
+                .map(|url| url.to_string())
+                .collect::<Vec<_>>(),
+            vec!["https://zulu.example.test/", "https://alpha.example.test/"],
         );
     }
 

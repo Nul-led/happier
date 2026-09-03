@@ -312,3 +312,21 @@ test('Mutagen conflict recovery recognizes a disposable artifact directory creat
     assert.deepEqual(resolveRecoverableReplicaArtifactConflictRoots(session), []);
   }
 });
+
+test('Mutagen conflict recovery recognizes plugin SDK example build output created only on the replica', () => {
+  const root = 'packages/plugin-sdk/.example-builds';
+  const recoverable = {
+    mode: 'one-way-replica',
+    conflicts: [{
+      root,
+      alphaChanges: [{ path: root, old: null, new: null }],
+      betaChanges: [{
+        path: `${root}/public-authoring/dist`,
+        old: null,
+        new: { kind: 'untracked' },
+      }],
+    }],
+  };
+
+  assert.deepEqual(resolveRecoverableReplicaArtifactConflictRoots(recoverable), [root]);
+});

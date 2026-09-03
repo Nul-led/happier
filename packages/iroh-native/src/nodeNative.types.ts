@@ -21,7 +21,7 @@ export const IROH_MACHINE_STREAM_ACCEPT_BYTE = 0x01 as const;
 export const IROH_MACHINE_STREAM_REJECT_BYTE = 0x00 as const;
 
 /** Cap profile ids accepted by the C ABI (`IrohCapProfile`). */
-export type IrohNodeCapProfile = 'homeInteractive' | 'machineBulk' | 'workspaceSync';
+export type IrohNodeCapProfile = 'homeInteractive' | 'machineBulk';
 
 /** Every export the Node/Bun addon must expose (the exact no-payload allowlist). */
 export const IROH_NODE_NATIVE_EXPORTS = [
@@ -95,7 +95,7 @@ export type IrohNodeStartMachineTunnelRequest = Readonly<{
   directAddresses?: readonly string[];
   relayUrls?: readonly string[];
   handshakeJson: string;
-  capProfile?: Extract<IrohNodeCapProfile, 'machineBulk' | 'workspaceSync'>;
+  capProfile?: Extract<IrohNodeCapProfile, 'machineBulk'>;
 }>;
 
 export type IrohNodeEnsureHomeTunnelRequest = Readonly<{

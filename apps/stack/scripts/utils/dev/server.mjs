@@ -717,6 +717,7 @@ export async function startDevServer({
   serverPort,
   serverBindPort = serverPort,
   internalServerUrl,
+  canonicalServerUrl = '',
   publicServerUrl,
   envPath,
   stackMode,
@@ -756,6 +757,7 @@ export async function startDevServer({
   const serverEnv = buildServerRuntimeEnv({
     baseEnv,
     serverPort: bindPort,
+    canonicalServerUrl,
     publicServerUrl,
   });
   delete baseEnv.HAPPIER_STACK_SERVER_RESTART_PREFLIGHT_ALREADY_DONE;

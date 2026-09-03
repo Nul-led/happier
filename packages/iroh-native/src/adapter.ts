@@ -85,6 +85,13 @@ function readNativeStatus(value: Record<string, unknown>): NativeStatus {
 /** Lifecycle-only adapter boundary. Native implementations supply the byte carrier. */
 export function createIrohNativeAdapter(native?: NativeLifecycleModule, options: AdapterOptions = {}): IrohNativeAdapter {
   const leases = new Map<string, IrohHomeTunnelLease>();
+  /**
+   * Native leases this adapter must still release but must never publish: a
+   * result rejected for identity mismatch whose immediate release failed. The
+   * native lease stays owned here and is retried only at this adapter's
+   * explicit release and dispose boundaries — never on a timer.
+   */
+  const retainedNativeLeases = new Set<string>();
   const pollers = new Map<string, {
     listeners: Set<(event: IrohNativeTunnelEvent) => void>;
     timer: ReturnType<typeof setInterval>;
@@ -98,6 +105,19 @@ export function createIrohNativeAdapter(native?: NativeLifecycleModule, options:
     if (!poller) return;
     clearInterval(poller.timer);
     pollers.delete(leaseId);
+  }
+
+  /**
+   * Retries every retained native release once. A release that succeeds drops
+   * its custody; a release that fails keeps it, so the retry stays idempotent
+   * across repeated boundaries.
+   */
+  function retryRetainedReleases(): readonly Promise<void>[] {
+    if (!native) return [];
+    return [...retainedNativeLeases].map(async (leaseId) => {
+      await native.releaseHomeTunnel(leaseId);
+      retainedNativeLeases.delete(leaseId);
+    });
   }
 
   function emit(leaseId: string, event: IrohNativeTunnelEvent): void {
@@ -149,9 +169,9 @@ export function createIrohNativeAdapter(native?: NativeLifecycleModule, options:
         type: 'error', tunnelHandle: leaseId, status: 'error',
         errorCode: normalized.code, atMs: Date.now(),
       });
-      // A failed native status boundary cannot safely certify recovery. Stop
-      // this observation; the existing supervisor owns foreground/reacquire.
-      stopPolling(leaseId);
+      // Observation is lease-scoped and non-authoritative. A transient status
+      // read failure must not discard that ownership; the next poll may
+      // observe native recovery while the supervisor remains the retry owner.
     } finally {
       const current = pollers.get(leaseId);
       if (current) current.polling = false;
@@ -174,7 +194,10 @@ export function createIrohNativeAdapter(native?: NativeLifecycleModule, options:
         try {
           await native.releaseHomeTunnel(result.leaseId);
         } catch {
-          // Best-effort release only; the misrouted lease is never adopted.
+          // Cleanup failed, so this adapter keeps custody of the exact native
+          // lease and retries it at its next explicit release/dispose
+          // boundary. The lease is still never adopted or published.
+          retainedNativeLeases.add(result.leaseId);
         }
         throw new IrohError('identity_mismatch', 'Native Iroh lease does not match the requested Home identity.');
       }
@@ -190,9 +213,17 @@ export function createIrohNativeAdapter(native?: NativeLifecycleModule, options:
       return lease;
     },
     async releaseHomeTunnel(leaseId) {
-      const lease = leases.get(leaseId);
-      if (lease) await lease.release();
-      else if (native) await native.releaseHomeTunnel(leaseId);
+      try {
+        if (retainedNativeLeases.has(leaseId)) return;
+        const lease = leases.get(leaseId);
+        if (lease) await lease.release();
+        else if (native) await native.releaseHomeTunnel(leaseId);
+      } finally {
+        // Retained custody is swept here best-effort: the caller only learns
+        // the outcome of the release it asked for, and a still-failing
+        // retained release stays owned for the next boundary.
+        await Promise.allSettled(retryRetainedReleases());
+      }
     },
     subscribeEvents(leaseId, listener) {
       const lease = leases.get(leaseId);
@@ -211,6 +242,19 @@ export function createIrohNativeAdapter(native?: NativeLifecycleModule, options:
         poller.listeners.delete(listener);
         if (poller.listeners.size === 0) stopPolling(leaseId);
       };
+    },
+    async dispose() {
+      for (const leaseId of [...pollers.keys()]) stopPolling(leaseId);
+      // One terminal sweep past every owned handle. Successful releases leave
+      // this adapter; failed ones stay owned and are retried by the next
+      // dispose, so native custody is never silently dropped.
+      const outcomes = await Promise.allSettled([
+        ...[...leases.values()].map((lease) => lease.release()),
+        ...retryRetainedReleases(),
+      ]);
+      for (const outcome of outcomes) {
+        if (outcome.status === 'rejected') throw outcome.reason;
+      }
     },
   };
 }

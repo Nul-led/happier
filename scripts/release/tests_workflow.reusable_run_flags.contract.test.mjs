@@ -93,3 +93,33 @@ test('reusable tests callers explicitly select jobs without inheriting caller ev
     assert.equal(stressCall?.with?.[input], false, `stress workflow must disable the unrelated true-default ${input} lane`);
   }
 });
+
+test('real workspace sync obeys the explicit reusable-workflow selection boundary', async () => {
+  const parsed = YAML.parse(await readWorkflow('.github/workflows/tests.yml'));
+  assert.equal(
+    parsed?.jobs?.['workspace-sync-real']?.if,
+    '${{ !inputs.select_jobs_explicitly || inputs.run_workspace_sync_real }}',
+  );
+});
+
+test('the existing Home Iroh real lane owns both real Chromium completion verticals', async () => {
+  const parsed = YAML.parse(await readWorkflow('.github/workflows/tests.yml'));
+  const uiPackage = JSON.parse(await readWorkflow('apps/ui/package.json'));
+  const job = parsed?.jobs?.['home-iroh-real'];
+  assert.equal(job?.if, '${{ !inputs.select_jobs_explicitly || inputs.run_home_iroh_real }}');
+
+  const steps = job?.steps ?? [];
+  assert.ok(
+    steps.some((step) => /playwright install --with-deps chromium/u.test(step?.run ?? '')),
+    'the existing lane must provision real Chromium',
+  );
+  assert.ok(
+    steps.some((step) => /proof:browser-iroh-real-verticals/u.test(step?.run ?? '')),
+    'the existing lane must invoke the combined browser completion command',
+  );
+  assert.equal(
+    uiPackage?.scripts?.['proof:browser-iroh-real-verticals'],
+    'node ./tools/iroh/runBrowserIrohSharedEndpointProof.mjs --real-home-vertical --machine-transfer-vertical',
+    'one existing runner invocation must execute both A7.3 and A7.4 completion verticals',
+  );
+});

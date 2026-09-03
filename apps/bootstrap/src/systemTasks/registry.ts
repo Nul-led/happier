@@ -128,28 +128,35 @@ export function createHsetupSystemTaskRegistry(deps: HsetupRegistryDeps = {}): S
   const remoteBootstrapDeps = createRemoteSshBootstrapDeps(deps.remoteSshBootstrap);
   const relayDriftRepairDeps = createRelayDriftRepairDeps(deps.relayDriftRepair);
   const relayAccessDeps = createRelayAccessDeps(deps.relayAccess);
-  const relayRuntimeStatusHandler = systemTasks.createExecutionRunnerFromKind(
-    systemTasks.createRelayRuntimeStatusTaskKind(relayRuntimeDeps),
-  );
-  const relayRuntimeInstallHandler = systemTasks.createExecutionRunnerFromKind(
-    systemTasks.createRelayRuntimeInstallOrUpdateTaskKind(relayRuntimeDeps),
-  );
-  const relayRuntimeStartHandler = systemTasks.createExecutionRunnerFromKind(
-    systemTasks.createRelayRuntimeStartTaskKind(relayRuntimeDeps),
-  );
-  const relayRuntimeRestartHandler = systemTasks.createExecutionRunnerFromKind(
-    systemTasks.createRelayRuntimeRestartTaskKind(relayRuntimeDeps),
-  );
-  const relayRuntimeStopHandler = systemTasks.createExecutionRunnerFromKind(
-    systemTasks.createRelayRuntimeStopTaskKind(relayRuntimeDeps),
-  );
-  const relayRuntimeUninstallHandler = systemTasks.createExecutionRunnerFromKind(
-    systemTasks.createRelayRuntimeUninstallTaskKind(relayRuntimeDeps),
-  );
   const personalHomeOperations = deps.personalHomeOperations
     ?? systemTasks.createDeferredPersonalHomeSystemTaskOperations(
       async (target) => await createBootstrapPersonalHomeSystemTaskOperations(target),
     );
+  const relayRuntimeDepsWithRestoreContact = {
+    ...relayRuntimeDeps,
+    reconcilePersonalHomeRestore: systemTasks.createPersonalHomeRestoreContactReconciler({
+      readStatus: relayRuntimeDeps.readStatus,
+      operations: personalHomeOperations,
+    }),
+  };
+  const relayRuntimeStatusHandler = systemTasks.createExecutionRunnerFromKind(
+    systemTasks.createRelayRuntimeStatusTaskKind(relayRuntimeDepsWithRestoreContact),
+  );
+  const relayRuntimeInstallHandler = systemTasks.createExecutionRunnerFromKind(
+    systemTasks.createRelayRuntimeInstallOrUpdateTaskKind(relayRuntimeDepsWithRestoreContact),
+  );
+  const relayRuntimeStartHandler = systemTasks.createExecutionRunnerFromKind(
+    systemTasks.createRelayRuntimeStartTaskKind(relayRuntimeDepsWithRestoreContact),
+  );
+  const relayRuntimeRestartHandler = systemTasks.createExecutionRunnerFromKind(
+    systemTasks.createRelayRuntimeRestartTaskKind(relayRuntimeDepsWithRestoreContact),
+  );
+  const relayRuntimeStopHandler = systemTasks.createExecutionRunnerFromKind(
+    systemTasks.createRelayRuntimeStopTaskKind(relayRuntimeDepsWithRestoreContact),
+  );
+  const relayRuntimeUninstallHandler = systemTasks.createExecutionRunnerFromKind(
+    systemTasks.createRelayRuntimeUninstallTaskKind(relayRuntimeDepsWithRestoreContact),
+  );
   const personalHomeTaskDeps = {
     operations: personalHomeOperations,
     loadRelocationDestination: deps.loadPersonalHomeRelocationDestination

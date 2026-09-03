@@ -10,7 +10,12 @@ import {
   resolvePersonalHomeRuntimeLayout,
   resolveRelayRuntimeDefaults,
 } from '@happier-dev/cli-common/firstPartyRuntime';
-import { executeSystemTask, type BackgroundServiceSetupGuidance } from '@happier-dev/cli-common/systemTasks';
+import {
+  executeSystemTask,
+  SystemTaskExecutionError,
+  type BackgroundServiceSetupGuidance,
+  type PersonalHomeTaskOperationContext,
+} from '@happier-dev/cli-common/systemTasks';
 import { createFakeTailscaleCli } from '@happier-dev/tests/testkit/tailscale/fakeTailscaleCli';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -1640,6 +1645,166 @@ describe('createHsetupSystemTaskRegistry', () => {
     });
   });
 
+  it('reconciles interrupted Personal Home restore state before every generic runtime contact', async () => {
+    const contacts: string[] = [];
+    const reconcileRestore = vi.fn(async (context: PersonalHomeTaskOperationContext) => {
+      contacts.push(`reconcile:${context.runtimeTarget.channel}:${context.runtimeTarget.mode}:${context.requestedPurpose.canonicalServerUrl}`);
+    });
+    const registry = createHsetupSystemTaskRegistry({
+      relayRuntime: {
+        async readStatus(params) {
+          contacts.push(`status:${params.channel}:${params.mode}`);
+          return {
+            installed: true,
+            version: '1.2.3',
+            service: { active: true, enabled: true },
+            baseUrl: 'http://127.0.0.1:43007',
+            purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43007' },
+          };
+        },
+        async checkHealth() {
+          return true;
+        },
+        async installOrUpdate(params) {
+          contacts.push(`install:${params.channel}:${params.mode}`);
+          return { relayUrl: 'http://127.0.0.1:43007', mode: params.mode ?? 'user' };
+        },
+        async control(params) {
+          contacts.push(`control:${params.action}:${params.channel}:${params.mode}`);
+        },
+      },
+      personalHomeOperations: {
+        reconcileRestore,
+        inspect: async () => ({}),
+        backup: async () => ({}),
+        verifyBackup: async () => ({}),
+        restore: async () => ({}),
+        recoverRestore: async () => ({}),
+        erase: async () => ({}),
+      },
+    });
+
+    for (const [index, kind] of [
+      'relay.runtime.status.v1',
+      'relay.runtime.installOrUpdate.v1',
+      'relay.runtime.start.v1',
+      'relay.runtime.restart.v1',
+      'relay.runtime.stop.v1',
+      'relay.runtime.uninstall.v1',
+    ].entries()) {
+      contacts.length = 0;
+      const result = await executeSystemTask({
+        spec: {
+          protocolVersion: 1,
+          kind,
+          params: { target: { kind: 'local' }, channel: 'preview', mode: 'system' },
+        },
+        taskId: `task_personal_home_runtime_contact_${index}`,
+        registry,
+        emitEvent() {},
+      });
+
+      expect(result.ok).toBe(true);
+      expect(contacts[0]).toBe('status:preview:system');
+      expect(contacts[1]).toBe('reconcile:preview:system:http://127.0.0.1:43007');
+    }
+    expect(reconcileRestore).toHaveBeenCalledTimes(6);
+  });
+
+  it('allows a fresh Personal Home install before a restore contact exists', async () => {
+    const reconcileRestore = vi.fn(async () => undefined);
+    const installOrUpdate = vi.fn(async () => ({
+      relayUrl: 'http://127.0.0.1:43007',
+      mode: 'user' as const,
+    }));
+    const registry = createHsetupSystemTaskRegistry({
+      relayRuntime: {
+        readStatus: async () => ({
+          installed: false,
+          version: null,
+          service: { active: null, enabled: null },
+          baseUrl: 'http://127.0.0.1:43007',
+          purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43007' },
+          dataPresent: false,
+        }),
+        installOrUpdate,
+      },
+      personalHomeOperations: {
+        reconcileRestore,
+        inspect: async () => ({}),
+        backup: async () => ({}),
+        verifyBackup: async () => ({}),
+        restore: async () => ({}),
+        recoverRestore: async () => ({}),
+        erase: async () => ({}),
+      },
+    });
+
+    const result = await executeSystemTask({
+      spec: {
+        protocolVersion: 1,
+        kind: 'relay.runtime.installOrUpdate.v1',
+        params: {
+          target: { kind: 'local' },
+          channel: 'preview',
+          mode: 'user',
+          purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43007' },
+        },
+      },
+      taskId: 'task_fresh_personal_home_install',
+      registry,
+      emitEvent() {},
+    });
+
+    expect(result.ok).toBe(true);
+    expect(reconcileRestore).not.toHaveBeenCalled();
+    expect(installOrUpdate).toHaveBeenCalledOnce();
+  });
+
+  it('fails a generic Personal Home runtime mutation closed when restore reconciliation requires recovery', async () => {
+    const installOrUpdate = vi.fn(async () => ({ relayUrl: 'http://127.0.0.1:43007', mode: 'user' as const }));
+    const registry = createHsetupSystemTaskRegistry({
+      relayRuntime: {
+        readStatus: async () => ({
+          installed: true,
+          version: '1.2.3',
+          service: { active: false, enabled: true },
+          baseUrl: 'http://127.0.0.1:43007',
+          purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43007' },
+        }),
+        installOrUpdate,
+      },
+      personalHomeOperations: {
+        reconcileRestore: async () => {
+          throw new SystemTaskExecutionError(
+            'restore_recovery_required',
+            'Interrupted Personal Home restore requires recovery.',
+          );
+        },
+        inspect: async () => ({}),
+        backup: async () => ({}),
+        verifyBackup: async () => ({}),
+        restore: async () => ({}),
+        recoverRestore: async () => ({}),
+        erase: async () => ({}),
+      },
+    });
+
+    const result = await executeSystemTask({
+      spec: {
+        protocolVersion: 1,
+        kind: 'relay.runtime.installOrUpdate.v1',
+        params: { target: { kind: 'local' }, channel: 'stable', mode: 'user' },
+      },
+      taskId: 'task_personal_home_restore_recovery_required',
+      registry,
+      emitEvent() {},
+    });
+
+    expect(result).toMatchObject({ ok: false, error: { code: 'restore_recovery_required' } });
+    expect(installOrUpdate).not.toHaveBeenCalled();
+  });
+
   it('runs relay.runtime.start.v1 through the lifecycle controller before returning fresh status', async () => {
     const controlled: string[] = [];
     const result = await executeSystemTask({
@@ -2918,8 +3083,8 @@ describe('createHsetupSystemTaskRegistry', () => {
         backup: async () => ({}),
         verifyBackup: async () => ({}),
         restore: async () => ({}),
+        reconcileRestore: async () => undefined,
         recoverRestore: async () => ({}),
-        finalizeRestore: async () => ({}),
         erase: async () => ({}),
       },
     });
@@ -2994,8 +3159,8 @@ describe('createHsetupSystemTaskRegistry', () => {
         backup: async () => (calls.push('backup'), {}),
         verifyBackup: async () => (calls.push('verify_backup'), {}),
         restore: async () => (calls.push('restore'), {}),
+        reconcileRestore: async () => undefined,
         recoverRestore: async () => ({}),
-        finalizeRestore: async () => ({}),
         erase: async () => (calls.push('erase'), {}),
       },
     });
@@ -3024,6 +3189,19 @@ describe('createHsetupSystemTaskRegistry', () => {
       expect(result.ok).toBe(true);
     }
 
+    const removedFinalization = await executeSystemTask({
+      spec: {
+        protocolVersion: 1,
+        kind: 'relay.runtime.personal_home.restore.v1',
+        params: { ...base, action: 'finalize' },
+      },
+      taskId: 'task_removed_personal_home_restore_finalization',
+      registry,
+      now: () => 1700000000000,
+      emitEvent: () => undefined,
+    });
+    expect(removedFinalization).toMatchObject({ ok: false, error: { code: 'invalid_params' } });
+
     expect(calls).toEqual(['inspect', 'backup', 'verify_backup', 'restore', 'erase']);
   });
 
@@ -3032,6 +3210,8 @@ describe('createHsetupSystemTaskRegistry', () => {
     const previousHome = process.env.HOME;
     const previousUserProfile = process.env.USERPROFILE;
     let running = true;
+    let startupReceiptPath = '';
+    let readinessIdentity = '';
     const engine = {
       readStatus: vi.fn(async () => ({
         installed: true,
@@ -3046,13 +3226,29 @@ describe('createHsetupSystemTaskRegistry', () => {
       installOrUpdate: vi.fn(async () => ({ relayUrl: 'http://127.0.0.1:52123', mode: 'user' as const })),
       control: vi.fn(async (input: { action?: string }) => {
         if (input.action === 'stop') running = false;
-        if (input.action === 'start') running = true;
+        if (input.action === 'start') {
+          running = true;
+          if (startupReceiptPath && readinessIdentity) {
+            mkdirSync(join(startupReceiptPath, '..'), { recursive: true });
+            writeFileSync(startupReceiptPath, JSON.stringify({
+              pid: process.pid,
+              personalHomeReadiness: {
+                authenticated: true,
+                homeServerIdentityId: readinessIdentity,
+                accountCount: 1,
+                sessionCount: 1,
+              },
+            }));
+          }
+        }
       }),
     };
     try {
       process.env.HOME = homeDir;
       process.env.USERPROFILE = homeDir;
       const fixture = await prepareBootstrapPersonalHomeFixture(homeDir);
+      startupReceiptPath = join(fixture.layout.dataDir, 'startup-receipt.json');
+      readinessIdentity = fixture.identity;
       vi.resetModules();
       vi.doMock('@happier-dev/cli-common/systemTasks', async (importOriginal) => {
         const actual = await importOriginal<typeof import('@happier-dev/cli-common/systemTasks')>();

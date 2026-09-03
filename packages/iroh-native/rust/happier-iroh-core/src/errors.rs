@@ -11,6 +11,7 @@ pub enum IrohFailureReason {
     ResourceLimit,
     LoopbackBindFailed,
     TransportClosed,
+    EndpointIdentityMismatch,
     TransportTimeout,
 }
 
@@ -29,6 +30,13 @@ pub enum IrohError {
     ResourceLimit,
     LoopbackBindFailed,
     TransportClosed,
+    /// The authenticated transport identity of a dialed connection does not
+    /// match the requested endpoint descriptor. Raised by the one outgoing
+    /// identity guard shared by the Home and machine tunnels
+    /// (`endpoint::verified_remote_endpoint_id`) and surfaced under the same
+    /// "endpoint-identity-mismatch" classification the machine acceptor path
+    /// already reports, so a start-path mismatch fails closed with one code.
+    EndpointIdentityMismatch,
     TransportTimeout,
 }
 impl PartialEq for IrohError {
@@ -50,6 +58,7 @@ impl IrohError {
             Self::ResourceLimit => IrohFailureReason::ResourceLimit,
             Self::LoopbackBindFailed => IrohFailureReason::LoopbackBindFailed,
             Self::TransportClosed => IrohFailureReason::TransportClosed,
+            Self::EndpointIdentityMismatch => IrohFailureReason::EndpointIdentityMismatch,
             Self::TransportTimeout => IrohFailureReason::TransportTimeout,
         }
     }

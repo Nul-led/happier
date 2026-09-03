@@ -5,18 +5,24 @@ import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { RelayHostEngine } from '@happier-dev/cli-common/systemTasks';
 
-const { preparePayloadMock, createRelayHostEngineMock, createCanonicalPersonalHomeOperationsMock, readPersonalHomeStartupReadinessMock, removePersonalHomeStartupReadinessMock, runCommandStreamingMock } = vi.hoisted(() => ({
-    preparePayloadMock: vi.fn(),
-    createRelayHostEngineMock: vi.fn(),
-    createCanonicalPersonalHomeOperationsMock: vi.fn(),
-    readPersonalHomeStartupReadinessMock: vi.fn(async () => ({ authenticated: true, homeServerIdentityId: 'home-ready', accountCount: 1, sessionCount: 2 })),
-    removePersonalHomeStartupReadinessMock: vi.fn(async () => undefined),
-    runCommandStreamingMock: vi.fn(),
-}));
-
-vi.mock('@happier-dev/cli-common/process', async (importOriginal) => {
-    const actual = await importOriginal<typeof import('@happier-dev/cli-common/process')>();
-    return { ...actual, runCommandStreaming: runCommandStreamingMock };
+const { preparePayloadMock, createRelayHostEngineMock, createLocalPersonalHomeHostMock, personalHomeSystemTaskOperationsStub } = vi.hoisted(() => {
+    const personalHomeSystemTaskOperationsStub = { inspect: vi.fn(async () => ({ purpose: 'personal-home' })) };
+    return {
+        preparePayloadMock: vi.fn(),
+        createRelayHostEngineMock: vi.fn(),
+        personalHomeSystemTaskOperationsStub,
+        createLocalPersonalHomeHostMock: vi.fn((_target: Readonly<{
+            engine: unknown;
+            homeDir?: string;
+            channel: string;
+            mode: string;
+        }>) => ({
+            releaseRing: 'preview' as const,
+            createOperations: vi.fn(async () => ({})),
+            createSystemTaskOperations: vi.fn(async () => personalHomeSystemTaskOperationsStub),
+            createRelocationDestinationOwner: vi.fn(async () => ({})),
+        })),
+    };
 });
 
 vi.mock('@happier-dev/cli-common/firstPartyRuntime', async (importOriginal) => {
@@ -24,10 +30,12 @@ vi.mock('@happier-dev/cli-common/firstPartyRuntime', async (importOriginal) => {
     return {
         ...actual,
         prepareFirstPartyComponentPayloadFromGitHubRelease: preparePayloadMock,
-        createCanonicalPersonalHomeOperations: createCanonicalPersonalHomeOperationsMock,
-        readPersonalHomeStartupReadiness: readPersonalHomeStartupReadinessMock,
-        removePersonalHomeStartupReadiness: removePersonalHomeStartupReadinessMock,
     };
+});
+
+vi.mock('@happier-dev/cli-common/relayHost', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@happier-dev/cli-common/relayHost')>();
+    return { ...actual, createLocalPersonalHomeHost: createLocalPersonalHomeHostMock };
 });
 
 vi.mock('@happier-dev/cli-common/systemTasks', async (importOriginal) => {
@@ -52,42 +60,19 @@ afterEach(() => {
 });
 
 describe('Personal Home operation composition', () => {
-    it('uses the existing relay host engine lifecycle in the production default factory', async () => {
-        const readStatus = vi.fn<RelayHostEngine['readStatus']>(async () => ({
-            installed: true,
-            version: 'happier-server-v9',
-            service: { active: true, enabled: true },
-            baseUrl: 'http://127.0.0.1:43123',
-            healthy: true,
-            purpose: { kind: 'personal-home' as const, canonicalServerUrl: 'http://127.0.0.1:43123' },
-        }));
+    it('builds Personal Home task operations from the shared local composition owner with the bootstrap engine', async () => {
         const engine = {
-            readStatus,
+            readStatus: vi.fn<RelayHostEngine['readStatus']>(async () => ({
+                installed: true,
+                version: 'happier-server-v9',
+                service: { active: true, enabled: true },
+                baseUrl: 'http://127.0.0.1:43123',
+                healthy: true,
+                purpose: { kind: 'personal-home' as const, canonicalServerUrl: 'http://127.0.0.1:43123' },
+            })),
             installOrUpdate: vi.fn(async () => ({ relayUrl: 'http://127.0.0.1:43123', mode: 'user' as const })),
             control: vi.fn(async () => undefined),
         };
-        createCanonicalPersonalHomeOperationsMock.mockResolvedValue({
-            inspect: async () => ({
-                purpose: 'personal-home',
-                canonicalServerUrl: 'http://127.0.0.1:43123',
-                layout: {},
-                running: true,
-                identity: null,
-                masterSecret: { present: false, fingerprint: null },
-                storage: {
-                    databasePresent: false,
-                    databaseBytes: null,
-                    publicFilesPresent: false,
-                    privateFilesPresent: false,
-                    backupsCount: 0,
-                },
-            }),
-            backup: async () => ({}),
-            verifyBackup: async () => ({}),
-            restore: async () => ({}),
-            erase: async () => ({}),
-            relocate: async () => ({}),
-        });
 
         const operations = await createBootstrapPersonalHomeSystemTaskOperations({
             engine,
@@ -95,73 +80,27 @@ describe('Personal Home operation composition', () => {
             channel: 'preview',
             mode: 'system',
         });
-        await expect(operations.inspect({
-            requestedPurpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' },
-            runtimeTarget: { channel: 'preview', mode: 'system' },
-            progress: () => undefined,
-        })).resolves.toMatchObject({ purpose: 'personal-home' });
 
-        const composition = createCanonicalPersonalHomeOperationsMock.mock.calls[0]?.[0] as {
-            lifecycle: { isRunning(): Promise<boolean>; stop(): Promise<void>; start(): Promise<void>; healthCheck(): Promise<boolean> };
-            attestActivatedHome(): Promise<Readonly<{ authenticated: true; homeServerIdentityId: string; accountCount: number; sessionCount: number }>>;
-            readPurpose(): Promise<{ kind: 'personal-home'; canonicalServerUrl: string }>;
-            readHappierVersion(): Promise<string>;
-            runMigrationProcess(input: Readonly<{ command: string; args: readonly string[]; env: NodeJS.ProcessEnv }>): Promise<void>;
-        };
-        await expect(composition.readHappierVersion()).resolves.toBe('happier-server-v9');
-        await expect(composition.readPurpose()).resolves.toEqual({
-            kind: 'personal-home',
-            canonicalServerUrl: 'http://127.0.0.1:43123',
-        });
-        engine.readStatus.mockResolvedValueOnce({
-            installed: true,
-            version: 'happier-server-v9',
-            service: { active: true, enabled: true },
-            baseUrl: 'http://127.0.0.1:43123',
-            healthy: true,
-            purpose: { kind: 'generic' as const },
-        });
-        await expect(composition.readPurpose()).rejects.toThrow(/Personal Home/u);
-        await composition.lifecycle.start();
-        await expect(composition.attestActivatedHome()).resolves.toMatchObject({
-            authenticated: true,
-            homeServerIdentityId: 'home-ready',
-        });
-        expect(removePersonalHomeStartupReadinessMock).toHaveBeenCalledWith('/var/lib/happier-preview/startup-receipt.json');
-        expect(readPersonalHomeStartupReadinessMock).toHaveBeenCalledWith({ path: '/var/lib/happier-preview/startup-receipt.json' });
-        await expect(operations.restore({
-            archivePath: '/tmp/home.tar',
-            requestedPurpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' },
-            runtimeTarget: { channel: 'preview', mode: 'system' },
-            progress: () => undefined,
-        })).resolves.toEqual({});
-        const migrationEnv = { DATABASE_URL: 'file:/tmp/staged.sqlite' };
-        await composition.runMigrationProcess({
-            command: '/installed/bin/happier-server',
-            args: ['--migrate-only'],
-            env: migrationEnv,
-        });
-        expect(runCommandStreamingMock).toHaveBeenCalledWith({
-            cmd: '/installed/bin/happier-server',
-            args: ['--migrate-only'],
-            env: migrationEnv,
-            context: 'personal-home staged migration',
-        });
-        await expect(composition.lifecycle.isRunning()).resolves.toBe(true);
-        await composition.lifecycle.stop();
-        await composition.lifecycle.start();
-        await expect(composition.lifecycle.healthCheck()).resolves.toBe(true);
-        expect(engine.control).toHaveBeenCalledWith(expect.objectContaining({ action: 'stop' }));
-        expect(engine.control).toHaveBeenCalledWith(expect.objectContaining({ action: 'start' }));
-        expect(readStatus).toHaveBeenCalledWith({
-            target: { kind: 'local' },
+        expect(operations).toBe(personalHomeSystemTaskOperationsStub);
+        expect(createLocalPersonalHomeHostMock).toHaveBeenCalledTimes(1);
+        // hsetup contributes only its host boundaries; every Personal Home dependency
+        // and policy is decided by the shared composition owner in cli-common.
+        expect(createLocalPersonalHomeHostMock).toHaveBeenCalledWith({
+            engine,
+            homeDir: '/tmp/home',
             channel: 'preview',
             mode: 'system',
         });
-        expect(createCanonicalPersonalHomeOperationsMock).toHaveBeenCalledWith(expect.objectContaining({
-            channel: 'preview',
-            mode: 'system',
-        }));
+    });
+
+    it('falls back to the bootstrap relay host engine when the caller supplies none', async () => {
+        await createBootstrapPersonalHomeSystemTaskOperations({ channel: 'stable', mode: 'user' });
+
+        expect(createRelayHostEngineMock).toHaveBeenCalledTimes(1);
+        const target = createLocalPersonalHomeHostMock.mock.calls[0]?.[0];
+        expect(target).toMatchObject({ channel: 'stable', mode: 'user' });
+        expect(target?.engine).toBeTruthy();
+        expect(target?.homeDir).toBeUndefined();
     });
 });
 

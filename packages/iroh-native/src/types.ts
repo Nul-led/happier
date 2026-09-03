@@ -50,4 +50,12 @@ export type IrohNativeAdapter = Readonly<{
   ensureHomeTunnel(input: IrohHomeTunnelRequest): Promise<IrohHomeTunnelLease>;
   releaseHomeTunnel(leaseId: string): Promise<void>;
   subscribeEvents(leaseId: string, listener: (event: IrohNativeTunnelEvent) => void): () => void;
+  /**
+   * Terminal boundary: stops observation and releases every native lease this
+   * adapter still owns, including a lease it retained because an earlier
+   * cleanup failed. Rejects when native custody could not be fully released so
+   * the caller keeps this adapter owned and retries here instead of orphaning
+   * the native lease.
+   */
+  dispose(): Promise<void>;
 }>;

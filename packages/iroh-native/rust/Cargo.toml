@@ -1,5 +1,5 @@
 [workspace]
-members = ["happier-iroh-core", "happier-iroh-native", "happier-iroh-node"]
+members = ["happier-iroh-core", "happier-iroh-native", "happier-iroh-node", "happier-iroh-wasm"]
 resolver = "2"
 
 [profile.release]

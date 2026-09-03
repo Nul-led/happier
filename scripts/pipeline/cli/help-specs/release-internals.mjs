@@ -411,7 +411,7 @@ export const COMMAND_HELP_RELEASE_INTERNALS = {
       '--keychain-account <name>         Wrapper flag.',
       `--channel <${publicReleaseChannelChoices}>        Script flag.`,
       '--version <ver>                   Script flag; defaults to apps/ui package.json.',
-      '--dist-dir <dir>                  Script flag (default: apps/ui/dist).',
+      '--dist-dir <dir>                  Script flag (fresh default: unique temporary output; --skip-build default: apps/ui/dist).',
       '--out-dir <dir>                   Script flag (default: dist/release-assets/ui-web).',
       '--skip-build                      Script flag.',
     ],

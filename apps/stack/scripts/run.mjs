@@ -158,6 +158,7 @@ async function main() {
   let internalServerUrl = '';
   let publicServerUrl = '';
   let defaultPublicUrl = '';
+  let canonicalServerUrl = '';
 
   // Convenience alias: allow `--server-flavor=light|full` for parity with `stack pr` and `tools setup-pr`.
   // `--server=...` always wins when both are specified.
@@ -447,6 +448,7 @@ async function main() {
   const resolvedUrls = await resolveServerUrls({ env: baseEnv, serverPort, allowEnable: allowEnableTailscale });
   defaultPublicUrl = resolvedUrls.defaultPublicUrl;
   publicServerUrl = resolvedUrls.publicServerUrl;
+  canonicalServerUrl = resolvedUrls.canonicalServerUrl;
 
   const publishExistingServerOwnership = async () => {
     if (!(startupDecision.adoptedServer && stackMode && runtimeStatePath)) return;
@@ -507,6 +509,7 @@ async function main() {
   const serverEnv = buildServerRuntimeEnv({
     baseEnv,
     serverPort,
+    canonicalServerUrl,
     publicServerUrl,
     serveUi,
     uiRequired,

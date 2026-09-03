@@ -29,7 +29,13 @@ const REPOSITORY_WORKSPACE_DIRECTORIES = [
   { directory: 'apps/cli', name: '@happier-dev/cli' },
   { directory: 'apps/server', name: '@happier-dev/server' },
   { directory: 'apps/stack', name: '@happier-dev/stack' },
-  { directory: 'apps/ui', name: '@happier-dev/app' },
+  {
+    directory: 'apps/ui',
+    name: '@happier-dev/app',
+    scripts: {
+      test: 'node --test ./tools/iroh/browserIrohAssetPackaging.test.mjs ./tools/iroh/productionCarrierPageSeam.test.mjs ./tools/iroh/realHomeVerticalJourney.test.mjs ./tools/iroh/browserMachineTransferJourney.test.mjs',
+    },
+  },
   { directory: 'apps/website', name: '@happier-dev/website' },
   { directory: 'packages/channels-protocol', name: '@happier-dev/channels-protocol' },
   { directory: 'packages/peer-mediation', name: '@happier-dev/peer-mediation' },
@@ -54,7 +60,6 @@ const REPOSITORY_WORKSPACE_DIRECTORIES = [
     // `test` chain names some of the rest, and the remainder has no runner at all.
     scripts: {
       test: 'node --test scripts/plugin-platform/named-self.test.mjs',
-      'test:ui:e2e:wsrepl:lima:self': 'node --test scripts/lima-vm.test.mjs scripts/wsrepl-lima-matrix.test.mjs',
     },
   },
 ] as const;
@@ -74,7 +79,7 @@ const ROOT_SCRIPTS = {
     'yarn --cwd apps/server test:unit',
     'yarn --cwd apps/stack test:unit',
   ].join(' && '),
-  'test:e2e:ui:wsrepl:lima:self': 'yarn --cwd packages/tests test:ui:e2e:wsrepl:lima:self',
+  'test:workspace-sync:real': 'yarn workspace @happier-dev/cli test:workspace-sync:real',
 } satisfies Record<string, string>;
 
 const LANE_CONTEXT: TestLaneContext = buildTestLaneContext({
@@ -99,8 +104,6 @@ test('classifies representative lane paths', () => {
   assert.equal(classifyTestFile(LANE_CONTEXT, 'packages/tests/suites/core-e2e/login.test.ts'), 'test:e2e:core:fast');
   assert.equal(classifyTestFile(LANE_CONTEXT, 'packages/tests/suites/core-e2e/login.slow.e2e.test.ts'), 'test:e2e:core:slow');
   assert.equal(classifyTestFile(LANE_CONTEXT, 'packages/tests/suites/ui-e2e/login.spec.ts'), 'test:e2e:ui');
-  assert.equal(classifyTestFile(LANE_CONTEXT, 'packages/tests/scripts/wsrepl-lima-matrix.test.mjs'), 'test:e2e:ui:wsrepl:lima:self');
-  assert.equal(classifyTestFile(LANE_CONTEXT, 'packages/tests/scripts/lima-vm.test.mjs'), 'test:e2e:ui:wsrepl:lima:self');
   assert.equal(classifyTestFile(LANE_CONTEXT, 'packages/tests/suites/agents/auth.test.ts'), 'test:agents');
   // Metadata-only scenario modules register no test cases; they are ordinary imported source,
   // so no lane may claim them. The importing *.test.ts files carry the lane credit.
@@ -116,6 +119,14 @@ test('classifies representative lane paths', () => {
     classifyTestFile(LANE_CONTEXT, 'apps/server/sources/app/iroh/homeIrohEndpoint.real.integration.test.ts'),
     'test:home-iroh:real',
   );
+  for (const testPath of [
+    'apps/ui/tools/iroh/browserIrohAssetPackaging.test.mjs',
+    'apps/ui/tools/iroh/productionCarrierPageSeam.test.mjs',
+    'apps/ui/tools/iroh/realHomeVerticalJourney.test.mjs',
+    'apps/ui/tools/iroh/browserMachineTransferJourney.test.mjs',
+  ]) {
+    assert.equal(classifyTestFile(LANE_CONTEXT, testPath), 'test');
+  }
   assert.equal(
     classifyTestFile(
       LANE_CONTEXT,
@@ -125,6 +136,14 @@ test('classifies representative lane paths', () => {
   );
   assert.equal(
     classifyTestFile(LANE_CONTEXT, 'apps/cli/src/daemon/startup/createDaemonWorkspaceSyncRuntime.real.integration.test.ts'),
+    'cli:test:workspace-sync:real',
+  );
+  assert.equal(
+    classifyTestFile(LANE_CONTEXT, 'apps/cli/src/workspaces/sync/transport/workspaceSyncBroker.go.real.integration.test.ts'),
+    'cli:test:workspace-sync:real',
+  );
+  assert.equal(
+    classifyTestFile(LANE_CONTEXT, 'apps/cli/src/daemon/peer/iroh/workspaceMachineCarrierMutagen.real.integration.test.ts'),
     'cli:test:workspace-sync:real',
   );
 });
@@ -182,9 +201,8 @@ test('flags known lane naming violations', () => {
   ]);
 });
 
-test('exposes the WSREPL Lima UI lane as a root script', () => {
-    assert.equal(LANE_ROOT_SCRIPTS['test:e2e:ui:wsrepl:lima'], 'yarn test:e2e:ui:wsrepl:lima');
-    assert.equal(LANE_ROOT_SCRIPTS['test:e2e:ui:wsrepl:lima:self'], 'yarn test:e2e:ui:wsrepl:lima:self');
+test('exposes the real workspace-sync lane through the canonical root scripts', () => {
+    assert.equal(LANE_ROOT_SCRIPTS['cli:test:workspace-sync:real'], 'yarn test:workspace-sync:real');
     assert.equal(LANE_ROOT_SCRIPTS['test:e2e:desktop:native'], 'yarn test:e2e:desktop:native');
     assert.equal(LANE_ROOT_SCRIPTS['test:plugin-workspaces'], 'yarn test:plugin-workspaces');
 });

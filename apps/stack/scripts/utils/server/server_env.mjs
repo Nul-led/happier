@@ -24,15 +24,19 @@ export function buildServerRuntimeEnv({
   uiBuildDirExists = false,
   uiPrefix = '/',
 }) {
-  const configuredCanonicalServerUrl = String(
-    canonicalServerUrl || baseEnv.HAPPIER_CANONICAL_SERVER_URL || '',
-  ).trim();
+  // Canonical identity is never derived from the public ingress URL: that value is inferred per start
+  // (Tailscale/relay/LAN) and would rotate the server's signed auth audience. Operator configuration
+  // wins, then the stack-owned canonical origin resolved by the stack URL owner, then the bounded
+  // explicit legacy public URL, then the local listener origin.
+  const operatorCanonicalServerUrl = String(baseEnv.HAPPIER_CANONICAL_SERVER_URL || '').trim();
+  const stackCanonicalServerUrl = String(canonicalServerUrl || '').trim();
   const explicitLegacyPublicServerUrl = String(
     baseEnv.HAPPIER_PUBLIC_SERVER_URL_INFERRED === '1'
       ? ''
       : baseEnv.HAPPIER_PUBLIC_SERVER_URL || '',
   ).trim();
-  const stableCanonicalServerUrl = configuredCanonicalServerUrl
+  const stableCanonicalServerUrl = operatorCanonicalServerUrl
+    || stackCanonicalServerUrl
     || explicitLegacyPublicServerUrl
     || `http://localhost:${serverPort}`;
   const nextEnv = {

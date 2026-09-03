@@ -22,6 +22,8 @@ const RELEASE_PACKAGE_FIELDS = Object.freeze({
   channelsProtocol: 'channels_protocol',
 });
 
+const REUSABLE_CANDIDATE_FIELDS = Object.freeze(['cli', 'stack', 'server']);
+
 /** @param {unknown} value @param {string} name */
 function parseBoolean(value, name) {
   const normalized = String(value ?? '').trim().toLowerCase();
@@ -36,6 +38,25 @@ function validateVersion(version, productId, channel) {
     throw new Error(`npm release metadata rejected non-canonical ${productId} version`);
   }
   return version;
+}
+
+/**
+ * @param {{
+ *   requested: Record<'cli' | 'stack' | 'server' | 'pluginSdk' | 'sdk' | 'channelsProtocol', boolean>;
+ *   suppliedVersions: Partial<Record<'cli' | 'stack' | 'server', string>>;
+ * }} input
+ */
+export function resolveNpmVersionSources(input) {
+  const allocationRequested = { ...input.requested };
+  /** @type {Partial<Record<'cli' | 'stack' | 'server', string>>} */
+  const reusedVersions = {};
+  for (const key of REUSABLE_CANDIDATE_FIELDS) {
+    const supplied = String(input.suppliedVersions[key] ?? '');
+    if (!input.requested[key] || supplied === '') continue;
+    allocationRequested[key] = false;
+    reusedVersions[key] = supplied;
+  }
+  return { allocationRequested, reusedVersions };
 }
 
 /**
@@ -157,6 +178,9 @@ function main() {
       'publish-cli': { type: 'string', default: 'false' },
       'publish-stack': { type: 'string', default: 'false' },
       'publish-server': { type: 'string', default: 'false' },
+      'cli-version': { type: 'string', default: '' },
+      'stack-version': { type: 'string', default: '' },
+      'server-version': { type: 'string', default: '' },
       'publish-plugin-sdk': { type: 'string', default: 'false' },
       'publish-sdk': { type: 'string', default: 'false' },
       'publish-channels-protocol': { type: 'string', default: 'false' },
@@ -182,6 +206,14 @@ function main() {
   };
   const repoRoot = process.cwd();
   const serverRunnerDir = String(values['server-runner-dir'] ?? '').trim() || 'packages/relay-server';
+  const { allocationRequested, reusedVersions } = resolveNpmVersionSources({
+    requested,
+    suppliedVersions: {
+      cli: String(values['cli-version'] ?? ''),
+      stack: String(values['stack-version'] ?? ''),
+      server: String(values['server-version'] ?? ''),
+    },
+  });
   // Versions already admitted by the release plan are consumed as-is; only the
   // remaining selections allocate from published release state. A supplied
   // version that is no longer valid refuses downstream at the rolling
@@ -194,14 +226,18 @@ function main() {
   let versions;
   if (channel === 'preview') {
     versions = readPreviewVersions(repoRoot, {
-      ...requested,
+      ...allocationRequested,
       pluginSdk: requested.pluginSdk && !admittedVersions.pluginSdk,
       sdk: requested.sdk && !admittedVersions.sdk,
     }, serverRunnerDir);
+    Object.assign(versions, reusedVersions);
     if (requested.pluginSdk && admittedVersions.pluginSdk) versions.pluginSdk = admittedVersions.pluginSdk;
     if (requested.sdk && admittedVersions.sdk) versions.sdk = admittedVersions.sdk;
   } else {
-    versions = readProductionVersions(repoRoot, requested, serverRunnerDir);
+    versions = {
+      ...readProductionVersions(repoRoot, allocationRequested, serverRunnerDir),
+      ...reusedVersions,
+    };
     if (requested.pluginSdk && admittedVersions.pluginSdk && versions.pluginSdk !== admittedVersions.pluginSdk) {
       throw new Error(
         `npm release metadata refused the admitted plugin SDK version ${admittedVersions.pluginSdk};`

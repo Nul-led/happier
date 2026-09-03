@@ -220,7 +220,7 @@ describe('workspace sync target authority', () => {
       expect(result).toMatchObject({
         type: 'approval_required',
         approval: {
-          consequence: 'replace_nonempty_workspace_target',
+          consequences: ['replace_nonempty_workspace_target'],
           serverId: 'server-1',
           machineId: 'machine-b',
           canonicalRoot: await realpath(betaRoot),
@@ -239,6 +239,64 @@ describe('workspace sync target authority', () => {
       await rm(fixture, { recursive: true, force: true });
     }
   });
+  it('asks exactly once for every destructive consequence the handoff target decision carries', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-target-consequences-'));
+    const alphaRoot = join(fixture, 'alpha');
+    const emptyRoot = join(fixture, 'empty');
+    const missingRoot = join(fixture, 'missing');
+    const filledRoot = join(fixture, 'filled');
+    await Promise.all([mkdir(alphaRoot), mkdir(emptyRoot), mkdir(filledRoot)]);
+    await writeFile(join(filledRoot, 'existing.txt'), 'preserve');
+    const harness = createAuthorityHarness({
+      getSettingsSnapshot: () => snapshot(alphaRoot, filledRoot),
+    });
+    const preflight = async (targetPath: string, activatesExactMirror: boolean) => (
+      await harness.authority.preflightHandoffTargetReplacementHere({
+        v: 1,
+        serverId: 'server-1',
+        machineId: 'machine-b',
+        operationId: 'handoff-action-1',
+        targetPath,
+        ...(activatesExactMirror ? { activatesExactMirror: true } : {}),
+      })
+    );
+    try {
+      // Nothing to lose and no deletion semantics: no approval at all.
+      expect(await preflight(missingRoot, false)).toEqual({ type: 'not_required' });
+      expect(await preflight(emptyRoot, false)).toEqual({ type: 'not_required' });
+
+      // Exact mirroring authorizes future target-only deletion even when the
+      // destination is missing or empty today.
+      expect(await preflight(missingRoot, true)).toMatchObject({
+        type: 'approval_required',
+        approval: { consequences: ['delete_target_only_files_during_exact_mirror'] },
+      });
+      expect(await preflight(emptyRoot, true)).toMatchObject({
+        type: 'approval_required',
+        approval: {
+          consequences: ['delete_target_only_files_during_exact_mirror'],
+          canonicalRoot: await realpath(emptyRoot),
+        },
+      });
+
+      // Both consequences apply to one destination decision, so they are bound
+      // to one proof rather than two prompts.
+      expect(await preflight(filledRoot, true)).toMatchObject({
+        type: 'approval_required',
+        approval: {
+          consequences: [
+            'replace_nonempty_workspace_target',
+            'delete_target_only_files_during_exact_mirror',
+          ],
+          canonicalRoot: await realpath(filledRoot),
+        },
+      });
+    } finally {
+      await harness.cleanup();
+      await rm(fixture, { recursive: true, force: true });
+    }
+  });
+
   it('keeps destructive materialization custody until the release outcome is known', async () => {
     const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-authority-custody-'));
     const alphaRoot = join(fixture, 'alpha');
@@ -1091,7 +1149,15 @@ describe('workspace sync target bootstrap authority', () => {
         sourceMachineId: 'machine-a',
         targetMachineId: 'machine-b',
       });
-      await harness.authority.releaseAllRetainedBootstraps();
+      const partialCapabilityClient = connect({ host: '127.0.0.1', port: pendingIngress.port });
+      await once(partialCapabilityClient, 'connect');
+      const partialCapabilityClosed = new Promise<void>((resolve) => {
+        partialCapabilityClient.once('close', () => resolve());
+      });
+      partialCapabilityClient.on('error', () => undefined);
+      partialCapabilityClient.write('0');
+      await expect(harness.authority.releaseAllRetainedBootstraps()).resolves.toBeUndefined();
+      await expect(partialCapabilityClosed).resolves.toBeUndefined();
       expect(rootedAgents[1]?.destroyed).toBe(true);
       const rejectedClient = connect({ host: '127.0.0.1', port: pendingIngress.port });
       await expect(once(rejectedClient, 'error')).resolves.toBeDefined();

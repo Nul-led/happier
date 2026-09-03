@@ -18,7 +18,6 @@ pub(crate) struct IrohTunnelLimits {
 pub enum IrohCapProfile {
     HomeInteractive,
     MachineBulk,
-    WorkspaceSync,
 }
 
 impl IrohCapProfile {
@@ -36,14 +35,6 @@ impl IrohCapProfile {
                 stream_receive_window: 8 * 1024 * 1024,
                 idle_timeout_ms: Some(10 * 60 * 1000),
             },
-            Self::WorkspaceSync => IrohTunnelLimits {
-                max_streams: 8,
-                receive_window: 32 * 1024 * 1024,
-                stream_receive_window: 8 * 1024 * 1024,
-                // The profile keep-alive is owned by iroh's own heartbeat
-                // defaults; the plan table's 30s keepalive maps onto it.
-                idle_timeout_ms: Some(10 * 60 * 1000),
-            },
         }
     }
 
@@ -51,7 +42,7 @@ impl IrohCapProfile {
     /// receive-window caps at the actual connection boundary. This is the real
     /// enforcement point: peers cannot open more streams or exceed these
     /// windows regardless of what any caller-side counter says.
-    pub(crate) fn transport_config(self) -> Result<iroh::endpoint::QuicTransportConfig> {
+    pub fn transport_config(self) -> Result<iroh::endpoint::QuicTransportConfig> {
         let limits = self.limits();
         let mut builder = iroh::endpoint::QuicTransportConfig::builder()
             .max_concurrent_bidi_streams(iroh::endpoint::VarInt::from(
@@ -84,7 +75,6 @@ impl IrohCapProfile {
         match self {
             Self::HomeInteractive => "homeInteractive",
             Self::MachineBulk => "machineBulk",
-            Self::WorkspaceSync => "workspaceSync",
         }
     }
 
@@ -92,7 +82,6 @@ impl IrohCapProfile {
         match value {
             "homeInteractive" => Ok(Self::HomeInteractive),
             "machineBulk" => Ok(Self::MachineBulk),
-            "workspaceSync" => Ok(Self::WorkspaceSync),
             _ => Err(IrohError::ResourceLimit),
         }
     }
@@ -117,20 +106,16 @@ mod tests {
     }
 
     #[test]
-    fn machine_and_workspace_profiles_enforce_distinct_transport_bounds() {
+    fn machine_bulk_is_the_only_machine_transport_profile() {
         let machine = IrohCapProfile::MachineBulk.limits();
         assert_eq!(machine.max_streams, 32);
         assert_eq!(machine.receive_window, 64 * 1024 * 1024);
         assert_eq!(machine.stream_receive_window, 8 * 1024 * 1024);
         assert_eq!(machine.idle_timeout_ms, Some(10 * 60 * 1000));
 
-        let sync = IrohCapProfile::WorkspaceSync.limits();
-        assert_eq!(sync.max_streams, 8);
-        assert_eq!(sync.receive_window, 32 * 1024 * 1024);
-        assert_eq!(sync.stream_receive_window, 8 * 1024 * 1024);
-        assert_eq!(sync.idle_timeout_ms, Some(10 * 60 * 1000));
-
         assert!(IrohCapProfile::parse("homeInteractive").is_ok());
+        assert!(IrohCapProfile::parse("machineBulk").is_ok());
+        assert!(IrohCapProfile::parse("workspaceSync").is_err());
         assert_eq!(IrohCapProfile::HomeInteractive.id(), "homeInteractive");
         assert!(IrohCapProfile::parse("unlimited").is_err());
     }

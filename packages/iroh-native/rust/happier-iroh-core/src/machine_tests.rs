@@ -1,8 +1,8 @@
 use crate::{
     EndpointConfig, HomeAcceptor, HomeAcceptorConfig, HomeTunnel, HomeTunnelConfig, IrohCapProfile,
-    IrohEndpoint, MachineAcceptor, MachineAcceptorConfig, MachineHttpTunnel, MachineTunnel, MachineTunnelConfig,
-    RelayPolicy, IROH_MACHINE_APPLICATION_CAPABILITY_HEADER, IROH_MACHINE_APPLICATION_PORT_HEADER,
-    IROH_MACHINE_HTTP_LOCAL_CAPABILITY_HEADER,
+    IrohEndpoint, MachineAcceptor, MachineAcceptorConfig, MachineHttpTunnel, MachineTunnel,
+    MachineTunnelConfig, RelayPolicy, IROH_MACHINE_APPLICATION_CAPABILITY_HEADER,
+    IROH_MACHINE_APPLICATION_PORT_HEADER, IROH_MACHINE_HTTP_LOCAL_CAPABILITY_HEADER,
 };
 use std::collections::VecDeque;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -373,12 +373,18 @@ async fn machine_http_tunnel_requires_capability_before_opening_a_machine_stream
         .write_all(b"GET /probe HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
         .await
         .expect("write unauthenticated request");
-    unauthorized.shutdown().await.expect("shutdown unauthenticated request");
-    let mut rejected = Vec::new();
-    tokio::time::timeout(Duration::from_secs(2), unauthorized.read_to_end(&mut rejected))
+    unauthorized
+        .shutdown()
         .await
-        .expect("unauthenticated listener close")
-        .expect("read unauthenticated close");
+        .expect("shutdown unauthenticated request");
+    let mut rejected = Vec::new();
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        unauthorized.read_to_end(&mut rejected),
+    )
+    .await
+    .expect("unauthenticated listener close")
+    .expect("read unauthenticated close");
     assert!(rejected.is_empty());
     assert_eq!(admission_contacts.load(Ordering::Relaxed), 0);
     assert_eq!(app_contacts.load(Ordering::Relaxed), 0);
@@ -397,12 +403,18 @@ async fn machine_http_tunnel_requires_capability_before_opening_a_machine_stream
         )
         .await
         .expect("write wrong-capability request");
-    wrong.shutdown().await.expect("shutdown wrong-capability request");
-    let mut wrong_rejected = Vec::new();
-    tokio::time::timeout(Duration::from_secs(2), wrong.read_to_end(&mut wrong_rejected))
+    wrong
+        .shutdown()
         .await
-        .expect("wrong-capability listener close")
-        .expect("read wrong-capability close");
+        .expect("shutdown wrong-capability request");
+    let mut wrong_rejected = Vec::new();
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        wrong.read_to_end(&mut wrong_rejected),
+    )
+    .await
+    .expect("wrong-capability listener close")
+    .expect("read wrong-capability close");
     assert!(wrong_rejected.is_empty());
     assert_eq!(admission_contacts.load(Ordering::Relaxed), 0);
     assert_eq!(app_contacts.load(Ordering::Relaxed), 0);
@@ -420,11 +432,7 @@ async fn machine_http_tunnel_requires_capability_before_opening_a_machine_stream
     .await;
     assert_eq!(
         echoed,
-        [
-            b"app-reply:".as_slice(),
-            forwarded_request.as_bytes(),
-        ]
-        .concat()
+        [b"app-reply:".as_slice(), forwarded_request.as_bytes(),].concat()
     );
     assert_eq!(admission_contacts.load(Ordering::Relaxed), 1);
     assert_eq!(app_contacts.load(Ordering::Relaxed), 1);
@@ -493,7 +501,7 @@ async fn machine_acceptor_presents_and_strips_the_admission_selected_local_capab
             direct_addresses: vec![direct_addr(&server).await],
             relay_urls: vec![],
             handshake_json: r#"{"v":1,"operationId":"target-local-capability"}"#.to_owned(),
-            cap_profile: IrohCapProfile::WorkspaceSync,
+            cap_profile: IrohCapProfile::MachineBulk,
         },
     )
     .await
@@ -585,7 +593,7 @@ async fn machine_admission_keeps_request_write_half_open_for_async_node_response
             direct_addresses: vec![direct_addr(&server).await],
             relay_urls: vec![],
             handshake_json: r#"{"v":1,"operationId":"node-async-op"}"#.to_owned(),
-            cap_profile: IrohCapProfile::WorkspaceSync,
+            cap_profile: IrohCapProfile::MachineBulk,
         },
     )
     .await
@@ -1100,8 +1108,9 @@ async fn workspace_sync_accepts_exactly_one_local_socket_for_one_grant() {
             bind_addr: "127.0.0.1:0".parse().unwrap(),
             direct_addresses: vec![direct_addr(&server).await],
             relay_urls: vec![],
-            handshake_json: r#"{"v":1,"operationId":"workspace"}"#.to_owned(),
-            cap_profile: IrohCapProfile::WorkspaceSync,
+            handshake_json: r#"{"v":1,"flow":"workspace_sync","operationId":"workspace"}"#
+                .to_owned(),
+            cap_profile: IrohCapProfile::MachineBulk,
         },
     )
     .await
@@ -1122,4 +1131,60 @@ async fn workspace_sync_accepts_exactly_one_local_socket_for_one_grant() {
     drop(admission_listener);
     tunnel.stop();
     acceptor.stop();
+}
+
+/// An admitted machine connection that never opens an application stream is
+/// released after the same bounded pre-application custody window. Nothing
+/// reaches the admission endpoint, because no stream ever existed to carry a
+/// handshake.
+#[tokio::test]
+async fn an_admitted_machine_connection_that_opens_no_stream_drains_after_the_custody_window() {
+    let admission_contacts = Arc::new(AtomicUsize::new(0));
+    let admission_target = echo_server(Arc::clone(&admission_contacts)).await;
+    let server = endpoint(IrohCapProfile::MachineBulk).await;
+    let server_addr = direct_addr(&server).await;
+    let acceptor = MachineAcceptor::start(&server, MachineAcceptorConfig { admission_target })
+        .expect("machine acceptor");
+    let client = endpoint(IrohCapProfile::MachineBulk).await;
+
+    let connection = client
+        .endpoint()
+        .connect(
+            iroh::EndpointAddr::new(server.id()).with_ip_addr(server_addr),
+            crate::MACHINE_ALPN,
+        )
+        .await
+        .expect("machine dial connects");
+
+    let mut admitted = false;
+    for _ in 0..200 {
+        if acceptor.status().connections_active == 1 {
+            admitted = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(
+        admitted,
+        "the connection must be admitted before the custody window is measured"
+    );
+
+    // The peer never opens a bidirectional application stream.
+    tokio::time::timeout(
+        crate::endpoint::PRE_APPLICATION_CUSTODY_TIMEOUT + Duration::from_secs(5),
+        connection.closed(),
+    )
+    .await
+    .expect("a machine connection that opens no application stream must be released");
+
+    assert_eq!(
+        admission_contacts.load(Ordering::Relaxed),
+        0,
+        "a connection without a first stream must never reach admission"
+    );
+    assert_eq!(acceptor.status().streams_accepted, 0);
+
+    acceptor.stop();
+    client.shutdown().await;
+    server.shutdown().await;
 }

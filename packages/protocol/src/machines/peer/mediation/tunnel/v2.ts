@@ -23,19 +23,35 @@ export const PeerTcpTunnelBinaryFrameHeaderV2Schema = z
   .strict();
 export type PeerTcpTunnelBinaryFrameHeaderV2 = z.infer<typeof PeerTcpTunnelBinaryFrameHeaderV2Schema>;
 
+/**
+ * Header admission failures. Shared by the header-only routing decode and the full frame
+ * decode so a streaming consumer and an admitting consumer cannot disagree about which
+ * prefixes are valid V2 headers.
+ */
+export type PeerTcpTunnelBinaryFrameHeaderDecodeFailureReasonV2 =
+  | 'frame_too_short'
+  | 'header_too_large'
+  | 'header_truncated'
+  | 'header_json_invalid'
+  | 'header_invalid';
+
+export type PeerTcpTunnelBinaryFrameDecodeFailureReasonV2 =
+  | PeerTcpTunnelBinaryFrameHeaderDecodeFailureReasonV2
+  | 'payload_too_large'
+  | 'payload_length_mismatch';
+
+export type DecodePeerTcpTunnelBinaryFrameHeaderV2Result =
+  | Readonly<{
+      ok: true;
+      header: PeerTcpTunnelBinaryFrameHeaderV2;
+      /** Byte offset at which the declared payload begins, so routing never buffers it. */
+      payloadOffset: number;
+    }>
+  | Readonly<{ ok: false; reasonCode: PeerTcpTunnelBinaryFrameHeaderDecodeFailureReasonV2 }>;
+
 export type DecodePeerTcpTunnelBinaryFrameV2Result =
   | Readonly<{ ok: true; header: PeerTcpTunnelBinaryFrameHeaderV2; payload: Uint8Array }>
-  | Readonly<{
-      ok: false;
-      reasonCode:
-        | 'frame_too_short'
-        | 'header_too_large'
-        | 'header_truncated'
-        | 'header_json_invalid'
-        | 'header_invalid'
-        | 'payload_too_large'
-        | 'payload_length_mismatch';
-    }>;
+  | Readonly<{ ok: false; reasonCode: PeerTcpTunnelBinaryFrameDecodeFailureReasonV2 }>;
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
@@ -53,11 +69,15 @@ export function encodePeerTcpTunnelBinaryFrameV2(input: Readonly<{
   return output;
 }
 
-export function decodePeerTcpTunnelBinaryFrameV2(input: Readonly<{
+/**
+ * Recovers only the strict, size-bounded header that selects the owning tunnel or substream.
+ * Streaming consumers route on this prefix; payload admission stays with the owning session,
+ * which re-decodes the complete frame through `decodePeerTcpTunnelBinaryFrameV2`.
+ */
+export function decodePeerTcpTunnelBinaryFrameHeaderV2(input: Readonly<{
   frame: Uint8Array;
   maxHeaderBytes: number;
-  maxPayloadBytes: number;
-}>): DecodePeerTcpTunnelBinaryFrameV2Result {
+}>): DecodePeerTcpTunnelBinaryFrameHeaderV2Result {
   if (input.frame.byteLength < 4) return { ok: false, reasonCode: 'frame_too_short' };
 
   const view = new DataView(input.frame.buffer, input.frame.byteOffset, input.frame.byteLength);
@@ -74,15 +94,26 @@ export function decodePeerTcpTunnelBinaryFrameV2(input: Readonly<{
   const parsedHeader = PeerTcpTunnelBinaryFrameHeaderV2Schema.safeParse(headerJson);
   if (!parsedHeader.success) return { ok: false, reasonCode: 'header_invalid' };
 
-  const payload = input.frame.subarray(4 + headerLength);
+  return { ok: true, header: parsedHeader.data, payloadOffset: 4 + headerLength };
+}
+
+export function decodePeerTcpTunnelBinaryFrameV2(input: Readonly<{
+  frame: Uint8Array;
+  maxHeaderBytes: number;
+  maxPayloadBytes: number;
+}>): DecodePeerTcpTunnelBinaryFrameV2Result {
+  const decodedHeader = decodePeerTcpTunnelBinaryFrameHeaderV2(input);
+  if (!decodedHeader.ok) return decodedHeader;
+
+  const payload = input.frame.subarray(decodedHeader.payloadOffset);
   if (payload.byteLength > input.maxPayloadBytes) return { ok: false, reasonCode: 'payload_too_large' };
-  if (payload.byteLength !== parsedHeader.data.payloadLength) {
+  if (payload.byteLength !== decodedHeader.header.payloadLength) {
     return { ok: false, reasonCode: 'payload_length_mismatch' };
   }
 
   return {
     ok: true,
-    header: parsedHeader.data,
+    header: decodedHeader.header,
     payload,
   };
 }

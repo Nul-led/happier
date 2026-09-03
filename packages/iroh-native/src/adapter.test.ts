@@ -160,6 +160,90 @@ describe('Iroh native lifecycle adapter', () => {
     expect(native.releaseHomeTunnel).toHaveBeenCalledWith('l1');
   });
 
+  it('retains custody of a mismatched lease whose immediate release failed and retries it at the next release boundary', async () => {
+    const releaseHomeTunnel = vi.fn(async (leaseId: string) => {
+      if (leaseId === 'l1' && releaseHomeTunnel.mock.calls.length === 1) {
+        throw new Error('native release failed');
+      }
+    });
+    const native = nativeHarness({
+      ensureHomeTunnel: vi.fn()
+        .mockResolvedValueOnce({ ...LEASE_BASE, homeServerIdentityId: 'srv_home_b' })
+        .mockResolvedValueOnce({ ...LEASE_BASE, leaseId: 'l2' }),
+      releaseHomeTunnel,
+    });
+    vi.useFakeTimers();
+    try {
+      const adapter = createIrohNativeAdapter(native, { statusPollIntervalMs: 100 });
+
+      await expect(adapter.ensureHomeTunnel({ homeServerIdentityId: 'srv_home_a', endpointId: 'endpoint-a', policy: 'automatic' }))
+        .rejects.toMatchObject({ code: 'identity_mismatch' });
+      expect(releaseHomeTunnel).toHaveBeenCalledTimes(1);
+      // The retained lease is never adopted: it never becomes an observable
+      // lease, so no consumer can subscribe to or use it for any Home.
+      adapter.subscribeEvents('l1', () => undefined);
+      await vi.advanceTimersByTimeAsync(300);
+      expect(native.getTunnelStatus).not.toHaveBeenCalled();
+
+      const lease = await adapter.ensureHomeTunnel({ homeServerIdentityId: 'srv_home_a', endpointId: 'endpoint-a', policy: 'automatic' });
+      expect(lease.leaseId).toBe('l2');
+      await adapter.releaseHomeTunnel('l2');
+
+      expect(releaseHomeTunnel.mock.calls.map(([id]) => id)).toEqual(['l1', 'l2', 'l1']);
+
+      // Idempotent: once the retained release succeeds it is dropped, so a
+      // later terminal boundary does not release the same native lease again.
+      await adapter.dispose();
+      expect(releaseHomeTunnel.mock.calls.map(([id]) => id)).toEqual(['l1', 'l2', 'l1']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps retained custody across a failing dispose and retries it at the next dispose', async () => {
+    const releaseHomeTunnel = vi.fn(async (leaseId: string) => {
+      if (leaseId === 'l1' && releaseHomeTunnel.mock.calls.length <= 2) {
+        throw new Error('native release failed');
+      }
+    });
+    const native = nativeHarness({
+      ensureHomeTunnel: vi.fn(async () => ({ ...LEASE_BASE, homeEndpointId: 'endpoint-stale' })),
+      releaseHomeTunnel,
+    });
+    const adapter = createIrohNativeAdapter(native);
+
+    await expect(adapter.ensureHomeTunnel({ homeServerIdentityId: 'srv_home_a', endpointId: 'endpoint-a', policy: 'automatic' }))
+      .rejects.toMatchObject({ code: 'identity_mismatch' });
+
+    // Disposal is terminal: an unreleased native lease is reported so the
+    // caller keeps this adapter owned instead of orphaning native custody.
+    await expect(adapter.dispose()).rejects.toThrow('native release failed');
+    await adapter.dispose();
+    expect(releaseHomeTunnel.mock.calls.map(([id]) => id)).toEqual(['l1', 'l1', 'l1']);
+  });
+
+  it('releases owned leases and stops polling at dispose', async () => {
+    vi.useFakeTimers();
+    try {
+      const native = nativeHarness();
+      const adapter = createIrohNativeAdapter(native, { statusPollIntervalMs: 100 });
+      const lease = await adapter.ensureHomeTunnel({
+        homeServerIdentityId: 'srv_home_a', endpointId: 'endpoint-a', policy: 'automatic',
+      });
+      adapter.subscribeEvents(lease.leaseId, () => undefined);
+      await vi.advanceTimersByTimeAsync(100);
+      const pollsBeforeDispose = native.getTunnelStatus.mock.calls.length;
+
+      await adapter.dispose();
+      await vi.advanceTimersByTimeAsync(300);
+
+      expect(native.releaseHomeTunnel).toHaveBeenCalledWith('l1');
+      expect(native.getTunnelStatus).toHaveBeenCalledTimes(pollsBeforeDispose);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('exposes the typed identity-mismatch failure code', () => {
     expect(new IrohError('identity_mismatch', 'test').code).toBe('identity_mismatch');
   });
@@ -203,12 +287,12 @@ describe('Iroh native lifecycle adapter', () => {
     }
   });
 
-  it('stops polling before native release and reports status failures as typed transport facts', async () => {
+  it('reports a transient status failure and continues observing the same owned lease', async () => {
     vi.useFakeTimers();
     try {
-      const getTunnelStatus = vi.fn(async () => {
-        throw Object.assign(new Error('peer disconnected'), { code: 'transport_closed' });
-      });
+      const getTunnelStatus = vi.fn()
+        .mockRejectedValueOnce(Object.assign(new Error('status read failed'), { code: 'unknown' }))
+        .mockResolvedValueOnce({ active: true, connectionActive: true, observedPath: 'direct' });
       const native = nativeHarness({ getTunnelStatus });
       const adapter = createIrohNativeAdapter(native, { statusPollIntervalMs: 100 });
       const lease = await adapter.ensureHomeTunnel({
@@ -219,14 +303,15 @@ describe('Iroh native lifecycle adapter', () => {
       const events: unknown[] = [];
       adapter.subscribeEvents(lease.leaseId, (event) => events.push(event));
 
-      await vi.advanceTimersByTimeAsync(100);
+      await vi.advanceTimersByTimeAsync(200);
       expect(events).toEqual([
-        expect.objectContaining({ type: 'error', tunnelHandle: 'l1', status: 'error', errorCode: 'transport_closed' }),
+        expect.objectContaining({ type: 'error', tunnelHandle: 'l1', status: 'error', errorCode: 'unknown' }),
+        expect.objectContaining({ type: 'ready', tunnelHandle: 'l1', status: 'ready', observedPath: 'direct' }),
       ]);
 
       await adapter.releaseHomeTunnel(lease.leaseId);
       await vi.advanceTimersByTimeAsync(300);
-      expect(getTunnelStatus).toHaveBeenCalledTimes(1);
+      expect(getTunnelStatus).toHaveBeenCalledTimes(2);
       expect(native.releaseHomeTunnel).toHaveBeenCalledWith('l1');
     } finally {
       vi.useRealTimers();

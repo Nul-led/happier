@@ -354,7 +354,7 @@ export const PROTOCOL_WIRE_COMPATIBILITY_INVENTORY: readonly ProtocolWireCompati
       'apps/cli/src/rpc/handlers/spawnRuntimeSelection.ts',
       'apps/cli/src/daemon/processSupervision/sessionRunnerRespawnDescriptor.ts',
       'apps/ui/sources/sync/domains/state/storageTypes.ts',
-      'apps/ui/sources/sync/ops/sessionHandoffs.ts',
+      'apps/ui/sources/sync/ops/buildSessionHandoffMetadataPatch.ts',
     ],
     proofTests: [
       'packages/protocol/src/backends/targets/backendTargetRefV2.test.ts',
@@ -368,7 +368,7 @@ export const PROTOCOL_WIRE_COMPATIBILITY_INVENTORY: readonly ProtocolWireCompati
       'apps/cli/src/rpc/handlers/spawnSessionOptionsContract.test.ts',
       'apps/cli/src/daemon/processSupervision/sessionRunnerRespawnDescriptor.test.ts',
       'apps/ui/sources/sync/domains/state/storageTypes.terminal.test.ts',
-      'apps/ui/sources/sync/ops/sessionHandoffs.test.ts',
+      'apps/ui/sources/sync/ops/buildSessionHandoffMetadataPatch.test.ts',
     ],
   },
   {
@@ -419,7 +419,7 @@ export const PROTOCOL_WIRE_COMPATIBILITY_INVENTORY: readonly ProtocolWireCompati
     proofTests: [
       'packages/protocol/src/plugins/sourceSpecV1.test.ts',
       'packages/protocol/src/plugins/hooks/catalog.test.ts',
-      'packages/protocol/src/plugins/hooks/compatibilityReaders.test.ts',
+      'packages/protocol/src/plugins/hooks/eventEnvelopeV1.test.ts',
       'packages/protocol/src/plugins/manifest/v2.test.ts',
       'packages/protocol/src/hooks/hookExecutionSemantics.test.ts',
       'packages/protocol/src/hooks/bridgeLifecycleHookCatalog.test.ts',

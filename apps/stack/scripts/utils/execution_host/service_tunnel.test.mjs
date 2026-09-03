@@ -551,6 +551,52 @@ test('service tunnel readiness waits for a declared remote Expo service to finis
   assert.deepEqual(result.forwards.map(({ service }) => service), ['server', 'expo']);
 });
 
+test('service tunnel readiness keeps waiting when the initial Expo projection names a target not published yet', async (t) => {
+  const fixture = await createTempFixture(t, { prefix: 'execution-host-service-tunnel-initial-remote-expo-' });
+  const env = { HAPPIER_STACK_HOME_DIR: fixture.path('home') };
+  const initialProjection = [
+    'stackName=repo-dev-1234567890',
+    'serverPort=52753',
+    'expoPort=18829',
+    JSON.stringify({
+      stackName: 'repo-dev-1234567890',
+      ports: { server: 52753 },
+      expo: {
+        port: 18829,
+        webPort: 18829,
+        mobilePort: 18829,
+        webEnabled: true,
+        devClientEnabled: true,
+        remoteTarget: 'mac-host',
+      },
+    }),
+  ].join('\n');
+  const readyProjection = runtimeProjection({ expoPort: 18829 });
+  const executor = {
+    calls: 0,
+    async capture() {
+      this.calls += 1;
+      return { exitCode: 0, out: this.calls === 1 ? initialProjection : readyProjection, err: '' };
+    },
+  };
+  const boundary = tunnelBoundary({
+    listenerPids: (port, spawned) => spawned.length > 0 && (port === 52753 || port === 18829) ? [731] : [],
+  });
+
+  const result = await waitForExecutionHostServiceTunnel({
+    profile: profile(fixture.path('lima')),
+    workspaceId: '0.3',
+    stackName: 'repo-dev-1234567890',
+    executor,
+    env,
+    boundary,
+  });
+
+  assert.equal(result.status, 'running');
+  assert.equal(executor.calls, 2);
+  assert.deepEqual(result.forwards.map(({ service }) => service), ['server', 'expo-web']);
+});
+
 test('service tunnel supervision replaces one transiently exited owned SSH transport and stops on cancellation', async (t) => {
   const fixture = await createTempFixture(t, { prefix: 'execution-host-service-tunnel-supervision-' });
   const env = { HAPPIER_STACK_HOME_DIR: fixture.path('home') };

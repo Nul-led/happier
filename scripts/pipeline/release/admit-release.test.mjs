@@ -15,7 +15,7 @@ const base = {
   publishServerRuntimeNeeded: true,
   publishCliBinariesNeeded: true,
   risks: { mysqlContract: false, platformServices: false, trustRoots: false },
-  gates: { mysql: 'skipped', platform: 'skipped', trustRoots: 'skipped' },
+  gates: { mysql: 'skipped', platform: 'skipped', trustRoots: 'skipped', mutagenEngine: 'success' },
 };
 
 test('admits a preview when no heavy risk gate applies', () => {
@@ -34,6 +34,14 @@ test('requires full checks for production and successful selected risk gates', (
     risks: { ...base.risks, trustRoots: true },
     gates: { ...base.gates, trustRoots: 'skipped' },
   }), /trust validation/);
+  assert.throws(() => admitRelease({
+    ...base,
+    gates: { ...base.gates, mutagenEngine: 'failure' },
+  }), /Mutagen engine release gate/);
+  assert.throws(() => admitRelease({
+    ...base,
+    gates: { mysql: 'skipped', platform: 'skipped', trustRoots: 'skipped' },
+  }), /Mutagen engine release gate/);
 });
 
 test('public SDK publication retains first-publication and breaking-change approval', () => {

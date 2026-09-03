@@ -198,6 +198,51 @@ test('stopped-stack restart consumes parent preflight marker before spawn and pr
   });
 });
 
+test('dev server startup gives the spawned server the stack-owned canonical origin, not the public ingress', async (t) => {
+  await withTempServerDir(t, async (serverDir) => {
+    let spawnedEnv;
+
+    await startDevServer(
+      {
+        serverComponentName: 'happier-server',
+        serverDir,
+        autostart: { stackName: 'agent-qa', baseDir: serverDir },
+        baseEnv: {
+          HAPPIER_STACK_MANAGED_INFRA: '0',
+          HAPPIER_STACK_PRISMA_MIGRATE: '0',
+        },
+        serverPort: 34567,
+        internalServerUrl: 'http://127.0.0.1:34567',
+        canonicalServerUrl: 'http://happier-agent-qa.localhost:34567',
+        publicServerUrl: 'https://relay.example.test',
+        envPath: join(serverDir, 'env'),
+        stackMode: true,
+        runtimeStatePath: join(serverDir, 'stack.runtime.json'),
+        serverAlreadyRunning: false,
+        restart: false,
+        children: [],
+        quiet: true,
+      },
+      {
+        ensureDepsInstalledImpl: async () => {},
+        ensureSourceServerWorkspacePackagesBuiltImpl: async () => {},
+        preflightDevServerRestartImpl: async () => ({ ran: false, reason: 'disabled' }),
+        stopStackOwnedServerForRestartImpl: async () => {},
+        pmSpawnScriptImpl: async ({ env }) => {
+          spawnedEnv = env;
+          return { pid: 2001, exitCode: null };
+        },
+        waitForServerReadyImpl: async () => {},
+        assertServerPortOwnedBySpawnedProcessGroupImpl: async () => 3001,
+        recordStackRuntimeServerActivationImpl: async () => {},
+      },
+    );
+
+    assert.equal(spawnedEnv.HAPPIER_CANONICAL_SERVER_URL, 'http://happier-agent-qa.localhost:34567');
+    assert.equal(spawnedEnv.HAPPIER_PUBLIC_SERVER_URL, 'https://relay.example.test');
+  });
+});
+
 test('disabled stopped-stack restart consumes the parent preflight marker from child and orchestration environments', async (t) => {
   await withTempServerDir(t, async (serverDir) => {
     const baseEnv = {

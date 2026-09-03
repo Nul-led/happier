@@ -1796,6 +1796,11 @@ test('remote Expo ownership does not launch a competing local workspace publicat
       'remote service output must be retained locally for borrowed-stack TUI panes',
     );
     assert.equal(worker?.env?.HAPPIER_STACK_LOG_TEE_TIMESTAMPS, '1');
+    assert.match(
+      worker?.args.at(-1) ?? '',
+      /HAPPIER_STACK_EXPO_PUBLIC_PORT=18081/,
+      'the target must publish the stable outer port while resolving its own reachable host',
+    );
     assert.doesNotMatch(
       worker?.args.at(-1) ?? '',
       /EXPO_PACKAGER_PROXY_URL=|192\.168\.5\.15/,

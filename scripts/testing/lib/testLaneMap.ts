@@ -23,8 +23,6 @@ export type LaneId =
   | 'test:e2e:core:fast'
   | 'test:e2e:core:slow'
   | 'test:e2e:ui'
-  | 'test:e2e:ui:wsrepl:lima'
-  | 'test:e2e:ui:wsrepl:lima:self'
   | 'test:e2e:mobile'
   | 'test:agents'
   | 'test:stress'
@@ -59,7 +57,13 @@ export const TEST_LANE_DEFINITIONS: readonly TestLaneDefinition[] = Object.freez
   { id: 'workspace:test', category: 'unit', rootScriptName: null, rootCommand: null, packageLocalOnly: true },
   { id: 'test:integration', category: 'integration', rootScriptName: 'test:integration', rootCommand: 'yarn test:integration', packageLocalOnly: false },
   { id: 'test:home-iroh:real', category: 'integration', rootScriptName: null, rootCommand: null, packageLocalOnly: true },
-  { id: 'cli:test:workspace-sync:real', category: 'integration', rootScriptName: null, rootCommand: null, packageLocalOnly: true },
+  {
+    id: 'cli:test:workspace-sync:real',
+    category: 'integration',
+    rootScriptName: 'test:workspace-sync:real',
+    rootCommand: 'yarn test:workspace-sync:real',
+    packageLocalOnly: false,
+  },
   {
     id: 'test:e2e:desktop:native',
     category: 'e2e',
@@ -92,20 +96,6 @@ export const TEST_LANE_DEFINITIONS: readonly TestLaneDefinition[] = Object.freez
     packageLocalOnly: false,
   },
   { id: 'test:e2e:ui', category: 'e2e', rootScriptName: 'test:e2e:ui', rootCommand: 'yarn test:e2e:ui', packageLocalOnly: false },
-  {
-    id: 'test:e2e:ui:wsrepl:lima',
-    category: 'e2e',
-    rootScriptName: 'test:e2e:ui:wsrepl:lima',
-    rootCommand: 'yarn test:e2e:ui:wsrepl:lima',
-    packageLocalOnly: false,
-  },
-  {
-    id: 'test:e2e:ui:wsrepl:lima:self',
-    category: 'integration',
-    rootScriptName: 'test:e2e:ui:wsrepl:lima:self',
-    rootCommand: 'yarn test:e2e:ui:wsrepl:lima:self',
-    packageLocalOnly: false,
-  },
   { id: 'test:e2e:mobile', category: 'e2e', rootScriptName: 'test:e2e:mobile', rootCommand: 'yarn test:e2e:mobile', packageLocalOnly: false },
   { id: 'test:agents', category: 'provider', rootScriptName: 'test:agents', rootCommand: 'yarn test:agents', packageLocalOnly: false },
   { id: 'test:stress', category: 'stress', rootScriptName: 'test:stress', rootCommand: 'yarn test:stress', packageLocalOnly: false },
@@ -141,6 +131,11 @@ const UI_VITEST_COVERED_RE = /^apps\/ui\/(?:sources|tools)\/.*\.(?:spec|test)\.t
 const CLI_VITEST_COVERED_RE = /^apps\/cli\/(?:src\/.*\.(?:test|spec)\.tsx?|scripts\/.*\.(?:test|spec)\.ts)$/;
 const SERVER_VITEST_COVERED_RE = /^apps\/server\/(?:sources|scripts)\/.*\.(?:test|spec)\.ts$/;
 const CLI_COMMON_VITEST_COVERED_RE = /^packages\/cli-common\/(?:src\/.*\.test\.ts|scripts\/.*\.test\.mjs)$/;
+const CLI_WORKSPACE_SYNC_REAL_TESTS = new Set([
+  'apps/cli/src/workspaces/sync/transport/workspaceSyncBroker.go.real.integration.test.ts',
+  'apps/cli/src/daemon/startup/createDaemonWorkspaceSyncRuntime.real.integration.test.ts',
+  'apps/cli/src/daemon/peer/iroh/workspaceMachineCarrierMutagen.real.integration.test.ts',
+]);
 
 /**
  * Lane assignment for a workspace's own unit tests.
@@ -394,7 +389,7 @@ export function classifyTestFile(context: TestLaneContext, relativePath: string)
     if (relativePath === 'apps/cli/src/daemon/peer/iroh/workspaceMachineCarrierLane08.real.integration.test.ts') {
       return 'test:home-iroh:real';
     }
-    if (relativePath === 'apps/cli/src/daemon/startup/createDaemonWorkspaceSyncRuntime.real.integration.test.ts') {
+    if (CLI_WORKSPACE_SYNC_REAL_TESTS.has(relativePath)) {
       return 'cli:test:workspace-sync:real';
     }
     if (!CLI_VITEST_COVERED_RE.test(relativePath)) {
@@ -442,12 +437,9 @@ export function classifyTestFile(context: TestLaneContext, relativePath: string)
   if (relativePath.startsWith('packages/tests/')) {
     if (relativePath.startsWith('packages/tests/scripts/') && /\.test\.mjs$/.test(relativePath)) {
       // No vitest config includes `scripts/**`, so these files run only where a `node --test`
-      // command names them. The WSREPL Lima self-check lane names two of them; the workspace's own
-      // `test` chain names most of the rest. Classifying the whole directory into the Lima lane
-      // reported every neighbour as gated by a root script that opens neither.
-      if (laneNamesTestFile(context, 'test:e2e:ui:wsrepl:lima:self', relativePath)) {
-        return 'test:e2e:ui:wsrepl:lima:self';
-      }
+      // command names them. The workspace's own `test` chain names most of them; classifying the
+      // whole directory into a bespoke lane reports coverage that opens neither its neighbours nor
+      // any retired harness left outside the active script chain.
       return resolveExplicitlyNamedUnitLane(context, relativePath);
     }
     if (relativePath.startsWith('packages/tests/src/plugin-platform/')) {

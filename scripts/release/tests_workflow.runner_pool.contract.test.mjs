@@ -94,6 +94,7 @@ test('manual test dispatch can opt approved non-secret Linux lanes into Blacksmi
     'shared-packages-unit',
     'plugin-workspaces-unit',
     'server-db-contract',
+    'workspace-sync-real',
     'cli',
     'e2e-core',
     'e2e-core-slow',
@@ -134,5 +135,14 @@ test('manual test dispatch can opt approved non-secret Linux lanes into Blacksmi
   assert.equal(tests.jobs.providers['runs-on'], 'ubuntu-latest');
   assert.equal(tests.jobs['installers-smoke-macos']['runs-on'], 'macos-latest');
   assert.equal(tests.jobs['installers-smoke-windows']['runs-on'], 'windows-latest');
-  assert.deepEqual(tests.jobs['ui-e2e-wsrepl-lima']['runs-on'], ['self-hosted', 'macOS', 'wsrepl-lima']);
+  assert.equal(tests.jobs['ui-e2e-wsrepl-lima'], undefined, 'retired WSREPL must not retain a CI owner');
+  assert.ok(tests.jobs['workspace-sync-real'], 'the real workspace-sync runner must own the replaced CI job');
+  // Its job/invocation/binary/selection/summary wiring is owned by
+  // tests_workflow.workspace_sync_real.contract.test.mjs.
+
+  const serverDbSteps = tests.jobs['server-db-contract'].steps;
+  const schemaSyncIndex = serverDbSteps.findIndex((step) => step.name === 'Check provider schema synchronization');
+  const providerTestIndex = serverDbSteps.findIndex((step) => step.name === 'Run db contract suite (Postgres)');
+  assert.ok(schemaSyncIndex >= 0 && schemaSyncIndex < providerTestIndex);
+  assert.equal(serverDbSteps[schemaSyncIndex].run, 'yarn --cwd apps/server schema:sync:check');
 });

@@ -11,6 +11,7 @@ const packageDir = dirname(dirname(fileURLToPath(import.meta.url)));
 const serverDir = resolve(packageDir, '../../apps/server');
 const cliDir = resolve(packageDir, '../../apps/cli');
 const uiDir = resolve(packageDir, '../../apps/ui');
+const testsDir = resolve(packageDir, '../tests');
 
 export function createHomeIrohRealIntegrationPlan({
   platform = process.platform,
@@ -19,6 +20,7 @@ export function createHomeIrohRealIntegrationPlan({
   serverDir: selectedServerDir = serverDir,
   cliDir: selectedCliDir = cliDir,
   uiDir: selectedUiDir = uiDir,
+  testsDir: selectedTestsDir = testsDir,
 } = {}) {
   const platformPath = platform === 'win32' ? win32 : posix;
   const addonPath = platformPath.join(
@@ -30,6 +32,9 @@ export function createHomeIrohRealIntegrationPlan({
     builds: [
       { args: ['-s', 'build'], cwd: selectedPackageDir },
       { args: ['-s', 'build:native:test-relay'], cwd: selectedPackageDir },
+      // The production-composed process journey must load the ordinary addon
+      // through the package's production loader, not the relay-fixture addon.
+      { args: ['-s', 'build:native'], cwd: selectedPackageDir },
     ],
     tests: {
       server: {
@@ -98,6 +103,23 @@ export function createHomeIrohRealIntegrationPlan({
           HAPPIER_TEST_IROH_NODE_ADDON_PATH: addonPath,
         },
       },
+      composed: {
+        args: [
+          '-s',
+          'test:core',
+          'suites/core-e2e/home.iroh.composedPersonalHome.real.e2e.test.ts',
+        ],
+        cwd: selectedTestsDir,
+        env: {
+          HAPPIER_RUN_HOME_IROH_REAL_INTEGRATION: '1',
+          // The composed journey's *parent test process* owns the one shared
+          // stock test relay through the canonical Iroh test controller, so it
+          // needs the stable fixture addon. The journey strips this path from
+          // every production server/daemon child env; those children load the
+          // ordinary addon through the package's production loader only.
+          HAPPIER_TEST_IROH_NODE_ADDON_PATH: addonPath,
+        },
+      },
     },
   };
 }
@@ -110,31 +132,60 @@ export function runHomeIrohRealIntegration({
   removeDirImpl = rmSync,
 } = {}) {
   const plan = createHomeIrohRealIntegrationPlan();
-  for (const build of plan.builds) {
-    execYarnImpl(build.args, {
-      cwd: build.cwd,
-      env,
-      stdio: 'inherit',
-    });
-  }
   // Remote workspace synchronization deliberately excludes ignored native
-  // build output. Preserve the just-built addon outside that mirror before a
-  // later child invocations can trigger another synchronization cycle.
+  // build output, so preserve the relay fixture outside that mirror. The
+  // ordinary addon is rebuilt only after every fixture journey has consumed
+  // this copy, immediately before the production-loader composed journey.
   const stableDir = makeTempDirImpl(join(tmpdir(), 'happier-iroh-home-test-'));
   try {
-    const stableAddonPath = join(stableDir, 'addon.node');
-    copyFileImpl(plan.tests.server.env.HAPPIER_TEST_IROH_NODE_ADDON_PATH, stableAddonPath);
-    for (const testPlan of Object.values(plan.tests)) {
+    const stableRelayFixtureAddonPath = join(stableDir, 'relay-fixture.node');
+    for (const build of plan.builds.slice(0, 2)) {
+      execYarnImpl(build.args, {
+        cwd: build.cwd,
+        env,
+        stdio: 'inherit',
+      });
+      if (build.args.includes('build:native:test-relay')) {
+        copyFileImpl(
+          plan.tests.server.env.HAPPIER_TEST_IROH_NODE_ADDON_PATH,
+          stableRelayFixtureAddonPath,
+        );
+      }
+    }
+    for (const testPlan of [
+      plan.tests.server,
+      plan.tests.machine,
+      plan.tests.clientMachineDirect,
+      plan.tests.clientMachineRelay,
+    ]) {
       execYarnImpl(testPlan.args, {
         cwd: testPlan.cwd,
         env: {
           ...env,
           ...testPlan.env,
-          HAPPIER_TEST_IROH_NODE_ADDON_PATH: stableAddonPath,
+          HAPPIER_TEST_IROH_NODE_ADDON_PATH: stableRelayFixtureAddonPath,
         },
         stdio: 'inherit',
       });
     }
+    const ordinaryBuild = plan.builds[2];
+    if (!ordinaryBuild) throw new Error('Missing ordinary native addon build step.');
+    execYarnImpl(ordinaryBuild.args, {
+      cwd: ordinaryBuild.cwd,
+      env,
+      stdio: 'inherit',
+    });
+    execYarnImpl(plan.tests.composed.args, {
+      cwd: plan.tests.composed.cwd,
+      env: {
+        ...env,
+        ...plan.tests.composed.env,
+        // Preserve the fixture addon outside the workspace mirror for the
+        // composed parent process too (same relay-fixture custody as above).
+        HAPPIER_TEST_IROH_NODE_ADDON_PATH: stableRelayFixtureAddonPath,
+      },
+      stdio: 'inherit',
+    });
   } finally {
     removeDirImpl(stableDir, { recursive: true, force: true });
   }

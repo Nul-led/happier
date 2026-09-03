@@ -21,6 +21,17 @@ test('the Home Iroh native gate runs by default and is selectable through manual
   assert.match(dispatch, /run_home_iroh_real: \$\{\{ needs\.resolve\.outputs\.run_home_iroh_real == 'true' \}\}/u);
 });
 
+test('the managed Iroh relay deployment contract runs in the release-contracts gate', () => {
+  const rootPackage = JSON.parse(readFileSync(new URL('package.json', repository), 'utf8')) as {
+    scripts: Record<string, string>;
+  };
+  const workflow = readFileSync(new URL('.github/workflows/tests.yml', repository), 'utf8');
+  assert.match(rootPackage.scripts['test:release:contracts'] ?? '', /deploy\/iroh-relay\/\*\.test\.mjs/u);
+  assert.match(workflow, /release-contracts:\n\s+if: \$\{\{ !inputs\.select_jobs_explicitly \|\| inputs\.run_release_contracts \}\}/u);
+  assert.match(workflow, /yarn -s test:release:contracts/u);
+  assert.match(workflow, /ci_summary:[\s\S]*needs: \[[^\]]*release-contracts/u);
+});
+
 test('ordinary CLI integration excludes the native machine-carrier fixture', () => {
   const config = readFileSync(new URL('apps/cli/vitest.integration.config.ts', repository), 'utf8');
   assert.match(config, /workspaceMachineCarrierLane08\.real\.integration\.test\.ts/u);

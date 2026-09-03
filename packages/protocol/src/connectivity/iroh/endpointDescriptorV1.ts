@@ -155,14 +155,40 @@ export const IrohEndpointIdV1Schema = z.string()
   });
 
 /**
- * Strict bounded hint list: non-empty, within the shared protocol bounds, and
- * free of duplicate entries (items are compared in their trimmed canonical
- * form). Empty or duplicated hint lists are ambiguous transport facts and are
- * never admitted into a descriptor.
+ * Canonical relay-URL equivalence. Two spellings that parse to the same URL are
+ * the same relay, so the descriptor compares them in that normalized form
+ * (`https://relay.test` and `https://relay.test/` are one entry, not two).
+ *
+ * This is the same equivalence the native transport owner applies: iroh's
+ * `RelayUrl` parser normalizes before `RelaySelection::resolve`
+ * (packages/iroh-native/rust/happier-iroh-core/src/endpoint.rs) rejects
+ * duplicates. Admitting a pair here that the transport refuses would publish a
+ * descriptor that cannot be bound.
+ *
+ * A value that does not parse has already failed the item schema; it keeps its
+ * literal form so the duplicate check never masks that error.
  */
-function IrohHintListSchema(item: z.ZodType<string>, maxItems: number) {
+function canonicalRelayUrl(value: string): string {
+  try {
+    return new URL(value).toString();
+  } catch {
+    return value;
+  }
+}
+
+/**
+ * Strict bounded hint list: non-empty, within the shared protocol bounds, and
+ * free of duplicate entries, compared through `canonical` (identity unless the
+ * item type has a normalized form). Empty or duplicated hint lists are
+ * ambiguous transport facts and are never admitted into a descriptor.
+ */
+function IrohHintListSchema(
+  item: z.ZodType<string>,
+  maxItems: number,
+  canonical: (value: string) => string = (value) => value,
+) {
   return z.array(item).min(1).max(maxItems).superRefine((values, context) => {
-    if (new Set(values).size !== values.length) {
+    if (new Set(values.map(canonical)).size !== values.length) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
         message: 'Hint lists must not contain duplicate entries',
@@ -173,7 +199,11 @@ function IrohHintListSchema(item: z.ZodType<string>, maxItems: number) {
 
 export const IrohEndpointDescriptorV1Schema = z.object({
   endpointId: IrohEndpointIdV1Schema,
-  relayUrls: IrohHintListSchema(IrohDescriptorUrlSchema, IROH_DESCRIPTOR_MAX_RELAY_URLS).optional(),
+  relayUrls: IrohHintListSchema(
+    IrohDescriptorUrlSchema,
+    IROH_DESCRIPTOR_MAX_RELAY_URLS,
+    canonicalRelayUrl,
+  ).optional(),
   directAddresses: IrohHintListSchema(
     z.string().trim().min(1).max(256).superRefine((value, context) => {
       if (!isValidIpSocketAddress(value)) {

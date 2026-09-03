@@ -1,4 +1,7 @@
-use crate::endpoint::{ConsumerRegistration, ConsumerSlot};
+use crate::endpoint::{
+    accept_first_application_stream, verified_remote_endpoint_id, ConsumerRegistration,
+    ConsumerSlot, CONSUMER_CHANNEL_CAPACITY,
+};
 use crate::stream::pump_bidirectional;
 use crate::{
     snapshot_for_connection, validate_loopback_bind_addr, validate_loopback_target,
@@ -27,12 +30,10 @@ pub const MACHINE_REMOTE_ENDPOINT_HEADER: &str = "X-Happier-Iroh-Remote-Endpoint
 pub const IROH_MACHINE_APPLICATION_PORT_HEADER: &str = "X-Happier-Iroh-Application-Port";
 pub const IROH_MACHINE_APPLICATION_CAPABILITY_HEADER: &str =
     "X-Happier-Iroh-Application-Capability";
-pub const IROH_MACHINE_HTTP_LOCAL_CAPABILITY_HEADER: &str =
-    "X-Happier-Machine-Local-Capability";
+pub const IROH_MACHINE_HTTP_LOCAL_CAPABILITY_HEADER: &str = "X-Happier-Machine-Local-Capability";
 pub const MACHINE_LOCAL_CAPABILITY_BYTES: usize = 32;
 pub const MACHINE_LOCAL_CAPABILITY_HEX_LENGTH: usize = MACHINE_LOCAL_CAPABILITY_BYTES * 2;
 const MAX_ADMISSION_RESPONSE_BYTES: usize = 16 * 1024;
-const CONSUMER_CHANNEL_CAPACITY: usize = 16;
 pub const MACHINE_STREAM_ACCEPT_BYTE: u8 = 0x01;
 pub const MACHINE_STREAM_REJECT_BYTE: u8 = 0x00;
 
@@ -146,6 +147,11 @@ fn validate_target(target: SocketAddr) -> Result<()> {
     validate_loopback_target(&target.ip().to_string(), target.port())
 }
 
+/// Streams on one dispatched machine connection. The connection's first stream
+/// must arrive inside the endpoint's pre-application custody window; after it
+/// has, the loop keeps waiting for further streams for as long as the peer holds
+/// the connection open, preserving the existing long-lived transfer and
+/// workspace-sync semantics.
 async fn pump_connection(
     accepted: AcceptedIrohConnection,
     config: MachineAcceptorConfig,
@@ -153,6 +159,18 @@ async fn pump_connection(
 ) {
     let remote_endpoint_id = accepted.remote_endpoint_id.clone();
     let mut streams = JoinSet::new();
+    let Some((send, recv)) = accept_first_application_stream(&accepted.connection).await else {
+        // No first stream: the connection is closed and dropping `accepted`
+        // (including its endpoint cap lease) drains the admission.
+        return;
+    };
+    streams.spawn(pump_stream(
+        send,
+        recv,
+        config,
+        remote_endpoint_id.clone(),
+        Arc::clone(&state),
+    ));
     loop {
         tokio::select! {
             opened = accepted.connection.accept_bi() => match opened {
@@ -408,9 +426,9 @@ pub struct MachineTunnelConfig {
     pub direct_addresses: Vec<SocketAddr>,
     pub relay_urls: Vec<RelayUrl>,
     pub handshake_json: String,
-    /// Logical machine-flow cap. The shared endpoint keeps the machine_bulk
-    /// physical QUIC ceiling; workspace_sync narrows concurrent local streams
-    /// here without creating a second endpoint or interpreting handshake data.
+    /// Both finite transfers and workspace synchronization use the one
+    /// machine-bulk transport profile. Workspace's one-local-stream rule is
+    /// derived separately from the verified handshake flow.
     pub cap_profile: IrohCapProfile,
 }
 
@@ -505,9 +523,7 @@ async fn read_capability_gated_http_request(
                 if capability_line.is_some() {
                     return Ok(None);
                 }
-                let supplied = line[colon + 1..]
-                    .trim_ascii_start()
-                    .trim_ascii_end();
+                let supplied = line[colon + 1..].trim_ascii_start().trim_ascii_end();
                 if !capabilities_equal(supplied, expected_capability) {
                     return Ok(None);
                 }
@@ -526,7 +542,10 @@ async fn read_capability_gated_http_request(
 }
 
 impl MachineHttpTunnel {
-    pub async fn start(endpoint: &crate::IrohEndpoint, config: MachineTunnelConfig) -> Result<Self> {
+    pub async fn start(
+        endpoint: &crate::IrohEndpoint,
+        config: MachineTunnelConfig,
+    ) -> Result<Self> {
         let tunnel = MachineTunnel::start(endpoint, config).await?;
         let private_addr = tunnel.local_addr()?;
         let local_capability = tunnel.local_capability().to_owned();
@@ -568,7 +587,12 @@ impl MachineHttpTunnel {
             }
             drop(streams);
         });
-        Ok(Self { local_addr, local_capability, tunnel, task })
+        Ok(Self {
+            local_addr,
+            local_capability,
+            tunnel,
+            task,
+        })
     }
 
     pub fn local_addr(&self) -> Result<SocketAddr> {
@@ -601,17 +625,13 @@ impl MachineTunnel {
         config: MachineTunnelConfig,
     ) -> Result<Self> {
         validate_loopback_bind_addr(config.bind_addr)?;
-        validate_handshake(&config.handshake_json)?;
-        if !matches!(
-            config.cap_profile,
-            IrohCapProfile::MachineBulk | IrohCapProfile::WorkspaceSync
-        ) {
+        let single_stream = validate_handshake(&config.handshake_json)?;
+        if config.cap_profile != IrohCapProfile::MachineBulk {
             return Err(IrohError::EndpointConfigConflict);
         }
         endpoint.ensure_relay_urls(&config.relay_urls).await?;
         let endpoint_id = iroh::EndpointId::from_str(&config.endpoint_id)
             .map_err(|_| IrohError::InvalidDescriptor)?;
-        let remote_endpoint_id = endpoint_id.to_string();
         let mut remote = iroh::EndpointAddr::new(endpoint_id);
         for relay in config.relay_urls {
             remote = remote.with_relay_url(relay);
@@ -630,6 +650,12 @@ impl MachineTunnel {
             .await
             .map_err(|_| IrohError::TransportClosed)?;
         let connection = connecting.await.map_err(|_| IrohError::TransportClosed)?;
+        // The authenticated transport identity — not the requested descriptor
+        // copy — is the only honest remote identity this tunnel reports. A
+        // mismatch fails the start closed with the shared
+        // endpoint-identity-mismatch classification before any loopback
+        // listener is published.
+        let remote_endpoint_id = verified_remote_endpoint_id(connection.remote_id(), endpoint_id)?;
         let listener = TcpListener::bind(config.bind_addr)
             .await
             .map_err(|_| IrohError::LoopbackBindFailed)?;
@@ -644,7 +670,7 @@ impl MachineTunnel {
             streams_opened: AtomicU64::new(0),
             streams_active: AtomicU64::new(0),
             max_streams: config.cap_profile.limits().max_streams as u64,
-            single_stream: config.cap_profile == IrohCapProfile::WorkspaceSync,
+            single_stream,
             local_stream_claimed: AtomicBool::new(false),
             last_failure: Mutex::new(None),
         });
@@ -791,7 +817,7 @@ async fn pump_local(
     pump_bidirectional(&mut socket_read, &mut socket_write, &mut recv, &mut send).await;
 }
 
-fn validate_handshake(value: &str) -> Result<()> {
+fn validate_handshake(value: &str) -> Result<bool> {
     if value.is_empty() || value.len() > MAX_MACHINE_HANDSHAKE_BYTES {
         return Err(IrohError::ResourceLimit);
     }
@@ -800,5 +826,5 @@ fn validate_handshake(value: &str) -> Result<()> {
     if !parsed.is_object() {
         return Err(IrohError::InvalidDescriptor);
     }
-    Ok(())
+    Ok(parsed.get("flow").and_then(serde_json::Value::as_str) == Some("workspace_sync"))
 }

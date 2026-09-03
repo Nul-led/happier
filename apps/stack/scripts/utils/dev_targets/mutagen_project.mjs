@@ -4,6 +4,7 @@ export const DEV_TARGET_DISPOSABLE_REPLICA_ARTIFACT_ROOTS = Object.freeze([
   '.happier',
   '.tsbuildinfo',
   '.turbo',
+  '.example-builds',
 ]);
 
 const [NODE_MODULES, DIST, HAPPIER] = DEV_TARGET_DISPOSABLE_REPLICA_ARTIFACT_ROOTS;
@@ -27,6 +28,7 @@ export const DEV_TARGET_MUTAGEN_IGNORE_PATHS = [
   // test outputs. They are Git-ignored and can exceed hundreds of MiB while a
   // test run is active; workers rebuild the exact fixture needed by the test.
   '.happier-first-party-runner-matrix-*',
+  'packages/plugin-sdk/.example-builds',
   '.claude-lane-reports',
   // The Mac checkout's linked worktrees contain Git control files pointing at
   // Mac-local metadata and are not valid worker source. Agent worktrees are

@@ -5,15 +5,29 @@
 //! tunnel acceptor/dialer over the `happier/home-tunnel/1` ALPN, endpoint key
 //! storage, path telemetry, and the native byte pump used by Home and machine
 //! tunnels.
+//!
+//! Everything above the loopback boundary — endpoint identity, explicit relay
+//! ownership, cap profiles, ALPN, and the tunnel preamble — is transport
+//! independent and compiles for `wasm32-unknown-unknown` as well. The modules
+//! that own native TCP loopback (`home_tunnel`, `machine`, `stream`) and the
+//! endpoint's incoming accept dispatcher and filesystem key store are native
+//! only: a browser cannot bind a local listener or accept an Iroh connection.
+//! There is deliberately no second endpoint, relay, or ALPN owner for the
+//! browser; `happier-iroh-wasm` binds this same core.
 
 mod endpoint;
 mod errors;
+#[cfg(not(target_arch = "wasm32"))]
 mod home_tunnel;
 mod limits;
+#[cfg(not(target_arch = "wasm32"))]
 mod machine;
 mod path;
 mod preamble;
+#[cfg(not(target_arch = "wasm32"))]
 mod stream;
+#[cfg(all(feature = "test-relay-fixture", not(target_arch = "wasm32")))]
+mod test_relay;
 
 #[cfg(test)]
 mod home_tunnel_tests;
@@ -22,31 +36,41 @@ mod machine_tests;
 #[cfg(test)]
 mod preamble_tests;
 
+#[cfg(target_arch = "wasm32")]
+pub use endpoint::refuse_inbound_until_closed;
 pub use endpoint::{
-    validate_endpoint_id, validate_loopback_bind_addr, validate_loopback_target,
-    AcceptedIrohConnection, ConsumerRegistration, EndpointConfig, EndpointIdentity,
-    EndpointKeyStore, EndpointManager, EndpointSeed, IrohConsumerSender, IrohEndpoint, RelayPolicy,
-    RelaySelection, ResolvedEndpointConfig, MAX_RELAY_URLS, MAX_RELAY_URL_UTF8_BYTES,
+    inbound_alpns, validate_endpoint_id, verified_remote_endpoint_id, EndpointConfig, EndpointSeed,
+    InboundAlpnRole, InboundStopSignal, IrohEndpoint, RelayPolicy, RelaySelection,
+    ResolvedEndpointConfig, MAX_RELAY_URLS, MAX_RELAY_URL_UTF8_BYTES, TARGET_INBOUND_ALPN_ROLE,
+};
+#[cfg(not(target_arch = "wasm32"))]
+pub use endpoint::{
+    validate_loopback_bind_addr, validate_loopback_target, AcceptedIrohConnection,
+    ConsumerRegistration, EndpointIdentity, EndpointKeyStore, EndpointManager, IrohConsumerSender,
 };
 pub use errors::{IrohError, IrohFailureReason, Result};
+#[cfg(not(target_arch = "wasm32"))]
 pub use home_tunnel::{
     HomeAcceptor, HomeAcceptorConfig, HomeAcceptorStatus, HomeTunnel, HomeTunnelConfig,
     HomeTunnelStatus, PREAMBLE_READ_TIMEOUT,
 };
 pub use limits::IrohCapProfile;
+#[cfg(not(target_arch = "wasm32"))]
 pub use machine::{
     MachineAcceptor, MachineAcceptorConfig, MachineAcceptorStatus, MachineFailureCode,
     MachineHttpTunnel, MachineTunnel, MachineTunnelConfig, MachineTunnelStatus,
     IROH_MACHINE_APPLICATION_CAPABILITY_HEADER, IROH_MACHINE_APPLICATION_PORT_HEADER,
-    IROH_MACHINE_HTTP_LOCAL_CAPABILITY_HEADER,
-    MACHINE_ADMISSION_PATH, MACHINE_CONTROL_TIMEOUT, MACHINE_REMOTE_ENDPOINT_HEADER,
-    MACHINE_STREAM_ACCEPT_BYTE, MACHINE_STREAM_REJECT_BYTE, MAX_MACHINE_HANDSHAKE_BYTES,
+    IROH_MACHINE_HTTP_LOCAL_CAPABILITY_HEADER, MACHINE_ADMISSION_PATH, MACHINE_CONTROL_TIMEOUT,
+    MACHINE_REMOTE_ENDPOINT_HEADER, MACHINE_STREAM_ACCEPT_BYTE, MACHINE_STREAM_REJECT_BYTE,
+    MAX_MACHINE_HANDSHAKE_BYTES,
 };
 pub use path::{
-    from_incoming_addr, normalize_path, snapshot_for_connection, snapshot_for_incoming_addr,
-    IrohObservedPath, IrohPathSnapshot,
+    from_incoming_addr, normalize_path, observed_path_for_connection, snapshot_for_connection,
+    snapshot_for_incoming_addr, IrohObservedPath, IrohPathSnapshot,
 };
 pub use preamble::{read_preamble, write_preamble};
+#[cfg(all(feature = "test-relay-fixture", not(target_arch = "wasm32")))]
+pub use test_relay::LocalTestRelay;
 
 pub const HOME_TUNNEL_ALPN: &[u8] = b"happier/home-tunnel/1";
 pub const MACHINE_ALPN: &[u8] = b"happier/machine/1";

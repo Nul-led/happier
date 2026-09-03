@@ -58,6 +58,7 @@ test('renderMutagenProject creates one-way source replicas while retaining targe
     '.backup.*',
     '.happier-plugin-ui-build-*',
     '.happier-first-party-runner-matrix-*',
+    'packages/plugin-sdk/.example-builds',
     '.claude-lane-reports',
     '.worktrees',
     '.tmp',

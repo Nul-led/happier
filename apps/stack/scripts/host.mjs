@@ -58,6 +58,10 @@ import {
   removeExecutionHostRecovery,
   runExecutionHostRecovery,
 } from './utils/execution_host/recovery.mjs';
+import {
+  startDetachedExecutionHostSkillsSync,
+  syncExecutionHostSkills,
+} from './utils/execution_host/skills_sync.mjs';
 
 function flagValue(argv, name) {
   const inline = argv.find((arg) => arg.startsWith(`${name}=`));
@@ -70,7 +74,7 @@ function flagValue(argv, name) {
 function usage(json) {
   printResult({
     json,
-    data: { commands: ['setup', 'activate', 'mirror', 'mount', 'unmount', 'backup', 'forward', 'recovery', 'status', 'doctor', 'start', 'stop', 'shell', 'exec'] },
+    data: { commands: ['setup', 'activate', 'mirror', 'mount', 'unmount', 'backup', 'forward', 'recovery', 'skills', 'status', 'doctor', 'start', 'stop', 'shell', 'exec'] },
     text: [
       '[dev-vm] usage:',
       '  hstack dev-vm setup [--instance=happier-agent-primary] [--profile=balanced] [--disk-image-format=raw|asif] [--workspace=ID=/absolute/source ...] [--workspace-stack=ID=STACK_NAME ...] [--json]',
@@ -86,6 +90,7 @@ function usage(json) {
       '  hstack dev-vm backup schedule status|disable [--json]',
       '  hstack dev-vm forward [status|reconcile|stop] [--workspace-id=ID] [--stack=NAME] [--json]',
       '  hstack dev-vm recovery enable|status|disable|run [--json]',
+      '  hstack dev-vm skills sync [--json]',
       '  hstack dev-vm shell [--guest-cwd=/absolute/path] [-- COMMAND...]',
       '  hstack dev-vm exec [--guest-cwd=/absolute/path] -- COMMAND [ARG...]',
       '  yarn -s dev-vm -- exec --guest-cwd=/absolute/path -- COMMAND [ARG...]',
@@ -147,6 +152,12 @@ function recoveryProgramArgs() {
   // Bind launchd to this checkout's controller rather than a possibly older
   // globally installed hstack shim.
   return [process.execPath, fileURLToPath(import.meta.url), 'recovery', 'run', '--json'];
+}
+
+function skillsSyncProgramArgs() {
+  // Keep the background boot reconciliation bound to this checkout's
+  // controller, just like the existing recovery and backup jobs.
+  return [process.execPath, fileURLToPath(import.meta.url), 'skills', 'sync', '--json'];
 }
 
 async function main() {
@@ -305,6 +316,24 @@ async function main() {
     });
   }
   const executor = executorFor(profile);
+  if (command === 'skills') {
+    const skillsArgument = argv[argv.indexOf(command) + 1] ?? '';
+    const skillsAction = skillsArgument.startsWith('-') ? '' : skillsArgument;
+    if (skillsAction !== 'sync') {
+      throw new Error(`[dev-vm] unknown skills command: ${skillsAction || '(missing)'}`);
+    }
+    await startManagedLimaInstance({ executor, instance: profile.instance });
+    const result = await syncExecutionHostSkills({
+      profile,
+      executor,
+      env: process.env,
+    });
+    return printResult({
+      json,
+      data: result,
+      text: `[dev-vm] skills synchronized: ${result.roots.filter((root) => root.status === 'synced').length} root(s)`,
+    });
+  }
   if (command === 'recovery') {
     const recoveryArgument = argv[argv.indexOf(command) + 1] ?? '';
     const recoveryAction = recoveryArgument.startsWith('-') ? 'status' : recoveryArgument || 'status';
@@ -543,6 +572,9 @@ async function main() {
   }
   if (command === 'start') {
     const result = await startManagedLimaInstance({ executor, instance: profile.instance });
+    const skillsSync = result.changed
+      ? startDetachedExecutionHostSkillsSync({ programArgs: skillsSyncProgramArgs(), env: process.env })
+      : null;
     const requestedWorkspace = flagValue(argv, '--workspace-id').trim();
     const serviceTunnel = (profile.version !== 2 || requestedWorkspace)
       ? await ensureExecutionHostServiceTunnel({
@@ -556,7 +588,15 @@ async function main() {
     if (profile.autoMount === true) {
       await mountExecutionHostWorkspace({ profile, env: process.env, mountDir: profile.hostMountDir || '', executor });
     }
-    return printResult({ json, data: { ...result, ...(serviceTunnel ? { serviceTunnel } : {}) }, text: `[dev-vm] VM status: ${result.status}` });
+    return printResult({
+      json,
+      data: {
+        ...result,
+        ...(skillsSync ? { skillsSync } : {}),
+        ...(serviceTunnel ? { serviceTunnel } : {}),
+      },
+      text: `[dev-vm] VM status: ${result.status}`,
+    });
   }
   if (command === 'stop') {
     const workspaceIds = profile.version === 2 ? profile.workspaces.map((workspace) => workspace.id) : [''];

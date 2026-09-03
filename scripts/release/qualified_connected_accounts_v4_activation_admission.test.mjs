@@ -28,7 +28,7 @@ const present = Object.fromEntries(
 const rollbackSupportPresent = Object.freeze({
   qualifiedAccountsV4: true,
   qualifiedConfigurationKind9: true,
-  sessionMetadataLayout1Kind10: true,
+  sessionMetadataLayout1Kind26: true,
   publicManagedProviderRuntime: true,
 });
 const rollbackSupportAbsent = Object.fromEntries(
@@ -48,7 +48,80 @@ test('qualified V4 activation admission names the migration in every database tr
   );
 });
 
-test('qualified V4 activation admission pins current reader and custody capability evidence', async () => {
+test('qualified V4 activation admission pins current envelope reader, exact kind bytes, and custody capability evidence', async () => {
+  assert.deepEqual(
+    Object.fromEntries(
+      QUALIFIED_CONNECTED_ACCOUNTS_V4_ROLLBACK_SUPPORT.map(({ key, checks }) => [
+        key,
+        checks.map(({ path, content, absent: expectedAbsent }) => ({
+          path,
+          content,
+          absent: expectedAbsent === true,
+        })),
+      ]),
+    ),
+    {
+      qualifiedAccountsV4: [
+        {
+          path: 'packages/protocol/src/connect/qualifiedConnectedAccountsV4.ts',
+          content: 'export const CONNECTED_ACCOUNT_V4_PROTOCOL_VERSION = 4 as const;',
+          absent: false,
+        },
+        {
+          path: 'apps/cli/src/api/client/qualifiedConnectedAccountApi.ts',
+          content: 'export async function listQualifiedConnectedAccountsV4',
+          absent: false,
+        },
+      ],
+      qualifiedConfigurationKind9: [
+        {
+          path: 'packages/protocol/src/crypto/accountScopedCipherEnvelope.ts',
+          content: 'qualified_connected_account_configuration: 9,',
+          absent: false,
+        },
+      ],
+      sessionMetadataLayout1Kind26: [
+        {
+          path: 'packages/protocol/src/crypto/accountScopedCipherEnvelope.ts',
+          content: 'session_owner_metadata: 26,',
+          absent: false,
+        },
+        {
+          path: 'packages/protocol/src/sessions/metadata/sessionMetadataEnvelopesV1.ts',
+          content: 'export const SESSION_METADATA_LAYOUT_VERSION_V1 = 1 as const;',
+          absent: false,
+        },
+        {
+          path: 'apps/cli/src/session/metadata/sessionMetadataLayout.ts',
+          content: 'if (layoutVersion !== SESSION_METADATA_LAYOUT_VERSION_V1) return null;',
+          absent: false,
+        },
+      ],
+      publicManagedProviderRuntime: [
+        {
+          path: 'apps/cli/src/providers/lifecycle/publicManagedProviderRuntimeStart.ts',
+          content: 'export async function startPublicManagedProviderRuntime',
+          absent: false,
+        },
+        {
+          path: 'apps/cli/src/daemon/startup/startDaemonSessionControlRuntime.ts',
+          content: "'sessionDemand' as const,",
+          absent: false,
+        },
+        {
+          path: 'apps/cli/src/providers/lifecycle/managedEndpointRecovery.ts',
+          content: undefined,
+          absent: true,
+        },
+        {
+          path: 'apps/cli/src/providers/discovery/managedStart.ts',
+          content: undefined,
+          absent: true,
+        },
+      ],
+    },
+  );
+
   for (const { key, checks } of QUALIFIED_CONNECTED_ACCOUNTS_V4_ROLLBACK_SUPPORT) {
     for (const { path, content, absent: expectedAbsent } of checks) {
       if (expectedAbsent === true) {

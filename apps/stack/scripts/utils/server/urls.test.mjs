@@ -338,3 +338,121 @@ test('resolveServerUrls prefers the persisted tailscale relay access url when th
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+async function writeFakeTailscaleBin(binDir, dnsName) {
+  const tailscaleBin = join(binDir, 'tailscale');
+  await writeFile(
+    tailscaleBin,
+    [
+      '#!/usr/bin/env bash',
+      'set -euo pipefail',
+      'if [[ "${1:-}" == "status" && "${2:-}" == "--json" ]]; then',
+      `  printf '%s\\n' '{"BackendState":"Running","Self":{"DNSName":"${dnsName}"},"HaveNodeKey":true}'`,
+      '  exit 0',
+      'fi',
+      'if [[ "${1:-}" == "funnel" && "${2:-}" == "status" ]]; then',
+      `  printf '%s\\n' 'https://${dnsName}' '|-- / proxy http://127.0.0.1:3005'`,
+      '  exit 0',
+      'fi',
+      'echo "unexpected args: $*" >&2',
+      'exit 1',
+      '',
+    ].join('\n'),
+    'utf-8'
+  );
+  await chmod(tailscaleBin, 0o755);
+  return tailscaleBin;
+}
+
+test('resolveServerUrls keeps the named-stack canonical origin stable while inferred public ingress rotates', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'hstack-server-urls-canonical-'));
+  const homeDir = join(dir, 'home');
+  const binDir = join(dir, 'bin');
+  const envPath = join(dir, 'stack.env');
+  await mkdir(join(homeDir, '.happier', 'relay', 'access'), { recursive: true });
+  await mkdir(binDir, { recursive: true });
+  await writeFile(
+    join(homeDir, '.happier', 'relay', 'access', 'local.json'),
+    JSON.stringify({ providerId: 'tailscaleFunnel' }),
+    'utf-8'
+  );
+  await writeFile(envPath, 'HAPPIER_STACK_SERVER_PORT=3005\n', 'utf-8');
+
+  const env = {
+    HOME: homeDir,
+    HAPPIER_STACK_STACK: 'agent-qa',
+    HAPPIER_STACK_ENV_FILE: envPath,
+    HAPPIER_STACK_TAILSCALE_PREFER_PUBLIC_URL: '1',
+    HAPPIER_STACK_TAILSCALE_SERVE: '0',
+  };
+
+  try {
+    const first = await resolveServerUrls({
+      env: { ...env, HAPPIER_TAILSCALE_BIN: await writeFakeTailscaleBin(binDir, 'relay-one.example.test') },
+      serverPort: 3005,
+      allowEnable: false,
+    });
+    const second = await resolveServerUrls({
+      env: { ...env, HAPPIER_TAILSCALE_BIN: await writeFakeTailscaleBin(binDir, 'relay-two.example.test') },
+      serverPort: 3005,
+      allowEnable: false,
+    });
+
+    assert.equal(first.publicServerUrl, 'https://relay-one.example.test');
+    assert.equal(second.publicServerUrl, 'https://relay-two.example.test');
+    assert.equal(first.canonicalServerUrl, 'http://happier-agent-qa.localhost:3005');
+    assert.equal(
+      second.canonicalServerUrl,
+      first.canonicalServerUrl,
+      'a rotating public ingress must never rotate the stack auth audience'
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('resolveServerUrls keeps an explicit operator stack public URL as the canonical origin', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'hstack-server-urls-canonical-explicit-'));
+  const envPath = join(dir, 'stack.env');
+  await writeFile(envPath, 'HAPPIER_PUBLIC_SERVER_URL=https://ops.example.test\n', 'utf-8');
+
+  try {
+    const out = await resolveServerUrls({
+      env: {
+        HOME: join(dir, 'home'),
+        HAPPIER_STACK_STACK: 'agent-qa',
+        HAPPIER_STACK_ENV_FILE: envPath,
+        HAPPIER_PUBLIC_SERVER_URL: 'https://ops.example.test',
+      },
+      serverPort: 3005,
+      allowEnable: false,
+    });
+
+    assert.equal(out.publicServerUrl, 'https://ops.example.test');
+    assert.equal(out.canonicalServerUrl, 'https://ops.example.test');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('resolveServerUrls keeps the loopback canonical origin for the main stack', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'hstack-server-urls-canonical-main-'));
+  const envPath = join(dir, 'stack.env');
+  await writeFile(envPath, 'HAPPIER_STACK_SERVER_PORT=3005\n', 'utf-8');
+
+  try {
+    const out = await resolveServerUrls({
+      env: {
+        HOME: join(dir, 'home'),
+        HAPPIER_STACK_STACK: 'main',
+        HAPPIER_STACK_ENV_FILE: envPath,
+      },
+      serverPort: 3005,
+      allowEnable: false,
+    });
+
+    assert.equal(out.canonicalServerUrl, 'http://localhost:3005');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

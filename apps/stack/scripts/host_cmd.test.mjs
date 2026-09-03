@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { chmod, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, readdir, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import test from 'node:test';
 
@@ -632,7 +632,7 @@ test('hstack registry exposes the dev-vm controller without retaining the unrele
     },
   });
   assert.equal(result.code, 0, result.stderr);
-  assert.match(result.stdout, /hstack dev-vm setup\|activate\|mirror \[status\|sync\|stop\]\|mount \[status\|enable\|disable\]\|unmount\|backup \[status\|schedule enable\|status\|disable\]\|forward \[status\|reconcile\|stop\]\|recovery \[enable\|status\|disable\|run\]\|status\|doctor \[--repair-forwarding\]\|start\|stop\|shell\|exec/);
+  assert.match(result.stdout, /hstack dev-vm setup\|activate\|mirror \[status\|sync\|stop\]\|mount \[status\|enable\|disable\]\|unmount\|backup \[status\|schedule enable\|status\|disable\]\|forward \[status\|reconcile\|stop\]\|recovery \[enable\|status\|disable\|run\]\|skills sync\|status\|doctor \[--repair-forwarding\]\|start\|stop\|shell\|exec/);
   assert.doesNotMatch(result.stdout, /hstack host setup/);
 });
 
@@ -656,6 +656,178 @@ test('hstack dev-vm keeps the native controller path without an execution-host p
   const retiredAlias = await runNodeCapture([launcher, sandbox, 'help', 'host'], { env });
   assert.notEqual(retiredAlias.code, 0);
   assert.match(retiredAlias.stderr, /unknown command: host/);
+});
+
+test('dev-vm skills sync mirrors host agent skill roots into the managed guest', async (t) => {
+  const fixture = await createTempFixture(t, { prefix: 'hstack-dev-vm-skills-sync-' });
+  const home = fixture.path('home');
+  const macHome = fixture.path('mac-home');
+  const bin = fixture.path('bin');
+  const limaLog = fixture.path('limactl.log');
+  const rsyncLog = fixture.path('rsync.log');
+  const limaHome = fixture.path('lima');
+  const instance = 'candidate';
+  await Promise.all([
+    mkdir(home, { recursive: true }),
+    mkdir(bin, { recursive: true }),
+    mkdir(fixture.path('mirror'), { recursive: true }),
+    mkdir(join(limaHome, instance), { recursive: true }),
+    ...['.codex', '.agents', '.claude'].map(async (owner) => {
+      const root = join(macHome, owner, 'skills', 'sample');
+      await mkdir(root, { recursive: true });
+      await writeFile(join(root, 'SKILL.md'), `# ${owner}\n`, 'utf8');
+    }),
+  ]);
+  await writeFile(join(limaHome, instance, 'ssh.config'), 'Host lima-candidate\n', 'utf8');
+  await writeFile(join(bin, 'limactl'), [
+    '#!/bin/sh',
+    `printf '%s\\n' "$*" >> ${JSON.stringify(limaLog)}`,
+    `if [ "$1" = "list" ]; then printf '%s\\n' '${JSON.stringify({ name: instance, status: 'Running' })}'; exit 0; fi`,
+    'if [ "$1" = "shell" ]; then',
+    '  case "$*" in',
+    '    *printf*) printf "/home/happier" ;;',
+    '  esac',
+    '  exit 0',
+    'fi',
+    'exit 0',
+    '',
+  ].join('\n'), 'utf8');
+  await writeFile(join(bin, 'rsync'), [
+    '#!/bin/sh',
+    `printf '%s\\n' "$*" >> ${JSON.stringify(rsyncLog)}`,
+    'exit 0',
+    '',
+  ].join('\n'), 'utf8');
+  await Promise.all([chmod(join(bin, 'limactl'), 0o755), chmod(join(bin, 'rsync'), 0o755)]);
+  await symlink(
+    join(macHome, 'missing-skill'),
+    join(macHome, '.claude', 'skills', 'dangling-skill'),
+  );
+  await writeFile(join(home, 'execution-host.json'), `${JSON.stringify({
+    version: 1,
+    mode: 'managed-lima',
+    activation: 'active',
+    instance,
+    limaHome,
+    profile: 'small',
+    pressureProfile: 'none',
+    guestWorkspaceDir: '/home/happier/.happier-stack/workspace',
+    mirrorWorkspaceDir: fixture.path('mirror'),
+  })}\n`, 'utf8');
+
+  const result = await runNodeCapture([script, 'skills', 'sync', '--json'], {
+    env: {
+      ...process.env,
+      HOME: macHome,
+      PATH: `${bin}:${process.env.PATH ?? ''}`,
+      HAPPIER_STACK_HOME_DIR: home,
+      HAPPIER_STACK_DISABLE_STACK_ENV_AUTOLOAD: '1',
+    },
+  });
+
+  assert.equal(result.code, 0, result.stderr);
+  const parsed = JSON.parse(result.stdout);
+  assert.equal(parsed.status, 'synced');
+  assert.deepEqual(parsed.roots.map((root) => [root.id, root.status]), [
+    ['codex', 'synced'],
+    ['agents', 'synced'],
+    ['claude', 'synced'],
+  ]);
+  const rsync = await readFile(rsyncLog, 'utf8');
+  assert.match(rsync, /--archive --copy-links --delete-delay/);
+  assert.match(rsync, /--delete-excluded --exclude dangling-skill/);
+  assert.match(rsync, new RegExp(`${macHome.replaceAll('/', '\\/')}\\/.codex\\/skills\\/`));
+  assert.match(rsync, /lima-candidate:\/home\/happier\/.codex\/skills\//);
+  assert.match(rsync, /lima-candidate:\/home\/happier\/.agents\/skills\//);
+  assert.match(rsync, /lima-candidate:\/home\/happier\/.claude\/skills\//);
+  assert.match(await readFile(limaLog, 'utf8'), /shell candidate -- mkdir -p/);
+});
+
+test('dev-vm start launches skill synchronization only after an actual managed guest boot', async (t) => {
+  const fixture = await createTempFixture(t, { prefix: 'hstack-dev-vm-start-skills-' });
+  const home = fixture.path('home');
+  const macHome = fixture.path('mac-home');
+  const bin = fixture.path('bin');
+  const limaHome = fixture.path('lima');
+  const runningMarker = fixture.path('running');
+  const rsyncLog = fixture.path('rsync.log');
+  await Promise.all([
+    mkdir(home, { recursive: true }),
+    mkdir(bin, { recursive: true }),
+    mkdir(join(limaHome, 'candidate'), { recursive: true }),
+    mkdir(join(macHome, '.codex', 'skills', 'sample'), { recursive: true }),
+    mkdir(fixture.path('mirror', '0.3'), { recursive: true }),
+  ]);
+  await writeFile(join(macHome, '.codex', 'skills', 'sample', 'SKILL.md'), '# sample\n', 'utf8');
+  await writeFile(join(limaHome, 'candidate', 'ssh.config'), 'Host lima-candidate\n', 'utf8');
+  await writeFile(join(bin, 'limactl'), [
+    '#!/bin/sh',
+    `running=${JSON.stringify(runningMarker)}`,
+    'if [ "$1" = "list" ]; then',
+    '  if [ -f "$running" ]; then status=Running; else status=Stopped; fi',
+    '  printf "{\\"name\\":\\"candidate\\",\\"status\\":\\"%s\\"}\\n" "$status"',
+    '  exit 0',
+    'fi',
+    'if [ "$1" = "start" ]; then : > "$running"; exit 0; fi',
+    'if [ "$1" = "shell" ]; then',
+    '  case "$*" in *printf*) printf "/home/happier" ;; esac',
+    '  exit 0',
+    'fi',
+    'exit 0',
+    '',
+  ].join('\n'), 'utf8');
+  await writeFile(join(bin, 'rsync'), [
+    '#!/bin/sh',
+    `printf '%s\\n' "$*" >> ${JSON.stringify(rsyncLog)}`,
+    'exit 0',
+    '',
+  ].join('\n'), 'utf8');
+  await Promise.all([chmod(join(bin, 'limactl'), 0o755), chmod(join(bin, 'rsync'), 0o755)]);
+  await writeFile(join(home, 'execution-host.json'), `${JSON.stringify({
+    version: 2,
+    mode: 'managed-lima',
+    activation: 'active',
+    instance: 'candidate',
+    limaHome,
+    profile: 'small',
+    pressureProfile: 'none',
+    guestWorkspaceDir: '/home/happier/.happier-stack/workspace',
+    mirrorWorkspaceDir: fixture.path('mirror'),
+    controllerEntrypoint: fixture.path('mirror', '0.3', 'apps', 'stack', 'scripts', 'execution_host_bridge.mjs'),
+    workspaces: [{
+      id: '0.3',
+      hostSourceDir: fixture.path('source'),
+      hostMirrorDir: fixture.path('mirror', '0.3'),
+      guestDir: '/home/happier/.happier-stack/workspace/0.3',
+    }],
+  })}\n`, 'utf8');
+  const env = {
+    ...process.env,
+    HOME: macHome,
+    PATH: `${bin}:${process.env.PATH ?? ''}`,
+    HAPPIER_STACK_HOME_DIR: home,
+    HAPPIER_STACK_DISABLE_STACK_ENV_AUTOLOAD: '1',
+  };
+
+  const first = await runNodeCapture([script, 'start', '--json'], { env });
+  assert.equal(first.code, 0, first.stderr);
+  assert.equal(JSON.parse(first.stdout).changed, true);
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    try {
+      if ((await readFile(rsyncLog, 'utf8')).trim()) break;
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+    }
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 20));
+  }
+  const afterBoot = (await readFile(rsyncLog, 'utf8')).trim().split('\n').length;
+  assert.equal(afterBoot, 1);
+
+  const second = await runNodeCapture([script, 'start', '--json'], { env });
+  assert.equal(second.code, 0, second.stderr);
+  assert.equal(JSON.parse(second.stdout).changed, false);
+  await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
+  assert.equal((await readFile(rsyncLog, 'utf8')).trim().split('\n').length, afterBoot);
 });
 
 test('host mirror status inspects continuous candidate sync without touching the VM', async (t) => {
