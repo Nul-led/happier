@@ -1104,9 +1104,21 @@ test('a newer dist directory does not hide stale declared workspace outputs', as
     assert.equal(buildCalls, 1);
     assert.deepEqual(result.built, ['@happier-dev/plugins-codex']);
 
+    // A post-build source write must invalidate the refreshed outputs even when
+    // the dist directory presents a newer mtime. The ordering is derived from the
+    // observed output refresh stamp: an immediate rewrite backdated with utimes
+    // cannot prove staleness because several Linux filesystems do not advance
+    // ctime within the same coarse tick (after ctime can equal the pre-rewrite
+    // ctime), leaving that write unobservable to any timestamp predicate.
+    // Stamping the rewritten source strictly after the observed outputs makes the
+    // stale verdict filesystem-independent, and strict `>` admission turns a
+    // granularity-collapsed equality into a converging rebuild rather than a pass.
+    const refreshedOutputTimeMs = Math.floor(statSync(indexOutputPath).mtimeMs);
+    const rewrittenSourceTime = new Date(refreshedOutputTimeMs + 1);
+    const misleadingDirectoryTimeAfterBuild = new Date(refreshedOutputTimeMs + 60_000);
     writeFileSync(sourcePath, 'export const identity = "local-v2";\n', 'utf8');
-    utimesSync(sourcePath, staleOutputTime, staleOutputTime);
-    utimesSync(distDir, misleadingDirectoryTime, misleadingDirectoryTime);
+    utimesSync(sourcePath, rewrittenSourceTime, rewrittenSourceTime);
+    utimesSync(distDir, misleadingDirectoryTimeAfterBuild, misleadingDirectoryTimeAfterBuild);
 
     const restoredMtimeResult = await ensureWorkspacePackagesBuiltByName(
       repoRoot,
@@ -1204,6 +1216,13 @@ test('CLI artifact preparation rebuilds bundled outputs recreated after current 
         },
         devDependencies: { '@happier-dev/tests': '0.0.0' },
         scripts: { build: 'fixture-build' },
+        // Reservation-only keeps this fixture plugin out of generator-owned
+        // membership, so artifact preparation force-rebuilds it through the
+        // ordinary workspace compiler — the derivation contract this test
+        // pins. A generator-owned plugin would instead be bound by the
+        // pack-time source-artifact inventory, which only the canonical
+        // publisher owns and this fixture deliberately does not stage.
+        happier: { pluginScaffold: { shipping: 'reservation_only' } },
       }),
       'utf8',
     );

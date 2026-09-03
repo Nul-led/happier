@@ -107,8 +107,8 @@ you stop it.
 <Callout type="info">
 Workspace sync is new on the 0.3 development line. It needs the managed sync engine component
 installed on both machines; where that component is unavailable, workspace sync reports
-**Component Unavailable**. The selected workspace action stops, but you can choose **No workspace
-action** and still move the session. See
+**Component Unavailable**. The selected workspace action stops, but you can choose **Don't move
+files** and still move the session. See
 [The sync engine, and its licence](#the-sync-engine-and-its-licence).
 </Callout>
 
@@ -117,12 +117,12 @@ action** and still move the session. See
 The workspace choice sits in the handoff modal, under **Session handoff**. Three options are
 in front of you:
 
-- **Keep destination updated** — the default, and the right answer most of the time. Source
+- **Keep updated** — the recommended default. Source
   changes reach the destination; files that exist only at the destination are preserved
   rather than treated as drift.
 - **Copy once** — materialize the workspace on the destination once, then stop. No ongoing
   relationship is created.
-- **No workspace action** — move the session and leave the destination folder exactly as it
+- **Don't move files** — move the session and leave the destination folder exactly as it
   is. Use this when the destination already has the right files.
 
 **Advanced** discloses the two modes that need a deliberate choice:
@@ -182,7 +182,7 @@ ignored files** with globs such as `dist/**` or `.env.local`.
 Happier inspects the exact destination before it stops the session on the source:
 
 - **Missing or empty destination** — prepared and populated with no extra approval for Copy once
-  or Keep destination updated. Mirror exactly still asks once because it authorizes future
+  or Keep updated. Mirror exactly still asks once because it authorizes future
   removal of destination-only files.
 - **Non-empty destination** — one approval, naming the destination machine and path, telling
   you its files will be replaced. For Mirror exactly, replacement and future removals are combined
@@ -214,7 +214,7 @@ that machine cannot be reached, the row says so rather than guessing, and the ot
 does not start syncing on its own.
 
 Direction follows the relationship, not the latest handoff. A one-way relationship
-(**Keep destination updated**, **Mirror exactly**) always flows from its source to its
+(**Keep updated**, **Mirror exactly**) always flows from its source to its
 destination; handing the session back to the original machine does not silently reverse it.
 **Keep both in sync** has no direction at all — either side can change, and both converge.
 
@@ -247,7 +247,7 @@ What that choice does, and what it will not do:
 - Removing a **directory** does ask, because the removal is recursive. A conflict at the
   workspace root is refused outright.
 
-At the bottom of the view, a closed **Diagnostics** disclosure holds the raw material for a
+At the bottom of the view, a closed **Details** disclosure holds the raw material for a
 support conversation: relationship and machine identifiers, the live folder paths on each
 side, and the engine's own mode, state and error code. Open it and everything in it is
 selectable and copyable. It stays out of the way until you ask for it.
@@ -285,7 +285,7 @@ engine is never executed — the new engine fails closed rather than trying to i
 The same refusal protects the handoff itself. If one machine still runs a Happier version that
 offers the retired workspace transfer, a handoff that tries to use it fails with an
 update-required error and moves nothing. Update Happier on both machines, or choose
-**No workspace action** — the session itself still moves.
+**Don't move files** — the session itself still moves.
 
 When Happier recognizes retired data on a machine, it moves it into a private quarantine
 folder and disables workspace sync on that machine. The UI then shows you the quarantine
@@ -397,7 +397,7 @@ Use Convert to Happier when you started from a provider-native session but now w
 
 ### Move the session but leave the destination workspace alone
 
-Choose **No workspace action**. This is the safest choice when:
+Choose **Don't move files**. This is the safest choice when:
 
 - the destination already has the right files
 - you want session continuity without file copying
@@ -417,13 +417,13 @@ Usually one of these is true:
 
 Happier refuses a source or destination path it considers unsafe to synchronize: a filesystem
 root, your home directory, the `~` shorthand, a blank path, or a path that is not absolute.
-Choose a narrower folder, or choose **No workspace action**.
+Choose a narrower folder, or choose **Don't move files**.
 
 ### Workspace sync says the component is unavailable
 
 The managed sync engine is not installed for that machine's platform. The session, the
 handoff, and everything unrelated to workspace sync remain available, but the selected workspace
-action cannot continue. Retry after the component is available, or choose **No workspace action**
+action cannot continue. Retry after the component is available, or choose **Don't move files**
 to move only the session. See [The sync engine, and its licence](#the-sync-engine-and-its-licence).
 
 ### Workspace sync is disabled on one machine
@@ -436,7 +436,7 @@ disabled sync there deliberately; clearing it is the offline step described in
 
 The machine on the other side still runs a Happier version that offers the retired workspace
 transfer. Happier refuses the workspace action instead of running retired workspace code.
-Update Happier on both machines and retry, or choose **No workspace action** to move only
+Update Happier on both machines and retry, or choose **Don't move files** to move only
 the session.
 
 ### The handoff action is missing

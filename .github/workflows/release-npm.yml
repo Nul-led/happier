@@ -83,6 +83,21 @@ on:
         required: false
         default: false
         type: boolean
+      cli_version:
+        description: "Already-admitted CLI candidate version to reuse"
+        required: false
+        default: ""
+        type: string
+      stack_version:
+        description: "Already-admitted Stack candidate version to reuse"
+        required: false
+        default: ""
+        type: string
+      server_version:
+        description: "Already-admitted server candidate version to reuse"
+        required: false
+        default: ""
+        type: string
       publish_plugin_sdk:
         description: "Publish (Plugin SDK) — Publish the lockstep plugin-sdk/plugin-ui pair to npm"
         required: false
@@ -332,6 +347,9 @@ jobs:
           INPUT_PUBLISH_CLI: ${{ inputs.publish_cli }}
           INPUT_PUBLISH_STACK: ${{ inputs.publish_stack }}
           INPUT_PUBLISH_SERVER: ${{ inputs.publish_server }}
+          INPUT_CLI_VERSION: ${{ inputs.cli_version }}
+          INPUT_STACK_VERSION: ${{ inputs.stack_version }}
+          INPUT_SERVER_VERSION: ${{ inputs.server_version }}
           INPUT_PUBLISH_PLUGIN_SDK: ${{ inputs.publish_plugin_sdk }}
           INPUT_PUBLISH_SDK: ${{ inputs.publish_sdk }}
           INPUT_PUBLISH_CHANNELS_PROTOCOL: ${{ inputs.publish_channels_protocol }}
@@ -348,6 +366,9 @@ jobs:
             --publish-cli "$INPUT_PUBLISH_CLI" \
             --publish-stack "$INPUT_PUBLISH_STACK" \
             --publish-server "$INPUT_PUBLISH_SERVER" \
+            --cli-version "$INPUT_CLI_VERSION" \
+            --stack-version "$INPUT_STACK_VERSION" \
+            --server-version "$INPUT_SERVER_VERSION" \
             --publish-plugin-sdk "$INPUT_PUBLISH_PLUGIN_SDK" \
             --publish-sdk "$INPUT_PUBLISH_SDK" \
             --publish-channels-protocol "$INPUT_PUBLISH_CHANNELS_PROTOCOL" \

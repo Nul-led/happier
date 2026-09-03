@@ -6,7 +6,6 @@ import { describe, expect, it } from 'vitest';
 
 import {
   collectBundledPluginUiTranslations,
-  shouldHoldGeneratorWorkspaceLockDuringGeneration,
   readExternalSessionSourceDeclaration,
   renderRetainedCliBundledPluginImplementationEntriesTs,
   renderGeneratedExternalSessionSourcesTs,
@@ -26,18 +25,13 @@ function sourceBetween(startMarker: string, endMarker: string): string {
 }
 
 describe('generator workspace lock policy', () => {
-  it('does not serialize a read-only drift check behind the CLI publication lock', () => {
-    expect(shouldHoldGeneratorWorkspaceLockDuringGeneration('check')).toBe(false);
-    expect(shouldHoldGeneratorWorkspaceLockDuringGeneration('write')).toBe(true);
-  });
-
   it('publishes Plugin SDK API governance after generated inputs and before runtime staging', () => {
     const synchronization = sourceBetween(
       'async function synchronizeGeneratorAuthoringRuntimeClosure(',
       'type PluginAuthorRuntimeModules =',
     );
 
-    expect(synchronization).toContain("if (mode === 'write') {");
+    expect(synchronization).toContain('if (preparationPolicy.publishPluginSdkApiGovernance) {');
     expect(synchronization).toContain('await publishPluginSdkApiGovernanceOutputs();');
     expect(synchronization).toContain(
       "await sync(false, GENERATOR_BUILD_PREP_STAMP_PATH, ['plugin-sdk']);",
@@ -52,7 +46,9 @@ describe('generator workspace lock policy', () => {
       'type PluginAuthorRuntimeModules =',
     );
 
-    expect(synchronization).toContain('generatedCompilerInputMode: mode,');
+    expect(synchronization).toContain(
+      'generatedCompilerInputMode: preparationPolicy.generatedCompilerInputMode,',
+    );
     expect(synchronization).not.toContain("generatedCompilerInputMode: 'write',");
   });
 
@@ -79,8 +75,10 @@ describe('generator workspace lock policy', () => {
       'options.workspaceNames.length === 0 && !options.aggregateOnly',
     );
     expect(mainSource).toContain(
-      'await synchronizeGeneratorAuthoringRuntimeClosure(options.mode, inheritedLockValue);',
+      'await synchronizeGeneratorAuthoringRuntimeClosure(preparationPolicy, inheritedLockValue);',
     );
+    expect(mainSource.indexOf('await loadPluginAuthorRuntimeForScope(authorRuntimeLoadScope);'))
+      .toBeGreaterThan(mainSource.indexOf('await withGeneratorWorkspaceLock('));
   });
 });
 

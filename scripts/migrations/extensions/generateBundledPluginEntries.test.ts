@@ -118,10 +118,14 @@ async function runGeneratorCliWithEnv(
     child.stderr.on('data', (chunk: string) => {
       stderr += chunk;
     });
+    // Author-runtime loading and manifest inspection intentionally share the
+    // workspace lease with the final generator decision. Keep this subprocess
+    // deadline above the observed full inspection cost; it guards a genuine
+    // inherited-lock deadlock, not product runtime behavior.
     const timeout = setTimeout(() => {
       child.kill('SIGKILL');
       rejectRun(new Error(`generator CLI timed out while reentering inherited workspace lock: ${stderr}`));
-    }, 30_000);
+    }, 180_000);
 
     child.once('error', (error) => {
       clearTimeout(timeout);
@@ -237,6 +241,7 @@ function createGeneratorSourceRuntimeClosureProbeLoader(loaderPath: string): voi
       '      "export async function syncSharedDepsForSourceDev(options) {",',
       '      "  if (options?.includeRuntimeDependencies !== true) throw new Error(\'expected runtime dependency synchronization\');",',
       '      "  if (options?.publishBundledPluginArtifacts !== false) throw new Error(\'expected generator-owned publication to remain single-owner\');",',
+      '      "  if (options?.generatedCompilerInputMode !== \'check\') throw new Error(\'temporary generator target must keep canonical compiler inputs read-only\');",',
       '      "  const stampPath = String(options?.stampPath ?? \'\');",',
       '      "  const expectedPreservation = stampPath.endsWith(\'/cli-generator-authoring-stage-prep.json\');",',
       '      "  if ((options?.preserveBundledPluginArtifacts === true) !== expectedPreservation) throw new Error(\'expected stage-prep bundled plugin artifact preservation\');",',
@@ -857,6 +862,8 @@ test('synchronizes the app-local authoring runtime closure before direct, check,
       ].join('\n'),
       'utf8',
     );
+    mkdirSync(resolve(packageRoot, 'dist'), { recursive: true });
+    writeFileSync(resolve(packageRoot, 'dist/index.js'), 'export function activate() {}\n', 'utf8');
     mkdirSync(resolve(packageRoot, 'resources'), { recursive: true });
     writeFileSync(resolve(packageRoot, 'resources/prompt.md'), 'fixture prompt\n', 'utf8');
     writeGeneratorOutputScaffold(repoRoot);
@@ -1490,7 +1497,10 @@ test('separates structural bundled generation records from pack-time source arti
       'export function activate(api: {',
       '  resources: { registerDynamicResource(localId: string, runtime: unknown): void };',
       '}): void {',
-      "  api.resources.registerDynamicResource('live-status', { read: async () => '{}' });",
+      "  api.resources.registerDynamicResource('live-status', {",
+      "    read: async () => '{}',",
+      '    observe: () => ({ dispose() {} }),',
+      '  });',
       '}',
       '',
     ].join('\n'),
@@ -1541,6 +1551,7 @@ test('separates structural bundled generation records from pack-time source arti
   assert.deepEqual(
     firstRecord.files.map((file) => file.relativePath),
     [
+      '.happier-plugin/daemon.js',
       '.happier-plugin/plugin.json',
       'README.md',
       'dist/Z.js',
@@ -1559,7 +1570,7 @@ test('separates structural bundled generation records from pack-time source arti
   const [firstSourceIntegrity] = readGeneratedSourceIntegrities<readonly Readonly<{
     files: readonly Readonly<{ byteLength: number; digest: string; relativePath: string }>[];
     packageName: string;
-  }>(repoRoot);
+  }>>(repoRoot);
   assert.ok(firstSourceIntegrity, 'expected one pack-time source-artifact integrity entry');
   assert.equal(firstSourceIntegrity.packageName, '@happier-dev/plugins-resource-owner');
   const firstManifestDigest = firstSourceIntegrity.files.find(

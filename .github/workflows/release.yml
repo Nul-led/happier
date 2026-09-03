@@ -767,7 +767,7 @@ jobs:
     with:
       select_jobs_explicitly: true
       run_ui_e2e: false
-      run_wsrepl_lima: false
+      run_workspace_sync_real: false
       run_mobile_e2e_android: false
       run_mobile_e2e_ios: false
       run_ui: false
@@ -820,6 +820,46 @@ jobs:
           node scripts/pipeline/run.mjs release-sync-installers --check
           node scripts/pipeline/run.mjs tauri-validate-updater-pubkey --config-path apps/ui/src-tauri/tauri.conf.json
 
+  mutagen_engine_release_gate:
+    name: External signed Mutagen engine release gate
+    needs: [plan]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact authorized release source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ needs.plan.outputs.source_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22.x
+          cache: yarn
+          cache-dependency-path: yarn.lock
+      - name: Enable Corepack
+        run: |
+          corepack enable
+          corepack prepare yarn@1.22.22 --activate
+      - name: Install dependencies
+        env:
+          YARN_PRODUCTION: "false"
+          npm_config_production: "false"
+        uses: ./.github/actions/install-yarn-dependencies
+        with:
+          args: --frozen-lockfile --ignore-engines
+      - name: Acquire the pinned engine from the external signed Mutagen release
+        env:
+          HAPPIER_TEST_MUTAGEN_ENGINE_LIVE_ACQUISITION: "1"
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          yarn workspace @happier-dev/cli-common test:mutagen-engine:live:local
+
   release_notes_admission:
     name: Admit canonical release notes for authorized source
     needs: [plan]
@@ -871,7 +911,7 @@ jobs:
 
   release_admission:
     name: Admit release mutation and publication
-    needs: [plan, mysql_db_contract, platform_service_validation, trust_root_validation]
+    needs: [plan, mysql_db_contract, platform_service_validation, trust_root_validation, mutagen_engine_release_gate]
     if: ${{ always() && needs.plan.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
@@ -898,6 +938,7 @@ jobs:
           MYSQL_GATE_RESULT: ${{ needs.mysql_db_contract.result }}
           PLATFORM_GATE_RESULT: ${{ needs.platform_service_validation.result }}
           TRUST_ROOT_GATE_RESULT: ${{ needs.trust_root_validation.result }}
+          MUTAGEN_ENGINE_GATE_RESULT: ${{ needs.mutagen_engine_release_gate.result }}
           PUBLISH_PLUGIN_SDK: ${{ needs.plan.outputs.publish_plugin_sdk }}
           PUBLISH_SDK: ${{ needs.plan.outputs.publish_sdk }}
           PLUGIN_SDK_VERSION: ${{ needs.plan.outputs.plugin_sdk_version }}
@@ -1364,7 +1405,7 @@ jobs:
 
   publish_npm:
     if: always() && needs.plan.result == 'success' && needs.release_admission.result == 'success' && needs.prepare_release_candidate.result == 'success' && needs.verify_release_candidates.result == 'success' && inputs.dry_run != true && (needs.plan.outputs.publish_cli == 'true' || needs.plan.outputs.publish_stack == 'true' || needs.plan.outputs.publish_server == 'true' || needs.plan.outputs.publish_plugin_sdk == 'true' || needs.plan.outputs.publish_sdk == 'true')
-    needs: [plan, release_admission, prepare_release_candidate, verify_release_candidates]
+    needs: [plan, release_admission, prepare_release_candidate, verify_release_candidates, publish_cli_binaries, publish_hstack_binaries, publish_server_runtime]
     permissions:
       contents: write
       id-token: write
@@ -1374,6 +1415,9 @@ jobs:
       publish_cli: ${{ needs.plan.outputs.publish_cli == 'true' }}
       publish_stack: ${{ needs.plan.outputs.publish_stack == 'true' }}
       publish_server: ${{ needs.plan.outputs.publish_server == 'true' }}
+      cli_version: ${{ needs.publish_cli_binaries.outputs.version }}
+      stack_version: ${{ needs.publish_hstack_binaries.outputs.version }}
+      server_version: ${{ needs.publish_server_runtime.outputs.version }}
       publish_plugin_sdk: ${{ needs.plan.outputs.publish_plugin_sdk == 'true' }}
       publish_sdk: ${{ needs.plan.outputs.publish_sdk == 'true' }}
       plugin_sdk_version: ${{ needs.plan.outputs.plugin_sdk_version }}

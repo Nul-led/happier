@@ -3,7 +3,7 @@
 // @ts-check
 
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
 import {
   commandExists,
@@ -36,7 +36,9 @@ async function main() {
   const requestedDistDir = String(kv.get('--dist-dir') ?? '').trim();
   const skipBuild = flags.has('--skip-build');
   const ownsTemporaryDist = !skipBuild && !requestedDistDir;
-  let distDir = requestedDistDir || join(repoRoot, 'apps', 'ui', 'dist');
+  let distDir = requestedDistDir
+    ? resolve(repoRoot, requestedDistDir)
+    : join(repoRoot, 'apps', 'ui', 'dist');
 
   if (ownsTemporaryDist) {
     const releaseWorkDir = join(repoRoot, 'dist', 'release-work');

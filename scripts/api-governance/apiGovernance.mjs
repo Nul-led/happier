@@ -505,6 +505,19 @@ async function commitStagedOutputs(staged) {
 }
 
 async function runEntrypointDeclarationProfile(profile, options) {
+  if (options.packageRoot === undefined && options.packageRootKind !== undefined) {
+    throw new Error(`${profile.id} packageRootKind requires an explicit packageRoot`);
+  }
+  // Source-complete is the default so an ordinary repository or publication
+  // sandbox run keeps the stricter author-spec comparison; only a caller that
+  // knows it holds an extracted candidate may opt out of it.
+  const packageRootKind = options.packageRootKind ?? 'source-complete-publication-sandbox';
+  if (
+    packageRootKind !== 'source-complete-publication-sandbox'
+    && packageRootKind !== 'extracted-final-candidate'
+  ) {
+    throw new Error(`Unknown ${profile.id} packageRootKind: ${packageRootKind}`);
+  }
   const packageRoot = resolve(options.packageRoot ?? join(REPOSITORY_ROOT, profile.packageRoot));
   const packageJson = JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf8'));
   if (packageJson.name !== profile.packageName && options.packageRoot === undefined) {
@@ -517,7 +530,10 @@ async function runEntrypointDeclarationProfile(profile, options) {
     bundledDependencies: packageJson.bundledDependencies ?? [],
   });
   const { entrypoints, rows } = emitted;
-  if (profile.sourceEntrypointSpecs === true) {
+  // A published tarball ships `dist` and the tracked records, never `src`, so
+  // the author-owned source spec is verifiable only where author source is
+  // present.
+  if (profile.sourceEntrypointSpecs === true && packageRootKind === 'source-complete-publication-sandbox') {
     const sourceSpecs = await projectAuthorEntrypointSpecSurface({
       packageRoot,
       entrypoints,

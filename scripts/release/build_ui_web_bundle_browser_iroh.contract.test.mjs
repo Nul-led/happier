@@ -51,6 +51,11 @@ test('a fresh ui web release packages the browser Iroh assets into its own expor
     /mkdtemp\([\s\S]*?ui-web-dist-/u.test(script),
     'a fresh build without --dist-dir must own a unique temporary output root',
   );
+  assert.match(
+    script,
+    /requestedDistDir\s*\? resolve\(repoRoot, requestedDistDir\)/u,
+    'relative caller targets must resolve once at the release owner before Yarn and Node consumers use them',
+  );
   assert.ok(
     /finally\s*\{[\s\S]*?rm\(distDir,\s*\{\s*recursive:\s*true,\s*force:\s*true\s*\}\)/u.test(script),
     'the release owner must remove its temporary output after materializing the artifact',

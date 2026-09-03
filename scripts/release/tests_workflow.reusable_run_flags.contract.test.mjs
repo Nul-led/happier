@@ -104,9 +104,31 @@ test('real workspace sync obeys the explicit reusable-workflow selection boundar
 
 test('the existing Home Iroh real lane owns both real Chromium completion verticals', async () => {
   const parsed = YAML.parse(await readWorkflow('.github/workflows/tests.yml'));
+  const dispatch = YAML.parse(await readWorkflow('.github/workflows/tests-dispatch.yml'));
   const uiPackage = JSON.parse(await readWorkflow('apps/ui/package.json'));
   const job = parsed?.jobs?.['home-iroh-real'];
   assert.equal(job?.if, '${{ !inputs.select_jobs_explicitly || inputs.run_home_iroh_real }}');
+  assert.equal(job?.name, 'Iroh real transport (native + Chromium)');
+
+  const dispatchCall = Object.values(dispatch?.jobs ?? {}).find(
+    (candidate) => candidate?.uses === './.github/workflows/tests.yml',
+  );
+  assert.match(
+    dispatch?.on?.workflow_dispatch?.inputs?.custom_checks?.description ?? '',
+    /home_iroh_real/u,
+    'the existing manual dispatch must advertise the Home Iroh real selector',
+  );
+  assert.equal(
+    dispatchCall?.with?.run_home_iroh_real,
+    "${{ needs.resolve.outputs.run_home_iroh_real == 'true' }}",
+    'the existing manual dispatch selector must forward to the reusable Home Iroh real lane',
+  );
+  const resolveStep = dispatch?.jobs?.resolve?.steps?.find((step) => step?.id === 'flags');
+  assert.match(
+    resolveStep?.run ?? '',
+    /if has home_iroh_real; then run_home_iroh_real=true; fi/u,
+    'the existing custom-check parser must select the Home Iroh real output',
+  );
 
   const steps = job?.steps ?? [];
   assert.ok(

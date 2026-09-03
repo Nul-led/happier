@@ -214,6 +214,9 @@ async function readNewestWorkspaceBuildInputChangeTimeNs(packageDir) {
       for (const childName of await readdir(path)) await visit(join(path, childName));
       return;
     }
+    // Unlike the output side, inputs intentionally include ctime: a source
+    // file rewritten after the last build and then utimes-backdated keeps its
+    // fresh inode change time, which must still invalidate the stale outputs.
     const changedAtNs = entryStat.ctimeNs > entryStat.mtimeNs
       ? entryStat.ctimeNs
       : entryStat.mtimeNs;
@@ -236,6 +239,13 @@ async function readNewestWorkspaceBuildInputChangeTimeNs(packageDir) {
   }
   return newest;
 }
+
+// An output proves derivation by having been written, so admission compares its
+// last write time. POSIX ctime advances on every inode touch (utimes, chmod,
+// copy) and cannot be backdated, so including it lets recreated or
+// metadata-touched stale outputs pass as current. Windows stat.ctime is the
+// creation time, which stays meaningful for replaced outputs.
+const OUTPUT_CURRENTNESS_INCLUDES_CTIME = process.platform === 'win32';
 
 async function readWorkspaceBuildOutputChangeTimeNs(outputPaths, { newest = false } = {}) {
   let selected = null;
@@ -261,7 +271,7 @@ async function readWorkspaceBuildOutputChangeTimeNs(outputPaths, { newest = fals
         return;
       }
     }
-    const changedAtNs = entryStat.ctimeNs > entryStat.mtimeNs
+    const changedAtNs = OUTPUT_CURRENTNESS_INCLUDES_CTIME && entryStat.ctimeNs > entryStat.mtimeNs
       ? entryStat.ctimeNs
       : entryStat.mtimeNs;
     const shouldSelect = selected === null
@@ -295,7 +305,17 @@ async function workspaceOutputsAppearCurrent(packageDir, expectedTargetMatches) 
       ? readNewestWorkspaceBuildOutputChangeTimeNs(paths)
       : readOldestWorkspaceBuildOutputChangeTimeNs(paths)
   )));
-  return outputTimes.every((outputTime) => outputTime !== null && outputTime >= newestInput);
+  return outputTimes.every((outputTime, index) => {
+    if (outputTime === null) return false;
+    // A post-build source write and the finished build's own output refresh can
+    // land in the same coarse clock tick, so equality cannot order derivation.
+    // Exact targets therefore admit only writes strictly after the newest input
+    // change; a stale verdict costs one converging rebuild. Wildcard families
+    // still admit on any current match.
+    return String(expectedTargetMatches[index].target).includes('*')
+      ? outputTime >= newestInput
+      : outputTime > newestInput;
+  });
 }
 
 function parsePositiveEnvInt(envValue, fallback) {

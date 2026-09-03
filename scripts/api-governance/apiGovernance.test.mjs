@@ -525,6 +525,68 @@ test('the plugin-ui profile requires an author-owned source spec for every publi
   }
 });
 
+test('the plugin-ui profile verifies an extracted final candidate that carries no author source', async () => {
+  // A published tarball ships `dist` and the tracked records, never `src`, so
+  // the author-owned source spec is a source-side contract that cannot be
+  // re-checked against the exact final candidate.
+  const root = await createEntrypointFixture();
+  try {
+    await runApiGovernance({
+      profileId: 'plugin-ui',
+      packageRoot: root,
+      packageRootKind: 'source-complete-publication-sandbox',
+      write: true,
+      check: false,
+    });
+    await rm(join(root, 'src'), { recursive: true, force: true });
+
+    const current = await runApiGovernance({
+      profileId: 'plugin-ui',
+      packageRoot: root,
+      packageRootKind: 'extracted-final-candidate',
+      write: false,
+      check: true,
+    });
+    assert.equal(current.status, 'current');
+    assert.equal(current.summary.changedFiles, 0);
+
+    await writeFile(join(root, 'dist/hidden.d.ts'), [
+      'export declare class Hidden {',
+      '  value: string;',
+      '}',
+      '',
+    ].join('\n'), 'utf8');
+    const drift = await runApiGovernance({
+      profileId: 'plugin-ui',
+      packageRoot: root,
+      packageRootKind: 'extracted-final-candidate',
+      write: false,
+      check: true,
+    });
+    assert.equal(drift.status, 'drift');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('the plugin-ui profile rejects an unknown package root kind', async () => {
+  const root = await createEntrypointFixture();
+  try {
+    await assert.rejects(
+      () => runApiGovernance({
+        profileId: 'plugin-ui',
+        packageRoot: root,
+        packageRootKind: 'packed-candidate',
+        write: false,
+        check: true,
+      }),
+      /Unknown plugin-ui packageRootKind: packed-candidate/u,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('the plugin-ui profile rejects a source spec export absent from prepared declarations', async () => {
   const root = await createEntrypointFixture();
   try {

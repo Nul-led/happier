@@ -21,7 +21,7 @@ on:
           - github
           - blacksmith-linux-4vcpu
       custom_checks:
-        description: "Custom — Comma-separated checks used only when profile=custom (ui,ui_e2e,wsrepl_lima,mobile_e2e_android,mobile_e2e_ios,plugin_workspaces,server,home_iroh_real,cli,stack,typecheck,daemon_e2e,e2e_core,e2e_core_slow,server_db_contract,providers,stress,release_contracts,installers_smoke,binary_smoke,cli_update_continuity,daemon_continuity,session_continuity,release_assets_docker,self_host_systemd,self_host_launchd,self_host_schtasks,self_host_daemon)"
+        description: "Custom — Comma-separated checks used only when profile=custom (ui,ui_e2e,workspace_sync_real,mobile_e2e_android,mobile_e2e_ios,plugin_workspaces,server,home_iroh_real,cli,stack,typecheck,daemon_e2e,e2e_core,e2e_core_slow,server_db_contract,providers,stress,release_contracts,installers_smoke,binary_smoke,cli_update_continuity,daemon_continuity,session_continuity,release_assets_docker,self_host_systemd,self_host_launchd,self_host_schtasks,self_host_daemon)"
         required: true
         default: ""
         type: string
@@ -65,7 +65,7 @@ jobs:
     outputs:
       run_ui_e2e: ${{ steps.flags.outputs.run_ui_e2e }}
       ui_e2e_specs: ${{ steps.flags.outputs.ui_e2e_specs }}
-      run_wsrepl_lima: ${{ steps.flags.outputs.run_wsrepl_lima }}
+      run_workspace_sync_real: ${{ steps.flags.outputs.run_workspace_sync_real }}
       run_mobile_e2e_android: ${{ steps.flags.outputs.run_mobile_e2e_android }}
       run_mobile_e2e_ios: ${{ steps.flags.outputs.run_mobile_e2e_ios }}
       run_ui: ${{ steps.flags.outputs.run_ui }}
@@ -128,7 +128,7 @@ jobs:
 
           if [ "${profile}" = "full" ]; then
             run_ui_e2e=true
-            run_wsrepl_lima=false
+            run_workspace_sync_real=true
             run_mobile_e2e_android=false
             run_mobile_e2e_ios=false
             run_ui=true
@@ -157,7 +157,7 @@ jobs:
             run_self_host_daemon=false
           elif [ "${profile}" = "fast" ]; then
             run_ui_e2e=true
-            run_wsrepl_lima=false
+            run_workspace_sync_real=false
             run_mobile_e2e_android=false
             run_mobile_e2e_ios=false
             run_ui=true
@@ -186,7 +186,7 @@ jobs:
             run_self_host_daemon=false
           else
             run_ui_e2e=false
-            run_wsrepl_lima=false
+            run_workspace_sync_real=false
             run_mobile_e2e_android=false
             run_mobile_e2e_ios=false
             run_ui=false
@@ -217,7 +217,7 @@ jobs:
             if has ui; then run_ui=true; fi
             if has plugin_workspaces; then run_plugin_workspaces=true; fi
             if has ui_e2e; then run_ui_e2e=true; fi
-            if has wsrepl_lima; then run_wsrepl_lima=true; fi
+            if has workspace_sync_real; then run_workspace_sync_real=true; fi
             if has mobile_e2e_android; then run_mobile_e2e_android=true; fi
             if has mobile_e2e_ios; then run_mobile_e2e_ios=true; fi
             if has server; then run_server=true; fi
@@ -247,7 +247,7 @@ jobs:
           {
             echo "run_ui_e2e=${run_ui_e2e}"
             echo "ui_e2e_specs=${ui_e2e_specs}"
-            echo "run_wsrepl_lima=${run_wsrepl_lima}"
+            echo "run_workspace_sync_real=${run_workspace_sync_real}"
             echo "run_mobile_e2e_android=${run_mobile_e2e_android}"
             echo "run_mobile_e2e_ios=${run_mobile_e2e_ios}"
             echo "run_ui=${run_ui}"
@@ -285,7 +285,7 @@ jobs:
       runner_pool: ${{ inputs.runner_pool }}
       run_ui_e2e: ${{ needs.resolve.outputs.run_ui_e2e == 'true' }}
       ui_e2e_specs: ${{ needs.resolve.outputs.ui_e2e_specs }}
-      run_wsrepl_lima: ${{ needs.resolve.outputs.run_wsrepl_lima == 'true' }}
+      run_workspace_sync_real: ${{ needs.resolve.outputs.run_workspace_sync_real == 'true' }}
       run_mobile_e2e_android: ${{ needs.resolve.outputs.run_mobile_e2e_android == 'true' }}
       run_mobile_e2e_ios: ${{ needs.resolve.outputs.run_mobile_e2e_ios == 'true' }}
       run_ui: ${{ needs.resolve.outputs.run_ui == 'true' }}
