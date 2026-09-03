@@ -1005,7 +1005,7 @@ function createIngressHarness(options: IngressHarnessOptions = {}) {
     async query(request: Readonly<{
       index: string;
       prefix?: readonly unknown[];
-      range?: Readonly<{ upper?: number }>;
+      range?: Readonly<{ lower?: number; upper?: number }>;
       order?: 'asc' | 'desc';
       cursor?: string;
       limit: number;
@@ -1024,9 +1024,14 @@ function createIngressHarness(options: IngressHarnessOptions = {}) {
             && row.value.attention === prefix[3];
         }
         if (request.index === 'by-ingress-due') {
+          // Mirrors the canonical raw-ordinal index order: a null due-at key
+          // (0x00) sorts before every numeric key (0x01 ‖ float64), so a range
+          // with no numeric lower bound admits null-due retained rows ahead of
+          // due work, and any numeric lower bound excludes them.
           const dueAt = row.value['due-at'];
-          return row.value['record-kind'] === prefix[0]
-            && typeof dueAt === 'number'
+          if (row.value['record-kind'] !== prefix[0]) return false;
+          if (typeof dueAt !== 'number') return request.range?.lower === undefined;
+          return (request.range?.lower === undefined || dueAt >= request.range.lower)
             && (request.range?.upper === undefined || dueAt <= request.range.upper);
         }
         return false;
@@ -1034,9 +1039,20 @@ function createIngressHarness(options: IngressHarnessOptions = {}) {
         if (request.index !== 'by-ingress-due') {
           return left.rowId === right.rowId ? 0 : left.rowId < right.rowId ? -1 : 1;
         }
-        const leftDueAt = Number(left.value['due-at']);
-        const rightDueAt = Number(right.value['due-at']);
-        return ((leftDueAt - rightDueAt) * (request.order === 'desc' ? -1 : 1))
+        const dueAtKey = (row: StoredStateRow): number | null => {
+          const dueAt = row.value['due-at'];
+          return typeof dueAt === 'number' ? dueAt : null;
+        };
+        const leftDueAt = dueAtKey(left);
+        const rightDueAt = dueAtKey(right);
+        const naturalOrder = leftDueAt === null && rightDueAt === null
+          ? 0
+          : leftDueAt === null
+            ? -1
+            : rightDueAt === null
+              ? 1
+              : leftDueAt - rightDueAt;
+        return (naturalOrder * (request.order === 'desc' ? -1 : 1))
           || (left.rowId === right.rowId ? 0 : left.rowId < right.rowId ? -1 : 1);
       });
       const cursorIndex = request.cursor === undefined
@@ -4227,6 +4243,55 @@ describe('Conversation provider observation ingress', () => {
         payload: { lifecycle: { phase: 'terminal', attemptCount: 1, dueAt: null } },
       });
       expect(obligation?.value).not.toHaveProperty('due-at');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps a due obligation reachable when a full due page holds only null-due retained rows', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    try {
+      const harness = createIngressHarness();
+      // Settled obligations persist as retained rows with a null due-at
+      // projection until retention reclaims them, and the canonical ordinal
+      // index sorts every one of them ahead of all numeric due-at keys.
+      for (let index = 0; index < 32; index += 1) {
+        await ingestConversationProviderObservationForInvocation(
+          observation({
+            occurrenceId: `telegram:update:due-null-page-${index}`,
+            messageRevision: `due:null-page:${index}`,
+            occurredAt: 1_000,
+          }),
+          harness.context,
+        );
+      }
+      const retained = [...harness.rows.values()].filter(
+        (row) => row.deleted !== true && row.value['record-kind'] === 'ingress-obligation',
+      );
+      expect(retained).toHaveLength(32);
+      expect(retained.every((row) => row.value['due-at'] === undefined)).toBe(true);
+
+      // One live obligation is durably due at 1_500.
+      const binding = record(harness.rows.get('binding-1')?.value);
+      const bindingPayload = record(binding.payload);
+      harness.rows.set('binding-1', stateRow({
+        ...binding,
+        payload: { ...bindingPayload, inboundDebounceMs: 500 },
+      }));
+      await expect(ingestConversationProviderObservationForInvocation(
+        observation({
+          occurrenceId: 'telegram:update:due-null-page-live',
+          messageRevision: 'due:null-page:live',
+          occurredAt: 1_000,
+        }),
+        harness.context,
+      )).rejects.toMatchObject({ code: 'channels_ingress_admission_unsettled', retryable: true });
+
+      vi.setSystemTime(1_500);
+      await expect(runConversationIngressDueWorkForInvocation({ now: 1_500 }, harness.context))
+        .resolves.toBe(1);
+      expect(harness.send).toHaveBeenCalledTimes(1);
     } finally {
       vi.useRealTimers();
     }

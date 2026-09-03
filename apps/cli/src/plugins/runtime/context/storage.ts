@@ -16,6 +16,7 @@ import type { PluginStorePaths } from '@/plugins/store/paths';
 import { withJsonOwnerFileLock } from '@/utils/fs/jsonOwnerFileLock';
 import { writeJsonAtomic } from '@/utils/fs/writeJsonAtomic';
 
+import { clonePluginPlainData } from '../plainData';
 import { PluginContextServiceError } from './errors';
 import {
     createUnavailablePluginDaemonDatabaseService,
@@ -163,7 +164,14 @@ function cloneJsonValue<T>(value: T): T {
     if (value === undefined) {
         return value;
     }
-    return JSON.parse(JSON.stringify(value)) as T;
+    // Persisted storage values follow the one plugin plain-data clone owner:
+    // unsupported JSON spellings fail closed instead of being silently coerced
+    // (Date -> string, NaN -> null, undefined members dropped) the way a
+    // JSON.stringify round trip would.
+    return clonePluginPlainData(value, {
+        path: 'plugin storage value',
+        invalid: (message) => new PluginContextServiceError('PLUGIN_STORAGE_VALUE_INVALID', message),
+    });
 }
 
 function throwIfAborted(signal?: AbortSignal): void {

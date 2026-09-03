@@ -582,11 +582,6 @@ describe('external-session live lifecycle fixture', () => {
         body: {
           pendingChangeId: 'pending-live-plugin',
           decision: 'installAndTrust',
-          actorEvidence: {
-            kind: 'authenticatedLocalUser',
-            interactionId: 'install-live-plugin',
-            occurredAtMs: expect.any(Number),
-          },
           optionalSelections: [],
         },
       },

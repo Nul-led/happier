@@ -392,7 +392,6 @@ describe('decideAuthenticatedPluginInstallReview', () => {
         waitForConnected: vi.fn(async () => undefined),
         callLegacy,
         callDataKey,
-        createInteractionId: () => 'interaction-1',
         nowMs: () => 42,
       },
     })).resolves.toMatchObject({ kind: 'committed', pluginId: 'acme.plugin' });
@@ -414,11 +413,6 @@ describe('decideAuthenticatedPluginInstallReview', () => {
       payload: expect.objectContaining({
         pendingChangeId: 'pending-1',
         decision: 'installAndTrust',
-        actorEvidence: {
-          kind: 'authenticatedLocalUser',
-          interactionId: 'interaction-1',
-          occurredAtMs: 42,
-        },
         optionalSelections: [{ accessId: 'optional-secrets', selected: true }],
       }),
     }));
@@ -467,7 +461,6 @@ describe('decideAuthenticatedPluginInstallReview', () => {
         waitForConnected: vi.fn(async () => undefined),
         callLegacy: vi.fn(),
         callDataKey,
-        createInteractionId: () => 'interaction-1',
         nowMs: () => 42,
       },
     })).resolves.toMatchObject({
@@ -627,7 +620,6 @@ describe('decideAuthenticatedPluginInstallReview', () => {
         readMachineId: vi.fn(async () => 'machine-1'),
         createUserSocket: vi.fn(() => reviewSocket),
         waitForConnected: vi.fn(async () => undefined),
-        createInteractionId: () => 'interaction-1',
         nowMs: () => 42,
       },
     })).rejects.toThrow(/RPC_METHOD_NOT_AVAILABLE/);
@@ -638,11 +630,6 @@ describe('decideAuthenticatedPluginInstallReview', () => {
       v: 1,
       pendingChangeId: 'pending-1',
       decision: 'installAndTrust',
-      actorEvidence: {
-        kind: 'authenticatedLocalUser',
-        interactionId: 'interaction-1',
-        occurredAtMs: 42,
-      },
       optionalSelections: [],
     });
     expect(reviewSocket.close).toHaveBeenCalledOnce();
@@ -712,7 +699,6 @@ describe('decideAuthenticatedPluginInstallReview', () => {
           throw new Error('operation has timed out');
         }),
         callDataKey: vi.fn(),
-        createInteractionId: () => 'interaction-1',
         nowMs,
       },
     })).rejects.toMatchObject({
@@ -777,7 +763,6 @@ describe('decideAuthenticatedPluginInstallReview', () => {
         readMachineId: vi.fn(async () => 'machine-1'),
         createUserSocket: vi.fn(() => reviewSocket),
         waitForConnected: vi.fn(async () => undefined),
-        createInteractionId: () => 'interaction-1',
         nowMs,
       },
     })).rejects.toMatchObject({

@@ -39,11 +39,6 @@ describe('machinePluginInstallDecision', () => {
                 v: 1,
                 pendingChangeId: 'pending-1',
                 decision: 'installAndTrust',
-                actorEvidence: {
-                    kind: 'authenticatedLocalUser',
-                    interactionId: 'ui-interaction-1',
-                    occurredAtMs: 42,
-                },
                 optionalSelections: [{ accessId: 'workspace', selected: false }],
             },
         }));

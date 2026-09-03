@@ -1743,11 +1743,6 @@ describe('PluginSettingsHomeScreen', () => {
                 v: 1,
                 pendingChangeId: 'pending-agent-1',
                 decision: 'trustSourceRoot',
-                actorEvidence: {
-                    kind: 'authenticatedLocalUser',
-                    interactionId: expect.any(String),
-                    occurredAtMs: expect.any(Number),
-                },
             },
         }));
         expect(machineRpcWithServerScopeMock).toHaveBeenNthCalledWith(2, expect.objectContaining({
@@ -2188,11 +2183,6 @@ describe('PluginSettingsHomeScreen', () => {
                 v: 1,
                 pendingChangeId: 'pending-source-root-1',
                 decision: 'trustSourceRoot',
-                actorEvidence: {
-                    kind: 'authenticatedLocalUser',
-                    interactionId: expect.any(String),
-                    occurredAtMs: expect.any(Number),
-                },
             },
         }));
         expect(machineRpcWithServerScopeMock).toHaveBeenNthCalledWith(2, expect.objectContaining({
@@ -4618,11 +4608,6 @@ describe('PluginSettingsHomeScreen', () => {
                 v: 1,
                 pendingChangeId: 'pending-curated-1',
                 decision: 'installAndTrust',
-                actorEvidence: {
-                    kind: 'authenticatedLocalUser',
-                    interactionId: expect.any(String),
-                    occurredAtMs: expect.any(Number),
-                },
                 optionalSelections: [],
             },
         }));
@@ -4797,11 +4782,6 @@ describe('PluginSettingsHomeScreen', () => {
                 v: 1,
                 pendingChangeId: 'pending-community-1',
                 decision: 'installAndTrust',
-                actorEvidence: {
-                    kind: 'authenticatedLocalUser',
-                    interactionId: expect.any(String),
-                    occurredAtMs: expect.any(Number),
-                },
                 optionalSelections: [
                     { accessId: 'sessions', selected: true },
                     { accessId: 'workspace', selected: false },

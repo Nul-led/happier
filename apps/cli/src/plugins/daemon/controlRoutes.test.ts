@@ -717,7 +717,7 @@ describe('registerDaemonPluginChangeRoutes', () => {
     expect(requestPluginChange).not.toHaveBeenCalled();
   });
 
-  it('rejects caller-injected evidence on an approved curated marketplace listing', async () => {
+  it('rejects caller-injected fields on an approved curated marketplace listing', async () => {
     const app = fastify();
     const requestPluginChange = vi.fn();
     registerDaemonPluginChangeRoutes(app, {
@@ -754,11 +754,10 @@ describe('registerDaemonPluginChangeRoutes', () => {
           manifestDigest: `sha256:${'a'.repeat(64)}`,
           review: { status: 'approved', reviewedAt: '2026-07-21T00:00:00.000Z' },
           updatePolicy: 'reviewSensitiveChanges',
-          actorEvidence: {
-            kind: 'authenticatedLocalUser',
-            interactionId: 'caller-selected',
-            occurredAtMs: 20,
-          },
+          // The listing a caller claims to have reviewed is a closed schema.
+          // An unrecognized field is rejected rather than carried past the
+          // route into the daemon change owner.
+          approvedByCaller: true,
         },
       },
     });

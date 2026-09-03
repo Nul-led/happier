@@ -143,8 +143,6 @@ describe('CLI scaffold development flow', () => {
       confirm: async () => true,
       requestChange: async (change) => await service.requestPluginChange(change),
       decideChange: async (decision) => await service.decidePluginChange(decision),
-      createInteractionId: () => 'cold-start-author-test',
-      nowMs: () => 1,
     }, {
       ...(options?.signal ? { signal: options.signal } : {}),
       approval: options?.approval ?? 'prompt',
@@ -574,8 +572,6 @@ describe('CLI scaffold development flow', () => {
       confirm: async () => true,
       requestChange: async (change) => await service.requestPluginChange(change),
       decideChange: async (decision) => await service.decidePluginChange(decision),
-      createInteractionId: () => 'external-lifecycle-test',
-      nowMs: () => 1,
     }, {
       ...(options?.signal ? { signal: options.signal } : {}),
       approval: options?.approval ?? 'prompt',

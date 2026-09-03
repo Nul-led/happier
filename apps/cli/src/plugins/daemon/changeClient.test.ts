@@ -77,7 +77,6 @@ describe('requestUserPluginChange', () => {
       ensureDaemon,
       readStatus,
       decideChange,
-      nowMs: () => 1,
     })).resolves.toEqual(packageReview);
 
     await expect(decideUserPluginChange({
@@ -87,7 +86,6 @@ describe('requestUserPluginChange', () => {
       ensureDaemon,
       readStatus,
       decideChange,
-      nowMs: () => 2,
     })).resolves.toEqual({
       kind: 'committed',
       pluginId: 'acme.example',
@@ -376,7 +374,6 @@ describe('requestUserPluginChange', () => {
         }),
       }),
       decideChange,
-      nowMs: () => 1,
     })).resolves.toEqual(expect.objectContaining({ kind: 'committed' }));
 
     expect(ensureDaemon).toHaveBeenCalledTimes(1);
@@ -428,7 +425,6 @@ describe('requestUserPluginChange', () => {
         }),
       }),
       decideChange,
-      nowMs: () => 1,
     });
 
     expect(confirm).toHaveBeenCalledTimes(3);
@@ -672,11 +668,14 @@ describe('requestUserPluginChange', () => {
       confirm: async () => true,
       requestChange,
       decideChange,
-      nowMs: () => 20,
     })).resolves.toEqual(expect.objectContaining({ kind: 'committed' }));
 
     expect(requestChange).toHaveBeenCalledWith(expect.objectContaining({
-      expectedMarketplaceListing: expect.not.objectContaining({
+      expectedMarketplaceListing: expect.objectContaining({
+        pluginId: 'acme.example',
+        packageName: '@acme/example',
+        version: '1.2.3',
+        review: { status: 'approved', reviewedAt: '2026-07-21T00:00:00.000Z' },
       }),
     }));
     expect(decideChange).toHaveBeenCalledWith(expect.objectContaining({
@@ -800,7 +799,6 @@ describe('requestUserPluginChange', () => {
       requestChange,
       decideChange,
       confirm,
-      nowMs: () => 1,
     })).resolves.toEqual({
       kind: 'committed',
       pluginId: 'acme.example',
@@ -877,7 +875,6 @@ describe('requestUserPluginChange', () => {
       }),
       decideChange,
       confirm,
-      nowMs: () => 1,
     })).resolves.toMatchObject({
       kind: 'failed',
       code: 'plugin_explicit_trust_target_mismatch',
