@@ -5,6 +5,7 @@ import type { Log } from "@sentry/node";
 import { parseOptionalBooleanEnv } from "@/config/env";
 import { redactSentryEvent, redactSentryLog } from "./sentryLogRedaction";
 import { redactPublicShareCapabilityUrl } from "@happier-dev/protocol";
+import { redactHttpRequestUrlForLog } from "@/utils/logging/redactHttpRequestUrlForLog";
 
 type ServerSentryConfig = {
     dsn: string;
@@ -212,9 +213,7 @@ export function captureFastifyExceptionForSentry(error: unknown, request: {
 
     const method = typeof request.method === "string" ? request.method : "unknown";
     const url = typeof request.url === "string" ? request.url : "";
-    const path = redactPublicShareCapabilityUrl(
-        url.includes("?") ? url.slice(0, url.indexOf("?")) : url,
-    );
+    const path = redactHttpRequestUrlForLog(url);
     const ip = typeof request.ip === "string" ? request.ip : undefined;
     const userAgent = typeof request.headers?.["user-agent"] === "string" ? (request.headers["user-agent"] as string) : undefined;
     const safeError = error instanceof Error

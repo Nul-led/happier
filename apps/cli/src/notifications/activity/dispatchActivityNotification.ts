@@ -23,7 +23,10 @@ import {
   sendExpoPushActivityNotificationAsync,
   type ExpoPushActivityNotificationSender,
 } from './sendExpoPushActivityNotification';
-import { sendWebhookActivityNotificationAsync } from './sendWebhookActivityNotification';
+import {
+  sendWebhookActivityNotificationAsync,
+  type WebhookActivityNotificationNetworkDependencies,
+} from './sendWebhookActivityNotification';
 
 function isTopicEnabled(channel: {
   enabled: boolean;
@@ -172,6 +175,7 @@ export async function dispatchActivityNotificationAsync(params: Readonly<{
   liveActivityRemoteSender?: LiveActivityRemoteUpdateSender | null;
   nowMs?: () => number;
   dedupeWindowMs?: number;
+  webhookNetwork?: WebhookActivityNotificationNetworkDependencies;
 }>): Promise<Readonly<{ attemptedChannels: number; deliveredChannels: number }>> {
   const settings = accountSettingsParse(params.settings ?? {});
   const channels = resolveNotificationChannelsV1FromAccountSettings(settings);
@@ -253,6 +257,7 @@ export async function dispatchActivityNotificationAsync(params: Readonly<{
         event: params.event,
         settingsSecretsReadKeys: params.settingsSecretsReadKeys,
         nowMs: params.nowMs,
+        ...(params.webhookNetwork ? { network: params.webhookNetwork } : {}),
       });
       deliveredChannels += 1;
     } catch (error) {

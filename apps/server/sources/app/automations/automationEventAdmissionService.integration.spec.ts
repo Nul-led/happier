@@ -3567,7 +3567,7 @@ describe("Automation Event admission", () => {
         // rejoins the prefix and admits the suffix, and only the genuinely new
         // suffix row consumes the freed slot.
         await db.automationRun.update({
-            where: { id: "retry-capacity-run-9999" },
+            where: { id: "retry-capacity-run-9998" },
             data: {
                 state: "failed",
                 executionDispatchState: "settled",

@@ -60,6 +60,41 @@ function targetWhere(target: ClaimTargetV1) {
     } as const;
 }
 
+/**
+ * Custody of an attempt that has already run: the exact frozen delivery target,
+ * the exact claimant machine installation, the exact lease identity and row
+ * revision, and a lease that has not expired.
+ *
+ * Plugin, materialization and endpoint currentness are deliberately absent.
+ * They are proven strictly *before* the effect — at claim, at every renewal
+ * (including the `executionStarted` transition immediately before dispatch),
+ * and again by the invocation-reference validator the handler's host calls run
+ * through. Re-deriving them here would refuse the settlement of a result the
+ * plugin already produced, leaving the row claimed until its lease expires and
+ * then re-executing the same delivery — the one duplicate the at-least-once
+ * contract asks the queue not to manufacture on its own.
+ */
+function startedAttemptCustodyWhereV1(params: Readonly<{
+    accountId: string;
+    deliveryId: string;
+    target: ClaimTargetV1;
+    lease: LeaseIdentityV1;
+    now: Date;
+}>) {
+    return {
+        id: params.deliveryId,
+        accountId: params.accountId,
+        ...targetWhere(params.target),
+        state: "claimed",
+        leaseId: params.lease.leaseId,
+        revision: params.lease.revision,
+        claimedByMachineId: params.target.materialization.machineId,
+        claimedByMachineInstallationId: params.target.machineInstallationId,
+        executionStartedAt: { not: null },
+        leaseExpiresAt: { gt: params.now },
+    } as const;
+}
+
 function clearLeaseFields() {
     return {
         leaseId: null,
@@ -656,47 +691,19 @@ export async function completePluginWebhookDeliveryV1(params: Readonly<{
     now?: Date;
 }>): Promise<PluginWebhookSettleResultV1> {
     const now = params.now ?? new Date();
-    const serverIdentityId = await getOrCreateServerIdentityId(process.env);
     return await inTx(async (tx) => {
         const fence = await acquireAccountEncryptionTransitionFenceInTx(tx, params.accountId);
         if (fence.status !== "ready") {
             return PluginWebhookSettleResultV1Schema.parse({ kind: "unavailable", code: "account_transition" });
         }
-        const current = await tx.pluginWebhookDelivery.findFirst({
-            where: {
-                id: params.deliveryId,
-                accountId: params.accountId,
-                ...targetWhere(params.target),
-                state: "claimed",
-                leaseId: params.lease.leaseId,
-                revision: params.lease.revision,
-                executionStartedAt: { not: null },
-                leaseExpiresAt: { gt: now },
-                endpoint: { enabled: true, revokedAt: null, releasedAt: null },
-            },
-            select: { targetPluginVersion: true },
-        });
-        if (!current || !(await isCurrentAuthenticatedTargetInTx({
-            tx,
-            accountId: params.accountId,
-            target: params.target,
-            version: current.targetPluginVersion,
-            serverIdentityId,
-        }))) {
-            return PluginWebhookSettleResultV1Schema.parse({ kind: "leaseLost" });
-        }
         const updated = await tx.pluginWebhookDelivery.updateMany({
-            where: {
-                id: params.deliveryId,
+            where: startedAttemptCustodyWhereV1({
                 accountId: params.accountId,
-                ...targetWhere(params.target),
-                state: "claimed",
-                leaseId: params.lease.leaseId,
-                revision: params.lease.revision,
-                executionStartedAt: { not: null },
-                leaseExpiresAt: { gt: now },
-                endpoint: { enabled: true, revokedAt: null, releasedAt: null },
-            },
+                deliveryId: params.deliveryId,
+                target: params.target,
+                lease: params.lease,
+                now,
+            }),
             data: {
                 state: "succeeded",
                 payload: getActivePrismaRuntime().DbNull,
@@ -733,7 +740,6 @@ export async function failPluginWebhookDeliveryV1(params: Readonly<{
     now?: Date;
 }>): Promise<PluginWebhookSettleResultV1> {
     const now = params.now ?? new Date();
-    const serverIdentityId = await getOrCreateServerIdentityId(process.env);
     if (params.retryDelayMs !== undefined && (
         !Number.isSafeInteger(params.retryDelayMs)
         || params.retryDelayMs < 1
@@ -752,42 +758,22 @@ export async function failPluginWebhookDeliveryV1(params: Readonly<{
         if (fence.status !== "ready") {
             return PluginWebhookSettleResultV1Schema.parse({ kind: "unavailable", code: "account_transition" });
         }
+        const custodyWhere = startedAttemptCustodyWhereV1({
+            accountId: params.accountId,
+            deliveryId: params.deliveryId,
+            target: params.target,
+            lease: params.lease,
+            now,
+        });
         const current = await tx.pluginWebhookDelivery.findFirst({
-            where: {
-                id: params.deliveryId,
-                accountId: params.accountId,
-                ...targetWhere(params.target),
-                state: "claimed",
-                leaseId: params.lease.leaseId,
-                revision: params.lease.revision,
-                executionStartedAt: { not: null },
-                leaseExpiresAt: { gt: now },
-                endpoint: { enabled: true, revokedAt: null, releasedAt: null },
-            },
-            select: { attemptCount: true, targetPluginVersion: true },
+            where: custodyWhere,
+            select: { attemptCount: true },
         });
         if (!current) return PluginWebhookSettleResultV1Schema.parse({ kind: "leaseLost" });
-        if (!(await isCurrentAuthenticatedTargetInTx({
-            tx,
-            accountId: params.accountId,
-            target: params.target,
-            version: current.targetPluginVersion,
-            serverIdentityId,
-        }))) {
-            return PluginWebhookSettleResultV1Schema.parse({ kind: "leaseLost" });
-        }
         const deadLetter = params.result.kind === "deadLetter"
             || current.attemptCount >= PLUGIN_WEBHOOK_MAX_ATTEMPTS_V1;
         const updated = await tx.pluginWebhookDelivery.updateMany({
-            where: {
-                id: params.deliveryId,
-                accountId: params.accountId,
-                state: "claimed",
-                leaseId: params.lease.leaseId,
-                revision: params.lease.revision,
-                executionStartedAt: { not: null },
-                leaseExpiresAt: { gt: now },
-            },
+            where: custodyWhere,
             data: deadLetter
                 ? deadLetterMutation(
                     now,

@@ -208,6 +208,62 @@ describe("plugin webhook durable delivery admission", () => {
         return { account, route, endpoint };
     }
 
+    async function seedAdditionalTarget(
+        machineId: string,
+        installationId: string,
+        materializationId: string,
+    ) {
+        await db.machine.create({
+            data: {
+                id: machineId,
+                accountId: "account-delivery",
+                metadata: "{}",
+                installationId,
+                pluginMaterializationRevision: 1n,
+                operationProtocolCapabilities: { pluginWebhookClaim: { protocolVersions: [1] } },
+                operationProtocolCapabilitiesRevision: 1,
+            },
+        });
+        await db.pluginMachineMaterialization.create({
+            data: {
+                accountId: "account-delivery",
+                serverIdentityId: SERVER_IDENTITY_ID,
+                machineId,
+                materializationId,
+                pluginId: "acme.github",
+                version: "1.0.0",
+                sourceClass: "registryPackage",
+                portableRelease: true,
+                archiveDigestSha256: RELEASE_FACTS.archiveDigestSha256,
+                uiArtifacts: [],
+                enabled: true,
+                trustState: "trusted",
+                observedAt: NOW,
+            },
+        });
+    }
+
+    async function moveEndpointTarget(params: Readonly<{
+        revision: number;
+        previous: Readonly<{ machineId: string; machineInstallationId: string; materializationId: string }>;
+        next: Readonly<{ machineId: string; machineInstallationId: string; materializationId: string }>;
+    }>) {
+        await db.pluginWebhookEndpoint.update({
+            where: { id: "wh_ep_AAECAwQFBgcICQoLDA0ODw" },
+            data: {
+                previousTargetMachineId: params.previous.machineId,
+                previousTargetMachineInstallationId: params.previous.machineInstallationId,
+                previousTargetMaterializationId: params.previous.materializationId,
+                previousTargetPluginVersion: "1.0.0",
+                targetMachineId: params.next.machineId,
+                targetMachineInstallationId: params.next.machineInstallationId,
+                targetMaterializationId: params.next.materializationId,
+                targetPluginVersion: "1.0.0",
+                revision: params.revision,
+            },
+        });
+    }
+
     function admissionParams(endpointRevision = 1) {
         return {
             endpointId: "wh_ep_AAECAwQFBgcICQoLDA0ODw",
@@ -493,6 +549,57 @@ describe("plugin webhook durable delivery admission", () => {
             hint: { pluginDomain: "webhook", pluginId: "acme.github" },
         });
         expect((await readWebhookChange()).cursor).toBeGreaterThan(beforeMove.cursor);
+    });
+
+    it("moves every stale frozen target after the endpoint moved twice, not only the immediately prior one", async () => {
+        // A -> B -> C. The row admitted while the endpoint pointed at A is as
+        // stranded as the one admitted at B: neither will ever be claimed,
+        // because claim only grants work frozen to a currently claimable
+        // target. Selecting by the endpoint's *immediately prior* target would
+        // silently leave the A row behind with no second operation able to
+        // reach it.
+        await seedCurrentTarget();
+        await expect(admitPluginWebhookDeliveryV1(admissionParams())).resolves.toMatchObject({ kind: "admitted" });
+        await seedAdditionalTarget("machine-2", "installation-2", "materialization-2");
+        await moveEndpointTarget({
+            revision: 2,
+            previous: { machineId: "machine-1", machineInstallationId: "installation-1", materializationId: "materialization-1" },
+            next: { machineId: "machine-2", machineInstallationId: "installation-2", materializationId: "materialization-2" },
+        });
+        await expect(admitPluginWebhookDeliveryV1({
+            ...admissionParams(2),
+            deliveryIdentityDigest: "b".repeat(64),
+        })).resolves.toMatchObject({ kind: "admitted" });
+        await seedAdditionalTarget("machine-3", "installation-3", "materialization-3");
+        await moveEndpointTarget({
+            revision: 3,
+            previous: { machineId: "machine-2", machineInstallationId: "installation-2", materializationId: "materialization-2" },
+            next: { machineId: "machine-3", machineInstallationId: "installation-3", materializationId: "materialization-3" },
+        });
+
+        await expect(movePendingPluginWebhookDeliveriesV1({
+            accountId: "account-delivery",
+            webhookEndpointId: "wh_ep_AAECAwQFBgcICQoLDA0ODw",
+            endpointRevision: 3,
+            previousTargetMaterialization: {
+                machineId: "machine-2",
+                materializationId: "materialization-2",
+                pluginId: "acme.github",
+            },
+            targetMaterialization: {
+                machineId: "machine-3",
+                materializationId: "materialization-3",
+                pluginId: "acme.github",
+            },
+        })).resolves.toEqual({ moved: 2, skippedClaimed: 0, nextCursor: null, done: true });
+        await expect(db.pluginWebhookDelivery.count({
+            where: {
+                targetMachineId: "machine-3",
+                targetMachineInstallationId: "installation-3",
+                targetMaterializationId: "materialization-3",
+                targetPluginVersion: "1.0.0",
+            },
+        })).resolves.toBe(2);
     });
 
     it("fails closed when endpoint revision, Account mode, or exact target currentness changed", async () => {

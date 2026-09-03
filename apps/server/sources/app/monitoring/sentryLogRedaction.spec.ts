@@ -96,6 +96,24 @@ describe("app/monitoring/sentryLogRedaction", () => {
         );
     });
 
+    it("keeps OAuth code and state query material out of Sentry URL projections", () => {
+        const code = "SENTINEL_OAUTH_CODE";
+        const state = "SENTINEL_OAUTH_STATE";
+        const redacted = redactSentryEvent({
+            request: {
+                url: `https://server.example.test/v1/auth/external/github/callback?code=${code}&state=${state}`,
+            },
+            breadcrumbs: [{
+                message: "oauth callback",
+                data: { url: `/v1/auth/external/github/callback?code=${code}&state=${state}` },
+            }],
+        });
+
+        expect(JSON.stringify(redacted)).not.toContain(code);
+        expect(JSON.stringify(redacted)).not.toContain(state);
+        expect((redacted.request as { url: string }).url).toBe("https://server.example.test/v1/auth/external/github/callback");
+    });
+
     it("redacts the public-share messages grant header from Sentry request events", () => {
         const grant = "SENTINEL_PUBLIC_SHARE_MESSAGES_GRANT";
         const event = {

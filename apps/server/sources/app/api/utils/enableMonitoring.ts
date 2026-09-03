@@ -15,7 +15,7 @@ import {
     sendDatabaseReadinessResponse,
 } from "@/app/monitoring/readiness";
 import { isShutdown } from "@/utils/process/shutdown";
-import { redactPublicShareCapabilityUrl } from "@happier-dev/protocol";
+import { redactHttpRequestUrlForLog } from "@/utils/logging/redactHttpRequestUrlForLog";
 
 type EnableMonitoringOptions = Readonly<{
     env?: MonitoringReadinessEnv;
@@ -33,7 +33,7 @@ export function enableMonitoring(app: Fastify, options: EnableMonitoringOptions 
         const method = request.method;
         // Use routeOptions.url for the route template, fallback to parsed URL path
         const route = request.routeOptions?.url
-            || redactPublicShareCapabilityUrl(request.url.split('?')[0])
+            || redactHttpRequestUrlForLog(request.url)
             || 'unknown';
         const status = reply.statusCode.toString();
 

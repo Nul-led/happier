@@ -7,6 +7,7 @@ import { resolveUiConfig } from "@/app/api/uiConfig";
 import { captureFastifyExceptionForSentry } from "@/app/monitoring/sentry";
 import { isServerApiRequestPath } from "./serverApiPath";
 import { redactPublicShareCapabilityUrl } from "@happier-dev/protocol";
+import { redactHttpRequestUrlForLog } from "@/utils/logging/redactHttpRequestUrlForLog";
 
 function sendGlobalErrorResponse(
     reply: FastifyReply,
@@ -28,7 +29,7 @@ export function enableErrorHandlers(app: Fastify) {
     // Global error handler
     app.setErrorHandler(async (error: FastifyError, request, reply) => {
         const method = request.method;
-        const url = redactPublicShareCapabilityUrl(request.url);
+        const url = redactHttpRequestUrlForLog(request.url);
         const errorMessage = redactPublicShareCapabilityUrl(error.message);
         const stack = typeof error.stack === "string"
             ? redactPublicShareCapabilityUrl(error.stack)
@@ -140,7 +141,7 @@ export function enableErrorHandlers(app: Fastify) {
         const userAgent = request.headers['user-agent'] || 'unknown';
         const contentType = request.headers['content-type'] || 'unknown';
         const hasAuthorization = typeof request.headers.authorization === 'string' && request.headers.authorization.length > 0;
-        const safeUrl = redactPublicShareCapabilityUrl(request.url);
+        const safeUrl = redactHttpRequestUrlForLog(request.url);
         log(
             { module: '404-handler', method: request.method, path: safeUrl, userAgent, contentType, hasAuthorization },
             '404 - Not found'
@@ -151,7 +152,7 @@ export function enableErrorHandlers(app: Fastify) {
     // Error hook for additional logging
     app.addHook('onError', async (request, reply, error) => {
         const method = request.method;
-        const url = redactPublicShareCapabilityUrl(request.url);
+        const url = redactHttpRequestUrlForLog(request.url);
         const errorMessage = redactPublicShareCapabilityUrl(error.message);
         const duration = (Date.now() - (request.startTime || Date.now())) / 1000;
 
@@ -180,7 +181,7 @@ export function enableErrorHandlers(app: Fastify) {
                     module: 'fastify-serialization-error',
                     level: 'error',
                     method: request.method,
-                    url: redactPublicShareCapabilityUrl(request.url),
+                    url: redactHttpRequestUrlForLog(request.url),
                     stack: typeof error?.stack === "string"
                         ? redactPublicShareCapabilityUrl(error.stack)
                         : error?.stack

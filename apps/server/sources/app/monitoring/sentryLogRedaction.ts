@@ -1,5 +1,6 @@
 import type { Log } from "@sentry/node";
 import { redactPublicShareCapabilityUrl } from "@happier-dev/protocol";
+import { redactHttpRequestUrlForLog } from "@/utils/logging/redactHttpRequestUrlForLog";
 
 const REDACTED_VALUE = "[redacted]";
 
@@ -58,6 +59,29 @@ export function redactSentryLog(log: Log): Log {
     };
 }
 
+/**
+ * Routes Sentry's canonical URL-shaped projections through the shared
+ * request-URL log owner so their query strings and fragments are removed
+ * universally, not just for capability paths. Arbitrary string fields keep
+ * capability-only redaction so sentence-like text is not mangled.
+ */
+function redactSentryBreadcrumbUrl(breadcrumb: unknown): unknown {
+    if (!isPlainObject(breadcrumb)) return breadcrumb;
+    const { data } = breadcrumb;
+    if (!isPlainObject(data) || typeof data.url !== "string") return breadcrumb;
+    return { ...breadcrumb, data: { ...data, url: redactHttpRequestUrlForLog(data.url) } };
+}
+
 export function redactSentryEvent<T>(event: T): T {
-    return redactRecursive(event, new WeakMap()) as T;
+    const redacted = redactRecursive(event, new WeakMap());
+    if (!isPlainObject(redacted)) return redacted as T;
+    const next: Record<string, unknown> = { ...redacted };
+    const request = next.request;
+    if (isPlainObject(request) && typeof request.url === "string") {
+        next.request = { ...request, url: redactHttpRequestUrlForLog(request.url) };
+    }
+    if (Array.isArray(next.breadcrumbs)) {
+        next.breadcrumbs = next.breadcrumbs.map(redactSentryBreadcrumbUrl);
+    }
+    return next as T;
 }

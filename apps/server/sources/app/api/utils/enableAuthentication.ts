@@ -8,10 +8,10 @@ import { captureAccountStoredContentCompatibilityForHttpRequest } from "@/app/cl
 import {
     ACCOUNT_DIRECTORY_ERROR_CODES_V1,
     AuthTokenProvenanceSchema,
-    redactPublicShareCapabilityUrl,
     type AuthTokenKind,
     type AuthTokenProvenance,
 } from "@happier-dev/protocol";
+import { redactHttpRequestUrlForLog } from "@/utils/logging/redactHttpRequestUrlForLog";
 import {
     isRestrictedAuthTokenDeniedForRoute,
     PRESENT_USER_REQUIRED_ERROR,
@@ -78,7 +78,7 @@ export function enableAuthentication(app: Fastify) {
             if (logDiagnostics) {
                 log(
                     { module: 'auth-decorator' },
-                    `Auth check - path: ${redactPublicShareCapabilityUrl(request.url)}, has header: ${!!authHeader}`,
+                    `Auth check - path: ${redactHttpRequestUrlForLog(request.url)}, has header: ${!!authHeader}`,
                 );
             }
             if (!authHeader || !authHeader.startsWith('Bearer ')) {

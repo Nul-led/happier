@@ -97,4 +97,46 @@ describe('public-share capability logging', () => {
             await app.close();
         }
     });
+
+    it('keeps OAuth code and state query material out of Fastify success, error, and 404 boundaries', async () => {
+        const code = 'SENTINEL_OAUTH_CODE';
+        const state = 'SENTINEL_OAUTH_STATE';
+        const query = `?code=${code}&state=${state}`;
+        const records: string[] = [];
+        const destination = new Writable({
+            write(chunk, _encoding, callback) {
+                records.push(String(chunk));
+                callback();
+            },
+        });
+        const requestLogger = pino({
+            level: 'info',
+            serializers: { req: serializeHttpRequestForLog },
+        }, destination);
+        const infoSpy = vi.spyOn(logger, 'info').mockImplementation(() => logger);
+        const app = Fastify({ loggerInstance: requestLogger });
+        enableErrorHandlers(app as any);
+        app.get('/v1/auth/external/github/callback', async () => ({ ok: true }));
+        app.get('/v1/auth/external/github/finalize', async () => {
+            throw new Error('finalize failed');
+        });
+
+        try {
+            await app.inject({ method: 'GET', url: `/v1/auth/external/github/callback${query}` });
+            await app.inject({ method: 'GET', url: `/v1/auth/external/github/finalize${query}` });
+            const missing = await app.inject({ method: 'GET', url: `/v1/auth/external/github/missing${query}` });
+            const rendered = [...records, ...infoSpy.mock.calls.flat().map(render)].join('\n');
+            expect(rendered).not.toContain(code);
+            expect(rendered).not.toContain(state);
+            expect(rendered).toContain('/v1/auth/external/github/callback');
+            expect(rendered).toContain('GET');
+            const missingBody = missing.json();
+            expect(missingBody.method).toBe('GET');
+            expect(String(missing.body)).not.toContain(code);
+            expect(String(missing.body)).not.toContain(state);
+        } finally {
+            infoSpy.mockRestore();
+            await app.close();
+        }
+    });
 });

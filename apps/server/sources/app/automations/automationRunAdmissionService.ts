@@ -420,8 +420,9 @@ async function insertPreparedAutomationRunTx(params: Readonly<{
 /**
  * The one admission owner for trigger and direct invocation batches. It
  * rejoins immutable occurrences before mutable checks, freezes current recipe
- * and assignments, and applies Event/Conversation capacity once across every
- * net-new capacity-consuming candidate in this bounded request.
+ * and assignments, and applies Event/Conversation capacity as deterministic
+ * prefix admission across the net-new capacity-consuming candidates of this
+ * bounded request.
  */
 export async function admitAutomationRunsTx(params: Readonly<{
     tx: Tx;
@@ -509,18 +510,20 @@ export async function admitAutomationRunsTx(params: Readonly<{
         triggersById,
     }));
 
-    const netNewCapacityAdmissions = prepared.filter((result): result is Readonly<{
-        kind: "prepared";
-        admission: PreparedAutomationRunAdmission;
-    }> => result.kind === "prepared" && consumesEventConversationCapacity(result.admission.cause));
-    // One bounded request is net-new-capacity atomic. Exact rejoins are already
-    // decided above and consume nothing, so only the net-new remainder is
-    // counted; if the Account cannot hold all of it, none of it is admitted.
-    // Admitting a request prefix would make a caller's checkpoint safety depend
-    // on positional ordering and leave a partially consumed request whose
-    // blocked positions have no committed row to rejoin on retry.
-    let capacityBlocksNetNewRequest = false;
-    if (netNewCapacityAdmissions.length > 0) {
+    // Capacity is deterministic prefix admission in request order. Exact
+    // rejoins are already decided above and consume nothing; every genuinely
+    // new capacity-consuming row decrements the single remaining-capacity
+    // count, and ordered positions beyond it return typed `capacity` as the
+    // request's retryable, checkpoint-unsafe remainder. A caller retries the
+    // same request, rejoins the committed prefix through the canonical
+    // occurrence owner, and admits the suffix once ordinary terminal recovery
+    // frees capacity. No reservation, rollback, staging, fairness, progress
+    // cursor, or second capacity counter exists; the count below stays the one
+    // capacity owner, evaluated inside this request's fence/transaction.
+    let remainingEventConversationCapacity = 0;
+    if (prepared.some((result) => (
+        result.kind === "prepared" && consumesEventConversationCapacity(result.admission.cause)
+    ))) {
         const occupied = await params.tx.automationRun.count({
             where: {
                 accountId: params.accountId,
@@ -531,11 +534,10 @@ export async function admitAutomationRunsTx(params: Readonly<{
                 state: { notIn: [...AUTOMATION_RUN_TERMINAL_STATES] },
             },
         });
-        const remainingCapacity = Math.max(
+        remainingEventConversationCapacity = Math.max(
             0,
             MAX_NON_TERMINAL_EVENT_CONVERSATION_RUNS_PER_ACCOUNT - occupied,
         );
-        capacityBlocksNetNewRequest = netNewCapacityAdmissions.length > remainingCapacity;
     }
     const results: AutomationRunAdmissionResult[] = [];
     for (const result of prepared) {
@@ -543,18 +545,20 @@ export async function admitAutomationRunsTx(params: Readonly<{
             results.push(result);
             continue;
         }
-        if (
-            capacityBlocksNetNewRequest
-            && consumesEventConversationCapacity(result.admission.cause)
-        ) {
+        const consumesCapacity = consumesEventConversationCapacity(result.admission.cause);
+        if (consumesCapacity && remainingEventConversationCapacity <= 0) {
             results.push({ kind: "ineligible", reason: "capacity" });
             continue;
         }
-        results.push(await insertPreparedAutomationRunTx({
+        const admitted = await insertPreparedAutomationRunTx({
             tx: params.tx,
             accountId: params.accountId,
             admission: result.admission,
-        }));
+        });
+        // Only a genuinely inserted row consumes capacity; rejoins never
+        // reach this loop and blocked positions decrement nothing.
+        if (consumesCapacity) remainingEventConversationCapacity -= 1;
+        results.push(admitted);
     }
     return results;
 }

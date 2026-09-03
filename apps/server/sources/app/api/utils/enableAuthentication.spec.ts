@@ -51,6 +51,42 @@ describe("enableAuthentication (defensive error handling)", () => {
         await app.close();
     });
 
+    it("keeps OAuth code and state query material out of auth decorator diagnostics", async () => {
+        const code = "SENTINEL_OAUTH_CODE";
+        const state = "SENTINEL_OAUTH_STATE";
+        const diagnosticEnvNames = ["HAPPIER_AUTH_DECORATOR_DIAGNOSTIC_LOGS", "HAPPY_AUTH_DECORATOR_DIAGNOSTIC_LOGS"] as const;
+        const previousValues = diagnosticEnvNames.map((name) => process.env[name]);
+        for (const name of diagnosticEnvNames) process.env[name] = "1";
+
+        try {
+            const app = Fastify({ logger: false }) as any;
+            enableAuthentication(app);
+            await app.ready();
+
+            const reply = {
+                code: vi.fn(() => reply),
+                send: vi.fn(() => reply),
+            };
+            await app.authenticate(
+                { headers: {}, url: `/v1/auth/external/github/callback?code=${code}&state=${state}` },
+                reply,
+            );
+
+            const rendered = log.mock.calls.flat().map((value: unknown) => String(value)).join(" ");
+            expect(rendered).not.toContain(code);
+            expect(rendered).not.toContain(state);
+            expect(rendered).toContain("/v1/auth/external/github/callback");
+
+            await app.close();
+        } finally {
+            diagnosticEnvNames.forEach((name, index) => {
+                const previous = previousValues[index];
+                if (previous === undefined) delete process.env[name];
+                else process.env[name] = previous;
+            });
+        }
+    });
+
     it("returns 403 account-disabled when eligibility blocks a disabled account", async () => {
         verifyToken.mockResolvedValueOnce({ userId: "u1", authTokenKind: "account", authority: "present_user" });
         enforceLoginEligibility.mockResolvedValueOnce({ ok: false, statusCode: 403, error: "account-disabled" } as any);
