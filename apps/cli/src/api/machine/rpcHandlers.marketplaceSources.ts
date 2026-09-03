@@ -75,13 +75,11 @@ export function registerMachineMarketplaceSourcesRpcHandlers(params: Readonly<{
       return await decidePluginChange({
         pendingChangeId: parsed.data.pendingChangeId,
         decision: 'trustSourceRoot',
-        actorEvidence: parsed.data.actorEvidence,
       });
     }
     return await decidePluginChange({
       pendingChangeId: parsed.data.pendingChangeId,
       decision: 'installAndTrust',
-      actorEvidence: parsed.data.actorEvidence,
       optionalSelections: parsed.data.optionalSelections,
     });
   });

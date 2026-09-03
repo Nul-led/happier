@@ -16,8 +16,6 @@ type PresentUserDecisionTransport<T> = Readonly<{
         method: typeof HOST_PRIVATE_PLUGIN_INSTALL_DECISION_RPC_METHOD,
         payload: HostPrivatePluginInstallDecisionV1,
     ) => Promise<T>;
-    createInteractionId: () => string;
-    nowMs: () => number;
 }>;
 
 export declare function decideMachinePluginInstallReviewAsPresentUser<T>(

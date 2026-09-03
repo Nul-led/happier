@@ -322,11 +322,6 @@ describe('installed path plugin External Session uninstall lifecycle', () => {
             await expect(changeService.decidePluginChange({
                 pendingChangeId: request.pendingChangeId,
                 decision: 'installAndTrust',
-                actorEvidence: {
-                    kind: 'authenticatedLocalUser',
-                    interactionId: `install-${Date.now()}`,
-                    occurredAtMs: Date.now(),
-                },
             })).resolves.toMatchObject({
                 kind: 'committed',
                 pluginId: PLUGIN_ID,

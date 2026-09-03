@@ -5,7 +5,6 @@ import {
 } from '@happier-dev/protocol/marketplace/internal';
 import { isRpcMethodNotFoundResult } from '@happier-dev/protocol/rpc';
 
-import { randomUUID } from '@/platform/randomUUID';
 import {
     decideMachinePluginDevelopmentSourceRootAsPresentUser,
     decideMachinePluginInstallReviewAsPresentUser,
@@ -14,7 +13,7 @@ import { machineRpcWithServerScope } from '@/sync/runtime/orchestration/serverSc
 
 type PositiveDecision = Omit<
     Extract<HostPrivatePluginInstallDecisionV1, Readonly<{ decision: 'installAndTrust' }>>,
-    'v' | 'actorEvidence' | 'optionalSelections'
+    'v' | 'optionalSelections'
 > & Readonly<{
     confirmPresentUser: () => Promise<
         readonly Readonly<{ accessId: string; selected: boolean }>[] | null
@@ -22,7 +21,7 @@ type PositiveDecision = Omit<
 }>;
 type TrustSourceRootDecision = Omit<
     Extract<HostPrivatePluginInstallDecisionV1, Readonly<{ decision: 'trustSourceRoot' }>>,
-    'v' | 'actorEvidence'
+    'v'
 > & Readonly<{
     confirmPresentUser: () => Promise<boolean>;
 }>;
@@ -119,8 +118,6 @@ export async function machinePluginInstallDecision(
                 pendingChangeId,
                 confirmPresentUser,
                 isAuthorityCurrent: opts.isAuthorityCurrent,
-                createInteractionId: randomUUID,
-                nowMs: Date.now,
                 callAuthenticatedPrivateRpc,
             });
         } else if (opts.decision.decision === 'installAndTrust') {
@@ -130,8 +127,6 @@ export async function machinePluginInstallDecision(
                 pendingChangeId: decision.pendingChangeId,
                 confirmPresentUser,
                 isAuthorityCurrent: opts.isAuthorityCurrent,
-                createInteractionId: randomUUID,
-                nowMs: Date.now,
                 callAuthenticatedPrivateRpc,
             });
         } else {

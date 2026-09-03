@@ -1096,6 +1096,8 @@ export const en = {
             staleBody: 'The selected turn is no longer the active parent turn. Refresh and choose the current turn explicitly.',
             useCurrentTurn: 'Use current turn',
             unavailable: 'There is no active parent turn to use right now.',
+            refreshFailedTitle: 'Could not refresh automations',
+            refreshFailedBody: 'The list of automations could not be read just now. Try again to load the current list.',
             resolvingRowSubtitle: 'Checking which automations you can use…',
             unavailableRowSubtitle: 'Details unavailable — this automation cannot be verified for this Session.',
             incompleteNoticeTitle: 'Some automations could not be read',

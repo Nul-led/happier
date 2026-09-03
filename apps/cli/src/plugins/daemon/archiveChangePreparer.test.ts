@@ -303,7 +303,6 @@ describe('createDaemonArchivePluginChangePreparer', () => {
     await expect(service.decidePluginChange({
       pendingChangeId: begun.pendingChangeId,
       decision: 'installAndTrust',
-      actorEvidence: { kind: 'authenticatedLocalUser', interactionId: 'archive-scm', occurredAtMs: 10 },
     })).resolves.toMatchObject({ kind: 'committed', pendingSurfaces: [] });
 
     const activeLease = await reloadController.acquireRuntimeRegistry();
@@ -406,7 +405,6 @@ describe('createDaemonArchivePluginChangePreparer', () => {
     await expect(service.decidePluginChange({
       pendingChangeId: begun.pendingChangeId,
       decision: 'installAndTrust',
-      actorEvidence: { kind: 'authenticatedLocalUser', interactionId: 'archive-speech', occurredAtMs: 9 },
     })).resolves.toMatchObject({ kind: 'committed', pendingSurfaces: [] });
 
     const activeLease = await reloadController.acquireRuntimeRegistry();
@@ -473,7 +471,6 @@ describe('createDaemonArchivePluginChangePreparer', () => {
     await expect(service.decidePluginChange({
       pendingChangeId: begun.pendingChangeId,
       decision: 'installAndTrust',
-      actorEvidence: { kind: 'authenticatedLocalUser', interactionId: 'archive-runtime', occurredAtMs: 9 },
     })).resolves.toMatchObject({ kind: 'committed', pendingSurfaces: [] });
     expect(await candidateRoots(happyHomeDir)).toEqual([]);
     await vi.waitFor(async () => {
@@ -531,7 +528,6 @@ describe('createDaemonArchivePluginChangePreparer', () => {
     const committed = await service.decidePluginChange({
       pendingChangeId: begun.pendingChangeId,
       decision: 'installAndTrust',
-      actorEvidence: { kind: 'authenticatedLocalUser', interactionId: 'archive-review', occurredAtMs: 10 },
     });
 
     expect(committed).toEqual(expect.objectContaining({
@@ -638,7 +634,6 @@ describe('createDaemonArchivePluginChangePreparer', () => {
     await expect(service.decidePluginChange({
       pendingChangeId: begun.pendingChangeId,
       decision: 'installAndTrust',
-      actorEvidence: { kind: 'authenticatedLocalUser', interactionId: 'archive-tamper', occurredAtMs: 11 },
     })).resolves.toMatchObject({ kind: 'committed', pluginId: 'acme.archive-candidate' });
 
     expect(prepareRuntime).toHaveBeenCalledOnce();
@@ -665,7 +660,6 @@ describe('createDaemonArchivePluginChangePreparer', () => {
     await service.decidePluginChange({
       pendingChangeId: initial.pendingChangeId,
       decision: 'installAndTrust',
-      actorEvidence: { kind: 'authenticatedLocalUser', interactionId: 'initial', occurredAtMs: 1 },
     });
 
     const prepared = await prepare({ kind: 'installArchive', locator: fixture.archivePath });
@@ -682,7 +676,6 @@ describe('createDaemonArchivePluginChangePreparer', () => {
     }));
 
     await expect(prepared.apply({
-      actorEvidence: { kind: 'authenticatedLocalUser', interactionId: 'replacement', occurredAtMs: 2 },
       optionalSelections: [],
     })).resolves.toEqual({ kind: 'conflict', pluginId: 'acme.archive-candidate' });
     await prepared.cleanup();
@@ -725,7 +718,6 @@ describe('createDaemonArchivePluginChangePreparer', () => {
     const committed = await service.decidePluginChange({
       pendingChangeId: begun.pendingChangeId,
       decision: 'installAndTrust',
-      actorEvidence: { kind: 'authenticatedLocalUser', interactionId: 'remote-archive', occurredAtMs: 12 },
     });
     expect(committed).toMatchObject({ kind: 'committed', appliedGeneration: expect.any(String), pendingSurfaces: [] });
     expect(origin.observedUrls).toEqual([archivePathAndQuery]);
@@ -777,7 +769,6 @@ describe('createDaemonArchivePluginChangePreparer', () => {
     await expect(service.decidePluginChange({
       pendingChangeId: begun.pendingChangeId,
       decision: 'installAndTrust',
-      actorEvidence: { kind: 'authenticatedLocalUser', interactionId: 'archive-adoption', occurredAtMs: 13 },
       optionalSelections: [{ accessId: 'project-sessions', selected: true }],
     })).resolves.toMatchObject({
       kind: 'outcomeUnknown',

@@ -424,11 +424,6 @@ async function installReviewedCuratedCandidate(params: Readonly<{
   const committed = await params.service.decidePluginChange({
     pendingChangeId: result.pendingChangeId,
     decision: 'installAndTrust',
-    actorEvidence: {
-      kind: 'authenticatedLocalUser',
-      interactionId: 'initial-curated-install',
-      occurredAtMs: 10,
-    },
     ...(params.optionalSelections ? { optionalSelections: params.optionalSelections } : {}),
   });
   if (committed.kind !== 'committed') throw new Error('Expected initial curated npm commit');
@@ -560,11 +555,6 @@ describe('createDaemonNpmPluginChangePreparer', () => {
       const committed = await service.decidePluginChange({
         pendingChangeId: result.pendingChangeId,
         decision: 'installAndTrust',
-        actorEvidence: {
-          kind: 'authenticatedLocalUser',
-          interactionId: 'community-marketplace-install',
-          occurredAtMs: 20,
-        },
       });
       expect(committed).toMatchObject({ kind: 'committed', pluginId: 'acme.npm-candidate' });
       expect((await createPluginRegistryStateStore({ happyHomeDir }).read()).plugins['acme.npm-candidate'])
@@ -657,7 +647,6 @@ describe('createDaemonNpmPluginChangePreparer', () => {
     await expect(service.decidePluginChange({
       pendingChangeId: result.pendingChangeId,
       decision: 'installAndTrust',
-      actorEvidence: { kind: 'authenticatedLocalUser', interactionId: 'marketplace-install', occurredAtMs: 20 },
     })).resolves.toMatchObject({ kind: 'committed', pluginId: 'acme.npm-candidate' });
     expect(prepareRuntime).toHaveBeenCalledOnce();
     expect(adopt).toHaveBeenCalledOnce();
@@ -1987,11 +1976,6 @@ describe('createDaemonNpmPluginChangePreparer', () => {
     await expect(service.decidePluginChange({
       pendingChangeId: result.pendingChangeId,
       decision: 'installAndTrust',
-      actorEvidence: {
-        kind: 'authenticatedLocalUser',
-        interactionId: 'marketplace-source-changed',
-        occurredAtMs: 20,
-      },
     })).resolves.toEqual({ kind: 'conflict', pluginId: 'acme.npm-candidate' });
 
     expect(prepareRuntime).not.toHaveBeenCalled();
@@ -2045,7 +2029,6 @@ describe('createDaemonNpmPluginChangePreparer', () => {
     await expect(service.decidePluginChange({
       pendingChangeId: result.pendingChangeId,
       decision: 'installAndTrust',
-      actorEvidence: { kind: 'authenticatedLocalUser', interactionId: 'marketplace-listing-changed', occurredAtMs: 20 },
     })).resolves.toEqual({ kind: 'conflict', pluginId: 'acme.npm-candidate' });
 
     expect(prepareRuntime).not.toHaveBeenCalled();
@@ -2180,7 +2163,6 @@ describe('createDaemonNpmPluginChangePreparer', () => {
       },
     });
     await expect(prepared.apply({
-      actorEvidence: { kind: 'authenticatedLocalUser', interactionId: 'private-marketplace', occurredAtMs: 20 },
       optionalSelections: [],
     })).resolves.toMatchObject({ kind: 'committed' });
     const installedBeforeLogout = await createPluginRegistryStateStore({ happyHomeDir }).read();
@@ -2280,11 +2262,6 @@ describe('createDaemonNpmPluginChangePreparer', () => {
     await expect(service.decidePluginChange({
       pendingChangeId: requested.pendingChangeId,
       decision: 'installAndTrust',
-      actorEvidence: {
-        kind: 'authenticatedLocalUser',
-        interactionId: 'inferred-private-install',
-        occurredAtMs: 30,
-      },
     })).resolves.toEqual({
       kind: 'conflict',
       pluginId: 'acme.npm-candidate',
@@ -2390,7 +2367,6 @@ describe('createDaemonNpmPluginChangePreparer', () => {
     const committed = await service.decidePluginChange({
       pendingChangeId: begun.pendingChangeId,
       decision: 'installAndTrust',
-      actorEvidence: { kind: 'authenticatedLocalUser', interactionId: 'npm-review', occurredAtMs: 10 },
     });
     expect(committed).toEqual(expect.objectContaining({
       kind: 'committed',
@@ -2463,7 +2439,6 @@ describe('createDaemonNpmPluginChangePreparer', () => {
     await expect(service.decidePluginChange({
       pendingChangeId: begun.pendingChangeId,
       decision: 'installAndTrust',
-      actorEvidence: { kind: 'authenticatedLocalUser', interactionId: 'npm-adoption', occurredAtMs: 11 },
     })).resolves.toMatchObject({
       kind: 'outcomeUnknown',
       pluginId: 'acme.npm-candidate',
@@ -2497,7 +2472,6 @@ describe('createDaemonNpmPluginChangePreparer', () => {
     await expect(service.decidePluginChange({
       pendingChangeId: begun.pendingChangeId,
       decision: 'installAndTrust',
-      actorEvidence: { kind: 'authenticatedLocalUser', interactionId: 'tampered-review', occurredAtMs: 11 },
     })).resolves.toMatchObject({ kind: 'committed', pluginId: 'acme.npm-candidate' });
 
     expect(prepareRuntime).toHaveBeenCalledOnce();
@@ -2532,7 +2506,6 @@ describe('createDaemonNpmPluginChangePreparer', () => {
     await service.decidePluginChange({
       pendingChangeId: initial.pendingChangeId,
       decision: 'installAndTrust',
-      actorEvidence: { kind: 'authenticatedLocalUser', interactionId: 'initial', occurredAtMs: 1 },
     });
 
     const prepared = await prepare({
@@ -2553,7 +2526,6 @@ describe('createDaemonNpmPluginChangePreparer', () => {
     }));
 
     await expect(prepared.apply({
-      actorEvidence: { kind: 'authenticatedLocalUser', interactionId: 'replacement', occurredAtMs: 2 },
       optionalSelections: [],
     })).resolves.toEqual({ kind: 'conflict', pluginId: 'acme.npm-candidate' });
     await prepared.cleanup();

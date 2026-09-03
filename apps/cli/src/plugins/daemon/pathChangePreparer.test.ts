@@ -195,7 +195,6 @@ describe('createDaemonPathPluginChangePreparer', () => {
     await service.decidePluginChange({
       pendingChangeId: install.pendingChangeId,
       decision: 'installAndTrust',
-      actorEvidence: { kind: 'authenticatedLocalUser', interactionId: 'policy-install', occurredAtMs: 1 },
     });
 
     await expect(service.requestPluginChange({
@@ -287,11 +286,6 @@ describe('createDaemonPathPluginChangePreparer', () => {
         const decided = await service.decidePluginChange({
           pendingChangeId: result.pendingChangeId,
           decision: 'installAndTrust',
-          actorEvidence: {
-            kind: 'authenticatedLocalUser',
-            interactionId: `cause-${interactionId += 1}`,
-            occurredAtMs: interactionId,
-          },
         });
         expect(decided).toMatchObject({ kind: 'committed', pluginId: 'acme.descriptor' });
         return;
@@ -720,7 +714,6 @@ describe('createDaemonPathPluginChangePreparer', () => {
     const result = await service.decidePluginChange({
       pendingChangeId: begun.pendingChangeId,
       decision: 'installAndTrust',
-      actorEvidence: { kind: 'authenticatedLocalUser', interactionId: 'test', occurredAtMs: 1 },
     });
     expect(result).toMatchObject({ kind: 'committed', pluginId: 'acme.dev-closure' });
     expect(materializedCandidateRoot).toBeDefined();
@@ -830,7 +823,6 @@ describe('createDaemonPathPluginChangePreparer', () => {
     await service.decidePluginChange({
       pendingChangeId: initial.pendingChangeId,
       decision: 'installAndTrust',
-      actorEvidence: { kind: 'authenticatedLocalUser', interactionId: 'initial', occurredAtMs: 1 },
     });
     runManagedPluginPnpm.mockClear();
 
@@ -1014,7 +1006,6 @@ describe('createDaemonPathPluginChangePreparer', () => {
     const initialPackageReview = await service.decidePluginChange({
       pendingChangeId: initial.pendingChangeId,
       decision: 'trustSourceRoot',
-      actorEvidence: { kind: 'authenticatedLocalUser', interactionId: 'initial', occurredAtMs: 1 },
     });
     if (initialPackageReview.kind !== 'reviewRequired') {
       throw new Error(`Expected package review, received ${initialPackageReview.kind}`);
@@ -1022,7 +1013,6 @@ describe('createDaemonPathPluginChangePreparer', () => {
     await expect(service.decidePluginChange({
       pendingChangeId: initialPackageReview.pendingChangeId,
       decision: 'installAndTrust',
-      actorEvidence: { kind: 'authenticatedLocalUser', interactionId: 'initial-package', occurredAtMs: 2 },
       optionalSelections: [],
     })).resolves.toMatchObject({ kind: 'committed', pluginId });
     const generationG = await readCurrentGeneration();
@@ -1124,18 +1114,12 @@ describe('createDaemonPathPluginChangePreparer', () => {
           result = await service.decidePluginChange({
             pendingChangeId: result.pendingChangeId,
             decision: 'trustSourceRoot',
-            actorEvidence: {
-              kind: 'authenticatedLocalUser',
-              interactionId: 'one-file-source-root',
-              occurredAtMs: 1,
-            },
           });
         }
         if (result.kind === 'reviewRequired') {
           result = await service.decidePluginChange({
             pendingChangeId: result.pendingChangeId,
             decision: 'installAndTrust',
-            actorEvidence: { kind: 'authenticatedLocalUser', interactionId: 'one-file', occurredAtMs: 1 },
           });
         }
         if (result.kind !== 'committed') throw new Error(`Unexpected one-file update: ${result.kind}`);
@@ -1298,7 +1282,6 @@ describe('createDaemonPathPluginChangePreparer', () => {
       confirm: confirmations,
       requestChange,
       decideChange,
-      createInteractionId: () => `source-and-package-${interaction += 1}`,
       nowMs: () => interaction,
     })).resolves.toMatchObject({
       kind: 'committed',
@@ -1316,20 +1299,10 @@ describe('createDaemonPathPluginChangePreparer', () => {
     expect(decideChange).toHaveBeenNthCalledWith(1, {
       pendingChangeId: initial.pendingChangeId,
       decision: 'trustSourceRoot',
-      actorEvidence: {
-        kind: 'authenticatedLocalUser',
-        interactionId: 'source-and-package-1',
-        occurredAtMs: 1,
-      },
     });
     expect(decideChange).toHaveBeenNthCalledWith(2, {
       pendingChangeId: initial.pendingChangeId,
       decision: 'installAndTrust',
-      actorEvidence: {
-        kind: 'authenticatedLocalUser',
-        interactionId: 'source-and-package-2',
-        occurredAtMs: 2,
-      },
       optionalSelections: [],
     });
     expect(confirmations.mock.calls.map(([message]) => message)).toEqual([
@@ -1401,11 +1374,6 @@ describe('createDaemonPathPluginChangePreparer', () => {
     const approved = await service.decidePluginChange({
       pendingChangeId: requested.pendingChangeId,
       decision: 'trustSourceRoot',
-      actorEvidence: {
-        kind: 'authenticatedLocalUser',
-        interactionId: 'source-root-trust',
-        occurredAtMs: 11,
-      },
     });
     expect(approved).toMatchObject({
       kind: 'reviewRequired',
@@ -1418,11 +1386,6 @@ describe('createDaemonPathPluginChangePreparer', () => {
     await expect(service.decidePluginChange({
       pendingChangeId: approved.pendingChangeId,
       decision: 'installAndTrust',
-      actorEvidence: {
-        kind: 'authenticatedLocalUser',
-        interactionId: 'optional-selection',
-        occurredAtMs: 22,
-      },
       optionalSelections: [{ accessId: 'project-sessions', selected: true }],
     })).resolves.toMatchObject({ kind: 'committed', pluginId: 'acme.one-file-optional' });
 
@@ -1548,7 +1511,6 @@ describe('createDaemonPathPluginChangePreparer', () => {
     const packageReview = await service.decidePluginChange({
       pendingChangeId: unapproved.pendingChangeId,
       decision: 'trustSourceRoot',
-      actorEvidence: { kind: 'authenticatedLocalUser', interactionId: 'root', occurredAtMs: 1 },
     });
     expect(packageReview).toMatchObject({
       kind: 'reviewRequired',
@@ -1558,7 +1520,6 @@ describe('createDaemonPathPluginChangePreparer', () => {
     await expect(service.decidePluginChange({
       pendingChangeId: packageReview.pendingChangeId,
       decision: 'installAndTrust',
-      actorEvidence: { kind: 'authenticatedLocalUser', interactionId: 'package', occurredAtMs: 2 },
       optionalSelections: [],
     })).resolves.toMatchObject({ kind: 'committed', pluginId: 'acme.owned-graph' });
     expect(await readFile(logPath, 'utf8')).toBe('leaf\nmodule:initial\nactivate:initial\n');
@@ -1716,11 +1677,6 @@ describe('createDaemonPathPluginChangePreparer', () => {
     const initialPackageReview = await service.decidePluginChange({
       pendingChangeId: sourceRootReview.pendingChangeId,
       decision: 'trustSourceRoot',
-      actorEvidence: {
-        kind: 'authenticatedLocalUser',
-        interactionId: 'development-closure-root',
-        occurredAtMs: 1,
-      },
     });
     if (initialPackageReview.kind !== 'reviewRequired') {
       throw new Error(`Expected package review, received ${initialPackageReview.kind}`);
@@ -1728,11 +1684,6 @@ describe('createDaemonPathPluginChangePreparer', () => {
     await expect(service.decidePluginChange({
       pendingChangeId: initialPackageReview.pendingChangeId,
       decision: 'installAndTrust',
-      actorEvidence: {
-        kind: 'authenticatedLocalUser',
-        interactionId: 'development-closure-package',
-        occurredAtMs: 2,
-      },
       optionalSelections: [],
     })).resolves.toMatchObject({ kind: 'committed', pluginId: 'acme.development-closure' });
     expect(runManagedPluginPnpm).toHaveBeenCalledTimes(1);
@@ -1850,11 +1801,6 @@ describe('createDaemonPathPluginChangePreparer', () => {
     await expect(service.decidePluginChange({
       pendingChangeId: ordinaryGenerationSourceReview.pendingChangeId,
       decision: 'trustSourceRoot',
-      actorEvidence: {
-        kind: 'authenticatedLocalUser',
-        interactionId: 'development-closure-reapprove-source',
-        occurredAtMs: 2,
-      },
     })).resolves.toMatchObject({ kind: 'committed', pluginId: 'acme.development-closure' });
     expect(runManagedPluginPnpm).toHaveBeenCalledTimes(1);
     await expect(service.requestPluginChange({
@@ -1921,11 +1867,6 @@ describe('createDaemonPathPluginChangePreparer', () => {
     const initialPackageReview = await service.decidePluginChange({
       pendingChangeId: initial.pendingChangeId,
       decision: 'trustSourceRoot',
-      actorEvidence: {
-        kind: 'authenticatedLocalUser',
-        interactionId: 'manual-delete-root',
-        occurredAtMs: 1,
-      },
     });
     if (initialPackageReview.kind !== 'reviewRequired') {
       throw new Error(`Expected package review, received ${initialPackageReview.kind}`);
@@ -1933,11 +1874,6 @@ describe('createDaemonPathPluginChangePreparer', () => {
     await expect(service.decidePluginChange({
       pendingChangeId: initialPackageReview.pendingChangeId,
       decision: 'installAndTrust',
-      actorEvidence: {
-        kind: 'authenticatedLocalUser',
-        interactionId: 'manual-delete-package',
-        occurredAtMs: 2,
-      },
       optionalSelections: [],
     })).resolves.toMatchObject({ kind: 'committed', pluginId: 'acme.manual-delete' });
     expect(runManagedPluginPnpm).toHaveBeenCalledTimes(1);
@@ -2026,11 +1962,6 @@ describe('createDaemonPathPluginChangePreparer', () => {
     const initialPackageReview = await service.decidePluginChange({
       pendingChangeId: initial.pendingChangeId,
       decision: 'trustSourceRoot',
-      actorEvidence: {
-        kind: 'authenticatedLocalUser',
-        interactionId: 'sensitive-inputs-root',
-        occurredAtMs: 1,
-      },
     });
     if (initialPackageReview.kind !== 'reviewRequired') {
       throw new Error(`Expected package review, received ${initialPackageReview.kind}`);
@@ -2038,11 +1969,6 @@ describe('createDaemonPathPluginChangePreparer', () => {
     await expect(service.decidePluginChange({
       pendingChangeId: initialPackageReview.pendingChangeId,
       decision: 'installAndTrust',
-      actorEvidence: {
-        kind: 'authenticatedLocalUser',
-        interactionId: 'sensitive-inputs-package',
-        occurredAtMs: 2,
-      },
       optionalSelections: [],
     })).resolves.toMatchObject({ kind: 'committed', pluginId: 'acme.sensitive-inputs' });
     expect(runManagedPluginPnpm).toHaveBeenCalledTimes(1);
@@ -2107,7 +2033,6 @@ describe('createDaemonPathPluginChangePreparer', () => {
     await expect(service.decidePluginChange({
       pendingChangeId: requested.pendingChangeId,
       decision: 'trustSourceRoot',
-      actorEvidence: { kind: 'authenticatedLocalUser', interactionId: 'substitution', occurredAtMs: 1 },
     })).resolves.toMatchObject({
       kind: 'failed',
       code: 'plugin_change_preparation_failed',
@@ -2272,7 +2197,6 @@ describe('createDaemonPathPluginChangePreparer', () => {
     await expect(service.decidePluginChange({
       pendingChangeId: begun.pendingChangeId,
       decision: 'installAndTrust',
-      actorEvidence: { kind: 'authenticatedLocalUser', interactionId: 'test', occurredAtMs: 1 },
     })).resolves.toEqual(expect.objectContaining({
       kind: 'committed',
       pluginId: 'acme.descriptor',
@@ -2353,7 +2277,6 @@ describe('createDaemonPathPluginChangePreparer', () => {
     const result = await service.decidePluginChange({
       pendingChangeId: begun.pendingChangeId,
       decision: 'installAndTrust',
-      actorEvidence: { kind: 'authenticatedLocalUser', interactionId: 'test', occurredAtMs: 1 },
     });
 
     expect(firstGeneration).toBeDefined();
@@ -2391,7 +2314,6 @@ describe('createDaemonPathPluginChangePreparer', () => {
     await expect(service.decidePluginChange({
       pendingChangeId: begun.pendingChangeId,
       decision: 'installAndTrust',
-      actorEvidence: { kind: 'authenticatedLocalUser', interactionId: 'test', occurredAtMs: 1 },
     })).resolves.toMatchObject({ kind: 'committed', pluginId: 'acme.descriptor' });
 
     const current = await readCurrentCommittedPluginGenerations(
@@ -2432,7 +2354,6 @@ describe('createDaemonPathPluginChangePreparer', () => {
     await expect(service.decidePluginChange({
       pendingChangeId: begun.pendingChangeId,
       decision: 'installAndTrust',
-      actorEvidence: { kind: 'authenticatedLocalUser', interactionId: 'test', occurredAtMs: 7 },
       optionalSelections: [{ accessId: 'project-sessions', selected: true }],
     })).resolves.toMatchObject({ kind: 'committed', pluginId: 'acme.descriptor' });
     await expect(createPluginRegistryStateStore({ happyHomeDir }).read()).resolves.toMatchObject({
@@ -2473,7 +2394,6 @@ describe('createDaemonPathPluginChangePreparer', () => {
     await service.decidePluginChange({
       pendingChangeId: first.pendingChangeId,
       decision: 'installAndTrust',
-      actorEvidence: { kind: 'authenticatedLocalUser', interactionId: 'test', occurredAtMs: 1 },
     });
     await writeFile(join(pluginRoot, 'payload.txt'), 'development edit');
 
@@ -2508,7 +2428,6 @@ describe('createDaemonPathPluginChangePreparer', () => {
     await service.decidePluginChange({
       pendingChangeId: first.pendingChangeId,
       decision: 'installAndTrust',
-      actorEvidence: { kind: 'authenticatedLocalUser', interactionId: 'initial-path-trust', occurredAtMs: 1 },
     });
 
     const manifestPath = join(pluginRoot, '.happier-plugin', 'plugin.json');
@@ -2612,7 +2531,6 @@ describe('createDaemonPathPluginChangePreparer', () => {
     await service.decidePluginChange({
       pendingChangeId: first.pendingChangeId,
       decision: 'installAndTrust',
-      actorEvidence: { kind: 'authenticatedLocalUser', interactionId: 'test', occurredAtMs: 1 },
     });
 
     const prepared = await prepare({
@@ -2678,7 +2596,6 @@ describe('createDaemonPathPluginChangePreparer', () => {
     await service.decidePluginChange({
       pendingChangeId: install.pendingChangeId,
       decision: 'installAndTrust',
-      actorEvidence: { kind: 'authenticatedLocalUser', interactionId: 'test', occurredAtMs: 1 },
     });
 
     await expect(service.requestPluginChange({
@@ -2706,7 +2623,6 @@ describe('createDaemonPathPluginChangePreparer', () => {
     await expect(service.requestPluginChange({
       kind: 'uninstallAndDeleteData',
       pluginId: 'acme.descriptor',
-      actorEvidence: { kind: 'authenticatedLocalUser', interactionId: 'retry', occurredAtMs: 2 },
     })).resolves.toEqual({
       kind: 'committed',
       pluginId: 'acme.descriptor',
@@ -2760,7 +2676,6 @@ describe('createDaemonPathPluginChangePreparer', () => {
     await service.decidePluginChange({
       pendingChangeId: install.pendingChangeId,
       decision: 'installAndTrust',
-      actorEvidence: { kind: 'authenticatedLocalUser', interactionId: 'test', occurredAtMs: 1 },
     });
 
     pausePreparedEnable = true;
@@ -2825,11 +2740,6 @@ describe('createDaemonPathPluginChangePreparer', () => {
     const request = {
       kind: 'uninstallAndDeleteData' as const,
       pluginId,
-      actorEvidence: {
-        kind: 'authenticatedLocalUser' as const,
-        interactionId: 'confirmed-delete',
-        occurredAtMs: 1,
-      },
     };
 
     await expect(service.requestPluginChange(request)).resolves.toEqual({
@@ -2875,11 +2785,6 @@ describe('createDaemonPathPluginChangePreparer', () => {
     await expect(service.requestPluginChange({
       kind: 'uninstallAndDeleteData',
       pluginId: 'happier.unowned',
-      actorEvidence: {
-        kind: 'authenticatedLocalUser',
-        interactionId: 'confirmed-reserved-delete',
-        occurredAtMs: 1,
-      },
     })).resolves.toMatchObject({
       kind: 'failed',
       code: 'plugin_data_removal_ownership_unsupported',
@@ -2936,16 +2841,10 @@ describe('createDaemonPathPluginChangePreparer', () => {
     await service.decidePluginChange({
       pendingChangeId: install.pendingChangeId,
       decision: 'installAndTrust',
-      actorEvidence: { kind: 'authenticatedLocalUser', interactionId: 'install', occurredAtMs: 1 },
     });
     const request = {
       kind: 'uninstallAndDeleteData' as const,
       pluginId: 'acme.descriptor',
-      actorEvidence: {
-        kind: 'authenticatedLocalUser' as const,
-        interactionId: 'confirmed-delete',
-        occurredAtMs: 2,
-      },
     };
 
     const first = service.requestPluginChange(request);
@@ -3000,7 +2899,6 @@ describe('createDaemonPathPluginChangePreparer', () => {
     await service.decidePluginChange({
       pendingChangeId: install.pendingChangeId,
       decision: 'installAndTrust',
-      actorEvidence: { kind: 'authenticatedLocalUser', interactionId: 'test', occurredAtMs: 1 },
     });
 
     await expect(service.requestPluginChange({
@@ -3044,7 +2942,6 @@ describe('createDaemonPathPluginChangePreparer', () => {
     const result = await service.decidePluginChange({
       pendingChangeId: install.pendingChangeId,
       decision: 'installAndTrust',
-      actorEvidence: { kind: 'authenticatedLocalUser', interactionId: 'test', occurredAtMs: 1 },
     });
     expect(result).toMatchObject({
       kind: 'failed',
@@ -3091,7 +2988,6 @@ describe('createDaemonPathPluginChangePreparer', () => {
     await service.decidePluginChange({
       pendingChangeId: install.pendingChangeId,
       decision: 'installAndTrust',
-      actorEvidence: { kind: 'authenticatedLocalUser', interactionId: 'test', occurredAtMs: 1 },
     });
     await writeFile(join(pluginRoot, 'payload.txt'), 'updated reviewed bytes');
     const update = await service.requestPluginChange({
@@ -3103,7 +2999,6 @@ describe('createDaemonPathPluginChangePreparer', () => {
     await service.decidePluginChange({
       pendingChangeId: update.pendingChangeId,
       decision: 'installAndTrust',
-      actorEvidence: { kind: 'authenticatedLocalUser', interactionId: 'update', occurredAtMs: 2 },
     });
 
     const paths = resolvePluginStorePaths({ happyHomeDir });
@@ -3171,7 +3066,6 @@ describe('createDaemonPathPluginChangePreparer', () => {
     await service.decidePluginChange({
       pendingChangeId: reinstall.pendingChangeId,
       decision: 'installAndTrust',
-      actorEvidence: { kind: 'authenticatedLocalUser', interactionId: 'reinstall', occurredAtMs: 3 },
     });
 
     expect((await createPluginRegistryStateStore({ happyHomeDir }).read()).plugins['acme.descriptor'])

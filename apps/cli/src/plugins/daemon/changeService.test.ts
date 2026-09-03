@@ -126,11 +126,6 @@ describe('createDaemonPluginChangeService', () => {
     const decision = {
       pendingChangeId: 'pending-1',
       decision: 'installAndTrust' as const,
-      actorEvidence: {
-        kind: 'authenticatedLocalUser' as const,
-        interactionId: 'interaction-1',
-        occurredAtMs: 101,
-      },
       optionalSelections: [],
     };
     const [first, duplicate] = await Promise.all([
@@ -202,11 +197,6 @@ describe('createDaemonPluginChangeService', () => {
     const deciding = service.decidePluginChange({
       pendingChangeId: begun.pendingChangeId,
       decision: 'installAndTrust',
-      actorEvidence: {
-        kind: 'authenticatedLocalUser',
-        interactionId: 'interaction-1',
-        occurredAtMs: 1,
-      },
     });
     await applyStarted;
     await expect(service.statusPluginChange({ pendingChangeId: begun.pendingChangeId })).resolves.toEqual({
@@ -330,11 +320,6 @@ describe('createDaemonPluginChangeService', () => {
     const deciding = service.decidePluginChange({
       pendingChangeId: begun.pendingChangeId,
       decision: 'trustSourceRoot',
-      actorEvidence: {
-        kind: 'authenticatedLocalUser',
-        interactionId: 'interaction-1',
-        occurredAtMs: 1,
-      },
     });
     await cleanupStarted;
 
@@ -484,13 +469,11 @@ describe('createDaemonPluginChangeService', () => {
     const decidingFirst = service.decidePluginChange({
       pendingChangeId: first.pendingChangeId,
       decision: 'installAndTrust',
-      actorEvidence: { kind: 'authenticatedLocalUser', interactionId: 'one', occurredAtMs: 1 },
     });
     await vi.waitFor(() => expect(events).toContain('apply-1'));
     const decidingSecond = service.decidePluginChange({
       pendingChangeId: second.pendingChangeId,
       decision: 'installAndTrust',
-      actorEvidence: { kind: 'authenticatedLocalUser', interactionId: 'two', occurredAtMs: 2 },
     });
     await vi.waitFor(() => expect(events).toContain('apply-2'));
     releaseFirst();
@@ -924,11 +907,6 @@ describe('createDaemonPluginChangeService', () => {
     await expect(service.decidePluginChange({
       pendingChangeId: begun.pendingChangeId,
       decision: 'installAndTrust',
-      actorEvidence: {
-        kind: 'authenticatedLocalUser',
-        interactionId: 'interaction-1',
-        occurredAtMs: 1,
-      },
     })).resolves.toEqual({
       kind: 'committed',
       pluginId: 'acme.example',
@@ -947,11 +925,6 @@ describe('createDaemonPluginChangeService', () => {
     await expect(service.decidePluginChange({
       pendingChangeId: retry.pendingChangeId,
       decision: 'installAndTrust',
-      actorEvidence: {
-        kind: 'authenticatedLocalUser',
-        interactionId: 'interaction-2',
-        occurredAtMs: 2,
-      },
     })).resolves.toMatchObject({
       kind: 'committed',
       pluginId: 'acme.example',

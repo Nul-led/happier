@@ -746,11 +746,6 @@ async function installPackedPlugin(params: Readonly<{
     await decideDaemonPluginChange({
       pendingChangeId: requested.pendingChangeId,
       decision: 'installAndTrust',
-      actorEvidence: {
-        kind: 'authenticatedLocalUser',
-        interactionId: randomUUID(),
-        occurredAtMs: Date.now(),
-      },
       optionalSelections: requested.review.optionalHostAccess.map((access) => ({
         accessId: access.id,
         selected: false,

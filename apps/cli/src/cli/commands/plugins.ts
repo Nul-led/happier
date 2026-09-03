@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import { realpath } from 'node:fs/promises';
 import { basename, resolve } from 'node:path';
 
@@ -1368,11 +1367,6 @@ async function runPluginsDestructiveUninstallCommand(
     request: {
       kind: 'uninstallAndDeleteData',
       pluginId,
-      actorEvidence: {
-        kind: 'authenticatedLocalUser',
-        interactionId: randomUUID(),
-        occurredAtMs: Date.now(),
-      },
     },
     approval: 'none',
   });

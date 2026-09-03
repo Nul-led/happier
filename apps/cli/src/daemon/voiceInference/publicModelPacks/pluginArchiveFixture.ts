@@ -76,11 +76,6 @@ export async function installVoiceModelPackPluginArchiveFixture(params: Readonly
     const committed = await service.decidePluginChange({
       pendingChangeId: begun.pendingChangeId,
       decision: 'installAndTrust',
-      actorEvidence: {
-        kind: 'authenticatedLocalUser',
-        interactionId: params.interactionId,
-        occurredAtMs: Date.now(),
-      },
     });
     if (committed.kind !== 'committed' || committed.pluginId !== manifest.id) {
       throw new Error(`Voice model-pack archive fixture was not committed: ${JSON.stringify(committed)}`);

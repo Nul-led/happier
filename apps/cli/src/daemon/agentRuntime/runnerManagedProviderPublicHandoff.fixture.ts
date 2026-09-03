@@ -318,11 +318,6 @@ export async function commitPackedPublicHandoffFixture(input: Readonly<{
     const committed = await input.changeService.decidePluginChange({
         pendingChangeId: requested.pendingChangeId,
         decision: 'installAndTrust',
-        actorEvidence: {
-            kind: 'authenticatedLocalUser',
-            interactionId: `public-handoff-${input.packed.pluginId}`,
-            occurredAtMs: 1,
-        },
     });
     if (committed.kind !== 'committed' || !committed.appliedGeneration) {
         throw new Error(`Expected archive commit for ${input.packed.pluginId}, received ${committed.kind}`);

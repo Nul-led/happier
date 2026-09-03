@@ -3586,7 +3586,6 @@ describe('handlePluginsCommand', () => {
       });
       expect(daemonBoundary.decideChange).toHaveBeenCalledWith(expect.objectContaining({
         decision: 'installAndTrust',
-        actorEvidence: expect.objectContaining({ kind: 'authenticatedLocalUser' }),
       }));
     } finally {
       envScope.restore();
@@ -3859,11 +3858,6 @@ describe('handlePluginsCommand', () => {
       expect(daemonBoundary.requestChange).toHaveBeenLastCalledWith({
         kind: 'uninstallAndDeleteData',
         pluginId: SAMPLE_PLUGIN_ID,
-        actorEvidence: {
-          kind: 'authenticatedLocalUser',
-          interactionId: expect.any(String),
-          occurredAtMs: expect.any(Number),
-        },
       });
     } finally {
       process.exitCode = previousExitCode;

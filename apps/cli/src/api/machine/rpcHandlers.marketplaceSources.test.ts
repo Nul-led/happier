@@ -50,21 +50,11 @@ describe('rpcHandlers (marketplace sources)', () => {
       v: 1,
       pendingChangeId: 'pending-1',
       decision: 'installAndTrust',
-      actorEvidence: {
-        kind: 'authenticatedLocalUser',
-        interactionId: 'ui-interaction-1',
-        occurredAtMs: 42,
-      },
       optionalSelections: [{ accessId: 'workspace', selected: false }],
     })).resolves.toMatchObject({ kind: 'committed', pluginId: 'acme.example' });
     expect(decideChange).toHaveBeenCalledWith({
       pendingChangeId: 'pending-1',
       decision: 'installAndTrust',
-      actorEvidence: {
-        kind: 'authenticatedLocalUser',
-        interactionId: 'ui-interaction-1',
-        occurredAtMs: 42,
-      },
       optionalSelections: [{ accessId: 'workspace', selected: false }],
     });
   });
@@ -102,20 +92,10 @@ describe('rpcHandlers (marketplace sources)', () => {
       v: 1,
       pendingChangeId: 'pending-source-1',
       decision: 'trustSourceRoot',
-      actorEvidence: {
-        kind: 'authenticatedLocalUser',
-        interactionId: 'ui-interaction-source-1',
-        occurredAtMs: 44,
-      },
     })).resolves.toMatchObject({ kind: 'reviewRequired', pendingChangeId: 'pending-source-1' });
     expect(decideChange).toHaveBeenCalledWith({
       pendingChangeId: 'pending-source-1',
       decision: 'trustSourceRoot',
-      actorEvidence: {
-        kind: 'authenticatedLocalUser',
-        interactionId: 'ui-interaction-source-1',
-        occurredAtMs: 44,
-      },
     });
   });
 
@@ -151,14 +131,12 @@ describe('rpcHandlers (marketplace sources)', () => {
       v: 1,
       pendingChangeId: 'pending-expired',
       decision: 'installAndTrust',
-      actorEvidence: { kind: 'authenticatedLocalUser', interactionId: 'ui-expired', occurredAtMs: 10 },
       optionalSelections: [],
     }],
     ['conflict', {
       v: 1,
       pendingChangeId: 'pending-conflict',
       decision: 'installAndTrust',
-      actorEvidence: { kind: 'authenticatedLocalUser', interactionId: 'ui-conflict', occurredAtMs: 11 },
       optionalSelections: [],
     }],
   ] as const)('passes through a %s daemon decision outcome', async (kind, request) => {

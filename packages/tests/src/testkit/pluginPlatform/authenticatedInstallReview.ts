@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 
 import {
   decideMachinePluginInstallReviewAsPresentUser,
@@ -125,7 +124,6 @@ type AuthenticatedInstallReviewDeps = Readonly<{
     machineKey: Uint8Array;
     timeoutMs: number;
   }>) => Promise<PluginInstallDecisionOutcome>;
-  createInteractionId: () => string;
   nowMs: () => number;
   readinessTimeoutMs: number;
   decisionTimeoutMs: number;
@@ -291,7 +289,6 @@ const defaultDeps: AuthenticatedInstallReviewDeps = {
     if (!parsed.success) throw new Error('Authenticated plugin install review returned an invalid outcome');
     return parsed.data;
   },
-  createInteractionId: randomUUID,
   nowMs: Date.now,
   readinessTimeoutMs: 20_000,
   decisionTimeoutMs: AUTHENTICATED_INSTALL_DECISION_TIMEOUT_MS,
@@ -428,8 +425,6 @@ export async function decideAuthenticatedPluginInstallReview(input: Readonly<{
           }, { cause: error });
         }
       },
-      createInteractionId: deps.createInteractionId,
-      nowMs: deps.nowMs,
     });
   } finally {
     socket.close();

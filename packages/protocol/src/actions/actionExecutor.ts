@@ -792,7 +792,9 @@ function bindAgentExistingExecutionRunAuthority(
     opts: {
       ...(opts ?? {}),
       causalPermissionAuthority: effective.causalPermissionAuthority,
-      effectiveCallerPermissionMode: effective.effectiveCallerMode,
+      ...(effective.effectiveCallerMode === null
+        ? {}
+        : { effectiveCallerPermissionMode: effective.effectiveCallerMode }),
     },
   };
 }

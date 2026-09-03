@@ -574,7 +574,6 @@ describe('plugins command daemon mutations', () => {
     expect(daemon.decideChange).toHaveBeenNthCalledWith(1, expect.objectContaining({
       pendingChangeId: 'pending-dev-1',
       decision: 'trustSourceRoot',
-      actorEvidence: expect.objectContaining({ kind: 'authenticatedLocalUser' }),
     }));
 
     process.exitCode = undefined;
@@ -600,7 +599,6 @@ describe('plugins command daemon mutations', () => {
     expect(daemon.decideChange).toHaveBeenNthCalledWith(2, expect.objectContaining({
       pendingChangeId: 'pending-dev-1',
       decision: 'installAndTrust',
-      actorEvidence: expect.objectContaining({ kind: 'authenticatedLocalUser' }),
       optionalSelections: [],
     }));
   });

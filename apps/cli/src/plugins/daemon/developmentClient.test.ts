@@ -84,7 +84,7 @@ describe('requestPluginDevelopmentChange', () => {
         changedPaths: ['src/index.ts'],
         sdkRegistryOrigin: 'https://registry.example.test',
       },
-      { ensureDaemon, confirm, requestChange, decideChange, createInteractionId: () => 'interaction-1', nowMs: () => 1 },
+      { ensureDaemon, confirm, requestChange, decideChange },
     )).resolves.toEqual({ ok: true, generation: { desired: 'generation-1', applied: 'generation-1', pendingSurfaces: [] } });
 
     expect(ensureDaemon).toHaveBeenCalledBefore(requestChange);
@@ -99,7 +99,6 @@ describe('requestPluginDevelopmentChange', () => {
     expect(decideChange).toHaveBeenCalledWith(expect.objectContaining({
       pendingChangeId: 'pending-1',
       decision: 'installAndTrust',
-      actorEvidence: expect.objectContaining({ interactionId: 'interaction-1' }),
     }));
   });
 
@@ -135,7 +134,6 @@ describe('requestPluginDevelopmentChange', () => {
         confirm,
         requestChange,
         decideChange,
-        createInteractionId: () => `interaction-${interaction += 1}`,
         nowMs: () => interaction,
       },
     )).resolves.toEqual({ ok: true, generation: { desired: 'generation-derived', applied: 'generation-derived', pendingSurfaces: [] } });
@@ -188,7 +186,6 @@ describe('requestPluginDevelopmentChange', () => {
         confirm,
         requestChange,
         decideChange,
-        createInteractionId: () => `interaction-${interaction += 1}`,
         nowMs: () => interaction,
       },
     )).resolves.toEqual({ ok: true, generation: { desired: 'generation-derived', applied: 'generation-derived', pendingSurfaces: [] } });

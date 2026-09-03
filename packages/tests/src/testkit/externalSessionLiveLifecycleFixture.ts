@@ -593,11 +593,6 @@ export async function applyTrustedLocalPluginFixture(params: Readonly<{
       body: {
         pendingChangeId: requestData.pendingChangeId,
         decision: 'installAndTrust',
-        actorEvidence: {
-          kind: 'authenticatedLocalUser',
-          interactionId: params.interactionId,
-          occurredAtMs: Date.now(),
-        },
         optionalSelections: [],
       },
     }),

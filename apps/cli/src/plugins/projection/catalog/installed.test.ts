@@ -71,7 +71,6 @@ async function seedInstalledPlugin(params: Readonly<{
     ? await service.decidePluginChange({
         pendingChangeId: begun.pendingChangeId,
         decision: 'installAndTrust',
-        actorEvidence: { kind: 'authenticatedLocalUser', interactionId: 'catalog-test', occurredAtMs: 1 },
       })
     : begun;
   return { ok: result.kind === 'committed', result } as const;

@@ -77,7 +77,6 @@ describe('requestUserPluginChange', () => {
       ensureDaemon,
       readStatus,
       decideChange,
-      createInteractionId: () => 'interaction-1',
       nowMs: () => 1,
     })).resolves.toEqual(packageReview);
 
@@ -88,7 +87,6 @@ describe('requestUserPluginChange', () => {
       ensureDaemon,
       readStatus,
       decideChange,
-      createInteractionId: () => 'interaction-2',
       nowMs: () => 2,
     })).resolves.toEqual({
       kind: 'committed',
@@ -103,20 +101,10 @@ describe('requestUserPluginChange', () => {
     expect(decideChange).toHaveBeenNthCalledWith(1, {
       pendingChangeId: 'pending-1',
       decision: 'trustSourceRoot',
-      actorEvidence: {
-        kind: 'authenticatedLocalUser',
-        interactionId: 'interaction-1',
-        occurredAtMs: 1,
-      },
     });
     expect(decideChange).toHaveBeenNthCalledWith(2, {
       pendingChangeId: 'pending-1',
       decision: 'installAndTrust',
-      actorEvidence: {
-        kind: 'authenticatedLocalUser',
-        interactionId: 'interaction-2',
-        occurredAtMs: 2,
-      },
       optionalSelections: [],
     });
     expect(ensureDaemon).toHaveBeenCalledTimes(2);
@@ -388,7 +376,6 @@ describe('requestUserPluginChange', () => {
         }),
       }),
       decideChange,
-      createInteractionId: () => 'interaction-1',
       nowMs: () => 1,
     })).resolves.toEqual(expect.objectContaining({ kind: 'committed' }));
 
@@ -409,7 +396,6 @@ describe('requestUserPluginChange', () => {
     expect(decideChange).toHaveBeenCalledWith(expect.objectContaining({
       pendingChangeId: 'pending-1',
       decision: 'installAndTrust',
-      actorEvidence: expect.objectContaining({ interactionId: 'interaction-1' }),
       optionalSelections: [],
     }));
   });
@@ -442,7 +428,6 @@ describe('requestUserPluginChange', () => {
         }),
       }),
       decideChange,
-      createInteractionId: () => 'interaction-1',
       nowMs: () => 1,
     });
 
@@ -687,23 +672,16 @@ describe('requestUserPluginChange', () => {
       confirm: async () => true,
       requestChange,
       decideChange,
-      createInteractionId: () => 'marketplace-install',
       nowMs: () => 20,
     })).resolves.toEqual(expect.objectContaining({ kind: 'committed' }));
 
     expect(requestChange).toHaveBeenCalledWith(expect.objectContaining({
       expectedMarketplaceListing: expect.not.objectContaining({
-        actorEvidence: expect.anything(),
       }),
     }));
     expect(decideChange).toHaveBeenCalledWith(expect.objectContaining({
       pendingChangeId: 'pending-curated',
       decision: 'installAndTrust',
-      actorEvidence: {
-        kind: 'authenticatedLocalUser',
-        interactionId: 'marketplace-install',
-        occurredAtMs: 20,
-      },
     }));
   });
 
@@ -749,7 +727,12 @@ describe('requestUserPluginChange', () => {
     })).resolves.toMatchObject({ kind: 'reviewRequired', pendingChangeId: 'pending-curated' });
 
     expect(requestChange).toHaveBeenCalledWith(expect.objectContaining({
-      expectedMarketplaceListing: expect.not.objectContaining({ actorEvidence: expect.anything() }),
+      expectedMarketplaceListing: expect.objectContaining({
+        pluginId: 'acme.example',
+        packageName: '@acme/example',
+        version: '1.2.3',
+        source: { id: 'marketplace:curated', kind: 'curated', sourceUrl: 'https://marketplace.example.test/catalog.json' },
+      }),
     }));
     expect(decideChange).not.toHaveBeenCalled();
   });
@@ -817,7 +800,6 @@ describe('requestUserPluginChange', () => {
       requestChange,
       decideChange,
       confirm,
-      createInteractionId: () => 'explicit-cli-trust-1',
       nowMs: () => 1,
     })).resolves.toEqual({
       kind: 'committed',
@@ -831,33 +813,10 @@ describe('requestUserPluginChange', () => {
     expect(decideChange).toHaveBeenNthCalledWith(1, {
       pendingChangeId: 'pending-1',
       decision: 'trustSourceRoot',
-      actorEvidence: {
-        kind: 'authenticatedLocalUser',
-        interactionId: 'explicit-cli-trust-1',
-        occurredAtMs: 1,
-        provenance: {
-          kind: 'explicitCliTrustFlag',
-          command: 'plugins install',
-          flag: '--trust',
-          source: { kind: 'path', locator: absoluteFixturePath },
-        },
-      },
     });
     expect(decideChange).toHaveBeenNthCalledWith(2, {
       pendingChangeId: 'pending-1',
       decision: 'installAndTrust',
-      actorEvidence: {
-        kind: 'authenticatedLocalUser',
-        interactionId: 'explicit-cli-trust-1',
-        occurredAtMs: 1,
-        provenance: {
-          kind: 'explicitCliTrustFlag',
-          command: 'plugins install',
-          flag: '--trust',
-          source: { kind: 'path', locator: absoluteFixturePath },
-          pluginId: 'acme.example',
-        },
-      },
       optionalSelections: [],
     });
   });
@@ -918,7 +877,6 @@ describe('requestUserPluginChange', () => {
       }),
       decideChange,
       confirm,
-      createInteractionId: () => 'explicit-cli-trust-1',
       nowMs: () => 1,
     })).resolves.toMatchObject({
       kind: 'failed',

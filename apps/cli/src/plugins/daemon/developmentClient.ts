@@ -47,8 +47,6 @@ export async function requestPluginDevelopmentChange(
       decision: PluginChangeDecision,
       options?: Readonly<{ signal?: AbortSignal }>,
     ) => Promise<PluginChangeDecisionResult>;
-    createInteractionId?: () => string;
-    nowMs?: () => number;
   }> = {},
   options: Readonly<{
     signal?: AbortSignal;

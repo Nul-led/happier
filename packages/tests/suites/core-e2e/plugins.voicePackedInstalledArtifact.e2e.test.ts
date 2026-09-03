@@ -746,11 +746,6 @@ describePackedCandidate('candidate-bound packed public-authoring Voice lifecycle
       const committed = await changeService.decidePluginChange({
         pendingChangeId: requested.pendingChangeId,
         decision: 'installAndTrust',
-        actorEvidence: {
-          kind: 'authenticatedLocalUser',
-          interactionId: 'packed-candidate-voice-install',
-          occurredAtMs: 35,
-        },
       });
       expect(committed).toMatchObject({
         kind: 'committed',
@@ -1350,11 +1345,6 @@ describePackedCandidate('candidate-bound packed public-authoring Voice lifecycle
       await expect(changeService.decidePluginChange({
         pendingChangeId: failedRequested.pendingChangeId,
         decision: 'installAndTrust',
-        actorEvidence: {
-          kind: 'authenticatedLocalUser',
-          interactionId: 'packed-candidate-voice-failed-update',
-          occurredAtMs: 36,
-        },
       })).resolves.toMatchObject({ kind: 'failed', code: 'plugin_install_failed' });
       expect(await readCurrentDaemonPluginCatalog({ happyHomeDir, reloadController }))
         .toEqual([expect.objectContaining({
@@ -1391,11 +1381,6 @@ describePackedCandidate('candidate-bound packed public-authoring Voice lifecycle
       const replacement = await changeService.decidePluginChange({
         pendingChangeId: replacementRequested.pendingChangeId,
         decision: 'installAndTrust',
-        actorEvidence: {
-          kind: 'authenticatedLocalUser',
-          interactionId: 'packed-candidate-voice-replacement',
-          occurredAtMs: 37,
-        },
       });
       expect(replacement).toMatchObject({
         kind: 'committed',
