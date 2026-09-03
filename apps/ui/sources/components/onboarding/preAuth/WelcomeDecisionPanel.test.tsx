@@ -337,6 +337,7 @@ describe('WelcomeDecisionPanel', () => {
             endpoint: { url: 'https://api.happier.dev', source: 'default' },
             status: 'loading',
             discovery: null,
+            retry: vi.fn(),
         });
         const screen = await screenPromise;
 

@@ -331,8 +331,8 @@ export const WelcomeDecisionPanel = React.memo(function WelcomeDecisionPanel(pro
             );
         }
 
-        if (accountServiceModeActive && accountServiceEntry.status !== 'ready') {
-            const unsupported = accountServiceEntry.status === 'unsupported';
+        if (accountServiceModeActive && !accountServiceSignInAvailable) {
+            const unsupported = accountServiceEntry.status === 'unsupported' || accountServiceEntry.status === 'ready';
             return (
                 <View
                     testID={accountServiceEntry.status === 'loading'

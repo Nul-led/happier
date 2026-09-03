@@ -60,6 +60,9 @@ function FakeBody(props: { label: string }) {
 }
 
 function flattenStyle(style: unknown): Record<string, unknown> {
+    if (typeof style === 'function') {
+        return flattenStyle((style as (state: { pressed: boolean }) => unknown)({ pressed: false }));
+    }
     if (Array.isArray(style)) {
         return Object.assign({}, ...style.map((entry) => flattenStyle(entry)));
     }
