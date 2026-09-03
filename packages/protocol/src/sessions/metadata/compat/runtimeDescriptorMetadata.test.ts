@@ -250,4 +250,34 @@ describe('runtimeDescriptorMetadata compat helpers', () => {
       agentId: 'ohMyPi',
     });
   });
+
+  it('carries an external Agent\'s unknown resume-critical descriptor bytes unchanged', () => {
+    // An installed Agent's `agent` payload is opaque to the host: only that
+    // Agent's own codec knows which of its fields resume depends on. The host
+    // must round-trip fields it has never heard of, at every depth, including
+    // inside the versioned `agentExtra` block.
+    const descriptor = {
+      v: 1,
+      agentId: 'acme.tools/reviewer',
+      agent: {
+        providerSessionId: 'acme_session_1',
+        resumeCheckpointRef: 'ckpt-9f2',
+        resumeCursor: { epoch: 4, offsets: [12, 44], marker: null },
+        agentExtra: {
+          owner: 'acme.tools',
+          schemaId: 'acme.tools/reviewer.runtime',
+          v: 3,
+          replayToken: 'tok-abc',
+        },
+      },
+      externalDescriptorRevision: 'rev-77',
+    } as const;
+
+    const written = writeRuntimeDescriptorV1ToMetadata({ path: '/tmp/session' }, descriptor);
+
+    // Exact equality, not a subset match: an added, dropped, renamed or
+    // re-shaped field inside the Agent-owned payload is a resume regression.
+    expect(written.runtimeDescriptorV1).toEqual(descriptor);
+    expect(readRuntimeDescriptorV1FromMetadata(written)).toEqual(descriptor);
+  });
 });

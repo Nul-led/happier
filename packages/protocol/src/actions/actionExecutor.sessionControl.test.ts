@@ -343,6 +343,78 @@ describe('createActionExecutor (session control)', () => {
     }));
   });
 
+  it('refuses the global Session permission policy Action on the plugin surface while present-user CLI mutation stays available', async () => {
+    const sessionPermissionModeSet = vi.fn(async () => ({ ok: true }));
+    const executor = createExecutor({ sessionPermissionModeSet });
+
+    await expect(executor.execute(
+      'session.permission_mode.set' as any,
+      { sessionId: 'target', permissionMode: 'read-only' },
+      {
+        surface: 'plugin',
+        actionCaller: { kind: 'plugin', pluginId: 'acme.channels', contributionLocalId: 'inbound' },
+      },
+    )).resolves.toMatchObject({
+      ok: false,
+      errorCode: 'action_disabled',
+      details: { reason: 'unsupported_surface', surface: 'plugin' },
+    });
+    expect(sessionPermissionModeSet).not.toHaveBeenCalled();
+
+    await expect(executor.execute(
+      'session.permission_mode.set' as any,
+      { sessionId: 'target', permissionMode: 'read-only' },
+      { surface: 'cli', authority: 'present_user' },
+    )).resolves.toEqual({ ok: true, result: { ok: true } });
+    expect(sessionPermissionModeSet).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses mediated source authority from a non-plugin caller instead of dropping it', async () => {
+    const sessionSendMessage = vi.fn(async () => ({ ok: true }));
+    const executor = createExecutor({ sessionSendMessage });
+    const source = {
+      sourceRef: 'channel-7',
+      sourceRevisionOrEpoch: 'message-42',
+      remoteApprovalMaxScope: 'session',
+      requestedPermissionCeiling: 'yolo',
+    } as const;
+
+    await expect(executor.execute(
+      'session.message.send' as any,
+      { sessionId: 'target', message: 'Continue', source },
+      {
+        surface: 'agent',
+        defaultSessionId: 'caller',
+        callerPermissionMode: 'yolo',
+        causalPermissionAuthority: {
+          kind: 'admittedSessionInputV1',
+          admittedPermissionCeiling: 'read-only',
+        },
+        sessionInputSource: {
+          sourceSessionId: 'caller',
+          sourceTurnId: 'turn-1',
+          via: 'action',
+        },
+      },
+    )).resolves.toEqual({
+      ok: false,
+      errorCode: 'invalid_parameters',
+      error: 'invalid_parameters',
+    });
+
+    await expect(executor.execute(
+      'session.message.send' as any,
+      { sessionId: 'target', message: 'Continue', source },
+      { surface: 'cli' },
+    )).resolves.toEqual({
+      ok: false,
+      errorCode: 'invalid_parameters',
+      error: 'invalid_parameters',
+    });
+
+    expect(sessionSendMessage).not.toHaveBeenCalled();
+  });
+
   it('forwards declared attachment drafts only for a plugin caller', async () => {
     const sessionSendMessage = vi.fn(async () => ({ status: 'accepted', localId: 'plugin-input-v1:test' }));
     const executor = createExecutor({ sessionSendMessage });
@@ -1284,7 +1356,7 @@ describe('createActionExecutor (session control)', () => {
     const res = await executor.execute(
       'session.spawn_new' as any,
       canonicalSessionSpawnInput,
-      { surface: 'cli', defaultSessionId: null, actionRequestId: 'attempt-1' },
+      { surface: 'cli', authority: 'present_user', defaultSessionId: null, actionRequestId: 'attempt-1' },
     );
 
     expect(res).toMatchObject({
@@ -1302,9 +1374,13 @@ describe('createActionExecutor (session control)', () => {
     const res = await executor.execute(
       'session.spawn_new' as any,
       canonicalSessionSpawnInput,
-      { surface: 'cli', defaultSessionId: null },
+      { surface: 'cli', authority: 'present_user', defaultSessionId: null },
     );
 
+    // Without the host-stamped authority this reached invalid_parameters, which
+    // also carries no details and made the assertion vacuous. Keep the canonical
+    // witness so the redaction is proven on the real thrown-error path.
+    expect(res).toMatchObject({ ok: false, error: 'action failed' });
     expect(res).not.toHaveProperty('details');
     expect(JSON.stringify(res)).not.toContain('do-not-leak');
   });
@@ -1623,7 +1699,7 @@ describe('createActionExecutor (session control)', () => {
     const res = await executor.execute(
       'session.permission.respond' as any,
       { sessionId: 's1', decision: 'allow' },
-      { surface: 'cli', defaultSessionId: null },
+      { surface: 'cli', authority: 'present_user', defaultSessionId: null },
     );
 
     expect(res).toEqual({ ok: false, errorCode: 'unsupported_action', error: 'unsupported_action:session.permission.respond' });
@@ -1850,7 +1926,7 @@ describe('createActionExecutor (session control)', () => {
     const res = await executor.execute(
       'session.user_action.answer' as any,
       { sessionId: 's1', decision: 'approve' },
-      { surface: 'cli', defaultSessionId: null },
+      { surface: 'cli', authority: 'present_user', defaultSessionId: null },
     );
 
     expect(res).toEqual({ ok: false, errorCode: 'unsupported_action', error: 'unsupported_action:session.user_action.answer' });

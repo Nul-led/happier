@@ -33,11 +33,21 @@ describe('spawn-session execution authorization', () => {
     })).toThrow();
   });
 
-  it('keeps execution authorization identity-only and rejects delivery authority fields', () => {
+  it('keeps older identity-only authorization accepted and carries an optional rearm timestamp', () => {
     expect(SpawnSessionExecutionAuthorizationSchema.parse({
       provenance: 'user_request',
       requestId: 'local-inactive',
     })).toEqual({ provenance: 'user_request', requestId: 'local-inactive' });
+    expect(SpawnSessionExecutionAuthorizationSchema.parse({
+      provenance: 'user_request',
+      requestId: 'local-inactive',
+      requestedAt: 1_234,
+    })).toEqual({ provenance: 'user_request', requestId: 'local-inactive', requestedAt: 1_234 });
+    expect(SpawnSessionExecutionAuthorizationSchema.safeParse({
+      provenance: 'user_request',
+      requestId: 'local-inactive',
+      requestedAt: -1,
+    }).success).toBe(false);
     expect(SpawnSessionExecutionAuthorizationSchema.safeParse({
       provenance: 'user_request',
       requestId: 'local-inactive',

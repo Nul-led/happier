@@ -135,14 +135,25 @@ describe('session draft protocol', () => {
         authoring: { environmentVariables: { mutationId, value: { SECRET: 'no' } } },
       },
     })).toThrow();
-    for (const retiredField of ['machineId', 'serverId', 'agentId', 'backendTarget']) {
-      expect(() => SessionDraftDocumentV1Schema.parse({
-        ...newSessionDocument(),
-        target: {
-          kind: 'newSession',
-          authoring: { [retiredField]: { mutationId, value: null } },
-        },
-      })).toThrow();
+  });
+
+  it('reads and preserves the published 0.2 authoring fields without restoring them as 0.3 write fields', () => {
+    const predecessorAuthoring = {
+      machineId: { mutationId, value: 'machine-1' },
+      serverId: { mutationId, value: 'server-1' },
+      agentId: { mutationId, value: 'codex' },
+      backendTarget: { mutationId, value: { kind: 'builtInAgent', agentId: 'codex' } },
+      modelId: { mutationId, value: 'gpt-5' },
+      codexBackendMode: { mutationId, value: null },
+    };
+    const parsed = SessionDraftDocumentV1Schema.parse({
+      ...newSessionDocument(),
+      target: { kind: 'newSession', authoring: predecessorAuthoring },
+    });
+
+    expect(parsed.target).toEqual({ kind: 'newSession', authoring: predecessorAuthoring });
+    for (const predecessorField of Object.keys(predecessorAuthoring)) {
+      expect(SyncedSessionAuthoringFieldIdV1Schema.safeParse(predecessorField).success).toBe(false);
     }
   });
 

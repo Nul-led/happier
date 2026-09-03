@@ -270,6 +270,11 @@ export const HandoffTargetReplacementPreflightV1Schema = z.object({
   machineId: z.string().trim().min(1).max(MAX_MACHINE_ID_LENGTH),
   operationId: z.string().trim().min(1).max(MAX_RELATIONSHIP_ID_LENGTH),
   targetPath: z.string().trim().min(1).max(MAX_PATH_LENGTH),
+  /**
+   * Whether this handoff activates exact mirroring, which authorizes deleting
+   * target-only files later even when the destination is missing or empty now.
+   */
+  activatesExactMirror: z.boolean().optional(),
 }).strict();
 export type HandoffTargetReplacementPreflightV1 = z.infer<typeof HandoffTargetReplacementPreflightV1Schema>;
 

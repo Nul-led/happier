@@ -10,6 +10,7 @@ import {
 } from '@happier-dev/protocol';
 
 import {
+  CAPABILITY_HOST_BINDING_OWNERS_V1,
   CapabilityMatrixValidationError,
   deriveCapabilityMatrixMetadata,
   projectCapabilityMatrix,
@@ -21,15 +22,6 @@ import { CAPABILITY_MATRIX_DECLARATIONS_V1 } from './capabilityMatrixMetadata.mj
 import {
   readCurrentApiSurfaceInventory,
 } from './apiSurfaceCli.mjs';
-
-function assertDeferredExternalDevelopmentProof(declaration) {
-  assert.equal(declaration.availabilityDisposition, 'deferred');
-  assert.equal(declaration.provingConsumer, null);
-  assert.match(declaration.unblockCondition, /maintained external development-source plugin/u);
-  assert.match(declaration.unblockCondition, /current loaded development stack/u);
-  assert.match(declaration.unblockCondition, /real invocation/u);
-  assert.match(declaration.unblockCondition, /currentness/u);
-}
 
 const CATALOG = Object.freeze([
   Object.freeze({
@@ -93,33 +85,75 @@ const SERVICES = Object.freeze([
   Object.freeze({ id: 'http', property: 'http', publicType: 'HttpService' }),
 ]);
 
+/**
+ * The host owners an available row may cite, with the canonical symbol that
+ * proves each one really binds, projects, or runs the capability. Declaration
+ * catalogs, `PluginServices` members, and published source modules are
+ * deliberately absent: they declare capabilities and bind none.
+ */
+const HOST_BINDING_OWNER_EVIDENCE = Object.freeze({
+  'apps/cli/src/plugins/runtime/resolveExecutablePluginRuntimeRegistry.ts': 'export async function resolveExecutablePluginRuntimeRegistry',
+  'apps/ui/sources/components/plugins/reactNative/clientExecutableContributions.ts': 'export function createPluginUiClientExecutableRegistrationIndex',
+  'apps/cli/src/plugins/projection/registry/ui/projection.ts': 'export const pluginUiProjectionFamily',
+  'apps/cli/src/plugins/projection/registry/browser.ts': 'export const pluginBrowserProjectionFamily',
+  'apps/cli/src/plugins/projection/registry/composer.ts': 'export const composerControlsProjectionFamily',
+  'apps/cli/src/plugins/projection/registry/managedDependencies.ts': 'export const managedDependenciesProjectionFamily',
+  'apps/cli/src/plugins/projection/registry/accountCollections.ts': 'export const accountCollectionsProjectionFamily',
+  'apps/cli/src/plugins/projection/registry/voiceDeclarations.ts': 'export const voiceModelPackProjectionFamily',
+  'apps/cli/src/plugins/projection/registry/targetedContributions.ts': 'export function resolveAdmittedTargetedContributions',
+  'apps/cli/src/cli/pluginCommandContributions.ts': 'export async function handlePluginCommandCliCommand',
+  'apps/cli/src/plugins/runtime/toolCatalog.ts': 'export function projectExecutablePluginToolCatalog',
+  'apps/cli/src/capabilities/registry/toolExecutionRuns.ts': 'export const executionRunsCapability',
+  'apps/cli/src/plugins/runtime/exec/system/tools/definitions.ts': 'export function projectPluginSystemToolContributions',
+  'apps/cli/src/plugins/runtime/invocation/services/settings.ts': 'export function createStablePluginSettingsHost',
+  'apps/cli/src/plugins/runtime/invocation/services/notifications.ts': 'export function createStablePluginNotificationsOwner',
+  'apps/cli/src/plugins/runtime/lifecycle/manager.ts': 'export async function activatePluginRuntimeRegistry',
+  'apps/cli/src/plugins/daemon/runtimeOwner.ts': 'export function createDaemonPluginRuntimeOwner',
+  'apps/server/sources/app/plugins/webhooks/currentContribution.ts': 'export async function resolveCurrentPluginWebhookContributionTxV1',
+  'apps/server/sources/app/plugins/webhooks/claimStore.ts': 'export async function claimPluginWebhookDeliveryV1',
+  'apps/cli/src/plugins/runtime/invocation/services/factory.ts': 'export function createUnavailablePluginInvocationServiceBinding',
+  'apps/cli/src/plugins/runtime/invocation/services/production.ts': 'export function createProductionPluginInvocationServiceOwners',
+  'apps/cli/src/plugins/runtime/invocation/lifetime.ts': 'export function createPluginInvocationLifetime',
+  'apps/cli/src/plugins/runtime/hostAccess/resolve.ts': 'export function createPluginInvocationHostPolicyResolver',
+  'apps/cli/src/plugins/runtime/context/terminalHost.ts': 'export function createPluginTerminalHostService',
+  'apps/cli/src/agent/runtime/registry/engineRegistry/nativeAgentSessionHostServiceOwners.ts': 'export function createNativeAgentSessionHostServiceOwners',
+  'apps/cli/src/plugins/runtime/loadPluginModule.ts': 'export async function loadVerifiedPluginModule',
+  'packages/plugin-ui/src/surfaceEntry.tsx': 'export function defineUiSurface',
+  'packages/plugin-sdk/src/ui/build/buildUiArtifacts.ts': 'export async function buildUiArtifacts',
+  'packages/plugin-sdk/package.json': '"exports"',
+});
+const HOST_BINDING_OWNER_MODULES = new Set(Object.keys(HOST_BINDING_OWNER_EVIDENCE));
+
 function metadata(overrides = {}) {
   return Object.freeze({
     manifestFamilies: Object.freeze({
       actions: Object.freeze({
-        producer: 'apps/cli/src/plugins/runtime/invocation/targetActionRegistry.ts',
+        producer: 'packages/protocol/src/plugins/contributions/catalog.ts#actions',
         provingConsumer: 'packages/plugins/channels/src/manifest.ts',
-        specialistOwner: 'SDK-ACTION-03',
+        specialistOwner: 'apps/cli/src/plugins/runtime/resolveExecutablePluginRuntimeRegistry.ts',
+        lifecycleOwner: 'apps/cli/src/plugins/runtime/lifecycle/manager.ts',
         predecessorRemoval: 'none',
         availabilityDisposition: 'available',
       }),
     }),
     services: Object.freeze({
       http: Object.freeze({
-        producer: 'apps/cli/src/plugins/runtime/invocation/services/factory.ts',
+        producer: 'src/services/io.ts',
         lifecycle: 'invocation-scoped',
         provingConsumer: 'packages/plugins/channel-telegram/src/channelActions.ts',
-        specialistOwner: 'SDK-NETWORK-01',
+        specialistOwner: 'apps/cli/src/plugins/runtime/invocation/services/factory.ts',
+        lifecycleOwner: 'apps/cli/src/plugins/runtime/invocation/lifetime.ts',
         predecessorRemoval: 'none',
         availabilityDisposition: 'available',
       }),
     }),
     hostAccess: Object.freeze({
       'network.client': Object.freeze({
-        producer: 'apps/cli/src/plugins/runtime/hostAccess/resolve.ts',
+        producer: 'packages/protocol/src/plugins/manifest/v2.ts#network.client',
         lifecycle: 'invocation-scoped',
         provingConsumer: 'packages/plugins/channels',
-        specialistOwner: 'SDK-NETWORK-01',
+        specialistOwner: 'apps/cli/src/plugins/runtime/hostAccess/resolve.ts',
+        lifecycleOwner: 'apps/cli/src/plugins/runtime/invocation/services/factory.ts',
         predecessorRemoval: 'none',
         availabilityDisposition: 'available',
       }),
@@ -129,7 +163,8 @@ function metadata(overrides = {}) {
         producer: 'src/index.ts',
         lifecycle: 'published',
         provingConsumer: 'packages/plugins/channels',
-        specialistOwner: 'SDK-PUBLIC-SURFACE',
+        specialistOwner: 'packages/plugin-sdk/package.json',
+        lifecycleOwner: 'apps/cli/src/plugins/runtime/loadPluginModule.ts',
         predecessorRemoval: 'none',
         availabilityDisposition: 'available',
       }),
@@ -137,7 +172,8 @@ function metadata(overrides = {}) {
         producer: 'src/http/index.ts',
         lifecycle: 'published',
         provingConsumer: 'packages/plugins/channels',
-        specialistOwner: 'SDK-NETWORK-01',
+        specialistOwner: 'packages/plugin-sdk/package.json',
+        lifecycleOwner: 'apps/cli/src/plugins/runtime/loadPluginModule.ts',
         predecessorRemoval: 'none',
         availabilityDisposition: 'available',
       }),
@@ -200,6 +236,113 @@ test('rejects metadata that does not join a canonical public subpath', () => {
     }),
     (error) => error instanceof CapabilityMatrixValidationError
       && error.diagnostics.includes('unknown published-subpath metadata: ./not-published'),
+  );
+});
+
+test('publishes exactly the canonical host binding owners, each owning its capability in source', async () => {
+  // Availability may only cite these owners, so an invented, moved, or retired
+  // owner path must fail here rather than reach a published matrix row.
+  const repoRoot = resolve(import.meta.dirname, '..', '..', '..');
+  assert.deepEqual(
+    [...Object.values(CAPABILITY_HOST_BINDING_OWNERS_V1)].sort(),
+    [...HOST_BINDING_OWNER_MODULES].sort(),
+  );
+  for (const [module, evidence] of Object.entries(HOST_BINDING_OWNER_EVIDENCE)) {
+    const source = await readFile(resolve(repoRoot, module), 'utf8');
+    assert.equal(source.includes(evidence), true, `${module} must own ${evidence}`);
+  }
+});
+
+test('rejects a contribution catalog label as an available family host binder', () => {
+  // The Protocol catalog entry declares the family. It registers, projects and
+  // runs nothing, so it cannot also stand as the row's host binder.
+  assert.throws(
+    () => project({
+      manifestFamilies: Object.freeze({
+        actions: Object.freeze({
+          ...metadata().manifestFamilies.actions,
+          specialistOwner: 'packages/protocol/src/plugins/contributions/catalog.ts#actions',
+        }),
+      }),
+    }),
+    (error) => error instanceof CapabilityMatrixValidationError
+      && error.diagnostics.includes(
+        'manifestFamilies.actions.specialistOwner must name a canonical host binder/projection owner'
+        + '; a declaration catalog, type member, or published source module binds nothing',
+      ),
+  );
+});
+
+test('rejects a PluginServices member spelling as an available service host binder', () => {
+  assert.throws(
+    () => project({
+      services: Object.freeze({
+        http: Object.freeze({
+          ...metadata().services.http,
+          specialistOwner: 'packages/plugin-sdk/src/services/index.ts#PluginServices.http',
+        }),
+      }),
+    }),
+    (error) => error instanceof CapabilityMatrixValidationError
+      && error.diagnostics.includes(
+        'services.http.specialistOwner must name a canonical host binder/projection owner'
+        + '; a declaration catalog, type member, or published source module binds nothing',
+      ),
+  );
+});
+
+test('rejects an available row whose host binder repeats its own declaration owner', () => {
+  assert.throws(
+    () => project({
+      hostAccess: Object.freeze({
+        'network.client': Object.freeze({
+          ...metadata().hostAccess['network.client'],
+          producer: 'apps/cli/src/plugins/runtime/hostAccess/resolve.ts',
+        }),
+      }),
+    }),
+    (error) => error instanceof CapabilityMatrixValidationError
+      && error.diagnostics.includes(
+        'hostAccess.network.client.specialistOwner must not repeat its own declaration owner',
+      ),
+  );
+});
+
+test('rejects an available row without a canonical runtime lifecycle owner', () => {
+  assert.throws(
+    () => project({
+      subpaths: Object.freeze({
+        ...metadata().subpaths,
+        './http': Object.freeze({
+          ...metadata().subpaths['./http'],
+          lifecycleOwner: undefined,
+        }),
+      }),
+    }),
+    (error) => error instanceof CapabilityMatrixValidationError
+      && error.diagnostics.includes(
+        'subpaths../http.lifecycleOwner must name a canonical runtime lifecycle owner'
+        + '; a lifecycle stage label owns no lifecycle',
+      ),
+  );
+});
+
+test('rejects a deferred row that claims a host binder or runtime lifecycle owner', () => {
+  assert.throws(
+    () => project({
+      hostAccess: Object.freeze({
+        'network.client': Object.freeze({
+          ...metadata().hostAccess['network.client'],
+          availabilityDisposition: 'deferred',
+          provingConsumer: null,
+          unblockCondition: 'no host authority or service owner binds this capability yet',
+        }),
+      }),
+    }),
+    (error) => error instanceof CapabilityMatrixValidationError
+      && error.diagnostics.includes(
+        'hostAccess.network.client must leave specialistOwner and lifecycleOwner null while it is deferred',
+      ),
   );
 });
 
@@ -294,7 +437,8 @@ test('derives targeted contribution availability through the maintained external
 
   assert.deepEqual(metadata.manifestFamilies.targetedPluginContributions, {
     producer: 'packages/protocol/src/plugins/contributions/catalog.ts#targetedPluginContributions',
-    specialistOwner: 'packages/protocol/src/plugins/contributions/catalog.ts#targetedPluginContributions',
+    specialistOwner: 'apps/cli/src/plugins/projection/registry/targetedContributions.ts',
+    lifecycleOwner: 'apps/cli/src/plugins/runtime/lifecycle/manager.ts',
     predecessorRemoval: `catalog-disposition:${targetedContributionCatalogEntry.disposition}`,
     availabilityDisposition: 'available',
     provingConsumer: 'packages/plugin-sdk/fixtures/external-targeted-packages/contributor/src/index.ts',
@@ -305,24 +449,197 @@ test('derives targeted contribution availability through the maintained external
   });
 });
 
-test('keeps MCP servers deferred until a maintained plugin author declares and registers one', () => {
-  assert.deepEqual(CAPABILITY_MATRIX_DECLARATIONS_V1.manifestFamilies['mcp.servers'], {
-    availabilityDisposition: 'deferred',
-    provingConsumer: null,
-    unblockCondition: 'A maintained plugin author declares and registers an MCP server through the canonical MCP lifecycle.',
+test('derives daemon database and webhook availability from their real realm owners', () => {
+  const entries = PLUGIN_CONTRIBUTION_CATALOG_V2.filter((entry) => (
+    entry.manifestKey === 'daemonDatabases' || entry.manifestKey === 'webhooks'
+  ));
+  const metadata = deriveCapabilityMatrixMetadata({
+    contributionCatalog: entries,
+    hostAccessCatalog: [],
+    apiInventory: { entrypoints: [], symbols: [] },
+    services: [],
+    declarations: CAPABILITY_MATRIX_DECLARATIONS_V1,
   });
+
+  assert.equal(
+    metadata.manifestFamilies.daemonDatabases.specialistOwner,
+    'apps/cli/src/plugins/daemon/runtimeOwner.ts',
+  );
+  assert.equal(
+    metadata.manifestFamilies.daemonDatabases.lifecycleOwner,
+    'apps/cli/src/plugins/daemon/runtimeOwner.ts',
+  );
+  assert.equal(
+    metadata.manifestFamilies.webhooks.specialistOwner,
+    'apps/server/sources/app/plugins/webhooks/currentContribution.ts',
+  );
+  assert.equal(
+    metadata.manifestFamilies.webhooks.lifecycleOwner,
+    'apps/server/sources/app/plugins/webhooks/claimStore.ts',
+  );
 });
 
-test('keeps Tools and Commands deferred until loaded development-source proof', () => {
-  assertDeferredExternalDevelopmentProof(CAPABILITY_MATRIX_DECLARATIONS_V1.manifestFamilies.commands);
-  assert.match(CAPABILITY_MATRIX_DECLARATIONS_V1.manifestFamilies.commands.unblockCondition, /canonical plugin command catalog/u);
-  assertDeferredExternalDevelopmentProof(CAPABILITY_MATRIX_DECLARATIONS_V1.manifestFamilies.tools);
-  assert.match(CAPABILITY_MATRIX_DECLARATIONS_V1.manifestFamilies.tools.unblockCondition, /real daemon MCP catalog/u);
+test('names the real realm binder for every catalogued manifest family', () => {
+  // Registration, client projection and direct host consumption are different
+  // host mechanisms. A catalog registration/projection label selects none of
+  // them, and the resolved-contribution registry only reads what others bind,
+  // so neither may stand in as a family's binder.
+  const metadata = deriveCapabilityMatrixMetadata({
+    contributionCatalog: PLUGIN_CONTRIBUTION_CATALOG_V2,
+    hostAccessCatalog: [],
+    apiInventory: { entrypoints: [], symbols: [] },
+    services: [],
+    declarations: CAPABILITY_MATRIX_DECLARATIONS_V1,
+  });
+
+  const expectedBinders = {
+    actions: 'apps/cli/src/plugins/runtime/resolveExecutablePluginRuntimeRegistry.ts',
+    // Voice providers ship on web/iOS/Android only, so the daemon registry
+    // never binds them; the client executable registration index does.
+    voiceProviders: 'apps/ui/sources/components/plugins/reactNative/clientExecutableContributions.ts',
+    transcriptActivities: 'apps/cli/src/plugins/projection/registry/ui/projection.ts',
+    'ui.views': 'apps/cli/src/plugins/projection/registry/ui/projection.ts',
+    browserActions: 'apps/cli/src/plugins/projection/registry/browser.ts',
+    composerControls: 'apps/cli/src/plugins/projection/registry/composer.ts',
+    managedDependencies: 'apps/cli/src/plugins/projection/registry/managedDependencies.ts',
+    accountCollections: 'apps/cli/src/plugins/projection/registry/accountCollections.ts',
+    voiceModelPacks: 'apps/cli/src/plugins/projection/registry/voiceDeclarations.ts',
+    commands: 'apps/cli/src/cli/pluginCommandContributions.ts',
+    tools: 'apps/cli/src/plugins/runtime/toolCatalog.ts',
+    settings: 'apps/cli/src/plugins/runtime/invocation/services/settings.ts',
+    'settings.fields': 'apps/cli/src/plugins/runtime/invocation/services/settings.ts',
+    executionRunProfiles: 'apps/cli/src/capabilities/registry/toolExecutionRuns.ts',
+    notifications: 'apps/cli/src/plugins/runtime/invocation/services/notifications.ts',
+    systemTools: 'apps/cli/src/plugins/runtime/exec/system/tools/definitions.ts',
+    pluginContributionPoints: 'apps/cli/src/plugins/projection/registry/targetedContributions.ts',
+    targetedPluginContributions: 'apps/cli/src/plugins/projection/registry/targetedContributions.ts',
+    daemonDatabases: 'apps/cli/src/plugins/daemon/runtimeOwner.ts',
+    webhooks: 'apps/server/sources/app/plugins/webhooks/currentContribution.ts',
+  };
+  for (const [family, binder] of Object.entries(expectedBinders)) {
+    assert.equal(metadata.manifestFamilies[family].specialistOwner, binder, family);
+  }
+  for (const entry of PLUGIN_CONTRIBUTION_CATALOG_V2) {
+    const row = metadata.manifestFamilies[entry.manifestKey];
+    assert.equal(HOST_BINDING_OWNER_MODULES.has(row.specialistOwner), true, `${entry.manifestKey} binder`);
+    assert.equal(HOST_BINDING_OWNER_MODULES.has(row.lifecycleOwner), true, `${entry.manifestKey} lifecycle`);
+  }
 });
 
-test('keeps unproven invocation services deferred until loaded development-source proof', () => {
+test('binds each published service through the host owner that really supplies it', async () => {
+  // The host splits `PluginServices` into binding-supplied and host-composed
+  // members. Citing the binding owner for a host-composed member — or any
+  // `PluginServices` spelling for either — is not a binder.
+  const packageRoot = resolve(import.meta.dirname, '..');
+  const repoRoot = resolve(packageRoot, '..', '..');
+  const [servicesSource, hostServices, apiInventory] = await Promise.all([
+    readFile(resolve(packageRoot, 'src/services/index.ts'), 'utf8'),
+    readFile(resolve(repoRoot, 'apps/cli/src/plugins/runtime/invocation/services/unavailable.ts'), 'utf8'),
+    readCurrentApiInventory(packageRoot),
+  ]);
+  const services = readPluginServicesCapabilityCatalog(servicesSource);
+  const availabilityOwnerById = new Map([...hostServices
+    .slice(hostServices.indexOf('export const PLUGIN_SERVICE_DESCRIPTORS'))
+    .matchAll(/id: '([a-zA-Z]+)', publicProperty: '[a-zA-Z]+', availabilityOwner: '(binding|host)'/gu)]
+    .map(([, id, availabilityOwner]) => [id, availabilityOwner]));
+  const metadata = deriveCapabilityMatrixMetadata({
+    contributionCatalog: [],
+    hostAccessCatalog: [],
+    apiInventory,
+    services,
+    declarations: CAPABILITY_MATRIX_DECLARATIONS_V1,
+  });
+
+  assert.equal(availabilityOwnerById.size, services.length);
+  for (const service of services) {
+    const row = metadata.services[service.id];
+    assert.equal(
+      row.specialistOwner,
+      availabilityOwnerById.get(service.id) === 'binding'
+        ? 'apps/cli/src/plugins/runtime/invocation/services/factory.ts'
+        : 'apps/cli/src/plugins/runtime/invocation/services/production.ts',
+      service.id,
+    );
+    assert.equal(row.lifecycleOwner, 'apps/cli/src/plugins/runtime/invocation/lifetime.ts', service.id);
+    assert.equal(/#PluginServices\./u.test(row.producer), false, service.id);
+  }
+});
+
+test('leaves a capability the owner map does not name unbound in every group', () => {
+  // A row can only be available with a named binder and lifecycle owner, so an
+  // unmapped family, service, HostAccess capability, or realm must arrive here
+  // unbound instead of inheriting a generic registry, resolver, or loader.
+  const declaration = Object.freeze({ availabilityDisposition: 'available', provingConsumer: null });
+  const metadata = deriveCapabilityMatrixMetadata({
+    contributionCatalog: [{
+      manifestKey: 'unmappedFamily',
+      allowedRuntimeRegistration: 'unmappedFamily',
+      projectionFamily: 'unmappedFamily',
+      disposition: 'reshaped',
+    }],
+    hostAccessCatalog: [{ capability: 'unmapped.capability' }],
+    apiInventory: {
+      entrypoints: [{
+        specifier: './unmapped',
+        sourceModule: 'src/unmapped/index.ts',
+        visibility: 'author',
+        realm: 'unmappedRealm',
+      }],
+      symbols: [],
+    },
+    services: [{ id: 'unmappedService', property: 'unmappedService', publicType: 'UnmappedService' }],
+    declarations: {
+      manifestFamilies: { unmappedFamily: declaration },
+      services: { unmappedService: declaration },
+      hostAccess: { 'unmapped.capability': declaration },
+      subpaths: { './unmapped': declaration },
+    },
+  });
+
+  for (const row of [
+    metadata.manifestFamilies.unmappedFamily,
+    metadata.services.unmappedService,
+    metadata.hostAccess['unmapped.capability'],
+    metadata.subpaths['./unmapped'],
+  ]) {
+    assert.equal(row.specialistOwner, null);
+    assert.equal(row.lifecycleOwner, null);
+  }
+});
+
+test('rejects a PluginServices member spelling as an available row declaration owner', () => {
+  assert.throws(
+    () => project({
+      services: Object.freeze({
+        http: Object.freeze({
+          ...metadata().services.http,
+          producer: 'packages/plugin-sdk/src/services/index.ts#PluginServices.http',
+        }),
+      }),
+    }),
+    (error) => error instanceof CapabilityMatrixValidationError
+      && error.diagnostics.includes(
+        'services.http.producer must name the module that declares the capability'
+        + '; a PluginServices member spelling declares no module',
+      ),
+  );
+});
+
+test('projects consumer-free availability for capabilities with a realm binder', () => {
+  // MCP servers, Commands, Tools, and the unconsumed invocation services each
+  // have a producer, a public projection, and a daemon-realm binder. No
+  // maintained consumer exists for any of them, and none is required.
+  for (const family of ['mcp.servers', 'commands', 'tools']) {
+    assert.deepEqual(CAPABILITY_MATRIX_DECLARATIONS_V1.manifestFamilies[family], {
+      availabilityDisposition: 'available',
+      provingConsumer: null,
+    });
+  }
   for (const service of ['events', 'fs', 'providers', 'resources']) {
-    assertDeferredExternalDevelopmentProof(CAPABILITY_MATRIX_DECLARATIONS_V1.services[service]);
+    assert.deepEqual(CAPABILITY_MATRIX_DECLARATIONS_V1.services[service], {
+      availabilityDisposition: 'available',
+      provingConsumer: null,
+    });
   }
 });
 
@@ -364,10 +681,11 @@ test('derives HostAccess metadata from the terminal/session and deferred declara
   });
 
   assert.deepEqual(metadata.hostAccess.terminal, {
-    producer: 'apps/cli/src/agent/runtime/registry/engineRegistry/nativeAgentSessionHostServiceOwners.ts',
+    producer: 'packages/protocol/src/plugins/manifest/v2.ts#terminal',
     lifecycle: 'session-runtime',
     provingConsumer: 'packages/plugins/claude/src/manifest.ts',
     specialistOwner: 'apps/cli/src/plugins/runtime/context/terminalHost.ts',
+    lifecycleOwner: 'apps/cli/src/agent/runtime/registry/engineRegistry/nativeAgentSessionHostServiceOwners.ts',
     predecessorRemoval: 'none',
     availabilityDisposition: 'available',
     sourceApiAvailability: 'present',
@@ -378,9 +696,10 @@ test('derives HostAccess metadata from the terminal/session and deferred declara
   assert.equal(Object.hasOwn(metadata.hostAccess, 'network.intercept'), false);
   for (const capability of ['browser', 'clipboard', 'externalLinks']) {
     const row = metadata.hostAccess[capability];
-    assert.equal(row.producer, 'packages/protocol/src/plugins/manifest/v2.ts');
+    assert.equal(row.producer, `packages/protocol/src/plugins/manifest/v2.ts#${capability}`);
     assert.equal(row.lifecycle, 'declaration-only');
-    assert.equal(row.specialistOwner, 'apps/cli/src/plugins/runtime/lifecycle/activation/policy.ts');
+    assert.equal(row.specialistOwner, null);
+    assert.equal(row.lifecycleOwner, null);
     assert.equal(row.availabilityDisposition, 'deferred');
     assert.equal(row.provingConsumer, null);
   }
@@ -576,10 +895,12 @@ test('joins the current canonical catalogs without a missing, stale, or disposit
   assert.deepEqual(matrix.hostAccess.find((row) => row.capability === 'terminal'), {
     capability: 'terminal',
     authorizationClass: 'presentIntentOrOs',
-    producer: 'apps/cli/src/agent/runtime/registry/engineRegistry/nativeAgentSessionHostServiceOwners.ts',
+    realm: 'daemon',
+    producer: 'packages/protocol/src/plugins/manifest/v2.ts#terminal',
     lifecycle: 'session-runtime',
     provingConsumer: 'packages/plugins/claude/src/manifest.ts',
     specialistOwner: 'apps/cli/src/plugins/runtime/context/terminalHost.ts',
+    lifecycleOwner: 'apps/cli/src/agent/runtime/registry/engineRegistry/nativeAgentSessionHostServiceOwners.ts',
     predecessorRemoval: 'none',
     availabilityDisposition: 'available',
     sourceApiAvailability: 'present',
@@ -602,7 +923,8 @@ test('joins the current canonical catalogs without a missing, stale, or disposit
       catalogDisposition: 'reshaped',
       producer: 'packages/protocol/src/plugins/contributions/catalog.ts#composerReferences',
       provingConsumer: 'packages/plugin-ui/fixtures/external-authoring/src/index.ts',
-      specialistOwner: 'packages/protocol/src/plugins/contributions/catalog.ts#composerReferences',
+      specialistOwner: 'apps/cli/src/plugins/runtime/resolveExecutablePluginRuntimeRegistry.ts',
+      lifecycleOwner: 'apps/cli/src/plugins/runtime/lifecycle/manager.ts',
       predecessorRemoval: 'catalog-disposition:reshaped',
       availabilityDisposition: 'available',
       sourceApiAvailability: 'present',
@@ -614,9 +936,10 @@ test('joins the current canonical catalogs without a missing, stale, or disposit
   assert.equal(matrix.hostAccess.some((entry) => entry.capability === 'network.intercept'), false);
   for (const capability of ['browser', 'clipboard', 'externalLinks']) {
     const row = matrix.hostAccess.find((entry) => entry.capability === capability);
-    assert.equal(row?.producer, 'packages/protocol/src/plugins/manifest/v2.ts');
+    assert.equal(row?.producer, `packages/protocol/src/plugins/manifest/v2.ts#${capability}`);
     assert.equal(row?.lifecycle, 'declaration-only');
-    assert.equal(row?.specialistOwner, 'apps/cli/src/plugins/runtime/lifecycle/activation/policy.ts');
+    assert.equal(row?.specialistOwner, null);
+    assert.equal(row?.lifecycleOwner, null);
     assert.equal(row?.availabilityDisposition, 'deferred');
     assert.equal(row?.provingConsumer, null);
   }
@@ -655,7 +978,8 @@ test('plans the current author-source matrix through the sole publisher output',
     producer: 'src/services/targetedContributions.ts',
     lifecycle: 'invocation-scoped',
     provingConsumer: 'packages/plugins/channels/src/ingress.ts',
-    specialistOwner: 'packages/plugin-sdk/src/services/index.ts#PluginServices.targetedContributions',
+    specialistOwner: 'apps/cli/src/plugins/runtime/invocation/services/production.ts',
+    lifecycleOwner: 'apps/cli/src/plugins/runtime/invocation/lifetime.ts',
     predecessorRemoval: 'none',
     availabilityDisposition: 'available',
     sourceApiAvailability: 'present',
@@ -663,4 +987,74 @@ test('plans the current author-source matrix through the sole publisher output',
     loadedPlatformProof: 'not-recorded',
     releaseAvailability: 'not-published',
   });
+});
+
+test('every available row carries its declaration owner, realm binder/projection, lifecycle owner, and supported realm in one matrix', async () => {
+  // r0.74: availability is a fact of the canonical producer (declaration
+  // owner), the public registration/projection and binder in the applicable
+  // realm (specialist owner + lifecycle), and that realm's support — recorded
+  // together in the one canonical matrix. A maintained consumer stays optional
+  // separately-truthful evidence and never appears as an availability fact.
+  const packageRoot = resolve(import.meta.dirname, '..');
+  const [definePluginSource, servicesSource, apiInventory] = await Promise.all([
+    readFile(resolve(packageRoot, 'src/definePlugin.ts'), 'utf8'),
+    readFile(resolve(packageRoot, 'src/services/index.ts'), 'utf8'),
+    readCurrentApiInventory(packageRoot),
+  ]);
+  const services = readPluginServicesCapabilityCatalog(servicesSource);
+  const matrix = projectCapabilityMatrix({
+    contributionCatalog: PLUGIN_CONTRIBUTION_CATALOG_V2,
+    hostAccessCatalog: PLUGIN_HOST_ACCESS_CAPABILITY_CATALOG_V2,
+    definePluginPolicy: readDefinePluginCapabilityPolicy(definePluginSource),
+    apiInventory,
+    services,
+    metadata: deriveCapabilityMatrixMetadata({
+      contributionCatalog: PLUGIN_CONTRIBUTION_CATALOG_V2,
+      hostAccessCatalog: PLUGIN_HOST_ACCESS_CAPABILITY_CATALOG_V2,
+      apiInventory,
+      services,
+      declarations: CAPABILITY_MATRIX_DECLARATIONS_V1,
+    }),
+  });
+
+  const rowId = (group, row) => `${group}:${row.manifestFamily ?? row.serviceId ?? row.capability ?? row.specifier}`;
+  const lifecycleStages = (lifecycle) => (Array.isArray(lifecycle) ? lifecycle : [lifecycle]);
+  const supportedRealm = (row) => (row.realms !== undefined
+    ? (Array.isArray(row.realms) && row.realms.length > 0 ? row.realms : null)
+    : (typeof row.realm === 'string' && row.realm !== '' ? row.realm : null));
+
+  for (const group of ['manifestFamilies', 'services', 'hostAccess', 'subpaths']) {
+    for (const row of matrix[group]) {
+      const id = rowId(group, row);
+      if (row.availabilityDisposition !== 'available') {
+        // Deferred rows assert no optional consumer evidence, no host binder or
+        // lifecycle owner, and name exactly what would unblock them in the
+        // applicable realm.
+        assert.equal(row.provingConsumer, null, id);
+        assert.equal(row.specialistOwner, null, id);
+        assert.equal(row.lifecycleOwner, null, id);
+        assert.equal(typeof row.unblockCondition === 'string' && row.unblockCondition !== '', true, id);
+        continue;
+      }
+      assert.equal(typeof row.producer === 'string' && row.producer !== '', true, `${id} declaration owner`);
+      assert.equal(
+        HOST_BINDING_OWNER_MODULES.has(row.specialistOwner),
+        true,
+        `${id} realm binder/projection owner: ${row.specialistOwner}`,
+      );
+      assert.equal(
+        HOST_BINDING_OWNER_MODULES.has(row.lifecycleOwner),
+        true,
+        `${id} runtime lifecycle owner: ${row.lifecycleOwner}`,
+      );
+      assert.notEqual(row.specialistOwner, row.producer, `${id} must not self-prove its binder`);
+      assert.notEqual(row.lifecycleOwner, row.producer, `${id} must not self-prove its lifecycle`);
+      assert.equal(
+        lifecycleStages(row.lifecycle).length > 0 && lifecycleStages(row.lifecycle).every((stage) => stage !== ''),
+        true,
+        `${id} runtime lifecycle owner`,
+      );
+      assert.notEqual(supportedRealm(row), null, `${id} supported realm`);
+    }
+  }
 });

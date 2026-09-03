@@ -13,6 +13,7 @@ import type { JsonValue as ProtocolOwnedStrictJsonValue } from '@happier-dev/pro
 import type { PluginJsonValueV2 as ProtocolOwnedAuthoredJson } from '@happier-dev/protocol';
 
 import type { JsonValue, PluginJsonValueV2 } from './identity.js';
+import { createCanonicalJsonSigningInput } from './identity.js';
 import type { ProtocolJsonValue } from './protocol/protocolFacade.js';
 
 type Assert<Condition extends true> = Condition;
@@ -57,4 +58,23 @@ type _FunctionIsNotStrictJson = Assert<IsRejected<() => void, JsonValue>>;
 type _FunctionIsNotAuthoredJson = Assert<IsRejected<() => void, PluginJsonValueV2>>;
 type _NestedNonJsonMemberIsRejected = Assert<
     IsRejected<{ readonly at: Date }, JsonValue>
+>;
+type CanonicalJsonSigningInput = Parameters<typeof createCanonicalJsonSigningInput>[0];
+type _CanonicalSigningInputMatchesStrictJson = Assert<
+    AreMutuallyAssignable<CanonicalJsonSigningInput, JsonValue>
+>;
+type _AuthoredJsonIsAcceptedByCanonicalSigningInput = Assert<
+    IsAssignable<PluginJsonValueV2, CanonicalJsonSigningInput>
+>;
+type _CanonicalSigningInputRejectsUndefined = Assert<
+    IsRejected<undefined, CanonicalJsonSigningInput>
+>;
+type _CanonicalSigningInputRejectsFunction = Assert<
+    IsRejected<() => void, CanonicalJsonSigningInput>
+>;
+type _CanonicalSigningInputRejectsSymbol = Assert<
+    IsRejected<symbol, CanonicalJsonSigningInput>
+>;
+type _CanonicalSigningInputRejectsBigInt = Assert<
+    IsRejected<bigint, CanonicalJsonSigningInput>
 >;

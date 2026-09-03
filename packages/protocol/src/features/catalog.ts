@@ -728,6 +728,12 @@ const FEATURE_CATALOG_DEFINITION = {
     dependencies: [],
     representation: 'client',
   },
+  search: {
+    description: 'Server-owned search providers and authenticated search routes.',
+    defaultFailMode: 'fail_closed',
+    dependencies: [],
+    representation: 'server',
+  },
   'sessions.direct': {
     description: 'Direct sessions (provider-backed transcript).',
     defaultFailMode: 'fail_closed',

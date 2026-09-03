@@ -35,6 +35,8 @@ const DoctorSnapshotTransportObservationSchema = z.object({
 
 export const DoctorSnapshotHomeTransportDiagnosticsSchema = z.object({
   homeServerIdentityId: NonEmptyString,
+  /** Remote Home transport identity; public diagnostic metadata, never a key. */
+  remoteEndpointId: NonEmptyString.max(256).optional(),
   state: z.enum(['connecting', 'connected', 'reconnecting', 'unavailable', 'disconnected', 'unknown']),
   /** Exact configuration applied by the native owner, when that owner has supplied it. */
   effectiveConfiguration: z.object({

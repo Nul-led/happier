@@ -1,4 +1,5 @@
 export type { AgentContribution } from '../agents.js';
+export type { AgentExecutionTargetV1 } from '../agents.js';
 export type { AgentDefinitionCapabilityFacts } from '../agents.js';
 export type { AgentLocalControlDeclaration } from '../agents.js';
 export type { AgentModelConfig } from '../agents.js';

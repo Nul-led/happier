@@ -44,3 +44,4 @@ export * from './metadata/sessionWorkspaceLocationV1.js';
 export * from './creation/index.js';
 export * from './permissions/index.js';
 export * from './userActionRequiredOccurrenceV1.js';
+export * from './pending/pendingActivationAuthorizationV1.js';

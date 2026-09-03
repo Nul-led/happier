@@ -48,6 +48,40 @@ describe('waitForExecutionRunTerminal', () => {
     expect(delay).toHaveBeenCalledWith(250, undefined);
   });
 
+  it('requests a delay no longer than the remaining observation deadline', async () => {
+    let now = 0;
+    const requestedDelays: Array<Readonly<{ atMs: number; ms: number }>> = [];
+    const readRun = vi.fn()
+      .mockResolvedValueOnce({ ok: true as const, data: { run: { status: 'running' } } })
+      .mockResolvedValueOnce({ ok: true as const, data: { run: { status: 'succeeded', result: { ok: true } } } });
+    const delay = vi.fn(async (ms: number) => {
+      requestedDelays.push({ atMs: now, ms });
+      // A real sleep advances the clock by at least the requested delay.
+      now += ms;
+    });
+
+    await expect(waitForExecutionRunTerminal({
+      runId: 'run_1',
+      timeoutMs: 1_000,
+      pollIntervalMs: 60_000,
+      readRun,
+      delay,
+      now: () => now,
+    })).resolves.toEqual({
+      ok: true,
+      status: 'succeeded',
+      result: { run: { status: 'succeeded', result: { ok: true } } },
+    });
+
+    expect(readRun).toHaveBeenCalledTimes(2);
+    // timeoutMs=1_000 with pollIntervalMs=60_000 must not sleep ~a minute past
+    // the deadline: every requested delay is min(pollIntervalMs, remaining).
+    expect(requestedDelays).toEqual([{ atMs: 0, ms: 1_000 }]);
+    for (const requested of requestedDelays) {
+      expect(requested.ms).toBeLessThanOrEqual(1_000 - requested.atMs);
+    }
+  });
+
   it('ends only its observation at timeout and preserves typed read failures', async () => {
     let now = 0;
     const runningRead = vi.fn(async () => ({ ok: true as const, data: { run: { status: 'running' } } }));
@@ -62,8 +96,26 @@ describe('waitForExecutionRunTerminal', () => {
       readRun: runningRead,
       delay,
       now: () => now,
-    })).resolves.toEqual({ ok: false, code: 'timeout' });
+    })).resolves.toEqual({
+      ok: true,
+      status: 'running',
+      disposition: 'observation_timeout',
+      runId: 'run_1',
+      timeoutMs: 50,
+      observedAtMs: 51,
+      deadlineAtMs: 50,
+    });
     expect(runningRead).toHaveBeenCalledTimes(1);
+
+    expect(ExecutionRunWaitResultSchema.safeParse({
+      ok: true,
+      status: 'running',
+      disposition: 'observation_timeout',
+      runId: 'run_1',
+      timeoutMs: 50,
+      observedAtMs: 51,
+      deadlineAtMs: 50,
+    }).success).toBe(true);
 
     const failedRead = vi.fn(async () => ({
       ok: false as const,

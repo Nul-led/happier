@@ -1095,6 +1095,12 @@ describe('normal SDK declaration closure identities', () => {
 
         expect(declarationType).toBeDefined();
         expect(declarationType).not.toMatch(/BackendTarget(?:Key|Ref)V2/u);
+        // The retired backend-target parameter shape is no longer part of the
+        // public helper: qualified Agent contribution identities are the only
+        // author-visible target, and no compatibility alias remains.
+        expect(declarationType).toMatch(/AgentExecutionTargetV1/u);
+        expect(declarationType).not.toMatch(/\bbackendId\b|\bconfiguredBackendId\b|\bsourceKind\b|kind:\s*'backend'/u);
+        expect(sourceText).not.toMatch(/\bBackend[A-Z]/u);
     });
 
     it('names hook observation facts through the curated External Sessions observation contract', async () => {

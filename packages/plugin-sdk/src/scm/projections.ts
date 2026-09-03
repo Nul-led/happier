@@ -462,10 +462,15 @@ export type ScmLogEntry = {
     body: string;
 };
 
-export type ScmLogListRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference'> & { limit?: number; skip?: number };
+export type ScmLogListRequest = Pick<ScmStatusSnapshotRequest, 'cwd' | 'backendPreference'> & { limit?: number; skip?: number; query?: string };
 export type ScmLogListResponse = {
     success: boolean;
     entries?: ScmLogEntry[];
+    /**
+     * Echoed `true` only by producers that honored a request `query`; absence means the
+     * producer ignored the query and returned a recent page.
+     */
+    queryApplied?: boolean;
     error?: string;
     errorCode?: ScmOperationErrorCode;
 };

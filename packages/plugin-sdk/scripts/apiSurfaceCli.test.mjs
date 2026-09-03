@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import {
   cp,
   lstat,
@@ -8,6 +9,7 @@ import {
   readFile,
   rename,
   rm,
+  stat,
   symlink,
   writeFile,
 } from 'node:fs/promises';
@@ -138,6 +140,9 @@ const VOICE_PUBLIC_EXPORTS_BY_ENTRYPOINT = Object.freeze({
     'VoiceProviderContribution',
     'VoiceProviderContributionSchema',
     'VoiceProviderSettings',
+    'VoiceProviderSettingsPresentation',
+    'VoiceProviderSettingsPresentationField',
+    'VoiceProviderSettingsPresentationSchema',
     'VoiceProvidersRegistrationApi',
     'VoiceRawCredentialAccess',
     'VoiceRawCredentialGrantDeclaration',
@@ -527,6 +532,43 @@ async function createVendoredDeclarationStalenessFixture() {
 }
 
 /**
+ * Every input and output the full publisher reads for this package, copied as a
+ * whole so a test can drift a generated artifact without ever writing a byte
+ * inside the checkout's own package root. `node_modules` is deliberately not
+ * copied: the copy lives under the real package root, so type resolution walks
+ * up into the same vendored `@happier-dev/*` copies the real run reads.
+ */
+const CURRENT_PACKAGE_GOVERNED_ENTRIES = Object.freeze([
+  'package.json',
+  'tsconfig.json',
+  'api-surface.json',
+  'api-surface.schema.json',
+  'API.md',
+  'api-declarations.md',
+  'capability-matrix.json',
+  'src',
+  'dist',
+]);
+
+/**
+ * Copies this package into a Git-ignored scratch root beside it. The name
+ * follows the repository's `.tmp.<ms>.<pid>.<hex>` scratch convention, which
+ * `.gitignore` already excludes, so a killed run leaves no tracked residue.
+ */
+async function createCurrentPackageCopy() {
+  const packageRoot = resolve(import.meta.dirname, '..');
+  const root = join(
+    packageRoot,
+    `.tmp.${Date.now()}.${process.pid}.${randomUUID().replaceAll('-', '')}`,
+  );
+  await mkdir(root, { recursive: true });
+  await Promise.all(CURRENT_PACKAGE_GOVERNED_ENTRIES.map((entry) => (
+    cp(join(packageRoot, entry), join(root, entry), { recursive: true })
+  )));
+  return { packageRoot, root };
+}
+
+/**
  * Publishes symbols the way package source publishes them: through the
  * author-owned entrypoint publication spec, with the realm declared on the
  * canonical module. The rows keep the inventory shape because the inventory
@@ -713,9 +755,11 @@ test('real CLI default output is a concise summary with bounded real-phase progr
     assert.equal(
       result.stdout,
       [
-        'api-surface dry-run: drift (planned=7 changed=3 written=0)',
+        'api-surface dry-run: drift (planned=7 changed=5 written=0)',
         '  drift apiSurfaceInventory api-surface.json',
         '  drift packageExports package.json',
+        '  drift sourceBarrels src/host/registration/index.ts',
+        '  drift sourceBarrels src/host/ui/index.ts',
         '  drift authorApiMarkdown API.md',
         '',
       ].join('\n'),
@@ -735,12 +779,12 @@ test('real CLI default output is a concise summary with bounded real-phase progr
     );
     // One header line plus one line per file the run would rewrite: the
     // default output stays scannable while naming the whole delta.
-    assert.equal(result.stdout.trimEnd().split('\n').length, 4);
+    assert.equal(result.stdout.trimEnd().split('\n').length, 6);
     assert.equal(machineReadable.status, result.status, machineReadable.stderr);
     const report = JSON.parse(machineReadable.stdout);
     assert.deepEqual(report.summary, {
       plannedFiles: 7,
-      changedFiles: 3,
+      changedFiles: 5,
       writtenFiles: 0,
     });
     assert.ok(machineReadable.stdout.length > result.stdout.length);
@@ -1207,12 +1251,19 @@ test('real CLI --json is read-only by default and reports the complete source-to
       './actions': ['ActionsService'],
     });
     // The fixture's author barrel carries a legacy marker, so the Preview
-    // projection updates that barrel along with the three derived artifacts.
+    // projection updates the stale generated barrels along with the three
+    // derived artifacts.
     assert.deepEqual(
       report.files.filter((file) => file.changed).map((file) => file.owner).sort(),
-      ['apiSurfaceInventory', 'authorApiMarkdown', 'packageExports'],
+      [
+        'apiSurfaceInventory',
+        'authorApiMarkdown',
+        'packageExports',
+        'sourceBarrels',
+        'sourceBarrels',
+      ],
     );
-    assert.equal(report.summary.changedFiles, 3);
+    assert.equal(report.summary.changedFiles, 5);
     assert.equal(report.summary.writtenFiles, 0);
     assert.equal(report.files.find((file) => file.owner === 'authorApiMarkdown').path, 'API.md');
 
@@ -1243,8 +1294,8 @@ test('explicit write preflights and materializes exports, barrels, and author AP
     assert.equal(report.status, 'current');
     assert.equal(report.sourceToolingComplete, true);
     assert.equal(Object.hasOwn(report, 'eu3Complete'), false);
-    assert.equal(report.summary.changedFiles, 3);
-    assert.equal(report.summary.writtenFiles, 3);
+    assert.equal(report.summary.changedFiles, 5);
+    assert.equal(report.summary.writtenFiles, 5);
 
     const packageJson = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
     assert.deepEqual(packageJson.exports, report.generationPlan.packageExports);
@@ -1489,26 +1540,36 @@ test('plans the capability matrix through the same atomic output corridor', asyn
 });
 
 test('the finite governance transaction fails on capability-matrix-only drift', async () => {
-  const packageRoot = resolve(import.meta.dirname, '..');
-  const matrixPath = join(packageRoot, 'capability-matrix.json');
-  const tracked = await readFile(matrixPath, 'utf8');
-  // Mutate only the tracked matrix bytes; every declaration input stays untouched.
-  await writeFile(matrixPath, `${tracked}\n`, 'utf8');
+  // The drift has to be introduced in a copy of this package. Writing the
+  // tracked matrix in place made a concurrently running publisher in the same
+  // checkout read — or restore over — half-written canonical bytes, so the
+  // whole transaction is exercised against governed inputs the test owns.
+  const { packageRoot, root } = await createCurrentPackageCopy();
+  const trackedMatrixPath = join(packageRoot, 'capability-matrix.json');
+  const trackedBefore = await readFile(trackedMatrixPath, 'utf8');
+  const trackedStatBefore = await stat(trackedMatrixPath);
   try {
-    const drift = await runApiSurfaceCli({ packageRoot, write: false, check: true });
+    const matrixPath = join(root, 'capability-matrix.json');
+    const current = (await runApiSurfaceCli({ packageRoot: root, write: false, check: true }))
+      .files
+      .find((file) => file.owner === 'capabilityMatrix');
+    assert.equal(current?.path, 'capability-matrix.json');
+    assert.equal(current?.changed, false);
+
+    // Mutate only the copied matrix bytes; every declaration input stays untouched.
+    await writeFile(matrixPath, `${await readFile(matrixPath, 'utf8')}\n`, 'utf8');
+    const drift = await runApiSurfaceCli({ packageRoot: root, write: false, check: true });
     assert.equal(drift.status, 'drift');
     const matrixFile = drift.files.find((file) => file.owner === 'capabilityMatrix');
     assert.equal(matrixFile?.path, 'capability-matrix.json');
     assert.equal(matrixFile?.changed, true);
   } finally {
-    await writeFile(matrixPath, tracked, 'utf8');
+    await rm(root, { recursive: true, force: true });
   }
 
-  const restored = await runApiSurfaceCli({ packageRoot, write: false, check: true });
-  assert.equal(
-    restored.files.find((file) => file.owner === 'capabilityMatrix')?.changed,
-    false,
-  );
+  const trackedStatAfter = await stat(trackedMatrixPath);
+  assert.equal(await readFile(trackedMatrixPath, 'utf8'), trackedBefore);
+  assert.equal(trackedStatAfter.mtimeMs, trackedStatBefore.mtimeMs);
 });
 
 test('plans the public declaration record through the same atomic output corridor', async () => {
@@ -1696,7 +1757,7 @@ test('explicit check mode reports generated API documentation drift and passes o
     const driftReport = JSON.parse(drift.stdout);
     assert.equal(driftReport.mode, 'check');
     assert.equal(driftReport.status, 'drift');
-    assert.equal(driftReport.summary.changedFiles, 3);
+    assert.equal(driftReport.summary.changedFiles, 5);
     assert.equal(driftReport.files.find((file) => file.path === 'API.md').changed, true);
 
     const write = runJsonCli(root, ['--write']);
@@ -4083,6 +4144,7 @@ test('current Actions canonical source does not reach its generated entrypoint b
       'export function createPluginActionHandlerNotStartedError() { return new Error(\'not started\'); }',
       'export function createExecutionRunHostBackendFromSessionRuntime() {}',
       'export function readPluginActionInputParser() {}',
+      'export function readPluginActionResultParser() {}',
       'export function createPluginRegistrationScope() {}',
       '',
     ].join('\n'));
@@ -4099,6 +4161,7 @@ test('current Actions canonical source does not reach its generated entrypoint b
       "export type { PluginRuntimeRegistration } from '../../apiSurfaceReachabilityProbe.js';",
       "export { createPluginActionHandlerNotStartedError } from '../../apiSurfaceReachabilityProbe.js';",
       "export { readPluginActionInputParser } from '../../apiSurfaceReachabilityProbe.js';",
+      "export { readPluginActionResultParser } from '../../apiSurfaceReachabilityProbe.js';",
       "export { createPluginRegistrationScope } from '../../apiSurfaceReachabilityProbe.js';",
       '',
     ].join('\n'));

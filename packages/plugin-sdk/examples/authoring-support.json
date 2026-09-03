@@ -1,8 +1,6 @@
 {
   "purpose": "Example and fixture support guidance only; this does not define SDK capability availability.",
   "assets": {
-    "examples/action-contract-producer": "advanced-public-preview",
-    "examples/action-contract-consumer": "advanced-public-preview",
     "examples/automation-event-source": "maintained-public-reference",
     "examples/advanced-package-root": "advanced-public-preview",
     "examples/background-indexer": "advanced-public-preview",
@@ -18,8 +16,6 @@
     "examples/react-native-installed": "advanced-public-preview",
     "examples/session-agent": "maintained-public-reference",
     "examples/tracked-action": "advanced-public-preview",
-    "examples/triage-source-target": "advanced-public-preview",
-    "examples/triage-source-contributor": "advanced-public-preview",
     "fixtures/action-contract-composition": "conformance-reference",
     "fixtures/authoring-inference": "inference-fixture",
     "fixtures/external-targeted-packages": "conformance-reference"

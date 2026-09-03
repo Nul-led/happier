@@ -8,6 +8,12 @@ import {
   ExecutionRunConnectedServicesCleanupReceiptV1Schema,
   normalizePersistedExecutionRunConnectedServicesLaunchV1,
 } from './executionRuns.js';
+import { MAX_AGENT_ROUTING_ID_BYTES } from '../agents/agentIdV1.js';
+import {
+  PluginContributionIdentityV1Schema,
+  buildQualifiedPluginContributionKey,
+} from '../plugins/contributionIdentity.js';
+import { MAX_PLUGIN_IDENTIFIER_BYTES } from '../plugins/pluginId.js';
 import {
   ExecutionRunConnectedServicesCleanupReceiptV1Schema as PublicExecutionRunConnectedServicesCleanupReceiptV1Schema,
   DaemonExecutionRunMarkerOwnerWriteSchema as PublicDaemonExecutionRunMarkerOwnerWriteSchema,
@@ -631,6 +637,54 @@ describe('DaemonExecutionRunMarkerSchema', () => {
     expect(listParsed.runs[0]?.backendTarget).toEqual({
       kind: 'backend',
       backendId: 'review-bot',
+    });
+  });
+
+  it('keeps the maximum-length qualified Agent routing id writable and readable as marker backend identity', () => {
+    // An installed Agent's host routing id is `<pluginId>/<localId>`, so the
+    // marker's backend identity bound is that contract, not a nearby bounded
+    // diagnostic-string length.
+    const maximumPluginId = `${'a'.repeat(MAX_PLUGIN_IDENTIFIER_BYTES - 2)}.b`;
+    const maximumLocalId = 'c'.repeat(MAX_PLUGIN_IDENTIFIER_BYTES);
+    const maximumRoutingId = buildQualifiedPluginContributionKey({
+      pluginId: maximumPluginId,
+      localId: maximumLocalId,
+    });
+    expect(maximumPluginId).toHaveLength(MAX_PLUGIN_IDENTIFIER_BYTES);
+    expect(maximumRoutingId).toHaveLength(MAX_AGENT_ROUTING_ID_BYTES);
+    expect(PluginContributionIdentityV1Schema.safeParse({
+      pluginId: maximumPluginId,
+      localId: maximumLocalId,
+    }).success).toBe(true);
+
+    const marker = {
+      pid: 123,
+      happySessionId: 'session_max_identity',
+      runId: 'run_max_identity',
+      callId: 'call_max_identity',
+      sidechainId: 'side_max_identity',
+      intent: 'plan',
+      backendTarget: { kind: 'backend', backendId: maximumRoutingId },
+      runClass: 'bounded',
+      ioMode: 'request_response',
+      retentionPolicy: 'resumable',
+      status: 'running',
+      startedAtMs: 0,
+      updatedAtMs: 1,
+    };
+
+    const ownerWrite = DaemonExecutionRunMarkerOwnerWriteSchema.safeParse(marker);
+    if (!ownerWrite.success) throw ownerWrite.error;
+    expect(ownerWrite.data.backendTarget).toEqual({
+      kind: 'backend',
+      backendId: maximumRoutingId,
+    });
+
+    const read = DaemonExecutionRunMarkerPersistenceReadSchema.safeParse(marker);
+    if (!read.success) throw read.error;
+    expect(read.data.backendTarget).toEqual({
+      kind: 'backend',
+      backendId: maximumRoutingId,
     });
   });
 

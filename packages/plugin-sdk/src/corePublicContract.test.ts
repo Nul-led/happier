@@ -2,13 +2,13 @@ import { describe, expect, expectTypeOf, it } from 'vitest';
 import type { AgentTerminalSessionStateUpdate } from './agentRuntime/surfaces.js';
 import type {
     AcpLoadSessionResultV1,
-    BackendSessionLaunchHintsV1,
-    BackendSurfaceOperationReceiptV1,
+    AgentSessionLaunchHintsV1,
+    AgentSurfaceOperationReceiptV1,
 } from './agentRuntime/projections.js';
 import type {
     AcpLoadSessionResultV1 as HostAcpLoadSessionResultV1,
-    BackendSessionLaunchHintsV1 as HostBackendSessionLaunchHintsV1,
-    BackendSurfaceOperationReceiptV1 as HostBackendSurfaceOperationReceiptV1,
+    AgentSessionLaunchHintsV1 as HostAgentSessionLaunchHintsV1,
+    AgentSurfaceOperationReceiptV1 as HostAgentSurfaceOperationReceiptV1,
 } from '@happier-dev/agents';
 import type { RuntimeDescriptorV1 } from '@happier-dev/protocol';
 
@@ -25,10 +25,10 @@ if (false) {
     };
     /* @sdk-negative-type-case:src-corePublicContract-test-ts-210:dGVybWluYWwgQWdlbnQgbGVhdmVzIGNhbm5vdCB3cml0ZSBvd25lci1wcml2YXRlIFNlc3Npb24gc3RhdGU:Y29uc3Qgb3duZXJQcml2YXRlVGVybWluYWxVcGRhdGU6IEFnZW50VGVybWluYWxTZXNzaW9uU3RhdGVVcGRhdGUgPSB7CgpmaWVsZElkOiAncnVudGltZS5leHRlcm5hbFNlc3Npb25PcGVyYXRpb24nLAogICAgICAgIHZhbHVlOiAncHJpdmF0ZS1vd25lci1zdGF0ZScsCiAgICB9Ow */
 const ownerPrivateTerminalUpdate = undefined as never; /* @sdk-negative-type-case-end */
-    const identityReceipt: BackendSurfaceOperationReceiptV1 = {
+    const identityReceipt: AgentSurfaceOperationReceiptV1 = {
         sessionStateUpdates: [runtimeDescriptorUpdate, providerSessionIdUpdate],
     };
-    const identityLaunchHints: BackendSessionLaunchHintsV1 = {
+    const identityLaunchHints: AgentSessionLaunchHintsV1 = {
         sessionStateUpdates: [runtimeDescriptorUpdate, providerSessionIdUpdate],
     };
     const identityLoadResult: AcpLoadSessionResultV1 = {
@@ -38,8 +38,8 @@ const ownerPrivateTerminalUpdate = undefined as never; /* @sdk-negative-type-cas
             sessionStateUpdates: [runtimeDescriptorUpdate, providerSessionIdUpdate],
         },
     };
-    const hostReceipt: HostBackendSurfaceOperationReceiptV1 = identityReceipt;
-    const hostLaunchHints: HostBackendSessionLaunchHintsV1 = identityLaunchHints;
+    const hostReceipt: HostAgentSurfaceOperationReceiptV1 = identityReceipt;
+    const hostLaunchHints: HostAgentSessionLaunchHintsV1 = identityLaunchHints;
     const hostLoadResult: HostAcpLoadSessionResultV1 = identityLoadResult;
     /* @sdk-negative-type-case:src-corePublicContract-test-ts-211:QWdlbnQgcmVjZWlwdHMgY2Fubm90IHdyaXRlIG93bmVyLXByaXZhdGUgU2Vzc2lvbiBzdGF0ZQ:Y29uc3Qgb3duZXJQcml2YXRlUmVjZWlwdDogQmFja2VuZFN1cmZhY2VPcGVyYXRpb25SZWNlaXB0VjEgPSB7CiAgICAgICAgc2Vzc2lvblN0YXRlVXBkYXRlczogW3sKCmZpZWxkSWQ6ICdydW50aW1lLmV4dGVybmFsU2Vzc2lvbk9wZXJhdGlvbicsCiAgICAgICAgICAgIHZhbHVlOiAncHJpdmF0ZS1vd25lci1zdGF0ZScsCiAgICAgICAgfV0sCiAgICB9Ow */
 const ownerPrivateReceipt = undefined as never; /* @sdk-negative-type-case-end */

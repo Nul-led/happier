@@ -40,6 +40,12 @@ describe('accountSettings', () => {
     expect(accountSettingsParse({}).featureToggles).toEqual({});
   });
 
+  it('defaults Happier run instructions on while retaining an explicit opt-out', () => {
+    expect(ACCOUNT_SETTING_DEFINITIONS.executionRunsGuidanceEnabled.default).toBe(true);
+    expect(accountSettingsParse({}).executionRunsGuidanceEnabled).toBe(true);
+    expect(accountSettingsParse({ executionRunsGuidanceEnabled: false }).executionRunsGuidanceEnabled).toBe(false);
+  });
+
   it('keeps valid machine-bound recent paths when sibling rows are malformed', () => {
     const recentMachinePaths = [
       { machineId: 'machine-1', path: '/workspace/project' },
@@ -326,6 +332,13 @@ describe('accountSettings', () => {
     const parsed = accountSettingsParse({});
 
     expect(parsed.sessionPendingQueueDrainMode).toBe('one_at_a_time');
+  });
+
+  it('defaults inactive-session resume to online-only and accepts every policy', () => {
+    expect(accountSettingsParse({}).sessionInactiveResumePolicy).toBe('online_only');
+    expect(accountSettingsParse({ sessionInactiveResumePolicy: 'when_available' }).sessionInactiveResumePolicy).toBe('when_available');
+    expect(accountSettingsParse({ sessionInactiveResumePolicy: 'manual' }).sessionInactiveResumePolicy).toBe('manual');
+    expect(accountSettingsParse({ sessionInactiveResumePolicy: 'invalid' }).sessionInactiveResumePolicy).toBe('online_only');
   });
 
   it('accepts drain-all pending queue mode and falls back to one-at-a-time for malformed values', () => {

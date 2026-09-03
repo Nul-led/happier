@@ -26,8 +26,12 @@ fact to `admitCheckpointedPluginEventObservationV1`, which performs the complete
 scan, canonical admission, catalog reconciliation report, and per-source status report through
 public SDK Actions. A real provider persists or advances its own ordered cursor only after the
 helper returns `checkpointSafe`; an unsettled result must retain the same upstream occurrence for
-retry. After the deterministic feed settles, the example stays idle until its exact plugin
-generation is retired so the host never mistakes normal return for a healthy observer.
+retry. While durable push is absent or only Preview, recover a pre-durable loss by observing the
+same provider occurrence again through redelivery or the next checkpointed pull. For GitHub-style
+webhooks, normalize redeliveries to the same stable occurrence id and never use the webhook attempt
+as the Automation dedupe key. After the deterministic feed settles, the example stays idle until
+its exact plugin generation is retired so the host never mistakes normal return for a healthy
+observer.
 
 The adjacent behavior test invokes this source module directly and exercises that list → catalog
 status → admit → source status sequence without assuming a prebuilt `dist` tree. The deeper CLI

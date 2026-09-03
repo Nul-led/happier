@@ -27,7 +27,6 @@ const reactVersion = '19.2.0';
 const pluginSdkRoot = fileURLToPath(new URL('../../../', import.meta.url));
 const protocolSourceDirectory = fileURLToPath(new URL('../../../../protocol/src/', import.meta.url));
 const protocolSourceEntrypoint = fileURLToPath(new URL('../../../../protocol/src/index.ts', import.meta.url));
-
 let projectRoot: string;
 
 function encode(text: string): Uint8Array {
@@ -107,7 +106,10 @@ async function symlinkInstalledPackage(projectRoot: string, packageName: string)
  * compiler in-process, so Vite can evaluate the current SDK source rather
  * than a stale workspace `dist` copy.
  */
-function createRealRepackExec(operationRoots: string[] = []): ManagedBundlerExecService {
+function createRealRepackExec(
+    operationRoots: string[] = [],
+    inspectGeneratedConfig?: (config: Readonly<Record<string, unknown>>) => void,
+): ManagedBundlerExecService {
     return {
         async run(input) {
             const configFlagIndex = input.args?.indexOf('--config') ?? -1;
@@ -157,6 +159,7 @@ function createRealRepackExec(operationRoots: string[] = []): ManagedBundlerExec
             if (typeof configProjectRoot !== 'string') {
                 throw new Error('Generated Re.Pack config did not provide the author project root');
             }
+            inspectGeneratedConfig?.(generatedConfigRecord);
             // The managed CLI runs Re.Pack from its ephemeral operation root.
             // Materialize the same logical author entry there so the real
             // compiler exercises that operation-local boundary.
@@ -506,7 +509,25 @@ describe('runPluginBuildUiCli', () => {
         ]);
         await symlink(firstRoot, firstRootAlias, process.platform === 'win32' ? 'junction' : 'dir');
         const operationRoots: string[] = [];
-        const realRepackExec = createRealRepackExec(operationRoots);
+        const portableIgnoredSources: string[] = [];
+        const realRepackExec = createRealRepackExec(operationRoots, (config) => {
+            const output = config.output as Readonly<Record<string, unknown>> | undefined;
+            const template = output?.devtoolModuleFilenameTemplate;
+            expect(typeof template).toBe('function');
+            const source = (template as (info: Readonly<{ absoluteResourcePath: string }>) => string)({
+                absoluteResourcePath: `ignored|${join(
+                    String(config.context),
+                    'node_modules',
+                    'portable-native-dependency',
+                    'crypto',
+                )}`,
+            });
+            expect(source).toContain('ignored|node_modules/portable-native-dependency/crypto');
+            expect(source).not.toContain(`ignored|${String(config.context).replace(/\\/gu, '/')}`);
+            expect(source).not.toMatch(/ignored\|\/[A-Za-z0-9]/u);
+            expect(source).not.toMatch(/ignored\|[A-Za-z]:[\\/]/u);
+            portableIgnoredSources.push(source);
+        });
 
         async function prepareFixture(root: string, packedDependencyRoot: string): Promise<void> {
             const entryPath = join(root, 'ui', 'nativeEntry.js');
@@ -623,6 +644,7 @@ describe('runPluginBuildUiCli', () => {
         const second = await buildFixture(secondRoot, secondPackedDependencyRoot);
         expect(operationRoots).toHaveLength(3);
         expect(new Set(operationRoots)).toHaveLength(3);
+        expect(portableIgnoredSources).toHaveLength(3);
 
         // A native Artifact graph is identified by its complete emitted tree,
         // not by the author root or a pack staging symlink target.

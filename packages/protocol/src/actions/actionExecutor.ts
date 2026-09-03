@@ -309,6 +309,24 @@ function normalizeId(raw: unknown): string {
   return String(raw ?? '').trim();
 }
 
+function resolveExecutionRunLaunchOrigin(ctx: ActionExecutorContext): Readonly<
+  | { kind: 'session'; sessionId: string }
+  | { kind: 'external'; source?: 'cli' | 'mcp' | 'action' }
+> {
+  const source = SessionInputSourceSessionV1Schema.safeParse(ctx.sessionInputSource);
+  if (source.success) {
+    return { kind: 'session', sessionId: source.data.sourceSessionId };
+  }
+  if (ctx.surface === 'agent') {
+    const sessionId = normalizeId(ctx.defaultSessionId);
+    return sessionId ? { kind: 'session', sessionId } : { kind: 'external' };
+  }
+  if (ctx.surface === 'cli' || ctx.surface === 'mcp') {
+    return { kind: 'external', source: ctx.surface };
+  }
+  return ctx.surface ? { kind: 'external', source: 'action' } : { kind: 'external' };
+}
+
 function isRecord(raw: unknown): raw is Record<string, unknown> {
   return Boolean(raw) && typeof raw === 'object' && !Array.isArray(raw);
 }
@@ -750,43 +768,7 @@ function resolveAgentExecutionRunPermission(
   requestedMode: unknown,
   supportedModes: readonly string[],
 ): AgentPermissionResolution {
-  const effective = resolveAgentEffectivePermission(ctx, supportedModes);
-  if (!effective.ok) return effective;
-  if (effective.effectiveCallerMode === null) {
-    return {
-      ok: true,
-      permissionDecision: null,
-    };
-  }
-  let permissionDecision = resolveNearestPermissionModeAtOrBelow({
-    requestedMode,
-    callerMode: effective.effectiveCallerMode,
-    supportedModes,
-  });
-  // A host-stamped causal ceiling narrows an otherwise valid agent request
-  // instead of treating the Session's later widening as authority to reject
-  // the original admitted turn. Preserve an explicitly lower request, but
-  // choose the nearest supported mode at the ceiling when the request is
-  // broader. Invalid input remains a typed refusal.
-  if (
-    effective.causalPermissionAuthority
-    && !permissionDecision.ok
-    && permissionDecision.reason === 'permission_escalation_denied'
-  ) {
-    permissionDecision = resolveNearestPermissionModeAtOrBelow({
-      requestedMode: undefined,
-      callerMode: effective.effectiveCallerMode,
-      supportedModes,
-    });
-  }
-
-  return {
-    ok: true,
-    permissionDecision,
-    ...(effective.causalPermissionAuthority
-      ? { causalPermissionAuthority: effective.causalPermissionAuthority }
-      : {}),
-  };
+  return assertAgentPermission(ctx, requestedMode, supportedModes);
 }
 
 function resolveSessionIdFromInput(input: unknown, ctx: ActionExecutorContext): string | null {
@@ -3148,6 +3130,7 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
                 runClass: 'bounded',
                 // Reviews should stream sidechain progress (and tool traffic) into the parent session.
                 ioMode: 'streaming',
+                launchOrigin: resolveExecutionRunLaunchOrigin(ctx),
                 ...(reviewInput.profileId && reviewInput.profileGenerationId
                   ? {
                       profileId: reviewInput.profileId,
@@ -3184,7 +3167,7 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
         const intent: 'plan' | 'delegate' | 'voice_agent' =
           actionId === 'subagents.plan.start' ? 'plan' : actionId === 'subagents.delegate.start' ? 'delegate' : 'voice_agent';
         const permissionModeDefault = intent === 'delegate' ? 'workspace_write' : 'read_only';
-        const requestedPermissionMode = data.permissionMode ?? permissionModeDefault;
+        const requestedPermissionMode = data.permissionMode;
         const executionRunPermission = resolveAgentExecutionRunPermission(
           ctx,
           requestedPermissionMode,
@@ -3199,7 +3182,7 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
         }
         const permissionMode = permissionDecision?.ok === true
           ? permissionDecision.requestedMode
-          : requestedPermissionMode;
+          : requestedPermissionMode ?? permissionModeDefault;
         const executionRunOpts = executionRunPermission.causalPermissionAuthority
           ? {
               ...(opts ?? {}),
@@ -3209,6 +3192,12 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
 
           const runOptions = resolveRunStartModelAndConfig(data);
           if (!runOptions.ok) {
+            return { ok: false, errorCode: 'invalid_parameters', error: 'invalid_parameters' };
+          }
+          const blanketConnectedServices = data.connectedServices === undefined
+            ? null
+            : normalizeConnectedServiceSelectionInput(data.connectedServices);
+          if (blanketConnectedServices && !blanketConnectedServices.ok) {
             return { ok: false, errorCode: 'invalid_parameters', error: 'invalid_parameters' };
           }
           const connectedServicesByBackendTargetKey = data.connectedServicesByBackendTargetKey;
@@ -3242,7 +3231,13 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
           const results = await fanoutStarts({
             keys: backendTargetKeys,
             startOne: async (backendTargetKey) => {
-              const targetSelection = connectedServicesByTargetKey.get(backendTargetKey);
+              const targetSelection = connectedServicesByTargetKey.get(backendTargetKey)
+                ?? (blanketConnectedServices?.ok
+                  ? {
+                      bindings: blanketConnectedServices.bindings,
+                      defaultServiceIds: blanketConnectedServices.defaultServiceIds,
+                    }
+                  : undefined);
               const connectedServices = targetSelection?.bindings;
               const connectedServicesDefaultServiceIds = targetSelection?.defaultServiceIds ?? [];
               return deps.executionRunStart(
@@ -3255,6 +3250,7 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
                   retentionPolicy: data.retentionPolicy ?? 'ephemeral',
                   runClass: data.runClass ?? 'bounded',
                   ioMode: data.ioMode ?? 'request_response',
+                  launchOrigin: resolveExecutionRunLaunchOrigin(ctx),
                   ...(typeof data.profileId === 'string' && typeof data.profileGenerationId === 'string'
                     ? {
                         profileId: data.profileId,
@@ -3409,12 +3405,44 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
             return { ok: false, errorCode: 'invalid_parameters', error: 'invalid_parameters' };
           }
 
+          const draftInput = readRecord(data.draftInput);
+          const dependencyInput: Record<string, unknown> = {
+            ...draftInput,
+            ...data,
+          };
+          const backendTargetKeys = Array.isArray(dependencyInput.backendTargetKeys)
+            ? dependencyInput.backendTargetKeys.filter((value): value is string => typeof value === 'string')
+            : [];
+          if (!normalizeId(dependencyInput.backendTargetKey) && backendTargetKeys.length === 1) {
+            dependencyInput.backendTargetKey = backendTargetKeys[0];
+          }
+          const requiresErgonomicRunTarget = (
+            actionIdRaw === 'subagents.plan.start'
+            || actionIdRaw === 'subagents.delegate.start'
+            || actionIdRaw === 'voice_agent.start'
+          ) && (
+            optionsSourceId === 'agents.models.available'
+            || optionsSourceId === 'agents.config_options.available'
+            || optionsSourceId === 'sessions.spawn.connected_services.available'
+          );
+          if (requiresErgonomicRunTarget && !normalizeId(dependencyInput.backendTargetKey)) {
+            return {
+              ok: false,
+              errorCode: 'missing_option_dependency',
+              error: 'Select one backend target in draftInput before resolving dependent options.',
+              details: {
+                requiredDraftPath: 'backendTargetKeys',
+                example: { draftInput: { backendTargetKeys: ['agent:pi'] } },
+              },
+            };
+          }
+
           const dynamic = await resolveDynamicActionOptions({
             deps,
             ctx,
-            actionId: actionIdRaw === 'session.spawn_new' ? 'session.spawn_new' : null,
+            actionId: actionIdRaw ? actionIdRaw as ActionId : null,
             optionsSourceId,
-            input: data,
+            input: dependencyInput,
           });
           if (!dynamic.ok) return dynamic;
 
@@ -3576,6 +3604,7 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
           // The `configOptions` shorthand is merged into the canonical `sessionConfigOptionOverrides`
           // above; never forward it as a second vocabulary on the run request.
           delete request.configOptions;
+          request.launchOrigin = resolveExecutionRunLaunchOrigin(ctx);
           if (runOptions.options.modelId) {
             request.modelId = runOptions.options.modelId;
           } else {
@@ -4282,6 +4311,16 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
           return completeActionResult(res);
         }
 
+        if (
+          (actionId === 'agents.models.list'
+            || actionId === 'agents.config_options.list'
+            || actionId === 'agents.session_modes.list'
+            || actionId === 'sessions.spawn.connected_services.list')
+          && hasOwn(data, 'serverId')
+        ) {
+          return { ok: false, errorCode: 'invalid_parameters', error: 'invalid_parameters' };
+        }
+
         if (actionId === 'agents.backends.list') {
           const res = await deps.agentsBackendsList({
             ...(typeof data.includeDisabled === 'boolean' ? { includeDisabled: data.includeDisabled } : {}),
@@ -4402,13 +4441,20 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
         if (actionId === 'session.message.send') {
           const sessionId = resolveSessionIdFromInput(parsed.data, ctx);
           if (!sessionId) return { ok: false, errorCode: 'session_not_selected', error: 'session_not_selected' };
+          const actionCaller = ctx.actionCaller ?? { kind: 'host' as const };
+          // Mediated external source authority is a plugin-mediator fact: it
+          // names the mediator, its external revision, and the ceiling that
+          // input may request. Only a plugin caller can be held to it, and the
+          // Agent/MCP cross-Session path derives its own source authority from
+          // the host-stamped active turn instead. A generic caller supplying
+          // the field is refused rather than silently stripped, so a permission
+          // ceiling is never quietly dropped from an accepted send.
           const parsedSource = data.source === undefined
             ? undefined
             : PluginSessionInputSourceV1Schema.safeParse(data.source);
-          if (parsedSource && !parsedSource.success) {
+          if (parsedSource && (actionCaller.kind !== 'plugin' || !parsedSource.success)) {
             return { ok: false, errorCode: 'invalid_parameters', error: 'invalid_parameters' };
           }
-          const actionCaller = ctx.actionCaller ?? { kind: 'host' as const };
           // Only a plugin caller owns a declared Composer attachment the host
           // can qualify. A generic caller supplying the field is refused rather
           // than silently stripped, so a mis-routed send never delivers its

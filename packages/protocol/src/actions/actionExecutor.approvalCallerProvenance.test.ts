@@ -275,6 +275,55 @@ describe('createActionExecutor (durable plugin approval caller provenance)', () 
     expect(approvalsCreate).not.toHaveBeenCalled();
   });
 
+  it('refuses a plugin request to have the user approve a host-internal Action', async () => {
+    const approvalsCreate = vi.fn(async () => ({ artifactId: 'approval-plugin-internal-target-1' }));
+    const executor = createActionExecutor({ approvalsCreate } as unknown as ActionExecutorDeps);
+
+    await expect(executor.execute('approval.request.create', {
+      actionId: 'sessions.subagents.upsert',
+      actionArgs: {
+        id: 'subagent-1',
+        parentSessionId: 'session-1',
+        origin: 'agent',
+        kind: 'native',
+        status: 'running',
+      },
+      summary: 'Record a child agent',
+      createdBy: { surface: 'system' },
+    }, {
+      surface: 'plugin',
+      actionCaller: {
+        kind: 'plugin',
+        pluginId: 'plugin.example',
+        contributionLocalId: 'approval-requester',
+      },
+    })).resolves.toMatchObject({
+      ok: false,
+      errorCode: 'invalid_parameters',
+    });
+    expect(approvalsCreate).not.toHaveBeenCalled();
+  });
+
+  it('still creates an approval row for a plugin-invocable Action target', async () => {
+    const approvalsCreate = vi.fn(async () => ({ artifactId: 'approval-plugin-invocable-target-1' }));
+    const executor = createActionExecutor({ approvalsCreate } as unknown as ActionExecutorDeps);
+
+    await expect(executor.execute('approval.request.create', {
+      actionId: 'session.list',
+      actionArgs: {},
+      summary: 'List sessions',
+      createdBy: { surface: 'system' },
+    }, {
+      surface: 'plugin',
+      actionCaller: {
+        kind: 'plugin',
+        pluginId: 'plugin.example',
+        contributionLocalId: 'approval-requester',
+      },
+    })).resolves.toMatchObject({ ok: true });
+    expect(approvalsCreate).toHaveBeenCalledTimes(1);
+  });
+
   it('rejects a noncanonical plugin identity in a durable approval row', () => {
     expect(ApprovalRequestV1Schema.safeParse({
       v: 1,

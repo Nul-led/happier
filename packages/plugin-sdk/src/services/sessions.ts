@@ -578,7 +578,6 @@ export interface CurrentSessionHandle extends SessionHandle {
 }
 export type SubagentSummary = Readonly<{ id: string; parentSessionId: string; groupId?: string; status: 'starting' | 'running' | 'completed' | 'failed' | 'aborted'; updatedAtMs: number }>;
 export interface SubagentsService {
-    capabilities(): { list: PluginOperationAvailability; watch: PluginOperationAvailability };
     list(query?: { parentSessionId?: string; groupId?: string; cursor?: string; limit?: number; signal?: AbortSignal }): Promise<{ items: readonly SubagentSummary[]; nextCursor?: string }>;
     get(id: string, options?: { parentSessionId?: string; signal?: AbortSignal }): Promise<SubagentSummary | null>;
     watch(query: { parentSessionId?: string; id?: string }, listener: (event: { kind: 'snapshot' | 'upserted' | 'removed' | 'resyncRequired'; item?: SubagentSummary; id?: string }) => void): Disposable;

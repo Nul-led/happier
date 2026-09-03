@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, expectTypeOf, it } from 'vitest';
 
 import * as protocol from '@happier-dev/protocol';
 import {
@@ -15,6 +15,10 @@ import {
     selectPluginUiTargetedContributionSurfaceV1 as canonicalSelectTargetedContributionSurface,
     selectPluginUiTargetedContributionV1 as canonicalSelectTargetedContribution,
 } from '@happier-dev/protocol/plugins/ui/client';
+import type {
+    ComposerRefV1 as CanonicalComposerRefV1,
+} from '@happier-dev/protocol/plugins/ui/composerRef';
+import type { ProtocolComposerRefV1 } from './protocol/composerRef.js';
 
 import {
     MAX_COMPOSER_ATTACHMENT_DESCRIPTION_CODE_POINTS_V1,
@@ -153,6 +157,11 @@ describe('plugin UI public surface', () => {
             .toBe(canonicalComposerRefV1Schema);
         expect(pluginProtocolAuthorSurface.ProtocolComposerRefV1Schema)
             .toBe(canonicalComposerRefV1Schema);
+        // The published name is a declaration-neutral structural projection of
+        // the canonical Protocol type. This equality fence plus the compile-time
+        // equality fence beside the projection in `protocol/composerRef.ts` keep
+        // Protocol arm drift loud instead of silently diverging.
+        expectTypeOf<ProtocolComposerRefV1>().toEqualTypeOf<CanonicalComposerRefV1>();
 
         const launchInput = pluginProtocolPackageSurface.defineProtocolObject({
             originComposer: pluginProtocolPackageSurface.ProtocolComposerRefV1Schema.optional(),

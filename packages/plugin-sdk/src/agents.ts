@@ -1,6 +1,9 @@
 import {
     buildBackendTargetKeyV2,
+    type AgentExecutionTargetV1,
 } from '@happier-dev/protocol/plugins/agents';
+
+export type { AgentExecutionTargetV1 } from '@happier-dev/protocol/plugins/agents';
 
 export type {
     AgentModelConfig,
@@ -9,8 +12,8 @@ export type {
 export type { AgentSessionRuntimeCapabilities } from './agentRuntime/session.js';
 
 export {
-    BackendSurfaceOperationCatalogV1 as AgentSurfaceOperationCatalogV1,
-    PluginBackendCapabilitiesV1Schema as PluginAgentCapabilitiesV1Schema,
+    AgentSurfaceOperationCatalogV1,
+    PluginAgentCapabilitiesV1Schema,
 } from '@happier-dev/protocol/plugins/agents';
 export type {
     AIBackendProfile as AgentProfile,
@@ -59,9 +62,12 @@ export type {
     AuthoredAgentSessionOpenRouteV2,
 } from '@happier-dev/agents/definitions/agent-capabilities';
 
-export const buildAgentTargetKeyV2: (target: Readonly<{
-    kind: 'backend';
-    backendId: string;
-    configuredBackendId?: string;
-    sourceKind?: 'built_in' | 'configured';
-}>) => string = buildBackendTargetKeyV2;
+/**
+ * Builds the persisted Agent target key from the one canonical
+ * `AgentExecutionTargetV1`. The retired backend-target parameter shape is not
+ * part of the public author contract: qualified plugin contribution identities
+ * are the only author-visible target, and the host owns the legacy
+ * `backend:…` key format internally through the same implementation.
+ */
+export const buildAgentTargetKeyV2: (target: AgentExecutionTargetV1) => string =
+    buildBackendTargetKeyV2;

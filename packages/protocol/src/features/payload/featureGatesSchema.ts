@@ -212,6 +212,7 @@ export const FeatureGatesSchema = z.object({
       localDiscovery: DEFAULT_GATE_DISABLED,
       localModelManagement: DEFAULT_GATE_DISABLED,
     }),
+  search: FeatureGateSchema.optional().default(DEFAULT_GATE_DISABLED),
   browser: z
     .object({
       enabled: z.boolean(),

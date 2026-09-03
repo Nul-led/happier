@@ -44,6 +44,7 @@ export type { PluginErrorData } from './errors.js';
 export type { PluginOperationAvailability, PluginRemediationData } from './availability.js';
 export { isPluginError, PluginError } from './errors.js';
 export { computeCanonicalDomainSeparatedDigest } from './identity.js';
+export { createCanonicalJsonSigningInput } from './identity.js';
 export {
   arePluginMachineExecutionOriginsEqual,
   arePluginMachineMaterializationRefsEqual,
@@ -98,10 +99,27 @@ export type {
     DefinedContributionPoints,
 } from './targetedContributionAuthoring.js';
 export { ComposerReferenceCandidateIdV1Schema } from './composerReferenceProviders.js';
+export {
+    MAX_PLUGIN_SEARCH_ITEMS_V1,
+    MAX_PLUGIN_SEARCH_ITEM_COMMAND_UTF8_BYTES_V1,
+    MAX_PLUGIN_SEARCH_ITEM_ID_UTF8_BYTES_V1,
+    MAX_PLUGIN_SEARCH_QUERY_UTF8_BYTES_V1,
+    MAX_PLUGIN_SEARCH_SUBTITLE_CODE_POINTS_V1,
+    MAX_PLUGIN_SEARCH_TITLE_CODE_POINTS_V1,
+    PluginSearchItemV1Schema,
+    PluginSearchQueryV1Schema,
+    PluginSearchResultV1Schema,
+} from './searchProviders.js';
 export type {
     ComposerReferenceCandidatePageV1,
     ComposerReferenceResolutionV1,
 } from './composerReferenceProviders.js';
+export type {
+    PluginSearchItemV1,
+    PluginSearchProviderContributionV1,
+    PluginSearchQueryV1,
+    PluginSearchResultV1,
+} from './searchProviders.js';
 export {
     normalizePluginAccountCollectionMigrationRuntimeProjection,
     projectPluginAccountCollectionDeclaration,

@@ -2,10 +2,18 @@ import {
     AutomationEventSourcesListResultV1Schema,
     isAutomationEventSourcesListPageProgressingV1,
 } from '@happier-dev/protocol/automations/event';
-
 import type { PluginActionInputById, PluginActionResultById } from './actions/index.js';
 import type { JsonValue, PluginContributionRef } from './identity.js';
 import type { PluginInvocationContext } from './invocation.js';
+
+/**
+ * Protocol's one source-catalog page-progress decision, re-exported beside the
+ * admission bridge that consumes it so every provider-side scanner — a
+ * checkpointed-pull observer, a durable-push webhook ingress, or a
+ * history-gap reset — rejects a malformed pagination shape through the same
+ * canonical owner instead of restating the check locally.
+ */
+export { isAutomationEventSourcesListPageProgressingV1 };
 
 type SourcesListResult = PluginActionResultById['automation.event.sources.list'];
 type SourceDefinition = Extract<SourcesListResult, Readonly<{ kind: 'page' }>>['definitions'][number];

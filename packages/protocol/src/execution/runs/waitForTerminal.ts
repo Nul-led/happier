@@ -3,17 +3,11 @@ import { z } from 'zod';
 import { ExecutionRunStatusSchema } from './listRequest.js';
 
 /**
- * The statuses an execution run can END on, derived from the canonical enum in `listRequest.ts`
- * rather than restated.
- *
- * This module already owned the terminal *type*; it now owns the terminal *schema* too, because
- * three wire shapes (`execution.run.wait`, `execution.run.start({ waitForCompletion })` and the
- * session-scoped run wait) each inlined `z.enum(['succeeded','failed','cancelled','timeout'])` and
- * `isExecutionRunTerminalStatus` inlined the same four literals a fourth time. Five copies of one
- * vocabulary are five places a member can be added to and four places it can be forgotten — and the
- * presentation adapter (`sessions/work/agentActivity/adapters/fromExecutionRunStatus.ts`) is typed
- * against the canonical enum, so a member living only in a copy would reach a surface with no
- * mapping at all. Deriving keeps the wire members and their order byte-identical.
+ * The statuses an execution run can END on, derived from the canonical enum in
+ * `listRequest.ts` instead of restating the literals: the wait/start-and-wait
+ * wire shapes and `isExecutionRunTerminalStatus` previously inlined this
+ * vocabulary five times, and the presentation adapter is typed against the
+ * canonical enum. Deriving keeps the wire members and their order byte-identical.
  */
 export const ExecutionRunTerminalStatusSchema = ExecutionRunStatusSchema.exclude(['running']);
 export type ExecutionRunTerminalStatus = z.infer<typeof ExecutionRunTerminalStatusSchema>;
@@ -35,8 +29,16 @@ export type ExecutionRunWaitLoopResult<TData, TFailure extends ExecutionRunWaitF
       status: ExecutionRunTerminalStatus;
       result: TData;
     }>
-  | TFailure
-  | Readonly<{ ok: false; code: 'timeout' }>;
+  | Readonly<{
+      ok: true;
+      status: 'running';
+      disposition: 'observation_timeout';
+      runId: string;
+      timeoutMs: number;
+      observedAtMs: number;
+      deadlineAtMs: number;
+    }>
+  | TFailure;
 
 const DEFAULT_EXECUTION_RUN_WAIT_POLL_INTERVAL_MS = 1_000;
 const MIN_EXECUTION_RUN_WAIT_POLL_INTERVAL_MS = 250;
@@ -132,9 +134,27 @@ export async function waitForExecutionRunTerminal<TData, TFailure extends Execut
     if (isExecutionRunTerminalStatus(status)) {
       return { ok: true, status, result: result.data };
     }
-    await delay(pollIntervalMs, args.signal);
+    // Sleep at most until the observation deadline: a full poll interval must
+    // never overshoot the caller's timeout (e.g. timeoutMs=1s, poll=60s).
+    const delayMs =
+      deadlineMs === null
+        ? pollIntervalMs
+        : Math.min(pollIntervalMs, Math.max(0, deadlineMs - now()));
+    await delay(delayMs, args.signal);
     args.signal?.throwIfAborted();
   }
 
-  return { ok: false, code: 'timeout' };
+  if (deadlineMs === null || timeoutMs === null) {
+    throw new Error('Execution-run wait exited without an observation deadline');
+  }
+  const observedAtMs = now();
+  return {
+    ok: true,
+    status: 'running',
+    disposition: 'observation_timeout',
+    runId: args.runId,
+    timeoutMs,
+    observedAtMs,
+    deadlineAtMs: deadlineMs,
+  };
 }

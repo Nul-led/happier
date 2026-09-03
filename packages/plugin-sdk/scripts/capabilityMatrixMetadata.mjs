@@ -11,35 +11,39 @@ function deferred(unblockCondition, sourceMetadata = {}) {
     ...sourceMetadata,
     availabilityDisposition: 'deferred',
     provingConsumer: null,
+    // A deferred capability has no host binder and no runtime lifecycle owner:
+    // that absence is exactly what defers it.
+    specialistOwner: null,
+    lifecycleOwner: null,
     unblockCondition,
   });
 }
 
-function deferredExternalDevelopmentSourceProof(capability) {
-  return deferred(
-    `A maintained external development-source plugin proves ${capability} through the current loaded development stack: lifecycle, real invocation, and replacement, disable, and uninstall currentness.`,
-  );
-}
+// r0.134: capability availability follows the canonical producer, public
+// registration/projection, and complete applicable lifecycle. A maintained
+// consumer or loaded invocation is optional, separately truthful evidence and
+// never gates the existence of an implemented Preview capability, so rows
+// whose only gap was missing dogfood are `available` here with no claimed
+// consumer. `deferred` is reserved for declarations whose applicable realm
+// has no host authority or service owner behind them at all.
 
 /**
  * The only hand-authored capability-matrix facts. Canonical catalogs supply
  * identities, schemas, realms, registration/lifecycle fields, and public
- * source modules. This file records the non-inferable availability outcome and
- * maintained positive consumer (or deferred unblock) for every capability
- * family, plus exceptional HostAccess source/lifecycle facts that catalogs do
- * not own.
+ * source modules, and the canonical owner maps in `capabilityMatrix.mjs`
+ * supply every available row's host binder and runtime lifecycle owner. This
+ * file records the non-inferable availability outcome and optional maintained
+ * consumer evidence for every capability family, plus exceptional HostAccess
+ * lifecycle facts that catalogs do not own. It never authors an owner for an
+ * available row.
  */
 export const CAPABILITY_MATRIX_DECLARATIONS_V1 = Object.freeze({
   manifestFamilies: Object.freeze({
     agents: available('packages/plugins/claude/src/manifest.ts'),
     providers: available('packages/plugins/openai-models/src/manifest.ts'),
     actions: available('packages/plugins/channels/src/manifest.ts'),
-    commands: deferred(
-      'A maintained external development-source plugin invokes its Command Action through the canonical plugin command catalog in the current loaded development stack and proves lifecycle, real invocation, and replacement, disable, and uninstall currentness.',
-    ),
-    tools: deferred(
-      'A maintained external development-source plugin invokes its Tool Action through the real daemon MCP catalog in the current loaded development stack and proves lifecycle, real invocation, and replacement, disable, and uninstall currentness.',
-    ),
+    commands: available(null),
+    tools: available(null),
     resources: available('packages/plugins/channels/src/manifest.ts'),
     transcriptActivities: available('packages/plugins/channels/src/manifest.ts'),
     sessionInfoSections: available('packages/plugins/channels/src/manifest.ts'),
@@ -49,8 +53,8 @@ export const CAPABILITY_MATRIX_DECLARATIONS_V1 = Object.freeze({
     settings: available('packages/plugins/inspector/src/manifest.ts'),
     events: available('packages/plugins/scm-github/src/manifest.ts'),
     executionRunProfiles: available('packages/plugins/review-deepsec/src/manifest.ts'),
-    notifications: deferredExternalDevelopmentSourceProof('notification category authoring'),
-    notificationChannels: deferredExternalDevelopmentSourceProof('notification channel authoring'),
+    notifications: available(null),
+    notificationChannels: available(null),
     scmHostingProviders: available('packages/plugins/scm-github/src/manifest.ts'),
     scmBackends: available('packages/plugins/scm-git/src/manifest.ts'),
     connectedAccountDescriptors: available('packages/plugins/gemini/src/manifest.ts'),
@@ -59,21 +63,16 @@ export const CAPABILITY_MATRIX_DECLARATIONS_V1 = Object.freeze({
     promptAssets: available('packages/plugins/review-deepsec/src/manifest.ts'),
     hooks: available('packages/plugins/gemini/src/manifest.ts'),
     requestInterceptors: available('packages/plugin-sdk/examples/action-contract-producer/src/index.ts'),
-    voiceModelPacks: deferred(
-      'A maintained Voice plugin author declares a model pack and proves the canonical Voice lifecycle.',
-    ),
+    voiceModelPacks: available(null),
     voiceProviders: available('packages/plugins/openai/src/manifest.ts'),
     backgroundServices: available('packages/plugins/channels/src/manifest.ts'),
-    daemonDatabases: deferred(
-      'A maintained plugin author declares a daemon database and proves its canonical migration and lifecycle owner.',
-    ),
+    daemonDatabases: available(null),
     composerReferences: available('packages/plugin-ui/fixtures/external-authoring/src/index.ts'),
+    searchProviders: available('packages/plugins/triage/src/manifest.ts'),
     composerAttachments: available('packages/tests/fixtures/plugin-platform/composer-external-dogfood/src/index.mjs'),
     composerControls: available('packages/tests/fixtures/plugin-platform/composer-external-dogfood/src/index.mjs'),
     composerRegions: available('packages/plugin-ui/fixtures/external-authoring/src/index.ts'),
-    openableContentViewers: deferred(
-      'A maintained plugin author declares an openable-content viewer and proves the canonical host read lifecycle.',
-    ),
+    openableContentViewers: available(null),
     accountCollections: available('packages/plugins/channels/src/manifest.ts'),
     webhooks: available('packages/plugins/scm-github/src/manifest.ts'),
     pluginContributionPoints: available('packages/plugin-sdk/fixtures/external-targeted-packages/target/src/index.ts'),
@@ -84,26 +83,24 @@ export const CAPABILITY_MATRIX_DECLARATIONS_V1 = Object.freeze({
     'ui.settingsGroups': available('packages/plugins/channels/src/manifest.ts'),
     'ui.settingsPages': available('packages/plugins/channels/src/manifest.ts'),
     'ui.translations': available('packages/plugins/inspector/src/manifest.ts'),
-    'mcp.servers': deferred(
-      'A maintained plugin author declares and registers an MCP server through the canonical MCP lifecycle.',
-    ),
+    'mcp.servers': available(null),
     'mcp.discoverySources': available('packages/plugins/opencode/src/manifest.ts'),
   }),
   services: Object.freeze({
     logger: available('packages/plugins/pi/src/agent/runtime/engine.ts'),
     storage: available('packages/plugins/channels/src/requiredAccountStorage.ts'),
     settings: available('packages/plugins/cursor/src/agent/acp/connection.ts'),
-    secrets: deferredExternalDevelopmentSourceProof('the SecretsService'),
-    events: deferredExternalDevelopmentSourceProof('the EventsService'),
+    secrets: available(null),
+    events: available(null),
     http: available('packages/plugins/channel-telegram/src/channelActions.ts'),
-    fs: deferredExternalDevelopmentSourceProof('the FileSystemService'),
+    fs: available(null),
     exec: available('packages/plugins/review-coderabbit/src/agent/reviews/nativeRun.ts'),
-    providers: deferredExternalDevelopmentSourceProof('the ProvidersService'),
+    providers: available(null),
     managedServices: available('packages/plugins/opencode/src/agent/runtime/server/runtimeContext.ts'),
     sessions: available('packages/plugins/channels/src/ingress.ts'),
-    resources: deferredExternalDevelopmentSourceProof('the ResourcesService'),
-    mcp: deferredExternalDevelopmentSourceProof('the root MCP service'),
-    notifications: deferredExternalDevelopmentSourceProof('the NotificationsService'),
+    resources: available(null),
+    mcp: available(null),
+    notifications: available(null),
     connectedAccounts: available('packages/plugins/channel-discord/src/discordActions.ts'),
     actions: available('packages/plugins/channels/src/ingress.ts'),
     targetedContributions: available('packages/plugins/channels/src/ingress.ts'),
@@ -122,42 +119,27 @@ export const CAPABILITY_MATRIX_DECLARATIONS_V1 = Object.freeze({
     environment: available('packages/plugins/review-deepsec/src/manifest.ts'),
     connectedAccounts: available('packages/plugins/posthog/src/manifest.ts'),
     sessions: available('packages/plugins/claude/src/manifest.ts'),
+    // The Agent-session terminal is outside an ordinary invocation's topology,
+    // so it declares its own lifecycle. Its binder and lifecycle owner come
+    // from the canonical HostAccess owner map like every other row's.
     terminal: available(
       'packages/plugins/claude/src/manifest.ts',
-      {
-        producer: 'apps/cli/src/agent/runtime/registry/engineRegistry/nativeAgentSessionHostServiceOwners.ts',
-        lifecycle: 'session-runtime',
-        specialistOwner: 'apps/cli/src/plugins/runtime/context/terminalHost.ts',
-      },
+      { lifecycle: 'session-runtime' },
     ),
     browser: deferred(
-      'A plugin-owned browser product flow proves present-intent, cancellation, currentness, and cleanup through the canonical browser owner.',
-      {
-        producer: 'packages/protocol/src/plugins/manifest/v2.ts',
-        lifecycle: 'declaration-only',
-        specialistOwner: 'apps/cli/src/plugins/runtime/lifecycle/activation/policy.ts',
-      },
+      'The manifest declaration has no host authority or service owner: no canonical browser owner binds present-intent, cancellation, currentness, or cleanup yet.',
+      { lifecycle: 'declaration-only' },
     ),
     clipboard: deferred(
-      'A plugin-owned clipboard product flow proves present-intent, platform behavior, and cleanup through the canonical clipboard owner.',
-      {
-        producer: 'packages/protocol/src/plugins/manifest/v2.ts',
-        lifecycle: 'declaration-only',
-        specialistOwner: 'apps/cli/src/plugins/runtime/lifecycle/activation/policy.ts',
-      },
+      'The manifest declaration has no host authority or service owner: no canonical clipboard owner binds present-intent, platform behavior, or cleanup yet.',
+      { lifecycle: 'declaration-only' },
     ),
     externalLinks: deferred(
-      'A plugin-owned external-link product flow proves present-intent and canonical URL handling through the external-link owner.',
-      {
-        producer: 'packages/protocol/src/plugins/manifest/v2.ts',
-        lifecycle: 'declaration-only',
-        specialistOwner: 'apps/cli/src/plugins/runtime/lifecycle/activation/policy.ts',
-      },
+      'The manifest declaration has no host authority or service owner: no canonical external-link owner binds present-intent or canonical URL handling yet.',
+      { lifecycle: 'declaration-only' },
     ),
     'storage.account': available('packages/plugins/channels/src/manifest.ts'),
-    mcp: deferred(
-      'A maintained plugin author declares an `mcp` hostAccess request and proves the canonical MCP server call lifecycle.',
-    ),
+    mcp: available(null),
   }),
   subpaths: Object.freeze({
     '.': available('packages/plugins/channels/src/manifest.ts'),
@@ -181,7 +163,7 @@ export const CAPABILITY_MATRIX_DECLARATIONS_V1 = Object.freeze({
     './managed-services': available('packages/plugins/ollama/src/provider/publicManagedRuntime.ts'),
     './manifest': available('packages/plugins/channels/src/manifest.ts'),
     './mcp': available('packages/plugins/opencode/src/manifest.ts'),
-    './notifications': deferredExternalDevelopmentSourceProof('the notifications entrypoint'),
+    './notifications': available(null),
     './providers': available('packages/plugins/openai-compat/src/voice/speech.ts'),
     './protocol': available('packages/plugins/channels/src/bindingTransition.ts'),
     './contributions': available(

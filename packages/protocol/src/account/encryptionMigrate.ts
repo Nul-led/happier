@@ -22,7 +22,9 @@ import {
   PluginCollectionContentEnvelopeV1Schema,
   PluginCollectionContractDigestV1Schema,
   PluginCollectionOpaqueCursorV1Schema,
+  PluginCollectionRevisionV1Schema,
   PluginCollectionRowIdV1Schema,
+  PluginCollectionSchemaVersionV1Schema,
 } from '../plugins/data/collectionsV1.js';
 import {
   ContentPublicKeyFingerprintSchema,
@@ -985,12 +987,6 @@ export const ACCOUNT_ENCRYPTION_MIGRATE_TRANSITION_COLLECTION_PAGE_MAX_ITEMS =
 export const ACCOUNT_ENCRYPTION_MIGRATE_TRANSITION_COLLECTION_STAGE_BATCH_MAX_UTF8_BYTES =
   8 * 1024 * 1024;
 
-const PositiveSafeIntegerSchema = z
-  .number()
-  .int()
-  .positive()
-  .max(Number.MAX_SAFE_INTEGER);
-
 const AccountEncryptionMigrateCollectionIdentityShape = {
   pluginId: asProtocolZod(PluginIdSchema),
   collectionId: asProtocolZod(PluginContributionLocalIdSchema),
@@ -999,9 +995,11 @@ const AccountEncryptionMigrateCollectionIdentityShape = {
 
 const AccountEncryptionMigrateCollectionSourceShape = {
   ...AccountEncryptionMigrateCollectionIdentityShape,
-  revision: PositiveSafeIntegerSchema,
+  // The Collection owner defines this ceiling from its persisted `Int`
+  // currentness columns; the transition never carries a wider revision.
+  revision: PluginCollectionRevisionV1Schema,
   sourceEnvelope: PluginCollectionContentEnvelopeV1Schema,
-  schemaVersion: PositiveSafeIntegerSchema,
+  schemaVersion: PluginCollectionSchemaVersionV1Schema,
   contractDigest: PluginCollectionContractDigestV1Schema,
 } as const;
 
@@ -1017,10 +1015,10 @@ export type AccountEncryptionMigrateCollectionInventoryItem = z.infer<
 export const AccountEncryptionMigrateCollectionStageItemSchema = z
   .object({
     ...AccountEncryptionMigrateCollectionIdentityShape,
-    expectedRevision: PositiveSafeIntegerSchema,
+    expectedRevision: PluginCollectionRevisionV1Schema,
     sourceEnvelope: PluginCollectionContentEnvelopeV1Schema,
     targetEnvelope: PluginCollectionContentEnvelopeV1Schema,
-    schemaVersion: PositiveSafeIntegerSchema,
+    schemaVersion: PluginCollectionSchemaVersionV1Schema,
     contractDigest: PluginCollectionContractDigestV1Schema,
   })
   .strict();

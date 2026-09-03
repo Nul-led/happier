@@ -88,4 +88,55 @@ describe('requestScmForgeJson', () => {
             body: 'service unavailable',
         });
     });
+
+    it('normalizes only the allowlisted retry-evidence response headers a mapper classifies from', async () => {
+        let responseHeaders: Readonly<Record<string, string>> | null = null;
+
+        await expect(requestScmForgeJson({
+            url: 'https://api.github.com/user/repos',
+            init: { method: 'POST' },
+            fetcher: async () => new Response(JSON.stringify({ message: 'API rate limit exceeded' }), {
+                status: 403,
+                statusText: 'Forbidden',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Retry-After': '  120  ',
+                    'X-RateLimit-Remaining': '0',
+                    'X-RateLimit-Reset': '1700000000',
+                    'X-Accepted-GitHub-Permissions': 'administration=write',
+                    'Set-Cookie': 'forge_session=forge-response-secret',
+                },
+            }),
+            mapError: (context) => {
+                responseHeaders = context.response.headers;
+                return new Error(`mapped ${context.status}`);
+            },
+        })).rejects.toThrow('mapped 403');
+
+        // Normalized to lowercase names and trimmed values, and bounded: a forge
+        // response can carry credential-bearing headers, and an error mapper may
+        // log or persist this context.
+        expect(responseHeaders).toEqual({
+            'retry-after': '120',
+            'x-ratelimit-remaining': '0',
+            'x-ratelimit-reset': '1700000000',
+            'x-accepted-github-permissions': 'administration=write',
+        });
+        expect(JSON.stringify(responseHeaders)).not.toContain('forge-response-secret');
+    });
+
+    it('reports empty response headers when a fetcher stub exposes none', async () => {
+        let responseHeaders: Readonly<Record<string, string>> | null = null;
+
+        await expect(requestScmForgeJson({
+            url: 'https://api.github.com/user/repos',
+            fetcher: async () => jsonResponse({ message: 'forbidden' }, { status: 403 }),
+            mapError: (context) => {
+                responseHeaders = context.response.headers;
+                return new Error('mapped');
+            },
+        })).rejects.toThrow('mapped');
+
+        expect(responseHeaders).toEqual({});
+    });
 });

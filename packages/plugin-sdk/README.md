@@ -263,39 +263,17 @@ happier plugins test .
 happier plugins dev
 ```
 
-## Manual ABI (advanced conformance)
+## Invocation context and interactions
 
-The manual ABI remains supported for broad/conformance examples: export a
-canonical named `manifest` plus a named `activate(api)` function. It is not the
-ordinary scaffold path. Registration is static and returns `void`; successful
-activation may return one cleanup function. The maintained
-`examples/public-authoring/` package is the broad code-defined conformance
-reference. Prefer `definePlugin(...)` for a normal author package.
-
-```ts
-import type { PluginApi } from '@happier-dev/plugin-sdk';
-
-export function activate(api: PluginApi) {
-  api.actions.register('echo', async (input, context) => {
-    const confirmation = await context.services.interactions.confirm({
-      kind: 'confirmation',
-      message: 'Echo this input?',
-    }, { signal: context.signal });
-    if (confirmation.status !== 'approved') return;
-    await context.ui?.notify('Echoed', { severity: 'info', signal: context.signal });
-    return input;
-  });
-
-  return async () => {
-    // Dispose plugin-owned resources.
-  };
-}
-```
+The named `manifest` plus `activate(api)` module shape is the host's internal
+compiled ABI that `definePlugin(...)` compiles to; authors do not hand-maintain
+that spelling. The maintained `examples/public-authoring/` package is the
+broad code-defined conformance reference.
 
 Handlers receive `PluginInvocationContext`, including plugin and contribution
 identity, cancellation, bounded services, and optional presentation-only
 `context.ui`. Fully qualified contribution ids use `pluginId/family/localId`
-slash form; for this action,
+slash form; for the `echo` action declared above,
 `com.example.echo/actions/echo`.
 
 `context.services.interactions` owns present-user requests and the canonical

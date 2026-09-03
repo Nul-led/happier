@@ -79,7 +79,6 @@ export type AgentConnectedAccountRuntimeAuthSelectionV1 = Readonly<{
   sourceProviderAccountId?: string | null;
   sourceAccountLabel?: string | null;
   applyReason?: string | null;
-  requireDirectLiveHotApply?: boolean;
 }>;
 
 export type AgentConnectedAccountNativeAuthCodecMaterializeInputV1 = Readonly<{

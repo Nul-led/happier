@@ -44,14 +44,14 @@ describe('FeaturesResponseSchema', () => {
     const current = FeaturesResponseSchema.parse({
       features: {},
       capabilities: {
-        homeSearch: { enabled: false, provider: 'home', reason: 'indexing' },
+        homeSearch: { enabled: false, reason: 'indexing' },
       },
     });
-    expect(current.capabilities.homeSearch).toEqual({ enabled: false, provider: 'home', reason: 'indexing' });
+    expect(current.capabilities.homeSearch).toEqual({ enabled: false, reason: 'indexing' });
     expect(FeaturesResponseSchema.safeParse({
       features: {},
       capabilities: {
-        homeSearch: { enabled: true, provider: 'home', extra: true },
+        homeSearch: { enabled: true, provider: 'home' },
       },
     }).success).toBe(false);
   });

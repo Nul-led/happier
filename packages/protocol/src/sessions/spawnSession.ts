@@ -14,6 +14,7 @@ export const SpawnSessionExecutionAuthorizationSchema = z.object({
   requestId: z.string().refine((value) => value.trim().length > 0, {
     message: 'Execution authorization request id must not be blank',
   }),
+  requestedAt: z.number().int().nonnegative().optional(),
 }).strict();
 export type SpawnSessionExecutionAuthorization = z.infer<typeof SpawnSessionExecutionAuthorizationSchema>;
 

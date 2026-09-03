@@ -643,7 +643,7 @@ describe('CORE-A curated package exports', () => {
         ]);
         expect(exportedNames).not.toContain('resolveTakeoverSpawnOptions');
         expect(exportedNames).not.toContain('SpawnSessionOptions');
-        expect(exportedNames).not.toContain('BackendSessionLaunchHintsV1');
+        expect(exportedNames).not.toContain('AgentSessionLaunchHintsV1');
     });
 
     inventoryIt('exports the exact current observation authoring types from Sessions authoring', async () => {

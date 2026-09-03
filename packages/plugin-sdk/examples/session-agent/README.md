@@ -1,29 +1,25 @@
 # Minimal custom Session Agent
 
 This is the smallest executable public-SDK reference for a custom persistent
-Session Agent. Start with the normal scaffold, then copy this package's
-`index.ts` to the scaffold's `src/index.ts` and
-`agent/deterministicSessionAgent.ts` to
-`src/agent/deterministicSessionAgent.ts`, and replace the scaffold's generated
-`test/index.test.mjs` with this package's `test/index.test.mjs`. The scaffold
-test invokes its retired `save-note` Action; the replacement instead checks the
-compiled manifest's one Session Agent and runner locator, so the documented
-`happier plugins test .` step remains executable after the copy. Then replace
-the example id, title, and deterministic behavior:
+Session Agent. Create the equivalent author-ready shape directly, then replace
+the generated runner's example behavior with the provider behavior you need:
 
 ```bash
-happier plugins create my-session-agent
+happier plugins create my-session-agent --template session-agent
 cd my-session-agent
 happier plugins dev typecheck .
 happier plugins dev build .
 happier plugins test .
 ```
 
-`index.ts` uses `definePlugin(...)` as the sole authoring path. It declares one
-custom Agent and names one distinct Session-runner leaf. The runner leaf exports
-the same factory and uses only public SDK imports, so activation and Session
-execution can run in separate daemon realms without sharing a process-global
-owner.
+The template and this maintained reference use `definePlugin(...)` as the sole
+authoring path. Each declares one custom Agent and names one distinct,
+import-safe Session-runner leaf. The runner leaf exports the same factory used
+at activation and imports only public SDK entrypoints, so activation and
+Session execution can run in separate daemon realms without sharing a
+process-global owner. This reference remains the richer deterministic lifecycle
+example; the template keeps the same public shape while leaving a smaller
+behavior body for authors to replace.
 
 The deterministic runner has no network or provider dependency. A new turn
 publishes its provider-session identity, then emits an input acceptance,
@@ -83,6 +79,24 @@ happier plugins change approve <pendingChangeId> --json
 Reopen the selected Agent after approval and verify the new behavior. This is
 the canonical archive update path; it does not introduce a separate plugin
 runtime or update owner.
+
+A failing edit must never replace working bytes. Break the reasoning delta's
+`channel` to an unknown member and run the same author commands:
+
+```bash
+happier plugins dev typecheck .
+happier plugins dev build .
+```
+
+Both refuse the change, no daemon generation is requested, and the installed
+generation keeps serving Sessions on the last good bytes. Restore the source,
+rebuild, and reload to move the same plugin identity onto a fresh current
+generation:
+
+```bash
+happier plugins dev build .
+happier plugins reload --json
+```
 
 For the hard-revocation check, leave a confirmation pending and choose
 **Forget trust** for `examples.session-agent` in Settings → Plugins. The active

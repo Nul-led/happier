@@ -8,7 +8,10 @@ import {
 import { ParticipantRecipientV1Schema } from '../messages/structured/participantMessageV1.js';
 import { asProtocolZod } from '../plugins/actions/internalProtocolZodAdapter.js';
 import { SessionIdSchema } from '../sessions/idsV1.js';
-import { PredecessorSessionDraftModelIdV1Schema } from '../sessions/authoring/fieldCatalog.js';
+import {
+  PREDECESSOR_SESSION_DRAFT_AUTHORING_FIELD_SCHEMAS_V1,
+  PredecessorSessionDraftAuthoringFieldIdV1Schema,
+} from '../sessions/authoring/fieldCatalog.js';
 import {
   SyncedSessionAuthoringFieldIdV1Schema,
   SyncedSessionAuthoringValueV1Schema,
@@ -85,6 +88,14 @@ export type DraftFieldV1<T extends StrictJsonValue = StrictJsonValue> = Readonly
   value: T;
 }>;
 
+export const SessionDraftPredecessorAuthoringValueV1Schema = z
+  .object(PREDECESSOR_SESSION_DRAFT_AUTHORING_FIELD_SCHEMAS_V1)
+  .partial()
+  .strict();
+export type SessionDraftPredecessorAuthoringValueV1 = z.infer<
+  typeof SessionDraftPredecessorAuthoringValueV1Schema
+>;
+
 export const SessionDraftRecipientValueV1Schema = z.union([
   z.null(),
   z.object({
@@ -115,15 +126,15 @@ const ComposerSchema = z.object({
 
 const SessionDraftAcceptedSyncedAuthoringFieldIdV1Schema = z.union([
   SyncedSessionAuthoringFieldIdV1Schema,
-  z.literal('modelId'),
+  PredecessorSessionDraftAuthoringFieldIdV1Schema,
 ]);
 const SyncedAuthoringFieldsSchema = z
   .partialRecord(SessionDraftAcceptedSyncedAuthoringFieldIdV1Schema, DraftFieldV1Schema)
   .superRefine((fields, context) => {
     for (const [fieldId, field] of Object.entries(fields as Record<string, { value: unknown }>)) {
-      const fieldSchema = fieldId === 'modelId'
-        ? PredecessorSessionDraftModelIdV1Schema
-        : (SyncedSessionAuthoringValueV1Schema.shape as Record<string, z.ZodTypeAny>)[fieldId];
+      const fieldSchema = (
+        SessionDraftPredecessorAuthoringValueV1Schema.shape as Record<string, z.ZodTypeAny>
+      )[fieldId] ?? (SyncedSessionAuthoringValueV1Schema.shape as Record<string, z.ZodTypeAny>)[fieldId];
       if (fieldSchema && !fieldSchema.safeParse(field.value).success) {
         context.addIssue({
           code: z.ZodIssueCode.custom,

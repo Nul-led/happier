@@ -1,11 +1,11 @@
 import { z } from 'zod';
 
-import type { BackendSurfaceAvailabilityV1 } from '@happier-dev/protocol';
+import type { AgentSurfaceAvailabilityV1 } from '@happier-dev/protocol';
 
 import type { MaybePromise } from '../engine/contracts.js';
 import type {
-  BackendSurfaceDiagnosticV1,
-  BackendSurfaceOperationReceiptV1,
+  AgentSurfaceDiagnosticV1,
+  AgentSurfaceOperationReceiptV1,
 } from './primitives.js';
 
 export type CheckpointRestoreScopeV1 =
@@ -123,20 +123,20 @@ export type RestoreCheckpointResultV1 =
         code: RestoreCheckpointFailureCodeV1;
         message?: string;
       }>[];
-      receipt?: BackendSurfaceOperationReceiptV1;
-      diagnostics?: readonly BackendSurfaceDiagnosticV1[];
+      receipt?: AgentSurfaceOperationReceiptV1;
+      diagnostics?: readonly AgentSurfaceDiagnosticV1[];
     }>
   | Readonly<{
       ok: false;
       code: RestoreCheckpointFailureCodeV1;
       message?: string;
       retryable?: boolean;
-      receipt?: BackendSurfaceOperationReceiptV1;
-      diagnostics?: readonly BackendSurfaceDiagnosticV1[];
+      receipt?: AgentSurfaceOperationReceiptV1;
+      diagnostics?: readonly AgentSurfaceDiagnosticV1[];
     }>;
 
 export type CheckpointSurfaceV1 = Readonly<{
-  evaluateAvailability?: (request: CheckpointAvailabilityRequestV1) => MaybePromise<BackendSurfaceAvailabilityV1>;
+  evaluateAvailability?: (request: CheckpointAvailabilityRequestV1) => MaybePromise<AgentSurfaceAvailabilityV1>;
   list?: (request: ListCheckpointsRequestV1) => MaybePromise<readonly CheckpointDescriptorV1[]>;
   resolveRestoreTarget?: (request: ResolveCheckpointRestoreTargetRequestV1) => MaybePromise<CheckpointProviderTargetRefV1 | null>;
   checkpoint?: (request: CreateCheckpointRequestV1) => MaybePromise<CheckpointDescriptorV1>;

@@ -9,6 +9,7 @@ import {
 describe('SCM backend command helpers', () => {
     it('delegates command execution to the host SCM backend runtime service', async () => {
         const calls: unknown[] = [];
+        const controller = new AbortController();
 
         const result = await runWithBackendRuntimeServices({
             async runCommand(input) {
@@ -30,6 +31,7 @@ describe('SCM backend command helpers', () => {
             stdin: 'input',
             maxOutputBytes: 456,
             env: { GIT_TERMINAL_PROMPT: '0' },
+            signal: controller.signal,
         }));
 
         expect(result).toEqual({
@@ -48,6 +50,7 @@ describe('SCM backend command helpers', () => {
                 stdin: 'input',
                 maxOutputBytes: 456,
                 env: { GIT_TERMINAL_PROMPT: '0' },
+                signal: controller.signal,
             },
         ]);
     });

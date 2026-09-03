@@ -6,6 +6,13 @@ export type ScmForgeHttpResponse = Readonly<{
     ok: boolean;
     status: number;
     statusText: string;
+    /**
+     * `Headers` satisfies this read, so a `fetch`-backed fetcher needs no
+     * adaptation. It stays optional because a fetcher may be a narrow stub: a
+     * mapper that cannot see a header classifies conservatively from the status
+     * alone rather than failing.
+     */
+    headers?: Readonly<{ get(name: string): string | null }>;
     json(): Promise<unknown>;
     text(): Promise<string>;
 }>;
@@ -19,6 +26,14 @@ export type ScmForgeHttpErrorContext = Readonly<{
     statusText: string;
     body: unknown;
     request: Readonly<{
+        headers: Readonly<Record<string, string>>;
+    }>;
+    /**
+     * The forge's own retry/permission evidence, normalized to lowercase names.
+     * Without it a mapper can only read a status, and every forge answers a
+     * throttle and a permission refusal with the same `403`.
+     */
+    response: Readonly<{
         headers: Readonly<Record<string, string>>;
     }>;
 }>;
@@ -42,6 +57,39 @@ const SCM_ERROR_CONTEXT_SAFE_HEADER_NAMES = new Set([
     'user-agent',
     'x-github-api-version',
 ]);
+
+/**
+ * The response headers an error mapper may read, and the whole set. A forge
+ * response carries `set-cookie` and other credential-bearing material, and an
+ * error mapper may persist or log this context, so the default stays "not
+ * disclosed" — the same rule the request-header allowlist above applies.
+ *
+ * Every name here is read by a current mapper: the first three are how a forge
+ * says a refusal is a throttle and when it may be retried, and the last is how
+ * GitHub names the permission a rejected request required, which is what
+ * separates a missing scope from an ordinary refusal.
+ */
+const SCM_FORGE_RESPONSE_EVIDENCE_HEADER_NAMES = [
+    'retry-after',
+    'x-ratelimit-remaining',
+    'x-ratelimit-reset',
+    'x-accepted-github-permissions',
+] as const;
+
+function readForgeResponseEvidenceHeaders(
+    response: ScmForgeHttpResponse,
+): Readonly<Record<string, string>> {
+    const headers = response.headers;
+    if (!headers || typeof headers.get !== 'function') return Object.freeze({});
+    const normalized: Record<string, string> = {};
+    for (const name of SCM_FORGE_RESPONSE_EVIDENCE_HEADER_NAMES) {
+        const value = headers.get(name);
+        if (typeof value !== 'string') continue;
+        const trimmed = value.trim();
+        if (trimmed) normalized[name] = trimmed;
+    }
+    return Object.freeze(normalized);
+}
 
 function defaultForgeHttpFetcher(url: string, init?: RequestInit): Promise<ScmForgeHttpResponse> {
     return fetch(url, init);
@@ -112,6 +160,9 @@ export async function requestScmForgeJson(input: ScmForgeHttpJsonRequest): Promi
         body: await readScmForgeResponseBody(response),
         request: {
             headers: redactHeaders(input.init?.headers),
+        },
+        response: {
+            headers: readForgeResponseEvidenceHeaders(response),
         },
     };
 

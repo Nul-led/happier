@@ -17,9 +17,11 @@ export {
   DEFAULT_SESSION_HANDOFF_DEFAULTS_V1,
   DEFAULT_SESSION_AGENT_SPAWN_POLICY_V1,
   DEFAULT_SESSION_PENDING_QUEUE_DRAIN_MODE,
+  DEFAULT_SESSION_INACTIVE_RESUME_POLICY,
   DEFAULT_SESSION_PENDING_QUEUE_DELIVERY_TIMING,
   DEFAULT_USAGE_LIMIT_RECOVERY_SETTINGS_V1,
   SESSION_PENDING_QUEUE_DRAIN_MODES,
+  SESSION_INACTIVE_RESUME_POLICY_VALUES,
   SESSION_PENDING_QUEUE_DELIVERY_TIMINGS,
   TRANSCRIPT_MESSAGE_TIMESTAMP_DISPLAY_MODE_VALUES,
   NEW_SESSION_PRESENTATION_MODES,
@@ -37,6 +39,7 @@ export {
   SessionTmuxMachineOverrideSchema,
   SessionPendingQueueDeliveryTimingSchema,
   SessionPendingQueueDrainModeSchema,
+  SessionInactiveResumePolicySchema,
   UsageLimitRecoverySettingsV1Schema,
   type AccountSettings,
   type AccountSettingKey,
@@ -56,6 +59,7 @@ export {
   type SessionHandoffDirectTargetMode,
   type SessionPendingQueueDeliveryTiming,
   type SessionPendingQueueDrainMode,
+  type SessionInactiveResumePolicy,
   type UsageLimitRecoverySettingsV1,
 } from './accountSettings.js';
 

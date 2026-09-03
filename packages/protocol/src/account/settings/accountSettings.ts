@@ -274,6 +274,12 @@ export const DEFAULT_USAGE_LIMIT_RECOVERY_SETTINGS_V1: UsageLimitRecoverySetting
 
 export const SESSION_PENDING_QUEUE_DRAIN_MODES = ['one_at_a_time', 'drain_all'] as const;
 export const DEFAULT_SESSION_PENDING_QUEUE_DRAIN_MODE = 'one_at_a_time' as const;
+export const SESSION_INACTIVE_RESUME_POLICY_VALUES = ['when_available', 'online_only', 'manual'] as const;
+export const DEFAULT_SESSION_INACTIVE_RESUME_POLICY = 'online_only' as const;
+export const SessionInactiveResumePolicySchema = z
+  .enum(SESSION_INACTIVE_RESUME_POLICY_VALUES)
+  .catch(DEFAULT_SESSION_INACTIVE_RESUME_POLICY);
+export type SessionInactiveResumePolicy = z.infer<typeof SessionInactiveResumePolicySchema>;
 export const SessionPendingQueueDrainModeSchema = z
   .enum(SESSION_PENDING_QUEUE_DRAIN_MODES)
   .catch(DEFAULT_SESSION_PENDING_QUEUE_DRAIN_MODE);
@@ -972,7 +978,7 @@ const ACCOUNT_DISPLAY_CATALOG_DEFINITIONS = {
   // recovers to the default: a budget below the floor produced no seed at all.
   sessionReplayRecentMessagesCount: accountPreference(HappierReplayRecentMessagesCountSchema, 250, 'session replay'),
   sessionReplayMaxSeedChars: accountPreference(HappierReplayWritableMaxSeedCharsSchema, 120_000, 'session replay'),
-  executionRunsGuidanceEnabled: accountPreference(z.boolean(), false, 'execution guidance'),
+  executionRunsGuidanceEnabled: accountPreference(z.boolean(), true, 'execution guidance'),
   executionRunsGuidanceMaxChars: accountPreference(z.number().int().min(1).max(64 * 1024), 4_000, 'execution guidance'),
   attachmentsUploadsUploadLocation: accountPreference(z.enum(['workspace', 'os_temp']), 'workspace', 'attachment uploads'),
   attachmentsUploadsWorkspaceRelativeDir: accountPreference(z.string().min(1).max(4 * 1024), '.happier/uploads', 'attachment uploads'),
@@ -1717,6 +1723,11 @@ export const ACCOUNT_SETTING_DEFINITIONS = defineAccountSettingDefinitions({
     SessionPendingQueueDrainModeSchema.default(DEFAULT_SESSION_PENDING_QUEUE_DRAIN_MODE),
     DEFAULT_SESSION_PENDING_QUEUE_DRAIN_MODE,
     { semanticDomain: 'pending queue delivery', classification: 'policy', maximumSerializedValueBytes: 64 },
+  ),
+  sessionInactiveResumePolicy: accountCatalogDefinition(
+    SessionInactiveResumePolicySchema.default(DEFAULT_SESSION_INACTIVE_RESUME_POLICY),
+    DEFAULT_SESSION_INACTIVE_RESUME_POLICY,
+    { semanticDomain: 'pending queue activation', classification: 'preference', maximumSerializedValueBytes: 32 },
   ),
   sessionPendingQueueDeliveryTiming: accountCatalogDefinition(
     SessionPendingQueueDeliveryTimingSchema.default(DEFAULT_SESSION_PENDING_QUEUE_DELIVERY_TIMING),

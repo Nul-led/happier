@@ -866,6 +866,54 @@
     },
     {
       "specifier": ".",
+      "exportName": "MAX_PLUGIN_SEARCH_ITEMS_V1",
+      "kind": "value",
+      "sourceModule": "src/searchProviders.ts",
+      "sourceExport": "MAX_PLUGIN_SEARCH_ITEMS_V1",
+      "realm": "any"
+    },
+    {
+      "specifier": ".",
+      "exportName": "MAX_PLUGIN_SEARCH_ITEM_COMMAND_UTF8_BYTES_V1",
+      "kind": "value",
+      "sourceModule": "src/searchProviders.ts",
+      "sourceExport": "MAX_PLUGIN_SEARCH_ITEM_COMMAND_UTF8_BYTES_V1",
+      "realm": "any"
+    },
+    {
+      "specifier": ".",
+      "exportName": "MAX_PLUGIN_SEARCH_ITEM_ID_UTF8_BYTES_V1",
+      "kind": "value",
+      "sourceModule": "src/searchProviders.ts",
+      "sourceExport": "MAX_PLUGIN_SEARCH_ITEM_ID_UTF8_BYTES_V1",
+      "realm": "any"
+    },
+    {
+      "specifier": ".",
+      "exportName": "MAX_PLUGIN_SEARCH_QUERY_UTF8_BYTES_V1",
+      "kind": "value",
+      "sourceModule": "src/searchProviders.ts",
+      "sourceExport": "MAX_PLUGIN_SEARCH_QUERY_UTF8_BYTES_V1",
+      "realm": "any"
+    },
+    {
+      "specifier": ".",
+      "exportName": "MAX_PLUGIN_SEARCH_SUBTITLE_CODE_POINTS_V1",
+      "kind": "value",
+      "sourceModule": "src/searchProviders.ts",
+      "sourceExport": "MAX_PLUGIN_SEARCH_SUBTITLE_CODE_POINTS_V1",
+      "realm": "any"
+    },
+    {
+      "specifier": ".",
+      "exportName": "MAX_PLUGIN_SEARCH_TITLE_CODE_POINTS_V1",
+      "kind": "value",
+      "sourceModule": "src/searchProviders.ts",
+      "sourceExport": "MAX_PLUGIN_SEARCH_TITLE_CODE_POINTS_V1",
+      "realm": "any"
+    },
+    {
+      "specifier": ".",
       "exportName": "MessageActionAvailableSnapshotV1",
       "kind": "type",
       "sourceModule": "src/invocation.ts",
@@ -1142,6 +1190,62 @@
       "kind": "type",
       "sourceModule": "src/definePlugin.ts",
       "sourceExport": "PluginRequestInterceptorDefinition",
+      "realm": "any"
+    },
+    {
+      "specifier": ".",
+      "exportName": "PluginSearchItemV1",
+      "kind": "type",
+      "sourceModule": "src/searchProviders.ts",
+      "sourceExport": "PluginSearchItemV1",
+      "realm": "any"
+    },
+    {
+      "specifier": ".",
+      "exportName": "PluginSearchItemV1Schema",
+      "kind": "value",
+      "sourceModule": "src/searchProviders.ts",
+      "sourceExport": "PluginSearchItemV1Schema",
+      "realm": "any"
+    },
+    {
+      "specifier": ".",
+      "exportName": "PluginSearchProviderContributionV1",
+      "kind": "type",
+      "sourceModule": "src/searchProviders.ts",
+      "sourceExport": "PluginSearchProviderContributionV1",
+      "realm": "any"
+    },
+    {
+      "specifier": ".",
+      "exportName": "PluginSearchQueryV1",
+      "kind": "type",
+      "sourceModule": "src/searchProviders.ts",
+      "sourceExport": "PluginSearchQueryV1",
+      "realm": "any"
+    },
+    {
+      "specifier": ".",
+      "exportName": "PluginSearchQueryV1Schema",
+      "kind": "value",
+      "sourceModule": "src/searchProviders.ts",
+      "sourceExport": "PluginSearchQueryV1Schema",
+      "realm": "any"
+    },
+    {
+      "specifier": ".",
+      "exportName": "PluginSearchResultV1",
+      "kind": "type",
+      "sourceModule": "src/searchProviders.ts",
+      "sourceExport": "PluginSearchResultV1",
+      "realm": "any"
+    },
+    {
+      "specifier": ".",
+      "exportName": "PluginSearchResultV1Schema",
+      "kind": "value",
+      "sourceModule": "src/searchProviders.ts",
+      "sourceExport": "PluginSearchResultV1Schema",
       "realm": "any"
     },
     {
@@ -1442,6 +1546,14 @@
     },
     {
       "specifier": ".",
+      "exportName": "createCanonicalJsonSigningInput",
+      "kind": "value",
+      "sourceModule": "src/identity.ts",
+      "sourceExport": "createCanonicalJsonSigningInput",
+      "realm": "any"
+    },
+    {
+      "specifier": ".",
       "exportName": "defineComposerAttachment",
       "kind": "value",
       "sourceModule": "src/composer.ts",
@@ -1586,14 +1698,6 @@
     },
     {
       "specifier": "./actions",
-      "exportName": "ActionCaller",
-      "kind": "type",
-      "sourceModule": "src/actions/actionTypeMap.generated.ts",
-      "sourceExport": "ActionCaller",
-      "realm": "any"
-    },
-    {
-      "specifier": "./actions",
       "exportName": "ActionContract",
       "kind": "type",
       "sourceModule": "src/actions/service.ts",
@@ -1694,14 +1798,6 @@
       "kind": "type",
       "sourceModule": "src/actions/service.ts",
       "sourceExport": "ActionSpec",
-      "realm": "any"
-    },
-    {
-      "specifier": "./actions",
-      "exportName": "ActionSurfaceBindingTransform",
-      "kind": "type",
-      "sourceModule": "src/actions/actionTypeMap.generated.ts",
-      "sourceExport": "ActionSurfaceBindingTransform",
       "realm": "any"
     },
     {
@@ -2086,6 +2182,14 @@
       "kind": "type",
       "sourceModule": "src/agents.ts",
       "sourceExport": "AgentDefinitionCapabilityFacts",
+      "realm": "any"
+    },
+    {
+      "specifier": "./agents",
+      "exportName": "AgentExecutionTargetV1",
+      "kind": "type",
+      "sourceModule": "src/agents.ts",
+      "sourceExport": "AgentExecutionTargetV1",
       "realm": "any"
     },
     {
@@ -3970,6 +4074,14 @@
     },
     {
       "specifier": "./agents/runtime",
+      "exportName": "AgentSessionLaunchHintsV1",
+      "kind": "type",
+      "sourceModule": "src/agentRuntime/projections.ts",
+      "sourceExport": "AgentSessionLaunchHintsV1",
+      "realm": "daemon"
+    },
+    {
+      "specifier": "./agents/runtime",
       "exportName": "AgentSessionMcpLaunchConfig",
       "kind": "type",
       "sourceModule": "src/agentRuntime/projections.ts",
@@ -4426,6 +4538,46 @@
     },
     {
       "specifier": "./agents/runtime",
+      "exportName": "AgentSurfaceAvailabilityV1",
+      "kind": "type",
+      "sourceModule": "src/agentRuntime/projections.ts",
+      "sourceExport": "AgentSurfaceAvailabilityV1",
+      "realm": "daemon"
+    },
+    {
+      "specifier": "./agents/runtime",
+      "exportName": "AgentSurfaceBaseFailureCodeV1",
+      "kind": "type",
+      "sourceModule": "src/agentRuntime/projections.ts",
+      "sourceExport": "AgentSurfaceBaseFailureCodeV1",
+      "realm": "daemon"
+    },
+    {
+      "specifier": "./agents/runtime",
+      "exportName": "AgentSurfaceDiagnosticV1",
+      "kind": "type",
+      "sourceModule": "src/agentRuntime/projections.ts",
+      "sourceExport": "AgentSurfaceDiagnosticV1",
+      "realm": "daemon"
+    },
+    {
+      "specifier": "./agents/runtime",
+      "exportName": "AgentSurfaceOperationReceiptV1",
+      "kind": "type",
+      "sourceModule": "src/agentRuntime/projections.ts",
+      "sourceExport": "AgentSurfaceOperationReceiptV1",
+      "realm": "daemon"
+    },
+    {
+      "specifier": "./agents/runtime",
+      "exportName": "AgentSurfaceResultV1",
+      "kind": "type",
+      "sourceModule": "src/agentRuntime/projections.ts",
+      "sourceExport": "AgentSurfaceResultV1",
+      "realm": "daemon"
+    },
+    {
+      "specifier": "./agents/runtime",
       "exportName": "AgentTerminalControlPresentation",
       "kind": "type",
       "sourceModule": "src/agentRuntime/projections.ts",
@@ -4671,54 +4823,6 @@
       "sourceModule": "src/agentRuntime/projections.ts",
       "sourceExport": "AttachSurfaceStaticMetadataV1",
       "realm": "any"
-    },
-    {
-      "specifier": "./agents/runtime",
-      "exportName": "BackendSessionLaunchHintsV1",
-      "kind": "type",
-      "sourceModule": "src/agentRuntime/projections.ts",
-      "sourceExport": "BackendSessionLaunchHintsV1",
-      "realm": "daemon"
-    },
-    {
-      "specifier": "./agents/runtime",
-      "exportName": "BackendSurfaceAvailabilityV1",
-      "kind": "type",
-      "sourceModule": "src/agentRuntime/projections.ts",
-      "sourceExport": "BackendSurfaceAvailabilityV1",
-      "realm": "daemon"
-    },
-    {
-      "specifier": "./agents/runtime",
-      "exportName": "BackendSurfaceBaseFailureCodeV1",
-      "kind": "type",
-      "sourceModule": "src/agentRuntime/projections.ts",
-      "sourceExport": "BackendSurfaceBaseFailureCodeV1",
-      "realm": "daemon"
-    },
-    {
-      "specifier": "./agents/runtime",
-      "exportName": "BackendSurfaceDiagnosticV1",
-      "kind": "type",
-      "sourceModule": "src/agentRuntime/projections.ts",
-      "sourceExport": "BackendSurfaceDiagnosticV1",
-      "realm": "daemon"
-    },
-    {
-      "specifier": "./agents/runtime",
-      "exportName": "BackendSurfaceOperationReceiptV1",
-      "kind": "type",
-      "sourceModule": "src/agentRuntime/projections.ts",
-      "sourceExport": "BackendSurfaceOperationReceiptV1",
-      "realm": "daemon"
-    },
-    {
-      "specifier": "./agents/runtime",
-      "exportName": "BackendSurfaceResultV1",
-      "kind": "type",
-      "sourceModule": "src/agentRuntime/projections.ts",
-      "sourceExport": "BackendSurfaceResultV1",
-      "realm": "daemon"
     },
     {
       "specifier": "./agents/runtime",
@@ -5910,6 +6014,14 @@
       "kind": "value",
       "sourceModule": "src/collections.ts",
       "sourceExport": "PLUGIN_COLLECTION_QUERY_MAX_ROWS_V1",
+      "realm": "daemon"
+    },
+    {
+      "specifier": "./collections",
+      "exportName": "PLUGIN_COLLECTION_REVISION_MAX",
+      "kind": "value",
+      "sourceModule": "src/collections.ts",
+      "sourceExport": "PLUGIN_COLLECTION_REVISION_MAX",
       "realm": "daemon"
     },
     {
@@ -7414,6 +7526,14 @@
       "kind": "value",
       "sourceModule": "src/events.ts",
       "sourceExport": "createPluginEventAutomationSetupResultV1JsonSchema",
+      "realm": "any"
+    },
+    {
+      "specifier": "./events",
+      "exportName": "isAutomationEventSourcesListPageProgressingV1",
+      "kind": "value",
+      "sourceModule": "src/eventAutomation.ts",
+      "sourceExport": "isAutomationEventSourcesListPageProgressingV1",
       "realm": "any"
     },
     {

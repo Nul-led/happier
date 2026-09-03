@@ -68,6 +68,7 @@ import {
   PluginWebhookActionHttpPathsV1,
   PluginWebhookActionInputSchemasV1,
   PluginWebhookActionOutputSchemasV1,
+  isPluginWebhookPluginSurfaceActionIdV1,
   type PluginWebhookActionIdV1,
   type PluginWebhookPresentUserActionIdV1,
 } from '../plugins/webhooks/endpointV1.js';
@@ -681,7 +682,7 @@ export const ActionSpecSchema = z.object({
 });
 
 export type ActionSpec = z.infer<typeof ActionSpecSchema> & Readonly<{
-  placements: ActionUiPlacement[];
+  placements: readonly ActionUiPlacement[];
   requiredAuthority: ActionRequiredAuthority;
   executionPlacement: ActionExecutionPlacement;
 }>;
@@ -978,7 +979,15 @@ export const SessionEventsGetInputSchema = z.object({
   includeRaw: z.boolean().optional(),
   maxTextChars: z.number().int().min(0).max(4000).optional(),
   maxPayloadChars: z.number().int().min(1).max(32768).optional(),
-}).passthrough();
+}).passthrough().superRefine((value, ctx) => {
+  if (value.sidechainId && value.scope !== 'sidechain') {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'scope must be sidechain when sidechainId is provided',
+      path: ['scope'],
+    });
+  }
+});
 export type SessionEventsGetInput = z.infer<typeof SessionEventsGetInputSchema>;
 export type SessionEventsGetItem = Readonly<{
   id: string;
@@ -1081,6 +1090,8 @@ const IntentStartCommonSchema = z.object({
    * fails with `invalid_parameters`.
    */
   configOptions: z.record(z.string(), SpawnConfigOptionValueSchema).optional(),
+  /** Blanket connected-services selection; an exact per-target entry overrides it. */
+  connectedServices: StrictJsonValueSchema.optional(),
   /**
    * Optional per-backend-target connected-services selection, keyed by the SAME backend target
    * key strings passed in `backendTargetKeys`. Each value may be an agent-friendly simple string
@@ -1102,7 +1113,7 @@ const PlanStartInputSchema = IntentStartCommonSchema.extend({
 }).passthrough();
 
 const DelegateStartInputSchema = IntentStartCommonSchema.extend({
-  permissionMode: ExecutionRunActionPermissionModeSchema.default('workspace_write'),
+  permissionMode: ExecutionRunActionPermissionModeSchema.optional(),
   retentionPolicy: z.enum(['ephemeral', 'resumable']).default('ephemeral'),
   runClass: z.enum(['bounded', 'long_lived']).default('bounded'),
   ioMode: z.enum(['request_response', 'streaming']).default('request_response'),
@@ -1608,6 +1619,7 @@ const ActionOptionsResolveInputSchema = z.object({
   sessionId: z.string().min(1).optional(),
   limit: z.number().int().min(1).max(200).optional(),
   query: z.string().trim().optional(),
+  draftInput: z.record(z.string(), z.unknown()).optional(),
 }).passthrough().superRefine((value, ctx) => {
   const actionId = typeof value.actionId === 'string' ? value.actionId.trim() : '';
   const fieldPath = typeof value.fieldPath === 'string' ? value.fieldPath.trim() : '';
@@ -2015,6 +2027,16 @@ const ApprovalRequestCreateInputSchema = z.object({
   preview: StrictJsonValueSchema.optional(),
 }).passthrough();
 
+/**
+ * A trusted plugin may ask the present user to approve an Action it could have
+ * invoked itself; it may not borrow the approval queue to reach a host-internal
+ * Action the Plugin census excludes. The census set is built from these same
+ * rows, so this arm resolves lazily instead of duplicating the exclusion list.
+ */
+const PluginSurfaceApprovalRequestCreateInputSchema = ApprovalRequestCreateInputSchema.extend({
+  actionId: z.lazy(() => PluginInvocableActionIdSchema),
+});
+
 const ApprovalRequestListInputSchema = z.object({
   status: ApprovalRequestStatusSchema.optional(),
   limit: z.number().int().min(1).max(100).optional(),
@@ -2318,6 +2340,10 @@ const RESULT_NONE_APPROVAL_ACTION_IDS = [
   'plugin.webhook.endpoint.ensure',
   'plugin.webhook.endpoint.revoke',
   'plugin.webhook.endpoint.retarget',
+  // The plugin-surface target convergence is the same endpoint mutation class
+  // as `retarget`: it never routes through approval, so it carries no
+  // approval-result artifact semantics either.
+  'plugin.webhook.endpoint.convergeTarget',
   'plugin.webhook.delivery.movePending',
   'plugin.webhook.endpoint.credential.configure',
   'plugin.webhook.endpoint.credential.rotate',
@@ -2635,11 +2661,16 @@ function bindPluginPermissionSubject(
 export const PluginScaffoldUiModeSchema = z.enum(['hostedWeb', 'reactNative']);
 export type PluginScaffoldUiMode = z.infer<typeof PluginScaffoldUiModeSchema>;
 
+/** Optional first-party starting shape; omission retains the generic scaffold. */
+export const PluginScaffoldTemplateSchema = z.enum(['session-agent']);
+export type PluginScaffoldTemplate = z.infer<typeof PluginScaffoldTemplateSchema>;
+
 const PluginScaffoldActionInputSchema = z.object({
   targetDir: z.string().trim().min(1),
   id: z.string().trim().min(1),
   name: z.string().trim().min(1),
   ui: PluginScaffoldUiModeSchema.optional(),
+  template: PluginScaffoldTemplateSchema.optional(),
 }).strict();
 
 const PluginInstallActionInputSchema = z.object({
@@ -2958,6 +2989,7 @@ const PLUGIN_WEBHOOK_ACTION_TITLES: Readonly<Record<PluginWebhookActionIdV1, str
   'plugin.webhook.endpoint.revoke': 'Revoke webhook endpoint',
   'plugin.webhook.endpoint.retarget': 'Retarget webhook endpoint',
   'plugin.webhook.endpoint.checkCorrespondence': 'Check webhook endpoint correspondence',
+  'plugin.webhook.endpoint.convergeTarget': 'Converge webhook endpoint target',
   'plugin.webhook.delivery.movePending': 'Move pending webhook deliveries',
   'plugin.webhook.endpoint.credential.configure': 'Configure webhook credential',
   'plugin.webhook.endpoint.credential.rotate': 'Rotate webhook credential',
@@ -2965,8 +2997,12 @@ const PLUGIN_WEBHOOK_ACTION_TITLES: Readonly<Record<PluginWebhookActionIdV1, str
 });
 
 function createPluginWebhookActionSpec(actionId: PluginWebhookActionIdV1): PreNormalizedActionSpec {
-  const isCorrespondenceCheck = actionId === 'plugin.webhook.endpoint.checkCorrespondence';
-  const readOnly = actionId === 'plugin.webhook.endpoint.read' || isCorrespondenceCheck;
+  // A plugin-surface endpoint operation is never offered on a present-user
+  // surface: the caller identity it authorizes against is host-stamped plugin
+  // provenance, which a `ui`/`cli` invocation cannot supply.
+  const isPluginSurface = isPluginWebhookPluginSurfaceActionIdV1(actionId);
+  const readOnly = actionId === 'plugin.webhook.endpoint.read'
+    || actionId === 'plugin.webhook.endpoint.checkCorrespondence';
   return {
     id: actionId,
     title: PLUGIN_WEBHOOK_ACTION_TITLES[actionId],
@@ -2974,11 +3010,11 @@ function createPluginWebhookActionSpec(actionId: PluginWebhookActionIdV1): PreNo
     safety: readOnly ? 'safe' : 'danger',
     placements: [],
     surfaces: {
-      ui: !isCorrespondenceCheck,
+      ui: !isPluginSurface,
       voice: false,
       agent: false,
       mcp: false,
-      cli: !isCorrespondenceCheck,
+      cli: !isPluginSurface,
       rpc: false,
     },
     sideEffectClass: readOnly ? 'read' : 'write',
@@ -3841,7 +3877,8 @@ const ACTION_SPECS_WITHOUT_APPROVAL = Object.freeze(defineActionSpecs([
         { path: 'actionId', title: 'Action id', description: 'Optional when optionsSourceId is provided directly.', widget: 'text' },
         { path: 'fieldPath', title: 'Field path', description: 'Dot-path for the action input field.', widget: 'text' },
         { path: 'optionsSourceId', title: 'Options source id', description: 'Direct options source lookup when known.', widget: 'text' },
-        { path: 'sessionId', title: 'Session id', description: 'Needed for session-scoped option sources.', widget: 'text' },
+        { path: 'sessionId', title: 'Session id', description: 'Omit to use the current invoking Session. Set only for an intentional authorized cross-Session target.', widget: 'text' },
+        { path: 'draftInput', title: 'Partial action input', description: 'Partial input for dependent options, for example {"backendTargetKeys":["agent:pi"]} when resolving a model, configuration, or connected service.', widget: 'json' },
         { path: 'query', title: 'Query filter', description: 'Optional search text to filter the returned options.', widget: 'text' },
         { path: 'limit', title: 'Limit', description: 'Maximum number of options to return.', widget: 'text' },
       ],
@@ -3952,7 +3989,7 @@ const ACTION_SPECS_WITHOUT_APPROVAL = Object.freeze(defineActionSpecs([
       ],
     },
     examples: {
-      voice: { argsExample: '{"sessionId":"{{sessionId}}","engineIds":["codex"],"instructions":"Review this.","changeType":"uncommitted","base":{"kind":"none"}}' },
+      voice: { argsExample: '{"engineIds":["codex"],"instructions":"Review this.","changeType":"uncommitted","base":{"kind":"none"}}' },
     },
     surfaces: {
       ui: true,
@@ -4009,6 +4046,13 @@ const ACTION_SPECS_WITHOUT_APPROVAL = Object.freeze(defineActionSpecs([
           optionsSourceId: 'agents.config_options.available',
         },
         {
+          path: 'connectedServices',
+          title: 'Connected services (json)',
+          description: 'Optional blanket connected-services selection for every target. An exact connectedServicesByBackendTargetKey entry overrides it.',
+          widget: 'json',
+          optionsSourceId: 'sessions.spawn.connected_services.available',
+        },
+        {
           path: 'connectedServicesByBackendTargetKey',
           title: 'Connected services per target (json)',
           description: 'Optional connected-services selection per backend target key. Accepts a simple string ("<service>:group:<id>", "<service>:<profileId>", "<service>:native"), an array, or the full object; omitted targets use session-spawn defaulting (literal). Enumerate valid selections via the shared session-spawn options source.',
@@ -4018,7 +4062,7 @@ const ACTION_SPECS_WITHOUT_APPROVAL = Object.freeze(defineActionSpecs([
       ],
     },
     examples: {
-      voice: { argsExample: '{"sessionId":"{{sessionId}}","backendTargetKeys":["agent:codex"],"instructions":"Plan the changes."}' },
+      voice: { argsExample: '{"backendTargetKeys":["agent:codex"],"instructions":"Plan the changes."}' },
     },
 	    surfaces: {
 	      ui: true,
@@ -4082,6 +4126,13 @@ const ACTION_SPECS_WITHOUT_APPROVAL = Object.freeze(defineActionSpecs([
           optionsSourceId: 'agents.config_options.available',
         },
         {
+          path: 'connectedServices',
+          title: 'Connected services (json)',
+          description: 'Optional blanket connected-services selection for every target. An exact connectedServicesByBackendTargetKey entry overrides it.',
+          widget: 'json',
+          optionsSourceId: 'sessions.spawn.connected_services.available',
+        },
+        {
           path: 'connectedServicesByBackendTargetKey',
           title: 'Connected services per target (json)',
           description: 'Optional connected-services selection per backend target key. Accepts a simple string ("<service>:group:<id>", "<service>:<profileId>", "<service>:native"), an array, or the full object; omitted targets use session-spawn defaulting (literal). Enumerate valid selections via the shared session-spawn options source.',
@@ -4091,7 +4142,7 @@ const ACTION_SPECS_WITHOUT_APPROVAL = Object.freeze(defineActionSpecs([
       ],
     },
     examples: {
-      voice: { argsExample: '{"sessionId":"{{sessionId}}","backendTargetKeys":["agent:codex"],"instructions":"Delegate the task."}' },
+      voice: { argsExample: '{"backendTargetKeys":["agent:codex"],"instructions":"Delegate the task."}' },
     },
 	    surfaces: {
 	      ui: true,
@@ -4132,10 +4183,24 @@ const ACTION_SPECS_WITHOUT_APPROVAL = Object.freeze(defineActionSpecs([
           widget: 'textarea',
           required: true,
         },
+        {
+          path: 'connectedServices',
+          title: 'Connected services (json)',
+          description: 'Optional blanket connected-services selection for every target. An exact connectedServicesByBackendTargetKey entry overrides it.',
+          widget: 'json',
+          optionsSourceId: 'sessions.spawn.connected_services.available',
+        },
+        {
+          path: 'connectedServicesByBackendTargetKey',
+          title: 'Connected services per target (json)',
+          description: 'Optional per-target override using the exact selected backend target key.',
+          widget: 'json',
+          optionsSourceId: 'sessions.spawn.connected_services.available',
+        },
       ],
     },
     examples: {
-      voice: { argsExample: '{"sessionId":"{{sessionId}}","backendTargetKeys":["agent:codex"],"instructions":"Start the voice assistant for this workspace."}' },
+      voice: { argsExample: '{"backendTargetKeys":["agent:codex"],"instructions":"Start the voice assistant for this workspace."}' },
     },
     surfaces: {
       ui: true,
@@ -4328,7 +4393,7 @@ const ACTION_SPECS_WITHOUT_APPROVAL = Object.freeze(defineActionSpecs([
     sideEffectClass: 'write',
     examples: {
       mcp: {
-        argsExample: '{"sessionId":"{{sessionId}}","intent":"voice_agent","backendTarget":{"kind":"backend","backendId":"codex","sourceKind":"built_in"},"instructions":"Summarize recent changes.","permissionMode":"read_only","retentionPolicy":"ephemeral","runClass":"bounded","ioMode":"request_response","waitForCompletion":true,"waitTimeoutSeconds":60}',
+        argsExample: '{"intent":"voice_agent","backendTarget":{"kind":"backend","backendId":"codex","sourceKind":"built_in"},"instructions":"Summarize recent changes.","permissionMode":"read_only","retentionPolicy":"ephemeral","runClass":"bounded","ioMode":"request_response","waitForCompletion":true,"waitTimeoutSeconds":60}',
       },
       voice: {
         argsExample: '{"intent":"voice_agent","backendTarget":{"kind":"backend","backendId":"codex","sourceKind":"built_in"},"instructions":"Summarize recent changes.","permissionMode":"read_only","retentionPolicy":"ephemeral","runClass":"bounded","ioMode":"request_response"}',
@@ -7450,6 +7515,9 @@ const ACTION_SPECS_WITHOUT_APPROVAL = Object.freeze(defineActionSpecs([
     safety: 'danger',
     placements: [],
     bindings: { mcpToolName: 'approval_request_create', rpcMethod: 'approval.request.create' },
+    surfaceBindings: {
+      plugin: { inputSchema: PluginSurfaceApprovalRequestCreateInputSchema },
+    },
     surfaces: {
       ui: true,
       voice: false,
@@ -8666,6 +8734,7 @@ export const PLUGIN_PROVENANCE_ONLY_API_EXCLUSION_REASONS = Object.freeze({
   'session.permission.remote.respond': 'The remote-permission mediator identity comes only from the host-stamped plugin caller.',
   'session.user_action.remote.answer': 'The remote user-action mediator identity comes only from the host-stamped plugin caller.',
   'plugins.permissions.grants.revoke': 'Plugin self-revocation resolves the grant owner from the host-stamped plugin caller.',
+  'plugin.webhook.endpoint.convergeTarget': 'Endpoint target convergence authorizes the host-stamped plugin caller against its own source correspondence; a present user administers endpoints through plugin.webhook.endpoint.retarget.',
   'sessions.external.materialize.start': 'External-session materialization persists plugin-authored intent from the host-stamped caller.',
   'scm.reviewWorkspace.materializePrepared': 'Prepared review-workspace materialization is invoked only by the host-stamped source plugin.',
 } as const satisfies Readonly<Partial<Record<ActionId, string>>>);
@@ -9112,13 +9181,31 @@ export type PluginInvocableActionSpecDefinition = {
  * census. Build this from the explicit descriptor contract rather than the
  * passthrough Zod inference: the latter carries a string index signature, and
  * applying `Omit` to it erases the useful property types to `unknown`.
+ * Host surface transforms, execution routing, and caller-authority policy are
+ * deliberately absent: authors consume the normalized descriptor and invoke
+ * Actions through the service rather than participating in host dispatch.
  */
-export type PluginInvocableActionSpec = Omit<ActionSpecWithoutApproval, 'id'> & Readonly<{
+export type PluginInvocableActionSpec = Readonly<{
   id: PluginInvocableActionId;
+  title: ParsedActionSpec['title'];
+  description?: ParsedActionSpec['description'];
+  safety: ParsedActionSpec['safety'];
   approval: ParsedActionSpec['approval'];
   placements: ActionUiPlacement[];
+  slash?: ParsedActionSpec['slash'];
+  bindings?: ParsedActionSpec['bindings'];
+  outputSchema?: ParsedActionSpec['outputSchema'];
+  sideEffectClass?: ParsedActionSpec['sideEffectClass'];
+  examples?: ParsedActionSpec['examples'];
+  prompting?: ParsedActionSpec['prompting'];
+  toolExposure?: ParsedActionSpec['toolExposure'];
+  contextualDefaults?: ParsedActionSpec['contextualDefaults'];
+  operation?: ParsedActionSpec['operation'];
   requiredAuthority: ActionRequiredAuthority;
   executionPlacement: ActionExecutionPlacement;
+  surfaces: ParsedActionSpec['surfaces'];
+  inputSchema: ParsedActionSpec['inputSchema'];
+  inputHints?: ParsedActionSpec['inputHints'];
 }>;
 
 type PluginActionSpecForId<TActionId extends PluginInvocableActionId> = Extract<

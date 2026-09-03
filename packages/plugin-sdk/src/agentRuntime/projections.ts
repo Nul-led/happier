@@ -16,9 +16,9 @@ import {
 import type {
   AcpForkSessionRequestV1,
   AcpLoadSessionRequestV1,
+  AgentSurfaceBaseFailureCodeV1,
+  AgentSurfaceDiagnosticV1,
   AttachSessionMetadataV1,
-  BackendSurfaceBaseFailureCodeV1,
-  BackendSurfaceDiagnosticV1,
   CheckpointAvailabilityOperationV1,
   CheckpointAvailabilityRequestV1,
   CheckpointDescriptorV1,
@@ -43,7 +43,7 @@ import type {
 } from '@happier-dev/agents';
 import type {
   AgentProviderBindingLaunchMaterializationV1,
-  BackendSurfaceAvailabilityV1,
+  AgentSurfaceAvailabilityV1,
 } from '@happier-dev/protocol';
 
 import type {
@@ -527,29 +527,29 @@ export type AgentTerminalSessionStateUpdate =
     }>;
 
 /** Author-safe receipt emitted by Agent-owned Session surfaces. */
-export type BackendSurfaceOperationReceiptV1 = Readonly<{
+export type AgentSurfaceOperationReceiptV1 = Readonly<{
   operationId?: string;
   providerOperationId?: string;
-  diagnostics?: readonly BackendSurfaceDiagnosticV1[];
+  diagnostics?: readonly AgentSurfaceDiagnosticV1[];
   sessionStateUpdates?: readonly AgentTerminalSessionStateUpdate[];
 }>;
 
-export type BackendSurfaceResultV1<
+export type AgentSurfaceResultV1<
   TValue,
-  TCode extends string = BackendSurfaceBaseFailureCodeV1,
+  TCode extends string = AgentSurfaceBaseFailureCodeV1,
 > =
   | Readonly<{
       ok: true;
       value: TValue;
-      receipt?: BackendSurfaceOperationReceiptV1;
+      receipt?: AgentSurfaceOperationReceiptV1;
     }>
   | Readonly<{
       ok: false;
-      code: TCode | BackendSurfaceBaseFailureCodeV1;
+      code: TCode | AgentSurfaceBaseFailureCodeV1;
       message?: string;
       retryable?: boolean;
-      receipt?: BackendSurfaceOperationReceiptV1;
-      diagnostics?: readonly BackendSurfaceDiagnosticV1[];
+      receipt?: AgentSurfaceOperationReceiptV1;
+      diagnostics?: readonly AgentSurfaceDiagnosticV1[];
     }>;
 
 export type AttachAvailabilityRequest = Readonly<{
@@ -575,11 +575,11 @@ export type AttachFailureCode =
 export type AttachSurface = Readonly<{
   evaluateAvailability?: (
     request: AttachAvailabilityRequest,
-  ) => BackendSurfaceAvailabilityV1 | Promise<BackendSurfaceAvailabilityV1>;
+  ) => AgentSurfaceAvailabilityV1 | Promise<AgentSurfaceAvailabilityV1>;
   attach: (
     request: AttachRequest,
-  ) => BackendSurfaceResultV1<Readonly<{ exitCode: number | null }>, AttachFailureCode>
-    | Promise<BackendSurfaceResultV1<Readonly<{ exitCode: number | null }>, AttachFailureCode>>;
+  ) => AgentSurfaceResultV1<Readonly<{ exitCode: number | null }>, AttachFailureCode>
+    | Promise<AgentSurfaceResultV1<Readonly<{ exitCode: number | null }>, AttachFailureCode>>;
 }>;
 
 export type AgentAuthorRestoreCheckpointResult =
@@ -592,22 +592,22 @@ export type AgentAuthorRestoreCheckpointResult =
         code: RestoreCheckpointFailureCodeV1;
         message?: string;
       }>[];
-      receipt?: BackendSurfaceOperationReceiptV1;
-      diagnostics?: readonly BackendSurfaceDiagnosticV1[];
+      receipt?: AgentSurfaceOperationReceiptV1;
+      diagnostics?: readonly AgentSurfaceDiagnosticV1[];
     }>
   | Readonly<{
       ok: false;
       code: RestoreCheckpointFailureCodeV1;
       message?: string;
       retryable?: boolean;
-      receipt?: BackendSurfaceOperationReceiptV1;
-      diagnostics?: readonly BackendSurfaceDiagnosticV1[];
+      receipt?: AgentSurfaceOperationReceiptV1;
+      diagnostics?: readonly AgentSurfaceDiagnosticV1[];
     }>;
 
 export type CheckpointSurface = Readonly<{
   evaluateAvailability?: (
     request: CheckpointAvailabilityRequestV1,
-  ) => BackendSurfaceAvailabilityV1 | Promise<BackendSurfaceAvailabilityV1>;
+  ) => AgentSurfaceAvailabilityV1 | Promise<AgentSurfaceAvailabilityV1>;
   list?: (
     request: ListCheckpointsRequestV1,
   ) => readonly CheckpointDescriptorV1[] | Promise<readonly CheckpointDescriptorV1[]>;
@@ -622,13 +622,13 @@ export type CheckpointSurface = Readonly<{
   ) => AgentAuthorRestoreCheckpointResult | Promise<AgentAuthorRestoreCheckpointResult>;
 }>;
 
-export type BackendSessionLaunchHintsV1 = Readonly<{
+export type AgentSessionLaunchHintsV1 = Readonly<{
   directory?: string;
   environmentVariables?: Readonly<Record<string, string>>;
   sessionStateUpdates?: readonly AgentTerminalSessionStateUpdate[];
 }>;
 
-export type AcpLoadSessionResultV1 = BackendSurfaceResultV1<Readonly<{
+export type AcpLoadSessionResultV1 = AgentSurfaceResultV1<Readonly<{
   providerSessionId: string;
   sessionStateUpdates?: readonly AgentTerminalSessionStateUpdate[];
 }>>;
@@ -646,20 +646,20 @@ export type AcpSessionOperationsV1 = Readonly<{
 
 export type ForkResultV1 = Readonly<{
   providerSessionId: string;
-  launch: BackendSessionLaunchHintsV1;
+  launch: AgentSessionLaunchHintsV1;
 }>;
 
 export type HandoffImportResultV1 = Readonly<{
   providerSessionId: string;
   source?: Readonly<{ kind: string }>;
-  launch: BackendSessionLaunchHintsV1;
+  launch: AgentSessionLaunchHintsV1;
 }>;
 
 export type {
   AcpForkSessionRequestV1,
   AcpLoadSessionRequestV1,
-  BackendSurfaceBaseFailureCodeV1,
-  BackendSurfaceDiagnosticV1,
+  AgentSurfaceBaseFailureCodeV1,
+  AgentSurfaceDiagnosticV1,
   CheckpointAvailabilityOperationV1,
   CheckpointAvailabilityRequestV1,
   CheckpointDescriptorV1,
@@ -705,7 +705,7 @@ export type {
     ProviderBindingCanonicalJsonValue,
 } from '@happier-dev/protocol';
 export type {
-    BackendSurfaceAvailabilityV1,
+    AgentSurfaceAvailabilityV1,
     PluginAgentAcpTransport as AgentAcpTransport,
     ProviderBoundModelRef,
     ProviderTranscriptDispatchRequestV1,
@@ -753,11 +753,11 @@ export type ReplayForkChildLaunchRequestV1 = Readonly<{
 export type ForkSurfaceV1 = Readonly<{
   evaluateAvailability?: (
     request: ForkAvailabilityRequestV1,
-  ) => BackendSurfaceAvailabilityV1 | Promise<BackendSurfaceAvailabilityV1>;
+  ) => AgentSurfaceAvailabilityV1 | Promise<AgentSurfaceAvailabilityV1>;
   fork?: (request: ForkRequestV1) => ForkResultV1 | null | Promise<ForkResultV1 | null>;
   resolveReplayChildLaunch?: (
     request: ReplayForkChildLaunchRequestV1,
-  ) => BackendSessionLaunchHintsV1 | null | Promise<BackendSessionLaunchHintsV1 | null>;
+  ) => AgentSessionLaunchHintsV1 | null | Promise<AgentSessionLaunchHintsV1 | null>;
 }>;
 
 export type HandoffAvailabilityRequestV1 = Readonly<{
@@ -822,15 +822,15 @@ export type HandoffNativeTranscriptPathCandidateRequestV1 = Readonly<{
 export type HandoffSurfaceV1 = Readonly<{
   evaluateAvailability?: (
     request: HandoffAvailabilityRequestV1,
-  ) => BackendSurfaceAvailabilityV1 | Promise<BackendSurfaceAvailabilityV1>;
+  ) => AgentSurfaceAvailabilityV1 | Promise<AgentSurfaceAvailabilityV1>;
   exportBundle: (
     request: HandoffExportRequestV1,
-  ) => BackendSurfaceResultV1<HandoffExportResultV1, HandoffFailureCodeV1>
-    | Promise<BackendSurfaceResultV1<HandoffExportResultV1, HandoffFailureCodeV1>>;
+  ) => AgentSurfaceResultV1<HandoffExportResultV1, HandoffFailureCodeV1>
+    | Promise<AgentSurfaceResultV1<HandoffExportResultV1, HandoffFailureCodeV1>>;
   importBundle: (
     request: HandoffImportRequestV1,
-  ) => BackendSurfaceResultV1<HandoffImportResultV1, HandoffFailureCodeV1>
-    | Promise<BackendSurfaceResultV1<HandoffImportResultV1, HandoffFailureCodeV1>>;
+  ) => AgentSurfaceResultV1<HandoffImportResultV1, HandoffFailureCodeV1>
+    | Promise<AgentSurfaceResultV1<HandoffImportResultV1, HandoffFailureCodeV1>>;
   extractMediaScannableRecords?: (
     request: HandoffMediaScannableRecordsRequestV1,
   ) => readonly unknown[] | Promise<readonly unknown[]>;

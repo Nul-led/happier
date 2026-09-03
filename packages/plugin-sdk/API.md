@@ -51,6 +51,12 @@
 | `.` | `Disposable` | type | any |
 | `.` | `JsonValue` | type | any |
 | `.` | `LoggerService` | type | daemon |
+| `.` | `MAX_PLUGIN_SEARCH_ITEMS_V1` | value | any |
+| `.` | `MAX_PLUGIN_SEARCH_ITEM_COMMAND_UTF8_BYTES_V1` | value | any |
+| `.` | `MAX_PLUGIN_SEARCH_ITEM_ID_UTF8_BYTES_V1` | value | any |
+| `.` | `MAX_PLUGIN_SEARCH_QUERY_UTF8_BYTES_V1` | value | any |
+| `.` | `MAX_PLUGIN_SEARCH_SUBTITLE_CODE_POINTS_V1` | value | any |
+| `.` | `MAX_PLUGIN_SEARCH_TITLE_CODE_POINTS_V1` | value | any |
 | `.` | `MessageActionAvailableSnapshotV1` | type | daemon |
 | `.` | `PluginAccountCollectionMigrationRuntimeProjection` | type | any |
 | `.` | `PluginActionOperationContextV1` | type | daemon |
@@ -86,6 +92,13 @@
 | `.` | `PluginReference` | type | any |
 | `.` | `PluginRemediationData` | type | any |
 | `.` | `PluginRequestInterceptorDefinition` | type | any |
+| `.` | `PluginSearchItemV1` | type | any |
+| `.` | `PluginSearchItemV1Schema` | value | any |
+| `.` | `PluginSearchProviderContributionV1` | type | any |
+| `.` | `PluginSearchQueryV1` | type | any |
+| `.` | `PluginSearchQueryV1Schema` | value | any |
+| `.` | `PluginSearchResultV1` | type | any |
+| `.` | `PluginSearchResultV1Schema` | value | any |
 | `.` | `PluginServiceId` | type | daemon |
 | `.` | `PluginServices` | type | daemon |
 | `.` | `PluginSettingDescriptor` | type | daemon |
@@ -123,6 +136,7 @@
 | `.` | `arePluginMachineExecutionOriginsEqual` | value | any |
 | `.` | `arePluginMachineMaterializationRefsEqual` | value | any |
 | `.` | `computeCanonicalDomainSeparatedDigest` | value | any |
+| `.` | `createCanonicalJsonSigningInput` | value | any |
 | `.` | `defineComposerAttachment` | value | any |
 | `.` | `defineComposerControl` | value | any |
 | `.` | `defineComposerReference` | value | any |
@@ -141,7 +155,6 @@
 | `.` | `redactBugReportSensitiveText` | value | any |
 | `.` | `selectCurrentTargetedContribution` | value | any |
 | `.` | `trimBugReportTextToMaxBytes` | value | any |
-| `./actions` | `ActionCaller` | type | any |
 | `./actions` | `ActionContract` | type | any |
 | `./actions` | `ActionContribution` | type | any |
 | `./actions` | `ActionExecuteResult` | type | any |
@@ -155,7 +168,6 @@
 | `./actions` | `ActionInputOptionValue` | type | any |
 | `./actions` | `ActionInputPredicate` | type | any |
 | `./actions` | `ActionSpec` | type | any |
-| `./actions` | `ActionSurfaceBindingTransform` | type | any |
 | `./actions` | `ActionsService` | type | daemon |
 | `./actions` | `AdmittedTargetedOperationExecutionHandle` | type | any |
 | `./actions` | `AdmittedTargetedOperationExecutionOptions` | type | daemon |
@@ -204,6 +216,7 @@
 | `./actions` | `resolveEffectiveActionInputFields` | value | any |
 | `./agents` | `AgentContribution` | type | any |
 | `./agents` | `AgentDefinitionCapabilityFacts` | type | any |
+| `./agents` | `AgentExecutionTargetV1` | type | any |
 | `./agents` | `AgentLocalControlDeclaration` | type | any |
 | `./agents` | `AgentModelConfig` | type | any |
 | `./agents` | `AgentModelDescriptor` | type | any |
@@ -439,6 +452,7 @@
 | `./agents/runtime` | `AgentSessionHostServices` | type | daemon |
 | `./agents/runtime` | `AgentSessionInFlightConfigurationOutcome` | type | daemon |
 | `./agents/runtime` | `AgentSessionInput` | type | daemon |
+| `./agents/runtime` | `AgentSessionLaunchHintsV1` | type | daemon |
 | `./agents/runtime` | `AgentSessionMcpLaunchConfig` | type | daemon |
 | `./agents/runtime` | `AgentSessionMcpServer` | type | daemon |
 | `./agents/runtime` | `AgentSessionMcpService` | type | daemon |
@@ -496,6 +510,11 @@
 | `./agents/runtime` | `AgentSessionUsageLimitRecoveryResult` | type | daemon |
 | `./agents/runtime` | `AgentSessionVendorPluginCatalogItem` | type | daemon |
 | `./agents/runtime` | `AgentSessionWorkflowActivityService` | type | daemon |
+| `./agents/runtime` | `AgentSurfaceAvailabilityV1` | type | daemon |
+| `./agents/runtime` | `AgentSurfaceBaseFailureCodeV1` | type | daemon |
+| `./agents/runtime` | `AgentSurfaceDiagnosticV1` | type | daemon |
+| `./agents/runtime` | `AgentSurfaceOperationReceiptV1` | type | daemon |
+| `./agents/runtime` | `AgentSurfaceResultV1` | type | daemon |
 | `./agents/runtime` | `AgentTerminalControlPresentation` | type | daemon |
 | `./agents/runtime` | `AgentTerminalHostCreateOrAttachRequest` | type | daemon |
 | `./agents/runtime` | `AgentTerminalHostDisposeIntent` | type | daemon |
@@ -527,12 +546,6 @@
 | `./agents/runtime` | `AttachSessionMetadata` | type | any |
 | `./agents/runtime` | `AttachSurface` | type | daemon |
 | `./agents/runtime` | `AttachSurfaceStaticMetadataV1` | type | any |
-| `./agents/runtime` | `BackendSessionLaunchHintsV1` | type | daemon |
-| `./agents/runtime` | `BackendSurfaceAvailabilityV1` | type | daemon |
-| `./agents/runtime` | `BackendSurfaceBaseFailureCodeV1` | type | daemon |
-| `./agents/runtime` | `BackendSurfaceDiagnosticV1` | type | daemon |
-| `./agents/runtime` | `BackendSurfaceOperationReceiptV1` | type | daemon |
-| `./agents/runtime` | `BackendSurfaceResultV1` | type | daemon |
 | `./agents/runtime` | `CheckpointAvailabilityOperationV1` | type | daemon |
 | `./agents/runtime` | `CheckpointAvailabilityRequestV1` | type | daemon |
 | `./agents/runtime` | `CheckpointDescriptorV1` | type | daemon |
@@ -682,6 +695,7 @@
 | `./collections` | `NormalizedPluginCollectionUiQueryDescriptorV1` | type | daemon |
 | `./collections` | `PLUGIN_COLLECTION_MUTATION_BATCH_MAX_ROWS_V1` | value | daemon |
 | `./collections` | `PLUGIN_COLLECTION_QUERY_MAX_ROWS_V1` | value | daemon |
+| `./collections` | `PLUGIN_COLLECTION_REVISION_MAX` | value | daemon |
 | `./collections` | `PluginAccountCollection` | type | daemon |
 | `./collections` | `PluginAccountCollectionContributionV1` | type | daemon |
 | `./collections` | `PluginAccountCollectionDeclaration` | type | daemon |
@@ -870,6 +884,7 @@
 | `./events` | `admitCheckpointedPluginEventObservationV1` | value | any |
 | `./events` | `admitSessionSocketPluginEventObservationV1` | value | any |
 | `./events` | `createPluginEventAutomationSetupResultV1JsonSchema` | value | any |
+| `./events` | `isAutomationEventSourcesListPageProgressingV1` | value | any |
 | `./events` | `projectPluginEventAdmissionSourceStatusV1` | value | any |
 | `./events` | `projectPluginEventSourceConnectionStatusV1` | value | any |
 | `./exec` | `AgentCliReadinessRequest` | type | daemon |

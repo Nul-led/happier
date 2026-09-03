@@ -7,6 +7,7 @@ import {
     createWorkspacePackageSourcesPlugin,
     type WorkspacePackageSpec,
 } from '../../scripts/testing/vitestWorkspacePackageResolution.ts';
+import { ISOLATED_EXAMPLE_BUILD_ROOT } from './scripts/buildExampleProjects.mjs';
 
 const packageRoot = fileURLToPath(new URL('.', import.meta.url));
 const workspacePackages: readonly WorkspacePackageSpec[] = [
@@ -52,6 +53,13 @@ export default defineConfig({
             ...configDefaults.exclude,
             'scripts/*.test.mjs',
             'examples/**/test/*.test.mjs',
+            // The example build lane copies each tracked example — its
+            // `test/index.test.mjs` included — into this package-owned build
+            // root. Those copies are `node --test` suites owned by the adjacent
+            // lane, so Vitest must not collect them here: it reports every copy
+            // as a file with no suites. The root name has one owner, so read it
+            // from the builder rather than respelling it.
+            `${ISOLATED_EXAMPLE_BUILD_ROOT}/**`,
         ],
         server: {
             deps: {

@@ -377,6 +377,7 @@ export const ACTION_ID_FAMILIES_V1 = Object.freeze({
     'plugin.webhook.endpoint.revoke',
     'plugin.webhook.endpoint.retarget',
     'plugin.webhook.endpoint.checkCorrespondence',
+    'plugin.webhook.endpoint.convergeTarget',
     'plugin.webhook.delivery.movePending',
     'plugin.webhook.endpoint.credential.configure',
     'plugin.webhook.endpoint.credential.rotate',

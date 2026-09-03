@@ -10,6 +10,7 @@ const AccountDirectoryOAuthParamsResponseSchema =
     credentialTarget: z.literal('account_directory'),
     endpointUrl: z.string().url(),
     endpointServerIdentityId: z.string().trim().min(1),
+    canonicalServerUrl: z.string().url(),
     expiresAt: z.string().datetime({ offset: true }).max(64),
   }).strict();
 

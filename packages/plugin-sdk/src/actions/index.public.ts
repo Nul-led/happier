@@ -1,5 +1,4 @@
 export type { ActionContract } from './service.js';
-export type { ActionCaller } from './actionTypeMap.generated.js';
 export type { PluginAgentExternalSessionLinkDataArray } from './actionTypeMap.generated.js';
 export type { PluginAgentExternalSessionLinkDataObject } from './actionTypeMap.generated.js';
 export type { PluginAgentExternalSessionLinkDataValue } from './actionTypeMap.generated.js';
@@ -27,7 +26,6 @@ export type { ActionInputOptionValue } from './inputHints.js';
 export type { ActionInputPredicate } from './inputHints.js';
 export type { ActionSpec } from './service.js';
 export type { ActionId } from './service.js';
-export type { ActionSurfaceBindingTransform } from './actionTypeMap.generated.js';
 export type { ActionsService } from './service.js';
 export type { CommandContribution } from './service.js';
 export type { ContributedActionExecutionWithOriginOptions } from './service.js';

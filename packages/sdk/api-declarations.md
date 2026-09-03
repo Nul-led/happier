@@ -1359,6 +1359,7 @@ const ActionIdSchema: z.ZodEnum<{
     "peerMediation.observability.unsubscribe": "peerMediation.observability.unsubscribe";
     "plugin.webhook.delivery.movePending": "plugin.webhook.delivery.movePending";
     "plugin.webhook.endpoint.checkCorrespondence": "plugin.webhook.endpoint.checkCorrespondence";
+    "plugin.webhook.endpoint.convergeTarget": "plugin.webhook.endpoint.convergeTarget";
     "plugin.webhook.endpoint.credential.configure": "plugin.webhook.endpoint.credential.configure";
     "plugin.webhook.endpoint.credential.finishRotation": "plugin.webhook.endpoint.credential.finishRotation";
     "plugin.webhook.endpoint.credential.rotate": "plugin.webhook.endpoint.credential.rotate";
@@ -5875,8 +5876,14 @@ const ACTION_SPECS_WITHOUT_APPROVAL: readonly [
                 {
                     readonly path: 'sessionId';
                     readonly title: 'Session id';
-                    readonly description: 'Needed for session-scoped option sources.';
+                    readonly description: 'Omit to use the current invoking Session. Set only for an intentional authorized cross-Session target.';
                     readonly widget: 'text';
+                },
+                {
+                    readonly path: 'draftInput';
+                    readonly title: 'Partial action input';
+                    readonly description: 'Partial input for dependent options, for example {"backendTargetKeys":["agent:pi"]} when resolving a model, configuration, or connected service.';
+                    readonly widget: 'json';
                 },
                 {
                     readonly path: 'query';
@@ -5902,6 +5909,7 @@ const ACTION_SPECS_WITHOUT_APPROVAL: readonly [
             sessionId: z.ZodOptional<z.ZodString>;
             limit: z.ZodOptional<z.ZodNumber>;
             query: z.ZodOptional<z.ZodString>;
+            draftInput: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodUnknown>>;
         }, z.core.$loose>;
     },
     {
@@ -6096,7 +6104,7 @@ const ACTION_SPECS_WITHOUT_APPROVAL: readonly [
         };
         readonly examples: {
             readonly voice: {
-                readonly argsExample: '{"sessionId":"{{sessionId}}","engineIds":["codex"],"instructions":"Review this.","changeType":"uncommitted","base":{"kind":"none"}}';
+                readonly argsExample: '{"engineIds":["codex"],"instructions":"Review this.","changeType":"uncommitted","base":{"kind":"none"}}';
             };
         };
         readonly surfaces: {
@@ -6343,6 +6351,13 @@ const ACTION_SPECS_WITHOUT_APPROVAL: readonly [
                     readonly optionsSourceId: 'agents.config_options.available';
                 },
                 {
+                    readonly path: 'connectedServices';
+                    readonly title: 'Connected services (json)';
+                    readonly description: 'Optional blanket connected-services selection for every target. An exact connectedServicesByBackendTargetKey entry overrides it.';
+                    readonly widget: 'json';
+                    readonly optionsSourceId: 'sessions.spawn.connected_services.available';
+                },
+                {
                     readonly path: 'connectedServicesByBackendTargetKey';
                     readonly title: 'Connected services per target (json)';
                     readonly description: 'Optional connected-services selection per backend target key. Accepts a simple string ("<service>:group:<id>", "<service>:<profileId>", "<service>:native"), an array, or the full object; omitted targets use session-spawn defaulting (literal). Enumerate valid selections via the shared session-spawn options source.';
@@ -6353,7 +6368,7 @@ const ACTION_SPECS_WITHOUT_APPROVAL: readonly [
         };
         readonly examples: {
             readonly voice: {
-                readonly argsExample: '{"sessionId":"{{sessionId}}","backendTargetKeys":["agent:codex"],"instructions":"Plan the changes."}';
+                readonly argsExample: '{"backendTargetKeys":["agent:codex"],"instructions":"Plan the changes."}';
             };
         };
         readonly surfaces: {
@@ -6394,6 +6409,9 @@ const ACTION_SPECS_WITHOUT_APPROVAL: readonly [
                 z.ZodBoolean,
                 z.ZodNull
             ]>>>;
+            connectedServices: z.ZodOptional<z.ZodPipe<z.ZodUnknown, z.ZodTransform<string | number | boolean | readonly import("../index.js").JsonValue[] | {
+                readonly [key: string]: import("../index.js").JsonValue;
+            } | null, unknown>>>;
             connectedServicesByBackendTargetKey: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodPipe<z.ZodUnknown, z.ZodTransform<string | number | boolean | readonly import("../index.js").JsonValue[] | {
                 readonly [key: string]: import("../index.js").JsonValue;
             } | null, unknown>>>>;
@@ -6486,6 +6504,13 @@ const ACTION_SPECS_WITHOUT_APPROVAL: readonly [
                     readonly optionsSourceId: 'agents.config_options.available';
                 },
                 {
+                    readonly path: 'connectedServices';
+                    readonly title: 'Connected services (json)';
+                    readonly description: 'Optional blanket connected-services selection for every target. An exact connectedServicesByBackendTargetKey entry overrides it.';
+                    readonly widget: 'json';
+                    readonly optionsSourceId: 'sessions.spawn.connected_services.available';
+                },
+                {
                     readonly path: 'connectedServicesByBackendTargetKey';
                     readonly title: 'Connected services per target (json)';
                     readonly description: 'Optional connected-services selection per backend target key. Accepts a simple string ("<service>:group:<id>", "<service>:<profileId>", "<service>:native"), an array, or the full object; omitted targets use session-spawn defaulting (literal). Enumerate valid selections via the shared session-spawn options source.';
@@ -6496,7 +6521,7 @@ const ACTION_SPECS_WITHOUT_APPROVAL: readonly [
         };
         readonly examples: {
             readonly voice: {
-                readonly argsExample: '{"sessionId":"{{sessionId}}","backendTargetKeys":["agent:codex"],"instructions":"Delegate the task."}';
+                readonly argsExample: '{"backendTargetKeys":["agent:codex"],"instructions":"Delegate the task."}';
             };
         };
         readonly surfaces: {
@@ -6537,10 +6562,13 @@ const ACTION_SPECS_WITHOUT_APPROVAL: readonly [
                 z.ZodBoolean,
                 z.ZodNull
             ]>>>;
+            connectedServices: z.ZodOptional<z.ZodPipe<z.ZodUnknown, z.ZodTransform<string | number | boolean | readonly import("../index.js").JsonValue[] | {
+                readonly [key: string]: import("../index.js").JsonValue;
+            } | null, unknown>>>;
             connectedServicesByBackendTargetKey: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodPipe<z.ZodUnknown, z.ZodTransform<string | number | boolean | readonly import("../index.js").JsonValue[] | {
                 readonly [key: string]: import("../index.js").JsonValue;
             } | null, unknown>>>>;
-            permissionMode: z.ZodDefault<z.ZodEnum<{
+            permissionMode: z.ZodOptional<z.ZodEnum<{
                 default: "default";
                 read_only: "read_only";
                 workspace_write: "workspace_write";
@@ -6596,12 +6624,26 @@ const ACTION_SPECS_WITHOUT_APPROVAL: readonly [
                     readonly description: 'Initial instructions for the voice agent run.';
                     readonly widget: 'textarea';
                     readonly required: true;
+                },
+                {
+                    readonly path: 'connectedServices';
+                    readonly title: 'Connected services (json)';
+                    readonly description: 'Optional blanket connected-services selection for every target. An exact connectedServicesByBackendTargetKey entry overrides it.';
+                    readonly widget: 'json';
+                    readonly optionsSourceId: 'sessions.spawn.connected_services.available';
+                },
+                {
+                    readonly path: 'connectedServicesByBackendTargetKey';
+                    readonly title: 'Connected services per target (json)';
+                    readonly description: 'Optional per-target override using the exact selected backend target key.';
+                    readonly widget: 'json';
+                    readonly optionsSourceId: 'sessions.spawn.connected_services.available';
                 }
             ];
         };
         readonly examples: {
             readonly voice: {
-                readonly argsExample: '{"sessionId":"{{sessionId}}","backendTargetKeys":["agent:codex"],"instructions":"Start the voice assistant for this workspace."}';
+                readonly argsExample: '{"backendTargetKeys":["agent:codex"],"instructions":"Start the voice assistant for this workspace."}';
             };
         };
         readonly surfaces: {
@@ -6642,6 +6684,9 @@ const ACTION_SPECS_WITHOUT_APPROVAL: readonly [
                 z.ZodBoolean,
                 z.ZodNull
             ]>>>;
+            connectedServices: z.ZodOptional<z.ZodPipe<z.ZodUnknown, z.ZodTransform<string | number | boolean | readonly import("../index.js").JsonValue[] | {
+                readonly [key: string]: import("../index.js").JsonValue;
+            } | null, unknown>>>;
             connectedServicesByBackendTargetKey: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodPipe<z.ZodUnknown, z.ZodTransform<string | number | boolean | readonly import("../index.js").JsonValue[] | {
                 readonly [key: string]: import("../index.js").JsonValue;
             } | null, unknown>>>>;
@@ -7464,7 +7509,7 @@ const ACTION_SPECS_WITHOUT_APPROVAL: readonly [
         readonly sideEffectClass: 'write';
         readonly examples: {
             readonly mcp: {
-                readonly argsExample: '{"sessionId":"{{sessionId}}","intent":"voice_agent","backendTarget":{"kind":"backend","backendId":"codex","sourceKind":"built_in"},"instructions":"Summarize recent changes.","permissionMode":"read_only","retentionPolicy":"ephemeral","runClass":"bounded","ioMode":"request_response","waitForCompletion":true,"waitTimeoutSeconds":60}';
+                readonly argsExample: '{"intent":"voice_agent","backendTarget":{"kind":"backend","backendId":"codex","sourceKind":"built_in"},"instructions":"Summarize recent changes.","permissionMode":"read_only","retentionPolicy":"ephemeral","runClass":"bounded","ioMode":"request_response","waitForCompletion":true,"waitTimeoutSeconds":60}';
             };
             readonly voice: {
                 readonly argsExample: '{"intent":"voice_agent","backendTarget":{"kind":"backend","backendId":"codex","sourceKind":"built_in"},"instructions":"Summarize recent changes.","permissionMode":"read_only","retentionPolicy":"ephemeral","runClass":"bounded","ioMode":"request_response"}';
@@ -7510,6 +7555,20 @@ const ACTION_SPECS_WITHOUT_APPROVAL: readonly [
                         participantLabel: z.ZodOptional<z.ZodString>;
                         groupId: z.ZodOptional<z.ZodString>;
                     }, z.core.$loose>>;
+                    launchOrigin: z.ZodOptional<z.ZodDiscriminatedUnion<[
+                        z.ZodObject<{
+                            kind: z.ZodLiteral<"session">;
+                            sessionId: z.ZodString;
+                        }, z.core.$strict>,
+                        z.ZodObject<{
+                            kind: z.ZodLiteral<"external">;
+                            source: z.ZodOptional<z.ZodEnum<{
+                                action: "action";
+                                cli: "cli";
+                                mcp: "mcp";
+                            }>>;
+                        }, z.core.$strict>
+                    ], "kind">>;
                     permissionMode: z.ZodString;
                     retentionPolicy: z.ZodEnum<{
                         ephemeral: "ephemeral";
@@ -7794,6 +7853,20 @@ const ACTION_SPECS_WITHOUT_APPROVAL: readonly [
                                 participantLabel: z.ZodOptional<z.ZodString>;
                                 groupId: z.ZodOptional<z.ZodString>;
                             }, z.core.$loose>>;
+                            launchOrigin: z.ZodOptional<z.ZodDiscriminatedUnion<[
+                                z.ZodObject<{
+                                    kind: z.ZodLiteral<"session">;
+                                    sessionId: z.ZodString;
+                                }, z.core.$strict>,
+                                z.ZodObject<{
+                                    kind: z.ZodLiteral<"external">;
+                                    source: z.ZodOptional<z.ZodEnum<{
+                                        action: "action";
+                                        cli: "cli";
+                                        mcp: "mcp";
+                                    }>>;
+                                }, z.core.$strict>
+                            ], "kind">>;
                             permissionMode: z.ZodString;
                             retentionPolicy: z.ZodEnum<{
                                 ephemeral: "ephemeral";
@@ -7867,8 +7940,13 @@ const ACTION_SPECS_WITHOUT_APPROVAL: readonly [
                     }, z.core.$loose>;
                 }, z.core.$strict>,
                 z.ZodObject<{
-                    ok: z.ZodLiteral<false>;
-                    code: z.ZodLiteral<"timeout">;
+                    ok: z.ZodLiteral<true>;
+                    status: z.ZodLiteral<"running">;
+                    disposition: z.ZodLiteral<"observation_timeout">;
+                    runId: z.ZodString;
+                    timeoutMs: z.ZodNumber;
+                    observedAtMs: z.ZodNumber;
+                    deadlineAtMs: z.ZodNumber;
                 }, z.core.$strict>,
                 z.ZodObject<{
                     ok: z.ZodLiteral<false>;
@@ -7888,6 +7966,7 @@ const ACTION_SPECS_WITHOUT_APPROVAL: readonly [
                         execution_run_output_limit_exceeded: "execution_run_output_limit_exceeded";
                         execution_run_protocol_unsupported: "execution_run_protocol_unsupported";
                         execution_run_scope_mismatch: "execution_run_scope_mismatch";
+                        execution_run_start_ambiguous: "execution_run_start_ambiguous";
                         execution_run_stream_not_found: "execution_run_stream_not_found";
                         execution_run_target_not_selected: "execution_run_target_not_selected";
                         execution_run_target_unavailable: "execution_run_target_unavailable";
@@ -7908,6 +7987,13 @@ const ACTION_SPECS_WITHOUT_APPROVAL: readonly [
                 title?: string | undefined;
                 participantLabel?: string | undefined;
                 groupId?: string | undefined;
+            } | undefined;
+            launchOrigin?: {
+                kind: "session";
+                sessionId: string;
+            } | {
+                kind: "external";
+                source?: "action" | "cli" | "mcp" | undefined;
             } | undefined;
             permissionMode: string;
             retentionPolicy: "ephemeral" | "resumable";
@@ -7977,14 +8063,14 @@ const ACTION_SPECS_WITHOUT_APPROVAL: readonly [
                 } | {
                     [x: string]: unknown;
                     source: "connected";
-                    selection?: "profile" | undefined;
-                    profileId: string;
-                } | {
-                    [x: string]: unknown;
-                    source: "connected";
                     selection: "group";
                     groupId: string;
                     profileId?: string | undefined;
+                } | {
+                    [x: string]: unknown;
+                    source: "connected";
+                    selection?: "profile" | undefined;
+                    profileId: string;
                 }> | undefined;
             } | undefined;
         }>, z.ZodObject<{
@@ -8017,6 +8103,20 @@ const ACTION_SPECS_WITHOUT_APPROVAL: readonly [
                 participantLabel: z.ZodOptional<z.ZodString>;
                 groupId: z.ZodOptional<z.ZodString>;
             }, z.core.$loose>>;
+            launchOrigin: z.ZodOptional<z.ZodDiscriminatedUnion<[
+                z.ZodObject<{
+                    kind: z.ZodLiteral<"session">;
+                    sessionId: z.ZodString;
+                }, z.core.$strict>,
+                z.ZodObject<{
+                    kind: z.ZodLiteral<"external">;
+                    source: z.ZodOptional<z.ZodEnum<{
+                        action: "action";
+                        cli: "cli";
+                        mcp: "mcp";
+                    }>>;
+                }, z.core.$strict>
+            ], "kind">>;
             permissionMode: z.ZodString;
             retentionPolicy: z.ZodEnum<{
                 ephemeral: "ephemeral";
@@ -8279,6 +8379,20 @@ const ACTION_SPECS_WITHOUT_APPROVAL: readonly [
                     participantLabel: z.ZodOptional<z.ZodString>;
                     groupId: z.ZodOptional<z.ZodString>;
                 }, z.core.$loose>>;
+                launchOrigin: z.ZodOptional<z.ZodDiscriminatedUnion<[
+                    z.ZodObject<{
+                        kind: z.ZodLiteral<"session">;
+                        sessionId: z.ZodString;
+                    }, z.core.$strict>,
+                    z.ZodObject<{
+                        kind: z.ZodLiteral<"external">;
+                        source: z.ZodOptional<z.ZodEnum<{
+                            action: "action";
+                            cli: "cli";
+                            mcp: "mcp";
+                        }>>;
+                    }, z.core.$strict>
+                ], "kind">>;
                 permissionMode: z.ZodString;
                 retentionPolicy: z.ZodEnum<{
                     ephemeral: "ephemeral";
@@ -8451,6 +8565,20 @@ const ACTION_SPECS_WITHOUT_APPROVAL: readonly [
                     participantLabel: z.ZodOptional<z.ZodString>;
                     groupId: z.ZodOptional<z.ZodString>;
                 }, z.core.$loose>>;
+                launchOrigin: z.ZodOptional<z.ZodDiscriminatedUnion<[
+                    z.ZodObject<{
+                        kind: z.ZodLiteral<"session">;
+                        sessionId: z.ZodString;
+                    }, z.core.$strict>,
+                    z.ZodObject<{
+                        kind: z.ZodLiteral<"external">;
+                        source: z.ZodOptional<z.ZodEnum<{
+                            action: "action";
+                            cli: "cli";
+                            mcp: "mcp";
+                        }>>;
+                    }, z.core.$strict>
+                ], "kind">>;
                 permissionMode: z.ZodString;
                 retentionPolicy: z.ZodEnum<{
                     ephemeral: "ephemeral";
@@ -8727,6 +8855,20 @@ const ACTION_SPECS_WITHOUT_APPROVAL: readonly [
                     participantLabel: z.ZodOptional<z.ZodString>;
                     groupId: z.ZodOptional<z.ZodString>;
                 }, z.core.$loose>>;
+                launchOrigin: z.ZodOptional<z.ZodDiscriminatedUnion<[
+                    z.ZodObject<{
+                        kind: z.ZodLiteral<"session">;
+                        sessionId: z.ZodString;
+                    }, z.core.$strict>,
+                    z.ZodObject<{
+                        kind: z.ZodLiteral<"external">;
+                        source: z.ZodOptional<z.ZodEnum<{
+                            action: "action";
+                            cli: "cli";
+                            mcp: "mcp";
+                        }>>;
+                    }, z.core.$strict>
+                ], "kind">>;
                 permissionMode: z.ZodString;
                 retentionPolicy: z.ZodEnum<{
                     ephemeral: "ephemeral";
@@ -9327,6 +9469,20 @@ const ACTION_SPECS_WITHOUT_APPROVAL: readonly [
                             participantLabel: z.ZodOptional<z.ZodString>;
                             groupId: z.ZodOptional<z.ZodString>;
                         }, z.core.$loose>>;
+                        launchOrigin: z.ZodOptional<z.ZodDiscriminatedUnion<[
+                            z.ZodObject<{
+                                kind: z.ZodLiteral<"session">;
+                                sessionId: z.ZodString;
+                            }, z.core.$strict>,
+                            z.ZodObject<{
+                                kind: z.ZodLiteral<"external">;
+                                source: z.ZodOptional<z.ZodEnum<{
+                                    action: "action";
+                                    cli: "cli";
+                                    mcp: "mcp";
+                                }>>;
+                            }, z.core.$strict>
+                        ], "kind">>;
                         permissionMode: z.ZodString;
                         retentionPolicy: z.ZodEnum<{
                             ephemeral: "ephemeral";
@@ -9400,8 +9556,13 @@ const ACTION_SPECS_WITHOUT_APPROVAL: readonly [
                 }, z.core.$loose>;
             }, z.core.$strict>,
             z.ZodObject<{
-                ok: z.ZodLiteral<false>;
-                code: z.ZodLiteral<"timeout">;
+                ok: z.ZodLiteral<true>;
+                status: z.ZodLiteral<"running">;
+                disposition: z.ZodLiteral<"observation_timeout">;
+                runId: z.ZodString;
+                timeoutMs: z.ZodNumber;
+                observedAtMs: z.ZodNumber;
+                deadlineAtMs: z.ZodNumber;
             }, z.core.$strict>,
             z.ZodObject<{
                 ok: z.ZodLiteral<false>;
@@ -9421,6 +9582,7 @@ const ACTION_SPECS_WITHOUT_APPROVAL: readonly [
                     execution_run_output_limit_exceeded: "execution_run_output_limit_exceeded";
                     execution_run_protocol_unsupported: "execution_run_protocol_unsupported";
                     execution_run_scope_mismatch: "execution_run_scope_mismatch";
+                    execution_run_start_ambiguous: "execution_run_start_ambiguous";
                     execution_run_stream_not_found: "execution_run_stream_not_found";
                     execution_run_target_not_selected: "execution_run_target_not_selected";
                     execution_run_target_unavailable: "execution_run_target_unavailable";
@@ -10950,6 +11112,8 @@ const ACTION_SPECS_WITHOUT_APPROVAL: readonly [
                 persisted: "persisted";
             }>>;
             targetPath: z.ZodString;
+            workspaceRootPath: z.ZodOptional<z.ZodString>;
+            workspaceSessionRelativeCwd: z.ZodOptional<z.ZodString>;
             endpointCandidates: z.ZodDefault<z.ZodReadonly<z.ZodArray<z.ZodDiscriminatedUnion<[
                 z.ZodObject<{
                     kind: z.ZodEnum<{
@@ -11825,10 +11989,10 @@ const ACTION_SPECS_WITHOUT_APPROVAL: readonly [
                 readonly inputHints: {
                     title: string;
                     fields: ({
+                        required?: undefined;
                         path: string;
                         title: string;
                         widget: "text";
-                        required?: undefined;
                         optionsSourceId?: undefined;
                     } | {
                         path: string;
@@ -11837,10 +12001,10 @@ const ACTION_SPECS_WITHOUT_APPROVAL: readonly [
                         required: true;
                         optionsSourceId: string;
                     } | {
+                        required?: undefined;
                         path: string;
                         title: string;
                         widget: "json";
-                        required?: undefined;
                         optionsSourceId?: undefined;
                     } | {
                         path: string;
@@ -12184,10 +12348,10 @@ const ACTION_SPECS_WITHOUT_APPROVAL: readonly [
         readonly inputHints: {
             title: string;
             fields: ({
+                required?: undefined;
                 path: string;
                 title: string;
                 widget: "text";
-                required?: undefined;
                 optionsSourceId?: undefined;
             } | {
                 path: string;
@@ -12196,10 +12360,10 @@ const ACTION_SPECS_WITHOUT_APPROVAL: readonly [
                 required: true;
                 optionsSourceId: string;
             } | {
+                required?: undefined;
                 path: string;
                 title: string;
                 widget: "json";
-                required?: undefined;
                 optionsSourceId?: undefined;
             } | {
                 path: string;
@@ -16822,6 +16986,7 @@ const ACTION_SPECS_WITHOUT_APPROVAL: readonly [
                     deep: "deep";
                     hints: "hints";
                 }>;
+                eligibleSessionIds: z.ZodOptional<z.ZodArray<z.ZodString>>;
                 maxResults: z.ZodOptional<z.ZodNumber>;
                 minScore: z.ZodOptional<z.ZodNumber>;
             }, z.core.$loose>;
@@ -17854,6 +18019,44 @@ const ACTION_SPECS_WITHOUT_APPROVAL: readonly [
             readonly mcpToolName: 'approval_request_create';
             readonly rpcMethod: 'approval.request.create';
         };
+        readonly surfaceBindings: {
+            readonly plugin: {
+                readonly inputSchema: z.ZodObject<{
+                    actionArgs: z.ZodPipe<z.ZodUnknown, z.ZodTransform<string | number | boolean | readonly import("../index.js").JsonValue[] | {
+                        readonly [key: string]: import("../index.js").JsonValue;
+                    } | null, unknown>>;
+                    summary: z.ZodString;
+                    createdBy: z.ZodObject<{
+                        surface: z.ZodEnum<{
+                            agent: "agent";
+                            cli: "cli";
+                            mcp: "mcp";
+                            session_agent: "session_agent";
+                            system: "system";
+                            voice: "voice";
+                        }>;
+                        agentId: z.ZodOptional<z.ZodString>;
+                        pluginId: z.ZodOptional<z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>>;
+                        contributionLocalId: z.ZodOptional<z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>>;
+                        sessionId: z.ZodOptional<z.ZodString>;
+                    }, z.core.$strict>;
+                    origin: z.ZodOptional<z.ZodObject<{
+                        kind: z.ZodLiteral<"transcript_tool_call">;
+                        sessionId: z.ZodString;
+                        messageId: z.ZodOptional<z.ZodString>;
+                        parentMessageId: z.ZodOptional<z.ZodString>;
+                        toolCallId: z.ZodOptional<z.ZodString>;
+                        mcpRequestId: z.ZodOptional<z.ZodString>;
+                        toolName: z.ZodOptional<z.ZodString>;
+                        toolInput: z.ZodOptional<z.ZodUnknown>;
+                    }, z.core.$strict>>;
+                    preview: z.ZodOptional<z.ZodPipe<z.ZodUnknown, z.ZodTransform<string | number | boolean | readonly import("../index.js").JsonValue[] | {
+                        readonly [key: string]: import("../index.js").JsonValue;
+                    } | null, unknown>>>;
+                    actionId: z.ZodLazy<z.ZodCustom<PluginInvocableActionId, PluginInvocableActionId>>;
+                }, z.core.$loose>;
+            };
+        };
         readonly surfaces: {
             readonly ui: true;
             readonly voice: false;
@@ -18028,6 +18231,7 @@ const ACTION_SPECS_WITHOUT_APPROVAL: readonly [
                 "peerMediation.observability.unsubscribe": "peerMediation.observability.unsubscribe";
                 "plugin.webhook.delivery.movePending": "plugin.webhook.delivery.movePending";
                 "plugin.webhook.endpoint.checkCorrespondence": "plugin.webhook.endpoint.checkCorrespondence";
+                "plugin.webhook.endpoint.convergeTarget": "plugin.webhook.endpoint.convergeTarget";
                 "plugin.webhook.endpoint.credential.configure": "plugin.webhook.endpoint.credential.configure";
                 "plugin.webhook.endpoint.credential.finishRotation": "plugin.webhook.endpoint.credential.finishRotation";
                 "plugin.webhook.endpoint.credential.rotate": "plugin.webhook.endpoint.credential.rotate";
@@ -23759,6 +23963,7 @@ const ActionSpecSchema: z.ZodObject<{
         "peerMediation.observability.unsubscribe": "peerMediation.observability.unsubscribe";
         "plugin.webhook.delivery.movePending": "plugin.webhook.delivery.movePending";
         "plugin.webhook.endpoint.checkCorrespondence": "plugin.webhook.endpoint.checkCorrespondence";
+        "plugin.webhook.endpoint.convergeTarget": "plugin.webhook.endpoint.convergeTarget";
         "plugin.webhook.endpoint.credential.configure": "plugin.webhook.endpoint.credential.configure";
         "plugin.webhook.endpoint.credential.finishRotation": "plugin.webhook.endpoint.credential.finishRotation";
         "plugin.webhook.endpoint.credential.rotate": "plugin.webhook.endpoint.credential.rotate";
@@ -24455,8 +24660,39 @@ const PLUGIN_PROVENANCE_ONLY_API_EXCLUSION_REASONS: Readonly<{
     readonly 'session.permission.remote.respond': 'The remote-permission mediator identity comes only from the host-stamped plugin caller.';
     readonly 'session.user_action.remote.answer': 'The remote user-action mediator identity comes only from the host-stamped plugin caller.';
     readonly 'plugins.permissions.grants.revoke': 'Plugin self-revocation resolves the grant owner from the host-stamped plugin caller.';
+    readonly 'plugin.webhook.endpoint.convergeTarget': 'Endpoint target convergence authorizes the host-stamped plugin caller against its own source correspondence; a present user administers endpoints through plugin.webhook.endpoint.retarget.';
     readonly 'sessions.external.materialize.start': 'External-session materialization persists plugin-authored intent from the host-stamped caller.';
     readonly 'scm.reviewWorkspace.materializePrepared': 'Prepared review-workspace materialization is invoked only by the host-stamped source plugin.';
+}>;
+```
+
+
+### `node_modules/@happier-dev/protocol/dist/actions/actionSpecs.d.ts` — `PLUGIN_SURFACE_EXCLUSION_REASONS`
+
+Reached from a published signature; not itself a published export.
+
+```ts
+const PLUGIN_SURFACE_EXCLUSION_REASONS: Readonly<{
+    readonly 'session.handoff.prepare_target': 'Private handoff lifecycle preparation phase; users invoke session.handoff instead.';
+    readonly 'session.handoff.prepare_target.resume': 'Private handoff lifecycle retry phase; users invoke session.handoff instead.';
+    readonly 'session.handoff.prepare_target_result.get': 'Private handoff coordination receipt read; session.handoff.status.get is the user projection.';
+    readonly 'session.handoff.commit': 'Private handoff lifecycle commit phase; users invoke session.handoff instead.';
+    readonly 'session.handoff.abort': 'Private handoff lifecycle abort phase; users invoke session.handoff instead.';
+    readonly 'sessions.subagents.upsert': 'Host lifecycle projection maintenance; user operations use the planning/delegation Actions.';
+    readonly 'sessions.subagents.updateStatus': 'Host lifecycle projection maintenance; user operations use the planning/delegation Actions.';
+    readonly 'sessions.subagents.complete': 'Host lifecycle projection maintenance; user operations use the planning/delegation Actions.';
+    readonly 'sessions.external.takeover': 'Released direct-session compatibility stub; current clients use sessions.external.takeover.start.';
+    readonly 'plugin.webhook.delivery.movePending': 'Private webhook delivery plumbing owned by the webhook worker.';
+    readonly 'devices.simulator.input.orientation': 'Stock scrcpy has no absolute-orientation producer; the simulator backing owner marks this Action statically unbacked.';
+    readonly 'sessions.external.candidates.list': 'Machine/source-scoped discovery seam; authors use SessionsService.external.list, which delegates to this same candidate-query owner.';
+    readonly 'sessions.external.link.ensure': 'Machine/source-scoped linking seam; authors use SessionsService.external.attach, which delegates to this same idempotent link operation.';
+    readonly 'sessions.external.follow': 'Ephemeral viewer lease seam; authors use SessionsService.external.followTranscript, which owns dynamic follow lifetime and cleanup.';
+    readonly 'sessions.external.unfollow': 'Ephemeral viewer lease cleanup seam; authors close SessionsService.external.followTranscript rather than invoking a low-level lease Action.';
+    readonly 'sessions.external.transcript.page': 'Machine/source-scoped transcript seam; authors use SessionsService.external.readTranscript.';
+    readonly 'sessions.external.transcript.readAfter': 'Machine/source-scoped transcript seam; authors use SessionsService.external.readTranscript.';
+    readonly 'sessions.external.takeover.start': 'Raw durable takeover Start; SessionsService.external.takeover privately delegates to it and is the documented author workflow.';
+    readonly 'session.permission.respond': 'Present-user permission approval cannot be represented by trusted-plugin provenance; plugins use session.permission.remote.respond for mediated external-human approval.';
+    readonly 'session.permission_mode.set': 'Global Session permission policy is present-user or causal Agent authority, never generic trusted-plugin authority.';
 }>;
 ```
 
@@ -24505,6 +24741,9 @@ const PluginDevLoopActionInputSchemas: {
         ui: z.ZodOptional<z.ZodEnum<{
             hostedWeb: "hostedWeb";
             reactNative: "reactNative";
+        }>>;
+        template: z.ZodOptional<z.ZodEnum<{
+            "session-agent": "session-agent";
         }>>;
     }, z.core.$strict>;
     readonly 'plugins.install': z.ZodObject<{
@@ -24628,6 +24867,15 @@ type PluginDevLoopActionSpecDefinition = {
 ```
 
 
+### `node_modules/@happier-dev/protocol/dist/actions/actionSpecs.d.ts` — `PluginInvocableActionId`
+
+Reached from a published signature; not itself a published export.
+
+```ts
+type PluginInvocableActionId = Exclude<ActionId, InternalActionId | PluginSurfaceExcludedActionId>;
+```
+
+
 ### `node_modules/@happier-dev/protocol/dist/actions/actionSpecs.d.ts` — `PluginPermissionGrantActionSpecDefinition`
 
 Reached from a published signature; not itself a published export.
@@ -24709,6 +24957,15 @@ Reached from a published signature; not itself a published export.
 type PluginSettingsAdministrationActionSpecDefinition = {
     [TActionId in PluginSettingsAdministrationActionIdV1]: CanonicalActionSchemaDefinition<TActionId, (typeof PluginSettingsAdministrationActionInputSchemasV1)[TActionId], typeof PluginSettingsAdministrationActionOutputV1Schema>;
 }[PluginSettingsAdministrationActionIdV1];
+```
+
+
+### `node_modules/@happier-dev/protocol/dist/actions/actionSpecs.d.ts` — `PluginSurfaceExcludedActionId`
+
+Reached from a published signature; not itself a published export.
+
+```ts
+type PluginSurfaceExcludedActionId = keyof typeof PLUGIN_SURFACE_EXCLUSION_REASONS;
 ```
 
 
@@ -75504,9 +75761,17 @@ type AutomationRunCause = Readonly<{
     occurrenceKey: AutomationOccurrenceKeyV1;
     occurredAt: AutomationOccurredAtV1;
     evidence: Readonly<{
-        event: 'parentTurnCompleted';
+        event: Exclude<AutomationSessionLifecycleEvent, 'userActionRequired'>;
         sourceSessionId: string;
         sourceTurnId: string;
+        policy: AutomationSessionLifecyclePolicySnapshot;
+    }> | Readonly<{
+        event: 'userActionRequired';
+        sourceSessionId: string;
+        sourceTurnId: string;
+        requestId: string;
+        requestKind: AutomationSessionLifecycleRequestKind;
+        policy: AutomationSessionLifecyclePolicySnapshot;
     }>;
 } | {
     kind: 'manual';
@@ -75516,6 +75781,70 @@ type AutomationRunCause = Readonly<{
     occurrenceKey: AutomationOccurrenceKeyV1;
     occurredAt: AutomationOccurredAtV1;
 }>;
+```
+
+
+### `node_modules/@happier-dev/protocol/dist/automations/automationSessionLifecycle.d.ts` — `AutomationSessionLifecycleEvent`
+
+Reached from a published signature; not itself a published export.
+
+```ts
+type AutomationSessionLifecycleEvent = z.infer<typeof AutomationSessionLifecycleEventSchema>;
+```
+
+
+### `node_modules/@happier-dev/protocol/dist/automations/automationSessionLifecycle.d.ts` — `AutomationSessionLifecycleEventSchema`
+
+Reached from a published signature; not itself a published export.
+
+```ts
+const AutomationSessionLifecycleEventSchema: z.ZodEnum<{
+    parentTurnCancelled: "parentTurnCancelled";
+    parentTurnCompleted: "parentTurnCompleted";
+    parentTurnFailed: "parentTurnFailed";
+    userActionRequired: "userActionRequired";
+}>;
+```
+
+
+### `node_modules/@happier-dev/protocol/dist/automations/automationSessionLifecycle.d.ts` — `AutomationSessionLifecyclePolicySnapshot`
+
+Reached from a published signature; not itself a published export.
+
+```ts
+type AutomationSessionLifecyclePolicySnapshot = z.infer<typeof AutomationSessionLifecyclePolicySnapshotSchema>;
+```
+
+
+### `node_modules/@happier-dev/protocol/dist/automations/automationSessionLifecycle.d.ts` — `AutomationSessionLifecyclePolicySnapshotSchema`
+
+Reached from a published signature; not itself a published export.
+
+```ts
+const AutomationSessionLifecyclePolicySnapshotSchema: z.ZodDiscriminatedUnion<[
+    z.ZodObject<{
+        kind: z.ZodLiteral<"currentTurn">;
+    }, z.core.$strict>,
+    z.ZodObject<{
+        kind: z.ZodLiteral<"firstMatch">;
+    }, z.core.$strict>,
+    z.ZodObject<{
+        kind: z.ZodLiteral<"nextMatches">;
+        count: z.ZodNumber;
+    }, z.core.$strict>,
+    z.ZodObject<{
+        kind: z.ZodLiteral<"everyMatch">;
+    }, z.core.$strict>
+], "kind">;
+```
+
+
+### `node_modules/@happier-dev/protocol/dist/automations/automationSessionLifecycle.d.ts` — `AutomationSessionLifecycleRequestKind`
+
+Reached from a published signature; not itself a published export.
+
+```ts
+type AutomationSessionLifecycleRequestKind = SessionUserActionRequiredRequestKindV1;
 ```
 
 
@@ -76923,6 +77252,7 @@ Reached from a published signature; not itself a published export.
 const PluginWebhookActionIdV1Schema: z.ZodEnum<{
     "plugin.webhook.delivery.movePending": "plugin.webhook.delivery.movePending";
     "plugin.webhook.endpoint.checkCorrespondence": "plugin.webhook.endpoint.checkCorrespondence";
+    "plugin.webhook.endpoint.convergeTarget": "plugin.webhook.endpoint.convergeTarget";
     "plugin.webhook.endpoint.credential.configure": "plugin.webhook.endpoint.credential.configure";
     "plugin.webhook.endpoint.credential.finishRotation": "plugin.webhook.endpoint.credential.finishRotation";
     "plugin.webhook.endpoint.credential.rotate": "plugin.webhook.endpoint.credential.rotate";
@@ -77023,6 +77353,40 @@ const PluginWebhookActionInputSchemasV1: Readonly<{
                 installationAuthorizationRef: z.ZodString;
             }, z.core.$strict>
         ], "kind">;
+    }, z.core.$strict>;
+    readonly 'plugin.webhook.endpoint.convergeTarget': z.ZodObject<{
+        webhookEndpointId: z.ZodString;
+        webhookContribution: z.ZodType<{
+            pluginId: string;
+            localId: string;
+        }, {
+            pluginId: string;
+            localId: string;
+        }, z.core.$ZodTypeInternals<{
+            pluginId: string;
+            localId: string;
+        }, {
+            pluginId: string;
+            localId: string;
+        }>>;
+        sourceInstanceId: z.ZodString;
+        setup: z.ZodDiscriminatedUnion<[
+            z.ZodObject<{
+                kind: z.ZodLiteral<"accountEndpointV1">;
+                credential: z.ZodLiteral<"serverGenerated">;
+            }, z.core.$strict>,
+            z.ZodObject<{
+                kind: z.ZodLiteral<"githubSharedInstallationV1">;
+                installationId: z.ZodString;
+                installationAuthorizationRef: z.ZodString;
+            }, z.core.$strict>
+        ], "kind">;
+        desiredTargetMaterialization: z.ZodObject<{
+            machineId: z.ZodString;
+            materializationId: z.ZodString;
+            pluginId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
+        }, z.core.$strict>;
+        targetIntentEpoch: z.ZodNumber;
     }, z.core.$strict>;
     readonly 'plugin.webhook.delivery.movePending': z.ZodObject<{
         webhookEndpointId: z.ZodString;
@@ -77154,6 +77518,28 @@ const PluginWebhookActionOutputSchemasV1: Readonly<{
             kind: z.ZodLiteral<"ready">;
             webhookEndpointId: z.ZodString;
             revision: z.ZodNumber;
+        }, z.core.$strict>,
+        z.ZodObject<{
+            kind: z.ZodLiteral<"unavailable">;
+            code: z.ZodString;
+        }, z.core.$strict>
+    ]>;
+    readonly 'plugin.webhook.endpoint.convergeTarget': z.ZodUnion<readonly [
+        z.ZodObject<{
+            kind: z.ZodLiteral<"converged">;
+            webhookEndpointId: z.ZodString;
+            revision: z.ZodNumber;
+            targetMaterialization: z.ZodObject<{
+                machineId: z.ZodString;
+                materializationId: z.ZodString;
+                pluginId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
+            }, z.core.$strict>;
+            targetIntentEpoch: z.ZodNumber;
+        }, z.core.$strict>,
+        z.ZodObject<{
+            kind: z.ZodLiteral<"superseded">;
+            webhookEndpointId: z.ZodString;
+            currentTargetIntentEpoch: z.ZodNumber;
         }, z.core.$strict>,
         z.ZodObject<{
             kind: z.ZodLiteral<"unavailable">;
@@ -83180,6 +83566,27 @@ type AgentExternalSessionTranscriptRawRecord = Readonly<{
 }> | Readonly<{
     role: 'agent';
     content: JsonValue;
+}>;
+```
+
+
+### `node_modules/@happier-dev/protocol/dist/sessions/userActionRequiredOccurrenceV1.d.ts` — `SessionUserActionRequiredRequestKindV1`
+
+Reached from a published signature; not itself a published export.
+
+```ts
+type SessionUserActionRequiredRequestKindV1 = z.infer<typeof SessionUserActionRequiredRequestKindV1Schema>;
+```
+
+
+### `node_modules/@happier-dev/protocol/dist/sessions/userActionRequiredOccurrenceV1.d.ts` — `SessionUserActionRequiredRequestKindV1Schema`
+
+Reached from a published signature; not itself a published export.
+
+```ts
+const SessionUserActionRequiredRequestKindV1Schema: z.ZodEnum<{
+    permission: "permission";
+    user_action: "user_action";
 }>;
 ```
 

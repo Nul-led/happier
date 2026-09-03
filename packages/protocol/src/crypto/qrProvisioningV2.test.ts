@@ -438,14 +438,14 @@ describe('Home QR v2 requester-displayed reverse invite material', () => {
     nowMs: NOW_MS,
   } as const;
 
-  it('generates CSPRNG pair-id, QR secret, ephemeral requester keypair, and bounded exact expiry', () => {
+  it('generates CSPRNG pair-id, QR secret, ephemeral requester keypair, and policy-compatible default expiry', () => {
     const material = createHomeQrReverseInviteV2(reverseInput);
     expect(material.invite.v).toBe(2);
     expect(material.invite.intent).toBe('home_device');
     expect(material.invite.direction).toBe('requester_displays');
     expect(material.invite.home).toEqual(HOME);
     expect(material.invite.issuedAtMs).toBe(NOW_MS);
-    expect(material.invite.expiresAtMs).toBe(NOW_MS + HOME_QR_INVITE_V2_MAX_TTL_MS);
+    expect(material.invite.expiresAtMs).toBe(NOW_MS + 120_000);
     expect(material.invite.pairId.length).toBeGreaterThan(0);
     expect(material.invite.pairId.length).toBeLessThanOrEqual(128);
     expect(material.qrSecret).toHaveLength(HOME_QR_SECRET_V2_BYTES);

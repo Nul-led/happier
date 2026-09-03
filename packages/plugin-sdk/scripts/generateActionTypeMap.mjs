@@ -66,12 +66,8 @@ const TYPE_PROJECTIONS = [
   // These helpers are intentionally file-local. Public Action signatures use
   // them transitively, but exposing their raw Protocol vocabulary would add
   // duplicate SDK entry points rather than an author capability.
-  { relativePath: 'packages/protocol/src/actions/executor/types.ts', name: 'ActionCaller', export: true },
   { relativePath: 'packages/protocol/src/plugins/contributions/publicTypes.ts', name: 'PluginPolicyExpressionV2', export: true, local: true },
   { relativePath: 'packages/protocol/src/actions/actionUiPlacements.ts', name: 'ActionUiPlacement', export: true },
-  { relativePath: 'packages/protocol/src/actions/actionSpecs.ts', name: 'ActionSurfaceBindingCaller', export: true },
-  { relativePath: 'packages/protocol/src/actions/actionSpecs.ts', name: 'ActionSurfaceBindingContext', export: true },
-  { relativePath: 'packages/protocol/src/actions/actionSpecs.ts', name: 'ActionSurfaceBindingTransform', export: true },
   { relativePath: 'packages/protocol/src/sessions/work/state/sessionWorkStateRpc.ts', name: 'SessionUsageLimitCheckNowRequestV1Input', export: true },
   { relativePath: 'packages/protocol/src/sessions/work/state/sessionWorkStateRpc.ts', name: 'SessionUsageLimitConsumeResetCreditRequestV1Input', export: true },
   { relativePath: 'packages/protocol/src/actions/actionSpecs.ts', name: 'SessionTranscriptGetExternalShareableInputV1', export: true },
@@ -368,7 +364,6 @@ function renderStructuralModule(onPhase = () => {}) {
     '',
     "import type { JsonValue, PluginJsonSchema, PluginJsonValueV2 } from '../identity.js';",
     "import type { AgentExternalSessionTranscriptRawRecord } from '../externalSessions.js';",
-    "import type { PluginAutomationRunCause as AutomationRunCause } from '../automations.js';",
     "import type { PluginUiJsonValueV1 } from '../ui/publicContract.js';",
     '',
     ...PUBLIC_ACTION_TYPE_CLOSURE,

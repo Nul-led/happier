@@ -501,6 +501,7 @@ export type PluginManifestAuthorInput = {
       | 'voiceProviders'
       | 'backgroundServices'
       | 'composerReferences'
+      | 'searchProviders'
       | 'composerControls'
       | 'composerRegions'
       | 'openableContentViewers'
@@ -704,6 +705,7 @@ export type PluginContributes = Readonly<{
   backgroundServices: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['backgroundServices']>;
   daemonDatabases: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['daemonDatabases']>;
   composerReferences: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['composerReferences']>;
+  searchProviders: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['searchProviders']>;
   composerAttachments: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['composerAttachments']>;
   composerControls: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['composerControls']>;
   composerRegions: NonNullable<NonNullable<PluginManifestAuthorInput['contributes']>['composerRegions']>;
@@ -803,7 +805,7 @@ function readPublicManifestDiagnostics(
     diagnostics.push({
       code: 'plugin_manifest_invalid',
       path: ['hostAccess', 'required', index, 'capability'],
-      message: `HostAccess capability '${request.capability}' is deferred from public plugin authoring until a maintained plugin consumer exists.`,
+      message: `HostAccess capability '${request.capability}' is deferred from public plugin authoring: no host authority or service owner binds it yet.`,
     });
   });
   return diagnostics;

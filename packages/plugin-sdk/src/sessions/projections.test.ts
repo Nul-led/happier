@@ -373,7 +373,8 @@ describe('nested Session package-local projections', () => {
         expectTypeOf<SubagentRefV1>().toEqualTypeOf<agents.SubagentRefV1>();
         expectTypeOf<SubagentStatusV1>().toEqualTypeOf<agents.SubagentStatusV1>();
         expectTypeOf<SubagentSummary>().toHaveProperty('id');
-        expectTypeOf<SubagentsService>().not.toHaveProperty('observe');
+        expectTypeOf<keyof SubagentsService>()
+            .toEqualTypeOf<'list' | 'get' | 'watch'>();
     });
 
     it('keeps Work State service types on normal runtime and predecessor values on the Protocol owner', () => {

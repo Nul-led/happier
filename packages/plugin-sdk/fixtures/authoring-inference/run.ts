@@ -2,7 +2,6 @@ import { createPluginTestkit } from '@happier-dev/plugin-sdk/testing';
 
 import { activate, manifest } from './index.js';
 import { exerciseActionsService } from './actions.js';
-import { activate as manualActivate, manifest as manualManifest } from './manual.js';
 import {
   managedProviderActivate,
   managedProviderManifest,
@@ -19,9 +18,6 @@ if (!manifest.contributes.promptAssets?.some((entry) => (
   && entry.adapterDescriptor?.id === 'example.inference.skill'
 ))) {
   throw new Error('definePlugin did not project the external Prompt Asset authoring fixture');
-}
-if (manualManifest.id !== 'example.manual' || typeof manualActivate !== 'function') {
-  throw new Error('manual authoring did not expose the expected named ABI');
 }
 
 const managedProviderTestkit = await createPluginTestkit({

@@ -116,6 +116,7 @@ export {
   AccountDirectoryRouteErrorResponseV1Schema,
   HomeConnectionEndpointV1Schema,
   HomeConnectionDescriptorV1Schema,
+  HomeCredentialDestinationV1Schema,
   HomeLoginCredentialPayloadV1Schema,
   HomeApplicationOriginV1Schema,
   HomeDeviceApprovalRequestV1Schema,
@@ -129,12 +130,16 @@ export {
   HomeLoginRedemptionRequestV1Schema,
   HomeLoginRedemptionResponseV1Schema,
   createHomeLoginRequesterFingerprintV1,
+  createHomeCredentialDestinationDigestV1,
+  createHomeCredentialDestinationV1,
+  isHomeCredentialDestinationAllowedV1,
   buildAccountDirectoryHomeHttpPathV1,
   buildAccountDirectoryHomeLoginAssertionHttpPathV1,
   buildAccountDirectoryLinkHttpPathV1,
   buildHomeLoginApprovalDecisionHttpPathV1,
   HomeLoginRedemptionResultV1Schema,
   createHomeLoginAssertionSigningBytesV1,
+  ACCOUNT_DIRECTORY_CREDENTIAL_DESTINATION_DIGEST_DOMAIN_V1,
   redactHomeLoginAssertionV1,
   type AccountDirectoryErrorCodeV1,
   type HomeLoginCredentialPayloadV1,
@@ -160,6 +165,8 @@ export {
   type AccountDirectoryRouteErrorResponseV1,
   type HomeConnectionEndpointV1,
   type HomeConnectionDescriptorV1,
+  type HomeCredentialDestinationV1,
+  type HomeCredentialDestinationSelectionV1,
   type HomeApplicationOriginV1,
   type HomeDeviceApprovalRequestV1,
   type HomeDeviceApprovalListV1,
@@ -428,6 +435,7 @@ export * from './sessions/pending/pendingLocalId.js';
 export * from './sessions/pending/pendingMessageMutationFingerprintV1.js';
 export * from './sessions/pending/pendingProviderAction.js';
 export * from './sessions/pending/acceptedPendingSettlementV1.js';
+export * from './sessions/pending/pendingActivationAuthorizationV1.js';
 
 export {
   isBaseCredentialDiagnosticKey,
@@ -673,16 +681,16 @@ export {
   type SerializedActionDefinitionV1,
 } from './actions/actionDefinitionV1.js';
 export {
+  AgentSurfaceAvailabilityV1Schema,
   AttachSurfaceStaticMetadataV1Schema,
-  BackendSurfaceAvailabilityV1Schema,
   BackendSurfaceDeclarationV1Schema,
   BackendSurfaceHandlerRefV1Schema,
   BackendSurfaceKindV1Schema,
   BackendSurfaceOperationCatalogV1,
   BackendSurfaceStaticSupportV1Schema,
   isSupportedBackendSurfaceOperationV1,
+  type AgentSurfaceAvailabilityV1,
   type AttachSurfaceStaticMetadataV1,
-  type BackendSurfaceAvailabilityV1,
   type BackendSurfaceDeclarationV1,
   type BackendSurfaceHandlerRefV1,
   type BackendSurfaceKindV1,
@@ -992,7 +1000,10 @@ export {
 export {
   PLUGIN_WEBHOOK_ENDPOINT_ID_V1_PREFIX,
   PLUGIN_WEBHOOK_ACTION_IDS_V1,
+  PLUGIN_WEBHOOK_PLUGIN_SURFACE_ACTION_IDS_V1,
   PluginWebhookActionHttpPathsV1,
+  PluginWebhookPluginSurfaceActionHttpPathsV1,
+  isPluginWebhookPluginSurfaceActionIdV1,
   PluginWebhookActionIdV1Schema,
   PluginWebhookActionInputSchemasV1,
   PluginWebhookActionOutputSchemasV1,
@@ -1000,6 +1011,8 @@ export {
   PluginWebhookDeliveryMovePendingResultV1Schema,
   PluginWebhookEndpointCheckCorrespondenceInputV1Schema,
   PluginWebhookEndpointCheckCorrespondenceResultV1Schema,
+  PluginWebhookEndpointConvergeTargetInputV1Schema,
+  PluginWebhookEndpointConvergeTargetResultV1Schema,
   PluginWebhookEndpointEnsureInputV1Schema,
   PluginWebhookEndpointEnsureResultV1Schema,
   PluginWebhookEndpointCredentialConfigureInputV1Schema,
@@ -1024,6 +1037,9 @@ export {
   type PluginWebhookDeliveryMovePendingResultV1,
   type PluginWebhookEndpointCheckCorrespondenceInputV1,
   type PluginWebhookEndpointCheckCorrespondenceResultV1,
+  type PluginWebhookEndpointConvergeTargetInputV1,
+  type PluginWebhookEndpointConvergeTargetResultV1,
+  type PluginWebhookPluginSurfaceActionIdV1,
   type PluginWebhookEndpointEnsureInputV1,
   type PluginWebhookEndpointEnsureResultV1,
   type PluginWebhookActionIdV1,
@@ -1591,6 +1607,13 @@ export {
   type PluginManifest,
 } from './plugins/manifest/v2.js';
 export {
+  CanonicalPluginNetworkHostSuffixSchema,
+  isCanonicalPluginNetworkHostSuffix,
+  matchesPluginNetworkHostSuffix,
+  pluginNetworkOriginPolicyAdmitsOrigin,
+  type PluginNetworkOriginPolicy,
+} from './plugins/networkHostSuffix.js';
+export {
   createPluginManifestJsonSchemaV2,
   PLUGIN_MANIFEST_JSON_SCHEMA_V2_ID,
 } from './plugins/manifest/jsonSchema.js';
@@ -1604,16 +1627,6 @@ export {
   type PluginInstallationManifestPublisherHeaderV1,
   type PluginInstallationManifestPublisherProofV1,
 } from './plugins/installations/manifests.js';
-export {
-  PluginMarketplaceCatalogV1Schema,
-  PluginMarketplaceEntryV1Schema,
-  PluginMarketplaceSourceKindV1Schema,
-  PluginManifestMarketplaceMetadataV1Schema,
-  type PluginMarketplaceCatalogV1,
-  type PluginMarketplaceEntryV1,
-  type PluginMarketplaceSourceKindV1,
-  type PluginManifestMarketplaceMetadataV1,
-} from './plugins/marketplace/catalog.js';
 export {
   PluginRequestInterceptorContributionV1Schema,
   type PluginRequestInterceptorContributionV1,
@@ -1914,6 +1927,7 @@ export {
   resolveNotificationChannelsV1FromAccountSettings,
   SessionPendingQueueDeliveryTimingSchema,
   SessionPendingQueueDrainModeSchema,
+  SessionInactiveResumePolicySchema,
   type NewSessionDraftEntryMode,
   UsageLimitRecoverySettingsV1Schema,
 } from './account/settings/accountSettings.js';
@@ -4876,6 +4890,7 @@ export {
   ExecutionRunKindSchema,
   ExecutionRunTransportErrorCodeSchema,
   ExecutionRunDisplaySchema,
+  ExecutionRunLaunchOriginSchema,
   ExecutionRunPublicStateSchema,
   ExecutionRunReplaySeedRequestSchema,
   ExecutionRunVoiceAgentIntentInputV1Schema,
@@ -4937,6 +4952,7 @@ export {
   type ExecutionRunKind,
   type ExecutionRunTransportErrorCode,
   type ExecutionRunDisplay,
+  type ExecutionRunLaunchOrigin,
   type ExecutionRunPublicState,
   type ExecutionRunReplaySeedRequest,
   type ExecutionRunVoiceAgentIntentInputV1,
@@ -5687,6 +5703,7 @@ export {
   HandoffWorkspaceActionV1Schema,
   HandoffTargetReplacementPreflightResultV1Schema,
   HandoffTargetReplacementPreflightV1Schema,
+  HANDOFF_TARGET_APPROVAL_CONSEQUENCES_V1,
   HandoffTargetReplacementApprovalV1Schema,
   sameHandoffTargetReplacementApproval,
   ReadWorkspaceSyncFileResultV1Schema,
@@ -5715,6 +5732,7 @@ export {
   type HandoffWorkspaceActionV1,
   type HandoffTargetReplacementPreflightResultV1,
   type HandoffTargetReplacementPreflightV1,
+  type HandoffTargetApprovalConsequenceV1,
   type HandoffTargetReplacementApprovalV1,
   type ReadWorkspaceSyncFileResultV1,
   type ReadWorkspaceSyncFileV1,
@@ -5770,6 +5788,12 @@ export {
   SERVER_URL_COMPARABLE_KEY_ERROR_CODE,
   ServerUrlComparableKeyError,
 } from './server/urls/index.js';
+export {
+  SERVER_HTTP_REQUEST_MAX_BODY_UTF8_BYTES_V1,
+  createServerHttpRequestBodyItemBudgetV1,
+  readServerHttpRequestBodyUtf8ByteLengthV1,
+  type ServerHttpRequestBodyItemBudgetV1,
+} from './server/http/requestBodyBoundsV1.js';
 export {
   SYSTEM_TASK_PROTOCOL_VERSION,
   SystemTaskEventSchema,
@@ -6250,6 +6274,7 @@ export {
 } from './messages/structured/subagentCommandV1.js';
 
 export {
+  MEMORY_SEARCH_QUERY_MAX_LENGTH,
   MemoryCitationV1Schema,
   MemorySearchErrorCodeSchema,
   MemorySearchHitV1Schema,
@@ -7100,6 +7125,7 @@ export {
   SessionTmuxMachineOverrideSchema,
   DEFAULT_ACTIONS_SETTINGS_V1,
   DEFAULT_SESSION_PENDING_QUEUE_DRAIN_MODE,
+  DEFAULT_SESSION_INACTIVE_RESUME_POLICY,
   DEFAULT_SESSION_PENDING_QUEUE_DELIVERY_TIMING,
   DEFAULT_USAGE_LIMIT_RECOVERY_SETTINGS_V1,
   DEFAULT_NOTIFICATIONS_SETTINGS_V1,
@@ -7115,6 +7141,7 @@ export {
   WorkspaceFileViewerPreferencesV1Schema,
   applyWorkspaceFileViewerPreferenceMutationV1,
   SESSION_PENDING_QUEUE_DRAIN_MODES,
+  SESSION_INACTIVE_RESUME_POLICY_VALUES,
   SESSION_PENDING_QUEUE_DELIVERY_TIMINGS,
   TRANSCRIPT_MESSAGE_TIMESTAMP_DISPLAY_MODE_VALUES,
   NEW_SESSION_PRESENTATION_MODES,
@@ -7175,6 +7202,7 @@ export {
   type AttentionDeliveryDecision,
   type SessionPendingQueueDeliveryTiming,
   type SessionPendingQueueDrainMode,
+  type SessionInactiveResumePolicy,
   type UsageLimitRecoverySettingsV1,
   type AttentionDeliveryPolicyV1,
   type PeerDirectPreferenceV1,
@@ -7425,6 +7453,7 @@ export {
 export * from './automations/automationOccurrenceV1.js';
 export * from './automations/automationSessionLifecycle.js';
 export * from './automations/automationEventV1.js';
+export * from './automations/automationReplyHandoffIdentityV1.js';
 export * from './automations/automationReplyHandoffStateV1.js';
 export * from './automations/automationRunExecutionRecipeV1.js';
 export {
@@ -7622,6 +7651,23 @@ export {
   type PluginComposerReferenceProviderPresentationV1,
   type PluginComposerReferenceProviderContributionV1,
 } from './plugins/contributions/composerReferenceProviders.js';
+export {
+  MAX_PLUGIN_SEARCH_ITEMS_V1,
+  MAX_PLUGIN_SEARCH_ITEM_ID_UTF8_BYTES_V1,
+  MAX_PLUGIN_SEARCH_QUERY_UTF8_BYTES_V1,
+  MAX_PLUGIN_SEARCH_ITEM_COMMAND_UTF8_BYTES_V1,
+  MAX_PLUGIN_SEARCH_SUBTITLE_CODE_POINTS_V1,
+  MAX_PLUGIN_SEARCH_TITLE_CODE_POINTS_V1,
+  PluginSearchItemV1Schema,
+  PluginSearchProviderContributionV1Schema,
+  PluginSearchQueryV1Schema,
+  PluginSearchResultV1Schema,
+  validatePluginSearchProviderContributionsV1,
+  type PluginSearchItemV1,
+  type PluginSearchProviderContributionV1,
+  type PluginSearchQueryV1,
+  type PluginSearchResultV1,
+} from './plugins/contributions/searchProviders.js';
 export {
   COMPOSER_ATTACHMENT_RUNTIME_REGISTRATION_FIELDS_V1,
   ComposerAttachmentDisplayV1Schema,
@@ -7853,6 +7899,7 @@ export {
 export {
   PLUGIN_COLLECTION_DEFAULT_DEPLOYMENT_LIMITS_V1,
   PLUGIN_COLLECTION_LIMITS_V1,
+  PLUGIN_COLLECTION_REVISION_MAX,
   PLUGIN_COLLECTION_SCHEMA_VERSION_MAX,
   PLUGIN_COLLECTION_PRIVATE_PAYLOAD_ACCOUNT_SCOPED_BLOB_KIND_V1,
   PLUGIN_COLLECTION_CONTRACT_HTTP_PATH_V1,
@@ -7886,6 +7933,7 @@ export {
   PluginCollectionForgetRequestV1Schema,
   PluginCollectionForgetResultV1Schema,
   PluginCollectionAbsenceEpochV1Schema,
+  PluginCollectionRevisionV1Schema,
   PluginCollectionIndexFieldV1Schema,
   PluginCollectionIndexPrefixQuotaV1Schema,
   PluginCollectionIndexScalarValueV1Schema,

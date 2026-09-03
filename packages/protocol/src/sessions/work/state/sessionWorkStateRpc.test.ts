@@ -201,7 +201,6 @@ describe('session work-state RPC contracts', () => {
         expect(applyRequestSchema?.parse?.({
             serviceId: ' openai-codex ',
             reason: 'usage_limit',
-            requireDirectLiveHotApply: true,
             expected: {
                 profileId: ' work ',
                 groupId: ' happier ',
@@ -214,7 +213,6 @@ describe('session work-state RPC contracts', () => {
         })).toEqual({
             serviceId: 'happier.agent.codex/openai-codex',
             reason: 'usage_limit',
-            requireDirectLiveHotApply: true,
             expected: {
                 profileId: 'work',
                 groupId: 'happier',

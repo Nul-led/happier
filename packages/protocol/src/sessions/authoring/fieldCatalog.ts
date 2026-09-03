@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { AgentExecutionTargetV1Schema } from '../../agents/executionTargetV1.js';
+import { BackendTargetRefSchema } from '../../backends/targets/backendTargetRef.js';
 import { SessionMcpSelectionV1Schema } from '../../mcp/servers/sessionSelectionV1.js';
 import { RuntimeDescriptorV1Schema } from '../metadata/runtimeDescriptorV1.js';
 import { AcpConfigOptionOverridesV1Schema } from '../metadata/metadataOverridesV1.js';
@@ -86,13 +87,29 @@ export const SessionAuthoringAutomationV1Schema = z.object({
 });
 
 /**
- * Reader-only values emitted by the current `remote-dev` predecessor's synced
- * Session-draft catalog. Current writers continue to derive their fields from
- * `draftStorage: 'sync'`, which excludes `modelId` and rejects `manual`.
- * Remove this adapter when predecessor-persisted Session drafts are no longer
- * a supported input to dev readers.
+ * Reader-only fields emitted by the published 0.2 Session-draft catalog.
+ * Current writers continue to derive their fields from `draftStorage: 'sync'`,
+ * so accepting these values cannot restore them as 0.3 write authority.
+ * Remove this bridge only after 0.2/0.3 coexistence and persisted 0.2 drafts are
+ * no longer supported inputs.
  */
-export const PredecessorSessionDraftModelIdV1Schema = z.string().trim().min(1).nullable();
+export const PREDECESSOR_SESSION_DRAFT_AUTHORING_FIELD_SCHEMAS_V1 = {
+  machineId: z.string().trim().min(1).nullable(),
+  serverId: z.string().trim().min(1).nullable(),
+  agentId: z.string().trim().min(1).nullable(),
+  backendTarget: BackendTargetRefSchema.nullable(),
+  modelId: z.string().trim().min(1).nullable(),
+  codexBackendMode: z.enum(['mcp', 'acp', 'appServer']).nullable(),
+} as const;
+
+export const PredecessorSessionDraftAuthoringFieldIdV1Schema = z.enum([
+  'machineId',
+  'serverId',
+  'agentId',
+  'backendTarget',
+  'modelId',
+  'codexBackendMode',
+]);
 const ALL_AUTHORING_CONTEXTS = [
   'newSession',
   'liveSession',

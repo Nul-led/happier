@@ -198,15 +198,6 @@ export const DaemonVoiceClientRawCredentialReviewV1Schema = z.object({
       status: z.literal('bundled_first_party'),
       identity: z.literal('Happier'),
     }).strict(),
-    z.object({
-      status: z.literal('unverified'),
-      id: z.string().trim().min(1),
-      displayName: z.string().trim().min(1),
-    }).strict(),
-    z.object({ status: z.literal('unavailable') }).strict(),
-  ]),
-  packageSignature: z.union([
-    z.object({ status: z.literal('verified'), keyId: z.string().trim().min(1) }).strict(),
     z.object({ status: z.literal('unavailable') }).strict(),
   ]),
   contribution: z.object({

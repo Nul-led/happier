@@ -1,4 +1,3 @@
-export type { ActionCaller } from './actionTypeMap.generated.js';
 export type { ActionContract } from './service.js';
 export type { ActionContribution } from './service.js';
 export type { ActionExecuteResult } from './service.js';
@@ -12,7 +11,6 @@ export type { ActionInputOption } from './inputHints.js';
 export type { ActionInputOptionValue } from './inputHints.js';
 export type { ActionInputPredicate } from './inputHints.js';
 export type { ActionSpec } from './service.js';
-export type { ActionSurfaceBindingTransform } from './actionTypeMap.generated.js';
 export type { ActionsService } from './service.js';
 export type { AdmittedTargetedOperationExecutionHandle } from './admittedTargetedOperation.js';
 export type { AdmittedTargetedOperationExecutionOptions } from './service.js';

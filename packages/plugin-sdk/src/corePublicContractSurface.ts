@@ -63,12 +63,8 @@ type _CurrentSessionUiMechanicsMustRemainPrivate = AssertNever<Extract<
     'interactions' | 'presentation'
 >>;
 type _SubagentOperationsMustBeIntentOriented = AssertTrue<Equal<
-    Exclude<keyof PluginServices['sessions']['subagents'], 'capabilities' | 'list' | 'get' | 'watch'>,
-    never
->>;
-type _SubagentCapabilitiesMustUseIntentVocabulary = AssertTrue<Equal<
-    keyof ReturnType<PluginServices['sessions']['subagents']['capabilities']>,
-    'list' | 'watch'
+    keyof PluginServices['sessions']['subagents'],
+    'list' | 'get' | 'watch'
 >>;
 type _ServiceIdsMustBeExact = AssertTrue<Equal<
     PluginServiceId,

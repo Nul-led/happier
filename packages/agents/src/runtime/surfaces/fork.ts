@@ -1,11 +1,11 @@
 import type {
-  BackendSurfaceAvailabilityV1,
+  AgentSurfaceAvailabilityV1,
   RuntimeDescriptorV1,
 } from '@happier-dev/protocol';
 
 import type {
-  BackendSessionLaunchHintsV1,
-  BackendSurfaceResultV1,
+  AgentSessionLaunchHintsV1,
+  AgentSurfaceResultV1,
   SessionStateUpdateV1,
 } from './primitives.js';
 
@@ -52,7 +52,7 @@ export type AcpForkSessionRequestV1 = Readonly<{
   signal?: AbortSignal;
 }>;
 
-export type AcpLoadSessionResultV1 = BackendSurfaceResultV1<
+export type AcpLoadSessionResultV1 = AgentSurfaceResultV1<
   Readonly<{
     providerSessionId: string;
     sessionStateUpdates?: readonly SessionStateUpdateV1[];
@@ -81,7 +81,7 @@ export type ForkRequestV1 = Readonly<{
 
 export type ForkResultV1 = Readonly<{
   providerSessionId: string;
-  launch: BackendSessionLaunchHintsV1;
+  launch: AgentSessionLaunchHintsV1;
 }>;
 
 export type ReplayForkChildLaunchRequestV1 = Readonly<{
@@ -92,9 +92,9 @@ export type ReplayForkChildLaunchRequestV1 = Readonly<{
 }>;
 
 export type ForkSurfaceV1 = Readonly<{
-  evaluateAvailability?: (request: ForkAvailabilityRequestV1) => BackendSurfaceAvailabilityV1 | Promise<BackendSurfaceAvailabilityV1>;
+  evaluateAvailability?: (request: ForkAvailabilityRequestV1) => AgentSurfaceAvailabilityV1 | Promise<AgentSurfaceAvailabilityV1>;
   fork?: (request: ForkRequestV1) => ForkResultV1 | null | Promise<ForkResultV1 | null>;
   resolveReplayChildLaunch?: (
     request: ReplayForkChildLaunchRequestV1
-  ) => BackendSessionLaunchHintsV1 | null | Promise<BackendSessionLaunchHintsV1 | null>;
+  ) => AgentSessionLaunchHintsV1 | null | Promise<AgentSessionLaunchHintsV1 | null>;
 }>;

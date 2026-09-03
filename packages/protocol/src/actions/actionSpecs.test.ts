@@ -1866,6 +1866,26 @@ describe('Action Spec Registry', () => {
     expect(spec.surfaces.voice).toBe(true);
   });
 
+  it('keeps the execution-run observation and control surface coherent for agents', () => {
+    for (const id of ['execution.run.start', 'execution.run.list', 'execution.run.get', 'execution.run.wait', 'execution.run.stop', 'execution.run.send'] as const) {
+      expect(getActionSpec(id).surfaces.agent, id).toBe(true);
+    }
+  });
+
+  it('preserves omitted delegate permission for causal admission', () => {
+    const parsed = getActionSpec('subagents.delegate.start').inputSchema.parse({
+      backendTargetKeys: ['agent:codex'],
+      instructions: 'Delegate this task.',
+    });
+    expect(parsed.permissionMode).toBeUndefined();
+  });
+
+  it('rejects a sidechain id without sidechain scope at the session-events schema owner', () => {
+    const schema = getActionSpec('session.events.get').inputSchema;
+    expect(schema.safeParse({ sessionId: 'session_1', sidechainId: 'side_1' }).success).toBe(false);
+    expect(schema.safeParse({ sessionId: 'session_1', scope: 'sidechain', sidechainId: 'side_1' }).success).toBe(true);
+  });
+
   it('documents the four execution-run Session scope cases without a second Action family', () => {
     const start = getActionSpec('execution.run.start');
     const sessionId = start.inputHints?.fields.find((field) => field.path === 'sessionId');
@@ -1931,11 +1951,15 @@ describe('Action Spec Registry', () => {
     const startExample = JSON.parse(getActionSpec('execution.run.start').examples?.mcp?.argsExample ?? '{}');
     const listExample = JSON.parse(getActionSpec('execution.run.list').examples?.voice?.argsExample ?? '{}');
     const getExample = JSON.parse(getActionSpec('execution.run.get').examples?.voice?.argsExample ?? '{}');
-    expect(startExample.sessionId).toBe('{{sessionId}}');
+    expect(startExample).not.toHaveProperty('sessionId');
     expect(startExample.waitForCompletion).toBe(true);
     expect(startExample.waitTimeoutSeconds).toBe(60);
     expect(listExample).not.toHaveProperty('sessionId');
     expect(getExample.sessionId).toBeNull();
+
+    for (const id of ['review.start', 'subagents.plan.start', 'subagents.delegate.start', 'voice_agent.start'] as const) {
+      expect(JSON.parse(getActionSpec(id).examples?.voice?.argsExample ?? '{}')).not.toHaveProperty('sessionId');
+    }
 
     const start = getActionSpec('execution.run.start');
     const waitForCompletion = start.inputHints?.fields.find((field) => field.path === 'waitForCompletion');
@@ -4023,15 +4047,6 @@ describe('Action Spec Registry', () => {
       expect(text).toContain('not parallelism capacity');
       expect(text).not.toContain('Each backend runs as its own execution run');
     }
-  });
-
-  it('defaults delegate start permission mode to workspace_write', () => {
-    const spec = getActionSpec('subagents.delegate.start');
-    const parsed = (spec.inputSchema as any).parse({
-      backendTargetKeys: ['agent:codex'],
-      instructions: 'Do it.',
-    });
-    expect(parsed.permissionMode).toBe('workspace_write');
   });
 
   it('advertises and validates the canonical delegate permission modes at the tool boundary', () => {

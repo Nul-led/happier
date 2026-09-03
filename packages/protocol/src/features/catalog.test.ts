@@ -144,6 +144,15 @@ describe('feature catalog', () => {
     });
   });
 
+  it('represents server search independently from the client memory-search surface', () => {
+    expect(FEATURE_CATALOG.search).toMatchObject({
+      representation: 'server',
+      defaultFailMode: 'fail_closed',
+      dependencies: [],
+    });
+    expect(FEATURE_CATALOG['memory.search']?.representation).toBe('client');
+  });
+
   it('includes terminal byte-stream transport as server-represented embedded PTY dependent feature', () => {
     expect(isFeatureId('terminal.transport.byteStream')).toBe(true);
     expect(FEATURE_CATALOG['terminal.transport.byteStream']?.representation).toBe('server');

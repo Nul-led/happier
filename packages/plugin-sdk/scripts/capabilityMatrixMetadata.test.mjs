@@ -12,61 +12,160 @@ const EXTERNAL_COMPOSER_AUTHOR_PROOF = 'packages/plugin-ui/fixtures/external-aut
 const EXTERNAL_COMPOSER_DOGFOOD_PROOF = 'packages/tests/fixtures/plugin-platform/composer-external-dogfood/src/index.mjs';
 const CHANNELS_COMPOSER_PROOF = 'packages/plugins/channels/src/manifest.ts';
 
-function assertDeferredExternalDevelopmentProof(declaration) {
+/**
+ * A row is deferred only when the applicable realm has no binder or lifecycle
+ * owner behind the declaration, so the host cannot serve the capability at
+ * all. A missing maintained consumer is not a reason.
+ */
+function assertDeferredWithoutHostAuthority(declaration) {
   assert.equal(declaration.availabilityDisposition, 'deferred');
+  assert.equal(declaration.lifecycle, 'declaration-only');
   assert.equal(declaration.provingConsumer, null);
-  assert.match(declaration.unblockCondition, /maintained external development-source plugin/u);
-  assert.match(declaration.unblockCondition, /current loaded development stack/u);
-  assert.match(declaration.unblockCondition, /real invocation/u);
-  assert.match(declaration.unblockCondition, /currentness/u);
+  assert.equal(declaration.specialistOwner, null);
+  assert.equal(declaration.lifecycleOwner, null);
+  assert.match(declaration.unblockCondition, /no host authority or service owner/u);
 }
 
-test('keeps unsupported capability families deferred without treating the external author fixture as proof', () => {
-  const declarations = [
-    ...['notifications', 'notificationChannels']
-      .map((family) => CAPABILITY_MATRIX_DECLARATIONS_V1.manifestFamilies[family]),
-    CAPABILITY_MATRIX_DECLARATIONS_V1.services.secrets,
-    CAPABILITY_MATRIX_DECLARATIONS_V1.services.notifications,
-    CAPABILITY_MATRIX_DECLARATIONS_V1.subpaths['./notifications'],
-  ];
+function everyDeclaration() {
+  return Object.entries(CAPABILITY_MATRIX_DECLARATIONS_V1).flatMap(([group, rows]) => (
+    Object.entries(rows).map(([id, declaration]) => [`${group}.${id}`, declaration])
+  ));
+}
 
-  for (const declaration of declarations) {
-    assertDeferredExternalDevelopmentProof(declaration);
-    assert.notEqual(declaration.provingConsumer, EXTERNAL_AUTHOR_PROOF);
+test('defers exactly the capabilities with no applicable-realm binder', () => {
+  const deferred = everyDeclaration()
+    .filter(([, declaration]) => declaration.availabilityDisposition === 'deferred')
+    .map(([id]) => id)
+    .sort();
+
+  // `hostAccess/resolve.ts` resolves these three unavailable: they are declared
+  // in the manifest catalog with no host authority or service owner behind
+  // them. Every other capability has a producer, a public projection, and a
+  // binder in the realm it applies to.
+  assert.deepEqual(deferred, [
+    'hostAccess.browser',
+    'hostAccess.clipboard',
+    'hostAccess.externalLinks',
+  ]);
+  for (const [, declaration] of everyDeclaration()
+    .filter(([, row]) => row.availabilityDisposition === 'deferred')) {
+    assertDeferredWithoutHostAuthority(declaration);
   }
 });
 
-test('HostAccess declarations name the terminal session path and deferred declaration sources', () => {
+test('decides availability without requiring a maintained consumer', () => {
+  // These rows carry no maintained first-party or fixture consumer. Their
+  // producer, public projection, and realm binder are what makes them
+  // available; the loaded journey stays recorded separately.
+  const consumerFreeAvailability = [
+    ...['commands', 'tools', 'notifications', 'notificationChannels', 'voiceModelPacks',
+      'daemonDatabases', 'openableContentViewers', 'mcp.servers']
+      .map((family) => [`manifestFamilies.${family}`, CAPABILITY_MATRIX_DECLARATIONS_V1.manifestFamilies[family]]),
+    ...['secrets', 'events', 'fs', 'providers', 'resources', 'mcp', 'notifications']
+      .map((service) => [`services.${service}`, CAPABILITY_MATRIX_DECLARATIONS_V1.services[service]]),
+    ['hostAccess.mcp', CAPABILITY_MATRIX_DECLARATIONS_V1.hostAccess.mcp],
+    ['subpaths../notifications', CAPABILITY_MATRIX_DECLARATIONS_V1.subpaths['./notifications']],
+  ];
+
+  for (const [id, declaration] of consumerFreeAvailability) {
+    assert.equal(declaration.availabilityDisposition, 'available', id);
+    assert.equal(declaration.provingConsumer, null, id);
+    assert.equal(Object.hasOwn(declaration, 'unblockCondition'), false, id);
+    assert.notEqual(declaration.provingConsumer, EXTERNAL_AUTHOR_PROOF, id);
+  }
+});
+
+test('HostAccess declarations name the terminal session lifecycle and no deferred host owner', () => {
+  // Declarations record availability, optional consumer evidence, and the
+  // exceptional lifecycle no catalog owns. Binder and lifecycle owner belong to
+  // the canonical HostAccess owner map, so this file never authors them for an
+  // available row.
   const terminal = CAPABILITY_MATRIX_DECLARATIONS_V1.hostAccess.terminal;
-  assert.equal(
-    terminal.producer,
-    'apps/cli/src/agent/runtime/registry/engineRegistry/nativeAgentSessionHostServiceOwners.ts',
-  );
-  assert.equal(terminal.lifecycle, 'session-runtime');
-  assert.equal(terminal.specialistOwner, 'apps/cli/src/plugins/runtime/context/terminalHost.ts');
-  assert.equal(terminal.availabilityDisposition, 'available');
-  assert.equal(terminal.provingConsumer, 'packages/plugins/claude/src/manifest.ts');
-  assert.notEqual(
-    terminal.producer,
-    terminal.provingConsumer,
-  );
-  assert.notEqual(
-    terminal.specialistOwner,
-    terminal.provingConsumer,
-  );
+  assert.deepEqual(terminal, {
+    lifecycle: 'session-runtime',
+    availabilityDisposition: 'available',
+    provingConsumer: 'packages/plugins/claude/src/manifest.ts',
+  });
+  for (const [id, declaration] of everyDeclaration()
+    .filter(([, row]) => row.availabilityDisposition === 'available')) {
+    assert.equal(Object.hasOwn(declaration, 'specialistOwner'), false, id);
+    assert.equal(Object.hasOwn(declaration, 'lifecycleOwner'), false, id);
+  }
   assert.equal(
     Object.hasOwn(CAPABILITY_MATRIX_DECLARATIONS_V1.hostAccess, 'network.intercept'),
     false,
   );
   for (const capability of ['browser', 'clipboard', 'externalLinks']) {
     assert.deepEqual(CAPABILITY_MATRIX_DECLARATIONS_V1.hostAccess[capability], {
-      producer: 'packages/protocol/src/plugins/manifest/v2.ts',
       lifecycle: 'declaration-only',
-      specialistOwner: 'apps/cli/src/plugins/runtime/lifecycle/activation/policy.ts',
+      specialistOwner: null,
+      lifecycleOwner: null,
       availabilityDisposition: 'deferred',
       provingConsumer: null,
       unblockCondition: CAPABILITY_MATRIX_DECLARATIONS_V1.hostAccess[capability].unblockCondition,
     });
+    assertDeferredWithoutHostAuthority(CAPABILITY_MATRIX_DECLARATIONS_V1.hostAccess[capability]);
+  }
+});
+
+test('the cited invocation-service owner really binds every published service id', async () => {
+  // Service rows cite one host binder for all of `PluginServices`. That claim
+  // is only true while the host descriptor map covers exactly the published
+  // ids; a published id with no host descriptor has no binder and must be
+  // deferred instead.
+  const repoRoot = resolve(import.meta.dirname, '..', '..', '..');
+  const [publicServices, hostServices] = await Promise.all([
+    readFile(resolve(repoRoot, 'packages/plugin-sdk/src/services/index.ts'), 'utf8'),
+    readFile(
+      resolve(repoRoot, 'apps/cli/src/plugins/runtime/invocation/services/unavailable.ts'),
+      'utf8',
+    ),
+  ]);
+  const publishedIds = [...publicServices
+    .slice(publicServices.indexOf('export type PluginServiceId'))
+    .split(';')[0]
+    .matchAll(/'([a-zA-Z]+)'/gu)]
+    .map(([, id]) => id)
+    .sort();
+  const descriptors = hostServices.slice(hostServices.indexOf('export const PLUGIN_SERVICE_DESCRIPTORS'));
+  const boundIds = [...descriptors.matchAll(/^ {4}([a-zA-Z]+): \{$/gmu)]
+    .map(([, id]) => id)
+    .sort();
+
+  assert.equal(publishedIds.length > 0, true);
+  assert.deepEqual(boundIds, publishedIds);
+  for (const id of publishedIds) {
+    assert.equal(
+      CAPABILITY_MATRIX_DECLARATIONS_V1.services[id].availabilityDisposition,
+      'available',
+      id,
+    );
+  }
+  assert.equal(descriptors.includes('createAvailable('), true);
+});
+
+test('defers exactly the HostAccess capabilities the host resolver refuses to serve', async () => {
+  // The resolver is the cited HostAccess binder. Its own refusal arms are the
+  // evidence for deferral, so a capability it starts serving cannot stay
+  // deferred and one it stops serving cannot stay available.
+  const repoRoot = resolve(import.meta.dirname, '..', '..', '..');
+  const resolver = await readFile(
+    resolve(repoRoot, 'apps/cli/src/plugins/runtime/hostAccess/resolve.ts'),
+    'utf8',
+  );
+  const refusalArm = resolver.match(
+    /((?:\s*case '[a-zA-Z.]+':)+)\s*return 'unavailable';\s*\}\s*\}/u,
+  );
+  assert.notEqual(refusalArm, null);
+  const refused = [...refusalArm[1].matchAll(/case '([a-zA-Z.]+)':/gu)].map(([, capability]) => capability).sort();
+
+  assert.deepEqual(refused, ['browser', 'clipboard', 'externalLinks']);
+  for (const [capability, declaration] of Object.entries(CAPABILITY_MATRIX_DECLARATIONS_V1.hostAccess)) {
+    assert.equal(
+      declaration.availabilityDisposition === 'deferred',
+      refused.includes(capability),
+      capability,
+    );
   }
 });
 
@@ -109,33 +208,21 @@ test('publishes r0.47 browser and request-policy authoring without promoting Hos
   assert.doesNotMatch(consumer, /capability:\s*'network\.intercept'/u);
 });
 
-test('keeps external Commands and Tools deferred until loaded development-source proof', async () => {
-  const consumerPath = EXTERNAL_AUTHOR_PROOF;
-  const repoRoot = resolve(import.meta.dirname, '..', '..', '..');
 
-  assertDeferredExternalDevelopmentProof(CAPABILITY_MATRIX_DECLARATIONS_V1.manifestFamilies.commands);
-  assert.match(CAPABILITY_MATRIX_DECLARATIONS_V1.manifestFamilies.commands.unblockCondition, /canonical plugin command catalog/u);
-  assertDeferredExternalDevelopmentProof(CAPABILITY_MATRIX_DECLARATIONS_V1.manifestFamilies.tools);
-  assert.match(CAPABILITY_MATRIX_DECLARATIONS_V1.manifestFamilies.tools.unblockCondition, /real daemon MCP catalog/u);
 
-  const consumer = await readFile(resolve(repoRoot, consumerPath), 'utf8');
-  assert.match(consumer, /commands:\s*\{/u);
-  assert.match(consumer, /tools:\s*\{/u);
-});
-
-test('keeps unproven invocation services deferred until loaded development-source proof', () => {
-  for (const service of ['events', 'fs', 'providers', 'resources']) {
-    assertDeferredExternalDevelopmentProof(CAPABILITY_MATRIX_DECLARATIONS_V1.services[service]);
-  }
-});
-
-test('retains notification source coverage without claiming external lifecycle proof', async () => {
+test('retains notification source coverage without claiming loaded lifecycle proof', async () => {
   const repoRoot = resolve(import.meta.dirname, '..', '..', '..');
   for (const family of ['notifications', 'notificationChannels']) {
-    assertDeferredExternalDevelopmentProof(CAPABILITY_MATRIX_DECLARATIONS_V1.manifestFamilies[family]);
+    assert.equal(
+      CAPABILITY_MATRIX_DECLARATIONS_V1.manifestFamilies[family].availabilityDisposition,
+      'available',
+    );
   }
-  assertDeferredExternalDevelopmentProof(CAPABILITY_MATRIX_DECLARATIONS_V1.services.notifications);
-  assertDeferredExternalDevelopmentProof(CAPABILITY_MATRIX_DECLARATIONS_V1.subpaths['./notifications']);
+  assert.equal(CAPABILITY_MATRIX_DECLARATIONS_V1.services.notifications.availabilityDisposition, 'available');
+  assert.equal(
+    CAPABILITY_MATRIX_DECLARATIONS_V1.subpaths['./notifications'].availabilityDisposition,
+    'available',
+  );
 
   const consumer = await readFile(resolve(repoRoot, EXTERNAL_AUTHOR_PROOF), 'utf8');
   assert.match(consumer, /from '@happier-dev\/plugin-sdk\/notifications'/u);
@@ -145,9 +232,9 @@ test('retains notification source coverage without claiming external lifecycle p
   assert.match(consumer, /context\.services\.notifications\.send\(/u);
 });
 
-test('retains SecretsService source coverage without claiming external lifecycle proof', async () => {
+test('retains SecretsService source coverage without claiming loaded lifecycle proof', async () => {
   const repoRoot = resolve(import.meta.dirname, '..', '..', '..');
-  assertDeferredExternalDevelopmentProof(CAPABILITY_MATRIX_DECLARATIONS_V1.services.secrets);
+  assert.equal(CAPABILITY_MATRIX_DECLARATIONS_V1.services.secrets.availabilityDisposition, 'available');
 
   const consumer = await readFile(resolve(repoRoot, EXTERNAL_AUTHOR_PROOF), 'utf8');
   assert.match(consumer, /secrets:\s*\[\{\s*id:\s*DOCUMENT_REVIEW_WEBHOOK_TOKEN\s*\}\]/u);

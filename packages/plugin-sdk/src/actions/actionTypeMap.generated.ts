@@ -3,7 +3,6 @@
 
 import type { JsonValue, PluginJsonSchema, PluginJsonValueV2 } from '../identity.js';
 import type { AgentExternalSessionTranscriptRawRecord } from '../externalSessions.js';
-import type { PluginAutomationRunCause as AutomationRunCause } from '../automations.js';
 import type { PluginUiJsonValueV1 } from '../ui/publicContract.js';
 
 export type PluginAgentExternalSessionLinkDataArray = readonly PluginAgentExternalSessionLinkDataValue[];
@@ -14,24 +13,6 @@ export type JSONType = string | number | boolean | null | JSONType[] | { [key: s
 
 export type PluginJsonSchemaV2 = PluginJsonSchema;
 
-export type ActionCaller = Readonly<{
-    kind: 'host';
-}> | Readonly<{
-    kind: 'plugin';
-    pluginId: string;
-    contributionLocalId?: string | undefined;
-    immutableGenerationId?: string | undefined;
-    materialization?: {
-        machineId: string;
-        materializationId: string;
-        pluginId: string;
-    } | undefined;
-}> | Readonly<{
-    kind: 'automationRun';
-    runId: string;
-    automationId: string;
-    cause: AutomationRunCause;
-}>;
 export type PluginPolicyExpressionV2 = {
     fact: string;
     operator: string;
@@ -44,62 +25,12 @@ export type PluginPolicyExpressionV2 = {
     not: PluginPolicyExpressionV2;
 };
 export type ActionUiPlacement = 'agent_input_chips' | 'browser_context' | 'session_header' | 'session_info' | 'session_action_menu' | 'pending_messages' | 'command_palette' | 'slash_command' | 'voice_panel' | 'run_list' | 'run_card';
-export type ActionSurfaceBindingCaller = Readonly<{
-    kind: 'host';
-}> | Readonly<{
-    kind: 'plugin';
-    pluginId: string;
-    contributionLocalId?: string | undefined;
-    immutableGenerationId?: string | undefined;
-    materialization?: {
-        machineId: string;
-        materializationId: string;
-        pluginId: string;
-    } | undefined;
-}> | Readonly<{
-    kind: 'automationRun';
-    runId: string;
-    automationId: string;
-    cause: AutomationRunCause;
-}>;
-export type ActionSurfaceBindingContext = {
-    readonly actionId: 'action.spec.search' | 'action.spec.get' | 'action.options.resolve' | 'action.invoke' | 'session.open' | 'session.fork' | 'session.continue_with_replay' | 'session.rollback' | 'session.checkpoint_code_rollback' | 'session.checkpoint' | 'session.restore' | 'session.handoff' | 'session.handoff.prepare_target' | 'session.handoff.prepare_target.resume' | 'session.handoff.prepare_target_result.get' | 'session.handoff.commit' | 'session.handoff.abort' | 'session.handoff.status.get' | 'session.spawn_new' | 'paths.list_recent' | 'projects.list' | 'prompts.invocations.list' | 'prompts.invocation.resolve' | 'machines.list' | 'servers.list' | 'review.engines.list' | 'agents.backends.list' | 'agents.models.list' | 'agents.config_options.list' | 'agents.session_modes.list' | 'sessions.spawn.profiles.list' | 'sessions.spawn.connected_services.list' | 'sessions.spawn.mcp_servers.preview' | 'session.message.send' | 'session.stop' | 'session.title.set' | 'session.model.set' | 'session.permission_mode.set' | 'session.archive' | 'session.unarchive' | 'session.status.get' | 'session.work_state.get' | 'session.goal.get' | 'session.goal.set' | 'session.goal.clear' | 'session.usageLimit.waitResume.enable' | 'session.usageLimit.waitResume.cancel' | 'session.usageLimit.checkNow' | 'session.usageLimit.consumeResetCredit' | 'session.terminalComposer.clear' | 'session.pendingInput.interruptAndRun' | 'session.vendor_plugin_catalog.list' | 'session.skill_catalog.list' | 'session.history.get' | 'session.wait.idle' | 'review.start' | 'subagents.plan.start' | 'subagents.delegate.start' | 'voice_agent.start' | 'reviews.comments.create' | 'reviews.comments.list' | 'reviews.comments.get' | 'reviews.comments.transition' | 'reviews.comments.edit' | 'reviews.comments.reply' | 'reviews.comments.redact' | 'reviews.comments.setDisposition' | 'reviews.comments.attachEvidence' | 'reviews.comments.bulkTransition' | 'reviews.comments.claimPublicationDispatch' | 'sessions.subagents.list' | 'sessions.subagents.get' | 'sessions.subagents.watch' | 'sessions.subagents.upsert' | 'sessions.subagents.updateStatus' | 'sessions.subagents.complete' | 'execution.run.start' | 'execution.run.list' | 'execution.run.get' | 'execution.run.send' | 'execution.run.ensure' | 'execution.run.ensure_or_start' | 'execution.run.stream.start' | 'execution.run.stream.read' | 'execution.run.stream.cancel' | 'execution.run.stop' | 'execution.run.action' | 'execution.run.wait' | 'session.target.primary.set' | 'session.target.tracked.set' | 'session.list' | 'session.activity.get' | 'session.messages.recent.get' | 'session.transcript.get' | 'session.events.get' | 'session.log.tail' | 'transcript.page' | 'transcript.readAfter' | 'transcript.follow' | 'transcript.unfollow' | 'transcript.import' | 'transcript.search' | 'session.permission.respond' | 'session.permission.remote.pending.list' | 'session.permission.remote.respond' | 'session.user_action.remote.answer' | 'session.permission.remote.grants.list' | 'session.permission.remote.grants.revoke' | 'session.user_action.answer' | 'session.mode.set' | 'sessions.external.candidates.list' | 'sessions.external.link.ensure' | 'sessions.external.follow' | 'sessions.external.unfollow' | 'sessions.external.backgroundFollow.set' | 'sessions.external.status.get' | 'sessions.external.transcript.page' | 'sessions.external.transcript.readAfter' | 'sessions.external.takeover' | 'sessions.external.materialize.start' | 'sessions.external.takeover.start' | 'sessions.external.operation.status.get' | 'sessions.external.operation.cancel' | 'sessions.external.operation.resume' | 'sessions.external.operation.retry' | 'sessions.external.operation.discard' | 'ui.voice_global.reset' | 'ui.voice_agent.teleport' | 'ui.current_context.read' | 'ui.current_context.command.invoke' | 'ui.pet.choose' | 'memory.search' | 'memory.get_window' | 'memory.ensure_up_to_date' | 'prompt_doc.update' | 'prompt_bundle.update' | 'prompt_asset.export' | 'prompt_registry.install' | 'daemon.promptAssets.discover' | 'daemon.promptAssets.delete' | 'daemon.promptRegistry.scanSource' | 'daemon.promptRegistry.install' | 'daemon.filesystem.readFile' | 'daemon.filesystem.writeFile' | 'daemon.filesystem.listDirectory' | 'daemon.filesystem.getDirectoryTree' | 'daemon.filesystem.listRoots' | 'daemon.filesystem.browseDirectory' | 'bugreport.collectDiagnostics' | 'bugreport.getLogTail' | 'bugreport.uploadArtifact' | 'browser.view.open' | 'browser.view.close' | 'browser.view.focus' | 'browser.target.set' | 'browser.navigate' | 'browser.reload' | 'browser.goBack' | 'browser.goForward' | 'browser.stop' | 'browser.diagnostics.snapshot' | 'browser.diagnostics.clear' | 'browser.diagnostics.pause' | 'browser.diagnostics.resume' | 'browser.diagnostics.eval' | 'browser.diagnostics.getProperties' | 'browser.diagnostics.releaseObjectGroup' | 'browser.diagnostics.elementPicker.start' | 'browser.diagnostics.elementPicker.cancel' | 'browser.context.capturePage' | 'browser.context.captureScreenshot' | 'browser.context.captureSelectedElement' | 'browser.context.captureNetworkSummary' | 'browser.context.captureConsoleSummary' | 'browser.context.annotation.start' | 'browser.context.annotation.cancel' | 'browser.context.annotation.captureRegion' | 'browser.context.annotation.captureElement' | 'browser.context.annotation.attachComment' | 'browser.context.annotation.attachStroke' | 'browser.context.annotation.attachStyleIntent' | 'browser.context.attachToComposer' | 'browser.context.attachToAgentTurn' | 'browser.context.clear' | 'browser.automation.status' | 'browser.automation.snapshot' | 'browser.automation.semanticSnapshot' | 'browser.automation.queryElements' | 'browser.automation.waitFor' | 'browser.automation.timeline.get' | 'browser.automation.cancelActive' | 'browser.automation.navigate' | 'browser.automation.reload' | 'browser.automation.goBack' | 'browser.automation.goForward' | 'browser.automation.click' | 'browser.automation.tap' | 'browser.automation.type' | 'browser.automation.press' | 'browser.automation.scroll' | 'browser.automation.hover' | 'browser.automation.focus' | 'browser.automation.select' | 'browser.automation.setValue' | 'browser.automation.upload' | 'browser.automation.drag' | 'browser.recording.start' | 'browser.recording.stop' | 'browser.recording.cancel' | 'browser.recording.status' | 'browser.recording.listForView' | 'browser.recording.discard' | 'browser.recording.cleanupExpired' | 'browser.recording.attachToComposer' | 'localServices.inventory.list' | 'localServices.inventory.refresh' | 'localServices.launcher.snapshot' | 'localServices.launcher.start' | 'localServices.launcher.openPreview' | 'localServices.launcher.registerPreview' | 'localServices.launcher.history.clear' | 'localServices.preview.openOrCreate' | 'localServices.preview.status' | 'localServices.preview.revoke' | 'localServices.publicPreview.create' | 'localServices.publicPreview.status' | 'localServices.publicPreview.revoke' | 'localServices.publicPreview.copyUrl' | 'localServices.actions.copyUrl' | 'localServices.actions.openPreview' | 'localServices.actions.forget' | 'localServices.actions.stopManaged' | 'localServices.actions.restartManaged' | 'localServices.actions.terminateDetected' | 'peerMediation.observability.snapshot' | 'peerMediation.observability.subscribe' | 'peerMediation.observability.unsubscribe' | 'devices.simulator.list' | 'devices.simulator.stream.keyframe' | 'devices.simulator.stream.snapshot' | 'devices.simulator.stream.quality.set' | 'devices.simulator.stream.fps.set' | 'devices.simulator.stream.scale.set' | 'devices.simulator.lease.acquire' | 'devices.simulator.lease.renew' | 'devices.simulator.lease.release' | 'devices.simulator.input.tap' | 'devices.simulator.input.swipe' | 'devices.simulator.input.text' | 'devices.simulator.input.key' | 'devices.simulator.input.button' | 'devices.simulator.input.orientation' | 'devices.simulator.input.pinch' | 'devices.simulator.input.rotate' | 'devices.simulator.sideband.request' | 'approval.request.list' | 'approval.request.get' | 'approval.request.create' | 'approval.request.decide' | 'plugins.scaffold' | 'plugins.install' | 'plugins.uninstall' | 'plugins.dev.submit' | 'plugins.dev.install' | 'plugins.dev.typecheck' | 'plugins.dev.build' | 'plugins.dev.test' | 'plugins.doctor' | 'plugins.pack' | 'plugins.reload' | 'plugins.list' | 'plugins.change.status' | 'plugins.sessionHooks.status.get' | 'plugins.sessionHooks.install' | 'plugins.sessionHooks.disable' | 'plugins.sessionHooks.enable' | 'plugins.sessionHooks.uninstall' | 'plugins.settings.list' | 'plugins.settings.get' | 'plugins.settings.set' | 'plugins.settings.reset' | 'plugins.settings.secret.status' | 'plugins.settings.secret.bind' | 'plugins.settings.secret.unbind' | 'plugins.settings.secret.delete' | 'plugins.permissions.grants.list' | 'plugins.permissions.grants.request' | 'plugins.permissions.grants.grant' | 'plugins.permissions.grants.revoke' | 'plugins.permissions.grants.dismissRequest' | 'plugin.webhook.endpoint.ensure' | 'plugin.webhook.endpoint.read' | 'plugin.webhook.endpoint.revoke' | 'plugin.webhook.endpoint.retarget' | 'plugin.webhook.endpoint.checkCorrespondence' | 'plugin.webhook.delivery.movePending' | 'plugin.webhook.endpoint.credential.configure' | 'plugin.webhook.endpoint.credential.rotate' | 'plugin.webhook.endpoint.credential.finishRotation' | 'account.plugins.data.erase' | 'account.sessions.signOutEverywhere' | 'account.apiTokens.create' | 'account.apiTokens.list' | 'account.apiTokens.revoke' | 'account.apiTokens.revokeAll' | 'automation.event.sources.list' | 'automation.event.admit' | 'automation.event.source.status.report' | 'automation.conversation.targets.list' | 'automation.conversation.target.verify' | 'automation.conversation.admit' | 'scm.pullRequest.list' | 'scm.pullRequest.get' | 'scm.pullRequest.openOrReuse' | 'scm.pullRequest.openCompose' | 'scm.pullRequest.checkout' | 'scm.pullRequest.prepareWorktree' | 'scm.reviewWorkspace.materializePrepared' | 'scm.pullRequest.runStacked' | 'scm.repository.clone' | 'scm.repository.init' | 'scm.repository.removeIndexLock' | 'scm.hostingRepository.describePublishTargets' | 'scm.hostingRepository.publish' | 'scm.diffSummary.generate';
-    readonly surface: 'plugin' | 'api' | 'rpc';
-    readonly caller: ActionCaller;
-    readonly defaultSessionId?: string | null | undefined;
-    readonly serverId?: string | null | undefined;
-    readonly externalActionTarget?: {
-        kind: 'machine';
-        machineId: string;
-    } | {
-        kind: 'session';
-        sessionId: string;
-    } | undefined;
-    readonly signal?: AbortSignal | undefined;
-    readonly input?: unknown;
-};
-export type ActionSurfaceBindingTransform = (value: unknown, context: Readonly<{
-    actionId: 'action.spec.search' | 'action.spec.get' | 'action.options.resolve' | 'action.invoke' | 'session.open' | 'session.fork' | 'session.continue_with_replay' | 'session.rollback' | 'session.checkpoint_code_rollback' | 'session.checkpoint' | 'session.restore' | 'session.handoff' | 'session.handoff.prepare_target' | 'session.handoff.prepare_target.resume' | 'session.handoff.prepare_target_result.get' | 'session.handoff.commit' | 'session.handoff.abort' | 'session.handoff.status.get' | 'session.spawn_new' | 'paths.list_recent' | 'projects.list' | 'prompts.invocations.list' | 'prompts.invocation.resolve' | 'machines.list' | 'servers.list' | 'review.engines.list' | 'agents.backends.list' | 'agents.models.list' | 'agents.config_options.list' | 'agents.session_modes.list' | 'sessions.spawn.profiles.list' | 'sessions.spawn.connected_services.list' | 'sessions.spawn.mcp_servers.preview' | 'session.message.send' | 'session.stop' | 'session.title.set' | 'session.model.set' | 'session.permission_mode.set' | 'session.archive' | 'session.unarchive' | 'session.status.get' | 'session.work_state.get' | 'session.goal.get' | 'session.goal.set' | 'session.goal.clear' | 'session.usageLimit.waitResume.enable' | 'session.usageLimit.waitResume.cancel' | 'session.usageLimit.checkNow' | 'session.usageLimit.consumeResetCredit' | 'session.terminalComposer.clear' | 'session.pendingInput.interruptAndRun' | 'session.vendor_plugin_catalog.list' | 'session.skill_catalog.list' | 'session.history.get' | 'session.wait.idle' | 'review.start' | 'subagents.plan.start' | 'subagents.delegate.start' | 'voice_agent.start' | 'reviews.comments.create' | 'reviews.comments.list' | 'reviews.comments.get' | 'reviews.comments.transition' | 'reviews.comments.edit' | 'reviews.comments.reply' | 'reviews.comments.redact' | 'reviews.comments.setDisposition' | 'reviews.comments.attachEvidence' | 'reviews.comments.bulkTransition' | 'reviews.comments.claimPublicationDispatch' | 'sessions.subagents.list' | 'sessions.subagents.get' | 'sessions.subagents.watch' | 'sessions.subagents.upsert' | 'sessions.subagents.updateStatus' | 'sessions.subagents.complete' | 'execution.run.start' | 'execution.run.list' | 'execution.run.get' | 'execution.run.send' | 'execution.run.ensure' | 'execution.run.ensure_or_start' | 'execution.run.stream.start' | 'execution.run.stream.read' | 'execution.run.stream.cancel' | 'execution.run.stop' | 'execution.run.action' | 'execution.run.wait' | 'session.target.primary.set' | 'session.target.tracked.set' | 'session.list' | 'session.activity.get' | 'session.messages.recent.get' | 'session.transcript.get' | 'session.events.get' | 'session.log.tail' | 'transcript.page' | 'transcript.readAfter' | 'transcript.follow' | 'transcript.unfollow' | 'transcript.import' | 'transcript.search' | 'session.permission.respond' | 'session.permission.remote.pending.list' | 'session.permission.remote.respond' | 'session.user_action.remote.answer' | 'session.permission.remote.grants.list' | 'session.permission.remote.grants.revoke' | 'session.user_action.answer' | 'session.mode.set' | 'sessions.external.candidates.list' | 'sessions.external.link.ensure' | 'sessions.external.follow' | 'sessions.external.unfollow' | 'sessions.external.backgroundFollow.set' | 'sessions.external.status.get' | 'sessions.external.transcript.page' | 'sessions.external.transcript.readAfter' | 'sessions.external.takeover' | 'sessions.external.materialize.start' | 'sessions.external.takeover.start' | 'sessions.external.operation.status.get' | 'sessions.external.operation.cancel' | 'sessions.external.operation.resume' | 'sessions.external.operation.retry' | 'sessions.external.operation.discard' | 'ui.voice_global.reset' | 'ui.voice_agent.teleport' | 'ui.current_context.read' | 'ui.current_context.command.invoke' | 'ui.pet.choose' | 'memory.search' | 'memory.get_window' | 'memory.ensure_up_to_date' | 'prompt_doc.update' | 'prompt_bundle.update' | 'prompt_asset.export' | 'prompt_registry.install' | 'daemon.promptAssets.discover' | 'daemon.promptAssets.delete' | 'daemon.promptRegistry.scanSource' | 'daemon.promptRegistry.install' | 'daemon.filesystem.readFile' | 'daemon.filesystem.writeFile' | 'daemon.filesystem.listDirectory' | 'daemon.filesystem.getDirectoryTree' | 'daemon.filesystem.listRoots' | 'daemon.filesystem.browseDirectory' | 'bugreport.collectDiagnostics' | 'bugreport.getLogTail' | 'bugreport.uploadArtifact' | 'browser.view.open' | 'browser.view.close' | 'browser.view.focus' | 'browser.target.set' | 'browser.navigate' | 'browser.reload' | 'browser.goBack' | 'browser.goForward' | 'browser.stop' | 'browser.diagnostics.snapshot' | 'browser.diagnostics.clear' | 'browser.diagnostics.pause' | 'browser.diagnostics.resume' | 'browser.diagnostics.eval' | 'browser.diagnostics.getProperties' | 'browser.diagnostics.releaseObjectGroup' | 'browser.diagnostics.elementPicker.start' | 'browser.diagnostics.elementPicker.cancel' | 'browser.context.capturePage' | 'browser.context.captureScreenshot' | 'browser.context.captureSelectedElement' | 'browser.context.captureNetworkSummary' | 'browser.context.captureConsoleSummary' | 'browser.context.annotation.start' | 'browser.context.annotation.cancel' | 'browser.context.annotation.captureRegion' | 'browser.context.annotation.captureElement' | 'browser.context.annotation.attachComment' | 'browser.context.annotation.attachStroke' | 'browser.context.annotation.attachStyleIntent' | 'browser.context.attachToComposer' | 'browser.context.attachToAgentTurn' | 'browser.context.clear' | 'browser.automation.status' | 'browser.automation.snapshot' | 'browser.automation.semanticSnapshot' | 'browser.automation.queryElements' | 'browser.automation.waitFor' | 'browser.automation.timeline.get' | 'browser.automation.cancelActive' | 'browser.automation.navigate' | 'browser.automation.reload' | 'browser.automation.goBack' | 'browser.automation.goForward' | 'browser.automation.click' | 'browser.automation.tap' | 'browser.automation.type' | 'browser.automation.press' | 'browser.automation.scroll' | 'browser.automation.hover' | 'browser.automation.focus' | 'browser.automation.select' | 'browser.automation.setValue' | 'browser.automation.upload' | 'browser.automation.drag' | 'browser.recording.start' | 'browser.recording.stop' | 'browser.recording.cancel' | 'browser.recording.status' | 'browser.recording.listForView' | 'browser.recording.discard' | 'browser.recording.cleanupExpired' | 'browser.recording.attachToComposer' | 'localServices.inventory.list' | 'localServices.inventory.refresh' | 'localServices.launcher.snapshot' | 'localServices.launcher.start' | 'localServices.launcher.openPreview' | 'localServices.launcher.registerPreview' | 'localServices.launcher.history.clear' | 'localServices.preview.openOrCreate' | 'localServices.preview.status' | 'localServices.preview.revoke' | 'localServices.publicPreview.create' | 'localServices.publicPreview.status' | 'localServices.publicPreview.revoke' | 'localServices.publicPreview.copyUrl' | 'localServices.actions.copyUrl' | 'localServices.actions.openPreview' | 'localServices.actions.forget' | 'localServices.actions.stopManaged' | 'localServices.actions.restartManaged' | 'localServices.actions.terminateDetected' | 'peerMediation.observability.snapshot' | 'peerMediation.observability.subscribe' | 'peerMediation.observability.unsubscribe' | 'devices.simulator.list' | 'devices.simulator.stream.keyframe' | 'devices.simulator.stream.snapshot' | 'devices.simulator.stream.quality.set' | 'devices.simulator.stream.fps.set' | 'devices.simulator.stream.scale.set' | 'devices.simulator.lease.acquire' | 'devices.simulator.lease.renew' | 'devices.simulator.lease.release' | 'devices.simulator.input.tap' | 'devices.simulator.input.swipe' | 'devices.simulator.input.text' | 'devices.simulator.input.key' | 'devices.simulator.input.button' | 'devices.simulator.input.orientation' | 'devices.simulator.input.pinch' | 'devices.simulator.input.rotate' | 'devices.simulator.sideband.request' | 'approval.request.list' | 'approval.request.get' | 'approval.request.create' | 'approval.request.decide' | 'plugins.scaffold' | 'plugins.install' | 'plugins.uninstall' | 'plugins.dev.submit' | 'plugins.dev.install' | 'plugins.dev.typecheck' | 'plugins.dev.build' | 'plugins.dev.test' | 'plugins.doctor' | 'plugins.pack' | 'plugins.reload' | 'plugins.list' | 'plugins.change.status' | 'plugins.sessionHooks.status.get' | 'plugins.sessionHooks.install' | 'plugins.sessionHooks.disable' | 'plugins.sessionHooks.enable' | 'plugins.sessionHooks.uninstall' | 'plugins.settings.list' | 'plugins.settings.get' | 'plugins.settings.set' | 'plugins.settings.reset' | 'plugins.settings.secret.status' | 'plugins.settings.secret.bind' | 'plugins.settings.secret.unbind' | 'plugins.settings.secret.delete' | 'plugins.permissions.grants.list' | 'plugins.permissions.grants.request' | 'plugins.permissions.grants.grant' | 'plugins.permissions.grants.revoke' | 'plugins.permissions.grants.dismissRequest' | 'plugin.webhook.endpoint.ensure' | 'plugin.webhook.endpoint.read' | 'plugin.webhook.endpoint.revoke' | 'plugin.webhook.endpoint.retarget' | 'plugin.webhook.endpoint.checkCorrespondence' | 'plugin.webhook.delivery.movePending' | 'plugin.webhook.endpoint.credential.configure' | 'plugin.webhook.endpoint.credential.rotate' | 'plugin.webhook.endpoint.credential.finishRotation' | 'account.plugins.data.erase' | 'account.sessions.signOutEverywhere' | 'account.apiTokens.create' | 'account.apiTokens.list' | 'account.apiTokens.revoke' | 'account.apiTokens.revokeAll' | 'automation.event.sources.list' | 'automation.event.admit' | 'automation.event.source.status.report' | 'automation.conversation.targets.list' | 'automation.conversation.target.verify' | 'automation.conversation.admit' | 'scm.pullRequest.list' | 'scm.pullRequest.get' | 'scm.pullRequest.openOrReuse' | 'scm.pullRequest.openCompose' | 'scm.pullRequest.checkout' | 'scm.pullRequest.prepareWorktree' | 'scm.reviewWorkspace.materializePrepared' | 'scm.pullRequest.runStacked' | 'scm.repository.clone' | 'scm.repository.init' | 'scm.repository.removeIndexLock' | 'scm.hostingRepository.describePublishTargets' | 'scm.hostingRepository.publish' | 'scm.diffSummary.generate';
-    surface: 'plugin' | 'api' | 'rpc';
-    caller: ActionCaller;
-    defaultSessionId?: string | null | undefined;
-    serverId?: string | null | undefined;
-    externalActionTarget?: {
-        kind: 'machine';
-        machineId: string;
-    } | {
-        kind: 'session';
-        sessionId: string;
-    } | undefined;
-    signal?: AbortSignal | undefined;
-    input?: unknown;
-}>) => unknown;
 export type SessionUsageLimitCheckNowRequestV1Input = {
     [x: string]: unknown;
     sessionId: string;
     agentId?: string | undefined;
     operation?: 'check_now' | 'switch_account_now' | undefined;
-    resumePromptMode?: 'custom' | 'standard' | 'off' | undefined;
+    resumePromptMode?: 'standard' | 'off' | 'custom' | undefined;
 } & Readonly<{
     provider?: string | undefined;
 }>;
@@ -108,7 +39,7 @@ export type SessionUsageLimitConsumeResetCreditRequestV1Input = {
     sessionId: string;
     agentId?: string | undefined;
     issueFingerprint?: string | undefined;
-    resumePromptMode?: 'custom' | 'standard' | 'off' | undefined;
+    resumePromptMode?: 'standard' | 'off' | 'custom' | undefined;
 } & Readonly<{
     provider?: string | undefined;
 }>;
@@ -129,7 +60,7 @@ export type SessionTranscriptGetExternalShareableResultV1 = {
         origin: {
             v: 1;
             producer: 'happierApp' | 'cli' | 'daemonInitialPrompt' | 'sessionAction' | 'happierMcp' | 'pluginSession' | 'connectedService' | 'automation' | 'voiceInput' | 'agentTerminal' | 'externalSessionHistory' | 'runtimeTranscript' | 'executionRunVoice' | 'agentRuntimeFirstInput';
-            actor: 'machine' | 'owner' | 'collaborator';
+            actor: 'owner' | 'collaborator' | 'machine';
             sourceAuthority?: {
                 sourceRef: string;
                 sourceRevisionOrEpoch: string;
@@ -154,7 +85,7 @@ export type SessionTranscriptGetExternalShareableResultV1 = {
             origin: {
                 v: 1;
                 producer: 'happierApp' | 'cli' | 'daemonInitialPrompt' | 'sessionAction' | 'happierMcp' | 'pluginSession' | 'connectedService' | 'automation' | 'voiceInput' | 'agentTerminal' | 'externalSessionHistory' | 'runtimeTranscript' | 'executionRunVoice' | 'agentRuntimeFirstInput';
-                actor: 'machine' | 'owner' | 'collaborator';
+                actor: 'owner' | 'collaborator' | 'machine';
                 sourceAuthority?: {
                     sourceRef: string;
                     sourceRevisionOrEpoch: string;
@@ -311,7 +242,7 @@ export type PluginActionContributionV2 = {
         fallback: string;
     };
     scopes: ('message' | 'machine' | 'session' | 'global' | 'settings' | 'agent' | 'transcript' | 'executionRun' | 'toolResult' | 'workspace')[];
-    surfaces: ('plugin' | 'cli' | 'agent' | 'mcp' | 'ui' | 'voice')[];
+    surfaces: ('cli' | 'agent' | 'mcp' | 'ui' | 'plugin' | 'voice')[];
     execution: {
         target: 'daemon';
     } | {
@@ -559,17 +490,21 @@ export type PluginCommandContributionV2 = {
     } | undefined;
     metadata?: Record<string, PluginJsonValueV2> | undefined;
 };
-export type ActionSpec = Omit<Readonly<{
-    id: 'action.spec.search' | 'action.spec.get' | 'action.options.resolve' | 'action.invoke' | 'session.open' | 'session.fork' | 'session.continue_with_replay' | 'session.rollback' | 'session.checkpoint_code_rollback' | 'session.checkpoint' | 'session.restore' | 'session.handoff' | 'session.handoff.prepare_target' | 'session.handoff.prepare_target.resume' | 'session.handoff.prepare_target_result.get' | 'session.handoff.commit' | 'session.handoff.abort' | 'session.handoff.status.get' | 'session.spawn_new' | 'paths.list_recent' | 'projects.list' | 'prompts.invocations.list' | 'prompts.invocation.resolve' | 'machines.list' | 'servers.list' | 'review.engines.list' | 'agents.backends.list' | 'agents.models.list' | 'agents.config_options.list' | 'agents.session_modes.list' | 'sessions.spawn.profiles.list' | 'sessions.spawn.connected_services.list' | 'sessions.spawn.mcp_servers.preview' | 'session.message.send' | 'session.stop' | 'session.title.set' | 'session.model.set' | 'session.permission_mode.set' | 'session.archive' | 'session.unarchive' | 'session.status.get' | 'session.work_state.get' | 'session.goal.get' | 'session.goal.set' | 'session.goal.clear' | 'session.usageLimit.waitResume.enable' | 'session.usageLimit.waitResume.cancel' | 'session.usageLimit.checkNow' | 'session.usageLimit.consumeResetCredit' | 'session.terminalComposer.clear' | 'session.pendingInput.interruptAndRun' | 'session.vendor_plugin_catalog.list' | 'session.skill_catalog.list' | 'session.history.get' | 'session.wait.idle' | 'review.start' | 'subagents.plan.start' | 'subagents.delegate.start' | 'voice_agent.start' | 'reviews.comments.create' | 'reviews.comments.list' | 'reviews.comments.get' | 'reviews.comments.transition' | 'reviews.comments.edit' | 'reviews.comments.reply' | 'reviews.comments.redact' | 'reviews.comments.setDisposition' | 'reviews.comments.attachEvidence' | 'reviews.comments.bulkTransition' | 'reviews.comments.claimPublicationDispatch' | 'sessions.subagents.list' | 'sessions.subagents.get' | 'sessions.subagents.watch' | 'sessions.subagents.upsert' | 'sessions.subagents.updateStatus' | 'sessions.subagents.complete' | 'execution.run.start' | 'execution.run.list' | 'execution.run.get' | 'execution.run.send' | 'execution.run.ensure' | 'execution.run.ensure_or_start' | 'execution.run.stream.start' | 'execution.run.stream.read' | 'execution.run.stream.cancel' | 'execution.run.stop' | 'execution.run.action' | 'execution.run.wait' | 'session.target.primary.set' | 'session.target.tracked.set' | 'session.list' | 'session.activity.get' | 'session.messages.recent.get' | 'session.transcript.get' | 'session.events.get' | 'session.log.tail' | 'transcript.page' | 'transcript.readAfter' | 'transcript.follow' | 'transcript.unfollow' | 'transcript.import' | 'transcript.search' | 'session.permission.respond' | 'session.permission.remote.pending.list' | 'session.permission.remote.respond' | 'session.user_action.remote.answer' | 'session.permission.remote.grants.list' | 'session.permission.remote.grants.revoke' | 'session.user_action.answer' | 'session.mode.set' | 'sessions.external.candidates.list' | 'sessions.external.link.ensure' | 'sessions.external.follow' | 'sessions.external.unfollow' | 'sessions.external.backgroundFollow.set' | 'sessions.external.status.get' | 'sessions.external.transcript.page' | 'sessions.external.transcript.readAfter' | 'sessions.external.takeover' | 'sessions.external.materialize.start' | 'sessions.external.takeover.start' | 'sessions.external.operation.status.get' | 'sessions.external.operation.cancel' | 'sessions.external.operation.resume' | 'sessions.external.operation.retry' | 'sessions.external.operation.discard' | 'ui.voice_global.reset' | 'ui.voice_agent.teleport' | 'ui.current_context.read' | 'ui.current_context.command.invoke' | 'ui.pet.choose' | 'memory.search' | 'memory.get_window' | 'memory.ensure_up_to_date' | 'prompt_doc.update' | 'prompt_bundle.update' | 'prompt_asset.export' | 'prompt_registry.install' | 'daemon.promptAssets.discover' | 'daemon.promptAssets.delete' | 'daemon.promptRegistry.scanSource' | 'daemon.promptRegistry.install' | 'daemon.filesystem.readFile' | 'daemon.filesystem.writeFile' | 'daemon.filesystem.listDirectory' | 'daemon.filesystem.getDirectoryTree' | 'daemon.filesystem.listRoots' | 'daemon.filesystem.browseDirectory' | 'bugreport.collectDiagnostics' | 'bugreport.getLogTail' | 'bugreport.uploadArtifact' | 'browser.view.open' | 'browser.view.close' | 'browser.view.focus' | 'browser.target.set' | 'browser.navigate' | 'browser.reload' | 'browser.goBack' | 'browser.goForward' | 'browser.stop' | 'browser.diagnostics.snapshot' | 'browser.diagnostics.clear' | 'browser.diagnostics.pause' | 'browser.diagnostics.resume' | 'browser.diagnostics.eval' | 'browser.diagnostics.getProperties' | 'browser.diagnostics.releaseObjectGroup' | 'browser.diagnostics.elementPicker.start' | 'browser.diagnostics.elementPicker.cancel' | 'browser.context.capturePage' | 'browser.context.captureScreenshot' | 'browser.context.captureSelectedElement' | 'browser.context.captureNetworkSummary' | 'browser.context.captureConsoleSummary' | 'browser.context.annotation.start' | 'browser.context.annotation.cancel' | 'browser.context.annotation.captureRegion' | 'browser.context.annotation.captureElement' | 'browser.context.annotation.attachComment' | 'browser.context.annotation.attachStroke' | 'browser.context.annotation.attachStyleIntent' | 'browser.context.attachToComposer' | 'browser.context.attachToAgentTurn' | 'browser.context.clear' | 'browser.automation.status' | 'browser.automation.snapshot' | 'browser.automation.semanticSnapshot' | 'browser.automation.queryElements' | 'browser.automation.waitFor' | 'browser.automation.timeline.get' | 'browser.automation.cancelActive' | 'browser.automation.navigate' | 'browser.automation.reload' | 'browser.automation.goBack' | 'browser.automation.goForward' | 'browser.automation.click' | 'browser.automation.tap' | 'browser.automation.type' | 'browser.automation.press' | 'browser.automation.scroll' | 'browser.automation.hover' | 'browser.automation.focus' | 'browser.automation.select' | 'browser.automation.setValue' | 'browser.automation.upload' | 'browser.automation.drag' | 'browser.recording.start' | 'browser.recording.stop' | 'browser.recording.cancel' | 'browser.recording.status' | 'browser.recording.listForView' | 'browser.recording.discard' | 'browser.recording.cleanupExpired' | 'browser.recording.attachToComposer' | 'localServices.inventory.list' | 'localServices.inventory.refresh' | 'localServices.launcher.snapshot' | 'localServices.launcher.start' | 'localServices.launcher.openPreview' | 'localServices.launcher.registerPreview' | 'localServices.launcher.history.clear' | 'localServices.preview.openOrCreate' | 'localServices.preview.status' | 'localServices.preview.revoke' | 'localServices.publicPreview.create' | 'localServices.publicPreview.status' | 'localServices.publicPreview.revoke' | 'localServices.publicPreview.copyUrl' | 'localServices.actions.copyUrl' | 'localServices.actions.openPreview' | 'localServices.actions.forget' | 'localServices.actions.stopManaged' | 'localServices.actions.restartManaged' | 'localServices.actions.terminateDetected' | 'peerMediation.observability.snapshot' | 'peerMediation.observability.subscribe' | 'peerMediation.observability.unsubscribe' | 'devices.simulator.list' | 'devices.simulator.stream.keyframe' | 'devices.simulator.stream.snapshot' | 'devices.simulator.stream.quality.set' | 'devices.simulator.stream.fps.set' | 'devices.simulator.stream.scale.set' | 'devices.simulator.lease.acquire' | 'devices.simulator.lease.renew' | 'devices.simulator.lease.release' | 'devices.simulator.input.tap' | 'devices.simulator.input.swipe' | 'devices.simulator.input.text' | 'devices.simulator.input.key' | 'devices.simulator.input.button' | 'devices.simulator.input.orientation' | 'devices.simulator.input.pinch' | 'devices.simulator.input.rotate' | 'devices.simulator.sideband.request' | 'approval.request.list' | 'approval.request.get' | 'approval.request.create' | 'approval.request.decide' | 'plugins.scaffold' | 'plugins.install' | 'plugins.uninstall' | 'plugins.dev.submit' | 'plugins.dev.install' | 'plugins.dev.typecheck' | 'plugins.dev.build' | 'plugins.dev.test' | 'plugins.doctor' | 'plugins.pack' | 'plugins.reload' | 'plugins.list' | 'plugins.change.status' | 'plugins.sessionHooks.status.get' | 'plugins.sessionHooks.install' | 'plugins.sessionHooks.disable' | 'plugins.sessionHooks.enable' | 'plugins.sessionHooks.uninstall' | 'plugins.settings.list' | 'plugins.settings.get' | 'plugins.settings.set' | 'plugins.settings.reset' | 'plugins.settings.secret.status' | 'plugins.settings.secret.bind' | 'plugins.settings.secret.unbind' | 'plugins.settings.secret.delete' | 'plugins.permissions.grants.list' | 'plugins.permissions.grants.request' | 'plugins.permissions.grants.grant' | 'plugins.permissions.grants.revoke' | 'plugins.permissions.grants.dismissRequest' | 'plugin.webhook.endpoint.ensure' | 'plugin.webhook.endpoint.read' | 'plugin.webhook.endpoint.revoke' | 'plugin.webhook.endpoint.retarget' | 'plugin.webhook.endpoint.checkCorrespondence' | 'plugin.webhook.delivery.movePending' | 'plugin.webhook.endpoint.credential.configure' | 'plugin.webhook.endpoint.credential.rotate' | 'plugin.webhook.endpoint.credential.finishRotation' | 'account.plugins.data.erase' | 'account.sessions.signOutEverywhere' | 'account.apiTokens.create' | 'account.apiTokens.list' | 'account.apiTokens.revoke' | 'account.apiTokens.revokeAll' | 'automation.event.sources.list' | 'automation.event.admit' | 'automation.event.source.status.report' | 'automation.conversation.targets.list' | 'automation.conversation.target.verify' | 'automation.conversation.admit' | 'scm.pullRequest.list' | 'scm.pullRequest.get' | 'scm.pullRequest.openOrReuse' | 'scm.pullRequest.openCompose' | 'scm.pullRequest.checkout' | 'scm.pullRequest.prepareWorktree' | 'scm.reviewWorkspace.materializePrepared' | 'scm.pullRequest.runStacked' | 'scm.repository.clone' | 'scm.repository.init' | 'scm.repository.removeIndexLock' | 'scm.hostingRepository.describePublishTargets' | 'scm.hostingRepository.publish' | 'scm.diffSummary.generate';
-    title: string;
-    description?: string | undefined;
-    safety: 'safe' | 'danger';
-    placements: readonly ('agent_input_chips' | 'browser_context' | 'session_header' | 'session_info' | 'session_action_menu' | 'pending_messages' | 'command_palette' | 'slash_command' | 'voice_panel' | 'run_list' | 'run_card')[];
-    slash?: {
+export type ActionSpec = {
+    readonly id: PluginInvocableActionId;
+    readonly title: string;
+    readonly description?: string | undefined;
+    readonly safety: 'safe' | 'danger';
+    readonly approval: {
+        result: 'optional' | 'required' | 'none';
+        flow?: 'blocking' | 'deferred' | undefined;
+    };
+    readonly placements: ('agent_input_chips' | 'browser_context' | 'session_header' | 'session_info' | 'session_action_menu' | 'pending_messages' | 'command_palette' | 'slash_command' | 'voice_panel' | 'run_list' | 'run_card')[];
+    readonly slash?: {
         [x: string]: unknown;
         tokens: string[];
     } | undefined;
-    bindings?: {
+    readonly bindings?: {
         [x: string]: unknown;
         voiceClientToolName?: string | undefined;
         mcpToolName?: string | undefined;
@@ -577,60 +512,9 @@ export type ActionSpec = Omit<Readonly<{
         rpcMethod?: string | undefined;
         rpcMethodAliases?: string[] | undefined;
     } | undefined;
-    surfaceBindings?: {
-        api?: {
-            inputSchema: unknown;
-            bindInput?: ActionSurfaceBindingTransform | undefined;
-            inputHints?: {
-                fields: readonly {
-                    path: string;
-                    widget: 'number' | 'boolean' | 'text' | 'url' | 'secret' | 'textarea' | 'integer' | 'text_list' | 'select' | 'multiselect' | 'json';
-                    title: string;
-                    required?: boolean | undefined;
-                    requireExplicitSelection?: boolean | undefined;
-                    listSeparator?: 'comma' | 'newline' | undefined;
-                    maxSelections?: number | undefined;
-                    visibleWhen?: ActionInputPredicate | undefined;
-                    requiredWhen?: ActionInputPredicate | undefined;
-                    disabledWhen?: ActionInputPredicate | undefined;
-                    optionsSourceId?: string | undefined;
-                    connectedAccountOptions?: true | undefined;
-                    resolvedEmptyConnectedAccountOptions?: true | undefined;
-                    description?: string | undefined;
-                    placeholder?: string | undefined;
-                    options?: readonly {
-                        value: ActionInputOptionValue;
-                        label: string;
-                        description?: string | undefined;
-                        disabled?: boolean | undefined;
-                    }[] | undefined;
-                }[];
-                title?: string | undefined;
-                description?: string | undefined;
-                submitLabel?: string | undefined;
-            } | undefined;
-        } | undefined;
-        rpc?: {
-            inputSchema: unknown;
-            decodeInput: ActionSurfaceBindingTransform;
-            outputSchema: unknown;
-            encodeOutput: ActionSurfaceBindingTransform;
-        } | undefined;
-        plugin?: {
-            inputSchema?: unknown | undefined;
-            bindInput?: ActionSurfaceBindingTransform | undefined;
-            outputSchema?: unknown | undefined;
-            projectOutput?: ActionSurfaceBindingTransform | undefined;
-        } | undefined;
-    } | undefined;
-    outputSchema?: unknown | undefined;
-    execution?: {
-        [x: string]: unknown;
-        handler?: string | undefined;
-        transport?: 'host' | 'plugin' | 'api' | 'rpc' | undefined;
-    } | undefined;
-    sideEffectClass?: 'external' | 'danger' | 'none' | 'read' | 'write' | undefined;
-    examples?: {
+    readonly outputSchema?: unknown | undefined;
+    readonly sideEffectClass?: 'external' | 'danger' | 'none' | 'read' | 'write' | undefined;
+    readonly examples?: {
         [x: string]: unknown;
         voice?: {
             [x: string]: unknown;
@@ -645,20 +529,20 @@ export type ActionSpec = Omit<Readonly<{
             codeExample?: string | undefined;
         } | undefined;
     } | undefined;
-    prompting?: {
+    readonly prompting?: {
         [x: string]: unknown;
         voiceHotPath?: boolean | undefined;
     } | undefined;
-    toolExposure?: {
+    readonly toolExposure?: {
         agent?: 'direct' | 'discoverable_only' | undefined;
         mcp?: 'direct' | 'discoverable_only' | undefined;
         cli?: 'direct' | 'discoverable_only' | undefined;
     } | undefined;
-    contextualDefaults?: {
+    readonly contextualDefaults?: {
         sessionId?: 'current_session' | undefined;
         machineId?: 'current_session_machine' | undefined;
     } | undefined;
-    operation?: {
+    readonly operation?: {
         version: 1;
         visibility: 'activity';
         progress: 'indeterminate' | 'reported';
@@ -666,19 +550,9 @@ export type ActionSpec = Omit<Readonly<{
             onStart: 'activity' | 'current' | 'detail';
         };
     } | undefined;
-    requiredAuthority?: 'account_automation' | 'present_user' | undefined;
-    executionPlacement?: 'machine' | 'session' | 'client' | 'account' | undefined;
-    pluginCallerPolicy?: {
-        kind: 'caller';
-    } | {
-        kind: 'self_or_inspector_admin';
-        targetPluginIdField: 'pluginId';
-        administrativeCallers: {
-            pluginId: string;
-            contributionLocalId: string;
-        }[];
-    } | undefined;
-    surfaces: {
+    readonly requiredAuthority: 'account_automation' | 'present_user';
+    readonly executionPlacement: 'machine' | 'session' | 'client' | 'account';
+    readonly surfaces: {
         ui: boolean;
         voice: boolean;
         agent: boolean;
@@ -688,8 +562,8 @@ export type ActionSpec = Omit<Readonly<{
         api: boolean;
         plugin: boolean;
     };
-    inputSchema: unknown;
-    inputHints?: {
+    readonly inputSchema: unknown;
+    readonly inputHints?: {
         fields: readonly {
             path: string;
             widget: 'number' | 'boolean' | 'text' | 'url' | 'secret' | 'textarea' | 'integer' | 'text_list' | 'select' | 'multiselect' | 'json';
@@ -717,16 +591,7 @@ export type ActionSpec = Omit<Readonly<{
         description?: string | undefined;
         submitLabel?: string | undefined;
     } | undefined;
-}>, 'id'> & Readonly<{
-    id: PluginInvocableActionId;
-    approval: {
-        result: 'optional' | 'required' | 'none';
-        flow?: 'blocking' | 'deferred' | undefined;
-    };
-    placements: ('agent_input_chips' | 'browser_context' | 'session_header' | 'session_info' | 'session_action_menu' | 'pending_messages' | 'command_palette' | 'slash_command' | 'voice_panel' | 'run_list' | 'run_card')[];
-    requiredAuthority: 'account_automation' | 'present_user';
-    executionPlacement: 'machine' | 'session' | 'client' | 'account';
-}>;
+};
 export type PluginActionInputById = {
     readonly "action.spec.search": {
         [x: string]: unknown;
@@ -745,6 +610,7 @@ export type PluginActionInputById = {
         sessionId?: string | undefined;
         limit?: number | undefined;
         query?: string | undefined;
+        draftInput?: Record<string, unknown> | undefined;
     };
     readonly "action.invoke": {
         action: {
@@ -1190,7 +1056,7 @@ export type PluginActionInputById = {
         source?: {
             sourceRef: string;
             sourceRevisionOrEpoch: string;
-            remoteApprovalMaxScope: 'session' | 'off' | 'request';
+            remoteApprovalMaxScope: 'off' | 'request' | 'session';
             requestedPermissionCeiling: 'default' | 'plan' | 'yolo' | 'read-only' | 'safe-yolo';
             externalActor?: {
                 kind: 'human' | 'bot';
@@ -1282,7 +1148,7 @@ export type PluginActionInputById = {
         issueFingerprint?: string | undefined;
         remember?: boolean | undefined;
         rememberPreference?: boolean | undefined;
-        resumePromptMode?: 'custom' | 'standard' | 'off' | undefined;
+        resumePromptMode?: 'standard' | 'off' | 'custom' | undefined;
     };
     readonly "session.usageLimit.waitResume.cancel": {
         [x: string]: unknown;
@@ -1464,6 +1330,7 @@ export type PluginActionInputById = {
             }>;
         } | undefined;
         configOptions?: Record<string, string | number | boolean | null> | undefined;
+        connectedServices?: unknown;
         connectedServicesByBackendTargetKey?: Record<string, unknown> | undefined;
         permissionMode?: 'default' | 'read_only' | 'workspace_write' | 'yolo' | undefined;
         retentionPolicy?: 'ephemeral' | 'resumable' | undefined;
@@ -1487,6 +1354,7 @@ export type PluginActionInputById = {
             }>;
         } | undefined;
         configOptions?: Record<string, string | number | boolean | null> | undefined;
+        connectedServices?: unknown;
         connectedServicesByBackendTargetKey?: Record<string, unknown> | undefined;
         permissionMode?: 'default' | 'read_only' | 'workspace_write' | 'yolo' | undefined;
         retentionPolicy?: 'ephemeral' | 'resumable' | undefined;
@@ -1510,6 +1378,7 @@ export type PluginActionInputById = {
             }>;
         } | undefined;
         configOptions?: Record<string, string | number | boolean | null> | undefined;
+        connectedServices?: unknown;
         connectedServicesByBackendTargetKey?: Record<string, unknown> | undefined;
         permissionMode?: 'default' | 'read_only' | 'workspace_write' | 'yolo' | undefined;
         retentionPolicy?: 'ephemeral' | 'resumable' | undefined;
@@ -1706,7 +1575,7 @@ export type PluginActionInputById = {
         sessionId?: string | undefined;
         runId?: string | undefined;
         states?: ('open' | 'dismissed' | 'proposed' | 'delegated' | 'pending_review' | 'resolved')[] | undefined;
-        authorKind?: 'plugin' | 'user' | 'agent' | undefined;
+        authorKind?: 'user' | 'agent' | 'plugin' | undefined;
         authorId?: string | undefined;
         engineId?: string | undefined;
         filePath?: string | undefined;
@@ -2135,6 +2004,13 @@ export type PluginActionInputById = {
             participantLabel?: string | undefined;
             groupId?: string | undefined;
         } | undefined;
+        launchOrigin?: {
+            kind: 'session';
+            sessionId: string;
+        } | {
+            kind: 'external';
+            source?: 'cli' | 'mcp' | 'action' | undefined;
+        } | undefined;
         profileId?: string | undefined;
         profileGenerationId?: string | undefined;
         initialContext?: string | undefined;
@@ -2256,6 +2132,13 @@ export type PluginActionInputById = {
                 title?: string | undefined;
                 participantLabel?: string | undefined;
                 groupId?: string | undefined;
+            } | undefined;
+            launchOrigin?: {
+                kind: 'session';
+                sessionId: string;
+            } | {
+                kind: 'external';
+                source?: 'cli' | 'mcp' | 'action' | undefined;
             } | undefined;
             profileId?: string | undefined;
             profileGenerationId?: string | undefined;
@@ -2419,7 +2302,7 @@ export type PluginActionInputById = {
         direction?: 'before' | 'after' | undefined;
         scope?: 'main' | 'sidechain' | 'all' | undefined;
         sidechainId?: string | null | undefined;
-        roles?: ('unknown' | 'user' | 'agent' | 'event')[] | undefined;
+        roles?: ('user' | 'unknown' | 'agent' | 'event')[] | undefined;
         kinds?: string[] | undefined;
         format?: 'compact' | 'raw' | undefined;
         includeMeta?: boolean | undefined;
@@ -2495,7 +2378,7 @@ export type PluginActionInputById = {
             principalId: string;
         };
         decision: 'allow' | 'deny';
-        scope: 'session' | 'request';
+        scope: 'request' | 'session';
     };
     readonly "session.user_action.remote.answer": {
         sessionId: string;
@@ -2602,6 +2485,7 @@ export type PluginActionInputById = {
                 sessionId: string;
             };
             mode: 'hints' | 'deep' | 'auto';
+            eligibleSessionIds?: string[] | undefined;
             maxResults?: number | undefined;
             minScore?: number | undefined;
         };
@@ -3173,7 +3057,7 @@ export type PluginActionInputById = {
         browserSessionId: string;
         viewId: string;
         navigationGeneration: number;
-        requestedBy: 'plugin' | 'user' | 'agent' | 'system';
+        requestedBy: 'user' | 'agent' | 'plugin' | 'system';
         requesterRef: {
             kind: string;
             id: string;
@@ -3191,7 +3075,7 @@ export type PluginActionInputById = {
         browserSessionId: string;
         viewId: string;
         navigationGeneration: number;
-        requestedBy: 'plugin' | 'user' | 'agent' | 'system';
+        requestedBy: 'user' | 'agent' | 'plugin' | 'system';
         requesterRef: {
             kind: string;
             id: string;
@@ -3209,7 +3093,7 @@ export type PluginActionInputById = {
         browserSessionId: string;
         viewId: string;
         navigationGeneration: number;
-        requestedBy: 'plugin' | 'user' | 'agent' | 'system';
+        requestedBy: 'user' | 'agent' | 'plugin' | 'system';
         requesterRef: {
             kind: string;
             id: string;
@@ -3227,7 +3111,7 @@ export type PluginActionInputById = {
         browserSessionId: string;
         viewId: string;
         navigationGeneration: number;
-        requestedBy: 'plugin' | 'user' | 'agent' | 'system';
+        requestedBy: 'user' | 'agent' | 'plugin' | 'system';
         requesterRef: {
             kind: string;
             id: string;
@@ -3245,7 +3129,7 @@ export type PluginActionInputById = {
         browserSessionId: string;
         viewId: string;
         navigationGeneration: number;
-        requestedBy: 'plugin' | 'user' | 'agent' | 'system';
+        requestedBy: 'user' | 'agent' | 'plugin' | 'system';
         requesterRef: {
             kind: string;
             id: string;
@@ -3263,7 +3147,7 @@ export type PluginActionInputById = {
         browserSessionId: string;
         viewId: string;
         navigationGeneration: number;
-        requestedBy: 'plugin' | 'user' | 'agent' | 'system';
+        requestedBy: 'user' | 'agent' | 'plugin' | 'system';
         requesterRef: {
             kind: string;
             id: string;
@@ -3285,7 +3169,7 @@ export type PluginActionInputById = {
         browserSessionId: string;
         viewId: string;
         navigationGeneration: number;
-        requestedBy: 'plugin' | 'user' | 'agent' | 'system';
+        requestedBy: 'user' | 'agent' | 'plugin' | 'system';
         requesterRef: {
             kind: string;
             id: string;
@@ -3303,7 +3187,7 @@ export type PluginActionInputById = {
         browserSessionId: string;
         viewId: string;
         navigationGeneration: number;
-        requestedBy: 'plugin' | 'user' | 'agent' | 'system';
+        requestedBy: 'user' | 'agent' | 'plugin' | 'system';
         requesterRef: {
             kind: string;
             id: string;
@@ -3321,7 +3205,7 @@ export type PluginActionInputById = {
         browserSessionId: string;
         viewId: string;
         navigationGeneration: number;
-        requestedBy: 'plugin' | 'user' | 'agent' | 'system';
+        requestedBy: 'user' | 'agent' | 'plugin' | 'system';
         requesterRef: {
             kind: string;
             id: string;
@@ -3339,7 +3223,7 @@ export type PluginActionInputById = {
         browserSessionId: string;
         viewId: string;
         navigationGeneration: number;
-        requestedBy: 'plugin' | 'user' | 'agent' | 'system';
+        requestedBy: 'user' | 'agent' | 'plugin' | 'system';
         requesterRef: {
             kind: string;
             id: string;
@@ -3357,7 +3241,7 @@ export type PluginActionInputById = {
         browserSessionId: string;
         viewId: string;
         navigationGeneration: number;
-        requestedBy: 'plugin' | 'user' | 'agent' | 'system';
+        requestedBy: 'user' | 'agent' | 'plugin' | 'system';
         requesterRef: {
             kind: string;
             id: string;
@@ -3375,7 +3259,7 @@ export type PluginActionInputById = {
         browserSessionId: string;
         viewId: string;
         navigationGeneration: number;
-        requestedBy: 'plugin' | 'user' | 'agent' | 'system';
+        requestedBy: 'user' | 'agent' | 'plugin' | 'system';
         requesterRef: {
             kind: string;
             id: string;
@@ -3393,7 +3277,7 @@ export type PluginActionInputById = {
         browserSessionId: string;
         viewId: string;
         navigationGeneration: number;
-        requestedBy: 'plugin' | 'user' | 'agent' | 'system';
+        requestedBy: 'user' | 'agent' | 'plugin' | 'system';
         requesterRef: {
             kind: string;
             id: string;
@@ -3411,7 +3295,7 @@ export type PluginActionInputById = {
         browserSessionId: string;
         viewId: string;
         navigationGeneration: number;
-        requestedBy: 'plugin' | 'user' | 'agent' | 'system';
+        requestedBy: 'user' | 'agent' | 'plugin' | 'system';
         requesterRef: {
             kind: string;
             id: string;
@@ -3429,7 +3313,7 @@ export type PluginActionInputById = {
         browserSessionId: string;
         viewId: string;
         navigationGeneration: number;
-        requestedBy: 'plugin' | 'user' | 'agent' | 'system';
+        requestedBy: 'user' | 'agent' | 'plugin' | 'system';
         requesterRef: {
             kind: string;
             id: string;
@@ -3447,7 +3331,7 @@ export type PluginActionInputById = {
         browserSessionId: string;
         viewId: string;
         navigationGeneration: number;
-        requestedBy: 'plugin' | 'user' | 'agent' | 'system';
+        requestedBy: 'user' | 'agent' | 'plugin' | 'system';
         requesterRef: {
             kind: string;
             id: string;
@@ -3465,7 +3349,7 @@ export type PluginActionInputById = {
         browserSessionId: string;
         viewId: string;
         navigationGeneration: number;
-        requestedBy: 'plugin' | 'user' | 'agent' | 'system';
+        requestedBy: 'user' | 'agent' | 'plugin' | 'system';
         requesterRef: {
             kind: string;
             id: string;
@@ -3483,7 +3367,7 @@ export type PluginActionInputById = {
         browserSessionId: string;
         viewId: string;
         navigationGeneration: number;
-        requestedBy: 'plugin' | 'user' | 'agent' | 'system';
+        requestedBy: 'user' | 'agent' | 'plugin' | 'system';
         requesterRef: {
             kind: string;
             id: string;
@@ -3501,7 +3385,7 @@ export type PluginActionInputById = {
         browserSessionId: string;
         viewId: string;
         navigationGeneration: number;
-        requestedBy: 'plugin' | 'user' | 'agent' | 'system';
+        requestedBy: 'user' | 'agent' | 'plugin' | 'system';
         requesterRef: {
             kind: string;
             id: string;
@@ -3519,7 +3403,7 @@ export type PluginActionInputById = {
         browserSessionId: string;
         viewId: string;
         navigationGeneration: number;
-        requestedBy: 'plugin' | 'user' | 'agent' | 'system';
+        requestedBy: 'user' | 'agent' | 'plugin' | 'system';
         requesterRef: {
             kind: string;
             id: string;
@@ -3537,7 +3421,7 @@ export type PluginActionInputById = {
         browserSessionId: string;
         viewId: string;
         navigationGeneration: number;
-        requestedBy: 'plugin' | 'user' | 'agent' | 'system';
+        requestedBy: 'user' | 'agent' | 'plugin' | 'system';
         requesterRef: {
             kind: string;
             id: string;
@@ -5273,7 +5157,6 @@ export type PluginActionInputById = {
     };
     readonly "approval.request.create": {
         [x: string]: unknown;
-        actionId: 'action.spec.search' | 'action.spec.get' | 'action.options.resolve' | 'action.invoke' | 'session.open' | 'session.fork' | 'session.continue_with_replay' | 'session.rollback' | 'session.checkpoint_code_rollback' | 'session.checkpoint' | 'session.restore' | 'session.handoff' | 'session.handoff.prepare_target' | 'session.handoff.prepare_target.resume' | 'session.handoff.prepare_target_result.get' | 'session.handoff.commit' | 'session.handoff.abort' | 'session.handoff.status.get' | 'session.spawn_new' | 'paths.list_recent' | 'projects.list' | 'prompts.invocations.list' | 'prompts.invocation.resolve' | 'machines.list' | 'servers.list' | 'review.engines.list' | 'agents.backends.list' | 'agents.models.list' | 'agents.config_options.list' | 'agents.session_modes.list' | 'sessions.spawn.profiles.list' | 'sessions.spawn.connected_services.list' | 'sessions.spawn.mcp_servers.preview' | 'session.message.send' | 'session.stop' | 'session.title.set' | 'session.model.set' | 'session.permission_mode.set' | 'session.archive' | 'session.unarchive' | 'session.status.get' | 'session.work_state.get' | 'session.goal.get' | 'session.goal.set' | 'session.goal.clear' | 'session.usageLimit.waitResume.enable' | 'session.usageLimit.waitResume.cancel' | 'session.usageLimit.checkNow' | 'session.usageLimit.consumeResetCredit' | 'session.terminalComposer.clear' | 'session.pendingInput.interruptAndRun' | 'session.vendor_plugin_catalog.list' | 'session.skill_catalog.list' | 'session.history.get' | 'session.wait.idle' | 'review.start' | 'subagents.plan.start' | 'subagents.delegate.start' | 'voice_agent.start' | 'reviews.comments.create' | 'reviews.comments.list' | 'reviews.comments.get' | 'reviews.comments.transition' | 'reviews.comments.edit' | 'reviews.comments.reply' | 'reviews.comments.redact' | 'reviews.comments.setDisposition' | 'reviews.comments.attachEvidence' | 'reviews.comments.bulkTransition' | 'reviews.comments.claimPublicationDispatch' | 'sessions.subagents.list' | 'sessions.subagents.get' | 'sessions.subagents.watch' | 'sessions.subagents.upsert' | 'sessions.subagents.updateStatus' | 'sessions.subagents.complete' | 'execution.run.start' | 'execution.run.list' | 'execution.run.get' | 'execution.run.send' | 'execution.run.ensure' | 'execution.run.ensure_or_start' | 'execution.run.stream.start' | 'execution.run.stream.read' | 'execution.run.stream.cancel' | 'execution.run.stop' | 'execution.run.action' | 'execution.run.wait' | 'session.target.primary.set' | 'session.target.tracked.set' | 'session.list' | 'session.activity.get' | 'session.messages.recent.get' | 'session.transcript.get' | 'session.events.get' | 'session.log.tail' | 'transcript.page' | 'transcript.readAfter' | 'transcript.follow' | 'transcript.unfollow' | 'transcript.import' | 'transcript.search' | 'session.permission.respond' | 'session.permission.remote.pending.list' | 'session.permission.remote.respond' | 'session.user_action.remote.answer' | 'session.permission.remote.grants.list' | 'session.permission.remote.grants.revoke' | 'session.user_action.answer' | 'session.mode.set' | 'sessions.external.candidates.list' | 'sessions.external.link.ensure' | 'sessions.external.follow' | 'sessions.external.unfollow' | 'sessions.external.backgroundFollow.set' | 'sessions.external.status.get' | 'sessions.external.transcript.page' | 'sessions.external.transcript.readAfter' | 'sessions.external.takeover' | 'sessions.external.materialize.start' | 'sessions.external.takeover.start' | 'sessions.external.operation.status.get' | 'sessions.external.operation.cancel' | 'sessions.external.operation.resume' | 'sessions.external.operation.retry' | 'sessions.external.operation.discard' | 'ui.voice_global.reset' | 'ui.voice_agent.teleport' | 'ui.current_context.read' | 'ui.current_context.command.invoke' | 'ui.pet.choose' | 'memory.search' | 'memory.get_window' | 'memory.ensure_up_to_date' | 'prompt_doc.update' | 'prompt_bundle.update' | 'prompt_asset.export' | 'prompt_registry.install' | 'daemon.promptAssets.discover' | 'daemon.promptAssets.delete' | 'daemon.promptRegistry.scanSource' | 'daemon.promptRegistry.install' | 'daemon.filesystem.readFile' | 'daemon.filesystem.writeFile' | 'daemon.filesystem.listDirectory' | 'daemon.filesystem.getDirectoryTree' | 'daemon.filesystem.listRoots' | 'daemon.filesystem.browseDirectory' | 'bugreport.collectDiagnostics' | 'bugreport.getLogTail' | 'bugreport.uploadArtifact' | 'browser.view.open' | 'browser.view.close' | 'browser.view.focus' | 'browser.target.set' | 'browser.navigate' | 'browser.reload' | 'browser.goBack' | 'browser.goForward' | 'browser.stop' | 'browser.diagnostics.snapshot' | 'browser.diagnostics.clear' | 'browser.diagnostics.pause' | 'browser.diagnostics.resume' | 'browser.diagnostics.eval' | 'browser.diagnostics.getProperties' | 'browser.diagnostics.releaseObjectGroup' | 'browser.diagnostics.elementPicker.start' | 'browser.diagnostics.elementPicker.cancel' | 'browser.context.capturePage' | 'browser.context.captureScreenshot' | 'browser.context.captureSelectedElement' | 'browser.context.captureNetworkSummary' | 'browser.context.captureConsoleSummary' | 'browser.context.annotation.start' | 'browser.context.annotation.cancel' | 'browser.context.annotation.captureRegion' | 'browser.context.annotation.captureElement' | 'browser.context.annotation.attachComment' | 'browser.context.annotation.attachStroke' | 'browser.context.annotation.attachStyleIntent' | 'browser.context.attachToComposer' | 'browser.context.attachToAgentTurn' | 'browser.context.clear' | 'browser.automation.status' | 'browser.automation.snapshot' | 'browser.automation.semanticSnapshot' | 'browser.automation.queryElements' | 'browser.automation.waitFor' | 'browser.automation.timeline.get' | 'browser.automation.cancelActive' | 'browser.automation.navigate' | 'browser.automation.reload' | 'browser.automation.goBack' | 'browser.automation.goForward' | 'browser.automation.click' | 'browser.automation.tap' | 'browser.automation.type' | 'browser.automation.press' | 'browser.automation.scroll' | 'browser.automation.hover' | 'browser.automation.focus' | 'browser.automation.select' | 'browser.automation.setValue' | 'browser.automation.upload' | 'browser.automation.drag' | 'browser.recording.start' | 'browser.recording.stop' | 'browser.recording.cancel' | 'browser.recording.status' | 'browser.recording.listForView' | 'browser.recording.discard' | 'browser.recording.cleanupExpired' | 'browser.recording.attachToComposer' | 'localServices.inventory.list' | 'localServices.inventory.refresh' | 'localServices.launcher.snapshot' | 'localServices.launcher.start' | 'localServices.launcher.openPreview' | 'localServices.launcher.registerPreview' | 'localServices.launcher.history.clear' | 'localServices.preview.openOrCreate' | 'localServices.preview.status' | 'localServices.preview.revoke' | 'localServices.publicPreview.create' | 'localServices.publicPreview.status' | 'localServices.publicPreview.revoke' | 'localServices.publicPreview.copyUrl' | 'localServices.actions.copyUrl' | 'localServices.actions.openPreview' | 'localServices.actions.forget' | 'localServices.actions.stopManaged' | 'localServices.actions.restartManaged' | 'localServices.actions.terminateDetected' | 'peerMediation.observability.snapshot' | 'peerMediation.observability.subscribe' | 'peerMediation.observability.unsubscribe' | 'devices.simulator.list' | 'devices.simulator.stream.keyframe' | 'devices.simulator.stream.snapshot' | 'devices.simulator.stream.quality.set' | 'devices.simulator.stream.fps.set' | 'devices.simulator.stream.scale.set' | 'devices.simulator.lease.acquire' | 'devices.simulator.lease.renew' | 'devices.simulator.lease.release' | 'devices.simulator.input.tap' | 'devices.simulator.input.swipe' | 'devices.simulator.input.text' | 'devices.simulator.input.key' | 'devices.simulator.input.button' | 'devices.simulator.input.orientation' | 'devices.simulator.input.pinch' | 'devices.simulator.input.rotate' | 'devices.simulator.sideband.request' | 'approval.request.list' | 'approval.request.get' | 'approval.request.create' | 'approval.request.decide' | 'plugins.scaffold' | 'plugins.install' | 'plugins.uninstall' | 'plugins.dev.submit' | 'plugins.dev.install' | 'plugins.dev.typecheck' | 'plugins.dev.build' | 'plugins.dev.test' | 'plugins.doctor' | 'plugins.pack' | 'plugins.reload' | 'plugins.list' | 'plugins.change.status' | 'plugins.sessionHooks.status.get' | 'plugins.sessionHooks.install' | 'plugins.sessionHooks.disable' | 'plugins.sessionHooks.enable' | 'plugins.sessionHooks.uninstall' | 'plugins.settings.list' | 'plugins.settings.get' | 'plugins.settings.set' | 'plugins.settings.reset' | 'plugins.settings.secret.status' | 'plugins.settings.secret.bind' | 'plugins.settings.secret.unbind' | 'plugins.settings.secret.delete' | 'plugins.permissions.grants.list' | 'plugins.permissions.grants.request' | 'plugins.permissions.grants.grant' | 'plugins.permissions.grants.revoke' | 'plugins.permissions.grants.dismissRequest' | 'plugin.webhook.endpoint.ensure' | 'plugin.webhook.endpoint.read' | 'plugin.webhook.endpoint.revoke' | 'plugin.webhook.endpoint.retarget' | 'plugin.webhook.endpoint.checkCorrespondence' | 'plugin.webhook.delivery.movePending' | 'plugin.webhook.endpoint.credential.configure' | 'plugin.webhook.endpoint.credential.rotate' | 'plugin.webhook.endpoint.credential.finishRotation' | 'account.plugins.data.erase' | 'account.sessions.signOutEverywhere' | 'account.apiTokens.create' | 'account.apiTokens.list' | 'account.apiTokens.revoke' | 'account.apiTokens.revokeAll' | 'automation.event.sources.list' | 'automation.event.admit' | 'automation.event.source.status.report' | 'automation.conversation.targets.list' | 'automation.conversation.target.verify' | 'automation.conversation.admit' | 'scm.pullRequest.list' | 'scm.pullRequest.get' | 'scm.pullRequest.openOrReuse' | 'scm.pullRequest.openCompose' | 'scm.pullRequest.checkout' | 'scm.pullRequest.prepareWorktree' | 'scm.reviewWorkspace.materializePrepared' | 'scm.pullRequest.runStacked' | 'scm.repository.clone' | 'scm.repository.init' | 'scm.repository.removeIndexLock' | 'scm.hostingRepository.describePublishTargets' | 'scm.hostingRepository.publish' | 'scm.diffSummary.generate';
         actionArgs: unknown;
         summary: string;
         createdBy: {
@@ -5283,6 +5166,7 @@ export type PluginActionInputById = {
             contributionLocalId?: string | undefined;
             sessionId?: string | undefined;
         };
+        actionId: PluginInvocableActionId;
         origin?: {
             kind: 'transcript_tool_call';
             sessionId: string;
@@ -5305,6 +5189,7 @@ export type PluginActionInputById = {
         id: string;
         name: string;
         ui?: 'hostedWeb' | 'reactNative' | undefined;
+        template?: 'session-agent' | undefined;
     };
     readonly "plugins.install": {
         path: string;
@@ -5693,6 +5578,28 @@ export type PluginActionInputById = {
             installationAuthorizationRef: string;
         };
     };
+    readonly "plugin.webhook.endpoint.convergeTarget": {
+        webhookEndpointId: string;
+        webhookContribution: {
+            pluginId: string;
+            localId: string;
+        };
+        sourceInstanceId: string;
+        setup: {
+            kind: 'accountEndpointV1';
+            credential: 'serverGenerated';
+        } | {
+            kind: 'githubSharedInstallationV1';
+            installationId: string;
+            installationAuthorizationRef: string;
+        };
+        desiredTargetMaterialization: {
+            machineId: string;
+            materializationId: string;
+            pluginId: string;
+        };
+        targetIntentEpoch: number;
+    };
     readonly "plugin.webhook.endpoint.credential.configure": {
         webhookEndpointId: string;
         expectedRevision: number;
@@ -5917,7 +5824,7 @@ export type PluginActionInputById = {
         displayName: string;
         sourceTip: {
             repository: {
-                kind: 'unknown' | 'custom' | 'github' | 'gitlab' | 'bitbucket' | 'azure-devops';
+                kind: 'custom' | 'unknown' | 'github' | 'gitlab' | 'bitbucket' | 'azure-devops';
                 deployment: string;
                 repository: string;
             };
@@ -5990,11 +5897,11 @@ export type PluginActionInputById = {
             backendId: string;
         } | undefined;
         providerId?: string | undefined;
-        providerKind?: 'unknown' | 'custom' | 'github' | 'gitlab' | 'bitbucket' | 'azure-devops' | undefined;
+        providerKind?: 'custom' | 'unknown' | 'github' | 'gitlab' | 'bitbucket' | 'azure-devops' | undefined;
     };
     readonly "scm.hostingRepository.publish": {
         [x: string]: unknown;
-        providerKind: 'unknown' | 'custom' | 'github' | 'gitlab' | 'bitbucket' | 'azure-devops';
+        providerKind: 'custom' | 'unknown' | 'github' | 'gitlab' | 'bitbucket' | 'azure-devops';
         owner: string;
         repositoryName: string;
         visibility: 'public' | 'private' | 'internal';
@@ -6134,11 +6041,11 @@ export type PluginActionResultById = {
             } | undefined;
             execution?: {
                 handler?: string | {
-                    target: 'host' | 'plugin' | 'daemon';
+                    target: 'plugin' | 'daemon' | 'host';
                     exportName?: string | undefined;
                     registrationId?: string | undefined;
                 } | undefined;
-                transport?: 'host' | 'plugin' | 'api' | 'rpc' | undefined;
+                transport?: 'plugin' | 'api' | 'rpc' | 'host' | undefined;
                 routing?: string | undefined;
                 approvalPolicy?: string | undefined;
                 resultSchema?: Record<string, unknown> | undefined;
@@ -6240,11 +6147,11 @@ export type PluginActionResultById = {
             } | undefined;
             execution?: {
                 handler?: string | {
-                    target: 'host' | 'plugin' | 'daemon';
+                    target: 'plugin' | 'daemon' | 'host';
                     exportName?: string | undefined;
                     registrationId?: string | undefined;
                 } | undefined;
-                transport?: 'host' | 'plugin' | 'api' | 'rpc' | undefined;
+                transport?: 'plugin' | 'api' | 'rpc' | 'host' | undefined;
                 routing?: string | undefined;
                 approvalPolicy?: string | undefined;
                 resultSchema?: Record<string, unknown> | undefined;
@@ -10360,7 +10267,7 @@ export type PluginActionResultById = {
         [x: string]: unknown;
         id: string;
         parentSessionId: string;
-        origin: 'plugin' | 'agent' | 'happier';
+        origin: 'agent' | 'plugin' | 'happier';
         kind: 'custom' | 'native' | 'execution-run';
         status: 'completed' | 'failed' | 'running' | 'pending' | 'aborted';
         createdAt: number;
@@ -10418,7 +10325,7 @@ export type PluginActionResultById = {
         [x: string]: unknown;
         id: string;
         parentSessionId: string;
-        origin: 'plugin' | 'agent' | 'happier';
+        origin: 'agent' | 'plugin' | 'happier';
         kind: 'custom' | 'native' | 'execution-run';
         status: 'completed' | 'failed' | 'running' | 'pending' | 'aborted';
         createdAt: number;
@@ -10479,7 +10386,7 @@ export type PluginActionResultById = {
             [x: string]: unknown;
             id: string;
             parentSessionId: string;
-            origin: 'plugin' | 'agent' | 'happier';
+            origin: 'agent' | 'plugin' | 'happier';
             kind: 'custom' | 'native' | 'execution-run';
             status: 'completed' | 'failed' | 'running' | 'pending' | 'aborted';
             createdAt: number;
@@ -10569,6 +10476,13 @@ export type PluginActionResultById = {
                         participantLabel?: string | undefined;
                         groupId?: string | undefined;
                     } | undefined;
+                    launchOrigin?: {
+                        kind: 'session';
+                        sessionId: string;
+                    } | {
+                        kind: 'external';
+                        source?: 'cli' | 'mcp' | 'action' | undefined;
+                    } | undefined;
                     turnInFlight?: boolean | undefined;
                     availableActionIds?: string[] | undefined;
                     resumeHandle?: {
@@ -10613,14 +10527,19 @@ export type PluginActionResultById = {
                 } | undefined;
             };
         } | {
-            ok: false;
-            code: 'timeout';
+            ok: true;
+            status: 'running';
+            disposition: 'observation_timeout';
+            runId: string;
+            timeoutMs: number;
+            observedAtMs: number;
+            deadlineAtMs: number;
         } | {
             ok: false;
             code: 'cancelled';
         } | {
             ok: false;
-            code: 'permission_denied' | 'execution_run_not_allowed' | 'execution_run_not_found' | 'execution_run_action_not_supported' | 'execution_run_invalid_action_input' | 'execution_run_stream_not_found' | 'execution_run_busy' | 'execution_run_failed' | 'execution_run_budget_exceeded' | 'execution_run_output_limit_exceeded' | 'execution_run_protocol_unsupported' | 'execution_run_target_not_selected' | 'execution_run_target_unavailable' | 'execution_run_scope_mismatch' | 'execution_run_connected_service_generation_refresh_required' | 'run_depth_exceeded';
+            code: 'permission_denied' | 'execution_run_not_allowed' | 'execution_run_not_found' | 'execution_run_action_not_supported' | 'execution_run_invalid_action_input' | 'execution_run_stream_not_found' | 'execution_run_busy' | 'execution_run_failed' | 'execution_run_budget_exceeded' | 'execution_run_output_limit_exceeded' | 'execution_run_protocol_unsupported' | 'execution_run_target_not_selected' | 'execution_run_target_unavailable' | 'execution_run_start_ambiguous' | 'execution_run_scope_mismatch' | 'execution_run_connected_service_generation_refresh_required' | 'run_depth_exceeded';
         } | undefined;
     };
     readonly "execution.run.list": {
@@ -10649,6 +10568,13 @@ export type PluginActionResultById = {
                 title?: string | undefined;
                 participantLabel?: string | undefined;
                 groupId?: string | undefined;
+            } | undefined;
+            launchOrigin?: {
+                kind: 'session';
+                sessionId: string;
+            } | {
+                kind: 'external';
+                source?: 'cli' | 'mcp' | 'action' | undefined;
             } | undefined;
             turnInFlight?: boolean | undefined;
             availableActionIds?: string[] | undefined;
@@ -10713,6 +10639,13 @@ export type PluginActionResultById = {
                 title?: string | undefined;
                 participantLabel?: string | undefined;
                 groupId?: string | undefined;
+            } | undefined;
+            launchOrigin?: {
+                kind: 'session';
+                sessionId: string;
+            } | {
+                kind: 'external';
+                source?: 'cli' | 'mcp' | 'action' | undefined;
             } | undefined;
             turnInFlight?: boolean | undefined;
             availableActionIds?: string[] | undefined;
@@ -10877,6 +10810,13 @@ export type PluginActionResultById = {
                     participantLabel?: string | undefined;
                     groupId?: string | undefined;
                 } | undefined;
+                launchOrigin?: {
+                    kind: 'session';
+                    sessionId: string;
+                } | {
+                    kind: 'external';
+                    source?: 'cli' | 'mcp' | 'action' | undefined;
+                } | undefined;
                 turnInFlight?: boolean | undefined;
                 availableActionIds?: string[] | undefined;
                 resumeHandle?: {
@@ -10921,14 +10861,19 @@ export type PluginActionResultById = {
             } | undefined;
         };
     } | {
-        ok: false;
-        code: 'timeout';
+        ok: true;
+        status: 'running';
+        disposition: 'observation_timeout';
+        runId: string;
+        timeoutMs: number;
+        observedAtMs: number;
+        deadlineAtMs: number;
     } | {
         ok: false;
         code: 'cancelled';
     } | {
         ok: false;
-        code: 'permission_denied' | 'execution_run_not_allowed' | 'execution_run_not_found' | 'execution_run_action_not_supported' | 'execution_run_invalid_action_input' | 'execution_run_stream_not_found' | 'execution_run_busy' | 'execution_run_failed' | 'execution_run_budget_exceeded' | 'execution_run_output_limit_exceeded' | 'execution_run_protocol_unsupported' | 'execution_run_target_not_selected' | 'execution_run_target_unavailable' | 'execution_run_scope_mismatch' | 'execution_run_connected_service_generation_refresh_required' | 'run_depth_exceeded';
+        code: 'permission_denied' | 'execution_run_not_allowed' | 'execution_run_not_found' | 'execution_run_action_not_supported' | 'execution_run_invalid_action_input' | 'execution_run_stream_not_found' | 'execution_run_busy' | 'execution_run_failed' | 'execution_run_budget_exceeded' | 'execution_run_output_limit_exceeded' | 'execution_run_protocol_unsupported' | 'execution_run_target_not_selected' | 'execution_run_target_unavailable' | 'execution_run_start_ambiguous' | 'execution_run_scope_mismatch' | 'execution_run_connected_service_generation_refresh_required' | 'run_depth_exceeded';
     };
     readonly "session.target.primary.set": string | number | boolean | readonly JsonValue[] | {
         readonly [key: string]: JsonValue;
@@ -10956,7 +10901,7 @@ export type PluginActionResultById = {
             origin: {
                 v: 1;
                 producer: 'happierApp' | 'cli' | 'daemonInitialPrompt' | 'sessionAction' | 'happierMcp' | 'pluginSession' | 'connectedService' | 'automation' | 'voiceInput' | 'agentTerminal' | 'externalSessionHistory' | 'runtimeTranscript' | 'executionRunVoice' | 'agentRuntimeFirstInput';
-                actor: 'machine' | 'owner' | 'collaborator';
+                actor: 'owner' | 'collaborator' | 'machine';
                 sourceAuthority?: {
                     sourceRef: string;
                     sourceRevisionOrEpoch: string;
@@ -10981,7 +10926,7 @@ export type PluginActionResultById = {
                 origin: {
                     v: 1;
                     producer: 'happierApp' | 'cli' | 'daemonInitialPrompt' | 'sessionAction' | 'happierMcp' | 'pluginSession' | 'connectedService' | 'automation' | 'voiceInput' | 'agentTerminal' | 'externalSessionHistory' | 'runtimeTranscript' | 'executionRunVoice' | 'agentRuntimeFirstInput';
-                    actor: 'machine' | 'owner' | 'collaborator';
+                    actor: 'owner' | 'collaborator' | 'machine';
                     sourceAuthority?: {
                         sourceRef: string;
                         sourceRevisionOrEpoch: string;
@@ -21361,7 +21306,7 @@ export type PluginActionResultById = {
             browserSessionId: string;
             viewId: string;
             actionKind: 'type' | 'select' | 'navigate' | 'reload' | 'goBack' | 'goForward' | 'focus' | 'getStatus' | 'snapshot' | 'semanticSnapshot' | 'queryElements' | 'getDiagnosticsSummary' | 'getActionTimeline' | 'waitFor' | 'click' | 'tap' | 'press' | 'scroll' | 'hover' | 'setValue' | 'upload' | 'drag' | 'evaluate' | 'startElementPicker' | 'cancelElementPicker';
-            requesterKind: 'plugin' | 'user' | 'agent' | 'system';
+            requesterKind: 'user' | 'agent' | 'plugin' | 'system';
             status: 'failed' | 'policy_denied' | 'succeeded' | 'interrupted' | 'canceled' | 'timed_out' | 'stale' | 'unsupported';
             adapterKind: 'externalUrl' | 'simulatorPreview' | 'localPreview' | 'hostedPlugin' | 'chromiumSidecar' | 'streamedBrowserSurface';
             fidelity: 'cdp' | 'injectedPage' | 'webIframe' | 'nativeWebView' | 'streamedSurface' | 'unavailable' | 'previewProxy';
@@ -22170,7 +22115,7 @@ export type PluginActionResultById = {
             labels: {
                 id: string;
                 text: string;
-                source: 'plugin' | 'user';
+                source: 'user' | 'plugin';
                 updatedAt: number;
             }[];
             confidence: 'high' | 'medium' | 'low';
@@ -22256,7 +22201,7 @@ export type PluginActionResultById = {
             labels: {
                 id: string;
                 text: string;
-                source: 'plugin' | 'user';
+                source: 'user' | 'plugin';
                 updatedAt: number;
             }[];
             confidence: 'high' | 'medium' | 'low';
@@ -22838,7 +22783,7 @@ export type PluginActionResultById = {
                     tone?: 'success' | 'danger' | 'neutral' | 'info' | 'warning' | 'accent' | undefined;
                     diagnostics?: Record<string, unknown> | undefined;
                 };
-                originMode: 'host' | 'path';
+                originMode: 'path' | 'host';
                 policy?: {
                     allowedMethods: ('GET' | 'HEAD' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'OPTIONS')[];
                     cookiePolicy: 'drop' | 'isolate' | 'rewrite';
@@ -22914,7 +22859,7 @@ export type PluginActionResultById = {
                     tone?: 'success' | 'danger' | 'neutral' | 'info' | 'warning' | 'accent' | undefined;
                     diagnostics?: Record<string, unknown> | undefined;
                 };
-                originMode: 'host' | 'path';
+                originMode: 'path' | 'host';
                 policy?: {
                     allowedMethods: ('GET' | 'HEAD' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'OPTIONS')[];
                     cookiePolicy: 'drop' | 'isolate' | 'rewrite';
@@ -22975,7 +22920,7 @@ export type PluginActionResultById = {
                         tone?: 'success' | 'danger' | 'neutral' | 'info' | 'warning' | 'accent' | undefined;
                         diagnostics?: Record<string, unknown> | undefined;
                     };
-                    originMode: 'host' | 'path';
+                    originMode: 'path' | 'host';
                     policy?: {
                         allowedMethods: ('GET' | 'HEAD' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'OPTIONS')[];
                         cookiePolicy: 'drop' | 'isolate' | 'rewrite';
@@ -23053,7 +22998,7 @@ export type PluginActionResultById = {
                 tone?: 'success' | 'danger' | 'neutral' | 'info' | 'warning' | 'accent' | undefined;
                 diagnostics?: Record<string, unknown> | undefined;
             };
-            originMode: 'host' | 'path';
+            originMode: 'path' | 'host';
             policy?: {
                 allowedMethods: ('GET' | 'HEAD' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'OPTIONS')[];
                 cookiePolicy: 'drop' | 'isolate' | 'rewrite';
@@ -23114,7 +23059,7 @@ export type PluginActionResultById = {
                     tone?: 'success' | 'danger' | 'neutral' | 'info' | 'warning' | 'accent' | undefined;
                     diagnostics?: Record<string, unknown> | undefined;
                 };
-                originMode: 'host' | 'path';
+                originMode: 'path' | 'host';
                 policy?: {
                     allowedMethods: ('GET' | 'HEAD' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'OPTIONS')[];
                     cookiePolicy: 'drop' | 'isolate' | 'rewrite';
@@ -23195,7 +23140,7 @@ export type PluginActionResultById = {
                     tone?: 'success' | 'danger' | 'neutral' | 'info' | 'warning' | 'accent' | undefined;
                     diagnostics?: Record<string, unknown> | undefined;
                 };
-                originMode: 'host' | 'path';
+                originMode: 'path' | 'host';
                 policy?: {
                     allowedMethods: ('GET' | 'HEAD' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'OPTIONS')[];
                     cookiePolicy: 'drop' | 'isolate' | 'rewrite';
@@ -23256,7 +23201,7 @@ export type PluginActionResultById = {
                         tone?: 'success' | 'danger' | 'neutral' | 'info' | 'warning' | 'accent' | undefined;
                         diagnostics?: Record<string, unknown> | undefined;
                     };
-                    originMode: 'host' | 'path';
+                    originMode: 'path' | 'host';
                     policy?: {
                         allowedMethods: ('GET' | 'HEAD' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'OPTIONS')[];
                         cookiePolicy: 'drop' | 'isolate' | 'rewrite';
@@ -27655,6 +27600,24 @@ export type PluginActionResultById = {
         kind: 'unavailable';
         code: string;
     };
+    readonly "plugin.webhook.endpoint.convergeTarget": {
+        kind: 'converged';
+        webhookEndpointId: string;
+        revision: number;
+        targetMaterialization: {
+            machineId: string;
+            materializationId: string;
+            pluginId: string;
+        };
+        targetIntentEpoch: number;
+    } | {
+        kind: 'superseded';
+        webhookEndpointId: string;
+        currentTargetIntentEpoch: number;
+    } | {
+        kind: 'unavailable';
+        code: string;
+    };
     readonly "plugin.webhook.endpoint.credential.configure": {
         kind: 'configured' | 'alreadyConfigured';
         webhookEndpointId: string;
@@ -27866,7 +27829,7 @@ export type PluginActionResultById = {
             provider: {
                 [x: string]: unknown;
                 id: string;
-                kind: 'unknown' | 'custom' | 'github' | 'gitlab' | 'bitbucket' | 'azure-devops';
+                kind: 'custom' | 'unknown' | 'github' | 'gitlab' | 'bitbucket' | 'azure-devops';
                 displayName: string;
                 baseUrl: string;
                 urlSafety: {
@@ -27897,7 +27860,7 @@ export type PluginActionResultById = {
             } | undefined;
             checks?: {
                 [x: string]: unknown;
-                state: 'success' | 'unknown' | 'pending' | 'failure';
+                state: 'unknown' | 'success' | 'pending' | 'failure';
                 description?: string | undefined;
             } | undefined;
         }[];
@@ -27926,7 +27889,7 @@ export type PluginActionResultById = {
             provider: {
                 [x: string]: unknown;
                 id: string;
-                kind: 'unknown' | 'custom' | 'github' | 'gitlab' | 'bitbucket' | 'azure-devops';
+                kind: 'custom' | 'unknown' | 'github' | 'gitlab' | 'bitbucket' | 'azure-devops';
                 displayName: string;
                 baseUrl: string;
                 urlSafety: {
@@ -27957,7 +27920,7 @@ export type PluginActionResultById = {
             } | undefined;
             checks?: {
                 [x: string]: unknown;
-                state: 'success' | 'unknown' | 'pending' | 'failure';
+                state: 'unknown' | 'success' | 'pending' | 'failure';
                 description?: string | undefined;
             } | undefined;
         } | null;
@@ -27995,7 +27958,7 @@ export type PluginActionResultById = {
             provider: {
                 [x: string]: unknown;
                 id: string;
-                kind: 'unknown' | 'custom' | 'github' | 'gitlab' | 'bitbucket' | 'azure-devops';
+                kind: 'custom' | 'unknown' | 'github' | 'gitlab' | 'bitbucket' | 'azure-devops';
                 displayName: string;
                 baseUrl: string;
                 urlSafety: {
@@ -28026,7 +27989,7 @@ export type PluginActionResultById = {
             } | undefined;
             checks?: {
                 [x: string]: unknown;
-                state: 'success' | 'unknown' | 'pending' | 'failure';
+                state: 'unknown' | 'success' | 'pending' | 'failure';
                 description?: string | undefined;
             } | undefined;
         } | null | undefined;
@@ -28071,7 +28034,7 @@ export type PluginActionResultById = {
             provider: {
                 [x: string]: unknown;
                 id: string;
-                kind: 'unknown' | 'custom' | 'github' | 'gitlab' | 'bitbucket' | 'azure-devops';
+                kind: 'custom' | 'unknown' | 'github' | 'gitlab' | 'bitbucket' | 'azure-devops';
                 displayName: string;
                 baseUrl: string;
                 urlSafety: {
@@ -28102,7 +28065,7 @@ export type PluginActionResultById = {
             } | undefined;
             checks?: {
                 [x: string]: unknown;
-                state: 'success' | 'unknown' | 'pending' | 'failure';
+                state: 'unknown' | 'success' | 'pending' | 'failure';
                 description?: string | undefined;
             } | undefined;
         } | null | undefined;
@@ -28125,7 +28088,7 @@ export type PluginActionResultById = {
             provider: {
                 [x: string]: unknown;
                 id: string;
-                kind: 'unknown' | 'custom' | 'github' | 'gitlab' | 'bitbucket' | 'azure-devops';
+                kind: 'custom' | 'unknown' | 'github' | 'gitlab' | 'bitbucket' | 'azure-devops';
                 displayName: string;
                 baseUrl: string;
                 urlSafety: {
@@ -28156,7 +28119,7 @@ export type PluginActionResultById = {
             } | undefined;
             checks?: {
                 [x: string]: unknown;
-                state: 'success' | 'unknown' | 'pending' | 'failure';
+                state: 'unknown' | 'success' | 'pending' | 'failure';
                 description?: string | undefined;
             } | undefined;
         } | null | undefined;
@@ -28220,7 +28183,7 @@ export type PluginActionResultById = {
             provider: {
                 [x: string]: unknown;
                 id: string;
-                kind: 'unknown' | 'custom' | 'github' | 'gitlab' | 'bitbucket' | 'azure-devops';
+                kind: 'custom' | 'unknown' | 'github' | 'gitlab' | 'bitbucket' | 'azure-devops';
                 displayName: string;
                 baseUrl: string;
                 urlSafety: {
@@ -28251,7 +28214,7 @@ export type PluginActionResultById = {
             } | undefined;
             checks?: {
                 [x: string]: unknown;
-                state: 'success' | 'unknown' | 'pending' | 'failure';
+                state: 'unknown' | 'success' | 'pending' | 'failure';
                 description?: string | undefined;
             } | undefined;
         } | null | undefined;
@@ -28283,7 +28246,7 @@ export type PluginActionResultById = {
             provider: {
                 [x: string]: unknown;
                 id: string;
-                kind: 'unknown' | 'custom' | 'github' | 'gitlab' | 'bitbucket' | 'azure-devops';
+                kind: 'custom' | 'unknown' | 'github' | 'gitlab' | 'bitbucket' | 'azure-devops';
                 displayName: string;
                 baseUrl: string;
                 urlSafety: {
@@ -28427,7 +28390,7 @@ export type PluginActionResultById = {
             hostingProvider?: {
                 [x: string]: unknown;
                 id: string;
-                kind: 'unknown' | 'custom' | 'github' | 'gitlab' | 'bitbucket' | 'azure-devops';
+                kind: 'custom' | 'unknown' | 'github' | 'gitlab' | 'bitbucket' | 'azure-devops';
                 displayName: string;
                 baseUrl: string;
                 urlSafety: {
@@ -28443,7 +28406,7 @@ export type PluginActionResultById = {
                 provider: {
                     [x: string]: unknown;
                     id: string;
-                    kind: 'unknown' | 'custom' | 'github' | 'gitlab' | 'bitbucket' | 'azure-devops';
+                    kind: 'custom' | 'unknown' | 'github' | 'gitlab' | 'bitbucket' | 'azure-devops';
                     displayName: string;
                     baseUrl: string;
                     urlSafety: {
@@ -28461,7 +28424,7 @@ export type PluginActionResultById = {
                     provider: {
                         [x: string]: unknown;
                         id: string;
-                        kind: 'unknown' | 'custom' | 'github' | 'gitlab' | 'bitbucket' | 'azure-devops';
+                        kind: 'custom' | 'unknown' | 'github' | 'gitlab' | 'bitbucket' | 'azure-devops';
                         displayName: string;
                         baseUrl: string;
                         urlSafety: {
@@ -28492,7 +28455,7 @@ export type PluginActionResultById = {
                     } | undefined;
                     checks?: {
                         [x: string]: unknown;
-                        state: 'success' | 'unknown' | 'pending' | 'failure';
+                        state: 'unknown' | 'success' | 'pending' | 'failure';
                         description?: string | undefined;
                     } | undefined;
                 } | null;
@@ -28669,7 +28632,7 @@ export type PluginActionResultById = {
             hostingProvider?: {
                 [x: string]: unknown;
                 id: string;
-                kind: 'unknown' | 'custom' | 'github' | 'gitlab' | 'bitbucket' | 'azure-devops';
+                kind: 'custom' | 'unknown' | 'github' | 'gitlab' | 'bitbucket' | 'azure-devops';
                 displayName: string;
                 baseUrl: string;
                 urlSafety: {
@@ -28685,7 +28648,7 @@ export type PluginActionResultById = {
                 provider: {
                     [x: string]: unknown;
                     id: string;
-                    kind: 'unknown' | 'custom' | 'github' | 'gitlab' | 'bitbucket' | 'azure-devops';
+                    kind: 'custom' | 'unknown' | 'github' | 'gitlab' | 'bitbucket' | 'azure-devops';
                     displayName: string;
                     baseUrl: string;
                     urlSafety: {
@@ -28703,7 +28666,7 @@ export type PluginActionResultById = {
                     provider: {
                         [x: string]: unknown;
                         id: string;
-                        kind: 'unknown' | 'custom' | 'github' | 'gitlab' | 'bitbucket' | 'azure-devops';
+                        kind: 'custom' | 'unknown' | 'github' | 'gitlab' | 'bitbucket' | 'azure-devops';
                         displayName: string;
                         baseUrl: string;
                         urlSafety: {
@@ -28734,7 +28697,7 @@ export type PluginActionResultById = {
                     } | undefined;
                     checks?: {
                         [x: string]: unknown;
-                        state: 'success' | 'unknown' | 'pending' | 'failure';
+                        state: 'unknown' | 'success' | 'pending' | 'failure';
                         description?: string | undefined;
                     } | undefined;
                 } | null;
@@ -28899,7 +28862,7 @@ export type PluginActionResultById = {
             hostingProvider?: {
                 [x: string]: unknown;
                 id: string;
-                kind: 'unknown' | 'custom' | 'github' | 'gitlab' | 'bitbucket' | 'azure-devops';
+                kind: 'custom' | 'unknown' | 'github' | 'gitlab' | 'bitbucket' | 'azure-devops';
                 displayName: string;
                 baseUrl: string;
                 urlSafety: {
@@ -28915,7 +28878,7 @@ export type PluginActionResultById = {
                 provider: {
                     [x: string]: unknown;
                     id: string;
-                    kind: 'unknown' | 'custom' | 'github' | 'gitlab' | 'bitbucket' | 'azure-devops';
+                    kind: 'custom' | 'unknown' | 'github' | 'gitlab' | 'bitbucket' | 'azure-devops';
                     displayName: string;
                     baseUrl: string;
                     urlSafety: {
@@ -28933,7 +28896,7 @@ export type PluginActionResultById = {
                     provider: {
                         [x: string]: unknown;
                         id: string;
-                        kind: 'unknown' | 'custom' | 'github' | 'gitlab' | 'bitbucket' | 'azure-devops';
+                        kind: 'custom' | 'unknown' | 'github' | 'gitlab' | 'bitbucket' | 'azure-devops';
                         displayName: string;
                         baseUrl: string;
                         urlSafety: {
@@ -28964,7 +28927,7 @@ export type PluginActionResultById = {
                     } | undefined;
                     checks?: {
                         [x: string]: unknown;
-                        state: 'success' | 'unknown' | 'pending' | 'failure';
+                        state: 'unknown' | 'success' | 'pending' | 'failure';
                         description?: string | undefined;
                     } | undefined;
                 } | null;
@@ -29020,7 +28983,7 @@ export type PluginActionResultById = {
             provider: {
                 [x: string]: unknown;
                 id: string;
-                kind: 'unknown' | 'custom' | 'github' | 'gitlab' | 'bitbucket' | 'azure-devops';
+                kind: 'custom' | 'unknown' | 'github' | 'gitlab' | 'bitbucket' | 'azure-devops';
                 displayName: string;
                 baseUrl: string;
                 urlSafety: {
@@ -29077,7 +29040,7 @@ export type PluginActionResultById = {
             provider: {
                 [x: string]: unknown;
                 id: string;
-                kind: 'unknown' | 'custom' | 'github' | 'gitlab' | 'bitbucket' | 'azure-devops';
+                kind: 'custom' | 'unknown' | 'github' | 'gitlab' | 'bitbucket' | 'azure-devops';
                 displayName: string;
                 baseUrl: string;
                 urlSafety: {
@@ -29227,7 +29190,7 @@ export type PluginActionResultById = {
             hostingProvider?: {
                 [x: string]: unknown;
                 id: string;
-                kind: 'unknown' | 'custom' | 'github' | 'gitlab' | 'bitbucket' | 'azure-devops';
+                kind: 'custom' | 'unknown' | 'github' | 'gitlab' | 'bitbucket' | 'azure-devops';
                 displayName: string;
                 baseUrl: string;
                 urlSafety: {
@@ -29243,7 +29206,7 @@ export type PluginActionResultById = {
                 provider: {
                     [x: string]: unknown;
                     id: string;
-                    kind: 'unknown' | 'custom' | 'github' | 'gitlab' | 'bitbucket' | 'azure-devops';
+                    kind: 'custom' | 'unknown' | 'github' | 'gitlab' | 'bitbucket' | 'azure-devops';
                     displayName: string;
                     baseUrl: string;
                     urlSafety: {
@@ -29261,7 +29224,7 @@ export type PluginActionResultById = {
                     provider: {
                         [x: string]: unknown;
                         id: string;
-                        kind: 'unknown' | 'custom' | 'github' | 'gitlab' | 'bitbucket' | 'azure-devops';
+                        kind: 'custom' | 'unknown' | 'github' | 'gitlab' | 'bitbucket' | 'azure-devops';
                         displayName: string;
                         baseUrl: string;
                         urlSafety: {
@@ -29292,7 +29255,7 @@ export type PluginActionResultById = {
                     } | undefined;
                     checks?: {
                         [x: string]: unknown;
-                        state: 'success' | 'unknown' | 'pending' | 'failure';
+                        state: 'unknown' | 'success' | 'pending' | 'failure';
                         description?: string | undefined;
                     } | undefined;
                 } | null;

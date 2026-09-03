@@ -209,6 +209,15 @@ const FEATURE_PROTOCOL_SDK_IMPORT_ALLOWLIST: Readonly<Record<string, ReadonlySet
         'QualifiedConnectedAccountRef',
         'QualifiedConnectedAccountRefSchema',
     ]),
+    // The Collection revision ceiling is a portable numeric schema fact, and
+    // SDK `/collections` is its public owner. A feature protocol that declares
+    // a revision-bounded witness must bound it from this exact value rather
+    // than a nearby safe-integer literal; nothing else on this subpath —
+    // `defineAccountCollection`, the query/mutation services, or the row
+    // shapes — is reusable protocol vocabulary.
+    [`${SDK_PACKAGE_NAME}/collections`]: new Set([
+        'PLUGIN_COLLECTION_REVISION_MAX',
+    ]),
     [`${SDK_PACKAGE_NAME}/manifest`]: new Set([
         // The current SDK entry intentionally exposes this V1 type under its
         // public `PluginContributionIdentity` alias; do not invent a second
@@ -1439,6 +1448,23 @@ describe('feature-protocol package policy', () => {
                 'src/v1/provider/nonAllowlistedSymbol.ts': "import { SessionsService } from '@happier-dev/plugin-sdk/sessions';\nvoid SessionsService;\n",
             },
         })).toThrow('unapproved SDK symbol SessionsService');
+        expect(() => assertFeatureProtocolPackageBoundary({
+            ...featureProtocolFixture,
+            sources: {
+                ...featureProtocolFixture.sources,
+                'src/v1/provider/collectionRevisionCeiling.ts': "import { PLUGIN_COLLECTION_REVISION_MAX } from '@happier-dev/plugin-sdk/collections';\nvoid PLUGIN_COLLECTION_REVISION_MAX;\n",
+            },
+        })).not.toThrow();
+        // `/collections` is the one approved subpath that also publishes an
+        // owning service surface, so admitting the revision ceiling must not
+        // admit the collection definition or its query/mutation services.
+        expect(() => assertFeatureProtocolPackageBoundary({
+            ...featureProtocolFixture,
+            sources: {
+                ...featureProtocolFixture.sources,
+                'src/v1/provider/collectionDefinition.ts': "import { defineAccountCollection } from '@happier-dev/plugin-sdk/collections';\nvoid defineAccountCollection;\n",
+            },
+        })).toThrow('unapproved SDK symbol defineAccountCollection');
         expect(() => assertFeatureProtocolPackageBoundary({
             ...featureProtocolFixture,
             sources: {

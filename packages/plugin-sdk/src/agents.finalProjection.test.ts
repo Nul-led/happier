@@ -47,6 +47,14 @@ describe('final Agent SDK projections', () => {
       .toBe(protocol.buildBackendTargetKeyV2);
   });
 
+  it('publishes the canonical Protocol Agent execution target for authors', async () => {
+    const publicSpec = await readFile(new URL('./agents/index.public.ts', import.meta.url), 'utf8');
+
+    expectTypeOf<agentDeclarations.AgentExecutionTargetV1>()
+      .toEqualTypeOf<protocol.AgentExecutionTargetV1>();
+    expect(publicSpec).toContain('AgentExecutionTargetV1');
+  });
+
   it('keeps Claude-only policy out of the generic Agent author seam', async () => {
     const publicSpec = await readFile(new URL('./agents/index.public.ts', import.meta.url), 'utf8');
     for (const name of [

@@ -664,9 +664,6 @@ describe('Happier SDK client', () => {
     expectTypeOf<HappierSessionSpawnInput['agentModeId']>().toEqualTypeOf<
       PublicActionInputById['session.spawn_new']['agentModeId']
     >();
-    expectTypeOf<HappierSessionSpawnInput['environmentVariables']>().toEqualTypeOf<
-      PublicActionInputById['session.spawn_new']['environmentVariables']
-    >();
     expectTypeOf<HappierSessionSpawnInput['agent']>().toEqualTypeOf<string>();
 
     const input = {
@@ -676,6 +673,12 @@ describe('Happier SDK client', () => {
       agentModeId: 'review',
       title: 'External agent session',
     } as const satisfies HappierSessionSpawnInput;
+
+    const rawEnvironmentConflict: HappierSessionSpawnInput = {
+      ...input,
+      // @ts-expect-error Raw environment values are not part of the public Session spawn contract.
+      environmentVariables: { TOKEN: 'secret' },
+    };
 
     // @ts-expect-error The target is supplied only by machine(machineId).
     const targetConflict: HappierSessionSpawnInput = { ...input, executionTarget: { serverId: 'wrong', machineId: 'other' } };
@@ -687,6 +690,7 @@ describe('Happier SDK client', () => {
         identity: { pluginId: 'happier.agent.codex', localId: 'codex' },
       },
     };
+    void rawEnvironmentConflict;
     void targetConflict;
     void agentTargetConflict;
 

@@ -43,6 +43,8 @@ export const HOME_QR_SECRET_V2_BYTES = 32;
 export const HOME_QR_REQUESTER_PUBLIC_KEY_V2_BYTES = 32;
 /** Bounded invite lifetime; matches the existing pairing policy TTL clamp maximum (600s). */
 export const HOME_QR_INVITE_V2_MAX_TTL_MS = 600_000;
+/** Default pairing window, aligned with the Home pairing policy's production default. */
+const HOME_QR_INVITE_V2_DEFAULT_TTL_MS = 120_000;
 /** Narrow clock tolerance for an invite issued slightly in the future. */
 export const HOME_QR_INVITE_V2_MAX_FUTURE_ISSUANCE_SKEW_MS = 30_000;
 /** Bounded opaque payload budget for QR/deep-link carriers. */
@@ -311,7 +313,7 @@ export function createHomeQrReverseInviteV2(input: Readonly<{
   requestedDeviceLabel?: string;
 }>): HomeQrReverseInviteV2Material {
   const { nowMs } = input;
-  const ttlMs = input.ttlMs ?? HOME_QR_INVITE_V2_MAX_TTL_MS;
+  const ttlMs = input.ttlMs ?? HOME_QR_INVITE_V2_DEFAULT_TTL_MS;
   if (!Number.isSafeInteger(nowMs) || nowMs < 0) throw new Error('Invalid issuance timestamp');
   if (!Number.isSafeInteger(ttlMs) || ttlMs <= 0 || ttlMs > HOME_QR_INVITE_V2_MAX_TTL_MS) {
     throw new Error('Invite TTL exceeds the pairing maximum');

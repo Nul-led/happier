@@ -16,6 +16,7 @@ export type ScmBackendCommandInput = Readonly<{
     stdin?: string;
     maxOutputBytes?: number;
     env?: Readonly<Record<string, string | undefined>>;
+    signal?: AbortSignal;
 }>;
 
 const DEFAULT_SCM_BACKEND_COMMAND_MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
@@ -68,5 +69,6 @@ export function runScmBackendCommand(
         stdin: input.stdin,
         maxOutputBytes: input.maxOutputBytes,
         env: input.env,
+        ...(input.signal ? { signal: input.signal } : {}),
     });
 }

@@ -483,6 +483,11 @@ export type {
   RuntimeTranscriptSourceFacet,
 } from './runtime/engine/contracts.js';
 export type {
+  AgentSessionLaunchHintsV1,
+  AgentSurfaceBaseFailureCodeV1,
+  AgentSurfaceDiagnosticV1,
+  AgentSurfaceOperationReceiptV1,
+  AgentSurfaceResultV1,
   AttachAvailabilityDepthV1,
   AttachAvailabilityRequestV1,
   AttachFailureCodeV1,
@@ -490,11 +495,6 @@ export type {
   AttachResultV1,
   AttachSessionMetadataV1,
   AttachSurfaceV1,
-  BackendSessionLaunchHintsV1,
-  BackendSurfaceBaseFailureCodeV1,
-  BackendSurfaceDiagnosticV1,
-  BackendSurfaceOperationReceiptV1,
-  BackendSurfaceResultV1,
   CheckpointAvailabilityOperationV1,
   CheckpointAvailabilityRequestV1,
   CheckpointDescriptorV1,

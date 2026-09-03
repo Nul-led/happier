@@ -407,10 +407,11 @@ async function prepareExternalTargetedPackageBuild(): Promise<ExternalTargetedPa
             '-p',
             join(contributorRoot, 'tsconfig.json'),
         ]);
-        await Promise.all([
-            typecheckEmittedAuthorDeclarations('target', targetRoot),
-            typecheckEmittedAuthorDeclarations('contributor', contributorRoot),
-        ]);
+        // These both build the same deep SDK declaration closure. Running them
+        // concurrently only doubles peak compiler pressure and can make one
+        // exceed the existing per-command bound on ordinary development hosts.
+        await typecheckEmittedAuthorDeclarations('target', targetRoot);
+        await typecheckEmittedAuthorDeclarations('contributor', contributorRoot);
         return Object.freeze({
             root,
             targetRoot,
@@ -731,8 +732,8 @@ describe('external definePlugin authoring inference fixture', { timeout: 90_000 
     it('compiles real independent triage target and contributor entrypoints through the canonical source-only protocol', async () => {
         const { triageSourceDeclarationsDirectory } = requireFixtureBuild();
         for (const declarationPath of [
-            join(triageSourceDeclarationsDirectory, 'packages', 'plugin-sdk', 'examples', 'triage-source-target', 'src', 'index.d.ts'),
-            join(triageSourceDeclarationsDirectory, 'packages', 'plugin-sdk', 'examples', 'triage-source-contributor', 'src', 'index.d.ts'),
+            join(triageSourceDeclarationsDirectory, 'plugin-sdk', 'examples', 'triage-source-target', 'src', 'index.d.ts'),
+            join(triageSourceDeclarationsDirectory, 'plugin-sdk', 'examples', 'triage-source-contributor', 'src', 'index.d.ts'),
         ]) {
             expectPortableExternalDeclaration(await readFile(declarationPath, 'utf8'));
         }

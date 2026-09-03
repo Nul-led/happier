@@ -1048,6 +1048,10 @@ const SessionOwnerHistoryV1Schema = z.object({
     createdAtMs: TimestampSchema,
     appliedToLocalId: OptionalOwnerIdentifierSchema.optional(),
     appliedAtMs: TimestampSchema.optional(),
+    // The Pending row whose provider prompt this seed was composed into, recorded before
+    // dispatch. Retirement is a separate write that can fail, so this association is what lets
+    // the incumbent durable accepted-delivery status decide the seed's fate after a restart.
+    dispatchedToLocalId: OptionalOwnerIdentifierSchema.optional(),
   }).strict().optional(),
   forkInitialPromptV1: z.object({
     v: z.literal(1),

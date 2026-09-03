@@ -1,6 +1,10 @@
 import {
     computeCanonicalDomainSeparatedDigest as canonicalComputeCanonicalDomainSeparatedDigest,
 } from '@happier-dev/protocol/crypto/canonicalDigest';
+import {
+    createCanonicalJsonSigningInput as canonicalCreateCanonicalJsonSigningInput,
+} from '@happier-dev/protocol/crypto/canonicalJson';
+import type { ProtocolJsonValue } from './protocol/protocolFacade.js';
 
 /**
  * The protocol facade owns the canonical public JSON vocabulary. Identity
@@ -21,6 +25,18 @@ export const computeCanonicalDomainSeparatedDigest: (
     domain: string,
     parts: readonly (string | Uint8Array)[],
 ) => string = canonicalComputeCanonicalDomainSeparatedDigest;
+
+/**
+ * The deterministic encoding a plugin signs or digests a structured value
+ * through: object members sorted by key and array order preserved. Invalid
+ * runtime values fail explicitly instead of being omitted or coerced. A
+ * producer and a verifier of the same digest must both reach this one owner,
+ * because property insertion order does not survive a persist/redeliver round
+ * trip. Protocol remains the sole implementation; the SDK only publishes it,
+ * exactly as it publishes the framed digest above.
+ */
+export const createCanonicalJsonSigningInput: (value: ProtocolJsonValue) => string =
+    canonicalCreateCanonicalJsonSigningInput;
 
 /** Local contribution-id projection; Protocol owns its parser and bounds. */
 export type PluginContributionLocalId = string;

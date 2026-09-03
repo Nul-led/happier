@@ -1,9 +1,9 @@
 import type { MaybePromise } from '../engine/contracts.js';
 import type {
-  BackendSurfaceAvailabilityV1,
+  AgentSurfaceAvailabilityV1,
   RuntimeDescriptorV1,
 } from '@happier-dev/protocol';
-import type { BackendSurfaceResultV1 } from './primitives.js';
+import type { AgentSurfaceResultV1 } from './primitives.js';
 
 export type AttachSessionMetadataV1 = Readonly<Partial<{
   path: string;
@@ -38,6 +38,6 @@ export type AttachFailureCodeV1 =
   | 'attach_failed';
 
 export type AttachSurfaceV1 = Readonly<{
-  evaluateAvailability?: (request: AttachAvailabilityRequestV1) => MaybePromise<BackendSurfaceAvailabilityV1>;
-  attach: (params: AttachRequestV1) => MaybePromise<BackendSurfaceResultV1<AttachResultV1, AttachFailureCodeV1>>;
+  evaluateAvailability?: (request: AttachAvailabilityRequestV1) => MaybePromise<AgentSurfaceAvailabilityV1>;
+  attach: (params: AttachRequestV1) => MaybePromise<AgentSurfaceResultV1<AttachResultV1, AttachFailureCodeV1>>;
 }>;

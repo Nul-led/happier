@@ -139,6 +139,26 @@ describe('executionRuns protocol', () => {
     expect(ExecutionRunIntentSchema.parse('scm_commit_message')).toBe('scm_commit_message');
   });
 
+  it('accepts privacy-bounded launch provenance', () => {
+    const request = {
+      intent: 'review',
+      backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
+      permissionMode: 'read_only',
+      retentionPolicy: 'ephemeral',
+      runClass: 'bounded',
+      ioMode: 'request_response',
+      launchOrigin: { kind: 'session', sessionId: 'session_initiator' },
+    } as const;
+
+    expect(ExecutionRunStartRequestSchema.parse(request)).toMatchObject({
+      launchOrigin: { kind: 'session', sessionId: 'session_initiator' },
+    });
+    expect(ExecutionRunStartRequestSchema.safeParse({
+      ...request,
+      launchOrigin: { kind: 'session', sessionId: 'session_initiator', secret: 'no' },
+    }).success).toBe(false);
+  });
+
   it('admits the bounded generic task contract with strict JSON input and result schema', () => {
     const valid = {
       intent: 'task',
@@ -173,6 +193,7 @@ describe('executionRuns protocol', () => {
       sidechainId: 'subagent_run_1',
       intent: 'review',
       backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
+      launchOrigin: { kind: 'external', source: 'action' },
       permissionMode: 'read_only',
       retentionPolicy: 'ephemeral',
       runClass: 'bounded',
@@ -184,6 +205,7 @@ describe('executionRuns protocol', () => {
       transcript: { persistenceMode: 'persistent', epoch: 2 },
       futurePublicStateFlag: 'state-extra',
     });
+    expect(parsed.launchOrigin).toEqual({ kind: 'external', source: 'action' });
     expect(parsed.intent).toBe('review');
     expect((parsed as any).turnInFlight).toBe(true);
     expect((parsed as any).transcript).toMatchObject({ persistenceMode: 'persistent', epoch: 2 });

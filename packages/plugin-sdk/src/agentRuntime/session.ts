@@ -499,7 +499,6 @@ export type AgentSessionRuntimeAuthApplyRequest = Readonly<{
     | 'soft_threshold'
     | 'manual'
     | 'diagnostic';
-  requireDirectLiveHotApply?: boolean;
   expected?: Readonly<{
     profileId?: string;
     groupId?: string;

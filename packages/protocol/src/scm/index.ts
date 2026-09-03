@@ -128,6 +128,11 @@ export {
 export const SCM_COMMIT_MESSAGE_MAX_LENGTH = 4096;
 export const SCM_COMMIT_PATCH_MAX_COUNT = 256;
 export const SCM_COMMIT_PATCH_MAX_LENGTH = 200_000;
+/**
+ * Bounded length for the `scm.log.list` commit-search query. Queries are user-typed search
+ * terms; the bound protects the SCM command line and result transport, not a UX limit.
+ */
+export const SCM_LOG_QUERY_MAX_LENGTH = 512;
 
 export const ScmBackendDescribeRequestSchema = ScmRequestBaseSchema;
 export type ScmBackendDescribeRequest = z.infer<typeof ScmBackendDescribeRequestSchema>;
@@ -371,12 +376,24 @@ export type ScmLogEntry = z.infer<typeof ScmLogEntrySchema>;
 export const ScmLogListRequestSchema = ScmRequestBaseSchema.extend({
   limit: z.number().int().min(1).max(500).optional(),
   skip: z.number().int().min(0).optional(),
+  /**
+   * Bounded commit search over the repository addressed by `cwd` (the explicit workspace
+   * scope), matching SHA prefixes, subject/body text, and author name/email. Additive-open:
+   * older daemons ignore this field, which is why the response carries `queryApplied`.
+   */
+  query: z.string().max(SCM_LOG_QUERY_MAX_LENGTH).optional(),
 });
 export type ScmLogListRequest = z.infer<typeof ScmLogListRequestSchema>;
 
 export const ScmLogListResponseSchema = z.object({
   success: z.boolean(),
   entries: z.array(ScmLogEntrySchema).optional(),
+  /**
+   * Echoed `true` only by producers that honored a request `query`. Absence means the
+   * producer did not apply the query (an older daemon ignored it and returned a recent
+   * page), so a consumer must never present that page as query matches.
+   */
+  queryApplied: z.boolean().optional(),
   error: z.string().optional(),
   errorCode: ScmOperationErrorCodeSchema.optional(),
 });

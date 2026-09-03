@@ -6,12 +6,14 @@ import {
   ExecutionRunDisplaySchema,
   ExecutionRunIntentSchema,
   ExecutionRunIoModeSchema,
+  ExecutionRunLaunchOriginSchema,
   ExecutionRunResumeHandleSchema,
   ExecutionRunRetentionPolicySchema,
   type ExecutionRunClass,
   type ExecutionRunDisplay,
   type ExecutionRunIntent,
   type ExecutionRunIoMode,
+  type ExecutionRunLaunchOrigin,
   type ExecutionRunResumeHandle,
   type ExecutionRunRetentionPolicy,
 } from './startRequest.js';
@@ -38,6 +40,7 @@ export const ExecutionRunTransportErrorCodeSchema = z.enum([
   'execution_run_protocol_unsupported',
   'execution_run_target_not_selected',
   'execution_run_target_unavailable',
+  'execution_run_start_ambiguous',
   'execution_run_scope_mismatch',
   'execution_run_connected_service_generation_refresh_required',
   'run_depth_exceeded',
@@ -105,6 +108,7 @@ export const ExecutionRunPublicStateSchema = z.object({
   intent: ExecutionRunIntentSchema,
   backendTarget: BackendTargetRefSchema,
   display: ExecutionRunDisplaySchema.optional(),
+  launchOrigin: ExecutionRunLaunchOriginSchema.optional(),
   // Policy/class fields are required for client surfaces (e.g. to decide if send/resume controls apply).
   permissionMode: z.string().min(1),
   retentionPolicy: ExecutionRunRetentionPolicySchema,
@@ -158,9 +162,19 @@ const ExecutionRunWaitCompletedResultSchema = z.object({
   }
 });
 
+const ExecutionRunWaitObservationTimeoutSchema = z.object({
+  ok: z.literal(true),
+  status: z.literal('running'),
+  disposition: z.literal('observation_timeout'),
+  runId: z.string().min(1),
+  timeoutMs: z.number().finite().positive(),
+  observedAtMs: z.number().finite(),
+  deadlineAtMs: z.number().finite(),
+}).strict();
+
 export const ExecutionRunWaitResultSchema = z.union([
   ExecutionRunWaitCompletedResultSchema,
-  z.object({ ok: z.literal(false), code: z.literal('timeout') }).strict(),
+  ExecutionRunWaitObservationTimeoutSchema,
   z.object({ ok: z.literal(false), code: z.literal('cancelled') }).strict(),
   z.object({ ok: z.literal(false), code: ExecutionRunTransportErrorCodeSchema }).strict(),
 ]);
@@ -187,6 +201,7 @@ export type {
   ExecutionRunDisplay,
   ExecutionRunIntent,
   ExecutionRunIoMode,
+  ExecutionRunLaunchOrigin,
   ExecutionRunResumeHandle,
   ExecutionRunRetentionPolicy,
 };

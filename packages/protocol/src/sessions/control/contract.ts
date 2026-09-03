@@ -10,6 +10,7 @@ import { TurnIdSchema } from '../idsV1.js';
 import { PendingLocalIdSchema } from '../pending/pendingLocalId.js';
 import { SessionOrganizationPlacementV1Schema } from '../creation/sessionSpawnNewResultV1.js';
 import { ExternalSessionStorageStateV1Schema } from '../external/operationV1.js';
+import { PendingActivationAuthorizationV1Schema } from '../pending/pendingActivationAuthorizationV1.js';
 import { SubAgentRunResultV2Schema } from '../../tools/v2/index.js';
 import { StopSessionIncompleteReasonSchema } from '../../sessionStop.js';
 import { AccountEncryptionModeSchema } from '../../features/payload/capabilities/encryptionCapabilities.js';
@@ -242,6 +243,7 @@ export const SessionSummarySchema = z.object({
   runtimeActivityObservedAt: z.number().int().nonnegative().nullable().optional(),
   runtimeActivityRevision: z.number().int().nonnegative().optional(),
   rollbackEligibleTurnStarts: z.array(z.number().int().nonnegative()).optional(),
+  pendingActivationAuthorization: PendingActivationAuthorizationV1Schema.optional(),
 }).passthrough().superRefine(refineRuntimeActivityProjectionFields);
 export type SessionSummary = z.infer<typeof SessionSummarySchema>;
 
@@ -450,6 +452,7 @@ export const V2SessionRecordSchema = z
     pendingCount: z.number().int().min(0).optional(),
     pendingBlockedCount: z.number().int().min(0).optional(),
     pendingVersion: z.number().int().min(0).optional(),
+    pendingActivationAuthorization: PendingActivationAuthorizationV1Schema.optional(),
     dataEncryptionKey: z.string().nullable(),
     share: SessionShareSchema.nullable().optional(),
     latestTurnId: TurnIdSchema.nullable().optional(),

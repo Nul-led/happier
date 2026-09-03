@@ -274,7 +274,10 @@ function generatedRepackConfigSource(params: Readonly<{
 }>): string {
     // Native source maps are staged as Artifact bytes. Their module names must
     // be portable across the author root, physical pack topology, and ephemeral
-    // managed operation root.
+    // managed operation root. Bundler module prefixes (`json|`, and `ignored|`
+    // for browser-field `false` stubs such as tweetnacl's `crypto`) are
+    // stripped before relativization and re-attached, so no machine-absolute
+    // path survives the template.
     return [
         "import { isAbsolute, relative, sep } from 'node:path';",
         "import * as Repack from '@callstack/repack';",
@@ -291,13 +294,13 @@ function generatedRepackConfigSource(params: Readonly<{
         `const moduleIdentity = Object.freeze(${JSON.stringify(params.module)});`,
         '',
         'function portableDevtoolResourcePath(absoluteResourcePath) {',
-        "  const jsonModulePrefix = absoluteResourcePath.startsWith('json|') ? 'json|' : '';",
-        "  const resourcePath = jsonModulePrefix === '' ? absoluteResourcePath : absoluteResourcePath.slice(jsonModulePrefix.length);",
+        "  const modulePrefix = absoluteResourcePath.startsWith('ignored|') ? 'ignored|' : absoluteResourcePath.startsWith('json|') ? 'json|' : '';",
+        "  const resourcePath = modulePrefix === '' ? absoluteResourcePath : absoluteResourcePath.slice(modulePrefix.length);",
         '  const operationRelativePath = relative(managedOperationRoot, resourcePath);',
         "  if (!isAbsolute(operationRelativePath) && operationRelativePath !== '..' && !operationRelativePath.startsWith(`..${sep}`)) {",
-        "    return `${jsonModulePrefix}${managedOperationSourceRoot}/${operationRelativePath.replace(/\\\\/gu, '/')}`;",
+        "    return `${modulePrefix}${managedOperationSourceRoot}/${operationRelativePath.replace(/\\\\/gu, '/')}`;",
         '  }',
-        "  return `${jsonModulePrefix}${relative(projectRoot, resourcePath).replace(/\\\\/gu, '/')}`;",
+        "  return `${modulePrefix}${relative(projectRoot, resourcePath).replace(/\\\\/gu, '/')}`;",
         '}',
         '',
         'function portableDevtoolModuleFilenameTemplate(info) {',

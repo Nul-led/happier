@@ -73,21 +73,64 @@ const canonicalSessionSpawnInput = {
 } as const;
 
 describe('createActionExecutor (inventory/discovery)', () => {
-  it('rejects agent subagents.delegate.start default workspace_write above a default caller', async () => {
+  it('selects the nearest non-escalating delegate permission when permissionMode is omitted', async () => {
     const deps = createDeps();
     const executor = createActionExecutor(deps);
 
     const res = await executor.execute('subagents.delegate.start', {
-      sessionId: 'session_1',
       backendTargetKeys: ['agent:claude'],
       instructions: 'Delegate this task.',
     }, { surface: 'agent', defaultSessionId: 'session_1' });
 
-    expect(res).toEqual(expect.objectContaining({
+    expect(res.ok).toBe(true);
+    expect(deps.executionRunStart).toHaveBeenCalledWith(
+      'session_1',
+      expect.objectContaining({ permissionMode: 'default' }),
+      undefined,
+    );
+  });
+
+  it('rejects an explicit delegate escalation under host-stamped causal authority', async () => {
+    const deps = createDeps();
+    const executor = createActionExecutor(deps);
+
+    const res = await executor.execute('subagents.delegate.start', {
+      backendTargetKeys: ['agent:claude'],
+      instructions: 'Delegate this task.',
+      permissionMode: 'workspace_write',
+    }, {
+      surface: 'agent',
+      defaultSessionId: 'session_1',
+      callerPermissionMode: 'workspace_write',
+      causalPermissionAuthority: {
+        kind: 'admittedSessionInputV1',
+        admittedPermissionCeiling: 'default',
+      },
+    });
+
+    expect(res).toMatchObject({
       ok: false,
       errorCode: 'permission_escalation_denied',
-      error: 'permission_escalation_denied',
-    }));
+      details: { requestedMode: 'workspace_write', callerMode: 'default' },
+    });
+    expect(deps.executionRunStart).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when causal permission authority is malformed', async () => {
+    const deps = createDeps();
+    const executor = createActionExecutor(deps);
+
+    const res = await executor.execute('subagents.delegate.start', {
+      backendTargetKeys: ['agent:claude'],
+      instructions: 'Delegate this task.',
+    }, {
+      surface: 'agent',
+      defaultSessionId: 'session_1',
+      callerPermissionMode: 'workspace_write',
+      causalPermissionAuthority: { kind: 'invalid' },
+    });
+
+    expect(res).toMatchObject({ ok: false, errorCode: 'causal_permission_authority_invalid' });
     expect(deps.executionRunStart).not.toHaveBeenCalled();
   });
 
@@ -149,11 +192,18 @@ describe('createActionExecutor (inventory/discovery)', () => {
         'happier.agent.codex/openai-codex': { source: 'connected', selection: 'profile', profileId: 'profile_1' },
       },
     };
+    const blanketSelection = {
+      v: 1,
+      bindingsByServiceId: {
+        'happier.agent.claude/anthropic': { source: 'native' },
+      },
+    };
 
     const res = await executor.execute('subagents.delegate.start', {
       sessionId: 'session_1',
       backendTargetKeys: ['agent:codex', 'agent:claude'],
       instructions: 'Delegate this task.',
+      connectedServices: blanketSelection,
       connectedServicesByBackendTargetKey: {
         'agent:codex': codexSelection,
       },
@@ -174,7 +224,7 @@ describe('createActionExecutor (inventory/discovery)', () => {
     );
     const claudeCall = (deps.executionRunStart as ReturnType<typeof vi.fn>).mock.calls
       .find((call) => (call[1] as { backendTarget?: { agentId?: string } }).backendTarget?.agentId === 'claude');
-    expect(claudeCall?.[1]).not.toHaveProperty('connectedServices');
+    expect(claudeCall?.[1]).toMatchObject({ connectedServices: blanketSelection });
   });
 
   it('treats successful execution-run service envelopes as successful fanout results', async () => {
@@ -726,7 +776,7 @@ describe('createActionExecutor (inventory/discovery)', () => {
     });
   });
 
-  it('rejects undeclared fields for agents.models.list', async () => {
+  it('drops additive undeclared fields for agents.models.list', async () => {
     const deps = createDeps();
     const executor = createActionExecutor(deps);
 
@@ -737,12 +787,13 @@ describe('createActionExecutor (inventory/discovery)', () => {
       providerTraceId: 'preview-field',
     });
 
-    expect(res).toEqual({
-      ok: false,
-      errorCode: 'invalid_parameters',
-      error: 'invalid_parameters',
+    expect(res.ok).toBe(true);
+    expect(deps.agentsModelsList).toHaveBeenCalledWith({
+      agentId: 'codex',
+      backendTargetKey: 'backend:codex',
+      machineId: 'm1',
+      limit: 2,
     });
-    expect(deps.agentsModelsList).not.toHaveBeenCalled();
   });
 
   it('routes configured ACP backendTargetKey through agents.models.list', async () => {
@@ -1368,6 +1419,58 @@ describe('createActionExecutor (inventory/discovery)', () => {
       selection: sessionSpawnOptionContext.mcpSelection,
       limit: 10,
     });
+  });
+
+  it('resolves dependent ergonomic-run options from the canonical draftInput target', async () => {
+    const deps = createDeps() as ActionExecutorDeps & {
+      agentsModelsList: ReturnType<typeof vi.fn>;
+      agentsConfigOptionsList: ReturnType<typeof vi.fn>;
+      spawnConnectedServicesList: ReturnType<typeof vi.fn>;
+    };
+    const executor = createActionExecutor(deps);
+
+    for (const fieldPath of ['modelId', 'configOptions', 'connectedServicesByBackendTargetKey'] as const) {
+      const res = await executor.execute('action.options.resolve', {
+        actionId: 'subagents.delegate.start',
+        fieldPath,
+        draftInput: {
+          backendTargetKeys: ['agent:pi'],
+          modelId: 'zai/glm-5.3-flash',
+        },
+      });
+      expect(res.ok, fieldPath).toBe(true);
+    }
+
+    expect(deps.agentsModelsList).toHaveBeenCalledWith(expect.objectContaining({
+      agentId: 'pi',
+      backendTargetKey: 'agent:pi',
+    }));
+    expect(deps.agentsConfigOptionsList).toHaveBeenCalledWith(expect.objectContaining({
+      agentId: 'pi',
+      backendTargetKey: 'agent:pi',
+      modelId: 'zai/glm-5.3-flash',
+    }));
+    expect(deps.spawnConnectedServicesList).toHaveBeenCalledWith(expect.objectContaining({
+      agentId: 'pi',
+      backendTargetKey: 'agent:pi',
+    }));
+  });
+
+  it('returns a typed missing dependency for ergonomic-run options without a selected target', async () => {
+    const deps = createDeps();
+    const executor = createActionExecutor(deps);
+
+    const res = await executor.execute('action.options.resolve', {
+      actionId: 'subagents.delegate.start',
+      fieldPath: 'modelId',
+    });
+
+    expect(res).toMatchObject({
+      ok: false,
+      errorCode: 'missing_option_dependency',
+      details: { requiredDraftPath: 'backendTargetKeys' },
+    });
+    expect(deps.agentsModelsList).not.toHaveBeenCalled();
   });
 
   it('fails closed when a V2 session spawn target cannot be resolved, even if retired flat selection fields are supplied', async () => {

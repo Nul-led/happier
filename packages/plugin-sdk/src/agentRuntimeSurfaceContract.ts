@@ -242,7 +242,6 @@ type _SessionRuntimeAuthApplyRequestMustBeBounded = AssertTrue<
     keyof AgentSessionRuntimeAuthApplyRequest,
     | 'serviceId'
     | 'reason'
-    | 'requireDirectLiveHotApply'
     | 'expected'
     | 'authGeneration'
   >
@@ -795,7 +794,6 @@ type _ConnectedAccountRuntimeSelectionMustBeGeneric = AssertTrue<
     | 'sourceProviderAccountId'
     | 'sourceAccountLabel'
     | 'applyReason'
-    | 'requireDirectLiveHotApply'
   >
 >;
 

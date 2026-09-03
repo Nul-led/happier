@@ -163,7 +163,7 @@ describe('createActionExecutor (session.handoff)', () => {
     };
     const approval = {
       v: 1 as const,
-      consequence: 'replace_nonempty_workspace_target' as const,
+      consequences: ['replace_nonempty_workspace_target'] as const,
       serverId: 'server_a',
       machineId: 'machine_2',
       canonicalRoot: '/workspace/target',
@@ -224,6 +224,90 @@ describe('createActionExecutor (session.handoff)', () => {
       actionRequestId: 'handoff-action-1',
       handoffTargetReplacementApproval: approval,
     }));
+    expect(approvalsCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it('routes one combined mirror-and-replacement approval and refuses a changed target on replay', async () => {
+    const contentPolicy = {
+      v: 1 as const,
+      selection: 'all_files' as const,
+      extraIgnorePatterns: [],
+      extraIncludePatterns: [],
+      includeGitDirectory: false,
+      policyDigest: computeWorkspaceSyncPolicyDigest({
+        v: 1,
+        selection: 'all_files',
+        extraIgnorePatterns: [],
+        extraIncludePatterns: [],
+        includeGitDirectory: false,
+      }),
+    };
+    const approval = {
+      v: 1 as const,
+      consequences: [
+        'replace_nonempty_workspace_target',
+        'delete_target_only_files_during_exact_mirror',
+      ] as const,
+      serverId: 'server_a',
+      machineId: 'machine_2',
+      canonicalRoot: '/workspace/target',
+      rootFingerprint: 'b'.repeat(64),
+      operationId: 'handoff-action-mirror-1',
+    };
+    const refreshedApproval = { ...approval, rootFingerprint: 'c'.repeat(64) };
+    let preflightCalls = 0;
+    const preflight = vi.fn(async () => {
+      preflightCalls += 1;
+      return {
+        type: 'approval_required' as const,
+        approval: preflightCalls === 1 ? approval : refreshedApproval,
+      };
+    });
+    const sessionHandoffStart = vi.fn(async () => ({ handoffId: 'handoff_1' }));
+    let persistedApproval: Record<string, unknown> | null = null;
+    const approvalsCreate = vi.fn(async ({ request }: { request: Record<string, unknown> }) => {
+      persistedApproval = request;
+      return { artifactId: 'handoff-target-approval-mirror-1' };
+    });
+    const approvalsGet = vi.fn(async () => persistedApproval);
+    const approvalsUpdate = vi.fn(async ({ request }: { request: Record<string, unknown> }) => {
+      persistedApproval = request;
+      return { ok: true as const };
+    });
+    const executor = createActionExecutor(createDeps({
+      sessionHandoffStart,
+      sessionHandoffTargetReplacementApprovalPreflight: preflight,
+      approvalsCreate,
+      approvalsGet,
+      approvalsUpdate,
+      resolveServerIdForSessionId: vi.fn(() => 'server_a'),
+    } as Partial<ActionExecutorDeps>));
+
+    await expect(executor.execute('session.handoff', {
+      sessionId: 'sess_1',
+      targetMachineId: 'machine_2',
+      targetPath: '/workspace/target',
+      workspaceAction: {
+        kind: 'create_relationship' as const,
+        mode: 'mirror_exactly' as const,
+        contentPolicy,
+        flushBeforeCommit: true as const,
+      },
+    }, {
+      surface: 'ui',
+      authority: 'present_user',
+      actionRequestId: 'handoff-action-mirror-1',
+    })).resolves.toMatchObject({ ok: true, result: { kind: 'approval_request_created' } });
+    expect(persistedApproval).toMatchObject({ handoffTargetReplacementApproval: approval });
+    expect(approvalsCreate).toHaveBeenCalledTimes(1);
+
+    const decided = await executor.execute('approval.request.decide', {
+      artifactId: 'handoff-target-approval-mirror-1',
+      decision: 'approve',
+    }, { surface: 'ui', authority: 'present_user' });
+
+    expect(decided).toMatchObject({ ok: true, result: { execution: { ok: false, errorCode: 'approval_stale' } } });
+    expect(sessionHandoffStart).not.toHaveBeenCalled();
     expect(approvalsCreate).toHaveBeenCalledTimes(1);
   });
 

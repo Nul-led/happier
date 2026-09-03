@@ -276,14 +276,23 @@ describe('createActionExecutor run options parity (model + effort)', () => {
   });
 
   it('publishes a direct waiter timeout through the strict Action result schema', async () => {
-    const executionRunWait = vi.fn(async () => ({ ok: false as const, code: 'timeout' as const }));
+    const observationTimeout = {
+      ok: true as const,
+      status: 'running' as const,
+      disposition: 'observation_timeout' as const,
+      runId: 'run_1',
+      timeoutMs: 1_000,
+      observedAtMs: 2_000,
+      deadlineAtMs: 1_500,
+    };
+    const executionRunWait = vi.fn(async () => observationTimeout);
     const executor = createActionExecutor(createDeps({ executionRunWait }));
 
     await expect(executor.execute(
       'execution.run.wait' as any,
       { sessionId: 's1', runId: 'run_1' },
       { ...UI_CALLER, defaultSessionId: 's1' },
-    )).resolves.toEqual({ ok: true, result: { ok: false, code: 'timeout' } });
+    )).resolves.toEqual({ ok: true, result: observationTimeout });
   });
 
   it('unwraps the incumbent Session start service envelope before composing start-and-wait', async () => {

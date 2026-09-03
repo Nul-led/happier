@@ -193,7 +193,7 @@ export const RPC_METHODS = {
   DAEMON_PROMPT_REGISTRY_DOWNLOAD_ABORT: 'daemon.promptRegistry.download.abort',
   DAEMON_PROMPT_REGISTRY_INSTALL: 'daemon.promptRegistry.install',
   DAEMON_MARKETPLACE_SOURCE_REGISTRY_GET: 'daemon.marketplaceSourceRegistry.get',
-  DAEMON_MARKETPLACE_SOURCE_REGISTRY_SET: 'daemon.marketplaceSourceRegistry.set',
+  DAEMON_MARKETPLACE_SOURCE_REGISTRY_MUTATE: 'daemon.marketplaceSourceRegistry.mutate',
   DAEMON_MARKETPLACE_INDEX_QUERY: 'daemon.marketplaceIndex.query',
   DAEMON_NPM_REGISTRY_PROFILES_GET: 'daemon.plugins.npmRegistries.get',
   DAEMON_NPM_REGISTRY_PROFILES_MUTATE: 'daemon.plugins.npmRegistries.mutate',

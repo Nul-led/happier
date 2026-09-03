@@ -1,14 +1,14 @@
 import {
   EXTERNAL_SESSIONS_AGENT_IDS_BY_SOURCE_KIND_V1,
   readNonAuthoritativeLinkedExternalSessionV1FromMetadata,
-  type BackendSurfaceAvailabilityV1,
+  type AgentSurfaceAvailabilityV1,
   type AgentNativeResumeIdentityV1,
   type PluginAgentExternalSessionLinkDataValue,
   type RuntimeDescriptorV1,
 } from '@happier-dev/protocol';
 import type {
-  BackendSessionLaunchHintsV1,
-  BackendSurfaceResultV1,
+  AgentSessionLaunchHintsV1,
+  AgentSurfaceResultV1,
 } from './primitives.js';
 import { readAgentSurfaceRuntimeDescriptorV1FromSessionMetadata } from '../identity/readAgentSurfaceRuntimeDescriptorV1.js';
 
@@ -93,7 +93,7 @@ export type HandoffImportRequestV1 = Readonly<{
 export type HandoffImportResultV1 = Readonly<{
   providerSessionId: string;
   source?: Readonly<{ kind: string }>;
-  launch: BackendSessionLaunchHintsV1;
+  launch: AgentSessionLaunchHintsV1;
 }>;
 
 /** Agent-owned decoding of an otherwise opaque exported handoff bundle. */
@@ -142,9 +142,9 @@ export type HandoffFailureCodeV1 =
   | 'handoff_failed';
 
 export type HandoffSurfaceV1 = Readonly<{
-  evaluateAvailability?: (request: HandoffAvailabilityRequestV1) => BackendSurfaceAvailabilityV1 | Promise<BackendSurfaceAvailabilityV1>;
-  exportBundle: (request: HandoffExportRequestV1) => BackendSurfaceResultV1<HandoffExportResultV1, HandoffFailureCodeV1> | Promise<BackendSurfaceResultV1<HandoffExportResultV1, HandoffFailureCodeV1>>;
-  importBundle: (request: HandoffImportRequestV1) => BackendSurfaceResultV1<HandoffImportResultV1, HandoffFailureCodeV1> | Promise<BackendSurfaceResultV1<HandoffImportResultV1, HandoffFailureCodeV1>>;
+  evaluateAvailability?: (request: HandoffAvailabilityRequestV1) => AgentSurfaceAvailabilityV1 | Promise<AgentSurfaceAvailabilityV1>;
+  exportBundle: (request: HandoffExportRequestV1) => AgentSurfaceResultV1<HandoffExportResultV1, HandoffFailureCodeV1> | Promise<AgentSurfaceResultV1<HandoffExportResultV1, HandoffFailureCodeV1>>;
+  importBundle: (request: HandoffImportRequestV1) => AgentSurfaceResultV1<HandoffImportResultV1, HandoffFailureCodeV1> | Promise<AgentSurfaceResultV1<HandoffImportResultV1, HandoffFailureCodeV1>>;
   extractMediaScannableRecords?: (request: HandoffMediaScannableRecordsRequestV1) => readonly unknown[] | Promise<readonly unknown[]>;
   buildRuntimeLocalMetadata?: (request: HandoffRuntimeLocalMetadataRequestV1) => HandoffRuntimeLocalMetadataV1 | null | Promise<HandoffRuntimeLocalMetadataV1 | null>;
   resolveNativeTranscriptPathCandidate?: (request: HandoffNativeTranscriptPathCandidateRequestV1) => HandoffNativeTranscriptPathCandidateV1 | null | Promise<HandoffNativeTranscriptPathCandidateV1 | null>;

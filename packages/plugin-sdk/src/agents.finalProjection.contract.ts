@@ -1,5 +1,6 @@
 import type {
   AgentContribution,
+  AgentExecutionTargetV1,
   AgentModelConfig,
   AgentModelDescriptor,
   AgentModelOption,
@@ -294,12 +295,12 @@ import type {
   AttachSessionMetadata,
   AttachSurface,
   AcpSessionOperationsV1,
-  BackendSessionLaunchHintsV1,
-  BackendSurfaceAvailabilityV1,
-  BackendSurfaceBaseFailureCodeV1,
-  BackendSurfaceDiagnosticV1,
-  BackendSurfaceOperationReceiptV1,
-  BackendSurfaceResultV1,
+  AgentSessionLaunchHintsV1,
+  AgentSurfaceAvailabilityV1,
+  AgentSurfaceBaseFailureCodeV1,
+  AgentSurfaceDiagnosticV1,
+  AgentSurfaceOperationReceiptV1,
+  AgentSurfaceResultV1,
   CheckpointSurface,
   ForkAvailabilityRequestV1,
   ForkPointV1,
@@ -396,6 +397,7 @@ import type {
 } from '@happier-dev/agents';
 import type {
   AIBackendProfile,
+  AgentExecutionTargetV1 as ProtocolAgentExecutionTargetV1,
   AgentSessionStartupInstructionsV1,
   PluginAgentAcpTransport,
   PluginAgentContributionV2,
@@ -418,6 +420,9 @@ type Equal<TLeft, TRight> =
 
 type _AgentContributionIdentity = AssertTrue<
   Equal<AgentContribution, PluginAgentContributionV2>
+>;
+type _AgentExecutionTargetIdentity = AssertTrue<
+  Equal<AgentExecutionTargetV1, ProtocolAgentExecutionTargetV1>
 >;
 type _AgentProfileIdentity = AssertTrue<Equal<AgentProfile, AIBackendProfile>>;
 type _AgentAcpTransportIdentity = AssertTrue<

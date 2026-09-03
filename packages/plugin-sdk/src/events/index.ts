@@ -28,5 +28,6 @@ export type { PluginEvents } from '../events.js';
 export { admitCheckpointedPluginEventObservationV1 } from '../eventAutomation.js';
 export { admitSessionSocketPluginEventObservationV1 } from '../eventAutomation.js';
 export { createPluginEventAutomationSetupResultV1JsonSchema } from '../events.js';
+export { isAutomationEventSourcesListPageProgressingV1 } from '../eventAutomation.js';
 export { projectPluginEventAdmissionSourceStatusV1 } from '../eventAutomation.js';
 export { projectPluginEventSourceConnectionStatusV1 } from '../eventAutomation.js';

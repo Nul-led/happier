@@ -41,12 +41,4 @@ describe('Agents publication subpaths', () => {
       expect(existsSync(resolve(packageDir, sourceOwner)), sourceOwner).toBe(true);
     }
   });
-
-  it('keeps the terminal prompt timeout on its explicit Node-backed leaf', () => {
-    const source = readFileSync(
-      resolve(packageDir, 'src/runtime/terminal/promptWriteTimeout.ts'),
-      'utf8',
-    );
-    expect(source).toContain("from 'node:buffer'");
-  });
 });

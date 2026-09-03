@@ -1,6 +1,8 @@
 export {
+  HANDOFF_TARGET_APPROVAL_CONSEQUENCES_V1,
   HandoffTargetReplacementApprovalV1Schema,
   sameHandoffTargetReplacementApproval,
+  type HandoffTargetApprovalConsequenceV1,
   type HandoffTargetReplacementApprovalV1,
 } from './handoffTargetReplacementApprovalV1.js';
 export {

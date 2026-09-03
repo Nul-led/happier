@@ -5,6 +5,7 @@ import {
   ExecutionRunDisplaySchema,
   ExecutionRunIntentSchema,
   ExecutionRunIoModeSchema,
+  ExecutionRunLaunchOriginSchema,
   normalizeLegacyExecutionRunBackendTargetInput,
   ExecutionRunResumeHandleSchema,
   ExecutionRunRetentionPolicySchema,
@@ -16,6 +17,7 @@ import {
   normalizeBackendTargetRefV2InputToV2,
 } from '../backends/targets/backendTargetRefV2.js';
 import { hasLegacyCustomAcpConcreteBackendId } from '../backends/targets/compat/customAcp.js';
+import { MAX_AGENT_ROUTING_ID_BYTES } from '../agents/agentIdV1.js';
 import {
   BuiltInLegacyConnectedServiceBindingsV1IngressSchema,
   ConnectedAccountServiceKeyIngressSchema,
@@ -293,7 +295,10 @@ const DaemonExecutionRunMarkerBackendIdentitySchema = z.preprocess(
   },
   z.object({
     kind: z.literal('backend'),
-    backendId: z.string().trim().min(1).max(200),
+    // The marker carries the host Agent routing id, so its bound is the
+    // canonical Agent-id wire contract, not the bounded diagnostic-string
+    // length used for `permissionMode`/`errorCode` below.
+    backendId: z.string().trim().min(1).max(MAX_AGENT_ROUTING_ID_BYTES),
   }).strict(),
 );
 
@@ -326,6 +331,7 @@ const DaemonExecutionRunMarkerFieldsSchema = z.object({
   sidechainId: z.string().min(1),
   intent: ExecutionRunIntentSchema,
   backendTarget: DaemonExecutionRunMarkerBackendIdentitySchema,
+  launchOrigin: ExecutionRunLaunchOriginSchema.optional(),
 
   ...DaemonExecutionRunMarkerPublicStateFieldsSchema,
 
@@ -354,10 +360,11 @@ const DaemonExecutionRunMarkerPersistenceReadFieldsSchema = z.object({
   sidechainId: z.string().min(1),
   intent: ExecutionRunIntentSchema,
   backendTarget: z.preprocess(normalizeBackendTargetRefV2InputToV2, BackendTargetRefV2Schema),
-  backendId: z.string().trim().min(1).max(200).optional(),
+  backendId: z.string().trim().min(1).max(MAX_AGENT_ROUTING_ID_BYTES).optional(),
   configuredBackendId: z.string().trim().min(1).max(200).optional(),
   sourceKind: BackendTargetSourceKindV2Schema.optional(),
   display: ExecutionRunDisplaySchema.optional(),
+  launchOrigin: ExecutionRunLaunchOriginSchema.optional(),
   ...DaemonExecutionRunMarkerPublicStateFieldsSchema,
   status: ExecutionRunStatusSchema,
   startedAtMs: z.number().int().nonnegative(),

@@ -229,9 +229,7 @@ test('generated Action projection is declaration-neutral and retains its public 
     /(?:['"]zod(?:\/[^'"]*)?['"]|\bz\.[A-Za-z_$]|\bZod[A-Za-z0-9_]*\b|\$(?:brand|Zod[A-Za-z0-9_]*))/u,
   );
   for (const name of [
-    'ActionCaller',
     'PluginPolicyExpressionV2',
-    'ActionSurfaceBindingTransform',
     'PluginJsonSchemaV2',
     'PluginAgentExternalSessionLinkDataArray',
     'PluginAgentExternalSessionLinkDataObject',
@@ -243,4 +241,7 @@ test('generated Action projection is declaration-neutral and retains its public 
   ]) {
     assert.match(source, new RegExp(`export type ${name}\\b`, 'u'));
   }
+  assert.doesNotMatch(source, /\bActionSurfaceBinding(?:Caller|Context|Transform)\b/u);
+  assert.doesNotMatch(source, /\bActionCaller\b/u);
+  assert.doesNotMatch(source, /\bsurfaceBindings\??:/u);
 });

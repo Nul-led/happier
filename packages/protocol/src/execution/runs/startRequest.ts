@@ -201,6 +201,18 @@ export const ExecutionRunDisplaySchema = z.object({
 }).passthrough();
 export type ExecutionRunDisplay = z.infer<typeof ExecutionRunDisplaySchema>;
 
+export const ExecutionRunLaunchOriginSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('session'),
+    sessionId: z.string().trim().min(1),
+  }).strict(),
+  z.object({
+    kind: z.literal('external'),
+    source: z.enum(['cli', 'mcp', 'action']).optional(),
+  }).strict(),
+]);
+export type ExecutionRunLaunchOrigin = z.infer<typeof ExecutionRunLaunchOriginSchema>;
+
 export const ExecutionRunReplaySeedRequestSchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('voice_session.v1'),
@@ -283,6 +295,7 @@ export const ExecutionRunStartRequestBaseSchema = z.object({
   backendTarget: z.preprocess(normalizeBackendTargetRefV2InputToV2, BackendTargetRefV2Schema),
   instructions: z.string().optional(),
   display: ExecutionRunDisplaySchema.optional(),
+  launchOrigin: ExecutionRunLaunchOriginSchema.optional(),
   permissionMode: z.string().min(1),
   retentionPolicy: ExecutionRunRetentionPolicySchema,
   runClass: ExecutionRunClassSchema,
@@ -629,6 +642,7 @@ export const ExecutionRunDetachedStartRequestV1Schema = ExecutionRunStartRequest
   initialContextMode: true,
   bootstrapMode: true,
   replay: true,
+  launchOrigin: true,
 }).extend({
   intent: z.literal('task'),
   permissionMode: z.enum(['no_tools', 'read_only']),

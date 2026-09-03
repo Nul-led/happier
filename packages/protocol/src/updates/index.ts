@@ -16,6 +16,7 @@ import {
   SessionRuntimeActivityStateSchema,
 } from '../sessions/runtime/activity/index.js';
 import { SessionOwnerMetadataEnvelopeV1Schema } from '../sessions/metadata/sessionMetadataEnvelopesV1.js';
+import { PendingActivationAuthorizationV1Schema } from '../sessions/pending/pendingActivationAuthorizationV1.js';
 
 const TimestampMsSchema = z.number().int().min(0);
 const Base64Schema = z.string();
@@ -131,6 +132,7 @@ export const UpdateBodySchema = z.discriminatedUnion('t', [
     changedByAccountId: z.string().optional(),
     meaningfulActivityAt: TimestampMsSchema.optional(),
     pendingActivationRequestId: z.string().trim().min(1).optional(),
+    pendingActivationAuthorization: PendingActivationAuthorizationV1Schema.nullable().optional(),
   }).passthrough(),
   z.object({
     t: z.literal('automation-upsert'),

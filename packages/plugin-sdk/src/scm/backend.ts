@@ -358,7 +358,7 @@ export type WorkspaceTransferEntry = Readonly<{
 export type WorkspaceTransferMetadata = Readonly<Record<string, unknown>>;
 
 export type WorkspaceTransferRequest = Readonly<{
-    strategy: 'transfer_snapshot' | 'sync_changes';
+    strategy: 'transfer_snapshot';
     includeIgnoredMode: 'exclude' | 'include_selected';
     ignoredIncludeGlobs: readonly string[];
 }>;
@@ -593,6 +593,7 @@ export type BackendCommandRunInput = Readonly<{
     stdin?: string;
     maxOutputBytes?: number;
     env?: Readonly<Record<string, string | undefined>>;
+    signal?: AbortSignal;
 }>;
 
 export type BackendCommandRunResult = Readonly<{

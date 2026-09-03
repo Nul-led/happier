@@ -7,8 +7,22 @@ import test from 'node:test';
 
 import { resolveNpmCommandInvocation } from '../../../scripts/workspaces/execYarnCommand.mjs';
 import { bundleWorkspacePackageWithRuntimeDependencies } from '../../../packages/cli-common/dist/workspaces/index.js';
+import { publicSdkExampleDependencyVersions } from '../../../scripts/pipeline/npm/public-sdk-example-dependency-publication.mjs';
 
 const packageRoot = resolve(import.meta.dirname, '..');
+
+// Workspace source manifests pin internal workspace dependencies at this
+// placeholder. Publication owns rewriting those bytes, so an example that
+// keeps a placeholder no publication run can rewrite must never reach the
+// published package selection.
+const INTERNAL_PACKAGE_PREFIX = '@happier-dev/';
+const WORKSPACE_SOURCE_DEPENDENCY_VERSION = '0.0.0';
+
+// The probe version only reveals which dependency names the release owner can
+// rewrite; the exact published version is a per-run value.
+const PUBLICATION_REWRITABLE_EXAMPLE_DEPENDENCIES = new Set(
+  Object.keys(publicSdkExampleDependencyVersions('0.0.0-package-inventory-probe')),
+);
 
 // Declarations belong to the package's `dist` output. Source-side declarations
 // can silently mask a current source contract on resolvers that do not prefer
@@ -122,6 +136,66 @@ async function collectPublicExampleFiles(root, prefix = '') {
   return files;
 }
 
+async function readExampleUnrewritablePlaceholderDependencies(exampleDir) {
+  let manifest;
+  try {
+    manifest = JSON.parse(await readFile(join(exampleDir, 'package.json'), 'utf8'));
+  } catch {
+    return [];
+  }
+  const names = new Set();
+  for (const field of ['dependencies', 'devDependencies']) {
+    const entries = manifest[field];
+    if (entries === undefined) continue;
+    assert.ok(
+      entries && typeof entries === 'object' && !Array.isArray(entries),
+      `example manifest ${field} must be an object when present: ${exampleDir}`,
+    );
+    for (const [dependencyName, dependencyVersion] of Object.entries(entries)) {
+      if (!dependencyName.startsWith(INTERNAL_PACKAGE_PREFIX)) continue;
+      if (dependencyVersion !== WORKSPACE_SOURCE_DEPENDENCY_VERSION) continue;
+      if (PUBLICATION_REWRITABLE_EXAMPLE_DEPENDENCIES.has(dependencyName)) continue;
+      names.add(dependencyName);
+    }
+  }
+  return [...names].sort((left, right) => left.localeCompare(right));
+}
+
+/**
+ * Joins every on-disk example manifest to the release owner's published
+ * dependency rewrite map. An example whose internal placeholder dependency no
+ * publication run can rewrite stays a repository example: publishing it would
+ * hand the reader a manifest pinned at `0.0.0` that cannot resolve, which the
+ * pack publication rewrite already refuses to produce.
+ */
+async function resolveExamplePublicationEligibility() {
+  const exampleRoot = join(packageRoot, 'examples');
+  const publishable = [];
+  const unpublishable = [];
+  for (const entry of await readdir(exampleRoot, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const unrewritable = await readExampleUnrewritablePlaceholderDependencies(
+      join(exampleRoot, entry.name),
+    );
+    if (unrewritable.length === 0) publishable.push(entry.name);
+    else unpublishable.push({ name: entry.name, unrewritable });
+  }
+  return {
+    publishable: publishable.sort((left, right) => left.localeCompare(right)),
+    unpublishable: unpublishable.sort((left, right) => left.name.localeCompare(right.name)),
+  };
+}
+
+function selectedExampleDirectoryNames(declaredFiles) {
+  return [...new Set(
+    declaredFiles
+      .filter((entry) => entry.startsWith('examples/'))
+      .map((entry) => entry.split('/'))
+      .filter((segments) => segments.length > 2)
+      .map((segments) => segments[1]),
+  )].sort((left, right) => left.localeCompare(right));
+}
+
 test('public example inventory excludes daemon-owned build manifests', async () => {
   const root = await mkdtemp(join(tmpdir(), 'happier-plugin-sdk-public-example-inventory-'));
   try {
@@ -195,7 +269,29 @@ test('SDK package selection declares and packs the public authoring inventory as
     `SDK package files must remain exact positive paths: ${JSON.stringify(declaredFiles)}`,
   );
 
+  // The published package selection, every on-disk example manifest, and the
+  // release owner's published dependency rewrite map must agree. A selected
+  // example whose internal placeholder dependency this publication path cannot
+  // rewrite would ship a manifest pinned at the workspace source placeholder,
+  // which the pack publication rewrite already refuses to produce.
+  const { publishable, unpublishable } = await resolveExamplePublicationEligibility();
+  const unpublishableByName = new Map(
+    unpublishable.map((example) => [example.name, example.unrewritable]),
+  );
+  assert.deepEqual(
+    selectedExampleDirectoryNames(declaredFiles)
+      .filter((name) => unpublishableByName.has(name))
+      .map((name) => `${name}: ${unpublishableByName.get(name).join(', ')}`),
+    [],
+    'SDK package selection must not publish an example whose internal dependency has no published rewrite in scripts/pipeline/npm/public-sdk-example-dependency-publication.mjs',
+  );
+
+  const publishableExamples = new Set(publishable);
   const expectedExampleFiles = (await collectPublicExampleFiles(join(packageRoot, 'examples')))
+    .filter((entry) => {
+      const segments = entry.split('/');
+      return segments.length <= 2 || publishableExamples.has(segments[1]);
+    })
     .sort((left, right) => left.localeCompare(right));
   assert.deepEqual(
     declaredFiles.filter((entry) => entry.startsWith('examples/')).sort((left, right) => left.localeCompare(right)),
@@ -331,7 +427,8 @@ test('canonical workspace bundler copies exactly the declared public SDK example
       pruneStale: true,
     });
 
-    const expectedExampleFiles = (await collectPublicExampleFiles(join(packageRoot, 'examples')))
+    const expectedExampleFiles = packageJson.files
+      .filter((entry) => entry.startsWith('examples/'))
       .sort((left, right) => left.localeCompare(right));
     const bundledExampleFiles = (await collectPublicExampleFiles(join(bundledPackageRoot, 'examples')))
       .sort((left, right) => left.localeCompare(right));

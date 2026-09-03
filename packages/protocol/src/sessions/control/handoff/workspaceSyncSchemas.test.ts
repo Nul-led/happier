@@ -4,6 +4,7 @@ import {
   areWorkspaceSyncRelationshipDefinitionsEqual,
   computeWorkspaceSyncPolicyDigest,
   DeleteWorkspaceSyncConflictLoserV1Schema,
+  HandoffTargetReplacementPreflightV1Schema,
   HandoffWorkspaceActionV1Schema,
   ReadWorkspaceSyncFileV1Schema,
   ReadWorkspaceSyncFileResultV1Schema,
@@ -23,6 +24,10 @@ import {
   SessionHandoffPrepareTargetResultGetResponseSchema,
   SessionHandoffStartRequestSchema,
 } from './handoffSchemas.js';
+import {
+  HandoffTargetReplacementApprovalV1Schema,
+  sameHandoffTargetReplacementApproval,
+} from './handoffTargetReplacementApprovalV1.js';
 
 const contentPolicyInput = {
   v: 1 as const,
@@ -140,7 +145,7 @@ describe('workspace sync protocol schemas', () => {
       contentPolicy,
       targetReplacementApproval: {
         v: 1,
-        consequence: 'replace_nonempty_workspace_target',
+        consequences: ['replace_nonempty_workspace_target'],
         serverId: 'server-1',
         machineId: 'machine-beta',
         canonicalRoot: '/workspace/beta',
@@ -475,7 +480,7 @@ describe('workspace sync protocol schemas', () => {
       targetBootstrap: 'materialize_from_source_workspace' as const,
       targetReplacementApproval: {
         v: 1 as const,
-        consequence: 'replace_nonempty_workspace_target' as const,
+        consequences: ['replace_nonempty_workspace_target'] as const,
         serverId: 'server-1',
         machineId: 'machine-beta',
         canonicalRoot: '/workspace/beta',
@@ -516,6 +521,66 @@ describe('workspace sync protocol schemas', () => {
     expect(WorkspaceSyncTargetBootstrapReleaseResultV1Schema.parse({ ok: true, released: false })).toEqual({ ok: true, released: false });
     expect(WorkspaceSyncTargetBootstrapReleaseResultV1Schema.safeParse({ ok: false, released: false }).success).toBe(false);
     expect(WorkspaceSyncTargetBootstrapReleaseResultV1Schema.safeParse({ ok: true, released: 'yes' }).success).toBe(false);
+  });
+
+  it('binds every approved destructive handoff-target consequence to one host-private proof', () => {
+    const base = {
+      v: 1 as const,
+      serverId: 'server-1',
+      machineId: 'machine-beta',
+      canonicalRoot: '/workspace/beta',
+      rootFingerprint: 'a'.repeat(64),
+      operationId: 'handoff-action-1',
+    };
+
+    const replacement = HandoffTargetReplacementApprovalV1Schema.parse({
+      ...base,
+      consequences: ['replace_nonempty_workspace_target'],
+    });
+    const combined = HandoffTargetReplacementApprovalV1Schema.parse({
+      ...base,
+      consequences: ['replace_nonempty_workspace_target', 'delete_target_only_files_during_exact_mirror'],
+    });
+    const mirrorOnly = HandoffTargetReplacementApprovalV1Schema.parse({
+      ...base,
+      consequences: ['delete_target_only_files_during_exact_mirror'],
+    });
+
+    expect(sameHandoffTargetReplacementApproval(combined, combined)).toBe(true);
+    expect(sameHandoffTargetReplacementApproval(combined, replacement)).toBe(false);
+    expect(sameHandoffTargetReplacementApproval(replacement, mirrorOnly)).toBe(false);
+
+    // An empty, duplicated or unordered consequence list cannot describe one
+    // decision, so it is not representable.
+    expect(HandoffTargetReplacementApprovalV1Schema.safeParse({ ...base, consequences: [] }).success).toBe(false);
+    expect(HandoffTargetReplacementApprovalV1Schema.safeParse({
+      ...base,
+      consequences: ['replace_nonempty_workspace_target', 'replace_nonempty_workspace_target'],
+    }).success).toBe(false);
+    expect(HandoffTargetReplacementApprovalV1Schema.safeParse({
+      ...base,
+      consequences: ['delete_target_only_files_during_exact_mirror', 'replace_nonempty_workspace_target'],
+    }).success).toBe(false);
+    expect(HandoffTargetReplacementApprovalV1Schema.safeParse({
+      ...base,
+      consequence: 'replace_nonempty_workspace_target',
+    }).success).toBe(false);
+  });
+
+  it('carries the exact-mirror activation fact into the target preflight request', () => {
+    const request = {
+      v: 1 as const,
+      serverId: 'server-1',
+      machineId: 'machine-beta',
+      operationId: 'handoff-action-1',
+      targetPath: '/workspace/beta',
+      activatesExactMirror: true,
+    };
+    expect(HandoffTargetReplacementPreflightV1Schema.parse(request)).toEqual(request);
+    expect(HandoffTargetReplacementPreflightV1Schema.safeParse({
+      ...request,
+      activatesExactMirror: 'yes',
+    }).success).toBe(false);
   });
 
   it('fails closed on the retired workspaceTransfer request field', () => {
