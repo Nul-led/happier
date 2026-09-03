@@ -17,8 +17,10 @@ forwarding when Iroh does not select a direct path. They still authenticate the
 remote peer as the exact descriptor EndpointId; relay URLs and direct-address
 hints are reachability inputs, not identity. In the current 0.3 development
 source, a browser carries Home HTTP and Socket.IO over Iroh when the Home
-publishes an exact endpoint and at least one configured relay. Browser Machine
-transfers are not activated. This does not claim stable or preview availability.
+publishes an exact endpoint and at least one configured relay. Finite browser
+Machine transfers use the same relay-only endpoint and `happier/machine/1`, with
+the canonical signed route grant and no ordinary user-socket fallback. Browser
+Mutagen/workspace sync remains excluded. This does not claim stable or preview availability.
 The browser form is relay-only and reports `Secure relay`, never `Direct`; it
 adds no gateway, loopback emulation, JavaScript relay, or browser Mutagen
 runtime.

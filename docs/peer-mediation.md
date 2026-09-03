@@ -46,8 +46,9 @@ from the descriptor. Relay URLs and direct-address hints only help reach that en
 stand in for its authenticated identity. Diagnostics may describe a proven native path as `Direct`
 or `Secure relay`, while an unproven path stays `unknown`.
 
-Browser Iroh carries **Home HTTP and Socket.IO in the current development source**; finite Machine
-transfers over `happier/machine/1` are still unactivated in the browser. A browser cannot bind the
+Browser Iroh carries **Home HTTP, Socket.IO, and finite Machine transfers in the current development
+source**. Finite transfers use `happier/machine/1`, the canonical signed route grant, and no ordinary
+user-socket fallback; browser Mutagen/workspace sync remains excluded. A browser cannot bind the
 native loopback listener, so its carrier is *semantic* rather than URL-addressed: no
 `runtimeOrigin` exists or is invented for it, and the canonical Home URL keeps describing identity,
 auth audience, reachability scope, and logging. The resolved transport therefore names either a
