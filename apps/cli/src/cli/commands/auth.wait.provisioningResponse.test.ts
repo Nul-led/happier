@@ -57,6 +57,8 @@ describe('auth wait provisioning response', () => {
     createdAtMs?: number;
     expiresAtMs?: number;
     claimSecret?: string;
+    pairingRequirement?: unknown;
+    omitPairingRequirement?: boolean;
   }>): Promise<string> {
     envScope.patch({
       HAPPIER_HOME_DIR: localHomeDir,
@@ -92,8 +94,13 @@ describe('auth wait provisioning response', () => {
                 pairingCreatedAtMs: params.createdAtMs,
                 pairingExpiresAtMs: params.expiresAtMs,
                 supportsTokenOnly: true,
+                ...(params.omitPairingRequirement
+                  ? {}
+                  : { pairingRequirement: params.pairingRequirement ?? 'v3' }),
               }
-            : {}),
+            : params.pairingRequirement !== undefined
+              ? { pairingRequirement: params.pairingRequirement }
+              : {}),
           createdAt: new Date().toISOString(),
         },
         null,
@@ -104,28 +111,50 @@ describe('auth wait provisioning response', () => {
     return statePath;
   }
 
-  it('requires a fresh v3 request when pending state has no pairing context', async () => {
+  it('rejects pending state without the mandatory v3 requirement before polling', async () => {
     const keypair = tweetnacl.box.keyPair();
-    await prepareState({ keypair });
+    await prepareState({
+      keypair,
+      pairingSecret: new Uint8Array(32).fill(11),
+      createdAtMs: Date.now() - 60_000,
+      expiresAtMs: Date.now() + 3_600_000,
+      omitPairingRequirement: true,
+    });
     vi.resetModules();
     const { handleAuthWait } = await import('./auth/wait');
     const getSpy = vi.spyOn(axios, 'get').mockRejectedValue(
       new Error('network boundary must not be reached for unbound pending state'),
     );
-    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((): never => {
-      throw new Error('process.exit:1');
-    });
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-
     try {
       await expect(
         handleAuthWait(['--public-key', Buffer.from(keypair.publicKey).toString('base64'), '--json']),
-      ).rejects.toThrow('process.exit:1');
-      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('Authenticated terminal pairing v3 is required'));
+      ).rejects.toThrow('Invalid auth state (pairingRequirement)');
       expect(getSpy).not.toHaveBeenCalled();
     } finally {
-      errorSpy.mockRestore();
-      exitSpy.mockRestore();
+      getSpy.mockRestore();
+    }
+  }, 20_000);
+
+  it('rejects a non-v3 pending requirement before polling', async () => {
+    const keypair = tweetnacl.box.keyPair();
+    await prepareState({
+      keypair,
+      pairingSecret: new Uint8Array(32).fill(11),
+      createdAtMs: Date.now() - 60_000,
+      expiresAtMs: Date.now() + 3_600_000,
+      pairingRequirement: 'compatible',
+    });
+    vi.resetModules();
+    const { handleAuthWait } = await import('./auth/wait');
+    const getSpy = vi.spyOn(axios, 'get').mockRejectedValue(
+      new Error('network boundary must not be reached for non-v3 pending state'),
+    );
+    try {
+      await expect(
+        handleAuthWait(['--public-key', Buffer.from(keypair.publicKey).toString('base64'), '--json']),
+      ).rejects.toThrow('Invalid auth state (pairingRequirement)');
+      expect(getSpy).not.toHaveBeenCalled();
+    } finally {
       getSpy.mockRestore();
     }
   }, 20_000);

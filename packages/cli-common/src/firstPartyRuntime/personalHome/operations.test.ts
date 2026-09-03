@@ -380,6 +380,35 @@ describe('PersonalHomeOperations facade', () => {
     }
   });
 
+  it('reports backup failure and an unverifiable restart as home restart failure', { timeout: 60_000 }, async () => {
+    const { root, layout } = await fixture('backup-failure-restart-failed');
+    try {
+      let running = true;
+      const { deps } = makeDeps(layout, {
+        lifecycle: {
+          isRunning: async () => running,
+          stop: async () => { running = false; },
+          start: async () => { throw new Error('service start failed'); },
+          healthCheck: async () => true,
+        },
+        sqliteMaintenance: async () => ({
+          checkpoint: async () => { throw new Error('backup checkpoint failed'); },
+          quickCheck: async () => true,
+          close: async () => undefined,
+        }),
+      });
+
+      const error = await createPersonalHomeOperations(deps).backup().then(() => null, (failure: unknown) => failure);
+      expect(error).toMatchObject({
+        code: 'home_restart_failed',
+        message: expect.stringMatching(/backup.*checkpoint failed.*restart.*service start failed/iu),
+        cause: expect.objectContaining({ message: 'backup checkpoint failed' }),
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('treats baseline runtime configuration without Home data as an empty restore destination', { timeout: 60_000 }, async () => {
     const { root, layout } = await fixture('baseline-config-empty');
     try {
@@ -508,6 +537,47 @@ describe('PersonalHomeOperations facade', () => {
       await expect(stat(join(destination.layout.dataDir, '.operations', 'restore-journal.json'))).rejects.toMatchObject({ code: 'ENOENT' });
       expect(events.filter((event) => event === 'home:stop')).toHaveLength(1);
       expect(events.filter((event) => event === 'home:start')).toHaveLength(1);
+    } finally {
+      await rm(source.root, { recursive: true, force: true });
+      await rm(destination.root, { recursive: true, force: true });
+    }
+  });
+
+  it('reports cancellation after the recovery archive and a failed restart as home restart failure', { timeout: 60_000 }, async () => {
+    const source = await fixture('restore-cancel-restart-source');
+    const destination = await fixture('restore-cancel-restart-destination');
+    const abort = new AbortController();
+    try {
+      const backup = await createPersonalHomeOperations(makeDeps(source.layout).deps).backup();
+      let running = true;
+      const { deps } = makeDeps(destination.layout, {
+        lifecycle: {
+          isRunning: async () => running,
+          stop: async () => { running = false; },
+          start: async () => { throw new Error('service restart refused'); },
+          healthCheck: async () => true,
+        },
+        sqliteMaintenance: async (databasePath) => ({
+          checkpoint: async () => {
+            if (databasePath === destination.layout.databasePath) abort.abort();
+            return { busy: 0 };
+          },
+          quickCheck: async () => true,
+          close: async () => undefined,
+        }),
+      });
+
+      const error = await createPersonalHomeOperations(deps).restore({
+        archivePath: backup.path,
+        confirmOverwrite: true,
+        signal: abort.signal,
+      }).then(() => null, (failure: unknown) => failure);
+      expect(error).toMatchObject({
+        code: 'home_restart_failed',
+        message: expect.stringMatching(/cancelled.*restart.*service restart refused/iu),
+        cause: expect.objectContaining({ code: 'operation_cancelled' }),
+      });
+      await expect(readFile(destination.layout.databasePath, 'utf8')).resolves.toBe('sqlite-fixture');
     } finally {
       await rm(source.root, { recursive: true, force: true });
       await rm(destination.root, { recursive: true, force: true });

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createHomeCredentialDestinationDigestV1 } from '@happier-dev/protocol';
 
 const endpointFetchMock = vi.hoisted(() => vi.fn());
 const createServerFetchAtEndpointMock = vi.hoisted(() => vi.fn(() => endpointFetchMock));
@@ -220,6 +221,13 @@ describe('account directory client', () => {
             issuerServerIdentityId: 'srv_dir1',
             issuerSubjectId: 'account-1',
             audienceHomeServerIdentityId: 'srv_home1',
+            credentialDestinationDigestBase64Url: createHomeCredentialDestinationDigestV1({
+                v: 1,
+                canonicalServerUrl: 'https://home.internal.test',
+                homeServerIdentityId: 'srv_home1',
+                revision: 1,
+                endpoints: [{ kind: 'https', url: 'https://home.internal.test' }],
+            }),
             clientBoxPublicKeyBase64: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
             issuedAtMs: 1,
             expiresAtMs: 120001,

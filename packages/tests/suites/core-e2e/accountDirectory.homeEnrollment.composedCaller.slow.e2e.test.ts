@@ -20,6 +20,8 @@ import { createRunDirs } from '../../src/testkit/runDir';
  *
  * Production composition under test (no internal logic is mocked):
  *   AccountDirectorySession (real HTTP client + real credential namespace)
+ *   → setAccountServiceEndpoint (the selected sign-in service owner binds the
+ *     exact endpoint + stable identity; never a ServerProfile or focused Home)
  *   → provisionAuthenticatedHomeLink (authenticated Home link PUT through
  *     resolveDirectoryHomeTransport/HomeEnrollmentTransport, then Account
  *     Service directory Home PUT; the first published Home becomes preferred
@@ -31,6 +33,10 @@ import { createRunDirs } from '../../src/testkit/runDir';
  *   → resumePendingPreferredHomeEnrollment → strict authorized response
  *   → sealed-token open → adoptHomeProfileWithCredentials (explicit target
  *     credential write + Lane 04 non-focusing adoption)
+ *   → finalizePreferredHomeEnrollmentEntryIntent: `connect_service` (the
+ *     Settings caller) never changes focus, while `enter_preferred_home` (the
+ *     unauthenticated Welcome entry) opens the exact enrolled Home through
+ *     Lane 04's setActiveServerAndSwitch
  *
  * Requester and approver load separate production module graphs and use distinct
  * storage scopes, matching two client processes without reproducing any client
@@ -286,7 +292,7 @@ describe('core e2e: Account Directory Home enrollment through the production cal
         approverHomeBToken = approver.token;
     }, 300_000);
 
-    it('enrolls, rejects a second request, and survives Account Service outage while Home A stays focused', async () => {
+    it('enrolls without focus on Settings intent, opens the preferred Home on Welcome intent, rejects a second request, and survives Account Service outage', async () => {
         const requesterModules = useProductionClient(requesterClient);
 
         // --- Focused Home A with existing credentials and group selection ---
@@ -392,6 +398,25 @@ describe('core e2e: Account Directory Home enrollment through the production cal
             .getCredentialsForServerUrl(homeBBaseUrl, { serverId: homeBIdentity });
         expect(requesterHomeBBeforeEnrollment).toBeNull();
 
+        // --- The selected sign-in service owner binds the exact endpoint and
+        // stable identity before any continuation exists (A7/G02-1). The
+        // selection is client-local: it never becomes a ServerProfile or the
+        // focused Home. ---
+        requesterModules.serverProfiles.setAccountServiceEndpoint({
+            url: accountServiceBaseUrl,
+            serverIdentityId: accountServiceIdentity,
+            source: 'user',
+        });
+        expect(requesterModules.serverProfiles.getAccountServiceEndpointSnapshot()).toEqual({
+            url: accountServiceBaseUrl,
+            serverIdentityId: accountServiceIdentity,
+            source: 'user',
+        });
+        expect(requesterModules.serverProfiles.listServerProfiles().filter(
+            (profile) => profile.serverIdentityId === accountServiceIdentity
+                || profile.serverUrl === accountServiceBaseUrl,
+        )).toEqual([]);
+
         const session = requesterModules.directorySession.createAccountDirectorySession(
             directoryTarget,
             { capability: directoryCapability },
@@ -420,7 +445,11 @@ describe('core e2e: Account Directory Home enrollment through the production cal
             serverUrl: activeBefore.serverUrl,
         });
 
-        const enrollment = await requesterModules.enrollment.enrollPreferredDirectoryHome(session);
+        // Settings-style enrollment: authenticated Settings connects the
+        // service with `connect_service`, which must never change focus.
+        const enrollment = await requesterModules.enrollment.enrollPreferredDirectoryHome(session, {
+            entryIntent: 'connect_service',
+        });
         expect(enrollment.kind).toBe('approval_required');
         if (enrollment.kind !== 'approval_required') throw new Error('unreachable');
         expect(enrollment.homeServerIdentityId).toBe(homeBIdentity);
@@ -432,6 +461,7 @@ describe('core e2e: Account Directory Home enrollment through the production cal
         const pending = requesterModules.enrollment.getPendingPreferredHomeEnrollment();
         expect(pending?.approvalId).toBe(firstApprovalId);
         expect(pending?.homeServerIdentityId).toBe(homeBIdentity);
+        expect(pending?.entryIntent).toBe('connect_service');
 
         // --- The separate trusted Home B client lists the request. Its module
         // singleton cannot observe the requester's continuation state. ---
@@ -495,6 +525,18 @@ describe('core e2e: Account Directory Home enrollment through the production cal
         expect(storedB!.token).not.toBe(directoryToken);
         enrolledHomeBToken = storedB!.token!;
 
+        // The restricted Account Service credential is reachable only through
+        // its dedicated namespace: the Account Service origin holds no Home
+        // credential slot at all, while the restricted token stays under its
+        // exact signed endpoint/identity target.
+        expect(await requesterModules.tokenStorage.TokenStorage.getCredentialsForServerUrl(
+            accountServiceBaseUrl,
+            { serverId: accountServiceIdentity },
+        )).toBeNull();
+        expect(await requesterModules.tokenStorage.TokenStorage
+            .accountDirectoryAuthCredentials
+            .get(directoryTarget!)).toEqual({ token: directoryToken });
+
         // Requester persistence cannot overwrite the approver's ordinary Home
         // credential in the other client storage scope.
         useProductionClient(approverClient);
@@ -541,6 +583,69 @@ describe('core e2e: Account Directory Home enrollment through the production cal
             .accountDirectoryAuthCredentials.get(directoryTarget!);
         expect(directoryCredentialsBeforeRetry?.token === directoryToken).toBe(true);
 
+        // --- Welcome intent (A7/G02-4): the unauthenticated entry continuation
+        // enrolls with `enter_preferred_home`. The same detached continuation
+        // applies the intent after approval: Lane 04's canonical explicit-open
+        // owner switches the focused Home to the exact enrolled preferred Home
+        // — the only enrollment path allowed to change focus. ---
+        const welcomeSession = requesterModules.directorySession.createAccountDirectorySession(
+            directoryTarget!,
+            { capability: directoryCapability },
+        );
+        const welcomeRefresh = await requesterModules.refreshDirectory.refreshAccountHomeDirectory(welcomeSession);
+        expect(welcomeRefresh).toMatchObject({
+            status: 'ready',
+            preferredHomeServerIdentityId: homeBIdentity,
+        });
+        const welcomeEnrollment = await requesterModules.enrollment.enrollPreferredDirectoryHome(welcomeSession, {
+            entryIntent: 'enter_preferred_home',
+        });
+        expect(welcomeEnrollment).toMatchObject({ kind: 'approval_required' });
+        if (welcomeEnrollment.kind !== 'approval_required') throw new Error('unreachable');
+        expect(welcomeEnrollment.homeServerIdentityId).toBe(homeBIdentity);
+        const welcomePending = requesterModules.enrollment.getPendingPreferredHomeEnrollment();
+        expect(welcomePending).toMatchObject({
+            approvalId: welcomeEnrollment.approvalId,
+            entryIntent: 'enter_preferred_home',
+            homeServerIdentityId: homeBIdentity,
+        });
+
+        useProductionClient(approverClient);
+        const welcomeListed = await approverModules.approvalClient.listHomeDeviceApprovals(approvalTarget);
+        expect(welcomeListed.ok).toBe(true);
+        if (!welcomeListed.ok) throw new Error('unreachable');
+        expect(welcomeListed.items.map((item) => item.approvalId)).toEqual([welcomeEnrollment.approvalId]);
+        const welcomeDecision = await approverModules.approvalClient.decideHomeDeviceApproval(
+            approvalTarget,
+            welcomeEnrollment.approvalId,
+            'approve',
+        );
+        expect(welcomeDecision).toMatchObject({ ok: true, status: 'approved' });
+
+        useProductionClient(requesterClient);
+        const welcomeResumed = await requesterModules.enrollment.resumePendingPreferredHomeEnrollment();
+        expect(welcomeResumed).toEqual({ kind: 'enrolled', homeServerIdentityId: homeBIdentity });
+        expect(requesterModules.enrollment.getPendingPreferredHomeEnrollment()).toBeNull();
+
+        // The exact enrolled preferred Home is now the focused Home, opened
+        // through the real switch owner, and the exact credential sits under
+        // the immutable target while the restricted namespace stays separate.
+        expect(requesterModules.serverProfiles.getActiveServerSnapshot()).toMatchObject({
+            serverId: homeBIdentity,
+            serverUrl: homeBBaseUrl,
+        });
+        const storedBAfterWelcomeEntry = await requesterModules.tokenStorage.TokenStorage
+            .getCredentialsForServerUrl(homeBBaseUrl, { serverId: homeBIdentity });
+        expect(Object.keys(storedBAfterWelcomeEntry ?? {})).toEqual(['token']);
+        expect(storedBAfterWelcomeEntry!.token).toEqual(expect.any(String));
+        expect(storedBAfterWelcomeEntry!.token!.length).toBeGreaterThan(0);
+        expect(storedBAfterWelcomeEntry!.token).not.toBe(directoryToken);
+        enrolledHomeBToken = storedBAfterWelcomeEntry!.token!;
+        const welcomeHomeProfile = await fetchJson<unknown>(`${homeBBaseUrl}/v1/account/profile`, {
+            headers: bearer(enrolledHomeBToken),
+        });
+        expect(welcomeHomeProfile.status).toBe(200);
+
         // Second enrollment round against the same directory: new assertion,
         // new requester key, fresh pending approval.
         const retrySession = requesterModules.directorySession.createAccountDirectorySession(
@@ -550,7 +655,9 @@ describe('core e2e: Account Directory Home enrollment through the production cal
         const retryRefresh = await requesterModules.refreshDirectory.refreshAccountHomeDirectory(retrySession);
         expect(retryRefresh).toMatchObject({ status: 'ready' });
         expect(retryRefresh.preferredHomeServerIdentityId).toBe(homeBIdentity);
-        const retryEnrollment = await requesterModules.enrollment.enrollPreferredDirectoryHome(retrySession);
+        const retryEnrollment = await requesterModules.enrollment.enrollPreferredDirectoryHome(retrySession, {
+            entryIntent: 'connect_service',
+        });
         expect(retryEnrollment).toMatchObject({ kind: 'approval_required' });
         if (retryEnrollment.kind !== 'approval_required') throw new Error('unreachable');
         expect(retryEnrollment.approvalId).not.toBe(firstApprovalId);
@@ -584,7 +691,7 @@ describe('core e2e: Account Directory Home enrollment through the production cal
         // --- Directory mutations are idempotent Account Service metadata only. ---
         // Exercise the production session/client/routes twice per mutation and prove
         // that removing the Directory row does not remove the already adopted Home,
-        // its Home-local credential, or the independently focused Home A state.
+        // its Home-local credential, or the independently focused Home state.
         const updatedHomeB = {
             homeServerIdentityId: homeBIdentity,
             label: 'Home B updated',
@@ -648,9 +755,11 @@ describe('core e2e: Account Directory Home enrollment through the production cal
             headers: bearer(enrolledHomeBToken),
         });
         expect(profileAfterDirectoryDelete.status).toBe(200);
+        // Directory mutations cannot move the Welcome-opened preferred Home
+        // out of focus, and the saved view state stays untouched.
         expect(requesterModules.serverProfiles.getActiveServerSnapshot()).toMatchObject({
-            serverId: activeBefore.serverId,
-            serverUrl: activeBefore.serverUrl,
+            serverId: homeBIdentity,
+            serverUrl: homeBBaseUrl,
         });
         expect(requesterModules.serverProfiles.loadHomeViewState()).toMatchObject({
             activeTargetId: focusedServerId,
@@ -670,8 +779,8 @@ describe('core e2e: Account Directory Home enrollment through the production cal
         });
         expect(profileAfterOutage.status).toBe(200);
         expect(requesterModules.serverProfiles.getActiveServerSnapshot()).toMatchObject({
-            serverId: activeBefore.serverId,
-            serverUrl: activeBefore.serverUrl,
+            serverId: homeBIdentity,
+            serverUrl: homeBBaseUrl,
         });
         await approvalTransportResolution.transport.close();
     }, 300_000);

@@ -337,6 +337,16 @@ describe('handleHomeCommand', () => {
     } });
   });
 
+  it('warns when backup bytes exist but the Home needs attention', async () => {
+    const output = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const backup = success('backup', { path: '/work/backup.tar', sha256: 'abc', homeNeedsAttention: true });
+    const { deps } = createDeps([homeStatus, backup]);
+
+    await handleHomeCommand(['backup'], deps);
+
+    expect(output.mock.calls.flat().join('\n')).toMatch(/Home needs attention: true/iu);
+  });
+
   it('rejects home status for a generic managed runtime before starting inspect', async () => {
     const genericStatus = success('status', { installed: true, purpose: { kind: 'generic' } });
     const { deps, start } = createDeps([genericStatus]);
@@ -425,6 +435,29 @@ describe('handleHomeCommand', () => {
     } });
   });
 
+  it('prints retained restore recovery facts and rejects a rolled-back restore outcome', async () => {
+    const output = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const verified = success('verify', {
+      identityMatchesCurrentHome: 'match',
+      manifest: { format: 'happier-personal-home-backup', version: 1, homeServerIdentityId: 'home-1' },
+    });
+    const restored = success('restore', {
+      outcome: 'rolled_back',
+      error: 'activated Home identity did not match',
+      rollbackPaths: ['/data/home.rollback', '/config/server.env.rollback'],
+    });
+    const { deps } = createDeps([homeStatus, nonEmptyInspection, verified, restored]);
+
+    await expect(handleHomeCommand(['restore', './backup.tar', '--yes'], deps)).rejects.toMatchObject({
+      code: 'personal_home_restore_incomplete',
+    });
+    const stdout = output.mock.calls.flat().join('\n');
+    expect(stdout).toContain('Outcome: rolled_back');
+    expect(stdout).toContain('Restore error: activated Home identity did not match');
+    expect(stdout).toContain('Rollback retained at: /data/home.rollback');
+    expect(stdout).toContain('Rollback retained at: /config/server.env.rollback');
+  });
+
   it('requires --yes for a noninteractive restore into an owner-proven non-empty destination', async () => {
     vi.spyOn(console, 'log').mockImplementation(() => {});
     const verified = success('verify', {
@@ -497,6 +530,29 @@ describe('handleHomeCommand', () => {
       params: expect.not.objectContaining({ confirmErase: expect.anything() }),
     }) });
     expect(respond).toHaveBeenCalledWith({ taskId: 'task-2', answer: { confirmed: true } });
+  });
+
+  it('prints partial erase facts and rejects a partial outcome', async () => {
+    const output = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const erased = success('erase', {
+      outcome: 'partial',
+      removedPaths: ['/data/home/database/home.sqlite'],
+      remainingOwnedPaths: ['/data/home/files/private'],
+      remainingUnknownPaths: ['/data/home/files/private/mystery'],
+      stoppedRunningHome: true,
+      error: 'permission denied',
+    });
+    const { deps } = createDeps([homeStatus, erasePrompt(erased)]);
+
+    await expect(handleHomeCommand(['erase', '--yes'], deps)).rejects.toMatchObject({
+      code: 'personal_home_erase_incomplete',
+    });
+    const stdout = output.mock.calls.flat().join('\n');
+    expect(stdout).toContain('Erase error: permission denied');
+    expect(stdout).toContain('Removed: /data/home/database/home.sqlite');
+    expect(stdout).toContain('Remaining owned: /data/home/files/private');
+    expect(stdout).toContain('Remaining unknown: /data/home/files/private/mystery');
+    expect(stdout).toContain('Stopped running Home: true');
   });
 
   it('uses --yes only for erase and never adds a preliminary backup prompt', async () => {

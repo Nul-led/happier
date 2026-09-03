@@ -69,7 +69,6 @@ describe('auth pairing commands (request/approve/wait) (json)', () => {
     'HAPPIER_NO_BROWSER_OPEN',
     'HAPPIER_AUTH_METHOD',
     'HAPPIER_AUTH_POLL_INTERVAL_MS',
-    'HAPPIER_TERMINAL_PAIRING_REQUIRE',
     'HAPPIER_SERVER_URL',
     'HAPPIER_PUBLIC_SERVER_URL',
     'HAPPIER_WEBAPP_URL',
@@ -100,7 +99,7 @@ describe('auth pairing commands (request/approve/wait) (json)', () => {
     await removeTempDir(localHomeDir);
   });
 
-  it('persists an opt-in v3 requirement with split request/wait state', async () => {
+  it('persists the mandatory v3 requirement with split request/wait state', async () => {
     const events: string[] = [];
     const app = fastify({ logger: false });
     app.post('/v1/auth/request', async (_req, reply) => {
@@ -116,7 +115,6 @@ describe('auth pairing commands (request/approve/wait) (json)', () => {
         HAPPIER_SERVER_URL: 'http://happier-auth.test',
         HAPPIER_PUBLIC_SERVER_URL: 'http://happier-auth.test',
         HAPPIER_WEBAPP_URL: 'http://webapp.test',
-        HAPPIER_TERMINAL_PAIRING_REQUIRE: 'v3',
       });
       vi.resetModules();
       vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {

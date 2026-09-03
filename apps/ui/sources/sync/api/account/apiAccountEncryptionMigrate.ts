@@ -1,11 +1,13 @@
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import { HappyError } from '@/utils/errors/errors';
 import { backoff } from '@/utils/timing/time';
-import { serverFetch } from '@/sync/http/client';
+import { serverFetch, type ServerFetch } from '@/sync/http/client';
 import { invalidateAccountEncryptionModeCache } from './apiAccountEncryptionMode';
 import {
+  assertCurrentAccountStoredContentServerCompatibility,
   requireCurrentAccountStoredContentServerCompatibility,
 } from '@/sync/api/capabilities/accountStoredContentCompatibility';
+import { probeServerFeaturesAtUrl } from '@/sync/api/capabilities/serverFeaturesClient';
 import {
   AccountEncryptionMigrateSuccessResponseSchema,
   AccountEncryptionMigrateAnyErrorResponseSchema,
@@ -19,11 +21,23 @@ export async function migrateAccountEncryptionMode(
   request: AccountEncryptionMigrateRequest,
   options: Readonly<{
     retry?: 'default' | 'none';
+    request?: ServerFetch;
+    target?: Readonly<{ serverUrl: string; serverId: string }>;
   }> = {},
 ): Promise<import('@happier-dev/protocol').AccountEncryptionMigrateSuccessResponse> {
-  await requireCurrentAccountStoredContentServerCompatibility();
+  if (options.target) {
+    assertCurrentAccountStoredContentServerCompatibility(
+      await probeServerFeaturesAtUrl({
+        endpointUrl: options.target.serverUrl,
+        serverId: options.target.serverId,
+        force: true,
+      }),
+    );
+  } else {
+    await requireCurrentAccountStoredContentServerCompatibility();
+  }
   const migrateOnce = async () => {
-    const response = await serverFetch(
+    const response = await (options.request ?? serverFetch)(
       '/v1/account/encryption/migrate',
       {
         method: 'POST',

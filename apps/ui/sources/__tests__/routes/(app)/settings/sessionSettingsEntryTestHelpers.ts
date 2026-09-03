@@ -158,9 +158,22 @@ export function installSessionSettingsEntryModuleMocks(
     }));
 
     vi.mock('@/constants/Typography', () => ({
+        FontWeights: {
+            regular: '400',
+            semiBold: '500',
+            bold: '600',
+        },
         Typography: {
             default: () => ({}),
             mono: () => ({}),
+            tabular: () => ({}),
+            eyebrow: () => ({}),
+            rowTitle: () => ({}),
+            rowMeta: () => ({}),
+            pillLabel: () => ({}),
+            keyHint: () => ({}),
+            timestamp: () => ({}),
+            logo: () => ({}),
         },
     }));
 

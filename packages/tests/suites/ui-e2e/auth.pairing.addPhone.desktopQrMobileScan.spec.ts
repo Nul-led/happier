@@ -243,6 +243,16 @@ function trackEnrollmentRequests(page: Page, sink: URL[]): void {
   });
 }
 
+async function openManualPairingLinkPrompt(page: Page): Promise<void> {
+  const disclosure = page.getByTestId('restore-pairing-link-details');
+  await expect(disclosure).toHaveCount(1, { timeout: 120_000 });
+  await disclosure.click();
+  const manualLinkButton = page.getByTestId('restore-enter-pairing-link');
+  await expect(manualLinkButton).toHaveCount(1, { timeout: 30_000 });
+  await manualLinkButton.click();
+  await expect(page.getByTestId('web-prompt-input')).toHaveCount(1, { timeout: 30_000 });
+}
+
 /**
  * Produces Home's single-use V2 invite through the real trusted-device production caller
  * (authenticated Settings → add-phone pairing surface) and binds it to the exact Home
@@ -260,10 +270,18 @@ async function produceTrustedHomeQrInviteLink(params: Readonly<{
   await expect(params.page).toHaveURL(/\/settings\/add-phone/, { timeout: 60_000 });
   await expect(params.page.getByTestId('add-phone-pairing-link')).toHaveCount(0);
   await assertPairingSurfaceRendered({ page: params.page, browserDiagnostics });
-  await expect(params.page.getByTestId('add-phone-show-link')).toHaveCount(1, { timeout: 120_000 });
-  await params.page.getByTestId('add-phone-show-link').click();
-  const pairingLink = params.page.getByTestId('add-phone-pairing-link');
-  await expect(pairingLink).toHaveCount(1, { timeout: 120_000 });
+  const pairingLinkDisclosure = params.page.getByTestId('add-phone-pairing-link-details');
+  try {
+    await expect(pairingLinkDisclosure).toHaveCount(1, { timeout: 120_000 });
+  } catch (error) {
+    throw new Error([
+      'Home B never produced a ready V2 pairing invite.',
+      `Browser diagnostics (pairing material redacted):\n${browserDiagnostics()}`,
+    ].join('\n'), { cause: error });
+  }
+  await pairingLinkDisclosure.click();
+  const pairingLink = params.page.getByTestId('add-phone-pairing-link-value');
+  await expect(pairingLink).toHaveCount(1, { timeout: 30_000 });
   const pairingLinkRaw = (await pairingLink.innerText()).trim();
 
   const pairingUrl = new URL(pairingLinkRaw);
@@ -330,10 +348,7 @@ async function runEnrollmentScenario(params: Readonly<{
     await expect(addHomeItem).toHaveCount(1, { timeout: 120_000 });
     await addHomeItem.click();
     await expect(joiningPage).toHaveURL(/\/restore\?entryIntent=add_home/, { timeout: 60_000 });
-    const manualLinkButton = joiningPage.getByTestId('restore-enter-pairing-link');
-    await expect(manualLinkButton).toHaveCount(1, { timeout: 120_000 });
-    await manualLinkButton.click();
-    await expect(joiningPage.getByTestId('web-prompt-input')).toHaveCount(1, { timeout: 30_000 });
+    await openManualPairingLinkPrompt(joiningPage);
     await joiningPage.getByTestId('web-prompt-input').fill(pairingLinkRaw);
     await joiningPage.getByTestId('web-prompt-confirm').click();
 
@@ -551,10 +566,7 @@ async function runReleasedV1UpdateRequiredScenario(params: Readonly<{
     await gotoDomContentLoadedWithRetries(page, `${params.uiBaseUrl}/settings/account`, 180_000);
     await page.getByTestId('settings-account-add-home').click();
     await expect(page).toHaveURL(/\/restore\?entryIntent=add_home/, { timeout: 60_000 });
-    const manualLinkButton = page.getByTestId('restore-enter-pairing-link');
-    await expect(manualLinkButton).toHaveCount(1, { timeout: 120_000 });
-    await manualLinkButton.click();
-    await expect(page.getByTestId('web-prompt-input')).toHaveCount(1, { timeout: 30_000 });
+    await openManualPairingLinkPrompt(page);
     await page.getByTestId('web-prompt-input').fill(releasedV1Link);
     await page.getByTestId('web-prompt-confirm').click();
 

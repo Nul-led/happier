@@ -33,8 +33,12 @@ import {
 } from '@/sync/api/account/apiAccountEncryptionMode';
 import {
     getServerFeaturesSnapshot,
+    probeServerFeaturesAtUrl,
 } from '@/sync/api/capabilities/serverFeaturesClient';
-import { serverFetch } from '@/sync/http/client';
+import {
+    createServerFetchAtEndpoint,
+    type ServerFetch,
+} from '@/sync/http/client';
 import { HappyError } from '@/utils/errors/errors';
 import { parseToken } from '@/utils/auth/parseToken';
 import { normalizeInternalReturnPath } from '@/utils/path/routeUtils';
@@ -118,7 +122,34 @@ export type AccountEncryptionFirstKeyCredentialPersistenceOptions =
     Readonly<{
         firstKeyRecoveryAuthorization:
             AccountEncryptionFirstKeyCredentialPersistenceAuthorization;
+        target: FirstKeyHomeTarget;
     }>;
+
+type FirstKeyHomeTarget = Readonly<{
+    serverUrl: string;
+    serverId: string;
+}>;
+
+function normalizeFirstKeyHomeTarget(
+    value: Readonly<{
+        serverUrl?: string | null;
+        serverId?: string | null;
+    }>,
+): FirstKeyHomeTarget {
+    const serverUrl = String(value.serverUrl ?? '').trim();
+    const serverId = String(value.serverId ?? '').trim();
+    if (!serverUrl || !serverId) return invalidExternalAuth();
+    return { serverUrl, serverId };
+}
+
+function createFirstKeyTargetRequest(
+    target: FirstKeyHomeTarget,
+): ServerFetch {
+    return createServerFetchAtEndpoint({
+        endpointUrl: target.serverUrl,
+        serverId: target.serverId,
+    });
+}
 
 export function isAccountEncryptionFirstKeyCredentialPersistenceAuthorized(
     value: unknown,
@@ -310,6 +341,7 @@ export async function recoverAccountEncryptionFirstKeyRejectedCredential(
             options:
                 AccountEncryptionFirstKeyCredentialPersistenceOptions,
         ) => Promise<Readonly<{ kind: string }>>;
+        target?: FirstKeyHomeTarget;
     }>,
 ): Promise<AccountEncryptionFirstKeyRejectedCredentialRecoveryResult> {
     const { recovery } = params;
@@ -379,9 +411,15 @@ export async function recoverAccountEncryptionFirstKeyRejectedCredential(
             token,
             secret: state.secret,
         } as const;
+        const target = normalizeFirstKeyHomeTarget({
+            serverId: recovery.serverId ?? state.serverId,
+            serverUrl: recovery.serverUrl ?? state.serverUrl,
+        });
+        const requestAtTarget = createFirstKeyTargetRequest(target);
         await assertCommittedFirstKeyCredentialsMatchCustody({
             state,
             credentials,
+            request: requestAtTarget,
         });
 
         const persistence =
@@ -393,6 +431,7 @@ export async function recoverAccountEncryptionFirstKeyRejectedCredential(
                             true,
                         token,
                     },
+                    target,
                 },
             );
         if (persistence.kind !== 'completed') {
@@ -582,6 +621,7 @@ async function assertCommittedFirstKeyCredentialsMatchCustody(
     params: Readonly<{
         state: PendingExternalAuth;
         credentials: LegacyAuthCredentials;
+        request: ServerFetch;
     }>,
 ): Promise<void> {
     const continuation =
@@ -642,6 +682,7 @@ async function assertCommittedFirstKeyCredentialsMatchCustody(
     const current =
         await fetchAccountEncryptionCurrentness(
             params.credentials,
+            { request: params.request },
         );
     if (
         current.mode !== 'e2ee'
@@ -716,8 +757,18 @@ export async function startAccountEncryptionFirstKeyExternalAuth(
     params: FirstKeyMigrationInput & Readonly<{
         linkedProviderIds: readonly string[];
         returnTo: string;
+        target?: FirstKeyHomeTarget;
     }>,
 ): Promise<FirstKeyStartResult> {
+    // Capture before the first await. A focus change may happen while secure
+    // pending custody or provider parameters are being prepared.
+    const target = normalizeFirstKeyHomeTarget(
+        params.target ?? {
+            serverId: getActiveServerId(),
+            serverUrl: getActiveServerUrl(),
+        },
+    );
+    const requestAtTarget = createFirstKeyTargetRequest(target);
     await TokenStorage.clearPendingExternalAuth();
     try {
         const request = assertFirstKeyMigrationInput(params);
@@ -725,8 +776,16 @@ export async function startAccountEncryptionFirstKeyExternalAuth(
             params.proposedCredentials,
             request,
         );
-        const snapshot =
-            await getServerFeaturesSnapshot({ force: true });
+        const snapshot = params.target
+            ? await probeServerFeaturesAtUrl({
+                endpointUrl: target.serverUrl,
+                serverId: target.serverId,
+                force: true,
+            })
+            : await getServerFeaturesSnapshot({
+                force: true,
+                serverId: target.serverId,
+            });
         if (snapshot.status !== 'ready') {
             return unavailableExternalAuth();
         }
@@ -742,15 +801,9 @@ export async function startAccountEncryptionFirstKeyExternalAuth(
             });
         const { proof, proofHash } = await createProof();
         const createdAt = Date.now();
-        const activeServerId = getActiveServerId();
-        const activeServerUrl = getActiveServerUrl();
         const serverContext = {
-            ...(activeServerId
-                ? { serverId: activeServerId }
-                : {}),
-            ...(activeServerUrl
-                ? { serverUrl: activeServerUrl }
-                : {}),
+            serverId: target.serverId,
+            serverUrl: target.serverUrl,
         };
         const createPendingContinuation = (
             pending?: string,
@@ -766,7 +819,7 @@ export async function startAccountEncryptionFirstKeyExternalAuth(
         });
 
         if (provider === 'mtls') {
-            const response = await serverFetch(
+            const response = await requestAtTarget(
                 '/v1/auth/mtls',
                 {
                     method: 'POST',
@@ -810,7 +863,7 @@ export async function startAccountEncryptionFirstKeyExternalAuth(
                         createPendingContinuation(
                             externalAuthProof.pending,
                         ),
-                });
+                }, target);
             if (!stored) {
                 return unavailableExternalAuth();
             }
@@ -829,7 +882,7 @@ export async function startAccountEncryptionFirstKeyExternalAuth(
                 ...serverContext,
                 accountEncryptionFirstKey:
                     createPendingContinuation(),
-            });
+            }, target);
         if (!stored) {
             return unavailableExternalAuth();
         }
@@ -840,7 +893,7 @@ export async function startAccountEncryptionFirstKeyExternalAuth(
             proofHash,
             requestDigest,
         });
-        const response = await serverFetch(
+        const response = await requestAtTarget(
             `/v1/auth/external/${
                 encodeURIComponent(provider)
             }/params?${query.toString()}`,
@@ -910,6 +963,8 @@ export async function openAccountEncryptionFirstKeyExternalAuthUrl(
 async function submitAccountEncryptionFirstKeyMigration(
     params: FirstKeyMigrationInput & Readonly<{
         externalAuthProof: AccountEncryptionMigrateExternalAuthProof;
+        target: FirstKeyHomeTarget;
+        requestAtTarget: ServerFetch;
     }>,
 ) {
     const request = assertFirstKeyMigrationInput(params);
@@ -930,30 +985,39 @@ async function submitAccountEncryptionFirstKeyMigration(
         return await migrateAccountEncryptionMode(
             params.currentCredentials,
             requestWithExternalAuth,
-            { retry: 'none' },
+            {
+                retry: 'none',
+                request: params.requestAtTarget,
+                target: params.target,
+            },
         );
     }
     const [
         { runAccountEncryptionModeMigration },
-        { getActiveServerAccountScope },
         {
             acknowledgeNewSessionDraftEncryptionMigration,
         },
         { sync },
     ] = await Promise.all([
         import('./runAccountEncryptionModeMigration'),
-        import('@/sync/domains/scope/activeServerAccountScope'),
         import('@/sync/ops/sessionDrafts/sessionDraftRepository'),
         import('@/sync/sync'),
     ]);
-    const sessionDraftScope = getActiveServerAccountScope();
+    const sessionDraftScope = {
+        serverId: params.target.serverId,
+        accountId: params.accountId,
+    };
     return await runAccountEncryptionModeMigration({
         request: requestWithExternalAuth,
         migrate: async (migrationRequest) =>
             await migrateAccountEncryptionMode(
                 params.currentCredentials,
                 migrationRequest,
-                { retry: 'none' },
+                {
+                    retry: 'none',
+                    request: params.requestAtTarget,
+                    target: params.target,
+                },
             ),
         activateTargetMode: () => {
             sync.reconfigureSessionDraftRepositoryForAccountMode(
@@ -998,8 +1062,12 @@ export async function resumeAccountEncryptionFirstKeyExternalAuth(
     try {
         const provider = normalizeProviderId(params.provider);
         const pending = params.pending.trim();
-        const pendingState =
-            await TokenStorage.readPendingExternalAuthState();
+        const pendingState = params.target
+            ? await TokenStorage.readPendingExternalAuthStateForServerUrl(
+                params.target.serverUrl,
+                { serverId: params.target.serverId },
+            )
+            : await TokenStorage.readPendingExternalAuthContinuationState();
         const state = pendingState.value;
         const hasMarkedFirstKeyCustody =
             state?.accountEncryptionFirstKey
@@ -1024,6 +1092,20 @@ export async function resumeAccountEncryptionFirstKeyExternalAuth(
         ) {
             return invalidExternalAuth();
         }
+        const target = normalizeFirstKeyHomeTarget({
+            serverId: state.serverId,
+            serverUrl: state.serverUrl,
+        });
+        if (
+            params.target
+            && (
+                params.target.serverId !== target.serverId
+                || params.target.serverUrl !== target.serverUrl
+            )
+        ) {
+            return invalidExternalAuth();
+        }
+        const requestAtTarget = createFirstKeyTargetRequest(target);
 
         let rawRequest: unknown;
         try {
@@ -1092,6 +1174,7 @@ export async function resumeAccountEncryptionFirstKeyExternalAuth(
             const stored =
                 await TokenStorage.setPendingExternalAuth(
                     attemptedState,
+                    target,
                 );
             if (!stored) {
                 return pendingCustodyFailed();
@@ -1116,6 +1199,8 @@ export async function resumeAccountEncryptionFirstKeyExternalAuth(
                         pending,
                         proof: state.proof,
                     },
+                    target,
+                    requestAtTarget,
                 });
         } catch (error) {
             if (
@@ -1138,6 +1223,7 @@ export async function resumeAccountEncryptionFirstKeyExternalAuth(
                     token:
                         proposedCredentials.token,
                 },
+                target,
             },
         );
         if (persistence.kind !== 'completed') {
@@ -1173,7 +1259,7 @@ export async function retryPendingAccountEncryptionFirstKeyExternalAuth(
     mode: 'e2ee';
 }> | null> {
     const pendingState =
-        await TokenStorage.readPendingExternalAuthState();
+        await TokenStorage.readPendingExternalAuthContinuationState();
     const state = pendingState.value;
     const provider = normalizeProviderId(state?.provider);
     const pending =
@@ -1191,10 +1277,15 @@ export async function retryPendingAccountEncryptionFirstKeyExternalAuth(
         params.currentCredentials,
     )) {
         try {
+            const target = normalizeFirstKeyHomeTarget({
+                serverId: state.serverId,
+                serverUrl: state.serverUrl,
+            });
             await assertCommittedFirstKeyCredentialsMatchCustody({
                 state,
                 credentials:
                     params.currentCredentials,
+                request: createFirstKeyTargetRequest(target),
             });
         } catch {
             return null;
@@ -1212,6 +1303,10 @@ export async function retryPendingAccountEncryptionFirstKeyExternalAuth(
         pending,
         currentCredentials: params.currentCredentials,
         persistCredentials: params.persistCredentials,
+        target: normalizeFirstKeyHomeTarget({
+            serverId: state.serverId,
+            serverUrl: state.serverUrl,
+        }),
     });
     if (resumed.migration.mode !== 'e2ee') {
         return null;

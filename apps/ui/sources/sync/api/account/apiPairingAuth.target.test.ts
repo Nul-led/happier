@@ -97,7 +97,7 @@ describe('pairing auth client explicit target', () => {
             }))
             .mockResolvedValueOnce(json(200, { success: true }));
 
-        await expect(pairingStart({ secretHash: 'hash' }, await target('https://home-a.test', 'profile-a'))).resolves.toEqual({ ok: true, data: { pairId: 'pair-9', expiresAt: '2026-01-01T00:00:00.000Z' } });
+        await expect(pairingStart({ direction: 'trusted_home_displays', secretHash: 'hash' }, await target('https://home-a.test', 'profile-a'))).resolves.toEqual({ ok: true, data: { pairId: 'pair-9', expiresAt: '2026-01-01T00:00:00.000Z' } });
         await expect(pairingStatus({ pairId: 'pair-9' }, await target('https://home-a.test', 'profile-a'))).resolves.toEqual({
             ok: true,
             data: {
@@ -118,6 +118,10 @@ describe('pairing auth client explicit target', () => {
             endpointUrl: 'https://home-a.test',
             serverId: 'profile-a',
         }));
+        expect(JSON.parse(String((endpointFetchMock.mock.calls[0]?.[1] as RequestInit).body))).toEqual({
+            direction: 'trusted_home_displays',
+            secretHash: 'hash',
+        });
         expect(createServerFetchAtEndpointMock).not.toHaveBeenCalledWith(expect.objectContaining({
             credentials: null,
         }));
@@ -170,7 +174,7 @@ describe('pairing auth client explicit target', () => {
             .mockResolvedValueOnce(malformed)
             .mockResolvedValueOnce(json(200, { state: 'pending' }));
 
-        await expect(pairingStart({ secretHash: 'hash' }, await target('https://home-a.test', 'profile-a'))).resolves.toEqual({
+        await expect(pairingStart({ direction: 'trusted_home_displays', secretHash: 'hash' }, await target('https://home-a.test', 'profile-a'))).resolves.toEqual({
             ok: false,
             reason: 'http_error',
             status: 502,
@@ -192,7 +196,7 @@ describe('pairing auth client explicit target', () => {
             .mockResolvedValueOnce(json(200, { state: 'requested', smuggled: true }))
             .mockResolvedValueOnce(json(200, {}));
 
-        await expect(pairingStart({ secretHash: 'hash' }, await target('https://home-a.test', 'profile-a'))).resolves.toEqual({
+        await expect(pairingStart({ direction: 'trusted_home_displays', secretHash: 'hash' }, await target('https://home-a.test', 'profile-a'))).resolves.toEqual({
             ok: false,
             reason: 'http_error',
             status: 502,

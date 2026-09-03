@@ -66,6 +66,12 @@ const featureDecisionState = vi.hoisted(() => ({
 }));
 const transportResolutionState = vi.hoisted(() => ({
     transientFailuresRemaining: 0,
+    browserIroh: false,
+    homeCarrier: {
+        endpointId: 'iroh-home-b',
+        request: vi.fn(),
+        close: vi.fn(async () => {}),
+    },
     calls: [] as Array<{ homeServerIdentityId: string; canonicalServerUrl: string }>,
 }));
 const modalAlertSpy = vi.hoisted(() => vi.fn(async (
@@ -318,7 +324,12 @@ vi.mock('@/auth/enrollment/homeEnrollmentTransport', () => ({
             ok: true,
             transport: {
                 endpointUrl: descriptor.canonicalServerUrl,
-                runtimeOrigin: descriptor.canonicalServerUrl,
+                runtimeOrigin: transportResolutionState.browserIroh
+                    ? null
+                    : descriptor.canonicalServerUrl,
+                homeCarrier: transportResolutionState.browserIroh
+                    ? transportResolutionState.homeCarrier
+                    : null,
                 descriptor,
                 close: async () => {},
             },
@@ -374,6 +385,9 @@ describe('RestoreScanComputerQrView (web phone)', () => {
         featureDecisionState.targetProbeSpy.mockClear();
         featureDecisionState.publishedDescriptor = createHomeBInvite().home;
         transportResolutionState.transientFailuresRemaining = 0;
+        transportResolutionState.browserIroh = false;
+        transportResolutionState.homeCarrier.request.mockReset();
+        transportResolutionState.homeCarrier.close.mockClear();
         transportResolutionState.calls = [];
         lastScannerProps = null;
         modalAlertSpy.mockClear();
@@ -461,6 +475,23 @@ describe('RestoreScanComputerQrView (web phone)', () => {
             'connect.scanComputerQrUnavailableTitle',
             'connect.scanComputerQrUnavailableBody',
         );
+    });
+
+    it('probes a forward browser-Iroh Home through the exact resolved semantic carrier', async () => {
+        const { buildHomeQrInviteDeepLink } = await import('@/auth/pairing/pairingUrl');
+        transportResolutionState.browserIroh = true;
+
+        const { RestoreScanComputerQrView } = await import('./RestoreScanComputerQrView');
+        await renderScreen(<RestoreScanComputerQrView entryIntent="add_home" />);
+        await act(async () => {
+            await lastScannerProps.onScan(buildHomeQrInviteDeepLink({ invite: createHomeBInvite() }));
+        });
+
+        expect(featureDecisionState.targetProbeSpy).toHaveBeenCalledWith(expect.objectContaining({
+            endpointUrl: 'https://home-b.test',
+            runtimeOrigin: null,
+            homeCarrier: transportResolutionState.homeCarrier,
+        }));
     });
 
     it('marks the QR scanner inactive when the restore route is covered by another screen', async () => {
@@ -581,6 +612,7 @@ describe('RestoreScanComputerQrView (web phone)', () => {
     });
 
     it('resolves and completes a known-target requester-displayed invite through the stored Home identity', async () => {
+        transportResolutionState.browserIroh = true;
         const requesterPublicKey = new Uint8Array(32).fill(8);
         const issuedAtMs = Date.now() - 1_000;
         const expiresAtMs = Date.now() + 120_000;
@@ -649,6 +681,11 @@ describe('RestoreScanComputerQrView (web phone)', () => {
         expect(restoreScanSuccessState.authQRStartSpy).not.toHaveBeenCalled();
         expect(restoreScanSuccessState.authQRWaitSpy).not.toHaveBeenCalled();
         expect(restoreScanSuccessState.adoptHomeProfileSpy).not.toHaveBeenCalled();
+        expect(featureDecisionState.targetProbeSpy).toHaveBeenCalledWith(expect.objectContaining({
+            endpointUrl: 'https://home-b.test',
+            runtimeOrigin: null,
+            homeCarrier: transportResolutionState.homeCarrier,
+        }));
         expect(screen.findByTestId('restore-scan-confirm-code')).toBeNull();
         expect(screen.getTextContent()).not.toContain('connect.confirmCodeComparisonBody');
         expect(modalAlertSpy).toHaveBeenCalledWith('home-b.test', 'connect.requesterDeviceAddedBody');

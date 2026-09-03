@@ -108,6 +108,9 @@ vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
     return {
         ...actual,
         getAccountServiceEndpointSnapshot: () => endpointState.endpoint,
+        resolveSelectedAccountServiceEndpoint: () => endpointState.endpoint ?? ({
+            url: 'https://api.happier.dev', source: 'default' as const,
+        }),
         subscribeAccountServiceEndpoint: (listener: () => void) => {
             endpointState.listeners.add(listener);
             return () => endpointState.listeners.delete(listener);

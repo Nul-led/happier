@@ -200,7 +200,9 @@ function taskSpec(
   };
 }
 
-function printSafeFacts(data: SystemTaskJsonValue): void {
+type PersonalHomeOperationLabel = 'Backup' | 'Restore' | 'Erase';
+
+function printSafeFacts(data: SystemTaskJsonValue, operation?: PersonalHomeOperationLabel): void {
   if (!isRecord(data)) return;
   const facts: string[] = [];
   const add = (label: string, value: unknown): void => {
@@ -210,7 +212,18 @@ function printSafeFacts(data: SystemTaskJsonValue): void {
   add('Path', data.path);
   add('SHA-256', data.sha256);
   add('Outcome', data.outcome);
-  add('Restore error', data.error);
+  add(operation ? `${operation} error` : 'Operation error', data.error);
+  add('Home needs attention', data.homeNeedsAttention);
+  add('Stopped running Home', data.stoppedRunningHome);
+  if (Array.isArray(data.removedPaths)) {
+    for (const path of data.removedPaths) add('Removed', path);
+  }
+  if (Array.isArray(data.remainingOwnedPaths)) {
+    for (const path of data.remainingOwnedPaths) add('Remaining owned', path);
+  }
+  if (Array.isArray(data.remainingUnknownPaths)) {
+    for (const path of data.remainingUnknownPaths) add('Remaining unknown', path);
+  }
   if (Array.isArray(data.rollbackPaths)) {
     for (const path of data.rollbackPaths) add('Rollback retained at', path);
   }
@@ -337,9 +350,13 @@ export async function handleHomeCommand(
     return { confirmed: /^y(?:es)?$/i.test(answer.trim()) };
   };
   const purpose = await readPersonalHomePurpose({ runner, signal, sleep: deps.sleep, runtime });
-  const run = async (spec: SystemTaskSpec, visible = true): Promise<SystemTaskJsonValue> => {
+  const run = async (
+    spec: SystemTaskSpec,
+    visible = true,
+    operation?: PersonalHomeOperationLabel,
+  ): Promise<SystemTaskJsonValue> => {
     const data = await runTask({ runner, spec, json, visible, signal, sleep: deps.sleep, onPrompt });
-    if (visible && !json) printSafeFacts(data);
+    if (visible && !json) printSafeFacts(data, operation);
     return data;
   };
 
@@ -491,7 +508,7 @@ export async function handleHomeCommand(
     args = output.rest;
     if (args.length > 0) throw new Error(`Unknown home backup arguments: ${args.join(' ')}`);
     const outputPath = output.value === null ? null : requirePath(output.value, 'backup output path', deps);
-    await run(taskSpec(PERSONAL_HOME_SYSTEM_TASK_KINDS.backup, purpose, runtime, outputPath ? { outputPath } : {}));
+    await run(taskSpec(PERSONAL_HOME_SYSTEM_TASK_KINDS.backup, purpose, runtime, outputPath ? { outputPath } : {}), true, 'Backup');
     return;
   }
 
@@ -539,11 +556,19 @@ export async function handleHomeCommand(
       ? verification.manifest.homeServerIdentityId
       : '';
     if (!expectedHomeServerIdentityId) throw Object.assign(new Error('Verified backup is missing its Home identity.'), { code: 'invalid_backup_manifest' });
-    await run(taskSpec(PERSONAL_HOME_SYSTEM_TASK_KINDS.restore, purpose, runtime, {
+    const result = await run(taskSpec(PERSONAL_HOME_SYSTEM_TASK_KINDS.restore, purpose, runtime, {
       archivePath,
       ...(destinationNonEmpty ? { confirmOverwrite: true } : {}),
       expectedHomeServerIdentityId,
-    }));
+    }), true, 'Restore');
+    if (isRecord(result) && (result.outcome === 'rolled_back' || result.outcome === 'recovery_required')) {
+      throw Object.assign(
+        new Error(result.error === undefined
+          ? `Personal Home restore did not complete (${result.outcome}).`
+          : `Personal Home restore did not complete (${result.outcome}): ${String(result.error)}`),
+        { code: 'personal_home_restore_incomplete', personalHomeTaskFailure: true },
+      );
+    }
     return;
   }
 
@@ -577,7 +602,15 @@ export async function handleHomeCommand(
     if (args.length > 0) {
       throw Object.assign(new Error(`Unknown home erase arguments: ${args.join(' ')}`), { code: 'invalid_params' });
     }
-    await run(taskSpec(PERSONAL_HOME_SYSTEM_TASK_KINDS.erase, purpose, runtime));
+    const result = await run(taskSpec(PERSONAL_HOME_SYSTEM_TASK_KINDS.erase, purpose, runtime), true, 'Erase');
+    if (isRecord(result) && result.outcome === 'partial') {
+      throw Object.assign(
+        new Error(result.error === undefined
+          ? 'Personal Home erase was only partially completed.'
+          : `Personal Home erase was only partially completed: ${String(result.error)}`),
+        { code: 'personal_home_erase_incomplete', personalHomeTaskFailure: true },
+      );
+    }
     return;
   }
 
@@ -602,6 +635,8 @@ export async function handleHomeCliCommand(context: CommandContext): Promise<voi
       'invalid_backup_manifest',
       'invalid_backup_result',
       'personal_home_inspection_incomplete',
+      'personal_home_restore_incomplete',
+      'personal_home_erase_incomplete',
       'restore_recovery_ambiguous',
       'invalid_runtime_target',
     ]);

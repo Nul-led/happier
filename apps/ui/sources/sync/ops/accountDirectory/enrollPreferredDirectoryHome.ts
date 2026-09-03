@@ -25,6 +25,13 @@ type ResumableHomeLoginContinuation =
         cancel: () => Promise<HomeLoginContinuationResult>;
     }>);
 
+function isResumableHomeLoginContinuation(
+    result: HomeLoginContinuationResult,
+): result is ResumableHomeLoginContinuation {
+    return result.kind === 'approval_required'
+        || (result.kind === 'transport_unavailable' && Boolean(result.resume && result.cancel));
+}
+
 export type PendingPreferredHomeEnrollment = ResumableHomeLoginContinuation & Readonly<{
     serviceKey: string;
     entryIntent: AccountServiceEntryIntent;
@@ -85,9 +92,7 @@ function publishPending(
     const boundHomeServerIdentityId = result.kind === 'approval_required'
         ? result.homeServerIdentityId
         : homeServerIdentityId ?? pendingPreferredHomeEnrollment?.homeServerIdentityId ?? null;
-    const resumable = result.kind === 'approval_required'
-        || (result.kind === 'transport_unavailable' && result.resume && result.cancel);
-    pendingPreferredHomeEnrollment = resumable
+    pendingPreferredHomeEnrollment = isResumableHomeLoginContinuation(result)
         && boundServiceKey
         && boundEntryIntent
         && boundHomeServerIdentityId
@@ -130,15 +135,18 @@ export async function resumePendingPreferredHomeEnrollment(): Promise<HomeLoginC
         return await pendingPreferredHomeResume.promise;
     }
     const resume = pending.resume().then(async (result) => {
-        if (
-            result.kind === 'enrolled'
-            && await finalizePreferredHomeEnrollmentEntryIntent(
+        if (result.kind === 'enrolled') {
+            const entryOutcome = await finalizePreferredHomeEnrollmentEntryIntent(
                 result.homeServerIdentityId,
                 pending.entryIntent,
                 pending.serviceKey,
-            ) === 'blocked'
-        ) {
-            throw new Error('Unable to enter the enrolled preferred Home');
+            );
+            if (entryOutcome === 'blocked') {
+                throw new Error('Unable to enter the enrolled preferred Home');
+            }
+            if (entryOutcome === 'superseded') {
+                result = { kind: 'cancelled' };
+            }
         }
         if (pendingPreferredHomeEnrollment === pending) {
             publishPending(
@@ -221,10 +229,7 @@ export async function enrollPreferredDirectoryHome(
         // retain the exact assertion/key/descriptor tuple. Publish that
         // detached continuation before initiating-screen teardown can discard
         // it; only explicit service replacement/disconnect invalidates it.
-        if (
-            result.kind === 'approval_required'
-            || (result.kind === 'transport_unavailable' && result.resume && result.cancel)
-        ) {
+        if (isResumableHomeLoginContinuation(result)) {
             // Disconnect and Account Service replacement are stronger than
             // ordinary initiating-screen cancellation. They can race the
             // Home's 202 before the continuation exists, so consume the newly

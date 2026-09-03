@@ -86,7 +86,9 @@ const reconcileServerProfileHomeConnectionDescriptorMock = vi.hoisted(() => vi.f
     },
 })));
 const buildHomeConnectionDescriptorForProfileMock = vi.hoisted(() => vi.fn<(...args: unknown[]) => AccountDirectoryHomeEntryV1['connectionDescriptor'] | null>());
-const setActiveServerAndSwitchMock = vi.hoisted(() => vi.fn(async () => 'switched' as const));
+const setActiveServerAndSwitchMock = vi.hoisted(() => vi.fn<
+    (...args: unknown[]) => Promise<'switched'>
+>(async () => 'switched'));
 const getAccountServiceEndpointSnapshotMock = vi.hoisted(() => vi.fn((): {
     url: string;
     serverIdentityId: string;
@@ -107,6 +109,9 @@ vi.mock('@/sync/domains/server/serverProfiles', () => ({
     }),
     resolveServerProfileScopeId: () => 'srv_home_b',
     getAccountServiceEndpointSnapshot: () => getAccountServiceEndpointSnapshotMock(),
+    resolveSelectedAccountServiceEndpoint: () => getAccountServiceEndpointSnapshotMock() ?? ({
+        url: 'https://api.happier.dev', source: 'default' as const,
+    }),
     // Lane 04 owns the closed digest-bound authorization; its rejection behavior is proven by the
     // production-caller suite against the real owner. Here it is a transparent scope holder.
     withHomeCredentialWriteAuthorization: async <T,>(
@@ -270,6 +275,9 @@ describe('enrollPreferredDirectoryHome requester continuation', () => {
     it('closes a transient Iroh attempt and returns an explicit retryable continuation', async () => {
         const keyPair = sodium.crypto_box_keypair();
         vi.spyOn(sodium, 'crypto_box_keypair').mockReturnValueOnce(keyPair);
+        createServerFetchAtEndpointMock.mockImplementationOnce(
+            () => async (path: string, ...args: unknown[]) => await endpointFetchMock(path, ...args),
+        );
         endpointFetchMock.mockResolvedValueOnce(json(503, { error: 'home_unavailable' }));
 
         const enrollment = await enrollPreferredDirectoryHome(makeSession({
@@ -429,15 +437,15 @@ describe('enrollPreferredDirectoryHome requester continuation', () => {
             source: 'user',
         });
 
-        // The Home still issues its credential, so adoption stays truthful and non-focusing…
+        // The Home still issues its credential, so adoption stays truthful and non-focusing, but
+        // this superseded entry journey reports cancellation rather than false success.
         await expect(resumePendingPreferredHomeEnrollment()).resolves.toEqual({
-            kind: 'enrolled',
-            homeServerIdentityId: 'srv_home_b',
+            kind: 'cancelled',
         });
         expect(setCredentialsForServerUrlMock).toHaveBeenCalledOnce();
         expect(setCredentialsForServerUrlMock.mock.calls[0]?.[0]).toBe('https://home-b.test');
         expect(setCredentialsForServerUrlMock.mock.calls[0]).toContainEqual({ token: 'home-b-token' });
-        // …but the superseded service cannot make its Home the focused one.
+        // The superseded service cannot make its Home the focused one.
         expect(setActiveServerAndSwitchMock).not.toHaveBeenCalled();
     });
 

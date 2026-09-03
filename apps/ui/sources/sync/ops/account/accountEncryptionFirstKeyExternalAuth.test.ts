@@ -24,6 +24,8 @@ const mocks = vi.hoisted(() => ({
     readExactAttempt: vi.fn(),
     acknowledgeSessionDrafts: vi.fn(),
     reconfigureSessionDraftRepository: vi.fn(),
+    endpointFetch: vi.fn(),
+    createServerFetchAtEndpoint: vi.fn(),
 }));
 
 vi.mock('@/sync/domains/scope/activeServerAccountScope', () => ({
@@ -50,15 +52,38 @@ vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
         await importOriginal<
             typeof import('@/auth/storage/tokenStorage')
         >();
+    const readStoredPending = async () => {
+        const state = await mocks.readPending();
+        const value = state?.value;
+        // TokenStorage enriches every real pending record with its physical
+        // Home scope. Keep owner tests focused on first-key orchestration while
+        // preserving that boundary invariant in their compact fixtures.
+        if (
+            value?.accountEncryptionFirstKey
+            && (!value.serverId || !value.serverUrl)
+        ) {
+            return {
+                ...state,
+                value: {
+                    ...value,
+                    serverId: 'server-a',
+                    serverUrl: 'https://server-a.example.test',
+                },
+            };
+        }
+        return state;
+    };
     return {
         ...actual,
         TokenStorage: {
             ...actual.TokenStorage,
             clearPendingExternalAuth: mocks.clearPending,
             setPendingExternalAuth: mocks.setPending,
-            readPendingExternalAuthState: mocks.readPending,
+            readPendingExternalAuthState: readStoredPending,
+            readPendingExternalAuthContinuationState:
+                readStoredPending,
             readPendingExternalAuthStateForServerUrl:
-                mocks.readPending,
+                readStoredPending,
             readExactPendingExternalAuthFirstKeyMigrationAttempt:
                 mocks.readExactAttempt,
         },
@@ -71,10 +96,13 @@ vi.mock('@/auth/flows/getToken', () => ({
 
 vi.mock('@/sync/http/client', () => ({
     serverFetch: mocks.serverFetch,
+    createServerFetchAtEndpoint:
+        mocks.createServerFetchAtEndpoint,
 }));
 
 vi.mock('@/sync/api/capabilities/serverFeaturesClient', () => ({
     getServerFeaturesSnapshot: mocks.getFeatures,
+    probeServerFeaturesAtUrl: mocks.getFeatures,
 }));
 
 vi.mock('@/sync/api/account/apiAccountEncryptionMigrate', async (importOriginal) => {
@@ -205,9 +233,11 @@ beforeEach(() => {
     mocks.setPending
         .mockReset()
         .mockResolvedValue(true);
-    mocks.getFeatures.mockResolvedValue(oauthFeatures());
-    mocks.migrate.mockResolvedValue({ mode: 'e2ee', version: 9 });
-    mocks.fetchCurrentness.mockResolvedValue({
+    mocks.readPending.mockReset();
+    mocks.serverFetch.mockReset();
+    mocks.getFeatures.mockReset().mockResolvedValue(oauthFeatures());
+    mocks.migrate.mockReset().mockResolvedValue({ mode: 'e2ee', version: 9 });
+    mocks.fetchCurrentness.mockReset().mockResolvedValue({
         mode: 'e2ee',
         updatedAt: 1,
         signingKeyFingerprint: null,
@@ -217,6 +247,11 @@ beforeEach(() => {
     mocks.readExactAttempt.mockReset();
     mocks.acknowledgeSessionDrafts.mockReset();
     mocks.reconfigureSessionDraftRepository.mockReset();
+    mocks.endpointFetch.mockReset();
+    mocks.createServerFetchAtEndpoint.mockReset();
+    mocks.createServerFetchAtEndpoint.mockReturnValue(
+        mocks.serverFetch,
+    );
 });
 
 describe('first Account key external auth', () => {
@@ -567,6 +602,7 @@ describe('first Account key external auth', () => {
             mocks.fetchCurrentness,
         ).toHaveBeenCalledWith(
             currentCredentials,
+            { request: mocks.serverFetch },
         );
         expect(mocks.clearPending).toHaveBeenLastCalledWith({
             removeFirstKeyMigrationAttempted: marked,
@@ -713,6 +749,10 @@ describe('first Account key external auth', () => {
                         expiresAt: expect.any(Number),
                     }),
             }),
+            {
+                serverId: 'api.happier.dev',
+                serverUrl: 'https://api.happier.dev',
+            },
         );
         const [, init] = mocks.serverFetch.mock.calls[0]!;
         expect(init).toMatchObject({
@@ -810,6 +850,8 @@ describe('first Account key external auth', () => {
                 provider: 'github',
                 proof: 'proof',
                 secret: fixture.proposedCredentials.secret,
+                serverId: 'server-a',
+                serverUrl: 'https://server-a.example.test',
                 returnTo: '/settings/account',
                 accountEncryptionFirstKey: {
                     accountId: fixture.accountId,
@@ -826,6 +868,10 @@ describe('first Account key external auth', () => {
             await resumeAccountEncryptionFirstKeyExternalAuth({
                 provider: 'github',
                 pending: 'oauth-pending',
+                target: {
+                    serverId: 'server-a',
+                    serverUrl: 'https://server-a.example.test',
+                },
                 currentCredentials: fixture.currentCredentials,
                 persistCredentials,
             });
@@ -839,6 +885,10 @@ describe('first Account key external auth', () => {
                         pending: 'oauth-pending',
                     }),
             }),
+            {
+                serverId: 'server-a',
+                serverUrl: 'https://server-a.example.test',
+            },
         );
         expect(
             mocks.setPending.mock.invocationCallOrder[0],
@@ -854,11 +904,23 @@ describe('first Account key external auth', () => {
                     proof: 'proof',
                 },
             }),
-            { retry: 'none' },
+            {
+                retry: 'none',
+                request: mocks.serverFetch,
+                target: {
+                    serverId: 'server-a',
+                    serverUrl: 'https://server-a.example.test',
+                },
+            },
         );
         expect(persistCredentials).toHaveBeenCalledWith(
             fixture.proposedCredentials,
-            expect.anything(),
+            expect.objectContaining({
+                target: {
+                    serverId: 'server-a',
+                    serverUrl: 'https://server-a.example.test',
+                },
+            }),
         );
         expect(
             mocks.migrate.mock.invocationCallOrder[0],
@@ -1158,7 +1220,11 @@ describe('first Account key external auth', () => {
         expect(persistCredentials).not.toHaveBeenCalled();
         expect(mocks.clearPending).not.toHaveBeenCalled();
         expect(mocks.setPending).toHaveBeenCalledWith(
-            retainedState,
+            expect.objectContaining(retainedState),
+            {
+                serverId: 'server-a',
+                serverUrl: 'https://server-a.example.test',
+            },
         );
         expect(
             mocks.setPending.mock.invocationCallOrder[0],
@@ -1324,13 +1390,19 @@ describe('first Account key external auth', () => {
                 persistCredentials,
             }),
         ).rejects.toMatchObject({ status: 503 });
-        expect(mocks.setPending).toHaveBeenCalledWith({
-            ...state,
-            accountEncryptionFirstKey: {
-                ...continuation,
-                migrationSubmissionAttempted: true,
+        expect(mocks.setPending).toHaveBeenCalledWith(
+            expect.objectContaining({
+                ...state,
+                accountEncryptionFirstKey: {
+                    ...continuation,
+                    migrationSubmissionAttempted: true,
+                },
+            }),
+            {
+                serverId: 'server-a',
+                serverUrl: 'https://server-a.example.test',
             },
-        });
+        );
         expect(mocks.clearPending).not.toHaveBeenCalled();
 
         mocks.readPending.mockResolvedValue({

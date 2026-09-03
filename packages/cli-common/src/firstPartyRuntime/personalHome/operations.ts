@@ -63,9 +63,11 @@ export class PersonalHomeOperationsError extends Error {
       | 'restore_recovery_required'
       | 'relocation_unavailable',
     message: string,
+    cause?: unknown,
   ) {
     super(message);
     this.name = 'PersonalHomeOperationsError';
+    if (cause !== undefined) Object.defineProperty(this, 'cause', { value: cause, configurable: true });
   }
 }
 
@@ -340,23 +342,34 @@ export function createPersonalHomeOperations(deps: PersonalHomeOperationsDeps): 
     }
   };
 
-  const restartHomeAfterAbortedErase = async (originalError: unknown): Promise<never> => {
+  const restorePreviouslyRunningHome = async (): Promise<void> => {
+    if (!await deps.lifecycle.isRunning()) {
+      await deps.lifecycle.start();
+    }
+    if (!await deps.lifecycle.isRunning()) {
+      throw new Error('the service did not report running');
+    }
+    if (healthCheck && !await healthCheck()) {
+      throw new Error('the Home health check failed');
+    }
+  };
+
+  const restorePreviouslyRunningHomeOrRethrow = async (
+    operation: 'Backup' | 'Restore' | 'Erase',
+    originalError: unknown,
+  ): Promise<never> => {
     try {
-      if (!await deps.lifecycle.isRunning()) {
-        await deps.lifecycle.start();
-      }
-      if (!await deps.lifecycle.isRunning()) {
-        throw new Error('the service did not report running');
-      }
-      if (healthCheck && !await healthCheck()) {
-        throw new Error('the Home health check failed');
-      }
+      await restorePreviouslyRunningHome();
     } catch (restartError) {
       const originalMessage = originalError instanceof Error ? originalError.message : String(originalError);
       const restartMessage = restartError instanceof Error ? restartError.message : String(restartError);
+      const operationContext = operation === 'Erase'
+        ? `Erase was not performed (${originalMessage})`
+        : `${operation} did not complete (${originalMessage})`;
       throw new PersonalHomeOperationsError(
         'home_restart_failed',
-        `Erase was not performed (${originalMessage}); Personal Home restart could not be verified and needs attention: ${restartMessage}.`,
+        `${operationContext}; Personal Home restart could not be verified and needs attention: ${restartMessage}.`,
+        originalError,
       );
     }
     throw originalError;
@@ -383,6 +396,7 @@ export function createPersonalHomeOperations(deps: PersonalHomeOperationsDeps): 
     const wasRunning = await deps.lifecycle.isRunning();
     let homeNeedsAttention = false;
     let result: PersonalHomeBackupResult | undefined;
+    let operationError: unknown;
     try {
       if (wasRunning) {
         checkCancelled(params.context);
@@ -406,17 +420,21 @@ export function createPersonalHomeOperations(deps: PersonalHomeOperationsDeps): 
         },
         operationLeaseHeld: true,
       });
-    } finally {
-      if (wasRunning && (!params.keepStoppedAfterSuccess || !result)) {
-        params.context.progress?.('restarting_home');
-        try {
-          await deps.lifecycle.start();
-          if (healthCheck && !(await healthCheck())) homeNeedsAttention = true;
-        } catch {
-          homeNeedsAttention = true;
-        }
+    } catch (error) {
+      operationError = error;
+    }
+    if (wasRunning && (!params.keepStoppedAfterSuccess || !result)) {
+      params.context.progress?.('restarting_home');
+      if (operationError !== undefined) {
+        await restorePreviouslyRunningHomeOrRethrow('Backup', operationError);
+      }
+      try {
+        await restorePreviouslyRunningHome();
+      } catch {
+        homeNeedsAttention = true;
       }
     }
+    if (operationError !== undefined) throw operationError;
     if (!result) throw new Error('Personal Home backup did not produce a result');
     return {
       backup: homeNeedsAttention ? { ...result, homeNeedsAttention: true } : result,
@@ -533,7 +551,7 @@ export function createPersonalHomeOperations(deps: PersonalHomeOperationsDeps): 
           try {
             checkCancelled(input);
           } catch (error) {
-            if (prepared.wasRunning) await deps.lifecycle.start().catch(() => undefined);
+            if (prepared.wasRunning) await restorePreviouslyRunningHomeOrRethrow('Restore', error);
             throw error;
           }
           return { archive: prepared.backup, wasRunning: prepared.wasRunning };
@@ -612,7 +630,7 @@ export function createPersonalHomeOperations(deps: PersonalHomeOperationsDeps): 
             throw new PersonalHomeOperationsError('home_stop_failed', 'Personal Home did not stop; erase was not attempted.');
           }
         } catch (error) {
-          await restartHomeAfterAbortedErase(error);
+          await restorePreviouslyRunningHomeOrRethrow('Erase', error);
         }
       }
       const paths = resolvePersonalHomeEraseTargets(layout);
@@ -634,7 +652,7 @@ export function createPersonalHomeOperations(deps: PersonalHomeOperationsDeps): 
         }
         checkCancelled(input);
       } catch (error) {
-        if (wasRunning) await restartHomeAfterAbortedErase(error);
+        if (wasRunning) await restorePreviouslyRunningHomeOrRethrow('Erase', error);
         throw error;
       }
       input.progress?.('erasing');

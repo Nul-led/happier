@@ -140,6 +140,9 @@ vi.mock('@/sync/domains/server/serverProfiles', () => ({
     resolveServerProfileForPortableIdentity: (...args: unknown[]) => resolveServerProfileForPortableIdentityMock(...args),
     resolveServerProfileScopeId: (...args: unknown[]) => resolveServerProfileScopeIdMock(...args),
     getAccountServiceEndpointSnapshot: () => getAccountServiceEndpointSnapshotMock(),
+    resolveSelectedAccountServiceEndpoint: () => getAccountServiceEndpointSnapshotMock() ?? ({
+        url: 'https://api.happier.dev', source: 'default' as const,
+    }),
     // Lane 04 owns the closed digest-bound authorization; its rejection behavior is proven by the
     // production-caller suite against the real owner. Here it is a transparent scope holder.
     withHomeCredentialWriteAuthorization: async <T,>(
