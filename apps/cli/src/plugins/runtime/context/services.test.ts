@@ -19,6 +19,7 @@ import {
 import {
     createPluginStoragePublicShareSnapshot,
     createPluginStorageOwner,
+    createStablePluginStorageService,
     preparePluginStorageDataRemoval,
 } from './storage';
 import {
@@ -129,6 +130,55 @@ describe('A.11 plugin context services', () => {
             t: 'happier_plugin_public_share_storage_snapshot_v1',
             plugins: [],
         });
+    });
+
+    it('rejects unsupported JSON storage values fail-closed and hands out immutable snapshots', async () => {
+        const happyHomeDir = await makeHappyHome();
+        const paths = resolvePluginStorePaths({ happyHomeDir });
+        const storage = createStablePluginStorageService({
+            pluginId: 'acme.plugin',
+            paths,
+            generation: 'generation-1',
+            signal: new AbortController().signal,
+            isGenerationCurrent: () => true,
+        });
+        // The public `JsonValue` surface already forbids these runtime values;
+        // passing them anyway must be refused instead of silently coerced into
+        // a different persisted shape the way a JSON.stringify round trip does
+        // (Date -> string, NaN -> null, undefined members dropped).
+        const setRaw = storage.daemon.set.bind(storage.daemon) as (
+            key: string,
+            value: unknown,
+        ) => Promise<void>;
+
+        await expect(setRaw('dated', { at: new Date(0) })).rejects.toMatchObject({
+            code: 'PLUGIN_STORAGE_VALUE_INVALID',
+        });
+        await expect(setRaw('nonfinite', { ratio: Number.NaN })).rejects.toMatchObject({
+            code: 'PLUGIN_STORAGE_VALUE_INVALID',
+        });
+        await expect(setRaw('undefined-member', { present: undefined })).rejects.toMatchObject({
+            code: 'PLUGIN_STORAGE_VALUE_INVALID',
+        });
+        // A rejected write must not persist a silently coerced projection.
+        await expect(storage.daemon.get('dated')).resolves.toBeNull();
+        await expect(storage.daemon.get('nonfinite')).resolves.toBeNull();
+        await expect(storage.daemon.get('undefined-member')).resolves.toBeNull();
+
+        // Readers get immutable plain-data snapshots, so in-place edits cannot
+        // masquerade as storage writes.
+        await storage.daemon.set('snapshot', { nested: { ok: true } });
+        const snapshot = await storage.daemon.get<Readonly<{ nested: Readonly<{ ok: boolean }> }>>('snapshot');
+        expect(snapshot).toEqual({ nested: { ok: true } });
+        expect(Object.isFrozen(snapshot)).toBe(true);
+        expect(Object.isFrozen(snapshot?.nested)).toBe(true);
+
+        // Writer isolation: mutating the source object after `set` must not
+        // leak into storage.
+        const source = { count: 1 };
+        await storage.ephemeral.set('counter', source);
+        source.count = 2;
+        await expect(storage.ephemeral.get('counter')).resolves.toEqual({ count: 1 });
     });
 
     it('removes only one validated plugin daemon/session/filesystem and secret namespace', async () => {

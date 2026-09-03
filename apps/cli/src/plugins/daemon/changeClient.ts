@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import { realpath } from 'node:fs/promises';
 
 import {
@@ -13,8 +12,6 @@ import { resolveLocalPathPluginSource } from '@/plugins/discovery/sources/localP
 import { resolveAbsolutePathFromWorkingDirectory } from '@/utils/path/expandHomeDirPath';
 
 import type {
-  AuthenticatedUserInteraction,
-  PluginChangeActorProvenance,
   PluginChangeDecision,
   PluginChangeDecisionResult,
   PluginChangeListResult,
@@ -77,11 +74,6 @@ type ExplicitNonInteractiveTrustTarget = Readonly<{
   locator: string;
 }>;
 
-type ExplicitNonInteractiveTrustAuthorization = Readonly<{
-  interactionId: string;
-  occurredAtMs: number;
-}>;
-
 type LocalDevelopmentPluginInstallRequest = Readonly<{
   kind: 'installPath';
   locator: string;
@@ -132,25 +124,6 @@ function reviewIsExactExplicitNonInteractiveTrustInstall(
     && review.updateChannel.kind === 'path'
     && review.updateChannel.development
     && review.updateChannel.locator === target.locator;
-}
-
-function createExplicitNonInteractiveTrustActorEvidence(
-  authorization: ExplicitNonInteractiveTrustAuthorization,
-  target: ExplicitNonInteractiveTrustTarget,
-  pluginId?: string,
-): AuthenticatedUserInteraction {
-  const provenance: PluginChangeActorProvenance = {
-    kind: 'explicitCliTrustFlag',
-    command: 'plugins install',
-    flag: '--trust',
-    source: target,
-    ...(pluginId === undefined ? {} : { pluginId }),
-  };
-  return {
-    kind: 'authenticatedLocalUser',
-    ...authorization,
-    provenance,
-  };
 }
 
 async function cancelMismatchedExplicitNonInteractiveTrustReview(
@@ -359,8 +332,6 @@ export async function decideUserPluginChange(
       decision: PluginChangeDecision,
       options?: Readonly<{ signal?: AbortSignal }>,
     ) => Promise<PluginChangeDecisionResult>;
-    createInteractionId?: () => string;
-    nowMs?: () => number;
   }> = {},
 ): Promise<UserPluginChangeDecisionResult> {
   const pendingChangeId = input.pendingChangeId.trim();
@@ -389,20 +360,10 @@ export async function decideUserPluginChange(
       ? {
           pendingChangeId,
           decision: 'trustSourceRoot',
-          actorEvidence: {
-            kind: 'authenticatedLocalUser',
-            interactionId: (dependencies.createInteractionId ?? randomUUID)(),
-            occurredAtMs: (dependencies.nowMs ?? Date.now)(),
-          },
         }
       : {
           pendingChangeId,
           decision: 'installAndTrust',
-          actorEvidence: {
-            kind: 'authenticatedLocalUser',
-            interactionId: (dependencies.createInteractionId ?? randomUUID)(),
-            occurredAtMs: (dependencies.nowMs ?? Date.now)(),
-          },
           // A noninteractive explicit decision never widens the review by
           // selecting optional host-owned resources. The interactive review
           // path remains the owner of optional-resource selection.
@@ -595,8 +556,6 @@ export async function requestUserPluginChange(
       decision: PluginChangeDecision,
       options?: Readonly<{ signal?: AbortSignal }>,
     ) => Promise<PluginChangeDecisionResult>;
-    createInteractionId?: () => string;
-    nowMs?: () => number;
   }> = {},
 ): Promise<UserPluginChangeResult> {
   const request = resolvePluginChangeRequestClientPaths(input.request);
@@ -635,10 +594,6 @@ export async function requestUserPluginChange(
 
   const decideChange = dependencies.decideChange ?? decideDaemonPluginChange;
   if (input.approval === 'explicitNonInteractiveTrust') {
-    const authorization: ExplicitNonInteractiveTrustAuthorization = {
-      interactionId: (dependencies.createInteractionId ?? randomUUID)(),
-      occurredAtMs: (dependencies.nowMs ?? Date.now)(),
-    };
     if (result.kind === 'sourceRootReviewRequired') {
       if (!reviewNamesExactExplicitNonInteractiveTrustSource(result.review, explicitTrustTarget!)) {
         return await cancelMismatchedExplicitNonInteractiveTrustReview(
@@ -649,7 +604,6 @@ export async function requestUserPluginChange(
       const sourceRootDecision: PluginChangeDecision = {
         pendingChangeId: result.pendingChangeId,
         decision: 'trustSourceRoot',
-        actorEvidence: createExplicitNonInteractiveTrustActorEvidence(authorization, explicitTrustTarget!),
       };
       result = input.signal
         ? await decideChange(sourceRootDecision, { signal: input.signal })
@@ -666,11 +620,6 @@ export async function requestUserPluginChange(
     const decision: PluginChangeDecision = {
       pendingChangeId: reviewedResult.pendingChangeId,
       decision: 'installAndTrust',
-      actorEvidence: createExplicitNonInteractiveTrustActorEvidence(
-        authorization,
-        explicitTrustTarget!,
-        reviewedResult.review.pluginId,
-      ),
       // An explicit CLI trust flag does not select optional host-owned
       // resources. Those remain available only to the reviewed prompt path.
       optionalSelections: [],
@@ -710,11 +659,6 @@ export async function requestUserPluginChange(
     const sourceRootDecision: PluginChangeDecision = {
       pendingChangeId: result.pendingChangeId,
       decision: 'trustSourceRoot',
-      actorEvidence: {
-        kind: 'authenticatedLocalUser',
-        interactionId: (dependencies.createInteractionId ?? randomUUID)(),
-        occurredAtMs: (dependencies.nowMs ?? Date.now)(),
-      },
     };
     result = input.signal
       ? await decideChange(sourceRootDecision, { signal: input.signal })
@@ -754,11 +698,6 @@ export async function requestUserPluginChange(
     ? {
         pendingChangeId: reviewedResult.pendingChangeId,
         decision: 'installAndTrust',
-        actorEvidence: {
-          kind: 'authenticatedLocalUser',
-          interactionId: (dependencies.createInteractionId ?? randomUUID)(),
-          occurredAtMs: (dependencies.nowMs ?? Date.now)(),
-        },
         optionalSelections,
       }
     : {

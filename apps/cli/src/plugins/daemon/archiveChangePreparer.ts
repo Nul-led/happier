@@ -271,13 +271,13 @@ export function createDaemonArchivePluginChangePreparer(params: Readonly<{
             if (JSON.stringify(existingAtApply) !== JSON.stringify(existingAtPreparation)) {
               return { kind: 'conflict' as const, pluginId: staged.candidate.manifest.id };
             }
+            const approvedAtMs = nowMs();
             const optionalAccess = createSelectedPluginOptionalAccess({
               pluginId: staged.candidate.manifest.id,
               declarations: staged.candidate.manifest.value.hostAccess.optional,
               decisions: decision.optionalSelections,
-              selectedAtMs: decision.actorEvidence.occurredAtMs,
+              selectedAtMs: approvedAtMs,
             });
-            const approvedAtMs = decision.actorEvidence.occurredAtMs;
             const trust = createPluginTrustRecord({
               pluginId: staged.candidate.manifest.id,
               distribution,

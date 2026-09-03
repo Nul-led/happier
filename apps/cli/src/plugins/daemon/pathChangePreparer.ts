@@ -184,7 +184,6 @@ const SOURCE_ROOT_APPROVED = Symbol('pluginDevelopmentSourceRootApproved');
 type InternalPluginChangeRequest = PluginChangeRequest & Readonly<{
   [SOURCE_ROOT_APPROVED]?: Readonly<{
     distribution: Awaited<ReturnType<typeof createLocalPathPluginDistributionIdentity>>;
-    actorEvidence: import('./changeContract').AuthenticatedUserInteraction;
   }>;
 }>;
 
@@ -279,13 +278,7 @@ export function createDaemonPathPluginChangePreparer(params: Readonly<{
                 locator: distribution.canonicalPath,
               }),
             }),
-            continueAfterSourceRootApproval: async (actorEvidence) => {
-              if (
-                actorEvidence.kind !== 'authenticatedLocalUser'
-                || !actorEvidence.interactionId.trim()
-              ) {
-                throw new Error('Plugin development source approval requires authenticated actor evidence');
-              }
+            continueAfterSourceRootApproval: async () => {
               const approvedSource = await resolvePluginAuthoringSource(developmentSourceRootPath);
               if (!approvedSource.ok || approvedSource.kind !== 'code') {
                 throw new Error('Approved plugin development source identity changed before evaluation');
@@ -299,10 +292,7 @@ export function createDaemonPathPluginChangePreparer(params: Readonly<{
               const continued = await prepare(Object.assign(
                 { ...request },
                 {
-                  [SOURCE_ROOT_APPROVED]: Object.freeze({
-                    distribution,
-                    actorEvidence,
-                  }),
+                  [SOURCE_ROOT_APPROVED]: Object.freeze({ distribution }),
                 },
               ));
               if ('kind' in continued) {
@@ -855,9 +845,9 @@ export function createDaemonPathPluginChangePreparer(params: Readonly<{
           return { kind: 'failed' as const, code: 'plugin_install_trust_required' };
         }
         try {
-          const approvedAtMs = decision?.actorEvidence.occurredAtMs
-            ?? existingAtApply?.install.trust?.approvedAtMs
-            ?? Date.now();
+          const approvedAtMs = decision
+            ? Date.now()
+            : existingAtApply?.install.trust?.approvedAtMs ?? Date.now();
           const trust = decision
             ? createPluginTrustRecord({
                 pluginId: manifest.id,
@@ -877,7 +867,7 @@ export function createDaemonPathPluginChangePreparer(params: Readonly<{
                 pluginId: manifest.id,
                 declarations: manifest.hostAccess.optional,
                 decisions: decision.optionalSelections,
-                selectedAtMs: decision.actorEvidence.occurredAtMs,
+                selectedAtMs: approvedAtMs,
               })
             : preservedOptionalSelections
               ?? (isCodeDevelopmentSource && manifest.hostAccess.optional.length === 0

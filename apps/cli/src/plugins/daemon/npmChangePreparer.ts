@@ -546,9 +546,9 @@ export function createDaemonNpmPluginChangePreparer(params: Readonly<{
                 );
               }
             });
-            const approvedAtMs = approval?.actorEvidence.occurredAtMs
-              ?? existingAtApply?.install.trust?.approvedAtMs
-              ?? nowMs();
+            const approvedAtMs = approval
+              ? nowMs()
+              : existingAtApply?.install.trust?.approvedAtMs ?? nowMs();
             const optionalAccess = approval
               ? createSelectedPluginOptionalAccess({
                   pluginId: staged.candidate.manifest.id,

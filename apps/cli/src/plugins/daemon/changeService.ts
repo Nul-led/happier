@@ -298,7 +298,6 @@ export function createDaemonPluginChangeService(params: Readonly<{
     }
     try {
       return await prepared.apply(decision ? {
-        actorEvidence: decision.actorEvidence,
         optionalSelections: decision.optionalSelections ?? [],
       } : undefined, { onApplied: lease.release });
     } catch (error) {
@@ -424,9 +423,7 @@ export function createDaemonPluginChangeService(params: Readonly<{
         pending.applyPromise = (async () => {
           let prepared: PreparedDaemonPluginChangeCandidate;
           try {
-            prepared = await sourceApproval.continueAfterSourceRootApproval(
-              decision.actorEvidence,
-            );
+            prepared = await sourceApproval.continueAfterSourceRootApproval();
           } catch (error) {
             const result = failedPluginChange(
               error instanceof DaemonPluginChangePreparationError
