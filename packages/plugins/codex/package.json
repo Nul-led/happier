@@ -366,10 +366,6 @@
     "./agent/auth/services/state/sharing/files": {
       "types": "./dist/agent/auth/services/state/sharing/files.d.ts",
       "default": "./dist/agent/auth/services/state/sharing/files.js"
-    },
-    "./agent/auth/services/state/sharing/switchContinuity": {
-      "types": "./dist/agent/auth/services/state/sharing/switchContinuity.d.ts",
-      "default": "./dist/agent/auth/services/state/sharing/switchContinuity.js"
     }
   },
   "files": [

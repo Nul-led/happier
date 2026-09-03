@@ -2,7 +2,11 @@ import { isPluginError, PluginError, type JsonValue, type PluginInvocationContex
 import type { PluginActionInputById, PluginActionResultById } from '@happier-dev/plugin-sdk/actions';
 import type { BackgroundServiceContext } from '@happier-dev/plugin-sdk/background-services';
 import type { ConnectedAccountRef } from '@happier-dev/plugin-sdk/connected-accounts';
-import type { PluginEventAutomationHistoryGapResetActionResultV1 } from '@happier-dev/plugin-sdk/events';
+import {
+  isAutomationEventSourcesListPageProgressingV1,
+  projectPluginEventAdmissionSourceStatusV1,
+  type PluginEventAutomationHistoryGapResetActionResultV1,
+} from '@happier-dev/plugin-sdk/events';
 import {
   PLUGIN_COLLECTION_MUTATION_BATCH_MAX_ROWS_V1,
   PLUGIN_COLLECTION_QUERY_MAX_ROWS_V1,
@@ -30,9 +34,13 @@ import {
 import {
   createGithubApiClient,
   decodeGithubJsonResponse,
-  readGithubRateLimitRetryAfterMs,
+  GITHUB_RATE_LIMIT_FALLBACK_MS,
   type GithubApiResponseV1,
 } from './githubApiClient.js';
+import {
+  classifyGithubResponseFailure,
+  isGithubInaccessibleResourceFailure,
+} from './githubResponseFailure.js';
 import {
   GITHUB_API_ORIGIN,
   GITHUB_AUTOMATION_REPOSITORY_EVENT_BACKGROUND_SERVICE_ID,
@@ -76,7 +84,6 @@ export type GithubAutomationEventSourceDefinitionV1 = Extract<
   AutomationEventSourcesListResultV1,
   Readonly<{ kind: 'page' }>
 >['definitions'][number];
-type AutomationEventAdmitItemResultV1 = PluginActionResultById['automation.event.admit']['results'][number];
 /**
  * The host Action owns what an admitted automation-event payload may be. This
  * observer names that contract instead of a second SDK JSON projection, so a
@@ -1191,7 +1198,7 @@ async function refreshCurrentSources(input: Readonly<{
       return sourceRefreshResult(input.state.adopted, false);
     }
     revision ??= result.revision;
-    if (result.nextCursor !== null && result.definitions.length === 0) {
+    if (!isAutomationEventSourcesListPageProgressingV1(result)) {
       await reportPendingReconciliation({ ...input, observedRevision: revision });
       return sourceRefreshResult(input.state.adopted, false);
     }
@@ -1226,14 +1233,43 @@ async function refreshCurrentSources(input: Readonly<{
   }
 }
 
-function classifyUnsafeAdmission(result: AutomationEventAdmitItemResultV1): SourceFailureStatusV1 {
-  if (result.kind === 'refreshDefinition') {
-    return Object.freeze({ state: 'attention', code: 'definitionStale', nextRetryAt: null });
+/**
+ * The shared GitHub classifier answers what the provider said; this names that
+ * answer in the Automation source-status vocabulary. A credential GitHub
+ * rejected, a permission it withheld, and a resource it cannot reach are three
+ * different repairs for the owner, and only the throttle arm carries a retry
+ * instruction. Statuses GitHub did not decide return `null` so the caller keeps
+ * its bounded transient backoff.
+ */
+function githubResponseSourceStatus(
+  response: GithubApiResponseV1,
+  now: number,
+): SourceFailureStatusV1 | null {
+  const failure = classifyGithubResponseFailure(response, now);
+  if (failure.class === 'rateLimit') {
+    return Object.freeze({
+      state: 'backingOff',
+      code: 'rateLimited',
+      // The classifier reports GitHub's absolute retry instant; the observer
+      // owns the wait ceiling it is willing to hold a source for.
+      nextRetryAt: addDelay(
+        now,
+        failure.retryNotBeforeMs === undefined ? GITHUB_RATE_LIMIT_FALLBACK_MS : failure.retryNotBeforeMs - now,
+      ),
+    });
   }
-  if (result.kind === 'blocked' && result.reason === 'capacity') {
-    return Object.freeze({ state: 'backingOff', code: 'capacityBlocked', nextRetryAt: null });
+  if (failure.class === 'authentication') {
+    return Object.freeze({ state: 'attention', code: 'credentialRevoked', nextRetryAt: null });
   }
-  return Object.freeze({ state: 'backingOff', code: 'admissionUnavailable', nextRetryAt: null });
+  if (failure.class === 'permission') {
+    return Object.freeze({ state: 'attention', code: 'credentialMissing', nextRetryAt: null });
+  }
+  // A deleted, renamed, or unreadable repository and a rejected request shape
+  // are both answers about the configured source, not about the credential.
+  if (isGithubInaccessibleResourceFailure(failure) || failure.class === 'unsupportedContract') {
+    return Object.freeze({ state: 'attention', code: 'sourceContractIncompatible', nextRetryAt: null });
+  }
+  return null;
 }
 
 function failureStatus(error: unknown, now: number): SourceFailureStatusV1 {
@@ -1244,22 +1280,32 @@ function failureStatus(error: unknown, now: number): SourceFailureStatusV1 {
     return Object.freeze({ state: 'attention', code: 'historyGap', nextRetryAt: null });
   }
   if (error instanceof GithubRepositoryEventsResponseError) {
-    const retryAfterMs = readGithubRateLimitRetryAfterMs(error.response, now);
-    if (retryAfterMs !== null) {
-      return Object.freeze({
-        state: 'backingOff',
-        code: 'rateLimited',
-        nextRetryAt: addDelay(now, retryAfterMs),
-      });
-    }
-    if (error.response.status === 401 || error.response.status === 404) {
-      return Object.freeze({ state: 'attention', code: 'credentialMissing', nextRetryAt: null });
-    }
-    if (error.response.status === 403) {
-      return Object.freeze({ state: 'attention', code: 'credentialRevoked', nextRetryAt: null });
-    }
+    const status = githubResponseSourceStatus(error.response, now);
+    if (status !== null) return status;
   }
   return Object.freeze({ state: 'backingOff', code: 'admissionUnavailable', nextRetryAt: null });
+}
+
+/**
+ * When the source may next be observed. A provider retry instruction wins; an
+ * `attention` status is a repairable answer about the credential, permission,
+ * repository, or configuration, so the source re-drives at the bounded
+ * reconciliation cadence — an owner who repairs the cause is observed on the
+ * next pass, and a definition-revision change still wakes it immediately
+ * through its schedule key; everything else keeps the bounded transient retry
+ * delay. No extra watcher or persisted attention state participates.
+ */
+function nextEligibleAfterStatus(input: Readonly<{
+  status: SourceFailureStatusV1;
+  statusAt: number;
+  retryDelayMs: number;
+  reconciliationIntervalMs: number;
+}>): number {
+  if (input.status.nextRetryAt !== null) return input.status.nextRetryAt;
+  return addDelay(
+    input.statusAt,
+    input.status.state === 'attention' ? input.reconciliationIntervalMs : input.retryDelayMs,
+  );
 }
 
 function checkpointForSafeObservations(input: Readonly<{
@@ -1291,12 +1337,21 @@ function checkpointForSafeObservations(input: Readonly<{
   return prefix.kind === 'observations' ? prefix.checkpoint : null;
 }
 
+/**
+ * Schedules are keyed by the exact definition revision they were earned by.
+ * A parked or backing-off source therefore becomes due again as soon as its
+ * owner edits it: the cycle's active-key sweep drops the previous revision's
+ * entry, and normal observation resumes without waiting out the old wait.
+ */
 function sourceScheduleKey(candidate: GithubAutomationObservedSourceCandidateV1): string {
-  if (candidate.kind === 'source') return checkpointRowId(candidate.source);
+  if (candidate.kind === 'source') {
+    return `${checkpointRowId(candidate.source)}:${candidate.source.definition.triggerRevision}`;
+  }
   return JSON.stringify([
     'incompatible',
     candidate.definition.automationId,
     candidate.definition.triggerId,
+    candidate.definition.triggerRevision,
     candidate.definition.eventRef.pluginId,
     candidate.definition.eventRef.localId,
     candidate.definition.sourceSelectorId,
@@ -1316,6 +1371,7 @@ async function runObservedSource(input: Readonly<{
   now: () => number;
   defaultPollIntervalMs: number;
   retryDelayMs: number;
+  reconciliationIntervalMs: number;
   coalescer: GithubObservationRequestCoalescer;
 }>): Promise<GithubAutomationSourceCycleResultV1> {
   const collection = requireGithubAccountStorage(input.context).collection(
@@ -1466,7 +1522,21 @@ async function runObservedSource(input: Readonly<{
       }
       const outcome = admitted.results[0]!;
       if (!outcome.checkpointSafe) {
-        unsafe = classifyUnsafeAdmission(outcome);
+        // One admission classifier: the SDK's canonical projection decides what
+        // an unsafe admission means (definition refresh, capacity, or an
+        // unsettled admission); the observer only carries that verdict into the
+        // checkpoint decision and the source-status report below.
+        const projected = projectPluginEventAdmissionSourceStatusV1({
+          definition: input.source.definition,
+          result: outcome,
+          observationReceivedAt: observedAtMs,
+          observedDelta: 0,
+        });
+        unsafe = Object.freeze({
+          state: projected.state,
+          code: projected.code,
+          nextRetryAt: projected.nextRetryAt,
+        });
         break;
       }
       safeObservationCount += 1;
@@ -1530,7 +1600,12 @@ async function runObservedSource(input: Readonly<{
       code: status.code,
       nextRetryAt: status.nextRetryAt,
     });
-    return sourceCycleResult(input.sourceKey, status.nextRetryAt ?? addDelay(statusAt, input.retryDelayMs));
+    return sourceCycleResult(input.sourceKey, nextEligibleAfterStatus({
+      status,
+      statusAt,
+      retryDelayMs: input.retryDelayMs,
+      reconciliationIntervalMs: input.reconciliationIntervalMs,
+    }));
   }
 }
 
@@ -1540,6 +1615,7 @@ async function runIncompatibleSource(input: Readonly<{
   sourceKey: string;
   now: () => number;
   retryDelayMs: number;
+  reconciliationIntervalMs: number;
 }>): Promise<GithubAutomationSourceCycleResultV1> {
   input.context.signal.throwIfAborted();
   await input.context.services.actions.execute('automation.event.source.status.report', {
@@ -1559,7 +1635,12 @@ async function runIncompatibleSource(input: Readonly<{
     skippedDelta: 0,
   } satisfies AutomationEventSourceStatusInputV1, { signal: input.context.signal });
   input.context.signal.throwIfAborted();
-  return sourceCycleResult(input.sourceKey, addDelay(readObserverNow(input.now), input.retryDelayMs));
+  return sourceCycleResult(input.sourceKey, nextEligibleAfterStatus({
+    status: { state: 'attention', code: 'sourceContractIncompatible', nextRetryAt: null },
+    statusAt: readObserverNow(input.now),
+    retryDelayMs: input.retryDelayMs,
+    reconciliationIntervalMs: input.reconciliationIntervalMs,
+  }));
 }
 
 function rotateCandidatesFairly(input: Readonly<{
@@ -1579,6 +1660,7 @@ async function runDueCandidates(input: Readonly<{
   now: () => number;
   defaultPollIntervalMs: number;
   retryDelayMs: number;
+  reconciliationIntervalMs: number;
   maxConcurrentSources: number;
 }>): Promise<readonly GithubAutomationSourceCycleResultV1[]> {
   const dueNow = readObserverNow(input.now);
@@ -1609,6 +1691,7 @@ async function runDueCandidates(input: Readonly<{
             sourceKey,
             now: input.now,
             retryDelayMs: input.retryDelayMs,
+            reconciliationIntervalMs: input.reconciliationIntervalMs,
           });
         results.push(result);
       } catch (error) {
@@ -1810,6 +1893,7 @@ export function createGithubAutomationEventCheckpointedPullObserver(
         now,
         defaultPollIntervalMs: DEFAULT_SOURCE_POLL_INTERVAL_MS,
         retryDelayMs,
+        reconciliationIntervalMs,
         maxConcurrentSources,
       });
     } finally {
@@ -1892,6 +1976,7 @@ export function createGithubAutomationEventCheckpointedPullObserver(
       now,
       defaultPollIntervalMs: DEFAULT_SOURCE_POLL_INTERVAL_MS,
       retryDelayMs,
+      reconciliationIntervalMs,
       // One source attempt owns one Automation trigger checkpoint. Identical
       // authenticated repository reads coalesce generation-locally and carry
       // no persisted checkpoint authority.

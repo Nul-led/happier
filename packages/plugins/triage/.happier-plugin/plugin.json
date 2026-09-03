@@ -2794,6 +2794,172 @@
       },
       {
         "dangerLevel": "safe",
+        "description": "Finds pull requests, issues and error groups matching what the reader typed.",
+        "execution": {
+          "target": "daemon"
+        },
+        "hostAccess": [
+          "account-storage"
+        ],
+        "id": "entries/search-v1",
+        "inputSchema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "additionalProperties": false,
+          "properties": {
+            "limit": {
+              "maximum": 32,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "query": {
+              "minLength": 1,
+              "type": "string",
+              "x-happier-max-utf8-bytes": 256
+            }
+          },
+          "required": [
+            "query",
+            "limit"
+          ],
+          "type": "object"
+        },
+        "placementBindings": [],
+        "resultSchema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "additionalProperties": false,
+          "properties": {
+            "items": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "command": {
+                    "x-happier-max-serialized-utf8-bytes": 9984
+                  },
+                  "icon": {
+                    "anyOf": [
+                      {
+                        "const": "action"
+                      },
+                      {
+                        "const": "browser"
+                      },
+                      {
+                        "const": "copy"
+                      },
+                      {
+                        "const": "file"
+                      },
+                      {
+                        "const": "globe"
+                      },
+                      {
+                        "const": "info"
+                      },
+                      {
+                        "const": "preview"
+                      },
+                      {
+                        "const": "refresh"
+                      },
+                      {
+                        "const": "settings"
+                      },
+                      {
+                        "const": "terminal"
+                      },
+                      {
+                        "const": "warning"
+                      },
+                      {
+                        "const": "add"
+                      },
+                      {
+                        "const": "back"
+                      },
+                      {
+                        "const": "check"
+                      },
+                      {
+                        "const": "close"
+                      },
+                      {
+                        "const": "error"
+                      },
+                      {
+                        "const": "external"
+                      },
+                      {
+                        "const": "forward"
+                      },
+                      {
+                        "const": "more"
+                      },
+                      {
+                        "const": "search"
+                      },
+                      {
+                        "const": "change-open"
+                      },
+                      {
+                        "const": "change-complete"
+                      }
+                    ]
+                  },
+                  "id": {
+                    "minLength": 1,
+                    "type": "string",
+                    "x-happier-max-utf8-bytes": 256
+                  },
+                  "subtitle": {
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "type": "string",
+                    "x-happier-max-utf8-bytes": 1024
+                  },
+                  "title": {
+                    "maxLength": 128,
+                    "minLength": 1,
+                    "type": "string",
+                    "x-happier-max-utf8-bytes": 512
+                  }
+                },
+                "required": [
+                  "id",
+                  "title",
+                  "command"
+                ],
+                "type": "object"
+              },
+              "maxItems": 32,
+              "type": "array"
+            },
+            "truncated": {
+              "anyOf": [
+                {
+                  "const": true
+                },
+                {
+                  "const": false
+                }
+              ]
+            }
+          },
+          "required": [
+            "items",
+            "truncated"
+          ],
+          "type": "object"
+        },
+        "scopes": [
+          "global"
+        ],
+        "surfaces": [
+          "ui"
+        ],
+        "title": "PRs & Issues"
+      },
+      {
+        "dangerLevel": "safe",
         "description": "Keeps one pull request, issue or error group at the top of the list, or removes that mark again.",
         "execution": {
           "target": "daemon"
@@ -16899,6 +17065,12 @@
     "resources": [],
     "scmBackends": [],
     "scmHostingProviders": [],
+    "searchProviders": [
+      {
+        "action": "entries/search-v1",
+        "id": "entry-search"
+      }
+    ],
     "sessionHeaderActions": [],
     "sessionInfoSections": [],
     "settings": [],

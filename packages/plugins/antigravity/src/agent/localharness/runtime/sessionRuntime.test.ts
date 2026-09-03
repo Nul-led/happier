@@ -179,6 +179,21 @@ describe('Antigravity localharness native session runtime', () => {
     expect(deps.client.sent).toContainEqual(WEBSOCKET_FIXTURE.cancel);
   });
 
+  it.each([
+    ['a stale turn id while a different localharness turn is active', true],
+    ['a turn id when no localharness turn is active', false],
+  ] as const)('does not cancel %s', async (_description, withActiveTurn) => {
+    const deps = createDeps();
+    const runtime = createAntigravityLocalharnessSessionRuntime(deps);
+    if (withActiveTurn) await runtime.send(sendRequest());
+
+    await expect(runtime.cancel?.({ turnId: 'turn-stale', reason: 'user' })).resolves.toEqual({
+      status: 'notRunning',
+    });
+
+    expect(deps.client.sent).not.toContainEqual(WEBSOCKET_FIXTURE.cancel);
+  });
+
   it('maps sidecar exit during an active turn to a native failure', async () => {
     const deps = createDeps();
     const runtime = createAntigravityLocalharnessSessionRuntime(deps);

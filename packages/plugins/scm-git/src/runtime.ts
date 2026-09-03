@@ -38,6 +38,7 @@ export function runScmCommand(input: {
   stdin?: string;
   maxOutputBytes?: number;
   env?: Record<string, string | undefined>;
+  signal?: AbortSignal;
 }): Promise<ScmExecResult> {
   return runScmBackendCommand({
     installableKey: GIT_INSTALLABLE_DEP_ID,
@@ -52,6 +53,7 @@ export function runScmCommand(input: {
       ...(input.env ?? {}),
       GIT_ALLOW_PROTOCOL: SAFE_GIT_ALLOW_PROTOCOL,
     },
+    signal: input.signal,
   });
 }
 

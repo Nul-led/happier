@@ -414,6 +414,50 @@ describe('createCodexNativeAppServerSessionRuntime', () => {
     });
   });
 
+  it('cancels only the exact tracked native turn and reports notRunning for any other turn', async () => {
+    const appServer = createAppServerSession();
+    const appServerCancel = vi.fn(async (expectedTurnId: string | undefined) => {
+      appServer.publish({
+        kind: 'turn-cancelled',
+        sessionId: 'session-1',
+        emittedAtMs: 30,
+        turnId: expectedTurnId ?? 'turn-1',
+        reason: 'user',
+      });
+      return { status: 'cancelled' as const };
+    });
+    const runtime = createCodexNativeAppServerSessionRuntime(
+      { ...appServer.runtime, cancel: appServerCancel },
+      'session-1',
+    );
+    runtime.watch(() => undefined);
+
+    await expect(runtime.send({
+      inputIds: ['input-1'],
+      input: { text: 'active turn' },
+      delivery: { kind: 'newTurn', turnId: 'turn-1' },
+    })).resolves.toEqual({ status: 'admitted' });
+
+    await expect(runtime.cancel?.({ turnId: 'turn-stale', reason: 'user' })).resolves.toEqual({
+      status: 'notRunning',
+    });
+    expect(appServerCancel).not.toHaveBeenCalled();
+
+    await expect(runtime.cancel?.({ turnId: 'turn-1', reason: 'user' })).resolves.toEqual({
+      status: 'requested',
+      turnId: 'turn-1',
+    });
+    expect(appServerCancel).toHaveBeenCalledTimes(1);
+    expect(appServerCancel).toHaveBeenCalledWith('turn-1');
+
+    await expect(runtime.cancel?.({ turnId: 'turn-1', reason: 'user' })).resolves.toEqual({
+      status: 'notRunning',
+    });
+    expect(appServerCancel).toHaveBeenCalledTimes(1);
+
+    await runtime.dispose();
+  });
+
   it('projects app-server usage as the canonical native usage observation', () => {
     const appServer = createAppServerSession();
     const runtime = createCodexNativeAppServerSessionRuntime(appServer.runtime, 'session-1');

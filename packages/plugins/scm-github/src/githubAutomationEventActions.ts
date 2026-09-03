@@ -4,6 +4,7 @@ import type {
   PluginActionResultById,
 } from '@happier-dev/plugin-sdk/actions';
 import {
+  isAutomationEventSourcesListPageProgressingV1,
   PluginEventAutomationHistoryGapResetActionInputV1Schema,
   PluginEventAutomationHistoryGapResetActionResultV1Schema,
   PluginEventAutomationSetupResultV1Schema,
@@ -90,7 +91,7 @@ async function readCurrentHistoryGapResetSource(input: Readonly<{
     input.context.signal.throwIfAborted();
     if (result.kind !== 'page'
       || (revision !== null && result.revision !== revision)
-      || (result.nextCursor !== null && result.definitions.length === 0)) {
+      || !isAutomationEventSourcesListPageProgressingV1(result)) {
       return null;
     }
     revision ??= result.revision;

@@ -320,12 +320,13 @@ export const CODEX_PLUGIN = definePlugin({
       factory: createCodexAgentRuntime,
       connectedAccountLaunch: {
         switchContinuity: {
-          continuityMode: 'restart_shared_state_required',
-          supportedTransitions: ['same_connected_group'],
-          providerStateSharingRequired: {
-            serviceIds: ['openai-codex'],
-            supportedTransitions: ['native_to_connected', 'connected_to_native', 'connected_to_connected'],
-          },
+          continuityMode: 'hot_apply',
+          supportedTransitions: [
+            'native_to_connected',
+            'connected_to_native',
+            'connected_to_connected',
+            'same_connected_group',
+          ],
         },
         stateSharingDescriptor: {
           ...CODEX_STATE_SHARING_DECLARATION,

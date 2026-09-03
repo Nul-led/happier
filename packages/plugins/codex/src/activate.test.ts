@@ -239,6 +239,15 @@ describe('activate', () => {
     const launch = registrationOptions?.connectedAccountLaunch;
 
     expect(launch).toMatchObject({
+      switchContinuity: {
+        continuityMode: 'hot_apply',
+        supportedTransitions: [
+          'native_to_connected',
+          'connected_to_native',
+          'connected_to_connected',
+          'same_connected_group',
+        ],
+      },
       stateSharingDescriptor: {
         nativeHome: {
           environmentKey: 'CODEX_HOME',
@@ -287,7 +296,7 @@ describe('activate', () => {
         }],
       },
     });
-    expect(launch?.continuity).toEqual({
+    expect(launch?.continuity).toMatchObject({
       runtimeAuthAdapter: expect.objectContaining({
         classifyRuntimeAuthFailure: expect.any(Function),
         materializeActiveProfile: expect.any(Function),

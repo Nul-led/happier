@@ -3,6 +3,8 @@ import {
   type ScmOperationErrorCode,
 } from '@happier-dev/plugin-sdk/scm';
 
+import { describeGithubRateLimitFailure } from '../observations/githubResponseFailure.js';
+
 export class GithubPullRequestAdapterError extends Error {
   readonly errorCode: ScmOperationErrorCode;
 
@@ -23,6 +25,21 @@ export function createGithubNotFoundError(message = 'GitHub pull request resourc
 
 export function createGithubCommandFailedError(message = 'GitHub pull request operation failed'): GithubPullRequestAdapterError {
   return new GithubPullRequestAdapterError(message, SCM_OPERATION_ERROR_CODES.COMMAND_FAILED);
+}
+
+/**
+ * A GitHub throttle is a temporarily unavailable backend, never a credential the
+ * owner must repair. `isGithubAuthRequiredError` drives reconnect affordances, so
+ * classifying a throttle as authentication sends the owner to fix an account that
+ * works and hides the retry instruction GitHub actually supplied.
+ */
+export function createGithubRateLimitedError(
+  retryNotBeforeMs: number | undefined,
+): GithubPullRequestAdapterError {
+  return new GithubPullRequestAdapterError(
+    describeGithubRateLimitFailure(retryNotBeforeMs),
+    SCM_OPERATION_ERROR_CODES.BACKEND_UNAVAILABLE,
+  );
 }
 
 export function createGithubUnsupportedError(message = 'GitHub pull request operation is unsupported'): GithubPullRequestAdapterError {

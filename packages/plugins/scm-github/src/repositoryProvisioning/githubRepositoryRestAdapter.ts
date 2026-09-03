@@ -18,12 +18,18 @@ import type {
 import { requestForgeJson as requestScmForgeJson } from '@happier-dev/plugin-sdk/scm/hosting';
 
 import { GITHUB_API_VERSION } from '../observations/githubProviderContracts.js';
+import { readGithubDecodedResponseFacts } from '../observations/githubApiClient.js';
+import {
+  classifyGithubResponseFacts,
+  isGithubInaccessibleResourceFailure,
+} from '../observations/githubResponseFailure.js';
 
 import {
   createGithubRepositoryAlreadyExistsError,
   createGithubRepositoryAuthRequiredError,
   createGithubRepositoryCommandFailedError,
   createGithubRepositoryNotFoundError,
+  createGithubRepositoryRateLimitedError,
   createGithubRepositoryRemoteRejectedError,
   isGithubRepositoryNotFoundError,
 } from './githubRepositoryErrors.js';
@@ -107,20 +113,40 @@ function repoPath(input: Readonly<{ owner: string; repositoryName: string }>): s
   return `${encodePathSegment(input.owner)}/${encodePathSegment(input.repositoryName)}`;
 }
 
+/**
+ * Names the shared GitHub classifier's answer in the SCM operation vocabulary.
+ * The ladder itself lives with the other GitHub consumers: restating it here is
+ * how a throttled `403` came to be reported as a permanent remote rejection with
+ * no retry instruction, even though GitHub had said exactly when to come back.
+ */
 function mapGithubRepositoryRestError(context: ScmForgeHttpErrorContext): Error {
-  if (context.status === 401) {
-    throw createGithubRepositoryAuthRequiredError('GitHub REST authentication failed');
-  }
-  if (context.status === 403) {
-    throw createGithubRepositoryRemoteRejectedError('GitHub REST request was forbidden');
-  }
-  if (context.status === 404) {
-    throw createGithubRepositoryNotFoundError();
-  }
-  if (context.status === 422) {
-    if (isAlreadyExistsValidationError(context.body)) {
-      throw createGithubRepositoryAlreadyExistsError();
-    }
+  const failure = classifyGithubResponseFacts(
+    readGithubDecodedResponseFacts({
+      status: context.status,
+      headers: context.response.headers,
+      body: context.body,
+    }),
+    Date.now(),
+  );
+  switch (failure.class) {
+    case 'rateLimit':
+      throw createGithubRepositoryRateLimitedError(failure.retryNotBeforeMs);
+    case 'authentication':
+      throw createGithubRepositoryAuthRequiredError('GitHub REST authentication failed');
+    case 'permission':
+      throw createGithubRepositoryRemoteRejectedError('GitHub REST request was forbidden');
+    case 'unsupportedContract':
+      if (isAlreadyExistsValidationError(context.body)) {
+        throw createGithubRepositoryAlreadyExistsError();
+      }
+      break;
+    default:
+      // GitHub answered about this exact repository: deleted, renamed, or masked
+      // by a credential that cannot see it. Retrying cannot change the answer.
+      if (isGithubInaccessibleResourceFailure(failure)) {
+        throw createGithubRepositoryNotFoundError();
+      }
+      break;
   }
   throw createGithubRepositoryCommandFailedError(`GitHub REST request failed with status ${context.status || context.statusText}`);
 }

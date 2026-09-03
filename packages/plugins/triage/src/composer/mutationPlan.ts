@@ -21,6 +21,7 @@ import {
     deriveTriageComposerEntryAttachmentKey,
     parseTriageComposerEntryAttachmentValue,
 } from './attachmentValue.js';
+import { boundTriageDisplayText } from '../ui/window/boundDisplayText.js';
 
 /**
  * The exact content of one Triage attach or remove (`core/COMPOSER.md` §3).
@@ -138,18 +139,6 @@ export function planTriageTierBEvidenceInsertion(
 }
 
 /**
- * Shorten one display string to a code-point ceiling without splitting a
- * surrogate pair or leaving the surrounding whitespace the schema rejects.
- */
-function boundDisplayText(value: string, maxCodePoints: number): string {
-    const trimmed = value.trim();
-    const codePoints = Array.from(trimmed);
-    if (codePoints.length <= maxCodePoints) return trimmed;
-    const kept = codePoints.slice(0, maxCodePoints - 1).join('').trimEnd();
-    return `${kept}…`;
-}
-
-/**
  * The bounded immutable fallback one entry contributes to a draft.
  *
  * A source title is bounded by the source ABI while a composer attachment
@@ -163,8 +152,8 @@ export function buildTriageEntryAttachmentPresentation(input: Readonly<{
     scopeLabel: string;
 }>): ComposerAttachmentAuthorPresentationV1 {
     return {
-        label: boundDisplayText(input.title, MAX_COMPOSER_ATTACHMENT_LABEL_CODE_POINTS_V1),
-        description: boundDisplayText(input.scopeLabel, MAX_COMPOSER_ATTACHMENT_DESCRIPTION_CODE_POINTS_V1),
+        label: boundTriageDisplayText(input.title, MAX_COMPOSER_ATTACHMENT_LABEL_CODE_POINTS_V1),
+        description: boundTriageDisplayText(input.scopeLabel, MAX_COMPOSER_ATTACHMENT_DESCRIPTION_CODE_POINTS_V1),
     };
 }
 

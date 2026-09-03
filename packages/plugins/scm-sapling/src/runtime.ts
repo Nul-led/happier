@@ -36,6 +36,7 @@ export function runSaplingCommand(input: Readonly<{
     timeoutMs?: number;
     stdin?: string;
     maxOutputBytes?: number;
+    signal?: AbortSignal;
 }>): Promise<SaplingExecResult> {
     return runScmBackendCommand({
         installableKey: SAPLING_INSTALLABLE_DEP_ID,
@@ -46,6 +47,7 @@ export function runSaplingCommand(input: Readonly<{
         timeoutMs: input.timeoutMs,
         stdin: input.stdin,
         maxOutputBytes: resolveMaxOutputBytes(input.maxOutputBytes),
+        signal: input.signal,
     });
 }
 

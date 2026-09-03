@@ -104,7 +104,6 @@ describe('Codex runtime auth adapter', () => {
     }));
     const selection = {
       applyReason: 'usage_limit',
-      requireDirectLiveHotApply: true,
       groupId: 'team',
       activeProfileId: 'work',
       fallbackProfileId: 'backup',
@@ -208,7 +207,6 @@ describe('Codex runtime auth adapter', () => {
   it('suppresses transport recycle when direct live hot apply is required', async () => {
     const adapter = createCodexConnectedServiceRuntimeAuthAdapter();
     const selection = {
-      requireDirectLiveHotApply: true,
     };
 
     expect(adapter.canHotApply({

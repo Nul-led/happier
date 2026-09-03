@@ -3,6 +3,8 @@ import {
   type ScmOperationErrorCode,
 } from '@happier-dev/plugin-sdk/scm';
 
+import { describeGithubRateLimitFailure } from '../observations/githubResponseFailure.js';
+
 export class GithubRepositoryProvisioningError extends Error {
   readonly errorCode: ScmOperationErrorCode;
 
@@ -41,6 +43,20 @@ export function createGithubRepositoryAlreadyExistsError(
   message = 'GitHub repository already exists',
 ): GithubRepositoryProvisioningError {
   return new GithubRepositoryProvisioningError(message, SCM_OPERATION_ERROR_CODES.REMOTE_ALREADY_EXISTS);
+}
+
+/**
+ * A GitHub throttle is a temporarily unavailable backend, never a credential the
+ * owner must repair: `REMOTE_AUTH_REQUIRED` or `REMOTE_REJECTED` would tell them
+ * to reconnect or give up on an account and a request that are both fine.
+ */
+export function createGithubRepositoryRateLimitedError(
+  retryNotBeforeMs: number | undefined,
+): GithubRepositoryProvisioningError {
+  return new GithubRepositoryProvisioningError(
+    describeGithubRateLimitFailure(retryNotBeforeMs),
+    SCM_OPERATION_ERROR_CODES.BACKEND_UNAVAILABLE,
+  );
 }
 
 export function createGithubRepositoryUnsupportedError(

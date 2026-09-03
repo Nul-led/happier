@@ -14,12 +14,17 @@ const enterpriseProvider: ScmHostingProviderRef = {
   baseUrl: 'https://ghe.internal.test',
 };
 
-function jsonResponse(body: unknown, init?: Readonly<{ status?: number; statusText?: string }>) {
+function jsonResponse(body: unknown, init?: Readonly<{
+  status?: number;
+  statusText?: string;
+  headers?: Readonly<Record<string, string>>;
+}>) {
   const status = init?.status ?? 200;
   return {
     ok: status >= 200 && status < 300,
     status,
     statusText: init?.statusText ?? 'OK',
+    ...(init?.headers ? { headers: new Headers(init.headers) } : {}),
     json: async () => body,
     text: async () => JSON.stringify(body),
   };
@@ -288,5 +293,75 @@ describe('GitHub REST repository provisioning adapter', () => {
     })).rejects.toMatchObject({
       errorCode: 'COMMAND_FAILED',
     });
+  });
+
+  it('classifies a throttled GitHub 403 as a retryable backend limit, not a remote rejection', async () => {
+    const mod = await import('./githubRepositoryRestAdapter.js').catch(() => null);
+    expect(mod).not.toBeNull();
+    if (!mod) return;
+
+    const adapter = mod.createGithubRepositoryRestAdapter({
+      resolveToken: async () => ({ kind: 'available', token: 'redacted-test-token' }),
+      fetcher: async () => jsonResponse({ message: 'API rate limit exceeded for user ID 1.' }, {
+        status: 403,
+        statusText: 'Forbidden',
+        headers: {
+          'X-RateLimit-Remaining': '0',
+          'X-RateLimit-Reset': '1700000000',
+        },
+      }),
+    });
+
+    await expect(adapter.createRepository({
+      provider: githubProvider,
+      owner: 'happier-dev',
+      ownerKind: 'org',
+      repositoryName: 'happier',
+      visibility: 'private',
+    })).rejects.toMatchObject({
+      errorCode: 'BACKEND_UNAVAILABLE',
+    });
+  });
+
+  it('classifies a secondary-limit GitHub 403 with a Retry-After instruction as a backend limit', async () => {
+    const mod = await import('./githubRepositoryRestAdapter.js').catch(() => null);
+    expect(mod).not.toBeNull();
+    if (!mod) return;
+
+    const adapter = mod.createGithubRepositoryRestAdapter({
+      resolveToken: async () => ({ kind: 'available', token: 'redacted-test-token' }),
+      fetcher: async () => jsonResponse({
+        message: 'You have exceeded a secondary rate limit. Please wait a few minutes before you try again.',
+      }, {
+        status: 403,
+        statusText: 'Forbidden',
+        headers: { 'Retry-After': '60' },
+      }),
+    });
+
+    await expect(adapter.getRepository({
+      provider: githubProvider,
+      owner: 'happier-dev',
+      repositoryName: 'happier',
+    })).rejects.toMatchObject({
+      errorCode: 'BACKEND_UNAVAILABLE',
+    });
+  });
+
+  it('treats a GitHub 410 as an unreachable repository rather than a generic command failure', async () => {
+    const mod = await import('./githubRepositoryRestAdapter.js').catch(() => null);
+    expect(mod).not.toBeNull();
+    if (!mod) return;
+
+    const adapter = mod.createGithubRepositoryRestAdapter({
+      resolveToken: async () => ({ kind: 'available', token: 'redacted-test-token' }),
+      fetcher: async () => jsonResponse({ message: 'gone' }, { status: 410, statusText: 'Gone' }),
+    });
+
+    await expect(adapter.getRepository({
+      provider: githubProvider,
+      owner: 'happier-dev',
+      repositoryName: 'retired',
+    })).resolves.toBeNull();
   });
 });

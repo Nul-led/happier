@@ -1,0 +1,263 @@
+import type { PluginInvocationContext } from '@happier-dev/plugin-sdk';
+import type { PluginAccountCollectionDefinition } from '@happier-dev/plugin-sdk/collections';
+import { PluginSearchResultV1Schema } from '@happier-dev/protocol';
+import {
+    TRIAGE_SOURCES_CONTRIBUTION_PROTOCOL_ID_V1,
+    TRIAGE_SOURCES_CONTRIBUTION_PROTOCOL_VERSION_V1,
+    TriageConfiguredSourceInstanceV1Schema,
+    type TriageScanResultV1,
+} from '@happier-dev/triage-protocol/v1';
+import { describe, expect, it } from 'vitest';
+
+import { CORPUS_SOURCE_INSTANCES_COLLECTION_ID, CORPUS_SOURCE_INSTANCE_LIFECYCLE } from '../corpus/collections/ids.js';
+import { toCorpusStoredValue } from '../corpus/collections/rowCodec.js';
+import { createTestkitCorpusCollections } from '../corpus/testkit/corpusCollections.test-support.js';
+import { testkitLocator, testkitSnapshot, testkitViewer } from '../corpus/testkit/observations.test-support.js';
+import { parseTriageEntryDetailLaunchInput } from '../composer/entryDetailLaunchInput.js';
+import { TRIAGE_APP_PAGE_LOCAL_ID_V1 } from '../composer/openEntryDetails.js';
+import { createTriageSearchEntriesActionHandler } from './searchEntries.js';
+import type { TriageAdmittedSourceV1 } from './listEntries.js';
+
+/**
+ * The first real producer of `contributes.searchProviders`.
+ *
+ * It proves the whole vertical from the plugin's side: the declared query
+ * Action answers the canonical `{ query, limit }` input with rows that satisfy
+ * the canonical result schema, the rows come from the SAME canonical matcher
+ * the list and Composer picker use, and each row's activation is the incumbent
+ * open owner's exact launch input rather than a route the host would have to
+ * understand.
+ */
+
+const SOURCE = Object.freeze({ pluginId: 'happier.example.source', localId: 'example-forge' });
+const INSTANCE_ID = '11111111-1111-4111-8111-111111111111';
+
+function createContext(snapshots: readonly Readonly<{
+    entryId: string;
+    title: string;
+    collisionScope?: string;
+    scopeLabel?: string;
+    present?: boolean;
+}>[]): PluginInvocationContext {
+    const { collections, control } = createTestkitCorpusCollections();
+    control.sourceInstances.seed(toCorpusStoredValue({
+        instanceTag: `a${'0'.repeat(42)}`,
+        sourceQualifiedId: `${SOURCE.pluginId}/${SOURCE.localId}`,
+        lifecycle: CORPUS_SOURCE_INSTANCE_LIFECYCLE.active,
+        configuredAtMs: 1,
+        configured: TriageConfiguredSourceInstanceV1Schema.parse({
+            v: 1,
+            instance: { source: SOURCE, sourceInstanceId: INSTANCE_ID },
+            binding: {
+                purpose: 'triage-source',
+                account: { service: { pluginId: SOURCE.pluginId, localId: 'accounts' }, accountId: 'account-1' },
+            },
+            localInstanceKey: 'example/repository',
+            configuration: { v: 1, token: 'routing-token' },
+        }),
+    }));
+
+    const admitted = [{
+        contributor: {
+            pluginId: SOURCE.pluginId,
+            contributionId: SOURCE.localId,
+            immutableGenerationId: 'generation-1',
+        },
+        protocol: {
+            id: TRIAGE_SOURCES_CONTRIBUTION_PROTOCOL_ID_V1,
+            version: TRIAGE_SOURCES_CONTRIBUTION_PROTOCOL_VERSION_V1,
+        },
+        descriptor: {
+            v: 1,
+            purpose: 'triage-source',
+            displayName: 'Example forge',
+            kinds: [{ id: 'pull-request', workflowSubject: 'pullRequest', displayName: 'Pull request' }],
+        },
+        operations: { listInstances: {}, scan: { role: 'scan' }, get: {} },
+        surfaces: { detail: {} },
+    } as unknown as TriageAdmittedSourceV1];
+
+    return {
+        signal: new AbortController().signal,
+        services: {
+            storage: {
+                account: {
+                    collection: (definition: PluginAccountCollectionDefinition) => (
+                        definition.id === CORPUS_SOURCE_INSTANCES_COLLECTION_ID
+                            ? collections.sourceInstances
+                            : collections.userMarks
+                    ),
+                },
+            },
+            targetedContributions: {
+                observeForSelf: () => ({
+                    readCurrent: async () => ({ generation: 'generation-1', contributions: admitted }),
+                    dispose: () => {},
+                }),
+            },
+            actions: {
+                // The source honours the page limit it is asked for, the way a
+                // real one must: a page larger than requested breaks the scan
+                // contract and the lane is refused, not silently truncated.
+                executeAdmittedTargetedOperation: async (
+                    _operation: unknown,
+                    scanInput: { page: { kind: string; limit?: number } },
+                ): Promise<TriageScanResultV1> => {
+                    const pageLimit = scanInput.page.kind === 'initial'
+                        ? scanInput.page.limit ?? snapshots.length
+                        : snapshots.length;
+                    const page = snapshots.slice(0, pageLimit);
+                    return {
+                        kind: 'complete',
+                        observations: page.map((entry) => {
+                            const localRef = {
+                                kindId: 'pull-request',
+                                collisionScope: entry.collisionScope ?? 'example/repository',
+                                entryId: entry.entryId,
+                            };
+                            return entry.present === false
+                                ? { kind: 'absent' as const, localRef }
+                                : {
+                                    kind: 'present' as const,
+                                    localRef,
+                                    locator: testkitLocator(),
+                                    snapshot: testkitSnapshot({
+                                        title: entry.title,
+                                        ...(entry.scopeLabel === undefined ? {} : { scopeLabel: entry.scopeLabel }),
+                                    }),
+                                    viewer: testkitViewer(),
+                                };
+                        }),
+                        // A source that stopped at the page bound has NOT walked
+                        // to the end, and saying otherwise here would let the
+                        // window claim a coverage the reader does not have.
+                        evidence: page.length === snapshots.length
+                            ? { kind: 'walkFinished' }
+                            : { kind: 'partial', reason: 'page-bound' },
+                    };
+                },
+            },
+        },
+    } as unknown as PluginInvocationContext;
+}
+
+describe('the Triage universal-search query Action', () => {
+    it('answers the canonical search contract from the one canonical matcher', async () => {
+        const context = createContext([
+            { entryId: '17', title: 'Fix the transcript crash' },
+            { entryId: '18', title: 'Document the release flow' },
+        ]);
+
+        const result = await createTriageSearchEntriesActionHandler()({
+            query: 'crash',
+            limit: 8,
+        }, context);
+
+        // The universal boundary parses this exact value, so the handler's own
+        // answer has to satisfy it here.
+        expect(PluginSearchResultV1Schema.safeParse(result).success).toBe(true);
+        // One matcher: the entry whose title the reader typed part of, and only
+        // that one — no second narrowing rule in the search path.
+        expect(result.items.map((item) => item.title)).toEqual(['Fix the transcript crash']);
+        expect(result.truncated).toBe(false);
+    });
+
+    it('activates through the incumbent open owner, carrying its exact launch input', async () => {
+        const context = createContext([{ entryId: '17', title: 'Fix the transcript crash' }]);
+
+        const result = await createTriageSearchEntriesActionHandler()({
+            query: 'crash',
+            limit: 8,
+        }, context);
+
+        const command = result.items[0]!.command;
+        expect(command.kind).toBe('openSurface');
+        if (command.kind !== 'openSurface') throw new Error('unreachable');
+        // The one Triage destination, spelled as a same-plugin local id that the
+        // host qualifies. No route, URL or callback crosses the wire.
+        expect(command.destination).toBe(TRIAGE_APP_PAGE_LOCAL_ID_V1);
+        // Admitted by the SAME parser `openTriageEntryDetails` uses.
+        const parsed = parseTriageEntryDetailLaunchInput(command.input);
+        expect(parsed.status).toBe('valid');
+        if (parsed.status !== 'valid') throw new Error('unreachable');
+        expect(parsed.input.entryRef.entryId).toBe('17');
+        expect(parsed.input.sourceInstance.sourceInstanceId).toBe(INSTANCE_ID);
+    });
+
+    it('reports a bounded answer as bounded rather than complete', async () => {
+        const context = createContext([
+            { entryId: '17', title: 'Crash one' },
+            { entryId: '18', title: 'Crash two' },
+            { entryId: '19', title: 'Crash three' },
+        ]);
+
+        const result = await createTriageSearchEntriesActionHandler()({
+            query: 'crash',
+            limit: 1,
+        }, context);
+
+        expect(result.items).toHaveLength(1);
+        expect(result.truncated).toBe(true);
+    });
+
+    it('derives a fixed full digest id and code-point-safe bounded display for a maximum-sized entry', async () => {
+        const context = createContext([
+            {
+                entryId: 'e'.repeat(128),
+                collisionScope: 's'.repeat(192),
+                title: 'needle identity',
+            },
+            {
+                entryId: 'display-entry',
+                title: `needle ${'😀'.repeat(100)}${'a'.repeat(100)}`,
+                scopeLabel: `scope ${'z'.repeat(300)}`,
+            },
+        ]);
+
+        const result = await createTriageSearchEntriesActionHandler()({
+            query: 'needle',
+            limit: 8,
+        }, context);
+
+        expect(result.items).toHaveLength(2);
+        expect(result.items.map((item) => item.id)).toEqual([
+            expect.stringMatching(/^[A-Za-z0-9_-]{43}$/),
+            expect.stringMatching(/^[A-Za-z0-9_-]{43}$/),
+        ]);
+        expect(new Set(result.items.map((item) => item.id))).toHaveProperty('size', 2);
+        const displayItem = result.items.find((item) => item.title.includes('😀'))!;
+        expect(Array.from(displayItem.title)).toHaveLength(128);
+        expect(displayItem.title.endsWith('…')).toBe(true);
+        expect(Array.from(displayItem.subtitle ?? '')).toHaveLength(256);
+        expect(displayItem.subtitle?.endsWith('…')).toBe(true);
+        expect(PluginSearchResultV1Schema.safeParse(result).success).toBe(true);
+        expect(result.truncated).toBe(false);
+    });
+
+    it('does not call a complete window truncated merely because an unopenable row is omitted', async () => {
+        const context = createContext([{
+            entryId: 'unopenable-entry',
+            title: 'unused',
+            present: false,
+        }]);
+
+        const result = await createTriageSearchEntriesActionHandler()({
+            query: 'unopenable-entry',
+            limit: 8,
+        }, context);
+
+        expect(result.items).toEqual([]);
+        expect(result.truncated).toBe(false);
+    });
+
+    it('returns no rows for a query nothing matches', async () => {
+        const context = createContext([{ entryId: '17', title: 'Fix the transcript crash' }]);
+
+        const result = await createTriageSearchEntriesActionHandler()({
+            query: 'nothing-matches-this',
+            limit: 8,
+        }, context);
+
+        expect(result.items).toEqual([]);
+    });
+});

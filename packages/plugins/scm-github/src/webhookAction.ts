@@ -7,7 +7,7 @@ import {
 } from '@happier-dev/plugin-sdk/webhooks';
 import type { PluginInvocationContext } from '@happier-dev/plugin-sdk';
 import type { PluginActionInputById, PluginActionResultById } from '@happier-dev/plugin-sdk/actions';
-import { projectPluginEventAdmissionSourceStatusV1 } from '@happier-dev/plugin-sdk/events';
+import { isAutomationEventSourcesListPageProgressingV1, projectPluginEventAdmissionSourceStatusV1 } from '@happier-dev/plugin-sdk/events';
 
 import {
   normalizeGithubWebhookDelivery,
@@ -112,7 +112,7 @@ async function readCurrentAutomationSources(
     }
     if (
       (revision !== null && revision !== result.revision)
-      || (result.nextCursor !== null && result.definitions.length === 0)
+      || !isAutomationEventSourcesListPageProgressingV1(result)
     ) {
       throw new Error('github_automation_source_page_invalid');
     }
@@ -307,6 +307,11 @@ async function handleGithubWebhookActionV1(
       eventType: input.verified.eventType,
       providerDeliveryId: input.delivery.providerDeliveryId,
       receivedAtMs: input.delivery.receivedAtMs,
+      // This route's only consumer is the Automation Event arm; no Channels or
+      // triage owner reads normalized issue comments here. Bypassing the
+      // dormant issue-comment parser keeps an otherwise-unconsumable comment
+      // body from dead-lettering a delivery that settles as ignored below.
+      consumesIssueComments: false,
     });
     context.signal.throwIfAborted();
   } catch (error) {

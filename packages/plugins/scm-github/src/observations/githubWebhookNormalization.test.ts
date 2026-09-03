@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  GithubWebhookPayloadError,
   normalizeGithubWebhookDelivery,
 } from './githubWebhookNormalization.js';
 
@@ -277,6 +278,56 @@ describe('GitHub webhook normalization', () => {
 
     expect(organizationComment.comment?.actor.kind).toBe('unsupported');
     expect(missingTypeComment.comment?.actor.kind).toBe('unsupported');
+  });
+
+  it('bypasses the dormant issue-comment deep parse for a route with no comment consumer', () => {
+    const malformedCommentBody = JSON.stringify({
+      action: 'created',
+      repository: { id: 77, full_name: 'acme/widgets' },
+      issue: { id: 300, number: 12 },
+      comment: { id: 'not-a-positive-integer' },
+    });
+
+    // The webhook route settles a comment delivery as ignored because no
+    // consumer exists, so a comment body it can never consume must not
+    // dead-letter the delivery through a deep parse it never needed.
+    const normalized = normalizeGithubWebhookDelivery({
+      rawBody: new TextEncoder().encode(malformedCommentBody),
+      eventType: 'issue_comment',
+      providerDeliveryId: 'delivery-no-consumer',
+      receivedAtMs: defaultReceivedAtMs,
+      consumesIssueComments: false,
+    });
+    expect(normalized).toEqual({
+      providerDeliveryId: 'delivery-no-consumer',
+      eventType: 'issue_comment',
+      comment: null,
+      automationEvent: null,
+    });
+  });
+
+  it('keeps the strict issue-comment parse for consumer routes and by default', () => {
+    const malformedCommentBody = JSON.stringify({
+      action: 'created',
+      repository: { id: 77, full_name: 'acme/widgets' },
+      issue: { id: 300, number: 12 },
+      comment: { id: 'not-a-positive-integer' },
+    });
+    const rawBody = new TextEncoder().encode(malformedCommentBody);
+
+    expect(() => normalizeGithubWebhookDelivery({
+      rawBody,
+      eventType: 'issue_comment',
+      providerDeliveryId: 'delivery-consumer',
+      receivedAtMs: defaultReceivedAtMs,
+      consumesIssueComments: true,
+    })).toThrow(GithubWebhookPayloadError);
+    expect(() => normalizeGithubWebhookDelivery({
+      rawBody,
+      eventType: 'issue_comment',
+      providerDeliveryId: 'delivery-default',
+      receivedAtMs: defaultReceivedAtMs,
+    })).toThrow(GithubWebhookPayloadError);
   });
 
 });

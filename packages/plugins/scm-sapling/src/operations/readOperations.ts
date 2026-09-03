@@ -100,36 +100,112 @@ export async function saplingDiffCommit(input: {
         };
 }
 
+/**
+ * A query that only names hexadecimal characters in this range is treated as an abbreviated
+ * SHA on top of the keyword arm. Anything else can only be a text match and must never reach
+ * sapling as a revision argument.
+ */
+const SAPLING_SHA_LIKE_QUERY_PATTERN = /^[0-9a-f]{7,40}$/i;
+
+const SAPLING_LOG_TEMPLATE = '{node}\\0{node|short}\\0{author|person}\\0{author|email}\\0{date|hgdate}\\0{desc|firstline}\\0{desc}\\0';
+
+function isSaplingUnknownRevisionFailure(stderr: string | undefined): boolean {
+    return String(stderr ?? '').toLowerCase().includes('unknown revision');
+}
+
+type SaplingLogMatchArm =
+    | { ok: true; entries: ScmLogEntry[] }
+    | { ok: false; unknownRevision: true }
+    | { ok: false; stderr: string };
+
+async function runSaplingLog(args: string[], cwd: string, signal?: AbortSignal): Promise<SaplingLogMatchArm> {
+    const result = await runScmCommand({ cwd, args, timeoutMs: 15_000, signal });
+    if (!result.success) {
+        return isSaplingUnknownRevisionFailure(result.stderr)
+            ? { ok: false, unknownRevision: true }
+            : { ok: false, stderr: result.stderr || 'Failed to search commits' };
+    }
+    return { ok: true, entries: parseSaplingLogEntries(result.stdout) };
+}
+
+function mergeSaplingLogMatchArms(arms: readonly SaplingLogMatchArm[]): ScmLogEntry[] {
+    const bySha = new Map<string, ScmLogEntry>();
+    for (const arm of arms) {
+        if (!arm.ok) continue;
+        for (const entry of arm.entries) {
+            if (!bySha.has(entry.sha)) {
+                bySha.set(entry.sha, entry);
+            }
+        }
+    }
+    return [...bySha.values()].sort((a, b) => b.timestamp - a.timestamp);
+}
+
 export async function saplingLogList(input: {
     context: ScmBackendContext;
     request: ScmLogListRequest;
+    signal?: AbortSignal;
 }): Promise<ScmLogListResponse> {
     const { context, request } = input;
     const limit = request.limit ?? 50;
     const skip = request.skip ?? 0;
-    const readCount = limit + skip;
-    const log = await runScmCommand({
-        cwd: context.cwd,
-        args: [
-            'log',
-            '--limit',
-            String(readCount),
-            '--template',
-            '{node}\\0{node|short}\\0{author|person}\\0{author|email}\\0{date|hgdate}\\0{desc|firstline}\\0{desc}\\0',
-        ],
-        timeoutMs: 15_000,
-    });
-    if (!log.success) {
+    const query = typeof request.query === 'string' ? request.query.trim() : '';
+
+    if (!query) {
+        const readCount = limit + skip;
+        const log = await runScmCommand({
+            cwd: context.cwd,
+            args: [
+                'log',
+                '--limit',
+                String(readCount),
+                '--template',
+                SAPLING_LOG_TEMPLATE,
+            ],
+            timeoutMs: 15_000,
+            signal: input.signal,
+        });
+        if (!log.success) {
+            return {
+                success: false,
+                errorCode: mapSaplingErrorCode(log.stderr),
+                error: log.stderr || 'Failed to list commits',
+            };
+        }
+
+        const entries = parseSaplingLogEntries(log.stdout).slice(skip, skip + limit);
         return {
-            success: false,
-            errorCode: mapSaplingErrorCode(log.stderr),
-            error: log.stderr || 'Failed to list commits',
+            success: true,
+            entries,
         };
     }
 
-    const entries = parseSaplingLogEntries(log.stdout).slice(skip, skip + limit);
+    // Bounded search over the explicit workspace scope (`context.cwd`). The keyword arm is
+    // sapling's own case-insensitive commit-message/user search, capped at the read bound;
+    // hex-like queries additionally resolve one abbreviated SHA. No all-history walk and no
+    // all-ref fanout — the ref scope stays the checkout's current parent set.
+    const readBound = limit + skip;
+    const arms: Array<Promise<SaplingLogMatchArm>> = [
+        runSaplingLog(['log', '-k', query, '--limit', String(readBound), '--template', SAPLING_LOG_TEMPLATE], context.cwd, input.signal),
+    ];
+    if (SAPLING_SHA_LIKE_QUERY_PATTERN.test(query)) {
+        arms.push(runSaplingLog(['log', '-r', query, '--template', SAPLING_LOG_TEMPLATE], context.cwd, input.signal));
+    }
+
+    const settledArms = await Promise.all(arms);
+
+    const failedArm = settledArms.find((arm): arm is Extract<SaplingLogMatchArm, { ok: false; stderr: string }> => !arm.ok && !('unknownRevision' in arm));
+    if (failedArm) {
+        return {
+            success: false,
+            errorCode: mapSaplingErrorCode(failedArm.stderr),
+            error: failedArm.stderr,
+        };
+    }
+
     return {
         success: true,
-        entries,
+        entries: mergeSaplingLogMatchArms(settledArms).slice(skip, skip + limit),
+        queryApplied: true,
     };
 }

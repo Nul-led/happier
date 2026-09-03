@@ -106,6 +106,13 @@ type PendingPromptAdmission = {
   onAccepted: () => void;
   bufferedRecords: AgentSessionPreAdmissionBuffer<Readonly<Record<string, unknown>>>;
   bufferFailure: Exclude<AgentSessionPreAdmissionBufferResult, { status: 'accepted' }> | null;
+  /**
+   * Cancellation reason once an abort for this exact admission has been
+   * acknowledged while the admission was still awaiting its own prompt
+   * acknowledgement. A late prompt ACK then begins the turn only to settle it
+   * cancelled; `null` leaves the ordinary admission flow untouched.
+   */
+  cancelledReason: PendingCancellation['reason'] | null;
 };
 
 type PendingCancellation = {
@@ -127,10 +134,16 @@ type PiRuntimeTurnOperations = Readonly<{
   steerInFlightTurn(message: string): Promise<void>;
   waitForTurnCompletion(opts?: Readonly<Record<string, unknown>>): Promise<void>;
   subscribeRuntimeEvents(handler: RuntimeEventHandler): () => void;
+  /**
+   * Cancel the exact tracked Pi turn (active or in-flight admission). Returns
+   * `false` without touching the Pi process when `turnId` does not identify
+   * the tracked turn, so a stale or replayed cancel can never abort an
+   * unrelated native turn.
+   */
   cancelTurn(
     turnId: string,
     reason: PendingCancellation['reason'],
-  ): Promise<void>;
+  ): Promise<boolean>;
   readSessionIdentity(): Readonly<{ sessionId: string | null }>;
   updateSessionRuntimeConfig(update: AgentSessionConfigurationSnapshot): Promise<readonly string[]>;
   compactContext(request: AgentSessionCompactRequest): Promise<void>;
@@ -704,12 +717,19 @@ function createRuntimeOperations(params: Readonly<{
         onAccepted,
         bufferedRecords: createAgentSessionPreAdmissionBuffer(),
         bufferFailure: null,
+        cancelledReason: null,
       };
       pendingPromptAdmission = admission;
       const providerNativeCommand = params.isProviderNativeCommand(prompt);
       const accept = () => {
         admission.onAccepted();
         readOrBeginTurn(null, admission.turnId, 'host');
+        // The provider did accept the prompt, so the input stays admitted; the
+        // turn it begins terminalizes cancelled instead of resurrecting an
+        // already aborted admission.
+        if (admission.cancelledReason !== null && activeTurn?.turnId === admission.turnId) {
+          settleTurnCancelled(admission.turnId, admission.cancelledReason);
+        }
       };
       const replayBufferedRecords = () => {
         const records = admission.bufferedRecords.drain();
@@ -795,11 +815,12 @@ function createRuntimeOperations(params: Readonly<{
     subscribeRuntimeEvents(handler: RuntimeEventHandler): () => void {
       return params.subscribeRuntimeEvents(handler);
     },
-    async cancelTurn(turnId, reason): Promise<void> {
+    async cancelTurn(turnId, reason): Promise<boolean> {
       if (pendingCancellation) {
         throw new Error('Pi cancellation is already in progress');
       }
       const cancellation: PendingCancellation | null = activeTurn?.turnId === turnId
+        || pendingPromptAdmission?.turnId === turnId
         ? {
           turnId,
           reason,
@@ -807,15 +828,16 @@ function createRuntimeOperations(params: Readonly<{
           finalBoundaryAgentTurnId: null,
         }
         : null;
+      if (!cancellation) return false;
       pendingCancellation = cancellation;
       try {
         await params.cancelBlockingExtensionUiRequests();
         await params.rpc.send({ type: 'abort' }, 30_000);
       } catch (error) {
         if (pendingCancellation === cancellation) pendingCancellation = null;
-        if (isPiRpcClientDisposedError(error)) return;
+        if (isPiRpcClientDisposedError(error)) return true;
         if (
-          cancellation?.finalBoundaryObserved
+          cancellation.finalBoundaryObserved
           && activeTurn?.turnId === cancellation.turnId
         ) {
           settleTurnComplete(cancellation.finalBoundaryAgentTurnId);
@@ -823,7 +845,19 @@ function createRuntimeOperations(params: Readonly<{
         throw error;
       }
       if (pendingCancellation === cancellation) pendingCancellation = null;
-      if (cancellation) settleTurnCancelled(cancellation.turnId, cancellation.reason);
+      settleTurnCancelled(cancellation.turnId, cancellation.reason);
+      // An abort acknowledged while the exact prompt admission is still awaiting
+      // its own acknowledgement fences that admission: its late prompt ACK may
+      // still arrive, and it must settle the turn cancelled instead of running it.
+      const pendingAdmission = pendingPromptAdmission;
+      if (
+        activeTurn === null
+        && pendingAdmission?.turnId === cancellation.turnId
+        && pendingAdmission.cancelledReason === null
+      ) {
+        pendingAdmission.cancelledReason = cancellation.reason;
+      }
+      return true;
     },
     readSessionIdentity() {
       return { sessionId };
@@ -1031,8 +1065,10 @@ function createPiSessionRuntime(params: Readonly<{
         return { status: 'unavailable', diagnostic: diagnostic('pi_cancel_aborted', 'Pi cancellation was aborted') };
       }
       try {
-        await params.operations.cancelTurn(request.turnId, request.reason);
-        return { status: 'requested', turnId: request.turnId };
+        const cancelled = await params.operations.cancelTurn(request.turnId, request.reason);
+        return cancelled
+          ? { status: 'requested', turnId: request.turnId }
+          : { status: 'notRunning' };
       } catch (error) {
         return {
           status: 'unavailable',

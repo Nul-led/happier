@@ -520,6 +520,34 @@ describe('GitHub webhook Action', () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
+  it('settles an issue-comment delivery the dormant parser would reject instead of dead-lettering it', async () => {
+    const execute = vi.fn();
+    const handler = createGithubWebhookActionHandlerV1();
+    // `comment` carries no timestamps and no actor, so the dormant issue-comment
+    // parser would throw and the handler's catch would dead-letter the delivery.
+    // No route consumes that projection, and twelve retries followed by a dead
+    // letter is the wrong answer for a delivery that settles as ignored.
+    const unparsableComment = new TextEncoder().encode(JSON.stringify({
+      action: 'created',
+      repository: { id: 77, full_name: 'acme/widgets' },
+      issue: { id: 300, number: 12 },
+      comment: { id: 444 },
+    }));
+
+    await expect(handler({
+      ...issueCommentInput,
+      request: {
+        ...issueCommentInput.request,
+        rawBodyBytes: unparsableComment.byteLength,
+        rawBodyBase64: Buffer.from(unparsableComment).toString('base64'),
+      },
+    }, contextWithActions(execute))).resolves.toEqual({
+      kind: 'settled',
+      disposition: 'ignored',
+    });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   it('reports the canonical durable-push source health the pull twin already reports', async () => {
     const reports: unknown[] = [];
     const execute = vi.fn(async (actionId: string, actionInput: unknown) => {

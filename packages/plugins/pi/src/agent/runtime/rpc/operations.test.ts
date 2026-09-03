@@ -1772,14 +1772,160 @@ describe('createPiRuntimeOperations', () => {
   it('treats abort as cancelled when cleanup disposes the Pi RPC client first', async () => {
     const capture: Capture = { specs: [], written: [] };
     const runtime = await createRuntime(capture);
+    const prompt = sendPrompt(runtime, 'cancel while the runtime is disposing');
+    await waitForWrittenCount(capture, 1);
+    await ackLastCommand(capture);
+    await expect(prompt).resolves.toEqual({ status: 'admitted' });
 
     const cancel = runtime.cancel!({ turnId: 'pi-turn-1', reason: 'user' });
-    await waitForWrittenCount(capture, 1);
+    await waitForWrittenCount(capture, 2);
     expect(capture.written.at(-1)).toEqual(expect.objectContaining({ type: 'abort' }));
 
     await runtime.dispose();
 
     await expect(cancel).resolves.toEqual({ status: 'requested', turnId: 'pi-turn-1' });
+  });
+
+  it('reports notRunning without aborting Pi when the requested turn is not the tracked turn', async () => {
+    const capture: Capture = { specs: [], written: [] };
+    const runtime = await createRuntime(capture);
+    const events: AgentSessionRuntimeEvent[] = [];
+    runtime.watch((event) => events.push(AgentSessionRuntimeEventSchema.parse(event)));
+
+    const prompt = sendPrompt(runtime, 'currently active turn');
+    await waitForWrittenCount(capture, 1);
+    await ackLastCommand(capture);
+    await expect(prompt).resolves.toEqual({ status: 'admitted' });
+    await emit(capture, { type: 'turn_start', turnId: 'provider-turn-1' });
+
+    const writesBeforeCancel = capture.written.length;
+    await expect(runtime.cancel!({ turnId: 'pi-turn-stale', reason: 'user' })).resolves.toEqual({
+      status: 'notRunning',
+    });
+
+    expect(capture.written.length).toBe(writesBeforeCancel);
+    expect(capture.written).not.toContainEqual(expect.objectContaining({ type: 'abort' }));
+    expect(events.some((event) => event.kind === 'turn-cancelled')).toBe(false);
+
+    await runtime.dispose();
+  });
+
+  it('reports notRunning without aborting Pi when no turn was ever admitted', async () => {
+    const capture: Capture = { specs: [], written: [] };
+    const runtime = await createRuntime(capture);
+
+    await expect(runtime.cancel!({ turnId: 'pi-turn-1', reason: 'user' })).resolves.toEqual({
+      status: 'notRunning',
+    });
+
+    expect(capture.written).toEqual([]);
+
+    await runtime.dispose();
+  });
+
+  it('aborts an exactly matched in-flight Pi admission and settles its late prompt acknowledgement as cancelled', async () => {
+    const capture: Capture = { specs: [], written: [] };
+    const runtime = await createRuntime(capture);
+    const events: AgentSessionRuntimeEvent[] = [];
+    runtime.watch((event) => events.push(AgentSessionRuntimeEventSchema.parse(event)));
+
+    const prompt = sendPrompt(runtime, 'cancel while the prompt is still in flight');
+    await waitForWrittenCount(capture, 1);
+
+    const cancel = runtime.cancel!({ turnId: 'pi-turn-1', reason: 'user' });
+    await waitForWrittenCount(capture, 2);
+    expect(capture.written.at(-1)).toEqual(expect.objectContaining({ type: 'abort' }));
+    await ackLastCommand(capture);
+    await expect(cancel).resolves.toEqual({ status: 'requested', turnId: 'pi-turn-1' });
+    expect(events.some((event) => (
+      event.kind === 'turn-complete' || event.kind === 'turn-failed' || event.kind === 'turn-cancelled'
+    ))).toBe(false);
+
+    await ackCommandAt(capture, 0);
+    await expect(prompt).resolves.toEqual({ status: 'admitted' });
+    expect(events.map((event) => event.kind)).toEqual([
+      'available-commands',
+      'provider-session-id',
+      'input-accepted',
+      'turn-start',
+      'turn-cancelled',
+    ]);
+    expect(events.at(-1)).toEqual(expect.objectContaining({
+      kind: 'turn-cancelled',
+      sessionId: 'happier-session-1',
+      turnId: 'pi-turn-1',
+      cause: 'user',
+    }));
+
+    const successor = sendPrompt(runtime, 'successor after the cancelled admission', {
+      inputIds: ['pi-input-2'],
+      delivery: { kind: 'newTurn', turnId: 'pi-turn-2' },
+    });
+    await waitForWrittenCount(capture, 3);
+    await ackLastCommand(capture);
+    await expect(successor).resolves.toEqual({ status: 'admitted' });
+    await emit(capture, { type: 'agent_start' });
+    await emit(capture, {
+      type: 'message_update',
+      assistantMessageEvent: { type: 'text_delta', delta: 'successor response' },
+      message: { role: 'assistant', content: [{ type: 'text', text: 'successor response' }] },
+    });
+    await emit(capture, { type: 'agent_end', willRetry: false });
+
+    expect(events.map((event) => event.kind)).toEqual([
+      'available-commands',
+      'provider-session-id',
+      'input-accepted',
+      'turn-start',
+      'turn-cancelled',
+      'input-accepted',
+      'turn-start',
+      'message-delta',
+      'turn-complete',
+    ]);
+    expect(events.filter((event) => (
+      event.kind === 'turn-complete' || event.kind === 'turn-failed' || event.kind === 'turn-cancelled'
+    ))).toEqual([
+      expect.objectContaining({ kind: 'turn-cancelled', turnId: 'pi-turn-1', cause: 'user' }),
+      expect.objectContaining({ kind: 'turn-complete', turnId: 'pi-turn-2' }),
+    ]);
+
+    await runtime.dispose();
+  });
+
+  it('settles a cancelled in-flight admission identically when the prompt ack precedes the abort ack', async () => {
+    const capture: Capture = { specs: [], written: [] };
+    const runtime = await createRuntime(capture);
+    const events: AgentSessionRuntimeEvent[] = [];
+    runtime.watch((event) => events.push(AgentSessionRuntimeEventSchema.parse(event)));
+
+    const prompt = sendPrompt(runtime, 'cancel racing the prompt acknowledgement');
+    await waitForWrittenCount(capture, 1);
+
+    const cancel = runtime.cancel!({ turnId: 'pi-turn-1', reason: 'user' });
+    await waitForWrittenCount(capture, 2);
+    expect(capture.written.at(1)).toEqual(expect.objectContaining({ type: 'abort' }));
+
+    await ackCommandAt(capture, 0);
+    await expect(prompt).resolves.toEqual({ status: 'admitted' });
+    await ackLastCommand(capture);
+    await expect(cancel).resolves.toEqual({ status: 'requested', turnId: 'pi-turn-1' });
+
+    expect(events.map((event) => event.kind)).toEqual([
+      'available-commands',
+      'provider-session-id',
+      'input-accepted',
+      'turn-start',
+      'turn-cancelled',
+    ]);
+    expect(events.at(-1)).toEqual(expect.objectContaining({
+      kind: 'turn-cancelled',
+      sessionId: 'happier-session-1',
+      turnId: 'pi-turn-1',
+      cause: 'user',
+    }));
+
+    await runtime.dispose();
   });
 
   it('terminalizes an acknowledged abort as cancelled once and admits a successor turn', async () => {

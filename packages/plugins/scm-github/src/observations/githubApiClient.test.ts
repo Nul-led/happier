@@ -7,19 +7,23 @@ import {
   createGithubListedAccountApiClient,
   GITHUB_RATE_LIMIT_FALLBACK_MS,
   isGithubRateLimited,
+  readGithubApiResponseFacts,
   readGithubRateLimitRetryAfterMs,
 } from './githubApiClient.js';
 
+// The classifier reads facts, and both carriers project onto them. Going through
+// the `github-api` reader keeps this exercising the real body decode rather than
+// hand-built message arrays.
 function response(input: Readonly<{
   status: number;
   headers?: Readonly<Record<string, string>>;
   body?: unknown;
 }>) {
-  return {
+  return readGithubApiResponseFacts({
     status: input.status,
     headers: input.headers ?? {},
     body: new TextEncoder().encode(JSON.stringify(input.body ?? {})),
-  } as const;
+  });
 }
 
 describe('GitHub API rate-limit classification', () => {

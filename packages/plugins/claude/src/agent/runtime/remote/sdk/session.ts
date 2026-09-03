@@ -1715,6 +1715,9 @@ export function createClaudeAgentSdkTurnOperations(
                         ...(currentEffort ? { effort: currentEffort } : {}),
                         ...(resumeProviderSessionId ? { resume: resumeProviderSessionId } : {}),
                         extraArgs: [
+                            // Execution-run policy remains owned by Happier's admitted mode and
+                            // canCallTool. Pin the Claude process away from any ambient bypass mode.
+                            ...(toolPermissionPolicy ? ['--permission-mode', 'default'] : []),
                             ...(hookPluginDir ? ['--plugin-dir', hookPluginDir, '--include-hook-events'] : []),
                             ...buildClaudeMcpConfigArgs(params.mcpServers),
                         ],

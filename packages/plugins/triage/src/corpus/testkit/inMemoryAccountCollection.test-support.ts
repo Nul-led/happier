@@ -9,6 +9,7 @@ import type {
 } from '@happier-dev/plugin-sdk/collections';
 import {
     derivePluginCollectionIdentityTagV1,
+    resolveEffectivePluginCollectionLimitsV1,
     type AccountScopedCryptoMaterial,
 } from '@happier-dev/protocol';
 
@@ -264,15 +265,12 @@ export function createInMemoryAccountCollection<TDefinition extends PluginAccoun
         },
         async limits() {
             // The corpus never plans multi-batch work, so this boundary reports
-            // the platform's shipped deployment policy unchanged.
-            return {
-                maxRowEncodedBytes: 512 * 1024,
-                maxBatchBytes: 16 * 1024 * 1024,
-                maxBatchRows: 100,
-                maxAccountRows: 10_000,
-                maxAccountBytes: 256 * 1024 * 1024,
-                basis: 'default' as const,
-            };
+            // the canonical effective default policy narrowed by this exact
+            // admitted Collection quota, just like the real host boundary.
+            return resolveEffectivePluginCollectionLimitsV1({
+                deployment: undefined,
+                quota: definition.quota,
+            });
         },
         async measureBatch(operations: readonly PluginCollectionMutation<Readonly<Record<string, JsonValue>>>[]) {
             if (operations.length === 0) {

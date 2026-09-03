@@ -3,6 +3,7 @@ import { readTriageResponseHeaderV1 } from '@happier-dev/triage-protocol/v1';
 import {
   decodeGithubJsonResponse,
   isGithubRateLimited,
+  readGithubApiResponseFacts,
   readGithubRetryAfterMs,
   type GithubApiClientV1,
   type GithubApiResponseV1,
@@ -303,7 +304,7 @@ export async function runGithubTriageScan(
     }
 
     const nowMs = dependencies.now();
-    if (isGithubRateLimited(response)) {
+    if (isGithubRateLimited(readGithubApiResponseFacts(response))) {
       return Object.freeze({
         kind: 'failed',
         failure: classifyGithubResponseFailure(response, nowMs),

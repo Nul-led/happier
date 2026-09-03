@@ -18,12 +18,18 @@ import type {
 import { requestForgeJson as requestScmForgeJson } from '@happier-dev/plugin-sdk/scm/hosting';
 
 import { GITHUB_API_VERSION } from '../observations/githubProviderContracts.js';
+import { readGithubDecodedResponseFacts } from '../observations/githubApiClient.js';
+import {
+  classifyGithubResponseFacts,
+  isGithubInaccessibleResourceFailure,
+} from '../observations/githubResponseFailure.js';
 
 import { resolveGithubCheckoutReferenceFromPullRequest } from './checkoutReference.js';
 import {
   createGithubAuthRequiredError,
   createGithubCommandFailedError,
   createGithubNotFoundError,
+  createGithubRateLimitedError,
 } from './errors.js';
 import { mapGithubPullRequest } from './mapping.js';
 
@@ -190,11 +196,31 @@ async function resolveToken(
   };
 }
 
+/**
+ * Names the shared GitHub classifier's answer in the SCM operation vocabulary.
+ * The ladder itself lives with the other GitHub consumers: restating it here is
+ * how an exhausted rate limit — GitHub's own `403` with `x-ratelimit-remaining:
+ * 0` — came to be reported as a credential failure that sends the owner to
+ * reconnect a working account.
+ */
 function mapGithubRestError(context: ScmForgeHttpErrorContext): Error {
-  if (context.status === 401 || context.status === 403) {
+  const failure = classifyGithubResponseFacts(
+    readGithubDecodedResponseFacts({
+      status: context.status,
+      headers: context.response.headers,
+      body: context.body,
+    }),
+    Date.now(),
+  );
+  if (failure.class === 'rateLimit') {
+    throw createGithubRateLimitedError(failure.retryNotBeforeMs);
+  }
+  // A withheld permission stays an authentication repair here: the owner fixes it
+  // by reconnecting an account whose scopes cover the operation.
+  if (failure.class === 'authentication' || failure.class === 'permission') {
     throw createGithubAuthRequiredError('GitHub REST authentication failed');
   }
-  if (context.status === 404) {
+  if (isGithubInaccessibleResourceFailure(failure)) {
     throw createGithubNotFoundError();
   }
   throw createGithubCommandFailedError(`GitHub REST request failed with status ${context.status || context.statusText}`);

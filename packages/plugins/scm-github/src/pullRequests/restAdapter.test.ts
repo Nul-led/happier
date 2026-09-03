@@ -16,12 +16,17 @@ const enterpriseProvider: ScmHostingProviderRef = {
   baseUrl: 'https://ghe.internal.test',
 };
 
-function jsonResponse(body: unknown, init?: Readonly<{ status?: number; statusText?: string }>) {
+function jsonResponse(body: unknown, init?: Readonly<{
+  status?: number;
+  statusText?: string;
+  headers?: Readonly<Record<string, string>>;
+}>) {
   const status = init?.status ?? 200;
   return {
     ok: status >= 200 && status < 300,
     status,
     statusText: init?.statusText ?? 'OK',
+    ...(init?.headers ? { headers: new Headers(init.headers) } : {}),
     json: async () => body,
     text: async () => JSON.stringify(body),
   };
@@ -247,6 +252,55 @@ describe('GitHub REST pull request adapter', () => {
       pullRequest: {
         number: 12,
       },
+    });
+  });
+
+  it('classifies a throttled GitHub 403 as a retryable backend limit, not a credential failure', async () => {
+    const mod = await import('./restAdapter.js').catch(() => null);
+    expect(mod).not.toBeNull();
+    if (!mod) return;
+
+    const adapter = mod.createGithubRestAdapter({
+      resolveToken: async () => ({ kind: 'available', token: 'redacted-test-token' }),
+      fetcher: async () => jsonResponse({ message: 'API rate limit exceeded for user ID 1.' }, {
+        status: 403,
+        statusText: 'Forbidden',
+        headers: {
+          'X-RateLimit-Remaining': '0',
+          'X-RateLimit-Reset': '1700000000',
+        },
+      }),
+    });
+
+    // The credential is fine; GitHub exhausted its primary limit. Reporting this
+    // as REMOTE_AUTH_REQUIRED tells the owner to reconnect an account that works.
+    await expect(adapter.listPullRequests({
+      provider: githubProvider,
+      head: 'feature/rest',
+    })).rejects.toMatchObject({
+      errorCode: 'BACKEND_UNAVAILABLE',
+    });
+  });
+
+  it('still reports an unthrottled GitHub 403 as remote authentication required', async () => {
+    const mod = await import('./restAdapter.js').catch(() => null);
+    expect(mod).not.toBeNull();
+    if (!mod) return;
+
+    const adapter = mod.createGithubRestAdapter({
+      resolveToken: async () => ({ kind: 'available', token: 'redacted-test-token' }),
+      fetcher: async () => jsonResponse({ message: 'Resource not accessible by personal access token' }, {
+        status: 403,
+        statusText: 'Forbidden',
+        headers: { 'X-Accepted-GitHub-Permissions': 'pull_requests=read' },
+      }),
+    });
+
+    await expect(adapter.listPullRequests({
+      provider: githubProvider,
+      head: 'feature/rest',
+    })).rejects.toMatchObject({
+      errorCode: 'REMOTE_AUTH_REQUIRED',
     });
   });
 });

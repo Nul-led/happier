@@ -29,11 +29,14 @@ import type { ConnectedAccountRef } from '@happier-dev/plugin-sdk/connected-acco
 import {
   createGithubApiClient,
   decodeGithubJsonResponse,
-  readGithubContentCreationThrottleRetryAfterMs,
-  readGithubRateLimitRetryAfterMs,
   type GithubApiClientV1,
   type GithubApiResponseV1,
 } from './observations/githubApiClient.js';
+import {
+  classifyGithubResponseFailure,
+  isGithubInaccessibleResourceFailure,
+  type GithubResponseFailureV1,
+} from './observations/githubResponseFailure.js';
 import {
   GithubApiResponseError,
   resolveGithubRepositoryWithClient,
@@ -149,9 +152,16 @@ async function readConfiguredIdentityWithClient(
   return parseGithubUser(decodeGithubJsonResponse(response));
 }
 
+/**
+ * The shared GitHub classifier decides what the provider said; this names that
+ * answer in the Channels failure vocabulary. An unreachable or rejected
+ * resource is a configuration problem, an exhausted limit is a throttle, and
+ * anything GitHub did not decide stays retryable.
+ */
 function providerFailureForGithubResponse(response: GithubApiResponseV1): ConversationProviderFailureV1 {
-  if (response.status === 401) return { kind: 'notReady', reason: 'credentialInvalid' };
-  const retryAfterMs = readBoundedGithubRateLimitRetryAfterMs(response);
+  const nowMs = Date.now();
+  const failure = classifyGithubResponseFailure(response, nowMs);
+  const retryAfterMs = readBoundedGithubRetryAfterMs(failure, nowMs);
   if (retryAfterMs !== null) {
     return {
       kind: 'notReady',
@@ -159,27 +169,37 @@ function providerFailureForGithubResponse(response: GithubApiResponseV1): Conver
       retryAfterMs,
     };
   }
-  if (response.status === 403) return { kind: 'notReady', reason: 'permissionMissing' };
-  if (response.status === 404 || response.status === 410 || response.status === 422) {
+  if (failure.class === 'authentication') return { kind: 'notReady', reason: 'credentialInvalid' };
+  if (failure.class === 'permission') return { kind: 'notReady', reason: 'permissionMissing' };
+  if (isGithubInaccessibleResourceFailure(failure) || failure.class === 'unsupportedContract') {
     return { kind: 'notReady', reason: 'invalidConfiguration' };
   }
   return { kind: 'notReady', reason: 'network' };
 }
 
 /**
- * Every Channels throttle bound, whichever GitHub limit family reported it. A
- * content-creation `422` is a throttle here for the same reason a `403`
- * secondary limit is: GitHub says to retry it, so it must not settle as a
- * permanent Channel failure.
+ * GitHub answered definitively about this credential, permission, or resource:
+ * repeating the same request cannot change the answer, so a delivery that hit
+ * it is never safe to retry.
  */
-function readBoundedGithubRateLimitRetryAfterMs(response: GithubApiResponseV1): number | null {
-  const retryAfterMs = readGithubRateLimitRetryAfterMs(response)
-    ?? readGithubContentCreationThrottleRetryAfterMs(response);
-  if (retryAfterMs === null) return null;
-  // The shared GitHub classifier decides whether this is rate-limited. C8
-  // owns only the Channels-result bound, including defensively normalizing an
-  // unexpected non-safe helper result before a strict contract projection.
-  if (!Number.isSafeInteger(retryAfterMs) || retryAfterMs < 0) {
+function isGithubDefiniteRejection(failure: GithubResponseFailureV1): boolean {
+  return failure.class === 'authentication'
+    || failure.class === 'permission'
+    || failure.class === 'unsupportedContract'
+    || isGithubInaccessibleResourceFailure(failure);
+}
+
+/**
+ * Every Channels throttle bound, whichever GitHub limit family reported it. The
+ * shared classifier decides whether this is rate-limited — including the
+ * content-creation `422` GitHub says to retry — and C8 owns only the
+ * Channels-result bound, including defensively normalizing an unexpected
+ * non-safe retry instant before a strict contract projection.
+ */
+function readBoundedGithubRetryAfterMs(failure: GithubResponseFailureV1, nowMs: number): number | null {
+  if (failure.class !== 'rateLimit') return null;
+  const retryAfterMs = failure.retryNotBeforeMs === undefined ? null : failure.retryNotBeforeMs - nowMs;
+  if (retryAfterMs === null || !Number.isSafeInteger(retryAfterMs) || retryAfterMs < 0) {
     return MAX_CONVERSATION_RETRY_AFTER_MS;
   }
   return Math.min(retryAfterMs, MAX_CONVERSATION_RETRY_AFTER_MS);
@@ -497,7 +517,8 @@ function safeRetryBeforeGithubCommentPost(
 }
 
 function prePostGithubResponseResult(response: GithubApiResponseV1): ConversationDeliveryResultV1 {
-  const retryAfterMs = readBoundedGithubRateLimitRetryAfterMs(response);
+  const nowMs = Date.now();
+  const retryAfterMs = readBoundedGithubRetryAfterMs(classifyGithubResponseFailure(response, nowMs), nowMs);
   if (retryAfterMs !== null || response.status >= 500) {
     return safeRetryBeforeGithubCommentPost(retryAfterMs);
   }
@@ -574,7 +595,9 @@ export async function deliverGithubChannelMessage(
         providerMessageIds.push(readGithubPositiveDecimal(value.id, 'delivered comment ID'));
         continue;
       }
-      const retryAfterMs = readBoundedGithubRateLimitRetryAfterMs(response);
+      const deliveryFailureAtMs = Date.now();
+      const failure = classifyGithubResponseFailure(response, deliveryFailureAtMs);
+      const retryAfterMs = readBoundedGithubRetryAfterMs(failure, deliveryFailureAtMs);
       if (retryAfterMs !== null) {
         if (providerMessageIds.length === 0) {
           return ConversationDeliveryResultV1Schema.parse({
@@ -587,7 +610,7 @@ export async function deliverGithubChannelMessage(
           kind: 'partial', providerMessageIds, failedChunk: index, retrySafe: false,
         });
       }
-      if ([401, 403, 404, 410, 422].includes(response.status)) {
+      if (isGithubDefiniteRejection(failure)) {
         if (providerMessageIds.length === 0) {
           return ConversationDeliveryResultV1Schema.parse({ kind: 'notDelivered', retry: 'never' });
         }

@@ -258,6 +258,13 @@ describe('bindClaudeAgentSdkFallbackSession', () => {
       operations.beginProviderTurn();
       await operations.sendProviderTurnPrompt('read the file');
       await vi.waitFor(() => expect(exec.spawnClient).toHaveBeenCalledOnce());
+      expect(exec.spawnClient.mock.calls[0]?.[0].launch.args).toEqual(expect.arrayContaining([
+        '--permission-mode',
+        'default',
+      ]));
+      expect(exec.spawnClient.mock.calls[0]?.[0].launch.args.filter(
+        (arg: string) => arg === '--permission-mode',
+      )).toHaveLength(1);
       await exec.emit({
         type: 'control_request',
         request_id: 'permission-call-1',
@@ -341,6 +348,39 @@ describe('bindClaudeAgentSdkFallbackSession', () => {
         request: { subtype: 'stop_task', task_id: 'task-without-session' },
       })]);
       expect(exec.written.some((record) => (record as any)?.request?.subtype === 'interrupt')).toBe(false);
+    } finally {
+      await operations.disposeProviderSession();
+    }
+  });
+
+  it('refuses to interrupt a different active Claude turn than the requested turn', async () => {
+    const terminalHost = createTerminalHostFixture();
+    const events = createEventsFixture();
+    const exec = createSdkExecFixture();
+    const ctx = createPluginContextFixture(terminalHost.service, events.service, {
+      exec: exec.service,
+      sessionHooks: createSessionHooksFixture().service,
+    });
+    const operations = createClaudeAgentSdkProviderOperations({
+      ctx,
+      directory: '/tmp/claude-project',
+      launchEnv: {},
+      permissionMode: 'default',
+      happierSessionId: 'happy-exact-turn-cancel',
+    });
+
+    try {
+      operations.beginProviderTurn('claude-turn-1');
+      await expect(operations.sendProviderTurnPrompt('active turn')).resolves.toEqual({
+        kind: 'accepted',
+      });
+      await vi.waitFor(() => expect(exec.spawnClient).toHaveBeenCalledOnce());
+
+      await expect(operations.cancelProviderTurn('claude-turn-stale')).resolves.toBe(false);
+      expect(exec.written.some((record) => (record as any)?.request?.subtype === 'interrupt')).toBe(false);
+      expect(exec.written.some((record) => (record as any)?.request?.subtype === 'stop_task')).toBe(false);
+
+      await expect(operations.cancelProviderTurn('claude-turn-1')).resolves.toBe(true);
     } finally {
       await operations.disposeProviderSession();
     }

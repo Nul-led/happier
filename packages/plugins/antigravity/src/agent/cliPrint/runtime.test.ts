@@ -147,6 +147,37 @@ describe('Antigravity cliPrint native session runtime', () => {
     expect(events.map((event) => event.kind)).toEqual(['turn-cancelled', 'input-custody-unknown']);
   });
 
+  it('does not cancel a different active Antigravity print turn than the requested turn', async () => {
+    let signal: AbortSignal | undefined;
+    const runtime = createAntigravityCliPrintSessionRuntime({
+      sessionId: 'session-1',
+      cwd: '/repo',
+      executable: 'agy',
+      promptTimeoutMs: 1_000,
+      runOneShot: vi.fn(async (input) => {
+        signal = input.signal;
+        await new Promise<void>((_resolve, reject) => input.signal?.addEventListener('abort', () => {
+          reject(new AntigravityCliPrintOneShotError({
+            code: 'antigravity_cliprint_cancelled',
+            message: 'cancelled',
+          }));
+        }, { once: true }));
+        return { status: 'completed', stdout: '', stderr: '' } as const;
+      }),
+    });
+
+    const send = runtime.send(sendRequest('long running'));
+    await vi.waitFor(() => expect(signal).toBeDefined());
+
+    await expect(runtime.cancel?.({ turnId: 'turn-stale', reason: 'user' })).resolves.toEqual({
+      status: 'notRunning',
+    });
+    expect(signal?.aborted).toBe(false);
+
+    await runtime.dispose();
+    await expect(send).resolves.toMatchObject({ status: 'unavailable' });
+  });
+
   it('keeps a delivered one-shot admitted when cancel lands after provider output', async () => {
     const events: Array<{ kind: string }> = [];
     let cancelResult: unknown;

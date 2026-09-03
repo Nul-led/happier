@@ -128,7 +128,7 @@ describe('resolveGitWorkspaceTransferEntries', () => {
                     },
                 },
                 workspaceTransfer: {
-                    strategy: 'sync_changes',
+                    strategy: 'transfer_snapshot',
                     includeIgnoredMode: 'exclude',
                     ignoredIncludeGlobs: [],
                 },

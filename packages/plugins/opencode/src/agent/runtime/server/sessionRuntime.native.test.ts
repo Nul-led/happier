@@ -370,18 +370,31 @@ describe('createOpenCodeSessionRuntime', () => {
     expect(disposeOperations).toHaveBeenCalledTimes(1);
   });
 
-  it('does not cancel a different active OpenCode turn than the requested turn', async () => {
+  it.each([
+    [
+      'a stale turn id while a different OpenCode turn is active',
+      'turn-stale',
+      'turn-current',
+    ],
+    [
+      'a turn id against an idle OpenCode runtime with no active turn',
+      'turn-current',
+      null,
+    ],
+  ] as const)('does not cancel %s', async (_description, requestedTurnId, activeTurnId) => {
     const { runtime, operations, publish } = createRuntime();
     runtime.watch(() => undefined);
-    publish({
-      kind: 'turn-start',
-      sessionId: 'happier-session-child',
-      turnId: 'turn-current',
-      emittedAtMs: 10,
-    });
+    if (activeTurnId !== null) {
+      publish({
+        kind: 'turn-start',
+        sessionId: 'happier-session-child',
+        turnId: activeTurnId,
+        emittedAtMs: 10,
+      });
+    }
 
     await expect(runtime.cancel?.({
-      turnId: 'turn-stale',
+      turnId: requestedTurnId,
       reason: 'user',
     })).resolves.toEqual({ status: 'notRunning' });
 

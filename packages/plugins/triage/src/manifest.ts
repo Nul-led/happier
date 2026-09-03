@@ -1,4 +1,8 @@
-import { definePlugin } from '@happier-dev/plugin-sdk';
+import {
+  definePlugin,
+  PluginSearchQueryV1Schema,
+  PluginSearchResultV1Schema,
+} from '@happier-dev/plugin-sdk';
 import {
   TRIAGE_SOURCES_ADMINISTER_ACTION_LOCAL_ID_V1,
   TRIAGE_SOURCES_CONTRIBUTION_POINT_ID_V1,
@@ -24,6 +28,11 @@ import {
   TriageListEntriesResultV1Schema,
 } from './actions/listEntriesProtocol.js';
 import { createTriageReadConfiguredSourceInstancesActionHandler } from './actions/readConfiguredSourceInstances.js';
+import { createTriageSearchEntriesActionHandler } from './actions/searchEntries.js';
+import {
+  TRIAGE_SEARCH_ENTRIES_ACTION_LOCAL_ID_V1,
+  TRIAGE_SEARCH_PROVIDER_LOCAL_ID_V1,
+} from './actions/searchEntriesProtocol.js';
 import { createTriageReadEntryDetailActionHandler } from './actions/readEntryDetail.js';
 import { createTriageReobserveEntryActionHandler } from './actions/reobserveEntry.js';
 import {
@@ -187,6 +196,33 @@ function createTriagePlugin() {
         // The one Collection it touches is `source-instances`, read-only.
         hostAccess: ['account-storage'],
         run: createTriageListEntriesActionHandler(),
+      },
+      [TRIAGE_SEARCH_ENTRIES_ACTION_LOCAL_ID_V1]: {
+        // The Universal Search section header. It is the product name the
+        // views already carry, which is a proper noun rather than translated
+        // copy — the same reason `ui.views` declares it directly.
+        title: TRIAGE_DISPLAY_NAME,
+        description: 'Finds pull requests, issues and error groups matching what the reader typed.',
+        scopes: ['global'],
+        // The universal Search surface is the caller, and it is a present-user
+        // host surface. Voice is absent because a spoken query is answered by
+        // the surface's own sections, not by a second entry point into this
+        // read; `plugin`, `agent` and `mcp` are absent for the same
+        // reachability reason the list Action states.
+        surfaces: ['ui'],
+        // The provider section IS the affordance. A query Action is not also a
+        // command-palette entry, and the manifest owner refuses one that is.
+        placementBindings: [],
+        dangerLevel: 'safe',
+        execution: { target: 'daemon' },
+        // The one canonical search contract, imported rather than restated, so
+        // the declaration and the host's parse cannot describe two shapes.
+        inputSchema: PluginSearchQueryV1Schema,
+        resultSchema: PluginSearchResultV1Schema,
+        // The one Collection it touches is `source-instances`, read-only —
+        // exactly the list read it shares its pass with.
+        hostAccess: ['account-storage'],
+        run: createTriageSearchEntriesActionHandler(),
       },
       [TRIAGE_SET_ENTRY_PINNED_ACTION_LOCAL_ID_V1]: {
         title: 'Pin or unpin an entry',
@@ -463,6 +499,16 @@ function createTriagePlugin() {
         hostAccess: ['account-storage'],
         run: createTriageAdministerActionActionHandler(),
       },
+    },
+    /**
+     * The one Universal Search provider.
+     *
+     * Everything a provider could otherwise restate — title, description, icon,
+     * availability, execution target, currentness — is the referenced Action's,
+     * so the descriptor is identity plus that reference and nothing else.
+     */
+    searchProviders: {
+      [TRIAGE_SEARCH_PROVIDER_LOCAL_ID_V1]: { action: TRIAGE_SEARCH_ENTRIES_ACTION_LOCAL_ID_V1 },
     },
     /**
      * The four mounted surfaces this package actually ships.

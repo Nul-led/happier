@@ -26,6 +26,21 @@ export type GithubApiResponseV1 = Readonly<{
 }>;
 
 /**
+ * Everything the shared failure ladder decides from, independent of how the body
+ * reached this process. The `github-api` client hands back undecoded bytes; the
+ * SCM forge seam hands back an already-parsed body. Re-encoding one to decode it
+ * again is how a second throttle-message ladder gets written, so both carriers
+ * project onto this instead.
+ */
+export type GithubResponseFactsV1 = Readonly<{
+  status: number;
+  /** Lowercase-insensitive response headers; a carrier that has none supplies `{}`. */
+  headers: Readonly<Record<string, string>>;
+  /** Provider-reported messages already extracted from the response body. */
+  messages: readonly string[];
+}>;
+
+/**
  * The verbs this client may send, and therefore the exact set the manifest's one
  * `github-api` grant admits. The host revalidates origin AND method at dispatch,
  * so a verb widened here without its grant fails at the host authority boundary
@@ -81,29 +96,55 @@ function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
 const GITHUB_THROTTLE_MESSAGE_PATTERN =
   /\bsecondary\s+rate\s+limits?\b|\btoo\s+quickly\b|\babuse\s+detection\b|\bspam\b/iu;
 
-function readGithubResponseMessages(response: GithubApiResponseV1): readonly string[] {
-  try {
-    const value: unknown = JSON.parse(new TextDecoder().decode(response.body));
-    if (!isRecord(value)) return [];
-    const messages = typeof value.message === 'string' ? [value.message] : [];
-    if (!Array.isArray(value.errors)) return messages;
-    for (const detail of value.errors) {
-      if (isRecord(detail) && typeof detail.message === 'string') messages.push(detail.message);
-    }
-    return messages;
-  } catch {
-    return [];
+function readGithubBodyMessages(value: unknown): readonly string[] {
+  if (!isRecord(value)) return [];
+  const messages = typeof value.message === 'string' ? [value.message] : [];
+  if (!Array.isArray(value.errors)) return messages;
+  for (const detail of value.errors) {
+    if (isRecord(detail) && typeof detail.message === 'string') messages.push(detail.message);
   }
+  return messages;
 }
 
-function hasGithubThrottleMessage(response: GithubApiResponseV1): boolean {
-  return readGithubResponseMessages(response)
-    .some((message) => GITHUB_THROTTLE_MESSAGE_PATTERN.test(message));
+/** The facts of a response whose body is still undecoded transport bytes. */
+export function readGithubApiResponseFacts(response: GithubApiResponseV1): GithubResponseFactsV1 {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(new TextDecoder().decode(response.body));
+  } catch {
+    parsed = null;
+  }
+  return Object.freeze({
+    status: response.status,
+    headers: response.headers,
+    messages: readGithubBodyMessages(parsed),
+  });
 }
 
-function isGithubSecondaryRateLimitResponse(response: GithubApiResponseV1): boolean {
-  if (response.status !== 403 && response.status !== 429) return false;
-  return hasGithubThrottleMessage(response);
+/**
+ * The facts of a response a seam already parsed for us — the SCM forge error
+ * context, whose `body` is the decoded JSON value (or the raw text when GitHub
+ * answered with something other than JSON).
+ */
+export function readGithubDecodedResponseFacts(input: Readonly<{
+  status: number;
+  headers: Readonly<Record<string, string>>;
+  body: unknown;
+}>): GithubResponseFactsV1 {
+  return Object.freeze({
+    status: input.status,
+    headers: input.headers,
+    messages: readGithubBodyMessages(input.body),
+  });
+}
+
+function hasGithubThrottleMessage(facts: GithubResponseFactsV1): boolean {
+  return facts.messages.some((message) => GITHUB_THROTTLE_MESSAGE_PATTERN.test(message));
+}
+
+function isGithubSecondaryRateLimitResponse(facts: GithubResponseFactsV1): boolean {
+  if (facts.status !== 403 && facts.status !== 429) return false;
+  return hasGithubThrottleMessage(facts);
 }
 
 /**
@@ -115,8 +156,8 @@ function isGithubSecondaryRateLimitResponse(response: GithubApiResponseV1): bool
  * failure keeps its permanent classification, so this never widens the general
  * `422` contract meaning relied on elsewhere.
  */
-export function isGithubContentCreationThrottled(response: GithubApiResponseV1): boolean {
-  return response.status === 422 && hasGithubThrottleMessage(response);
+export function isGithubContentCreationThrottled(facts: GithubResponseFactsV1): boolean {
+  return facts.status === 422 && hasGithubThrottleMessage(facts);
 }
 
 /**
@@ -124,11 +165,11 @@ export function isGithubContentCreationThrottled(response: GithubApiResponseV1):
  * the response is not one.
  */
 export function readGithubContentCreationThrottleRetryAfterMs(
-  response: GithubApiResponseV1,
+  facts: GithubResponseFactsV1,
   nowMs = Date.now(),
 ): number | null {
-  if (!isGithubContentCreationThrottled(response)) return null;
-  return readGithubRetryAfterMs(response.headers, nowMs) ?? GITHUB_RATE_LIMIT_FALLBACK_MS;
+  if (!isGithubContentCreationThrottled(facts)) return null;
+  return readGithubRetryAfterMs(facts.headers, nowMs) ?? GITHUB_RATE_LIMIT_FALLBACK_MS;
 }
 
 function withoutReservedGithubHeaders(headers: Readonly<Record<string, string>>): Readonly<Record<string, string>> {
@@ -322,12 +363,12 @@ export function readGithubRetryAfterMs(
   return null;
 }
 
-export function isGithubRateLimited(response: GithubApiResponseV1): boolean {
-  if (response.status !== 403 && response.status !== 429) return false;
-  const remaining = readTriageResponseHeaderV1(response.headers, 'x-ratelimit-remaining');
-  return response.status === 429
+export function isGithubRateLimited(facts: GithubResponseFactsV1): boolean {
+  if (facts.status !== 403 && facts.status !== 429) return false;
+  const remaining = readTriageResponseHeaderV1(facts.headers, 'x-ratelimit-remaining');
+  return facts.status === 429
     || remaining === '0'
-    || isGithubSecondaryRateLimitResponse(response);
+    || isGithubSecondaryRateLimitResponse(facts);
 }
 
 /**
@@ -335,9 +376,9 @@ export function isGithubRateLimited(response: GithubApiResponseV1): boolean {
  * provider-documented minimum for a response classified as rate limited.
  */
 export function readGithubRateLimitRetryAfterMs(
-  response: GithubApiResponseV1,
+  facts: GithubResponseFactsV1,
   nowMs = Date.now(),
 ): number | null {
-  if (!isGithubRateLimited(response)) return null;
-  return readGithubRetryAfterMs(response.headers, nowMs) ?? GITHUB_RATE_LIMIT_FALLBACK_MS;
+  if (!isGithubRateLimited(facts)) return null;
+  return readGithubRetryAfterMs(facts.headers, nowMs) ?? GITHUB_RATE_LIMIT_FALLBACK_MS;
 }

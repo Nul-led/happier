@@ -2688,7 +2688,6 @@ describe('Codex app-server temporary recoverable turn failures', () => {
       await expect(runtime.runtimeAuth.apply({
         serviceId: 'openai-codex',
         reason: 'manual',
-        requireDirectLiveHotApply: true,
         expected: {
           profileId: 'target',
           groupId: 'primary-group',
@@ -3129,7 +3128,6 @@ describe('Codex app-server temporary recoverable turn failures', () => {
       const appliedAuth = await runtime.runtimeAuth.apply({
         serviceId: 'openai-codex',
         reason: 'usage_limit',
-        requireDirectLiveHotApply: true,
         expected: {
           profileId: 'target',
           groupId: 'team',
@@ -3855,7 +3853,6 @@ describe('Codex app-server temporary recoverable turn failures', () => {
       await expect(runtime.runtimeAuth.apply({
         serviceId: 'openai-codex',
         reason: 'same_provider_account_exhausted',
-        requireDirectLiveHotApply: true,
         authGeneration: {
           credential: buildConnectedCodexCredential('backup'),
           forcedWorkspaceId: 'acct_target',

@@ -266,12 +266,19 @@ function normalizeAutomationEvent(
  * generic webhook owner has already authenticated, bounded, and durably
  * committed the bytes; this function deliberately does not verify signatures,
  * resolve an endpoint, or create another delivery record.
+ *
+ * `consumesIssueComments` declares whether the calling route consumes the
+ * normalized issue-comment projection. The default (`true`) keeps the strict
+ * deep parse; a route with no issue-comment consumer passes `false` so the
+ * dormant parser is bypassed entirely — an otherwise-unconsumable comment
+ * body can never dead-letter a delivery that would settle as ignored.
  */
 export function normalizeGithubWebhookDelivery(input: Readonly<{
   rawBody: Uint8Array;
   eventType: string | undefined;
   providerDeliveryId: string;
   receivedAtMs: number;
+  consumesIssueComments?: boolean;
   parseJson?: GithubWebhookJsonParser;
 }>): GithubNormalizedWebhookDeliveryV1 {
   if (!input.eventType || !input.providerDeliveryId) {
@@ -289,7 +296,9 @@ export function normalizeGithubWebhookDelivery(input: Readonly<{
   return Object.freeze({
     providerDeliveryId: input.providerDeliveryId,
     eventType: input.eventType,
-    comment: input.eventType === 'issue_comment' ? normalizeIssueComment(payload) : null,
+    comment: input.eventType === 'issue_comment' && input.consumesIssueComments !== false
+      ? normalizeIssueComment(payload)
+      : null,
     automationEvent: normalizeAutomationEvent(
       payload,
       input.eventType,

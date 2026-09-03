@@ -152,6 +152,7 @@
     ],
     "scmBackends": [],
     "scmHostingProviders": [],
+    "searchProviders": [],
     "sessionHeaderActions": [],
     "sessionInfoSections": [],
     "settings": [],

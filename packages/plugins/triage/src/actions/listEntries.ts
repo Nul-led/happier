@@ -155,10 +155,27 @@ function resumeByInstanceId(
     return byInstance;
 }
 
-export async function listTriageEntries(
+/**
+ * One assembled pass, before any wire projection.
+ *
+ * The list Action projects it to its own bounded wire rows; the search Action
+ * projects the same rows to bounded search items. Both read the SAME assembled
+ * window, so a query cannot find in one surface what it cannot find in the
+ * other, and neither owns a second scan, fold, order or matcher.
+ */
+export type TriageAssembledListPassV1 = Readonly<{
+    configuredSources: TriageListEntriesResultV1['configuredSources'];
+    configuredSourcesStatus: 'complete' | 'truncated';
+    configuredSourcesNextCursor?: string;
+    window: TriageListWindowV1;
+    /** Absent when no walked lane stopped with more to give. */
+    continuations?: TriageListEntriesResultV1['window']['continuations'];
+}>;
+
+export async function assembleTriageListPass(
     input: TriageListEntriesInputV1,
     deps: TriageListEntriesDepsV1,
-): Promise<TriageListEntriesResultV1> {
+): Promise<TriageAssembledListPassV1> {
     const options: PluginCancellationOptions | undefined = deps.signal ? { signal: deps.signal } : undefined;
     const resumeByInstance = resumeByInstanceId(input);
     const admittedPromise = deps.readAdmittedSources(options);
@@ -359,17 +376,36 @@ export async function listTriageEntries(
     const continuations = pass.stopped.filter((stop) => currentGenerationMatches(stop.sourceInstanceId));
 
     return {
-        v: 1,
         configuredSources: input.limit === 0 ? configuredSources : settledConfiguredSources,
         configuredSourcesStatus,
         ...(configuredSourcesNextCursor === undefined ? {} : { configuredSourcesNextCursor }),
+        window,
+        ...(continuations.length === 0 ? {} : { continuations }),
+    };
+}
+
+/** The bounded wire projection of one assembled pass. */
+export async function listTriageEntries(
+    input: TriageListEntriesInputV1,
+    deps: TriageListEntriesDepsV1,
+): Promise<TriageListEntriesResultV1> {
+    const pass = await assembleTriageListPass(input, deps);
+    return {
+        v: 1,
+        configuredSources: pass.configuredSources,
+        configuredSourcesStatus: pass.configuredSourcesStatus,
+        ...(pass.configuredSourcesNextCursor === undefined
+            ? {}
+            : { configuredSourcesNextCursor: pass.configuredSourcesNextCursor }),
         window: {
             v: 1,
-            rows: toTriageListWireRows(window),
-            lanes: window.lanes,
-            coverage: window.coverage,
-            ...(continuations.length === 0 ? {} : { continuations }),
-            assembledAtMs: window.assembledAtMs,
+            rows: toTriageListWireRows(pass.window),
+            lanes: pass.window.lanes,
+            coverage: pass.window.coverage,
+            ...(pass.continuations === undefined || pass.continuations.length === 0
+                ? {}
+                : { continuations: pass.continuations }),
+            assembledAtMs: pass.window.assembledAtMs,
         },
     };
 }

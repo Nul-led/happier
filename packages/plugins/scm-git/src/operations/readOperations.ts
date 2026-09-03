@@ -36,7 +36,11 @@ function parseGitLogEntries(rawOutput: string): ScmLogEntry[] {
         const timestampSeconds = Number(row[4] || 0);
         const timestampRaw = Number.isFinite(timestampSeconds) ? timestampSeconds * 1000 : 0;
         return {
-            sha: row[0] || '',
+            // `--pretty=format:` uses record-SEPARATOR semantics: git emits `\n` between
+            // records, which lands at the start of every sha field after the first. Trim the
+            // hex field so commit identity is exact for entries 2+ (dedupe, pagination,
+            // activation) instead of only for the newest entry.
+            sha: (row[0] || '').trim(),
             shortSha: row[1] || '',
             authorName: row[2] || '',
             authorEmail: row[3] || '',
@@ -149,30 +153,125 @@ export async function gitDiffCommit(input: {
         };
 }
 
+/**
+ * A query that only names hexadecimal characters in this range is treated as an abbreviated
+ * SHA on top of the text/author arms. Anything else (spaces, `-`, `:`, …) can only be a text
+ * match and must never reach git as a revision argument.
+ */
+const GIT_SHA_LIKE_QUERY_PATTERN = /^[0-9a-f]{7,40}$/i;
+
+function isGitUnknownRevisionFailure(stderr: string | undefined): boolean {
+    const lower = String(stderr ?? '').toLowerCase();
+    return lower.includes('unknown revision') || lower.includes('ambiguous argument');
+}
+
+type GitLogMatchArm =
+    | { ok: true; entries: ScmLogEntry[] }
+    | { ok: false; unknownRevision: true }
+    | { ok: false; stderr: string };
+
+async function runGitLogMatchArm(input: {
+    cwd: string;
+    args: string[];
+    signal?: AbortSignal;
+}): Promise<GitLogMatchArm> {
+    const result = await runScmCommand({
+        bin: 'git',
+        cwd: input.cwd,
+        args: ['log', ...input.args, '--pretty=format:%H%x00%h%x00%an%x00%ae%x00%at%x00%s%x00%b%x00'],
+        timeoutMs: 15_000,
+        signal: input.signal,
+    });
+    if (!result.success) {
+        return isGitUnknownRevisionFailure(result.stderr)
+            ? { ok: false, unknownRevision: true }
+            : { ok: false, stderr: result.stderr || 'Failed to search commits' };
+    }
+    return { ok: true, entries: parseGitLogEntries(result.stdout) };
+}
+
+function mergeGitLogMatchArms(arms: readonly GitLogMatchArm[]): ScmLogEntry[] {
+    const bySha = new Map<string, ScmLogEntry>();
+    for (const arm of arms) {
+        if (!arm.ok) continue;
+        for (const entry of arm.entries) {
+            if (!bySha.has(entry.sha)) {
+                bySha.set(entry.sha, entry);
+            }
+        }
+    }
+    return [...bySha.values()].sort((a, b) => b.timestamp - a.timestamp);
+}
+
 export async function gitLogList(input: {
     context: ScmBackendContext;
     request: ScmLogListRequest;
+    signal?: AbortSignal;
 }): Promise<ScmLogListResponse> {
     const { context, request } = input;
     const limit = request.limit ?? 50;
     const skip = request.skip ?? 0;
-    const log = await runScmCommand({
-        bin: 'git',
-        cwd: context.cwd,
-        args: [
-            'log',
-            `--max-count=${limit}`,
-            `--skip=${skip}`,
-            '--pretty=format:%H%x00%h%x00%an%x00%ae%x00%at%x00%s%x00%b%x00',
-        ],
-        timeoutMs: 15_000,
-    });
-    if (!log.success) {
+    const query = typeof request.query === 'string' ? request.query.trim() : '';
+
+    if (!query) {
+        const log = await runScmCommand({
+            bin: 'git',
+            cwd: context.cwd,
+            args: [
+                'log',
+                `--max-count=${limit}`,
+                `--skip=${skip}`,
+                '--pretty=format:%H%x00%h%x00%an%x00%ae%x00%at%x00%s%x00%b%x00',
+            ],
+            timeoutMs: 15_000,
+            signal: input.signal,
+        });
+        if (!log.success) {
+            return {
+                success: false,
+                errorCode: SCM_OPERATION_ERROR_CODES.COMMAND_FAILED,
+                error: log.stderr || 'Failed to list commits',
+            };
+        }
+        return { success: true, entries: parseGitLogEntries(log.stdout) };
+    }
+
+    // Bounded search over the explicit workspace scope (`context.cwd`, the checkout the
+    // request addresses). Every arm reads at most `limit + skip` commits off the current
+    // checkout; the merged page is sliced once. There is no all-history walk and no all-ref
+    // (`--all`) fanout — the ref scope stays the checkout's current branch.
+    const readBound = limit + skip;
+    const armArgs: string[][] = [
+        // Commit subject and body text (`--grep` inspects the whole message). Fixed strings
+        // keep the user's query from acting as a regular expression.
+        ['-i', '-F', `--grep=${query}`, `--max-count=${readBound}`],
+        // Author name and email (git matches `Name <email>` as one string).
+        ['-i', '-F', `--author=${query}`, `--max-count=${readBound}`],
+    ];
+    if (GIT_SHA_LIKE_QUERY_PATTERN.test(query)) {
+        // A revision argument makes git walk its ancestors; the search contract resolves the
+        // single commit whose SHA carries this prefix, so cap the walk at one.
+        armArgs.push(['--max-count=1', query]);
+    }
+
+    const arms = await Promise.all(
+        armArgs.map((args) => runGitLogMatchArm({ cwd: context.cwd, args, signal: input.signal })),
+    );
+
+    const failedArm = arms.find((arm): arm is Extract<GitLogMatchArm, { ok: false; stderr: string }> => !arm.ok && !('unknownRevision' in arm));
+    if (failedArm) {
+        // The text and author arms read the same repository; one hard failure means the
+        // repository itself cannot answer (the unknown-revision case is filtered out above).
         return {
             success: false,
             errorCode: SCM_OPERATION_ERROR_CODES.COMMAND_FAILED,
-            error: log.stderr || 'Failed to list commits',
+            error: failedArm.stderr,
         };
     }
-    return { success: true, entries: parseGitLogEntries(log.stdout) };
+
+    return {
+        success: true,
+        entries: mergeGitLogMatchArms(arms).slice(skip, skip + limit),
+        queryApplied: true,
+    };
 }

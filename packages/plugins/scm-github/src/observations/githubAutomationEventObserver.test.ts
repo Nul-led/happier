@@ -3239,7 +3239,7 @@ describe('GitHub Automation Event checkpointed-pull observer', () => {
     }));
   });
 
-  it('keeps an ordinary positive-remaining GitHub 403 with reset metadata as credential attention', async () => {
+  it('names an ordinary GitHub 403 a missing permission rather than a revoked credential', async () => {
     const source = definition({ automationId: 'automation-a', sourceSelectorId: sourceSelectorA });
     const checkpoints = createCheckpointCollection([]);
     const statuses: AutomationEventSourceStatusReport[] = [];
@@ -3283,8 +3283,181 @@ describe('GitHub Automation Event checkpointed-pull observer', () => {
     await observer.runCycle(sourceAttemptContext(observer, context));
 
     expect(statuses).toContainEqual(expect.objectContaining({
+      kind: 'source', state: 'attention', code: 'credentialMissing', nextRetryAt: null,
+    }));
+  });
+
+  /**
+   * One failing GitHub response, one mutable catalog: the tests below separate
+   * what GitHub said about the credential from what it said about the resource,
+   * and observe when the observer next asks again.
+   */
+  function failingSourceHarness(input: Readonly<{
+    catalog: { revision: string; definitions: SourceDefinition[] };
+    response: Readonly<{ status: number; headers?: Readonly<Record<string, string>> }>;
+  }>) {
+    const checkpoints = createCheckpointCollection([]);
+    const controller = new AbortController();
+    const statuses: AutomationEventSourceStatusReport[] = [];
+    const http = {
+      request: vi.fn(async () => ({
+        status: input.response.status,
+        headers: input.response.headers ?? {},
+        body: new Uint8Array(),
+      })),
+    };
+    const actions = {
+      execute: vi.fn(async (actionId: string, actionInput: unknown) => {
+        if (actionId === 'automation.event.sources.list') {
+          return {
+            kind: 'page',
+            revision: input.catalog.revision,
+            definitions: input.catalog.definitions,
+            nextCursor: null,
+          } satisfies PluginActionResultById['automation.event.sources.list'];
+        }
+        if (actionId === 'automation.event.source.status.report') {
+          statuses.push(actionInput as AutomationEventSourceStatusReport);
+          return {} satisfies PluginActionResultById['automation.event.source.status.report'];
+        }
+        throw new Error(`unexpected Action ${actionId}`);
+      }),
+    };
+    const context = {
+      plugin: { id: GITHUB_PLUGIN_ID, version: '0.0.0' },
+      contribution: { id: 'observer', qualifiedId: `${GITHUB_PLUGIN_ID}/backgroundServices/observer` },
+      surface: 'background' as const,
+      signal: controller.signal,
+      services: {
+        actions,
+        connectedAccounts: { materialize: vi.fn(async () => ({ kind: 'httpHeaders' as const, headers: { Authorization: 'Bearer token' } })) },
+        http,
+        storage: { account: { collection: vi.fn(() => checkpoints.collection) } },
+      },
+    } as unknown as BackgroundServiceContext;
+    return { checkpoints, controller, statuses, http, context };
+  }
+
+  it('re-drives a repairable GitHub 401 on the reconciliation cadence and picks up the repaired credential', async () => {
+    const catalog = {
+      revision: '7',
+      definitions: [definition({ automationId: 'automation-a', sourceSelectorId: sourceSelectorA })],
+    };
+    const checkpoints = createCheckpointCollection([]);
+    let currentController = new AbortController();
+    let clock = 1_000;
+    let responseStatus = 401;
+    const waits: number[] = [];
+    const statuses: AutomationEventSourceStatusReport[] = [];
+    const http = {
+      request: vi.fn(async () => ({
+        status: responseStatus,
+        headers: {},
+        body: new TextEncoder().encode('[]'),
+      })),
+    };
+    const actions = {
+      execute: vi.fn(async (actionId: string, actionInput: unknown) => {
+        if (actionId === 'automation.event.sources.list') {
+          return {
+            kind: 'page',
+            revision: catalog.revision,
+            definitions: catalog.definitions,
+            nextCursor: null,
+          } satisfies PluginActionResultById['automation.event.sources.list'];
+        }
+        if (actionId === 'automation.event.source.status.report') {
+          statuses.push(actionInput as AutomationEventSourceStatusReport);
+          return {} satisfies PluginActionResultById['automation.event.source.status.report'];
+        }
+        throw new Error(`unexpected Action ${actionId}`);
+      }),
+    };
+    const context = {
+      plugin: { id: GITHUB_PLUGIN_ID, version: '0.0.0' },
+      contribution: { id: 'observer', qualifiedId: `${GITHUB_PLUGIN_ID}/backgroundServices/observer` },
+      surface: 'background' as const,
+      get signal() {
+        return currentController.signal;
+      },
+      services: {
+        actions,
+        connectedAccounts: { materialize: vi.fn(async () => ({ kind: 'httpHeaders' as const, headers: { Authorization: 'Bearer token' } })) },
+        http,
+        storage: { account: { collection: vi.fn(() => checkpoints.collection) } },
+      },
+    } as unknown as BackgroundServiceContext;
+    const observer = createGithubAutomationEventCheckpointedPullObserver({
+      now: () => clock,
+      reconciliationIntervalMs: 120_000,
+      sleep: async (delayMs) => {
+        waits.push(delayMs);
+        currentController.abort();
+      },
+    });
+
+    await observer.run(sourceAttemptContext(observer, context));
+
+    // GitHub rejected the credential: the owner can repair it, so the source
+    // re-drives at the bounded reconciliation cadence — not the transient
+    // retry delay, and not a one-day park.
+    expect(statuses).toContainEqual(expect.objectContaining({
       kind: 'source', state: 'attention', code: 'credentialRevoked', nextRetryAt: null,
     }));
+    expect(waits).toEqual([120_000]);
+
+    // The repaired credential is observed again on the next due pass.
+    currentController = new AbortController();
+    clock = 250_000;
+    responseStatus = 200;
+    await observer.runCycle(sourceAttemptContext(observer, context));
+
+    expect(http.request).toHaveBeenCalledTimes(2);
+    expect(statuses).toContainEqual(expect.objectContaining({
+      kind: 'source', state: 'baselined', code: 'none',
+    }));
+  });
+
+  it('names a GitHub 404 an unreachable source rather than a missing credential', async () => {
+    const catalog = {
+      revision: '7',
+      definitions: [definition({ automationId: 'automation-a', sourceSelectorId: sourceSelectorA })],
+    };
+    const harness = failingSourceHarness({ catalog, response: { status: 404 } });
+    const observer = createGithubAutomationEventCheckpointedPullObserver({ now: () => 1_000 });
+
+    await observer.runCycle(sourceAttemptContext(observer, harness.context));
+
+    // A deleted, renamed, or unreadable repository is an answer about the
+    // configured source. Reporting it as a credential problem sends the owner
+    // to reconnect an account that was never the cause.
+    expect(harness.statuses).toContainEqual(expect.objectContaining({
+      kind: 'source', state: 'attention', code: 'sourceContractIncompatible', nextRetryAt: null,
+    }));
+  });
+
+  it('resumes normal observation of a parked source when its definition revision changes', async () => {
+    const catalog = {
+      revision: '7',
+      definitions: [definition({ automationId: 'automation-a', sourceSelectorId: sourceSelectorA })],
+    };
+    const harness = failingSourceHarness({ catalog, response: { status: 404 } });
+    const observer = createGithubAutomationEventCheckpointedPullObserver({ now: () => 1_000 });
+    const attemptContext = sourceAttemptContext(observer, harness.context);
+
+    await observer.runCycle(attemptContext);
+    expect(harness.http.request).toHaveBeenCalledTimes(1);
+
+    catalog.revision = '8';
+    catalog.definitions = [
+      definition({ automationId: 'automation-a', sourceSelectorId: sourceSelectorA, triggerRevision: 2 }),
+    ];
+    await observer.runCycle(attemptContext);
+
+    // The owner corrected the configuration: the parked source is a different
+    // definition revision now, so it is observed again instead of waiting out a
+    // park earned by the previous revision.
+    expect(harness.http.request).toHaveBeenCalledTimes(2);
   });
 
   it('caps a usable long GitHub Retry-After hint at the provider wait ceiling', async () => {

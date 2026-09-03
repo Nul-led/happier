@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import { PluginAgentCapabilitiesV1Schema as PluginBackendCapabilitiesV1Schema } from '@happier-dev/plugin-sdk/agents';
+import { PluginAgentCapabilitiesV1Schema } from '@happier-dev/plugin-sdk/agents';
 
 import { PLUGIN_MANIFEST } from './manifest.js';
 
 function capabilitiesForBackend(id: string) {
   const backend = PLUGIN_MANIFEST.contributes?.agents?.find((entry) => entry.id === id);
   if (!backend) throw new Error(`Missing backend declaration: ${id}`);
-  return PluginBackendCapabilitiesV1Schema.parse(backend.capabilities ?? {});
+  return PluginAgentCapabilitiesV1Schema.parse(backend.capabilities ?? {});
 }
 
 describe('Claude plugin AgentRuntime capabilities', () => {
