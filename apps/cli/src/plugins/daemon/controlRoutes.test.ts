@@ -51,19 +51,12 @@ describe('registerDaemonPluginChangeRoutes', () => {
       },
       requireAuth,
     });
-    const actorEvidence = {
-      kind: 'authenticatedLocalUser',
-      interactionId: 'destructive-uninstall',
-      occurredAtMs: 1,
-    } as const;
-
     const response = await app.inject({
       method: 'POST',
       url: '/plugins/change/request',
       payload: {
         kind: 'uninstallAndDeleteData',
         pluginId: 'acme.example',
-        actorEvidence,
       },
     });
 
@@ -72,7 +65,6 @@ describe('registerDaemonPluginChangeRoutes', () => {
     expect(requestPluginChange).toHaveBeenCalledWith({
       kind: 'uninstallAndDeleteData',
       pluginId: 'acme.example',
-      actorEvidence,
     });
   });
 
@@ -324,7 +316,6 @@ describe('registerDaemonPluginChangeRoutes', () => {
       payload: {
         pendingChangeId: 'pending-1',
         decision: 'installAndTrust',
-        actorEvidence: { kind: 'authenticatedLocalUser', interactionId: 'interaction-1', occurredAtMs: 1 },
       },
     });
     expect(decisionResponse.statusCode).toBe(200);
@@ -332,7 +323,7 @@ describe('registerDaemonPluginChangeRoutes', () => {
     expect(requireAuth).toHaveBeenCalledTimes(2);
   });
 
-  it('forwards explicit CLI trust provenance only as typed authenticated actor evidence', async () => {
+  it('forwards a decision to the change owner as the pending change, decision, and selections', async () => {
     const app = fastify();
     const decidePluginChange = vi.fn(async () => ({
       kind: 'committed' as const,
@@ -352,25 +343,12 @@ describe('registerDaemonPluginChangeRoutes', () => {
       requireAuth: async () => undefined,
     });
 
-    const actorEvidence = {
-      kind: 'authenticatedLocalUser',
-      interactionId: 'explicit-cli-trust-1',
-      occurredAtMs: 1,
-      provenance: {
-        kind: 'explicitCliTrustFlag',
-        command: 'plugins install',
-        flag: '--trust',
-        source: { kind: 'path', locator: '/tmp/example-plugin-source' },
-        pluginId: 'acme.example',
-      },
-    } as const;
     const response = await app.inject({
       method: 'POST',
       url: '/plugins/change/decide',
       payload: {
         pendingChangeId: 'pending-1',
         decision: 'installAndTrust',
-        actorEvidence,
         optionalSelections: [],
       },
     });
@@ -379,17 +357,24 @@ describe('registerDaemonPluginChangeRoutes', () => {
     expect(decidePluginChange).toHaveBeenCalledWith({
       pendingChangeId: 'pending-1',
       decision: 'installAndTrust',
-      actorEvidence,
       optionalSelections: [],
     });
   });
 
-  it('rejects malformed explicit CLI trust provenance before the daemon decision owner', async () => {
+  /**
+   * The route already authenticates the caller and the change service already
+   * resolves the pending change it names. A caller-described actor, interaction
+   * id, or approval timestamp is therefore self-asserted rather than evidence,
+   * and the closed request keeps one from reappearing on any decision or on the
+   * destructive uninstall request.
+   */
+  it('rejects caller-asserted actor evidence before the daemon change owner', async () => {
     const app = fastify();
     const decidePluginChange = vi.fn();
+    const requestPluginChange = vi.fn();
     registerDaemonPluginChangeRoutes(app, {
       service: {
-        requestPluginChange: vi.fn(),
+        requestPluginChange,
         decidePluginChange,
         statusPluginChange: async () => ({ kind: 'expired' }),
         listPendingPluginChanges: async () => ({ changes: [] }),
@@ -398,28 +383,35 @@ describe('registerDaemonPluginChangeRoutes', () => {
       requireAuth: async () => undefined,
     });
 
-    const response = await app.inject({
-      method: 'POST',
-      url: '/plugins/change/decide',
-      payload: {
+    const actorEvidence = {
+      kind: 'authenticatedLocalUser',
+      interactionId: 'explicit-cli-trust-1',
+      occurredAtMs: 1,
+    };
+    for (const [url, payload] of [
+      ['/plugins/change/decide', {
         pendingChangeId: 'pending-1',
         decision: 'installAndTrust',
-        actorEvidence: {
-          kind: 'authenticatedLocalUser',
-          interactionId: 'explicit-cli-trust-1',
-          occurredAtMs: 1,
-          provenance: {
-            kind: 'explicitCliTrustFlag',
-            command: 'plugins marketplace install',
-            flag: '--trust',
-            source: { kind: 'path', locator: '/tmp/example-plugin-source' },
-          },
-        },
-      },
-    });
+        actorEvidence,
+        optionalSelections: [],
+      }],
+      ['/plugins/change/decide', {
+        pendingChangeId: 'pending-1',
+        decision: 'trustSourceRoot',
+        actorEvidence,
+      }],
+      ['/plugins/change/request', {
+        kind: 'uninstallAndDeleteData',
+        pluginId: 'acme.example',
+        actorEvidence,
+      }],
+    ] as const) {
+      const response = await app.inject({ method: 'POST', url, payload });
+      expect(response.statusCode).toBe(400);
+    }
 
-    expect(response.statusCode).toBe(400);
     expect(decidePluginChange).not.toHaveBeenCalled();
+    expect(requestPluginChange).not.toHaveBeenCalled();
   });
 
   it('rejects malformed requests before the service owner sees them', async () => {

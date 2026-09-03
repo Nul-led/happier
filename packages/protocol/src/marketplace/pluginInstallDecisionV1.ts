@@ -7,17 +7,17 @@ export const HostPrivatePluginInstallOptionalSelectionV1Schema = z.object({
   selected: z.boolean(),
 }).strict();
 
-const HostPrivatePluginInstallActorEvidenceV1Schema = z.object({
-  kind: z.literal('authenticatedLocalUser'),
-  interactionId: z.string().trim().min(1).max(256),
-  occurredAtMs: z.number().int().nonnegative(),
-}).strict();
-
+/**
+ * A decision names the daemon-issued pending change it answers and nothing
+ * about its own author. The daemon authenticates this RPC and resolves the
+ * pending change itself, so a caller-supplied actor, interaction id, or
+ * timestamp would be self-asserted rather than evidence; approval and
+ * selection times come from the daemon clock at apply time.
+ */
 const HostPrivatePluginInstallPositiveDecisionV1Schema = z.object({
   v: z.literal(1),
   pendingChangeId: z.string().trim().min(1).max(256),
   decision: z.literal('installAndTrust'),
-  actorEvidence: HostPrivatePluginInstallActorEvidenceV1Schema,
   optionalSelections: z.array(HostPrivatePluginInstallOptionalSelectionV1Schema).max(128),
 }).strict().superRefine((value, context) => {
   const accessIds = new Set<string>();
@@ -49,7 +49,6 @@ const HostPrivatePluginInstallTrustSourceRootDecisionV1Schema = z.object({
   v: z.literal(1),
   pendingChangeId: z.string().trim().min(1).max(256),
   decision: z.literal('trustSourceRoot'),
-  actorEvidence: HostPrivatePluginInstallActorEvidenceV1Schema,
 }).strict();
 
 const HostPrivatePluginInstallCancelDecisionV1Schema = z.object({

@@ -9,26 +9,16 @@ describe('HostPrivatePluginInstallDecisionV1Schema', () => {
     expect(publicProtocol).not.toHaveProperty('HostPrivatePluginInstallDecisionV1Schema');
   }, 30_000);
 
-  it('requires bounded UI-created evidence only for positive decisions', () => {
+  it('carries the pending change, the decision, and optional selections only', () => {
     expect(HostPrivatePluginInstallDecisionV1Schema.parse({
       v: 1,
       pendingChangeId: 'pending-1',
       decision: 'installAndTrust',
-      actorEvidence: {
-        kind: 'authenticatedLocalUser',
-        interactionId: 'ui-interaction-1',
-        occurredAtMs: 42,
-      },
       optionalSelections: [{ accessId: 'workspace', selected: false }],
     })).toEqual({
       v: 1,
       pendingChangeId: 'pending-1',
       decision: 'installAndTrust',
-      actorEvidence: {
-        kind: 'authenticatedLocalUser',
-        interactionId: 'ui-interaction-1',
-        occurredAtMs: 42,
-      },
       optionalSelections: [{ accessId: 'workspace', selected: false }],
     });
     expect(HostPrivatePluginInstallDecisionV1Schema.parse({
@@ -49,33 +39,32 @@ describe('HostPrivatePluginInstallDecisionV1Schema', () => {
       v: 1,
       pendingChangeId: 'pending-3',
       decision: 'trustSourceRoot',
-      actorEvidence: {
-        kind: 'authenticatedLocalUser',
-        interactionId: 'ui-interaction-3',
-        occurredAtMs: 43,
-      },
     })).toEqual({
       v: 1,
       pendingChangeId: 'pending-3',
       decision: 'trustSourceRoot',
-      actorEvidence: {
-        kind: 'authenticatedLocalUser',
-        interactionId: 'ui-interaction-3',
-        occurredAtMs: 43,
-      },
     });
+  });
 
+  /**
+   * The caller never describes who it is or when it acted. The daemon
+   * authenticates this RPC and matches the decision against its own current
+   * pending change, so a self-asserted actor/interaction/timestamp is not
+   * evidence of anything — it is only a field the caller can choose. Keeping
+   * the request closed means a caller cannot re-introduce one.
+   */
+  it('rejects caller-asserted actor, interaction, or timing fields', () => {
     for (const invalid of [
       {
         v: 1,
         pendingChangeId: 'pending-1',
         decision: 'installAndTrust',
+        actorEvidence: {
+          kind: 'authenticatedLocalUser',
+          interactionId: 'ui-interaction-1',
+          occurredAtMs: 42,
+        },
         optionalSelections: [],
-      },
-      {
-        v: 1,
-        pendingChangeId: 'pending-1',
-        decision: 'trustSourceRoot',
       },
       {
         v: 1,
@@ -86,6 +75,40 @@ describe('HostPrivatePluginInstallDecisionV1Schema', () => {
           interactionId: 'ui-interaction-1',
           occurredAtMs: 42,
         },
+      },
+      {
+        v: 1,
+        pendingChangeId: 'pending-1',
+        decision: 'installAndTrust',
+        optionalSelections: [],
+        occurredAtMs: 42,
+      },
+      {
+        v: 1,
+        pendingChangeId: 'pending-1',
+        decision: 'cancel',
+        actorEvidence: {
+          kind: 'authenticatedLocalUser',
+          interactionId: 'ui-interaction-1',
+          occurredAtMs: 42,
+        },
+      },
+    ]) {
+      expect(HostPrivatePluginInstallDecisionV1Schema.safeParse(invalid).success).toBe(false);
+    }
+  });
+
+  it('keeps optional selections bounded, unique, and exclusive to install-and-trust', () => {
+    for (const invalid of [
+      {
+        v: 1,
+        pendingChangeId: 'pending-1',
+        decision: 'installAndTrust',
+      },
+      {
+        v: 1,
+        pendingChangeId: 'pending-1',
+        decision: 'trustSourceRoot',
         optionalSelections: [],
       },
       {

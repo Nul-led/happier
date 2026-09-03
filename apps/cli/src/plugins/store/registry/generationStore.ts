@@ -1536,7 +1536,7 @@ export async function verifyPluginRegistryCommitGenerationReferences(
   }
 }
 
-export function collectPluginGenerationStagingAncestorDirectories(
+function collectPluginGenerationStagingAncestorDirectories(
   stagingRoot: string,
   destinationDirectory: string,
 ): readonly string[] {

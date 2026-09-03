@@ -60017,7 +60017,7 @@ Declared by `dist/scm/backend.d.ts` as `WorkspaceTransferRequest`.
 
 ```ts
 type WorkspaceTransferRequest = Readonly<{
-    strategy: 'transfer_snapshot' | 'sync_changes';
+    strategy: 'transfer_snapshot';
     includeIgnoredMode: 'exclude' | 'include_selected';
     ignoredIncludeGlobs: readonly string[];
 }>;

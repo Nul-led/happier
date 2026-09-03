@@ -1,4 +1,4 @@
-import { readdir, readFile } from 'node:fs/promises';
+import { readdir, readFile, stat } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -33,10 +33,18 @@ const RETIRED_MATERIALIZED_INTEGRITY_TERMS = Object.freeze([
 ]);
 
 const REPOSITORY_ROOT = fileURLToPath(new URL('../../../../../../', import.meta.url));
-const UNPUBLISHED_RECONCILIATION_SOURCE_PATH =
-  'apps/cli/src/plugins/store/registry/unpublishedV1Reconciliation.ts';
-const UNPUBLISHED_RECONCILIATION_ENTRYPOINT_PATH =
-  'apps/cli/scripts/reconcileUnpublishedPluginRegistryV1.ts';
+
+/**
+ * The unpublished V1 registry reconciliation subsystem is retired. Its pinned
+ * producer wrote no record in any retained store, so no predecessor bytes
+ * remain to convert and no exemption from the retired-term contraction
+ * survives.
+ */
+const RETIRED_UNPUBLISHED_RECONCILIATION_PATHS = Object.freeze([
+  'apps/cli/src/plugins/store/registry/unpublishedV1Reconciliation.ts',
+  'apps/cli/scripts/reconcileUnpublishedPluginRegistryV1.ts',
+  'apps/cli/scripts/__tests__/reconcileUnpublishedPluginRegistryV1.test.ts',
+]);
 
 const PRODUCTION_ROOTS = Object.freeze([
   join(REPOSITORY_ROOT, 'apps/cli/src/plugins'),
@@ -103,15 +111,19 @@ function readAllProductionSources(): Promise<ReadonlyArray<Readonly<{
   return productionSourcesPromise;
 }
 
-function isShippedRuntimeSource(source: Readonly<{ relativePath: string }>): boolean {
-  // This one-time developer reconciliation is not a shipped runtime
-  // corridor. Its predecessor terms remain isolated and are checked below.
-  return source.relativePath !== UNPUBLISHED_RECONCILIATION_SOURCE_PATH;
+async function pathExists(relativePath: string): Promise<boolean> {
+  try {
+    await stat(join(REPOSITORY_ROOT, relativePath));
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException | null)?.code === 'ENOENT') return false;
+    throw error;
+  }
 }
 
 describe('plugin generation materialized-integrity contraction', () => {
   it('removes retired custom content hashes from production readers', async () => {
-    const productionSources = (await readAllProductionSources()).filter(isShippedRuntimeSource);
+    const productionSources = await readAllProductionSources();
 
     for (const { relativePath, source } of productionSources) {
       for (const term of RETIRED_MATERIALIZED_INTEGRITY_TERMS) {
@@ -121,23 +133,20 @@ describe('plugin generation materialized-integrity contraction', () => {
     }
   });
 
-  it('keeps unpublished reconciliation unreachable from shipped runtime corridors', async () => {
-    const runtimeReferences = (await readAllProductionSources())
-      .filter(isShippedRuntimeSource)
-      .filter(({ source }) => source.includes('unpublishedV1Reconciliation'));
-    expect(runtimeReferences).toEqual([]);
+  it('retires the unpublished V1 reconciliation subsystem entirely', async () => {
+    const retained = (await Promise.all(RETIRED_UNPUBLISHED_RECONCILIATION_PATHS.map(
+      async (relativePath) => (await pathExists(relativePath) ? relativePath : null),
+    ))).filter((relativePath): relativePath is string => relativePath !== null);
+    expect(retained).toEqual([]);
 
-    const operatorEntrypoint = await readFile(
-      join(REPOSITORY_ROOT, UNPUBLISHED_RECONCILIATION_ENTRYPOINT_PATH),
-      'utf8',
-    );
-    expect(operatorEntrypoint).toContain(
-      "../src/plugins/store/registry/unpublishedV1Reconciliation",
-    );
+    const references = (await readAllProductionSources())
+      .filter(({ source }) => source.includes('unpublishedV1Reconciliation'))
+      .map(({ relativePath }) => relativePath);
+    expect(references).toEqual([]);
   });
 
   it('keeps bundled package integrity at the build boundary, outside runtime generation authority', async () => {
-    const productionSources = (await readAllProductionSources()).filter(isShippedRuntimeSource);
+    const productionSources = await readAllProductionSources();
     const runtimeIntegrityReaders = productionSources.filter(({ source }) => (
       source.includes('BUNDLED_FIRST_PARTY_SOURCE_ARTIFACT_INTEGRITIES')
     ));

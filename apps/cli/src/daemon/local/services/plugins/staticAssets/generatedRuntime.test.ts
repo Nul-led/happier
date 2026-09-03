@@ -114,7 +114,7 @@ async function installGeneratedUiPlugin(input?: Readonly<{
                     manifestPath,
                 },
                 compatibility: { status: 'compatible', diagnostics: [] },
-                install: { mode: 'link', manifestVersion: '1.0.0', trust, updatePolicy: 'manual' },
+                install: { mode: 'link', manifestVersion: '1.0.0', trust, updatePolicy: 'reviewEveryUpdate' },
                 state: { enabled: true },
             },
         },
@@ -134,7 +134,7 @@ async function installGeneratedUiPlugin(input?: Readonly<{
         sourceRootPath: sourceRoot,
         manifestRelativePath: '.happier-plugin/plugin.json',
         distribution,
-        updatePolicy: 'manual',
+        updatePolicy: 'reviewEveryUpdate',
         createdAtMs: Date.now(),
     });
     try {
@@ -142,7 +142,7 @@ async function installGeneratedUiPlugin(input?: Readonly<{
             pluginId,
             catalogRecord,
             trust,
-            updatePolicy: 'manual',
+            updatePolicy: 'reviewEveryUpdate',
             optionalAccess: [],
             preparedGeneration,
         });

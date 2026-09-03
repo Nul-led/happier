@@ -3,13 +3,16 @@ import { describe, expect, it } from 'vitest';
 import { createPromptRegistryAdapterRegistry } from './createPromptRegistryAdapterRegistry';
 
 describe('createPromptRegistryAdapterRegistry', () => {
-  it('registers the shipped registry adapters', () => {
+  it('registers exactly the shipped registry adapters with real sources', () => {
     const registry = createPromptRegistryAdapterRegistry();
 
-    expect([...registry.adapters.keys()]).toEqual(expect.arrayContaining([
+    // The retired `claude_marketplace` reserved slot stays retired: it exposed
+    // an empty marketplace adapter row with no producer, no configurable
+    // source, and no fetch capability, so its descriptor id must not return.
+    expect([...registry.adapters.keys()].sort()).toEqual([
       'git',
       'skills_sh',
-      'claude_marketplace',
-    ]));
+    ]);
+    expect(registry.adapters.has('claude_marketplace')).toBe(false);
   });
 });

@@ -4,7 +4,6 @@ import type {
   PromptRegistryItemSummaryV1,
 } from '@happier-dev/protocol';
 
-import { createClaudeMarketplacePromptRegistryAdapter } from '@/prompts/registries/adapters/claudeMarketplace/createClaudeMarketplacePromptRegistryAdapter';
 import { createGitPromptRegistryAdapter } from '@/prompts/registries/adapters/git/createGitPromptRegistryAdapter';
 import { createSkillsShPromptRegistryAdapter } from '@/prompts/registries/adapters/skillsSh/createSkillsShPromptRegistryAdapter';
 import type { PromptRegistryAdapter, PromptRegistryResolvedSource } from '@/prompts/registries/types';
@@ -41,7 +40,6 @@ async function resolveAllSources(
 
 export function createPromptRegistryAdapterRegistry(): PromptRegistryRegistry {
   const adapters = new Map<string, PromptRegistryAdapter>([
-    ['claude_marketplace', createClaudeMarketplacePromptRegistryAdapter()],
     ['git', createGitPromptRegistryAdapter()],
     ['skills_sh', createSkillsShPromptRegistryAdapter()],
   ]);
