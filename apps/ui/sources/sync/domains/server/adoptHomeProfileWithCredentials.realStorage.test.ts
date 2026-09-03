@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createHomeCredentialDestinationDigestV1 } from '@happier-dev/protocol';
 
 import { installTokenStorageWebPlatformMocks } from '@/auth/storage/tokenStorage.testHelpers';
 import { installLocalStorageMock } from '@/auth/storage/tokenStorage.web.testHelpers';
@@ -214,7 +215,7 @@ describe('adoptHomeProfileWithCredentials (real storage integration)', () => {
         )).resolves.toBeNull();
     });
 
-    it('stores for an advisory-only placeholder without establishing new routing facts', async () => {
+    it('rejects credentials for an advisory-only placeholder until a current Home observation establishes routing', async () => {
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = `adopt_advisory_placeholder_${Date.now()}_${Math.random()}`;
         const localStorageMock = installLocalStorageMock();
         restoreLocalStorage = localStorageMock.restore;
@@ -234,7 +235,23 @@ describe('adoptHomeProfileWithCredentials (real storage integration)', () => {
             },
         });
 
-        const adopted = await adoptHomeProfileWithCredentials({
+        expect(profiles.preflightHomeProfileAdoption({
+            source: 'account-directory',
+            descriptorAuthority: 'advisory',
+            descriptor: {
+                v: 1,
+                homeServerIdentityId: 'srv_coupled_storage_home',
+                canonicalServerUrl: 'https://directory-route.test',
+                revision: 50,
+                endpoints: [{ kind: 'https', url: 'https://directory-route.test' }],
+            },
+        })).toEqual({
+            canonicalServerUrl: 'https://directory-route.test',
+            serverIdentityId: 'srv_coupled_storage_home',
+            credentialWrite: 'requiresCurrentObservation',
+        });
+
+        await expect(adoptHomeProfileWithCredentials({
             source: 'account-directory',
             descriptorAuthority: 'advisory',
             descriptor: {
@@ -245,15 +262,92 @@ describe('adoptHomeProfileWithCredentials (real storage integration)', () => {
                 endpoints: [{ kind: 'https', url: 'https://directory-route.test' }],
             },
             credentials: { token: 'advisory-home-token' },
+        })).rejects.toMatchObject({
+            code: 'home_profile_adoption_requires_current_observation',
+            canonicalServerUrl: 'https://directory-route.test',
+            serverIdentityId: 'srv_coupled_storage_home',
         });
 
-        expect(adopted.id).toBe(placeholder.id);
-        expect(adopted.descriptorProvenance).toBe('advisory-only');
-        expect(adopted.canonicalServerUrl ?? adopted.serverUrl).toBe('https://directory-route.test');
+        const retained = profiles.getServerProfileById(placeholder.id);
+        expect(retained?.id).toBe(placeholder.id);
+        expect(retained?.descriptorProvenance).toBe('advisory-only');
+        expect(retained?.canonicalServerUrl ?? retained?.serverUrl).toBe('https://directory-route.test');
         await expect(TokenStorage.getCredentialsForServerUrl(
             'https://directory-route.test',
             { serverId: 'srv_coupled_storage_home' },
-        )).resolves.toEqual({ token: 'advisory-home-token' });
+        )).resolves.toBeNull();
+        for (const [, value] of localStorageMock.store.entries()) {
+            expect(value).not.toContain('advisory-home-token');
+        }
+    });
+
+    it('stores the advisory Home credential for a digest-bound destination authorization and rejects a wrong-digest one without mutating anything', async () => {
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = `adopt_bound_authorization_${Date.now()}_${Math.random()}`;
+        const localStorageMock = installLocalStorageMock();
+        restoreLocalStorage = localStorageMock.restore;
+
+        const profiles = await import('@/sync/domains/server/serverProfiles');
+        const { TokenStorage } = await import('@/auth/storage/tokenStorage');
+        const { adoptHomeProfileWithCredentials } = await import('./adoptHomeProfile');
+        const descriptor = {
+            v: 1 as const,
+            homeServerIdentityId: 'srv_bound_first_contact',
+            canonicalServerUrl: 'https://bound-first-contact.test',
+            revision: 12,
+            endpoints: [{ kind: 'https' as const, url: 'https://bound-first-contact.test' }],
+        };
+        const attackerDescriptor = {
+            ...descriptor,
+            canonicalServerUrl: 'https://attacker-route.test',
+            endpoints: [{ kind: 'https' as const, url: 'https://attacker-route.test' }],
+        };
+
+        // A signed binding for a different destination cannot authorize this write.
+        await profiles.withHomeCredentialWriteAuthorization({
+                kind: 'assertion_destination_binding_v1',
+                descriptor: attackerDescriptor,
+                credentialDestinationDigestBase64Url:
+                    createHomeCredentialDestinationDigestV1(attackerDescriptor),
+        }, async (credentialWriteAuthorization) => {
+            await expect(adoptHomeProfileWithCredentials({
+                source: 'account-directory',
+                descriptorAuthority: 'advisory',
+                descriptor,
+                credentialWriteAuthorization,
+                credentials: { token: 'unauthorized-home-token' },
+            })).rejects.toMatchObject({
+            code: 'home_credential_write_authorization_invalid',
+            reason: 'descriptor_mismatch',
+            });
+        });
+        expect(profiles.listServerProfiles()).not.toEqual(expect.arrayContaining([
+            expect.objectContaining({ serverIdentityId: 'srv_bound_first_contact' }),
+        ]));
+        for (const [, value] of localStorageMock.store.entries()) {
+            expect(value).not.toContain('unauthorized-home-token');
+        }
+
+        const adopted = await profiles.withHomeCredentialWriteAuthorization({
+                kind: 'assertion_destination_binding_v1',
+                descriptor,
+                credentialDestinationDigestBase64Url:
+                    createHomeCredentialDestinationDigestV1(descriptor),
+        }, async (credentialWriteAuthorization) => await adoptHomeProfileWithCredentials({
+                source: 'account-directory',
+                descriptorAuthority: 'advisory',
+                descriptor,
+                preserveUserLabel: true,
+                credentialWriteAuthorization,
+                credentials: { token: 'bound-home-token' },
+            }),
+        );
+
+        expect(adopted.serverIdentityId).toBe('srv_bound_first_contact');
+        expect(adopted.descriptorProvenance).toBe('advisory-only');
+        await expect(TokenStorage.getCredentialsForServerUrl(
+            'https://bound-first-contact.test',
+            { serverId: 'srv_bound_first_contact' },
+        )).resolves.toEqual({ token: 'bound-home-token' });
     });
 
     it('reads a pre-adoption loopback credential through the adopted stable identity', async () => {
@@ -283,6 +377,210 @@ describe('adoptHomeProfileWithCredentials (real storage integration)', () => {
         )).resolves.toEqual({ token: 'loopback-home-token' });
     });
 
+    it('moves the canonical URL and credential slot of one established identity while preserving label, aliases, pointers and unrelated Homes', async () => {
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = `canonical_url_migration_${Date.now()}_${Math.random()}`;
+        const localStorageMock = installLocalStorageMock();
+        restoreLocalStorage = localStorageMock.restore;
+
+        const profiles = await import('@/sync/domains/server/serverProfiles');
+        const { TokenStorage } = await import('@/auth/storage/tokenStorage');
+        const { adoptHomeProfileWithCanonicalUrlMigration } = await import('./adoptHomeProfile');
+
+        const other = await profiles.adoptHomeProfile({
+            source: 'qr',
+            descriptor: {
+                v: 1,
+                homeServerIdentityId: 'srv_unrelated_home',
+                canonicalServerUrl: 'https://unrelated-home.test',
+                revision: 1,
+                endpoints: [{ kind: 'https', url: 'https://unrelated-home.test' }],
+            },
+        });
+        await expect(TokenStorage.setCredentialsForServerUrl(
+            'https://unrelated-home.test',
+            { serverId: 'srv_unrelated_home' },
+            { token: 'unrelated-home-token' },
+        )).resolves.toBe(true);
+
+        const moving = await profiles.adoptHomeProfile({
+            source: 'qr',
+            descriptor: {
+                v: 1,
+                homeServerIdentityId: 'srv_moving_home',
+                canonicalServerUrl: 'https://moving-home-old.test',
+                revision: 3,
+                endpoints: [{ kind: 'https', url: 'https://moving-home-old.test' }],
+            },
+        });
+        profiles.renameServerProfile(moving.id, 'Workshop Home');
+        await expect(TokenStorage.setCredentialsForServerUrl(
+            'https://moving-home-old.test',
+            { serverId: 'srv_moving_home' },
+            { token: 'moving-home-token' },
+        )).resolves.toBe(true);
+        profiles.setActiveServerId(other.id);
+        profiles.saveHomeViewState({
+            version: 1,
+            activeTargetKind: 'group',
+            activeTargetId: 'homes',
+            groups: [{ id: 'homes', name: 'Homes', serverIds: [other.id, moving.id] }],
+        });
+        const focusBefore = profiles.getActiveServerSnapshot();
+        const groupsBefore = profiles.loadHomeViewState();
+        const otherBefore = profiles.getServerProfileById(other.id);
+
+        const migrated = await adoptHomeProfileWithCanonicalUrlMigration({
+            source: 'qr',
+            preserveUserLabel: true,
+            descriptor: {
+                v: 1,
+                homeServerIdentityId: 'srv_moving_home',
+                canonicalServerUrl: 'https://moving-home-new.test',
+                revision: 4,
+                endpoints: [{ kind: 'https', url: 'https://moving-home-new.test' }],
+            },
+        });
+
+        expect(migrated).toMatchObject({
+            kind: 'migrated',
+            fromCanonicalServerUrl: 'https://moving-home-old.test',
+            toCanonicalServerUrl: 'https://moving-home-new.test',
+        });
+        expect(migrated.profile.id).toBe(moving.id);
+        expect(migrated.profile.name).toBe('Workshop Home');
+        expect(migrated.profile.serverIdentityId).toBe('srv_moving_home');
+        expect(migrated.profile.canonicalServerUrl ?? migrated.profile.serverUrl)
+            .toBe('https://moving-home-new.test');
+
+        // The exact bearer follows the identity to its destination and is no longer
+        // addressable through the obsolete URL.
+        await expect(TokenStorage.getCredentialsForServerUrl(
+            'https://moving-home-new.test',
+            { serverId: 'srv_moving_home' },
+        )).resolves.toEqual({ token: 'moving-home-token' });
+        await expect(TokenStorage.getCredentialsForServerUrl('https://moving-home-old.test'))
+            .resolves.toBeNull();
+
+        // Pointers, groups and the unrelated Home are untouched.
+        expect(profiles.getActiveServerSnapshot()).toMatchObject({
+            serverId: focusBefore.serverId,
+            serverUrl: focusBefore.serverUrl,
+        });
+        expect(profiles.loadHomeViewState()).toEqual(groupsBefore);
+        expect(profiles.getServerProfileById(other.id)).toEqual(otherBefore);
+        await expect(TokenStorage.getCredentialsForServerUrl(
+            'https://unrelated-home.test',
+            { serverId: 'srv_unrelated_home' },
+        )).resolves.toEqual({ token: 'unrelated-home-token' });
+    });
+
+    it('reports a truthful partial commit when the obsolete credential slot cannot be cleaned up', async () => {
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = `canonical_url_partial_${Date.now()}_${Math.random()}`;
+        const localStorageMock = installLocalStorageMock();
+        restoreLocalStorage = localStorageMock.restore;
+
+        const profiles = await import('@/sync/domains/server/serverProfiles');
+        const { TokenStorage } = await import('@/auth/storage/tokenStorage');
+        const { adoptHomeProfileWithCanonicalUrlMigration } = await import('./adoptHomeProfile');
+
+        const moving = await profiles.adoptHomeProfile({
+            source: 'qr',
+            descriptor: {
+                v: 1,
+                homeServerIdentityId: 'srv_partial_home',
+                canonicalServerUrl: 'https://partial-old.test',
+                revision: 2,
+                endpoints: [{ kind: 'https', url: 'https://partial-old.test' }],
+            },
+        });
+        await expect(TokenStorage.setCredentialsForServerUrl(
+            'https://partial-old.test',
+            { serverId: 'srv_partial_home' },
+            { token: 'partial-home-token' },
+        )).resolves.toBe(true);
+
+        localStorageMock.removeItemMock.mockImplementation(() => {
+            throw new Error('storage removal unavailable');
+        });
+
+        await expect(adoptHomeProfileWithCanonicalUrlMigration({
+            source: 'qr',
+            preserveUserLabel: true,
+            descriptor: {
+                v: 1,
+                homeServerIdentityId: 'srv_partial_home',
+                canonicalServerUrl: 'https://partial-new.test',
+                revision: 3,
+                endpoints: [{ kind: 'https', url: 'https://partial-new.test' }],
+            },
+        })).rejects.toMatchObject({
+            code: 'home_profile_canonical_url_migration_partial_commit',
+            stage: 'obsolete_credential_cleanup',
+            serverIdentityId: 'srv_partial_home',
+            fromCanonicalServerUrl: 'https://partial-old.test',
+            toCanonicalServerUrl: 'https://partial-new.test',
+        });
+
+        // The destination is already committed; the caller is told so rather than
+        // being handed a clean failure that hides the retained obsolete slot.
+        expect(profiles.getServerProfileById(moving.id)?.canonicalServerUrl)
+            .toBe('https://partial-new.test');
+        await expect(TokenStorage.getCredentialsForServerUrl(
+            'https://partial-new.test',
+            { serverId: 'srv_partial_home' },
+        )).resolves.toEqual({ token: 'partial-home-token' });
+    });
+
+    it('moves an identity-scoped credential without a conflicting destination rewrite', async () => {
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = `canonical_url_destination_failure_${Date.now()}_${Math.random()}`;
+        const localStorageMock = installLocalStorageMock();
+        restoreLocalStorage = localStorageMock.restore;
+
+        const profiles = await import('@/sync/domains/server/serverProfiles');
+        const { TokenStorage } = await import('@/auth/storage/tokenStorage');
+        const { adoptHomeProfileWithCanonicalUrlMigration } = await import('./adoptHomeProfile');
+
+        const moving = await profiles.adoptHomeProfile({
+            source: 'qr',
+            descriptor: {
+                v: 1,
+                homeServerIdentityId: 'srv_destination_failure_home',
+                canonicalServerUrl: 'https://destination-failure-old.test',
+                revision: 2,
+                endpoints: [{ kind: 'https', url: 'https://destination-failure-old.test' }],
+            },
+        });
+        await expect(TokenStorage.setCredentialsForServerUrl(
+            'https://destination-failure-old.test',
+            { serverId: 'srv_destination_failure_home' },
+            { token: 'destination-failure-token' },
+        )).resolves.toBe(true);
+        const destinationWrite = vi.spyOn(TokenStorage, 'setCredentialsForServerUrlWithRollback');
+
+        await expect(adoptHomeProfileWithCanonicalUrlMigration({
+            source: 'qr',
+            preserveUserLabel: true,
+            descriptor: {
+                v: 1,
+                homeServerIdentityId: 'srv_destination_failure_home',
+                canonicalServerUrl: 'https://destination-failure-new.test',
+                revision: 3,
+                endpoints: [{ kind: 'https', url: 'https://destination-failure-new.test' }],
+            },
+        })).resolves.toMatchObject({ kind: 'migrated' });
+
+        expect(profiles.getServerProfileById(moving.id)?.canonicalServerUrl)
+            .toBe('https://destination-failure-new.test');
+        await expect(TokenStorage.getCredentialsForServerUrl(
+            'https://destination-failure-new.test',
+            { serverId: 'srv_destination_failure_home' },
+        )).resolves.toEqual({ token: 'destination-failure-token' });
+        await expect(TokenStorage.getCredentialsForServerUrl(
+            'https://destination-failure-old.test',
+        )).resolves.toBeNull();
+        expect(destinationWrite).not.toHaveBeenCalled();
+    });
+
     it('does not expose Home A credentials through a conflicting Home B identity observed at the same URL', async () => {
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = `identity_conflict_storage_${Date.now()}_${Math.random()}`;
         const localStorageMock = installLocalStorageMock();
@@ -308,6 +606,34 @@ describe('adoptHomeProfileWithCredentials (real storage integration)', () => {
         )).resolves.toBeNull();
         await expect(TokenStorage.getCredentialsForServerUrl(
             serverUrl,
+            { serverId: 'srv_home_a' },
+        )).resolves.toEqual({ token: 'home-a-token' });
+    });
+
+    it('does not expose an established Home credential when an unrelated URL advertises its identity', async () => {
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = `public_identity_collision_${Date.now()}_${Math.random()}`;
+        const localStorageMock = installLocalStorageMock();
+        restoreLocalStorage = localStorageMock.restore;
+
+        const profiles = await import('@/sync/domains/server/serverProfiles');
+        const { TokenStorage } = await import('@/auth/storage/tokenStorage');
+        const homeA = profiles.upsertServerProfile({ serverUrl: 'https://home-a.test', source: 'manual' });
+        const unrelated = profiles.upsertServerProfile({ serverUrl: 'https://unrelated.test', source: 'manual' });
+        expect(profiles.setServerProfileIdentityForUrl(homeA.serverUrl, 'srv_home_a')).not.toBeNull();
+        await expect(TokenStorage.setCredentialsForServerUrl(
+            homeA.serverUrl,
+            { serverId: 'srv_home_a' },
+            { token: 'home-a-token' },
+        )).resolves.toBe(true);
+
+        expect(profiles.setServerProfileIdentityForUrl(unrelated.serverUrl, 'srv_home_a')).toBeNull();
+        expect(profiles.getServerProfileById(unrelated.id)).not.toHaveProperty('serverIdentityId');
+        await expect(TokenStorage.getCredentialsForServerUrl(
+            unrelated.serverUrl,
+            { serverId: unrelated.id },
+        )).resolves.toBeNull();
+        await expect(TokenStorage.getCredentialsForServerUrl(
+            homeA.serverUrl,
             { serverId: 'srv_home_a' },
         )).resolves.toEqual({ token: 'home-a-token' });
     });

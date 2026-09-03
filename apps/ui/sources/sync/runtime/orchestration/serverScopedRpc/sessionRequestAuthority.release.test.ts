@@ -45,6 +45,33 @@ describe('server account session request authority disposal', () => {
         expect(releaseTransport).toHaveBeenCalledTimes(1);
     });
 
+    it('keeps release retry custody after a rejection: coalesces concurrent callers, propagates the first rejection, retries once on the next explicit call, then idles', async () => {
+        releaseTransport.mockRejectedValueOnce(new Error('release failed'));
+
+        const authority = await captureSessionRequestAuthorityForServerAccountScope({
+            scope: { serverId: 'server-a', accountId: 'account-a' },
+            activeRequest: vi.fn(),
+        });
+
+        // Concurrent callers coalesce one in-flight underlying release and both
+        // observe its rejection; the second caller must not resolve early just
+        // because released was marked before the await.
+        const settled = await Promise.allSettled([authority.release(), authority.release()]);
+        expect(settled).toEqual([
+            { status: 'rejected', reason: expect.objectContaining({ message: 'release failed' }) },
+            { status: 'rejected', reason: expect.objectContaining({ message: 'release failed' }) },
+        ]);
+        expect(releaseTransport).toHaveBeenCalledTimes(1);
+
+        // The next explicit call retries the underlying release exactly once.
+        await expect(authority.release()).resolves.toBeUndefined();
+        expect(releaseTransport).toHaveBeenCalledTimes(2);
+
+        // After a success, later calls are idempotent.
+        await expect(authority.release()).resolves.toBeUndefined();
+        expect(releaseTransport).toHaveBeenCalledTimes(2);
+    });
+
     it.each(['success', 'error'] as const)('releases once after an operation %s', async (outcome) => {
         const operation = vi.fn(async () => {
             if (outcome === 'error') throw new Error('operation failed');

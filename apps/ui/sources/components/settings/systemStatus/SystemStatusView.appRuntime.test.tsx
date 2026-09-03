@@ -19,6 +19,9 @@ const homeTransportDiagnostics = vi.hoisted(() => [{
     lastKnown: { carrier: 'iroh' as const, observedPath: 'direct' as const },
     lastTransitionAtMs: 1_788_200_000_000,
 }]);
+const socketState = vi.hoisted(() => ({
+    lastError: 'authorization=copy-me-never',
+}));
 
 afterEach(() => {
     standardCleanup();
@@ -122,7 +125,7 @@ vi.mock('@/sync/domains/server/serverProfiles', () => ({
     loadHomeViewState: () => null,
 }));
 
-vi.mock('@/sync/runtime/nativeIrohTunnels/runtime', () => ({
+vi.mock('@/sync/runtime/irohHomeTransportDiagnostics', () => ({
     readIrohHomeTransportDiagnostics: () => homeTransportDiagnostics,
 }));
 
@@ -150,7 +153,7 @@ vi.mock('@/sync/domains/state/storage', async () => {
         useProfile: () => ({ id: 'prof_1', username: 'u1', connectedServices: [] }),
         useIsDataReady: () => true,
         useRealtimeStatus: () => 'connected',
-        useSocketStatus: () => ({ status: 'connected', lastError: null, lastErrorAt: null }),
+        useSocketStatus: () => ({ status: 'connected', lastError: socketState.lastError, lastErrorAt: 1_788_200_000_000 }),
         useLastSyncAt: () => null,
         useMachineListByServerId: () => ({}),
         useMachineListStatusByServerId: () => ({}),
@@ -198,5 +201,7 @@ describe('SystemStatusView app runtime info', () => {
             },
         });
         expect(payload.homeTransports).toEqual(homeTransportDiagnostics);
+        expect(payload.ui.socketLastError).not.toContain('copy-me-never');
+        expect(payload.ui.socketLastError).toContain('[redacted]');
     });
 });

@@ -114,11 +114,17 @@ vi.mock('@/components/settings/machines/localControl/useLocalDaemonControl', () 
     }),
 }));
 
-vi.mock('@/sync/domains/server/serverProfiles', () => ({
-    getActiveServerSnapshot: () => state.activeServerSnapshot,
-    listServerProfiles: () => state.profiles,
-    areServerProfileIdentifiersEquivalent: () => true,
-}));
+// Partial mock: the rest of the profile owner keeps its real exports so an
+// unrelated addition there cannot silently break this suite's module graph.
+vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>();
+    return {
+        ...actual,
+        getActiveServerSnapshot: () => state.activeServerSnapshot,
+        listServerProfiles: () => state.profiles,
+        areServerProfileIdentifiersEquivalent: () => true,
+    };
+});
 
 const upsertAndActivateServerSpy = vi.hoisted(() => vi.fn((..._args: any[]) => ({ id: 'server-daemon', serverUrl: 'https://daemon-relay.example.test' })));
 vi.mock('@/sync/domains/server/serverRuntime', async (importOriginal) => {

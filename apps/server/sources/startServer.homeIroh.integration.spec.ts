@@ -66,6 +66,12 @@ describe("startServer managed Home Iroh composition", () => {
         startServerDbMocks.reset();
         ensureHomeIrohEndpoint.mockClear();
         stopHomeIrohEndpoint.mockClear();
+        ensureHomeIrohEndpoint.mockImplementation(async () => ({
+            status: "unavailable",
+            snapshot: null,
+            failureReason: null,
+        }));
+        stopHomeIrohEndpoint.mockImplementation(async () => {});
         vi.stubGlobal("fetch", vi.fn(() => {
             throw new Error("Personal Home exposure proof must not issue a signup request");
         }));
@@ -138,6 +144,23 @@ describe("startServer managed Home Iroh composition", () => {
             PORT: "not-a-port",
             HAPPIER_MANAGED_RELAY_PURPOSE: "personal-home",
             HAPPIER_CANONICAL_SERVER_URL: "http://127.0.0.1:3005",
+            AUTH_ANONYMOUS_SIGNUP_ENABLED: "0",
+        });
+
+        expect(ensureHomeIrohEndpoint).not.toHaveBeenCalled();
+    });
+
+    it.each([
+        ["legacy public fallback", undefined, "http://127.0.0.1:3005"],
+        ["HTTPS canonical URL", "https://127.0.0.1:3005", undefined],
+        ["canonical URL with a path", "http://127.0.0.1:3005/home", undefined],
+    ] as const)("starts no Iroh endpoint for %s", async (_label, canonicalServerUrl, publicServerUrl) => {
+        await startServerHarness.start("light", {
+            SERVER_ROLE: "all",
+            PORT: "3005",
+            HAPPIER_MANAGED_RELAY_PURPOSE: "personal-home",
+            ...(canonicalServerUrl ? { HAPPIER_CANONICAL_SERVER_URL: canonicalServerUrl } : {}),
+            ...(publicServerUrl ? { HAPPIER_PUBLIC_SERVER_URL: publicServerUrl } : {}),
             AUTH_ANONYMOUS_SIGNUP_ENABLED: "0",
         });
 

@@ -5,11 +5,13 @@ import {
     projectIrohHomeTransportDiagnosticsEvent,
 } from './diagnostics';
 import { createIrohHomeTunnelSupervisor } from './supervisor';
+import { readIrohHomeTransportDiagnostics } from '@/sync/runtime/irohHomeTransportDiagnostics';
 
 describe('native Iroh Home transport diagnostics projection', () => {
     it('retains exact applied configuration and sanitizes relay URLs', () => {
         const snapshot = createInitialIrohHomeTransportDiagnostics({
             homeServerIdentityId: 'home_1',
+            remoteEndpointId: 'a'.repeat(64),
             policy: 'automatic',
             relayUrls: ['https://user:secret@relay.example.test/path?token=secret#fragment'],
             directAddresses: ['192.0.2.10:4433'],
@@ -18,6 +20,7 @@ describe('native Iroh Home transport diagnostics projection', () => {
 
         expect(snapshot).toMatchObject({
             homeServerIdentityId: 'home_1',
+            remoteEndpointId: 'a'.repeat(64),
             state: 'connecting',
             effectiveConfiguration: {
                 policy: 'automatic',
@@ -32,6 +35,7 @@ describe('native Iroh Home transport diagnostics projection', () => {
     it('distinguishes current observations from last-known facts after degradation', () => {
         const initial = createInitialIrohHomeTransportDiagnostics({
             homeServerIdentityId: 'home_1',
+            remoteEndpointId: 'a'.repeat(64),
             policy: 'disabled',
             atMs: 10,
         });
@@ -62,6 +66,7 @@ describe('native Iroh Home transport diagnostics projection', () => {
     it('never infers direct or relay when native reports unknown', () => {
         const initial = createInitialIrohHomeTransportDiagnostics({
             homeServerIdentityId: 'home_1',
+            remoteEndpointId: 'a'.repeat(64),
             policy: 'automatic',
             atMs: 10,
         });
@@ -109,7 +114,14 @@ describe('native Iroh Home transport diagnostics projection', () => {
 
         expect(supervisor.readDiagnostics()[0]).toMatchObject({
             state: 'connected',
+            remoteEndpointId: 'endpoint_1',
             effectiveConfiguration: { policy: 'automatic', relayUrls: ['https://relay.example.test'] },
+            current: { carrier: 'iroh' },
+        });
+        expect(readIrohHomeTransportDiagnostics().find(
+            (entry) => entry.homeServerIdentityId === 'home_1',
+        )).toMatchObject({
+            remoteEndpointId: 'endpoint_1',
             current: { carrier: 'iroh' },
         });
     });

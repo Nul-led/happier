@@ -52,6 +52,10 @@ import { resolveCachedPublicServerUrl } from '@/app/integrations/publicUrl/publi
 import { startRetentionWorker } from '@/app/retention/runtime/startRetentionWorker';
 import { startPluginWebhookCredentialRetirementWorker } from '@/app/plugins/webhooks/credentialRetirementWorker';
 import { startVoiceProviderIdentityBackfillWorker } from '@/app/voice/providerIdentityBackfill/worker';
+import {
+    assertPersonalHomeBootAdmission,
+    resolvePersonalHomeRuntimeLayout,
+} from '@happier-dev/cli-common/firstPartyRuntime';
 import { expandHomeDirPath } from '@happier-dev/cli-common/path';
 import { readPresenceRedisWorkerConfigFromEnv } from '@/config/presence';
 import { initializeServerIdentityCache } from '@/app/serverIdentity/serverIdentity';
@@ -64,6 +68,7 @@ import {
 } from '@/app/iroh/homeIrohEndpoint';
 import { verifyPersonalHomeExposureProof } from '@/app/iroh/personalHomeExposureProof';
 import { createPersonalHomeAuthenticatedReadiness } from '@/app/runtime/personalHomeReadiness';
+import { createHomeConnectionDescriptorContinuityStoreForServer } from '@/app/features/homeConnectionDescriptorContinuity';
 
 export type ServerFlavor = 'full' | 'light';
 export type ServerRole = 'all' | 'api' | 'worker';
@@ -158,6 +163,9 @@ export async function startServer(flavor: ServerFlavor): Promise<void> {
     if (shouldApplyLocalDefaults) {
         applyLightDefaultEnv(process.env);
         applyPackagedLightRuntimeSqliteDefaults(process.env);
+        if (flavor === 'light' && process.env.HAPPIER_MANAGED_RELAY_PURPOSE === 'personal-home') {
+            await assertPersonalHomeBootAdmission(resolvePersonalHomeRuntimeLayout({ env: process.env }));
+        }
         await ensureHandyMasterSecret(process.env);
     }
 
@@ -386,7 +394,10 @@ export async function startServer(flavor: ServerFlavor): Promise<void> {
             // Best-effort: infer a canonical public URL so capabilities.server can advertise it.
             // This is cached and single-flight so startup does not spawn redundant inference processes.
             void resolveCachedPublicServerUrl(process.env).catch(() => null);
-            const api = await startApi();
+            const api = await startApi({
+                homeConnectionDescriptorContinuityStore:
+                    createHomeConnectionDescriptorContinuityStoreForServer(process.env),
+            });
             apiListenerOwner = api;
             const listener = resolveBoundServerListener(api);
 
@@ -405,11 +416,11 @@ export async function startServer(flavor: ServerFlavor): Promise<void> {
                 && process.env.HAPPIER_MANAGED_RELAY_PURPOSE === 'personal-home'
                 && verifyPersonalHomeExposureProof({ env: process.env, listener })
             ) {
+                onShutdown('iroh', () => stopHomeIrohEndpoint());
                 await ensureHomeIrohEndpoint({
                     env: process.env,
                     apiPort: listener?.port ?? null,
                 });
-                onShutdown('iroh', () => stopHomeIrohEndpoint());
             }
         }
 

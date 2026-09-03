@@ -38,8 +38,6 @@ import { resolveSetupSurfacePolicy } from '@/sync/domains/server/setup/setupSurf
 import { t } from '@/text';
 import { buildRelaySetupWizardHref } from '@/utils/routes/setupWizardHref';
 import { invokeDesktopHost } from '@/utils/platform/desktopHost';
-import { useServerFeaturesSnapshotForServerId } from '@/sync/domains/features/featureDecisionRuntime';
-import { resolveHomeMemorySearchReadiness } from '@/sync/domains/memory/useMemorySearchProvider';
 import { useSetting } from '@/sync/domains/state/storage';
 import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
 import { sync } from '@/sync/sync';
@@ -153,14 +151,6 @@ export function ServerSettingsScreen() {
         () => findPersonalHomeBootstrapCompletedProfile(controller.servers),
         [controller.servers],
     );
-    const personalHomeFeatures = useServerFeaturesSnapshotForServerId(personalHomeProfile?.id, {
-        enabled: personalHomeProfile !== null,
-    });
-    const personalHomeSearchReadiness = React.useMemo(() => resolveHomeMemorySearchReadiness(
-        personalHomeFeatures.status === 'ready'
-            ? personalHomeFeatures.features.capabilities.homeSearch
-            : undefined,
-    ), [personalHomeFeatures]);
     const remoteHostsRaw = useSetting('remoteHostsV1');
     const remoteHostsManagementEnabled = useFeatureEnabled('remoteHosts.management');
     const remoteHostsSecretMaterialEnabled = useFeatureEnabled('remoteHosts.secretMaterial');
@@ -387,7 +377,6 @@ export function ServerSettingsScreen() {
                                     onStatusChange={handleLocalRelayStatusChange}
                                     operations={personalHomeOperations}
                                     homeLabel={personalHomeProfile.name}
-                                    searchReadiness={personalHomeSearchReadiness}
                                 />
                             ) : (
                                 <LocalRelayRuntimeControlSection onStatusChange={handleLocalRelayStatusChange} />

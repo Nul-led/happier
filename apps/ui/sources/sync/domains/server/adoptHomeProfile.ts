@@ -2,11 +2,15 @@ import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import { TokenStorage } from '@/auth/storage/tokenStorage';
 import {
     adoptHomeProfile,
+    getServerProfileById,
+    listServerProfiles,
     preflightHomeProfileAdoption,
     type ServerProfile,
 } from './serverProfiles';
 
-export type AdoptHomeProfileWithCredentialsInput = Parameters<typeof adoptHomeProfile>[0] & Readonly<{
+type HomeProfileAdoptionInput = Parameters<typeof adoptHomeProfile>[0];
+
+export type AdoptHomeProfileWithCredentialsInput = HomeProfileAdoptionInput & Readonly<{
     credentials: AuthCredentials;
     shouldCancel?: () => boolean;
 }>;
@@ -36,6 +40,136 @@ export class HomeProfileAdoptionPartialCommitError extends Error {
 }
 
 /**
+ * Directory descriptors are discovery hints, not credential-routing authority.
+ * A credential can be stored only after this exact Home has been observed through
+ * a current identity-bound Home connection and upgraded out of advisory-only state.
+ */
+export class HomeProfileAdoptionRequiresCurrentObservationError extends Error {
+    readonly code = 'home_profile_adoption_requires_current_observation' as const;
+
+    constructor(
+        readonly canonicalServerUrl: string,
+        readonly serverIdentityId: string,
+    ) {
+        super('Home credentials require a current identity-bound Home observation');
+        this.name = 'HomeProfileAdoptionRequiresCurrentObservationError';
+    }
+}
+
+export type HomeProfileCanonicalUrlMigrationResult =
+    | Readonly<{ kind: 'adopted'; profile: ServerProfile }>
+    | Readonly<{
+        kind: 'migrated';
+        profile: ServerProfile;
+        fromCanonicalServerUrl: string;
+        toCanonicalServerUrl: string;
+    }>;
+
+/**
+ * The profile move committed, but its credential verification or obsolete URL-scope
+ * cleanup could not be completed. Callers receive the exact incomplete stage rather
+ * than a clean success or an ambiguous generic failure.
+ */
+export class HomeProfileCanonicalUrlMigrationPartialCommitError extends Error {
+    readonly code = 'home_profile_canonical_url_migration_partial_commit' as const;
+
+    constructor(
+        readonly stage: 'destination_credential_verification' | 'obsolete_credential_cleanup',
+        readonly serverIdentityId: string,
+        readonly fromCanonicalServerUrl: string,
+        readonly toCanonicalServerUrl: string,
+        readonly profile: ServerProfile,
+    ) {
+        super('Home canonical URL migration did not complete its credential transaction');
+        this.name = 'HomeProfileCanonicalUrlMigrationPartialCommitError';
+    }
+}
+
+/**
+ * Authoritative same-identity canonical URL migration. A Home that proves the same stable
+ * identity may move its canonical URL through this one transaction. The profile owner
+ * decides the move (so label, aliases, groups, focus pointers and unrelated Homes are
+ * preserved by construction); the credential remains in its canonical identity scope,
+ * is verified through the destination URL, and only obsolete URL-hash aliases are removed.
+ * An incomplete verification or cleanup surfaces typed partial-commit facts instead of a
+ * clean result. Advisory descriptors can never reach the migration branch: the profile
+ * owner keeps their target pinned to the established URL.
+ */
+export async function adoptHomeProfileWithCanonicalUrlMigration(
+    input: HomeProfileAdoptionInput,
+): Promise<HomeProfileCanonicalUrlMigrationResult> {
+    const target = preflightHomeProfileAdoption(input);
+    const identity = target.serverIdentityId;
+    const existing = identity ? getServerProfileById(identity) : null;
+    const fromCanonicalServerUrl = existing
+        ? existing.canonicalServerUrl ?? existing.serverUrl
+        : null;
+    const toCanonicalServerUrl = target.canonicalServerUrl;
+    if (
+        !identity
+        || !existing
+        || existing.serverIdentityId !== identity
+        || !fromCanonicalServerUrl
+        || fromCanonicalServerUrl === toCanonicalServerUrl
+    ) {
+        return { kind: 'adopted', profile: await adoptHomeProfile(input) };
+    }
+
+    const credentials = await TokenStorage.getCredentialsForServerUrl(
+        fromCanonicalServerUrl,
+        { serverId: identity },
+    );
+    // Credentials are canonically keyed by stable Home identity, not URL. The
+    // old-URL read above also migrates a supported legacy URL-hash credential
+    // into that identity scope. Rewriting it at the destination before the
+    // profile moves would correctly be rejected as an identity/URL conflict.
+    const profile = await adoptHomeProfile(input);
+    // Revision adjudication may legitimately decline the move. The identity-keyed
+    // credential was never rewritten, so the unchanged profile remains coherent.
+    if ((profile.canonicalServerUrl ?? profile.serverUrl) !== toCanonicalServerUrl) {
+        return { kind: 'adopted', profile };
+    }
+
+    if (credentials) {
+        const destinationCredentials = await TokenStorage.getCredentialsForServerUrl(
+            toCanonicalServerUrl,
+            { serverId: identity },
+        );
+        if (JSON.stringify(destinationCredentials) !== JSON.stringify(credentials)) {
+            throw new HomeProfileCanonicalUrlMigrationPartialCommitError(
+                'destination_credential_verification',
+                identity,
+                fromCanonicalServerUrl,
+                toCanonicalServerUrl,
+                profile,
+            );
+        }
+    }
+
+    // Cleanup targets the obsolete URL scope only. A Home that now occupies that URL
+    // owns its own credentials, so the obsolete slot is left to its owner instead.
+    const obsoleteUrlReassigned = listServerProfiles().some((candidate) => (
+        candidate.id !== profile.id
+        && ((candidate.canonicalServerUrl ?? candidate.serverUrl) === fromCanonicalServerUrl
+            || candidate.serverUrl === fromCanonicalServerUrl)
+    ));
+    if (
+        credentials
+        && !obsoleteUrlReassigned
+        && !await TokenStorage.removeCredentialsForServerUrl(fromCanonicalServerUrl)
+    ) {
+        throw new HomeProfileCanonicalUrlMigrationPartialCommitError(
+            'obsolete_credential_cleanup',
+            identity,
+            fromCanonicalServerUrl,
+            toCanonicalServerUrl,
+            profile,
+        );
+    }
+    return { kind: 'migrated', profile, fromCanonicalServerUrl, toCanonicalServerUrl };
+}
+
+/**
  * Non-focusing credential adoption composition. The profile owner validates the exact target
  * without mutation, credentials are written under that canonical target, and the same owner
  * revalidates before adopting the profile. A storage failure leaves profile/focus state intact;
@@ -54,9 +188,18 @@ export async function adoptHomeProfileWithCredentials(
         ...(input.descriptorAuthority !== undefined
             ? { descriptorAuthority: input.descriptorAuthority }
             : {}),
+        ...(input.credentialWriteAuthorization !== undefined
+            ? { credentialWriteAuthorization: input.credentialWriteAuthorization }
+            : {}),
     } satisfies Parameters<typeof preflightHomeProfileAdoption>[0];
     const target = preflightHomeProfileAdoption(adoption);
     if (!target.serverIdentityId) throw new Error('Credentialed Home adoption requires a stable identity');
+    if (target.credentialWrite === 'requiresCurrentObservation') {
+        throw new HomeProfileAdoptionRequiresCurrentObservationError(
+            target.canonicalServerUrl,
+            target.serverIdentityId,
+        );
+    }
     if (input.shouldCancel?.()) throw new Error('Home credential adoption cancelled');
     // Advisory discovery never overwrites an established credential. A signed-out
     // established Home still accepts the newly issued credential in its canonical

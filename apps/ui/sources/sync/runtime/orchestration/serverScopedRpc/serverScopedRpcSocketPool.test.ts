@@ -1,12 +1,32 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION } from '@happier-dev/protocol';
 
+import type { HomeCarrier } from '@/sync/runtime/homeCarrier';
 import type { ScopedSocketClient } from './serverScopedRpcTypes';
 import { createServerScopedRpcSocketPool } from './serverScopedRpcSocketPool';
 
 type Listener = (...args: any[]) => void;
 
-function createFakeSocket(options: Readonly<{ disconnectEventDelayMs?: number; connectionId?: string }> = {}): Readonly<{
+/**
+ * A semantic Home carrier is only ever identified here; the pool never moves bytes
+ * through it in these tests because `createSocket` is supplied directly.
+ */
+function createFakeHomeCarrier(endpointId: string): HomeCarrier {
+    return {
+        endpointId,
+        readObservedPath: () => 'relay',
+        request: async () => {
+            throw new Error('unused');
+        },
+        createWebSocket: () => ({}),
+    };
+}
+
+function createFakeSocket(options: Readonly<{
+    disconnectEventDelayMs?: number;
+    connectionId?: string;
+    connectError?: Error;
+}> = {}): Readonly<{
     socket: any;
     connectSpy: ReturnType<typeof vi.fn>;
     disconnectSpy: ReturnType<typeof vi.fn>;
@@ -33,6 +53,10 @@ function createFakeSocket(options: Readonly<{ disconnectEventDelayMs?: number; c
     };
 
     const connectSpy = vi.fn(() => {
+        if (options.connectError) {
+            emit('connect_error', options.connectError);
+            return;
+        }
         socket.connected = true;
         // socket.io-client assigns `id` once the handshake completes.
         if (typeof options.connectionId === 'string') {
@@ -557,6 +581,341 @@ describe('serverScopedRpcSocketPool', () => {
         });
         expect(createSocketSpy).toHaveBeenCalledTimes(2);
 
+        pool.resetForTests();
+    });
+
+    it('holds one carrier custody across concurrent logical clients and releases it once after the socket is gone', async () => {
+        const { socket, disconnectSpy } = createFakeSocket();
+        const createSocketSpy = vi.fn(() => socket);
+        const homeCarrier = createFakeHomeCarrier('endpoint-shared');
+        const releaseCarrier = vi.fn(async () => {});
+
+        const pool = createServerScopedRpcSocketPool({
+            createSocket: () => createSocketSpy(),
+            reachability: {
+                waitForReachable: async () => {},
+                startReachability: async () => {},
+                reportUnreachable: () => {},
+                subscribeNetworkAllowed: () => () => {},
+            },
+            readIdleDisconnectMs: () => 0,
+        });
+
+        const params = {
+            serverUrl: 'https://home.example.test',
+            carrier: 'iroh' as const,
+            homeCarrier,
+            releaseCarrier,
+            token: 'token-carrier',
+            timeoutMs: 1_000,
+        };
+        const first = await pool.acquire(params);
+        const second = await pool.acquire(params);
+        expect(createSocketSpy).toHaveBeenCalledTimes(1);
+
+        // A logical client only drops its own use of the pooled socket. The carrier
+        // still moves bytes for the other client, so releasing its lease here would
+        // pull the transport out from under a live socket.
+        first.disconnect();
+        await Promise.resolve();
+        expect(releaseCarrier).not.toHaveBeenCalled();
+        expect(disconnectSpy).not.toHaveBeenCalled();
+
+        second.disconnect();
+        await vi.waitFor(() => {
+            expect(releaseCarrier).toHaveBeenCalledTimes(1);
+        });
+        expect(disconnectSpy).toHaveBeenCalledTimes(1);
+        expect(releaseCarrier.mock.invocationCallOrder[0]).toBeGreaterThan(
+            disconnectSpy.mock.invocationCallOrder[0] as number,
+        );
+
+        await pool.stopAll();
+        expect(releaseCarrier).toHaveBeenCalledTimes(1);
+        pool.resetForTests();
+    });
+
+    it('keeps serving the retained carrier and releases a redundant one acquired for the same endpoint', async () => {
+        const { socket } = createFakeSocket();
+        const retainedCarrier = createFakeHomeCarrier('endpoint-shared');
+        const redundantCarrier = createFakeHomeCarrier('endpoint-shared');
+        const releaseRetained = vi.fn(async () => {});
+        const releaseRedundant = vi.fn(async () => {});
+        const socketCarriers: (HomeCarrier | null)[] = [];
+
+        const pool = createServerScopedRpcSocketPool({
+            createSocket: (createParams) => {
+                socketCarriers.push(createParams.homeCarrier ?? null);
+                return socket;
+            },
+            reachability: {
+                waitForReachable: async () => {},
+                startReachability: async () => {},
+                reportUnreachable: () => {},
+                subscribeNetworkAllowed: () => () => {},
+            },
+            readIdleDisconnectMs: () => 5_000,
+        });
+
+        const first = await pool.acquire({
+            serverUrl: 'https://home.example.test',
+            carrier: 'iroh',
+            homeCarrier: retainedCarrier,
+            releaseCarrier: releaseRetained,
+            token: 'token-carrier',
+            timeoutMs: 1_000,
+        });
+        const second = await pool.acquire({
+            serverUrl: 'https://home.example.test',
+            carrier: 'iroh',
+            homeCarrier: redundantCarrier,
+            releaseCarrier: releaseRedundant,
+            token: 'token-carrier',
+            timeoutMs: 1_000,
+        });
+
+        // The live socket keeps the carrier it was built on, and the caller's now
+        // redundant acquisition is released instead of replacing it.
+        expect(socketCarriers).toEqual([retainedCarrier]);
+        // Settled by the time the acquire resolves, not left in flight behind it.
+        expect(releaseRedundant).toHaveBeenCalledTimes(1);
+        expect(releaseRetained).not.toHaveBeenCalled();
+
+        first.disconnect();
+        second.disconnect();
+        await pool.stopAll();
+        expect(releaseRetained).toHaveBeenCalledTimes(1);
+        expect(releaseRedundant).toHaveBeenCalledTimes(1);
+        pool.resetForTests();
+    });
+
+    it('retains failed carrier release custody and never hands out an entry whose carrier was released', async () => {
+        const first = createFakeSocket();
+        const second = createFakeSocket();
+        const createSocketSpy = vi.fn()
+            .mockReturnValueOnce(first.socket)
+            .mockReturnValueOnce(second.socket);
+        const releaseError = new Error('carrier release failed');
+        const releaseCarrier = vi.fn()
+            .mockRejectedValueOnce(releaseError)
+            .mockResolvedValue(undefined);
+        const homeCarrier = createFakeHomeCarrier('endpoint-shared');
+
+        const pool = createServerScopedRpcSocketPool({
+            createSocket: () => createSocketSpy(),
+            reachability: {
+                waitForReachable: async () => {},
+                startReachability: async () => {},
+                reportUnreachable: () => {},
+                subscribeNetworkAllowed: () => () => {},
+            },
+            readIdleDisconnectMs: () => 5_000,
+        });
+
+        await pool.acquire({
+            serverUrl: 'https://home.example.test',
+            carrier: 'iroh',
+            homeCarrier,
+            releaseCarrier,
+            token: 'token-carrier',
+            timeoutMs: 1_000,
+        });
+
+        await expect(pool.stopAll()).rejects.toBe(releaseError);
+        expect(releaseCarrier).toHaveBeenCalledTimes(1);
+
+        // Custody survives the failure, so an explicit retry completes it.
+        await pool.stopAll();
+        expect(releaseCarrier).toHaveBeenCalledTimes(2);
+
+        await pool.acquire({
+            serverUrl: 'https://home.example.test',
+            carrier: 'iroh',
+            homeCarrier,
+            releaseCarrier,
+            token: 'token-carrier',
+            timeoutMs: 1_000,
+        });
+        expect(createSocketSpy).toHaveBeenCalledTimes(2);
+        expect(second.connectSpy).toHaveBeenCalledTimes(1);
+        expect(releaseCarrier).toHaveBeenCalledTimes(2);
+
+        pool.resetForTests();
+    });
+
+    it('holds the entry across a deferred redundant release and keeps its custody when it fails', async () => {
+        const { socket, disconnectSpy } = createFakeSocket();
+        const retainedCarrier = createFakeHomeCarrier('endpoint-shared');
+        const redundantCarrier = createFakeHomeCarrier('endpoint-shared');
+        const releaseRetained = vi.fn(async () => {});
+        const redundantReleaseError = new Error('redundant release failed');
+        let failRedundantRelease!: () => void;
+        const redundantReleaseSettled = new Promise<void>((_resolve, reject) => {
+            failRedundantRelease = () => reject(redundantReleaseError);
+        });
+        const releaseRedundant = vi.fn()
+            .mockImplementationOnce(() => redundantReleaseSettled)
+            .mockResolvedValue(undefined);
+        const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+        const pool = createServerScopedRpcSocketPool({
+            createSocket: () => socket,
+            reachability: {
+                waitForReachable: async () => {},
+                startReachability: async () => {},
+                reportUnreachable: () => {},
+                subscribeNetworkAllowed: () => () => {},
+            },
+            readIdleDisconnectMs: () => 0,
+        });
+
+        const first = await pool.acquire({
+            serverUrl: 'https://home.example.test',
+            carrier: 'iroh',
+            homeCarrier: retainedCarrier,
+            releaseCarrier: releaseRetained,
+            token: 'token-carrier',
+            timeoutMs: 1_000,
+        });
+        const secondAcquire = pool.acquire({
+            serverUrl: 'https://home.example.test',
+            carrier: 'iroh',
+            homeCarrier: redundantCarrier,
+            releaseCarrier: releaseRedundant,
+            token: 'token-carrier',
+            timeoutMs: 1_000,
+        });
+        await vi.waitFor(() => {
+            expect(releaseRedundant).toHaveBeenCalledTimes(1);
+        });
+
+        // The last settled client leaves while the redundant release is still in
+        // flight. The pending acquisition already reserved the entry, so idle
+        // teardown must not pull the socket or its carrier out from under it.
+        first.disconnect();
+        for (let index = 0; index < 6; index += 1) {
+            await Promise.resolve();
+        }
+        expect(disconnectSpy).not.toHaveBeenCalled();
+        expect(releaseRetained).not.toHaveBeenCalled();
+
+        failRedundantRelease();
+        const second = await secondAcquire;
+        expect(consoleErrorSpy).toHaveBeenCalledWith(
+            '[scoped-rpc] redundant carrier release failed',
+            redundantReleaseError,
+        );
+        expect(releaseRedundant).toHaveBeenCalledTimes(1);
+
+        second.disconnect();
+        await vi.waitFor(() => {
+            expect(disconnectSpy).toHaveBeenCalledTimes(1);
+            expect(releaseRetained).toHaveBeenCalledTimes(1);
+        });
+
+        // Custody is the pool's, not the removed entry's, so the failure is retried.
+        await pool.stopAll();
+        expect(releaseRedundant).toHaveBeenCalledTimes(2);
+        expect(releaseRetained).toHaveBeenCalledTimes(1);
+        consoleErrorSpy.mockRestore();
+        pool.resetForTests();
+    });
+
+    it('releases carrier custody when socket creation fails before an entry can retain it', async () => {
+        const releaseCarrier = vi.fn(async () => {});
+        const pool = createServerScopedRpcSocketPool({
+            createSocket: () => {
+                throw new Error('socket construction failed');
+            },
+            reachability: {
+                waitForReachable: async () => {},
+                startReachability: async () => {},
+                reportUnreachable: () => {},
+                subscribeNetworkAllowed: () => () => {},
+            },
+            readIdleDisconnectMs: () => 0,
+        });
+
+        await expect(pool.acquire({
+            serverUrl: 'https://home.example.test',
+            carrier: 'iroh',
+            homeCarrier: createFakeHomeCarrier('endpoint-shared'),
+            releaseCarrier,
+            token: 'token-carrier',
+            timeoutMs: 1_000,
+        })).rejects.toThrow('socket construction failed');
+
+        expect(releaseCarrier).toHaveBeenCalledTimes(1);
+        pool.resetForTests();
+    });
+
+    it('reports the acquire failure and keeps custody when its carrier cleanup also fails', async () => {
+        const cleanupError = new Error('carrier release failed');
+        const releaseCarrier = vi.fn()
+            .mockRejectedValueOnce(cleanupError)
+            .mockResolvedValue(undefined);
+        const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+        const pool = createServerScopedRpcSocketPool({
+            createSocket: () => {
+                throw new Error('socket construction failed');
+            },
+            reachability: {
+                waitForReachable: async () => {},
+                startReachability: async () => {},
+                reportUnreachable: () => {},
+                subscribeNetworkAllowed: () => () => {},
+            },
+            readIdleDisconnectMs: () => 0,
+        });
+
+        // The caller still sees why its acquire failed, not why cleanup failed...
+        await expect(pool.acquire({
+            serverUrl: 'https://home.example.test',
+            carrier: 'iroh',
+            homeCarrier: createFakeHomeCarrier('endpoint-shared'),
+            releaseCarrier,
+            token: 'token-carrier',
+            timeoutMs: 1_000,
+        })).rejects.toThrow('socket construction failed');
+        expect(releaseCarrier).toHaveBeenCalledTimes(1);
+        expect(consoleErrorSpy).toHaveBeenCalledWith(
+            '[scoped-rpc] carrier release failed after acquire failure',
+            cleanupError,
+        );
+
+        // ...and the lease is not lost: the pool still holds it for a retry.
+        await pool.stopAll();
+        expect(releaseCarrier).toHaveBeenCalledTimes(2);
+        consoleErrorSpy.mockRestore();
+        pool.resetForTests();
+    });
+
+    it('releases retained carrier custody when the connect attempt fails', async () => {
+        const { socket } = createFakeSocket({ connectError: new Error('connect refused') });
+        const releaseCarrier = vi.fn(async () => {});
+        const pool = createServerScopedRpcSocketPool({
+            createSocket: () => socket,
+            reachability: {
+                waitForReachable: async () => {},
+                startReachability: async () => {},
+                reportUnreachable: () => {},
+                subscribeNetworkAllowed: () => () => {},
+            },
+            readIdleDisconnectMs: () => 0,
+        });
+
+        await expect(pool.acquire({
+            serverUrl: 'https://home.example.test',
+            carrier: 'iroh',
+            homeCarrier: createFakeHomeCarrier('endpoint-shared'),
+            releaseCarrier,
+            token: 'token-carrier',
+            timeoutMs: 1_000,
+        })).rejects.toThrow('connect refused');
+
+        await vi.waitFor(() => {
+            expect(releaseCarrier).toHaveBeenCalledTimes(1);
+        });
         pool.resetForTests();
     });
 });

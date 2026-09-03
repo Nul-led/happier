@@ -131,6 +131,8 @@ export function resolvePluginMachineExecutionOriginPresentation(
 export function PluginMachineExecutionOriginSelectorView(props: Readonly<{
     selection: PluginMachineExecutionOriginSelectionV1;
     testIDPrefix?: string;
+    /** Contextual label for the machine scope this selector presents. */
+    groupTitle?: string;
 }>) {
     const [settlementError, setSettlementError] = React.useState<string | null>(null);
     const settleSelection = React.useCallback(async (
@@ -158,10 +160,12 @@ export function PluginMachineExecutionOriginSelectorView(props: Readonly<{
         ?? (props.selection.state.kind === 'selected' ? props.selection.state.origin : null);
     const currentTestID = props.testIDPrefix ? `${props.testIDPrefix}.current` : undefined;
     const clearTestID = props.testIDPrefix ? `${props.testIDPrefix}.clear` : undefined;
+    const groupTitle = props.groupTitle ?? t('settingsProviders.detail.targetMachine');
+    const clearAccessibilityScope = props.groupTitle ?? t('settingsPlugins.executionOriginTitle');
 
     return (
         <>
-            <ItemGroup title={t('settingsProviders.detail.targetMachine')}>
+            <ItemGroup title={groupTitle}>
                 <Item
                     testID={currentTestID}
                     title={current.title}
@@ -175,6 +179,7 @@ export function PluginMachineExecutionOriginSelectorView(props: Readonly<{
                     <Item
                         testID={clearTestID}
                         title={t('common.remove')}
+                        accessibilityLabel={`${t('common.remove')}: ${clearAccessibilityScope}`}
                         onPress={() => { void settleSelection(props.selection.clearOrigin()); }}
                         showChevron={false}
                     />

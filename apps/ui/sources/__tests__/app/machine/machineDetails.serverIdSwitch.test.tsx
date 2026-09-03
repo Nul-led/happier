@@ -101,7 +101,8 @@ vi.mock('@/hooks/ui/useMountedShouldContinue', () => ({
 }));
 vi.mock('@/hooks/server/useMachineCapabilitiesCache', () => ({ useMachineCapabilitiesCache: () => ({ state: { status: 'idle' }, refresh: vi.fn() }) }));
 
-vi.mock('@/sync/domains/server/serverProfiles', () => ({
+vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>(),
     areServerProfileIdentifiersEquivalent: (left: unknown, right: unknown) => String(left ?? '').trim() === String(right ?? '').trim(),
     getActiveServerId: () => 'server-a',
 }));
@@ -175,7 +176,7 @@ describe('MachineDetailScreen (serverId param switching)', () => {
             consoleError.mockRestore();
         }
 
-        expect(switchSpy).toHaveBeenCalledWith({ serverId: 'server-b', scope: 'device' });
+        expect(switchSpy).toHaveBeenCalledWith({ serverId: 'server-b', scope: 'tab' });
         expect(refreshMachinesThrottledSpy).toHaveBeenCalled();
         expect(machineCollectBugReportDiagnosticsMock).not.toHaveBeenCalled();
         expect(unhandledSpy).not.toHaveBeenCalled();

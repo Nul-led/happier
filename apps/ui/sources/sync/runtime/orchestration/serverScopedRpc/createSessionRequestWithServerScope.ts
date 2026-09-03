@@ -4,8 +4,11 @@ import {
     createServerAccountScope,
     type ServerAccountScope,
 } from '@/sync/domains/scope/serverAccountScope';
+import { createServerFetchAtEndpoint } from '@/sync/http/client';
+import type { HomeCarrier } from '@/sync/runtime/homeCarrier';
 
 import { resolveServerScopedSessionContext } from './resolveServerScopedSessionContext';
+import { onceAsync } from './resolveServerScopedTransport';
 import type {
     ResolvedServerSessionRpcContext,
 } from './resolveServerScopedSessionContext';
@@ -20,10 +23,27 @@ export function createSessionRequestForExplicitServerScope(params: Readonly<{
     runtimeOrigin?: string;
     token: string;
     timeoutMs?: number;
+    /**
+     * A Home that owns its own bytes and has no origin a URL fetch can reach
+     * (browser Iroh, Lane 06 A7.3/A7.4). When one is resolved, it — not the
+     * canonical URL — is how this request travels; the URL keeps describing
+     * identity, audience and logging exactly as it does for every other carrier.
+     */
+    homeCarrier?: HomeCarrier;
 }>): (path: string, init?: RequestInit) => Promise<Response> {
     return async (path: string, init?: RequestInit) => {
         const headers = new Headers(init?.headers);
         headers.set('Authorization', `Bearer ${params.token}`);
+        if (params.homeCarrier) {
+            // The canonical HTTP owner already knows how to compose a request
+            // for a semantic carrier; this seam supplies the carrier and the
+            // scoped credential rather than adding a second request composer.
+            return await createServerFetchAtEndpoint({
+                endpointUrl: params.serverUrl,
+                homeCarrier: params.homeCarrier,
+                credentials: { token: params.token },
+            })(path, { ...init, method: init?.method ?? 'GET', headers }, { retry: 'none' });
+        }
         return await runtimeFetchWithServerReachability({
             serverUrl: params.serverUrl,
             token: params.token,
@@ -60,6 +80,10 @@ export function createSessionRequestForResolvedServerScope(params: Readonly<{
             ...(params.context.runtimeOrigin ? { runtimeOrigin: params.context.runtimeOrigin } : {}),
             token: params.context.token,
             timeoutMs: params.context.timeoutMs,
+            // The resolved transport already decided how this Home is reached;
+            // dropping its carrier here would send every account-scoped request
+            // to an origin an ingress-less Home does not have.
+            ...(params.context.homeCarrier ? { homeCarrier: params.context.homeCarrier } : {}),
         })(path, init);
     };
 }
@@ -67,12 +91,14 @@ export function createSessionRequestForResolvedServerScope(params: Readonly<{
 export function createSessionRequestWithServerScope(params: Readonly<{
     serverId?: string | null;
     timeoutMs?: number;
+    preferScoped?: boolean;
     activeRequest: (path: string, init?: RequestInit) => Promise<Response>;
 }>): (path: string, init?: RequestInit) => Promise<Response> {
     return async (path: string, init?: RequestInit) => {
         const context = await resolveServerScopedSessionContext({
             serverId: params.serverId ?? null,
             ...(params.timeoutMs ? { timeoutMs: params.timeoutMs } : {}),
+            ...(params.preferScoped === true ? { preferScoped: true } : {}),
         });
         try {
             const response = await createSessionRequestForResolvedServerScope({
@@ -112,12 +138,12 @@ export async function captureSessionRequestAuthorityForServerAccountScope(params
         await context.release?.();
         throw new Error('Account-scoped request authenticated account does not match requested scope');
     }
-    let released = false;
-    const release = async (): Promise<void> => {
-        if (released) return;
-        released = true;
+    // Release ownership must survive a rejection: coalesce concurrent callers,
+    // propagate the first rejection, and retry the underlying release on the
+    // next explicit call instead of losing custody before the await resolves.
+    const release = onceAsync(async () => {
         await context.release?.();
-    };
+    });
     return {
         scope: params.scope,
         context,

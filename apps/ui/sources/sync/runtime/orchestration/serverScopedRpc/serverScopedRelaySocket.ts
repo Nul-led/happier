@@ -115,11 +115,17 @@ export async function resolveServerScopedRelaySocket<TPayload>(params: Readonly<
 
     let socket: ScopedSocketClientLike<TPayload> | null = null;
     let retainedByReturnedSocket = false;
+    // The socket is pooled and can outlive this client, so carrier custody moves to
+    // the pool with the acquire call: it releases the lease when the socket that
+    // carries it is torn down, and unwinds custody itself when the call fails.
+    // Nothing here releases it afterwards, including on the failure paths below.
     try {
         socket = await createEphemeralServerSocketClient({
             serverUrl: context.runtimeOrigin ?? context.targetServerUrl,
             reachabilityServerUrl: context.targetServerUrl,
             ...(context.carrier ? { carrier: context.carrier } : {}),
+            ...(context.homeCarrier ? { homeCarrier: context.homeCarrier } : {}),
+            ...(context.release ? { releaseCarrier: context.release } : {}),
             token: context.token,
             timeoutMs: context.timeoutMs,
         });
@@ -135,7 +141,6 @@ export async function resolveServerScopedRelaySocket<TPayload>(params: Readonly<
             onEnvelope: scopedTransport.on,
             disconnect: async () => {
                 socket?.disconnect();
-                await context.release?.();
             },
         };
         retainedByReturnedSocket = true;
@@ -143,7 +148,6 @@ export async function resolveServerScopedRelaySocket<TPayload>(params: Readonly<
     } finally {
         if (!retainedByReturnedSocket) {
             socket?.disconnect();
-            await context.release?.();
         }
     }
 }

@@ -2,12 +2,18 @@ import { parseBooleanEnv, parseIntEnv } from "@/config/env";
 import { auth } from "@/app/auth/auth";
 import { isRestrictedAuthTokenKind } from "@/app/api/utils/apiTokenRouteAdmission";
 
+export type ApiRateLimitRequest = Readonly<{
+    ip?: unknown;
+    headers?: Readonly<{ authorization?: unknown }>;
+    routeOptions?: Readonly<{ config?: Readonly<{ allowApiToken?: unknown }> }>;
+}>;
+
 export type ApiRouteRateLimitConfig =
     | false
     | Readonly<{
           max: number;
           timeWindow: string;
-          keyGenerator?: (request: any) => string | Promise<string>;
+          keyGenerator?: (request: ApiRateLimitRequest) => string | number | Promise<string | number>;
       }>;
 
 export type ApiRateLimitKeyStrategy = "user-or-ip" | "ip-only";
@@ -30,13 +36,13 @@ function resolveApiRateLimitKeyStrategy(
     return opts.scope === "global" ? "ip-only" : "user-or-ip";
 }
 
-function resolveIpKey(request: any): string {
+function resolveIpKey(request: ApiRateLimitRequest): string {
     const ip = typeof request?.ip === "string" ? request.ip.trim() : "";
     const safeIp = ip.length > API_RATE_LIMIT_MAX_IP_KEY_LENGTH ? ip.slice(0, API_RATE_LIMIT_MAX_IP_KEY_LENGTH) : ip;
     return safeIp ? `ip:${safeIp}` : "ip:unknown";
 }
 
-function parseBearerTokenFromRequest(request: any): string | null {
+function parseBearerTokenFromRequest(request: ApiRateLimitRequest): string | null {
     const raw = request?.headers?.authorization;
     if (typeof raw !== "string") return null;
     const trimmed = raw.trim();
@@ -53,14 +59,14 @@ function parseBearerTokenFromRequest(request: any): string | null {
 export function createApiRateLimitKeyGenerator(
     env: Record<string, string | undefined> = {},
     opts?: Readonly<{ strategy?: ApiRateLimitKeyStrategy; scope?: "route" | "global" }>,
-): (request: any) => Promise<string> {
+): (request: ApiRateLimitRequest) => Promise<string> {
     const strategy =
         opts?.strategy ??
         resolveApiRateLimitKeyStrategy(env, {
             scope: opts?.scope ?? "route",
         });
 
-    return async (request: any) => {
+    return async (request) => {
         const ipKey = resolveIpKey(request);
         if (
             strategy === "ip-only"
@@ -102,7 +108,7 @@ export function gateRateLimitConfig(
 
 export function resolveApiRateLimitPluginOptions(
     env: Record<string, string | undefined>,
-): Readonly<{ global: boolean; max?: number; timeWindow?: string; keyGenerator?: (request: any) => string | Promise<string> }> {
+): Readonly<{ global: boolean; max?: number; timeWindow?: string; keyGenerator?: (request: ApiRateLimitRequest) => string | number | Promise<string | number> }> {
     const enabled = parseBooleanEnv(env.HAPPIER_API_RATE_LIMITS_ENABLED, true);
     if (!enabled) {
         return { global: false };
@@ -127,7 +133,7 @@ export function resolveRouteRateLimit(
         windowEnvKey: string;
         defaultMax: number;
         defaultWindow: string;
-        keyGenerator?: (request: any) => string | Promise<string>;
+        keyGenerator?: (request: ApiRateLimitRequest) => string | number | Promise<string | number>;
     }>,
 ): ApiRouteRateLimitConfig {
     const enabled = parseBooleanEnv(env.HAPPIER_API_RATE_LIMITS_ENABLED, true);

@@ -484,6 +484,71 @@ describe('switchConnectionToActiveServer Iroh lease acquisition', () => {
         expect(syncSwitchServer).toHaveBeenCalledWith({ token: 'scoped-token', secret: 'scoped-secret' });
     });
 
+    it('does not acquire or retry through Home A after focus changes while its credentials are loading', async () => {
+        let activeSnapshot = {
+            serverId: 'srv_home_a',
+            serverUrl: 'https://home-a.example.test',
+            kind: 'custom',
+            generation: 11,
+        };
+        vi.doMock('@/sync/domains/server/serverRuntime', () => ({
+            getActiveServerSnapshot: () => activeSnapshot,
+            captureActiveServerRuntimeTarget: () => ({
+                serverId: activeSnapshot.serverId,
+                generation: activeSnapshot.generation,
+            }),
+            publishActiveServerRuntimeOrigin: publishActiveServerRuntimeOriginSpy,
+        }));
+        vi.doMock('@/sync/domains/server/serverProfiles', () => ({
+            getServerProfileById: (serverId: string) => serverId === 'srv_home_a'
+                ? {
+                    id: 'profile-a',
+                    serverIdentityId: 'srv_home_a',
+                    serverUrl: 'https://home-a.example.test',
+                    irohEndpoint: { endpointId: 'endpoint-a' },
+                    connectionDescriptorRevision: 2,
+                }
+                : {
+                    id: 'profile-b',
+                    serverIdentityId: 'srv_home_b',
+                    serverUrl: 'https://home-b.example.test',
+                    irohEndpoint: { endpointId: 'endpoint-b' },
+                    connectionDescriptorRevision: 1,
+                },
+        }));
+        let resolveCredentials: ((value: { token: string; secret: string }) => void) | null = null;
+        vi.doMock('@/auth/storage/tokenStorage', () => ({
+            TokenStorage: {
+                getCredentialsForServerUrl: vi.fn(async () => await new Promise((resolve) => {
+                    resolveCredentials = resolve;
+                })),
+            },
+        }));
+        const { retryNow } = mockSyncInfra();
+        vi.doMock('@/sync/runtime/nativeIrohTunnels/runtime', () => ({
+            getIrohHomeTunnelRuntime: () => irohRuntimeMock,
+        }));
+        vi.doMock('@/sync/runtime/nativeSshTunnels/runtime', () => ({
+            startNativeSshTunnelRuntimeAppStateLifecycle: startLifecycleSpy,
+        }));
+
+        const { retryActiveServerConnection } = await import('./connectionManager');
+        const retry = retryActiveServerConnection();
+        await vi.waitFor(() => expect(resolveCredentials).toBeTypeOf('function'));
+        activeSnapshot = {
+            serverId: 'srv_home_b',
+            serverUrl: 'https://home-b.example.test',
+            kind: 'custom',
+            generation: 12,
+        };
+        resolveCredentials!({ token: 'token-a', secret: 'secret-a' });
+
+        await expect(retry).resolves.toBeUndefined();
+        expect(irohRuntimeMock.ensureHomeTunnel).not.toHaveBeenCalled();
+        expect(publishActiveServerRuntimeOriginSpy).not.toHaveBeenCalled();
+        expect(retryNow).not.toHaveBeenCalled();
+    });
+
     it('does not acquire Iroh without an endpoint-scoped credential to verify with', async () => {
         mockActiveSnapshot({
             serverId: 'srv_home_a',

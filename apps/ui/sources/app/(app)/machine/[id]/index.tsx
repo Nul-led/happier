@@ -40,6 +40,8 @@ import { formatPathRelativeToHome, getSessionName, getSessionSubtitle } from '@/
 import { isMachineOnline } from '@/utils/sessions/machineUtils';
 import { sync } from '@/sync/sync';
 import { fireAndForget } from '@/utils/system/fireAndForget';
+import { resolveRoutineServerSelectionScope } from '@/sync/domains/server/selection/serverSelectionScope';
+import { isDesktopHost } from '@/utils/platform/desktopHost';
 import { tryShowDaemonUnavailableAlertForRpcError, tryShowDaemonUnavailableAlertForRpcFailure } from '@/utils/errors/daemonUnavailableAlert';
 import { useUnistyles, StyleSheet } from 'react-native-unistyles';
 import { t } from '@/text';
@@ -322,7 +324,10 @@ export default function MachineDetailScreen() {
         setIsServerSwitching(true);
         fireAndForget((async () => {
             try {
-                await setActiveServerAndSwitch({ serverId: requestedServerId, scope: 'device' });
+                await setActiveServerAndSwitch({
+                    serverId: requestedServerId,
+                    scope: resolveRoutineServerSelectionScope(Platform.OS, isDesktopHost()),
+                });
                 await sync.refreshMachinesThrottled({ staleMs: 0, force: true });
             } finally {
                 if (!cancelled) {

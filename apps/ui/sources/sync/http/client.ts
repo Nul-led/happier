@@ -24,6 +24,8 @@ import {
     stripAccountStoredContentCompatibilityHeader,
 } from './accountStoredContentCompatibility';
 import { resolveActiveServerRuntimeOrigin } from '@/sync/runtime/nativeLoopbackTunnels/runtimeOrigin';
+import { getActiveServerHomeCarrier } from '@/sync/domains/server/serverRuntime';
+import type { HomeCarrier } from '@/sync/runtime/homeCarrier';
 
 export { resetRuntimeFetch, setRuntimeFetch } from '@/utils/system/runtimeFetch';
 
@@ -91,8 +93,21 @@ export type ServerFetch = (
 type EndpointRequestContext = Readonly<{
     /** Stable logical URL used for identity, reachability, compatibility, and storage scope. */
     endpointUrl: string;
-    /** Actual request origin. For Iroh this may be an ephemeral loopback origin. */
+    /**
+     * Actual request origin. For a native Iroh lease this may be an ephemeral
+     * loopback origin. A semantic carrier has no origin, so it stays the
+     * canonical endpoint URL and {@link EndpointRequestContext.homeCarrier}
+     * moves the bytes.
+     */
     runtimeOrigin: string;
+    /**
+     * A Home carrier that owns its own bytes (browser Iroh). Everything above
+     * the transport — compatibility headers, auth, credential invalidation,
+     * generation checks, reachability, timeouts, and error classification —
+     * stays here; the carrier only receives the final request and returns the
+     * response.
+     */
+    homeCarrier?: HomeCarrier;
     serverId: string;
     generation?: number;
     /** Active requests retain switch currentness/abort semantics; explicit requests do not. */
@@ -474,6 +489,11 @@ async function requestAtEndpoint(
         isActiveOrigin
             ? getEndpointSupervisorForServer({ serverId: context.serverId, serverUrl: context.endpointUrl })
             : null;
+    // A Home carrier is bound to exactly one Home. An absolute cross-origin URL
+    // is by definition not that Home, so it keeps the platform transport — which
+    // also means a Home bearer can never reach the carrier for another origin
+    // (the fail-closed same-origin check above already refuses to attach one).
+    const homeCarrier = context.homeCarrier && !isCrossOrigin ? context.homeCarrier : null;
 
     let response: Response | null = null;
     try {
@@ -520,8 +540,15 @@ async function requestAtEndpoint(
                         serverUrl: transportOrigin,
                         token: usedToken,
                         endpointSupervisor,
+                        ...(homeCarrier ? { homeCarrier } : {}),
                     });
                     response = await supervisedFetch(requestUrl, {
+                        ...init,
+                        headers,
+                        signal: requestController.signal,
+                    });
+                } else if (homeCarrier) {
+                    response = await homeCarrier.request(requestUrl, {
                         ...init,
                         headers,
                         signal: requestController.signal,
@@ -764,6 +791,7 @@ export function createServerFetchAtEndpoint(
     params: Readonly<{
         endpointUrl: string;
         runtimeOrigin?: string;
+        homeCarrier?: HomeCarrier;
         credentials?: AuthCredentials | null;
         serverId?: string;
         signal?: AbortSignal;
@@ -778,6 +806,7 @@ export function createServerFetchAtEndpoint(
         serverId,
         active: false,
         useStoredCredentials: params.credentials === undefined,
+        ...(params.homeCarrier ? { homeCarrier: params.homeCarrier } : {}),
         ...(params.credentials !== undefined ? { credentials: params.credentials } : {}),
         ...(params.signal ? { signal: params.signal } : {}),
     };
@@ -792,10 +821,14 @@ export async function serverFetch(
     options: ServerFetchOptions = {},
 ): Promise<Response> {
     const snapshot = getActiveServerSnapshot();
+    // Read from the same publication the snapshot was built from, so a carrier
+    // and an origin can never describe different transport generations.
+    const homeCarrier = getActiveServerHomeCarrier();
     return await requestAtEndpoint(
         {
             endpointUrl: snapshot.serverUrl,
             runtimeOrigin: resolveActiveServerRuntimeOrigin(snapshot),
+            ...(homeCarrier ? { homeCarrier } : {}),
             serverId: snapshot.serverId,
             generation: snapshot.generation,
             active: true,

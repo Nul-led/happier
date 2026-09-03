@@ -49,7 +49,7 @@ describe('concurrentSessionCache teardown ordering', () => {
         let appliedActiveServerId = 'server-a';
         let appliedActiveServerListener: ((serverId: string) => void) | null = null;
         let applyingActiveServerListener: ((serverId: string) => void) | null = null;
-        let serverProfilesListener: (() => void) | null = null;
+        let serverProfilesListener: ((generation: number) => void) | null = null;
 
         vi.doMock('@/sync/runtime/orchestration/connectionManager', () => ({
             getAppliedActiveServerId: () => appliedActiveServerId,
@@ -106,7 +106,7 @@ describe('concurrentSessionCache teardown ordering', () => {
             overrides: {
                 loadHomeViewState: () => null,
                 subscribeHomeViewState: () => () => {},
-                subscribeServerProfiles: (listener: () => void) => {
+                subscribeServerProfiles: (listener: (generation: number) => void) => {
                     serverProfilesListener = listener;
                     return () => {
                         serverProfilesListener = null;
@@ -246,7 +246,7 @@ describe('concurrentSessionCache teardown ordering', () => {
         // A profile event queues reconciliation while A is still the applied
         // Home. Applying B must invalidate that queued view before releasing
         // B's secondary transport, otherwise the queued pass recreates B.
-        (serverProfilesListener as (() => void) | null)?.();
+        (serverProfilesListener as ((generation: number) => void) | null)?.(1);
         (applyingActiveServerListener as ((serverId: string) => void) | null)?.('server-b');
         await vi.advanceTimersByTimeAsync(1);
         expect(getCredentialsForServerUrlSpy.mock.calls.filter(([serverUrl]) => (

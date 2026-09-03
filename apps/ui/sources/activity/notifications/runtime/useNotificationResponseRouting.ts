@@ -13,6 +13,8 @@ import {
     setPendingNotificationAction,
 } from '@/sync/domains/pending/pendingNotificationAction';
 import { loadExpoNotifications, type ExpoNotificationsModule } from '@/utils/platform/loadExpoNotifications';
+import { resolveRoutineServerSelectionScope } from '@/sync/domains/server/selection/serverSelectionScope';
+import { isDesktopHost } from '@/utils/platform/desktopHost';
 
 import { isUnsafeNotificationServerUrl, parseNotificationTap } from '../notificationRouting';
 import type { ActivityInteractionCommand } from '@/activity/actions/resolveActivityInteractionCommand';
@@ -217,7 +219,7 @@ export function useNotificationResponseRouting(params: Readonly<{
                                     await upsertActivateAndSwitchServer({
                                         serverUrl,
                                         source: 'notification',
-                                        scope: 'device',
+                                        scope: resolveRoutineServerSelectionScope(Platform.OS, isDesktopHost()),
                                         refreshAuth: refreshAuthRef.current,
                                     });
                                     clearPendingNotificationNav();
@@ -244,7 +246,7 @@ export function useNotificationResponseRouting(params: Readonly<{
                         try {
                             await setActiveServerAndSwitch({
                                 serverId: saved.id,
-                                scope: 'device',
+                                scope: resolveRoutineServerSelectionScope(Platform.OS, isDesktopHost()),
                                 refreshAuth: refreshAuthRef.current,
                             });
                             clearPendingNotificationAction();
@@ -272,7 +274,7 @@ export function useNotificationResponseRouting(params: Readonly<{
                             try {
                                 await setActiveServerAndSwitch({
                                     serverId: saved.id,
-                                    scope: 'device',
+                                    scope: resolveRoutineServerSelectionScope(Platform.OS, isDesktopHost()),
                                     refreshAuth: refreshAuthRef.current,
                                 });
                                 clearPendingNotificationNav();
@@ -297,7 +299,7 @@ export function useNotificationResponseRouting(params: Readonly<{
                                 await upsertActivateAndSwitchServer({
                                     serverUrl,
                                     source: 'notification',
-                                    scope: 'device',
+                                    scope: resolveRoutineServerSelectionScope(Platform.OS, isDesktopHost()),
                                     refreshAuth: refreshAuthRef.current,
                                 });
                                 clearPendingNotificationNav();

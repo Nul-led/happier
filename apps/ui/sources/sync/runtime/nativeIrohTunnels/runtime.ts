@@ -6,6 +6,7 @@ import {
 } from '@/sync/domains/server/serverProfiles';
 
 import { IROH_HOME_TUNNEL_INVALID_ENDPOINT_ERROR, IROH_HOME_TUNNEL_STALE_FOCUS_ERROR } from './fallback';
+import { releaseRetainedIrohMachineHttpLeases } from './machineHttpLifecycle';
 import { createIrohHomeTunnelSupervisor, type IrohHomeTunnelSupervisor, type IrohNativeLifecycleModule } from './supervisor';
 import type {
     IrohHomeTunnelAcquireInput,
@@ -23,11 +24,6 @@ type PublishedIrohHomeLease = Readonly<{
     release: () => Promise<void>;
 }>;
 
-type OwnedIrohHomeLease = Readonly<{
-    leaseId: string;
-    release: () => Promise<void>;
-}>;
-
 /**
  * UI lifecycle runtime for the native Iroh Home tunnel. Acquires/releases the
  * native lease through the shared loopback supervisor, publishes the runtime
@@ -41,7 +37,6 @@ export function createIrohHomeTunnelRuntime(params: Readonly<{
 }> = {}): IrohHomeTunnelRuntime {
     const supervisor = params.createSupervisor?.() ?? createIrohHomeTunnelSupervisor({ native: params.native });
     const publicationsByLeaseId = new Map<string, PublishedIrohHomeLease>();
-    const ownedLeases = new Set<OwnedIrohHomeLease>();
     const recoveryListeners = new Set<(event: IrohHomeTunnelRecoveryRequired) => void>();
 
     function notifyRecoveryRequired(event: IrohHomeTunnelRecoveryRequired): void {
@@ -118,19 +113,6 @@ export function createIrohHomeTunnelRuntime(params: Readonly<{
         if (errors.length > 1) throw new AggregateError(errors, 'Failed to release every active Iroh Home tunnel.');
     }
 
-    async function releaseEveryOwnedLease(): Promise<void> {
-        const errors: unknown[] = [];
-        for (const owned of [...ownedLeases]) {
-            try {
-                await owned.release();
-            } catch (error) {
-                errors.push(error);
-            }
-        }
-        if (errors.length === 1) throw errors[0];
-        if (errors.length > 1) throw new AggregateError(errors, 'Failed to release every owned Iroh Home tunnel.');
-    }
-
     async function acquireHomeRuntimeOrigin(
         input: IrohHomeTunnelAcquireInput,
     ): Promise<IrohHomeRuntimeOriginLease> {
@@ -157,27 +139,22 @@ export function createIrohHomeTunnelRuntime(params: Readonly<{
         }
         let releasePromise: Promise<void> | null = null;
         let released = false;
-        const owned: OwnedIrohHomeLease = {
-            leaseId: lease.leaseId,
-            release: () => {
-                if (released) return Promise.resolve();
-                releasePromise ??= supervisor.releaseTunnel(lease.leaseId).then(() => {
-                    released = true;
-                    ownedLeases.delete(owned);
-                }).catch((error: unknown) => {
-                    // Concurrent callers still share one attempt, but a failed
-                    // native stop remains retryable through the runtime owner.
-                    releasePromise = null;
-                    throw error;
-                });
-                return releasePromise;
-            },
+        const release = (): Promise<void> => {
+            if (released) return Promise.resolve();
+            releasePromise ??= supervisor.releaseTunnel(lease.leaseId).then(() => {
+                released = true;
+            }).catch((error: unknown) => {
+                // Concurrent callers still share one attempt, while the
+                // supervisor retains a failed native stop for a later retry.
+                releasePromise = null;
+                throw error;
+            });
+            return releasePromise;
         };
-        ownedLeases.add(owned);
         return {
             ...lease,
             runtimeOrigin,
-            release: owned.release,
+            release,
         };
     }
 
@@ -247,11 +224,7 @@ export function createIrohHomeTunnelRuntime(params: Readonly<{
             const published = publicationsByLeaseId.get(leaseId) ?? null;
             if (published) releaseActiveServerRuntimeOrigin({ target: published.target, leaseId });
             if (published) await published.release();
-            else {
-                const owned = [...ownedLeases].find((candidate) => candidate.leaseId === leaseId);
-                if (owned) await owned.release();
-                else await supervisor.releaseTunnel(leaseId);
-            }
+            else await supervisor.releaseTunnel(leaseId);
             publicationsByLeaseId.delete(leaseId);
         },
 
@@ -261,10 +234,9 @@ export function createIrohHomeTunnelRuntime(params: Readonly<{
             for (const [leaseId, published] of publicationsByLeaseId) {
                 releaseActiveServerRuntimeOrigin({ target: published.target, leaseId });
             }
-            // The supervisor also owns native handles from acquisitions that
-            // failed before this runtime could receive and retain a lease.
+            // The supervisor is the sole owner of every native handle,
+            // including acquisitions that failed before returning a lease.
             await supervisor.dispose();
-            await releaseEveryOwnedLease();
             publicationsByLeaseId.clear();
             unsubscribeLifecycle();
             unsubscribeLifecycle = () => undefined;
@@ -345,12 +317,18 @@ export function getIrohHomeTunnelRuntime(params: Readonly<{
 }
 
 export async function disposeIrohHomeTunnelRuntime(): Promise<void> {
+    // This is the existing application-level Iroh disposal hook. Retained
+    // machine HTTP stops must succeed before the shared endpoint owner is
+    // considered disposable, and a failure remains retryable on the next call.
+    await releaseRetainedIrohMachineHttpLeases();
     const runtime = singletonRuntime;
     if (!runtime) return;
     if (singletonDisposePromise) return await singletonDisposePromise;
     singletonDisposePromise = (async () => {
         await runtime.dispose();
-        if (singletonRuntime === runtime) singletonRuntime = null;
+        if (singletonRuntime === runtime) {
+            singletonRuntime = null;
+        }
     })();
     try {
         await singletonDisposePromise;

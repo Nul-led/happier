@@ -4,8 +4,9 @@ import type { SystemTaskSpec } from '@happier-dev/protocol';
 
 import { Modal } from '@/modal';
 import { SystemTaskProgressCard } from '@/components/systemTasks';
+import { resolveSystemTaskStepLabel } from '@/components/systemTasks/resolveSystemTaskStepLabel';
 import { readLatestSystemTaskPrompt } from '@/components/systemTasks/prompts/readLatestSystemTaskPrompt';
-import type { SystemTaskRunner } from '@/components/systemTasks/types';
+import type { SystemTaskPromptContinuation, SystemTaskRunner } from '@/components/systemTasks/types';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { Text } from '@/components/ui/text/Text';
@@ -15,7 +16,6 @@ import { formatWithCachedDateTimeFormatter } from '@/utils/datetime/cachedIntlFo
 import { formatByteSize } from '@/utils/files/formatByteSize';
 import { useLocalRelayRuntimeControl } from './useLocalRelayRuntimeControl';
 import { canCancelPersonalHomeOperationProgress } from './personalHomeOperationCancellation';
-import type { HomeMemorySearchReadiness } from '@/sync/domains/memory/useMemorySearchProvider';
 import type { SystemTaskPromptEnvelope } from '@/components/systemTasks/prompts/readLatestSystemTaskPrompt';
 
 export type PersonalHomeRelocationDestination = Readonly<{
@@ -107,27 +107,22 @@ async function runExternalOperation(run: () => Promise<void>): Promise<void> {
     }
 }
 
-async function confirmExternalOperation(title: string, body: string, action: string, run: () => Promise<void>): Promise<void> {
-    if (!await Modal.confirm(title, body, { confirmText: action, destructive: true })) return;
-    try { await run(); } catch (error) {
-        await Modal.alert(tLoose('common.error'), error instanceof Error ? error.message : String(error));
-    }
-}
-
 export const PersonalHomeRuntimeControlSection = React.memo(function PersonalHomeRuntimeControlSection(props: Readonly<{
     runner?: SystemTaskRunner;
     operations?: PersonalHomeRuntimeControlOperations;
     homeLabel?: string;
-    searchReadiness?: HomeMemorySearchReadiness;
     onStatusChange?: (status: ReturnType<typeof useLocalRelayRuntimeControl>['status']) => void;
 }>) {
     const control = useLocalRelayRuntimeControl({ ...(props.runner ? { runner: props.runner } : {}) });
+    const personalHomeCanonicalServerUrl = control.status?.purpose?.kind === 'personal-home'
+        ? control.status.purpose.canonicalServerUrl
+        : null;
 
     React.useEffect(() => {
-        if (!control.isUnavailable && control.status?.purpose?.kind === 'personal-home') void control.refreshInspection();
+        if (!control.isUnavailable && personalHomeCanonicalServerUrl) void control.refreshInspection();
         // refreshInspection is stable for the lifetime of the selected runner.
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [control.isUnavailable, control.status?.purpose]);
+    }, [control.isUnavailable, personalHomeCanonicalServerUrl]);
 
     React.useEffect(() => {
         props.onStatusChange?.(control.status);
@@ -148,7 +143,20 @@ export const PersonalHomeRuntimeControlSection = React.memo(function PersonalHom
         if (!archivePath) return;
         const verified = await control.verifyPersonalHomeBackup({ archivePath });
         if (!verified) return;
-        const overwriteNeeded = control.inspection?.destinationEmpty !== true;
+        const inspectionOutcome = await control.refreshInspection();
+        if (inspectionOutcome.status === 'failed') {
+            await Modal.alert(tLoose('common.error'), inspectionOutcome.message);
+            return;
+        }
+        const destinationInspection = inspectionOutcome.inspection;
+        if (destinationInspection.destinationEmpty == null) {
+            await Modal.alert(
+                copy('restoreRecoveryWarningTitle', 'Restore needs repair'),
+                copy('restoreRecoveryWarningBody', 'Recovery state is ambiguous. No automatic change will be made. Review diagnostics before repairing this Home.'),
+            );
+            return;
+        }
+        const overwriteNeeded = !destinationInspection.destinationEmpty;
         if (overwriteNeeded) {
             const summary = [
                 `${copy('restoreBackupTitle', 'Backup')}: ${archivePath}`,
@@ -161,7 +169,7 @@ export const PersonalHomeRuntimeControlSection = React.memo(function PersonalHom
             if (!await Modal.confirm(
                 copy('restoreConfirmTitle', 'Replace and restore this Personal Home?'),
                 summary,
-                { confirmText: copy('restoreAction', 'Replace and Restore'), destructive: true },
+                { confirmText: copy('restoreConfirmAction', 'Replace and Restore'), destructive: true },
             )) return;
         }
         await control.restorePersonalHomeBackup({ archivePath, overwriteConfirmed: overwriteNeeded, verification: verified });
@@ -177,17 +185,19 @@ export const PersonalHomeRuntimeControlSection = React.memo(function PersonalHom
     }, [control]);
 
     const [relocationMenuOpen, setRelocationMenuOpen] = React.useState(false);
-    const relocationResponderRef = React.useRef<Readonly<{
-        taskId: string;
-        respondToPrompt: PreparedPersonalHomeRelocationTask['respondToPrompt'];
-    }> | null>(null);
-    const handledRelocationPromptRef = React.useRef<string | null>(null);
     const startRelocationTask = React.useCallback(async (prepared: PreparedPersonalHomeRelocationTask) => {
-        const taskId = await control.startExternalOperation(prepared.spec);
-        if (taskId) {
-            relocationResponderRef.current = { taskId, respondToPrompt: prepared.respondToPrompt };
-            handledRelocationPromptRef.current = null;
-        }
+        const promptContinuation: SystemTaskPromptContinuation = async (prompt) => {
+            if (prompt.kind !== 'personal_home.publish_relocation_descriptor.v1'
+                && prompt.kind !== 'personal_home.read_relocation_descriptor.v1') return undefined;
+            try {
+                return await prepared.respondToPrompt(prompt);
+            } catch {
+                // Publication/readback ambiguity must flow through the relocation
+                // authority reconciler; never terminate the surviving task.
+                return { descriptor: null };
+            }
+        };
+        await control.startExternalOperation(prepared.spec, { promptContinuation });
     }, [control]);
     const relocate = React.useCallback(async (destination: PersonalHomeRelocationDestination) => {
         const relocation = props.operations?.relocation;
@@ -205,55 +215,18 @@ export const PersonalHomeRuntimeControlSection = React.memo(function PersonalHom
 
     const recoverRestore = React.useCallback(async () => {
         const targets = control.inspection?.restoreRecovery.affectedTargets ?? [];
-        const status = control.inspection?.restoreRecovery.status;
-        if ((status !== 'rollback_available' && status !== 'finalization_available') || targets.length === 0) return;
+        if (control.inspection?.restoreRecovery.status !== 'rollback_available' || targets.length === 0) return;
         const confirmed = await Modal.confirm(
-            status === 'finalization_available'
-                ? copy('rollbackCompletedRestoreTitle', 'Roll back the completed restore?')
-                : copy('recoverRestoreTitle', 'Recover interrupted restore?'),
-            status === 'finalization_available'
-                ? copy('rollbackCompletedRestoreBody', 'Replace the restored Home with the retained previous data.')
-                : copy('recoverRestoreBody', 'Roll back the interrupted restore using retained recovery material.'),
+            copy('recoverRestoreTitle', 'Recover interrupted restore?'),
+            copy('recoverRestoreBody', 'Roll back the interrupted restore using retained recovery material.'),
             { confirmText: copy('recoverRestoreAction', 'Recover Restore'), destructive: true },
         );
         if (confirmed) await control.recoverPersonalHomeRestore();
     }, [control]);
 
-    const finalizeRestore = React.useCallback(async () => {
-        const targets = control.inspection?.restoreRecovery.affectedTargets ?? [];
-        if (control.inspection?.restoreRecovery.status !== 'finalization_available' || targets.length === 0) return;
-        const confirmed = await Modal.confirm(
-            copy('finalizeRestoreTitle', 'Finalize this restore?'),
-            copy('finalizeRestoreBody', 'The restored Home stays active. Retained rollback material will be permanently removed.'),
-            { confirmText: copy('finalizeRestoreAction', 'Finalize Restore'), destructive: true },
-        );
-        if (confirmed) await control.finalizePersonalHomeRestore();
-    }, [control]);
-
     const handledErasePromptRef = React.useRef<string | null>(null);
+    const [operationDetailsOpen, setOperationDetailsOpen] = React.useState(false);
     const operationPrompt = readLatestSystemTaskPrompt(control.operationSnapshot);
-    React.useEffect(() => {
-        const responder = relocationResponderRef.current;
-        const taskId = control.operationSnapshot?.taskId;
-        if (!responder || !taskId || taskId !== responder.taskId || !operationPrompt || control.operationSnapshot?.result) return;
-        if (operationPrompt.kind !== 'personal_home.publish_relocation_descriptor.v1'
-            && operationPrompt.kind !== 'personal_home.read_relocation_descriptor.v1') return;
-        const promptKey = `${taskId}:${operationPrompt.kind}:${JSON.stringify(operationPrompt.data)}`;
-        if (handledRelocationPromptRef.current === promptKey) return;
-        handledRelocationPromptRef.current = promptKey;
-        void responder.respondToPrompt(operationPrompt)
-            .then(async (answer) => await control.respondToTaskPrompt(taskId, answer))
-            // A publication/readback failure must flow back through the task's
-            // authority reconciliation. Never terminate the destructive task
-            // process after the source may already be quarantined.
-            .catch(async () => await control.respondToTaskPrompt(taskId, { descriptor: null }));
-    }, [control, operationPrompt]);
-    React.useEffect(() => {
-        if (control.operationSnapshot?.result && relocationResponderRef.current?.taskId === control.operationSnapshot.taskId) {
-            relocationResponderRef.current = null;
-            handledRelocationPromptRef.current = null;
-        }
-    }, [control.operationSnapshot]);
     React.useEffect(() => {
         if (!control.operationSnapshot?.awaitingInput
             || operationPrompt?.kind !== 'personal_home.confirm_erase.v1') return;
@@ -312,9 +285,12 @@ export const PersonalHomeRuntimeControlSection = React.memo(function PersonalHom
                 recoveryAction: inspectionRelocationRecovery.primaryAction,
             }
             : null;
+    // Returning is offered only while the durable facts still carry it: once
+    // publication moved authority to the destination, finishing is the only
+    // authority-safe action.
     const returnRelocationRecovery = terminalRelocationRecovery?.recoveryAction === 'return_to_source'
         ? terminalRelocationRecovery
-        : inspectionRelocationRecovery
+        : inspectionRelocationRecovery?.secondaryAction
             ? {
                 operationId: inspectionRelocationRecovery.operationId,
                 destinationMachineId: inspectionRelocationRecovery.destinationMachineId,
@@ -339,9 +315,19 @@ export const PersonalHomeRuntimeControlSection = React.memo(function PersonalHom
             ...(destination.subtitle ? { subtitle: destination.subtitle } : {}),
         })) ?? []
     ), [operations?.relocation?.destinations]);
-    const latestBackup = control.inspection?.latestBackup ?? null;
+    const backupInventoryComplete = control.inspection?.backupsCountComplete !== false;
+    // A bounded inventory exposes a confirmed lower bound, but cannot prove that its newest
+    // inspected manifest is the latest across every retained archive.
+    const latestBackup = backupInventoryComplete ? control.inspection?.latestBackup ?? null : null;
     const canCancel = control.operationSnapshot?.result == null
         && canCancelPersonalHomeOperationProgress(control.activeOperationKind, control.operationSnapshot?.currentStepId ?? null);
+    const operationPhase = control.operationSnapshot
+        ? resolveSystemTaskStepLabel(control.operationSnapshot.currentStepId) ?? control.operationSnapshot.latestMessage
+        : null;
+
+    React.useEffect(() => {
+        setOperationDetailsOpen(false);
+    }, [control.operationSnapshot?.taskId]);
 
     const canStart = !control.isUnavailable && control.status?.installed === true && control.status.service.active !== true && !control.isBusy;
     const canStop = !control.isUnavailable && control.status?.service.active === true && !control.isBusy;
@@ -357,21 +343,18 @@ export const PersonalHomeRuntimeControlSection = React.memo(function PersonalHom
                 onPress={() => void Modal.alert(t('common.details'), [
                     `${copy('homeTitle', 'Home')}: ${homeLabel}`,
                     `${copy('identityTitle', 'Home identity')}: ${control.inspection?.homeServerIdentityId ?? copy('identityUnavailable', 'Identity unavailable')}`,
-                    `${copy('canonicalAddress', 'Address')}: ${control.status?.relayUrl ?? copy('notAvailable', 'Not available')}`,
+                    `${copy('canonicalAddress', 'Home address')}: ${control.status?.relayUrl ?? copy('notAvailable', 'Not available')}`,
                 ].join('\n'))}
             /> : null}
             <Item testID="settings.personalHomeRuntime.storage" title={copy('storageTitle', 'Storage')} subtitle={formatBytes(control.inspection?.databaseBytes ?? null)} showChevron={false} mode="info" />
             <Item testID="settings.personalHomeRuntime.masterSecret" title={copy('masterSecretTitle', 'Home access secret')} subtitle={control.inspection?.masterSecretPresent ? copy('masterSecretPresent', 'Present') : copy('masterSecretUnavailable', 'Not available')} showChevron={false} mode="info" />
             <Item testID="settings.personalHomeRuntime.inspect" title={copy('inspectAction', 'Refresh Home details')} onPress={() => void control.refreshInspection()} disabled={disabled} />
         </ItemGroup>
-        <ItemGroup title={copy('protectionTitle', 'Protection')} footer={copy('backupsSectionFooter', 'Backups contain readable conversations, Home data, trusted-device state, and the Home access secret. Store them only in a location you trust.')}>
-            <Item testID="settings.personalHomeRuntime.lastBackup" title={copy('lastBackupTitle', 'Last backup')} subtitle={latestBackup ? `${formatTimestamp(latestBackup.createdAt)} · ${formatBytes(latestBackup.archiveBytes)}` : copy('lastBackupUnknown', 'Last backup unknown')} showChevron={false} mode="info" />
-            <Item testID="settings.personalHomeRuntime.backupsCount" title={copy('backupsTitle', 'Backup archives')} subtitle={String(control.inspection?.backupsCount ?? 0)} showChevron={false} mode="info" />
-            {props.searchReadiness === 'indexing' ? <Item testID="settings.personalHomeRuntime.search" title={copy('searchTitle', 'Search')} subtitle={copy('searchIndexing', 'Search indexing')} showChevron={false} mode="info" /> : null}
+        <ItemGroup title={copy('actionsTitle', 'Backup & Restore')} footer={copy('backupsSectionFooter', 'Backups contain readable conversations, Home data, trusted-device state, and the Home access secret. Store them only in a location you trust.')}>
             <Item testID="settings.personalHomeRuntime.backup" title={copy('backupAction', 'Back Up Now')} subtitle={copy('backupSubtitle', 'Creates and verifies a plaintext Home archive.')} onPress={() => void backup()} disabled={disabled} />
-            {operations?.selectBackupExportDestination ? <Item testID="settings.personalHomeRuntime.exportBackup" title={copy('exportBackupAction', 'Export Backup…')} subtitle={copy('exportBackupSubtitle', 'Creates a verified backup in a location you choose.')} onPress={() => void exportBackup()} disabled={disabled} /> : null}
-            {operations?.selectBackupArchive ? <Item testID="settings.personalHomeRuntime.verifyBackup" title={copy('verifyAction', 'Verify Backup…')} subtitle={copy('verifySubtitle', 'Checks an archive without restoring it.')} onPress={() => void verify()} disabled={disabled} /> : null}
-            {operations?.selectBackupArchive ? <Item testID="settings.personalHomeRuntime.restore" title={copy('restoreAction', 'Restore…')} subtitle={copy('restoreSubtitle', 'Validates a backup before replacing Home data.')} onPress={() => void restore()} disabled={disabled} /> : null}
+            {operations?.selectBackupExportDestination ? <Item testID="settings.personalHomeRuntime.exportBackup" title={copy('exportBackupAction', 'Export Backup…')} subtitle={copy('exportBackupSubtitle', 'Creates a verified backup in a location you choose.')} onPress={() => void runExternalOperation(exportBackup)} disabled={disabled} /> : null}
+            {operations?.selectBackupArchive ? <Item testID="settings.personalHomeRuntime.verifyBackup" title={copy('verifyAction', 'Verify Backup…')} subtitle={copy('verifySubtitle', 'Checks an archive without restoring it.')} onPress={() => void runExternalOperation(verify)} disabled={disabled} /> : null}
+            {operations?.selectBackupArchive ? <Item testID="settings.personalHomeRuntime.restore" title={copy('restoreAction', 'Restore…')} subtitle={copy('restoreSubtitle', 'Validates a backup before replacing Home data.')} onPress={() => void runExternalOperation(restore)} disabled={disabled} /> : null}
             {relocationItems.length > 0 ? <DropdownMenu
                 testID="settings.personalHomeRuntime.relocate"
                 open={relocationMenuOpen}
@@ -397,9 +380,13 @@ export const PersonalHomeRuntimeControlSection = React.memo(function PersonalHom
                 onPress={() => void runExternalOperation(() => recoverRelocation(finishRelocationRecovery))}
                 disabled={disabled}
             /> : null}
-            {control.inspection?.restoreRecovery.status === 'rollback_available' || control.inspection?.restoreRecovery.status === 'finalization_available' ? <Item testID="settings.personalHomeRuntime.recoverRestore" title={control.inspection.restoreRecovery.status === 'finalization_available' ? copy('rollbackCompletedRestoreAction', 'Roll Back Completed Restore') : copy('recoverRestoreAction', 'Recover Restore')} subtitle={control.inspection.restoreRecovery.status === 'finalization_available' ? copy('rollbackCompletedRestoreSubtitle', 'Restore the previous Home from retained rollback material.') : copy('recoverRestoreSubtitle', 'An interrupted restore can be rolled back explicitly.')} onPress={() => void recoverRestore()} disabled={disabled} destructive /> : null}
-            {control.inspection?.restoreRecovery.status === 'finalization_available' ? <Item testID="settings.personalHomeRuntime.finalizeRestore" title={copy('finalizeRestoreAction', 'Finalize Restore')} subtitle={copy('finalizeRestoreSubtitle', 'Keep the restored Home and permanently remove retained rollback material.')} onPress={() => void finalizeRestore()} disabled={disabled} destructive /> : null}
-            {control.inspection?.restoreRecovery.status === 'ambiguous' ? <Item testID="settings.personalHomeRuntime.restoreRecoveryWarning" title={copy('restoreRecoveryWarningTitle', 'Restore needs repair')} subtitle={copy('restoreRecoveryWarningBody', 'Recovery state is ambiguous. No automatic change will be made. Review diagnostics before repairing this Home.')} showChevron={false} mode="info" /> : null}
+            {returnRelocationRecovery && operations?.relocation?.prepareRecovery ? <Item
+                testID="settings.personalHomeRuntime.recoverRelocationReturn"
+                title={copy('relocationReturnAction', 'Return to Original Home')}
+                subtitle={copy('relocationReturnSubtitle', 'Keep the original Home as the active location.')}
+                onPress={() => void runExternalOperation(() => recoverRelocation(returnRelocationRecovery))}
+                disabled={disabled}
+            /> : null}
             {backupResult ? <Item testID="settings.personalHomeRuntime.backupResult" title={copy('backupVerified', 'Backup verified')} subtitle={[formatTimestamp(backupResult.createdAt), formatBytes(backupResult.bytes), backupResult.homeNeedsAttention ? copy('backupNeedsAttention', 'Backup verified; Home restart needs attention') : copy('backupHomeReady', 'Home restarted')].join(' · ')} showChevron={false} mode="info" /> : null}
             {backupResult ? <Item
                 testID="settings.personalHomeRuntime.backupResultDetails"
@@ -453,32 +440,67 @@ export const PersonalHomeRuntimeControlSection = React.memo(function PersonalHom
                 onPress={() => void runExternalOperation(() => operations.revealBackupOutput!(restoreRecoveryBackup.path))}
             /> : null}
         </ItemGroup>
+        {control.operationSnapshot ? <View>
+            {control.operationSnapshot.status === 'failed' ? <Text testID="system-task-a11y-failure" accessibilityLiveRegion="assertive">{control.operationSnapshot.latestMessage}</Text> : control.operationSnapshot.result ? null : <Text testID="system-task-a11y-progress" accessibilityLiveRegion="polite">{control.operationSnapshot.latestMessage}</Text>}
+            <Item
+                testID="settings.personalHomeRuntime.operationSummary"
+                title={copy('progressTitle', 'Personal Home operation')}
+                subtitle={operationPhase ?? t('common.loading')}
+                showChevron={false}
+                mode="info"
+            />
+            {canCancel ? <Item
+                testID="system-task-progress-cancel"
+                title={t('common.cancel')}
+                onPress={() => void control.cancelTask(control.operationSnapshot!.taskId)}
+            /> : null}
+            <Item
+                testID="settings.personalHomeRuntime.operationDetails"
+                title={t('common.details')}
+                onPress={() => setOperationDetailsOpen((current) => !current)}
+            />
+            {operationDetailsOpen ? <SystemTaskProgressCard
+                title={copy('progressTitle', 'Personal Home operation')}
+                snapshot={control.operationSnapshot}
+            /> : null}
+            {control.operationSnapshot.result ? <Item testID="settings.personalHomeRuntime.dismissResult" title={copy('dismissResult', 'Dismiss')} onPress={control.dismissOperationResult} /> : null}
+        </View> : null}
+        <ItemGroup title={copy('protectionTitle', 'Protection')}>
+            <Item testID="settings.personalHomeRuntime.lastBackup" title={copy('lastBackupTitle', 'Last backup')} subtitle={latestBackup ? `${formatTimestamp(latestBackup.createdAt)} · ${formatBytes(latestBackup.archiveBytes)}` : copy('lastBackupUnknown', 'Last backup unknown')} showChevron={false} mode="info" />
+            <Item testID="settings.personalHomeRuntime.backupsCount" title={copy('backupsTitle', 'Backup archives')} subtitle={`${String(control.inspection?.backupsCount ?? 0)}${backupInventoryComplete ? '' : '+'}`} showChevron={false} mode="info" />
+            {control.inspection?.restoreRecovery.status === 'rollback_available' ? <Item testID="settings.personalHomeRuntime.recoverRestore" title={copy('recoverRestoreAction', 'Recover Restore')} subtitle={copy('recoverRestoreSubtitle', 'An interrupted restore can be rolled back explicitly.')} onPress={() => void recoverRestore()} disabled={disabled} destructive /> : null}
+            {control.inspection?.restoreRecovery.status === 'ambiguous' ? <Item testID="settings.personalHomeRuntime.restoreRecoveryWarning" title={copy('restoreRecoveryWarningTitle', 'Restore needs repair')} subtitle={copy('restoreRecoveryWarningBody', 'Recovery state is ambiguous. No automatic change will be made. Review diagnostics before repairing this Home.')} showChevron={false} mode="info" /> : null}
+            {control.inspection?.restoreRecovery.status === 'finalization_available' ? <Item testID="settings.personalHomeRuntime.restoreRecoveryWarning" title={copy('restoreCleanupWarningTitle', 'Restore cleanup needs attention')} subtitle={copy('restoreCleanupWarningBody', 'The Home was restored, but automatic cleanup did not finish. Review diagnostics and retry the Home operation.')} showChevron={false} mode="info" /> : null}
+        </ItemGroup>
         <ItemGroup title={copy('advancedTitle', 'Advanced')} footer={copy('advancedFooter', 'Runtime controls and diagnostics for this computer.')}>
             {control.status?.version ? <Item title={t('settings.localRelayRuntime.versionTitle')} subtitle={control.status.version} showChevron={false} mode="info" /> : null}
-            <Item testID="settings.localRelayRuntime.installOrUpdate" title={t('settings.localRelayRuntime.installOrUpdateAction')} onPress={() => void control.installOrUpdate()} disabled={control.isBusy || control.isUnavailable} />
-            <Item testID="settings.localRelayRuntime.start" title={t('settings.localRelayRuntime.startAction')} onPress={() => void control.startRelay()} disabled={!canStart} />
-            <Item testID="settings.localRelayRuntime.stop" title={t('settings.localRelayRuntime.stopAction')} onPress={() => void control.stopRelay()} disabled={!canStop} />
+            <Item testID="settings.localRelayRuntime.installOrUpdate" title={copy('installOrUpdateAction', 'Install or update Personal Home')} onPress={() => void control.installOrUpdate()} disabled={control.isBusy || control.isUnavailable} />
+            <Item testID="settings.localRelayRuntime.start" title={copy('startAction', 'Start Personal Home')} onPress={() => void control.startRelay()} disabled={!canStart} />
+            <Item testID="settings.localRelayRuntime.stop" title={copy('stopAction', 'Stop Personal Home')} onPress={() => void control.stopRelay()} disabled={!canStop} />
             <Item testID="settings.personalHomeRuntime.restart" title={copy('restartAction', 'Restart Personal Home')} onPress={() => void control.restartRelay()} disabled={disabled} />
-            {returnRelocationRecovery && operations?.relocation?.prepareRecovery ? <Item
-                testID="settings.personalHomeRuntime.recoverRelocationReturn"
-                title={copy('relocationReturnAction', 'Return to Original Home')}
-                subtitle={copy('relocationReturnSubtitle', 'Keep the original Home as the active location.')}
-                onPress={() => void runExternalOperation(() => recoverRelocation(returnRelocationRecovery))}
-                disabled={disabled}
-            /> : null}
             {operations?.openDataLocation ? <Item testID="settings.personalHomeRuntime.openDataLocation" title={copy('openDataLocationAction', 'Open Home data location')} onPress={() => void runExternalOperation(() => operations.openDataLocation!(control.inspection?.layoutPaths.dataDir ?? ''))} disabled={!control.inspection?.layoutPaths.dataDir} /> : null}
             {operations?.openLogs ? <Item testID="settings.personalHomeRuntime.openLogs" title={copy('openLogsAction', 'Open runtime logs')} onPress={() => void runExternalOperation(() => operations.openLogs!(control.inspection?.layoutPaths.logsDir ?? ''))} disabled={!control.inspection?.layoutPaths.logsDir} /> : null}
-            {operations?.removeProfile ? <Item testID="settings.personalHomeRuntime.removeProfile" title={copy('removeProfileAction', 'Remove Home from Happier')} subtitle={copy('removeProfileSubtitle', 'Removes this profile; runtime data stays on this computer.')} onPress={() => void confirmExternalOperation(copy('removeProfileTitle', 'Remove Personal Home profile?'), copy('removeProfileBody', 'This removes the profile but keeps the runtime and data.'), tLoose('common.remove'), operations.removeProfile!)} destructive /> : null}
+            {operations?.removeProfile ? <Item testID="settings.personalHomeRuntime.removeProfile" title={copy('removeProfileAction', 'Remove Home from Happier')} subtitle={copy('removeProfileSubtitle', 'Removes this profile and this device’s saved Home credential; runtime data stays on this computer.')} onPress={() => void operations.removeProfile?.()} destructive /> : null}
             {operations?.uninstallRuntime ? <Item testID="settings.personalHomeRuntime.uninstallRuntime" title={copy('uninstallRuntimeAction', 'Uninstall runtime, keep data')} subtitle={copy('uninstallRuntimeSubtitle', 'Removes the service and binaries; Home data is preserved.')} onPress={() => void runExternalOperation(operations.uninstallRuntime!)} /> : null}
         </ItemGroup>
         <ItemGroup title={copy('deleteHomeDataTitle', 'Delete Home Data')} footer={copy('removeSectionFooter', 'Uninstall keeps Home data. Permanent deletion is a separate confirmed action.')}>
             <Item testID="settings.personalHomeRuntime.eraseData" title={copy('eraseDataAction', 'Delete Personal Home data permanently')} subtitle={copy('eraseDataSubtitle', 'Separate from uninstall. Permanently deletes the resolved Home data.')} onPress={() => void erase()} disabled={disabled} destructive />
-            {eraseResult ? <Item testID="settings.personalHomeRuntime.eraseResult" title={copy('eraseResultTitle', 'Home data deleted')} subtitle={[`${eraseResult.removedPaths.length} ${copy('pathsRemoved', 'paths removed')}`, eraseResult.stoppedRunningHome ? copy('eraseStoppedHome', 'Running Home was stopped') : copy('eraseHomeAlreadyStopped', 'Home was already stopped'), ...(eraseResult.remainingUnknownPaths.length > 0 ? [`${copy('eraseRemainingPaths', 'Could not remove')}: ${eraseResult.remainingUnknownPaths.join(', ')}`] : [])].join('\n')} showChevron={false} mode="info" /> : null}
+            {eraseResult ? <Item
+                testID="settings.personalHomeRuntime.eraseResult"
+                title={eraseResult.outcome === 'partial'
+                    ? copy('eraseRemainingPaths', 'Could not remove')
+                    : copy('eraseResultTitle', 'Home data deleted')}
+                subtitle={[
+                    `${eraseResult.removedPaths.length} ${copy('pathsRemoved', 'paths removed')}`,
+                    eraseResult.stoppedRunningHome ? copy('eraseStoppedHome', 'Running Home was stopped') : copy('eraseHomeAlreadyStopped', 'Home was already stopped'),
+                    ...([...eraseResult.remainingOwnedPaths, ...eraseResult.remainingUnknownPaths].length > 0
+                        ? [`${copy('eraseRemainingPaths', 'Could not remove')}: ${[...eraseResult.remainingOwnedPaths, ...eraseResult.remainingUnknownPaths].join(', ')}`]
+                        : []),
+                    ...(eraseResult.error ? [eraseResult.error] : []),
+                ].join('\n')}
+                showChevron={false}
+                mode="info"
+            /> : null}
         </ItemGroup>
-        {control.operationSnapshot ? <View>
-            {control.operationSnapshot.status === 'failed' ? <Text testID="system-task-a11y-failure" accessibilityLiveRegion="assertive">{control.operationSnapshot.latestMessage}</Text> : control.operationSnapshot.result ? null : <Text testID="system-task-a11y-progress" accessibilityLiveRegion="polite">{control.operationSnapshot.latestMessage}</Text>}
-            <SystemTaskProgressCard title={copy('progressTitle', 'Personal Home operation')} snapshot={control.operationSnapshot} {...(canCancel ? { onCancel: () => void control.cancelTask(control.operationSnapshot!.taskId) } : {})} />
-            {control.operationSnapshot.result ? <Item testID="settings.personalHomeRuntime.dismissResult" title={copy('dismissResult', 'Dismiss')} onPress={control.dismissOperationResult} /> : null}
-        </View> : null}
     </>;
 });

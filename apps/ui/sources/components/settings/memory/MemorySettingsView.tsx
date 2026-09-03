@@ -30,6 +30,7 @@ import {
     type MemorySettingsV1,
     type MemoryStatusV1,
 } from '@happier-dev/protocol';
+import { MemorySettingsArchivedSection } from './MemorySettingsArchivedSection';
 import { MemorySettingsBudgetsSection } from './MemorySettingsBudgetsSection';
 import { MemorySettingsContentPolicySection } from './MemorySettingsContentPolicySection';
 import { MemorySettingsCoverageSection } from './MemorySettingsCoverageSection';
@@ -313,6 +314,12 @@ export const MemorySettingsView = React.memo(function MemorySettingsView() {
                     }}
                 />
             </ItemGroup>
+
+            <MemorySettingsArchivedSection
+                settings={settings}
+                status={memoryStatus}
+                writeSettings={writeSettings}
+            />
 
             <MemorySettingsCoverageSection settings={settings} writeSettings={writeSettings} />
 

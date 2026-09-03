@@ -306,9 +306,7 @@ describe('ServerSettingsScreen (concurrent section visibility)', () => {
         expect(typeof operations.selectBackupArchive).toBe('function');
         expect(typeof operations.selectBackupExportDestination).toBe('function');
 
-        // Search readiness comes from the existing features/capability runtime for the
-        // local Home profile, never from a second polling owner.
-        expect(typeof sections[0].props.searchReadiness).toBe('string');
+        expect(sections[0].props).not.toHaveProperty('searchReadiness');
 
         // Safe uninstall goes through the canonical system-task bridge.
         await operations.uninstallRuntime();

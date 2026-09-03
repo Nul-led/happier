@@ -15,6 +15,7 @@ type IrohDiagnosticsLifecycleEvent = Readonly<{
 
 type InitialIrohHomeTransportDiagnosticsInput = Readonly<{
     homeServerIdentityId: string;
+    remoteEndpointId: string;
     policy: IrohRelayPolicy;
     relayUrls?: readonly string[];
     directAddresses?: readonly string[];
@@ -30,7 +31,9 @@ export function createInitialIrohHomeTransportDiagnostics(
 ): DoctorSnapshotHomeTransportDiagnostics {
     return {
         homeServerIdentityId: input.homeServerIdentityId,
+        remoteEndpointId: input.remoteEndpointId,
         state: 'connecting',
+        current: { carrier: 'iroh' },
         effectiveConfiguration: {
             policy: input.policy,
             relayUrls: (input.relayUrls ?? []).slice(0, 16).map(sanitizeRelayUrl).filter(Boolean),

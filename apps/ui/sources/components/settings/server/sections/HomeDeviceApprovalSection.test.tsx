@@ -5,6 +5,7 @@ import { createDeferred, flushHookEffects, renderScreen } from '@/dev/testkit';
 import { installSettingsViewCommonModuleMocks } from '../../settingsViewTestHelpers';
 import type { HomeEnrollmentTransport } from '@/auth/enrollment/homeEnrollmentTransport';
 import type { ServerProfile } from '@/sync/domains/server/serverProfiles';
+import type { PendingPreferredHomeEnrollment } from '@/sync/ops/accountDirectory/enrollPreferredDirectoryHome';
 import type { HomeLoginContinuationResult } from '@/sync/ops/accountDirectory/homeLoginApproval';
 
 type ListHomeDeviceApprovals = (typeof import('@/auth/approval/homeDeviceApprovalClient'))['listHomeDeviceApprovals'];
@@ -45,14 +46,9 @@ const closeTransportMock = vi.hoisted(() => vi.fn());
 const getCredentialsForServerUrlMock = vi.hoisted(() => vi.fn<GetCredentialsForServerUrl>(
     async () => ({ token: 'home-b-full-credential' }),
 ));
-const pendingEnrollmentSnapshot = vi.hoisted(() => ({ current: null as null | {
-    kind: 'approval_required';
-    homeServerIdentityId: string;
-    approvalId: string;
-    expiresAtMs: number;
-    resume: () => Promise<never>;
-    cancel: () => Promise<never>;
-} }));
+const pendingEnrollmentSnapshot = vi.hoisted(() => ({
+    current: null as PendingPreferredHomeEnrollment | null,
+}));
 const pendingEnrollmentListeners = vi.hoisted(() => new Set<() => void>());
 const resumePendingEnrollmentMock = vi.hoisted(() => vi.fn<() => Promise<HomeLoginContinuationResult | null>>(async () => null));
 const cancelPendingEnrollmentMock = vi.hoisted(() => vi.fn(async () => undefined));
@@ -312,10 +308,12 @@ describe('HomeDeviceApprovalSection', () => {
         expect(listMock).toHaveBeenCalledTimes(2);
     });
 
-    it('continues a mounted pending enrollment without manual retry and stops after terminal success', async () => {
+    it('keeps a mounted pending enrollment idle until explicit Retry and stops after terminal success', async () => {
         vi.useFakeTimers();
         pendingEnrollmentSnapshot.current = {
             kind: 'approval_required',
+            serviceKey: 'https://accounts.test\u0000srv_directory',
+            entryIntent: 'connect_service',
             homeServerIdentityId: 'srv_home_b',
             approvalId: 'approval-pending',
             expiresAtMs: Date.now() + 60_000,
@@ -339,6 +337,11 @@ describe('HomeDeviceApprovalSection', () => {
             await flushHookEffects({ cycles: 3, turns: 2 });
         });
 
+        expect(resumePendingEnrollmentMock).not.toHaveBeenCalled();
+        await React.act(async () => {
+            screen.pressByTestId('settings.server.homeEnrollment.pending.retry');
+            await flushHookEffects({ cycles: 3, turns: 2 });
+        });
         expect(resumePendingEnrollmentMock).toHaveBeenCalledTimes(1);
         expect(screen.findByTestId('settings.server.homeEnrollment.pending')).toBeNull();
         expect(screen.findByTestId('settings.server.homeApprovals.status')?.props.accessibilityLabel)
@@ -350,10 +353,12 @@ describe('HomeDeviceApprovalSection', () => {
         expect(resumePendingEnrollmentMock).toHaveBeenCalledTimes(1);
     });
 
-    it('expires a mounted pending enrollment once and does not poll it again', async () => {
+    it('checks expiry only when the user explicitly retries a mounted pending enrollment', async () => {
         vi.useFakeTimers();
         pendingEnrollmentSnapshot.current = {
             kind: 'approval_required',
+            serviceKey: 'https://accounts.test\u0000srv_directory',
+            entryIntent: 'connect_service',
             homeServerIdentityId: 'srv_home_b',
             approvalId: 'approval-pending',
             expiresAtMs: Date.now() + 1_000,
@@ -376,6 +381,11 @@ describe('HomeDeviceApprovalSection', () => {
             await flushHookEffects({ cycles: 3, turns: 2 });
         });
 
+        expect(resumePendingEnrollmentMock).not.toHaveBeenCalled();
+        await React.act(async () => {
+            screen.pressByTestId('settings.server.homeEnrollment.pending.retry');
+            await flushHookEffects({ cycles: 3, turns: 2 });
+        });
         expect(resumePendingEnrollmentMock).toHaveBeenCalledTimes(1);
         expect(screen.findByTestId('settings.server.homeEnrollment.pending')).toBeNull();
         expect(screen.findByTestId('settings.server.homeApprovals.status')?.props.accessibilityLabel)
@@ -391,6 +401,8 @@ describe('HomeDeviceApprovalSection', () => {
         const expiresAtMs = Date.parse('2030-01-02T03:04:05.000Z');
         pendingEnrollmentSnapshot.current = {
             kind: 'approval_required',
+            serviceKey: 'https://accounts.test\u0000srv_directory',
+            entryIntent: 'connect_service',
             homeServerIdentityId: 'srv_home_b',
             approvalId: 'approval-pending',
             expiresAtMs,
@@ -418,7 +430,7 @@ describe('HomeDeviceApprovalSection', () => {
 
         const retry = screen.findByTestId('settings.server.homeEnrollment.pending.retry');
         expect(retry?.props.title).toBe('common.retry');
-        expect(screen.findByTestId('settings.server.homeEnrollment.pending.cancel')?.props.title).toBe('common.cancel');
+        expect(screen.findByTestId('settings.server.homeEnrollment.pending.cancel')?.props.title).toBe('approvals.stopWaiting');
         await React.act(async () => {
             screen.pressByTestId('settings.server.homeEnrollment.pending.retry');
             await flushHookEffects({ cycles: 2, turns: 2 });
@@ -431,9 +443,34 @@ describe('HomeDeviceApprovalSection', () => {
         expect(cancelPendingEnrollmentMock).toHaveBeenCalledTimes(1);
     });
 
+    it('presents a retained transport failure as retryable without inventing an approval expiry', async () => {
+        pendingEnrollmentSnapshot.current = {
+            kind: 'transport_unavailable',
+            reason: 'request_failed',
+            serviceKey: 'https://accounts.test\u0000srv_directory',
+            entryIntent: 'connect_service',
+            homeServerIdentityId: 'srv_home_b',
+            resume: async () => ({ kind: 'transport_unavailable', reason: 'request_failed' }),
+            cancel: async () => ({ kind: 'cancelled' }),
+        };
+        listMock.mockResolvedValue({ ok: true, items: [] });
+
+        const { HomeDeviceApprovalSection } = await import('./HomeDeviceApprovalSection');
+        const screen = await renderScreen(<HomeDeviceApprovalSection homes={[HOME]} />);
+        await flushHookEffects({ cycles: 2, turns: 2 });
+
+        const pending = screen.findByTestId('settings.server.homeEnrollment.pending');
+        expect(pending?.props.subtitle).toContain('connect.homeEnrollmentRetryBody');
+        expect(pending?.props.subtitle).not.toContain('connect.expiresAtLabel');
+        expect(screen.findByTestId('settings.server.homeEnrollment.pending.retry')).toBeTruthy();
+        expect(screen.findByTestId('settings.server.homeEnrollment.pending.cancel')).toBeTruthy();
+    });
+
     it('falls back to the pending Home identity when no provided profile matches', async () => {
         pendingEnrollmentSnapshot.current = {
             kind: 'approval_required',
+            serviceKey: 'https://accounts.test\u0000srv_directory',
+            entryIntent: 'connect_service',
             homeServerIdentityId: 'srv_unknown',
             approvalId: 'approval-pending',
             expiresAtMs: Date.now() + 60_000,
@@ -448,7 +485,7 @@ describe('HomeDeviceApprovalSection', () => {
         expect(screen.findByTestId('settings.server.homeEnrollment.pending')?.props.title).toBe('srv_unknown');
     });
 
-    it('shows the stable requester fingerprint before a decision without a redundant security disclosure', async () => {
+    it('shows the exact requester fingerprint before any disclosure or decision when the device label is absent', async () => {
         listMock.mockResolvedValue({ ok: true, items: [{ ...APPROVAL, deviceLabel: null }] });
         resolveTransportMock.mockResolvedValue({
             ok: true,
@@ -465,8 +502,9 @@ describe('HomeDeviceApprovalSection', () => {
             .toContain('connect.requestKeyFingerprintLabel: U9NW-XLlJ-x5Hw-8zJH');
         expect(approval?.props.accessibilityLabel)
             .toContain('connect.requestKeyFingerprintLabel: U9NW-XLlJ-x5Hw-8zJH');
-
         expect(screen.findByTestId('settings.server.homeApprovals.approval-1.security')).toBeNull();
+        expect(screen.findByTestId('settings.server.homeApprovals.approval-1.approve')).toBeTruthy();
+        expect(screen.findByTestId('settings.server.homeApprovals.approval-1.reject')).toBeTruthy();
     });
 
     it('shows a target Home approval and disables both decisions while approving', async () => {
@@ -513,6 +551,8 @@ describe('HomeDeviceApprovalSection', () => {
             .toContain('connect.deviceLabel: New phone');
         expect(screen.findByTestId('settings.server.homeApprovals.approval-1')?.props.subtitle)
             .toContain('connect.requestKeyFingerprintLabel: U9NW-XLlJ-x5Hw-8zJH');
+        expect(screen.findByTestId('settings.server.homeApprovals.approval-1')?.props.accessibilityLabel)
+            .toContain('connect.requestKeyFingerprintLabel: U9NW-XLlJ-x5Hw-8zJH');
         expect(screen.findByTestId('settings.server.homeApprovals.approval-1')?.props.subtitle)
             .toContain('connect.expiresAtLabel:');
         const liveRegions = screen.findAllByProps({ accessibilityLiveRegion: 'polite' });
@@ -547,6 +587,88 @@ describe('HomeDeviceApprovalSection', () => {
         expect(screen.findByTestId('settings.server.homeApprovals.empty')).toBeNull();
         expect(screen.findByTestId('settings.server.homeApprovals.status')?.props.accessibilityLabel)
             .toBe('approvals.status.approved: Home B');
+    });
+
+    it('keeps a successful approval list successful when transport cleanup fails', async () => {
+        listMock.mockResolvedValue({ ok: true, items: [APPROVAL] });
+        closeTransportMock.mockRejectedValueOnce(new Error('transport cleanup failed'));
+        resolveTransportMock.mockResolvedValue({ ok: true, transport: createTransport() });
+
+        const { HomeDeviceApprovalSection } = await import('./HomeDeviceApprovalSection');
+        const screen = await renderScreen(<HomeDeviceApprovalSection homes={[HOME]} />);
+        await flushHookEffects({ cycles: 2, turns: 2 });
+
+        expect(screen.findByTestId('settings.server.homeApprovals.loading')).toBeNull();
+        expect(screen.findByTestId('settings.server.homeApprovals.approval-1')).toBeTruthy();
+        expect(screen.findByTestId('settings.server.homeApprovals.status')?.props.accessibilityLabel)
+            .toBe('approvals.title: Home B');
+    });
+
+    it('keeps a list operation failure primary and clears loading when transport cleanup also fails', async () => {
+        listMock.mockRejectedValueOnce(new Error('approval list failed'));
+        closeTransportMock.mockRejectedValueOnce(new Error('transport cleanup failed'));
+        resolveTransportMock.mockResolvedValue({ ok: true, transport: createTransport() });
+
+        const { HomeDeviceApprovalSection } = await import('./HomeDeviceApprovalSection');
+        const screen = await renderScreen(<HomeDeviceApprovalSection homes={[HOME]} />);
+        await flushHookEffects({ cycles: 2, turns: 2 });
+
+        expect(screen.findByTestId('settings.server.homeApprovals.loading')).toBeNull();
+        expect(screen.findByTestId('settings.server.homeApprovals.error')).toBeTruthy();
+        expect(screen.findByTestId('settings.server.homeApprovals.status')?.props.accessibilityLabel)
+            .toBe('approvals.loadError');
+    });
+
+    it.each([
+        ['approve', 'approved'],
+        ['reject', 'rejected'],
+    ] as const)(
+        'keeps a successful %s successful and clears busy state when transport cleanup fails',
+        async (decision, expectedStatus) => {
+            listMock.mockResolvedValue({ ok: true, items: [APPROVAL] });
+            decideMock.mockResolvedValue({ ok: true, status: expectedStatus });
+            closeTransportMock
+                .mockResolvedValueOnce(undefined)
+                .mockRejectedValueOnce(new Error('transport cleanup failed'));
+            resolveTransportMock.mockResolvedValue({ ok: true, transport: createTransport() });
+
+            const { HomeDeviceApprovalSection } = await import('./HomeDeviceApprovalSection');
+            const screen = await renderScreen(<HomeDeviceApprovalSection homes={[HOME]} />);
+            await flushHookEffects({ cycles: 2, turns: 2 });
+
+            await React.act(async () => {
+                screen.findByTestId(`settings.server.homeApprovals.approval-1.${decision}`)?.props.onPress();
+                await flushHookEffects({ cycles: 2, turns: 2 });
+            });
+
+            expect(screen.findByTestId('settings.server.homeApprovals.approval-1')).toBeNull();
+            expect(screen.findByTestId('settings.server.homeApprovals.status')?.props.accessibilityLabel)
+                .toBe(`approvals.status.${expectedStatus}: Home B`);
+        },
+    );
+
+    it('keeps the operation failure primary, clears busy state, and ignores a cleanup failure', async () => {
+        listMock.mockResolvedValue({ ok: true, items: [APPROVAL] });
+        decideMock.mockRejectedValue(new Error('approval operation failed'));
+        closeTransportMock
+            .mockResolvedValueOnce(undefined)
+            .mockRejectedValueOnce(new Error('transport cleanup failed'));
+        resolveTransportMock.mockResolvedValue({ ok: true, transport: createTransport() });
+
+        const { HomeDeviceApprovalSection } = await import('./HomeDeviceApprovalSection');
+        const screen = await renderScreen(<HomeDeviceApprovalSection homes={[HOME]} />);
+        await flushHookEffects({ cycles: 2, turns: 2 });
+
+        await React.act(async () => {
+            screen.findByTestId('settings.server.homeApprovals.approval-1.approve')?.props.onPress();
+            await flushHookEffects({ cycles: 2, turns: 2 });
+        });
+
+        expect(screen.findByTestId('settings.server.homeApprovals.approval-1.error')).toBeTruthy();
+        expect(screen.findByTestId('settings.server.homeApprovals.approval-1.approve')?.props.disabled).toBe(false);
+        expect(screen.findByTestId('settings.server.homeApprovals.approval-1.reject')?.props.disabled).toBe(false);
+        expect(screen.findByTestId('settings.server.homeApprovals.status')?.props.accessibilityLabel)
+            .toBe('approvals.decisionError: Home B');
     });
 
     it('keeps a failed decision error local to its approval card', async () => {
@@ -615,11 +737,20 @@ describe('HomeDeviceApprovalSection', () => {
         [{ kind: 'expired' }, 'approvals.status.expired. connect.startAgain'],
         [{ kind: 'transport_unavailable', reason: 'no_approved_endpoint' }, 'errors.operationFailed. common.retry'],
         [{ kind: 'failed' }, 'errors.operationFailed. common.retry'],
+        [{
+            kind: 'partial_commit',
+            adoptionError: new Error('profile adoption failed'),
+            canonicalServerUrl: 'https://canonical.home-b.test',
+            homeServerIdentityId: 'srv_home_b',
+            rollbackOutcome: { kind: 'not_applied', reason: 'ownership_changed' },
+        }, 'connect.homeEnrollmentPartialCommitBody'],
     ] as const)(
         'announces the explicit %s pending-enrollment result without creating another continuation owner',
         async (result, expectedAnnouncement) => {
             pendingEnrollmentSnapshot.current = {
                 kind: 'approval_required',
+                serviceKey: 'https://accounts.test\u0000srv_directory',
+                entryIntent: 'connect_service',
                 homeServerIdentityId: 'srv_home_b',
                 approvalId: 'approval-pending',
                 expiresAtMs: Date.now() + 60_000,
@@ -648,6 +779,8 @@ describe('HomeDeviceApprovalSection', () => {
     it('announces explicit cancellation after the pending continuation is released', async () => {
         pendingEnrollmentSnapshot.current = {
             kind: 'approval_required',
+            serviceKey: 'https://accounts.test\u0000srv_directory',
+            entryIntent: 'connect_service',
             homeServerIdentityId: 'srv_home_b',
             approvalId: 'approval-pending',
             expiresAtMs: Date.now() + 60_000,
@@ -667,7 +800,7 @@ describe('HomeDeviceApprovalSection', () => {
         });
 
         expect(screen.findByTestId('settings.server.homeApprovals.status')?.props.accessibilityLabel)
-            .toBe('Home B. approvals.status.canceled');
+            .toBe('Home B. approvals.stopWaiting');
         expect(screen.findAllByProps({ accessibilityLiveRegion: 'polite' })).toHaveLength(1);
     });
 });

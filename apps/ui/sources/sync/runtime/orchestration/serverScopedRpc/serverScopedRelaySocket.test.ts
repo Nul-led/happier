@@ -182,15 +182,21 @@ describe('resolveServerScopedRelaySocket', () => {
         expect(resolveServerScopedContextSpy).toHaveBeenCalledTimes(1);
     });
 
-    it('surfaces scoped transport release failure from awaitable disconnect', async () => {
-        const releaseError = new Error('release failed');
-        const release = vi.fn(async () => {
-            throw releaseError;
-        });
+    it('hands carrier custody to the socket pool and never releases it from a logical disconnect', async () => {
+        const release = vi.fn(async () => {});
+        const disconnectSpy = vi.fn();
+        const homeCarrier = {
+            endpointId: 'endpoint-release',
+            readObservedPath: () => 'relay' as const,
+            request: async () => {
+                throw new Error('unused');
+            },
+            createWebSocket: () => ({}),
+        };
         createEphemeralServerSocketClientSpy.mockResolvedValue({
             emit: vi.fn(),
             timeout: vi.fn(),
-            disconnect: vi.fn(),
+            disconnect: disconnectSpy,
             on: vi.fn(),
             off: vi.fn(),
             getSocketId: vi.fn(() => 'socket-release'),
@@ -204,6 +210,8 @@ describe('resolveServerScopedRelaySocket', () => {
             targetAccountId: 'account-release',
             token: 'token-release',
             encryption: null,
+            carrier: 'iroh',
+            homeCarrier,
             release,
         });
 
@@ -215,8 +223,16 @@ describe('resolveServerScopedRelaySocket', () => {
             createScopedTransport: () => ({ send: () => {}, on: () => () => {} }),
         });
 
-        await expect(socket.disconnect()).rejects.toBe(releaseError);
-        expect(release).toHaveBeenCalledTimes(1);
+        // The pooled socket may still be shared, so the pool owns the carrier lease
+        // for as long as it can reuse it; this client only drops its own use.
+        expect(createEphemeralServerSocketClientSpy).toHaveBeenCalledWith(expect.objectContaining({
+            homeCarrier,
+            releaseCarrier: release,
+        }));
+
+        await socket.disconnect();
+        expect(disconnectSpy).toHaveBeenCalledTimes(1);
+        expect(release).not.toHaveBeenCalled();
     });
 
     it('falls back to transport- and socket-provided socket ids when scoped overrides are missing', async () => {
@@ -315,7 +331,7 @@ describe('resolveServerScopedRelaySocket', () => {
         expect(socket.socketId).toBe('socket-default-id');
     });
 
-    it('releases the scoped carrier when socket construction fails', async () => {
+    it('leaves carrier custody with the socket pool when socket construction fails', async () => {
         const releaseSpy = vi.fn(async () => {});
         resolveServerScopedContextSpy.mockResolvedValue({
             scope: 'scoped',
@@ -340,10 +356,15 @@ describe('resolveServerScopedRelaySocket', () => {
             createScopedTransport: () => ({ send: () => {}, on: () => () => {} }),
         })).rejects.toThrow('socket failed');
 
-        expect(releaseSpy).toHaveBeenCalledTimes(1);
+        // Custody moves with the acquire call, so failing there is the pool's to
+        // unwind; releasing here as well would double-release a shared lease.
+        expect(createEphemeralServerSocketClientSpy).toHaveBeenCalledWith(expect.objectContaining({
+            releaseCarrier: releaseSpy,
+        }));
+        expect(releaseSpy).not.toHaveBeenCalled();
     });
 
-    it('disconnects the socket and releases the scoped carrier when transport construction fails', async () => {
+    it('disconnects the pooled socket and leaves carrier custody with the pool when transport construction fails', async () => {
         const releaseSpy = vi.fn(async () => {});
         const disconnectSpy = vi.fn();
         createEphemeralServerSocketClientSpy.mockResolvedValue({
@@ -378,7 +399,9 @@ describe('resolveServerScopedRelaySocket', () => {
             },
         })).rejects.toThrow('transport failed');
 
+        // Dropping the pool use is enough: the pool releases the carrier once the
+        // pooled socket it belongs to is actually torn down.
         expect(disconnectSpy).toHaveBeenCalledTimes(1);
-        expect(releaseSpy).toHaveBeenCalledTimes(1);
+        expect(releaseSpy).not.toHaveBeenCalled();
     });
 });

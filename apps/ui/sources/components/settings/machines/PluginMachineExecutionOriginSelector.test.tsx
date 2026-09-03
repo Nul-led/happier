@@ -45,10 +45,12 @@ type CapturedItemProps = Readonly<{
     mode?: string;
     showChevron?: boolean;
     onPress?: () => void;
+    accessibilityLabel?: string;
 }>;
 
 const capturedPickerProps: CapturedPickerProps[] = [];
 const capturedItemProps: CapturedItemProps[] = [];
+const capturedGroupTitleProps: Readonly<{ title?: React.ReactNode }>[] = [];
 
 installNewSessionComponentsCommonModuleMocks({
     text: async () => {
@@ -65,7 +67,10 @@ vi.mock('@/components/ui/lists/Item', () => ({
 }));
 
 vi.mock('@/components/ui/lists/ItemGroup', () => ({
-    ItemGroup: ({ children }: { children?: React.ReactNode }) => React.createElement(React.Fragment, null, children),
+    ItemGroup: ({ title, children }: { title?: React.ReactNode; children?: React.ReactNode }) => {
+        capturedGroupTitleProps.push({ title });
+        return React.createElement(React.Fragment, null, children);
+    },
 }));
 
 vi.mock('@/components/sessions/new/components/ServerScopedMachineSelector', () => ({
@@ -309,8 +314,44 @@ describe('PluginMachineExecutionOriginSelector', () => {
             selected: true,
         }));
         const clear = capturedItemProps.find((item) => item.testID === 'plugin.origin.clear');
+        expect(clear?.accessibilityLabel).toBe('common.remove: settingsPlugins.executionOriginTitle');
         clear?.onPress?.();
         expect(fixture.clearOrigin).toHaveBeenCalledOnce();
         expect(capturedPickerProps).toHaveLength(0);
+    });
+
+    it('labels its group with the caller-provided presentation title instead of the shared default', async () => {
+        const machineA = candidate({ machineId: 'machine-a', materializationId: 'mat-a', version: '1.0.0' });
+        const fixture = selection({
+            candidates: [machineA],
+            state: { kind: 'conflict', candidates: [machineA], reasons: ['different_versions'] },
+        });
+        const { PluginMachineExecutionOriginSelectorView } = await import('./PluginMachineExecutionOriginSelector');
+        capturedGroupTitleProps.length = 0;
+
+        await renderScreen(React.createElement(PluginMachineExecutionOriginSelectorView, {
+            selection: fixture.value,
+            testIDPrefix: 'plugin.origin',
+            groupTitle: 'settingsPlugins.executionOriginTitle',
+        }));
+
+        expect(capturedGroupTitleProps).toContainEqual({ title: 'settingsPlugins.executionOriginTitle' });
+    });
+
+    it('keeps the incumbent shared machine heading as the default group title for callers that name nothing', async () => {
+        const machineA = candidate({ machineId: 'machine-a', materializationId: 'mat-a', version: '1.0.0' });
+        const fixture = selection({
+            candidates: [machineA],
+            state: { kind: 'conflict', candidates: [machineA], reasons: ['different_versions'] },
+        });
+        const { PluginMachineExecutionOriginSelectorView } = await import('./PluginMachineExecutionOriginSelector');
+        capturedGroupTitleProps.length = 0;
+
+        await renderScreen(React.createElement(PluginMachineExecutionOriginSelectorView, {
+            selection: fixture.value,
+            testIDPrefix: 'plugin.origin',
+        }));
+
+        expect(capturedGroupTitleProps).toContainEqual({ title: 'settingsProviders.detail.targetMachine' });
     });
 });

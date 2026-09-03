@@ -10,6 +10,7 @@ import {
   resolveServerProfileScopeIdForIdentifier,
 } from '@/sync/domains/server/serverProfiles';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
+import type { HomeCarrier } from '@/sync/runtime/homeCarrier';
 import { parseToken } from '@/utils/auth/parseToken';
 import {
   resolveServerScopedTransport,
@@ -38,6 +39,8 @@ export type ResolvedServerSessionRpcContext =
       encryption: ScopedRpcSessionEncryptionContext | null;
       runtimeOrigin?: string;
       carrier?: 'https' | 'iroh';
+      /** Semantic carrier for a Home with no reachable URL origin (browser Iroh). */
+      homeCarrier?: HomeCarrier;
       release?: () => Promise<void>;
     }>;
 
@@ -77,6 +80,7 @@ async function buildScopedContext(params: Readonly<{
     encryption,
     runtimeOrigin: transport.runtimeOrigin,
     carrier: transport.carrier,
+    ...(transport.homeCarrier ? { homeCarrier: transport.homeCarrier } : {}),
     release: transport.release,
   };
 }

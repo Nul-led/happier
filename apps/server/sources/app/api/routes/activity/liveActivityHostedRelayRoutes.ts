@@ -15,6 +15,7 @@ import {
 } from "@/app/activity/liveActivities/providers/apnsLiveActivityHttp2Sender";
 import { resolveLiveActivityRemoteTransportConfig } from "@/app/activity/liveActivities/resolveLiveActivityRemoteTransport";
 import { resolveApiHotEndpointRateLimit } from "@/app/api/utils/apiRateLimitCatalog";
+import type { ApiRateLimitRequest } from "@/app/api/utils/apiRateLimitPolicy";
 import { parseBooleanEnv, parseIntEnv } from "@/config/env";
 import type { Fastify } from "../../types";
 
@@ -85,7 +86,7 @@ function readCsv(env: NodeJS.ProcessEnv, key: string): string[] {
         .filter(Boolean);
 }
 
-function readBearerToken(request: { headers?: Record<string, unknown> }): string | null {
+function readBearerToken(request: ApiRateLimitRequest): string | null {
     const raw = request.headers?.authorization;
     if (typeof raw !== "string") return null;
     const trimmed = raw.trim();
@@ -123,7 +124,7 @@ function tokenFingerprint(token: string): string {
     return `activitykit:${hashString(token).slice(0, 16)}`;
 }
 
-function hostedRelayRateLimitKey(request: { headers?: Record<string, unknown>; ip?: unknown }): string {
+function hostedRelayRateLimitKey(request: ApiRateLimitRequest): string {
     const bearerToken = readBearerToken(request);
     if (bearerToken && hasRelayAccessKey(relayAccessKeys(process.env), bearerToken)) {
         return `relay:${hashString(bearerToken).slice(0, 16)}`;

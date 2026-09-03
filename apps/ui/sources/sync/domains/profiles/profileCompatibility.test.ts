@@ -19,4 +19,29 @@ describe('isProfileCompatibleWithBackendTarget', () => {
             },
         )).toBe(true);
     });
+
+    it('resolves an installed external Agent named by its canonical target key instead of failing', () => {
+        // The canonical key is what every catalog, settings and Voice surface
+        // publishes for an installed Agent. Reading it through the Protocol's
+        // bundled-only V1 conversion threw, so a compatible profile disappeared.
+        expect(isProfileCompatibleWithBackendTarget(
+            { compatibility: {}, isBuiltIn: false },
+            'agent:acme.agent/native',
+        )).toBe(true);
+        expect(isProfileCompatibleWithBackendTarget(
+            { compatibility: {}, isBuiltIn: true },
+            'agent:acme.agent/native',
+        )).toBe(false);
+    });
+
+    it('honors an explicit canonical entry for an installed external Agent', () => {
+        expect(isProfileCompatibleWithBackendTarget(
+            {
+                compatibility: {},
+                compatibilityByTargetKey: { 'agent:acme.agent/native': false },
+                isBuiltIn: false,
+            },
+            { kind: 'agent', identity: { pluginId: 'acme.agent', localId: 'native' } },
+        )).toBe(false);
+    });
 });

@@ -107,7 +107,8 @@ function pendingEnrollmentResultAnnouncement(
     if (result.kind === 'approval_required') return `${prefix}${t('connect.waitingForApproval')}`;
     if (result.kind === 'rejected') return `${prefix}${t('connect.pairingRejectedBody')}`;
     if (result.kind === 'expired') return `${prefix}${t('approvals.status.expired')}. ${t('connect.startAgain')}`;
-    return `${prefix}${t('approvals.status.canceled')}`;
+    if (result.kind === 'partial_commit') return `${prefix}${t('connect.homeEnrollmentPartialCommitBody')}`;
+    return `${prefix}${t('approvals.stopWaiting')}`;
 }
 
 const styles = StyleSheet.create({
@@ -139,7 +140,11 @@ async function withHomeApprovalTarget<T>(
     try {
         return await operation({ transport, credentials });
     } finally {
-        await transport.close();
+        try {
+            await transport.close();
+        } catch {
+            // The operation result is authoritative; transport teardown is best-effort.
+        }
     }
 }
 
@@ -169,8 +174,7 @@ export function HomeDeviceApprovalSection({ homes }: Readonly<{ homes: readonly 
         const inFlight = approvalRefreshPromiseRef.current;
         if (inFlight) return inFlight;
 
-        let operation: Promise<AccountDirectoryActivePollingOutcome>;
-        operation = (async () => {
+        const operation = (async () => {
             if (mode === 'interactive' && mountedRef.current) {
                 setState((current) => ({ kind: 'loading', items: current.items }));
             }
@@ -206,13 +210,21 @@ export function HomeDeviceApprovalSection({ homes }: Readonly<{ homes: readonly 
                             : `${t('approvals.title')}: ${items.map(({ home }) => home.name).join(', ')}`,
                 );
                 return failed ? 'transient' : 'success';
-            } finally {
-                if (approvalRefreshPromiseRef.current === operation) {
-                    approvalRefreshPromiseRef.current = null;
+            } catch {
+                if (mountedRef.current && mode === 'interactive') {
+                    approvalSnapshotKeyRef.current = null;
+                    setState((current) => ({ kind: 'error', items: current.items }));
+                    publishAnnouncement(t('approvals.loadError'));
                 }
+                return 'transient';
             }
         })();
         approvalRefreshPromiseRef.current = operation;
+        void operation.finally(() => {
+            if (approvalRefreshPromiseRef.current === operation) {
+                approvalRefreshPromiseRef.current = null;
+            }
+        });
         return operation;
     }, [homes, publishAnnouncement]);
 
@@ -231,12 +243,19 @@ export function HomeDeviceApprovalSection({ homes }: Readonly<{ homes: readonly 
         const key = `${item.home.id}:${item.approval.approvalId}`;
         setBusyKeys((current) => current.includes(key) ? current : [...current, key]);
         setDecisionErrorKeys((current) => current.filter((candidate) => candidate !== key));
-        const result = await withHomeApprovalTarget(
-            item.home,
-            { ok: false, reason: 'request_failed', status: 0 } as const,
-            (target) => decideHomeDeviceApproval(target, item.approval.approvalId, decision),
-        );
-        setBusyKeys((current) => current.filter((candidate) => candidate !== key));
+        const unavailable = { ok: false, reason: 'request_failed', status: 0 } as const;
+        let result: Awaited<ReturnType<typeof decideHomeDeviceApproval>>;
+        try {
+            result = await withHomeApprovalTarget(
+                item.home,
+                unavailable,
+                (target) => decideHomeDeviceApproval(target, item.approval.approvalId, decision),
+            );
+        } catch {
+            result = unavailable;
+        } finally {
+            setBusyKeys((current) => current.filter((candidate) => candidate !== key));
+        }
         if (!result.ok) {
             if (result.reason === 'already_decided') {
                 setDecisionErrorKeys((current) => current.filter((candidate) => candidate !== key));
@@ -269,7 +288,7 @@ export function HomeDeviceApprovalSection({ homes }: Readonly<{ homes: readonly 
             const result = await operation();
             publishAnnouncement(
                 operationKind === 'cancel'
-                    ? `${homeName}. ${t('approvals.status.canceled')}`
+                    ? `${homeName}. ${t('approvals.stopWaiting')}`
                     : pendingEnrollmentResultAnnouncement(homeName, result),
             );
         } catch {
@@ -293,25 +312,19 @@ export function HomeDeviceApprovalSection({ homes }: Readonly<{ homes: readonly 
     const pendingEnrollmentTarget = pendingEnrollmentDescriptor
         ? formatHomeEnrollmentTargetLabel(pendingEnrollmentDescriptor)
         : null;
-    const pendingEnrollmentExpiry = pendingEnrollment
+    const pendingEnrollmentExpiry = pendingEnrollment?.kind === 'approval_required'
         ? formatEnrollmentExpiry(pendingEnrollment.expiresAtMs)
         : '';
     const pendingEnrollmentBusy = busyKeys.includes('pending-enrollment');
 
     const poll = React.useCallback(async (): Promise<AccountDirectoryActivePollingOutcome> => {
         try {
-            const loadOutcome = await load('poll');
-            if (!pendingEnrollment) return loadOutcome;
-            const result = await resumePendingPreferredHomeEnrollment();
-            if (!mountedRef.current || !result || result.kind === 'approval_required') return loadOutcome;
-            publishAnnouncement(pendingEnrollmentResultAnnouncement(pendingEnrollmentName, result));
-            return result.kind === 'transport_unavailable' ? 'transient' : loadOutcome;
+            return await load('poll');
         } catch {
-            // The visible pending card and manual Retry remain available. The next
-            // active-screen cadence tick may retry through the same continuation owner.
+            // The visible pending card and explicit Retry remain available.
             return 'transient';
         }
-    }, [load, pendingEnrollment, pendingEnrollmentName, publishAnnouncement]);
+    }, [load]);
     useAccountDirectoryActivePolling(poll);
 
     const pendingEnrollmentGroup = pendingEnrollment ? (
@@ -321,10 +334,18 @@ export function HomeDeviceApprovalSection({ homes }: Readonly<{ homes: readonly 
                 title={pendingEnrollmentName}
                 subtitle={[
                     pendingEnrollmentTarget,
-                    t('connect.waitingForApproval'),
-                    `${t('connect.expiresAtLabel')}: ${pendingEnrollmentExpiry}`,
+                    pendingEnrollment.kind === 'approval_required'
+                        ? t('connect.waitingForApproval')
+                        : t('connect.homeEnrollmentRetryBody'),
+                    pendingEnrollmentExpiry
+                        ? `${t('connect.expiresAtLabel')}: ${pendingEnrollmentExpiry}`
+                        : null,
                 ].filter((value): value is string => typeof value === 'string').join(' · ')}
-                accessibilityLabel={`${pendingEnrollmentName}. ${t('connect.waitingForApproval')}. ${t('connect.expiresAtLabel')}: ${pendingEnrollmentExpiry}`}
+                accessibilityLabel={`${pendingEnrollmentName}. ${
+                    pendingEnrollment.kind === 'approval_required'
+                        ? t('connect.waitingForApproval')
+                        : t('connect.homeEnrollmentRetryBody')
+                }${pendingEnrollmentExpiry ? `. ${t('connect.expiresAtLabel')}: ${pendingEnrollmentExpiry}` : ''}`}
                 mode="info"
                 showChevron={false}
             />
@@ -342,8 +363,8 @@ export function HomeDeviceApprovalSection({ homes }: Readonly<{ homes: readonly 
             />
             <Item
                 testID="settings.server.homeEnrollment.pending.cancel"
-                title={t('common.cancel')}
-                accessibilityLabel={`${t('common.cancel')}: ${pendingEnrollmentName}`}
+                title={t('approvals.stopWaiting')}
+                accessibilityLabel={`${t('approvals.stopWaiting')}: ${pendingEnrollmentName}`}
                 disabled={pendingEnrollmentBusy}
                 onPress={() => void runPendingEnrollmentOperation(
                     pendingEnrollmentName,

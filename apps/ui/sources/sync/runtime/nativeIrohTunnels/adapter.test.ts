@@ -85,20 +85,58 @@ function createSupervisorFake(): {
     markSuspended: ReturnType<typeof vi.fn>;
     markForeground: ReturnType<typeof vi.fn>;
     unsubscribe: ReturnType<typeof vi.fn>;
+    /** Every native stop the supervisor actually performed, in order. */
+    nativeStops: string[];
+    /** Lease ids whose native handle the supervisor still owns. */
+    outstandingLeaseIds: () => string[];
+    failNextStop: (leaseId: string) => void;
     emit: (event: LoopbackTunnelLifecycleEvent<IrohHomeTunnelLease>) => void;
 } {
     const stored: { lease: IrohHomeTunnelLease | null } = { lease: null };
+    // Mirrors the real supervisor's ownership contract: one reference-counted
+    // native handle per lease id, stopped exactly once when the last reference
+    // releases or on disposal, and retained by the same supervisor when a stop
+    // fails so a later release/disposal can retry it.
+    const referenceCounts = new Map<string, number>();
+    const failingStops = new Set<string>();
+    const nativeStops: string[] = [];
+    function performNativeStop(leaseId: string): void {
+        nativeStops.push(leaseId);
+        if (failingStops.delete(leaseId)) throw new Error('native stop failed');
+        referenceCounts.delete(leaseId);
+    }
     const ensureTunnel = vi.fn(async (request: IrohHomeTunnelRequest) => {
         const lease = makeLease(request, `lease-${ensureTunnel.mock.calls.length}`, `http://127.0.0.1:${45800 + ensureTunnel.mock.calls.length}`);
         stored.lease = lease;
+        referenceCounts.set(lease.leaseId, (referenceCounts.get(lease.leaseId) ?? 0) + 1);
         return lease;
     });
     const listTunnels = vi.fn((): LoopbackTunnelSnapshot<IrohHomeTunnelLease, never> => ({
         leases: stored.lease ? [stored.lease] : [],
         platformLimitations: [],
     }));
-    const releaseTunnel = vi.fn(async (_leaseId: string) => undefined);
-    const dispose = vi.fn(async () => undefined);
+    const releaseTunnel = vi.fn(async (leaseId: string) => {
+        const referenceCount = referenceCounts.get(leaseId);
+        // An unknown lease id was already stopped and dropped by this owner.
+        if (referenceCount === undefined) return;
+        if (referenceCount > 1) {
+            referenceCounts.set(leaseId, referenceCount - 1);
+            return;
+        }
+        performNativeStop(leaseId);
+    });
+    const dispose = vi.fn(async () => {
+        const errors: unknown[] = [];
+        for (const leaseId of [...referenceCounts.keys()]) {
+            try {
+                performNativeStop(leaseId);
+            } catch (error) {
+                errors.push(error);
+            }
+        }
+        if (errors.length === 1) throw errors[0];
+        if (errors.length > 1) throw new AggregateError(errors, 'Failed to dispose every loopback tunnel.');
+    });
     const markSuspended = vi.fn();
     const markForeground = vi.fn(async () => undefined);
     const readDiagnostics = vi.fn(() => []);
@@ -122,7 +160,36 @@ function createSupervisorFake(): {
     } as unknown as IrohHomeTunnelSupervisor;
     return {
         supervisor, ensureTunnel, listTunnels, releaseTunnel, markSuspended, markForeground, unsubscribe,
+        nativeStops,
+        outstandingLeaseIds: () => [...referenceCounts.keys()],
+        failNextStop: (leaseId: string) => { failingStops.add(leaseId); },
         emit: (event) => { for (const listener of listeners) listener(event); },
+    };
+}
+
+/** Records the real native lifecycle boundary so stop custody is observable. */
+function createRecordingNativeLifecycle(): {
+    module: { ensureHomeTunnel: ReturnType<typeof vi.fn>; releaseHomeTunnel: ReturnType<typeof vi.fn> };
+    stops: string[];
+    startCount: () => number;
+    failNextStop: (nativeTunnelId: string) => void;
+} {
+    const stops: string[] = [];
+    const failingStops = new Set<string>();
+    let starts = 0;
+    const ensureHomeTunnel = vi.fn(async (input: { homeServerIdentityId: string; endpointId: string }) => {
+        starts += 1;
+        return nativeLease(`native-lease-${starts}`, input.homeServerIdentityId, input.endpointId, 45980 + starts);
+    });
+    const releaseHomeTunnel = vi.fn(async (nativeTunnelId: string) => {
+        stops.push(nativeTunnelId);
+        if (failingStops.delete(nativeTunnelId)) throw new Error('native stop failed');
+    });
+    return {
+        module: { ensureHomeTunnel, releaseHomeTunnel },
+        stops,
+        startCount: () => starts,
+        failNextStop: (nativeTunnelId: string) => { failingStops.add(nativeTunnelId); },
     };
 }
 
@@ -415,6 +482,147 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
         expect(native.releaseHomeTunnel).toHaveBeenCalledTimes(2);
         expect(native.releaseHomeTunnel).toHaveBeenLastCalledWith('native-lease-failed-start');
         expect(runtime.listTunnels().leases).toEqual([]);
+    });
+
+    it('stops the native tunnel exactly once per released lease and never again on disposal', async () => {
+        vi.resetModules();
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
+        const native = createRecordingNativeLifecycle();
+        const { createIrohHomeTunnelRuntime } = await import('./runtime');
+        const { createIrohHomeTunnelSupervisor } = await import('./supervisor');
+        const runtime = createIrohHomeTunnelRuntime({
+            createSupervisor: () => createIrohHomeTunnelSupervisor({
+                native: native.module,
+                probe: async () => ({ ok: true }),
+            }),
+        });
+
+        const lease = await runtime.acquireHomeRuntimeOrigin({
+            homeServerIdentityId: HOME_IDENTITY_A,
+            endpoint: { endpointId: 'endpoint-a' },
+            canonicalServerUrl: 'https://single-stop.example.test',
+            verification: { kind: 'enrollment' },
+        });
+
+        await lease.release();
+        // The returned release stays idempotent for its own caller.
+        await lease.release();
+        expect(native.stops).toEqual(['native-lease-1']);
+        expect(runtime.listTunnels().leases).toEqual([]);
+
+        // Disposal must not stop a handle the supervisor already released.
+        await runtime.dispose();
+        expect(native.stops).toEqual(['native-lease-1']);
+    });
+
+    it('keeps a failed native stop owned by the supervisor and retries it on the next release', async () => {
+        vi.resetModules();
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
+        const native = createRecordingNativeLifecycle();
+        const { createIrohHomeTunnelRuntime } = await import('./runtime');
+        const { createIrohHomeTunnelSupervisor } = await import('./supervisor');
+        const runtime = createIrohHomeTunnelRuntime({
+            createSupervisor: () => createIrohHomeTunnelSupervisor({
+                native: native.module,
+                probe: async () => ({ ok: true }),
+            }),
+        });
+
+        const lease = await runtime.acquireHomeRuntimeOrigin({
+            homeServerIdentityId: HOME_IDENTITY_A,
+            endpoint: { endpointId: 'endpoint-a' },
+            canonicalServerUrl: 'https://failed-stop.example.test',
+            verification: { kind: 'enrollment' },
+        });
+        native.failNextStop('native-lease-1');
+
+        await expect(lease.release()).rejects.toThrow('native stop failed');
+        expect(native.stops).toEqual(['native-lease-1']);
+        // Custody is not lost: the supervisor still owns the failed handle.
+        expect(runtime.listTunnels().leases).toMatchObject([{ leaseId: lease.leaseId, status: 'failed' }]);
+
+        await lease.release();
+        expect(native.stops).toEqual(['native-lease-1', 'native-lease-1']);
+        expect(runtime.listTunnels().leases).toEqual([]);
+    });
+
+    it('unpublishes before disposal, retries the failed native stop, and leaves no publication custody behind', async () => {
+        vi.resetModules();
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
+        const profiles = await import('../../domains/server/serverProfiles');
+        const home = profiles.upsertServerProfile({ serverUrl: 'https://dispose-custody.example.test', source: 'manual' });
+        profiles.setActiveServerId(home.id, { scope: 'device' });
+        const native = createRecordingNativeLifecycle();
+        const { createIrohHomeTunnelRuntime } = await import('./runtime');
+        const { createIrohHomeTunnelSupervisor } = await import('./supervisor');
+        const runtime = createIrohHomeTunnelRuntime({
+            createSupervisor: () => createIrohHomeTunnelSupervisor({
+                native: native.module,
+                probe: async () => ({ ok: true }),
+            }),
+        });
+
+        const lease = await runtime.ensureHomeTunnel({
+            homeServerIdentityId: HOME_IDENTITY_A,
+            endpoint: { endpointId: 'endpoint-a' },
+            canonicalServerUrl: 'https://dispose-custody.example.test',
+            verification: { kind: 'authenticated', token: 'token-a' },
+        });
+        expect(profiles.getActiveServerSnapshot().runtimeOrigin).toBe(lease.localUrl);
+        native.failNextStop('native-lease-1');
+
+        await expect(runtime.dispose()).rejects.toThrow('native stop failed');
+        // The publication is cleared even though the native stop failed...
+        expect(profiles.getActiveServerSnapshot().runtimeOrigin).toBeUndefined();
+        // ...and the failed handle remains owned by the supervisor for retry.
+        expect(native.stops).toEqual(['native-lease-1']);
+        expect(runtime.listTunnels().leases).toMatchObject([{ status: 'failed' }]);
+
+        await runtime.dispose();
+        expect(native.stops).toEqual(['native-lease-1', 'native-lease-1']);
+        expect(runtime.listTunnels().leases).toEqual([]);
+
+        // No leaked publication or duplicate ownership can drive a third stop.
+        await runtime.dispose();
+        await runtime.releaseActiveHomeTunnels();
+        expect(native.stops).toEqual(['native-lease-1', 'native-lease-1']);
+    });
+
+    it('shares one native tunnel across concurrent leases and stops it only after the last reference releases', async () => {
+        vi.resetModules();
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
+        const native = createRecordingNativeLifecycle();
+        const { createIrohHomeTunnelRuntime } = await import('./runtime');
+        const { createIrohHomeTunnelSupervisor } = await import('./supervisor');
+        const runtime = createIrohHomeTunnelRuntime({
+            createSupervisor: () => createIrohHomeTunnelSupervisor({
+                native: native.module,
+                probe: async () => ({ ok: true }),
+            }),
+        });
+        const input: IrohHomeTunnelAcquireInput = {
+            homeServerIdentityId: HOME_IDENTITY_A,
+            endpoint: { endpointId: 'endpoint-a' },
+            canonicalServerUrl: 'https://shared-lease.example.test',
+            verification: { kind: 'enrollment' },
+        };
+
+        const first = await runtime.acquireHomeRuntimeOrigin(input);
+        const second = await runtime.acquireHomeRuntimeOrigin(input);
+        expect(second.leaseId).toBe(first.leaseId);
+        expect(native.startCount()).toBe(1);
+
+        await first.release();
+        // A live second reference must keep the shared native tunnel running.
+        expect(native.stops).toEqual([]);
+        expect(runtime.listTunnels().leases).toHaveLength(1);
+
+        await second.release();
+        expect(native.stops).toEqual(['native-lease-1']);
+        expect(runtime.listTunnels().leases).toEqual([]);
+
+        await runtime.dispose();
+        expect(native.stops).toEqual(['native-lease-1']);
     });
 
     it('releases the native lease and never publishes when focus changes during acquisition', async () => {
@@ -819,6 +1027,7 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
         const profiles = await import('../../domains/server/serverProfiles');
         const home = profiles.upsertServerProfile({ serverUrl: 'https://stale-foreground.example.test', source: 'manual' });
+        const otherHome = profiles.upsertServerProfile({ serverUrl: 'https://other-foreground.example.test', source: 'manual' });
         profiles.setActiveServerId(home.id, { scope: 'device' });
         const fake = createSupervisorFake();
         const { createIrohHomeTunnelRuntime } = await import('./runtime');
@@ -833,7 +1042,8 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
         });
 
         runtime.markSuspended();
-        profiles.renameServerProfile(home.id, 'Renamed without changing the Home');
+        profiles.setActiveServerId(otherHome.id, { scope: 'device' });
+        profiles.setActiveServerId(home.id, { scope: 'device' });
         await runtime.markForeground();
 
         expect(profiles.getActiveServerSnapshot().runtimeOrigin).toBeUndefined();
@@ -932,7 +1142,10 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
 
         await disposeIrohHomeTunnelRuntime();
 
-        expect(fake.releaseTunnel).toHaveBeenCalledWith(lease.leaseId);
+        // The supervisor owns the native handle: exactly one stop, no second
+        // release from a duplicate runtime-side ownership record.
+        expect(fake.nativeStops).toEqual([lease.leaseId]);
+        expect(fake.outstandingLeaseIds()).toEqual([]);
         expect(fake.unsubscribe).toHaveBeenCalledTimes(1);
         expect(profiles.getActiveServerSnapshot().runtimeOrigin).toBeUndefined();
     });
@@ -952,7 +1165,8 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
 
         await disposeIrohHomeTunnelRuntime();
 
-        expect(fake.releaseTunnel).toHaveBeenCalledWith(lease.leaseId);
+        expect(fake.nativeStops).toEqual([lease.leaseId]);
+        expect(fake.outstandingLeaseIds()).toEqual([]);
         expect(fake.unsubscribe).toHaveBeenCalledTimes(1);
     });
 
@@ -963,22 +1177,28 @@ describe('Iroh Home tunnel lifecycle runtime', () => {
         const home = profiles.upsertServerProfile({ serverUrl: 'https://dispose-retry.example.test', source: 'manual' });
         profiles.setActiveServerId(home.id, { scope: 'device' });
         const fake = createSupervisorFake();
-        fake.releaseTunnel.mockRejectedValueOnce(new Error('native stop failed'));
         const { disposeIrohHomeTunnelRuntime, getIrohHomeTunnelRuntime } = await import('./runtime');
         const runtime = getIrohHomeTunnelRuntime({ createSupervisor: () => fake.supervisor });
-        await runtime.ensureHomeTunnel({
+        const lease = await runtime.ensureHomeTunnel({
             homeServerIdentityId: HOME_IDENTITY_A,
             endpoint: { endpointId: 'endpoint-a' },
             canonicalServerUrl: 'https://dispose-retry.example.test',
             verification: { kind: 'authenticated', token: 'token-a' },
         });
+        fake.failNextStop(lease.leaseId);
 
         await expect(disposeIrohHomeTunnelRuntime()).rejects.toThrow('native stop failed');
+        // The origin is unpublished before any stop is attempted, and the failed
+        // native handle stays owned by the same supervisor.
+        expect(profiles.getActiveServerSnapshot().runtimeOrigin).toBeUndefined();
+        expect(fake.nativeStops).toEqual([lease.leaseId]);
+        expect(fake.outstandingLeaseIds()).toEqual([lease.leaseId]);
         expect(fake.unsubscribe).not.toHaveBeenCalled();
         expect(getIrohHomeTunnelRuntime({ createSupervisor: () => createSupervisorFake().supervisor })).toBe(runtime);
 
         await disposeIrohHomeTunnelRuntime();
-        expect(fake.releaseTunnel).toHaveBeenCalledTimes(2);
+        expect(fake.nativeStops).toEqual([lease.leaseId, lease.leaseId]);
+        expect(fake.outstandingLeaseIds()).toEqual([]);
         expect(fake.unsubscribe).toHaveBeenCalledTimes(1);
         expect(getIrohHomeTunnelRuntime({ createSupervisor: () => createSupervisorFake().supervisor })).not.toBe(runtime);
     });

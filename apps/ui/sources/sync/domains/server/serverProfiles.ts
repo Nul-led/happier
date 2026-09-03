@@ -1,6 +1,9 @@
 import { MMKV } from 'react-native-mmkv';
 import {
+    createHomeCredentialDestinationDigestV1,
+    createHomeCredentialDestinationV1,
     HomeConnectionDescriptorV1Schema,
+    isHomeCredentialDestinationAllowedV1,
     mergePublicIrohEndpointObservation,
     normalizeServerIdentityIdCapability,
     parseIrohEndpointDescriptorV1,
@@ -8,6 +11,7 @@ import {
     type IrohEndpointDescriptorV1,
 } from '@happier-dev/protocol';
 import { readStorageScopeFromEnv, scopedStorageId } from '@/utils/system/storageScope';
+import type { HomeCarrier } from '@/sync/runtime/homeCarrier';
 import { normalizeAccountDirectoryEndpoint } from '@/sync/domains/accountDirectory/accountDirectoryEndpoint';
 import { isStackContext } from './serverContext';
 import { canonicalizeServerUrl, createServerUrlComparableKey } from './url/serverUrlCanonical';
@@ -138,12 +142,24 @@ const SESSION_STORAGE_ACTIVE_ID_KEY = 'activeServerId';
 const STATE_KEY = 'server-state-v1';
 
 let activeServerGeneration = 0;
+// Changes only when the focused Home/descriptor basis changes. Snapshot
+// generation also advances for unrelated profile emissions, so it cannot own
+// native publication release fencing.
+let activeRuntimeTargetGeneration = 0;
 const activeServerListeners = new Set<(snapshot: ActiveServerSnapshot) => void>();
 let activeServerSnapshotCache: ActiveServerSnapshot | null = null;
+/**
+ * The one focused-Home transport publication. It is either URL-addressed (an
+ * independent HTTPS origin, or the loopback origin a native Iroh lease binds)
+ * or a semantic carrier that owns its own bytes and has no origin at all. A
+ * browser Iroh Home is the second case: fabricating a loopback origin for it
+ * would put an untrue value into request URLs, reachability keys, and logs.
+ */
 let activeRuntimeOriginLease: Readonly<{
     target: ActiveServerRuntimeTarget;
     leaseId: string;
-    runtimeOrigin: string;
+    runtimeOrigin: string | null;
+    homeCarrier: HomeCarrier | null;
     carrier: 'https' | 'iroh';
 }> | null = null;
 const runtimeOriginListeners = new Set<(snapshot: ActiveServerSnapshot) => void>();
@@ -1009,11 +1025,9 @@ function normalizeHomeViewStateAgainstProfiles(
     activeServerId: string,
 ): HomeViewStateV1 {
     const scopeIdByAlias = new Map<string, string>();
-    const availableScopeIds = new Set<string>();
     for (const profile of Object.values(servers)) {
         const scopeId = resolveServerProfileScopeId(profile);
         if (!scopeId) continue;
-        availableScopeIds.add(scopeId);
         scopeIdByAlias.set(profile.id, scopeId);
         scopeIdByAlias.set(scopeId, scopeId);
         for (const legacyId of profile.legacyServerIds ?? []) {
@@ -1030,7 +1044,6 @@ function normalizeHomeViewStateAgainstProfiles(
                 const id = normalizeServerId(rawId);
                 if (!id) continue;
                 const mapped = scopeIdByAlias.get(id) ?? id;
-                if (!availableScopeIds.has(mapped)) continue;
                 if (seen.has(mapped)) continue;
                 seen.add(mapped);
                 serverIds.push(mapped);
@@ -1048,7 +1061,10 @@ function normalizeHomeViewStateAgainstProfiles(
     let targetIsValid = activeTargetKind === null && activeTargetId === null;
     if (activeTargetKind === 'server' && activeTargetId) {
         const mapped = scopeIdByAlias.get(activeTargetId) ?? activeTargetId;
-        targetIsValid = availableScopeIds.has(mapped);
+        // A persisted Home scope may arrive before its profile (for example while
+        // Account Directory adoption is still reconciling). Keep that explicit
+        // target until an authoritative removal says otherwise.
+        targetIsValid = true;
         activeTargetId = mapped;
     } else if (activeTargetKind === 'group' && activeTargetId) {
         targetIsValid = groups.some((group) => group.id === activeTargetId && group.serverIds.length > 0);
@@ -1237,7 +1253,8 @@ function readPersistedState(
 
         persistedStateParseCache = { raw, state };
         return state;
-    } catch {
+    } catch (error) {
+        if (error instanceof ServerProfilesPersistenceError) throw error;
         const seeded = applyRuntimeSeedPolicy({});
         return {
             activeServerIdIsExplicit: false,
@@ -1250,14 +1267,26 @@ function readPersistedState(
     }
 }
 
+class ServerProfilesPersistenceError extends Error {
+    constructor() {
+        super('Failed to persist Home profiles');
+        this.name = 'ServerProfilesPersistenceError';
+    }
+}
+
 function writePersistedState(state: Required<PersistedServerState>): void {
     const servers = Object.fromEntries(Object.entries(state.servers).map(([id, profile]) => {
         if (profile.source !== 'legacy' || !profile.legacySource) return [id, profile];
         const { legacySource, ...persisted } = profile;
         return [id, { ...persisted, source: legacySource }];
     }));
-    if (!getPersistedStateStorage().set(STATE_KEY, JSON.stringify({ ...state, servers }))) {
-        throw new Error('Failed to persist Home profiles');
+    try {
+        if (!getPersistedStateStorage().set(STATE_KEY, JSON.stringify({ ...state, servers }))) {
+            throw new ServerProfilesPersistenceError();
+        }
+    } catch (error) {
+        if (error instanceof ServerProfilesPersistenceError) throw error;
+        throw new ServerProfilesPersistenceError();
     }
     // Invalidate rather than prime: the next read re-parses so the parse path stays the
     // single canonicalization owner for cached state shapes.
@@ -1393,7 +1422,7 @@ function buildActiveSnapshotFromState(state: Required<PersistedServerState>): Ac
 
     if (selected) {
         const runtimeLease = activeRuntimeOriginLease?.target.serverId === resolveServerProfileScopeId(selected)
-            && activeRuntimeOriginLease.target.generation === activeServerGeneration
+            && activeRuntimeOriginLease.target.generation === activeRuntimeTargetGeneration
             ? activeRuntimeOriginLease
             : null;
         return {
@@ -1409,7 +1438,7 @@ function buildActiveSnapshotFromState(state: Required<PersistedServerState>): Ac
                 ? {}
                 : { connectionDescriptorRevision: selected.connectionDescriptorRevision }),
             ...(runtimeLease ? {
-                runtimeOrigin: runtimeLease.runtimeOrigin,
+                ...(runtimeLease.runtimeOrigin ? { runtimeOrigin: runtimeLease.runtimeOrigin } : {}),
                 carrier: runtimeLease.carrier,
             } : {}),
             generation: activeServerGeneration,
@@ -1431,27 +1460,43 @@ function buildActiveSnapshotFromState(state: Required<PersistedServerState>): Ac
 export function captureActiveServerRuntimeTarget(): ActiveServerRuntimeTarget {
     return {
         serverId: getActiveServerSnapshot().serverId,
-        generation: activeServerGeneration,
+        generation: activeRuntimeTargetGeneration,
     };
 }
 
-/** Publish only for the still-focused Home and make the native lease the clearing authority. */
+/**
+ * Publish only for the still-focused Home and make the acquiring lease the
+ * clearing authority. Exactly one transport form is published: a `runtimeOrigin`
+ * a request can be addressed to, or a `homeCarrier` that moves the bytes itself.
+ */
 export function publishActiveServerRuntimeOrigin(params: Readonly<{
     target: ActiveServerRuntimeTarget;
     leaseId: string;
-    runtimeOrigin: string;
+    runtimeOrigin?: string;
+    homeCarrier?: HomeCarrier;
     carrier: 'https' | 'iroh';
 }>): boolean {
-    const runtimeOrigin = params.runtimeOrigin.trim();
+    const runtimeOrigin = String(params.runtimeOrigin ?? '').trim();
+    const homeCarrier = params.homeCarrier ?? null;
     const leaseId = params.leaseId.trim();
     const current = captureActiveServerRuntimeTarget();
-    if (!runtimeOrigin || !leaseId || current.serverId !== params.target.serverId || current.generation !== params.target.generation) {
+    // A semantic carrier is Iroh-only: HTTPS is addressable by definition, and a
+    // publication naming both forms would leave two transports for one Home.
+    const publishesExactlyOneTransport = runtimeOrigin.length > 0 !== (homeCarrier !== null);
+    if (
+        !publishesExactlyOneTransport
+        || (homeCarrier !== null && params.carrier !== 'iroh')
+        || !leaseId
+        || current.serverId !== params.target.serverId
+        || current.generation !== params.target.generation
+    ) {
         return false;
     }
     activeRuntimeOriginLease = {
         target: params.target,
         leaseId,
-        runtimeOrigin,
+        runtimeOrigin: runtimeOrigin || null,
+        homeCarrier,
         carrier: params.carrier,
     };
     activeServerSnapshotCache = null;
@@ -1471,6 +1516,7 @@ export function releaseActiveServerRuntimeOrigin(params: Readonly<{
         !owner
         || owner.leaseId !== params.leaseId
         || owner.target.serverId !== params.target.serverId
+        || owner.target.generation !== params.target.generation
     ) {
         return false;
     }
@@ -1480,6 +1526,20 @@ export function releaseActiveServerRuntimeOrigin(params: Readonly<{
     notifyIndependentListeners(activeServerListeners, [snapshot], 'active_server_changed');
     notifyIndependentListeners(runtimeOriginListeners, [snapshot], 'runtime_origin_changed');
     return true;
+}
+
+/**
+ * The semantic carrier owned by the current focused-Home publication, if any.
+ * It is read alongside the snapshot rather than embedded in it: the snapshot is
+ * a compared, cached, logged value, and a carrier is a live handle.
+ */
+export function getActiveServerHomeCarrier(): HomeCarrier | null {
+    const lease = activeRuntimeOriginLease;
+    if (!lease || lease.homeCarrier === null) return null;
+    const current = captureActiveServerRuntimeTarget();
+    return current.serverId === lease.target.serverId && current.generation === lease.target.generation
+        ? lease.homeCarrier
+        : null;
 }
 
 export function subscribeActiveServerRuntimeOrigin(listener: (snapshot: ActiveServerSnapshot) => void): () => void {
@@ -1526,6 +1586,7 @@ function emitActiveServerChanged(
     // loopback listener across an active-profile/descriptor change; the native
     // lease is reacquired and publishes against the next authoritative generation.
     if (invalidateRuntimeOrigin) {
+        activeRuntimeTargetGeneration += 1;
         activeRuntimeOriginLease = null;
         activeServerSnapshotCache = null;
         next = getActiveServerSnapshot();
@@ -1541,16 +1602,6 @@ function emitActiveServerChanged(
         || invalidateRuntimeOrigin;
     if (!materiallyChanged && !options.force) return;
     activeServerGeneration += 1;
-    // Non-transport changes keep the existing publication owned by the same
-    // single active generation instead of creating a parallel focus fence.
-    if (activeRuntimeOriginLease) {
-        activeRuntimeOriginLease = {
-            ...activeRuntimeOriginLease,
-            target: { ...activeRuntimeOriginLease.target, generation: activeServerGeneration },
-        };
-        activeServerSnapshotCache = null;
-        next = getActiveServerSnapshot();
-    }
     const emitted: ActiveServerSnapshot = getStableActiveServerSnapshot({ ...next, generation: activeServerGeneration });
     notifyIndependentListeners(activeServerListeners, [emitted], 'active_server_changed');
 }
@@ -1573,8 +1624,27 @@ export function subscribeServerProfiles(listener: (generation: number) => void):
 
 const accountServiceEndpointListeners = new Set<(endpoint: AccountServiceEndpointV1 | null) => void>();
 
+/**
+ * Owner-defined selected sign-in service used until the user explicitly selects another one.
+ * Frozen and shared so `resolveSelectedAccountServiceEndpoint()` stays referentially stable for
+ * `useSyncExternalStore` consumers.
+ */
+export const DEFAULT_ACCOUNT_SERVICE_ENDPOINT: AccountServiceEndpointV1 = Object.freeze({
+    url: HAPPIER_CLOUD_SERVER_URL,
+    displayName: 'Happier Cloud',
+    source: 'default',
+});
+
 export function getAccountServiceEndpointSnapshot(): AccountServiceEndpointV1 | null {
     return readPersistedState().accountServiceEndpoint ?? null;
+}
+
+/**
+ * The selected sign-in service, which exists before any Home profile or focused Home. This is a
+ * pure selection read: it never creates a `ServerProfile`, group member, or Home runtime.
+ */
+export function resolveSelectedAccountServiceEndpoint(): AccountServiceEndpointV1 {
+    return getAccountServiceEndpointSnapshot() ?? DEFAULT_ACCOUNT_SERVICE_ENDPOINT;
 }
 
 export function subscribeAccountServiceEndpoint(listener: (endpoint: AccountServiceEndpointV1 | null) => void): () => void {
@@ -1593,7 +1663,7 @@ export function setAccountServiceEndpoint(endpoint: AccountServiceEndpointV1): v
 
 export function resetAccountServiceToDefault(): void {
     const state = readPersistedState();
-    const endpoint: AccountServiceEndpointV1 = { url: HAPPIER_CLOUD_SERVER_URL, source: 'default', displayName: 'Happier Cloud' };
+    const endpoint = DEFAULT_ACCOUNT_SERVICE_ENDPOINT;
     writePersistedState({ ...state, accountServiceEndpoint: endpoint });
     notifyIndependentListeners(accountServiceEndpointListeners, [endpoint], 'account_service_endpoint_changed');
 }
@@ -1650,12 +1720,63 @@ export type HomeProfileDescriptorAuthority =
     | 'advisory'
     | 'current_connection_observation';
 
+/**
+ * Closed, digest-bound permission to store one Home credential against an exact
+ * advisory descriptor. The caller supplies the descriptor its Account Service
+ * signed plus that signed destination digest; this owner recomputes the canonical
+ * protocol projection for both the supplied descriptor and the descriptor actually
+ * being adopted and permits the credential write only when all three agree. It is
+ * not a boolean bypass and never promotes descriptor provenance: the adopted
+ * profile stays `advisory-only` until a current Home observation establishes it.
+ */
+export type HomeCredentialWriteAuthorizationV1 = Readonly<{
+    kind: 'assertion_destination_binding_v1';
+    descriptor: HomeConnectionDescriptorV1;
+    credentialDestinationDigestBase64Url: string;
+}>;
+
+// Runtime custody for the short-lived authorization. A structurally identical
+// object is deliberately insufficient: the token is valid only while the
+// Account Directory redemption owner executes its bounded adoption callback.
+const activeHomeCredentialWriteAuthorizations = new WeakSet<object>();
+
+export async function withHomeCredentialWriteAuthorization<T>(
+    input: HomeCredentialWriteAuthorizationV1,
+    run: (authorization: HomeCredentialWriteAuthorizationV1) => Promise<T>,
+): Promise<T> {
+    const authorization = Object.freeze({ ...input });
+    activeHomeCredentialWriteAuthorizations.add(authorization);
+    try {
+        return await run(authorization);
+    } finally {
+        activeHomeCredentialWriteAuthorizations.delete(authorization);
+    }
+}
+
+export type HomeCredentialWriteAuthorizationRejectionReason =
+    | 'unsupported_authorization'
+    | 'authority_not_advisory'
+    | 'malformed_descriptor'
+    | 'digest_mismatch'
+    | 'descriptor_mismatch'
+    | 'destination_not_authorized';
+
+export class HomeCredentialWriteAuthorizationError extends Error {
+    readonly code = 'home_credential_write_authorization_invalid' as const;
+
+    constructor(readonly reason: HomeCredentialWriteAuthorizationRejectionReason) {
+        super(`Home credential write authorization rejected: ${reason}`);
+        this.name = 'HomeCredentialWriteAuthorizationError';
+    }
+}
+
 type HomeProfileAdoptionParams = Readonly<{
     descriptor: HomeConnectionDescriptorV1 | LegacyManualHomeDescriptor;
     source: ServerProfileSource;
     preserveUserLabel?: boolean;
     preserveProfileSource?: boolean;
     descriptorAuthority?: HomeProfileDescriptorAuthority;
+    credentialWriteAuthorization?: HomeCredentialWriteAuthorizationV1;
     suggestedName?: string;
 }>;
 
@@ -1663,11 +1784,11 @@ export type HomeProfileAdoptionPreflight = Readonly<{
     canonicalServerUrl: string;
     serverIdentityId: string | null;
     /**
-     * Advisory discovery may authenticate a signed-out Home, but it must not replace
-     * an established credential. The credential composition checks the established
-     * slot and writes only when that slot is empty.
+     * Advisory discovery may authenticate a signed-out, already-established Home,
+     * but it must not replace an established credential. An unknown/advisory-only
+     * Home first requires a current identity-bound observation.
      */
-    credentialWrite: 'required' | 'preserveExisting';
+    credentialWrite: 'required' | 'preserveExisting' | 'requiresCurrentObservation';
 }>;
 
 export type HomeConnectionDescriptorReconciliationResult =
@@ -1753,7 +1874,10 @@ function mergePublicDescriptorObservation(
         ...(observedEntry.relayUrls ? { relayUrls: observedEntry.relayUrls } : {}),
         ...(observedEntry.directAddresses ? { directAddresses: observedEntry.directAddresses } : {}),
     } : null;
-    const merged = mergePublicIrohEndpointObservation(profile.irohEndpoint ?? null, observed);
+    const trustedCurrent = profile.descriptorProvenance === 'advisory-only'
+        ? null
+        : profile.irohEndpoint ?? null;
+    const merged = mergePublicIrohEndpointObservation(trustedCurrent, observed);
     const endpoints: HomeConnectionDescriptorV1['endpoints'][number][] = descriptor.endpoints
         .filter((endpoint) => endpoint.kind !== 'iroh');
     if (merged) {
@@ -1827,7 +1951,59 @@ type ResolvedHomeProfileAdoption = Readonly<{
     state: Required<PersistedServerState>;
     existing: ServerProfile | null;
     descriptorAdjudication: DescriptorRevisionAdjudication | null;
+    credentialWriteAuthorized: boolean;
 }>;
+
+/**
+ * Recomputes the canonical protocol credential-destination digest for the supplied
+ * authorization and for the descriptor actually being adopted, then proves all three
+ * values equal. Any missing, malformed, mismatched or non-advisory authorization is
+ * rejected here — before the resolver reads or writes any profile state — so no
+ * adoption path can treat an unproven destination as permission to store a bearer.
+ */
+function authorizeAdvisoryCredentialWrite(
+    authorization: HomeCredentialWriteAuthorizationV1 | undefined,
+    adoptedDescriptor: HomeConnectionDescriptorV1 | LegacyManualHomeDescriptor,
+    descriptorAuthority: HomeProfileDescriptorAuthority | undefined,
+): boolean {
+    if (authorization === undefined) return false;
+    if (
+        !authorization
+        || typeof authorization !== 'object'
+        || authorization.kind !== 'assertion_destination_binding_v1'
+        || !activeHomeCredentialWriteAuthorizations.has(authorization)
+    ) {
+        throw new HomeCredentialWriteAuthorizationError('unsupported_authorization');
+    }
+    // Only advisory adoption needs this permission; an establishing authority that
+    // also carried one would be a second, redundant trust path for the same write.
+    if (descriptorAuthority !== 'advisory') {
+        throw new HomeCredentialWriteAuthorizationError('authority_not_advisory');
+    }
+    let authorizedDigest: string;
+    try {
+        authorizedDigest = createHomeCredentialDestinationDigestV1(authorization.descriptor);
+    } catch {
+        throw new HomeCredentialWriteAuthorizationError('malformed_descriptor');
+    }
+    if (authorizedDigest !== authorization.credentialDestinationDigestBase64Url) {
+        throw new HomeCredentialWriteAuthorizationError('digest_mismatch');
+    }
+    const parsedAdopted = HomeConnectionDescriptorV1Schema.safeParse(adoptedDescriptor);
+    if (!parsedAdopted.success) {
+        throw new HomeCredentialWriteAuthorizationError('descriptor_mismatch');
+    }
+    let adoptedDigest: string;
+    try {
+        adoptedDigest = createHomeCredentialDestinationDigestV1(parsedAdopted.data);
+    } catch {
+        throw new HomeCredentialWriteAuthorizationError('descriptor_mismatch');
+    }
+    if (adoptedDigest !== authorizedDigest) {
+        throw new HomeCredentialWriteAuthorizationError('descriptor_mismatch');
+    }
+    return true;
+}
 
 function resolveHomeProfileAdoption(
     params: HomeProfileAdoptionParams,
@@ -1844,6 +2020,11 @@ function resolveHomeProfileAdoption(
     if (!descriptor || typeof descriptor !== 'object') {
         throw new Error('Invalid Home connection descriptor');
     }
+    const credentialWriteAuthorized = authorizeAdvisoryCredentialWrite(
+        params.credentialWriteAuthorization,
+        descriptor,
+        params.descriptorAuthority,
+    );
     const strictDescriptor = params.source === 'qr' || params.source === 'account-directory';
     if (strictDescriptor) {
         const parsed = HomeConnectionDescriptorV1Schema.safeParse(descriptor);
@@ -1871,6 +2052,27 @@ function resolveHomeProfileAdoption(
         || (byIdentity.length === 1 && profile.id !== byIdentity[0]!.id)
     ))) throw new Error('Home identity conflicts with URL');
     const existing = byIdentity[0] ?? byUrl;
+    // The authorization is the only thing permitting this credential write, so the
+    // destination the runtime will actually route to must be one the Home bound the
+    // credential to. Advisory facts never retarget an existing profile, so an
+    // unproven advisory route would otherwise keep its stale URL while receiving a
+    // bearer issued for a different destination.
+    if (
+        credentialWriteAuthorized
+        && params.credentialWriteAuthorization
+        && (!existing || existing.descriptorProvenance === 'advisory-only')
+        && !isHomeCredentialDestinationAllowedV1(
+            createHomeCredentialDestinationV1(params.credentialWriteAuthorization.descriptor),
+            {
+                kind: 'https',
+                applicationUrl: existing
+                    ? normalizeUrl(existing.canonicalServerUrl ?? existing.serverUrl)
+                    : url,
+            },
+        )
+    ) {
+        throw new HomeCredentialWriteAuthorizationError('destination_not_authorized');
+    }
     const parsedCanonicalDescriptor = HomeConnectionDescriptorV1Schema.safeParse(descriptor);
     let descriptorAdjudication: DescriptorRevisionAdjudication | null;
     if (parsedCanonicalDescriptor.success && existing) {
@@ -1899,6 +2101,7 @@ function resolveHomeProfileAdoption(
         state,
         existing,
         descriptorAdjudication,
+        credentialWriteAuthorized,
     };
 }
 
@@ -1917,6 +2120,11 @@ export function preflightHomeProfileAdoption(
         && resolved.existing.descriptorProvenance !== 'advisory-only';
     const preserveExisting = existingEstablished
         && params.descriptorAuthority === 'advisory';
+    // A digest-bound destination authorization permits exactly this advisory write;
+    // it never upgrades provenance, so the adopted profile stays advisory-only.
+    const requiresCurrentObservation = !existingEstablished
+        && params.descriptorAuthority === 'advisory'
+        && !resolved.credentialWriteAuthorized;
     const existingServerUrl = resolved.existing
         ? normalizeUrl(resolved.existing.canonicalServerUrl ?? resolved.existing.serverUrl)
         : resolved.canonicalServerUrl;
@@ -1925,11 +2133,18 @@ export function preflightHomeProfileAdoption(
             ? existingServerUrl
             : (preserveExisting ? existingServerUrl : resolved.canonicalServerUrl),
         serverIdentityId: resolved.serverIdentityId,
-        credentialWrite: preserveExisting ? 'preserveExisting' : 'required',
+        credentialWrite: requiresCurrentObservation
+            ? 'requiresCurrentObservation'
+            : preserveExisting
+                ? 'preserveExisting'
+                : 'required',
     };
 }
 
-export async function adoptHomeProfile(params: HomeProfileAdoptionParams): Promise<ServerProfile> {
+async function adoptHomeProfileWithOptions(
+    params: HomeProfileAdoptionParams,
+    options: Readonly<{ completePersonalHomeBootstrap?: true }> = {},
+): Promise<ServerProfile> {
     const {
         descriptor,
         canonicalServerUrl: url,
@@ -1979,8 +2194,14 @@ export async function adoptHomeProfile(params: HomeProfileAdoptionParams): Promi
         && descriptor.revision > 0
         ? descriptor.revision
         : undefined;
-    if (descriptorAdjudication === 'unchanged' || descriptorAdjudication === 'stale') {
+    if (
+        (descriptorAdjudication === 'unchanged' || descriptorAdjudication === 'stale')
+        && options.completePersonalHomeBootstrap !== true
+    ) {
         return profile;
+    }
+    if (options.completePersonalHomeBootstrap === true && !identity) {
+        throw new Error('Personal Home bootstrap completion requires a stable Home identity');
     }
     // Revisioned descriptor snapshots are monotonic at this single writer. Only
     // a strictly newer generation may replace snapshot-owned identity/transport
@@ -2043,6 +2264,9 @@ export async function adoptHomeProfile(params: HomeProfileAdoptionParams): Promi
         descriptorProvenance: params.descriptorAuthority === 'advisory'
             ? (existing ? profile.descriptorProvenance : 'advisory-only')
             : undefined,
+        ...(options.completePersonalHomeBootstrap === true
+            ? { personalHomeBootstrapCompleted: true as const }
+            : {}),
     };
     if (!existing || JSON.stringify(updated) !== JSON.stringify(profile)) {
         const previousSnapshot = getActiveServerSnapshot();
@@ -2057,43 +2281,28 @@ export async function adoptHomeProfile(params: HomeProfileAdoptionParams): Promi
     return updated;
 }
 
+export async function adoptHomeProfile(params: HomeProfileAdoptionParams): Promise<ServerProfile> {
+    return await adoptHomeProfileWithOptions(params);
+}
+
+/**
+ * Commits the verified Personal Home identity, mutable adoption provenance, and
+ * durable completion scalar through the profile owner's one persistence mutation.
+ * Callers must reach this operation only after their live refusal/authenticated
+ * readback checks; this owner binds the receipt to the descriptor's stable identity.
+ */
+export async function adoptPersonalHomeProfileAndComplete(
+    params: Omit<HomeProfileAdoptionParams, 'source'> & Readonly<{
+        source: 'desktop-personal-home';
+    }>,
+): Promise<ServerProfile> {
+    return await adoptHomeProfileWithOptions(params, { completePersonalHomeBootstrap: true });
+}
+
 export function getServerProfileById(idRaw: string): ServerProfile | null {
     const id = normalizeServerId(idRaw);
     if (!id) return null;
     return findProfileByServerIdentifier(readPersistedState().servers, id);
-}
-
-/**
- * Records that this device completed the verified managed Personal Home bootstrap
- * for one exact adopted Home identity. This is deliberately not inferred from URL
- * or mutable adoption provenance.
- */
-export function markServerProfilePersonalHomeBootstrapCompleted(params: Readonly<{
-    profileId: string;
-    serverIdentityId: string;
-}>): ServerProfile {
-    const profileId = normalizeServerId(params.profileId);
-    const serverIdentityId = normalizeServerIdentityId(params.serverIdentityId);
-    if (!profileId || !serverIdentityId) {
-        throw new Error('Personal Home bootstrap completion requires a profile and Home identity');
-    }
-
-    const state = readPersistedState();
-    const profile = findProfileByServerIdentifier(state.servers, profileId);
-    if (!profile || profile.serverIdentityId !== serverIdentityId) {
-        throw new Error('Personal Home bootstrap completion identity does not match the adopted profile');
-    }
-    if (profile.personalHomeBootstrapCompleted === true) return profile;
-
-    const completed: ServerProfile = { ...profile, personalHomeBootstrapCompleted: true };
-    const previousSnapshot = getActiveServerSnapshot();
-    writePersistedState({
-        ...state,
-        servers: { ...state.servers, [completed.id]: completed },
-    });
-    emitServerProfilesChanged();
-    emitActiveServerChanged(previousSnapshot, { force: true });
-    return completed;
 }
 
 /**
@@ -2266,6 +2475,15 @@ export function setServerProfileIdentityForUrl(serverUrlRaw: string, identityRaw
     const state = readPersistedState();
     const existing = findProfileByEquivalentUrl(state.servers, url);
     if (existing?.serverIdentityId && existing.serverIdentityId !== serverIdentityId) {
+        return null;
+    }
+    // Public feature discovery may learn an identity only for the URL it
+    // actually contacted. Once another profile owns that stable identity,
+    // relocating it is an authoritative adoption transaction, not an
+    // unauthenticated identity-learning merge.
+    if (Object.values(state.servers).some((profile) => (
+        profile.id !== existing?.id && profile.serverIdentityId === serverIdentityId
+    ))) {
         return null;
     }
     const hasCompetingIdentityProfile = Object.values(state.servers).some((profile) => (
@@ -2506,11 +2724,12 @@ export function removeServerProfile(idRaw: string): void {
         removed.serverIdentityId,
         ...(removed.legacyServerIds ?? []),
     ]));
-    const remainingIds = new Set(Object.values(rest).map(resolveServerProfileScopeId));
     const groups = (state.homeViewState?.groups ?? [])
         .map((group) => ({
             ...group,
-            serverIds: group.serverIds.filter((serverId) => !removedIds.has(serverId) && remainingIds.has(serverId)),
+            // Explicit removal owns pruning for this Home only. Other unresolved
+            // scope IDs may represent profiles that have not been adopted yet.
+            serverIds: group.serverIds.filter((serverId) => !removedIds.has(serverId)),
         }))
         .filter((group) => group.serverIds.length > 0);
     const removedWasActiveTarget = state.homeViewState?.activeTargetKind === 'server'

@@ -3,7 +3,7 @@ import * as React from 'react';
 import { Modal } from '@/modal';
 import { t } from '@/text';
 import { TokenStorage } from '@/auth/storage/tokenStorage';
-import { resolveServerProfileScopeId, type ServerProfile } from '@/sync/domains/server/serverProfiles';
+import { getActiveServerId, resolveServerProfileScopeId, type ServerProfile } from '@/sync/domains/server/serverProfiles';
 import type { ServerSelectionGroup } from '@/sync/domains/server/selection/serverSelectionTypes';
 
 import type { ServerAuthStatus } from './useServerAuthStatusByServerId';
@@ -104,11 +104,17 @@ export function useServerSettingsGroupActions(params: Readonly<{
         if (!next) return;
         const trimmed = next.trim();
         if (!trimmed) return;
-        const nextProfiles = params.normalizedGroupProfiles.map((item) => item.id !== profile.id ? item : { ...item, name: trimmed });
-        params.setHomeViewSelectionSettings((current) => ({
-            ...current,
-            serverSelectionGroups: normalizeServerSelectionGroupsForSettings(nextProfiles),
-        }), { targetScope: params.selectionScope });
+        // The prompt awaited above; another writer may have changed groups meanwhile.
+        // Derive the mutation from the state present at commit instead of the
+        // snapshot this callback captured.
+        params.setHomeViewSelectionSettings((current) => {
+            const groups = normalizeServerSelectionGroupsForSettings(current.serverSelectionGroups);
+            if (!groups.some((item) => item.id === profile.id)) return current;
+            return {
+                ...current,
+                serverSelectionGroups: groups.map((item) => item.id !== profile.id ? item : { ...item, name: trimmed }),
+            };
+        }, { targetScope: params.selectionScope });
     }, [params]);
 
     const onRemoveGroup = React.useCallback(async (profile: ServerSelectionGroup) => {
@@ -118,16 +124,25 @@ export function useServerSettingsGroupActions(params: Readonly<{
             { confirmText: t('common.remove'), destructive: true },
         );
         if (!confirmed) return;
+        const activeServerId = getActiveServerId();
 
-        const nextProfiles = params.normalizedGroupProfiles.filter((item) => item.id !== profile.id);
-        params.setHomeViewSelectionSettings((current) => ({
-            ...current,
-            serverSelectionGroups: normalizeServerSelectionGroupsForSettings(nextProfiles),
-            ...(params.activeGroupId === profile.id ? {
-                serverSelectionActiveTargetKind: params.activeServerId ? 'server' as const : null,
-                serverSelectionActiveTargetId: params.activeServerId || null,
-            } : {}),
-        }), { targetScope: params.selectionScope });
+        // The confirmation awaited above; only the removed group is dropped from the
+        // state present at commit, and the fallback target is derived from that
+        // current target rather than the captured one.
+        params.setHomeViewSelectionSettings((current) => {
+            const groups = normalizeServerSelectionGroupsForSettings(current.serverSelectionGroups)
+                .filter((item) => item.id !== profile.id);
+            const removedCurrentTarget = current.serverSelectionActiveTargetKind === 'group'
+                && current.serverSelectionActiveTargetId === profile.id;
+            return {
+                ...current,
+                serverSelectionGroups: groups,
+                ...(removedCurrentTarget ? {
+                    serverSelectionActiveTargetKind: activeServerId ? 'server' as const : null,
+                    serverSelectionActiveTargetId: activeServerId || null,
+                } : {}),
+            };
+        }, { targetScope: params.selectionScope });
     }, [params]);
 
     const onCreateServerGroup = React.useCallback(async (input: { name: string; serverIds: string[] }) => {
@@ -140,13 +155,6 @@ export function useServerSettingsGroupActions(params: Readonly<{
         }
 
         const baseId = toGroupProfileId(trimmedName);
-        const existingIds = new Set(params.normalizedGroupProfiles.map((profile) => profile.id));
-        let id = baseId;
-        let suffix = 2;
-        while (existingIds.has(id)) {
-            id = `${baseId}-${suffix}`;
-            suffix += 1;
-        }
 
         const activation = await resolveServerSelectionGroupActivation({
             currentServerId: params.activeServerId,
@@ -159,23 +167,37 @@ export function useServerSettingsGroupActions(params: Readonly<{
         });
         if (!activation) return false;
         const { serverId: nextServerId, authStatus } = activation;
-        const nextGroup: ServerSelectionGroup = {
-            id,
-            name: trimmedName,
-            serverIds: nextServerIds,
-            presentation: params.groupPresentation,
-        };
-        if (nextServerId !== params.activeServerId) {
+        // Auth resolution may await credential storage. Compare against the
+        // canonical applied Home now, not the render-time focus.
+        if (nextServerId !== getActiveServerId()) {
             const result = await params.onSwitchServerById(nextServerId);
             if (result === 'blocked') return false;
         }
-        const nextProfiles = [...params.normalizedGroupProfiles, nextGroup];
-        params.setHomeViewSelectionSettings((current) => ({
-            ...current,
-            serverSelectionGroups: normalizeServerSelectionGroupsForSettings(nextProfiles),
-            serverSelectionActiveTargetKind: 'group',
-            serverSelectionActiveTargetId: nextGroup.id,
-        }), { targetScope: params.selectionScope });
+        // The auth probe and focus switch awaited above: allocate the group id
+        // against the groups present at commit so a concurrently created group
+        // with the same derived id is neither overwritten nor dropped.
+        params.setHomeViewSelectionSettings((current) => {
+            const groups = normalizeServerSelectionGroupsForSettings(current.serverSelectionGroups);
+            const existingIds = new Set(groups.map((group) => group.id));
+            let id = baseId;
+            let suffix = 2;
+            while (existingIds.has(id)) {
+                id = `${baseId}-${suffix}`;
+                suffix += 1;
+            }
+            const nextGroup: ServerSelectionGroup = {
+                id,
+                name: trimmedName,
+                serverIds: nextServerIds,
+                presentation: params.groupPresentation,
+            };
+            return {
+                ...current,
+                serverSelectionGroups: normalizeServerSelectionGroupsForSettings([...groups, nextGroup]),
+                serverSelectionActiveTargetKind: 'group',
+                serverSelectionActiveTargetId: id,
+            };
+        }, { targetScope: params.selectionScope });
         if (authStatus === 'signedOut') {
             params.onAfterSignedOutSwitch();
         }

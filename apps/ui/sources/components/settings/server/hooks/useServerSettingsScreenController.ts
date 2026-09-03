@@ -34,7 +34,7 @@ import type { ServerSelectionGroup } from '@/sync/domains/server/selection/serve
 import { canonicalizeServerUrl } from '@/sync/domains/server/url/serverUrlCanonical';
 import { isInsecureRemoteHttpServerUrl } from '@/sync/domains/server/url/serverUrlClassification';
 import { useAuth } from '@/auth/context/AuthContext';
-import { useMachineListStatusByServerId, useSettings, useSocketStatus } from '@/sync/domains/state/storage';
+import { useMachineListStatusByServerId, useSocketStatus } from '@/sync/domains/state/storage';
 import { useHomeViewSelectionSettingsMutable } from '@/hooks/server/useHomeViewSelectionSettings';
 import { parseServerSettingsRouteParams } from '@/components/settings/server/navigation/serverSettingsRouteParams';
 import { useServerAuthStatusByServerId } from '@/components/settings/server/hooks/useServerAuthStatusByServerId';
@@ -147,13 +147,12 @@ export function useServerSettingsScreenController(): ServerSettingsController {
     const validationAbortControllerRef = React.useRef<AbortController | null>(null);
     const inputUrlRef = React.useRef(inputUrl);
 
-    const accountSettings = useSettings();
     const {
         serverSelectionGroups,
         serverSelectionActiveTargetKind,
         serverSelectionActiveTargetId,
         setHomeViewSelectionSettings,
-    } = useHomeViewSelectionSettingsMutable(accountSettings);
+    } = useHomeViewSelectionSettingsMutable();
     const routineSelectionScope = resolveRoutineServerSelectionScope(Platform.OS, isDesktopHost());
     const serverProfilesGeneration = useServerProfilesGeneration();
     const subscribedActiveServer = useActiveServerSnapshot();
@@ -172,9 +171,10 @@ export function useServerSettingsScreenController(): ServerSettingsController {
     const switchServerById = React.useCallback(async (serverId: string, opts?: SwitchServerByIdOptions) => {
         const targetProfile = getServerProfileById(serverId);
         const targetServerId = targetProfile ? resolveServerProfileScopeId(targetProfile) : serverId;
+        const selectionScope = opts?.scope ?? routineSelectionScope;
         const switched = await setActiveServerAndSwitch({
             serverId: targetServerId,
-            scope: opts?.scope ?? 'device',
+            scope: selectionScope,
             refreshAuth: auth.refreshFromActiveServer,
         });
         if (switched === 'blocked') return switched;
@@ -182,14 +182,14 @@ export function useServerSettingsScreenController(): ServerSettingsController {
             const target = buildServerSelectionActiveTargetForServer(targetServerId);
             setHomeViewSelectionSettings(
                 (current) => ({ ...current, ...target }),
-                { targetScope: opts?.scope ?? 'device' },
+                { targetScope: selectionScope },
             );
         }
         if (opts?.normalizeRoute ?? true) {
             router.replace('/server');
         }
         return switched;
-    }, [auth, router, setHomeViewSelectionSettings]);
+    }, [auth, router, routineSelectionScope, setHomeViewSelectionSettings]);
 
     const validateServerReachable = React.useCallback(async (url: string): Promise<boolean> => {
         const attemptId = (validationAttemptIdRef.current += 1);
@@ -460,6 +460,7 @@ export function useServerSettingsScreenController(): ServerSettingsController {
 
     const profileActions = useServerSettingsServerProfileActions({
         authStatusByServerId,
+        selectionScope: routineSelectionScope,
         onSwitchServerById: async (serverId, scope) => {
             return await switchServerById(serverId, { scope });
         },

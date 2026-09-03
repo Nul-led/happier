@@ -52,6 +52,7 @@ type PrepareDaemonHomeIrohTransportInput = Readonly<{
   identityProbe?: (input: IdentityProbeInput) => Promise<ReadinessProbeResult>;
   probe?: (input: ProbeInput) => Promise<ReadinessProbeResult>;
   publishRuntimeOrigin?: typeof publishServerHttpRuntimeOrigin;
+  isCancelled?: () => boolean;
 }>;
 
 type ActiveDaemonHomeTransport = Omit<DaemonHomeTransport, 'reacquire'>;
@@ -64,6 +65,9 @@ function withReacquisition(
   let activeRelease = initial.release;
   const pendingReleases = new Set([initial.release]);
   let released = false;
+  let closing = false;
+  let releaseInFlight: Promise<void> | null = null;
+  let reacquireInFlight: Promise<ReadinessProbeResult> | null = null;
   let authenticatedToken = input.token;
   return {
     get carrier() {
@@ -74,44 +78,67 @@ function withReacquisition(
     },
     async release() {
       if (released) return;
-      const errors: unknown[] = [];
-      for (const release of [...pendingReleases]) {
-        try {
-          await release();
-          pendingReleases.delete(release);
-        } catch (error) {
-          errors.push(error);
+      closing = true;
+      releaseInFlight ??= (async () => {
+        await reacquireInFlight?.catch(() => undefined);
+        const errors: unknown[] = [];
+        for (const release of [...pendingReleases]) {
+          try {
+            await release();
+            pendingReleases.delete(release);
+          } catch (error) {
+            errors.push(error);
+          }
         }
-      }
-      if (errors.length === 1) throw errors[0];
-      if (errors.length > 1) throw new AggregateError(errors, 'Failed to release every daemon Home transport.');
-      released = true;
+        if (errors.length === 1) throw errors[0];
+        if (errors.length > 1) throw new AggregateError(errors, 'Failed to release every daemon Home transport.');
+        released = true;
+      })().finally(() => {
+        releaseInFlight = null;
+      });
+      return await releaseInFlight;
     },
     async reacquire() {
-      if (released) return { status: 'server_unreachable', errorMessage: 'Home transport is released' };
-      try {
-        await activeRelease();
-        pendingReleases.delete(activeRelease);
-      } catch {
-        // Keep custody of a failed predecessor release for final teardown.
-      }
-      try {
-        const currentProfile = await (input.readProfile ?? getActiveServerProfile)();
-        const replacement = await prepareDaemonHomeIrohTransportOnce(
-          { ...input, ...(authenticatedToken ? { token: authenticatedToken } : {}) },
-          currentProfile,
-        );
-        active = replacement;
-        activeRelease = replacement.release;
-        pendingReleases.add(activeRelease);
-        return { status: 'ready' };
-      } catch (error) {
-        if (error instanceof DaemonHomeReadinessError) return error.probe;
-        return {
-          status: classifyIrohHomeCarrierFailure(error).fallbackAllowed ? 'server_unreachable' : 'auth_failed',
-          errorMessage: error instanceof Error ? error.message : 'Home transport reacquisition failed closed',
-        };
-      }
+      if (released || closing) return { status: 'server_unreachable', errorMessage: 'Home transport is released' };
+      if (reacquireInFlight) return await reacquireInFlight;
+      reacquireInFlight = (async (): Promise<ReadinessProbeResult> => {
+        try {
+          await activeRelease();
+          pendingReleases.delete(activeRelease);
+        } catch {
+          // Keep custody of a failed predecessor release for final teardown.
+        }
+        try {
+          const currentProfile = await (input.readProfile ?? getActiveServerProfile)();
+          const replacement = await prepareDaemonHomeIrohTransportOnce(
+            {
+              ...input,
+              ...(authenticatedToken ? { token: authenticatedToken } : {}),
+              isCancelled: () => closing || released,
+            },
+            currentProfile,
+          );
+          if (closing || released) {
+            pendingReleases.add(replacement.release);
+            await replacement.release();
+            pendingReleases.delete(replacement.release);
+            return { status: 'server_unreachable', errorMessage: 'Home transport is released' };
+          }
+          active = replacement;
+          activeRelease = replacement.release;
+          pendingReleases.add(activeRelease);
+          return { status: 'ready' };
+        } catch (error) {
+          if (error instanceof DaemonHomeReadinessError) return error.probe;
+          return {
+            status: classifyIrohHomeCarrierFailure(error).fallbackAllowed ? 'server_unreachable' : 'auth_failed',
+            errorMessage: error instanceof Error ? error.message : 'Home transport reacquisition failed closed',
+          };
+        }
+      })().finally(() => {
+        reacquireInFlight = null;
+      });
+      return await reacquireInFlight;
     },
     async verifyAuthenticated(token) {
       if (released) return { status: 'server_unreachable', errorMessage: 'Home transport is released' };
@@ -163,6 +190,9 @@ async function prepareDaemonHomeIrohTransportOnce(
     expectedServerIdentityId: descriptor.homeServerIdentityId,
   });
   const activateTrustedFallback = (serverUrl: string): ActiveDaemonHomeTransport => {
+    if (input.isCancelled?.()) {
+      throw new DaemonHomeReadinessError({ status: 'server_unreachable', errorMessage: 'Home transport is released' });
+    }
     const unpublish = publish(serverUrl, 'https');
     return {
       carrier: 'standard',
@@ -219,6 +249,34 @@ async function prepareDaemonHomeIrohTransportOnce(
       });
     }
 
+    if (input.token) {
+      const authenticatedReadiness = await probe({
+        serverUrl: nativeLease.runtimeOrigin,
+        token: input.token,
+        expectedServerIdentityId: descriptor.homeServerIdentityId,
+      });
+      if (authenticatedReadiness.status !== 'ready') {
+        await nativeLease.release().catch(() => undefined);
+        if (authenticatedReadiness.status === 'auth_failed') {
+          throw new DaemonHomeReadinessError({
+            ...authenticatedReadiness,
+            errorMessage: `Iroh Home verification failed: ${authenticatedReadiness.errorMessage ?? 'authentication rejected'}`,
+          });
+        }
+        if (trustedHttpsOrigin) {
+          const standardReadiness = await verifyTrustedFallback(trustedHttpsOrigin, input.token);
+          if (standardReadiness.status === 'ready') return activateTrustedFallback(trustedHttpsOrigin);
+        }
+        throw new DaemonHomeReadinessError({
+          ...authenticatedReadiness,
+          errorMessage: `Iroh Home verification failed: ${authenticatedReadiness.errorMessage ?? authenticatedReadiness.status}`,
+        });
+      }
+    }
+    if (input.isCancelled?.()) {
+      await nativeLease.release();
+      throw new DaemonHomeReadinessError({ status: 'server_unreachable', errorMessage: 'Home transport is released' });
+    }
     const unpublish = publish(nativeLease.runtimeOrigin, 'iroh');
     let released = false;
     const active: ActiveDaemonHomeTransport = {
@@ -236,25 +294,7 @@ async function prepareDaemonHomeIrohTransportOnce(
         expectedServerIdentityId: descriptor.homeServerIdentityId,
       }),
     };
-    if (!input.token) return active;
-
-    const authenticatedReadiness = await active.verifyAuthenticated(input.token);
-    if (authenticatedReadiness.status === 'ready') return active;
-    await active.release().catch(() => undefined);
-    if (authenticatedReadiness.status === 'auth_failed') {
-      throw new DaemonHomeReadinessError({
-        ...authenticatedReadiness,
-        errorMessage: `Iroh Home verification failed: ${authenticatedReadiness.errorMessage ?? 'authentication rejected'}`,
-      });
-    }
-    if (trustedHttpsOrigin) {
-      const standardReadiness = await verifyTrustedFallback(trustedHttpsOrigin, input.token);
-      if (standardReadiness.status === 'ready') return activateTrustedFallback(trustedHttpsOrigin);
-    }
-    throw new DaemonHomeReadinessError({
-      ...authenticatedReadiness,
-      errorMessage: `Iroh Home verification failed: ${authenticatedReadiness.errorMessage ?? authenticatedReadiness.status}`,
-    });
+    return active;
   } catch (error) {
     if (!classifyIrohHomeCarrierFailure(error).fallbackAllowed) throw error;
     if (!trustedHttpsOrigin) throw error;

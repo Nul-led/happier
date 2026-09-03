@@ -117,6 +117,62 @@ describe('activeServerSwitch device scope', () => {
         expect(profiles.getActiveServerId()).toBe(tabProfile.id);
     });
 
+    it('opens the exact adopted Home separately from non-focusing adoption without changing groups', async () => {
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
+        stubWebRuntime('https://origin.example.test');
+
+        const { profiles, switches } = await importFreshServerModules();
+        const activeProfile = await profiles.adoptHomeProfile({
+            source: 'qr',
+            descriptor: {
+                v: 1,
+                homeServerIdentityId: 'srv_active_home',
+                canonicalServerUrl: 'https://active.example.test',
+                revision: 1,
+                endpoints: [{ kind: 'https', url: 'https://active.example.test' }],
+            },
+        });
+        profiles.setActiveServerId(activeProfile.id, { scope: 'device' });
+        profiles.saveHomeViewState({
+            version: 1,
+            groups: [{
+                id: 'saved-homes',
+                name: 'Saved Homes',
+                serverIds: [activeProfile.id],
+                presentation: 'grouped',
+            }],
+            activeTargetKind: 'server',
+            activeTargetId: activeProfile.id,
+        });
+        const groupsBefore = profiles.loadHomeViewState()?.groups;
+
+        const adopted = await profiles.adoptHomeProfile({
+            source: 'qr',
+            descriptor: {
+                v: 1,
+                homeServerIdentityId: 'srv_adopted_home',
+                canonicalServerUrl: 'https://adopted.example.test',
+                revision: 1,
+                endpoints: [{ kind: 'https', url: 'https://adopted.example.test' }],
+            },
+        });
+
+        expect(profiles.getServerProfileById(adopted.id)).toEqual(adopted);
+        expect(profiles.getActiveServerId()).toBe(activeProfile.serverIdentityId);
+        expect(profiles.loadHomeViewState()?.groups).toEqual(groupsBefore);
+        expect(switchConnectionToActiveServerSpy).not.toHaveBeenCalled();
+
+        await expect(switches.setActiveServerAndSwitch({
+            serverId: adopted.id,
+            scope: 'device',
+        })).resolves.toBe('switched');
+
+        expect(profiles.getActiveServerId()).toBe('srv_adopted_home');
+        expect(profiles.getDeviceDefaultServerId()).toBe(adopted.id);
+        expect(profiles.loadHomeViewState()?.groups).toEqual(groupsBefore);
+        expect(switchConnectionToActiveServerSpy).toHaveBeenCalledOnce();
+    });
+
     it('promotes the current tab active server to the device active server by url', async () => {
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
         stubWebRuntime('https://origin.example.test');

@@ -2,11 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createDbMocks, installDbModuleMock } from "../api/testkit/dbMocks";
 
-const { emitEphemeral, emitUpdate, expireSessionPublisherCandidates, refreshSessionParticipantBadgePushes } = vi.hoisted(() => ({
+const { emitEphemeral, emitUpdate, expireSessionPublisherCandidates, refreshSessionParticipantBadgePushes, emitPendingActivationHint } = vi.hoisted(() => ({
     emitEphemeral: vi.fn(),
     emitUpdate: vi.fn(),
     expireSessionPublisherCandidates: vi.fn(),
     refreshSessionParticipantBadgePushes: vi.fn(),
+    emitPendingActivationHint: vi.fn(),
 }));
 const dbMocks = createDbMocks({
     session: ["findMany", "findUnique", "updateMany", "updateManyAndReturn"],
@@ -45,6 +46,7 @@ vi.mock("@/app/events/eventRouter", async (importOriginal) => {
 
 vi.mock("./sessionPublisherPresence", () => ({ expireSessionPublisherCandidates }));
 vi.mock("@/app/activity/refreshAccountActivityBadgePushes", () => ({ refreshSessionParticipantBadgePushes }));
+vi.mock("@/app/session/pending/publishPendingMutation", () => ({ emitPendingActivationHint }));
 
 vi.mock("@/utils/logging/log", () => ({ warn: vi.fn(), log: vi.fn() }));
 
@@ -64,6 +66,7 @@ beforeEach(() => {
     expireSessionPublisherCandidates.mockResolvedValue([]);
     refreshSessionParticipantBadgePushes.mockReset();
     refreshSessionParticipantBadgePushes.mockResolvedValue(undefined);
+    emitPendingActivationHint.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -168,6 +171,39 @@ describe("runPresenceTimeoutTick", () => {
                 payload: expect.objectContaining({ type: "activity", id: "s1", active: false }),
             }),
         );
+    });
+
+    it("re-emits the exact still-waiting activation hint after active presence expires", async () => {
+        const { runPresenceTimeoutTick } = await importTimeoutModule();
+        const oldActiveAt = new Date("2026-01-01T00:00:00.000Z");
+        dbMocks.db.session.findMany.mockResolvedValue([
+            { id: "s1", accountId: "u1", lastActiveAt: oldActiveAt },
+        ]);
+        expireSessionPublisherCandidates.mockResolvedValue([{
+            status: "expired",
+            sessionId: "s1",
+            activeAt: oldActiveAt,
+            participantCursors: [{ accountId: "u1", cursor: 101 }],
+            badgeAttentionChanged: false,
+            activationHint: {
+                activationTarget: { accountId: "u1", requestId: "pending-1" },
+                pendingCount: 1,
+                pendingBlockedCount: 0,
+                pendingVersion: 8,
+            },
+        }]);
+
+        await runPresenceTimeoutTick(config);
+
+        expect(emitPendingActivationHint).toHaveBeenCalledWith({
+            sessionId: "s1",
+            changedByAccountId: "u1",
+            pendingCount: 1,
+            pendingBlockedCount: 0,
+            pendingVersion: 8,
+            participantCursors: [{ accountId: "u1", cursor: 101 }],
+            activationTarget: { accountId: "u1", requestId: "pending-1" },
+        });
     });
 
     it("marks timed-out machines inactive only through their exact scanned fences", async () => {

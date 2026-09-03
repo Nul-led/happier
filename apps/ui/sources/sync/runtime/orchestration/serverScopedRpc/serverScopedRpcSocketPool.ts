@@ -5,8 +5,12 @@ import {
 } from '@happier-dev/protocol';
 
 import { canonicalizeServerUrl } from '@/sync/domains/server/url/serverUrlCanonical';
+import type { HomeCarrier } from '@/sync/runtime/homeCarrier';
 import { fireAndForget } from '@/utils/system/fireAndForget';
-import { resolveSocketIoTransportsForCarrier } from '@/sync/runtime/socketIoTransports';
+import {
+    resolveSocketIoTransportsForCarrier,
+    resolveSocketIoTransportsForHomeCarrier,
+} from '@/sync/runtime/socketIoTransports';
 import {
     reportServerUnreachable,
     startServerReachabilitySupervisor,
@@ -33,7 +37,7 @@ type SocketLike = Readonly<{
 }>;
 
 type ReachabilityDeps = Readonly<{
-    acquireReachability?: (params: Readonly<{ serverUrl: string; runtimeOrigin: string; token: string }>) => Promise<Readonly<{ release: () => Promise<void> }>>;
+    acquireReachability?: (params: Readonly<{ serverUrl: string; runtimeOrigin: string; token: string; homeCarrier?: HomeCarrier | null }>) => Promise<Readonly<{ release: () => Promise<void> }>>;
     startReachability: (params: Readonly<{ serverUrl: string; token: string }>) => Promise<void>;
     waitForReachable: (params: Readonly<{ serverUrl: string; token: string; timeoutMs: number }>) => Promise<void>;
     reportUnreachable: (serverUrl: string, error: unknown, token: string) => void;
@@ -45,6 +49,7 @@ type Deps = Readonly<{
         serverUrl: string;
         token: string;
         carrier: 'https' | 'iroh';
+        homeCarrier?: HomeCarrier | null;
     }>) => SocketLike;
     reachability: ReachabilityDeps;
     now: () => number;
@@ -57,12 +62,19 @@ type PoolEntry = {
     reachabilityServerUrl: string;
     token: string;
     carrier: 'https' | 'iroh';
+    homeCarrier: HomeCarrier | null;
     socket: SocketLike;
     inUseCount: number;
     connectInFlight: Promise<void> | null;
     intentionalDisconnect: boolean;
     idleDisconnectTimer: ReturnType<typeof setTimeout> | null;
     reachabilityRelease: (() => Promise<void>) | null;
+    /**
+     * Custody of the transport lease {@link homeCarrier} is carried by. The pool owns
+     * it for as long as this entry can reuse the carrier, so it is released only once
+     * the socket built on it is gone — never when one logical client disconnects.
+     */
+    carrierRelease: (() => Promise<void>) | null;
     teardownRequested: boolean;
     teardownInFlight: Promise<void> | null;
 };
@@ -131,7 +143,11 @@ export function createServerScopedRpcSocketPool(overrides?: Partial<Deps>): Read
 }> {
     const deps: Deps = {
         createSocket: overrides?.createSocket ?? ((params) => {
-            const transports = resolveSocketIoTransportsForCarrier(params.carrier);
+            // A carrier that owns its own bytes supplies the socket; Engine.IO
+            // keeps its own transport selection for every URL-addressed Home.
+            const transports = params.homeCarrier
+                ? resolveSocketIoTransportsForHomeCarrier(params.homeCarrier.createWebSocket)
+                : resolveSocketIoTransportsForCarrier(params.carrier);
             return io(params.serverUrl, {
                 path: '/v1/updates/',
                 auth: {
@@ -154,6 +170,7 @@ export function createServerScopedRpcSocketPool(overrides?: Partial<Deps>): Read
                 serverUrl: params.serverUrl,
                 runtimeOrigin: params.runtimeOrigin,
                 token: params.token,
+                homeCarrier: params.homeCarrier ?? null,
             }),
             startReachability: async (params) => {
                 await startServerReachabilitySupervisor({ serverUrl: params.serverUrl, token: params.token });
@@ -173,11 +190,58 @@ export function createServerScopedRpcSocketPool(overrides?: Partial<Deps>): Read
     };
 
     const entriesByKey = new Map<string, PoolEntry>();
+    /**
+     * Carrier custody the pool accepted but could not hand back yet: a redundant
+     * acquisition whose release failed, or one whose acquire failed before any entry
+     * could retain it. It is owned here rather than on an entry precisely because
+     * neither case belongs to a live entry — an entry may be torn down and removed
+     * while such a release is still in flight — and `stopAll` retries whatever is
+     * still held.
+     */
+    const strandedCarrierReleases = new Set<() => Promise<void>>();
     let detachNetworkAllowedListener: (() => void) | null = null;
 
     // The pool is private in-memory custody and already retains the token on each live entry.
     // Key directly by that credential so unrelated token churn cannot split one live socket.
     const buildKey = (serverUrl: string, token: string) => JSON.stringify([serverUrl, token]);
+
+    // A replaced carrier is a replaced transport even when the URL is unchanged,
+    // which is exactly the browser Iroh case: its URL is always the canonical
+    // Home URL. Its proven EndpointId therefore belongs in the entry identity.
+    //
+    // Two acquisitions that agree on the EndpointId are equivalent transports to the
+    // same Home, so sharing one entry is correct — and safe, because a live entry
+    // still holds its own carrier's lease, so the one it kept can never be the
+    // released half of a genuine replacement. The second acquisition is redundant,
+    // not a successor, and is released rather than swapped in.
+    const buildEntryKey = (
+        serverUrl: string,
+        reachabilityServerUrl: string,
+        token: string,
+        carrier: 'https' | 'iroh',
+        homeCarrier: HomeCarrier | null,
+    ) => `${buildKey(reachabilityServerUrl, token)}::${serverUrl}::${carrier}::${homeCarrier?.endpointId ?? ''}`;
+
+    /**
+     * Releases one piece of unowned carrier custody, keeping it held here when the
+     * release fails so a later `stopAll` retries it instead of leaking the lease.
+     */
+    const releaseUnownedCarrierCustody = async (release: () => Promise<void>): Promise<void> => {
+        try {
+            await release();
+        } catch (error) {
+            strandedCarrierReleases.add(release);
+            throw error;
+        }
+    };
+
+    /** Retries every still-held stranded release, claiming each so two drains cannot double-release. */
+    const drainStrandedCarrierCustody = async (): Promise<void> => {
+        for (const release of Array.from(strandedCarrierReleases)) {
+            if (!strandedCarrierReleases.delete(release)) continue;
+            await releaseUnownedCarrierCustody(release);
+        }
+    };
 
     const stopEntrySocket = (entry: PoolEntry, remove: boolean): Promise<void> => {
         entry.teardownRequested ||= remove;
@@ -199,6 +263,15 @@ export function createServerScopedRpcSocketPool(overrides?: Partial<Deps>): Read
                 await releaseReachability();
                 if (entry.reachabilityRelease === releaseReachability) {
                     entry.reachabilityRelease = null;
+                }
+            }
+            // Only now is the carrier certainly unused by this socket. A failure here
+            // keeps custody — and the entry — so a later teardown/stop can retry.
+            const releaseCarrier = entry.carrierRelease;
+            if (releaseCarrier) {
+                await releaseCarrier();
+                if (entry.carrierRelease === releaseCarrier) {
+                    entry.carrierRelease = null;
                 }
             }
             if (entry.teardownRequested && entriesByKey.get(entry.key) === entry) {
@@ -239,29 +312,30 @@ export function createServerScopedRpcSocketPool(overrides?: Partial<Deps>): Read
         }, idleMs);
     };
 
-    const getOrCreateEntry = (
+    const createEntry = (
         serverUrl: string,
         reachabilityServerUrl: string,
         token: string,
         carrier: 'https' | 'iroh',
+        homeCarrier: HomeCarrier | null,
+        carrierRelease: (() => Promise<void>) | null,
     ): PoolEntry => {
-        const key = `${buildKey(reachabilityServerUrl, token)}::${serverUrl}::${carrier}`;
-        const existing = entriesByKey.get(key);
-        if (existing) return existing;
-
-        const socket = deps.createSocket({ serverUrl, token, carrier });
+        const key = buildEntryKey(serverUrl, reachabilityServerUrl, token, carrier, homeCarrier);
+        const socket = deps.createSocket({ serverUrl, token, carrier, homeCarrier });
         const entry: PoolEntry = {
             key,
             serverUrl,
             reachabilityServerUrl,
             token,
             carrier,
+            homeCarrier,
             socket,
             inUseCount: 0,
             connectInFlight: null,
             intentionalDisconnect: false,
             idleDisconnectTimer: null,
             reachabilityRelease: null,
+            carrierRelease,
             teardownRequested: false,
             teardownInFlight: null,
         };
@@ -296,6 +370,7 @@ export function createServerScopedRpcSocketPool(overrides?: Partial<Deps>): Read
                     serverUrl: entry.reachabilityServerUrl,
                     runtimeOrigin: entry.serverUrl,
                     token: entry.token,
+                    homeCarrier: entry.homeCarrier,
                 });
                 entry.reachabilityRelease = lease.release;
             } else if (!entry.reachabilityRelease) {
@@ -315,10 +390,36 @@ export function createServerScopedRpcSocketPool(overrides?: Partial<Deps>): Read
     };
 
     const acquire = async (params: ScopedSocketConnectParams): Promise<ScopedSocketClient> => {
+        const releaseCarrier = params.releaseCarrier ?? null;
+        let carrierCustodyTransferred = false;
+        try {
+            return await acquireWithCarrierCustody(params, () => {
+                carrierCustodyTransferred = true;
+            });
+        } catch (error) {
+            // No entry retains this lease, so the release is settled here rather than
+            // reported as done while still pending. A failed release stays in the
+            // pool's stranded custody for `stopAll` to retry, and the acquire failure
+            // the caller is waiting on remains the error it sees.
+            if (releaseCarrier && !carrierCustodyTransferred) {
+                await releaseUnownedCarrierCustody(releaseCarrier).catch((releaseError: unknown) => {
+                    console.error('[scoped-rpc] carrier release failed after acquire failure', releaseError);
+                });
+            }
+            throw error;
+        }
+    };
+
+    const acquireWithCarrierCustody = async (
+        params: ScopedSocketConnectParams,
+        onCarrierCustodyTransferred: () => void,
+    ): Promise<ScopedSocketClient> => {
         const serverUrl = normalizeServerUrl(params.serverUrl);
         const reachabilityServerUrl = normalizeServerUrl(params.reachabilityServerUrl ?? params.serverUrl);
         const token = String(params.token ?? '');
         const carrier = params.carrier === 'iroh' ? 'iroh' : 'https';
+        const homeCarrier = params.homeCarrier ?? null;
+        const releaseCarrier = params.releaseCarrier ?? null;
         const timeoutMs = typeof params.timeoutMs === 'number' && params.timeoutMs > 0 ? params.timeoutMs : 30_000;
         if (!serverUrl) {
             throw new Error('Missing server URL');
@@ -327,7 +428,7 @@ export function createServerScopedRpcSocketPool(overrides?: Partial<Deps>): Read
             throw new Error('Missing token');
         }
 
-        const key = `${buildKey(reachabilityServerUrl, token)}::${serverUrl}::${carrier}`;
+        const key = buildEntryKey(serverUrl, reachabilityServerUrl, token, carrier, homeCarrier);
         let entry = entriesByKey.get(key);
         while (entry?.teardownRequested) {
             // A retiring socket cannot be revived: join (or retry) its canonical teardown,
@@ -335,11 +436,28 @@ export function createServerScopedRpcSocketPool(overrides?: Partial<Deps>): Read
             await stopEntrySocket(entry, true);
             entry = entriesByKey.get(key);
         }
-        entry ??= getOrCreateEntry(serverUrl, reachabilityServerUrl, token, carrier);
+        // This caller acquired its own carrier before it could know an equivalent one
+        // was already retained. The retained carrier keeps serving the live socket;
+        // only the redundant acquisition is released.
+        const redundantCarrierRelease = entry && releaseCarrier && releaseCarrier !== entry.carrierRelease
+            ? releaseCarrier
+            : null;
+        entry ??= createEntry(serverUrl, reachabilityServerUrl, token, carrier, homeCarrier, releaseCarrier);
+        onCarrierCustodyTransferred();
+        // Reserve this entry before anything below can await: an idle teardown that
+        // ran in between would otherwise remove the entry this client is acquiring.
         entry.inUseCount += 1;
         if (entry.idleDisconnectTimer) {
             clearTimeout(entry.idleDisconnectTimer);
             entry.idleDisconnectTimer = null;
+        }
+        if (redundantCarrierRelease) {
+            // Settled before this call returns, so no carrier release outlives the
+            // acquire that started it. A failure is not this acquisition's failure,
+            // but the lease stays in pool custody for `stopAll` to retry.
+            await releaseUnownedCarrierCustody(redundantCarrierRelease).catch((releaseError: unknown) => {
+                console.error('[scoped-rpc] redundant carrier release failed', releaseError);
+            });
         }
 
         let released = false;
@@ -370,10 +488,13 @@ export function createServerScopedRpcSocketPool(overrides?: Partial<Deps>): Read
 
     const stopAll = async (): Promise<void> => {
         const entries = Array.from(entriesByKey.values());
-        await Promise.all(entries.map(async (entry) => {
-            entry.inUseCount = 0;
-            await stopEntrySocket(entry, true);
-        }));
+        await Promise.all([
+            ...entries.map(async (entry) => {
+                entry.inUseCount = 0;
+                await stopEntrySocket(entry, true);
+            }),
+            drainStrandedCarrierCustody(),
+        ]);
     };
 
     const resetForTests = () => {
@@ -383,6 +504,7 @@ export function createServerScopedRpcSocketPool(overrides?: Partial<Deps>): Read
             if (entry.idleDisconnectTimer) clearTimeout(entry.idleDisconnectTimer);
         }
         entriesByKey.clear();
+        strandedCarrierReleases.clear();
     };
 
     detachNetworkAllowedListener = deps.reachability.subscribeNetworkAllowed((allowed) => {

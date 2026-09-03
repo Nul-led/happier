@@ -222,6 +222,7 @@ function createServerRequest(
     const request = createServerFetchAtEndpoint({
         endpointUrl: entry.serverUrl,
         ...(entry.irohLease ? { runtimeOrigin: entry.irohLease.runtimeOrigin } : {}),
+        ...(entry.irohLease?.homeCarrier ? { homeCarrier: entry.irohLease.homeCarrier } : {}),
         credentials: entry.credentials,
         serverId: entry.id,
         signal,
@@ -903,6 +904,7 @@ async function createManagedServer(
                 ...(entry.irohLease
                     ? { runtimeOrigin: entry.irohLease.runtimeOrigin, carrier: entry.irohLease.carrier }
                     : {}),
+                ...(entry.irohLease?.homeCarrier ? { homeCarrier: entry.irohLease.homeCarrier } : {}),
             });
             entry.socket = socket;
             entry.socketTransport = transport;
@@ -965,6 +967,9 @@ async function acquireManagedServerReachability(entry: ManagedConcurrentServer):
         ...(entry.irohLease && normalizeServerUrl(entry.irohLease.runtimeOrigin) !== entry.serverUrl
             ? { runtimeOrigin: entry.irohLease.runtimeOrigin }
             : {}),
+        // An ingress-less secondary Home has no URL a platform fetch can probe,
+        // so readiness is proven over the same carrier its requests will use.
+        homeCarrier: entry.irohLease?.homeCarrier ?? null,
     });
 
     if (
@@ -1079,10 +1084,19 @@ async function reconcileConcurrentServers(requestRevision: number): Promise<void
         try {
             irohLease = await acquireConcurrentHomeTransport(target, credentials);
         } catch {
+            if (!started || requestRevision !== reconcileRequestRevision) {
+                return;
+            }
             // Unsafe Iroh verification failures fail this Home closed. Do not
             // create the ordinary HTTPS reachability/socket/refresh bypass.
-            clearConcurrentSessionListCache(target.id);
-            clearConcurrentMachineListCache(target.id);
+            // Publish the failure as this Home's own status so consumers can
+            // tell an unreachable Home from one that was never selected, and
+            // keep its last known rows instead of blanking a hydrated list.
+            updateConcurrentMachineListCache({
+                serverId: target.id,
+                machines: storage.getState().machineListByServerId?.[target.id] ?? null,
+                status: 'error',
+            });
             continue;
         }
         if (!started || requestRevision !== reconcileRequestRevision) {

@@ -18,6 +18,7 @@ import {
     projectSessionTranscriptPublicationRealtimeProjection,
 } from "@/app/session/sessionTranscriptPublicationPolicy";
 import { expireSessionPublisherCandidates } from "./sessionPublisherPresence";
+import { emitPendingActivationHint } from "@/app/session/pending/publishPendingMutation";
 
 export interface PresenceTimeoutConfig {
     sessionTimeoutMs: number;
@@ -129,6 +130,17 @@ export async function runPresenceTimeoutTick(timeoutConfig: PresenceTimeoutConfi
                 badgeAttentionChanged: result.badgeAttentionChanged,
                 participantCursors: result.participantCursors,
             });
+            if (result.activationHint) {
+                await emitPendingActivationHint({
+                    sessionId: result.sessionId,
+                    changedByAccountId: result.activationHint.activationTarget.accountId,
+                    pendingCount: result.activationHint.pendingCount,
+                    pendingBlockedCount: result.activationHint.pendingBlockedCount,
+                    pendingVersion: result.activationHint.pendingVersion,
+                    participantCursors: [...result.participantCursors],
+                    activationTarget: result.activationHint.activationTarget,
+                });
+            }
             const candidate = candidateBySessionId.get(result.sessionId);
             if (!candidate) continue;
             eventRouter.emitEphemeral({

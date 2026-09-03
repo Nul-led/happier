@@ -5,6 +5,7 @@ import { useRouter } from 'expo-router';
 import { useUnistyles } from 'react-native-unistyles';
 import {
   sanitizeBugReportUrl,
+  sanitizeDoctorDiagnosticErrorMessage,
 } from '@happier-dev/protocol';
 
 import { Item } from '@/components/ui/lists/Item';
@@ -17,7 +18,7 @@ import { useHappyAction } from '@/hooks/ui/useHappyAction';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { listServerProfiles, type ServerProfile } from '@/sync/domains/server/serverProfiles';
 import { readCurrentAppRuntimeInfo } from '@/sync/runtime/readCurrentAppRuntimeInfo';
-import { readIrohHomeTransportDiagnostics } from '@/sync/runtime/nativeIrohTunnels/runtime';
+import { readIrohHomeTransportDiagnostics } from '@/sync/runtime/irohHomeTransportDiagnostics';
 import {
   useIsDataReady,
   useLastSyncAt,
@@ -174,7 +175,9 @@ export const SystemStatusView = React.memo(function SystemStatusView() {
         isDataReady,
         voiceStatus,
         socketStatus: socket.status,
-        socketLastError: socket.lastError,
+        socketLastError: socket.lastError
+          ? sanitizeDoctorDiagnosticErrorMessage(socket.lastError)
+          : socket.lastError,
         socketLastErrorAt: socket.lastErrorAt,
         lastSyncAt,
       },

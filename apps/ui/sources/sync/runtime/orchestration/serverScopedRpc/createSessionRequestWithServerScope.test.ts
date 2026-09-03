@@ -49,6 +49,7 @@ import { setActiveServerId, upsertServerProfile } from '@/sync/domains/server/se
 
 import {
     captureSessionRequestAuthorityForServerAccountScope,
+    createSessionRequestForResolvedServerScope,
     createSessionRequestWithServerScope,
     resolveSessionRequestForServerAccountScope,
 } from './createSessionRequestWithServerScope';
@@ -227,6 +228,68 @@ describe('createSessionRequestWithServerScope', () => {
             activeRequest: async () => new Response(null, { status: 200 }),
         })).rejects.toThrow('authenticated account does not match');
         expect(runtimeFetchMock).not.toHaveBeenCalled();
+    });
+
+    /**
+     * A Home reached only by a semantic carrier (browser Iroh, Lane 06 A7.3/A7.4)
+     * has NO origin a URL fetch can reach: its canonical URL resolves nowhere.
+     * The scoped-request owner already receives that carrier on its resolved
+     * context, so it must move the bytes over it. Sending the request to the
+     * canonical URL instead is not a degraded path — it cannot arrive at all,
+     * which is what broke every account-scoped call (V2 route grants included)
+     * on an ingress-less Home.
+     */
+    it('carries an account-scoped request over the resolved semantic Home carrier instead of its unreachable URL', async () => {
+        const carried: { url: string; init: RequestInit }[] = [];
+        const homeCarrier = {
+            endpointId: 'a'.repeat(64),
+            readObservedPath: () => 'relay' as const,
+            request: async (url: string, init: RequestInit) => {
+                carried.push({ url, init });
+                return new Response(JSON.stringify({ ok: true }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                });
+            },
+            createWebSocket: () => {
+                throw new Error('the scoped HTTP request must not open a socket');
+            },
+        };
+
+        const request = createSessionRequestForResolvedServerScope({
+            context: {
+                scope: 'scoped',
+                timeoutMs: 5_000,
+                targetServerId: 'srv_ingressless',
+                targetServerUrl: 'https://ingressless.happier.invalid',
+                targetAccountId: 'account-a',
+                token: tokenForSub('account-a'),
+                credentials: { token: tokenForSub('account-a') },
+                encryption: null,
+                // Exactly what `resolveServerScopedTransport` returns for a
+                // browser Iroh Home: the canonical URL as the "origin", plus the
+                // carrier that actually owns the bytes.
+                runtimeOrigin: 'https://ingressless.happier.invalid',
+                carrier: 'iroh',
+                homeCarrier,
+            },
+            activeRequest: async () => {
+                throw new Error('a scoped request must not fall back to the active request');
+            },
+        });
+
+        const response = await request('/v1/machines/peer/mediation/route-grants', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ v: 2 }),
+        });
+
+        expect(response.status).toBe(200);
+        expect(runtimeFetchMock).not.toHaveBeenCalled();
+        expect(carried).toHaveLength(1);
+        expect(carried[0]?.url).toBe('https://ingressless.happier.invalid/v1/machines/peer/mediation/route-grants');
+        expect(carried[0]?.init.method).toBe('POST');
+        expectHeaderValue(carried[0]?.init.headers, 'Authorization', `Bearer ${tokenForSub('account-a')}`);
     });
 });
 

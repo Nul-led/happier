@@ -425,4 +425,14 @@ impl HomeTunnel {
         self.task.abort();
         self.connection.close(0u32.into(), b"tunnel_released");
     }
+
+    /// Releases the lease and waits until the loopback accept task has dropped
+    /// its listener. Native lifecycle APIs use this form because reporting a
+    /// completed release while the old runtime origin still accepts sockets
+    /// would let callers publish or reuse a resource they no longer own.
+    pub async fn stop_and_wait(self) {
+        self.task.abort();
+        self.connection.close(0u32.into(), b"tunnel_released");
+        let _ = self.task.await;
+    }
 }

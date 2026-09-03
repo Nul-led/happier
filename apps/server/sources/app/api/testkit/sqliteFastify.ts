@@ -9,9 +9,9 @@ import {
 export function createAuthenticatedTestApp(
     options: Readonly<{ bodyLimit?: number }> = {},
 ) {
-    // Fastify's own 1 MiB default would answer 413 for a route that declares no
-    // ceiling at all, so a body-limit test must be able to reproduce the
-    // production application limit and let the route ceiling be the only bound.
+    // Fastify's own 1 MiB default would answer 413 for a route that relies on
+    // the application transport limit, so a body-limit test must be able to
+    // reproduce the production application limit explicitly.
     const app = Fastify(options.bodyLimit === undefined ? {} : { bodyLimit: options.bodyLimit });
     app.setValidatorCompiler(validatorCompiler);
     app.setSerializerCompiler(serializerCompiler);

@@ -11,7 +11,9 @@ import {
 import {
     resolveSocketIoTransports,
     resolveSocketIoTransportsForCarrier,
+    resolveSocketIoTransportsForHomeCarrier,
 } from '@/sync/runtime/socketIoTransports';
+import type { HomeCarrier } from '@/sync/runtime/homeCarrier';
 import { resolveServerRuntimeOrigin } from '@/sync/runtime/nativeLoopbackTunnels/runtimeOrigin';
 
 export type ConcurrentServerSocket = Socket;
@@ -21,11 +23,18 @@ export function createConcurrentServerSocketTransport(params: Readonly<{
     token: string;
     carrier?: 'https' | 'iroh';
     runtimeOrigin?: string;
+    /** Semantic carrier for a Home with no reachable URL origin (browser Iroh). */
+    homeCarrier?: HomeCarrier;
 }>): Readonly<{
     socket: ConcurrentServerSocket;
     transport: ManagedConnectionTransport;
 }> {
-    const transports = resolveSocketIoTransportsForCarrier(params.carrier, resolveSocketIoTransports());
+    // A carrier that owns its own bytes supplies the socket. The endpoint stays
+    // this Home's canonical URL — never the focused Home's, and never an
+    // ephemeral port that could be persisted.
+    const transports = params.homeCarrier
+        ? resolveSocketIoTransportsForHomeCarrier(params.homeCarrier.createWebSocket)
+        : resolveSocketIoTransportsForCarrier(params.carrier, resolveSocketIoTransports());
     const endpoint = resolveServerRuntimeOrigin(params);
     const socket = io(endpoint, {
         path: '/v1/updates/',

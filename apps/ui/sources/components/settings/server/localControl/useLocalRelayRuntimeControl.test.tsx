@@ -147,6 +147,38 @@ describe('useLocalRelayRuntimeControl Personal Home operations', () => {
         expect(harness.startedSpecs.find((spec) => spec.kind === 'relay.runtime.personal_home.restore.v1')?.params).toEqual({ ...BASE_PARAMS, action: 'recover' });
     });
 
+    it('preserves an unknown restore destination inspection instead of treating it as non-empty', async () => {
+        const harness = createScriptedRunnerHarness();
+        const { getCurrent } = await renderHook(() => useLocalRelayRuntimeControl({ runner: harness.runner }));
+        const inspect = await harness.start(() => getCurrent().refreshInspection());
+        await harness.settle(inspect, true, { data: {
+            running: false, identity: null, masterSecret: {}, layout: {},
+            storage: { ownedErasePaths: [] },
+            restoreRecovery: { status: 'none', affectedTargets: [] },
+        } });
+
+        expect(getCurrent().inspection?.destinationEmpty).toBeNull();
+    });
+
+    it('returns an explicit failed inspection outcome without replacing the last inspected facts', async () => {
+        const harness = createScriptedRunnerHarness();
+        const { getCurrent } = await renderHook(() => useLocalRelayRuntimeControl({ runner: harness.runner }));
+        const initial = await harness.start(() => getCurrent().refreshInspection());
+        const initialOutcome = await harness.settle(initial, true, { data: {
+            running: false, identity: null, masterSecret: {}, layout: {},
+            storage: { destinationEmpty: false, ownedErasePaths: [] },
+            restoreRecovery: { status: 'none', affectedTargets: [] },
+        } });
+        expect(initialOutcome).toMatchObject({ status: 'inspected', inspection: { destinationEmpty: false } });
+
+        const failed = await harness.start(() => getCurrent().refreshInspection());
+        const failedOutcome = await harness.settle(failed, false, { message: 'Home inspection failed at the database boundary.' });
+
+        expect(failedOutcome).toEqual({ status: 'failed', message: 'Home inspection failed at the database boundary.' });
+        expect(getCurrent().inspection?.destinationEmpty).toBe(false);
+        expect(getCurrent().lastErrorMessage).toBe('Home inspection failed at the database boundary.');
+    });
+
     it('projects only canonical durable relocation recovery facts from inspection', async () => {
         const harness = createScriptedRunnerHarness();
         const { getCurrent } = await renderHook(() => useLocalRelayRuntimeControl({ runner: harness.runner }));
@@ -173,7 +205,31 @@ describe('useLocalRelayRuntimeControl Personal Home operations', () => {
         });
     });
 
-    it('projects completed restore finalization and keeps both rollback and finalize actions on the restore kind', async () => {
+    it('keeps relocation recovery available when publication left no safe return action', async () => {
+        const harness = createScriptedRunnerHarness();
+        const { getCurrent } = await renderHook(() => useLocalRelayRuntimeControl({ runner: harness.runner }));
+        const inspect = await harness.start(() => getCurrent().refreshInspection());
+        await harness.settle(inspect, true, { data: {
+            running: false, identity: null, masterSecret: {}, layout: {},
+            storage: { destinationEmpty: false, ownedErasePaths: [] },
+            restoreRecovery: { status: 'none', affectedTargets: [] },
+            relocationRecovery: {
+                status: 'recovery_available',
+                operationId: 'relocation-1',
+                destinationMachineId: 'managed-host-1',
+                sourceDescriptorRevision: 7,
+                primaryAction: 'finish_move',
+            },
+        } });
+        expect(getCurrent().inspection?.relocationRecovery).toEqual({
+            operationId: 'relocation-1',
+            destinationMachineId: 'managed-host-1',
+            sourceDescriptorRevision: 7,
+            primaryAction: 'finish_move',
+        });
+    });
+
+    it('preserves completed-restore cleanup diagnostics without exposing restore choices', async () => {
         const harness = createScriptedRunnerHarness();
         const { getCurrent } = await renderHook(() => useLocalRelayRuntimeControl({ runner: harness.runner }));
         const inspect = await harness.start(() => getCurrent().refreshInspection());
@@ -183,22 +239,12 @@ describe('useLocalRelayRuntimeControl Personal Home operations', () => {
             restoreRecovery: { status: 'finalization_available', affectedTargets: ['/data/home', '/data/home.rollback'] },
         } });
         expect(getCurrent().inspection?.restoreRecovery).toEqual({ status: 'finalization_available', affectedTargets: ['/data/home', '/data/home.rollback'] });
+        expect('finalizePersonalHomeRestore' in getCurrent()).toBe(false);
 
-        const rollback = await harness.start(() => getCurrent().recoverPersonalHomeRestore());
-        await harness.settle(rollback, true, { data: { outcome: 'rolled_back', restartedHome: true } });
-        expect(harness.startedSpecs.filter((spec) => spec.kind === 'relay.runtime.personal_home.restore.v1').at(-1)?.params)
-            .toEqual({ ...BASE_PARAMS, action: 'recover' });
-
-        const inspectAgain = await harness.start(() => getCurrent().refreshInspection());
-        await harness.settle(inspectAgain, true, { data: {
-            running: false, identity: null, masterSecret: {}, layout: {},
-            storage: { destinationEmpty: false, ownedErasePaths: [] },
-            restoreRecovery: { status: 'finalization_available', affectedTargets: ['/data/home', '/data/home.rollback'] },
-        } });
-        const finalize = await harness.start(() => getCurrent().finalizePersonalHomeRestore());
-        await harness.settle(finalize, true, { data: { outcome: 'finalized', removedPaths: ['/data/home.rollback'] } });
-        expect(harness.startedSpecs.filter((spec) => spec.kind === 'relay.runtime.personal_home.restore.v1').at(-1)?.params)
-            .toEqual({ ...BASE_PARAMS, action: 'finalize' });
+        await act(async () => {
+            expect(await getCurrent().recoverPersonalHomeRestore()).toBeNull();
+        });
+        expect(harness.startedSpecs.every((spec) => spec.kind !== 'relay.runtime.personal_home.restore.v1')).toBe(true);
     });
 
     it('starts erase without a caller-owned confirmation fact and retains its terminal result', async () => {
@@ -217,14 +263,45 @@ describe('useLocalRelayRuntimeControl Personal Home operations', () => {
         expect(getCurrent().lastOperation).toEqual({
             operation: 'erase',
             erase: {
+                outcome: 'completed',
                 removedPaths: ['/data/a', '/data/b'],
+                remainingOwnedPaths: [],
                 remainingUnknownPaths: [],
                 stoppedRunningHome: true,
+                error: null,
             },
         });
         // The terminal snapshot is retained so completed steps stay visible.
         expect(getCurrent().operationSnapshot?.taskId).toBe(erase.taskId);
         expect(getCurrent().operationSnapshot?.result?.ok).toBe(true);
+    });
+
+    it('retains exact partial erase facts instead of presenting all-or-nothing success', async () => {
+        const harness = createScriptedRunnerHarness();
+        const { getCurrent } = await renderHook(() => useLocalRelayRuntimeControl({ runner: harness.runner }));
+        const erase = await harness.start(() => getCurrent().erasePersonalHomeData());
+        await harness.settle(erase, true, {
+            data: {
+                outcome: 'partial',
+                removedPaths: ['/data/home.sqlite'],
+                remainingOwnedPaths: ['/data/files'],
+                remainingUnknownPaths: ['/data/operator-note'],
+                stoppedRunningHome: true,
+                error: 'The files directory could not be removed.',
+            },
+        });
+
+        expect(getCurrent().lastOperation).toEqual({
+            operation: 'erase',
+            erase: {
+                outcome: 'partial',
+                removedPaths: ['/data/home.sqlite'],
+                remainingOwnedPaths: ['/data/files'],
+                remainingUnknownPaths: ['/data/operator-note'],
+                stoppedRunningHome: true,
+                error: 'The files directory could not be removed.',
+            },
+        });
     });
 
     it('keeps the retained operation snapshot subscribed when a later action becomes active', async () => {
@@ -280,6 +357,13 @@ describe('useLocalRelayRuntimeControl Personal Home operations', () => {
             format: 'happier-personal-home-backup',
             version: 1,
         });
+
+        const inspect = await harness.start(() => getCurrent().refreshInspection());
+        await harness.settle(inspect, true, { data: {
+            running: true, identity: null, masterSecret: {}, layout: {},
+            storage: { destinationEmpty: false, ownedErasePaths: [] },
+            restoreRecovery: { status: 'none', affectedTargets: [] },
+        } });
 
         await act(async () => {
             // A different archive than the verified one is refused.
@@ -411,6 +495,8 @@ describe('useLocalRelayRuntimeControl Personal Home operations', () => {
                     publicFilesPresent: true,
                     privateFilesPresent: true,
                     backupsCount: 3,
+                    backupsCountComplete: false,
+                    destinationEmpty: false,
                     latestBackup: {
                         path: '/home/.happier/self-host/data/backups/personal-home-2026-02-02T03-04-05-006Z.tar',
                         createdAt: '2026-02-02T03:04:05.006Z',
@@ -421,13 +507,16 @@ describe('useLocalRelayRuntimeControl Personal Home operations', () => {
         });
 
         expect(facts).toEqual({
-            homeServerIdentityId: 'home-identity-1',
+            status: 'inspected',
+            inspection: {
+                homeServerIdentityId: 'home-identity-1',
             schemaVersion: '7',
             running: true,
             masterSecretPresent: true,
             databasePresent: true,
             databaseBytes: 2048,
             backupsCount: 3,
+            backupsCountComplete: false,
             latestBackup: {
                 path: '/home/.happier/self-host/data/backups/personal-home-2026-02-02T03-04-05-006Z.tar',
                 createdAt: '2026-02-02T03:04:05.006Z',
@@ -443,9 +532,12 @@ describe('useLocalRelayRuntimeControl Personal Home operations', () => {
             restoreRecovery: { status: 'none', affectedTargets: [] },
             relocationRecovery: null,
             estimatedOwnedBytes: null,
-            destinationEmpty: false,
+                destinationEmpty: false,
+            },
         });
-        expect(getCurrent().inspection).toEqual(facts);
+        expect(facts.status).toBe('inspected');
+        if (facts.status !== 'inspected') throw new Error('Expected a successful inspection result.');
+        expect(getCurrent().inspection).toEqual(facts.inspection);
     });
 
     it('projects the verified backup result facts the Settings surface must disclose, including the manifest timestamp', async () => {

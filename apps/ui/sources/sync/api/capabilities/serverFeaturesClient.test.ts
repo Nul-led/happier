@@ -18,6 +18,7 @@ const frozenServerFeaturesTimeAfterErrorTtl = new Date('2026-02-13T00:00:06.000Z
 
 vi.mock('@/sync/domains/server/serverRuntime', () => ({
     getActiveServerSnapshot: () => activeServerSnapshot,
+    getActiveServerHomeCarrier: () => null,
 }));
 
 vi.mock('@/sync/domains/server/serverProfiles', () => ({
@@ -1004,5 +1005,38 @@ describe('serverFeaturesClient', () => {
                 'http://127.0.0.1:43123/v1/features',
             ]),
         );
+    });
+
+    it('probes an explicit ingress-less Home through its semantic carrier', async () => {
+        const homeCarrierRequest = vi.fn(async () => createResponse(200, {
+            features: {},
+            capabilities: {
+                serverIdentity: { serverIdentityId: 'srv_iroh_home' },
+            },
+        }));
+        const homeCarrier = {
+            endpointId: 'iroh-home-endpoint',
+            readObservedPath: () => 'relay' as const,
+            request: homeCarrierRequest,
+            createWebSocket: vi.fn(),
+        };
+        const {
+            probeServerFeaturesAtUrl,
+            resetServerFeaturesClientForTests,
+        } = await import('./serverFeaturesClient');
+        resetServerFeaturesClientForTests();
+
+        const result = await probeServerFeaturesAtUrl({
+            endpointUrl: 'http://localhost:3010',
+            homeCarrier,
+            timeoutMs: 2_000,
+        });
+
+        expect(result).toMatchObject({ status: 'ready', serverIdentityId: 'srv_iroh_home' });
+        expect(homeCarrierRequest).toHaveBeenCalledWith(
+            'http://localhost:3010/v1/features',
+            expect.objectContaining({ method: 'GET' }),
+        );
+        expect(featuresFetchMock).not.toHaveBeenCalled();
     });
 });

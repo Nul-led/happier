@@ -112,6 +112,7 @@ describe('useServerSettingsServerProfileActions (remove server)', () => {
         const actions = await renderHook(() =>
             useServerSettingsServerProfileActions({
                 authStatusByServerId: {},
+                selectionScope: 'tab',
                 onSwitchServerById: vi.fn(async () => 'switched' as const),
                 onAfterSignedOutSwitch: vi.fn(),
                 setRevision: setRevision as any,
@@ -175,6 +176,7 @@ describe('useServerSettingsServerProfileActions (remove server)', () => {
         const actions = await renderHook(() =>
             useServerSettingsServerProfileActions({
                 authStatusByServerId: {},
+                selectionScope: 'tab',
                 onSwitchServerById: vi.fn(async () => 'switched' as const),
                 onAfterSignedOutSwitch: vi.fn(),
                 setRevision: ((next: React.SetStateAction<number>) => {
@@ -222,6 +224,7 @@ describe('useServerSettingsServerProfileActions (remove server)', () => {
         const actions = await renderHook(() =>
             useServerSettingsServerProfileActions({
                 authStatusByServerId: { 'server-correct': 'signedIn' },
+                selectionScope: 'tab',
                 onSwitchServerById,
                 onAfterSignedOutSwitch: vi.fn(),
                 setRevision: setRevision as any,
@@ -235,7 +238,7 @@ describe('useServerSettingsServerProfileActions (remove server)', () => {
             serverUrl: 'https://correct.example.test',
             serverIdentityId: 'srv_original_home',
         });
-        expect(onSwitchServerById).toHaveBeenCalledWith('server-correct', 'device');
+        expect(onSwitchServerById).toHaveBeenCalledWith('server-correct', 'tab');
     });
 
     it('selects a signed-out Home and continues to target-specific auth without another prompt', async () => {
@@ -255,6 +258,7 @@ describe('useServerSettingsServerProfileActions (remove server)', () => {
         const actions = await renderHook(() =>
             useServerSettingsServerProfileActions({
                 authStatusByServerId: { 'server-signed-out': 'signedOut' },
+                selectionScope: 'tab',
                 onSwitchServerById,
                 onAfterSignedOutSwitch,
                 setRevision: setRevision as any,
@@ -264,7 +268,7 @@ describe('useServerSettingsServerProfileActions (remove server)', () => {
         await actions.onSwitchServer(profile);
 
         expect(modalSpies.confirm).not.toHaveBeenCalled();
-        expect(onSwitchServerById).toHaveBeenCalledWith('server-signed-out', 'device');
+        expect(onSwitchServerById).toHaveBeenCalledWith('server-signed-out', 'tab');
         expect(onAfterSignedOutSwitch).toHaveBeenCalledTimes(1);
     });
 
@@ -289,6 +293,7 @@ describe('useServerSettingsServerProfileActions (remove server)', () => {
         const actions = await renderHook(() =>
             useServerSettingsServerProfileActions({
                 authStatusByServerId: { 'server-blocked': 'signedIn' },
+                selectionScope: 'tab',
                 onSwitchServerById,
                 onAfterSignedOutSwitch: vi.fn(),
                 setRevision: setRevision as any,
@@ -297,7 +302,7 @@ describe('useServerSettingsServerProfileActions (remove server)', () => {
 
         await actions.onSwitchServer(profile);
 
-        expect(onSwitchServerById).toHaveBeenCalledWith('server-blocked', 'device');
+        expect(onSwitchServerById).toHaveBeenCalledWith('server-blocked', 'tab');
         expect(pendingTerminalConnectMock.set).not.toHaveBeenCalled();
         expect(setRevision).not.toHaveBeenCalled();
     });
@@ -324,6 +329,7 @@ describe('useServerSettingsServerProfileActions (remove server)', () => {
         const actions = await renderHook(() =>
             useServerSettingsServerProfileActions({
                 authStatusByServerId: { srv_identity_correct: 'signedIn' },
+                selectionScope: 'tab',
                 onSwitchServerById,
                 onAfterSignedOutSwitch: vi.fn(),
                 setRevision: setRevision as any,
@@ -337,6 +343,6 @@ describe('useServerSettingsServerProfileActions (remove server)', () => {
             serverUrl: 'https://correct.example.test',
             serverIdentityId: 'srv_original_home',
         });
-        expect(onSwitchServerById).toHaveBeenCalledWith('srv_identity_correct', 'device');
+        expect(onSwitchServerById).toHaveBeenCalledWith('srv_identity_correct', 'tab');
     });
 });

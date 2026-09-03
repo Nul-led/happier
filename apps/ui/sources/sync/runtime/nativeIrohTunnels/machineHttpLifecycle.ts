@@ -29,29 +29,94 @@ function readEndpoint(value: unknown): IrohApplicationEndpoint {
     return { endpointId };
 }
 
-function readLease(value: unknown, release: (leaseId: string) => Promise<void>): IrohMachineHttpNativeLease {
+// Leases whose native stop rejected stay owned here until one succeeds, so a
+// later release or dispose retries them instead of leaking a native handle.
+// Transfer helpers hand custody back by calling `release` again; none of them
+// implements its own retry.
+const retainedMachineHttpLeaseReleases = new Map<string, () => Promise<void>>();
+
+/** Lease ids retained because their native stop has not succeeded yet. */
+export function readRetainedIrohMachineHttpLeaseIds(): readonly string[] {
+    return [...retainedMachineHttpLeaseReleases.keys()];
+}
+
+/** Retries every retained release. Used by the next tunnel start and by disposal. */
+export async function releaseRetainedIrohMachineHttpLeases(): Promise<void> {
+    const errors: unknown[] = [];
+    for (const retainedRelease of [...retainedMachineHttpLeaseReleases.values()]) {
+        try {
+            await retainedRelease();
+        } catch (error) {
+            errors.push(error);
+        }
+    }
+    if (errors.length === 1) throw errors[0];
+    if (errors.length > 1) {
+        throw new AggregateError(errors, 'Failed to release every retained Iroh machine HTTP lease.');
+    }
+}
+
+function createOwnedMachineHttpLeaseRelease(
+    leaseId: string,
+    stop: (leaseId: string) => Promise<void>,
+): () => Promise<void> {
+    let releasePromise: Promise<void> | null = null;
+    let released = false;
+    const release = (): Promise<void> => {
+        if (released) return Promise.resolve();
+        releasePromise ??= stop(leaseId).then(() => {
+            released = true;
+            retainedMachineHttpLeaseReleases.delete(leaseId);
+        }).catch((error: unknown) => {
+            // Concurrent callers still share one attempt, but a failed native
+            // stop stays owned and retryable through a later release/dispose.
+            releasePromise = null;
+            retainedMachineHttpLeaseReleases.set(leaseId, release);
+            throw error;
+        });
+        return releasePromise;
+    };
+    return release;
+}
+
+async function readLease(
+    value: unknown,
+    stop: (leaseId: string) => Promise<void>,
+): Promise<IrohMachineHttpNativeLease> {
     const record = typeof value === 'object' && value !== null ? value as Record<string, unknown> : {};
     const leaseId = record.leaseId;
-    const localOrigin = record.localOrigin;
-    const localCapability = record.localCapability;
-    if (
-        typeof leaseId !== 'string'
-        || typeof localOrigin !== 'string'
-        || typeof localCapability !== 'string'
-        || !/^[0-9a-f]{64}$/u.test(localCapability)
-    ) {
+    if (typeof leaseId !== 'string' || leaseId.length === 0) {
         throw new Error('Iroh machine HTTP lease is unavailable');
     }
-    const parsed = new URL(localOrigin);
-    if (parsed.protocol !== 'http:' || parsed.hostname !== '127.0.0.1' || !parsed.port || parsed.pathname !== '/') {
-        throw new Error('Iroh machine HTTP lease returned an invalid local origin');
+    // Native has transferred ownership as soon as it returns a usable lease
+    // id. Validate the remaining response only after installing cleanup
+    // custody so malformed connection facts cannot orphan that handle.
+    const release = createOwnedMachineHttpLeaseRelease(leaseId, stop);
+    const localOrigin = record.localOrigin;
+    const localCapability = record.localCapability;
+    try {
+        if (typeof localOrigin !== 'string' || typeof localCapability !== 'string' || !/^[0-9a-f]{64}$/u.test(localCapability)) {
+            throw new Error('Iroh machine HTTP lease is unavailable');
+        }
+        let parsed: URL;
+        try {
+            parsed = new URL(localOrigin);
+        } catch {
+            throw new Error('Iroh machine HTTP lease returned an invalid local origin');
+        }
+        if (parsed.protocol !== 'http:' || parsed.hostname !== '127.0.0.1' || !parsed.port || parsed.pathname !== '/') {
+            throw new Error('Iroh machine HTTP lease returned an invalid local origin');
+        }
+        return {
+            leaseId,
+            localOrigin: parsed.origin,
+            requestHeaders: { [IROH_MACHINE_HTTP_LOCAL_CAPABILITY_HEADER]: localCapability },
+            release,
+        };
+    } catch (error) {
+        await release().catch(() => undefined);
+        throw error;
     }
-    return {
-        leaseId,
-        localOrigin: parsed.origin,
-        requestHeaders: { [IROH_MACHINE_HTTP_LOCAL_CAPABILITY_HEADER]: localCapability },
-        release: async () => await release(leaseId),
-    };
 }
 
 let desktopAvailability: boolean | null = null;
@@ -105,6 +170,10 @@ export async function startIrohMachineHttpTunnel(input: Readonly<{
     policy?: 'automatic' | 'disabled';
     handshakeJson: string;
 }>): Promise<IrohMachineHttpNativeLease> {
+    // Retry cleanup a previous transfer could not complete before this owner
+    // adds another native lease. Only already-failed releases are retained, so
+    // this never disturbs a lease an in-flight transfer still uses.
+    await releaseRetainedIrohMachineHttpLeases();
     if (desktopHostKind() !== null) {
         return readLease(await invokeDesktopHost('iroh_start_machine_http_tunnel', { request: input }), async (leaseId) => {
             await invokeDesktopHost('iroh_stop_machine_http_tunnel', { leaseId });

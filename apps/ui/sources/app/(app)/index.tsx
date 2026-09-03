@@ -9,8 +9,7 @@ import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { clearPendingSetupIntent, setPendingSetupIntent } from '@/sync/domains/pending/pendingSetupIntent';
 import { buildDismissedThisComputerSetupIntent } from '@/sync/domains/pending/pendingSetupIntent.shared';
 import { getPendingTerminalConnect } from '@/sync/domains/pending/pendingTerminalConnect';
-import { desktopHostKind, isDesktopHost } from '@/utils/platform/desktopHost';
-import { isDesktopOverlayWindowContext } from '@/desktop/window/isDesktopOverlayWindowContext';
+import { isDesktopHost } from '@/utils/platform/desktopHost';
 import { PreAuthOnboardingWizardEntry } from '@/components/onboarding/preAuth/PreAuthOnboardingWizardEntry';
 import { usePendingSetupIntent } from '@/components/onboarding/state/usePendingSetupIntent';
 import { useMachineSetupStepSatisfied } from '@/components/onboarding/state/useMachineSetupStepSatisfied';
@@ -29,6 +28,7 @@ import { shouldHoldUnauthenticatedShellForWebServerOverride } from '@/sync/domai
 import { createSessionRouteServerScope } from '@/hooks/session/sessionRouteServerScope';
 import { resolveNewSessionAuthContinuation } from '@/components/sessions/new/navigation/newSessionAuthContinuation';
 import { useVoiceSurfaceE2eFixtureComposition } from '@/dev/testkit/harness/useVoiceSurfaceE2eFixtureComposition';
+import { isPersonalHomeBootstrapRuntimeHost } from '@/components/personalHome/bootstrap/personalHomeBootstrapHost';
 import { t } from '@/text';
 import { shouldKeepDesktopPersonalHomeShell } from './personalHomeIndexRoutePolicy';
 
@@ -77,7 +77,7 @@ export default function Home() {
         && readJourneyReplayBeatId() != null;
     const keepDesktopPersonalHomeShell = shouldKeepDesktopPersonalHomeShell({
         isAuthenticated: auth.isAuthenticated,
-        isPersonalHomeBootstrapHost: desktopHostKind() === 'tauri' && !isDesktopOverlayWindowContext(),
+        isPersonalHomeBootstrapHost: isPersonalHomeBootstrapRuntimeHost(),
     });
     if (
         (!auth.isAuthenticated && !keepDesktopPersonalHomeShell)

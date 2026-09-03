@@ -46,6 +46,7 @@ type CapturedItemProps = Readonly<{
     mode?: string;
     showChevron?: boolean;
     onPress?: () => void;
+    accessibilityLabel?: string;
 }>;
 
 const capturedPickerProps: CapturedPickerProps[] = [];
@@ -178,6 +179,9 @@ describe('MachineAdministrationTargetSelector', () => {
         const clearIndex = capturedItemProps.findIndex((props) => props.testID === 'administration.target.clear');
         expect(currentIndex).toBeGreaterThanOrEqual(0);
         expect(clearIndex).toBeGreaterThan(currentIndex);
+        expect(capturedItemProps[clearIndex]).toEqual(expect.objectContaining({
+            accessibilityLabel: 'common.remove: settingsProviders.detail.targetMachine',
+        }));
         expect(capturedItemProps[currentIndex]).toEqual(expect.objectContaining({
             testID: 'administration.target.current',
             title: 'Machine B',

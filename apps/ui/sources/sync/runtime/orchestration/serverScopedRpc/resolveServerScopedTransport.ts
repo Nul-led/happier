@@ -3,10 +3,17 @@ import {
     canonicalizeServerUrl,
     resolveIndependentHttpsServerOrigin,
 } from '@/sync/domains/server/url/serverUrlCanonical';
+import type { HomeCarrier } from '@/sync/runtime/homeCarrier';
 import {
     acquireIrohHomeRuntimeOrigin,
     classifyIrohHomeTunnelSwitchFailure,
 } from '@/sync/runtime/nativeIrohTunnels';
+import {
+    acquireBrowserIrohHomeCarrier,
+    resolveBrowserIrohHomeCarrierEligibility,
+} from '@/sync/runtime/browserIroh/homeCarrier/browserHomeCarrier';
+import { resolveBrowserIrohHostDecision } from '@/sync/runtime/browserIroh/hostEligibility';
+import { IrohError } from '@happier-dev/iroh-native';
 import type { IrohEndpointDescriptorV1 } from '@happier-dev/protocol';
 
 export class ServerScopedTransportUnavailableError extends Error {
@@ -27,18 +34,47 @@ type ServerTransportProfile = Readonly<{
 
 export type ResolvedServerScopedTransport = Readonly<{
     canonicalServerUrl: string;
+    /**
+     * Where a URL-addressed carrier sends bytes: an independent HTTPS origin, or
+     * the loopback origin a native Iroh lease binds. A semantic carrier has no
+     * origin at all, so this stays the canonical Home URL rather than a
+     * fabricated loopback one, and {@link homeCarrier} moves the bytes instead.
+     */
     runtimeOrigin: string;
     carrier: 'https' | 'iroh';
-    /** Native lifecycle identity, present only for an acquired Iroh carrier. */
+    /** Lifecycle identity, present only for an acquired Iroh carrier. */
     leaseId?: string;
+    /** Present only for a semantic carrier that owns its own bytes (browser Iroh). */
+    homeCarrier?: HomeCarrier;
     release: () => Promise<void>;
 }>;
 
-function onceAsync(release: () => Promise<void>): () => Promise<void> {
-    let result: Promise<void> | null = null;
-    return () => {
-        result ??= release();
-        return result;
+/**
+ * Makes a release coalesce concurrent callers into one in-flight underlying
+ * release, propagate its first rejection, retry the underlying release exactly
+ * once per later explicit call, and become idempotent after the first success.
+ * Rejection custody stays with the caller: nothing retries, times, or swallows
+ * automatically, so a caller that still owns the transport must call release
+ * again after observing a rejection.
+ */
+export function onceAsync(release: () => Promise<void>): () => Promise<void> {
+    let released = false;
+    let inFlight: Promise<void> | null = null;
+    return async () => {
+        if (released) return;
+        inFlight ??= release().then(
+            () => {
+                released = true;
+                inFlight = null;
+            },
+            (error: unknown) => {
+                // Clear in-flight custody so the next explicit call retries the
+                // underlying release; the original rejection still propagates.
+                inFlight = null;
+                throw error;
+            },
+        );
+        await inFlight;
     };
 }
 
@@ -59,25 +95,53 @@ export async function resolveServerScopedTransport(params: Readonly<{
     let runtimeOrigin = canonicalServerUrl;
     let carrier: 'https' | 'iroh' = 'https';
     let leaseId: string | undefined;
+    let homeCarrier: HomeCarrier | undefined;
     let releaseCarrier = async (): Promise<void> => {};
     const identity = String(params.profile.serverIdentityId ?? '').trim();
     const endpoint = params.profile.irohEndpoint;
 
     if (identity && endpoint) {
+        const browserRequest = {
+            homeServerIdentityId: identity,
+            endpoint,
+            canonicalServerUrl,
+            credentials: params.credentials,
+        };
+        // A browser cannot bind the native loopback listener, so it uses the
+        // relay-only semantic carrier instead. Every other host — including
+        // Tauri and Electron running this same bundle — keeps the native lease,
+        // which can also use direct paths.
+        const browserHost = resolveBrowserIrohHostDecision();
         try {
-            const lease = await acquireIrohHomeRuntimeOrigin({
-                homeServerIdentityId: identity,
-                endpoint,
-                ...(params.profile.connectionDescriptorRevision === undefined
-                    ? {}
-                    : { descriptorRevision: params.profile.connectionDescriptorRevision }),
-                canonicalServerUrl,
-                verification: { kind: 'authenticated', token: params.credentials.token },
-            });
-            runtimeOrigin = lease.runtimeOrigin;
-            carrier = 'iroh';
-            leaseId = lease.leaseId;
-            releaseCarrier = onceAsync(lease.release);
+            if (browserHost.eligible) {
+                const eligibility = resolveBrowserIrohHomeCarrierEligibility(browserRequest, browserHost);
+                if (!eligibility.eligible) {
+                    // A descriptor a browser cannot use (no explicit relay set,
+                    // no endpoint) means this carrier is unavailable here. It is
+                    // not a descriptor-integrity failure: a native host would
+                    // still use the same descriptor.
+                    throw new IrohError('unavailable', `Browser Iroh Home carrier unavailable: ${eligibility.reason}`);
+                }
+                const acquired = await acquireBrowserIrohHomeCarrier(browserRequest);
+                carrier = 'iroh';
+                leaseId = acquired.leaseId;
+                homeCarrier = acquired;
+                releaseCarrier = onceAsync(acquired.release);
+            } else {
+                const lease = await acquireIrohHomeRuntimeOrigin({
+                    homeServerIdentityId: identity,
+                    endpoint,
+                    ...(params.profile.connectionDescriptorRevision === undefined
+                        ? {}
+                        : { descriptorRevision: params.profile.connectionDescriptorRevision }),
+                    canonicalServerUrl,
+                    verification: { kind: 'authenticated', token: params.credentials.token },
+                });
+                runtimeOrigin = lease.runtimeOrigin;
+                carrier = 'iroh';
+                leaseId = lease.leaseId;
+                releaseCarrier = onceAsync(lease.release);
+            }
         } catch (error) {
             if (!classifyIrohHomeTunnelSwitchFailure(error).fallbackAllowed) throw error;
             const independentHttpsOrigin = resolveIndependentHttpsServerOrigin(
@@ -93,6 +157,7 @@ export async function resolveServerScopedTransport(params: Readonly<{
         runtimeOrigin,
         carrier,
         ...(leaseId ? { leaseId } : {}),
+        ...(homeCarrier ? { homeCarrier } : {}),
         release: releaseCarrier,
     };
 }

@@ -1,6 +1,7 @@
 import type { ReadinessProbeResult } from '@happier-dev/connection-supervisor';
 
 import { buildRetryLaterProbeResultFromResponse } from '@/sync/runtime/connectivity/retryLaterProbeResult';
+import type { HomeCarrier } from '@/sync/runtime/homeCarrier';
 import { runtimeFetch } from '@/utils/system/runtimeFetch';
 
 export type AuthenticatedServerAuthPingProbeResult =
@@ -46,18 +47,28 @@ export async function probeAuthenticatedServerAuthPingEndpoint(params: Readonly<
     endpoint: string;
     token: string;
     signal?: AbortSignal;
+    /**
+     * A Home carrier that owns its own bytes. An ingress-less Home has no URL a
+     * platform fetch could reach, so readiness must be proven over the same
+     * carrier the requests and the socket will use.
+     */
+    homeCarrier?: HomeCarrier;
 }>): Promise<AuthenticatedServerAuthPingProbeResult> {
     const endpoint = normalizeBaseUrl(params.endpoint) ?? String(params.endpoint ?? '').replace(/\/+$/, '');
 
     try {
-        const authResponse = await runtimeFetch(joinBaseAndPath(endpoint, '/v1/auth/ping'), {
+        const probeUrl = joinBaseAndPath(endpoint, '/v1/auth/ping');
+        const probeInit: RequestInit = {
             method: 'GET',
             signal: params.signal,
             headers: {
                 Accept: 'application/json',
                 Authorization: `Bearer ${params.token}`,
             },
-        });
+        };
+        const authResponse = params.homeCarrier
+            ? await params.homeCarrier.request(probeUrl, probeInit)
+            : await runtimeFetch(probeUrl, probeInit);
 
         if (authResponse.status === 401 || authResponse.status === 403) {
             return {

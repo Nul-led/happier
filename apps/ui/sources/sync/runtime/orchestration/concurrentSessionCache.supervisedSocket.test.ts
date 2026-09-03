@@ -319,7 +319,7 @@ describe('concurrent session cache supervised sockets', () => {
 
         stopConcurrentSessionCacheSync();
 
-        expect(snapshotSignal?.aborted).toBe(true);
+        expect((snapshotSignal as AbortSignal | null)?.aborted).toBe(true);
         expect(storage.getState().machineListStatusByServerId['server-b']).toBe('idle');
     });
 

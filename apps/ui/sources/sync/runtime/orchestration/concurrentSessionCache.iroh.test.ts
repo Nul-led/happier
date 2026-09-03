@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createServerProfilesModuleMock } from '@/dev/testkit';
+import {
+    createMachineFixture,
+    createServerProfilesModuleMock,
+    createSessionFixture,
+    createSessionListRenderableSessionFixture,
+} from '@/dev/testkit';
+import type { Machine, Session } from '@/sync/domains/state/storageTypes';
 
 type IrohRuntimeOriginAcquire = typeof import('@/sync/runtime/nativeIrohTunnels')['acquireIrohHomeRuntimeOrigin'];
 type IrohRuntimeOriginAcquireInput = Parameters<IrohRuntimeOriginAcquire>[0];
@@ -23,6 +29,10 @@ type ProfileFixture = Readonly<{
 
 const profileListeners = new Set<(generation: number) => void>();
 let profiles: ProfileFixture[] = [];
+/** Mutable so one test can move a Home from failing acquisition to recovery. */
+let acquisitionError: Error | null = null;
+let sessionsForRefresh: Session[] = [];
+let machinesForRefresh: Machine[] = [];
 let stopCache: (() => void) | null = null;
 let networkAllowedListener: ((allowed: boolean) => void) | null = null;
 let recoveryRequiredListener: ((event: Readonly<{
@@ -76,12 +86,14 @@ function onlineState() {
 
 async function configureHarness(params: Readonly<{
     acquisitionError?: Error;
+    additionalProfiles?: readonly ProfileFixture[];
 }> = {}): Promise<{
     events: string[];
     fetchedUrls: string[];
 }> {
     const events: string[] = [];
     const fetchedUrls: string[] = [];
+    acquisitionError = params.acquisitionError ?? null;
     profiles = [
         { id: 'server-a', name: 'Server A', serverUrl: 'https://stack-a.example.test' },
         {
@@ -95,11 +107,12 @@ async function configureHarness(params: Readonly<{
             },
             connectionDescriptorRevision: 7,
         },
+        ...(params.additionalProfiles ?? []),
     ];
 
     acquireIrohHomeRuntimeOriginSpy.mockImplementation(async () => {
         events.push('acquire');
-        if (params.acquisitionError) throw params.acquisitionError;
+        if (acquisitionError) throw acquisitionError;
         return {
             leaseId: 'lease-home-b',
             key: 'home-b-key',
@@ -213,11 +226,12 @@ async function configureHarness(params: Readonly<{
                 events.push(`http-error:${error instanceof Error ? error.message : String(error)}`);
                 throw error;
             }
-            applySessions([]);
+            applySessions(sessionsForRefresh);
         },
     }));
     vi.doMock('@/sync/engine/machines/syncMachines', () => ({
-        fetchAndApplyMachines: async ({ applyMachines }: { applyMachines: (machines: unknown[]) => void }) => applyMachines([]),
+        fetchAndApplyMachines: async ({ applyMachines }: { applyMachines: (machines: unknown[]) => void }) =>
+            applyMachines(machinesForRefresh),
     }));
 
     const { setRuntimeFetch } = await import('@/utils/system/runtimeFetch');
@@ -241,7 +255,7 @@ async function configureHarness(params: Readonly<{
             serverSelectionGroups: [{
                 id: 'group-main',
                 name: 'Main',
-                serverIds: ['server-a', 'server-b'],
+                serverIds: profiles.map((profile) => profile.id),
                 presentation: 'grouped',
             }],
             serverSelectionActiveTargetKind: 'group',
@@ -260,6 +274,9 @@ beforeEach(() => {
     startReachabilitySpy.mockReset();
     ioSpy.mockReset();
     profileListeners.clear();
+    acquisitionError = null;
+    sessionsForRefresh = [];
+    machinesForRefresh = [];
     stopCache = null;
     networkAllowedListener = null;
     recoveryRequiredListener = null;
@@ -305,6 +322,7 @@ describe('concurrent session cache Iroh Home routing', () => {
             serverUrl: 'https://home-b.example.test',
             token: 'token-b',
             runtimeOrigin: 'http://127.0.0.1:45991',
+            homeCarrier: null,
         });
         expect(ioSpy).toHaveBeenCalledWith(
             'http://127.0.0.1:45991',
@@ -322,6 +340,7 @@ describe('concurrent session cache Iroh Home routing', () => {
             serverUrl: 'https://home-b.example.test',
             token: 'token-b',
             runtimeOrigin: 'http://127.0.0.1:45991',
+            homeCarrier: null,
         });
         expect(startReachabilitySpy.mock.calls).not.toContainEqual([{
             serverUrl: 'https://home-b.example.test',
@@ -347,7 +366,10 @@ describe('concurrent session cache Iroh Home routing', () => {
         await vi.advanceTimersByTimeAsync(1);
         await vi.advanceTimersByTimeAsync(601);
 
-        expect(acquireIrohHomeRuntimeOriginSpy).toHaveBeenCalledTimes(1);
+        // The periodic reconciliation may retry the same fail-closed carrier;
+        // the invariant here is that none of those attempts opens an HTTPS,
+        // HTTP, or Socket.IO bypass after identity verification fails.
+        expect(acquireIrohHomeRuntimeOriginSpy).toHaveBeenCalled();
         expect(startReachabilitySpy).not.toHaveBeenCalled();
         expect(fetchedUrls).toEqual([]);
         expect(ioSpy).not.toHaveBeenCalled();
@@ -374,5 +396,160 @@ describe('concurrent session cache Iroh Home routing', () => {
 
         await vi.waitFor(() => expect(releaseIrohHomeRuntimeOriginSpy).toHaveBeenCalledTimes(1));
         await vi.waitFor(() => expect(acquireIrohHomeRuntimeOriginSpy).toHaveBeenCalledTimes(2));
+    });
+});
+
+describe('concurrent session cache Iroh Home transport acquisition failure', () => {
+    const coldAcquisitionError = new Error('iroh_home_tunnel_probe_failed:identity-mismatch');
+    const homeBScopeId = 'srv_home_b';
+
+    async function seedLastKnownHomeBProjection(): Promise<void> {
+        const { storage } = await import('@/sync/domains/state/storageStore');
+        storage.setState((state) => ({
+            ...state,
+            concurrentSessionListCacheByServerId: {
+                ...state.concurrentSessionListCacheByServerId,
+                [homeBScopeId]: {
+                    serverName: 'Home B',
+                    sessions: {
+                        'session-stale': createSessionListRenderableSessionFixture({ id: 'session-stale' }),
+                    },
+                },
+            },
+            machineListByServerId: {
+                ...state.machineListByServerId,
+                [homeBScopeId]: [createMachineFixture({ id: 'machine-stale' })],
+            },
+            machineListStatusByServerId: {
+                ...state.machineListStatusByServerId,
+                [homeBScopeId]: 'idle',
+            },
+        }));
+    }
+
+    async function readHomeBProjection() {
+        const { storage } = await import('@/sync/domains/state/storageStore');
+        const state = storage.getState();
+        return {
+            status: state.machineListStatusByServerId?.[homeBScopeId],
+            machines: state.machineListByServerId?.[homeBScopeId],
+            sessionEntry: state.concurrentSessionListCacheByServerId?.[homeBScopeId],
+        };
+    }
+
+    async function settleReconcile(): Promise<void> {
+        await vi.advanceTimersByTimeAsync(1);
+        for (let index = 0; index < 6; index += 1) await Promise.resolve();
+        await vi.advanceTimersByTimeAsync(1);
+        await vi.advanceTimersByTimeAsync(601);
+    }
+
+    it('publishes an explicit target-local error status for a cold Home whose transport never resolved', async () => {
+        const { fetchedUrls } = await configureHarness({ acquisitionError: coldAcquisitionError });
+        const cache = await import('./concurrentSessionCache');
+        stopCache = cache.stopConcurrentSessionCacheSync;
+        cache.startConcurrentSessionCacheSync();
+
+        await settleReconcile();
+
+        expect(acquireIrohHomeRuntimeOriginSpy).toHaveBeenCalled();
+        const projection = await readHomeBProjection();
+        // A cold failure must be legible as this Home's own failure, not as an
+        // absent Home that consumers cannot distinguish from "never selected".
+        expect(projection.status).toBe('error');
+        // Fail closed: no HTTPS/user-socket/standard-relay substitution.
+        expect(startReachabilitySpy).not.toHaveBeenCalled();
+        expect(fetchedUrls).toEqual([]);
+        expect(ioSpy).not.toHaveBeenCalled();
+    });
+
+    it('does not publish an acquisition error after a newer reconcile removed the Home', async () => {
+        await configureHarness({ acquisitionError: coldAcquisitionError });
+        acquireIrohHomeRuntimeOriginSpy.mockImplementationOnce(async () => {
+            profiles = profiles.filter((profile) => profile.id !== 'server-b');
+            for (const listener of profileListeners) listener(2);
+            throw coldAcquisitionError;
+        });
+        const cache = await import('./concurrentSessionCache');
+        stopCache = cache.stopConcurrentSessionCacheSync;
+        cache.startConcurrentSessionCacheSync();
+
+        await settleReconcile();
+
+        expect((await readHomeBProjection()).status).toBeUndefined();
+    });
+
+    it('preserves last-known session and machine rows when a warm Home loses its transport', async () => {
+        await configureHarness({ acquisitionError: coldAcquisitionError });
+        await seedLastKnownHomeBProjection();
+        const cache = await import('./concurrentSessionCache');
+        stopCache = cache.stopConcurrentSessionCacheSync;
+        cache.startConcurrentSessionCacheSync();
+
+        await settleReconcile();
+
+        const projection = await readHomeBProjection();
+        expect(projection.status).toBe('error');
+        expect(Object.keys(projection.sessionEntry?.sessions ?? {})).toEqual(['session-stale']);
+        expect(projection.machines?.map((machine) => machine.id)).toEqual(['machine-stale']);
+    });
+
+    it('keeps another secondary Home healthy while one Home fails closed', async () => {
+        const { fetchedUrls } = await configureHarness({
+            acquisitionError: coldAcquisitionError,
+            additionalProfiles: [{
+                id: 'server-c',
+                name: 'Home C',
+                serverUrl: 'https://home-c.example.test',
+            }],
+        });
+        machinesForRefresh = [createMachineFixture({ id: 'machine-c' })];
+        const cache = await import('./concurrentSessionCache');
+        stopCache = cache.stopConcurrentSessionCacheSync;
+        cache.startConcurrentSessionCacheSync();
+
+        await settleReconcile();
+        await vi.waitFor(() => expect(fetchedUrls).toContain('https://home-c.example.test/v1/sessions'));
+
+        const { storage } = await import('@/sync/domains/state/storageStore');
+        const state = storage.getState();
+        expect(state.machineListStatusByServerId?.['server-c']).toBe('idle');
+        expect(state.machineListByServerId?.['server-c']?.map((machine) => machine.id)).toEqual(['machine-c']);
+        expect(state.machineListStatusByServerId?.[homeBScopeId]).toBe('error');
+        expect(startReachabilitySpy).toHaveBeenCalledWith({
+            serverUrl: 'https://home-c.example.test',
+            token: 'token-b',
+            homeCarrier: null,
+        });
+        expect(startReachabilitySpy.mock.calls.map(([input]) => input.serverUrl))
+            .not.toContain('https://home-b.example.test');
+    });
+
+    it('reconciles a recovered Home to truthful current rows without duplicating preserved rows', async () => {
+        await configureHarness({ acquisitionError: coldAcquisitionError });
+        await seedLastKnownHomeBProjection();
+        const cache = await import('./concurrentSessionCache');
+        stopCache = cache.stopConcurrentSessionCacheSync;
+        cache.startConcurrentSessionCacheSync();
+
+        await settleReconcile();
+        expect((await readHomeBProjection()).status).toBe('error');
+        const failedAcquireCount = acquireIrohHomeRuntimeOriginSpy.mock.calls.length;
+
+        acquisitionError = null;
+        sessionsForRefresh = [createSessionFixture({ id: 'session-fresh' })];
+        machinesForRefresh = [createMachineFixture({ id: 'machine-fresh' })];
+        for (const listener of profileListeners) listener(2);
+
+        await settleReconcile();
+        await vi.waitFor(() => expect(acquireIrohHomeRuntimeOriginSpy.mock.calls.length).toBeGreaterThan(failedAcquireCount));
+        await vi.advanceTimersByTimeAsync(601);
+
+        await vi.waitFor(async () => {
+            const projection = await readHomeBProjection();
+            expect(projection.status).toBe('idle');
+            expect(projection.machines?.map((machine) => machine.id)).toEqual(['machine-fresh']);
+            expect(Object.keys(projection.sessionEntry?.sessions ?? {})).toEqual(['session-fresh']);
+        });
     });
 });

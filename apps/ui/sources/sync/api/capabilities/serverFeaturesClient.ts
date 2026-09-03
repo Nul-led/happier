@@ -6,7 +6,7 @@ import {
     ServerFetchAbortedForServerSwitchError,
     StaleServerGenerationError,
 } from '@/sync/http/client';
-import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
+import { getActiveServerHomeCarrier, getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import {
     areServerProfileIdentifiersEquivalent,
     getServerProfileById,
@@ -18,6 +18,7 @@ import { parseServerFeatures } from './serverFeaturesParse';
 import { runtimeFetchWithServerReachability } from '@/sync/runtime/connectivity/serverReachabilityRuntimeFetch';
 import { normalizeBaseUrl } from './probeAuthenticatedServerAuthPingEndpoint';
 import { recordAccountStoredContentServerRequirements } from '@/sync/http/accountStoredContentCompatibility';
+import type { HomeCarrier } from '@/sync/runtime/homeCarrier';
 
 const TTL_READY_MS = 10 * 60 * 1000;
 const TTL_UNSUPPORTED_ENDPOINT_MISSING_MS = 60 * 60 * 1000;
@@ -156,8 +157,12 @@ function joinBaseAndPath(baseUrl: string, path: string): string {
  * id-scoped entries in the legacy active-server cache; a URL is allowed to be
  * unknown to the local profile store.
  */
-function getEndpointCacheKey(endpointUrl: string, runtimeOrigin: string): string {
-    return `endpoint:${endpointUrl}\u0000runtime:${runtimeOrigin}`;
+function getEndpointCacheKey(
+    endpointUrl: string,
+    runtimeOrigin: string,
+    homeCarrier?: HomeCarrier,
+): string {
+    return `endpoint:${endpointUrl}\u0000runtime:${runtimeOrigin}\u0000carrier:${homeCarrier?.endpointId ?? 'url'}`;
 }
 
 function normalizeExplicitEndpointUrl(raw: unknown): string {
@@ -221,6 +226,12 @@ async function getServerFeaturesSnapshotWithRetry(
     const cacheKey = getCacheKey(params?.serverId);
     const requestedServerId = String(params?.serverId ?? '').trim();
     let activeSnapshot = getActiveServerSnapshot();
+    // Read at request time, not once: the focused Home's transport publication
+    // can be replaced between retries, exactly like `activeSnapshot` itself.
+    const readActiveHomeCarrier = () => {
+        const homeCarrier = getActiveServerHomeCarrier();
+        return homeCarrier ? { homeCarrier } : null;
+    };
     const isExplicitServerRequest = requestedServerId.length > 0
         && !areServerProfileIdentifiersEquivalent(requestedServerId, activeSnapshot.serverId);
     const explicitServerId = isExplicitServerRequest ? resolveServerProfileScopeIdForIdentifier(requestedServerId) : '';
@@ -297,6 +308,11 @@ async function getServerFeaturesSnapshotWithRetry(
                             ? await serverHttp.createServerFetchAtEndpoint({
                                 endpointUrl: activeSnapshot.serverUrl,
                                 runtimeOrigin: activeSnapshot.runtimeOrigin,
+                                // An ingress-less Home has no URL a platform fetch
+                                // can reach; discovery uses the same carrier the
+                                // requests do, while the canonical URL stays the
+                                // cache and profile key.
+                                ...(readActiveHomeCarrier() ?? {}),
                                 serverId: activeSnapshot.serverId,
                                 credentials: params?.credentials,
                             })(
@@ -321,6 +337,7 @@ async function getServerFeaturesSnapshotWithRetry(
                             response = await serverHttp.createServerFetchAtEndpoint({
                                 endpointUrl: activeSnapshot.serverUrl,
                                 runtimeOrigin: activeSnapshot.runtimeOrigin,
+                                ...(readActiveHomeCarrier() ?? {}),
                                 serverId: activeSnapshot.serverId,
                                 credentials: params?.credentials,
                             })(
@@ -542,6 +559,8 @@ export type ProbeServerFeaturesAtUrlOptions = Readonly<{
     serverId?: string;
     /** Request-only transport origin (for example an Iroh loopback origin). */
     runtimeOrigin?: string;
+    /** Semantic browser Iroh carrier, where a loopback runtime origin cannot exist. */
+    homeCarrier?: HomeCarrier;
     /** Caller cancellation; it never changes focused-server state. */
     signal?: AbortSignal;
 }>;
@@ -590,7 +609,7 @@ export async function probeServerFeaturesAtUrl(
     const input = normalizeProbeServerFeaturesArgs(endpointOrInput, options);
     const endpointUrl = normalizeExplicitEndpointUrl(input.endpointUrl);
     const runtimeOrigin = resolveEffectiveProbeRuntimeOrigin(endpointUrl, input.runtimeOrigin);
-    const cacheKey = getEndpointCacheKey(endpointUrl, runtimeOrigin);
+    const cacheKey = getEndpointCacheKey(endpointUrl, runtimeOrigin, input.homeCarrier);
     const force = input.force ?? false;
     const timeoutMs = typeof input.timeoutMs === 'number' && Number.isFinite(input.timeoutMs)
         ? Math.max(0, Math.trunc(input.timeoutMs))
@@ -636,6 +655,7 @@ export async function probeServerFeaturesAtUrl(
             const request = serverHttp.createServerFetchAtEndpoint({
                 endpointUrl,
                 runtimeOrigin,
+                ...(input.homeCarrier ? { homeCarrier: input.homeCarrier } : {}),
                 serverId: input.serverId,
                 // A feature probe is intentionally unauthenticated. Passing null
                 // also prevents a scoped credential lookup if a future caller

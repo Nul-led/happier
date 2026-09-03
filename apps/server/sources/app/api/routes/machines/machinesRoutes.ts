@@ -880,14 +880,6 @@ export function machinesRoutes(app: Fastify) {
     }, async (request, reply) => {
         const userId = request.userId;
 
-        // The shared authenticate hook normally enforces this route's PAT
-        // allow-list. Keep the direct serializer branch fail-closed as well so
-        // a future hook/test adapter cannot expose Home machine data to a
-        // Directory credential.
-        if (request.authTokenKind === "account_directory") {
-            return reply.code(403).send({ error: "present_user_required" });
-        }
-
         const machines = await db.machine.findMany({
             where: { accountId: userId },
             orderBy: { lastActiveAt: 'desc' }

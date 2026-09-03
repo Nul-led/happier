@@ -1,10 +1,12 @@
 //! The `wasm-bindgen` boundary for browser Iroh endpoint and stream custody.
 //!
-//! A7.1/I10 established the feasibility surface; A7.3 adds the dormant,
-//! incremental bidirectional stream boundary. Neither is wired to `serverFetch`,
-//! the Socket.IO owner, QR, Account Service, or transfer routing. The shared
-//! core still owns relay validation, exact EndpointId dialing, ALPN, limits, and
-//! cancellation while this boundary owns opaque browser stream handles.
+//! A7.1/I10 established the feasibility surface; A7.3/A7.4 add the incremental
+//! bidirectional stream boundary consumed by the browser Home HTTP, Socket.IO,
+//! and finite machine-transfer carriers. QR and Account Service consume the
+//! resulting transport through their existing scoped owners rather than this
+//! binding directly. The shared core still owns relay validation, exact
+//! EndpointId dialing, ALPN, limits, and cancellation while this boundary owns
+//! opaque browser stream handles.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -426,7 +428,11 @@ impl HappierBrowserIrohProbe {
 
     #[wasm_bindgen(js_name = streamRemoteEndpointId)]
     pub fn stream_remote_endpoint_id(&self, stream_handle: u32) -> Result<String, JsValue> {
-        Ok(self.inner.stream(stream_handle)?.remote_endpoint_id.to_string())
+        Ok(self
+            .inner
+            .stream(stream_handle)?
+            .remote_endpoint_id
+            .to_string())
     }
 
     /// The path this stream's connection actually selected. A relay-only
@@ -490,14 +496,16 @@ impl HappierBrowserIrohProbe {
     /// application endpoint alive for other Homes and later re-dials.
     #[wasm_bindgen(js_name = closeHomeTunnelConnection)]
     pub fn close_home_tunnel_connection(&self, endpoint_id: String) -> Result<(), JsValue> {
-        self.inner.close_connection(BrowserStreamKind::Home, &endpoint_id)
+        self.inner
+            .close_connection(BrowserStreamKind::Home, &endpoint_id)
     }
 
     /// Releases one Machine connection while keeping the browser's single
     /// application endpoint alive for other Homes and later re-dials.
     #[wasm_bindgen(js_name = closeMachineConnection)]
     pub fn close_machine_connection(&self, endpoint_id: String) -> Result<(), JsValue> {
-        self.inner.close_connection(BrowserStreamKind::Machine, &endpoint_id)
+        self.inner
+            .close_connection(BrowserStreamKind::Machine, &endpoint_id)
     }
 
     /// Cancels every current and pending operation and closes every live
@@ -584,7 +592,11 @@ impl ProbeInner {
             }
         }
         if let Some(streams) = self.with_live(|live| {
-            live.streams.borrow_mut().drain().map(|(_, stream)| stream).collect::<Vec<_>>()
+            live.streams
+                .borrow_mut()
+                .drain()
+                .map(|(_, stream)| stream)
+                .collect::<Vec<_>>()
         }) {
             for stream in streams {
                 stream.cancel();
@@ -652,14 +664,22 @@ impl ProbeInner {
         Ok(stream_handle)
     }
 
-    async fn read_stream(&self, stream_handle: u32, max_bytes: usize) -> Result<Option<Vec<u8>>, JsValue> {
+    async fn read_stream(
+        &self,
+        stream_handle: u32,
+        max_bytes: usize,
+    ) -> Result<Option<Vec<u8>>, JsValue> {
         validate_stream_read_size(max_bytes).map_err(to_js)?;
         let stream = self.stream(stream_handle)?;
         if stream.closed.get() {
             return Err(cancelled_error());
         }
         let generation = stream.generation.get();
-        let mut recv = stream.recv.borrow_mut().take().ok_or_else(|| JsValue::from_str("read_in_progress"))?;
+        let mut recv = stream
+            .recv
+            .borrow_mut()
+            .take()
+            .ok_or_else(|| JsValue::from_str("read_in_progress"))?;
         let mut bytes = vec![0u8; max_bytes];
         let read = tokio::select! {
             biased;
@@ -686,7 +706,11 @@ impl ProbeInner {
             return Err(cancelled_error());
         }
         let generation = stream.generation.get();
-        let mut send = stream.send.borrow_mut().take().ok_or_else(|| JsValue::from_str("write_in_progress"))?;
+        let mut send = stream
+            .send
+            .borrow_mut()
+            .take()
+            .ok_or_else(|| JsValue::from_str("write_in_progress"))?;
         let written = tokio::select! {
             biased;
             () = stream.await_cancellation(generation) => Err(cancelled_error()),
@@ -720,11 +744,7 @@ impl ProbeInner {
         }
     }
 
-    fn close_connection(
-        &self,
-        kind: BrowserStreamKind,
-        endpoint_id: &str,
-    ) -> Result<(), JsValue> {
+    fn close_connection(&self, kind: BrowserStreamKind, endpoint_id: &str) -> Result<(), JsValue> {
         BrowserEndpointPlan::validate_target(endpoint_id).map_err(to_js)?;
         let target = iroh::EndpointId::from_str(endpoint_id).map_err(to_js)?;
         let key = ConnectionKey { target, kind };
@@ -751,9 +771,12 @@ impl ProbeInner {
             .ok_or_else(closed_error)?;
         // `ensure_relay_urls` is a union, so joining one Home's relay never
         // evicts another's.
-        self.until_cancelled(generation, endpoint.ensure_relay_urls(selection.relay_urls()))
-            .await?
-            .map_err(to_js)?;
+        self.until_cancelled(
+            generation,
+            endpoint.ensure_relay_urls(selection.relay_urls()),
+        )
+        .await?
+        .map_err(to_js)?;
         Ok(selection)
     }
 
@@ -792,9 +815,7 @@ impl ProbeInner {
         // Iroh streams are lazy until the first write, so the shared tunnel
         // preamble is written immediately, exactly as the native Home tunnel
         // does.
-        send.write_all(&[TUNNEL_PREAMBLE])
-            .await
-            .map_err(to_js)?;
+        send.write_all(&[TUNNEL_PREAMBLE]).await.map_err(to_js)?;
         send.write_all(request).await.map_err(to_js)?;
         send.finish().map_err(to_js)?;
         self.until_cancelled(generation, recv.read_to_end(max_response_bytes))
@@ -909,7 +930,10 @@ impl ProbeInner {
         // endpoint's accumulated union is membership, not reachability: another
         // Home's relay is not a path to this target.
         let connection = self
-            .until_cancelled(generation, dial(endpoint.endpoint(), selection.clone(), key))
+            .until_cancelled(
+                generation,
+                dial(endpoint.endpoint(), selection.clone(), key),
+            )
             .await??;
         // A dial that completed after a cancellation or a close must not enter
         // custody: it is closed instead of becoming a live connection nobody

@@ -397,10 +397,8 @@ describe('prepareDaemonHomeIrohTransport', () => {
         })),
     };
     const unpublishInitial = vi.fn();
-    const unpublishLate = vi.fn();
     const publish = vi.fn()
-      .mockReturnValueOnce(unpublishInitial)
-      .mockReturnValueOnce(unpublishLate);
+      .mockReturnValueOnce(unpublishInitial);
     const transport = await prepareDaemonHomeIrohTransport({
       runtime: runtime as never,
       profile: { serverUrl: descriptor.canonicalServerUrl, homeConnectionDescriptor: descriptor } as never,
@@ -424,7 +422,7 @@ describe('prepareDaemonHomeIrohTransport', () => {
 
     await expect(reacquire).resolves.toMatchObject({ status: 'server_unreachable' });
     await release;
-    expect(unpublishLate).toHaveBeenCalledTimes(1);
+    expect(publish).toHaveBeenCalledTimes(1);
     expect(releaseLate).toHaveBeenCalledTimes(1);
   });
 });

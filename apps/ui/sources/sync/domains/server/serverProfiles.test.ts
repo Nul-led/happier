@@ -110,7 +110,7 @@ describe('serverProfiles', () => {
         expect(profiles.loadHomeViewState()).toEqual(first);
     });
 
-    it('filters stale Home members and repairs an impossible server target during scoped migration', async () => {
+    it('maps Home aliases and keeps not-yet-adopted Home ids during scoped migration', async () => {
         const scope = randomScope();
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = scope;
         seedServerState(scope, homeAState());
@@ -120,10 +120,10 @@ describe('serverProfiles', () => {
             serverSelectionGroups: [{
                 id: 'homes',
                 name: 'Homes',
-                serverIds: ['home-a', 'srv_home_a_marker_1', 'missing-home'],
+                serverIds: ['home-a', 'srv_home_a_marker_1', '   ', 'srv_future_home_1'],
             }],
             serverSelectionActiveTargetKind: 'server',
-            serverSelectionActiveTargetId: 'missing-home',
+            serverSelectionActiveTargetId: 'srv_future_home_1',
         });
 
         expect(migrated).toEqual({
@@ -131,11 +131,50 @@ describe('serverProfiles', () => {
             groups: [{
                 id: 'homes',
                 name: 'Homes',
-                serverIds: ['srv_home_a_marker_1'],
+                serverIds: ['srv_home_a_marker_1', 'srv_future_home_1'],
                 presentation: 'grouped',
             }],
             activeTargetKind: 'server',
-            activeTargetId: 'srv_home_a_marker_1',
+            activeTargetId: 'srv_future_home_1',
+        });
+    });
+
+    it('preserves an unadopted Home scope id through load, save and later adoption', async () => {
+        const scope = randomScope();
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = scope;
+        const storage = seedServerState(scope, {
+            ...homeAState(),
+            homeViewStateInitialized: true,
+            homeViewState: {
+                version: 1,
+                groups: [{
+                    id: 'homes',
+                    name: 'Homes',
+                    serverIds: ['srv_home_a_marker_1', 'srv_late_home_1'],
+                    presentation: 'grouped',
+                }],
+                activeTargetKind: 'group',
+                activeTargetId: 'homes',
+            },
+        });
+        const profiles = await importFresh();
+
+        const loaded = profiles.loadHomeViewState();
+        expect(loaded).toMatchObject({
+            groups: [{ id: 'homes', serverIds: ['srv_home_a_marker_1', 'srv_late_home_1'] }],
+            activeTargetKind: 'group',
+            activeTargetId: 'homes',
+        });
+        expect(readPersistedBlob(storage).homeViewState).toEqual(loaded);
+
+        // The Home is adopted after the view referencing it was already stored.
+        const late = profiles.upsertServerProfile({ serverUrl: 'https://late-home.example.test', source: 'manual' });
+        profiles.setServerProfileIdentityForUrl(late.serverUrl, 'srv_late_home_1');
+
+        expect(profiles.loadHomeViewState()).toMatchObject({
+            groups: [{ id: 'homes', serverIds: ['srv_home_a_marker_1', 'srv_late_home_1'] }],
+            activeTargetKind: 'group',
+            activeTargetId: 'homes',
         });
     });
 
@@ -170,6 +209,152 @@ describe('serverProfiles', () => {
         return (parsed && typeof parsed === 'object' ? parsed : {}) as PersistedTestBlob;
     }
 
+    it('does not treat a newly constructed source-only profile as completed bootstrap truth', async () => {
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
+        const profiles = await importFresh();
+
+        expect(profiles.findPersonalHomeBootstrapCompletedProfile([{
+            id: 'personal-home',
+            name: 'Personal Home',
+            serverUrl: 'http://127.0.0.1:3005',
+            serverIdentityId: 'srv_personal_home_1',
+            source: 'desktop-personal-home',
+            createdAt: 1,
+            updatedAt: 1,
+            lastUsedAt: 1,
+        }])).toBeNull();
+    });
+
+    it('migrates a persisted identity-bearing legacy Personal Home source to the scalar once', async () => {
+        const scope = randomScope();
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = scope;
+        const storage = seedServerState(scope, {
+            activeServerId: 'personal-home',
+            servers: {
+                'personal-home': {
+                    id: 'personal-home',
+                    name: 'Personal Home',
+                    serverUrl: 'http://127.0.0.1:3005',
+                    serverIdentityId: 'srv_personal_home_1',
+                    source: 'desktop-personal-home',
+                    createdAt: 1,
+                    updatedAt: 1,
+                    lastUsedAt: 1,
+                },
+            },
+        });
+        const profiles = await importFresh();
+
+        expect(profiles.listServerProfiles().find(
+            (profile) => profile.serverIdentityId === 'srv_personal_home_1',
+        )).toMatchObject({
+            source: 'desktop-personal-home',
+            personalHomeBootstrapCompleted: true,
+        });
+        expect(readPersistedBlob(storage).servers?.['personal-home']).toMatchObject({
+            personalHomeBootstrapCompleted: true,
+        });
+
+        const persistedAfterMigration = storage.getString('server-state-v1');
+        profiles.listServerProfiles();
+        expect(storage.getString('server-state-v1')).toBe(persistedAfterMigration);
+    });
+
+    it('adopts the verified identity and completion scalar in one profile-owner mutation', async () => {
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
+        const profiles = await importFresh();
+        const emissions: Array<readonly import('./serverProfiles').ServerProfile[]> = [];
+        const unsubscribe = profiles.subscribeServerProfiles(() => emissions.push(profiles.listServerProfiles()));
+
+        const completed = await profiles.adoptPersonalHomeProfileAndComplete({
+            descriptor: {
+                serverUrl: 'http://127.0.0.1:3005',
+                canonicalServerUrl: 'http://127.0.0.1:3005',
+                homeServerIdentityId: 'srv_personal_home_1',
+            },
+            source: 'desktop-personal-home',
+            preserveUserLabel: true,
+        });
+        unsubscribe();
+
+        expect(completed).toMatchObject({
+            serverIdentityId: 'srv_personal_home_1',
+            source: 'desktop-personal-home',
+            personalHomeBootstrapCompleted: true,
+        });
+        expect(emissions).toHaveLength(1);
+        expect(emissions[0]?.find(
+            (profile) => profile.serverIdentityId === 'srv_personal_home_1',
+        )).toMatchObject({ personalHomeBootstrapCompleted: true });
+    });
+
+    it('preserves completed bootstrap for the same identity when later adoption changes source', async () => {
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
+        const profiles = await importFresh();
+        await profiles.adoptPersonalHomeProfileAndComplete({
+            descriptor: {
+                serverUrl: 'http://127.0.0.1:3005',
+                canonicalServerUrl: 'http://127.0.0.1:3005',
+                homeServerIdentityId: 'srv_personal_home_1',
+            },
+            source: 'desktop-personal-home',
+        });
+
+        const readopted = await profiles.adoptHomeProfile({
+            descriptor: {
+                serverUrl: 'http://127.0.0.1:3005',
+                canonicalServerUrl: 'http://127.0.0.1:3005',
+                homeServerIdentityId: 'srv_personal_home_1',
+            },
+            source: 'manual',
+        });
+
+        expect(readopted).toMatchObject({
+            source: 'manual',
+            personalHomeBootstrapCompleted: true,
+        });
+    });
+
+    it('never transfers completed bootstrap across identities that share a URL', async () => {
+        const scope = randomScope();
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = scope;
+        seedServerState(scope, {
+            activeServerId: 'personal-home',
+            servers: {
+                'personal-home': {
+                    id: 'personal-home',
+                    name: 'Personal Home',
+                    serverUrl: 'http://127.0.0.1:3005',
+                    serverIdentityId: 'srv_personal_home_1',
+                    source: 'manual',
+                    personalHomeBootstrapCompleted: true,
+                    createdAt: 1,
+                    updatedAt: 1,
+                    lastUsedAt: 1,
+                },
+                'different-home': {
+                    id: 'different-home',
+                    name: 'Different Home',
+                    serverUrl: 'http://127.0.0.1:3005',
+                    serverIdentityId: 'srv_different_home_2',
+                    source: 'manual',
+                    createdAt: 2,
+                    updatedAt: 2,
+                    lastUsedAt: 2,
+                },
+            },
+        });
+        const profiles = await importFresh();
+
+        const loaded = profiles.listServerProfiles();
+        expect(loaded.find(
+            (profile) => profile.serverIdentityId === 'srv_personal_home_1',
+        )).toMatchObject({ personalHomeBootstrapCompleted: true });
+        expect(loaded.find(
+            (profile) => profile.serverIdentityId === 'srv_different_home_2',
+        )).not.toHaveProperty('personalHomeBootstrapCompleted');
+    });
+
     function homeAState(): Record<string, unknown> {
         return {
             activeServerId: 'home-a',
@@ -200,7 +385,7 @@ describe('serverProfiles', () => {
         };
     }
 
-    it('repairs a semantically impossible initialized v1 group target at the persisted owner', async () => {
+    it('retains an initialized v1 group target whose members are not adopted yet', async () => {
         const scope = randomScope();
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = scope;
         const storage = seedServerState(scope, {
@@ -215,13 +400,43 @@ describe('serverProfiles', () => {
         });
         const profiles = await importFresh();
 
+        const loaded = profiles.loadHomeViewState();
+        if (!loaded) throw new Error('expected initialized Home-view state');
+        expect(loaded).toEqual({
+            version: 1,
+            groups: [{ id: 'homes', name: 'Homes', serverIds: ['missing-home'], presentation: 'grouped' }],
+            activeTargetKind: 'group',
+            activeTargetId: 'homes',
+        });
+        profiles.saveHomeViewState(loaded);
+        expect(readPersistedBlob(storage).homeViewState).toMatchObject({
+            groups: [{ id: 'homes', serverIds: ['missing-home'] }],
+            activeTargetKind: 'group',
+            activeTargetId: 'homes',
+        });
+    });
+
+    it('drops an initialized v1 group target that no longer names an existing group', async () => {
+        const scope = randomScope();
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = scope;
+        seedServerState(scope, {
+            ...homeAState(),
+            homeViewStateInitialized: true,
+            homeViewState: {
+                version: 1,
+                groups: [{ id: 'homes', name: 'Homes', serverIds: ['srv_home_a_marker_1'] }],
+                activeTargetKind: 'group',
+                activeTargetId: 'gone',
+            },
+        });
+        const profiles = await importFresh();
+
         expect(profiles.loadHomeViewState()).toEqual({
             version: 1,
-            groups: [],
+            groups: [{ id: 'homes', name: 'Homes', serverIds: ['srv_home_a_marker_1'], presentation: 'grouped' }],
             activeTargetKind: 'server',
             activeTargetId: 'srv_home_a_marker_1',
         });
-        expect(readPersistedBlob(storage).homeViewState).toEqual(profiles.loadHomeViewState());
     });
 
     it('repairs an initialized corrupt HomeView payload to the focused fallback instead of re-running scoped migration', async () => {
@@ -396,6 +611,27 @@ describe('serverProfiles', () => {
         });
     });
 
+    it('prunes only the explicitly removed Home and keeps other unadopted members', async () => {
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
+        const profiles = await importFresh();
+        const first = profiles.upsertServerProfile({ serverUrl: 'https://kept-home.example.test', source: 'manual' });
+        const second = profiles.upsertServerProfile({ serverUrl: 'https://forgotten-home.example.test', source: 'manual' });
+        profiles.saveHomeViewState({
+            version: 1,
+            groups: [{ id: 'homes', name: 'Homes', serverIds: [first.id, second.id, 'srv_not_adopted_yet_1'] }],
+            activeTargetKind: 'group',
+            activeTargetId: 'homes',
+        });
+
+        profiles.removeServerProfile(second.id);
+
+        expect(profiles.loadHomeViewState()).toMatchObject({
+            groups: [{ id: 'homes', name: 'Homes', serverIds: [first.id, 'srv_not_adopted_yet_1'] }],
+            activeTargetKind: 'group',
+            activeTargetId: 'homes',
+        });
+    });
+
     it('keeps Account Service endpoint separate and adopts strict Home descriptors without focus changes', async () => {
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
         const profiles = await importFresh();
@@ -416,6 +652,28 @@ describe('serverProfiles', () => {
         expect(adopted.serverIdentityId).toBe('srv_home_identity_123');
         expect(profiles.getAccountServiceEndpointSnapshot()?.url).toBe('https://accounts.example.test');
         expect(profiles.getActiveServerSnapshot().serverId).toBe(initial.serverId);
+    });
+
+    it('resolves the owner-defined Happier Cloud sign-in service before any explicit selection', async () => {
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
+        const profiles = await importFresh();
+
+        expect(profiles.getAccountServiceEndpointSnapshot()).toBeNull();
+        const fallback = profiles.resolveSelectedAccountServiceEndpoint();
+        expect(fallback).toEqual({
+            url: profiles.HAPPIER_CLOUD_SERVER_URL,
+            displayName: 'Happier Cloud',
+            source: 'default',
+        });
+        // Referential stability is load-bearing: unauthenticated entry reads this through
+        // `useSyncExternalStore`, which re-renders forever on a fresh object per call.
+        expect(profiles.resolveSelectedAccountServiceEndpoint()).toBe(fallback);
+
+        profiles.setAccountServiceEndpoint({ url: 'https://accounts.example.test', source: 'user' });
+        expect(profiles.resolveSelectedAccountServiceEndpoint()).toMatchObject({
+            url: 'https://accounts.example.test',
+            source: 'user',
+        });
     });
 
     it('normalizes Account Service endpoint identity consistently for writes and persisted reads', async () => {
@@ -689,10 +947,10 @@ describe('serverProfiles', () => {
         expect(directoryReadopted.personalHomeBootstrapCompleted).toBe(true);
     });
 
-    it('marks completion only for the exact adopted Home identity and never transfers it across a URL collision', async () => {
+    it('adopts completion only for the exact Home identity and never transfers it across a URL collision', async () => {
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
         const profiles = await importFresh();
-        const personalHome = await profiles.adoptHomeProfile({
+        const personalHome = await profiles.adoptPersonalHomeProfileAndComplete({
             source: 'desktop-personal-home',
             preserveUserLabel: true,
             descriptor: {
@@ -701,16 +959,7 @@ describe('serverProfiles', () => {
                 homeServerIdentityId: 'srv_personal_home_identity_a',
             },
         });
-        const completed = profiles.markServerProfilePersonalHomeBootstrapCompleted({
-            profileId: personalHome.id,
-            serverIdentityId: 'srv_personal_home_identity_a',
-        });
-        expect(completed.personalHomeBootstrapCompleted).toBe(true);
-
-        expect(() => profiles.markServerProfilePersonalHomeBootstrapCompleted({
-            profileId: personalHome.id,
-            serverIdentityId: 'srv_personal_home_identity_b',
-        })).toThrow('Personal Home bootstrap completion identity does not match the adopted profile');
+        expect(personalHome.personalHomeBootstrapCompleted).toBe(true);
 
         await expect(profiles.adoptHomeProfile({
             source: 'qr',
@@ -1791,6 +2040,40 @@ describe('serverProfiles', () => {
         expect(profiles.getActiveServerSnapshot().runtimeOrigin).toBeUndefined();
     });
 
+    it('rejects a stale-generation release that reuses a lease id after refocus', async () => {
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
+        const profiles = await importFresh();
+        const first = profiles.upsertServerProfile({ serverUrl: 'https://reused-first.example.test', source: 'manual' });
+        const second = profiles.upsertServerProfile({ serverUrl: 'https://reused-second.example.test', source: 'manual' });
+
+        profiles.setActiveServerId(first.id, { scope: 'device' });
+        const staleTarget = profiles.captureActiveServerRuntimeTarget();
+        expect(profiles.publishActiveServerRuntimeOrigin({
+            target: staleTarget,
+            leaseId: 'lease-reused',
+            runtimeOrigin: 'http://127.0.0.1:4201',
+            carrier: 'iroh',
+        })).toBe(true);
+
+        // Refocus away and back: the native supervisor may hand out the same lease id.
+        profiles.setActiveServerId(second.id, { scope: 'device' });
+        profiles.setActiveServerId(first.id, { scope: 'device' });
+        const currentTarget = profiles.captureActiveServerRuntimeTarget();
+        expect(currentTarget).not.toEqual(staleTarget);
+        expect(profiles.publishActiveServerRuntimeOrigin({
+            target: currentTarget,
+            leaseId: 'lease-reused',
+            runtimeOrigin: 'http://127.0.0.1:4202',
+            carrier: 'iroh',
+        })).toBe(true);
+
+        expect(profiles.releaseActiveServerRuntimeOrigin({ target: staleTarget, leaseId: 'lease-reused' })).toBe(false);
+        expect(profiles.getActiveServerSnapshot().runtimeOrigin).toBe('http://127.0.0.1:4202');
+
+        expect(profiles.releaseActiveServerRuntimeOrigin({ target: currentTarget, leaseId: 'lease-reused' })).toBe(true);
+        expect(profiles.getActiveServerSnapshot().runtimeOrigin).toBeUndefined();
+    });
+
     it('invalidates the active runtime publication when the focused Home adopts a newer descriptor', async () => {
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
         const profiles = await importFresh();
@@ -2202,6 +2485,59 @@ describe('serverProfiles', () => {
         for (const unsubscribe of unsubscribers) unsubscribe();
     });
 
+    // Reproduced two-tab lost update (Lane 04 amendment A8 §5). Tab A commits a
+    // disjoint current-version mutation inside the window between tab B's shared
+    // `server-state-v1` read and B's whole-object write, so B's write from the
+    // pre-A snapshot erases it. Two real tabs are separate threads, so nothing
+    // serializes another tab's `setItem` against this tab's read/modify/write pair.
+    //
+    // Pinned as a known failure rather than fixed here: A8 prescribes serializing
+    // these mutations through one owner-level transaction boundary using a
+    // platform-native Web Lock, but `navigator.locks` is async-only while every
+    // mutator here — and the canonicalization write reached from the synchronous
+    // `sync/store/domains/**` readers — is synchronous. That conversion is a broad
+    // public API change, so it is `AMENDMENT_REQUIRED` and not taken on this lane.
+    // Assert the exact observed loss instead of using `it.fails`: an unrelated
+    // exception must not satisfy this reproduction. The expectation intentionally
+    // turns RED when the approved serialization amendment closes the defect.
+    it('reproduces loss of a disjoint current-tab mutation when another current tab writes from a captured base', async () => {
+        const scope = randomScope();
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = scope;
+        stubWebRuntime('https://origin.example.test');
+
+        const tabB = await importFresh();
+        const profile = tabB.upsertServerProfile({
+            serverUrl: 'https://home.example.test',
+            name: 'Home before B',
+            source: 'manual',
+        });
+        const tabA = await importFresh();
+        const stateKey = `${scopedStorageId('server-profiles', scope)}:server-state-v1`;
+        const sharedStorage = globalThis.window.localStorage;
+        const originalGetItem = sharedStorage.getItem.bind(sharedStorage);
+        let interleaved = false;
+
+        sharedStorage.getItem = (key: string): string | null => {
+            const captured = originalGetItem(key);
+            if (!interleaved && key === stateKey) {
+                interleaved = true;
+                tabA.setAccountServiceEndpoint({
+                    url: 'https://accounts.example.test',
+                    source: 'configured',
+                });
+            }
+            return captured;
+        };
+
+        // Tab B has captured the old whole state. Tab A commits a disjoint valid
+        // mutation before B resumes and writes its profile rename from that base.
+        tabB.renameServerProfile(profile.id, 'Home renamed by B');
+
+        expect(interleaved).toBe(true);
+        expect(tabA.getServerProfileById(profile.id)?.name).toBe('Home renamed by B');
+        expect(tabA.getAccountServiceEndpointSnapshot()).toBeNull();
+    });
+
     it('seeds Happier Cloud on native when no preconfigured env exists', async () => {
         const scope = randomScope();
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = scope;
@@ -2556,7 +2892,7 @@ describe('serverProfiles', () => {
         expect(profile).not.toHaveProperty('legacyServerIds');
     });
 
-    it('dedupes profiles that learn the same server identity across different hostnames', async () => {
+    it('rejects learning an established stable identity at an unrelated URL', async () => {
         const scope = randomScope();
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = scope;
 
@@ -2564,16 +2900,46 @@ describe('serverProfiles', () => {
         const lan = profiles.upsertServerProfile({ serverUrl: 'https://macbook.local:18829', name: 'LAN' });
         const tunnel = profiles.upsertServerProfile({ serverUrl: 'https://public.example.test', name: 'Public' });
 
-        profiles.setServerProfileIdentityForUrl(lan.serverUrl, 'srv_shared_identity');
-        profiles.setServerProfileIdentityForUrl(tunnel.serverUrl, 'srv_shared_identity');
+        expect(profiles.setServerProfileIdentityForUrl(lan.serverUrl, 'srv_shared_identity')).not.toBeNull();
+        expect(profiles.setServerProfileIdentityForUrl(tunnel.serverUrl, 'srv_shared_identity')).toBeNull();
 
         const all = profiles.listServerProfiles().filter((profile) => profile.serverIdentityId === 'srv_shared_identity');
         expect(all).toHaveLength(1);
-        expect(profiles.getServerProfileLegacyServerIds('srv_shared_identity')).toEqual(
-            expect.arrayContaining([lan.id, tunnel.id]),
-        );
-        profiles.setActiveServerId(tunnel.id, { scope: 'device' });
-        expect(profiles.getActiveServerSnapshot().serverId).toBe('srv_shared_identity');
+        expect(all[0]?.serverUrl).toBe(lan.serverUrl);
+        expect(profiles.getServerProfileById(tunnel.id)).toMatchObject({
+            id: tunnel.id,
+            serverUrl: tunnel.serverUrl,
+        });
+        expect(profiles.getServerProfileById(tunnel.id)).not.toHaveProperty('serverIdentityId');
+    });
+
+    it('surfaces a canonicalization repair write failure without substituting seeded empty state', async () => {
+        const scope = randomScope();
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = scope;
+        const storage = new MMKV({ id: scopedStorageId('server-profiles', scope) });
+        storage.set('server-state-v1', JSON.stringify({
+            activeServerId: 'home-a',
+            servers: {
+                'home-a': { id: 'home-a', name: 'A', serverUrl: 'https://home.example.test', createdAt: 1, updatedAt: 1, lastUsedAt: 1 },
+                'home-a-duplicate': { id: 'home-a-duplicate', name: 'A duplicate', serverUrl: 'https://home.example.test/', createdAt: 2, updatedAt: 2, lastUsedAt: 2 },
+            },
+        }));
+        const originalSet = MMKV.prototype.set;
+        const repairWrite = vi.spyOn(MMKV.prototype, 'set').mockImplementation(function (this: MMKV, key, value) {
+            if (key === 'server-state-v1') throw new Error('storage unavailable');
+            return originalSet.call(this, key, value);
+        });
+
+        const profiles = await importFresh();
+        try {
+            expect(() => profiles.listServerProfiles()).toThrow('Failed to persist Home profiles');
+        } finally {
+            repairWrite.mockRestore();
+        }
+
+        expect(profiles.listServerProfiles()).toEqual([
+            expect.objectContaining({ serverUrl: 'https://home.example.test' }),
+        ]);
     });
 
     it('does not merge conflicting Home identities merely because their canonical URLs match', async () => {

@@ -13,12 +13,13 @@ import type { ActiveServerSwitchResult } from '@/sync/domains/server/activeServe
 
 export function useServerSettingsServerProfileActions(params: Readonly<{
     authStatusByServerId: Readonly<Record<string, ServerAuthStatus>>;
+    selectionScope: 'device' | 'tab';
     onSwitchServerById: (serverId: string, scope?: 'device' | 'tab') => Promise<ActiveServerSwitchResult>;
     onAfterSignedOutSwitch: () => void;
 
     setRevision: React.Dispatch<React.SetStateAction<number>>;
 }>) {
-    const onSwitchServer = React.useCallback(async (profile: ServerProfile, scope: 'device' | 'tab' = 'device') => {
+    const onSwitchServer = React.useCallback(async (profile: ServerProfile, scope: 'device' | 'tab' = params.selectionScope) => {
         const scopeId = resolveServerProfileScopeId(profile);
         let authStatus = params.authStatusByServerId[scopeId]
             ?? params.authStatusByServerId[profile.id]

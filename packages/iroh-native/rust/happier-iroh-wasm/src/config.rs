@@ -187,9 +187,8 @@ mod tests {
 
     #[test]
     fn an_explicit_relay_is_applied_as_the_endpoint_relay_set() {
-        let plan =
-            BrowserEndpointPlan::resolve(&SEED, &["https://relay.happier.test".to_string()])
-                .expect("an explicit relay is usable");
+        let plan = BrowserEndpointPlan::resolve(&SEED, &["https://relay.happier.test".to_string()])
+            .expect("an explicit relay is usable");
         let config = plan.endpoint_config();
 
         assert_eq!(config.relay_policy, RelayPolicy::Automatic);
@@ -387,7 +386,10 @@ mod tests {
         assert_eq!(BROWSER_STREAM_CHUNK_BYTES, 1024 * 1024);
         assert!(validate_stream_read_size(1).is_ok());
         assert!(validate_stream_read_size(BROWSER_STREAM_CHUNK_BYTES).is_ok());
-        assert_eq!(validate_stream_read_size(0).unwrap_err(), IrohError::ResourceLimit);
+        assert_eq!(
+            validate_stream_read_size(0).unwrap_err(),
+            IrohError::ResourceLimit
+        );
         assert_eq!(
             validate_stream_read_size(BROWSER_STREAM_CHUNK_BYTES + 1).unwrap_err(),
             IrohError::ResourceLimit

@@ -139,6 +139,7 @@ function resolvePickerAvailability(machine: MachineAdministrationPickerMachine):
  */
 export function MachineAdministrationTargetSelector(props: MachineAdministrationTargetSelectorProps) {
     const testIDPrefix = props.testIDPrefix ?? 'machine-administration-target';
+    const groupTitle = props.groupTitle ?? t('settingsProviders.detail.targetMachine');
     const current = presentCurrentTarget(props.selection.state, props.unselectedTitle);
     const groups = buildPickerGroups(props.selection);
     const selectedRow = props.selection.selectedTarget
@@ -159,7 +160,7 @@ export function MachineAdministrationTargetSelector(props: MachineAdministration
 
     return (
         <>
-            <ItemGroup title={props.groupTitle ?? t('settingsProviders.detail.targetMachine')}>
+            <ItemGroup title={groupTitle}>
                 <Item
                     testID={`${testIDPrefix}.current`}
                     title={current.title}
@@ -174,6 +175,7 @@ export function MachineAdministrationTargetSelector(props: MachineAdministration
                     <Item
                         testID={`${testIDPrefix}.clear`}
                         title={t('common.remove')}
+                        accessibilityLabel={`${t('common.remove')}: ${groupTitle}`}
                         showChevron={false}
                         onPress={() => changeTarget(props.selection.clearTarget)}
                     />

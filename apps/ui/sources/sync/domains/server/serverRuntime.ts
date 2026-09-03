@@ -19,6 +19,7 @@ export type { AccountServiceEndpointV1 } from './serverProfiles';
 export {
     areServerProfileIdentifiersEquivalent,
     captureActiveServerRuntimeTarget,
+    getActiveServerHomeCarrier,
     publishActiveServerRuntimeOrigin,
     releaseActiveServerRuntimeOrigin,
     subscribeActiveServerRuntimeOrigin,

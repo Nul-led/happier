@@ -3,7 +3,7 @@ import {
     getProfileEnvironmentVariables as getProfileEnvironmentVariablesProtocol,
     isProfileCompatibleWithBackendTarget as isProfileCompatibleWithBackendTargetProtocol,
     isProfileCompatibleWithAgent as isProfileCompatibleWithAgentProtocol,
-    readBackendTargetRefV2,
+    parseBackendTargetKeyV2,
     type BackendTargetRefV2Input,
 } from '@happier-dev/protocol';
 import { resolveBackendTargetKeyV2 } from '@/agents/backendCatalog/backendTargetKeyV2';
@@ -36,8 +36,14 @@ export function isProfileCompatibleWithBackendTarget(
     const canonicalTargetKey = resolveBackendTargetKeyV2(target);
     const explicitCanonical = profile.compatibilityByTargetKey?.[canonicalTargetKey];
     if (typeof explicitCanonical === 'boolean') return explicitCanonical;
-    if (typeof target !== 'string' && target.kind === 'agent') {
-        const bundledAgentId = resolveBundledAgentIdFromContributionIdentity(target.identity);
+    // Read the qualified identity from the canonical key rather than from the
+    // caller's spelling: a target key, a persisted ref, and a runtime carrier id
+    // all name the same Agent, and only the canonical key owner knows which.
+    // Deriving it here also keeps an installed Agent off the V1 conversion,
+    // which can only represent identities the Protocol reader already knows.
+    const canonicalTarget = parseBackendTargetKeyV2(canonicalTargetKey);
+    if (canonicalTarget.kind === 'agent') {
+        const bundledAgentId = resolveBundledAgentIdFromContributionIdentity(canonicalTarget.identity);
         if (bundledAgentId !== null) {
             return isProfileCompatibleWithBackendTargetProtocol(
                 normalizeCompatibilityProfile(profile),
@@ -48,8 +54,10 @@ export function isProfileCompatibleWithBackendTarget(
         // canonical profile default instead of guessing one from its identity.
         return profile.isBuiltIn ? false : true;
     }
-    const normalizedTargetV1 = convertBackendTargetRefV2ToV1(readBackendTargetRefV2(target));
-    return isProfileCompatibleWithBackendTargetProtocol(normalizeCompatibilityProfile(profile), normalizedTargetV1);
+    return isProfileCompatibleWithBackendTargetProtocol(
+        normalizeCompatibilityProfile(profile),
+        convertBackendTargetRefV2ToV1(canonicalTarget),
+    );
 }
 
 export function isProfileCompatibleWithAgent(

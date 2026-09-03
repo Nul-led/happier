@@ -1,5 +1,6 @@
 import type { ManagedEndpointSupervisor } from '@happier-dev/connection-supervisor';
 
+import type { HomeCarrier } from '@/sync/runtime/homeCarrier';
 import { runtimeFetch } from '@/utils/system/runtimeFetch';
 
 import { acquireEndpointSupervisor } from './endpointSupervisorPool';
@@ -36,6 +37,12 @@ export function createEndpointSupervisedRequest(params: Readonly<{
     serverUrl: string;
     token?: string | null;
     endpointSupervisor?: ManagedEndpointSupervisor | null;
+    /**
+     * A Home carrier that owns its own bytes. Supervision, the fail-closed
+     * same-origin check, and failure reporting stay here; only the transport
+     * changes.
+     */
+    homeCarrier?: HomeCarrier;
 }>): (path: string, init: RequestInit) => Promise<Response> {
     const serverUrl = String(params.serverUrl ?? '').trim().replace(/\/+$/, '');
     const baseUrlParsed = tryParseUrl(serverUrl);
@@ -89,11 +96,10 @@ export function createEndpointSupervisedRequest(params: Readonly<{
 
             let response: Response;
             try {
-                response = await runtimeFetch(requestUrl, {
-                    ...init,
-                    headers,
-                    method: init?.method ?? 'GET',
-                });
+                const request = { ...init, headers, method: init?.method ?? 'GET' };
+                response = params.homeCarrier
+                    ? await params.homeCarrier.request(requestUrl, request)
+                    : await runtimeFetch(requestUrl, request);
             } catch (error) {
                 if (shouldReportEndpointFailure({ init, error })) {
                     const errorMessage = sanitizeEndpointErrorMessage(error);

@@ -11,6 +11,7 @@ import {
 
 import { probeAuthenticatedServerAuthPingEndpoint } from '@/sync/api/capabilities/probeAuthenticatedServerAuthPingEndpoint';
 import { canonicalizeServerUrl } from '@/sync/domains/server/url/serverUrlCanonical';
+import type { HomeCarrier } from '@/sync/runtime/homeCarrier';
 import { runtimeFetch } from '@/utils/system/runtimeFetch';
 
 import { createNotAuthenticatedError } from './authErrors';
@@ -108,13 +109,17 @@ function createExternallyDisconnectableTransport(): TransportController {
     };
 }
 
-async function runtimeFetchWithTimeout(
-    input: RequestInfo | URL,
+async function fetchWithTimeout(
+    homeCarrier: HomeCarrier | null,
+    input: string,
     init: RequestInit,
     timeoutMs: number,
 ): Promise<Response> {
+    const send = async (request: RequestInit): Promise<Response> => (
+        homeCarrier ? await homeCarrier.request(input, request) : await runtimeFetch(input, request)
+    );
     if (typeof AbortController !== 'function') {
-        return await runtimeFetch(input, init);
+        return await send(init);
     }
 
     const controller = new AbortController();
@@ -123,14 +128,19 @@ async function runtimeFetchWithTimeout(
     }, Math.max(0, timeoutMs));
 
     try {
-        return await runtimeFetch(input, { ...init, signal: controller.signal });
+        return await send({ ...init, signal: controller.signal });
     } finally {
         clearTimeout(timeout);
     }
 }
 
-async function probeServerReadiness(params: Readonly<{ endpoint: string; token: string | null }>): Promise<ReadinessProbeResult> {
+async function probeServerReadiness(params: Readonly<{
+    endpoint: string;
+    token: string | null;
+    homeCarrier?: HomeCarrier | null;
+}>): Promise<ReadinessProbeResult> {
     const endpoint = params.endpoint.replace(/\/+$/, '');
+    const homeCarrier = params.homeCarrier ?? null;
     if (!networkAllowed) {
         return {
             status: 'retry_later',
@@ -145,7 +155,8 @@ async function probeServerReadiness(params: Readonly<{ endpoint: string; token: 
     // remains the probe for the tokenless case, where no authenticated route can be used.
     if (!params.token) {
         try {
-            const healthResponse = await runtimeFetchWithTimeout(
+            const healthResponse = await fetchWithTimeout(
+                homeCarrier,
                 `${endpoint}/health`,
                 {
                     method: 'GET',
@@ -176,7 +187,11 @@ async function probeServerReadiness(params: Readonly<{ endpoint: string; token: 
     }
 
     if (typeof AbortController !== 'function') {
-        return await probeAuthenticatedServerAuthPingEndpoint({ endpoint, token: params.token });
+        return await probeAuthenticatedServerAuthPingEndpoint({
+            endpoint,
+            token: params.token,
+            ...(homeCarrier ? { homeCarrier } : {}),
+        });
     }
 
     const controller = new AbortController();
@@ -187,6 +202,7 @@ async function probeServerReadiness(params: Readonly<{ endpoint: string; token: 
             endpoint,
             token: params.token,
             signal: controller.signal,
+            ...(homeCarrier ? { homeCarrier } : {}),
         });
     } finally {
         clearTimeout(timeout);
@@ -198,6 +214,8 @@ type ReachabilitySupervisorEntry = {
     serverUrl: string;
     /** Verified request-only transport origin; canonical serverUrl remains part of the scope key. */
     runtimeOrigin: string | null;
+    /** Semantic carrier for a Home with no reachable URL origin (browser Iroh). */
+    homeCarrier: HomeCarrier | null;
     token: string | null;
     state: ManagedConnectionState;
     supervisor: ManagedConnectionSupervisor;
@@ -260,6 +278,7 @@ function getOrCreateEntry(serverUrlRaw: string, token: string | null = null): Re
         scopeKey,
         serverUrl,
         runtimeOrigin: null,
+        homeCarrier: null,
         token,
         state: {
             phase: 'idle',
@@ -281,6 +300,7 @@ function getOrCreateEntry(serverUrlRaw: string, token: string | null = null): Re
         probeReadiness: async () => probeServerReadiness({
             endpoint: entry.runtimeOrigin ?? entry.serverUrl,
             token: entry.token,
+            homeCarrier: entry.homeCarrier,
         }),
         onStateChange: (state) => {
             entry.state = state;
@@ -622,6 +642,8 @@ export async function startServerReachabilitySupervisor(params: Readonly<{
     token: string | null;
     /** Verified transport-only origin; ownership/subscriptions remain keyed by serverUrl. */
     runtimeOrigin?: string;
+    /** Semantic carrier for a Home with no reachable URL origin (browser Iroh). */
+    homeCarrier?: HomeCarrier | null;
 }>): Promise<void> {
     const entry = getOrCreateEntry(params.serverUrl, params.token);
     entry.pendingStartCount += 1;
@@ -633,9 +655,13 @@ export async function startServerReachabilitySupervisor(params: Readonly<{
         if (runtimeOriginRaw && !runtimeOrigin) {
             throw new Error('Invalid server reachability runtime origin');
         }
-        const runtimeOriginChanged = entry.runtimeOrigin !== runtimeOrigin;
+        const homeCarrier = params.homeCarrier ?? null;
+        // A replaced carrier is a replaced transport, exactly like a replaced
+        // origin: the supervisor must re-probe rather than keep a stale verdict.
+        const transportChanged = entry.runtimeOrigin !== runtimeOrigin || entry.homeCarrier !== homeCarrier;
         entry.token = params.token;
         entry.runtimeOrigin = runtimeOrigin;
+        entry.homeCarrier = homeCarrier;
 
         if (!networkAllowed) {
             return;
@@ -643,7 +669,7 @@ export async function startServerReachabilitySupervisor(params: Readonly<{
 
         if (entry.state.phase === 'idle' || entry.state.phase === 'shutting_down') {
             await entry.supervisor.start();
-        } else if (runtimeOriginChanged || (entry.state.phase === 'auth_failed' && tokenChanged)) {
+        } else if (transportChanged || (entry.state.phase === 'auth_failed' && tokenChanged)) {
             await entry.supervisor.stop();
             await entry.supervisor.start();
         }
@@ -658,6 +684,7 @@ export async function acquireServerReachabilitySupervisor(params: Readonly<{
     serverUrl: string;
     token: string | null;
     runtimeOrigin?: string;
+    homeCarrier?: HomeCarrier | null;
 }>): Promise<ServerReachabilityLease> {
     const entry = getOrCreateEntry(params.serverUrl, params.token);
     entry.ownerCount += 1;

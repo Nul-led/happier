@@ -1,4 +1,9 @@
-import { createApiRateLimitKeyGenerator, resolveRouteRateLimit, type ApiRouteRateLimitConfig } from "./apiRateLimitPolicy";
+import {
+    createApiRateLimitKeyGenerator,
+    resolveRouteRateLimit,
+    type ApiRateLimitRequest,
+    type ApiRouteRateLimitConfig,
+} from "./apiRateLimitPolicy";
 
 type ApiRateLimitDefaults = Readonly<{
     defaultMax: number;
@@ -86,7 +91,7 @@ function resolveRateLimitEnvKeysForId(id: string): { maxEnvKey: string; windowEn
 export function resolveApiHotEndpointRateLimit(
     env: Record<string, string | undefined>,
     id: ApiHotEndpointRateLimitId,
-    opts?: Readonly<{ keyGenerator?: (request: any) => string | Promise<string> }>,
+    opts?: Readonly<{ keyGenerator?: (request: ApiRateLimitRequest) => string | number | Promise<string | number> }>,
 ): ApiRouteRateLimitConfig {
     const defaults = API_HOT_ENDPOINT_RATE_LIMIT_DEFAULTS[id];
     if (!defaults) return false;

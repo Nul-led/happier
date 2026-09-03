@@ -917,7 +917,7 @@ fn release_home_tunnel(value: *const c_char) -> Value {
         .expect("lease lock poisoned")
         .remove(&input.tunnel_id)
     {
-        lease.tunnel.stop();
+        runtime().block_on(lease.tunnel.stop_and_wait());
     }
     json!({"ok": true})
 }
@@ -1246,7 +1246,7 @@ pub fn shutdown_endpoint_json(request: &str) -> Value {
             .expect("lease lock poisoned")
             .remove(&lease_id)
         {
-            lease.tunnel.stop();
+            runtime().block_on(lease.tunnel.stop_and_wait());
         }
     }
     let machine_leases: Vec<String> = state()

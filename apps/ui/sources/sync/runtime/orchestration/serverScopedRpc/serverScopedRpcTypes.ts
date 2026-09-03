@@ -1,5 +1,7 @@
 import type { SocketRpcAuthorizationContext } from '@happier-dev/protocol/rpc';
 
+import type { HomeCarrier } from '@/sync/runtime/homeCarrier';
+
 /**
  * How long an unqualified server-scoped RPC operation may stay in flight.
  *
@@ -44,6 +46,8 @@ export type ScopedServerRpcContext = Readonly<{
     targetAccountId?: string;
     runtimeOrigin?: string;
     carrier?: 'https' | 'iroh';
+    /** Semantic carrier for a Home with no reachable URL origin (browser Iroh). */
+    homeCarrier?: HomeCarrier;
     release?: () => Promise<void>;
     token: string;
     encryption: ScopedRpcEncryptionContext | null;
@@ -80,6 +84,18 @@ export type ScopedSocketConnectParams = Readonly<{
     /** Stable Home identity/auth audience and reachability key. */
     reachabilityServerUrl?: string;
     carrier?: 'https' | 'iroh';
+    /** Semantic carrier for a Home with no reachable URL origin (browser Iroh). */
+    homeCarrier?: HomeCarrier;
+    /**
+     * Custody of the acquired transport lease behind {@link homeCarrier}.
+     *
+     * Passing it hands ownership to the socket pool from this call onward, because
+     * the pooled socket outlives the caller that created it: a logical client's
+     * `disconnect()` only drops its own use, and the pool releases the lease once
+     * the socket it carries is actually torn down. The caller must not release it
+     * afterwards — including when this call fails, which the pool unwinds itself.
+     */
+    releaseCarrier?: () => Promise<void>;
     token: string;
     timeoutMs: number;
 }>;

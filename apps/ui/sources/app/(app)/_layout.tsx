@@ -35,6 +35,7 @@ import { RootLayoutNavigationEffects } from '@/components/navigation/root/RootLa
 import { RootLayoutRedirectGate } from '@/components/navigation/root/RootLayoutRedirectGate';
 import { useOnboardingJourneySessionActive } from '@/components/onboarding/tour/state/journeySession';
 import { VoiceAnnouncer } from '@/components/voice/surface/VoiceAnnouncer';
+import { buildUniversalSearchRouteScreenOptions } from './universalSearchRouteScreenOptions';
 
 type StackScreenOptions = NativeStackNavigationOptions;
 type ModalRouteNavigation = Readonly<{
@@ -212,9 +213,24 @@ const RootLayoutShell = React.memo(function RootLayoutShell(): React.ReactElemen
                 headerTitle: t('navigation.newAutomation'),
                 headerBackTitle: back,
             },
+            automationsEdit: {
+                headerShown: true,
+                headerTitle: t('automations.edit.title'),
+                headerBackTitle: back,
+            },
             automationsSettings: {
                 headerShown: true,
                 headerTitle: t('automations.settings.title'),
+                headerBackTitle: back,
+            },
+            sessionAutomations: {
+                headerShown: true,
+                headerTitle: t('sessionInfo.automationsTitle'),
+                headerBackTitle: back,
+            },
+            sessionAutomationsNew: {
+                headerShown: true,
+                headerTitle: t('navigation.newAutomation'),
                 headerBackTitle: back,
             },
             visibleBlankBack,
@@ -421,6 +437,10 @@ const RootLayoutShell = React.memo(function RootLayoutShell(): React.ReactElemen
                     options={rootStackRouteOptions.settings}
                 />
                 <Stack.Screen
+                    name="search"
+                    options={buildUniversalSearchRouteScreenOptions({ platformOs: Platform.OS })}
+                />
+                <Stack.Screen
                     name="desktop/activity-overlay"
                     options={rootStackRouteOptions.desktopActivityOverlay}
                 />
@@ -441,8 +461,20 @@ const RootLayoutShell = React.memo(function RootLayoutShell(): React.ReactElemen
                     options={rootStackRouteOptions.automationsNew}
                 />
                 <Stack.Screen
+                    name="automations/edit"
+                    options={rootStackRouteOptions.automationsEdit}
+                />
+                <Stack.Screen
                     name="automations/settings"
                     options={rootStackRouteOptions.automationsSettings}
+                />
+                <Stack.Screen
+                    name="session/[id]/automations"
+                    options={rootStackRouteOptions.sessionAutomations}
+                />
+                <Stack.Screen
+                    name="session/[id]/automations/new"
+                    options={rootStackRouteOptions.sessionAutomationsNew}
                 />
                 <Stack.Screen
                     name="session/[id]/info"

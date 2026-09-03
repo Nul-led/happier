@@ -8,7 +8,6 @@ import {
     useAllMachines,
     useMachineListByServerId,
     useMachineListStatusByServerId,
-    useSettings,
 } from '@/sync/domains/state/storage';
 import { useHomeViewSelectionSettings } from '@/hooks/server/useHomeViewSelectionSettings';
 
@@ -17,12 +16,11 @@ export function useMachinesSettingsViewModel() {
     const allMachines = useAllMachines();
     const machineListByServerId = useMachineListByServerId();
     const machineListStatusByServerId = useMachineListStatusByServerId();
-    const accountSettings = useSettings();
     const {
         serverSelectionGroups,
         serverSelectionActiveTargetKind,
         serverSelectionActiveTargetId,
-    } = useHomeViewSelectionSettings(accountSettings);
+    } = useHomeViewSelectionSettings();
 
     const activeServerSnapshot = getActiveServerSnapshot();
     const serverProfiles = React.useMemo(() => {
