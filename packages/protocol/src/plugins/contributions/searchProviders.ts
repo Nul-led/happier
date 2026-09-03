@@ -3,7 +3,6 @@ import { z } from 'zod';
 import { asProtocolZod } from '../actions/internalProtocolZodAdapter.js';
 import {
   defineProtocolArray,
-  defineProtocolJsonValue,
   defineProtocolLiteral,
   defineProtocolNumber,
   defineProtocolObject,
@@ -13,10 +12,10 @@ import {
 } from '../actions/protocolComposableSchema.js';
 import { PluginContributionLocalIdSchema } from '../contributionIdentity.js';
 import {
+  definePluginUiSemanticCommandProtocolSchemaV1,
   PLUGIN_UI_INSTANCE_KEY_MAX_UTF8_BYTES_V1,
   PLUGIN_UI_LAUNCH_INPUT_MAX_UTF8_BYTES_V1,
   PLUGIN_UI_SUB_PATH_MAX_UTF8_BYTES_V1,
-  type PluginUiSemanticCommandV1,
 } from '../ui/semanticCommands.js';
 import { PLUGIN_UI_ICON_TOKENS_V1 } from './ui/tokens.js';
 
@@ -121,10 +120,11 @@ const searchItemIconToken = defineProtocolUnion([
  *
  * Restating the `executeAction | openSurface` union in this DSL would create a
  * second parser for one contract — including a second answer to sub-path
- * normalization — so the shape is typed from that owner and admitted by it at
- * the universal boundary, where a command is qualified before it can activate.
+ * normalization — so this binds that owner's own composable projection. A row
+ * whose command that union refuses is refused here, rather than being carried
+ * to activation as a value nothing can run.
  */
-const searchItemCommand = defineProtocolJsonValue<PluginUiSemanticCommandV1>({
+const searchItemCommand = definePluginUiSemanticCommandProtocolSchemaV1({
   maxSerializedUtf8Bytes: MAX_PLUGIN_SEARCH_ITEM_COMMAND_UTF8_BYTES_V1,
 });
 

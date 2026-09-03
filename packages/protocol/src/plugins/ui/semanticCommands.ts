@@ -8,7 +8,9 @@ import {
 import { PluginIdSchema } from '../pluginId.js';
 import {
   cloneStrictPluginJsonValue,
+  defineProtocolCanonicalJsonValue,
   measureSerializedValidatedStrictPluginJsonUtf8Bytes,
+  type ProtocolComposableSchema,
 } from '../actions/protocolComposableSchema.js';
 import { asProtocolZod } from '../actions/internalProtocolZodAdapter.js';
 import type { PluginUiJsonValueV1 } from '../contributions/ui/json.js';
@@ -125,6 +127,30 @@ export const PluginUiSemanticCommandV1Schema = z.discriminatedUnion('kind', [
 ]);
 export type PluginUiSemanticCommandV1 =
   z.infer<typeof PluginUiSemanticCommandV1Schema>;
+
+/**
+ * The composable-schema binding of the union above.
+ *
+ * A Protocol position that carries a command inside a composable Action
+ * contract — today a Universal Search row — binds this rather than a bare
+ * bounded JSON value. The union stays the only parser, so a `null`, `{}`,
+ * missing-discriminator, unknown-key or namespace-escaping command is refused
+ * by the same owner that refuses one on a session header action, and no second
+ * grammar for the command exists in the composable DSL.
+ *
+ * The caller owns the byte bound because it is the boundary the value crosses.
+ */
+export function definePluginUiSemanticCommandProtocolSchemaV1(
+  options: Readonly<{ maxSerializedUtf8Bytes: number }>,
+): ProtocolComposableSchema<PluginUiSemanticCommandV1, PluginUiSemanticCommandV1> {
+  return defineProtocolCanonicalJsonValue<PluginUiSemanticCommandV1>({
+    maxSerializedUtf8Bytes: options.maxSerializedUtf8Bytes,
+    parse: (value) => {
+      const parsed = PluginUiSemanticCommandV1Schema.safeParse(value);
+      return parsed.success ? parsed.data : null;
+    },
+  });
+}
 
 /**
  * What a semantic chrome affordance does, as its author declares it.

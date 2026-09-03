@@ -896,6 +896,55 @@ export function defineProtocolJsonValue<TValue extends ProtocolJsonValue = Proto
   );
 }
 
+/**
+ * A bounded JSON position whose shape already has one canonical Protocol owner.
+ *
+ * `defineProtocolJsonValue` bounds cost but admits any strict JSON, which is
+ * correct only where the position genuinely carries opaque author data. Where
+ * the shape is owned elsewhere in Protocol, this binds that owner as the
+ * parser: the DSL never restates the shape as a second grammar, and the
+ * position cannot admit a value its owner refuses. `parse` returns the owner's
+ * normalized value, or `null` to refuse it.
+ *
+ * The emitted projection is the incumbent bounded-JSON one, so the published
+ * schema and its rehydrated form are unchanged; this tightens what the schema
+ * object itself accepts, which is what every direct Protocol/SDK/host parse of
+ * the value uses.
+ */
+export function defineProtocolCanonicalJsonValue<TValue extends ProtocolJsonValue>(
+  options: Readonly<{
+    maxSerializedUtf8Bytes: number;
+    parse: (value: ProtocolJsonValue) => TValue | null;
+  }>,
+): ProtocolComposableSchema<TValue, TValue> {
+  const maximum = assertPositiveSafeInteger(
+    options.maxSerializedUtf8Bytes,
+    'JSON value maxSerializedUtf8Bytes',
+  );
+  return createProtocolComposableSchema<TValue, TValue>(
+    { [HAPPIER_MAX_SERIALIZED_UTF8_BYTES_KEYWORD]: maximum },
+    (input) => {
+      try {
+        if (measureSerializedValidatedStrictPluginJsonUtf8Bytes(input, 'value', maximum) > maximum) {
+          return createProtocolSingleFailure(
+            'invalid_json_value',
+            'Value exceeds the protocol serialized-byte limit',
+          );
+        }
+      } catch {
+        return createProtocolSingleFailure('invalid_json_value', 'Value must be strict JSON data');
+      }
+      const parsed = options.parse(input);
+      return parsed === null
+        ? createProtocolSingleFailure(
+          'invalid_json_value',
+          'Value does not satisfy its canonical protocol contract',
+        )
+        : { success: true, data: parsed };
+    },
+  );
+}
+
 type CanonicalComposableSchema = ProtocolComposableSchema<ProtocolJsonValue, ProtocolJsonValue>;
 type CanonicalComposableObjectPropertySchema = ProtocolComposableSchema<
   ProtocolJsonValue | undefined,

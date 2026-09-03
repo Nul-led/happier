@@ -263,7 +263,7 @@ type VirtualizedListSharedProps<Item> = Readonly<{
   search?: ListSearchProps<Item>;
   /** Content shown beside the collection when it has no rows. */
   empty?: ReactNode;
-  /** Content below the collection. */
+  /** Fixed content below the collection; it does not scroll with the rows. */
   footer?: ReactNode;
   /** Additive container layout for a virtualized collection. */
   contentContainerStyle?: HappierStyleProp;
@@ -292,11 +292,25 @@ type VirtualizedListSharedProps<Item> = Readonly<{
 
 type NonSelectableVirtualizedListProps<Item> = VirtualizedListSharedProps<Item> & Readonly<{
   selection?: undefined;
+  /**
+   * Content at the end of the collection that scrolls WITH the rows, unlike
+   * `footer`. It reaches the platform's own end slot, so a long trailing
+   * region — a second settings section under a list, for example — is
+   * reachable without nesting a second scroller inside this one.
+   *
+   * It is deliberately absent from the selectable arms: a `listbox` or `grid`
+   * owns options and rows, and has no honest cell for author content, while a
+   * `list` admits it through the `listitem` its role permits. When the
+   * collection is empty the `empty` slot travels into the same region, so a
+   * reader still meets "no rows" before whatever follows them.
+   */
+  endContent?: ReactNode;
 }>;
 
 type SelectableVirtualizedListProps<Item> = VirtualizedListSharedProps<Item>
   & ListAccessibleNameProps
   & Readonly<{
+    endContent?: never;
     /** Makes one semantic List.Item per row an accessible selected collection row. */
     selection: ListSelectionProps<Item>;
     /**
@@ -339,6 +353,7 @@ type StaticListProps = Readonly<{
   selection?: never;
   empty?: never;
   footer?: never;
+  endContent?: never;
   contentContainerStyle?: never;
   children?: ReactNode;
 }>;
@@ -1272,6 +1287,16 @@ function VirtualizedList<Item>(props: ListBaseProps & VirtualizedListProps<Item>
   // section virtualizer counts a header cell per section, so its own empty slot
   // never fires for a sectioned collection.
   const emptyContent = rows.length === 0 ? props.empty : null;
+  // `endContent` is a `list`-only affordance (see its prop documentation). An
+  // untyped bundle that hands it to a selectable List keeps the fixed
+  // placement below rather than invalidating the control for a reader.
+  const scrollsEndContent = props.endContent !== undefined && !selectionEnabled;
+  const collectionEndContent = scrollsEndContent ? (
+    <View role="listitem">
+      {emptyContent}
+      {props.endContent}
+    </View>
+  ) : undefined;
   const renderItem = props.renderItem;
   const accessibilityPattern = selectionEnabled ? props.accessibilityPattern ?? 'listbox' : 'listbox';
   const collectionRole = selectionEnabled
@@ -1405,6 +1430,7 @@ function VirtualizedList<Item>(props: ListBaseProps & VirtualizedListProps<Item>
       keyboardShouldPersistTaps="handled"
       stickySectionHeadersEnabled
       extraData={extraData}
+      ListFooterComponent={collectionEndContent}
       renderItem={renderSectionRow}
       renderSectionHeader={renderSectionHeader}
       maintainVisibleContentPosition={props.preserveVisibleContentPositionOnPrepend && Platform.OS !== 'web'
@@ -1445,6 +1471,7 @@ function VirtualizedList<Item>(props: ListBaseProps & VirtualizedListProps<Item>
       contentContainerStyle={[densityStyle, props.contentContainerStyle]}
       keyboardShouldPersistTaps="handled"
       extraData={extraData}
+      ListFooterComponent={collectionEndContent}
       renderItem={renderFlatRow}
       maintainVisibleContentPosition={props.preserveVisibleContentPositionOnPrepend && Platform.OS !== 'web'
         ? { minIndexForVisible: 0 }
@@ -1480,7 +1507,8 @@ function VirtualizedList<Item>(props: ListBaseProps & VirtualizedListProps<Item>
       <View ref={listRootRef} style={virtualizedListBoxStyle}>
         {headerContent}
         {collection}
-        {emptyContent}
+        {scrollsEndContent ? null : emptyContent}
+        {scrollsEndContent ? null : props.endContent}
         {props.footer}
       </View>
     </ListMultiSelectionProvider>

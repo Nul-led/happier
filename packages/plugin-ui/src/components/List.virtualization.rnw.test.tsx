@@ -16,6 +16,7 @@ const flatListCapture = vi.hoisted(() => ({
   extraData: [] as unknown[],
   keyExtractor: [] as Array<(item: unknown, index: number) => string>,
   emptyComponent: [] as React.ReactNode[],
+  footerComponent: [] as React.ReactNode[],
   imperativeReveals: [] as Array<Readonly<{ method: string; index?: number; offset?: number }>>,
   renderItem: [] as Array<(input: Readonly<{ item: unknown; index: number }>) => React.ReactNode>,
   scrollToIndex: [] as Array<(index: number) => void>,
@@ -94,6 +95,7 @@ vi.mock('react-native', async () => {
       flatListCapture.extraData.push(props.extraData);
       flatListCapture.keyExtractor.push(props.keyExtractor);
       flatListCapture.emptyComponent.push(props.ListEmptyComponent);
+      flatListCapture.footerComponent.push(props.ListFooterComponent);
       flatListCapture.renderItem.push(props.renderItem);
       flatListCapture.scrollToIndex.push((index) => {
         setWindowStart(Math.max(0, Math.min(index, maximumWindowStart)));
@@ -466,6 +468,63 @@ describe('virtualized List data ownership', () => {
     expect(mount.container.textContent).toContain('Current findings');
     expect(mount.container.textContent).toContain('End of findings');
     expect(flatListCapture.keyboardShouldPersistTaps).toEqual(['handled']);
+    mount.unmount();
+  });
+
+  it('scrolls author end content with the rows while the fixed footer stays beside the collection', () => {
+    const items = [
+      { id: 'first', label: 'First finding' },
+      { id: 'second', label: 'Second finding' },
+    ] as const;
+    flatListCapture.footerComponent.length = 0;
+
+    const mount = mountList(
+      <List
+        items={items}
+        keyForItem={(item) => item.id}
+        renderItem={(item) => <List.Item title={item.label} />}
+        header={<Text value="Current findings" />}
+        endContent={<Text value="Connection settings" />}
+        footer={<Text value="Fixed actions" />}
+      />,
+    );
+
+    const list = mount.container.querySelector('[role="list"]');
+    // End content belongs to the same scroller as the rows — that is the whole
+    // point — so it arrives through the platform footer slot. The action
+    // footer keeps its fixed placement beside the collection.
+    expect(flatListCapture.footerComponent.at(-1)).toBeDefined();
+    expect(list?.textContent).toContain('Connection settings');
+    expect(list?.textContent).not.toContain('Fixed actions');
+    expect(list?.textContent).not.toContain('Current findings');
+    expect(mount.container.textContent).toContain('Fixed actions');
+    // A `list` owns list items, so the end content enters through the one
+    // child that role permits rather than as a bare node.
+    expect(list?.querySelectorAll('[role="listitem"]')).toHaveLength(3);
+    mount.unmount();
+  });
+
+  it('keeps the empty slot with scrolling end content so a reader meets them in order', () => {
+    flatListCapture.footerComponent.length = 0;
+
+    const mount = mountList(
+      <List
+        items={[]}
+        keyForItem={() => 'unreachable'}
+        renderItem={() => null}
+        empty={<Text value="No findings" />}
+        endContent={<Text value="Connection settings" />}
+      />,
+    );
+
+    // Without this the empty slot would stay outside the scroller and read
+    // AFTER everything the author placed at the end of the collection.
+    const text = mount.container.textContent ?? '';
+    expect(text.indexOf('No findings')).toBeGreaterThanOrEqual(0);
+    expect(text.indexOf('No findings')).toBeLessThan(text.indexOf('Connection settings'));
+    const list = mount.container.querySelector('[role="list"]');
+    expect(list?.textContent).toContain('No findings');
+    expect(list?.textContent).toContain('Connection settings');
     mount.unmount();
   });
 

@@ -199,6 +199,11 @@ describe('plugin search query and result schemas', () => {
     expect(parseCommand({ kind: 'navigate', destination: 'triage' })).toBe(false);
     expect(parseCommand({ kind: 'executeAction', action: 'open-entry', href: '/x' })).toBe(false);
     expect(parseCommand({ kind: 'openSurface', destination: 'triage', subPath: '../escape' })).toBe(false);
+    // A qualified destination is a plugin id plus a local id, not a bare word.
+    expect(parseCommand({
+      kind: 'openSurface',
+      destination: { pluginId: 'triage', localId: 'entry-details' },
+    })).toBe(false);
   });
 
   it('accepts both members of the incumbent semantic command union', () => {
@@ -211,7 +216,7 @@ describe('plugin search query and result schemas', () => {
           id: 'entry-2',
           command: {
             kind: 'openSurface',
-            destination: { pluginId: 'triage', localId: 'entry-details' },
+            destination: { pluginId: 'happier.triage', localId: 'entry-details' },
             instanceKey: 'entry-2',
           },
         },
@@ -223,7 +228,7 @@ describe('plugin search query and result schemas', () => {
       { kind: 'executeAction', action: 'open-entry', input: { id: 7 } },
       {
         kind: 'openSurface',
-        destination: { pluginId: 'triage', localId: 'entry-details' },
+        destination: { pluginId: 'happier.triage', localId: 'entry-details' },
         instanceKey: 'entry-2',
       },
     ]);
