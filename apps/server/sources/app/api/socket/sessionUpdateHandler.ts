@@ -35,6 +35,7 @@ import {
     type SettlePendingInputAdmissionResult,
 } from "@/app/session/pending/pendingMessageService";
 import { serializePendingMaterializedMessage } from "@/app/session/pending/serializePendingMaterializedMessage";
+import { loadPendingActivationPublication } from "@/app/session/pending/publishPendingMutation";
 import { normalizeIncomingSessionMessageContent } from "@/app/session/messageContent/normalizeIncomingSessionMessageContent";
 import { checkSessionAccess, requireAccessLevel } from "@/app/share/accessControl";
 import { getSessionParticipantUserIds } from "@/app/share/sessionParticipants";
@@ -180,11 +181,14 @@ async function emitPublicationSafePendingChanged(params: Readonly<{
     participantCursors: readonly Readonly<{ accountId: string; cursor: number }>[];
 }>): Promise<void> {
     const { sessionId, ...rawProjection } = params.data;
-    const session = await loadSessionTranscriptPublicationRecipientProjection(sessionId);
+    const [session, pendingActivationAuthorization] = await Promise.all([
+        loadSessionTranscriptPublicationRecipientProjection(sessionId),
+        loadPendingActivationPublication(sessionId),
+    ]);
     if (!session) return;
     await Promise.all(params.participantCursors.map(async ({ accountId, cursor }) => {
         const projection = projectSessionTranscriptPublicationPendingProjection(
-            rawProjection,
+            { ...rawProjection, pendingActivationAuthorization },
             session,
             accountId,
         );
@@ -448,6 +452,7 @@ export function sessionUpdateHandler(
                             pendingBlockedCount: pendingState.pendingBlockedCount,
                             pendingVersion: pendingState.pendingVersion,
                             changedByAccountId: userId,
+                            pendingActivationAuthorization: await loadPendingActivationPublication(sid),
                         },
                         session,
                         accountId,
@@ -1162,6 +1167,7 @@ export function sessionUpdateHandler(
                         ? projectSessionTranscriptPublicationPendingProjection({
                             ...presenceResult.pendingState,
                             changedByAccountId: userId,
+                            pendingActivationAuthorization: null,
                         }, session, accountId)
                         : null;
                     if (realtimeProjection.kind === "publish") {

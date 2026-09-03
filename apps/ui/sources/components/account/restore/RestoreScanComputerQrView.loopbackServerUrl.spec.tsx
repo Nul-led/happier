@@ -64,8 +64,7 @@ vi.mock('@/sync/domains/server/activeServerSwitch', () => ({
 }));
 
 vi.mock('@/auth/pairing/pairingUrl', () => ({
-    buildPairingDeepLink: () => 'happier:///pair?v=1&pairId=p&secret=s&server=http%3A%2F%2Flocalhost%3A53288',
-    parsePairingDeepLink: () => ({ pairId: 'p', secret: 's', serverUrl: 'http://localhost:53288' }),
+    classifyLegacyPairingDeepLink: () => ({ kind: 'legacy_pairing_update_required' }),
     parseHomeQrInviteDeepLink: () => null,
 }));
 
@@ -106,7 +105,7 @@ describe('RestoreScanComputerQrView (loopback serverUrl)', () => {
         let tree: ReactTestRenderer | null = null;
         try {
             await act(async () => {
-                tree = create(<RestoreScanComputerQrView />);
+                tree = create(<RestoreScanComputerQrView entryIntent="add_home" />);
             });
 
             expect(lastScannerProps?.onScan).toBeInstanceOf(Function);
@@ -117,9 +116,12 @@ describe('RestoreScanComputerQrView (loopback serverUrl)', () => {
 
             expect(upsertActivateAndSwitchServerSpy).not.toHaveBeenCalled();
             expect(modalAlertAsyncSpy).toHaveBeenCalledWith(
-                'connect.restoreAccount',
-                'connect.legacyAccountQrUnavailable',
-                expect.any(Array),
+                'connect.updateRequiredTitle',
+                'connect.legacyPairingUpdateRequiredBody',
+                [
+                    expect.objectContaining({ text: 'connect.scanNewQr' }),
+                    expect.objectContaining({ text: 'common.cancel', style: 'cancel' }),
+                ],
             );
         } finally {
             act(() => {

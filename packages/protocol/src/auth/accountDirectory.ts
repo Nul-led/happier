@@ -12,6 +12,7 @@ import {
   IROH_DESCRIPTOR_MAX_DIRECT_ADDRESSES,
   IROH_DESCRIPTOR_MAX_RELAY_URLS,
   IrohEndpointDescriptorV1Schema,
+  IrohEndpointIdV1Schema,
 } from '../connectivity/iroh/endpointDescriptorV1.js';
 
 export {
@@ -27,6 +28,8 @@ export type { AccountDirectoryCapabilities } from '../features/payload/capabilit
 /** The assertion is signed independently from ordinary account/session tokens. */
 export const ACCOUNT_DIRECTORY_ASSERTION_SIGNING_DOMAIN_V1 =
   'happier.account-directory.home-login.v1' as const;
+export const ACCOUNT_DIRECTORY_CREDENTIAL_DESTINATION_DIGEST_DOMAIN_V1 =
+  'happier.account-directory.home-login.credential-destination.v1' as const;
 
 export const ACCOUNT_DIRECTORY_ME_HTTP_PATH_V1 = '/v1/account-directory/me' as const;
 export const ACCOUNT_DIRECTORY_HOMES_HTTP_PATH_V1 = '/v1/account-directory/homes' as const;
@@ -178,6 +181,7 @@ function strictEncodedBytes(
 const ClientBoxPublicKeyBase64Schema = strictEncodedBytes('base64', 32, 32);
 const PublicKeyBase64UrlSchema = strictEncodedBytes('base64url', 32, 32);
 const SignatureBase64UrlSchema = strictEncodedBytes('base64url', 64, 64);
+const Sha256DigestBase64UrlSchema = strictEncodedBytes('base64url', 32, 32);
 const SealedHomeTokenBase64UrlSchema = strictEncodedBytes(
   'base64url',
   undefined,
@@ -213,6 +217,115 @@ export const HomeConnectionDescriptorV1Schema = z.object({
     .max(ACCOUNT_DIRECTORY_MAX_ENDPOINTS),
 }).strict();
 export type HomeConnectionDescriptorV1 = z.infer<typeof HomeConnectionDescriptorV1Schema>;
+
+function normalizeHomeApplicationOriginV1(value: string): string {
+  return new URL(HomeApplicationOriginV1Schema.parse(value)).toString().replace(/\/+$/u, '');
+}
+
+function isCanonicalHomeApplicationOriginV1(value: string): boolean {
+  try {
+    return value === new URL(value).toString().replace(/\/+$/u, '');
+  } catch {
+    return false;
+  }
+}
+
+function isCanonicalSortedUnique(values: readonly string[]): boolean {
+  return values.every((value, index) => index === 0 || values[index - 1]! < value);
+}
+
+const CanonicalHomeApplicationOriginV1Schema = HomeApplicationOriginV1Schema.refine(
+  isCanonicalHomeApplicationOriginV1,
+  'Home application URL must use its canonical URL serialization',
+);
+
+export const HomeCredentialDestinationV1Schema = z.object({
+  v: z.literal(1),
+  homeServerIdentityId: ServerIdentityIdSchema,
+  canonicalServerUrl: CanonicalHomeApplicationOriginV1Schema,
+  applicationEndpointUrls: z.array(CanonicalHomeApplicationOriginV1Schema)
+    .max(ACCOUNT_DIRECTORY_MAX_ENDPOINTS)
+    .refine(isCanonicalSortedUnique, 'Application endpoint URLs must be sorted and unique'),
+  irohEndpointIds: z.array(IrohEndpointIdV1Schema)
+    .max(ACCOUNT_DIRECTORY_MAX_ENDPOINTS)
+    .refine(isCanonicalSortedUnique, 'Iroh endpoint IDs must be sorted and unique'),
+}).strict();
+export type HomeCredentialDestinationV1 = z.infer<typeof HomeCredentialDestinationV1Schema>;
+
+export type HomeCredentialDestinationSelectionV1 =
+  | Readonly<{ kind: 'https'; applicationUrl: string }>
+  | Readonly<{ kind: 'iroh'; endpointId: string }>;
+
+/**
+ * Canonical authority projection for every destination capable of receiving a
+ * Home credential. Routing hints and publication revision are deliberately excluded.
+ */
+export function createHomeCredentialDestinationV1(
+  descriptor: HomeConnectionDescriptorV1,
+): HomeCredentialDestinationV1 {
+  const parsed = HomeConnectionDescriptorV1Schema.parse(descriptor);
+  const applicationEndpointUrls = [...new Set(parsed.endpoints
+    .filter((endpoint): endpoint is Extract<HomeConnectionEndpointV1, { kind: 'https' }> => endpoint.kind === 'https')
+    .map((endpoint) => normalizeHomeApplicationOriginV1(endpoint.url)))]
+    .sort();
+  const irohEndpointIds = [...new Set(parsed.endpoints
+    .filter((endpoint): endpoint is Extract<HomeConnectionEndpointV1, { kind: 'iroh' }> => endpoint.kind === 'iroh')
+    .map((endpoint) => endpoint.endpointId))]
+    .sort();
+
+  return HomeCredentialDestinationV1Schema.parse({
+    v: 1,
+    homeServerIdentityId: parsed.homeServerIdentityId,
+    canonicalServerUrl: normalizeHomeApplicationOriginV1(parsed.canonicalServerUrl),
+    applicationEndpointUrls,
+    irohEndpointIds,
+  });
+}
+
+export function createHomeCredentialDestinationDigestV1(
+  descriptor: HomeConnectionDescriptorV1,
+): string {
+  const destination = createHomeCredentialDestinationV1(descriptor);
+  return Sha256DigestBase64UrlSchema.parse(computeCanonicalDomainSeparatedDigest(
+    ACCOUNT_DIRECTORY_CREDENTIAL_DESTINATION_DIGEST_DOMAIN_V1,
+    [
+      String(destination.v),
+      destination.homeServerIdentityId,
+      destination.canonicalServerUrl,
+      'https',
+      String(destination.applicationEndpointUrls.length),
+      ...destination.applicationEndpointUrls,
+      'iroh',
+      String(destination.irohEndpointIds.length),
+      ...destination.irohEndpointIds,
+    ],
+  ));
+}
+
+/**
+ * Checks the concrete carrier destination selected by a client against the
+ * canonical assertion-bound projection. Runtime loopback origins and Iroh
+ * routing hints are intentionally not valid credential destinations.
+ */
+export function isHomeCredentialDestinationAllowedV1(
+  destination: HomeCredentialDestinationV1,
+  selected: HomeCredentialDestinationSelectionV1,
+): boolean {
+  const parsedDestination = HomeCredentialDestinationV1Schema.safeParse(destination);
+  if (!parsedDestination.success) return false;
+  if (selected.kind === 'iroh') {
+    const parsedEndpointId = IrohEndpointIdV1Schema.safeParse(selected.endpointId);
+    return parsedEndpointId.success
+      && parsedDestination.data.irohEndpointIds.includes(parsedEndpointId.data);
+  }
+  try {
+    return parsedDestination.data.applicationEndpointUrls.includes(
+      normalizeHomeApplicationOriginV1(selected.applicationUrl),
+    );
+  } catch {
+    return false;
+  }
+}
 
 const HomeLoginTokenV1Schema = z.string().trim().min(1).max(ACCOUNT_DIRECTORY_MAX_HOME_LOGIN_TOKEN_UTF8_BYTES)
   .superRefine((value, context) => {
@@ -403,6 +516,7 @@ const HomeLoginAssertionSigningFactsV1Schema = z.object({
   issuerServerIdentityId: ServerIdentityIdSchema,
   issuerSubjectId: BoundedIdentifierSchema,
   audienceHomeServerIdentityId: ServerIdentityIdSchema,
+  credentialDestinationDigestBase64Url: Sha256DigestBase64UrlSchema,
   clientBoxPublicKeyBase64: ClientBoxPublicKeyBase64Schema,
   issuedAtMs: TimestampMsSchema,
   expiresAtMs: TimestampMsSchema,
@@ -434,6 +548,7 @@ export function createHomeLoginAssertionSigningBytesV1(
     parsed.issuerServerIdentityId,
     parsed.issuerSubjectId,
     parsed.audienceHomeServerIdentityId,
+    parsed.credentialDestinationDigestBase64Url,
     parsed.clientBoxPublicKeyBase64,
     String(parsed.issuedAtMs),
     String(parsed.expiresAtMs),
@@ -595,6 +710,7 @@ export function redactHomeLoginAssertionV1(input: unknown): Readonly<Record<stri
     issuerServerIdentityId: parsed.data.issuerServerIdentityId,
     issuerSubjectId: parsed.data.issuerSubjectId,
     audienceHomeServerIdentityId: parsed.data.audienceHomeServerIdentityId,
+    credentialDestinationDigestBase64Url: parsed.data.credentialDestinationDigestBase64Url,
     issuedAtMs: parsed.data.issuedAtMs,
     expiresAtMs: parsed.data.expiresAtMs,
     keyId: parsed.data.keyId,

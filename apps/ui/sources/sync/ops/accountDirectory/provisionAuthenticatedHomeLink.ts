@@ -25,7 +25,7 @@ export type AuthenticatedHomeLinkProvisionResult =
 
 export type ProvisionAuthenticatedHomeLinkInput = Readonly<{
     session: AccountDirectorySession;
-    /** Stable identity of the Home captured at login start (or at an explicit refresh retry). */
+    /** Stable identity of the Home captured when the explicit link intent began. */
     homeServerIdentityId: string;
     /** Stable identity of the selected Account Service, verified by the caller. */
     issuerServerIdentityId: string;
@@ -41,8 +41,9 @@ export type ProvisionAuthenticatedHomeLinkInput = Readonly<{
  * Resolves the captured stable identity through the canonical profile registry, composes the
  * canonical descriptor, and provisions Home trust first (authenticated with that Home's own
  * full credential through the canonical Home transport), then publishes the Home into the
- * Account Service directory. Both PUTs are idempotent; a partial failure is retried by the
- * next explicit login/refresh, never by rollback machinery. Every lookup is bound to the
+ * Account Service directory. Both PUTs are idempotent; a partial failure is retried only by
+ * repeating this explicit linking action, never by ordinary Directory refresh or rollback
+ * machinery. Every lookup is bound to the
  * captured identity — focus is never consulted, and missing profile, credentials, or an
  * approved transport fail closed without publishing an untrusted directory row. Pure-Iroh
  * descriptors acquire the shared verified Lane06 origin through HomeEnrollmentTransport.

@@ -41,8 +41,7 @@ vi.mock('@/sync/domains/server/activeServerSwitch', () => ({
 }));
 
 vi.mock('@/auth/pairing/pairingUrl', () => ({
-    buildPairingDeepLink: () => 'happier:///pair?v=1&pairId=p&secret=s',
-    parsePairingDeepLink: () => ({ pairId: 'pair_123', secret: 'secret_123', serverUrl: null }),
+    classifyLegacyPairingDeepLink: () => ({ kind: 'legacy_pairing_update_required' }),
     parseHomeQrInviteDeepLink: () => null,
 }));
 
@@ -78,7 +77,7 @@ describe('RestoreScanComputerQrView (feature disabled)', () => {
 
         const { RestoreScanComputerQrView } = await import('./RestoreScanComputerQrView');
 
-        const screen = await renderScreen(<RestoreScanComputerQrView />);
+        const screen = await renderScreen(<RestoreScanComputerQrView entryIntent="add_home" />);
 
         expect(scannerRendered).toBe(false);
         expect(screen.getTextContent()).toContain('connect.scanComputerQrUnavailableBody');

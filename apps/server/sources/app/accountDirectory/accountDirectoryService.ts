@@ -3,8 +3,10 @@ import type { Prisma } from "@prisma/client";
 import tweetnacl from "tweetnacl";
 import { db } from "@/storage/db";
 import { inTx, type Tx } from "@/storage/inTx";
-import { readCachedServerIdentityIdForHotPath } from "@/app/serverIdentity/serverIdentity";
+import { getOrCreateServerIdentityId, initializeServerIdentityCache, readCachedServerIdentityIdForHotPath } from "@/app/serverIdentity/serverIdentity";
 import { getPublicUrl } from "@/storage/blob/files";
+import { readHomeConnectionDescriptor } from "@/app/features/homeConnectionDescriptorPublication";
+import { createHomeConnectionDescriptorContinuityStoreForServer } from "@/app/features/homeConnectionDescriptorContinuity";
 import { AccountDirectoryError } from "./accountDirectoryErrors";
 import {
     AccountDirectoryLinkPutRequestSchema,
@@ -24,12 +26,15 @@ import {
     type HomeLoginRedemptionResultV1,
 } from "./accountDirectorySchemas";
 import {
+    accountDirectorySigningKeyMetadata,
     mintHomeLoginAssertion,
     verifyHomeLoginAssertionSignature,
 } from "./accountDirectorySigner";
 import {
     ACCOUNT_DIRECTORY_MAX_HOME_LOGIN_CREDENTIAL_PLAINTEXT_BYTES,
+    ACCOUNT_DIRECTORY_MAX_LABEL_UTF8_BYTES,
     computeCanonicalDomainSeparatedDigest,
+    createHomeCredentialDestinationDigestV1,
     createHomeLoginAssertionSigningBytesV1,
     decodeBase64,
     encodeBase64,
@@ -170,6 +175,79 @@ export async function listAccountHomeDirectory(accountId: string) {
     });
 }
 
+async function upsertAccountHomeDirectoryEntryInTx(
+    tx: Tx,
+    params: Readonly<{
+        accountId: string;
+        homeServerIdentityId: string;
+        label: string;
+        connectionDescriptor: HomeConnectionDescriptorV1;
+    }>,
+): Promise<ReturnType<typeof mapHomeRow>> {
+    const account = await tx.account.findUnique({ where: { id: params.accountId }, select: { preferredHomeServerIdentityId: true } });
+    if (!account) throw new AccountDirectoryError("not_found", "Account not found");
+    const where = { accountId_homeServerIdentityId: { accountId: params.accountId, homeServerIdentityId: params.homeServerIdentityId } };
+    const data = {
+        canonicalServerUrl: params.connectionDescriptor.canonicalServerUrl,
+        label: params.label,
+        connectionDescriptor: params.connectionDescriptor,
+    };
+    const existing = await tx.accountHomeDirectoryEntry.findUnique({
+        where,
+        select: HOME_DIRECTORY_ENTRY_SELECT,
+    });
+    const isFirstDirectoryEntry = !existing
+        && await tx.accountHomeDirectoryEntry.findFirst({
+            where: { accountId: params.accountId },
+            select: { homeServerIdentityId: true },
+        }) === null;
+    let row: HomeDirectoryEntryRow;
+    if (!existing) {
+        row = await tx.accountHomeDirectoryEntry.create({
+            data: { accountId: params.accountId, homeServerIdentityId: params.homeServerIdentityId, ...data },
+            select: HOME_DIRECTORY_ENTRY_SELECT,
+        });
+    } else {
+        const currentDescriptor = mapDescriptor(existing.connectionDescriptor);
+        const nextDescriptor = params.connectionDescriptor;
+        if (nextDescriptor.revision < currentDescriptor.revision) {
+            row = existing;
+        } else if (nextDescriptor.revision === currentDescriptor.revision) {
+            if (!descriptorsEqual(nextDescriptor, currentDescriptor)) {
+                throw new AccountDirectoryError(
+                    "descriptor_revision_conflict",
+                    "Home descriptor revision conflicts with the current descriptor",
+                );
+            }
+            row = params.label === existing.label
+                ? existing
+                : await tx.accountHomeDirectoryEntry.update({
+                    where,
+                    data: { label: params.label },
+                    select: HOME_DIRECTORY_ENTRY_SELECT,
+                });
+        } else {
+            row = await tx.accountHomeDirectoryEntry.update({ where, data, select: HOME_DIRECTORY_ENTRY_SELECT });
+        }
+    }
+    let preferredHomeServerIdentityId = account.preferredHomeServerIdentityId ?? null;
+    if (isFirstDirectoryEntry && preferredHomeServerIdentityId === null) {
+        const preferred = await tx.account.updateMany({
+            where: { id: params.accountId, preferredHomeServerIdentityId: null },
+            data: { preferredHomeServerIdentityId: params.homeServerIdentityId },
+        });
+        if (preferred.count === 1) preferredHomeServerIdentityId = params.homeServerIdentityId;
+        else {
+            const refreshed = await tx.account.findUnique({
+                where: { id: params.accountId },
+                select: { preferredHomeServerIdentityId: true },
+            });
+            preferredHomeServerIdentityId = refreshed?.preferredHomeServerIdentityId ?? null;
+        }
+    }
+    return mapHomeRow(row, preferredHomeServerIdentityId);
+}
+
 export async function upsertAccountHomeDirectoryEntry(params: Readonly<{
     accountId: string;
     homeServerIdentityId: string;
@@ -184,65 +262,12 @@ export async function upsertAccountHomeDirectoryEntry(params: Readonly<{
     if (body.connectionDescriptor.homeServerIdentityId !== params.homeServerIdentityId) {
         throw new AccountDirectoryError("invalid_request", "Home identity does not match descriptor");
     }
-    return inTx(async (tx) => {
-        const account = await tx.account.findUnique({ where: { id: params.accountId }, select: { preferredHomeServerIdentityId: true } });
-        if (!account) throw new AccountDirectoryError("not_found", "Account not found");
-        const where = { accountId_homeServerIdentityId: { accountId: params.accountId, homeServerIdentityId: params.homeServerIdentityId } };
-        const data = {
-            canonicalServerUrl: body.connectionDescriptor.canonicalServerUrl,
-            label: body.label,
-            connectionDescriptor: body.connectionDescriptor,
-        };
-        const existing = await tx.accountHomeDirectoryEntry.findUnique({
-            where,
-            select: HOME_DIRECTORY_ENTRY_SELECT,
-        });
-        let row: HomeDirectoryEntryRow;
-        if (!existing) {
-            row = await tx.accountHomeDirectoryEntry.create({
-                data: { accountId: params.accountId, homeServerIdentityId: params.homeServerIdentityId, ...data },
-                select: HOME_DIRECTORY_ENTRY_SELECT,
-            });
-        } else {
-            const currentDescriptor = mapDescriptor(existing.connectionDescriptor);
-            const nextDescriptor = body.connectionDescriptor;
-            if (nextDescriptor.revision < currentDescriptor.revision) {
-                row = existing;
-            } else if (nextDescriptor.revision === currentDescriptor.revision) {
-                if (!descriptorsEqual(nextDescriptor, currentDescriptor)) {
-                    throw new AccountDirectoryError(
-                        "descriptor_revision_conflict",
-                        "Home descriptor revision conflicts with the current descriptor",
-                    );
-                }
-                row = body.label === existing.label
-                    ? existing
-                    : await tx.accountHomeDirectoryEntry.update({
-                        where,
-                        data: { label: body.label },
-                        select: HOME_DIRECTORY_ENTRY_SELECT,
-                    });
-            } else {
-                row = await tx.accountHomeDirectoryEntry.update({ where, data, select: HOME_DIRECTORY_ENTRY_SELECT });
-            }
-        }
-        let preferredHomeServerIdentityId = account.preferredHomeServerIdentityId ?? null;
-        if (preferredHomeServerIdentityId === null) {
-            const preferred = await tx.account.updateMany({
-                where: { id: params.accountId, preferredHomeServerIdentityId: null },
-                data: { preferredHomeServerIdentityId: params.homeServerIdentityId },
-            });
-            if (preferred.count === 1) preferredHomeServerIdentityId = params.homeServerIdentityId;
-            else {
-                const refreshed = await tx.account.findUnique({
-                    where: { id: params.accountId },
-                    select: { preferredHomeServerIdentityId: true },
-                });
-                preferredHomeServerIdentityId = refreshed?.preferredHomeServerIdentityId ?? null;
-            }
-        }
-        return mapHomeRow(row, preferredHomeServerIdentityId);
-    });
+    return inTx((tx) => upsertAccountHomeDirectoryEntryInTx(tx, {
+        accountId: params.accountId,
+        homeServerIdentityId: params.homeServerIdentityId,
+        label: body.label,
+        connectionDescriptor: body.connectionDescriptor,
+    }));
 }
 
 export async function publishAccountHomeDirectoryDescriptor(params: Readonly<{
@@ -298,6 +323,81 @@ export async function setPreferredAccountHome(params: Readonly<{ accountId: stri
     return listAccountHomeDirectory(params.accountId);
 }
 
+function decodeAndValidateIssuerSigningPublicKey(params: Readonly<{
+    issuerSigningKeyId: string;
+    issuerSigningPublicKeyBase64Url: string;
+}>): Uint8Array<ArrayBuffer> {
+    let publicKey: Uint8Array;
+    try {
+        publicKey = decodeBase64(params.issuerSigningPublicKeyBase64Url, "base64url");
+    } catch {
+        throw new AccountDirectoryError("invalid_request", "Invalid issuer signing public key");
+    }
+    if (publicKey.length !== tweetnacl.sign.publicKeyLength) throw new AccountDirectoryError("invalid_request", "Invalid issuer signing public key");
+    if (createHash("sha256").update(publicKey).digest("hex") !== params.issuerSigningKeyId) {
+        throw new AccountDirectoryError("invalid_request", "Issuer signing key ID does not match the public key");
+    }
+    const storedPublicKey = new Uint8Array(publicKey.byteLength);
+    storedPublicKey.set(publicKey);
+    return storedPublicKey;
+}
+
+async function upsertAccountDirectoryLinkInTx(
+    tx: Tx,
+    params: Readonly<{
+        accountId: string;
+        issuerServerIdentityId: string;
+        issuerSubjectId: string;
+        issuerSigningKeyId: string;
+        issuerSigningPublicKey: Uint8Array<ArrayBuffer>;
+        relink?: boolean;
+    }>,
+): Promise<void> {
+    const existing = await tx.accountDirectoryLink.findFirst({
+        where: { accountId: params.accountId, issuerServerIdentityId: params.issuerServerIdentityId },
+        select: ACCOUNT_DIRECTORY_LINK_SELECT,
+    });
+    if (existing) {
+        const subjectChanged = existing.issuerSubjectId !== params.issuerSubjectId;
+        const keyIdChanged = existing.issuerSigningKeyId !== params.issuerSigningKeyId;
+        const rawKeyChanged = !Buffer.from(existing.issuerSigningPublicKey).equals(Buffer.from(params.issuerSigningPublicKey));
+        if (!subjectChanged && !keyIdChanged && !rawKeyChanged) return;
+        if (params.relink !== true) {
+            throw new AccountDirectoryError("directory_link_conflict", "Issuer link changes require explicit relink");
+        }
+        await invalidateAccountAssertionApprovalsForLink(tx, existing);
+        if (subjectChanged) {
+            await tx.accountDirectoryLink.deleteMany({
+                where: { accountId: params.accountId, issuerServerIdentityId: params.issuerServerIdentityId },
+            });
+            await tx.accountDirectoryLink.create({
+                data: {
+                    accountId: params.accountId,
+                    issuerServerIdentityId: params.issuerServerIdentityId,
+                    issuerSubjectId: params.issuerSubjectId,
+                    issuerSigningKeyId: params.issuerSigningKeyId,
+                    issuerSigningPublicKey: params.issuerSigningPublicKey,
+                },
+            });
+            return;
+        }
+        await tx.accountDirectoryLink.update({
+            where: { issuerServerIdentityId_issuerSubjectId: { issuerServerIdentityId: params.issuerServerIdentityId, issuerSubjectId: params.issuerSubjectId } },
+            data: { issuerSigningKeyId: params.issuerSigningKeyId, issuerSigningPublicKey: params.issuerSigningPublicKey },
+        });
+        return;
+    }
+    await tx.accountDirectoryLink.create({
+        data: {
+            accountId: params.accountId,
+            issuerServerIdentityId: params.issuerServerIdentityId,
+            issuerSubjectId: params.issuerSubjectId,
+            issuerSigningKeyId: params.issuerSigningKeyId,
+            issuerSigningPublicKey: params.issuerSigningPublicKey,
+        },
+    });
+}
+
 export async function upsertAccountDirectoryLink(params: Readonly<{
     accountId: string;
     issuerServerIdentityId: string;
@@ -318,62 +418,18 @@ export async function upsertAccountDirectoryLink(params: Readonly<{
         issuerSigningPublicKeyBase64Url: params.issuerSigningPublicKeyBase64Url,
         relink: params.relink ?? false,
     });
-    let publicKey: Uint8Array;
-    try {
-        publicKey = decodeBase64(body.issuerSigningPublicKeyBase64Url, "base64url");
-    } catch {
-        throw new AccountDirectoryError("invalid_request", "Invalid issuer signing public key");
-    }
-    if (publicKey.length !== tweetnacl.sign.publicKeyLength) throw new AccountDirectoryError("invalid_request", "Invalid issuer signing public key");
-    if (createHash("sha256").update(publicKey).digest("hex") !== body.issuerSigningKeyId) {
-        throw new AccountDirectoryError("invalid_request", "Issuer signing key ID does not match the public key");
-    }
-    const storedPublicKey: Uint8Array<ArrayBuffer> = new Uint8Array(publicKey);
-    await inTx(async (tx) => {
-        const existing = await tx.accountDirectoryLink.findFirst({
-            where: { accountId: params.accountId, issuerServerIdentityId: params.issuerServerIdentityId },
-            select: ACCOUNT_DIRECTORY_LINK_SELECT,
-        });
-        if (existing) {
-            const subjectChanged = existing.issuerSubjectId !== body.issuerSubjectId;
-            const keyIdChanged = existing.issuerSigningKeyId !== body.issuerSigningKeyId;
-            const rawKeyChanged = !Buffer.from(existing.issuerSigningPublicKey).equals(Buffer.from(publicKey));
-            if (!subjectChanged && !keyIdChanged && !rawKeyChanged) return;
-            if (body.relink !== true) {
-                throw new AccountDirectoryError("directory_link_conflict", "Issuer link changes require explicit relink");
-            }
-            await invalidateAccountAssertionApprovalsForLink(tx, existing);
-            if (subjectChanged) {
-                await tx.accountDirectoryLink.deleteMany({
-                    where: { accountId: params.accountId, issuerServerIdentityId: params.issuerServerIdentityId },
-                });
-                await tx.accountDirectoryLink.create({
-                    data: {
-                        accountId: params.accountId,
-                        issuerServerIdentityId: params.issuerServerIdentityId,
-                        issuerSubjectId: body.issuerSubjectId,
-                        issuerSigningKeyId: body.issuerSigningKeyId,
-                        issuerSigningPublicKey: storedPublicKey,
-                    },
-                });
-                return;
-            }
-            await tx.accountDirectoryLink.update({
-                where: { issuerServerIdentityId_issuerSubjectId: { issuerServerIdentityId: params.issuerServerIdentityId, issuerSubjectId: body.issuerSubjectId } },
-                data: { issuerSigningKeyId: body.issuerSigningKeyId, issuerSigningPublicKey: storedPublicKey },
-            });
-            return;
-        }
-        await tx.accountDirectoryLink.create({
-            data: {
-                accountId: params.accountId,
-                issuerServerIdentityId: params.issuerServerIdentityId,
-                issuerSubjectId: body.issuerSubjectId,
-                issuerSigningKeyId: body.issuerSigningKeyId,
-                issuerSigningPublicKey: storedPublicKey,
-            },
-        });
+    const storedPublicKey = decodeAndValidateIssuerSigningPublicKey({
+        issuerSigningKeyId: body.issuerSigningKeyId,
+        issuerSigningPublicKeyBase64Url: body.issuerSigningPublicKeyBase64Url,
     });
+    await inTx((tx) => upsertAccountDirectoryLinkInTx(tx, {
+        accountId: params.accountId,
+        issuerServerIdentityId: params.issuerServerIdentityId,
+        issuerSubjectId: body.issuerSubjectId,
+        issuerSigningKeyId: body.issuerSigningKeyId,
+        issuerSigningPublicKey: storedPublicKey,
+        relink: body.relink,
+    }));
 }
 
 export async function deleteAccountDirectoryLink(params: Readonly<{ accountId: string; issuerServerIdentityId: string }>): Promise<void> {
@@ -389,6 +445,143 @@ export async function deleteAccountDirectoryLink(params: Readonly<{ accountId: s
             await invalidateAccountAssertionApprovalsForLink(tx, existing);
         }
     });
+}
+
+export type SameServiceHomeBootstrapOutcome = Readonly<
+    | { status: "ensured"; homeServerIdentityId: string; preferred: boolean }
+    | {
+        status: "not_dual_role";
+        reason:
+            | "account_service_signing_metadata_unavailable"
+            | "home_descriptor_unavailable"
+            | "server_identity_mismatch";
+    }
+>;
+
+export type SameServiceHomeBootstrapPreparation = Readonly<
+    | SameServiceHomeBootstrapOutcome
+    | {
+        status: "ready";
+        serverIdentityId: string;
+        signingKeyId: string;
+        signingPublicKey: Uint8Array<ArrayBuffer>;
+        homeConnectionDescriptor: HomeConnectionDescriptorV1;
+    }
+>;
+
+function sameServiceHomeEntryLabel(canonicalServerUrl: string): string {
+    // Advisory presentation metadata only. The host of the authoritative
+    // canonical origin is stable, per-instance, non-secret, and needs no
+    // display-name owner; the bounded projection keeps the stored label within
+    // the protocol label bound.
+    let host = canonicalServerUrl;
+    try {
+        host = new URL(canonicalServerUrl).host;
+    } catch {
+        // The descriptor schema already guarantees an absolute origin; keep
+        // the raw value as a bounded fallback.
+    }
+    const trimmed = host.trim();
+    const encoded = new TextEncoder().encode(trimmed);
+    if (encoded.byteLength <= ACCOUNT_DIRECTORY_MAX_LABEL_UTF8_BYTES) return trimmed;
+    return new TextDecoder().decode(encoded.slice(0, ACCOUNT_DIRECTORY_MAX_LABEL_UTF8_BYTES));
+}
+
+/**
+ * A10 same-service Cloud bootstrap, owned by the Account Directory domain.
+ *
+ * Invoked only by the authentication finalizers for an `account_directory`
+ * completion that created the Account row in that same request (the Lane 01
+ * fresh-only authorization fact). It verifies that this exact server instance
+ * is currently configured for both roles — the Account Service assertion
+ * signing metadata plus an authoritative Home connection descriptor bound to
+ * this server's stable identity — and then ensures in one idempotent
+ * transaction: the server's own canonical Home Directory entry, the
+ * same-account trust link pinned to the server's current signing identity,
+ * and first-Home preferred selection via the existing entry owner. It never
+ * mints credentials, never generalizes to unrelated Homes, never relinks an
+ * existing differing link, and never mutates existing accounts.
+ */
+export async function prepareSameServiceHomeBootstrapForNewAccount(params: Readonly<{
+    env?: NodeJS.ProcessEnv;
+    /** Narrow canonical-owner seam for owner tests; production resolves the live Home descriptor. */
+    resolveHomeConnectionDescriptor?: HomeConnectionDescriptorResolver;
+}>): Promise<SameServiceHomeBootstrapPreparation> {
+    const env = params.env ?? process.env;
+    let signing: ReturnType<typeof accountDirectorySigningKeyMetadata>;
+    try {
+        signing = accountDirectorySigningKeyMetadata(env);
+    } catch {
+        return { status: "not_dual_role", reason: "account_service_signing_metadata_unavailable" };
+    }
+    const resolveHomeConnectionDescriptor = params.resolveHomeConnectionDescriptor
+        ?? createCurrentHomeConnectionDescriptorResolver(env);
+    const resolvedDescriptor = await resolveHomeConnectionDescriptor();
+    const authoritativeDescriptor = resolvedDescriptor;
+    if (!authoritativeDescriptor) {
+        return { status: "not_dual_role", reason: "home_descriptor_unavailable" };
+    }
+    // The pinned link and the entry identity must name the exact issuer that
+    // the existing assertion-mint owner signs with.
+    const serverIdentityId = await getOrCreateServerIdentityId(env);
+    if (authoritativeDescriptor.homeServerIdentityId !== serverIdentityId) {
+        return { status: "not_dual_role", reason: "server_identity_mismatch" };
+    }
+    return {
+        status: "ready",
+        serverIdentityId,
+        signingKeyId: signing.keyId,
+        signingPublicKey: decodeAndValidateIssuerSigningPublicKey({
+            issuerSigningKeyId: signing.keyId,
+            issuerSigningPublicKeyBase64Url: signing.publicKeyBase64Url,
+        }),
+        homeConnectionDescriptor: authoritativeDescriptor,
+    };
+}
+
+export async function ensureSameServiceHomeBootstrapForNewAccountInTx(
+    tx: Tx,
+    params: Readonly<{
+        accountId: string;
+        preparation: SameServiceHomeBootstrapPreparation;
+    }>,
+): Promise<SameServiceHomeBootstrapOutcome> {
+    if (params.preparation.status !== "ready") return params.preparation;
+    const preparation = params.preparation;
+    await upsertAccountDirectoryLinkInTx(tx, {
+        accountId: params.accountId,
+        issuerServerIdentityId: preparation.serverIdentityId,
+        issuerSubjectId: params.accountId,
+        issuerSigningKeyId: preparation.signingKeyId,
+        issuerSigningPublicKey: preparation.signingPublicKey,
+    });
+    const home = await upsertAccountHomeDirectoryEntryInTx(tx, {
+        accountId: params.accountId,
+        homeServerIdentityId: preparation.serverIdentityId,
+        label: sameServiceHomeEntryLabel(
+            preparation.homeConnectionDescriptor.canonicalServerUrl,
+        ),
+        connectionDescriptor: preparation.homeConnectionDescriptor,
+    });
+    return {
+        status: "ensured",
+        homeServerIdentityId: home.homeServerIdentityId,
+        preferred: home.preferred,
+    };
+}
+
+export async function ensureSameServiceHomeBootstrapForNewAccount(params: Readonly<{
+    accountId: string;
+    env?: NodeJS.ProcessEnv;
+    /** Narrow canonical-owner seam for owner tests; production resolves the live Home descriptor. */
+    resolveHomeConnectionDescriptor?: HomeConnectionDescriptorResolver;
+}>): Promise<SameServiceHomeBootstrapOutcome> {
+    const preparation = await prepareSameServiceHomeBootstrapForNewAccount(params);
+    if (preparation.status !== "ready") return preparation;
+    return await inTx((tx) => ensureSameServiceHomeBootstrapForNewAccountInTx(tx, {
+        accountId: params.accountId,
+        preparation,
+    }));
 }
 
 export async function mintAccountHomeLoginAssertion(params: Readonly<{
@@ -425,6 +618,7 @@ export async function mintAccountHomeLoginAssertion(params: Readonly<{
     return mintHomeLoginAssertion({
         issuerSubjectId: params.accountId,
         audienceHomeServerIdentityId: params.homeServerIdentityId,
+        credentialDestinationDigestBase64Url: createHomeCredentialDestinationDigestV1(descriptor),
         clientBoxPublicKeyBase64: params.clientBoxPublicKeyBase64,
         env: params.env,
     });
@@ -452,11 +646,68 @@ function validateAssertionAgainstLink(
     if (signatureStatus !== "ok") throw new AccountDirectoryError("invalid_assertion");
 }
 
+export type HomeConnectionDescriptorResolver = () => Promise<HomeConnectionDescriptorV1 | undefined>;
+
+function createCurrentHomeConnectionDescriptorResolver(
+    env: NodeJS.ProcessEnv,
+): HomeConnectionDescriptorResolver {
+    return async () => {
+        // The canonical descriptor publication binds to the server identity
+        // primed once at startup. Establish it through the canonical owner so
+        // the dual-role classification cannot collapse the recoverable
+        // "identity not yet established" fact into "not dual-role" in
+        // entrypoints that register routes without the full startServer
+        // sequence. No-op wherever startup already primed the cache; a
+        // storage-less environment still fails soft to null and stays
+        // classified not-dual-role.
+        await initializeServerIdentityCache(env);
+        const continuityStore = createHomeConnectionDescriptorContinuityStoreForServer(env);
+        if (!continuityStore) return undefined;
+        return readHomeConnectionDescriptor({
+            env,
+            continuityStore,
+            visibility: "authenticated",
+        });
+    };
+}
+
+async function validateCredentialDestination(
+    assertion: HomeLoginAssertionV1,
+    resolveHomeConnectionDescriptor: HomeConnectionDescriptorResolver,
+): Promise<void> {
+    let descriptor: HomeConnectionDescriptorV1 | undefined;
+    try {
+        descriptor = await resolveHomeConnectionDescriptor();
+    } catch {
+        throw new AccountDirectoryError(
+            "home_redemption_unavailable",
+            "Home connection descriptor is unavailable",
+        );
+    }
+    if (!descriptor) {
+        throw new AccountDirectoryError(
+            "home_redemption_unavailable",
+            "Home connection descriptor is unavailable",
+        );
+    }
+    if (
+        createHomeCredentialDestinationDigestV1(descriptor)
+        !== assertion.credentialDestinationDigestBase64Url
+    ) {
+        throw new AccountDirectoryError(
+            "credential_destination_mismatch",
+            "Home credential destination does not match the assertion",
+        );
+    }
+}
+
 export async function redeemHomeLoginAssertion(params: Readonly<{
     assertion: unknown;
     env?: NodeJS.ProcessEnv;
     nowMs?: number;
     approvalId?: string;
+    /** Narrow canonical-owner seam for owner tests; production resolves the live Home descriptor. */
+    resolveHomeConnectionDescriptor?: HomeConnectionDescriptorResolver;
     /** Home/Lane-05 owns approval and final Home-local token issuance. */
     homeApprovalGate?: { evaluate: (facts: Readonly<{
         accountId: string;
@@ -497,6 +748,9 @@ export async function redeemHomeLoginAssertion(params: Readonly<{
     // low-order keys defeat that binding and are rejected before the approval
     // gate or any token issuance.
     if (!isValidBoxBundlePublicKey(clientPublicKey)) throw new AccountDirectoryError("invalid_client_key");
+    const resolveHomeConnectionDescriptor = params.resolveHomeConnectionDescriptor
+        ?? createCurrentHomeConnectionDescriptorResolver(params.env ?? process.env);
+    await validateCredentialDestination(assertion, resolveHomeConnectionDescriptor);
     // Account Service assertions are inputs to the target Home only. The gate
     // and token issuer are injected from the Home auth/pairing owner; without
     // that owner this route fails closed and cannot mint an Account token.
@@ -581,6 +835,11 @@ export async function redeemHomeLoginAssertion(params: Readonly<{
                 throw new AccountDirectoryError("approval_invalid", "Home approval is no longer current");
             }
         }
+        // Approval binds the assertion signing bytes, including the destination
+        // digest. Re-read the canonical Home owner after every transactional
+        // trust check and immediately before issuance, so a destination change
+        // while approval was pending cannot produce a usable Home credential.
+        await validateCredentialDestination(assertion, resolveHomeConnectionDescriptor);
         return issueHomeToken(tx, currentLink.accountId);
     });
     const credentialPayload = HomeLoginCredentialPayloadV1Schema.safeParse({ token });

@@ -290,6 +290,44 @@ describe('usePairingSession (pairing deep link server URL)', () => {
         }
     });
 
+    it('uses the post-start timestamp for the forward invite issuance window', async () => {
+        cachedCanonicalServerUrl = 'https://home-a.test';
+        cachedServerIdentityId = 'srv_home_a';
+        activeServerUrl = 'https://home-a.test';
+        let nowMs = 1_000_000;
+        const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => nowMs);
+        pairingStartMock.mockImplementationOnce(async () => {
+            nowMs += 1_500;
+            return {
+                ok: true,
+                data: { pairId: 'pair_123', expiresAt: new Date(nowMs + 600_000).toISOString() },
+            };
+        });
+
+        const { parseHomeQrInviteDeepLink } = await import('@/auth/pairing/pairingUrl');
+        const { usePairingSession } = await import('./usePairingSession');
+
+        let hookApi: ReturnType<typeof usePairingSession> | null = null;
+        function Probe() {
+            hookApi = usePairingSession({ enabled: true, isAuthenticated: true });
+            return null;
+        }
+
+        const screen = await renderScreen(<Probe />);
+        try {
+            await act(async () => {
+                await expect(hookApi!.startPairing()).resolves.toEqual({ ok: true });
+            });
+
+            const invite = parseHomeQrInviteDeepLink(hookApi!.deepLink ?? '')?.invite;
+            expect(invite?.issuedAtMs).toBe(1_001_500);
+            expect((invite?.expiresAtMs ?? 0) - (invite?.issuedAtMs ?? 0)).toBe(600_000);
+        } finally {
+            nowSpy.mockRestore();
+            act(() => screen.tree.unmount());
+        }
+    });
+
     it('builds the production Add Phone payload as one strict V2 Home invite and targets that Home', async () => {
         cachedCanonicalServerUrl = 'https://home-a.test';
         cachedServerIdentityId = 'srv_home_a';

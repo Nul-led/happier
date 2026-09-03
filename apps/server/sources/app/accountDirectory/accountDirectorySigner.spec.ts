@@ -13,10 +13,19 @@ import {
 import {
     ACCOUNT_DIRECTORY_ASSERTION_CLOCK_SKEW_MS,
     ACCOUNT_DIRECTORY_ASSERTION_SIGNING_DOMAIN_V1,
+    createHomeCredentialDestinationDigestV1,
     HomeLoginAssertionV1Schema,
     decodeBase64,
     encodeBase64,
 } from "@happier-dev/protocol";
+
+const CREDENTIAL_DESTINATION_DIGEST = createHomeCredentialDestinationDigestV1({
+    v: 1,
+    homeServerIdentityId: "srv_home",
+    canonicalServerUrl: "https://home.test",
+    revision: 1,
+    endpoints: [{ kind: "https", url: "https://home.test" }],
+});
 
 // The server identity is a database-backed environment adapter; the signer's
 // own derivation, signing, and validation logic runs for real below.
@@ -33,6 +42,7 @@ describe("Account Directory Home login assertion signer", () => {
             issuerServerIdentityId: "srv_account",
             issuerSubjectId: "account-1",
             audienceHomeServerIdentityId: "srv_home",
+            credentialDestinationDigestBase64Url: CREDENTIAL_DESTINATION_DIGEST,
             clientBoxPublicKeyBase64: privacyKit.encodeBase64(new Uint8Array(32).fill(1)),
             issuedAtMs: 1_700_000_000_000,
             expiresAtMs: 1_700_000_180_000,
@@ -45,6 +55,10 @@ describe("Account Directory Home login assertion signer", () => {
         };
         expect(verifyHomeLoginAssertionSignature(assertion, keyPair.publicKey, unsigned.issuedAtMs + 1)).toBe("ok");
         expect(verifyHomeLoginAssertionSignature({ ...assertion, audienceHomeServerIdentityId: "srv_other" }, keyPair.publicKey, unsigned.issuedAtMs + 1)).toBe("invalid");
+        expect(verifyHomeLoginAssertionSignature({
+            ...assertion,
+            credentialDestinationDigestBase64Url: "A".repeat(43),
+        }, keyPair.publicKey, unsigned.issuedAtMs + 1)).toBe("invalid");
     });
 
     it("fails closed for expired assertions and malformed signatures", () => {
@@ -55,6 +69,7 @@ describe("Account Directory Home login assertion signer", () => {
             issuerServerIdentityId: "srv_account",
             issuerSubjectId: "account-1",
             audienceHomeServerIdentityId: "srv_home",
+            credentialDestinationDigestBase64Url: CREDENTIAL_DESTINATION_DIGEST,
             clientBoxPublicKeyBase64: privacyKit.encodeBase64(new Uint8Array(32).fill(1)),
             issuedAtMs: 1_700_000_000_000,
             expiresAtMs: 1_700_000_180_000,
@@ -98,6 +113,7 @@ describe("Account Directory Home login assertion signer", () => {
             issuerServerIdentityId: "srv_account",
             issuerSubjectId: "account-1",
             audienceHomeServerIdentityId: "srv_home",
+            credentialDestinationDigestBase64Url: CREDENTIAL_DESTINATION_DIGEST,
             clientBoxPublicKeyBase64: privacyKit.encodeBase64(new Uint8Array(32).fill(1)),
             issuedAtMs: 1_700_000_000_000,
             expiresAtMs: 1_700_000_180_000,
@@ -139,6 +155,7 @@ describe("Account Directory Home login assertion signer", () => {
             issuerServerIdentityId: "srv_account",
             issuerSubjectId: "account-1",
             audienceHomeServerIdentityId: "srv_home",
+            credentialDestinationDigestBase64Url: CREDENTIAL_DESTINATION_DIGEST,
             clientBoxPublicKeyBase64: privacyKit.encodeBase64(new Uint8Array(32).fill(1)),
             issuedAtMs: 1_700_000_000_000,
             expiresAtMs: 1_700_000_180_000,
@@ -159,6 +176,7 @@ describe("Account Directory Home login assertion signer", () => {
         const assertion = await mintHomeLoginAssertion({
             issuerSubjectId: "account-42",
             audienceHomeServerIdentityId: "srv_home",
+            credentialDestinationDigestBase64Url: CREDENTIAL_DESTINATION_DIGEST,
             clientBoxPublicKeyBase64: privacyKit.encodeBase64(new Uint8Array(32).fill(2)),
             nowMs,
             env,

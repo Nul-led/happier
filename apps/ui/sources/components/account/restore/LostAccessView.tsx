@@ -19,6 +19,10 @@ import { isSafeExternalAuthUrl } from '@/auth/providers/externalAuthUrl';
 import { fireAndForget } from '@/utils/system/fireAndForget';
 import { formatOperationFailedDebugMessage } from '@/utils/errors/formatOperationFailedDebugMessage';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
+import {
+    captureHomeExternalAuthTarget,
+    createHomeOAuthRequestContext,
+} from '@/auth/providers/homeExternalAuthTarget';
 import { layout } from '@/components/ui/layout/layout';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import type {
@@ -130,6 +134,10 @@ export const LostAccessView = React.memo(function LostAccessView(props: LostAcce
     }, []);
 
     const startReset = React.useCallback(async (providerIdRaw: string) => {
+        // Bind reset OAuth to the Home selected when the user initiates it,
+        // before confirmation or lifecycle guards can yield to a focus change.
+        const target = captureHomeExternalAuthTarget(getActiveServerSnapshot());
+        const requestContext = createHomeOAuthRequestContext(target);
         const providerId = providerIdRaw.trim().toLowerCase();
         const provider = getAuthProvider(providerId);
         if (!provider) {
@@ -145,6 +153,9 @@ export const LostAccessView = React.memo(function LostAccessView(props: LostAcce
         if (!ok) return;
 
         try {
+            if (!requestContext) {
+                throw new Error('Home OAuth target is unavailable');
+            }
             let mayStart = false;
             await presentFirstKeyCredentialLifecycle({
                 run: guardOrdinaryAuthIngress,
@@ -159,16 +170,14 @@ export const LostAccessView = React.memo(function LostAccessView(props: LostAcce
             const signingKeyPair = sodium.crypto_sign_seed_keypair(secretBytes);
             const publicKey = encodeBase64(signingKeyPair.publicKey);
 
-            const snapshot = getActiveServerSnapshot();
-            const serverUrl = snapshot.serverUrl ? String(snapshot.serverUrl).trim() : '';
             const stored =
                 await TokenStorage.setPendingExternalAuth({
                     provider: providerId,
                     secret,
                     intent: 'reset',
                     returnTo: props.returnTo,
-                    ...(serverUrl ? { serverUrl } : {}),
-                });
+                    ...target,
+                }, requestContext.target);
             if (!stored) {
                 const guard =
                     await guardAccountEncryptionFirstKeyCredentialMutation();
@@ -183,7 +192,10 @@ export const LostAccessView = React.memo(function LostAccessView(props: LostAcce
                 );
             }
 
-            const url = await provider.getExternalAuthUrl({ mode: 'keyed', publicKey });
+            const url = await provider.getExternalAuthUrl(
+                { mode: 'keyed', publicKey },
+                requestContext,
+            );
             if (!isSafeExternalAuthUrl(url)) {
                 throw new Error('unsafe_url');
             }

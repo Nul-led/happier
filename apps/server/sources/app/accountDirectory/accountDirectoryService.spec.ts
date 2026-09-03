@@ -6,11 +6,12 @@ import {
     canonicalHomeLoginAssertionBytes,
 } from "./accountDirectorySigner";
 import {
+    createHomeCredentialDestinationDigestV1,
     decodeBase64,
     encodeBase64,
     openBoxBundle,
 } from "@happier-dev/protocol";
-import type { HomeLoginAssertionV1 } from "./accountDirectorySchemas";
+import type { HomeConnectionDescriptorV1, HomeLoginAssertionV1 } from "./accountDirectorySchemas";
 
 /**
  * Owner-level tests for the Account Directory domain service.
@@ -240,6 +241,50 @@ describe("Account Directory service", () => {
             expect(mocks.txEntryCreate).not.toHaveBeenCalled();
             expect(mocks.txAccountUpdateMany).not.toHaveBeenCalled();
             expect(result.label).toBe("Home A renamed");
+            expect(result.preferred).toBe(false);
+        });
+
+        it("preserves an explicit null preferred choice when an existing entry is upserted", async () => {
+            const { upsertAccountHomeDirectoryEntry } = await import("./accountDirectoryService");
+            state.preferredHomeServerIdentityId = null;
+            mocks.txEntryFindUnique.mockResolvedValue(entryRow("srv_home_a"));
+            mocks.txEntryUpdate.mockImplementation(async (args: FindArgs) => ({
+                ...entryRow("srv_home_a"),
+                ...(args.data as Row),
+            }));
+
+            const result = await upsertAccountHomeDirectoryEntry({
+                accountId: "account-1",
+                homeServerIdentityId: "srv_home_a",
+                label: "Home A renamed",
+                connectionDescriptor: descriptor("srv_home_a"),
+            });
+
+            expect(mocks.txEntryCreate).not.toHaveBeenCalled();
+            expect(mocks.txEntryUpdate).toHaveBeenCalledTimes(1);
+            expect(mocks.txAccountUpdateMany).not.toHaveBeenCalled();
+            expect(result.preferred).toBe(false);
+        });
+
+        it("preserves an explicit null preferred choice when another Home is added", async () => {
+            const { upsertAccountHomeDirectoryEntry } = await import("./accountDirectoryService");
+            state.preferredHomeServerIdentityId = null;
+            mocks.txEntryFindUnique.mockResolvedValue(null);
+            mocks.txEntryFindFirst.mockResolvedValue(entryRow("srv_home_a"));
+            mocks.txEntryCreate.mockImplementation(async (args: FindArgs) => {
+                const data = args.data as Row;
+                return entryRow(data.homeServerIdentityId as string, data);
+            });
+
+            const result = await upsertAccountHomeDirectoryEntry({
+                accountId: "account-1",
+                homeServerIdentityId: "srv_home_b",
+                label: "Home B",
+                connectionDescriptor: descriptor("srv_home_b"),
+            });
+
+            expect(mocks.txEntryCreate).toHaveBeenCalledTimes(1);
+            expect(mocks.txAccountUpdateMany).not.toHaveBeenCalled();
             expect(result.preferred).toBe(false);
         });
 
@@ -644,6 +689,9 @@ describe("Account Directory service", () => {
                 issuerServerIdentityId: "srv_account",
                 issuerSubjectId: "account-1",
                 audienceHomeServerIdentityId: "srv_home_a",
+                credentialDestinationDigestBase64Url: createHomeCredentialDestinationDigestV1(
+                    descriptor("srv_home_a") as HomeConnectionDescriptorV1,
+                ),
             });
             expect(mocks.dbLinkFindUnique).not.toHaveBeenCalled();
         });
@@ -713,6 +761,7 @@ describe("Account Directory service", () => {
                 issuerServerIdentityId: "srv_account",
                 issuerSubjectId: "account-1",
                 audienceHomeServerIdentityId: "srv_home",
+                credentialDestinationDigestBase64Url: createHomeCredentialDestinationDigestV1(homeDescriptor),
                 clientBoxPublicKeyBase64: privacyKit.encodeBase64(new Uint8Array(32).fill(1)),
                 issuedAtMs: 1_700_000_000_000,
                 expiresAtMs: 1_700_000_180_000,
@@ -724,6 +773,7 @@ describe("Account Directory service", () => {
         }
 
         const allowedGate = { evaluate: async () => ({ kind: "allowed" as const }) };
+        const resolveStableHomeConnectionDescriptor = async () => homeDescriptor;
         it("resolves the Home identity through the read-only lookup and never creates one", async () => {
             const { redeemHomeLoginAssertion } = await import("./accountDirectoryService");
             mocks.dbLinkFindUnique.mockResolvedValue(linkRowFor(signingKeyPair(4)));
@@ -731,6 +781,7 @@ describe("Account Directory service", () => {
             const result = await redeemHomeLoginAssertion({
                 assertion: signedAssertion(),
                 nowMs,
+                resolveHomeConnectionDescriptor: resolveStableHomeConnectionDescriptor,
                 homeApprovalGate: allowedGate,
                 issueHomeToken: async () => "home-token",
             });
@@ -748,6 +799,135 @@ describe("Account Directory service", () => {
             await expect(redeemHomeLoginAssertion({ assertion: signedAssertion(), nowMs, homeApprovalGate: allowedGate }))
                 .rejects.toMatchObject({ code: "home_redemption_unavailable" });
             expect(mocks.getOrCreateServerIdentityId).not.toHaveBeenCalled();
+        });
+
+        it("rejects a changed credential destination before approval or token issuance", async () => {
+            const { redeemHomeLoginAssertion } = await import("./accountDirectoryService");
+            mocks.dbLinkFindUnique.mockResolvedValue(linkRowFor(signingKeyPair(4)));
+            const homeApprovalGate = { evaluate: vi.fn(async () => ({ kind: "allowed" as const })) };
+            const issueHomeToken = vi.fn(async () => "must-never-issue");
+
+            await expect(redeemHomeLoginAssertion({
+                assertion: signedAssertion(),
+                nowMs,
+                resolveHomeConnectionDescriptor: async () => ({
+                    ...homeDescriptor,
+                    canonicalServerUrl: "https://attacker.test",
+                    endpoints: [{ kind: "https", url: "https://attacker.test" }],
+                }),
+                homeApprovalGate,
+                issueHomeToken,
+            })).rejects.toMatchObject({ code: "credential_destination_mismatch" });
+            expect(homeApprovalGate.evaluate).not.toHaveBeenCalled();
+            expect(issueHomeToken).not.toHaveBeenCalled();
+        });
+
+        it("fails closed before approval when the canonical Home descriptor is unavailable", async () => {
+            const { redeemHomeLoginAssertion } = await import("./accountDirectoryService");
+            mocks.dbLinkFindUnique.mockResolvedValue(linkRowFor(signingKeyPair(4)));
+            const homeApprovalGate = { evaluate: vi.fn(async () => ({ kind: "allowed" as const })) };
+            const issueHomeToken = vi.fn(async () => "must-never-issue");
+
+            await expect(redeemHomeLoginAssertion({
+                assertion: signedAssertion(),
+                nowMs,
+                resolveHomeConnectionDescriptor: async () => undefined,
+                homeApprovalGate,
+                issueHomeToken,
+            })).rejects.toMatchObject({ code: "home_redemption_unavailable" });
+            expect(homeApprovalGate.evaluate).not.toHaveBeenCalled();
+            expect(issueHomeToken).not.toHaveBeenCalled();
+        });
+
+        it("revalidates an allowed destination immediately before issuance", async () => {
+            const { redeemHomeLoginAssertion } = await import("./accountDirectoryService");
+            mocks.dbLinkFindUnique.mockResolvedValue(linkRowFor(signingKeyPair(4)));
+            const resolveHomeConnectionDescriptor = vi.fn()
+                .mockResolvedValueOnce(homeDescriptor)
+                .mockResolvedValueOnce({
+                    ...homeDescriptor,
+                    endpoints: [{ kind: "https", url: "https://replacement.test" }],
+                });
+            const issueHomeToken = vi.fn(async () => "must-never-issue");
+
+            await expect(redeemHomeLoginAssertion({
+                assertion: signedAssertion(),
+                nowMs,
+                resolveHomeConnectionDescriptor,
+                homeApprovalGate: allowedGate,
+                issueHomeToken,
+            })).rejects.toMatchObject({ code: "credential_destination_mismatch" });
+            expect(resolveHomeConnectionDescriptor).toHaveBeenCalledTimes(2);
+            expect(issueHomeToken).not.toHaveBeenCalled();
+        });
+
+        it("revalidates after transactional link checks before issuing the Home token", async () => {
+            const { redeemHomeLoginAssertion } = await import("./accountDirectoryService");
+            mocks.dbLinkFindUnique.mockResolvedValue(linkRowFor(signingKeyPair(4)));
+            let currentDescriptor: HomeConnectionDescriptorV1 = homeDescriptor;
+            mocks.txLinkFindUnique.mockImplementation(async () => {
+                currentDescriptor = {
+                    ...homeDescriptor,
+                    endpoints: [{ kind: "https", url: "https://replacement.test" }],
+                };
+                return linkRowFor(signingKeyPair(4));
+            });
+            const issueHomeToken = vi.fn(async () => "must-never-issue");
+
+            await expect(redeemHomeLoginAssertion({
+                assertion: signedAssertion(),
+                nowMs,
+                resolveHomeConnectionDescriptor: async () => currentDescriptor,
+                homeApprovalGate: allowedGate,
+                issueHomeToken,
+            })).rejects.toMatchObject({ code: "credential_destination_mismatch" });
+            expect(issueHomeToken).not.toHaveBeenCalled();
+        });
+
+        it("accepts revision and Iroh routing-hint changes that preserve the credential destination", async () => {
+            const { redeemHomeLoginAssertion } = await import("./accountDirectoryService");
+            mocks.dbLinkFindUnique.mockResolvedValue(linkRowFor(signingKeyPair(4)));
+            const initialDescriptor = {
+                ...homeDescriptor,
+                endpoints: [
+                    ...homeDescriptor.endpoints,
+                    {
+                        kind: "iroh" as const,
+                        endpointId: "a".repeat(64),
+                        relayUrls: ["https://relay-a.test"],
+                        directAddresses: ["127.0.0.1:7777"],
+                    },
+                ],
+            };
+            const changedHintsDescriptor = {
+                ...initialDescriptor,
+                revision: 99,
+                endpoints: [
+                    ...homeDescriptor.endpoints,
+                    {
+                        kind: "iroh" as const,
+                        endpointId: "a".repeat(64),
+                        relayUrls: ["https://relay-b.test"],
+                        directAddresses: ["10.0.0.8:8888"],
+                    },
+                ],
+            };
+            const resolveHomeConnectionDescriptor = vi.fn()
+                .mockResolvedValueOnce(initialDescriptor)
+                .mockResolvedValueOnce(changedHintsDescriptor);
+            const issueHomeToken = vi.fn(async () => "home-token");
+
+            await expect(redeemHomeLoginAssertion({
+                assertion: signedAssertion({
+                    credentialDestinationDigestBase64Url: createHomeCredentialDestinationDigestV1(initialDescriptor),
+                }),
+                nowMs,
+                resolveHomeConnectionDescriptor,
+                homeApprovalGate: allowedGate,
+                issueHomeToken,
+            })).resolves.toMatchObject({ v: 1, homeServerIdentityId: "srv_home" });
+            expect(resolveHomeConnectionDescriptor).toHaveBeenCalledTimes(2);
+            expect(issueHomeToken).toHaveBeenCalledTimes(1);
         });
 
         it("verifies the assertion against the pinned link and returns typed failures", async () => {
@@ -851,6 +1031,7 @@ describe("Account Directory service", () => {
             await expect(redeemHomeLoginAssertion({
                 assertion: signedAssertion(),
                 nowMs,
+                resolveHomeConnectionDescriptor: resolveStableHomeConnectionDescriptor,
                 homeApprovalGate: allowedGate,
                 issueHomeToken,
             })).rejects.toMatchObject({ code: expectedCode });
@@ -881,6 +1062,7 @@ describe("Account Directory service", () => {
             await expect(redeemHomeLoginAssertion({
                 assertion: signedAssertion(),
                 nowMs,
+                resolveHomeConnectionDescriptor: resolveStableHomeConnectionDescriptor,
                 homeApprovalGate: allowedGate,
                 issueHomeToken,
             })).rejects.toMatchObject({ code: "directory_link_not_found" });
@@ -896,6 +1078,7 @@ describe("Account Directory service", () => {
             await expect(redeemHomeLoginAssertion({
                 assertion: signedAssertion(),
                 nowMs,
+                resolveHomeConnectionDescriptor: resolveStableHomeConnectionDescriptor,
                 homeApprovalGate: allowedGate,
                 issueHomeToken,
             })).rejects.toMatchObject({ code: "assertion_issuer_untrusted" });
@@ -912,6 +1095,7 @@ describe("Account Directory service", () => {
             await expect(redeemHomeLoginAssertion({
                 assertion: signedAssertion(),
                 nowMs,
+                resolveHomeConnectionDescriptor: resolveStableHomeConnectionDescriptor,
                 homeApprovalGate: allowedGate,
                 issueHomeToken,
             })).rejects.toMatchObject({ code: "assertion_issuer_untrusted" });
@@ -930,6 +1114,7 @@ describe("Account Directory service", () => {
                     clientBoxPublicKeyBase64: privacyKit.encodeBase64(new Uint8Array(clientBoxKeyPair.publicKey)),
                 }),
                 nowMs,
+                resolveHomeConnectionDescriptor: resolveStableHomeConnectionDescriptor,
                 homeApprovalGate: allowedGate,
                 issueHomeToken,
             });
@@ -964,6 +1149,7 @@ describe("Account Directory service", () => {
             await expect(redeemHomeLoginAssertion({
                 assertion: signedAssertion(),
                 nowMs,
+                resolveHomeConnectionDescriptor: resolveStableHomeConnectionDescriptor,
                 homeApprovalGate: { evaluate: async () => ({ kind: "rejected" as const }) },
                 issueHomeToken,
             })).rejects.toMatchObject({ code: "approval_rejected" });
@@ -978,6 +1164,7 @@ describe("Account Directory service", () => {
             await expect(redeemHomeLoginAssertion({
                 assertion: signedAssertion(),
                 nowMs,
+                resolveHomeConnectionDescriptor: resolveStableHomeConnectionDescriptor,
                 homeApprovalGate: { evaluate: async () => ({ kind: "expired" as const }) },
                 issueHomeToken,
             })).rejects.toMatchObject({ code: "approval_expired" });
@@ -992,6 +1179,7 @@ describe("Account Directory service", () => {
             await expect(redeemHomeLoginAssertion({
                 assertion: signedAssertion(),
                 nowMs,
+                resolveHomeConnectionDescriptor: resolveStableHomeConnectionDescriptor,
                 homeApprovalGate: { evaluate: async () => ({ kind: "invalid" as const }) },
                 issueHomeToken,
             })).rejects.toMatchObject({ code: "approval_invalid" });
@@ -1007,6 +1195,7 @@ describe("Account Directory service", () => {
             await expect(redeemHomeLoginAssertion({
                 assertion: signedAssertion(),
                 nowMs,
+                resolveHomeConnectionDescriptor: resolveStableHomeConnectionDescriptor,
                 homeApprovalGate: {
                     evaluate: async () => ({
                         kind: "allowed" as const,

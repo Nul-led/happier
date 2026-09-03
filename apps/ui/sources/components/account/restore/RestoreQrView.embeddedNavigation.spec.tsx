@@ -1,6 +1,8 @@
 import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { IModal } from '@/modal';
+import type { ActiveServerSwitchResult } from '@/sync/domains/server/activeServerSwitch';
 
 import { createExpoRouterMock, renderScreen } from '@/dev/testkit';
 
@@ -17,8 +19,10 @@ const state = vi.hoisted(() => ({
     canCancel: true,
     cancel: vi.fn(),
     start: vi.fn(async () => {}),
-    copy: vi.fn(async () => true),
+    copy: vi.fn<(value: string) => Promise<boolean>>(async () => true),
     preventRemove: vi.fn(),
+    switchHome: vi.fn<(params: unknown) => Promise<ActiveServerSwitchResult>>(async () => 'switched'),
+    alertAsync: vi.fn<IModal['alertAsync']>(async () => {}),
 }));
 
 vi.mock('react-native', async () => {
@@ -53,6 +57,13 @@ vi.mock('@/utils/platform/qrScannerSupport', () => ({ canUseCurrentDeviceQrScann
 vi.mock('@/sync/api/capabilities/getReadyServerFeatures', () => ({ getReadyServerFeatures: vi.fn(async () => null) }));
 vi.mock('@/utils/system/fireAndForget', () => ({ fireAndForget: (promise: Promise<unknown>) => void promise }));
 vi.mock('@/auth/providers/registry', () => ({ getAuthProvider: () => null }));
+vi.mock('@/sync/domains/server/activeServerSwitch', () => ({
+    setActiveServerAndSwitch: (params: unknown) => state.switchHome(params),
+}));
+vi.mock('@/modal', async () => {
+    const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
+    return createModalModuleMock({ spies: { alertAsync: state.alertAsync } }).module;
+});
 
 describe('RestoreQrView known-target requester QR', () => {
     beforeEach(() => {
@@ -68,13 +79,18 @@ describe('RestoreQrView known-target requester QR', () => {
         state.start.mockClear();
         state.copy.mockClear();
         state.preventRemove.mockClear();
+        state.switchHome.mockReset();
+        state.switchHome.mockResolvedValue('switched');
+        state.alertAsync.mockReset();
+        state.alertAsync.mockResolvedValue(undefined);
+        routerMock.spies.replace.mockClear();
     });
 
     afterEach(() => vi.clearAllMocks());
 
     it('renders the exact known-target requester QR with no code or approval controls', async () => {
         const { RestoreQrView } = await import('./RestoreQrView');
-        const screen = await renderScreen(<RestoreQrView embedded />);
+        const screen = await renderScreen(<RestoreQrView embedded entryIntent="enter_home" />);
 
         expect(screen.findByTestId('restore-requester-qr')?.findByType('QRCode').props.data)
             .toBe('happier:///pair?v=2&payload=opaque-secret');
@@ -86,31 +102,47 @@ describe('RestoreQrView known-target requester QR', () => {
 
     it('keeps the secret-bearing link behind explicit warned disclosure, then copies the exact value', async () => {
         const { RestoreQrView } = await import('./RestoreQrView');
-        const screen = await renderScreen(<RestoreQrView embedded />);
+        const screen = await renderScreen(<RestoreQrView embedded entryIntent="enter_home" />);
 
-        expect(screen.getTextContent()).toContain(
+        expect(screen.getTextContent()).not.toContain(
             'Anyone with this temporary link can add a device before it expires. Share it only with your own device.',
         );
         expect(screen.findByTestId('restore-requester-link-value')).toBeNull();
         expect(screen.findByTestId('restore-copy-requester-link')).toBeNull();
 
-        await act(async () => screen.findByTestId('restore-show-requester-link')?.props.onPress());
+        const details = screen.findByTestId('restore-requester-link-details');
+        expect(details?.props.accessibilityState).toMatchObject({ expanded: false });
+        await act(async () => details?.props.onPress());
+        expect(screen.getTextContent()).toContain(
+            'Anyone with this temporary link can add a device before it expires. Share it only with your own device.',
+        );
         expect(screen.findByTestId('restore-requester-link-value')?.props.children)
             .toBe('happier:///pair?v=2&payload=opaque-secret');
-        await act(async () => screen.findByTestId('restore-copy-requester-link')?.props.action());
+        await act(async () => screen.findByTestId('restore-requester-link-copy')?.props.action());
         expect(state.copy).toHaveBeenCalledWith('happier:///pair?v=2&payload=opaque-secret');
     });
 
     it('keeps the exact live link row when only QR encoding is unavailable', async () => {
         state.presentation = { ...state.presentation, qrAvailable: false };
         const { RestoreQrView } = await import('./RestoreQrView');
-        const screen = await renderScreen(<RestoreQrView embedded />);
+        const screen = await renderScreen(<RestoreQrView embedded entryIntent="enter_home" />);
 
         expect(screen.findByTestId('restore-requester-qr')?.findAllByType('QRCode')).toHaveLength(0);
         expect(screen.getTextContent()).toContain("This invite carries extra connection details, so it can't be shown as a QR code.");
-        await act(async () => screen.findByTestId('restore-show-requester-link')?.props.onPress());
+        await act(async () => screen.findByTestId('restore-requester-link-details')?.props.onPress());
         expect(screen.findByTestId('restore-requester-link-value')?.props.children)
             .toBe('happier:///pair?v=2&payload=opaque-secret');
+    });
+
+    it('removes the secret-bearing disclosure after terminal success', async () => {
+        state.presentation = { phase: 'succeeded', descriptor, profileId: 'known-profile' };
+        state.canCancel = false;
+        const { RestoreQrView } = await import('./RestoreQrView');
+        const screen = await renderScreen(<RestoreQrView embedded entryIntent="add_home" />);
+
+        expect(screen.findByTestId('restore-requester-link-details')).toBeNull();
+        expect(screen.findByTestId('restore-requester-link')).toBeNull();
+        expect(screen.getTextContent()).toContain('This Home was added. Your focused Home is unchanged.');
     });
 
     it('locks route removal and hides destructive navigation after the requester claim', async () => {
@@ -122,6 +154,7 @@ describe('RestoreQrView known-target requester QR', () => {
         const { RestoreQrView } = await import('./RestoreQrView');
         const screen = await renderScreen(
             <RestoreQrView
+                entryIntent="enter_home"
                 embedded
                 onBack={onBack}
                 onOpenScanQr={onOpenScanQr}
@@ -139,9 +172,57 @@ describe('RestoreQrView known-target requester QR', () => {
     it('routes the embedded scanner action through its owner before any claim exists', async () => {
         const onOpenScanQr = vi.fn();
         const { RestoreQrView } = await import('./RestoreQrView');
-        const screen = await renderScreen(<RestoreQrView embedded onOpenScanQr={onOpenScanQr} />);
+        const screen = await renderScreen(
+            <RestoreQrView embedded entryIntent="enter_home" onOpenScanQr={onOpenScanQr} />,
+        );
 
         await act(async () => screen.findByTestId('restore-open-scan-qr')?.props.onPress());
         expect(onOpenScanQr).toHaveBeenCalledOnce();
+    });
+
+    it('opens the exact adopted Home and enters the shell for enter_home', async () => {
+        state.presentation = { phase: 'succeeded', descriptor, profileId: 'known-profile' };
+        state.canCancel = false;
+        const { RestoreQrView } = await import('./RestoreQrView');
+        await renderScreen(<RestoreQrView embedded entryIntent="enter_home" />);
+
+        await vi.waitFor(() => expect(state.switchHome).toHaveBeenCalledWith({
+            serverId: 'known-profile',
+            scope: 'tab',
+        }));
+        expect(routerMock.spies.replace).toHaveBeenCalledWith('/');
+        expect(state.preventRemove).toHaveBeenLastCalledWith(false);
+        expect(state.preventRemove.mock.invocationCallOrder.at(-1)!)
+            .toBeLessThan(routerMock.spies.replace.mock.invocationCallOrder[0]!);
+    });
+
+    it('retries the exact retained profile when opening enter_home is initially blocked', async () => {
+        state.presentation = { phase: 'succeeded', descriptor, profileId: 'known-profile' };
+        state.canCancel = false;
+        state.switchHome
+            .mockResolvedValueOnce('blocked')
+            .mockResolvedValueOnce('switched');
+        state.alertAsync.mockImplementationOnce(async (_title, _message, buttons) => {
+            buttons?.find((button) => button.style !== 'cancel')?.onPress?.();
+        });
+        const { RestoreQrView } = await import('./RestoreQrView');
+        await renderScreen(<RestoreQrView embedded entryIntent="enter_home" />);
+
+        await vi.waitFor(() => expect(state.switchHome).toHaveBeenCalledTimes(2));
+        expect(state.switchHome).toHaveBeenNthCalledWith(2, {
+            serverId: 'known-profile',
+            scope: 'tab',
+        });
+        expect(routerMock.spies.replace).toHaveBeenCalledWith('/');
+    });
+
+    it('returns to the shell without switching focus for add_home', async () => {
+        state.presentation = { phase: 'succeeded', descriptor, profileId: 'known-profile' };
+        state.canCancel = false;
+        const { RestoreQrView } = await import('./RestoreQrView');
+        await renderScreen(<RestoreQrView embedded entryIntent="add_home" />);
+
+        expect(state.switchHome).not.toHaveBeenCalled();
+        expect(routerMock.spies.replace).not.toHaveBeenCalled();
     });
 });

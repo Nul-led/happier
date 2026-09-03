@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import sodium from '@/encryption/libsodium.lib';
 import { encodeBase64 } from '@/encryption/base64';
@@ -7,10 +7,16 @@ import { createAccountDirectoryClient, type AccountDirectoryHomeEntryV1, type Ho
 import {
     continueHomeLoginEnrollment,
 } from './homeLoginApproval';
-import { enrollPreferredDirectoryHome } from './enrollPreferredDirectoryHome';
+import {
+    cancelPendingPreferredHomeEnrollment,
+    enrollPreferredDirectoryHome,
+    getPendingPreferredHomeEnrollment,
+    resumePendingPreferredHomeEnrollment,
+} from './enrollPreferredDirectoryHome';
 import {
     ACCOUNT_DIRECTORY_MAX_HOME_LOGIN_CREDENTIAL_PLAINTEXT_BYTES,
     ACCOUNT_DIRECTORY_MAX_SEALED_TOKEN_BYTES,
+    createHomeCredentialDestinationDigestV1,
 } from '@happier-dev/protocol';
 
 const endpointFetchMock = vi.hoisted(() => vi.fn());
@@ -71,11 +77,86 @@ const preflightHomeProfileAdoptionMock = vi.hoisted(() => vi.fn<(...args: unknow
         serverIdentityId: adoption.descriptor?.homeServerIdentityId ?? 'srv_home_b',
     };
 }));
+const reconcileServerProfileHomeConnectionDescriptorMock = vi.hoisted(() => vi.fn<(...args: unknown[]) => Promise<
+    | Readonly<{
+        kind: 'applied';
+        profile: {
+            id: string;
+            serverUrl: string;
+            canonicalServerUrl: string;
+            serverIdentityId: string;
+            source: 'account-directory';
+            connectionDescriptorRevision: number;
+        };
+    }>
+    | Readonly<{
+        kind: 'conflict';
+        code: 'equal_revision_conflict';
+        profile: null;
+    }>
+>>(async () => ({
+    kind: 'applied' as const,
+    profile: {
+        id: 'profile-b',
+        serverUrl: 'https://home-b.test',
+        canonicalServerUrl: 'https://home-b.test',
+        serverIdentityId: 'srv_home_b',
+        source: 'account-directory' as const,
+        connectionDescriptorRevision: 1,
+    },
+})));
+const buildHomeConnectionDescriptorForProfileMock = vi.hoisted(() => vi.fn<(...args: unknown[]) => AccountDirectoryHomeEntryV1['connectionDescriptor'] | null>(() => ({
+    v: 1 as const,
+    homeServerIdentityId: 'srv_home_b',
+    canonicalServerUrl: 'https://home-b.test',
+    revision: 1,
+    endpoints: [{ kind: 'https' as const, url: 'https://home-b.test' }],
+})));
+const resolveServerProfileForPortableIdentityMock = vi.hoisted(() => vi.fn(() => ({
+    kind: 'resolved' as const,
+    profile: {
+        id: 'profile-b',
+        serverUrl: 'https://home-b.test',
+        serverIdentityId: 'srv_home_b',
+    },
+})));
+const resolveServerProfileScopeIdMock = vi.hoisted(() => vi.fn(() => 'srv_home_b'));
+const getAccountServiceEndpointSnapshotMock = vi.hoisted(() => vi.fn((): {
+    url: string;
+    serverIdentityId: string;
+    source: 'user';
+} | null => ({
+    url: 'https://directory.test',
+    serverIdentityId: 'srv_dir_1',
+    source: 'user',
+})));
+const setActiveServerAndSwitchMock = vi.hoisted(() => vi.fn(async () => 'switched' as const));
 
 vi.mock('@/sync/domains/server/serverProfiles', () => ({
     adoptHomeProfile: (...args: unknown[]) => adoptHomeProfileMock(...args),
     preflightHomeProfileAdoption: (...args: unknown[]) => preflightHomeProfileAdoptionMock(...args),
+    reconcileServerProfileHomeConnectionDescriptor: (...args: unknown[]) => reconcileServerProfileHomeConnectionDescriptorMock(...args),
+    buildHomeConnectionDescriptorForProfile: (...args: unknown[]) => buildHomeConnectionDescriptorForProfileMock(...args),
+    resolveServerProfileForPortableIdentity: (...args: unknown[]) => resolveServerProfileForPortableIdentityMock(...args),
+    resolveServerProfileScopeId: (...args: unknown[]) => resolveServerProfileScopeIdMock(...args),
+    getAccountServiceEndpointSnapshot: () => getAccountServiceEndpointSnapshotMock(),
+    // Lane 04 owns the closed digest-bound authorization; its rejection behavior is proven by the
+    // production-caller suite against the real owner. Here it is a transparent scope holder.
+    withHomeCredentialWriteAuthorization: async <T,>(
+        authorization: unknown,
+        run: (authorization: unknown) => Promise<T>,
+    ): Promise<T> => await run(authorization),
 }));
+
+vi.mock('@/sync/domains/server/activeServerSwitch', () => ({
+    setActiveServerAndSwitch: (...args: unknown[]) => setActiveServerAndSwitchMock(...args),
+}));
+
+vi.mock('@/sync/domains/server/selection/serverSelectionScope', () => ({
+    resolveRoutineServerSelectionScope: () => 'tab' as const,
+}));
+
+vi.mock('@/utils/platform/desktopHost', () => ({ isDesktopHost: () => false }));
 
 const directoryCredentialStorageMock = vi.hoisted(() => ({
     get: vi.fn(async () => ({ token: 'directory-oauth-token' })),
@@ -143,6 +224,7 @@ const ASSERTION: HomeLoginAssertionV1 = {
     issuerServerIdentityId: 'srv_dir_1',
     issuerSubjectId: 'account-1',
     audienceHomeServerIdentityId: 'srv_home_b',
+    credentialDestinationDigestBase64Url: createHomeCredentialDestinationDigestV1(HOME_B.connectionDescriptor),
     clientBoxPublicKeyBase64: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
     issuedAtMs: Date.now() - 1_000,
     expiresAtMs: Date.now() + 120_000,
@@ -150,9 +232,44 @@ const ASSERTION: HomeLoginAssertionV1 = {
     signatureBase64Url: 'A'.repeat(86),
 };
 
+function assertionForHome(home: AccountDirectoryHomeEntryV1): HomeLoginAssertionV1 {
+    return {
+        ...ASSERTION,
+        audienceHomeServerIdentityId: home.homeServerIdentityId,
+        credentialDestinationDigestBase64Url: createHomeCredentialDestinationDigestV1(
+            home.connectionDescriptor,
+        ),
+    };
+}
+
 describe('Home login approval continuation (explicit target, Home-authoritative)', () => {
     beforeAll(async () => {
         await sodium.ready;
+    });
+
+    beforeEach(() => {
+        createServerFetchAtEndpointMock.mockImplementation(() => (async (path: string, ...args: unknown[]) => {
+            if (path === '/v1/features') {
+                return json(200, {
+                    features: {},
+                    capabilities: { serverIdentity: { serverIdentityId: 'srv_home_b' } },
+                    homeConnectionDescriptor: HOME_B.connectionDescriptor,
+                });
+            }
+            return await endpointFetchMock(path, ...args);
+        }) as typeof endpointFetchMock);
+        reconcileServerProfileHomeConnectionDescriptorMock.mockResolvedValue({
+            kind: 'applied',
+            profile: {
+                id: 'profile-b',
+                serverUrl: 'https://home-b.test',
+                canonicalServerUrl: 'https://home-b.test',
+                serverIdentityId: 'srv_home_b',
+                source: 'account-directory',
+                connectionDescriptorRevision: 1,
+            },
+        });
+        buildHomeConnectionDescriptorForProfileMock.mockReturnValue(HOME_B.connectionDescriptor);
     });
 
     afterEach(() => {
@@ -160,16 +277,21 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
         vi.restoreAllMocks();
         endpointFetchMock.mockReset();
         createServerFetchAtEndpointMock.mockClear();
-        createServerFetchAtEndpointMock.mockImplementation(() => endpointFetchMock);
         setCredentialsForServerUrlMock.mockClear();
         getCredentialsForServerUrlMock.mockClear();
         adoptHomeProfileMock.mockClear();
         preflightHomeProfileAdoptionMock.mockClear();
+        reconcileServerProfileHomeConnectionDescriptorMock.mockClear();
+        buildHomeConnectionDescriptorForProfileMock.mockClear();
         directoryCredentialStorageMock.get.mockClear();
         directoryCredentialStorageMock.remove.mockClear();
         irohReleaseMock.mockClear();
         acquireIrohHomeRuntimeOriginMock.mockReset();
         acquireIrohHomeRuntimeOriginMock.mockRejectedValue(new Error('native unavailable'));
+        resolveServerProfileForPortableIdentityMock.mockClear();
+        resolveServerProfileScopeIdMock.mockClear();
+        setActiveServerAndSwitchMock.mockClear();
+        setActiveServerAndSwitchMock.mockResolvedValue('switched');
     });
 
     it('preserves the same assertion and approval id in an explicit resume operation', async () => {
@@ -223,7 +345,7 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
         );
     });
 
-    it('keeps the intended advisory descriptor after redeeming through its advisory route', async () => {
+    it('keeps first-contact routing advisory after a matching destination-bound observation', async () => {
         const keyPair = sodium.crypto_box_keypair();
         const advisoryHome = {
             ...HOME_B,
@@ -235,6 +357,25 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
                 endpoints: [{ kind: 'https' as const, url: 'https://directory-advisory-route.test' }],
             },
         };
+        const assertion = {
+            ...ASSERTION,
+            credentialDestinationDigestBase64Url: createHomeCredentialDestinationDigestV1(
+                advisoryHome.connectionDescriptor,
+            ),
+        };
+        createServerFetchAtEndpointMock.mockImplementation(() => (async (path: string, ...args: unknown[]) => {
+            if (path === '/v1/features') {
+                return json(200, {
+                    features: {},
+                    capabilities: { serverIdentity: { serverIdentityId: 'srv_home_b' } },
+                    homeConnectionDescriptor: {
+                        ...advisoryHome.connectionDescriptor,
+                        revision: 100,
+                    },
+                });
+            }
+            return await endpointFetchMock(path, ...args);
+        }) as typeof endpointFetchMock);
         endpointFetchMock.mockResolvedValueOnce(json(200, {
             v: 1,
             homeServerIdentityId: 'srv_home_b',
@@ -249,7 +390,7 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
         await expect(continueHomeLoginEnrollment({
             home: advisoryHome,
             clientSecretKey: keyPair.privateKey,
-            assertion: ASSERTION,
+            assertion,
         })).resolves.toEqual({ kind: 'enrolled', homeServerIdentityId: 'srv_home_b' });
 
         expect(createServerFetchAtEndpointMock).toHaveBeenCalledWith(expect.objectContaining({
@@ -268,6 +409,214 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
             descriptor: advisoryHome.connectionDescriptor,
             descriptorAuthority: 'advisory',
         }));
+        expect(reconcileServerProfileHomeConnectionDescriptorMock).not.toHaveBeenCalled();
+        expect(buildHomeConnectionDescriptorForProfileMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects an assertion whose signed destination does not match the exact Directory entry before transport', async () => {
+        const keyPair = sodium.crypto_box_keypair();
+
+        await expect(continueHomeLoginEnrollment({
+            home: HOME_B,
+            clientSecretKey: keyPair.privateKey,
+            assertion: {
+                ...ASSERTION,
+                credentialDestinationDigestBase64Url: createHomeCredentialDestinationDigestV1({
+                    ...HOME_B.connectionDescriptor,
+                    canonicalServerUrl: 'https://attacker.test',
+                    endpoints: [{ kind: 'https', url: 'https://attacker.test' }],
+                }),
+            },
+        })).resolves.toEqual({ kind: 'failed' });
+
+        expect(createServerFetchAtEndpointMock).not.toHaveBeenCalled();
+        expect(acquireIrohHomeRuntimeOriginMock).not.toHaveBeenCalled();
+        expect(endpointFetchMock).not.toHaveBeenCalled();
+        expect(setCredentialsForServerUrlMock).not.toHaveBeenCalled();
+    });
+
+    it('preserves Directory authentication and returns an explicit retry when Home observation is unavailable', async () => {
+        const keyPair = sodium.crypto_box_keypair();
+        createServerFetchAtEndpointMock.mockImplementation(() => (async (path: string, ...args: unknown[]) => {
+            if (path === '/v1/features') return json(503, { error: 'temporarily_unavailable' });
+            return await endpointFetchMock(path, ...args);
+        }) as typeof endpointFetchMock);
+
+        const unavailable = await continueHomeLoginEnrollment({
+            home: HOME_B,
+            clientSecretKey: keyPair.privateKey,
+            assertion: ASSERTION,
+        });
+
+        expect(unavailable).toMatchObject({
+            kind: 'transport_unavailable',
+            reason: 'home_observation_unavailable',
+            resume: expect.any(Function),
+            cancel: expect.any(Function),
+        });
+        expect(endpointFetchMock).not.toHaveBeenCalled();
+        expect(reconcileServerProfileHomeConnectionDescriptorMock).not.toHaveBeenCalled();
+        expect(setCredentialsForServerUrlMock).not.toHaveBeenCalled();
+        expect(directoryCredentialStorageMock.remove).not.toHaveBeenCalled();
+
+        createServerFetchAtEndpointMock.mockImplementation(() => (async (path: string, ...args: unknown[]) => {
+            if (path === '/v1/features') {
+                return json(200, {
+                    features: {},
+                    capabilities: { serverIdentity: { serverIdentityId: 'srv_home_b' } },
+                    homeConnectionDescriptor: HOME_B.connectionDescriptor,
+                });
+            }
+            return await endpointFetchMock(path, ...args);
+        }) as typeof endpointFetchMock);
+        endpointFetchMock.mockResolvedValueOnce(json(200, {
+            v: 1,
+            homeServerIdentityId: 'srv_home_b',
+            sealedHomeTokenBase64Url: sealCredentialPayload('home-b-retried-token', keyPair.publicKey),
+            issuedAtMs: Date.now() - 500,
+            expiresAtMs: Date.now() + 120_000,
+        }));
+        if (unavailable.kind !== 'transport_unavailable' || !unavailable.resume) return;
+
+        await expect(unavailable.resume()).resolves.toEqual({
+            kind: 'enrolled',
+            homeServerIdentityId: 'srv_home_b',
+        });
+        expect(endpointFetchMock).toHaveBeenCalledTimes(1);
+        expect(directoryCredentialStorageMock.remove).not.toHaveBeenCalled();
+    });
+
+    it('retains an unavailable Home observation when the initiating screen unmounts during the probe', async () => {
+        const keyPair = sodium.crypto_box_keypair();
+        let initiatingScreenCancelled = false;
+        let releaseObservation!: () => void;
+        const observationGate = new Promise<void>((resolve) => {
+            releaseObservation = resolve;
+        });
+        createServerFetchAtEndpointMock.mockImplementation(() => (async (path: string, ...args: unknown[]) => {
+            if (path === '/v1/features') {
+                await observationGate;
+                return json(503, { error: 'temporarily_unavailable' });
+            }
+            return await endpointFetchMock(path, ...args);
+        }) as typeof endpointFetchMock);
+
+        const enrollment = continueHomeLoginEnrollment({
+            home: HOME_B,
+            clientSecretKey: keyPair.privateKey,
+            assertion: ASSERTION,
+            shouldCancel: () => initiatingScreenCancelled,
+        });
+        await vi.waitFor(() => expect(createServerFetchAtEndpointMock).toHaveBeenCalledOnce());
+        initiatingScreenCancelled = true;
+        releaseObservation();
+
+        await expect(enrollment).resolves.toMatchObject({
+            kind: 'transport_unavailable',
+            reason: 'home_observation_unavailable',
+            resume: expect.any(Function),
+            cancel: expect.any(Function),
+        });
+        expect(endpointFetchMock).not.toHaveBeenCalled();
+        expect(setCredentialsForServerUrlMock).not.toHaveBeenCalled();
+    });
+
+    it('fails closed before redemption when the observed Home identity differs from the selected target', async () => {
+        const keyPair = sodium.crypto_box_keypair();
+        createServerFetchAtEndpointMock.mockImplementation(() => (async (path: string, ...args: unknown[]) => {
+            if (path === '/v1/features') {
+                return json(200, {
+                    features: {},
+                    capabilities: { serverIdentity: { serverIdentityId: 'srv_attacker' } },
+                    homeConnectionDescriptor: {
+                        ...HOME_B.connectionDescriptor,
+                        homeServerIdentityId: 'srv_attacker',
+                    },
+                });
+            }
+            return await endpointFetchMock(path, ...args);
+        }) as typeof endpointFetchMock);
+
+        await expect(continueHomeLoginEnrollment({
+            home: HOME_B,
+            clientSecretKey: keyPair.privateKey,
+            assertion: ASSERTION,
+        })).resolves.toEqual({ kind: 'failed' });
+
+        expect(endpointFetchMock).not.toHaveBeenCalled();
+        expect(reconcileServerProfileHomeConnectionDescriptorMock).not.toHaveBeenCalled();
+        expect(setCredentialsForServerUrlMock).not.toHaveBeenCalled();
+        expect(adoptHomeProfileMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects a published descriptor whose credential destination differs from the signed assertion', async () => {
+        const keyPair = sodium.crypto_box_keypair();
+        createServerFetchAtEndpointMock.mockImplementation(() => (async (path: string, ...args: unknown[]) => {
+            if (path === '/v1/features') {
+                return json(200, {
+                    features: {},
+                    capabilities: { serverIdentity: { serverIdentityId: 'srv_home_b' } },
+                    homeConnectionDescriptor: {
+                        ...HOME_B.connectionDescriptor,
+                        canonicalServerUrl: 'https://attacker.test',
+                        endpoints: [{ kind: 'https', url: 'https://attacker.test' }],
+                    },
+                });
+            }
+            return await endpointFetchMock(path, ...args);
+        }) as typeof endpointFetchMock);
+
+        await expect(continueHomeLoginEnrollment({
+            home: HOME_B,
+            clientSecretKey: keyPair.privateKey,
+            assertion: ASSERTION,
+        })).resolves.toEqual({ kind: 'failed' });
+
+        expect(reconcileServerProfileHomeConnectionDescriptorMock).not.toHaveBeenCalled();
+        expect(endpointFetchMock).not.toHaveBeenCalled();
+        expect(setCredentialsForServerUrlMock).not.toHaveBeenCalled();
+        expect(adoptHomeProfileMock).not.toHaveBeenCalled();
+    });
+
+    it('does not redeem after cancellation arrives while Home observation is pending', async () => {
+        const keyPair = sodium.crypto_box_keypair();
+        let cancelled = false;
+        let finishObservation!: () => void;
+        createServerFetchAtEndpointMock.mockImplementation(() => (async (path: string, ...args: unknown[]) => {
+            if (path !== '/v1/features') return await endpointFetchMock(path, ...args);
+            await new Promise<void>((resolve) => {
+                finishObservation = resolve;
+            });
+            return json(200, {
+                features: {},
+                capabilities: { serverIdentity: { serverIdentityId: 'srv_home_b' } },
+                homeConnectionDescriptor: HOME_B.connectionDescriptor,
+            });
+        }) as typeof endpointFetchMock);
+        endpointFetchMock.mockResolvedValueOnce(json(202, {
+            v: 1,
+            outcome: 'approval_required',
+            homeServerIdentityId: 'srv_home_b',
+            approvalId: 'must-not-be-created',
+            deviceLabel: null,
+            expiresAtMs: Date.now() + 60_000,
+        }));
+
+        const result = continueHomeLoginEnrollment({
+            home: HOME_B,
+            clientSecretKey: keyPair.privateKey,
+            assertion: ASSERTION,
+            shouldCancel: () => cancelled,
+        });
+        await vi.waitFor(() => {
+            expect(createServerFetchAtEndpointMock).toHaveBeenCalledTimes(1);
+        });
+        cancelled = true;
+        finishObservation();
+
+        await expect(result).resolves.toEqual({ kind: 'cancelled' });
+        expect(endpointFetchMock).not.toHaveBeenCalled();
+        expect(setCredentialsForServerUrlMock).not.toHaveBeenCalled();
     });
 
     it('keeps a Home approval continuation resumable after its initiating screen unmounts', async () => {
@@ -307,69 +656,109 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
         expect(endpointFetchMock).toHaveBeenCalledTimes(2);
     });
 
-    it('closes each pure-Iroh redemption transport and reacquires one for approval resume', async () => {
+    it('publishes the detached approval continuation when initiating cancellation flips after redemption resolves', async () => {
         const keyPair = sodium.crypto_box_keypair();
-        const sealedToken = sealCredentialPayload('home-b-iroh-token', keyPair.publicKey);
-        acquireIrohHomeRuntimeOriginMock.mockResolvedValue({
-            leaseId: 'lease-home-b',
-            runtimeOrigin: 'http://127.0.0.1:45991',
-            release: irohReleaseMock,
-        });
-        endpointFetchMock
-            .mockResolvedValueOnce(json(202, {
+        let initiatingScreenCancelled = false;
+        endpointFetchMock.mockImplementationOnce(async () => {
+            initiatingScreenCancelled = true;
+            return json(202, {
                 v: 1,
                 outcome: 'approval_required',
                 homeServerIdentityId: 'srv_home_b',
-                approvalId: 'approval-iroh',
-                deviceLabel: 'Phone',
+                approvalId: 'approval-publication-race',
+                deviceLabel: null,
                 expiresAtMs: Date.now() + 60_000,
-            }))
-            .mockResolvedValueOnce(json(200, {
-                v: 1,
-                homeServerIdentityId: 'srv_home_b',
-                sealedHomeTokenBase64Url: sealedToken,
-                issuedAtMs: Date.now() - 500,
-                expiresAtMs: Date.now() + 120_000,
-            }));
+            });
+        });
 
-        const pending = await continueHomeLoginEnrollment({
-            home: {
-                ...HOME_B,
-                connectionDescriptor: {
-                    ...HOME_B.connectionDescriptor,
-                    canonicalServerUrl: 'http://localhost:3010',
-                    endpoints: [{ kind: 'iroh', endpointId: 'a'.repeat(64) }],
-                },
-            },
+        const result = await continueHomeLoginEnrollment({
+            home: HOME_B,
             clientSecretKey: keyPair.privateKey,
             assertion: ASSERTION,
+            shouldCancel: () => initiatingScreenCancelled,
         });
-        expect(pending).toMatchObject({ kind: 'approval_required', approvalId: 'approval-iroh' });
+
+        expect(result).toMatchObject({
+            kind: 'approval_required',
+            homeServerIdentityId: 'srv_home_b',
+            approvalId: 'approval-publication-race',
+        });
+        expect(setCredentialsForServerUrlMock).not.toHaveBeenCalled();
+    });
+
+    it('redeems and stores a destination-bound credential through the selected Iroh EndpointId', async () => {
+        const keyPair = sodium.crypto_box_keypair();
+        const endpointId = 'a'.repeat(64);
+        acquireIrohHomeRuntimeOriginMock.mockResolvedValueOnce({
+            leaseId: 'lease-home-b',
+            runtimeOrigin: 'http://127.0.0.1:45991',
+            endpointId,
+            release: irohReleaseMock,
+        });
+        const home = {
+            ...HOME_B,
+            connectionDescriptor: {
+                ...HOME_B.connectionDescriptor,
+                canonicalServerUrl: 'http://localhost:3010',
+                endpoints: [{ kind: 'iroh' as const, endpointId }],
+            },
+        };
+        createServerFetchAtEndpointMock.mockImplementation(() => (async (path: string, ...args: unknown[]) => {
+            if (path === '/v1/features') {
+                return json(200, {
+                    features: {},
+                    capabilities: { serverIdentity: { serverIdentityId: 'srv_home_b' } },
+                    homeConnectionDescriptor: home.connectionDescriptor,
+                });
+            }
+            return await endpointFetchMock(path, ...args);
+        }) as typeof endpointFetchMock);
+        endpointFetchMock.mockResolvedValueOnce(json(200, {
+            v: 1,
+            homeServerIdentityId: 'srv_home_b',
+            sealedHomeTokenBase64Url: sealCredentialPayload('home-b-iroh-token', keyPair.publicKey),
+            issuedAtMs: Date.now() - 500,
+            expiresAtMs: Date.now() + 120_000,
+        }));
+
+        const result = await continueHomeLoginEnrollment({
+            home,
+            clientSecretKey: keyPair.privateKey,
+            assertion: assertionForHome(home),
+        });
+
+        expect(result).toEqual({ kind: 'enrolled', homeServerIdentityId: 'srv_home_b' });
         expect(acquireIrohHomeRuntimeOriginMock).toHaveBeenCalledTimes(1);
         expect(irohReleaseMock).toHaveBeenCalledTimes(1);
         expect(createServerFetchAtEndpointMock).toHaveBeenCalledWith(expect.objectContaining({
             endpointUrl: 'http://localhost:3010',
             runtimeOrigin: 'http://127.0.0.1:45991',
             serverId: 'srv_home_b',
-            credentials: null,
         }));
-
-        if (pending.kind !== 'approval_required') return;
-        await expect(pending.resume()).resolves.toEqual({
-            kind: 'enrolled',
-            homeServerIdentityId: 'srv_home_b',
-        });
-        expect(acquireIrohHomeRuntimeOriginMock).toHaveBeenCalledTimes(2);
-        expect(irohReleaseMock).toHaveBeenCalledTimes(2);
+        expect(endpointFetchMock).toHaveBeenCalledOnce();
+        expect(setCredentialsForServerUrlMock).toHaveBeenCalledWith(
+            'http://localhost:3010',
+            { serverId: 'srv_home_b' },
+            { token: 'home-b-iroh-token' },
+        );
     });
 
     it('releases a transport acquired after the enrollment attempt was cancelled', async () => {
         const keyPair = sodium.crypto_box_keypair();
         let cancelled = false;
+        const home = {
+            ...HOME_B,
+            connectionDescriptor: {
+                ...HOME_B.connectionDescriptor,
+                canonicalServerUrl: 'http://localhost:3010',
+                endpoints: [{ kind: 'iroh' as const, endpointId: 'a'.repeat(64) }],
+            },
+        };
         const acquisition = {
             finish: null as ((lease: {
                 leaseId: string;
                 runtimeOrigin: string;
+                endpointId: string;
                 release: typeof irohReleaseMock;
             }) => void) | null,
         };
@@ -378,16 +767,9 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
         }));
 
         const resultPromise = continueHomeLoginEnrollment({
-            home: {
-                ...HOME_B,
-                connectionDescriptor: {
-                    ...HOME_B.connectionDescriptor,
-                    canonicalServerUrl: 'http://localhost:3010',
-                    endpoints: [{ kind: 'iroh', endpointId: 'a'.repeat(64) }],
-                },
-            },
+            home,
             clientSecretKey: keyPair.privateKey,
-            assertion: ASSERTION,
+            assertion: assertionForHome(home),
             shouldCancel: () => cancelled,
         });
 
@@ -396,80 +778,13 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
         acquisition.finish?.({
             leaseId: 'lease-cancelled-after-acquire',
             runtimeOrigin: 'http://127.0.0.1:45991',
+            endpointId: 'a'.repeat(64),
             release: irohReleaseMock,
         });
 
         await expect(resultPromise).resolves.toEqual({ kind: 'cancelled' });
         expect(irohReleaseMock).toHaveBeenCalledTimes(1);
         expect(endpointFetchMock).not.toHaveBeenCalled();
-    });
-
-    it('releases a retained pure-Iroh approval lease when the continuation is cancelled', async () => {
-        const keyPair = sodium.crypto_box_keypair();
-        acquireIrohHomeRuntimeOriginMock.mockResolvedValueOnce({
-            leaseId: 'lease-home-b',
-            runtimeOrigin: 'http://127.0.0.1:45991',
-            release: irohReleaseMock,
-        });
-        endpointFetchMock.mockResolvedValueOnce(json(202, {
-            v: 1,
-            outcome: 'approval_required',
-            homeServerIdentityId: 'srv_home_b',
-            approvalId: 'approval-cancel',
-            deviceLabel: 'Phone',
-            expiresAtMs: Date.now() + 60_000,
-        }));
-        const pending = await continueHomeLoginEnrollment({
-            home: {
-                ...HOME_B,
-                connectionDescriptor: {
-                    ...HOME_B.connectionDescriptor,
-                    canonicalServerUrl: 'http://localhost:3010',
-                    endpoints: [{ kind: 'iroh', endpointId: 'a'.repeat(64) }],
-                },
-            },
-            clientSecretKey: keyPair.privateKey,
-            assertion: ASSERTION,
-        });
-        if (pending.kind !== 'approval_required') throw new Error('Expected approval continuation');
-        expect(irohReleaseMock).toHaveBeenCalledTimes(1);
-        await expect(pending.cancel()).resolves.toEqual({ kind: 'cancelled' });
-        expect(irohReleaseMock).toHaveBeenCalledTimes(1);
-    });
-
-    it('releases a retained pure-Iroh approval lease when resume observes expiry', async () => {
-        const keyPair = sodium.crypto_box_keypair();
-        const expiresAtMs = Date.now() + 5_000;
-        acquireIrohHomeRuntimeOriginMock.mockResolvedValueOnce({
-            leaseId: 'lease-home-b',
-            runtimeOrigin: 'http://127.0.0.1:45991',
-            release: irohReleaseMock,
-        });
-        endpointFetchMock.mockResolvedValueOnce(json(202, {
-            v: 1,
-            outcome: 'approval_required',
-            homeServerIdentityId: 'srv_home_b',
-            approvalId: 'approval-expiry',
-            deviceLabel: 'Phone',
-            expiresAtMs,
-        }));
-        const pending = await continueHomeLoginEnrollment({
-            home: {
-                ...HOME_B,
-                connectionDescriptor: {
-                    ...HOME_B.connectionDescriptor,
-                    canonicalServerUrl: 'http://localhost:3010',
-                    endpoints: [{ kind: 'iroh', endpointId: 'a'.repeat(64) }],
-                },
-            },
-            clientSecretKey: keyPair.privateKey,
-            assertion: ASSERTION,
-        });
-        if (pending.kind !== 'approval_required') throw new Error('Expected approval continuation');
-        vi.spyOn(Date, 'now').mockReturnValue(expiresAtMs);
-        await expect(pending.resume()).resolves.toEqual({ kind: 'expired' });
-        expect(irohReleaseMock).toHaveBeenCalledTimes(1);
-        expect(endpointFetchMock).toHaveBeenCalledTimes(1);
     });
 
     it('reports failure without profile adoption when explicit-target credential storage fails', async () => {
@@ -496,6 +811,7 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
 
     it('preserves target and rollback uncertainty for a partial credential/adoption commit', async () => {
         const keyPair = sodium.crypto_box_keypair();
+        const adoptionError = new Error('profile adoption failed');
         endpointFetchMock.mockResolvedValueOnce(json(200, {
             v: 1,
             homeServerIdentityId: 'srv_home_b',
@@ -503,7 +819,7 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
             issuedAtMs: Date.now() - 500,
             expiresAtMs: Date.now() + 120_000,
         }));
-        adoptHomeProfileMock.mockRejectedValueOnce(new Error('profile adoption failed'));
+        adoptHomeProfileMock.mockRejectedValueOnce(adoptionError);
         setCredentialsForServerUrlMock.mockResolvedValueOnce({
             rollback: async () => false,
         } as never);
@@ -518,6 +834,7 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
             kind: 'partial_commit',
             homeServerIdentityId: 'srv_home_b',
             canonicalServerUrl: 'https://home-b.test',
+            adoptionError,
             rollbackOutcome: { kind: 'not_applied', reason: 'ownership_changed' },
         });
         expect(result).not.toEqual({ kind: 'failed' });
@@ -596,9 +913,17 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
         expect(setCredentialsForServerUrlMock).not.toHaveBeenCalled();
     });
 
-    it('maps an initial transient redemption to the existing failed outcome', async () => {
+    it('retains assertion and key across an initial transient redemption until one explicit resume', async () => {
         const keyPair = sodium.crypto_box_keypair();
-        endpointFetchMock.mockResolvedValueOnce(json(503, { error: 'home_unavailable' }));
+        endpointFetchMock
+            .mockResolvedValueOnce(json(503, { error: 'home_unavailable' }))
+            .mockResolvedValueOnce(json(200, {
+                v: 1,
+                homeServerIdentityId: 'srv_home_b',
+                sealedHomeTokenBase64Url: sealCredentialPayload('home-b-after-initial-retry', keyPair.publicKey),
+                issuedAtMs: Date.now() - 500,
+                expiresAtMs: Date.now() + 120_000,
+            }));
 
         const result = await continueHomeLoginEnrollment({
             home: HOME_B,
@@ -606,18 +931,130 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
             assertion: ASSERTION,
         });
 
-        expect(result).toEqual({ kind: 'failed' });
+        expect(result).toMatchObject({
+            kind: 'transport_unavailable',
+            reason: 'request_failed',
+            resume: expect.any(Function),
+            cancel: expect.any(Function),
+        });
         expect(endpointFetchMock).toHaveBeenCalledTimes(1);
         expect(setCredentialsForServerUrlMock).not.toHaveBeenCalled();
+        await Promise.resolve();
+        expect(endpointFetchMock).toHaveBeenCalledTimes(1);
+        if (result.kind !== 'transport_unavailable' || !result.resume) return;
+
+        await expect(result.resume()).resolves.toEqual({
+            kind: 'enrolled',
+            homeServerIdentityId: 'srv_home_b',
+        });
+        expect(endpointFetchMock).toHaveBeenCalledTimes(2);
+        const firstBody = JSON.parse(String((endpointFetchMock.mock.calls[0]?.[1] as RequestInit).body));
+        const secondBody = JSON.parse(String((endpointFetchMock.mock.calls[1]?.[1] as RequestInit).body));
+        expect(secondBody.assertion).toEqual(firstBody.assertion);
+    });
+
+    it('single-flights concurrent resume calls for one retained initial attempt', async () => {
+        const keyPair = sodium.crypto_box_keypair();
+        let releaseRedemption: (() => void) | null = null;
+        endpointFetchMock
+            .mockResolvedValueOnce(json(503, { error: 'home_unavailable' }))
+            .mockImplementationOnce(async () => {
+                await new Promise<void>((resolve) => { releaseRedemption = resolve; });
+                return json(202, {
+                    v: 1,
+                    outcome: 'approval_required',
+                    homeServerIdentityId: 'srv_home_b',
+                    approvalId: 'approval-single-flight',
+                    deviceLabel: 'Phone',
+                    expiresAtMs: Date.now() + 60_000,
+                });
+            });
+
+        const result = await continueHomeLoginEnrollment({
+            home: HOME_B,
+            clientSecretKey: keyPair.privateKey,
+            assertion: ASSERTION,
+        });
+        if (result.kind !== 'transport_unavailable' || !result.resume) {
+            throw new Error('expected a resumable transient continuation');
+        }
+
+        const firstResume = result.resume();
+        const secondResume = result.resume();
+        expect(secondResume).toBe(firstResume);
+        await vi.waitFor(() => expect(endpointFetchMock).toHaveBeenCalledTimes(2));
+        releaseRedemption?.();
+        await expect(firstResume).resolves.toMatchObject({
+            kind: 'approval_required',
+            approvalId: 'approval-single-flight',
+        });
+        await expect(secondResume).resolves.toMatchObject({
+            kind: 'approval_required',
+            approvalId: 'approval-single-flight',
+        });
+        expect(endpointFetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('keeps an initial transient continuation resumable after its initiating screen unmounts', async () => {
+        const keyPair = sodium.crypto_box_keypair();
+        let initiatingScreenCancelled = false;
+        endpointFetchMock
+            .mockResolvedValueOnce(json(503, { error: 'home_unavailable' }))
+            .mockResolvedValueOnce(json(200, {
+                v: 1,
+                homeServerIdentityId: 'srv_home_b',
+                sealedHomeTokenBase64Url: sealCredentialPayload('home-b-after-unmount', keyPair.publicKey),
+                issuedAtMs: Date.now() - 500,
+                expiresAtMs: Date.now() + 120_000,
+            }));
+
+        const result = await continueHomeLoginEnrollment({
+            home: HOME_B,
+            clientSecretKey: keyPair.privateKey,
+            assertion: ASSERTION,
+            shouldCancel: () => initiatingScreenCancelled,
+        });
+        expect(result).toMatchObject({ kind: 'transport_unavailable', reason: 'request_failed' });
+        if (result.kind !== 'transport_unavailable' || !result.resume) return;
+
+        initiatingScreenCancelled = true;
+        await expect(result.resume()).resolves.toEqual({
+            kind: 'enrolled',
+            homeServerIdentityId: 'srv_home_b',
+        });
+        expect(endpointFetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('stops a detached initial transient continuation through its own cancel owner', async () => {
+        const keyPair = sodium.crypto_box_keypair();
+        endpointFetchMock
+            .mockResolvedValueOnce(json(503, { error: 'home_unavailable' }))
+            .mockResolvedValueOnce(json(200, {
+                v: 1,
+                homeServerIdentityId: 'srv_home_b',
+                sealedHomeTokenBase64Url: sealCredentialPayload('must-not-be-consumed', keyPair.publicKey),
+                issuedAtMs: Date.now() - 500,
+                expiresAtMs: Date.now() + 120_000,
+            }));
+
+        const result = await continueHomeLoginEnrollment({
+            home: HOME_B,
+            clientSecretKey: keyPair.privateKey,
+            assertion: ASSERTION,
+        });
+        if (result.kind !== 'transport_unavailable' || !result.resume || !result.cancel) {
+            throw new Error('expected a resumable transient continuation');
+        }
+
+        await expect(result.cancel()).resolves.toEqual({ kind: 'cancelled' });
+        await expect(result.resume()).resolves.toEqual({ kind: 'cancelled' });
+        expect(endpointFetchMock).toHaveBeenCalledTimes(1);
+        expect(setCredentialsForServerUrlMock).not.toHaveBeenCalled();
+        expect(adoptHomeProfileMock).not.toHaveBeenCalled();
     });
 
     it('retains approval state across a transient resume and retries through a fresh transport', async () => {
         const keyPair = sodium.crypto_box_keypair();
-        acquireIrohHomeRuntimeOriginMock.mockResolvedValue({
-            leaseId: 'lease-home-b',
-            runtimeOrigin: 'http://127.0.0.1:45991',
-            release: irohReleaseMock,
-        });
         endpointFetchMock
             .mockResolvedValueOnce(json(202, {
                 v: 1,
@@ -637,26 +1074,17 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
             }));
 
         const first = await continueHomeLoginEnrollment({
-            home: {
-                ...HOME_B,
-                connectionDescriptor: {
-                    ...HOME_B.connectionDescriptor,
-                    canonicalServerUrl: 'http://localhost:3010',
-                    endpoints: [{ kind: 'iroh', endpointId: 'a'.repeat(64) }],
-                },
-            },
+            home: HOME_B,
             clientSecretKey: keyPair.privateKey,
             assertion: ASSERTION,
         });
         expect(first).toMatchObject({ kind: 'approval_required', approvalId: 'approval-transient' });
         expect(endpointFetchMock).toHaveBeenCalledTimes(1);
-        expect(irohReleaseMock).toHaveBeenCalledTimes(1);
         if (first.kind !== 'approval_required') return;
 
         const second = await first.resume();
         expect(second).toMatchObject({ kind: 'transport_unavailable', resume: expect.any(Function) });
         expect(endpointFetchMock).toHaveBeenCalledTimes(2);
-        expect(irohReleaseMock).toHaveBeenCalledTimes(2);
         if (second.kind !== 'transport_unavailable' || !second.resume) return;
 
         await expect(second.resume()).resolves.toEqual({
@@ -664,8 +1092,6 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
             homeServerIdentityId: 'srv_home_b',
         });
         expect(endpointFetchMock).toHaveBeenCalledTimes(3);
-        expect(acquireIrohHomeRuntimeOriginMock).toHaveBeenCalledTimes(3);
-        expect(irohReleaseMock).toHaveBeenCalledTimes(3);
         const firstBody = JSON.parse(String((endpointFetchMock.mock.calls[0]?.[1] as RequestInit).body));
         const secondBody = JSON.parse(String((endpointFetchMock.mock.calls[1]?.[1] as RequestInit).body));
         const thirdBody = JSON.parse(String((endpointFetchMock.mock.calls[2]?.[1] as RequestInit).body));
@@ -701,6 +1127,7 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
     it.each([
         ['approval_expired', 'expired'],
         ['approval_invalid', 'failed'],
+        ['invalid_audience', 'failed'],
     ] as const)('maps terminal %s without retry or credential mutation', async (error, kind) => {
         const keyPair = sodium.crypto_box_keypair();
         endpointFetchMock
@@ -763,7 +1190,7 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
                 preferredHomeServerIdentityId: 'srv_home_b',
                 refreshedAtMs: Date.now(),
                 error: null,
-                reconciliation: { kind: 'not_run' },
+                reconciliation: { kind: 'not_run' as const },
             },
             requestLoginAssertion: async (homeServerIdentityId: string, clientBoxPublicKeyBase64: string) => (
                 await createAccountDirectoryClient({ endpoint: 'https://directory.test', serverIdentityId: 'srv_dir_1' }).requestLoginAssertion(
@@ -773,8 +1200,12 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
             ),
         };
 
-        const first = await enrollPreferredDirectoryHome(sessionSnapshot);
-        expect(first).toMatchObject({ kind: 'approval_required', approvalId: 'approval-8' });
+        const first = await enrollPreferredDirectoryHome(sessionSnapshot, { entryIntent: 'enter_preferred_home' });
+        expect(first).toMatchObject({
+            kind: 'approval_required',
+            approvalId: 'approval-8',
+            entryIntent: 'enter_preferred_home',
+        });
         const assertionRequest = JSON.parse(String((endpointFetchMock.mock.calls[0]?.[1] as RequestInit).body));
         expect(assertionRequest.clientBoxPublicKeyBase64).toMatch(/^[A-Za-z0-9+/]{43}=$/);
 
@@ -789,13 +1220,78 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
             expiresAtMs: Date.now() + 120_000,
         }));
 
-        const resumed = await first.resume();
+        const resumed = await resumePendingPreferredHomeEnrollment();
         expect(resumed).toEqual({ kind: 'enrolled', homeServerIdentityId: 'srv_home_b' });
         expect(setCredentialsForServerUrlMock).toHaveBeenCalledWith(
             'https://home-b.test',
             { serverId: 'srv_home_b' },
             { token: 'home-b-resumed-token' },
         );
+        expect(setActiveServerAndSwitchMock).toHaveBeenCalledWith({
+            serverId: 'srv_home_b',
+            scope: 'tab',
+        });
+    });
+
+    it('retains an initial transient only for its exact Account Service and Home', async () => {
+        await cancelPendingPreferredHomeEnrollment();
+        const assertionRequests: string[] = [];
+        const createSession = (serviceKey: string) => ({
+            serviceKey,
+            supportsHomeEnrollment: true,
+            snapshot: {
+                endpoint: 'https://directory.test',
+                status: 'ready' as const,
+                homes: [HOME_B],
+                preferredHomeServerIdentityId: HOME_B.homeServerIdentityId,
+                refreshedAtMs: Date.now(),
+                error: null,
+                reconciliation: { kind: 'not_run' as const },
+            },
+            requestLoginAssertion: async (_homeServerIdentityId: string, clientBoxPublicKeyBase64: string) => {
+                assertionRequests.push(serviceKey);
+                return { ...ASSERTION, clientBoxPublicKeyBase64 };
+            },
+        });
+        endpointFetchMock
+            .mockResolvedValueOnce(json(503, { error: 'home_unavailable' }))
+            .mockResolvedValueOnce(json(503, { error: 'home_unavailable' }));
+
+        const first = await enrollPreferredDirectoryHome(
+            createSession('https://directory-one.test\u0000srv_dir_1'),
+            { entryIntent: 'enter_preferred_home' },
+        );
+        expect(first).toMatchObject({
+            kind: 'transport_unavailable',
+            serviceKey: 'https://directory-one.test\u0000srv_dir_1',
+            entryIntent: 'enter_preferred_home',
+            homeServerIdentityId: 'srv_home_b',
+        });
+        expect(getPendingPreferredHomeEnrollment()).toBe(first);
+
+        const reused = await enrollPreferredDirectoryHome(
+            createSession('https://directory-one.test\u0000srv_dir_1'),
+            { entryIntent: 'enter_preferred_home' },
+        );
+        expect(reused).toBe(first);
+        expect(assertionRequests).toEqual(['https://directory-one.test\u0000srv_dir_1']);
+
+        const replacement = await enrollPreferredDirectoryHome(
+            createSession('https://directory-two.test\u0000srv_dir_2'),
+            { entryIntent: 'connect_service' },
+        );
+        expect(replacement).toMatchObject({
+            kind: 'transport_unavailable',
+            serviceKey: 'https://directory-two.test\u0000srv_dir_2',
+            entryIntent: 'connect_service',
+        });
+        expect(assertionRequests).toEqual([
+            'https://directory-one.test\u0000srv_dir_1',
+            'https://directory-two.test\u0000srv_dir_2',
+        ]);
+        if (first.kind !== 'transport_unavailable' || !first.resume) return;
+        await expect(first.resume()).resolves.toEqual({ kind: 'cancelled' });
+        await cancelPendingPreferredHomeEnrollment();
     });
 
     it('returns a typed transport blocker for an Iroh-only non-focused Home', async () => {
@@ -803,21 +1299,24 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
             Object.assign(new Error('native unavailable'), { name: 'IrohError', code: 'unavailable' }),
         );
         const keyPair = sodium.crypto_box_keypair();
-        const result = await continueHomeLoginEnrollment({
-            home: {
-                ...HOME_B,
-                connectionDescriptor: {
-                    ...HOME_B.connectionDescriptor,
-                    endpoints: [{ kind: 'iroh', endpointId: 'a'.repeat(64) }],
-                },
+        const home = {
+            ...HOME_B,
+            connectionDescriptor: {
+                ...HOME_B.connectionDescriptor,
+                endpoints: [{ kind: 'iroh' as const, endpointId: 'a'.repeat(64) }],
             },
+        };
+        const result = await continueHomeLoginEnrollment({
+            home,
             clientSecretKey: keyPair.privateKey,
-            assertion: ASSERTION,
+            assertion: assertionForHome(home),
         });
 
-        expect(result).toEqual({
+        expect(result).toMatchObject({
             kind: 'transport_unavailable',
             reason: 'iroh_transport_unavailable',
+            resume: expect.any(Function),
+            cancel: expect.any(Function),
         });
         expect(createServerFetchAtEndpointMock).not.toHaveBeenCalled();
         expect(setCredentialsForServerUrlMock).not.toHaveBeenCalled();
@@ -829,20 +1328,21 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
             Object.assign(new Error('identity mismatch'), { name: 'IrohError', code: 'identity_mismatch' }),
         );
         const keyPair = sodium.crypto_box_keypair();
+        const home = {
+            ...HOME_B,
+            connectionDescriptor: {
+                ...HOME_B.connectionDescriptor,
+                endpoints: [
+                    { kind: 'iroh' as const, endpointId: 'a'.repeat(64) },
+                    { kind: 'https' as const, url: 'https://home-b.test' },
+                ],
+            },
+        };
 
         const result = await continueHomeLoginEnrollment({
-            home: {
-                ...HOME_B,
-                connectionDescriptor: {
-                    ...HOME_B.connectionDescriptor,
-                    endpoints: [
-                        { kind: 'iroh', endpointId: 'a'.repeat(64) },
-                        { kind: 'https', url: 'https://home-b.test' },
-                    ],
-                },
-            },
+            home,
             clientSecretKey: keyPair.privateKey,
-            assertion: ASSERTION,
+            assertion: assertionForHome(home),
         });
 
         expect(result).toEqual({
@@ -850,68 +1350,6 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
             reason: 'iroh_transport_failed_closed',
         });
         expect(endpointFetchMock).not.toHaveBeenCalled();
-    });
-
-    it('retains approval when Iroh reacquisition is transient and retries with a later lease', async () => {
-        const keyPair = sodium.crypto_box_keypair();
-        const lease = {
-            leaseId: 'lease-home-b',
-            runtimeOrigin: 'http://127.0.0.1:45991',
-            release: irohReleaseMock,
-        };
-        acquireIrohHomeRuntimeOriginMock
-            .mockResolvedValueOnce(lease)
-            .mockRejectedValueOnce(Object.assign(
-                new Error('native unavailable'),
-                { name: 'IrohError', code: 'unavailable' },
-            ))
-            .mockResolvedValueOnce(lease);
-        endpointFetchMock
-            .mockResolvedValueOnce(json(202, {
-                v: 1,
-                outcome: 'approval_required',
-                homeServerIdentityId: 'srv_home_b',
-                approvalId: 'approval-transport-retry',
-                deviceLabel: 'Phone',
-                expiresAtMs: Date.now() + 60_000,
-            }))
-            .mockResolvedValueOnce(json(200, {
-                v: 1,
-                homeServerIdentityId: 'srv_home_b',
-                sealedHomeTokenBase64Url: sealCredentialPayload('home-b-after-transport-retry', keyPair.publicKey),
-                issuedAtMs: Date.now() - 500,
-                expiresAtMs: Date.now() + 120_000,
-            }));
-        const home = {
-            ...HOME_B,
-            connectionDescriptor: {
-                ...HOME_B.connectionDescriptor,
-                canonicalServerUrl: 'http://localhost:3010',
-                endpoints: [{ kind: 'iroh' as const, endpointId: 'a'.repeat(64) }],
-            },
-        };
-
-        const first = await continueHomeLoginEnrollment({
-            home,
-            clientSecretKey: keyPair.privateKey,
-            assertion: ASSERTION,
-        });
-        if (first.kind !== 'approval_required') throw new Error('Expected approval continuation');
-
-        const retry = await first.resume();
-        expect(retry).toMatchObject({ kind: 'transport_unavailable', resume: expect.any(Function) });
-        expect(endpointFetchMock).toHaveBeenCalledTimes(1);
-        expect(acquireIrohHomeRuntimeOriginMock).toHaveBeenCalledTimes(2);
-        expect(irohReleaseMock).toHaveBeenCalledTimes(1);
-        if (retry.kind !== 'transport_unavailable' || !retry.resume) return;
-
-        await expect(retry.resume()).resolves.toEqual({
-            kind: 'enrolled',
-            homeServerIdentityId: 'srv_home_b',
-        });
-        expect(endpointFetchMock).toHaveBeenCalledTimes(2);
-        expect(acquireIrohHomeRuntimeOriginMock).toHaveBeenCalledTimes(3);
-        expect(irohReleaseMock).toHaveBeenCalledTimes(2);
     });
 
     it('rejects malformed UTF-8 token bytes before persistence', async () => {

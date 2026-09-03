@@ -1,17 +1,35 @@
 import { encodeBase64 } from '@/encryption/base64';
 import sodium from '@/encryption/libsodium.lib';
+import { createHomeCredentialDestinationDigestV1 } from '@happier-dev/protocol';
 import type { AccountDirectorySession } from '@/sync/domains/accountDirectory/accountDirectorySession';
+import type { AccountServiceEntryIntent } from '@/auth/storage/tokenStorage';
 import { continueHomeLoginEnrollment, type HomeLoginContinuationResult } from './homeLoginApproval';
+import { Platform } from 'react-native';
+import {
+    resolveServerProfileForPortableIdentity,
+    resolveServerProfileScopeId,
+} from '@/sync/domains/server/serverProfiles';
+import { isSelectedAccountServiceKey } from '@/sync/domains/accountDirectory/accountServiceSelection';
+import { resolveRoutineServerSelectionScope } from '@/sync/domains/server/selection/serverSelectionScope';
+import { isDesktopHost } from '@/utils/platform/desktopHost';
 
 export type PreferredDirectoryHomeEnrollmentResult =
     | HomeLoginContinuationResult
     | Readonly<{ kind: 'unavailable'; reason: 'directory_not_ready' | 'no_preferred_home' | 'unsupported' }>
     | Readonly<{ kind: 'failed'; error?: unknown }>;
 
-export type PendingPreferredHomeEnrollment = Extract<
-    HomeLoginContinuationResult,
-    { kind: 'approval_required' }
-> & Readonly<{ serviceKey: string }>;
+type ResumableHomeLoginContinuation =
+    | Extract<HomeLoginContinuationResult, { kind: 'approval_required' }>
+    | (Extract<HomeLoginContinuationResult, { kind: 'transport_unavailable' }> & Readonly<{
+        resume: () => Promise<HomeLoginContinuationResult>;
+        cancel: () => Promise<HomeLoginContinuationResult>;
+    }>);
+
+export type PendingPreferredHomeEnrollment = ResumableHomeLoginContinuation & Readonly<{
+    serviceKey: string;
+    entryIntent: AccountServiceEntryIntent;
+    homeServerIdentityId: string;
+}>;
 
 type PreferredDirectoryEnrollmentSession = Pick<
     AccountDirectorySession,
@@ -25,10 +43,60 @@ let pendingPreferredHomeResume: Readonly<{
 }> | null = null;
 const pendingListeners = new Set<() => void>();
 
-function publishPending(result: HomeLoginContinuationResult, serviceKey?: string): void {
+export type PreferredHomeEntryIntentOutcome = 'completed' | 'blocked' | 'superseded';
+
+/**
+ * Applies the semantic entry intent after a successful non-focusing adoption. Only
+ * `enter_preferred_home` opens a Home, and only while its own Account Service is still selected —
+ * an immediate result and an approval resume both recheck that here rather than at each caller.
+ */
+export async function finalizePreferredHomeEnrollmentEntryIntent(
+    homeServerIdentityId: string,
+    entryIntent: AccountServiceEntryIntent,
+    serviceKey: string,
+): Promise<PreferredHomeEntryIntentOutcome> {
+    if (entryIntent === 'connect_service') return 'completed';
+    if (!isSelectedAccountServiceKey(serviceKey)) return 'superseded';
+    const resolvedProfile = resolveServerProfileForPortableIdentity(homeServerIdentityId);
+    if (resolvedProfile.kind !== 'resolved') return 'blocked';
+    try {
+        // Settings uses `connect_service` and must not pull the active-runtime
+        // switch graph into its non-focusing enrollment path. Load the single
+        // canonical switch owner only for the explicit Welcome/open intent.
+        const { setActiveServerAndSwitch } = await import('@/sync/domains/server/activeServerSwitch');
+        const switched = await setActiveServerAndSwitch({
+            serverId: resolveServerProfileScopeId(resolvedProfile.profile),
+            scope: resolveRoutineServerSelectionScope(Platform.OS, isDesktopHost()),
+        });
+        return switched === 'blocked' ? 'blocked' : 'completed';
+    } catch {
+        return 'blocked';
+    }
+}
+
+function publishPending(
+    result: HomeLoginContinuationResult,
+    serviceKey?: string,
+    entryIntent?: AccountServiceEntryIntent,
+    homeServerIdentityId?: string,
+): void {
     const boundServiceKey = serviceKey ?? pendingPreferredHomeEnrollment?.serviceKey ?? null;
-    pendingPreferredHomeEnrollment = result.kind === 'approval_required' && boundServiceKey
-        ? { ...result, serviceKey: boundServiceKey }
+    const boundEntryIntent = entryIntent ?? pendingPreferredHomeEnrollment?.entryIntent ?? null;
+    const boundHomeServerIdentityId = result.kind === 'approval_required'
+        ? result.homeServerIdentityId
+        : homeServerIdentityId ?? pendingPreferredHomeEnrollment?.homeServerIdentityId ?? null;
+    const resumable = result.kind === 'approval_required'
+        || (result.kind === 'transport_unavailable' && result.resume && result.cancel);
+    pendingPreferredHomeEnrollment = resumable
+        && boundServiceKey
+        && boundEntryIntent
+        && boundHomeServerIdentityId
+        ? {
+            ...result,
+            serviceKey: boundServiceKey,
+            entryIntent: boundEntryIntent,
+            homeServerIdentityId: boundHomeServerIdentityId,
+        }
         : null;
     for (const listener of pendingListeners) listener();
 }
@@ -42,9 +110,15 @@ export function subscribePendingPreferredHomeEnrollment(listener: () => void): (
     return () => pendingListeners.delete(listener);
 }
 
-export async function cancelPendingPreferredHomeEnrollment(): Promise<void> {
+export async function cancelPendingPreferredHomeEnrollment(
+    fallback?: Pick<PendingPreferredHomeEnrollment, 'cancel'>,
+): Promise<void> {
     const pending = pendingPreferredHomeEnrollment;
-    const cancellation = pending?.cancel().catch(() => {});
+    if (pending && fallback && pending.cancel !== fallback.cancel) {
+        await fallback.cancel().catch(() => {});
+        return;
+    }
+    const cancellation = (pending ?? fallback)?.cancel().catch(() => {});
     publishPending({ kind: 'cancelled' });
     await cancellation;
 }
@@ -55,12 +129,25 @@ export async function resumePendingPreferredHomeEnrollment(): Promise<HomeLoginC
     if (pendingPreferredHomeResume?.pending === pending) {
         return await pendingPreferredHomeResume.promise;
     }
-    const resume = pending.resume().then((result) => {
+    const resume = pending.resume().then(async (result) => {
+        if (
+            result.kind === 'enrolled'
+            && await finalizePreferredHomeEnrollmentEntryIntent(
+                result.homeServerIdentityId,
+                pending.entryIntent,
+                pending.serviceKey,
+            ) === 'blocked'
+        ) {
+            throw new Error('Unable to enter the enrolled preferred Home');
+        }
         if (pendingPreferredHomeEnrollment === pending) {
-            if (result.kind === 'approval_required') return pending;
-            if (result.kind !== 'transport_unavailable' || !result.resume) {
-                publishPending(result, pending.serviceKey);
-            }
+            publishPending(
+                result,
+                pending.serviceKey,
+                pending.entryIntent,
+                pending.homeServerIdentityId,
+            );
+            return pendingPreferredHomeEnrollment ?? result;
         }
         return result;
     });
@@ -79,7 +166,11 @@ export async function resumePendingPreferredHomeEnrollment(): Promise<HomeLoginC
  */
 export async function enrollPreferredDirectoryHome(
     session: PreferredDirectoryEnrollmentSession,
-    options: Readonly<{ shouldCancel?: () => boolean }> = {},
+    options: Readonly<{
+        entryIntent: AccountServiceEntryIntent;
+        shouldCancel?: () => boolean;
+        shouldInvalidateContinuation?: () => boolean;
+    }>,
 ): Promise<PreferredDirectoryHomeEnrollmentResult> {
     if (options.shouldCancel?.()) return { kind: 'cancelled' };
     const snapshot = session.snapshot;
@@ -98,6 +189,7 @@ export async function enrollPreferredDirectoryHome(
     if (
         retained?.serviceKey === session.serviceKey
         && retained.homeServerIdentityId === entry.homeServerIdentityId
+        && retained.entryIntent === options.entryIntent
     ) return retained;
 
     await cancelPendingPreferredHomeEnrollment();
@@ -109,6 +201,12 @@ export async function enrollPreferredDirectoryHome(
             // base64 (not base64url) for the requester box key.
             encodeBase64(keyPair.publicKey, 'base64'),
         );
+        const expectedCredentialDestinationDigest = createHomeCredentialDestinationDigestV1(
+            entry.connectionDescriptor,
+        );
+        if (assertion.credentialDestinationDigestBase64Url !== expectedCredentialDestinationDigest) {
+            throw new Error('Account Service assertion targeted a different credential destination');
+        }
         if (options.shouldCancel?.()) return { kind: 'cancelled' };
         if (assertion.audienceHomeServerIdentityId !== entry.homeServerIdentityId) {
             throw new Error('Account Service assertion targeted a different Home');
@@ -119,11 +217,32 @@ export async function enrollPreferredDirectoryHome(
             assertion,
             shouldCancel: options.shouldCancel,
         });
-        if (options.shouldCancel?.()) return { kind: 'cancelled' };
-        publishPending(result, session.serviceKey);
-        return result.kind === 'approval_required'
-            ? pendingPreferredHomeEnrollment ?? result
-            : result;
+        // Retryable first-contact failures and durable approval requests both
+        // retain the exact assertion/key/descriptor tuple. Publish that
+        // detached continuation before initiating-screen teardown can discard
+        // it; only explicit service replacement/disconnect invalidates it.
+        if (
+            result.kind === 'approval_required'
+            || (result.kind === 'transport_unavailable' && result.resume && result.cancel)
+        ) {
+            // Disconnect and Account Service replacement are stronger than
+            // ordinary initiating-screen cancellation. They can race the
+            // Home's 202 before the continuation exists, so consume the newly
+            // detached continuation here instead of publishing it afterward.
+            if (options.shouldInvalidateContinuation?.()) {
+                await result.cancel().catch(() => {});
+                return { kind: 'cancelled' };
+            }
+            publishPending(
+                result,
+                session.serviceKey,
+                options.entryIntent,
+                entry.homeServerIdentityId,
+            );
+            return pendingPreferredHomeEnrollment ?? result;
+        }
+        publishPending(result, session.serviceKey, options.entryIntent);
+        return result;
     } catch (error) {
         return { kind: 'failed', error };
     }

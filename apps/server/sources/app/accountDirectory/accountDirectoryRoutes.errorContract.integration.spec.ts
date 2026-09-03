@@ -8,11 +8,22 @@ import { enableErrorHandlers } from "@/app/api/utils/enableErrorHandlers";
 import { resolveApiRateLimitPluginOptions } from "@/app/api/utils/apiRateLimitPolicy";
 import type { Fastify as AppFastify } from "@/app/api/types";
 import { applyEnvValues, restoreEnv, snapshotEnv } from "@/app/api/testkit/env";
-import { AccountDirectoryRouteErrorResponseV1Schema } from "@happier-dev/protocol";
+import {
+    AccountDirectoryRouteErrorResponseV1Schema,
+    createHomeCredentialDestinationDigestV1,
+} from "@happier-dev/protocol";
 
 import { registerAccountDirectoryRoutes, registerHomeLoginRoute } from "./accountDirectoryRoutes";
 
 const envSnapshot = snapshotEnv();
+
+const HOME_DESCRIPTOR = {
+    v: 1 as const,
+    homeServerIdentityId: "srv_home",
+    canonicalServerUrl: "https://home.example.test",
+    revision: 1,
+    endpoints: [{ kind: "https" as const, url: "https://home.example.test" }],
+};
 
 const ASSERTION = {
     v: 1 as const,
@@ -20,6 +31,7 @@ const ASSERTION = {
     issuerServerIdentityId: "srv_account_service",
     issuerSubjectId: "account-1",
     audienceHomeServerIdentityId: "srv_home",
+    credentialDestinationDigestBase64Url: createHomeCredentialDestinationDigestV1(HOME_DESCRIPTOR),
     clientBoxPublicKeyBase64: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
     issuedAtMs: 1_700_000_000_000,
     expiresAtMs: 1_700_000_180_000,

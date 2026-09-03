@@ -3,23 +3,30 @@ import { Platform, ScrollView, View } from 'react-native';
 import type { StyleProp, ViewStyle } from 'react-native';
 import Constants from 'expo-constants';
 import { useRouter } from 'expo-router';
-import { useIsFocused } from '@react-navigation/native';
+import { useIsFocused, usePreventRemove } from '@react-navigation/native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { generateAuthKeyPair, authQRStart } from '@/auth/flows/qrStart';
 import { authQRWait } from '@/auth/flows/qrWait';
 import {
-    parsePairingDeepLink,
+    classifyLegacyPairingDeepLink,
     parseHomeQrInviteDeepLink,
 } from '@/auth/pairing/pairingUrl';
+import { promptLegacyPairingUpdateRequired } from '@/auth/pairing/legacyPairingUpdateRequired';
 import { parseAccountConnectDeepLink } from '@/auth/pairing/accountConnectUrl';
 import { Modal } from '@/modal';
 import { t } from '@/text';
 import { useFeatureDecision } from '@/hooks/server/useFeatureDecision';
 import { pairingRequest, pairingStart, pairingStatus, type PairingRequestResult } from '@/sync/api/account/apiPairingAuth';
-import { adoptHomeProfileWithCredentials } from '@/sync/domains/server/adoptHomeProfile';
+import {
+    adoptHomeProfileWithCanonicalUrlMigration,
+    adoptHomeProfileWithCredentials,
+    HomeProfileAdoptionPartialCommitError,
+    HomeProfileCanonicalUrlMigrationPartialCommitError,
+} from '@/sync/domains/server/adoptHomeProfile';
 import {
     computeHomeQrBindingProofV2,
+    createHomeCredentialDestinationDigestV1,
     deriveHomeQrBindingKeyV2,
     deriveHomeQrRendezvousSecretV2,
     deriveHomeQrRendezvousVerifierV2,
@@ -40,6 +47,7 @@ import { promptAccountConnectApprovalRequired } from './accountConnectApprovalGu
 import {
     formatEnrollmentExpiry,
     formatHomeEnrollmentTargetLabel,
+    resolveHomeEnrollmentPresentation,
 } from '@/auth/pairing/pairingPresentation';
 import { probeServerFeaturesAtUrl } from '@/sync/api/capabilities/serverFeaturesClient';
 import { enrollmentPollingBackoffMs } from '@/auth/enrollment/enrollmentPollingBackoff';
@@ -47,10 +55,33 @@ import { completeTrustedHomeQrPairingRequest, InvalidTrustedHomeQrRequestError }
 import {
     buildHomeConnectionDescriptorForProfile,
     resolveServerProfileForPortableIdentity,
+    type ServerProfile,
 } from '@/sync/domains/server/serverProfiles';
 import { AccountCompletionError } from '@/auth/flows/accountCompletion';
+import { PairingLinkDisclosure } from '@/components/auth/pairing/PairingLinkDisclosure';
+import type { HomeQrEntryIntent } from '@/auth/pairing/homeQrEntryIntent';
+import { openEnrolledHomeOrReturnToShell } from '@/auth/pairing/openEnrolledHome';
 
 const DESKTOP_QR_SCAN_FEATURE_ID = 'auth.pairing.desktopQrMobileScan' as const;
+
+type ScannedHomeEnrollmentPartialCommitError =
+    | HomeProfileAdoptionPartialCommitError
+    | HomeProfileCanonicalUrlMigrationPartialCommitError;
+
+export type ScannedHomeEnrollmentPartialCommit = Readonly<{
+    kind: 'partial_commit';
+    error: ScannedHomeEnrollmentPartialCommitError;
+}>;
+
+/** Keeps owner-provided recovery facts intact at the forward QR caller boundary. */
+export function classifyScannedHomeEnrollmentPartialCommit(
+    error: unknown,
+): ScannedHomeEnrollmentPartialCommit | null {
+    return error instanceof HomeProfileAdoptionPartialCommitError
+        || error instanceof HomeProfileCanonicalUrlMigrationPartialCommitError
+        ? { kind: 'partial_commit', error }
+        : null;
+}
 
 function isTransientEnrollmentStatus(status: number): boolean {
     return status === 0 || status === 408 || status === 429 || status >= 500;
@@ -166,6 +197,7 @@ function resolveDeviceLabel(): string | null {
 }
 
 export type RestoreScanComputerQrViewProps = Readonly<{
+    entryIntent: HomeQrEntryIntent;
     embedded?: boolean;
     initialPairingLink?: string | null;
     onBack?: () => void;
@@ -192,6 +224,9 @@ export const RestoreScanComputerQrView = React.memo(function RestoreScanComputer
 
     const [phase, setPhase] = React.useState<'idle' | 'requesting' | 'securing'>('idle');
     const [activeInvite, setActiveInvite] = React.useState<HomeQrInviteV2 | null>(null);
+    const [navigationLocked, setNavigationLocked] = React.useState(false);
+    const [shellNavigationRequested, setShellNavigationRequested] = React.useState(false);
+    usePreventRemove(navigationLocked, () => undefined);
     const nextAttemptIdRef = React.useRef(0);
     const activeAttemptRef = React.useRef<{
         id: number;
@@ -260,39 +295,83 @@ export const RestoreScanComputerQrView = React.memo(function RestoreScanComputer
     type ScannedEnrollmentLink =
         | Readonly<{ kind: 'accountConnect' }>
         | Readonly<{ kind: 'inviteV2'; invite: HomeQrInviteV2 }>
-        | Readonly<{ kind: 'pairingV1'; pairId: string; secret: string; serverUrl: string | null }>;
+        | Readonly<{ kind: 'pairingV1' }>;
 
     const classifyScannedLink = React.useCallback((rawUrl: string): ScannedEnrollmentLink | null => {
         if (parseAccountConnectDeepLink(rawUrl)) return { kind: 'accountConnect' };
         const invite = parseHomeQrInviteDeepLink(rawUrl);
         if (invite) return { kind: 'inviteV2', invite: invite.invite };
-        const legacy = parsePairingDeepLink(rawUrl);
-        if (legacy) return { kind: 'pairingV1', pairId: legacy.pairId, secret: legacy.secret, serverUrl: legacy.serverUrl };
+        if (classifyLegacyPairingDeepLink(rawUrl)) return { kind: 'pairingV1' };
         return null;
     }, []);
+
+    React.useEffect(() => {
+        props.onNavigationLockChange?.(navigationLocked);
+        return () => props.onNavigationLockChange?.(false);
+    }, [navigationLocked, props.onNavigationLockChange]);
+
+    React.useEffect(() => {
+        if (!shellNavigationRequested || navigationLocked) return;
+        router.replace('/');
+    }, [navigationLocked, router, shellNavigationRequested]);
 
     /** Persist the enrollment result under the explicit target Home without touching focus. */
     const completeEnrollment = React.useCallback(async (
         credentials: AuthCredentials,
-        target: HomeQrEnrollmentTarget,
         enrolledIdentity: string | null,
-    ): Promise<boolean> => {
+        observedDescriptor: HomeQrInviteV2['home'],
+    ): Promise<
+        | Readonly<{ kind: 'completed'; profile: ServerProfile }>
+        | ScannedHomeEnrollmentPartialCommit
+        | Readonly<{ kind: 'failed' }>
+    > => {
         try {
-            const descriptor = target.descriptor;
+            const descriptor = observedDescriptor;
             // A QR credential is authority-bearing. Persist only after the target Home
             // identity has been bound either by the V2 invite or the Home response.
-            if (!enrolledIdentity || enrolledIdentity !== descriptor.homeServerIdentityId) return false;
-            await adoptHomeProfileWithCredentials({
+            if (!enrolledIdentity || enrolledIdentity !== descriptor.homeServerIdentityId) return { kind: 'failed' };
+            const existingResolution = resolveServerProfileForPortableIdentity(enrolledIdentity);
+            const existingProfile = existingResolution.kind === 'resolved'
+                ? existingResolution.profile
+                : null;
+            if (
+                existingProfile
+                && (existingProfile.canonicalServerUrl ?? existingProfile.serverUrl) !== descriptor.canonicalServerUrl
+            ) {
+                // Lane 04 remains the sole owner of same-identity URL migration,
+                // including descriptor revision adjudication and old-slot cleanup.
+                await adoptHomeProfileWithCanonicalUrlMigration({
+                    descriptor,
+                    source: 'qr',
+                    preserveUserLabel: true,
+                });
+            }
+            const profile = await adoptHomeProfileWithCredentials({
                 descriptor,
                 source: 'qr',
                 preserveUserLabel: true,
                 credentials,
             });
-            return true;
-        } catch {
-            return false;
+            return { kind: 'completed', profile };
+        } catch (error) {
+            return classifyScannedHomeEnrollmentPartialCommit(error) ?? { kind: 'failed' };
         }
     }, []);
+
+    const openRetainedHomeOrReturnToShell = React.useCallback(async (
+        profileId: string,
+        targetLabel: string,
+        attemptId: number,
+    ): Promise<void> => {
+        const result = await openEnrolledHomeOrReturnToShell({
+            profileId,
+            targetLabel,
+            isCurrent: () => isCurrentAttempt(attemptId),
+        });
+        if (result !== 'cancelled' && isCurrentAttempt(attemptId)) {
+            setShellNavigationRequested(true);
+        }
+    }, [isCurrentAttempt]);
 
     const processPairingLink = React.useCallback(
         async (rawUrl: string) => {
@@ -309,10 +388,8 @@ export const RestoreScanComputerQrView = React.memo(function RestoreScanComputer
                 return;
             }
             if (link.kind === 'pairingV1') {
-                // No independently bound released V1 fixture exists. Recognition is
-                // retained only to direct users to the current Home QR flow.
-                const action = await promptAccountConnectApprovalRequired();
-                if (action === 'showQr') openShowQrInstead();
+                const action = await promptLegacyPairingUpdateRequired();
+                if (action === 'cancel') handleBack();
                 return;
             }
 
@@ -320,7 +397,6 @@ export const RestoreScanComputerQrView = React.memo(function RestoreScanComputer
             if (!attempt) return;
 
             let target: HomeQrEnrollmentTarget | null = null;
-            let didComplete = false;
             try {
                 if (Date.now() > link.invite.expiresAtMs) {
                     await Modal.alertAsync(t('modals.authRequestExpired'), t('modals.authRequestExpiredDescription'));
@@ -409,13 +485,14 @@ export const RestoreScanComputerQrView = React.memo(function RestoreScanComputer
                         if (!isCurrentAttempt(attempt.id)) return;
                         if (status.ok && status.data.state === 'pending') {
                             statusFailures = 0;
-                        } else if (status.ok) {
+                        } else if (status.ok && status.data.state === 'requested') {
                             const expectedRequesterPublicKey = decodeBase64(link.invite.requesterPublicKeyBase64Url, 'base64url');
                             // This is the Home-authority commit boundary. The shared owner checks
                             // the exact key, Home, expiry, direction and proof before responding.
                             attempt.cancellable = false;
-                            props.onNavigationLockChange?.(true);
+                            setNavigationLocked(true);
                             setPhase('securing');
+                            let completed = false;
                             try {
                                 await completeTrustedHomeQrPairingRequest({
                                     context: {
@@ -431,6 +508,7 @@ export const RestoreScanComputerQrView = React.memo(function RestoreScanComputer
                                     signal: attempt.controller.signal,
                                 });
                                 if (!isCurrentAttempt(attempt.id)) return;
+                                completed = true;
                             } catch (error) {
                                 if (!isCurrentAttempt(attempt.id)) return;
                                 if (error instanceof AccountCompletionError && error.retryable) {
@@ -443,8 +521,9 @@ export const RestoreScanComputerQrView = React.memo(function RestoreScanComputer
                                     return;
                                 }
                             }
-                            if (statusFailures === 0) {
-                                didComplete = true;
+                            // Success is decided by this attempt's own completion, not by an
+                            // earlier transient poll failure that the retry already recovered.
+                            if (completed) {
                                 await Modal.alertAsync(
                                     formatHomeEnrollmentTargetLabel(storedDescriptor),
                                     t('connect.requesterDeviceAddedBody'),
@@ -452,7 +531,11 @@ export const RestoreScanComputerQrView = React.memo(function RestoreScanComputer
                                 handleBack();
                                 return;
                             }
-                        } else if (status.reason === 'not_found' || (status.reason === 'http_error' && isTransientEnrollmentStatus(status.status))) {
+                        } else if (
+                            'reason' in status
+                            && (status.reason === 'not_found'
+                                || (status.reason === 'http_error' && isTransientEnrollmentStatus(status.status)))
+                        ) {
                             statusFailures += 1;
                         } else {
                             await Modal.alertAsync(t('common.error'), t('errors.authenticationFailed'));
@@ -481,8 +564,8 @@ export const RestoreScanComputerQrView = React.memo(function RestoreScanComputer
                         await resolvedTarget?.close().catch(() => {});
                         return;
                     }
-                    if (resolvedTarget) {
-                        target = resolvedTarget;
+                    if (transportResolution.ok) {
+                        target = transportResolution.transport;
                         break;
                     }
                     if (transportResolution.reason !== 'iroh_transport_unavailable') {
@@ -509,6 +592,7 @@ export const RestoreScanComputerQrView = React.memo(function RestoreScanComputer
                 }
 
                 let featureProbeFailureCount = 0;
+                let observedHomeDescriptor: HomeQrInviteV2['home'] | null = null;
                 while (true) {
                     const targetFeatureSnapshot = await probeServerFeaturesAtUrl({
                         endpointUrl: target.endpointUrl,
@@ -550,6 +634,28 @@ export const RestoreScanComputerQrView = React.memo(function RestoreScanComputer
                         );
                         return;
                     }
+                    const publishedDescriptor = targetFeatureSnapshot.features.homeConnectionDescriptor;
+                    try {
+                        if (
+                            !publishedDescriptor
+                            || publishedDescriptor.homeServerIdentityId !== link.invite.home.homeServerIdentityId
+                            || createHomeCredentialDestinationDigestV1(publishedDescriptor)
+                                !== createHomeCredentialDestinationDigestV1(link.invite.home)
+                        ) {
+                            await Modal.alertAsync(
+                                t('connect.scanComputerQrUnavailableTitle'),
+                                t('connect.scanComputerQrUnavailableBody'),
+                            );
+                            return;
+                        }
+                    } catch {
+                        await Modal.alertAsync(
+                            t('connect.scanComputerQrUnavailableTitle'),
+                            t('connect.scanComputerQrUnavailableBody'),
+                        );
+                        return;
+                    }
+                    observedHomeDescriptor = publishedDescriptor;
                     break;
                 }
 
@@ -602,7 +708,7 @@ export const RestoreScanComputerQrView = React.memo(function RestoreScanComputer
                 // From here, the trusted Home may complete automatically, so local Cancel
                 // must not claim the enrollment was revoked.
                 attempt.cancellable = false;
-                props.onNavigationLockChange?.(true);
+                setNavigationLocked(true);
                 setPhase('securing');
                 const pairingParams = {
                     pairId: link.invite.pairId,
@@ -671,20 +777,50 @@ export const RestoreScanComputerQrView = React.memo(function RestoreScanComputer
                     // Once authorization succeeds, stop presenting Cancel before entering that
                     // commit boundary so a late press cannot claim the attempt was cancelled.
                     attempt.cancellable = false;
+                    setNavigationLocked(true);
                     setPhase('securing');
-                    const stored = await completeEnrollment(result.credentials, target, result.homeServerIdentityId);
+                    if (!observedHomeDescriptor) return;
+                    const stored = await completeEnrollment(
+                        result.credentials,
+                        result.homeServerIdentityId,
+                        observedHomeDescriptor,
+                    );
                     if (!isCurrentAttempt(attempt.id)) return;
-                    if (!stored) {
+                    if (stored.kind === 'partial_commit') {
+                        const partialCommitHome = {
+                            ...link.invite.home,
+                            homeServerIdentityId: stored.error.serverIdentityId,
+                            canonicalServerUrl: stored.error instanceof HomeProfileAdoptionPartialCommitError
+                                ? stored.error.canonicalServerUrl
+                                : stored.error.toCanonicalServerUrl,
+                        };
+                        await Modal.alertAsync(
+                            formatHomeEnrollmentTargetLabel(partialCommitHome),
+                            t('connect.homeEnrollmentPartialCommitBody'),
+                            [{ text: t('common.ok') }],
+                        );
+                        return;
+                    }
+                    if (stored.kind === 'failed') {
                         await Modal.alertAsync(t('common.error'), t('errors.authenticationFailed'));
                         return;
                     }
-                    didComplete = true;
+                    if (stored.kind !== 'completed') return;
                     trackAccountRestored();
-                    await Modal.alertAsync(
+                    if (props.entryIntent === 'add_home') {
+                        await Modal.alertAsync(
+                            formatHomeEnrollmentTargetLabel(link.invite.home),
+                            t('connect.homeAddedPreservedFocusBody'),
+                        );
+                        if (isCurrentAttempt(attempt.id)) setShellNavigationRequested(true);
+                        return;
+                    }
+
+                    await openRetainedHomeOrReturnToShell(
+                        stored.profile.id,
                         formatHomeEnrollmentTargetLabel(link.invite.home),
-                        t('connect.homeAddedPreservedFocusBody'),
+                        attempt.id,
                     );
-                    router.replace('/');
                 } else {
                     if (result.reason === 'cancelled') {
                         return;
@@ -728,16 +864,14 @@ export const RestoreScanComputerQrView = React.memo(function RestoreScanComputer
             } finally {
                 await target?.close().catch(() => {});
                 if (activeAttemptRef.current?.id === attempt.id) {
-                    props.onNavigationLockChange?.(false);
+                    setNavigationLocked(false);
                     activeAttemptRef.current = null;
-                    if (!didComplete) {
-                        setPhase('idle');
-                        setActiveInvite(null);
-                    }
+                    setPhase('idle');
+                    setActiveInvite(null);
                 }
             }
         },
-        [beginEnrollmentAttempt, classifyScannedLink, completeEnrollment, isCurrentAttempt, openShowQrInstead, props.onNavigationLockChange, router],
+        [beginEnrollmentAttempt, classifyScannedLink, completeEnrollment, handleBack, isCurrentAttempt, openRetainedHomeOrReturnToShell, openShowQrInstead, props.entryIntent, router],
     );
 
     const processedInitialPairingLinkRef = React.useRef<string | null>(null);
@@ -762,17 +896,14 @@ export const RestoreScanComputerQrView = React.memo(function RestoreScanComputer
         return () => {
             const attempt = activeAttemptRef.current;
             activeAttemptRef.current = null;
-            attempt?.controller.abort();
-            props.onNavigationLockChange?.(false);
+            // Irreversible Home-side completion may continue after unmount, but
+            // clearing local ownership prevents stale UI/navigation dispatch.
+            if (attempt?.cancellable) attempt.controller.abort();
         };
-    }, [props.onNavigationLockChange]);
+    }, []);
 
-    const statusText =
-        phase === 'idle'
-            ? t('connect.scanComputerQrInstructions')
-                : phase === 'requesting'
-                    ? t('common.loading')
-                    : t('connect.securingCredentials');
+    const enrollmentPresentation = resolveHomeEnrollmentPresentation({ kind: 'scanner', phase });
+    const statusText = t(enrollmentPresentation.primaryTranslationKey);
 
     if (pairingState === 'unknown') {
         const frame = (
@@ -889,7 +1020,7 @@ export const RestoreScanComputerQrView = React.memo(function RestoreScanComputer
             <QrCodeScannerView
                 active={isFocused}
                 testIDPrefix="restore-scan"
-                title={t('connect.restoreAccount')}
+                title={t('connect.scanExistingHomeQrTitle')}
                 subtitle={t('connect.scanComputerQrInstructions')}
                 permissionRequiredMessage={t('modals.cameraPermissionsRequiredToScanQr')}
                 embedded={props.embedded}
@@ -901,7 +1032,7 @@ export const RestoreScanComputerQrView = React.memo(function RestoreScanComputer
                 }}
                 footer={
                     <>
-                        <View style={styles.footerButton}>
+                        <PairingLinkDisclosure testIDPrefix="restore-pairing-link">
                             <RoundButton
                                 testID="restore-enter-pairing-link"
                                 size="normal"
@@ -909,7 +1040,7 @@ export const RestoreScanComputerQrView = React.memo(function RestoreScanComputer
                                 action={async () => {
                                     const url = await Modal.prompt(
                                         t('connect.enterUrlManually'),
-                                        undefined,
+                                        t('connect.pairingLinkSecurityWarning'),
                                         {
                                             placeholder: 'happier:///pair?v=2&payload=…',
                                             confirmText: t('common.continue'),
@@ -921,7 +1052,7 @@ export const RestoreScanComputerQrView = React.memo(function RestoreScanComputer
                                     }
                                 }}
                             />
-                        </View>
+                        </PairingLinkDisclosure>
                         <View style={styles.footerButton}>
                             <RoundButton
                                 testID="restore-open-manual"
@@ -957,14 +1088,16 @@ export const RestoreScanComputerQrView = React.memo(function RestoreScanComputer
                 <Text
                     testID={phase === 'securing' ? 'restore-enrollment-securing' : undefined}
                     style={styles.subtitle}
-                    accessibilityLiveRegion="polite"
+                    accessibilityLiveRegion={enrollmentPresentation.liveRegion}
                 >
                     {statusText}
                 </Text>
 
                 <View style={[styles.statusCard, embedded ? styles.embeddedStatusCard : null]}>
-                    <ActivitySpinner size="small" color={theme.colors.text.primary} />
-                    {activeInvite ? (
+                    {enrollmentPresentation.activity ? (
+                        <ActivitySpinner size="small" color={theme.colors.text.primary} />
+                    ) : null}
+                    {enrollmentPresentation.contextualFacts !== 'none' && activeInvite ? (
                         <>
                             <Text style={styles.detailLabel}>{t('common.home')}</Text>
                             <Text style={styles.identityValue} numberOfLines={2}>

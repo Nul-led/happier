@@ -10,7 +10,10 @@ import {
     ACCOUNT_DIRECTORY_ERROR_CODES_V1,
     ACCOUNT_DIRECTORY_MAX_HOME_LOGIN_CREDENTIAL_PLAINTEXT_BYTES,
     ACCOUNT_DIRECTORY_MAX_SEALED_TOKEN_BYTES,
+    createHomeCredentialDestinationDigestV1,
+    createHomeCredentialDestinationV1,
     HomeLoginCredentialPayloadV1Schema,
+    isHomeCredentialDestinationAllowedV1,
 } from '@happier-dev/protocol';
 import { decodeBase64 } from '@/encryption/base64';
 import { decryptBox } from '@/encryption/libsodium';
@@ -23,6 +26,8 @@ import {
     HomeProfileAdoptionPartialCommitError,
     type HomeProfileCredentialRollbackOutcome,
 } from '@/sync/domains/server/adoptHomeProfile';
+import { probeServerFeaturesAtUrl } from '@/sync/api/capabilities/serverFeaturesClient';
+import { withHomeCredentialWriteAuthorization } from '@/sync/domains/server/serverProfiles';
 
 /**
  * Home-authoritative existing-device approval continuation. All requests target the exact
@@ -43,7 +48,7 @@ export type HomeLoginContinuationResult =
     }>
     | Readonly<{
         kind: 'transport_unavailable';
-        reason: HomeEnrollmentTransportFailureReason | 'request_failed';
+        reason: HomeEnrollmentTransportFailureReason | 'home_observation_unavailable' | 'request_failed';
         resume?: () => Promise<HomeLoginContinuationResult>;
         cancel?: () => Promise<HomeLoginContinuationResult>;
     }>
@@ -54,6 +59,7 @@ export type HomeLoginContinuationResult =
         kind: 'partial_commit';
         homeServerIdentityId: string;
         canonicalServerUrl: string;
+        adoptionError: unknown;
         rollbackOutcome: Exclude<HomeProfileCredentialRollbackOutcome, { kind: 'succeeded' }>;
     }>
     | Readonly<{ kind: 'failed' }>;
@@ -113,6 +119,22 @@ type HomeLoginCancellationState = {
     readonly retained?: true;
 };
 
+function retainCancellationState(state: HomeLoginCancellationState): HomeLoginCancellationState {
+    return state.retained
+        ? state
+        : { cancelled: state.cancelled, retained: true };
+}
+
+function createSingleFlightResume(
+    run: () => Promise<HomeLoginContinuationResult>,
+): () => Promise<HomeLoginContinuationResult> {
+    let result: Promise<HomeLoginContinuationResult> | null = null;
+    return () => {
+        result ??= run();
+        return result;
+    };
+}
+
 function isCancelled(state: HomeLoginCancellationState): boolean {
     return state.cancelled || state.externalShouldCancel?.() === true;
 }
@@ -132,20 +154,18 @@ function createApprovalContinuation(
     // the service-scoped continuation must survive normal navigation/unmount;
     // explicit service change/disconnect still invokes this continuation's
     // cancel method and flips the detached state below.
-    const cancellationState: HomeLoginCancellationState = input.cancellationState.retained
-        ? input.cancellationState
-        : { cancelled: input.cancellationState.cancelled, retained: true };
+    const cancellationState = retainCancellationState(input.cancellationState);
     const continuationInput = { ...input, cancellationState };
     return {
         kind: 'approval_required',
         homeServerIdentityId: input.home.connectionDescriptor.homeServerIdentityId,
         approvalId,
         expiresAtMs,
-        resume: async () => await continueHomeLoginEnrollment({
+        resume: createSingleFlightResume(async () => await continueHomeLoginEnrollment({
             ...continuationInput,
             approvalId,
             approvalExpiresAtMs: expiresAtMs,
-        }),
+        })),
         cancel: async () => {
             cancellationState.cancelled = true;
             return { kind: 'cancelled' };
@@ -155,19 +175,24 @@ function createApprovalContinuation(
 
 function createExplicitResumeContinuation(
     input: Parameters<typeof createApprovalContinuation>[0],
-    approvalId: string,
-    expiresAtMs: number,
-    reason: HomeEnrollmentTransportFailureReason | 'request_failed',
+    reason: HomeEnrollmentTransportFailureReason | 'home_observation_unavailable' | 'request_failed',
+    approval?: Readonly<{ approvalId: string; expiresAtMs: number }>,
 ): Extract<HomeLoginContinuationResult, { kind: 'transport_unavailable' }> {
-    const cancellationState = input.cancellationState;
+    // Retryable initial failures are retained by the Account Service owner, so
+    // normal initiating-screen teardown must not destroy the only assertion/key
+    // tuple. Explicit continuation cancellation remains authoritative.
+    const cancellationState = retainCancellationState(input.cancellationState);
+    const continuationInput = { ...input, cancellationState };
     return {
         kind: 'transport_unavailable',
         reason,
-        resume: async () => await continueHomeLoginEnrollment({
-            ...input,
-            approvalId,
-            approvalExpiresAtMs: expiresAtMs,
-        }),
+        resume: createSingleFlightResume(async () => await continueHomeLoginEnrollment({
+            ...continuationInput,
+            ...(approval ? {
+                approvalId: approval.approvalId,
+                approvalExpiresAtMs: approval.expiresAtMs,
+            } : {}),
+        })),
         cancel: async () => {
             cancellationState.cancelled = true;
             return { kind: 'cancelled' };
@@ -197,6 +222,16 @@ export async function continueHomeLoginEnrollment(input: Readonly<{
     const descriptor = input.home.connectionDescriptor;
     const targetIdentity = descriptor.homeServerIdentityId;
     if (input.assertion.audienceHomeServerIdentityId !== targetIdentity) return { kind: 'failed' };
+    let credentialDestination: ReturnType<typeof createHomeCredentialDestinationV1>;
+    try {
+        credentialDestination = createHomeCredentialDestinationV1(descriptor);
+        if (
+            createHomeCredentialDestinationDigestV1(descriptor)
+            !== input.assertion.credentialDestinationDigestBase64Url
+        ) return { kind: 'failed' };
+    } catch {
+        return { kind: 'failed' };
+    }
     if (input.clientSecretKey.byteLength !== 32) return { kind: 'failed' };
     if (isCancelled(cancellationState)) return { kind: 'cancelled' };
     if (input.approvalExpiresAtMs !== undefined && Date.now() >= input.approvalExpiresAtMs) {
@@ -205,16 +240,13 @@ export async function continueHomeLoginEnrollment(input: Readonly<{
 
     const resolved = await resolveHomeEnrollmentTransport(descriptor);
     if (!resolved.ok) {
-        if (
-            resolved.reason === 'iroh_transport_unavailable'
-            && input.approvalId
-            && input.approvalExpiresAtMs !== undefined
-        ) {
+        if (resolved.reason === 'iroh_transport_unavailable') {
             return createExplicitResumeContinuation(
                 continuationInput,
-                input.approvalId,
-                input.approvalExpiresAtMs,
                 resolved.reason,
+                input.approvalId && input.approvalExpiresAtMs !== undefined
+                    ? { approvalId: input.approvalId, expiresAtMs: input.approvalExpiresAtMs }
+                    : undefined,
             );
         }
         return { kind: 'transport_unavailable', reason: resolved.reason };
@@ -224,27 +256,76 @@ export async function continueHomeLoginEnrollment(input: Readonly<{
     let redemption: HomeLoginRedemptionResultV1;
     try {
         if (isCancelled(cancellationState)) return { kind: 'cancelled' };
+        if (
+            !transport.authenticatedCredentialDestination
+            || !isHomeCredentialDestinationAllowedV1(
+                credentialDestination,
+                transport.authenticatedCredentialDestination,
+            )
+        ) return { kind: 'failed' };
+        const observation = await probeServerFeaturesAtUrl({
+            endpointUrl: transport.endpointUrl,
+            ...(transport.runtimeOrigin ? { runtimeOrigin: transport.runtimeOrigin } : {}),
+            ...(transport.homeCarrier ? { homeCarrier: transport.homeCarrier } : {}),
+            serverId: targetIdentity,
+            force: true,
+        });
+        if (cancellationState.cancelled) return { kind: 'cancelled' };
+        if (observation.status !== 'ready') {
+            return createExplicitResumeContinuation(
+                continuationInput,
+                'home_observation_unavailable',
+                input.approvalId && input.approvalExpiresAtMs !== undefined
+                    ? { approvalId: input.approvalId, expiresAtMs: input.approvalExpiresAtMs }
+                    : undefined,
+            );
+        }
+        if (isCancelled(cancellationState)) return { kind: 'cancelled' };
+        const observedIdentity = observation.serverIdentityId
+            ?? observation.features.capabilities.serverIdentity.serverIdentityId;
+        const publishedDescriptor = observation.features.homeConnectionDescriptor;
+        if (observedIdentity !== targetIdentity) {
+            return { kind: 'failed' };
+        }
+        if (!publishedDescriptor) {
+            return createExplicitResumeContinuation(
+                continuationInput,
+                'home_observation_unavailable',
+                input.approvalId && input.approvalExpiresAtMs !== undefined
+                    ? { approvalId: input.approvalId, expiresAtMs: input.approvalExpiresAtMs }
+                    : undefined,
+            );
+        }
+        if (publishedDescriptor.homeServerIdentityId !== targetIdentity) return { kind: 'failed' };
+        try {
+            if (
+                createHomeCredentialDestinationDigestV1(publishedDescriptor)
+                !== input.assertion.credentialDestinationDigestBase64Url
+            ) return { kind: 'failed' };
+        } catch {
+            return { kind: 'failed' };
+        }
         redemption = await redeemHomeLoginAssertion(transport, input.assertion, {
             ...(input.approvalId ? { approvalId: input.approvalId } : {}),
         });
     } catch (error) {
         const terminalError = terminalRedemptionError(error);
         if (terminalError) return terminalError;
-        if (input.approvalId && input.approvalExpiresAtMs !== undefined) {
-            return createExplicitResumeContinuation(
-                continuationInput,
-                input.approvalId,
-                input.approvalExpiresAtMs,
-                'request_failed',
-            );
-        }
-        return { kind: 'failed' };
+        return createExplicitResumeContinuation(
+            continuationInput,
+            'request_failed',
+            input.approvalId && input.approvalExpiresAtMs !== undefined
+                ? { approvalId: input.approvalId, expiresAtMs: input.approvalExpiresAtMs }
+                : undefined,
+        );
     } finally {
         await transport.close().catch(() => {});
     }
-    if (isCancelled(cancellationState)) return { kind: 'cancelled' };
-
     if ('approvalId' in redemption) {
+        // A durable Home approval request must survive cancellation owned by
+        // the initiating screen. Explicit service change/disconnect flips the
+        // detached state's own `cancelled` bit through continuation.cancel().
+        if (cancellationState.cancelled) return { kind: 'cancelled' };
         if (redemption.homeServerIdentityId !== targetIdentity) return { kind: 'failed' };
         const resolvedApprovalId = input.approvalId ?? redemption.approvalId;
         if (resolvedApprovalId !== redemption.approvalId) return { kind: 'failed' };
@@ -256,6 +337,7 @@ export async function continueHomeLoginEnrollment(input: Readonly<{
         return createApprovalContinuation(continuationInput, resolvedApprovalId, approvalExpiresAtMs);
     }
 
+    if (isCancelled(cancellationState)) return { kind: 'cancelled' };
     if (redemption.homeServerIdentityId !== targetIdentity) return { kind: 'failed' };
     // The locked wire field names the redemption window, not the lifetime of
     // the durable Home credential carried inside the sealed envelope.
@@ -271,14 +353,22 @@ export async function continueHomeLoginEnrollment(input: Readonly<{
     if (isCancelled(cancellationState)) return { kind: 'cancelled' };
 
     try {
-        await adoptHomeProfileWithCredentials({
+        await withHomeCredentialWriteAuthorization({
+            kind: 'assertion_destination_binding_v1',
             descriptor,
-            source: 'account-directory',
-            preserveUserLabel: true,
-            suggestedName: input.home.label,
-            descriptorAuthority: 'advisory',
-            credentials: { token: payload.token },
-            shouldCancel: () => isCancelled(cancellationState),
+            credentialDestinationDigestBase64Url:
+                input.assertion.credentialDestinationDigestBase64Url,
+        }, async (credentialWriteAuthorization) => {
+            return await adoptHomeProfileWithCredentials({
+                descriptor,
+                source: 'account-directory',
+                preserveUserLabel: true,
+                suggestedName: input.home.label,
+                descriptorAuthority: 'advisory',
+                credentialWriteAuthorization,
+                credentials: { token: payload.token },
+                shouldCancel: () => isCancelled(cancellationState),
+            });
         });
     } catch (error) {
         if (error instanceof HomeProfileAdoptionPartialCommitError) {
@@ -286,6 +376,7 @@ export async function continueHomeLoginEnrollment(input: Readonly<{
                 kind: 'partial_commit',
                 homeServerIdentityId: error.serverIdentityId,
                 canonicalServerUrl: error.canonicalServerUrl,
+                adoptionError: error.adoptionError,
                 rollbackOutcome: error.rollbackOutcome,
             };
         }

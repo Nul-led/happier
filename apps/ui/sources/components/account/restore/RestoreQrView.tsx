@@ -15,10 +15,14 @@ import { canUseCurrentDeviceQrScanner } from '@/utils/platform/qrScannerSupport'
 import { useReversePairingSession } from '@/hooks/auth/useReversePairingSession';
 import { QRCode } from '@/components/qr/QRCode';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
-import { formatHomeEnrollmentTargetLabel } from '@/auth/pairing/pairingPresentation';
-import { setClipboardStringSafe } from '@/utils/ui/clipboard';
-import { Modal } from '@/modal';
+import {
+    formatHomeEnrollmentTargetLabel,
+    resolveHomeEnrollmentPresentation,
+} from '@/auth/pairing/pairingPresentation';
 import { usePreventRemove } from '@react-navigation/native';
+import { PairingLinkDisclosure } from '@/components/auth/pairing/PairingLinkDisclosure';
+import type { HomeQrEntryIntent } from '@/auth/pairing/homeQrEntryIntent';
+import { openEnrolledHomeOrReturnToShell } from '@/auth/pairing/openEnrolledHome';
 
 
 const stylesheet = StyleSheet.create((theme) => ({
@@ -100,21 +104,6 @@ const stylesheet = StyleSheet.create((theme) => ({
         color: theme.colors.text.primary,
         ...Typography.default('semiBold'),
     },
-    linkWarning: {
-        marginTop: 10,
-        fontSize: 13,
-        lineHeight: 18,
-        textAlign: 'center',
-        color: theme.colors.text.secondary,
-        ...Typography.default(),
-    },
-    linkValue: {
-        marginTop: 8,
-        fontSize: 12,
-        lineHeight: 16,
-        color: theme.colors.text.secondary,
-        ...Typography.mono(),
-    },
     embeddedQrBlock: {
         paddingVertical: 6,
     },
@@ -159,6 +148,7 @@ function parseRestoreRedirectReason(value: unknown): RestoreRedirectReason | nul
 }
 
 export type RestoreQrViewProps = Readonly<{
+    entryIntent: HomeQrEntryIntent;
     embedded?: boolean;
     onBack?: () => void;
     onOpenSecretKeyLogin?: () => void;
@@ -176,10 +166,21 @@ export const RestoreQrView = React.memo(function RestoreQrView(props: RestoreQrV
     const canOpenScanner = typeof props.onOpenScanQr === 'function' && canUseCurrentDeviceQrScanner();
     const reversePairing = useReversePairingSession({ enabled: true });
     const pairing = reversePairing.presentation;
-    const [showPairingLink, setShowPairingLink] = React.useState(false);
-    const claimOwnsNavigation = pairing.phase === 'connecting' || pairing.phase === 'adding';
+    const [shellNavigationRequested, setShellNavigationRequested] = React.useState(false);
+    const openGenerationRef = React.useRef(0);
+    const handledProfileIdRef = React.useRef<string | null>(null);
+    const presentation = resolveHomeEnrollmentPresentation({
+        kind: 'requester_display',
+        phase: pairing.phase,
+        ...(pairing.phase === 'retryable_error' ? { partialCommit: pairing.partialCommit !== null } : {}),
+    });
+    // Once adoption succeeds, leaving is safe: the Home is already retained. Keeping the
+    // removal guard active during the explicit open would also block the intentional route
+    // replacement after a successful exact-profile switch.
+    const claimOwnsNavigation = presentation.phase === 'verifying'
+        || presentation.phase === 'adding';
     usePreventRemove(claimOwnsNavigation, () => undefined);
-    const targetLabel = 'descriptor' in pairing
+    const targetLabel = 'descriptor' in pairing && pairing.descriptor !== undefined
         ? formatHomeEnrollmentTargetLabel(pairing.descriptor)
         : null;
     const scrollViewStyle: StyleProp<ViewStyle> = embedded
@@ -192,8 +193,30 @@ export const RestoreQrView = React.memo(function RestoreQrView(props: RestoreQrV
     }, [claimOwnsNavigation, props.onNavigationLockChange]);
 
     React.useEffect(() => {
-        setShowPairingLink(false);
-    }, [pairing.phase === 'ready' ? pairing.link : null]);
+        if (pairing.phase !== 'succeeded' || props.entryIntent !== 'enter_home') return;
+        if (handledProfileIdRef.current === pairing.profileId) return;
+        handledProfileIdRef.current = pairing.profileId;
+        const generation = openGenerationRef.current + 1;
+        openGenerationRef.current = generation;
+        void openEnrolledHomeOrReturnToShell({
+            profileId: pairing.profileId,
+            targetLabel: formatHomeEnrollmentTargetLabel(pairing.descriptor),
+            isCurrent: () => openGenerationRef.current === generation,
+        }).then((result) => {
+            if (result !== 'cancelled' && openGenerationRef.current === generation) {
+                setShellNavigationRequested(true);
+            }
+        });
+    }, [pairing, props.entryIntent]);
+
+    React.useEffect(() => {
+        if (!shellNavigationRequested || claimOwnsNavigation) return;
+        router.replace('/');
+    }, [claimOwnsNavigation, router, shellNavigationRequested]);
+
+    React.useEffect(() => () => {
+        openGenerationRef.current += 1;
+    }, []);
 
     const restoreRedirectNotice: RestoreRedirectNotice | null = React.useMemo(() => {
         const providerId = (paramString(params, 'provider') ?? '').trim().toLowerCase();
@@ -228,24 +251,19 @@ export const RestoreQrView = React.memo(function RestoreQrView(props: RestoreQrV
                 ) : null}
 
                 <Text style={[styles.sectionLead, embedded ? styles.embeddedSectionLead : null]}>
-                    {pairing.phase === 'succeeded'
-                        ? t('connect.homeAddedPreservedFocusBody')
-                        : pairing.phase === 'expired'
-                            ? t('connect.pairingQrExpired')
-                            : pairing.phase === 'invalid'
-                                ? t('connect.scanComputerQrUnavailableBody')
-                                : pairing.phase === 'retryable_error'
-                                    ? pairing.partialCommit
-                                        ? t('connect.homeEnrollmentPartialCommitBody')
-                                        : t('connect.homeEnrollmentRetryBody')
-                                    : t('connect.showRequesterQrInstructions')}
+                    {t(presentation.primaryTranslationKey)}
                 </Text>
 
-                <View style={[styles.statusCard, embedded ? styles.embeddedQrBlock : null]} accessibilityLiveRegion="polite">
-                    {pairing.phase === 'generating' || pairing.phase === 'connecting' || pairing.phase === 'adding' ? (
+                <View
+                    style={[styles.statusCard, embedded ? styles.embeddedQrBlock : null]}
+                    accessibilityLiveRegion={presentation.liveRegion}
+                >
+                    {presentation.activity ? (
                         <ActivitySpinner size="small" />
                     ) : null}
-                    {targetLabel ? <Text style={styles.targetName}>{targetLabel}</Text> : null}
+                    {presentation.contextualFacts !== 'none' && targetLabel ? (
+                        <Text style={styles.targetName}>{targetLabel}</Text>
+                    ) : null}
                     {pairing.phase === 'ready' ? (
                         <>
                             <View testID="restore-requester-qr" style={styles.qrBlock}>
@@ -255,34 +273,10 @@ export const RestoreQrView = React.memo(function RestoreQrView(props: RestoreQrV
                                     <Text style={styles.noticeBody}>{t('connect.pairingQrTooLargeBody')}</Text>
                                 )}
                             </View>
-                            <Text style={styles.linkWarning}>{t('connect.pairingLinkSecurityWarning')}</Text>
-                            {showPairingLink ? (
-                                <Text testID="restore-requester-link-value" style={styles.linkValue} selectable>
-                                    {pairing.link}
-                                </Text>
-                            ) : null}
-                            <View style={styles.footerButton}>
-                                {showPairingLink ? (
-                                    <RoundButton
-                                        testID="restore-copy-requester-link"
-                                        size="small"
-                                        title={t('common.copy')}
-                                        display="inverted"
-                                        action={async () => {
-                                            const copied = await setClipboardStringSafe(pairing.link);
-                                            if (!copied) await Modal.alertAsync(t('common.error'), t('items.failedToCopyToClipboard'));
-                                        }}
-                                    />
-                                ) : (
-                                    <RoundButton
-                                        testID="restore-show-requester-link"
-                                        size="small"
-                                        title={t('connect.showPairingLink')}
-                                        display="inverted"
-                                        onPress={() => setShowPairingLink(true)}
-                                    />
-                                )}
-                            </View>
+                            <PairingLinkDisclosure
+                                testIDPrefix="restore-requester-link"
+                                link={pairing.link}
+                            />
                         </>
                     ) : null}
                 </View>
@@ -303,9 +297,7 @@ export const RestoreQrView = React.memo(function RestoreQrView(props: RestoreQrV
                             <View style={styles.footerButtonSpacer} />
                         </>
                     ) : null}
-                    {pairing.phase === 'expired'
-                        || pairing.phase === 'invalid'
-                        || (pairing.phase === 'retryable_error' && !pairing.partialCommit) ? (
+                    {presentation.recoveryAction === 'retry' ? (
                         <>
                             <View style={styles.footerButton}>
                                 <RoundButton

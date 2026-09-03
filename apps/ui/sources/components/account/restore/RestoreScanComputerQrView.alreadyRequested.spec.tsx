@@ -71,6 +71,13 @@ vi.mock('@/sync/api/capabilities/serverFeaturesClient', () => ({
             features: {
                 auth: { pairing: { desktopQrMobileScan: { enabled: true } } },
             },
+            homeConnectionDescriptor: {
+                v: 1,
+                homeServerIdentityId: 'srv_test',
+                canonicalServerUrl: 'https://stack.example.test',
+                revision: 1,
+                endpoints: [{ kind: 'https', url: 'https://stack.example.test' }],
+            },
         },
     }),
 }));
@@ -112,8 +119,7 @@ vi.mock('@/constants/Typography', () => ({
 }));
 
 vi.mock('@/auth/pairing/pairingUrl', () => ({
-    buildPairingDeepLink: () => 'happier:///pair?v=1&pairId=p&secret=s',
-    parsePairingDeepLink: () => null,
+    classifyLegacyPairingDeepLink: () => null,
     parseHomeQrInviteDeepLink: () => ({
         invite: {
             v: 2,
@@ -124,6 +130,7 @@ vi.mock('@/auth/pairing/pairingUrl', () => ({
                 v: 1,
                 homeServerIdentityId: 'srv_test',
                 canonicalServerUrl: 'https://stack.example.test',
+                revision: 1,
                 endpoints: [{ kind: 'https', url: 'https://stack.example.test' }],
             },
             qrSecretBase64Url: 'BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc',
@@ -165,7 +172,7 @@ describe('RestoreScanComputerQrView (already requested)', () => {
         let tree: ReactTestRenderer | null = null;
         try {
             await act(async () => {
-                tree = create(<RestoreScanComputerQrView />);
+                tree = create(<RestoreScanComputerQrView entryIntent="add_home" />);
             });
             if (!tree) throw new Error('Expected renderer');
             expect(typeof lastScannerProps?.onScan).toBe('function');

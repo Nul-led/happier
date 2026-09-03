@@ -27,9 +27,13 @@ export type ReversePairingPresentation =
     | Readonly<{ phase: 'generating' }>
     | Readonly<{ phase: 'ready'; invite: HomeQrInviteV2; link: string; qrAvailable: boolean; descriptor: HomeConnectionDescriptorV1 }>
     | Readonly<{ phase: 'connecting' | 'adding'; descriptor: HomeConnectionDescriptorV1; expiresAtMs: number }>
-    | Readonly<{ phase: 'succeeded'; descriptor: HomeConnectionDescriptorV1 }>
+    | Readonly<{ phase: 'succeeded'; descriptor: HomeConnectionDescriptorV1; profileId: string }>
     | Readonly<{ phase: 'expired' | 'invalid'; descriptor?: HomeConnectionDescriptorV1 }>
-    | Readonly<{ phase: 'retryable_error'; descriptor?: HomeConnectionDescriptorV1; partialCommit: boolean }>;
+    | Readonly<{
+        phase: 'retryable_error';
+        descriptor?: HomeConnectionDescriptorV1;
+        partialCommit: HomeProfileAdoptionPartialCommitError | null;
+    }>;
 
 type ReverseAttempt = {
     generation: number;
@@ -89,7 +93,11 @@ export function useReversePairingSession(params: Readonly<{ enabled: boolean }>)
         attemptRef.current = null;
         attempt.controller.abort();
         void attempt.target?.close().catch(() => {});
-        setPresentation({ phase: 'generating' });
+        setPresentation((current) => ({
+            phase: 'retryable_error',
+            ...('descriptor' in current && current.descriptor ? { descriptor: current.descriptor } : {}),
+            partialCommit: null,
+        }));
     }, []);
 
     const start = React.useCallback(async () => {
@@ -125,14 +133,15 @@ export function useReversePairingSession(params: Readonly<{ enabled: boolean }>)
                 return;
             }
             if (!transportResolution.ok) {
-                setPresentation({ phase: 'retryable_error', descriptor, partialCommit: false });
+                setPresentation({ phase: 'retryable_error', descriptor, partialCommit: null });
                 return;
             }
             const target: HomeQrEnrollmentTarget = { ...transportResolution.transport, serverId: profile.id };
             attempt.target = target;
             const featureSnapshot = await probeServerFeaturesAtUrl({
                 endpointUrl: target.endpointUrl,
-                runtimeOrigin: target.runtimeOrigin,
+                ...(target.runtimeOrigin ? { runtimeOrigin: target.runtimeOrigin } : {}),
+                ...(target.homeCarrier ? { homeCarrier: target.homeCarrier } : {}),
                 serverId: profile.id,
                 force: true,
                 signal: attempt.controller.signal,
@@ -158,7 +167,7 @@ export function useReversePairingSession(params: Readonly<{ enabled: boolean }>)
                 setPresentation({
                     phase: started.reason === 'transient' ? 'retryable_error' : 'invalid',
                     descriptor,
-                    ...(started.reason === 'transient' ? { partialCommit: false } : {}),
+                    ...(started.reason === 'transient' ? { partialCommit: null } : {}),
                 } as ReversePairingPresentation);
                 return;
             }
@@ -228,42 +237,47 @@ export function useReversePairingSession(params: Readonly<{ enabled: boolean }>)
             if (!isCurrent(attempt)) return;
             if (!result.ok) {
                 setPresentation({
-                    phase: result.reason === 'expired' ? 'expired' : result.reason === 'cancelled' ? 'generating' : 'invalid',
+                    phase: result.reason === 'expired' ? 'expired' : result.reason === 'cancelled' ? 'retryable_error' : 'invalid',
                     descriptor,
+                    ...(result.reason === 'cancelled' ? { partialCommit: null } : {}),
                 } as ReversePairingPresentation);
                 return;
             }
             setPresentation({ phase: 'adding', descriptor, expiresAtMs: material.invite.expiresAtMs });
+            let adoptedProfileId: string;
             try {
-                await adoptHomeProfileWithCredentials({
+                const adoptedProfile = await adoptHomeProfileWithCredentials({
                     descriptor,
                     source: 'qr',
                     preserveUserLabel: true,
                     credentials: result.credentials,
                     shouldCancel: () => !isCurrent(attempt!),
                 });
+                adoptedProfileId = adoptedProfile.id;
             } catch (error) {
                 if (!isCurrent(attempt)) return;
                 setPresentation({
                     phase: 'retryable_error',
                     descriptor,
-                    partialCommit: error instanceof HomeProfileAdoptionPartialCommitError,
+                    partialCommit: error instanceof HomeProfileAdoptionPartialCommitError ? error : null,
                 });
                 return;
             }
-            if (isCurrent(attempt)) setPresentation({ phase: 'succeeded', descriptor });
+            if (isCurrent(attempt)) {
+                setPresentation({ phase: 'succeeded', descriptor, profileId: adoptedProfileId });
+            }
         } catch {
             if (!isCurrent(attempt)) return;
-            const currentPresentation = presentation;
+            const descriptor = attempt.target?.descriptor;
             setPresentation({
                 phase: 'retryable_error',
-                ...('descriptor' in currentPresentation ? { descriptor: currentPresentation.descriptor } : {}),
-                partialCommit: false,
+                ...(descriptor ? { descriptor } : {}),
+                partialCommit: null,
             });
         } finally {
             await retire(attempt);
         }
-    }, [isCurrent, params.enabled, presentation, retire]);
+    }, [isCurrent, params.enabled, retire]);
 
     React.useEffect(() => {
         if (!params.enabled || startedRef.current) return;

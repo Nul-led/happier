@@ -2,7 +2,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import tweetnacl from "tweetnacl";
 import * as privacyKit from "privacy-kit";
-import { decodeBase64, openBoxBundle } from "@happier-dev/protocol";
+import {
+    createHomeCredentialDestinationDigestV1,
+    decodeBase64,
+    openBoxBundle,
+    type HomeConnectionDescriptorV1,
+} from "@happier-dev/protocol";
 
 const { createToken, linkFindUnique, linkFindFirst } = vi.hoisted(() => ({
     createToken: vi.fn(),
@@ -31,6 +36,15 @@ import { db } from "@/storage/db";
 import { canonicalHomeLoginAssertionBytes } from "./accountDirectorySigner";
 import { redeemHomeLoginAssertion } from "./accountDirectoryService";
 
+const HOME_DESCRIPTOR: HomeConnectionDescriptorV1 = {
+    v: 1,
+    homeServerIdentityId: "srv_home",
+    canonicalServerUrl: "https://home.test",
+    revision: 1,
+    endpoints: [{ kind: "https", url: "https://home.test" }],
+};
+const resolveHomeConnectionDescriptor = async () => HOME_DESCRIPTOR;
+
 describe("Account Directory Home redemption security", () => {
     beforeEach(() => createToken.mockReset());
 
@@ -43,6 +57,7 @@ describe("Account Directory Home redemption security", () => {
             issuerServerIdentityId: "srv_account",
             issuerSubjectId: "account-1",
             audienceHomeServerIdentityId: "srv_home",
+            credentialDestinationDigestBase64Url: createHomeCredentialDestinationDigestV1(HOME_DESCRIPTOR),
             clientBoxPublicKeyBase64: privacyKit.encodeBase64(new Uint8Array(requesterBoxKeyPair.publicKey)),
             issuedAtMs: 1_700_000_000_000,
             expiresAtMs: 1_700_000_180_000,
@@ -62,7 +77,11 @@ describe("Account Directory Home redemption security", () => {
             issuerSigningPublicKey: Buffer.from(keyPair.publicKey),
             createdAt: new Date(1_700_000_000_000),
         } as never);
-        await expect(redeemHomeLoginAssertion({ assertion: signed, nowMs: assertion.issuedAtMs + 1 })).rejects.toMatchObject({
+        await expect(redeemHomeLoginAssertion({
+            assertion: signed,
+            nowMs: assertion.issuedAtMs + 1,
+            resolveHomeConnectionDescriptor,
+        })).rejects.toMatchObject({
             code: "home_redemption_unavailable",
         });
         expect(createToken).not.toHaveBeenCalled();
@@ -70,6 +89,7 @@ describe("Account Directory Home redemption security", () => {
         const result = await redeemHomeLoginAssertion({
             assertion: signed,
             nowMs: assertion.issuedAtMs + 1,
+            resolveHomeConnectionDescriptor,
             homeApprovalGate: { evaluate: async () => ({
                 kind: "approval_required" as const,
                 request: { approvalId: "approval-1", deviceLabel: null, expiresAtMs: assertion.expiresAtMs },
@@ -82,6 +102,7 @@ describe("Account Directory Home redemption security", () => {
         const authorized = await redeemHomeLoginAssertion({
             assertion: signed,
             nowMs: assertion.issuedAtMs + 1,
+            resolveHomeConnectionDescriptor,
             homeApprovalGate: { evaluate: async () => ({ kind: "allowed" as const }) },
             issueHomeToken: async () => "home-local-token",
         });
@@ -106,6 +127,12 @@ describe("Account Directory Home redemption security", () => {
         expect(new TextDecoder().decode(opened)).toBe('{"token":"home-local-token"}');
 
         const forged = { ...signed, issuerSubjectId: "attacker" };
-        await expect(redeemHomeLoginAssertion({ assertion: forged, nowMs: assertion.issuedAtMs + 1, homeApprovalGate: { evaluate: async () => ({ kind: "allowed" as const }) }, issueHomeToken: async () => "bad" })).rejects.toMatchObject({ code: "invalid_subject" });
+        await expect(redeemHomeLoginAssertion({
+            assertion: forged,
+            nowMs: assertion.issuedAtMs + 1,
+            resolveHomeConnectionDescriptor,
+            homeApprovalGate: { evaluate: async () => ({ kind: "allowed" as const }) },
+            issueHomeToken: async () => "bad",
+        })).rejects.toMatchObject({ code: "invalid_subject" });
     });
 });

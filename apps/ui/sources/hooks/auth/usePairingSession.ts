@@ -158,9 +158,9 @@ export function usePairingSession(params: Readonly<{ enabled: boolean; isAuthent
             const { secret: qrSecretBase64Url } = await createPairingSecret();
             if (!isCurrentStart()) return { ok: false, status: 409 } as const;
             const qrSecret = decodeBase64(qrSecretBase64Url, 'base64url');
-            const issuedAtMs = Date.now();
             const secretHash = encodeBase64(deriveHomeQrRendezvousVerifierV2(qrSecret), 'base64url');
             const started = await pairingStart({ direction: 'trusted_home_displays', secretHash }, immutableTarget);
+            const issuedAtMs = Date.now();
             if (!isCurrentStart()) return { ok: false, status: 409 } as const;
             if (!started.ok) return { ok: false, status: started.status } as const;
             const expiresAtMs = Date.parse(started.data.expiresAt);

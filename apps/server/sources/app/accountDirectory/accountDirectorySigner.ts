@@ -46,6 +46,7 @@ export function canonicalHomeLoginAssertionBytes(assertion: Omit<HomeLoginAssert
 export async function mintHomeLoginAssertion(params: Readonly<{
     issuerSubjectId: string;
     audienceHomeServerIdentityId: string;
+    credentialDestinationDigestBase64Url: string;
     clientBoxPublicKeyBase64: string;
     nowMs?: number;
     env?: NodeJS.ProcessEnv;
@@ -59,6 +60,7 @@ export async function mintHomeLoginAssertion(params: Readonly<{
         issuerServerIdentityId: await getOrCreateServerIdentityId(env),
         issuerSubjectId: params.issuerSubjectId,
         audienceHomeServerIdentityId: params.audienceHomeServerIdentityId,
+        credentialDestinationDigestBase64Url: params.credentialDestinationDigestBase64Url,
         clientBoxPublicKeyBase64: params.clientBoxPublicKeyBase64,
         issuedAtMs: nowMs,
         expiresAtMs: nowMs + ASSERTION_TTL_MS,

@@ -85,7 +85,7 @@ const afterTx = vi.hoisted(() => vi.fn((_tx: unknown, callback: () => void) => {
 }));
 vi.mock("@/storage/inTx", () => ({
     inTx: async <T>(fn: (tx: SessionWriteTxMock) => T | Promise<T>) => await fn(transactionQueue.shift() ?? currentTx),
-    afterTx: (...args: unknown[]) => afterTx(...args),
+    afterTx: (tx: unknown, callback: () => void) => afterTx(tx, callback),
 }));
 
 const warn = vi.hoisted(() => vi.fn());
@@ -3649,6 +3649,142 @@ describe("sessionWriteService", () => {
                     occurredAt: 123,
                 },
             });
+        });
+
+        it("writes the published pending request projection while the parent turn is live", async () => {
+            currentTx.session.findUnique
+                .mockResolvedValueOnce({
+                    accountId: "u1",
+                    encryptionMode: "plain",
+                    tag: "session-tag",
+                    shares: [],
+                    seq: 0,
+                    pendingCount: 0,
+                    pendingBlockedCount: 0,
+                    lastViewedSessionSeq: null,
+                    pendingPermissionRequestCount: 0,
+                    pendingUserActionRequestCount: 0,
+                    pendingRequestObservedAt: null,
+                    latestTurnStatus: "in_progress",
+                    lastRuntimeIssue: null,
+                    active: true,
+                    archivedAt: null,
+                })
+                .mockResolvedValueOnce({
+                    metadataLayoutVersion: 0,
+                    ownerMetadata: null,
+                    agentStateVersion: 1,
+                    agentState: "a1",
+                    seq: 0,
+                    pendingCount: 0,
+                    pendingBlockedCount: 0,
+                    lastViewedSessionSeq: null,
+                    pendingPermissionRequestCount: 0,
+                    pendingUserActionRequestCount: 0,
+                    pendingRequestObservedAt: null,
+                    latestTurnStatus: "in_progress",
+                    lastRuntimeIssue: null,
+                    active: true,
+                    archivedAt: null,
+                });
+            currentTx.session.updateMany.mockResolvedValueOnce({ count: 1 });
+            getSessionParticipantUserIds.mockResolvedValueOnce(["u1"]);
+            markAccountChanged.mockResolvedValueOnce(10);
+
+            const params: Parameters<typeof updateSessionAgentState>[0] & { pendingRequestNewestCreatedAt: number } = {
+                actorUserId: "u1",
+                sessionId: "s1",
+                expectedVersion: 1,
+                agentStateCiphertext: "a2",
+                pendingPermissionRequestCount: 2,
+                pendingUserActionRequestCount: 1,
+                pendingRequestNewestCreatedAt: 500,
+            };
+            const res = await updateSessionAgentState(params);
+
+            expect(res).toMatchObject({
+                ok: true,
+                pendingPermissionRequestCount: 2,
+                pendingUserActionRequestCount: 1,
+                pendingRequestObservedAt: 500,
+            });
+            expect(currentTx.session.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+                data: expect.objectContaining({
+                    pendingPermissionRequestCount: 2,
+                    pendingUserActionRequestCount: 1,
+                    pendingRequestObservedAt: new Date(500),
+                }),
+            }));
+        });
+
+        it("does not resurrect a positive pending request projection after the parent turn terminalized", async () => {
+            currentTx.session.findUnique
+                .mockResolvedValueOnce({
+                    accountId: "u1",
+                    encryptionMode: "plain",
+                    tag: "session-tag",
+                    shares: [],
+                    seq: 0,
+                    pendingCount: 0,
+                    pendingBlockedCount: 0,
+                    lastViewedSessionSeq: null,
+                    pendingPermissionRequestCount: 0,
+                    pendingUserActionRequestCount: 0,
+                    pendingRequestObservedAt: null,
+                    latestTurnStatus: "completed",
+                    lastRuntimeIssue: null,
+                    active: true,
+                    archivedAt: null,
+                })
+                .mockResolvedValueOnce({
+                    metadataLayoutVersion: 0,
+                    ownerMetadata: null,
+                    agentStateVersion: 1,
+                    agentState: "a1",
+                    seq: 0,
+                    pendingCount: 0,
+                    pendingBlockedCount: 0,
+                    lastViewedSessionSeq: null,
+                    pendingPermissionRequestCount: 0,
+                    pendingUserActionRequestCount: 0,
+                    pendingRequestObservedAt: null,
+                    latestTurnStatus: "completed",
+                    lastRuntimeIssue: null,
+                    active: true,
+                    archivedAt: null,
+                });
+            currentTx.session.updateMany.mockResolvedValueOnce({ count: 1 });
+            getSessionParticipantUserIds.mockResolvedValueOnce(["u1"]);
+            markAccountChanged.mockResolvedValueOnce(10);
+
+            const params: Parameters<typeof updateSessionAgentState>[0] & { pendingRequestNewestCreatedAt: number } = {
+                actorUserId: "u1",
+                sessionId: "s1",
+                expectedVersion: 1,
+                agentStateCiphertext: "a2",
+                pendingPermissionRequestCount: 2,
+                pendingUserActionRequestCount: 1,
+                pendingRequestNewestCreatedAt: 500,
+            };
+            const res = await updateSessionAgentState(params);
+
+            // The Agent-state CAS still applies; only the stale attention
+            // projection is refused, so the terminal zeroes survive.
+            expect(res).toMatchObject({
+                ok: true,
+                version: 2,
+                pendingPermissionRequestCount: 0,
+                pendingUserActionRequestCount: 0,
+                pendingRequestObservedAt: null,
+            });
+            expect(currentTx.session.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+                data: expect.objectContaining({
+                    agentState: "a2",
+                    pendingPermissionRequestCount: 0,
+                    pendingUserActionRequestCount: 0,
+                    pendingRequestObservedAt: null,
+                }),
+            }));
         });
 
         it("rejects layout-zero Agent-state edits from a non-owner admin", async () => {

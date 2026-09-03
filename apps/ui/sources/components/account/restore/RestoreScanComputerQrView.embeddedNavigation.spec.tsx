@@ -50,8 +50,7 @@ vi.mock('@/sync/domains/server/activeServerSwitch', () => ({
 }));
 
 vi.mock('@/auth/pairing/pairingUrl', () => ({
-    buildPairingDeepLink: () => 'happier:///pair?v=1&pairId=p&secret=s&server=http%3A%2F%2Flocalhost%3A53288',
-    parsePairingDeepLink: () => ({ pairId: 'p', secret: 's', serverUrl: 'http://localhost:53288' }),
+    classifyLegacyPairingDeepLink: () => ({ kind: 'legacy_pairing_update_required' }),
     parseHomeQrInviteDeepLink: () => null,
 }));
 
@@ -87,7 +86,7 @@ describe('RestoreScanComputerQrView (embedded navigation)', () => {
         let tree!: renderer.ReactTestRenderer;
         try {
             await act(async () => {
-                tree = renderer.create(<RestoreScanComputerQrView embedded onShowQrInstead={onShowQrInstead} />);
+                tree = renderer.create(<RestoreScanComputerQrView entryIntent="add_home" embedded onShowQrInstead={onShowQrInstead} />);
             });
 
             const button = tree.root.findByProps({ testID: 'restore-show-qr-instead' });

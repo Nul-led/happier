@@ -188,9 +188,9 @@ vi.mock('@/sync/domains/pending/pendingTerminalConnect', () => ({
     clearPendingTerminalConnect: vi.fn(),
 }));
 
-// `authApproveSpy` records calls to the explicit-target v3 approval owner.
+// `authApproveSpy` records calls to the resolved Home-transport v3 approval owner.
 vi.mock('@/auth/flows/approve', () => ({
-    authApproveAtEndpoint: authApproveSpy,
+    authApproveWithTransport: authApproveSpy,
 }));
 
 vi.mock('@/sync/api/account/apiAccountEncryptionMode', () => ({
@@ -519,7 +519,9 @@ describe('useConnectTerminal unauthenticated flow', () => {
         expect(result).toBe(true);
         expect(authApproveSpy).toHaveBeenCalledTimes(1);
         expect(authApproveSpy).toHaveBeenCalledWith(expect.objectContaining({
-            endpointUrl: 'https://api.happier.dev',
+            transport: expect.objectContaining({
+                canonicalServerUrl: 'https://api.happier.dev',
+            }),
             token: 'token-1',
             publicKeyBase64: Buffer.from(terminalPublicKey).toString('base64'),
             responseKind: 'dataKey',
@@ -643,7 +645,9 @@ describe('useConnectTerminal unauthenticated flow', () => {
             'e2ee.keylessAccounts',
         ]);
         expect(authApproveSpy).toHaveBeenCalledWith(expect.objectContaining({
-            endpointUrl: 'https://api.happier.dev',
+            transport: expect.objectContaining({
+                canonicalServerUrl: 'https://api.happier.dev',
+            }),
             token: 'plain-token',
             responseKind: 'tokenOnly',
         }));
@@ -769,8 +773,10 @@ describe('useConnectTerminal unauthenticated flow', () => {
             { serverId: 'srv_home_b' },
         );
         expect(authApproveSpy).toHaveBeenCalledWith(expect.objectContaining({
-            endpointUrl: 'https://stack.example.test',
-            serverId: 'srv_home_b',
+            transport: expect.objectContaining({
+                canonicalServerUrl: 'https://stack.example.test',
+                homeServerIdentityId: 'srv_home_b',
+            }),
             token: 'token-new',
             responseKind: 'dataKey',
         }));

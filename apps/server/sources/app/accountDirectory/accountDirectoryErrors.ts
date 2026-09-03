@@ -13,6 +13,7 @@ export type AccountDirectoryErrorCode =
     | "assertion_expired"
     | "assertion_clock_skew"
     | "assertion_wrong_audience"
+    | "credential_destination_mismatch"
     | "invalid_client_key"
     | "assertion_issuer_untrusted"
     | "directory_link_not_found"
@@ -33,6 +34,7 @@ const STATUS_BY_CODE = {
     assertion_expired: 401,
     assertion_clock_skew: 401,
     assertion_wrong_audience: 401,
+    credential_destination_mismatch: 401,
     invalid_client_key: 401,
     assertion_issuer_untrusted: 401,
     directory_link_not_found: 401,
@@ -74,6 +76,7 @@ export const ACCOUNT_DIRECTORY_PROTOCOL_ERROR_BY_CODE: Readonly<
     assertion_expired: ACCOUNT_DIRECTORY_ERROR_CODES_V1.assertionExpired,
     assertion_clock_skew: ACCOUNT_DIRECTORY_ERROR_CODES_V1.assertionClockSkew,
     assertion_wrong_audience: ACCOUNT_DIRECTORY_ERROR_CODES_V1.invalidAudience,
+    credential_destination_mismatch: ACCOUNT_DIRECTORY_ERROR_CODES_V1.invalidAudience,
     invalid_client_key: ACCOUNT_DIRECTORY_ERROR_CODES_V1.invalidClientKey,
     assertion_issuer_untrusted: ACCOUNT_DIRECTORY_ERROR_CODES_V1.invalidIssuer,
     directory_link_not_found: ACCOUNT_DIRECTORY_ERROR_CODES_V1.directoryLinkNotFound,

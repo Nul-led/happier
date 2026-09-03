@@ -2,7 +2,11 @@ import { createHash, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import tweetnacl from "tweetnacl";
 
-import { encodeBase64, type HomeConnectionDescriptorV1 } from "@happier-dev/protocol";
+import {
+    createHomeCredentialDestinationDigestV1,
+    encodeBase64,
+    type HomeConnectionDescriptorV1,
+} from "@happier-dev/protocol";
 import { db, initDbMysql, initDbPostgres } from "@/storage/db";
 import {
     createLightSqliteHarness,
@@ -75,6 +79,9 @@ function signedAssertion(params: Readonly<{
         issuerServerIdentityId: params.issuerServerIdentityId,
         issuerSubjectId: params.issuerSubjectId,
         audienceHomeServerIdentityId: "srv_home_tx_test",
+        credentialDestinationDigestBase64Url: createHomeCredentialDestinationDigestV1(
+            descriptor("srv_home_tx_test"),
+        ),
         clientBoxPublicKeyBase64: encodeBase64(clientKeyPair.publicKey, "base64"),
         issuedAtMs: params.nowMs,
         expiresAtMs: params.nowMs + 180_000,
@@ -97,6 +104,7 @@ async function approveAssertionRequest(params: Readonly<{
         assertion: params.assertion,
         nowMs: params.nowMs,
         env: { HAPPIER_SERVER_IDENTITY_ID: "srv_home_tx_test" } as NodeJS.ProcessEnv,
+        resolveHomeConnectionDescriptor: async () => descriptor("srv_home_tx_test"),
         homeApprovalGate: createHomeApprovalGate({ HAPPIER_HOME_DEVICE_APPROVAL_REQUIRED: "1" }),
         issueHomeToken: async () => {
             throw new Error("approval request must not issue a Home token");
@@ -251,6 +259,40 @@ describe("Account Directory database contract", () => {
         await db.account.deleteMany({ where: { id: { in: [accountA.id, accountB.id] } } });
     });
 
+    it("preserves an explicit null preferred choice across an ordinary existing-row upsert", async () => {
+        const account = await db.account.create({
+            data: { publicKey: uniqueValue("account-directory-null-preferred") },
+            select: { id: true },
+        });
+        const homeServerIdentityId = uniqueValue("srv_home_null_preferred");
+
+        await upsertAccountHomeDirectoryEntry({
+            accountId: account.id,
+            homeServerIdentityId,
+            label: "Original label",
+            connectionDescriptor: descriptor(homeServerIdentityId),
+        });
+        await setPreferredAccountHome({
+            accountId: account.id,
+            homeServerIdentityId: null,
+        });
+
+        const updated = await upsertAccountHomeDirectoryEntry({
+            accountId: account.id,
+            homeServerIdentityId,
+            label: "Updated label",
+            connectionDescriptor: descriptor(homeServerIdentityId),
+        });
+
+        expect(updated.preferred).toBe(false);
+        await expect(db.account.findUniqueOrThrow({
+            where: { id: account.id },
+            select: { preferredHomeServerIdentityId: true },
+        })).resolves.toEqual({ preferredHomeServerIdentityId: null });
+
+        await db.account.delete({ where: { id: account.id } });
+    });
+
     it("requires explicit relink for trust changes and cascades directory state with Account deletion", async () => {
         const account = await db.account.create({
             data: { publicKey: uniqueValue("account-directory-cascade") },
@@ -366,6 +408,7 @@ describe("Account Directory database contract", () => {
                 assertion,
                 nowMs,
                 env: { HAPPIER_SERVER_IDENTITY_ID: "srv_home_tx_test" } as NodeJS.ProcessEnv,
+                resolveHomeConnectionDescriptor: async () => descriptor("srv_home_tx_test"),
                 homeApprovalGate: {
                     evaluate: async () => {
                         await deleteAccountDirectoryLink({ accountId: account.id, issuerServerIdentityId });
@@ -381,6 +424,7 @@ describe("Account Directory database contract", () => {
                 assertion,
                 nowMs,
                 env: { HAPPIER_SERVER_IDENTITY_ID: "srv_home_tx_test" } as NodeJS.ProcessEnv,
+                resolveHomeConnectionDescriptor: async () => descriptor("srv_home_tx_test"),
                 homeApprovalGate: {
                     evaluate: async () => {
                         await upsertAccountDirectoryLink({
@@ -428,6 +472,7 @@ describe("Account Directory database contract", () => {
                 approvalId,
                 nowMs,
                 env: { HAPPIER_SERVER_IDENTITY_ID: "srv_home_tx_test" } as NodeJS.ProcessEnv,
+                resolveHomeConnectionDescriptor: async () => descriptor("srv_home_tx_test"),
                 homeApprovalGate: {
                     evaluate: async (facts) => {
                         const decision = await createHomeApprovalGate({ HAPPIER_HOME_DEVICE_APPROVAL_REQUIRED: "1" }).evaluate(facts);
@@ -476,6 +521,7 @@ describe("Account Directory database contract", () => {
                 approvalId,
                 nowMs: nowMs + 1,
                 env: { HAPPIER_SERVER_IDENTITY_ID: "srv_home_tx_test" } as NodeJS.ProcessEnv,
+                resolveHomeConnectionDescriptor: async () => descriptor("srv_home_tx_test"),
                 homeApprovalGate: createHomeApprovalGate({ HAPPIER_HOME_DEVICE_APPROVAL_REQUIRED: "1" }),
                 issueHomeToken: async () => {
                     issueCalls += 1;
@@ -524,6 +570,7 @@ describe("Account Directory database contract", () => {
                 approvalId,
                 nowMs: nowMs + 1,
                 env: { HAPPIER_SERVER_IDENTITY_ID: "srv_home_tx_test" } as NodeJS.ProcessEnv,
+                resolveHomeConnectionDescriptor: async () => descriptor("srv_home_tx_test"),
                 homeApprovalGate: createHomeApprovalGate({ HAPPIER_HOME_DEVICE_APPROVAL_REQUIRED: "1" }),
                 issueHomeToken: async () => {
                     issueCalls += 1;
@@ -567,6 +614,7 @@ describe("Account Directory database contract", () => {
                 approvalId,
                 nowMs,
                 env: { HAPPIER_SERVER_IDENTITY_ID: "srv_home_tx_test" } as NodeJS.ProcessEnv,
+                resolveHomeConnectionDescriptor: async () => descriptor("srv_home_tx_test"),
                 homeApprovalGate: createHomeApprovalGate({ HAPPIER_HOME_DEVICE_APPROVAL_REQUIRED: "1" }),
                 issueHomeToken: async () => {
                     issueCalls += 1;

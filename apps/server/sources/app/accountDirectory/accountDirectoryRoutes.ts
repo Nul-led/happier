@@ -49,6 +49,7 @@ import {
     setPreferredAccountHome,
     upsertAccountDirectoryLink,
     upsertAccountHomeDirectoryEntry,
+    type HomeConnectionDescriptorResolver,
 } from "./accountDirectoryService";
 
 function sendAccountDirectoryError(reply: FastifyReply, error: unknown): void {
@@ -184,7 +185,9 @@ export function registerAccountDirectoryLinkRoutes(app: Fastify): void {
     });
 }
 
-export function registerHomeLoginRoute(app: Fastify): void {
+export function registerHomeLoginRoute(app: Fastify, params: Readonly<{
+    resolveHomeConnectionDescriptor?: HomeConnectionDescriptorResolver;
+}> = {}): void {
     const homeApprovalGate = createHomeApprovalGate(process.env);
     app.post(HOME_LOGIN_HTTP_PATH_V1, {
         errorHandler: accountDirectoryRouteErrorHandler,
@@ -196,6 +199,9 @@ export function registerHomeLoginRoute(app: Fastify): void {
         const result = await redeemHomeLoginAssertion({
             assertion: body.assertion,
             ...(body.approvalId ? { approvalId: body.approvalId } : {}),
+            ...(params.resolveHomeConnectionDescriptor
+                ? { resolveHomeConnectionDescriptor: params.resolveHomeConnectionDescriptor }
+                : {}),
             homeApprovalGate,
             issueHomeToken: async (tx, accountId) => await auth.createTokenInTx(
                 tx,

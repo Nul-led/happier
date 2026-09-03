@@ -5,6 +5,7 @@ import {
   ACCOUNT_DIRECTORY_MAX_HOME_LOGIN_TOKEN_UTF8_BYTES,
   ACCOUNT_DIRECTORY_MAX_SEALED_TOKEN_BYTES,
   ACCOUNT_DIRECTORY_ASSERTION_SIGNING_DOMAIN_V1,
+  ACCOUNT_DIRECTORY_CREDENTIAL_DESTINATION_DIGEST_DOMAIN_V1,
   ACCOUNT_DIRECTORY_ERROR_CODES_V1,
   ACCOUNT_DIRECTORY_HOME_HTTP_PATH_V1,
   ACCOUNT_DIRECTORY_HOME_LOGIN_ASSERTION_HTTP_PATH_V1,
@@ -25,6 +26,7 @@ import {
   AccountDirectoryPreferredHomePatchResponseV1Schema,
   AccountDirectoryRouteErrorResponseV1Schema,
   HomeConnectionDescriptorV1Schema,
+  HomeCredentialDestinationV1Schema,
   HomeApplicationOriginV1Schema,
   HomeDeviceApprovalRequestV1Schema,
   HomeDeviceApprovalListV1Schema,
@@ -38,6 +40,9 @@ import {
   HomeLoginRedemptionResultV1Schema,
   HomeLoginRedemptionResponseV1Schema,
   createHomeLoginAssertionSigningBytesV1,
+  createHomeCredentialDestinationDigestV1,
+  createHomeCredentialDestinationV1,
+  isHomeCredentialDestinationAllowedV1,
   createHomeLoginRequesterFingerprintV1,
   buildAccountDirectoryHomeHttpPathV1,
   buildAccountDirectoryHomeLoginAssertionHttpPathV1,
@@ -85,6 +90,7 @@ const ASSERTION = {
   issuerServerIdentityId: 'srv_account_service',
   issuerSubjectId: 'account-subject-1',
   audienceHomeServerIdentityId: 'srv_home_https',
+  credentialDestinationDigestBase64Url: 'A'.repeat(43),
   clientBoxPublicKeyBase64: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
   issuedAtMs: 1_700_000_000_000,
   expiresAtMs: 1_700_000_180_000,
@@ -277,6 +283,107 @@ describe('Account Directory protocol DTOs', () => {
       ...HTTPS_DESCRIPTOR,
       endpoints: [{ ...IROH_DESCRIPTOR.endpoints[0], v: 1 }],
     }).success).toBe(false);
+  });
+
+  it('canonically binds credential-bearing Home destinations', () => {
+    const descriptor = {
+      ...MIXED_DESCRIPTOR,
+      revision: 41,
+      endpoints: [
+        { kind: 'iroh' as const, endpointId: 'd'.repeat(64), relayUrls: ['https://relay-b.example.test'], directAddresses: ['192.0.2.2:443'] },
+        { kind: 'https' as const, url: 'https://SECOND.example.test:443/path' },
+        { kind: 'iroh' as const, endpointId: 'c'.repeat(64), relayUrls: ['https://relay-a.example.test'], directAddresses: ['192.0.2.1:443'] },
+        { kind: 'https' as const, url: 'https://home.example.test/base' },
+        { kind: 'iroh' as const, endpointId: 'c'.repeat(64) },
+        { kind: 'https' as const, url: 'https://second.example.test/path' },
+      ],
+    };
+    const canonical = createHomeCredentialDestinationV1(descriptor);
+
+    expect(ACCOUNT_DIRECTORY_CREDENTIAL_DESTINATION_DIGEST_DOMAIN_V1)
+      .toBe('happier.account-directory.home-login.credential-destination.v1');
+    expect(canonical).toEqual({
+      v: 1,
+      homeServerIdentityId: 'srv_home_mixed',
+      canonicalServerUrl: 'https://home.example.test/base',
+      applicationEndpointUrls: [
+        'https://home.example.test/base',
+        'https://second.example.test/path',
+      ],
+      irohEndpointIds: ['c'.repeat(64), 'd'.repeat(64)],
+    });
+    expect(HomeCredentialDestinationV1Schema.parse(canonical)).toEqual(canonical);
+    expect(HomeCredentialDestinationV1Schema.safeParse({ ...canonical, revision: 41 }).success).toBe(false);
+    expect(HomeCredentialDestinationV1Schema.safeParse({
+      ...canonical,
+      canonicalServerUrl: 'not-a-url',
+    }).success).toBe(false);
+
+    expect(isHomeCredentialDestinationAllowedV1(canonical, {
+      kind: 'https',
+      applicationUrl: 'https://SECOND.example.test:443/path/',
+    })).toBe(true);
+    expect(isHomeCredentialDestinationAllowedV1(canonical, {
+      kind: 'https',
+      applicationUrl: 'https://attacker.example.test/path',
+    })).toBe(false);
+    expect(isHomeCredentialDestinationAllowedV1(canonical, {
+      kind: 'iroh',
+      endpointId: 'd'.repeat(64),
+    })).toBe(true);
+    expect(isHomeCredentialDestinationAllowedV1(canonical, {
+      kind: 'iroh',
+      endpointId: 'e'.repeat(64),
+    })).toBe(false);
+    expect(HomeCredentialDestinationV1Schema.safeParse({
+      ...canonical,
+      applicationEndpointUrls: [...canonical.applicationEndpointUrls].reverse(),
+    }).success).toBe(false);
+    expect(HomeCredentialDestinationV1Schema.safeParse({
+      ...canonical,
+      irohEndpointIds: [canonical.irohEndpointIds[0], canonical.irohEndpointIds[0]],
+    }).success).toBe(false);
+    expect(HomeCredentialDestinationV1Schema.safeParse({
+      ...canonical,
+      applicationEndpointUrls: Array.from(
+        { length: 17 },
+        (_, index) => `https://destination-${String(index).padStart(2, '0')}.example.test/`,
+      ),
+    }).success).toBe(false);
+
+    const digest = createHomeCredentialDestinationDigestV1(descriptor);
+    expect(digest).toBe('Dp90cbs5GdTQplxyhVptYwLVcumzgBUq-47y7lJyNqw');
+    for (const equivalent of [
+      { ...descriptor, revision: 42 },
+      { ...descriptor, endpoints: [...descriptor.endpoints].reverse() },
+      {
+        ...descriptor,
+        endpoints: descriptor.endpoints.map((endpoint) => endpoint.kind === 'iroh'
+          ? { ...endpoint, relayUrls: ['https://changed-relay.example.test'], directAddresses: ['203.0.113.8:443'] }
+          : endpoint),
+      },
+    ]) {
+      expect(createHomeCredentialDestinationDigestV1(equivalent)).toBe(digest);
+    }
+
+    for (const changed of [
+      { ...descriptor, homeServerIdentityId: 'srv_home_other' },
+      { ...descriptor, canonicalServerUrl: 'https://auth-other.example.test' },
+      {
+        ...descriptor,
+        endpoints: descriptor.endpoints.map((endpoint, index) => index === 1
+          ? { kind: 'https' as const, url: 'https://different.example.test/path' }
+          : endpoint),
+      },
+      {
+        ...descriptor,
+        endpoints: descriptor.endpoints.map((endpoint, index) => index === 0
+          ? { ...endpoint, endpointId: 'e'.repeat(64) }
+          : endpoint),
+      },
+    ]) {
+      expect(createHomeCredentialDestinationDigestV1(changed)).not.toBe(digest);
+    }
   });
 
   it('parses the optional accountDirectory capability as one closed family', () => {
@@ -499,6 +606,12 @@ describe('Account Directory protocol DTOs', () => {
       clientBoxPublicKeyBase64: ASSERTION.clientBoxPublicKeyBase64.replace(/=+$/u, ''),
     }).success).toBe(false);
     expect(HomeLoginAssertionV1Schema.safeParse({ ...ASSERTION, purpose: 'wrong-purpose' }).success).toBe(false);
+    const { credentialDestinationDigestBase64Url: _digest, ...missingDestinationDigest } = ASSERTION;
+    expect(HomeLoginAssertionV1Schema.safeParse(missingDestinationDigest).success).toBe(false);
+    expect(HomeLoginAssertionV1Schema.safeParse({
+      ...ASSERTION,
+      credentialDestinationDigestBase64Url: 'not-a-canonical-sha256-digest',
+    }).success).toBe(false);
     expect(HomeLoginAssertionV1Schema.safeParse({ ...ASSERTION, audienceHomeServerIdentityId: 'srv_other' }).success).toBe(true);
   });
 
@@ -506,7 +619,7 @@ describe('Account Directory protocol DTOs', () => {
     const bytes = createHomeLoginAssertionSigningBytesV1(ASSERTION);
     const bytesAsHex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
     expect(ACCOUNT_DIRECTORY_ASSERTION_SIGNING_DOMAIN_V1).toBe('happier.account-directory.home-login.v1');
-    expect(bytesAsHex).toBe('00000027686170706965722e6163636f756e742d6469726563746f72792e686f6d652d6c6f67696e2e7631000000013100000012686170706965722e686f6d652d6c6f67696e000000137372765f6163636f756e745f73657276696365000000116163636f756e742d7375626a6563742d310000000e7372765f686f6d655f68747470730000002c414141414141414141414141414141414141414141414141414141414141414141414141414141414141413d0000000d313730303030303030303030300000000d313730303030303138303030300000004030313233343536373839616263646566303132333435363738396162636465663031323334353637383961626364656630313233343536373839616263646566');
+    expect(bytesAsHex).toBe('00000027686170706965722e6163636f756e742d6469726563746f72792e686f6d652d6c6f67696e2e7631000000013100000012686170706965722e686f6d652d6c6f67696e000000137372765f6163636f756e745f73657276696365000000116163636f756e742d7375626a6563742d310000000e7372765f686f6d655f68747470730000002b414141414141414141414141414141414141414141414141414141414141414141414141414141414141410000002c414141414141414141414141414141414141414141414141414141414141414141414141414141414141413d0000000d313730303030303030303030300000000d313730303030303138303030300000004030313233343536373839616263646566303132333435363738396162636465663031323334353637383961626364656630313233343536373839616263646566');
   });
 
   it('exposes typed route errors without leaking credentials', () => {

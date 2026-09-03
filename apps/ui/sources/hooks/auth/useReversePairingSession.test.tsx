@@ -206,7 +206,11 @@ describe('useReversePairingSession', () => {
             source: 'qr',
             preserveUserLabel: true,
         }));
-        expect(hook.getCurrent().presentation).toEqual({ phase: 'succeeded', descriptor });
+        expect(hook.getCurrent().presentation).toEqual({
+            phase: 'succeeded',
+            descriptor,
+            profileId: 'known-profile',
+        });
         await hook.unmount();
     });
 
@@ -244,8 +248,18 @@ describe('useReversePairingSession', () => {
 
         expect(requestSignal?.aborted).toBe(true);
         expect(target.close).toHaveBeenCalledOnce();
-        expect(hook.getCurrent().presentation).toEqual({ phase: 'generating' });
+        expect(hook.getCurrent().presentation).toEqual({
+            phase: 'retryable_error',
+            descriptor,
+            partialCommit: null,
+        });
         expect(state.authWait).not.toHaveBeenCalled();
+
+        await act(async () => {
+            void hook.getCurrent().start();
+            for (let turn = 0; turn < 8; turn += 1) await Promise.resolve();
+        });
+        expect(hook.getCurrent().presentation.phase).toBe('ready');
         await hook.unmount();
     });
 
@@ -274,16 +288,27 @@ describe('useReversePairingSession', () => {
 
     it('distinguishes the canonical target-qualified adoption partial commit', async () => {
         const { HomeProfileAdoptionPartialCommitError } = await import('@/sync/domains/server/adoptHomeProfile');
-        state.adopt.mockRejectedValueOnce(new HomeProfileAdoptionPartialCommitError());
+        const partialCommit = new HomeProfileAdoptionPartialCommitError();
+        Object.assign(partialCommit, {
+            adoptionError: new Error('profile adoption failed'),
+            canonicalServerUrl: descriptor.canonicalServerUrl,
+            serverIdentityId: descriptor.homeServerIdentityId,
+            rollbackOutcome: { kind: 'not_applied', reason: 'ownership_changed' },
+        });
+        state.adopt.mockRejectedValueOnce(partialCommit);
 
         const { useReversePairingSession } = await import('./useReversePairingSession');
         const hook = await renderHook(() => useReversePairingSession({ enabled: true }));
         await vi.waitFor(() => expect(hook.getCurrent().presentation.phase).toBe('retryable_error'));
 
-        expect(hook.getCurrent().presentation).toEqual({
+        expect(hook.getCurrent().presentation).toMatchObject({
             phase: 'retryable_error',
             descriptor,
-            partialCommit: true,
+            partialCommit: {
+                canonicalServerUrl: descriptor.canonicalServerUrl,
+                serverIdentityId: descriptor.homeServerIdentityId,
+                rollbackOutcome: { kind: 'not_applied', reason: 'ownership_changed' },
+            },
         });
         await hook.unmount();
     });
