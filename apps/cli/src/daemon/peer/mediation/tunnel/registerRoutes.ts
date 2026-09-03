@@ -3,6 +3,7 @@ import fastifyWebsocket from '@fastify/websocket';
 
 import {
     DEFAULT_MACHINE_TUNNEL_SUBSTREAM_CAPABILITIES,
+    decodePeerTcpTunnelBinaryFrameHeaderV2,
     decodePeerTcpTunnelBinaryFrameV2,
     PEER_TCP_TUNNEL_DEFAULT_MAX_FRAME_BYTES,
     PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
@@ -23,14 +24,11 @@ import {
     createPeerTcpTunnelStreamSession,
     decodePeerTcpTunnelBinaryFrameForSession,
     encodePeerTcpTunnelBinaryFrameForSession,
+    peerTcpTunnelBinaryDecodeFailureReason,
 } from './frames';
 import { connectPeerTcpTunnelTcp } from './open';
 import type { DaemonPeerMediationDirectFlowObserver } from '../observability/events';
 import { createAtomicRouteGrantConsumption } from './grantConsumption';
-import {
-    decodePeerTcpTunnelBinaryRoutingHeaderV2,
-    peerTcpTunnelBinaryDecodeFailureReason,
-} from './routingHeader';
 import {
     dispatchDaemonVoiceInferenceSttBinaryAppend,
     dispatchDaemonVoiceInferenceSttTerminal,
@@ -265,7 +263,7 @@ export function registerPeerTcpTunnelLoopbackRoutes(
                 inboundQueue = inboundQueue.then(async () => {
                     const binaryPayload = toBinaryFramePayload(raw, PEER_TCP_TUNNEL_DEFAULT_MAX_FRAME_BYTES);
                     if (binaryPayload) {
-                        const routingHeader = decodePeerTcpTunnelBinaryRoutingHeaderV2({
+                        const routingHeader = decodePeerTcpTunnelBinaryFrameHeaderV2({
                             frame: binaryPayload,
                             maxHeaderBytes: PEER_TCP_TUNNEL_DEFAULT_MAX_FRAME_BYTES,
                         });

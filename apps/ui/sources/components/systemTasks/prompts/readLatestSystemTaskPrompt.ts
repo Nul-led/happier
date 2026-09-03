@@ -1,12 +1,8 @@
 import type { SystemTaskJsonObject } from '@happier-dev/protocol';
 
-import type { SystemTaskRunState } from '../types';
+import type { SystemTaskPromptEnvelope, SystemTaskRunState } from '../types';
 
-export type SystemTaskPromptEnvelope = Readonly<{
-    kind: string;
-    message: string;
-    data: SystemTaskJsonObject;
-}>;
+export type { SystemTaskPromptEnvelope };
 
 export function readLatestSystemTaskPrompt(snapshot: SystemTaskRunState | null): SystemTaskPromptEnvelope | null {
     if (!snapshot) {

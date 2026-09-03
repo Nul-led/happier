@@ -254,8 +254,25 @@ function resolveServerIdForUrl(serverUrl: string, preferredServerId?: string | n
             ? normalizeServerId(preferredProfile.serverIdentityId ?? null) ?? preferredProfile.id
             : null;
     }
-    const match = profiles.find((profile) => normalizeUrl(profile.serverUrl) === normalized);
+    // More than one Home can reach the same URL (a moved Home retaining its old
+    // alias, or a legacy/manual duplicate). Picking one by registry order would
+    // attribute that URL's credentials to an arbitrary identity, so ambiguity
+    // resolves to no identity and callers fall back to the anonymous URL scope.
+    const matches = profiles.filter((profile) => normalizeUrl(profile.serverUrl) === normalized);
+    const match = matches.length === 1 ? matches[0]! : null;
     return match ? (normalizeServerId(match.serverIdentityId ?? null) ?? match.id) : null;
+}
+
+/**
+ * Profiles that can currently derive the anonymous URL-hash scope for this URL,
+ * through either their canonical routing URL or a retained legacy/manual alias.
+ */
+function listProfilesClaimingUrl(normalizedUrl: string) {
+    if (!normalizedUrl) return [];
+    return listServerProfiles().filter((profile) => (
+        normalizeUrl(profile.serverUrl) === normalizedUrl
+        || normalizeUrl(profile.canonicalServerUrl ?? '') === normalizedUrl
+    ));
 }
 
 function findServerProfileForIdentifier(serverId: string | null | undefined) {
@@ -439,9 +456,17 @@ async function getServerScopedKeys(
     const profileIdScopes = listServerProfileCredentialScopeIds(serverId)
         .map((id) => sanitizeScopeToken(id))
         .filter((scope) => scope !== idScope);
+    // URL-hash data belongs to no identity, so it is a migration input only while
+    // exactly this Home can reach that URL. When another profile also claims it,
+    // reading or migrating it here would hand one Home another Home's credential.
+    const resolvedProfileId = findServerProfileForIdentifier(serverId)?.id ?? null;
+    const urlHashScopeIsShared = [normalizedUrl, legacyNormalizedUrlForHash]
+        .filter((candidate) => Boolean(candidate))
+        .some((candidate) => listProfilesClaimingUrl(candidate)
+            .some((profile) => profile.id !== resolvedProfileId));
     // A strict pre-adoption identity scope is identity-keyed only. URL-hash data
     // belongs to no identity; it must never migrate into (or be readable as) one.
-    const [canonicalUrlScope, legacyUrlScope] = preAdoptionIdentityScope
+    const [canonicalUrlScope, legacyUrlScope] = preAdoptionIdentityScope || urlHashScopeIsShared
         ? [null, null] as const
         : await Promise.all([
             getServerHashScopeForNormalizedUrl(normalizedUrl),
@@ -646,6 +671,8 @@ export type PendingAccountDirectoryAuth = Readonly<{
     serverIdentityId: string;
     /** Canonical callback spelling retained for the plan/API boundary. */
     credentialTarget: 'account_directory';
+    entryIntent: AccountServiceEntryIntent;
+    canonicalServerUrl: string;
     provider: string;
     purpose: 'account_directory';
     /** Server-generated post-provider handle; absent before the provider redirect completes. */
@@ -671,6 +698,8 @@ export type PendingAccountDirectoryAuthInput = Readonly<{
     endpoint: string;
     serverIdentityId: string;
     credentialTarget: 'account_directory';
+    entryIntent: AccountServiceEntryIntent;
+    canonicalServerUrl: string;
     provider: string;
     purpose: 'account_directory';
     pending?: string;
@@ -689,6 +718,8 @@ type NormalizedPendingAccountDirectoryAuth = Readonly<{
     endpoint: string;
     serverIdentityId: string;
     credentialTarget: 'account_directory';
+    entryIntent: AccountServiceEntryIntent;
+    canonicalServerUrl: string;
     provider: string;
     purpose: 'account_directory';
     pending?: string;
@@ -707,6 +738,8 @@ export type PendingAccountDirectoryAuthTarget = Readonly<{
     endpoint: string;
     serverIdentityId: string;
 }>;
+
+export type AccountServiceEntryIntent = 'enter_preferred_home' | 'connect_service';
 
 export function isLegacyAuthCredentials(credentials: AuthCredentials): credentials is LegacyAuthCredentials {
     return 'secret' in credentials
@@ -887,8 +920,10 @@ function isPendingAccountDirectoryAuthRecord(
     if (
         !endpoint
         || !isNonEmptyString(row.provider)
+        || !normalizeAccountDirectoryEndpoint(typeof row.canonicalServerUrl === 'string' ? row.canonicalServerUrl : '')
         || row.purpose !== 'account_directory'
         || row.credentialTarget !== 'account_directory'
+        || (row.entryIntent !== 'enter_preferred_home' && row.entryIntent !== 'connect_service')
         || (row.pending !== undefined && !isNonEmptyString(row.pending))
         || !Number.isSafeInteger(row.createdAt)
         || !Number.isSafeInteger(row.expiresAt)
@@ -931,6 +966,8 @@ function isPendingAccountDirectoryAuthRecord(
         'endpoint',
         'serverIdentityId',
         'credentialTarget',
+        'entryIntent',
+        'canonicalServerUrl',
         'provider',
         'purpose',
         'pending',
@@ -962,10 +999,14 @@ function normalizePendingAccountDirectoryAuth(
         || !identity
         || (options.includeExpired !== true && Date.now() >= value.expiresAt)
     ) return null;
+    const canonicalServerUrl = normalizeAccountDirectoryEndpoint(String(raw.canonicalServerUrl ?? ''));
+    if (!canonicalServerUrl) return null;
     return {
         endpoint,
         serverIdentityId: identity,
         credentialTarget: 'account_directory',
+        entryIntent: value.entryIntent,
+        canonicalServerUrl,
         provider: value.provider.trim(),
         purpose: 'account_directory',
         ...(value.pending ? { pending: value.pending.trim() } : {}),
@@ -2348,6 +2389,37 @@ export const TokenStorage = {
         };
     },
 
+    /** Read provider-return custody without retargeting it to the Home now focused. */
+    async readPendingExternalAuthContinuationState(): Promise<PendingExternalReadState<PendingExternalAuth>> {
+        const global = await readStoredJson(
+            getPendingExternalAuthGlobalKey(),
+            'pending external auth',
+            isPendingExternalAuthRecord,
+        );
+        if (!global) return await this.readPendingExternalAuthState();
+        if (isPendingExternalAuthFirstKeyExpired(global)) {
+            await this.clearPendingExternalAuth(
+                hasAttemptedFirstKeyMigration(global)
+                    ? { removeFirstKeyMigrationAttempted: global }
+                    : undefined,
+            );
+            return { value: null, serverMismatch: false };
+        }
+        const hasExactTarget = Boolean(
+            normalizeServerId(global.serverId)
+            && normalizeUrl(global.serverUrl ?? ''),
+        );
+        return {
+            value: global,
+            serverMismatch: hasExactTarget
+                ? false
+                : !doesPendingExternalStateMatchActiveServer(
+                    global,
+                    { requireExplicitServerContext: true },
+                ),
+        };
+    },
+
     async getPendingExternalAuth(): Promise<PendingExternalAuth | null> {
         const state = await this.readPendingExternalAuthState();
         if (!state.value || state.serverMismatch) {
@@ -2667,12 +2739,21 @@ export const TokenStorage = {
         );
     },
 
-    async setPendingExternalAuth(value: PendingExternalAuth): Promise<boolean> {
+    async setPendingExternalAuth(
+        value: PendingExternalAuth,
+        target?: Readonly<{ serverUrl: string; serverId?: string }>,
+    ): Promise<boolean> {
         return await serializePendingExternalAuthMutation(
             async () => {
-                const key =
-                    (await getPendingExternalAuthKeys())
-                        .primary;
+                const keys = target
+                    ? await getServerScopedKeys(
+                        PENDING_EXTERNAL_AUTH_KEY,
+                        target.serverUrl,
+                        target.serverId ? { serverId: target.serverId } : {},
+                    )
+                    : await getPendingExternalAuthKeys();
+                if (!keys) return false;
+                const key = keys.primary;
                 const storedValue =
                     enrichPendingExternalServerContext(
                         value,

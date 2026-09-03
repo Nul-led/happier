@@ -113,6 +113,8 @@ export const FEATURE_ENV_KEYS = Object.freeze({
   providersLocalDiscoveryEnabled: 'HAPPIER_FEATURE_PROVIDERS_LOCAL_DISCOVERY__ENABLED',
   providersLocalModelManagementEnabled: 'HAPPIER_FEATURE_PROVIDERS_LOCAL_MODEL_MANAGEMENT__ENABLED',
 
+  searchEnabled: 'HAPPIER_FEATURE_SEARCH__ENABLED',
+
   // Core browser product gates (server-represented + default-allow). The capture/automation
   // surfaces (sidecar/diagnostics/context/recording/automation) are server-represented but default-off.
   browserEnabled: 'HAPPIER_FEATURE_BROWSER__ENABLED',

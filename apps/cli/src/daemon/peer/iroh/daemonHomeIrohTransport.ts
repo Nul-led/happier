@@ -136,7 +136,7 @@ async function prepareDaemonHomeIrohTransportOnce(
 ): Promise<ActiveDaemonHomeTransport> {
   const descriptor = profile.homeConnectionDescriptor;
   const hasIrohEndpoint = descriptor?.endpoints.some((endpoint) => endpoint.kind === 'iroh') === true;
-  if (!input.runtime || !input.runtime.ensureHomeTunnel || !descriptor || !hasIrohEndpoint) {
+  if (!descriptor || !hasIrohEndpoint) {
     return {
       carrier: 'standard',
       observedPath: 'unknown',
@@ -156,7 +156,6 @@ async function prepareDaemonHomeIrohTransportOnce(
       : defaultIdentityProbe
   );
   const publish = input.publishRuntimeOrigin ?? publishServerHttpRuntimeOrigin;
-  const ensureHomeTunnel = input.runtime.ensureHomeTunnel;
   const trustedHttpsOrigin = descriptor.endpoints.find((endpoint) => endpoint.kind === 'https')?.url;
   const verifyTrustedFallback = async (serverUrl: string, token: string) => await probe({
     serverUrl,
@@ -172,6 +171,25 @@ async function prepareDaemonHomeIrohTransportOnce(
       verifyAuthenticated: async (token) => await verifyTrustedFallback(serverUrl, token),
     };
   };
+  const ensureHomeTunnel = input.runtime?.ensureHomeTunnel;
+  if (!ensureHomeTunnel) {
+    if (!trustedHttpsOrigin) {
+      throw new Error('Iroh Home transport is required and no independently trusted HTTPS fallback is declared');
+    }
+    const standardReadiness = input.token
+      ? await verifyTrustedFallback(trustedHttpsOrigin, input.token)
+      : await identityProbe({
+          serverUrl: trustedHttpsOrigin,
+          expectedServerIdentityId: descriptor.homeServerIdentityId,
+        });
+    if (standardReadiness.status !== 'ready') {
+      throw new DaemonHomeReadinessError({
+        ...standardReadiness,
+        errorMessage: `Trusted HTTPS Home verification failed: ${standardReadiness.errorMessage ?? standardReadiness.status}`,
+      });
+    }
+    return activateTrustedFallback(trustedHttpsOrigin);
+  }
   try {
     const nativeLease = await ensureHomeTunnel({ descriptor });
     const identityReadiness = await identityProbe({

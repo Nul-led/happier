@@ -20,8 +20,6 @@ import { ensureMachineRegistered } from '@/api/machine/ensureMachineRegistered';
 import { initialMachineMetadata } from '@/daemon/machine/metadata';
 import {
   openTerminalProvisioningResponse,
-  readTerminalPairingRequirement,
-  type TerminalPairingRequirement,
 } from '@/auth/terminalProvisioningResponse';
 import {
   readProtectedLocalStateFile,
@@ -33,11 +31,11 @@ type PendingAuthState = Readonly<{
   secretKey: string;
   claimSecret: string;
   serverIdentityId: string;
-  pairingSecret?: string;
-  pairingCreatedAtMs?: number;
-  pairingExpiresAtMs?: number;
-  supportsTokenOnly?: true;
-  pairingRequirement?: TerminalPairingRequirement;
+  pairingSecret: string;
+  pairingCreatedAtMs: number;
+  pairingExpiresAtMs: number;
+  supportsTokenOnly: true;
+  pairingRequirement: 'v3';
   createdAt: string;
 }>;
 
@@ -119,41 +117,25 @@ function parsePendingAuthState(raw: string): PendingAuthState {
   if (typeof createdAt !== 'string') throw new Error('Invalid auth state (createdAt)');
   const normalizedServerIdentityId = normalizeServerIdentityIdCapability(serverIdentityId);
   if (!normalizedServerIdentityId) throw new Error('Invalid auth state (serverIdentityId)');
-  if (supportsTokenOnly !== undefined && supportsTokenOnly !== true) {
+  if (supportsTokenOnly !== true) {
     throw new Error('Invalid auth state (supportsTokenOnly)');
   }
-  if (pairingRequirement !== undefined && pairingRequirement !== 'v3') {
+  if (pairingRequirement !== 'v3') {
     throw new Error('Invalid auth state (pairingRequirement)');
   }
 
-  const hasPairingField = pairingSecret !== undefined
-    || pairingCreatedAtMs !== undefined
-    || pairingExpiresAtMs !== undefined;
-  let validatedPairing: Readonly<{
-    pairingSecret: string;
-    pairingCreatedAtMs: number;
-    pairingExpiresAtMs: number;
-  }> | null = null;
-  if (hasPairingField) {
-    if (
-      typeof pairingSecret !== 'string'
-      || !hasCanonicalEncodedLength(pairingSecret, 'base64url', 32)
-    ) {
-      throw new Error('Invalid auth state (pairingSecret)');
-    }
-    if (typeof pairingCreatedAtMs !== 'number' || !Number.isSafeInteger(pairingCreatedAtMs) || pairingCreatedAtMs < 0) {
-      throw new Error('Invalid auth state (pairingCreatedAtMs)');
-    }
-    if (
-      typeof pairingExpiresAtMs !== 'number'
-      || !Number.isSafeInteger(pairingExpiresAtMs)
-      || pairingExpiresAtMs <= pairingCreatedAtMs
-    ) {
-      throw new Error('Invalid auth state (pairingExpiresAtMs)');
-    }
-    validatedPairing = { pairingSecret, pairingCreatedAtMs, pairingExpiresAtMs };
-  } else if (supportsTokenOnly === true || pairingRequirement === 'v3') {
-    throw new Error('Invalid auth state (pairing context)');
+  if (typeof pairingSecret !== 'string' || !hasCanonicalEncodedLength(pairingSecret, 'base64url', 32)) {
+    throw new Error('Invalid auth state (pairingSecret)');
+  }
+  if (typeof pairingCreatedAtMs !== 'number' || !Number.isSafeInteger(pairingCreatedAtMs) || pairingCreatedAtMs < 0) {
+    throw new Error('Invalid auth state (pairingCreatedAtMs)');
+  }
+  if (
+    typeof pairingExpiresAtMs !== 'number'
+    || !Number.isSafeInteger(pairingExpiresAtMs)
+    || pairingExpiresAtMs <= pairingCreatedAtMs
+  ) {
+    throw new Error('Invalid auth state (pairingExpiresAtMs)');
   }
 
   return {
@@ -162,9 +144,11 @@ function parsePendingAuthState(raw: string): PendingAuthState {
     claimSecret,
     serverIdentityId: normalizedServerIdentityId,
     createdAt,
-    ...(validatedPairing ?? {}),
-    ...(supportsTokenOnly === true ? { supportsTokenOnly: true } : {}),
-    ...(pairingRequirement === 'v3' ? { pairingRequirement } : {}),
+    pairingSecret,
+    pairingCreatedAtMs,
+    pairingExpiresAtMs,
+    supportsTokenOnly: true,
+    pairingRequirement: 'v3',
   };
 }
 
@@ -216,21 +200,11 @@ export async function handleAuthWait(argsRaw: string[]): Promise<void> {
     statePath,
     PENDING_AUTH_STATE_PROTECTION,
   ));
-  const pairingRequirement = state.pairingRequirement ?? readTerminalPairingRequirement();
-  const pairing =
-    state.pairingSecret !== undefined
-    && state.pairingCreatedAtMs !== undefined
-    && state.pairingExpiresAtMs !== undefined
-      ? {
-          secret: decodeBase64(state.pairingSecret, 'base64url'),
-          createdAtMs: state.pairingCreatedAtMs,
-          expiresAtMs: state.pairingExpiresAtMs,
-        }
-      : null;
-  if (!pairing) {
-    console.error(`${V3_REQUIRED_ERROR} Run \`happier auth request --json\` again.`);
-    process.exit(1);
-  }
+  const pairing = {
+    secret: decodeBase64(state.pairingSecret, 'base64url'),
+    createdAtMs: state.pairingCreatedAtMs,
+    expiresAtMs: state.pairingExpiresAtMs,
+  };
 
   const pollIntervalMsRaw = Number(process.env.HAPPIER_AUTH_POLL_INTERVAL_MS ?? '');
   const pollIntervalMs = Number.isFinite(pollIntervalMsRaw) && pollIntervalMsRaw > 0 ? pollIntervalMsRaw : 1000;
@@ -277,16 +251,11 @@ export async function handleAuthWait(argsRaw: string[]): Promise<void> {
         terminalSecretKey,
         terminalPublicKey: publicKeyBytes,
         pairing,
-        requirement: pairingRequirement,
         nowMs: Date.now(),
-        supportsTokenOnly: state.supportsTokenOnly === true,
+        supportsTokenOnly: true,
       });
       if (!opened) {
-        console.error(
-          pairingRequirement === 'v3'
-            ? V3_REQUIRED_ERROR
-            : 'Failed to decrypt auth response.',
-        );
+        console.error(V3_REQUIRED_ERROR);
         process.exit(1);
       }
 

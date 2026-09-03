@@ -24,8 +24,8 @@ describe('getLiveSystemTasksRunnerAdapter', () => {
       backup: vi.fn(async () => ({})),
       verifyBackup: vi.fn(async () => ({})),
       restore: vi.fn(async () => ({})),
+      reconcileRestore: vi.fn(async () => undefined),
       recoverRestore: vi.fn(async () => ({})),
-      finalizeRestore: vi.fn(async () => ({})),
       erase: vi.fn(async () => ({})),
     };
     const createOperations = vi.fn(async () => operations);
@@ -373,9 +373,23 @@ async function importWithRelayBoundaryMocks<T>(load: () => Promise<T>): Promise<
   return await load();
 }
 
-async function importRelayRunnerAdapter(): Promise<ReturnType<typeof getLiveSystemTasksRunnerAdapter>> {
+function createNoopPersonalHomeSystemTaskOperations(): PersonalHomeSystemTaskOperations {
+  return {
+    reconcileRestore: async () => undefined,
+    inspect: async () => ({}),
+    backup: async () => ({}),
+    verifyBackup: async () => ({}),
+    restore: async () => ({}),
+    recoverRestore: async () => ({}),
+    erase: async () => ({}),
+  };
+}
+
+async function importRelayRunnerAdapter(
+  params: Parameters<typeof getLiveSystemTasksRunnerAdapter>[0] = {},
+): Promise<ReturnType<typeof getLiveSystemTasksRunnerAdapter>> {
   const module = await importWithRelayBoundaryMocks(() => import('./liveSystemTasksRunner'));
-  return module.getLiveSystemTasksRunnerAdapter();
+  return module.getLiveSystemTasksRunnerAdapter(params);
 }
 
 async function importHomeCommand(): Promise<typeof import('../../cli/commands/home')> {
@@ -437,7 +451,7 @@ describe('relay runtime system tasks', () => {
   });
 
   it('status inspects the requested channel and mode instead of reconstructed defaults', async () => {
-    const adapter = await importRelayRunnerAdapter();
+    const adapter = await importRelayRunnerAdapter({ personalHomeOperations: createNoopPersonalHomeSystemTaskOperations() });
     const started = await adapter.start({
       spec: {
         protocolVersion: SYSTEM_TASK_PROTOCOL_VERSION,
@@ -456,7 +470,7 @@ describe('relay runtime system tasks', () => {
       purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:59999' },
       anonymousSignupEnabled: false,
     });
-    expect(relayHarness.engine.readStatus).toHaveBeenCalledTimes(1);
+    expect(relayHarness.engine.readStatus).toHaveBeenCalledTimes(2);
     expect(relayHarness.engine.readStatus).toHaveBeenCalledWith(expect.objectContaining({
       target: { kind: 'local' },
       channel: 'preview',
@@ -464,8 +478,39 @@ describe('relay runtime system tasks', () => {
     }));
   });
 
+  it('reconciles through the live CLI registry before returning generic Personal Home status', async () => {
+    const reconcileRestore = vi.fn(async () => undefined);
+    const module = await importWithRelayBoundaryMocks(() => import('./liveSystemTasksRunner'));
+    const adapter = module.getLiveSystemTasksRunnerAdapter({
+      personalHomeOperations: {
+        reconcileRestore,
+        inspect: async () => ({}),
+        backup: async () => ({}),
+        verifyBackup: async () => ({}),
+        restore: async () => ({}),
+        recoverRestore: async () => ({}),
+        erase: async () => ({}),
+      },
+    });
+    const started = await adapter.start({
+      spec: {
+        protocolVersion: SYSTEM_TASK_PROTOCOL_VERSION,
+        kind: 'relay.runtime.status.v1',
+        params: { target: { kind: 'local' }, channel: 'preview', mode: 'system' },
+      },
+    });
+
+    const { result } = await waitForResult(adapter, String((started as { taskId?: unknown }).taskId ?? ''));
+
+    expect(result?.ok).toBe(true);
+    expect(reconcileRestore).toHaveBeenCalledWith(expect.objectContaining({
+      requestedPurpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:59999' },
+      runtimeTarget: { channel: 'preview', mode: 'system' },
+    }));
+  });
+
   it('installOrUpdate forwards env and the server binary override to the canonical engine', async () => {
-    const adapter = await importRelayRunnerAdapter();
+    const adapter = await importRelayRunnerAdapter({ personalHomeOperations: createNoopPersonalHomeSystemTaskOperations() });
     const started = await adapter.start({
       spec: {
         protocolVersion: SYSTEM_TASK_PROTOCOL_VERSION,
@@ -477,7 +522,6 @@ describe('relay runtime system tasks', () => {
           env: {
             HAPPIER_SERVER_HOST: '127.0.0.1',
             PORT: '4123',
-            HAPPIER_PUBLIC_SERVER_URL: 'http://127.0.0.1:4123',
             HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: 'plaintext_only',
             HAPPIER_FEATURE_ENCRYPTION__DEFAULT_ACCOUNT_MODE: 'plain',
             AUTH_ANONYMOUS_SIGNUP_ENABLED: '0',
@@ -504,7 +548,6 @@ describe('relay runtime system tasks', () => {
       env: {
         HAPPIER_SERVER_HOST: '127.0.0.1',
         PORT: '4123',
-        HAPPIER_PUBLIC_SERVER_URL: 'http://127.0.0.1:4123',
         HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: 'plaintext_only',
         HAPPIER_FEATURE_ENCRYPTION__DEFAULT_ACCOUNT_MODE: 'plain',
         AUTH_ANONYMOUS_SIGNUP_ENABLED: '0',
@@ -515,7 +558,7 @@ describe('relay runtime system tasks', () => {
   });
 
   it('rejects arbitrary Personal Home environment keys on the registered install path before reaching the engine', async () => {
-    const adapter = await importRelayRunnerAdapter();
+    const adapter = await importRelayRunnerAdapter({ personalHomeOperations: createNoopPersonalHomeSystemTaskOperations() });
     const started = await adapter.start({
       spec: {
         protocolVersion: SYSTEM_TASK_PROTOCOL_VERSION,
@@ -544,7 +587,7 @@ describe('relay runtime system tasks', () => {
   });
 
   it('start, restart, and stop delegate control actions with the requested params', async () => {
-    const adapter = await importRelayRunnerAdapter();
+    const adapter = await importRelayRunnerAdapter({ personalHomeOperations: createNoopPersonalHomeSystemTaskOperations() });
 
     const startedStart = await adapter.start({
       spec: {
@@ -629,8 +672,8 @@ describe('relay runtime system tasks', () => {
         backup: async () => ({}),
         verifyBackup: async () => ({}),
         restore: async () => ({}),
+        reconcileRestore: async () => undefined,
         recoverRestore: async () => ({}),
-        finalizeRestore: async () => ({}),
         erase: async () => ({}),
       },
     });
@@ -842,7 +885,19 @@ describe('relay runtime system tasks', () => {
     }));
     relayHarness.engine.control.mockImplementation(async (input: { action?: string }) => {
       if (input.action === 'stop') running = false;
-      if (input.action === 'start') running = true;
+      if (input.action === 'start') {
+        running = true;
+        await mkdir(fixture.layout.dataDir, { recursive: true });
+        await writeFile(path.join(fixture.layout.dataDir, 'startup-receipt.json'), JSON.stringify({
+          pid: process.pid,
+          personalHomeReadiness: {
+            authenticated: true,
+            homeServerIdentityId: fixture.identity,
+            accountCount: 1,
+            sessionCount: 1,
+          },
+        }));
+      }
     });
     const adapter = await importRelayRunnerAdapter();
     const baseParams = {
@@ -924,6 +979,9 @@ describe('relay runtime system tasks', () => {
         },
       },
     });
+    await vi.waitFor(async () => {
+      await expect(readFile(path.join(fixture.layout.dataDir, 'startup-receipt.json'), 'utf8')).resolves.toContain(fixture.identity);
+    });
     const emptyRestore = await waitForResult(adapter, String((emptyRestoreStarted as { taskId?: unknown }).taskId ?? ''));
     expect(emptyRestore.result, JSON.stringify(emptyRestore.result))
       .toMatchObject({ ok: true, data: { outcome: 'restored' } });
@@ -933,15 +991,15 @@ describe('relay runtime system tasks', () => {
     await expect(readFile(fixture.layout.masterSecretPath, 'utf8')).resolves.toBe(fixture.masterSecret);
     expect(running).toBe(true);
 
-    const finalizedInitialRestore = await adapter.start({
+    const rejectedFinalization = await adapter.start({
       spec: {
         protocolVersion: SYSTEM_TASK_PROTOCOL_VERSION,
         kind: 'relay.runtime.personal_home.restore.v1',
         params: { ...baseParams, action: 'finalize' },
       },
     });
-    expect((await waitForResult(adapter, String((finalizedInitialRestore as { taskId?: unknown }).taskId ?? ''))).result)
-      .toMatchObject({ ok: true, data: { outcome: 'finalized' } });
+    expect((await waitForResult(adapter, String((rejectedFinalization as { taskId?: unknown }).taskId ?? ''))).result)
+      .toMatchObject({ ok: false, error: { code: 'invalid_params' } });
 
     const destinationDatabase = new DatabaseSync(fixture.layout.databasePath);
     destinationDatabase.prepare('UPDATE live_transcript SET body = ? WHERE id = ?').run('destination-before-failed-restore', 'live-1');
@@ -1004,7 +1062,7 @@ describe('relay runtime system tasks', () => {
     await expect(readFile(fixture.layout.masterSecretPath, 'utf8')).resolves.toBe(fixture.masterSecret);
     await expect(lstat(path.join(fixture.layout.publicFilesDir, 'destination-only.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
     const restoredEnv = await readFile(path.join(fixture.layout.configDir, 'server.env'), 'utf8');
-    expect(restoredEnv).toContain(`HAPPIER_PUBLIC_SERVER_URL=${fixture.canonicalServerUrl}`);
+    expect(restoredEnv).toContain(`HAPPIER_CANONICAL_SERVER_URL=${fixture.canonicalServerUrl}`);
     expect(restoredEnv).toContain('HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY=plaintext_only');
     expect(restoredEnv).toContain('HAPPIER_FEATURE_ENCRYPTION__DEFAULT_ACCOUNT_MODE=plain');
     expect(restoredEnv).toContain('AUTH_ANONYMOUS_SIGNUP_ENABLED=0');

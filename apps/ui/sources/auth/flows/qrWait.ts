@@ -98,6 +98,11 @@ async function waitForNextPoll(ms: number, signal?: AbortSignal): Promise<boolea
     });
 }
 
+function clampPollDelayToExpiry(delayMs: number, expiresAtMs: number | undefined): number {
+    if (expiresAtMs === undefined) return delayMs;
+    return Math.max(0, Math.min(delayMs, expiresAtMs - Date.now()));
+}
+
 /**
  * Poll the explicit target Home until it authorizes this device's enrollment. Transport
  * failures retry with bounded backoff and jitter until the deadline; malformed, oversized,
@@ -139,7 +144,9 @@ export async function authQRWait(
         if (expiresAtMs !== undefined && Date.now() >= expiresAtMs) return terminal('expired');
 
         if (!isRuntimeActive()) {
-            if (!await waitForNextPoll(1_000, signal)) return terminal('cancelled');
+            const inactiveWaitMs = clampPollDelayToExpiry(1_000, expiresAtMs);
+            if (inactiveWaitMs === 0) return terminal('expired');
+            if (!await waitForNextPoll(inactiveWaitMs, signal)) return terminal('cancelled');
             continue;
         }
 
@@ -236,6 +243,8 @@ export async function authQRWait(
         const waitMs = transientFailures > 0
             ? enrollmentPollingBackoffMs(transientFailures)
             : ENROLLMENT_POLL_IDLE_DELAY_MS;
-        if (!await waitForNextPoll(waitMs, signal)) return terminal('cancelled');
+        const boundedWaitMs = clampPollDelayToExpiry(waitMs, expiresAtMs);
+        if (boundedWaitMs === 0) return terminal('expired');
+        if (!await waitForNextPoll(boundedWaitMs, signal)) return terminal('cancelled');
     }
 }

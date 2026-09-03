@@ -126,10 +126,17 @@ describe('Settings → Account (grouping)', () => {
         const screen = await renderScreen(<AccountScreen />);
         expect(screen.findByTestId('settings-account-add-your-phone')).toBeTruthy();
         expect(screen.findByTestId('settings-account-link-new-device')).toBeTruthy();
+        expect(screen.findByTestId('settings-account-add-home')).toBeTruthy();
 
         screen.pressByTestId('settings-account-add-your-phone');
 
         expect(sessionSettingsEntryState.routerPushSpy).toHaveBeenCalledWith('/settings/add-phone');
+
+        screen.pressByTestId('settings-account-add-home');
+
+        expect(sessionSettingsEntryState.routerPushSpy).toHaveBeenCalledWith(
+            '/restore?entryIntent=add_home',
+        );
     });
 
     it('hides "Add your phone" on phone-sized web', async () => {
@@ -140,6 +147,7 @@ describe('Settings → Account (grouping)', () => {
         const { default: AccountScreen } = await import('@/app/(app)/settings/account');
         const screen = await renderScreen(<AccountScreen />);
         expect(screen.findByTestId('settings-account-add-your-phone')).toBeNull();
+        expect(screen.findByTestId('settings-account-add-home')).toBeTruthy();
     });
 
     it('shows "Add your phone" on desktop-sized web even when the viewport is narrow', async () => {

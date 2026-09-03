@@ -11,7 +11,6 @@ import {
 import {
   createTerminalPairingAuthentication,
   openTerminalProvisioningResponse,
-  readTerminalPairingRequirement,
 } from './terminalProvisioningResponse';
 
 function deterministicRandomBytes(length: number): Uint8Array {
@@ -38,14 +37,6 @@ describe('openTerminalProvisioningResponse', () => {
     });
   });
 
-  it('reads the opt-in v3 requirement and rejects unknown values', () => {
-    expect(readTerminalPairingRequirement({})).toBeNull();
-    expect(readTerminalPairingRequirement({ HAPPIER_TERMINAL_PAIRING_REQUIRE: ' v3 ' })).toBe('v3');
-    expect(() => readTerminalPairingRequirement({
-      HAPPIER_TERMINAL_PAIRING_REQUIRE: 'future',
-    })).toThrow('HAPPIER_TERMINAL_PAIRING_REQUIRE');
-  });
-
   it('authenticates v3 responses before returning a data key', () => {
     const machineKey = new Uint8Array(32).fill(7);
     const payload = sealTerminalProvisioningV3Payload({
@@ -62,7 +53,6 @@ describe('openTerminalProvisioningResponse', () => {
       terminalSecretKey,
       terminalPublicKey,
       pairing,
-      requirement: null,
       nowMs: 2_000,
     })).toEqual({ type: 'dataKey', key: machineKey, authenticated: true });
   });
@@ -82,7 +72,6 @@ describe('openTerminalProvisioningResponse', () => {
       terminalSecretKey,
       terminalPublicKey,
       pairing: null,
-      requirement: null,
       nowMs: 2_000,
     })).toBeNull();
     expect(openTerminalProvisioningResponse({
@@ -90,7 +79,6 @@ describe('openTerminalProvisioningResponse', () => {
       terminalSecretKey,
       terminalPublicKey,
       pairing: { ...pairing, secret: new Uint8Array(32).fill(12) },
-      requirement: null,
       nowMs: 2_000,
     })).toBeNull();
   });
@@ -115,7 +103,6 @@ describe('openTerminalProvisioningResponse', () => {
       terminalSecretKey,
       terminalPublicKey,
       pairing: null,
-      requirement: null,
       nowMs: 2_000,
     })).toBeNull();
     expect(openTerminalProvisioningResponse({
@@ -123,7 +110,6 @@ describe('openTerminalProvisioningResponse', () => {
       terminalSecretKey,
       terminalPublicKey,
       pairing: null,
-      requirement: null,
       nowMs: 2_000,
     })).toBeNull();
   });
@@ -148,7 +134,6 @@ describe('openTerminalProvisioningResponse', () => {
       terminalSecretKey,
       terminalPublicKey,
       pairing,
-      requirement: null,
       nowMs: 2_000,
     })).toBeNull();
     expect(openTerminalProvisioningResponse({
@@ -156,7 +141,6 @@ describe('openTerminalProvisioningResponse', () => {
       terminalSecretKey,
       terminalPublicKey,
       pairing,
-      requirement: null,
       nowMs: 2_000,
     })).toBeNull();
   });
@@ -176,7 +160,6 @@ describe('openTerminalProvisioningResponse', () => {
       terminalSecretKey,
       terminalPublicKey,
       pairing,
-      requirement: null,
       nowMs: pairing.createdAtMs - 1,
     })).toBeNull();
     expect(openTerminalProvisioningResponse({
@@ -184,7 +167,6 @@ describe('openTerminalProvisioningResponse', () => {
       terminalSecretKey,
       terminalPublicKey,
       pairing,
-      requirement: null,
       nowMs: pairing.expiresAtMs + 1,
     })).toBeNull();
   });
@@ -205,7 +187,6 @@ describe('openTerminalProvisioningResponse', () => {
       terminalSecretKey,
       terminalPublicKey,
       pairing,
-      requirement: null,
       nowMs: 2_000,
     })).toBeNull();
   });
@@ -223,7 +204,6 @@ describe('openTerminalProvisioningResponse', () => {
       terminalPublicKey,
       pairing,
       nowMs: 2_000,
-      requirement: 'v3',
     })).toBeNull();
   });
 
@@ -241,7 +221,6 @@ describe('openTerminalProvisioningResponse', () => {
       terminalSecretKey,
       terminalPublicKey,
       pairing,
-      requirement: null,
       nowMs: 2_000,
       supportsTokenOnly: true,
     })).toEqual({ type: 'tokenOnly', authenticated: true });
@@ -261,7 +240,6 @@ describe('openTerminalProvisioningResponse', () => {
       terminalSecretKey,
       terminalPublicKey,
       pairing,
-      requirement: null,
       nowMs: 2_000,
       supportsTokenOnly: false,
     })).toBeNull();
@@ -278,7 +256,6 @@ describe('openTerminalProvisioningResponse', () => {
       terminalSecretKey,
       terminalPublicKey,
       pairing,
-      requirement: null,
       nowMs: 2_000,
     })).toBeNull();
   });
@@ -298,7 +275,6 @@ describe('openTerminalProvisioningResponse', () => {
         terminalSecretKey,
         terminalPublicKey,
         pairing,
-        requirement: null,
         nowMs: 2_000,
       })).toBeNull();
     }

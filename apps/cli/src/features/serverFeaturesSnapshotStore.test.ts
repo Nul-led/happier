@@ -13,6 +13,27 @@ function ready(features: Record<string, unknown>): Extract<CliServerFeaturesSnap
 
 const READY_ENABLED = ready({ localServices: { enabled: true } });
 const READY_DISABLED = ready({ localServices: { enabled: false } });
+const HOME_INDEXING: Extract<CliServerFeaturesSnapshot, { status: 'ready' }> = {
+  status: 'ready',
+  features: FeaturesResponseSchema.parse({
+    features: {},
+    capabilities: { homeSearch: { enabled: false, reason: 'indexing' } },
+  }),
+};
+const HOME_UNAVAILABLE: Extract<CliServerFeaturesSnapshot, { status: 'ready' }> = {
+  status: 'ready',
+  features: FeaturesResponseSchema.parse({
+    features: {},
+    capabilities: { homeSearch: { enabled: false, reason: 'index_unavailable' } },
+  }),
+};
+const HOME_READY: Extract<CliServerFeaturesSnapshot, { status: 'ready' }> = {
+  status: 'ready',
+  features: FeaturesResponseSchema.parse({
+    features: {},
+    capabilities: { homeSearch: { enabled: true } },
+  }),
+};
 
 describe('createServerFeaturesSnapshotStore', () => {
   afterEach(() => {
@@ -76,6 +97,23 @@ describe('createServerFeaturesSnapshotStore', () => {
     expect(fetchSnapshot).toHaveBeenCalledOnce();
   });
 
+  it('classifies only a parsed Home indexing snapshot as a refresh transition', async () => {
+    const fetchSnapshot = vi
+      .fn<() => Promise<CliServerFeaturesSnapshot>>()
+      .mockResolvedValueOnce(HOME_INDEXING)
+      .mockResolvedValueOnce(HOME_READY)
+      .mockResolvedValueOnce(HOME_UNAVAILABLE);
+    const store = createServerFeaturesSnapshotStore({ fetchSnapshot });
+
+    expect(store.isRefreshTransitionActive()).toBe(false);
+    await store.refresh();
+    expect(store.isRefreshTransitionActive()).toBe(true);
+    await store.refresh();
+    expect(store.isRefreshTransitionActive()).toBe(false);
+    await store.refresh();
+    expect(store.isRefreshTransitionActive()).toBe(false);
+  });
+
   it('reports fetch failures through onError without throwing', async () => {
     const onError = vi.fn();
     const store = createServerFeaturesSnapshotStore({
@@ -109,5 +147,24 @@ describe('createServerFeaturesSnapshotStore', () => {
       'http://127.0.0.1:41001/v1/features',
       'http://127.0.0.1:41002/v1/features',
     ]);
+  });
+
+  it('uses the authenticated exact projection when the daemon has a Home credential', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ features: {}, capabilities: {} }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    const store = createServerUrlServerFeaturesSnapshotStore({
+      serverUrl: 'http://127.0.0.1:41001',
+      token: 'home-token',
+    });
+
+    await store.refresh();
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:41001/v1/features/authenticated',
+      expect.objectContaining({ headers: { Authorization: 'Bearer home-token' } }),
+    );
   });
 });

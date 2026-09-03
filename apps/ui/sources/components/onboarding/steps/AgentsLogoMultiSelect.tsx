@@ -12,7 +12,6 @@ export type AgentsLogoMultiSelectEntry = Readonly<{
     agentId: string;
     icon?: React.ReactNode;
     iconAgentId?: AgentId | null;
-    setupAgentId?: AgentId | null;
     iconName?: string | null;
 }>;
 
@@ -70,7 +69,6 @@ export const AgentsLogoMultiSelect = React.memo(function AgentsLogoMultiSelect(p
             const entries = props.agentEntries ?? (props.agentIds?.map((agentId) => ({
                 agentId,
                 iconAgentId: agentId as AgentId,
-                setupAgentId: agentId as AgentId,
                 iconName: 'stack-simple',
             })) ?? []);
             // A logo tile carries no name text, so an agent whose icon cannot resolve

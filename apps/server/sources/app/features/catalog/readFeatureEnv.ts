@@ -167,6 +167,10 @@ export type ProvidersFeatureEnv = Readonly<{
   localModelManagementEnabled: boolean;
 }>;
 
+export type SearchFeatureEnv = Readonly<{
+  enabled: boolean;
+}>;
+
 export type BrowserFeatureEnv = Readonly<{
   // Core product gates (default-allow).
   enabled: boolean;
@@ -776,6 +780,12 @@ export function readProvidersFeatureEnv(env: NodeJS.ProcessEnv): ProvidersFeatur
       env[FEATURE_ENV_KEYS.providersLocalModelManagementEnabled],
       true,
     ),
+  };
+}
+
+export function readSearchFeatureEnv(env: NodeJS.ProcessEnv): SearchFeatureEnv {
+  return {
+    enabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.searchEnabled], true),
   };
 }
 

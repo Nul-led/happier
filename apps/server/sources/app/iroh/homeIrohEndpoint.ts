@@ -60,6 +60,7 @@ export type HomeIrohEndpointFailureReason =
     | 'acceptor_not_running'
     | 'descriptor_invalid'
     | 'continuity_write_failed'
+    | 'endpoint_cleanup_pending'
     | 'native_error';
 
 export type HomeIrohEndpointSnapshot = Readonly<{
@@ -90,14 +91,84 @@ export function resolveHomeIrohAcceptorPort(
 
 type ActiveHomeIrohEndpoint = Readonly<{
     state: HomeIrohEndpointState;
-    endpointHandle: string;
-    native: HomeIrohNativeLifecycle;
     configKey: string;
 }>;
 
+/**
+ * The one native resource this owner holds. It is registered as soon as the
+ * native endpoint exists and cleared only after every owned step has been
+ * released, so a rejected teardown or startup cleanup stays owned here and is
+ * retried by the next disposal instead of leaking or creating a second owner.
+ */
+type OwnedHomeIrohNativeEndpoint = {
+    readonly native: HomeIrohNativeLifecycle;
+    readonly endpointHandle: string;
+    acceptorAttempted: boolean;
+    acceptorStopped: boolean;
+    endpointShutdown: boolean;
+};
+
 let activeState: ActiveHomeIrohEndpoint | null = null;
+let ownedEndpoint: OwnedHomeIrohNativeEndpoint | null = null;
+let cleanupInFlight: Promise<void> | null = null;
 let ensureInFlight: Promise<HomeIrohEndpointState> | null = null;
+let stopInFlight: Promise<void> | null = null;
+let lifecycleEpoch = 0;
 let lifecycleState: HomeIrohEndpointState = NOT_COMPOSED_STATE;
+
+/**
+ * True while native resources are still owned outside a published composition:
+ * a disposal is in flight, or a previous cleanup rejected and left the endpoint
+ * owned. New composition work is refused until that custody is released.
+ */
+function isCleanupPending(): boolean {
+    return activeState === null && (cleanupInFlight !== null || ownedEndpoint !== null);
+}
+
+/**
+ * Attempts every owned cleanup step exactly once per disposal, keeps the
+ * endpoint owned when any step rejects, and never caches a rejected attempt:
+ * concurrent callers share the one in-flight cleanup, and the next caller
+ * retries only the steps that have not settled.
+ */
+function releaseOwnedEndpoint(): Promise<void> {
+    const owned = ownedEndpoint;
+    if (!owned) return Promise.resolve();
+    cleanupInFlight ??= runRelease(owned).then(
+        () => {
+            ownedEndpoint = null;
+            cleanupInFlight = null;
+        },
+        (error: unknown) => {
+            cleanupInFlight = null;
+            throw error;
+        },
+    );
+    return cleanupInFlight;
+}
+
+async function runRelease(owned: OwnedHomeIrohNativeEndpoint): Promise<void> {
+    let firstFailure: unknown = null;
+    if (owned.acceptorAttempted && !owned.acceptorStopped) {
+        try {
+            await owned.native.stopHomeAcceptor({ endpointHandle: owned.endpointHandle });
+            owned.acceptorStopped = true;
+        } catch (error) {
+            firstFailure ??= error;
+            log({ module: 'iroh', level: 'warn', detail: error instanceof Error ? error.message : String(error) }, 'Home Iroh acceptor stop failed; the endpoint stays owned for a later disposal');
+        }
+    }
+    if (!owned.endpointShutdown) {
+        try {
+            await owned.native.shutdownEndpoint({ endpointHandle: owned.endpointHandle });
+            owned.endpointShutdown = true;
+        } catch (error) {
+            firstFailure ??= error;
+            log({ module: 'iroh', level: 'warn', detail: error instanceof Error ? error.message : String(error) }, 'Home Iroh endpoint shutdown failed; the endpoint stays owned for a later disposal');
+        }
+    }
+    if (firstFailure) throw firstFailure;
+}
 
 export type EnsureHomeIrohEndpointParams = Readonly<{
     env: NodeJS.ProcessEnv;
@@ -137,8 +208,10 @@ export type HomeIrohEndpointMaterializationResult =
  * configuration fails with a typed `endpoint_config_conflict` IrohError.
  */
 export async function ensureHomeIrohEndpoint(params: EnsureHomeIrohEndpointParams): Promise<HomeIrohEndpointState> {
+    if (stopInFlight) return failed('endpoint_cleanup_pending');
     if (ensureInFlight) return await ensureInFlight;
-    ensureInFlight = runEnsure(params)
+    const admittedEpoch = lifecycleEpoch;
+    ensureInFlight = runEnsure(params, admittedEpoch)
         .then((state) => {
             lifecycleState = state;
             return state;
@@ -166,6 +239,9 @@ export async function materializeHomeIrohEndpointDescriptor(
     }
     if (activeState) {
         return { status: 'failed', failureReason: 'endpoint_config_conflict' };
+    }
+    if (isCleanupPending()) {
+        return { status: 'failed', failureReason: 'endpoint_cleanup_pending' };
     }
 
     const native = params.native !== undefined ? params.native : loadHomeIrohNativeLifecycle();
@@ -198,7 +274,9 @@ export async function materializeHomeIrohEndpointDescriptor(
     }
 
     try {
-        await provisioned.native.shutdownEndpoint({ endpointHandle: provisioned.endpointHandle });
+        // Materialization owns no ingress; releasing through the same custody
+        // keeps a rejected disposal owned and retryable.
+        await releaseOwnedEndpoint();
     } catch (error) {
         const state = failed('native_error', error);
         return { status: 'failed', failureReason: state.failureReason };
@@ -219,24 +297,27 @@ export async function getHomeIrohEndpointState(): Promise<HomeIrohEndpointState>
 }
 
 /**
- * Stops the Home Iroh ingress: clears the published in-memory snapshot
- * first, then stops the acceptor, then shuts the endpoint down. Idempotent.
+ * Stops the Home Iroh ingress: clears the published in-memory snapshot first,
+ * then stops the acceptor, then shuts the endpoint down. Idempotent. New
+ * composition work is refused from the moment the shutdown starts; a rejected
+ * cleanup keeps the native endpoint owned and rejects here so the caller (the
+ * canonical shutdown owner) can retry the same disposal.
  */
 export async function stopHomeIrohEndpoint(): Promise<void> {
-    const current = activeState;
+    if (stopInFlight) return await stopInFlight;
+    lifecycleEpoch += 1;
+    const admittedEnsure = ensureInFlight;
     activeState = null;
     lifecycleState = NOT_COMPOSED_STATE;
-    if (!current) return;
-    try {
-        await current.native.stopHomeAcceptor({ endpointHandle: current.endpointHandle });
-    } catch (error) {
-        log({ module: 'iroh', level: 'warn', detail: error instanceof Error ? error.message : String(error) }, 'Home Iroh acceptor stop failed during shutdown');
-    }
-    try {
-        await current.native.shutdownEndpoint({ endpointHandle: current.endpointHandle });
-    } catch (error) {
-        log({ module: 'iroh', level: 'warn', detail: error instanceof Error ? error.message : String(error) }, 'Home Iroh endpoint shutdown failed during shutdown');
-    }
+    stopInFlight = (async () => {
+        await admittedEnsure?.catch(() => undefined);
+        activeState = null;
+        lifecycleState = NOT_COMPOSED_STATE;
+        await releaseOwnedEndpoint();
+    })().finally(() => {
+        stopInFlight = null;
+    });
+    return await stopInFlight;
 }
 
 function failed(failureReason: HomeIrohEndpointFailureReason, error?: unknown): HomeIrohEndpointState {
@@ -274,17 +355,13 @@ function classifyNativeError(error: unknown): HomeIrohEndpointFailureReason {
     return 'native_error';
 }
 
-async function cleanupNativeLifecycle(native: HomeIrohNativeLifecycle, endpointHandle: string): Promise<void> {
-    try {
-        await native.stopHomeAcceptor({ endpointHandle });
-    } catch {
-        // Best-effort cleanup of a composition that never published.
-    }
-    try {
-        await native.shutdownEndpoint({ endpointHandle });
-    } catch {
-        // Best-effort cleanup of a composition that never published.
-    }
+/**
+ * Cleanup for a composition that never published. A rejected cleanup does not
+ * change the reported failure, but the endpoint stays owned so the next
+ * disposal retries it.
+ */
+async function cleanupNeverPublishedComposition(): Promise<void> {
+    await releaseOwnedEndpoint().catch(() => undefined);
 }
 
 function sameStrings(a: readonly string[], b: readonly string[]): boolean {
@@ -368,14 +445,25 @@ async function provisionHomeIrohEndpoint(params: Readonly<{
     } catch (error) {
         return { kind: 'terminal', state: failed(classifyNativeError(error), error) };
     }
+    // Custody is taken as soon as the native endpoint exists, before any status
+    // read, descriptor projection, continuity write, or acceptor start, so every
+    // later failure disposes through the one owner and a rejected disposal keeps
+    // the endpoint owned for a retry.
+    ownedEndpoint = {
+        native: params.native,
+        endpointHandle: created.endpointHandle,
+        acceptorAttempted: false,
+        acceptorStopped: false,
+        endpointShutdown: false,
+    };
 
     const endpointStatus = await params.native.getEndpointStatus({ endpointHandle: created.endpointHandle }).catch(() => null);
     if (!endpointStatus || !endpointStatus.active || endpointStatus.endpointId !== created.endpointId) {
-        await cleanupNativeLifecycle(params.native, created.endpointHandle);
+        await cleanupNeverPublishedComposition();
         return { kind: 'terminal', state: failed('endpoint_not_active') };
     }
     if (continuity && continuity.endpointId !== created.endpointId) {
-        await cleanupNativeLifecycle(params.native, created.endpointHandle);
+        await cleanupNeverPublishedComposition();
         return { kind: 'terminal', state: failed('endpoint_identity_drift') };
     }
 
@@ -390,7 +478,7 @@ async function provisionHomeIrohEndpoint(params: Readonly<{
             ...(directAddresses.length > 0 ? { directAddresses } : {}),
         });
     } catch (error) {
-        await cleanupNativeLifecycle(params.native, created.endpointHandle);
+        await cleanupNeverPublishedComposition();
         return { kind: 'terminal', state: failed('descriptor_invalid', error) };
     }
 
@@ -415,7 +503,7 @@ async function provisionHomeIrohEndpoint(params: Readonly<{
             revision,
         });
     } catch (error) {
-        await cleanupNativeLifecycle(params.native, created.endpointHandle);
+        await cleanupNeverPublishedComposition();
         return { kind: 'terminal', state: failed('continuity_write_failed', error) };
     }
 
@@ -429,7 +517,7 @@ async function provisionHomeIrohEndpoint(params: Readonly<{
     };
 }
 
-async function runEnsure(params: EnsureHomeIrohEndpointParams): Promise<HomeIrohEndpointState> {
+async function runEnsure(params: EnsureHomeIrohEndpointParams, admittedEpoch: number): Promise<HomeIrohEndpointState> {
     const env = params.env;
     const native = params.native !== undefined ? params.native : loadHomeIrohNativeLifecycle();
 
@@ -465,6 +553,12 @@ async function runEnsure(params: EnsureHomeIrohEndpointParams): Promise<HomeIroh
         }
         return activeState.state;
     }
+    // (5) A shutdown in flight, or a previous cleanup that rejected and still
+    // owns the native endpoint, refuses new composition work rather than
+    // creating a second owner for the same endpoint.
+    if (isCleanupPending()) {
+        return failed('endpoint_cleanup_pending');
+    }
 
     const provisioned = await provisionHomeIrohEndpoint({
         env,
@@ -477,14 +571,24 @@ async function runEnsure(params: EnsureHomeIrohEndpointParams): Promise<HomeIroh
     if (provisioned.kind === 'terminal') return provisioned.state;
 
     // (12) One acceptor, fixed to the loopback target and the bound API port.
+    // The attempt itself is owned: an acceptor that started, or may have
+    // started, must be stopped by the disposal path.
+    if (ownedEndpoint) ownedEndpoint.acceptorAttempted = true;
     const acceptor = await provisioned.native.startHomeAcceptor({
         endpointHandle: provisioned.endpointHandle,
         targetHost: HOME_IROH_ACCEPTOR_TARGET_HOST,
         targetPort: apiPort,
     }).catch(() => null);
     if (!acceptor || !acceptor.status.running) {
-        await cleanupNativeLifecycle(provisioned.native, provisioned.endpointHandle);
+        await cleanupNeverPublishedComposition();
         return failed('acceptor_not_running');
+    }
+
+    // A stop admitted while native composition was in flight owns the late
+    // handle. Never publish it, and finish its cleanup before stop resolves.
+    if (admittedEpoch !== lifecycleEpoch) {
+        await cleanupNeverPublishedComposition();
+        return NOT_COMPOSED_STATE;
     }
 
     // (15) Publish readiness only after the endpoint is active and the fixed
@@ -499,12 +603,7 @@ async function runEnsure(params: EnsureHomeIrohEndpointParams): Promise<HomeIroh
         },
         failureReason: null,
     };
-    activeState = {
-        state,
-        endpointHandle: provisioned.endpointHandle,
-        native: provisioned.native,
-        configKey,
-    };
+    activeState = { state, configKey };
     log(
         {
             module: 'iroh',

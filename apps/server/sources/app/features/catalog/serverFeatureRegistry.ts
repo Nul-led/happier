@@ -18,6 +18,7 @@ import { resolveMachineLiveStreamFeature } from '../machineLiveStreamFeature';
 import { resolveMachineRpcFeature } from '../machineRpcFeature';
 import { resolveLocalServicesFeature } from '../localServicesFeature';
 import { resolveProvidersFeature } from '../providersFeature';
+import { resolveSearchFeature } from '../searchFeature';
 import { resolveBrowserFeature } from '../browserFeature';
 import { resolvePluginsFeature } from '../pluginsFeature';
 import { resolveDevicesFeature } from '../devicesFeature';
@@ -60,6 +61,7 @@ export const serverFeatureRegistry = Object.freeze([
     (env) => resolvePeerMediationFeature(env),
     (env) => resolveLocalServicesFeature(env),
     (env) => resolveProvidersFeature(env),
+    (env) => resolveSearchFeature(env),
     (env) => resolveBrowserFeature(env),
     (env) => resolvePluginsFeature(env),
     (env) => resolveDevicesFeature(env),

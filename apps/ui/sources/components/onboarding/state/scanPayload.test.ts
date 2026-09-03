@@ -10,6 +10,7 @@ describe('parseOnboardingScanPayload', () => {
             invite: {
                 v: 2,
                 intent: 'home_device',
+                direction: 'trusted_home_displays',
                 pairId: 'pair-v2',
                 home: {
                     v: 1,
@@ -30,22 +31,21 @@ describe('parseOnboardingScanPayload', () => {
         });
     });
 
-    it('parses pairing links', () => {
+    it('classifies the provenance-pinned released V1 invite without retaining its raw secret material', () => {
         expect(parseOnboardingScanPayload('happier:///pair?v=1&pairId=pair_1&secret=sec_1&server=https%3A%2F%2Frelay.example.com')).toEqual({
-            kind: 'pairing_link',
-            pairId: 'pair_1',
-            secret: 'sec_1',
-            serverUrl: 'https://relay.example.com',
+            kind: 'legacy_pairing_update_required',
         });
     });
 
-    it('keeps pairing links without an embedded server url marked as missing relay metadata', () => {
+    it('recognizes the released V1 shape without optional server metadata', () => {
         expect(parseOnboardingScanPayload('happier:///pair?v=1&pairId=pair_1&secret=sec_1')).toEqual({
-            kind: 'pairing_link',
-            pairId: 'pair_1',
-            secret: 'sec_1',
-            serverUrl: null,
+            kind: 'legacy_pairing_update_required',
         });
+    });
+
+    it('keeps malformed and unknown pairing links distinct from released V1', () => {
+        expect(parseOnboardingScanPayload('happier:///pair?v=1&secret=sec_1')).toEqual({ kind: 'unknown' });
+        expect(parseOnboardingScanPayload('happier:///pair?v=9&pairId=pair_1&secret=sec_1')).toEqual({ kind: 'unknown' });
     });
 
     it('parses account connect links', () => {

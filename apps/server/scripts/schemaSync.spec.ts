@@ -362,9 +362,6 @@ model AutomationWorkerClaimReceipt {
     account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
     machineId String
     machineInstallationId String
-    runId String?
-    claimedAttempt Int?
-    accountCurrentnessWitnessJson String?
     claimResultJson String
     expiresAt DateTime
     createdAt DateTime @default(now())
@@ -374,18 +371,17 @@ model AutomationWorkerClaimReceipt {
 }
 `;
 
-        // The receipt id and the committed post-claim witness JSON both leave
-        // MySQL's VARCHAR(191) String default. The generator must annotate
-        // them, or `yarn schema:sync` silently narrows the live LONGTEXT
-        // witness column in the model.
+        // The receipt id and its strict claim result both leave MySQL's
+        // VARCHAR(191) String default. The generator must annotate them, or
+        // `yarn schema:sync` silently narrows the live LONGTEXT result column
+        // in the model.
         const mysql = generateMySqlSchemaFromPostgres(master);
         expect(mysql).toMatch(/^\s*id String @id @db\.VarChar\(64\)$/m);
-        expect(mysql).toMatch(/^\s*accountCurrentnessWitnessJson String\? @db\.LongText$/m);
         expect(mysql).toMatch(/^\s*claimResultJson\s+String @db\.LongText$/m);
-        expect(mysql).not.toMatch(/^\s*accountCurrentnessWitnessJson String\?\s*$/m);
+        expect(mysql).not.toMatch(/^\s*claimResultJson\s+String\s*$/m);
         const regenerated = generateMySqlSchemaFromPostgres(mysql);
         expect(
-            regenerated.match(/^\s*accountCurrentnessWitnessJson String\? @db\.LongText$/gm),
+            regenerated.match(/^\s*claimResultJson String @db\.LongText$/gm),
         ).toHaveLength(1);
 
         const migration = readFileSync(
@@ -400,15 +396,13 @@ model AutomationWorkerClaimReceipt {
             "utf8",
         );
         expect(migration).toContain("`id` VARCHAR(64)");
-        expect(migration).toContain("`accountCurrentnessWitnessJson` LONGTEXT");
         expect(migration).toContain("`claimResultJson` LONGTEXT");
         const receiptModel = /^model\s+AutomationWorkerClaimReceipt\s+\{[\s\S]*?^\}\s*$/m
             .exec(generated)?.[0];
         expect(receiptModel).toBeDefined();
         expect(receiptModel).toMatch(/^\s*id\s+String\s+@id\s+@db\.VarChar\(64\)\s*$/m);
-        expect(receiptModel).toMatch(/^\s*accountCurrentnessWitnessJson String\? @db\.LongText$/m);
         expect(receiptModel).toMatch(/^\s*claimResultJson\s+String @db\.LongText$/m);
-        expect(receiptModel).not.toMatch(/^\s*accountCurrentnessWitnessJson\s+String\?\s*$/m);
+        expect(receiptModel).not.toMatch(/^\s*claimResultJson\s+String\s*$/m);
     });
 
     it("keeps Account API token label storage compatible with the public 256-character contract", () => {

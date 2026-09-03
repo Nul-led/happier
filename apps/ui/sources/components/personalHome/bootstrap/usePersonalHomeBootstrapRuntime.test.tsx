@@ -29,11 +29,13 @@ const harness = vi.hoisted(() => {
     const relayTaskOccurrences = new Map<string, number>();
     let statusAvailable = true;
     const routerPush = vi.fn();
+    const readRelayStatus = async () => statusAvailable ? statusData() : null;
     const useLocalRelayRuntimeControl = vi.fn(() => ({
         activeTaskSnapshot: null,
         isUnavailable: false,
         lastErrorMessage: null,
         status: statusAvailable ? statusData() : null,
+        readStatus: readRelayStatus,
         runTaskAndWait: async (kind: string, options: Record<string, unknown> = {}) => {
             taskCalls.push({ kind, options });
             const occurrence = (relayTaskOccurrences.get(kind) ?? 0) + 1;
@@ -81,6 +83,7 @@ const harness = vi.hoisted(() => {
     const isDesktopHost = vi.fn(() => true);
     const desktopHostKind = vi.fn<() => 'tauri' | 'electron' | null>(() => 'tauri');
     const isDesktopOverlayWindowContext = vi.fn(() => false);
+    const currentWindowLabel = vi.fn(() => 'main');
 
     // Pending Personal Home bootstrap-seed custody boundary state (native storage beneath the
     // Home-scoped token-storage owner). `lastPersistedSeed` is what the verified custody held
@@ -158,6 +161,7 @@ const harness = vi.hoisted(() => {
         isDesktopHost,
         desktopHostKind,
         isDesktopOverlayWindowContext,
+        currentWindowLabel,
         authGetTokenAtEndpoint,
         focusedAuthGetToken,
         getCredentials: () => credentials,
@@ -210,6 +214,7 @@ const harness = vi.hoisted(() => {
             isDesktopHost.mockReturnValue(true);
             desktopHostKind.mockReturnValue('tauri');
             isDesktopOverlayWindowContext.mockReturnValue(false);
+            currentWindowLabel.mockReturnValue('main');
         },
     };
 });
@@ -235,6 +240,10 @@ vi.mock('@/utils/platform/desktopHost', () => ({
 
 vi.mock('@/desktop/window/isDesktopOverlayWindowContext', () => ({
     isDesktopOverlayWindowContext: () => harness.isDesktopOverlayWindowContext(),
+}));
+
+vi.mock('@tauri-apps/api/window', () => ({
+    getCurrentWindow: () => ({ label: harness.currentWindowLabel() }),
 }));
 
 vi.mock('@/components/settings/server/localControl/useLocalRelayRuntimeControl', () => ({
@@ -353,6 +362,7 @@ describe('usePersonalHomeBootstrapRuntime production composition', () => {
         expect(harness.taskCalls.map((call) => call.kind)).toEqual([
             'relay.runtime.status.v1',
             'relay.runtime.installOrUpdate.v1',
+            'relay.runtime.status.v1',
             'relay.runtime.status.v1',
             'relay.runtime.installOrUpdate.v1',
             'relay.runtime.status.v1',
@@ -505,6 +515,7 @@ describe('usePersonalHomeBootstrapRuntime production composition', () => {
         expect(harness.taskCalls.map((call) => call.kind)).toEqual([
             'relay.runtime.status.v1',
             'relay.runtime.installOrUpdate.v1',
+            'relay.runtime.status.v1',
             'relay.runtime.status.v1',
             'relay.runtime.installOrUpdate.v1',
             'relay.runtime.status.v1',
@@ -707,6 +718,7 @@ describe('usePersonalHomeBootstrapRuntime production composition', () => {
         harness.reset();
 
         harness.isDesktopOverlayWindowContext.mockReturnValue(true);
+        harness.currentWindowLabel.mockReturnValue('activity_overlay');
         const overlayScreen = await renderScreen(
             <PersonalHomeBootstrapRuntimeMount>
                 <div data-testid="normal-shell" />
@@ -733,6 +745,24 @@ describe('usePersonalHomeBootstrapRuntime production composition', () => {
         expect(harness.useLocalDaemonControl).not.toHaveBeenCalled();
     });
 
+    it.each([
+        ['oauth-callback'],
+        ['future-secondary-window'],
+    ])('renders Tauri window %s without constructing the bootstrap runtime hooks', async (windowLabel) => {
+        harness.currentWindowLabel.mockReturnValue(windowLabel);
+        const { PersonalHomeBootstrapRuntimeMount } = await import('./usePersonalHomeBootstrapRuntime');
+        const screen = await renderScreen(
+            <PersonalHomeBootstrapRuntimeMount>
+                <div data-testid="secondary-window-shell" />
+            </PersonalHomeBootstrapRuntimeMount>,
+        );
+        await flushHookEffects({ cycles: 2, turns: 2 });
+
+        expect(screen.findByTestId('secondary-window-shell')).not.toBeNull();
+        expect(harness.useLocalRelayRuntimeControl).not.toHaveBeenCalled();
+        expect(harness.useLocalDaemonControl).not.toHaveBeenCalled();
+    });
+
     it('renders Desktop callback routes without constructing the bootstrap runtime hooks', async () => {
         harness.setSegments(['(app)', 'oauth', 'github']);
         const { PersonalHomeBootstrapRuntimeMount } = await import('./usePersonalHomeBootstrapRuntime');
@@ -750,15 +780,14 @@ describe('usePersonalHomeBootstrapRuntime production composition', () => {
 
     it('releases a durable returning Personal Home without misclassifying an unverified Home as computer recovery', async () => {
         const profiles = await import('@/sync/domains/server/serverProfiles');
-        const profile = profiles.upsertServerProfile({
-            serverUrl: harness.canonicalServerUrl,
-            name: 'Personal Home',
+        await profiles.adoptPersonalHomeProfileAndComplete({
             source: 'desktop-personal-home',
-        });
-        profiles.setServerProfileIdentityForUrl(profile.serverUrl, 'srv_home_b_identity');
-        profiles.markServerProfilePersonalHomeBootstrapCompleted({
-            profileId: profile.id,
-            serverIdentityId: 'srv_home_b_identity',
+            suggestedName: 'Personal Home',
+            descriptor: {
+                serverUrl: harness.canonicalServerUrl,
+                canonicalServerUrl: harness.canonicalServerUrl,
+                homeServerIdentityId: 'srv_home_b_identity',
+            },
         });
 
         const { PersonalHomeBootstrapRuntimeMount } = await import('./usePersonalHomeBootstrapRuntime');
@@ -787,15 +816,14 @@ describe('usePersonalHomeBootstrapRuntime production composition', () => {
         harness.runtime.healthy = true;
         harness.setStatusAvailable(false);
         const profiles = await import('@/sync/domains/server/serverProfiles');
-        const profile = profiles.upsertServerProfile({
-            serverUrl: harness.canonicalServerUrl,
-            name: 'Personal Home',
+        await profiles.adoptPersonalHomeProfileAndComplete({
             source: 'desktop-personal-home',
-        });
-        profiles.setServerProfileIdentityForUrl(profile.serverUrl, 'srv_home_b_identity');
-        profiles.markServerProfilePersonalHomeBootstrapCompleted({
-            profileId: profile.id,
-            serverIdentityId: 'srv_home_b_identity',
+            suggestedName: 'Personal Home',
+            descriptor: {
+                serverUrl: harness.canonicalServerUrl,
+                canonicalServerUrl: harness.canonicalServerUrl,
+                homeServerIdentityId: 'srv_home_b_identity',
+            },
         });
         const features = await import('@/sync/api/capabilities/serverFeaturesClient');
         const tokenStorage = await import('@/auth/storage/tokenStorage');

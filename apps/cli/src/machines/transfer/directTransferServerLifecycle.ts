@@ -196,6 +196,7 @@ export function createDirectTransferServerLifecycle(params: Readonly<{
   let terminalStopped = false;
   let terminalStopPromise: Promise<void> | null = null;
   const stoppedServers = new WeakSet<object>();
+  const inFlightServerStops = new WeakMap<object, Promise<void>>();
   const pendingServerStops = new Set<Promise<void>>();
 
   const hasActivity = (): boolean =>
@@ -230,10 +231,20 @@ export function createDirectTransferServerLifecycle(params: Readonly<{
     if (stoppedServers.has(target)) {
       return Promise.resolve();
     }
-    stoppedServers.add(target);
-    const stopping = target.stop().finally(() => {
+    // Concurrent cleanup shares one attempt, but the stopped marker is only
+    // written after the listener actually stopped: a rejected stop leaves the
+    // listener owned here so a later idle stop or disposal retries it.
+    const inFlight = inFlightServerStops.get(target);
+    if (inFlight) {
+      return inFlight;
+    }
+    const stopping = target.stop().then(() => {
+      stoppedServers.add(target);
+    }).finally(() => {
+      inFlightServerStops.delete(target);
       pendingServerStops.delete(stopping);
     });
+    inFlightServerStops.set(target, stopping);
     pendingServerStops.add(stopping);
     return stopping;
   };
@@ -243,14 +254,20 @@ export function createDirectTransferServerLifecycle(params: Readonly<{
     idleDeadlineAt = null;
     shouldStopWhenStarted = false;
     const currentServer = server;
-    server = null;
-    void emitState('stopped');
     if (!currentServer) {
+      void emitState('stopped');
       return;
     }
     serverStopInProgress = true;
     try {
       await stopServerOnce(currentServer);
+      if (server === currentServer) {
+        server = null;
+      }
+      void emitState('stopped');
+    } catch {
+      // The listener is still live. Keep owning it so the next idle stop or
+      // terminal disposal retries instead of leaking a second owner.
     } finally {
       serverStopInProgress = false;
       if (!terminalStopped && hasActivity()) {
@@ -367,9 +384,15 @@ export function createDirectTransferServerLifecycle(params: Readonly<{
       scheduleLifecycleTimer();
       if (shouldStopWhenStarted && !registry.hasPublishedTransfers()) {
         shouldStopWhenStarted = false;
-        await stopServerOnce(started).catch(() => undefined);
-        server = null;
-        void emitState('stopped');
+        try {
+          await stopServerOnce(started);
+          if (server === started) {
+            server = null;
+          }
+          void emitState('stopped');
+        } catch {
+          // Retain the started listener so a later stop can retry it.
+        }
       }
       return started;
     })();
@@ -493,13 +516,11 @@ export function createDirectTransferServerLifecycle(params: Readonly<{
       idleDeadlineAt = null;
       shouldStopWhenStarted = false;
       const pendingStart = startPromise;
-      const currentServer = server;
-      server = null;
-      void emitState('stopped');
 
-      terminalStopPromise = (async () => {
+      const running = (async () => {
         const registryDisposal = registry.dispose();
         const serversToStop = new Set<Awaited<ReturnType<StartDirectPeerTransferServer>>>();
+        const currentServer = server;
         if (currentServer) {
           serversToStop.add(currentServer);
         }
@@ -525,11 +546,23 @@ export function createDirectTransferServerLifecycle(params: Readonly<{
           }
         }
         await registryDisposal;
-        void emitState('stopped');
         if (listenerStopError) {
+          // Ownership of the still-live listener stays here; only the disposal
+          // attempt failed, and `terminalStopped` keeps refusing new work.
           throw listenerStopError;
         }
+        if (server && stoppedServers.has(server)) {
+          server = null;
+        }
+        void emitState('stopped');
       })();
+
+      terminalStopPromise = running.catch((error: unknown) => {
+        // A failed disposal remains retryable through a later stop; new work
+        // stays refused because the lifecycle is already terminal.
+        terminalStopPromise = null;
+        throw error;
+      });
       return terminalStopPromise;
     },
     getState: () => ({

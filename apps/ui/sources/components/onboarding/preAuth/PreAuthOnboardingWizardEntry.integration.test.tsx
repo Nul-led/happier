@@ -327,20 +327,20 @@ describe('PreAuthOnboardingWizardEntry shell integration', () => {
         const screen = await renderScreen(<PreAuthOnboardingWizardEntry />);
 
         expect(screen.findAllByTestId('brand-hero-get-started')).toHaveLength(0);
-        expect(screen.findByTestId('welcome-secondary-login')).toBeTruthy();
+        expect(screen.findByTestId('welcome-scan-existing-home')).toBeTruthy();
 
-        await screen.pressByTestIdAsync('welcome-secondary-login');
+        await screen.pressByTestIdAsync('welcome-scan-existing-home');
         await flushHookEffects({ cycles: 2, turns: 2 });
 
         expect(screen.findByTestId('unauth-shell-route-restore')).toBeTruthy();
         expect(screen.findByTestId('restore-route-content')).toBeTruthy();
         expect(screen.findByTestId('unauth-shell-back-chevron')).toBeTruthy();
-        expect(screen.findAllByTestId('welcome-secondary-login')).toHaveLength(0);
+        expect(screen.findAllByTestId('welcome-scan-existing-home')).toHaveLength(0);
 
         await screen.pressByTestIdAsync('unauth-shell-back-chevron');
         await flushHookEffects({ cycles: 2, turns: 2 });
 
-        expect(screen.findByTestId('welcome-secondary-login')).toBeTruthy();
+        expect(screen.findByTestId('welcome-scan-existing-home')).toBeTruthy();
 
         await screen.pressByTestIdAsync('welcome-footer-relay-action');
         await flushHookEffects({ cycles: 2, turns: 2 });
@@ -348,6 +348,6 @@ describe('PreAuthOnboardingWizardEntry shell integration', () => {
         expect(screen.findByTestId('unauth-shell-route-setup-pre-auth')).toBeTruthy();
         expect(screen.findByTestId('relay-select-route-content')).toBeTruthy();
         expect(screen.findByTestId('unauth-shell-back-chevron')).toBeTruthy();
-        expect(screen.findAllByTestId('welcome-secondary-login')).toHaveLength(0);
+        expect(screen.findAllByTestId('welcome-scan-existing-home')).toHaveLength(0);
     });
 });

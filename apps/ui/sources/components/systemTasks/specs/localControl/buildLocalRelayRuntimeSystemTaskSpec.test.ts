@@ -96,10 +96,10 @@ describe('buildLocalRelayRuntimeSystemTaskSpec', () => {
                 archivePath: '/tmp/home-backup.tar',
             });
 
-            const finalizeSpec = buildLocalRelayRuntimeSystemTaskSpec('relay.runtime.personal_home.restore.v1', {
-                purpose, personalHomeOperation: { action: 'finalize' },
+            const recoverSpec = buildLocalRelayRuntimeSystemTaskSpec('relay.runtime.personal_home.restore.v1', {
+                purpose, personalHomeOperation: { action: 'recover' },
             });
-            expect(finalizeSpec.params).toEqual({ ...baseParams, action: 'finalize' });
+            expect(recoverSpec.params).toEqual({ ...baseParams, action: 'recover' });
         });
 
         it('builds erase without a caller-owned confirmation bypass', async () => {

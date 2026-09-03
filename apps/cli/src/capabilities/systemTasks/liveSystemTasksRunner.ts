@@ -20,6 +20,7 @@ import {
   createPersonalHomeRelocationDestinationStatusTaskKind,
   createPersonalHomeRestoreTaskKind,
   createPersonalHomeVerifyBackupTaskKind,
+  createPersonalHomeRestoreContactReconciler,
   PERSONAL_HOME_SYSTEM_TASK_KINDS,
   createRelayRuntimeInstallOrUpdateTaskKind,
   createRelayRuntimeRestartTaskKind,
@@ -244,6 +245,10 @@ function createLiveSystemTasksRunnerAdapter(params: Readonly<{
     loadRelocationDestination: params.loadPersonalHomeRelocationDestination
       ?? (async (target) => await createLivePersonalHomeRelocationDestinationOwner(target)),
   };
+  const reconcilePersonalHomeRestore = createPersonalHomeRestoreContactReconciler({
+    readStatus: readLiveRelayRuntimeSnapshot,
+    operations: personalHomeOperations,
+  });
 
   const runner = createSystemTasksRunner({
     kinds: {
@@ -308,11 +313,13 @@ function createLiveSystemTasksRunnerAdapter(params: Readonly<{
       [SSH_TUNNEL_SYSTEM_TASK_KINDS.release]: createDaemonSshTunnelReleaseTaskKind(),
       [SSH_TUNNEL_SYSTEM_TASK_KINDS.stop]: createDaemonSshTunnelStopTaskKind(),
       'relay.runtime.installOrUpdate.v1': createRelayRuntimeInstallOrUpdateTaskKind({
+        reconcilePersonalHomeRestore,
         installOrUpdate: async (params) => {
           return await installOrUpdateLiveRelayRuntime(requireLocalRelayRuntimeParams(params));
         },
       }),
       'relay.runtime.start.v1': createRelayRuntimeStartTaskKind({
+        reconcilePersonalHomeRestore,
         control: async (params) => {
           const localParams = requireLocalRelayRuntimeParams(params);
           await startLiveRelayRuntime(localParams);
@@ -321,6 +328,7 @@ function createLiveSystemTasksRunnerAdapter(params: Readonly<{
         checkHealth: checkLiveRelayRuntimeHealth,
       }),
       'relay.runtime.restart.v1': createRelayRuntimeRestartTaskKind({
+        reconcilePersonalHomeRestore,
         control: async (params) => {
           await restartLiveRelayRuntime(requireLocalRelayRuntimeParams(params));
         },
@@ -328,16 +336,19 @@ function createLiveSystemTasksRunnerAdapter(params: Readonly<{
         checkHealth: checkLiveRelayRuntimeHealth,
       }),
       'relay.runtime.status.v1': createRelayRuntimeStatusTaskKind({
+        reconcilePersonalHomeRestore,
         readStatus: readLiveRelayRuntimeSnapshot,
         checkHealth: checkLiveRelayRuntimeHealth,
       }),
       'relay.runtime.stop.v1': createRelayRuntimeStopTaskKind({
+        reconcilePersonalHomeRestore,
         control: async (params) => {
           const localParams = requireLocalRelayRuntimeParams(params);
           await stopLiveRelayRuntime(localParams);
         },
       }),
       'relay.runtime.uninstall.v1': createRelayRuntimeUninstallTaskKind({
+        reconcilePersonalHomeRestore,
         control: async (params) => {
           const localParams = requireLocalRelayRuntimeParams(params);
           await uninstallLiveRelayRuntime(localParams);

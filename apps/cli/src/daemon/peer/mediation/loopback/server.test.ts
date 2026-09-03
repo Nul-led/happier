@@ -1189,6 +1189,36 @@ describe('peer mediation loopback server', () => {
 });
 
 describe('machine/1 Iroh admission route', () => {
+  it('resolves current signing roots for each admission instead of freezing startup keys', async () => {
+    let currentRoots: typeof IROH_TRUST_ROOTS = [];
+    const app = createPeerMediationLoopbackApp({
+      nowMs: () => 2_000,
+      expected: {
+        accountId: 'account_1', machineId: 'machine_1', flowKind: 'bounded_transfer',
+        routeKind: 'loopback_direct', endpointFingerprint: 'loopback_endpoint_1',
+      },
+      trustRoots: [],
+      irohMachineAdmission: {
+        localEndpointId: IROH_TARGET_ENDPOINT_ID,
+        role: 'acceptor',
+        allowedFlows: ['file_transfer'],
+        resolveTrustRoots: () => currentRoots,
+        resolveApplicationTarget: () => ({ port: 46_001 }),
+      },
+    });
+    const request = {
+      method: 'POST' as const,
+      url: IROH_MACHINE_ADMISSION_PATH,
+      headers: { [IROH_MACHINE_REMOTE_ENDPOINT_HEADER]: IROH_SOURCE_ENDPOINT_ID },
+      payload: createIrohMachineHandshake(),
+    };
+
+    expect((await app.inject(request)).statusCode).toBe(403);
+    currentRoots = IROH_TRUST_ROOTS;
+    expect((await app.inject(request)).statusCode).toBe(204);
+    await app.close();
+  });
+
   it('gates the finite-transfer target listener with a fresh first-bytes capability and strips it before application bytes', async () => {
     const applicationBytes: Buffer[] = [];
     const applicationServer = createServer({ allowHalfOpen: true }, (socket) => {

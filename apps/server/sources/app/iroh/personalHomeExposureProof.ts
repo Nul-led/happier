@@ -1,5 +1,4 @@
 import { isAnonymousSignupExplicitlyDisabled } from '@/app/auth/authPolicy';
-import { resolveConfiguredCanonicalServerUrl } from '@/app/serverUrls/effectiveServerUrls';
 import type { BoundServerListener } from '@/app/runtime/startupReceipt';
 
 const PERSONAL_HOME_LOOPBACK_HOST = '127.0.0.1';
@@ -31,18 +30,8 @@ export function verifyPersonalHomeExposureProof(params: Readonly<{
     const expectedPort = readExpectedApiPort(params.env);
     if (expectedPort === null || params.listener.port !== expectedPort) return false;
 
-    const canonicalServerUrl = resolveConfiguredCanonicalServerUrl(params.env);
-    if (!canonicalServerUrl) return false;
-    let canonicalUrl: URL;
-    try {
-        canonicalUrl = new URL(canonicalServerUrl);
-    } catch {
-        return false;
-    }
-    const canonicalPort = canonicalUrl.port
-        ? Number(canonicalUrl.port)
-        : canonicalUrl.protocol === 'https:' ? 443 : 80;
-    if (canonicalUrl.hostname !== PERSONAL_HOME_LOOPBACK_HOST || canonicalPort !== expectedPort) return false;
+    const canonicalServerUrl = String(params.env.HAPPIER_CANONICAL_SERVER_URL ?? '').trim();
+    if (canonicalServerUrl !== `http://${PERSONAL_HOME_LOOPBACK_HOST}:${expectedPort}`) return false;
 
     return true;
 }

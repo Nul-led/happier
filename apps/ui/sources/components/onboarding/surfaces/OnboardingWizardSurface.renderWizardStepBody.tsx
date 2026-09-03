@@ -2,6 +2,7 @@ import * as React from 'react';
 import { View } from 'react-native';
 
 import type { AuthEntryOptions } from '@/components/account/auth/useAuthEntryOptions';
+import type { AccountServiceEntryOptions } from '@/components/account/auth/useAccountServiceEntryOptions';
 import { AuthEntryView } from '@/components/account/auth/AuthEntryView';
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { Text, TextInput } from '@/components/ui/text/Text';
@@ -66,6 +67,7 @@ export function renderOnboardingWizardStepBody(params: Readonly<{
     layout: 'portrait' | 'landscape';
     isDesktopShell: boolean;
     authEntryOptions: AuthEntryOptions;
+    accountServiceEntry?: AccountServiceEntryOptions;
 
     canScanQr: boolean;
     welcomeHasKnownRelay: boolean;
@@ -101,6 +103,8 @@ export function renderOnboardingWizardStepBody(params: Readonly<{
     onRelayAccessProviderIdChange: (next: RelayAccessProviderId | null) => void;
     onRelayAccessProviderDetailsRequested: (providerId: RelayAccessProviderId) => void;
 
+    onContinueWithAccountServiceProvider?: (providerId: string) => Promise<void> | void;
+    onContinueWithAccountServiceKey?: () => Promise<void> | void;
     onCreateAccount: () => Promise<void> | void;
     onCreateAccountViaProvider: (providerId: string) => Promise<void> | void;
     onLoginWithKeylessProvider: (providerId: string) => Promise<void> | void;
@@ -138,6 +142,9 @@ export function renderOnboardingWizardStepBody(params: Readonly<{
         return (
             <WelcomeDecisionPanel
                 authEntryOptions={params.authEntryOptions}
+                accountServiceEntry={params.accountServiceEntry}
+                onContinueWithAccountServiceProvider={params.onContinueWithAccountServiceProvider}
+                onContinueWithAccountServiceKey={params.onContinueWithAccountServiceKey}
                 onCreateAccount={params.onCreateAccount}
                 onCreateAccountViaProvider={params.onCreateAccountViaProvider}
                 onLoginWithKeylessProvider={params.onLoginWithKeylessProvider}
@@ -353,6 +360,7 @@ export function renderOnboardingWizardStepBody(params: Readonly<{
         return (
             <View testID="restore-route-content">
                 <RestoreIndexEmbedded
+                    entryIntent="enter_home"
                     onBack={params.onRestoreBackToAuth}
                     onOpenSecretKeyLogin={params.onOpenSecretKeyLogin}
                     initialPairingLink={params.initialPairingLink}

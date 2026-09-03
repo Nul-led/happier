@@ -691,24 +691,34 @@ describe('PreAuthOnboardingWizardEntry', () => {
             throw new Error('Unexpected global fetch call');
         });
         vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
-        runtimeFetchMock.mockResolvedValue(new Response(JSON.stringify({ token: 'mtls-token' }), {
-            status: 200,
-            headers: { 'Content-Type': 'application/json' },
-        }));
+        let finishRequest!: (response: Response) => void;
+        runtimeFetchMock.mockImplementation((input: string) => {
+            if (String(input).endsWith('/v1/auth/mtls')) {
+                return new Promise<Response>((resolve) => { finishRequest = resolve; });
+            }
+            return Promise.resolve(new Response('{}', { status: 200 }));
+        });
 
         const { PreAuthOnboardingWizardEntry } = await import('./PreAuthOnboardingWizardEntry');
         const screen = await renderScreen(React.createElement(PreAuthOnboardingWizardEntry));
 
-        await act(async () => {
-            await wizardControllerMock.lastProps?.onLoginWithMtls?.();
-        });
+        const login = wizardControllerMock.lastProps?.onLoginWithMtls?.();
+        serverRuntimeState.serverUrl = 'https://other.example.test';
+        finishRequest(new Response(JSON.stringify({ token: 'mtls-token' }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+        }));
+        await act(async () => { await login; });
 
         expect(fetchMock).not.toHaveBeenCalled();
         expect(runtimeFetchMock).toHaveBeenCalledWith('https://api.example.test/v1/auth/mtls', {
             method: 'POST',
             signal: expect.any(AbortSignal),
         });
-        expect(loginWithCredentialsMock).toHaveBeenCalledWith({ token: 'mtls-token' });
+        expect(loginWithCredentialsMock).toHaveBeenCalledWith(
+            { token: 'mtls-token' },
+            { target: { serverId: 'server-a', serverUrl: 'https://api.example.test' } },
+        );
     });
 
     it('auto-starts web mtls login when auth auto-redirect targets mtls', async () => {
@@ -725,7 +735,7 @@ describe('PreAuthOnboardingWizardEntry', () => {
                 toLegacySignupProvider: false,
             },
         };
-        runtimeFetchMock.mockResolvedValue(new Response(JSON.stringify({ token: 'mtls-token' }), {
+        runtimeFetchMock.mockImplementation(async () => new Response(JSON.stringify({ token: 'mtls-token' }), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
         }));
@@ -733,10 +743,15 @@ describe('PreAuthOnboardingWizardEntry', () => {
         const { PreAuthOnboardingWizardEntry } = await import('./PreAuthOnboardingWizardEntry');
         await renderScreen(React.createElement(PreAuthOnboardingWizardEntry));
 
+        await vi.waitFor(() => expect(loginWithCredentialsMock).toHaveBeenCalled());
+
         expect(runtimeFetchMock).toHaveBeenCalledWith('https://api.example.test/v1/auth/mtls', {
             method: 'POST',
             signal: expect.any(AbortSignal),
         });
-        expect(loginWithCredentialsMock).toHaveBeenCalledWith({ token: 'mtls-token' });
+        expect(loginWithCredentialsMock).toHaveBeenCalledWith(
+            { token: 'mtls-token' },
+            { target: { serverId: 'server-a', serverUrl: 'https://api.example.test' } },
+        );
     });
 });

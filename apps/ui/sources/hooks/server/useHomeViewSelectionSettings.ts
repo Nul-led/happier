@@ -7,6 +7,7 @@ import {
     updateEffectiveHomeViewState,
 } from '@/sync/domains/server/selection/homeViewSelectionState';
 import { normalizeServerSelectionGroupsForSettings } from '@/sync/domains/server/selection/serverSelectionSettingsAdapter';
+import { useSetting } from '@/sync/domains/state/storage';
 import { getStorage } from '@/sync/domains/state/storageStore';
 
 export type HomeViewSelectionSettings = Pick<
@@ -14,32 +15,48 @@ export type HomeViewSelectionSettings = Pick<
     'serverSelectionGroups' | 'serverSelectionActiveTargetKind' | 'serverSelectionActiveTargetId'
 >;
 
-export function useHomeViewSelectionSettings(
-    fallback: HomeViewSelectionSettings,
-): HomeViewSelectionSettings {
+/**
+ * Until the one-time migration writes the device-global Home-view state, the
+ * three legacy Account-scoped keys remain the fallback. They are subscribed key
+ * by key rather than through the whole `Settings` object: persistent surfaces
+ * (header/sidebar connection control, session lists, new-session targeting)
+ * hold this hook for the life of the session and must not rerender for every
+ * unrelated Account setting.
+ */
+function useLegacyHomeViewSelectionSettings(): HomeViewSelectionSettings {
+    const serverSelectionGroups = useSetting('serverSelectionGroups');
+    const serverSelectionActiveTargetKind = useSetting('serverSelectionActiveTargetKind');
+    const serverSelectionActiveTargetId = useSetting('serverSelectionActiveTargetId');
+    return React.useMemo(() => ({
+        serverSelectionGroups,
+        serverSelectionActiveTargetKind,
+        serverSelectionActiveTargetId,
+    }), [serverSelectionActiveTargetId, serverSelectionActiveTargetKind, serverSelectionGroups]);
+}
+
+export function useHomeViewSelectionSettings(): HomeViewSelectionSettings {
     const state = React.useSyncExternalStore(
         subscribeEffectiveHomeViewState,
         loadEffectiveHomeViewState,
         loadEffectiveHomeViewState,
     );
+    const legacySettings = useLegacyHomeViewSelectionSettings();
     return React.useMemo(() => state
         ? {
             serverSelectionGroups: normalizeServerSelectionGroupsForSettings(state.groups),
             serverSelectionActiveTargetKind: state.activeTargetKind,
             serverSelectionActiveTargetId: state.activeTargetId,
         }
-        : fallback, [fallback, state]);
+        : legacySettings, [legacySettings, state]);
 }
 
-export function useHomeViewSelectionSettingsMutable(
-    fallback: HomeViewSelectionSettings,
-): HomeViewSelectionSettings & Readonly<{
+export function useHomeViewSelectionSettingsMutable(): HomeViewSelectionSettings & Readonly<{
     setHomeViewSelectionSettings: (
         update: HomeViewSelectionSettings | ((current: HomeViewSelectionSettings) => HomeViewSelectionSettings),
         options?: Readonly<{ targetScope?: 'tab' | 'device' }>,
     ) => void;
 }> {
-    const settings = useHomeViewSelectionSettings(fallback);
+    const settings = useHomeViewSelectionSettings();
     const setHomeViewSelectionSettings = React.useCallback((
         update: HomeViewSelectionSettings | ((current: HomeViewSelectionSettings) => HomeViewSelectionSettings),
         options?: Readonly<{ targetScope?: 'tab' | 'device' }>,

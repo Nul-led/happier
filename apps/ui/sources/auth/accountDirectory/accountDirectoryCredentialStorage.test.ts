@@ -89,6 +89,8 @@ describe('account directory credential storage', () => {
         await TokenStorage.setPendingAccountDirectoryAuth({
             ...target,
             credentialTarget: 'account_directory',
+            entryIntent: 'connect_service',
+            canonicalServerUrl: target.endpoint,
             provider: 'github',
             purpose: 'account_directory',
             pending: 'pending-1',

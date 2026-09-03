@@ -1,10 +1,10 @@
 import { parseAccountConnectDeepLink } from '@/auth/pairing/accountConnectUrl';
-import { parseHomeQrInviteDeepLink, parsePairingDeepLink } from '@/auth/pairing/pairingUrl';
+import { classifyLegacyPairingDeepLink, parseHomeQrInviteDeepLink } from '@/auth/pairing/pairingUrl';
 import { normalizeServerUrl } from '@/sync/domains/server/activeServerSwitch';
 
 export type ParsedOnboardingScanPayload =
     | Readonly<{ kind: 'home_qr_invite'; rawLink: string }>
-    | Readonly<{ kind: 'pairing_link'; pairId: string; secret: string; serverUrl: string | null }>
+    | Readonly<{ kind: 'legacy_pairing_update_required' }>
     | Readonly<{ kind: 'account_connect'; publicKeyB64Url: string }>
     | Readonly<{ kind: 'relay_url'; serverUrl: string }>
     | Readonly<{ kind: 'unknown' }>;
@@ -21,14 +21,8 @@ export function parseOnboardingScanPayload(raw: string): ParsedOnboardingScanPay
         return { kind: 'home_qr_invite', rawLink: trimmed };
     }
 
-    const pairing = parsePairingDeepLink(trimmed);
-    if (pairing) {
-        return {
-            kind: 'pairing_link',
-            pairId: pairing.pairId,
-            secret: pairing.secret,
-            serverUrl: pairing.serverUrl,
-        };
+    if (classifyLegacyPairingDeepLink(trimmed)) {
+        return { kind: 'legacy_pairing_update_required' };
     }
 
     const accountConnect = parseAccountConnectDeepLink(trimmed);

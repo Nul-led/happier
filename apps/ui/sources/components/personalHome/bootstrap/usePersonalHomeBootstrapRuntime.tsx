@@ -20,10 +20,10 @@ import {
 import { probeAuthenticatedServerAuthPingEndpoint } from '@/sync/api/capabilities/probeAuthenticatedServerAuthPingEndpoint';
 import {
     adoptHomeProfile,
+    adoptPersonalHomeProfileAndComplete,
     findPersonalHomeBootstrapCompletedProfile,
     getServerProfileById,
     listServerProfiles,
-    markServerProfilePersonalHomeBootstrapCompleted,
     preflightHomeProfileAdoption,
     type ServerProfile,
 } from '@/sync/domains/server/serverProfiles';
@@ -34,8 +34,6 @@ import {
 import { canonicalizeServerUrl, createServerUrlComparableKey } from '@/sync/domains/server/url/serverUrlCanonical';
 import type { SystemTaskRunState } from '@/components/systemTasks/types';
 import { HappyError } from '@/utils/errors/errors';
-import { desktopHostKind } from '@/utils/platform/desktopHost';
-import { isDesktopOverlayWindowContext } from '@/desktop/window/isDesktopOverlayWindowContext';
 
 import { createPersonalHomeBootstrapFacts } from './personalHomeBootstrapFacts';
 import type {
@@ -44,6 +42,7 @@ import type {
     RelayRuntimeStatusSnapshot,
 } from './personalHomeBootstrapTypes';
 import { PersonalHomeBootstrapGate } from './PersonalHomeBootstrapGate';
+import { isPersonalHomeBootstrapRuntimeHost } from './personalHomeBootstrapHost';
 import {
     runPersonalHomeBootstrapFromSystemTasks,
     type PersonalHomeEndpointSnapshot,
@@ -228,10 +227,12 @@ export function usePersonalHomeBootstrapRuntime(): PersonalHomeBootstrapRuntime 
     const setupTaskActiveSnapshot = setupTask.activeTaskSnapshot;
     // Daemon status is read through the daemon-control owner: one parser, one status state.
     const readDaemonStatus = daemon.readStatus;
+    const readRelayStatus = relay.readStatus;
 
     const readFacts = React.useCallback(async (): Promise<PersonalHomeFacts> => {
+        const authoritativeRelayStatus = await readRelayStatus();
         const profiles = listServerProfiles();
-        const localUrl = resolveLocalUrl();
+        const localUrl = normalizeUrl(authoritativeRelayStatus?.relayUrl);
         const candidate = localUrl
             ? profiles.find((profile) => profileMatchesUrl(profile, localUrl)) ?? null
             : null;
@@ -243,7 +244,7 @@ export function usePersonalHomeBootstrapRuntime(): PersonalHomeBootstrapRuntime 
             && (localUrl
                 ? !profileMatchesUrl(activeProfile, localUrl)
                 : activeProfile.serverIdentityId !== completed?.serverIdentityId);
-        const relayRuntime = mapRelayStatus(relay.status, relay.lastErrorMessage);
+        const relayRuntime = mapRelayStatus(authoritativeRelayStatus, relay.lastErrorMessage);
         let localHomeReachability: PersonalHomeFacts['localHomeReachability'] = 'unknown';
         let localHomeIdentity = candidate?.serverIdentityId ?? null;
         let anonymousSignup: PersonalHomeFacts['anonymousSignup'] = relayRuntime?.anonymousSignupEnabled === true
@@ -343,10 +344,9 @@ export function usePersonalHomeBootstrapRuntime(): PersonalHomeBootstrapRuntime 
     }, [
         daemon.activeTaskSnapshot,
         readDaemonStatus,
+        readRelayStatus,
         relay.activeTaskSnapshot,
         relay.lastErrorMessage,
-        relay.status,
-        resolveLocalUrl,
         setupTaskActiveSnapshot,
     ]);
 
@@ -491,7 +491,7 @@ export function usePersonalHomeBootstrapRuntime(): PersonalHomeBootstrapRuntime 
                     if (!token || !isExactTokenOnlyCredential(credentials, token)) {
                         throw new Error('Verified Personal Home credentials are unavailable for profile adoption.');
                     }
-                    return await adoptHomeProfile({
+                    return await adoptPersonalHomeProfileAndComplete({
                         // The canonical /v1/features descriptor when present; otherwise the
                         // exact legacy HTTPS descriptor behavior for this loopback Home.
                         descriptor: connectionDescriptor ?? {
@@ -507,13 +507,13 @@ export function usePersonalHomeBootstrapRuntime(): PersonalHomeBootstrapRuntime 
         });
         const completedProfile = getServerProfileById(result.profileId);
         const completedIdentity = completedProfile?.serverIdentityId;
-        if (!completedProfile || !completedIdentity) {
+        if (
+            !completedProfile
+            || !completedIdentity
+            || completedProfile.personalHomeBootstrapCompleted !== true
+        ) {
             throw new Error('Verified Personal Home completion did not retain its stable Home identity.');
         }
-        markServerProfilePersonalHomeBootstrapCompleted({
-            profileId: completedProfile.id,
-            serverIdentityId: completedIdentity,
-        });
         activateServerProfileIfSelectionImplicit(result.profileId);
         // Credential/profile writes are non-focusing. Ask the existing auth owner to re-read the
         // selected Home. The profile owner activates the first local Home only while selection
@@ -738,7 +738,7 @@ export function PersonalHomeBootstrapRuntimeMount(props: Readonly<{ children: Re
     // with the native system-task commands required by Personal Home bootstrap.
     // A durable profile instead seeds synchronous ready facts into that same controller: children
     // render on the first pass while normal health/auth/daemon recovery continues in the shell.
-    if (desktopHostKind() !== 'tauri' || isDesktopOverlayWindowContext()) return <>{props.children}</>;
+    if (!isPersonalHomeBootstrapRuntimeHost()) return <>{props.children}</>;
     return (
         <EligibleDesktopPersonalHomeBootstrapRuntime>
             {props.children}

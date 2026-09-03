@@ -371,7 +371,7 @@ describe('runNativeRemoteSshBootstrapTask', () => {
 
     it('posts a pairing-bound data-key v3 response to the exact Home target', async () => {
         vi.resetModules();
-        const authApproveAtEndpoint = vi.fn(async () => 'approved' as const);
+        const authApproveWithTransport = vi.fn(async () => 'approved' as const);
         const machineKey = new Uint8Array(32).fill(5);
         const contentPublicKey = (await import('tweetnacl')).default.box.keyPair.fromSecretKey(machineKey).publicKey;
         vi.doMock('@/auth/storage/tokenStorage', async (importOriginal) => {
@@ -389,12 +389,12 @@ describe('runNativeRemoteSshBootstrapTask', () => {
                 },
             };
         });
-        vi.doMock('@/auth/flows/approve', () => ({ authApproveAtEndpoint }));
+        vi.doMock('@/auth/flows/approve', () => ({ authApproveWithTransport }));
         vi.doMock('@/sync/domains/server/serverProfiles', async (importOriginal) => ({
             ...await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>(),
             listServerProfiles: () => [{
                 id: 'home-profile',
-                serverIdentityId: 'home-identity',
+                serverIdentityId: 'srv_home_identity',
                 serverUrl: 'https://relay.example.test',
             }],
         }));
@@ -454,9 +454,11 @@ describe('runNativeRemoteSshBootstrapTask', () => {
                 commandRunner,
                 prompt: async () => ({ approved: true }),
             })).resolves.toMatchObject({ machineId: 'machine-paired' });
-            expect(authApproveAtEndpoint).toHaveBeenCalledWith(expect.objectContaining({
-                endpointUrl: 'https://relay.example.test',
-                serverId: 'home-identity',
+            expect(authApproveWithTransport).toHaveBeenCalledWith(expect.objectContaining({
+                transport: expect.objectContaining({
+                    runtimeOrigin: 'https://relay.example.test',
+                    homeServerIdentityId: 'srv_home_identity',
+                }),
                 token: 'home-token',
                 responseKind: 'dataKey',
             }));

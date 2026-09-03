@@ -37,6 +37,8 @@ export type PeerMediationLoopbackIrohMachineAdmissionOptions = Readonly<{
   role: MachineCarrierRole;
   /** Precise admitted carrier flows; a handshake flow outside this list fails closed. */
   allowedFlows: readonly IrohMachineCarrierFlowV1[];
+  /** Current Home-published signing roots; resolved at admission so rotation needs no restart. */
+  resolveTrustRoots?: () => readonly DirectRouteGrantTrustRoot[];
   /**
    * Selects the existing local application owner for this already-verified
    * stream. The peer never supplies a destination: native Rust accepts only
@@ -105,7 +107,7 @@ export function registerPeerMediationIrohMachineAdmissionRoute(
         machineId: options.machineId,
         localEndpointId: options.admission.localEndpointId,
         role: options.admission.role,
-        trustRoots: options.trustRoots,
+        trustRoots: options.admission.resolveTrustRoots?.() ?? options.trustRoots,
         nowMs: options.nowMs(),
         authenticatedRemoteEndpointId,
       });

@@ -2,7 +2,7 @@ import { SYSTEM_TASK_PROTOCOL_VERSION, type SystemTaskSpec } from '@happier-dev/
 import {
     createPersonalHomeRuntimeSpec,
     renderPersonalHomeRuntimeEnv,
-} from '@happier-dev/cli-common/firstPartyRuntime';
+} from '@happier-dev/cli-common/firstPartyRuntime/personalHome/runtimeSpec';
 
 import { resolvePreferredPublicReleaseRingLabelForCurrentApp } from '@/sync/runtime/resolvePublicReleaseRing';
 
@@ -27,8 +27,13 @@ export type LocalRelayRuntimePurpose = Readonly<{
 export type LocalRelayRuntimeTaskOptions = Readonly<{
     purpose?: LocalRelayRuntimePurpose;
     anonymousSignupEnabled?: boolean;
+    expectedPersonalHomeState?: Readonly<{
+        installed: boolean;
+        canonicalServerUrl: string | null;
+        dataPresent: boolean;
+    }>;
     personalHomeOperation?: Readonly<{
-        action?: 'recover' | 'finalize';
+        action?: 'recover';
         outputPath?: string;
         archivePath?: string;
         confirmOverwrite?: boolean;
@@ -70,7 +75,7 @@ export function buildLocalRelayRuntimeSystemTaskSpec(
                 operationParams = { archivePath };
                 break;
             case 'relay.runtime.personal_home.restore.v1':
-                if (operation.action === 'recover' || operation.action === 'finalize') {
+                if (operation.action === 'recover') {
                     operationParams = { action: operation.action };
                     break;
                 }
@@ -110,6 +115,9 @@ export function buildLocalRelayRuntimeSystemTaskSpec(
             ...LOCAL_RELAY_RUNTIME_PARAMS,
             ...(purpose ? { purpose } : {}),
             ...(env ? { env } : {}),
+            ...(options.expectedPersonalHomeState
+                ? { expectedPersonalHomeState: options.expectedPersonalHomeState }
+                : {}),
         },
     };
 }

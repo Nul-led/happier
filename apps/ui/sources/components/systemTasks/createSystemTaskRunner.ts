@@ -7,7 +7,10 @@ import {
     type SystemTaskSpec,
 } from '@happier-dev/protocol';
 
+import { readLatestSystemTaskPrompt } from './prompts/readLatestSystemTaskPrompt';
 import type {
+    SystemTaskPromptContinuation,
+    SystemTaskPromptContinuationRegistration,
     SystemTaskRunState,
     SystemTaskRunner,
     SystemTaskRunStatus,
@@ -27,9 +30,13 @@ type MutableSystemTaskRunState = {
 };
 
 type TaskRecord = {
+    spec: SystemTaskSpec;
     state: SystemTaskRunState;
     listeners: Set<() => void>;
     unlistenBridge: (() => void) | null;
+    promptContinuation: SystemTaskPromptContinuation | null;
+    answeredPromptSignatures: Set<string>;
+    inFlightPromptSignatures: Set<string>;
 };
 
 function getEventSignature(event: SystemTaskEvent): string {
@@ -116,9 +123,59 @@ export function createSystemTaskRunner(options: Readonly<{
                 },
             },
         };
+        record.promptContinuation = null;
         notifyTask(taskId);
         record.unlistenBridge?.();
         record.unlistenBridge = null;
+    };
+
+    const respondToTask = async (taskId: string, answer: unknown): Promise<void> => {
+        const record = tasks.get(taskId);
+        if (!record || record.state.result || !record.state.awaitingInput) {
+            return;
+        }
+        await options.bridge.respond(taskId, answer);
+    };
+
+    /**
+     * Answer the task's current prompt through its registered continuation. The
+     * signature guard keeps the answer exactly-once across re-registration and
+     * repeated event replays; a continuation that declines leaves the prompt for
+     * the user.
+     */
+    const continuePrompt = (taskId: string) => {
+        const record = tasks.get(taskId);
+        if (!record || record.state.result || !record.state.awaitingInput || !record.promptContinuation) {
+            return;
+        }
+        const prompt = readLatestSystemTaskPrompt(record.state);
+        if (!prompt) {
+            return;
+        }
+        const signature = `${prompt.kind}:${JSON.stringify(prompt.data)}`;
+        if (record.answeredPromptSignatures.has(signature) || record.inFlightPromptSignatures.has(signature)) {
+            return;
+        }
+        record.inFlightPromptSignatures.add(signature);
+        const continuation = record.promptContinuation;
+        void (async () => {
+            const answer = await continuation(prompt);
+            if (answer === undefined) {
+                record.answeredPromptSignatures.add(signature);
+                return;
+            }
+            await respondToTask(taskId, answer);
+            record.answeredPromptSignatures.add(signature);
+        })().catch(() => {
+            // Publication and bridge failures are retryable. The prompt remains
+            // current and a remounted owner may register a fresh continuation.
+        }).finally(() => {
+            record.inFlightPromptSignatures.delete(signature);
+            if (record.promptContinuation !== continuation
+                && !record.answeredPromptSignatures.has(signature)) {
+                continuePrompt(taskId);
+            }
+        });
     };
 
     const applyEvent = (taskId: string, payload: unknown) => {
@@ -144,6 +201,7 @@ export function createSystemTaskRunner(options: Readonly<{
             status: record.state.status === 'canceling' ? 'canceling' : 'running',
         };
         notifyTask(taskId);
+        continuePrompt(taskId);
     };
 
     const applyResult = (taskId: string, payload: unknown) => {
@@ -171,6 +229,7 @@ export function createSystemTaskRunner(options: Readonly<{
             result,
             status: resolveResultStatus(result),
         };
+        record.promptContinuation = null;
         notifyTask(taskId);
         record.unlistenBridge?.();
         record.unlistenBridge = null;
@@ -186,9 +245,13 @@ export function createSystemTaskRunner(options: Readonly<{
                 return taskId;
             }
             const record: TaskRecord = {
+                spec: parsedSpec,
                 state: createInitialTaskState(taskId),
                 listeners: new Set(),
                 unlistenBridge: null,
+                promptContinuation: null,
+                answeredPromptSignatures: new Set(),
+                inFlightPromptSignatures: new Set(),
             };
             tasks.set(taskId, record);
             record.unlistenBridge = await options.bridge.subscribe(taskId, {
@@ -218,11 +281,20 @@ export function createSystemTaskRunner(options: Readonly<{
             await options.bridge.cancel(taskId);
         },
         async respond(taskId: string, answer: unknown): Promise<void> {
+            await respondToTask(taskId, answer);
+        },
+        registerPromptContinuation(taskId: string, continuation: SystemTaskPromptContinuation): void {
             const record = tasks.get(taskId);
-            if (!record || record.state.result || !record.state.awaitingInput) {
+            if (!record || record.state.result) {
                 return;
             }
-            await options.bridge.respond(taskId, answer);
+            record.promptContinuation = continuation;
+            continuePrompt(taskId);
+        },
+        listPromptContinuations(): readonly SystemTaskPromptContinuationRegistration[] {
+            return [...tasks.values()]
+                .filter((record) => record.promptContinuation !== null && record.state.result === null)
+                .map((record) => ({ taskId: record.state.taskId, spec: record.spec }));
         },
         getSnapshot(taskId: string): SystemTaskRunState | null {
             const record = tasks.get(taskId);

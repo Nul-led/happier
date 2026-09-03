@@ -70,6 +70,43 @@ function installServerProfilesMockWithLegacyScopes(): void {
     }));
 }
 
+/**
+ * Two Homes can reach the same routing URL at once: one currently canonical there,
+ * and one that moved its canonical URL while retaining the old alias. The anonymous
+ * URL-hash credential stored under that URL belongs to neither identity in particular.
+ */
+function installServerProfilesMockWithSharedUrl(): void {
+    vi.doMock('@/sync/domains/server/serverProfiles', () => ({
+        getActiveServerId: () => 'srv-identity',
+        getActiveServerUrl: () => SERVER_URL,
+        listServerProfiles: () => [
+            {
+                id: 'srv-legacy-a',
+                serverIdentityId: 'srv-identity',
+                serverUrl: SERVER_URL,
+                canonicalServerUrl: SERVER_URL,
+                legacyServerIds: ['srv-legacy-b'],
+            },
+            {
+                id: 'srv-moved',
+                serverIdentityId: 'srv-moved-identity',
+                serverUrl: SERVER_URL,
+                canonicalServerUrl: 'https://moved.example.test',
+            },
+        ],
+        areServerProfileIdentifiersEquivalent: (left: string, right: string) => left === right,
+    }));
+}
+
+function installServerProfilesMockWithoutProfiles(): void {
+    vi.doMock('@/sync/domains/server/serverProfiles', () => ({
+        getActiveServerId: () => null,
+        getActiveServerUrl: () => SERVER_URL,
+        listServerProfiles: () => [],
+        areServerProfileIdentifiersEquivalent: () => false,
+    }));
+}
+
 describe('TokenStorage credential lookup (native keychain)', () => {
     beforeEach(() => {
         vi.resetModules();
@@ -142,6 +179,35 @@ describe('TokenStorage credential lookup (native keychain)', () => {
         expect(secureStoreState.values.has(legacyKeys[0]!)).toBe(false);
         // Losing legacy scopes are left alone; only the migrated one is retired.
         expect(secureStoreState.values.has(legacyKeys[1]!)).toBe(true);
+    });
+
+    it('never promotes an anonymous URL-hash credential into an identity that shares that URL with another Home', async () => {
+        installServerProfilesMockWithoutProfiles();
+        const { TokenStorage } = await import('./tokenStorage');
+
+        await expect(TokenStorage.setCredentialsForServerUrl(
+            SERVER_URL,
+            {},
+            { token: 'anonymous-url', secret: 'anon' },
+        )).resolves.toBe(true);
+        const [urlHashKey] = [...secureStoreState.values.keys()];
+        expect(urlHashKey).toBeDefined();
+
+        vi.resetModules();
+        secureStoreState.readOrder.length = 0;
+        installServerProfilesMockWithSharedUrl();
+        const { TokenStorage: SharedUrlTokenStorage } = await import('./tokenStorage');
+
+        // Ownership of the anonymous scope is ambiguous, so it is neither read as
+        // this identity's credential nor migrated into (and deleted from) it.
+        await expect(
+            SharedUrlTokenStorage.getCredentialsForServerUrl(SERVER_URL, { serverId: 'srv-identity' }),
+        ).resolves.toBeNull();
+        expect(secureStoreState.readOrder).not.toContain(urlHashKey);
+        expect(secureStoreState.values.get(urlHashKey)).toBe(
+            JSON.stringify({ token: 'anonymous-url', secret: 'anon' }),
+        );
+        expect([...secureStoreState.values.keys()]).toEqual([urlHashKey]);
     });
 
     it('applies the same lookup to an explicitly requested server URL', async () => {

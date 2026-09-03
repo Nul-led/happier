@@ -15,7 +15,18 @@ import sodium from '@/encryption/libsodium.lib';
 import { digest } from '@/platform/digest';
 import { getRandomBytesAsync } from '@/platform/cryptoRandom';
 import { Modal } from '@/modal';
+import { accountDirectoryAuthClient } from '@/auth/accountDirectory/accountDirectoryAuthClient';
+import {
+    authenticateSelectedAccountServiceWithKey,
+    refreshAndEnrollAccountServiceDirectory,
+} from '@/auth/accountDirectory/accountDirectoryKeyAuth';
+import { finalizePreferredHomeEnrollmentEntryIntent } from '@/sync/ops/accountDirectory/enrollPreferredDirectoryHome';
+import { isSelectedAccountServiceKey } from '@/sync/domains/accountDirectory/accountServiceSelection';
+import { createAccountDirectoryServiceKey } from '@/sync/domains/accountDirectory/accountDirectorySession';
 import { useAuthEntryOptions } from '@/components/account/auth/useAuthEntryOptions';
+import { useAccountServiceEntryOptions } from '@/components/account/auth/useAccountServiceEntryOptions';
+import { AccountServiceOAuthJourney } from '@/components/account/auth/AccountServiceOAuthJourney';
+import { setAccountServiceEndpoint } from '@/sync/domains/server/serverProfiles';
 import { useIsLandscape } from '@/utils/platform/responsive';
 import { isSafeExternalAuthUrl } from '@/auth/providers/externalAuthUrl';
 import { formatOperationFailedDebugMessage } from '@/utils/errors/formatOperationFailedDebugMessage';
@@ -30,6 +41,10 @@ import { usePendingSetupIntent } from '@/components/onboarding/state/usePendingS
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { readConfiguredServerUrlEnv } from '@/sync/domains/server/readConfiguredServerUrlEnv';
 import { isDesktopHost } from '@/utils/platform/desktopHost';
+import {
+    captureHomeExternalAuthTarget,
+    createHomeOAuthRequestContext,
+} from '@/auth/providers/homeExternalAuthTarget';
 
 import { OnboardingWizardSurfacePresentation } from '@/components/onboarding/surfaces/OnboardingWizardSurface';
 import { useOnboardingWizardController } from '@/components/onboarding/surfaces/useOnboardingWizardController';
@@ -161,6 +176,25 @@ function resolveAuthReturnToRoute(): string {
     return resolveWizardAuthReturnToRoute();
 }
 
+/**
+ * Leaves the app for a provider authorization URL. Web replaces the current document so the
+ * provider return lands back on the same origin; native hands the URL to the OS.
+ */
+async function openExternalAuthUrl(url: string): Promise<void> {
+    if (Platform.OS === 'web') {
+        const location = typeof window !== 'undefined' ? window.location : null;
+        if (location && typeof location.assign === 'function') {
+            location.assign(url);
+            return;
+        }
+        if (location && typeof location.href === 'string') {
+            location.href = url;
+            return;
+        }
+    }
+    await Linking.openURL(url);
+}
+
 function resolveUnauthShellRouteTestId(stepId: WizardStepId): string {
     if (stepId === 'auth_restore') return 'unauth-shell-route-restore';
     if (stepId === 'relay_select') return 'unauth-shell-route-setup-pre-auth';
@@ -200,6 +234,12 @@ export const PreAuthOnboardingWizardEntry = React.memo(function PreAuthOnboardin
     const isLandscape = useIsLandscape();
     const isDesktopShell = React.useMemo(() => isDesktopHost(), []);
     const authEntryOptions = useAuthEntryOptions();
+    // The selected sign-in service is resolved independently of the focused Home, so a fresh
+    // device with zero Home profiles still reaches its advertised sign-in methods.
+    const accountServiceEntry = useAccountServiceEntryOptions();
+    const accountServiceEndpoint = accountServiceEntry.endpoint;
+    const accountServiceDiscovery = accountServiceEntry.discovery;
+    const [accountServiceApprovalPending, setAccountServiceApprovalPending] = React.useState(false);
     const applyBrandHeroSeen = useApplyBrandHeroSeen();
     const autoRedirectAttemptedRef = React.useRef(false);
     const shellChromeHost = resolveAppShellChromeHost({
@@ -248,7 +288,14 @@ export const PreAuthOnboardingWizardEntry = React.memo(function PreAuthOnboardin
     }, [auth, authEntryOptions.retryServerCheck]);
 
     const createAccountViaProvider = React.useCallback(async (providerId: string) => {
+        // OAuth custody must be fixed before any modal, lifecycle guard, or
+        // randomness await can allow focus to move to another Home.
+        const target = captureHomeExternalAuthTarget(getActiveServerSnapshot());
+        const requestContext = createHomeOAuthRequestContext(target);
         try {
+            if (!requestContext) {
+                throw new Error('Home OAuth target is unavailable');
+            }
             let mayStart = false;
             await presentFirstKeyCredentialLifecycle({
                 run: guardOrdinaryAuthIngress,
@@ -268,16 +315,14 @@ export const PreAuthOnboardingWizardEntry = React.memo(function PreAuthOnboardin
             const signingKeyPair = sodium.crypto_sign_seed_keypair(secretBytes);
             const publicKey = encodeBase64(signingKeyPair.publicKey);
 
-            const snapshot = getActiveServerSnapshot();
-            const serverUrl = snapshot.serverUrl ? String(snapshot.serverUrl).trim() : '';
             const stored =
                 await TokenStorage.setPendingExternalAuth({
                     provider: providerId,
                     proof,
                     secret,
                     returnTo: resolveAuthReturnToRoute(),
-                    ...(serverUrl ? { serverUrl } : {}),
-                });
+                    ...target,
+                }, requestContext.target);
             if (!stored) {
                 const guard =
                     await guardAccountEncryptionFirstKeyCredentialMutation();
@@ -299,24 +344,16 @@ export const PreAuthOnboardingWizardEntry = React.memo(function PreAuthOnboardin
                 return;
             }
 
-            const url = await provider.getExternalAuthUrl({ mode: 'keyed', proofHash, publicKey });
+            const url = await provider.getExternalAuthUrl(
+                { mode: 'keyed', proofHash, publicKey },
+                requestContext,
+            );
             if (!isSafeExternalAuthUrl(url)) {
                 await TokenStorage.clearPendingExternalAuth();
                 await Modal.alert(t('common.error'), t('errors.operationFailed'));
                 return;
             }
-            if (Platform.OS === 'web') {
-                const location = typeof window !== 'undefined' ? window.location : null;
-                if (location && typeof location.assign === 'function') {
-                    location.assign(url);
-                    return;
-                }
-                if (location && typeof location.href === 'string') {
-                    location.href = url;
-                    return;
-                }
-            }
-            await Linking.openURL(url);
+            await openExternalAuthUrl(url);
         } catch (error) {
             await TokenStorage.clearPendingExternalAuth();
             await Modal.alert(t('common.error'), t('errors.operationFailed'));
@@ -324,7 +361,14 @@ export const PreAuthOnboardingWizardEntry = React.memo(function PreAuthOnboardin
     }, []);
 
     const loginWithKeylessProvider = React.useCallback(async (providerId: string) => {
+        // Capture the exact Home before the first asynchronous guard for the
+        // same reason as keyed OAuth above.
+        const target = captureHomeExternalAuthTarget(getActiveServerSnapshot());
+        const requestContext = createHomeOAuthRequestContext(target);
         try {
+            if (!requestContext) {
+                throw new Error('Home OAuth target is unavailable');
+            }
             let mayStart = false;
             await presentFirstKeyCredentialLifecycle({
                 run: guardOrdinaryAuthIngress,
@@ -339,15 +383,13 @@ export const PreAuthOnboardingWizardEntry = React.memo(function PreAuthOnboardin
             const proofHashBytes = await digest('SHA-256', new TextEncoder().encode(proof));
             const proofHash = encodeHex(proofHashBytes).toLowerCase();
 
-            const snapshot = getActiveServerSnapshot();
-            const serverUrl = snapshot.serverUrl ? String(snapshot.serverUrl).trim() : '';
             const stored =
                 await TokenStorage.setPendingExternalAuth({
                     provider: providerId,
                     proof,
                     returnTo: resolveAuthReturnToRoute(),
-                    ...(serverUrl ? { serverUrl } : {}),
-                });
+                    ...target,
+                }, requestContext.target);
             if (!stored) {
                 const guard =
                     await guardAccountEncryptionFirstKeyCredentialMutation();
@@ -369,29 +411,145 @@ export const PreAuthOnboardingWizardEntry = React.memo(function PreAuthOnboardin
                 return;
             }
 
-            const url = await provider.getExternalAuthUrl({ mode: 'keyless', proofHash });
+            const url = await provider.getExternalAuthUrl(
+                { mode: 'keyless', proofHash },
+                requestContext,
+            );
             if (!isSafeExternalAuthUrl(url)) {
                 await TokenStorage.clearPendingExternalAuth();
                 await Modal.alert(t('common.error'), t('errors.operationFailed'));
                 return;
             }
-            if (Platform.OS === 'web') {
-                const location = typeof window !== 'undefined' ? window.location : null;
-                if (location && typeof location.assign === 'function') {
-                    location.assign(url);
-                    return;
-                }
-                if (location && typeof location.href === 'string') {
-                    location.href = url;
-                    return;
-                }
-            }
-            await Linking.openURL(url);
+            await openExternalAuthUrl(url);
         } catch {
             await TokenStorage.clearPendingExternalAuth();
             await Modal.alert(t('common.error'), t('errors.operationFailed'));
         }
     }, []);
+
+    /**
+     * Unauthenticated Welcome sign-in against the selected sign-in service (A7 / G02-2).
+     *
+     * Every fact comes from the service's own advertisement: the immutable endpoint URL, its
+     * observed stable identity, and its canonical audience. The focused Home is never read, the
+     * ordinary Home OAuth custody namespace is never written, and no Home runtime is constructed.
+     */
+    const continueWithAccountServiceProvider = React.useCallback(async (providerId: string) => {
+        if (!accountServiceDiscovery) return;
+        const endpointUrl = accountServiceDiscovery.endpointUrl;
+        const endpointServerIdentityId = accountServiceDiscovery.serverIdentityId;
+        let pendingMayExist = false;
+        try {
+            // Bind the selection to the observed stable service identity through the existing
+            // endpoint owner before a continuation exists, so the OAuth callback's
+            // selected-service custody check resolves to this exact service.
+            setAccountServiceEndpoint({
+                ...accountServiceEndpoint,
+                serverIdentityId: endpointServerIdentityId,
+            });
+            const url = await accountDirectoryAuthClient.startOAuth({
+                endpointUrl,
+                endpointServerIdentityId,
+                canonicalServerUrl: accountServiceDiscovery.canonicalServerUrl,
+                providerId,
+                // Linked plaintext/keyless Accounts complete without manufacturing a Home
+                // signing secret. An unlinked identity receives the typed keyed-required
+                // result and the callback starts a fresh keyed continuation on this service.
+                mode: 'keyless',
+                entryIntent: 'enter_preferred_home',
+                returnTo: resolveAuthReturnToRoute(),
+            });
+            pendingMayExist = true;
+            if (!isSafeExternalAuthUrl(url)) {
+                throw new Error('Invalid Account Service OAuth URL');
+            }
+            await openExternalAuthUrl(url);
+        } catch {
+            if (pendingMayExist) {
+                await TokenStorage.clearPendingAccountDirectoryAuth({
+                    endpoint: endpointUrl,
+                    serverIdentityId: endpointServerIdentityId,
+                }).catch(() => false);
+            }
+            await Modal.alert(t('common.error'), t('errors.operationFailed'));
+        }
+    }, [accountServiceDiscovery, accountServiceEndpoint]);
+
+    /**
+     * Unauthenticated Welcome key sign-in against the selected sign-in service (A7 / G02-2).
+     *
+     * Runs the one canonical Account Service key ceremony shared with Settings — endpoint-targeted
+     * discovery of the exact selected service, the secure secret prompt, and restricted
+     * `account_directory` credential storage — then refreshes the Directory and enrolls the
+     * preferred Home under the explicit `enter_preferred_home` entry intent. The focused Home is
+     * never read; only the enrollment owner's post-enrollment intent finalizer may open the exact
+     * enrolled preferred Home.
+     */
+    const continueWithAccountServiceKey = React.useCallback(async () => {
+        if (!accountServiceDiscovery) return;
+        // The selected sign-in service may change while discovery, the secret prompt, or login
+        // is awaiting. Every async boundary cancels a superseded attempt through the canonical
+        // endpoint snapshot (the same comparison the enrollment owner's finalizer uses), so a
+        // replaced service can never be bound back, authenticated, or enrolled late. The
+        // observed identity updates the captured key before the coordinator binds it, so the
+        // bind itself never reads as a replacement.
+        let capturedServiceKey = createAccountDirectoryServiceKey({
+            endpoint: accountServiceEndpoint.url,
+            serverIdentityId: accountServiceEndpoint.serverIdentityId ?? null,
+        });
+        const serviceSuperseded = () => !isSelectedAccountServiceKey(capturedServiceKey);
+        const auth = await authenticateSelectedAccountServiceWithKey({
+            endpoint: accountServiceEndpoint,
+            shouldCancel: serviceSuperseded,
+            onServiceIdentityObserved: ({ serviceKey }) => {
+                capturedServiceKey = serviceKey;
+            },
+        });
+        if (auth.kind === 'cancelled') return;
+        if (auth.kind === 'invalid_key') {
+            await Modal.alert(t('common.error'), t('connect.invalidSecretKey'));
+            return;
+        }
+        if (auth.kind !== 'authenticated') {
+            await Modal.alert(t('common.error'), t('errors.operationFailed'));
+            return;
+        }
+        const { enrollment } = await refreshAndEnrollAccountServiceDirectory(auth.session, {
+            entryIntent: 'enter_preferred_home',
+            shouldCancel: serviceSuperseded,
+            shouldInvalidateContinuation: serviceSuperseded,
+        });
+        if (serviceSuperseded()) return;
+        if (enrollment?.kind === 'enrolled') {
+            // One explicit post-enrollment intent finalizer (A10): open the exact enrolled Home.
+            // The enrollment owner finalizes only its own approval-resume path, so this immediate
+            // result is finalized here exactly once.
+            const applied = await finalizePreferredHomeEnrollmentEntryIntent(
+                enrollment.homeServerIdentityId,
+                'enter_preferred_home',
+                auth.serviceKey,
+            );
+            if (applied === 'blocked') {
+                await Modal.alert(t('common.error'), t('errors.operationFailed'));
+            }
+            return;
+        }
+        if (enrollment?.kind === 'approval_required') {
+            // The enrollment owner retained the credential-bearing continuation. Welcome stays
+            // mounted as its destination-owned presenter and lets that owner resume/open/cancel.
+            setAccountServiceApprovalPending(true);
+            return;
+        }
+        if (
+            enrollment?.kind === 'failed'
+            || enrollment?.kind === 'rejected'
+            || enrollment?.kind === 'expired'
+            || enrollment?.kind === 'partial_commit'
+        ) {
+            // A failed stage preserves the valid Account Service credential and reports truthfully.
+            await Modal.alert(t('common.error'), t('errors.operationFailed'));
+        }
+    }, [accountServiceDiscovery, accountServiceEndpoint]);
 
     const loginWithMtls = React.useCallback(async () => {
         try {
@@ -402,11 +560,32 @@ export const PreAuthOnboardingWizardEntry = React.memo(function PreAuthOnboardin
                 await Modal.alert(t('common.error'), t('errors.operationFailed'));
                 return;
             }
+            const target = captureHomeExternalAuthTarget({
+                serverId: snapshot.serverId,
+                serverUrl,
+            });
+            if (!target.serverId || !target.serverUrl) {
+                await Modal.alert(t('common.error'), t('errors.operationFailed'));
+                return;
+            }
 
             if (Platform.OS !== 'web') {
+                const pendingWritten = await TokenStorage.setPendingExternalAuth(
+                    { provider: 'mtls', serverId: target.serverId, serverUrl: target.serverUrl },
+                    target,
+                );
+                if (!pendingWritten) {
+                    await Modal.alert(t('common.error'), t('errors.operationFailed'));
+                    return;
+                }
                 const returnTo = `${resolveAppUrlScheme()}:///mtls`;
                 const startUrl = `${serverUrl}/v1/auth/mtls/start?returnTo=${encodeURIComponent(returnTo)}`;
-                await Linking.openURL(startUrl);
+                try {
+                    await Linking.openURL(startUrl);
+                } catch (error) {
+                    await TokenStorage.clearPendingExternalAuth(target).catch(() => false);
+                    throw error;
+                }
                 return;
             }
 
@@ -423,7 +602,7 @@ export const PreAuthOnboardingWizardEntry = React.memo(function PreAuthOnboardin
                 const token = String(json.token);
                 await presentFirstKeyCredentialLifecycle({
                     run: async () =>
-                        await auth.loginWithCredentials({ token }),
+                        await auth.loginWithCredentials({ token }, { target }),
                 });
             } finally {
                 clearTimeout(timer);
@@ -517,8 +696,11 @@ export const PreAuthOnboardingWizardEntry = React.memo(function PreAuthOnboardin
         wizardChromeMode: 'bare' as const,
         wizardLayoutPresentation: isDesktopShell ? 'fullscreen' as const : undefined,
         authEntryOptions,
+        accountServiceEntry,
         shellChrome,
         initialStepId: resolvedInitialStepId,
+        onContinueWithAccountServiceProvider: continueWithAccountServiceProvider,
+        onContinueWithAccountServiceKey: continueWithAccountServiceKey,
         onCreateAccount: createAccount,
         onCreateAccountViaProvider: createAccountViaProvider,
         onLoginWithKeylessProvider: loginWithKeylessProvider,
@@ -559,6 +741,22 @@ export const PreAuthOnboardingWizardEntry = React.memo(function PreAuthOnboardin
 
     if (onboardingTourResolving) {
         return journeyLoadingFallback;
+    }
+
+    if (accountServiceApprovalPending) {
+        return renderClassicShell(
+            <AccountServiceOAuthJourney
+                state={{
+                    kind: 'progress',
+                    stage: 'waiting_approval',
+                    providerName: accountServiceEndpoint.displayName ?? t('connect.secretKeyInputLabel'),
+                    endpointUrl: accountServiceEndpoint.url,
+                }}
+                onRecovery={() => setAccountServiceApprovalPending(false)}
+                approvalContinuation
+                onApprovalOutcome={() => setAccountServiceApprovalPending(false)}
+            />,
+        );
     }
 
     // Explicit replay intent (deep-link into a specific journey beat) reaches the

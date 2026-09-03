@@ -12,7 +12,8 @@ const mocks = vi.hoisted(() => ({
     abandon: vi.fn(),
     recoverRejectedCredential: vi.fn(),
     loginWithCredentials: vi.fn(),
-    setActiveServer: vi.fn(),
+    refreshFromActiveServer: vi.fn(async () => {}),
+    setActiveServerAndSwitch: vi.fn(async () => 'switched' as const),
     profiles: [] as ReadonlyArray<Readonly<{
         id: string;
         serverUrl: string;
@@ -27,11 +28,12 @@ vi.mock('@/modal', () => ({
     Modal: { show: mocks.show },
 }));
 
-vi.mock('@/sync/domains/server/serverRuntime', () => ({
-    setActiveServer: mocks.setActiveServer,
+vi.mock('@/sync/domains/server/activeServerSwitch', () => ({
+    setActiveServerAndSwitch: mocks.setActiveServerAndSwitch,
 }));
 
-vi.mock('@/sync/domains/server/serverProfiles', () => ({
+vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>(),
     listServerProfiles: () => mocks.profiles,
 }));
 
@@ -39,6 +41,8 @@ vi.mock('@/auth/context/AuthContext', () => ({
     getCurrentAuth: () => ({
         loginWithCredentials:
             mocks.loginWithCredentials,
+        refreshFromActiveServer:
+            mocks.refreshFromActiveServer,
     }),
 }));
 
@@ -182,13 +186,15 @@ describe('presentFirstKeyCredentialLifecycle', () => {
         await expect(
             config.props.finish(),
         ).resolves.toEqual({ kind: 'completed' });
-        expect(mocks.setActiveServer)
+        expect(mocks.setActiveServerAndSwitch)
             .toHaveBeenCalledWith({
                 serverId: 'server-b',
                 scope: 'device',
+                refreshAuth:
+                    mocks.refreshFromActiveServer,
             });
         expect(
-            mocks.setActiveServer
+            mocks.setActiveServerAndSwitch
                 .mock.invocationCallOrder[0],
         ).toBeLessThan(
             mocks.push.mock.invocationCallOrder[0]!,
@@ -335,7 +341,7 @@ describe('presentFirstKeyCredentialLifecycle', () => {
         ).resolves.toEqual({
             kind: 'recovery_failed',
         });
-        expect(mocks.setActiveServer)
+        expect(mocks.setActiveServerAndSwitch)
             .not.toHaveBeenCalled();
         expect(mocks.push).not.toHaveBeenCalled();
         shownConfig().onRequestClose();

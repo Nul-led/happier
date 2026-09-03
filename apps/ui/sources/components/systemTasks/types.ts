@@ -1,4 +1,4 @@
-import type { SystemTaskEvent, SystemTaskResult, SystemTaskSpec } from '@happier-dev/protocol';
+import type { SystemTaskEvent, SystemTaskJsonObject, SystemTaskResult, SystemTaskSpec } from '@happier-dev/protocol';
 
 export type SystemTaskRunnerMode = 'tauri' | 'native' | 'dev' | 'unavailable';
 
@@ -41,6 +41,24 @@ export type SystemTaskRunState = Readonly<{
 export type SystemTaskStatus = SystemTaskRunStatus;
 export type SystemTaskSnapshot = SystemTaskRunState;
 
+export type SystemTaskPromptEnvelope = Readonly<{
+    kind: string;
+    message: string;
+    data: SystemTaskJsonObject;
+}>;
+
+/**
+ * A task-lifetime answer for the prompts a running system task raises. The
+ * runner owns delivery and exactly-once response; a continuation resolving
+ * `undefined` declines the prompt and leaves it unanswered for the user.
+ */
+export type SystemTaskPromptContinuation = (prompt: SystemTaskPromptEnvelope) => Promise<unknown>;
+
+export type SystemTaskPromptContinuationRegistration = Readonly<{
+    taskId: string;
+    spec: SystemTaskSpec;
+}>;
+
 export type SystemTaskBridgeListenerSet = Readonly<{
     onEvent: (payload: unknown) => void;
     onResult: (payload: unknown) => void;
@@ -65,6 +83,14 @@ export type SystemTaskRunner = Readonly<{
     start: (spec: SystemTaskSpec) => Promise<string>;
     cancel: (taskId: string) => Promise<void>;
     respond: (taskId: string, answer: unknown) => Promise<void>;
+    /**
+     * Bind a prompt answerer to a started task for the rest of that task's life.
+     * Continuations outlive any view that started the task, so navigating away
+     * cannot strand a task waiting on an answer.
+     */
+    registerPromptContinuation?: (taskId: string, continuation: SystemTaskPromptContinuation) => void;
+    /** Tasks that are still running with a registered continuation, so a remounted surface can rediscover them. */
+    listPromptContinuations?: () => readonly SystemTaskPromptContinuationRegistration[];
     getSnapshot: (taskId: string) => SystemTaskRunState | null;
     subscribe(taskId: string, listener: () => void): () => void;
     subscribe(taskId: string, onEvent?: (event: SystemTaskEvent) => void, onResult?: (result: SystemTaskResult) => void): () => void;

@@ -1,8 +1,7 @@
 import * as React from 'react';
 
-import { isDesktopHost } from '@/utils/platform/desktopHost';
-
 import { derivePersonalHomeBootstrapSnapshot } from './derivePersonalHomeBootstrapSnapshot';
+import { isPersonalHomeBootstrapRuntimeHost } from './personalHomeBootstrapHost';
 import type {
     PersonalHomeBootstrapOperation,
     PersonalHomeBootstrapSnapshot,
@@ -115,6 +114,9 @@ export function usePersonalHomeBootstrapController(
     const operationKeyRef = React.useRef<string | null>(null);
     const operationInFlightRef = React.useRef(false);
     const mountedRef = React.useRef(true);
+    const latestReadFactsRef = React.useRef(options.readFacts);
+    const factsReadSequenceRef = React.useRef(0);
+    latestReadFactsRef.current = options.readFacts;
 
     React.useEffect(() => {
         mountedRef.current = true;
@@ -134,21 +136,22 @@ export function usePersonalHomeBootstrapController(
     React.useEffect(() => {
         if (!enabled) return;
         let cancelled = false;
+        const readSequence = ++factsReadSequenceRef.current;
         setIsChecking(true);
-        void options.readFacts()
+        void latestReadFactsRef.current()
             .then((nextFacts) => {
-                if (cancelled || !mountedRef.current) return;
+                if (cancelled || !mountedRef.current || readSequence !== factsReadSequenceRef.current) return;
                 setFacts(nextFacts);
                 setHasAuthoritativeFacts(true);
                 setError(null);
             })
             .catch((cause: unknown) => {
-                if (cancelled || !mountedRef.current) return;
+                if (cancelled || !mountedRef.current || readSequence !== factsReadSequenceRef.current) return;
                 const nextError = cause instanceof Error ? cause : new Error(String(cause));
                 setError(nextError);
             })
             .finally(() => {
-                if (!cancelled && mountedRef.current) setIsChecking(false);
+                if (!cancelled && mountedRef.current && readSequence === factsReadSequenceRef.current) setIsChecking(false);
             });
         return () => {
             cancelled = true;
@@ -191,7 +194,9 @@ export function usePersonalHomeBootstrapController(
         // partially completed operation cannot publish an error over stale readiness state.
         let nextFacts: PersonalHomeFacts | null = null;
         try {
-            nextFacts = await options.readFacts();
+            const readSequence = ++factsReadSequenceRef.current;
+            const observedFacts = await latestReadFactsRef.current();
+            if (readSequence === factsReadSequenceRef.current) nextFacts = observedFacts;
         } catch (cause: unknown) {
             if (!operationError) {
                 operationError = cause instanceof Error ? cause : new Error(String(cause));
@@ -204,7 +209,7 @@ export function usePersonalHomeBootstrapController(
         setError(operationError);
         setIsOperating(false);
         return operationError == null;
-    }, [derivedSnapshot.action, enabled, facts, options.readFacts]);
+    }, [derivedSnapshot.action, enabled, facts]);
 
     const retry = React.useCallback(() => {
         if (snapshot.action === 'choose-existing-runtime') return;
@@ -258,7 +263,7 @@ export function usePersonalHomeBootstrapController(
     };
 }
 
-/** The default host predicate is kept here so gate placement can be tested without importing Tauri APIs. */
+/** Compatibility export for the gate; host eligibility is owned by the canonical runtime predicate. */
 export function isPersonalHomeDesktopHost(): boolean {
-    return isDesktopHost();
+    return isPersonalHomeBootstrapRuntimeHost();
 }

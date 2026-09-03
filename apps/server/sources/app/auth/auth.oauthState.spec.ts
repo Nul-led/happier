@@ -130,6 +130,19 @@ describe("auth (oauth state tokens)", () => {
         })).rejects.toThrow(/step-up binding/i);
     });
 
+    it("rejects Account Directory audience fields on first-key step-up state", async () => {
+        await expect((auth as any).createOauthStateToken({
+            flow: "auth",
+            provider: "github",
+            sid: "sid_step_up_with_directory_audience",
+            userId: "account_1",
+            proofHash: "a".repeat(64),
+            purpose: "account_encryption_first_key",
+            requestDigest,
+            canonicalServerUrl: "https://home.example.com",
+        })).rejects.toThrow(/step-up binding/i);
+    });
+
     it("rejects creating oauth state tokens with an empty provider", async () => {
         await expect(
             (auth as any).createOauthStateToken({

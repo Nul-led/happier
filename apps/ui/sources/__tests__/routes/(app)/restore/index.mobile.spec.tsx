@@ -1,9 +1,8 @@
 import React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { renderScreen, standardCleanup } from '@/dev/testkit';
+import { flushHookEffects, renderScreen, standardCleanup } from '@/dev/testkit';
 import {
     installRestoreRouteCommonModuleMocks,
-    resetRestoreRouteTestState,
 } from './restoreRouteTestHelpers';
 
 type ReactActEnvironmentGlobal = typeof globalThis & {
@@ -11,7 +10,18 @@ type ReactActEnvironmentGlobal = typeof globalThis & {
 };
 (globalThis as ReactActEnvironmentGlobal).IS_REACT_ACT_ENVIRONMENT = true;
 
-const modalAlertSpy = vi.fn(async () => {});
+const modalAlertSpy = vi.fn(async (
+    _title: string,
+    _message: string,
+    buttons?: ReadonlyArray<Readonly<{ onPress?: () => void }>>,
+) => {
+    buttons?.[0]?.onPress?.();
+});
+const restoreMobileRouteState = vi.hoisted(() => ({
+    params: {} as Readonly<Record<string, string>>,
+    backSpy: vi.fn(),
+    replaceSpy: vi.fn(),
+}));
 
 installRestoreRouteCommonModuleMocks({
     reactNative: async () => {
@@ -44,6 +54,13 @@ installRestoreRouteCommonModuleMocks({
             },
         }).module;
     },
+    router: async () => {
+        const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
+        return createExpoRouterMock({
+            router: { back: restoreMobileRouteState.backSpy, push: vi.fn(), replace: restoreMobileRouteState.replaceSpy },
+            params: () => restoreMobileRouteState.params,
+        }).module;
+    },
 });
 
 vi.mock('@/utils/platform/platform', () => ({
@@ -66,15 +83,6 @@ vi.mock('expo-camera', () => ({
     ),
     useCameraPermissions: () => [{ granted: true }, vi.fn(async () => ({ granted: true }))],
 }));
-
-vi.mock('expo-router', async () => {
-    const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
-    const routerMock = createExpoRouterMock({
-        router: { back: vi.fn(), push: vi.fn(), replace: vi.fn() },
-        params: {},
-    });
-    return routerMock.module;
-});
 
 vi.mock('@/hooks/server/useFeatureDecision', () => ({
     useFeatureDecision: () => ({ state: 'enabled' }),
@@ -119,11 +127,13 @@ vi.mock('@/sync/domains/server/activeServerSwitch', () => ({
 }));
 
 vi.mock('@/auth/pairing/pairingUrl', () => ({
-    parsePairingDeepLink: () => null,
+    classifyLegacyPairingDeepLink: () => null,
 }));
 
 afterEach(() => {
-    resetRestoreRouteTestState();
+    restoreMobileRouteState.params = {};
+    restoreMobileRouteState.backSpy.mockClear();
+    restoreMobileRouteState.replaceSpy.mockReset();
     vi.restoreAllMocks();
     standardCleanup();
 });
@@ -137,5 +147,42 @@ describe('/restore (mobile)', () => {
         const screen = await renderScreen(<Screen />);
         const button = screen.findByTestId('restore-show-qr-instead');
         expect(button).not.toBeNull();
+    });
+
+    it('shows canonical update-required guidance from a secret-free native-intent marker', async () => {
+        restoreMobileRouteState.params = { legacyPairingUpdateRequired: '1' };
+        restoreMobileRouteState.replaceSpy.mockImplementation((path: unknown) => {
+            if (path === '/restore') restoreMobileRouteState.params = {};
+        });
+        vi.resetModules();
+        modalAlertSpy.mockClear();
+        const { default: Screen } = await import('@/app/(app)/restore/index');
+
+        const screen = await renderScreen(<Screen />);
+        await flushHookEffects({ cycles: 2, turns: 2 });
+
+        expect(modalAlertSpy).toHaveBeenCalledWith(
+            'connect.updateRequiredTitle',
+            'connect.legacyPairingUpdateRequiredBody',
+            [
+                expect.objectContaining({ text: 'connect.scanNewQr' }),
+                expect.objectContaining({ text: 'common.cancel', style: 'cancel' }),
+            ],
+        );
+        expect(screen.findByTestId('restore-show-qr-instead')).not.toBeNull();
+        expect(restoreMobileRouteState.replaceSpy).toHaveBeenCalledWith('/restore');
+        expect(restoreMobileRouteState.replaceSpy.mock.invocationCallOrder[0]).toBeLessThan(
+            modalAlertSpy.mock.invocationCallOrder[0]!,
+        );
+        expect(restoreMobileRouteState.backSpy).not.toHaveBeenCalled();
+        expect(JSON.stringify(modalAlertSpy.mock.calls)).not.toContain('pid123');
+        expect(JSON.stringify(modalAlertSpy.mock.calls)).not.toContain('sec_abc');
+        expect(JSON.stringify(modalAlertSpy.mock.calls)).not.toContain('stack.example.test');
+
+        await screen.unmount();
+        const remounted = await renderScreen(<Screen />);
+        await flushHookEffects({ cycles: 2, turns: 2 });
+        expect(modalAlertSpy).toHaveBeenCalledTimes(1);
+        expect(remounted.findByTestId('restore-show-qr-instead')).not.toBeNull();
     });
 });

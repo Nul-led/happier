@@ -10,6 +10,7 @@ import { afterTx, inTx } from "@/storage/inTx";
 import { markAccountChanged } from "@/app/changes/markAccountChanged";
 import { resolveGitHubAuthRestrictionsFromEnv } from "@/app/auth/providers/github/restrictions";
 import { fetchLinkedProvidersForAccount } from "@/app/auth/providers/linkedProviders";
+import type { PreparedIdentityConnection } from "@/app/auth/providers/identityProviders/types";
 
 function parseExplicitGithubStoreTokenSetting(env: NodeJS.ProcessEnv): boolean | null {
     const raw = (env.GITHUB_STORE_ACCESS_TOKEN ?? '').toString().trim().toLowerCase();
@@ -51,12 +52,12 @@ export class ProviderAlreadyLinkedError extends Error {
  * @param githubProfile - GitHub profile data from OAuth
  * @param accessToken - GitHub access token for API access
  */
-export async function githubConnect(
+export async function prepareGithubConnect(
     ctx: Context,
     githubProfile: GitHubProfile,
     accessToken: string,
     opts?: { preferredUsername?: string | null }
-): Promise<void> {
+): Promise<PreparedIdentityConnection> {
     const userId = ctx.uid;
     const githubUserId = githubProfile.id.toString();
     const githubLogin = githubProfile.login?.toString().trim();
@@ -69,7 +70,7 @@ export async function githubConnect(
         select: { providerUserId: true },
     });
     if (existingIdentity?.providerUserId?.toString?.() === githubUserId) {
-        return;
+        return { connectInTx: async () => {} };
     }
 
     // Step 2: Check if GitHub account is connected to another user
@@ -103,8 +104,10 @@ export async function githubConnect(
     // Extract name from GitHub profile
     const name = separateName(githubProfile.name);
 
-    // Step 4: Start transaction for atomic database operations
-    await inTx(async (tx) => {
+    // Step 4 is returned to the caller so a larger auth finalization can own
+    // one mutation boundary. Network/blob preparation above never runs while
+    // that database transaction is open.
+    return { connectInTx: async (tx) => {
         const currentUser = await tx.account.findUnique({
             where: { id: userId },
             select: { username: true },
@@ -112,6 +115,15 @@ export async function githubConnect(
         if (!currentUser) {
             throw new Error('account-not-found');
         }
+        const conflictingIdentity = await tx.accountIdentity.findFirst({
+            where: {
+                provider: "github",
+                providerUserId: githubUserId,
+                NOT: { accountId: userId },
+            },
+            select: { id: true },
+        });
+        if (conflictingIdentity) throw new ProviderAlreadyLinkedError();
         const existingUsername = currentUser.username?.toString().trim() || null;
 
         const shouldPersistToken = shouldStoreGithubAccessToken({ env: process.env });
@@ -180,5 +192,15 @@ export async function githubConnect(
                 recipientFilter: { type: 'user-scoped-only' }
             });
         });
-    });
+    }};
+}
+
+export async function githubConnect(
+    ctx: Context,
+    githubProfile: GitHubProfile,
+    accessToken: string,
+    opts?: { preferredUsername?: string | null },
+): Promise<void> {
+    const prepared = await prepareGithubConnect(ctx, githubProfile, accessToken, opts);
+    await inTx(prepared.connectInTx);
 }

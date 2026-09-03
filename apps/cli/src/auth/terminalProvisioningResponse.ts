@@ -9,10 +9,6 @@ export type TerminalPairingAuthentication = Readonly<{
   expiresAtMs: number;
 }>;
 
-export type TerminalPairingRequirement = 'v3';
-
-export const TERMINAL_PAIRING_REQUIRE_ENV = 'HAPPIER_TERMINAL_PAIRING_REQUIRE';
-
 export type OpenTerminalProvisioningResponseResult =
   | Readonly<{
       type: 'dataKey';
@@ -25,17 +21,6 @@ export type OpenTerminalProvisioningResponseResult =
     }>;
 
 const TERMINAL_PAIRING_AUTHENTICATION_TTL_MS = 60 * 60 * 1_000;
-
-export function readTerminalPairingRequirement(
-  env: Readonly<Record<string, string | undefined>> = process.env,
-): TerminalPairingRequirement | null {
-  const raw = String(env[TERMINAL_PAIRING_REQUIRE_ENV] ?? '').trim().toLowerCase();
-  if (!raw) return null;
-  if (raw === 'v3') return 'v3';
-  throw new Error(
-    `Invalid ${TERMINAL_PAIRING_REQUIRE_ENV} value "${raw}". Supported values: v3`,
-  );
-}
 
 export function createTerminalPairingAuthentication(params: Readonly<{
   nowMs: number;
@@ -57,15 +42,11 @@ export function openTerminalProvisioningResponse(params: Readonly<{
   terminalSecretKey: Uint8Array;
   terminalPublicKey: Uint8Array;
   pairing: TerminalPairingAuthentication | null;
-  requirement: TerminalPairingRequirement | null;
   nowMs: number;
   supportsTokenOnly?: boolean;
 }>): OpenTerminalProvisioningResponseResult | null {
-  const isV3 = isTerminalProvisioningV3Payload(params.payload);
-  if (params.requirement === 'v3' && !isV3) return null;
-
-  if (isV3) {
-    if (!params.pairing) return null;
+  if (!params.pairing) return null;
+  if (isTerminalProvisioningV3Payload(params.payload)) {
     const opened = openTerminalProvisioningV3Response({
       payload: params.payload,
       recipientSecretKeyOrSeed: params.terminalSecretKey,

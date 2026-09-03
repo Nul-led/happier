@@ -59,6 +59,7 @@ type OAuthStatePayload = Readonly<{
     requestDigest?: string | null;
     endpointUrl?: string | null;
     endpointServerIdentityId?: string | null;
+    canonicalServerUrl?: string | null;
 }>;
 
 type DecodedAuthToken = Readonly<{
@@ -577,7 +578,11 @@ class AuthModule {
      */
     async verifyLegacyHomeToken(token: string): Promise<VerifiedAuthToken | null> {
         const verified = await this.verifyTokenInternal(token, { allowLegacyHome: true });
-        if (!verified || !verified.legacy || verified.authTokenKind !== "account") {
+        if (
+            !verified
+            || !verified.legacy
+            || (verified.authTokenKind !== "account" && verified.authTokenKind !== "terminal")
+        ) {
             return null;
         }
         return verified;
@@ -937,6 +942,8 @@ class AuthModule {
         const endpointUrl = payload.endpointUrl?.toString().trim() || null;
         const endpointServerIdentityId =
             payload.endpointServerIdentityId?.toString().trim() || null;
+        const canonicalServerUrl =
+            payload.canonicalServerUrl?.toString().trim() || null;
         const requestDigestCandidate =
             AccountEncryptionMigrateExternalAuthBindingDigestV1Schema
                 .safeParse(
@@ -958,6 +965,7 @@ class AuthModule {
                 || publicKey !== null
                 || endpointUrl !== null
                 || endpointServerIdentityId !== null
+                || canonicalServerUrl !== null
             )
         ) {
             throw new Error("Invalid OAuth first-key step-up binding");
@@ -969,6 +977,7 @@ class AuthModule {
                 || userId !== null
                 || !endpointUrl
                 || !endpointServerIdentityId
+                || !canonicalServerUrl
                 || requestDigest !== null
                 || ((publicKey === null) === (proofHash === null))
             )
@@ -977,7 +986,7 @@ class AuthModule {
         }
         if (
             purpose === null
-            && (endpointUrl !== null || endpointServerIdentityId !== null)
+            && (endpointUrl !== null || endpointServerIdentityId !== null || canonicalServerUrl !== null)
         ) {
             // Endpoint binding fields only travel with the directory purpose.
             throw new Error("Invalid OAuth endpoint binding");
@@ -996,6 +1005,7 @@ class AuthModule {
                 requestDigest,
                 endpointUrl,
                 endpointServerIdentityId,
+                canonicalServerUrl,
             },
         });
     }
@@ -1011,6 +1021,7 @@ class AuthModule {
         requestDigest?: string;
         endpointUrl?: string;
         endpointServerIdentityId?: string;
+        canonicalServerUrl?: string;
     } | null> {
         if (!this.tokens) {
             throw new Error("Auth module not initialized");
@@ -1050,6 +1061,10 @@ class AuthModule {
                 typeof extras.endpointServerIdentityId === "string" && extras.endpointServerIdentityId.trim()
                     ? extras.endpointServerIdentityId.trim()
                     : null;
+            const canonicalServerUrl =
+                typeof extras.canonicalServerUrl === "string" && extras.canonicalServerUrl.trim()
+                    ? extras.canonicalServerUrl.trim()
+                    : null;
             const userId =
                 typeof extras.userId === "string" && extras.userId.trim()
                     ? extras.userId.trim()
@@ -1084,6 +1099,7 @@ class AuthModule {
                     || publicKey !== null
                     || endpointUrl !== null
                     || endpointServerIdentityId !== null
+                    || canonicalServerUrl !== null
                 )
             ) {
                 return null;
@@ -1095,6 +1111,7 @@ class AuthModule {
                     || userId !== null
                     || !endpointUrl
                     || !endpointServerIdentityId
+                    || !canonicalServerUrl
                     || requestDigest !== null
                     || ((publicKey === null) === (proofHash === null))
                 )
@@ -1103,7 +1120,7 @@ class AuthModule {
             }
             if (
                 purpose === null
-                && (endpointUrl !== null || endpointServerIdentityId !== null)
+                && (endpointUrl !== null || endpointServerIdentityId !== null || canonicalServerUrl !== null)
             ) {
                 // Endpoint binding fields only travel with the directory purpose.
                 return null;
@@ -1123,6 +1140,9 @@ class AuthModule {
                     : {}),
                 ...(purpose === "account_directory" && endpointServerIdentityId
                     ? { endpointServerIdentityId }
+                    : {}),
+                ...(purpose === "account_directory" && canonicalServerUrl
+                    ? { canonicalServerUrl }
                     : {}),
             };
         } catch (error) {

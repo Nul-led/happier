@@ -34,7 +34,7 @@ export function createWorkspaceMachineCarrierTunnelOpen(input: Readonly<{
   accountId: string;
   localMachineId: string;
   runtime: DaemonMachineIrohRuntime;
-  trustRoots: readonly DirectRouteGrantTrustRoot[];
+  resolveTrustRoots: () => readonly DirectRouteGrantTrustRoot[];
   readTargetMachine: (machineId: string) => Promise<TargetMachineCarrierSnapshot | null>;
   mintGrant: (request: ReturnType<typeof DirectRouteGrantRequestV2Schema.parse>) => Promise<unknown>;
   nowMs?: () => number;
@@ -49,7 +49,7 @@ export function createWorkspaceMachineCarrierTunnelOpen(input: Readonly<{
     const target = await input.readTargetMachine(request.targetMachineId);
     const daemonState = target?.daemonState as { peerMediation?: { iroh?: { endpoint?: unknown } } } | null;
     const parsedEndpoint = IrohEndpointDescriptorV1Schema.safeParse(daemonState?.peerMediation?.iroh?.endpoint);
-    if (!target || target.id !== request.targetMachineId || target.daemonStateVersion <= 0 || !parsedEndpoint.success) {
+    if (!target || target.id !== request.targetMachineId || !parsedEndpoint.success) {
       throw machineCarrierUnavailableError();
     }
 
@@ -99,9 +99,9 @@ export function createWorkspaceMachineCarrierTunnelOpen(input: Readonly<{
           ?.peerMediation?.iroh?.endpoint,
       );
       if (
-        !current || current.daemonStateVersion !== target.daemonStateVersion
+        !current || current.id !== request.targetMachineId
         || !currentEndpoint.success
-        || JSON.stringify(currentEndpoint.data) !== JSON.stringify(parsedEndpoint.data)
+        || currentEndpoint.data.endpointId !== grant.payload.iroh?.target.endpointId
       ) {
         throw machineCarrierUnavailableError();
       }
@@ -122,7 +122,7 @@ export function createWorkspaceMachineCarrierTunnelOpen(input: Readonly<{
         machineId: input.localMachineId,
         localEndpointId: input.runtime.endpoint.endpointId,
         role: 'initiator',
-        trustRoots: input.trustRoots,
+        trustRoots: input.resolveTrustRoots(),
         nowMs: (input.nowMs ?? Date.now)(),
       });
       const tunnel = await input.runtime.openTunnel({

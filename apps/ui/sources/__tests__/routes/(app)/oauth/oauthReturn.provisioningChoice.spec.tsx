@@ -12,6 +12,7 @@ import {
   loginWithCredentialsSpy,
   replaceSpy,
   resetOAuthHarness,
+  setActiveServerSnapshot,
   setPendingExternalAuthState,
 } from '@/auth/providers/github/test/oauthReturnHarness';
 
@@ -19,10 +20,19 @@ import {
 
 vi.mock('@shopify/react-native-skia', () => ({}));
 
+const setActiveServerAndSwitchSpy = vi.hoisted(() => vi.fn<
+  (input: unknown) => Promise<'switched'>
+>(async () => 'switched'));
+vi.mock('@/sync/domains/server/activeServerSwitch', () => ({
+  setActiveServerAndSwitch: (input: unknown) => setActiveServerAndSwitchSpy(input),
+}));
+
 afterEach(() => {
   vi.unstubAllGlobals();
   resetRuntimeFetch();
   resetOAuthHarness();
+  setActiveServerAndSwitchSpy.mockReset();
+  setActiveServerAndSwitchSpy.mockResolvedValue('switched');
 });
 
 describe('oauth/[provider] return (provisioning choice)', () => {
@@ -98,6 +108,80 @@ describe('oauth/[provider] return (provisioning choice)', () => {
       await screen.unmount();
     }
 
+  });
+
+  it('persists and opens the immutable OAuth Home even when focus changes before finalization resolves', async () => {
+    const profiles = await import('@/sync/domains/server/serverProfiles');
+    const profile = profiles.upsertServerProfile({
+      serverUrl: 'https://oauth-home-a.test',
+      source: 'manual',
+    });
+    profiles.setServerProfileIdentityForUrl(profile.serverUrl, 'srv_oauth_home_a');
+    setActiveServerSnapshot({
+      serverId: 'srv_oauth_home_a',
+      serverUrl: 'https://oauth-home-a.test',
+      generation: 1,
+    });
+    localSearchParamsMock.mockReturnValue({
+      provider: 'github',
+      flow: 'auth',
+      pending: 'p-exact-target',
+      storagePolicy: 'optional',
+      provisioning: 'required',
+    });
+    setPendingExternalAuthState({
+      provider: 'github',
+      proof: 'proof-exact-target',
+      serverUrl: 'https://oauth-home-a.test',
+      serverId: 'srv_oauth_home_a',
+    });
+
+    let resolveFinalize!: (response: Response) => void;
+    const finalizeResponse = new Promise<Response>((resolve) => { resolveFinalize = resolve; });
+    const fetchMock = vi.fn(async (url: unknown) => {
+      const rawUrl = String(url);
+      if (isReachabilityProbeUrl(rawUrl)) return new Response('', { status: 200 });
+      if (rawUrl.includes('/v1/auth/external/github/finalize-keyless')) return await finalizeResponse;
+      return new Response(JSON.stringify({ error: 'unexpected' }), { status: 500 });
+    });
+    setRuntimeFetch(fetchMock as unknown as typeof fetch);
+
+    const screen = await renderOAuthReturnScreen();
+    try {
+      const choice = screen.findByTestId('oauth-provisioning-choice-plain');
+      if (!choice) throw new Error('Expected plaintext provisioning choice');
+      const press = pressTestInstanceAsync(choice, 'oauth-provisioning-choice-plain');
+      await vi.waitFor(() => expect(fetchMock.mock.calls.some(([url]) =>
+        String(url).includes('/v1/auth/external/github/finalize-keyless'))).toBe(true));
+
+      setActiveServerSnapshot({
+        serverId: 'srv_oauth_home_b',
+        serverUrl: 'https://oauth-home-b.test',
+        generation: 2,
+      });
+      resolveFinalize(new Response(JSON.stringify({ success: true, token: 'token-home-a' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }));
+      await press;
+
+      expect(loginWithCredentialsSpy).toHaveBeenCalledWith(
+        { token: 'token-home-a' },
+        {
+          target: {
+            serverUrl: 'https://oauth-home-a.test',
+            serverId: 'srv_oauth_home_a',
+          },
+        },
+      );
+      expect(setActiveServerAndSwitchSpy).toHaveBeenCalledWith({
+        serverId: 'srv_oauth_home_a',
+        scope: 'device',
+        refreshAuth: expect.any(Function),
+      });
+    } finally {
+      await screen.unmount();
+    }
   });
 
   it('auto-finalizes plaintext (keyless) when provisioningModes only allows plain', async () => {

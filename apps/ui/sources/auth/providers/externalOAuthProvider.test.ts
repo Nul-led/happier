@@ -64,6 +64,7 @@ describe('createExternalOAuthProvider', () => {
                 credentialTarget: 'account_directory',
                 endpointUrl: 'https://directory.example.test',
                 endpointServerIdentityId: 'directory-1',
+                canonicalServerUrl: 'https://directory.example.test',
                 expiresAt: new Date(Date.now() + 60_000).toISOString(),
             },
         }) as Response);
@@ -76,6 +77,7 @@ describe('createExternalOAuthProvider', () => {
                 purpose: 'account_directory',
                 endpointUrl: 'https://directory.example.test',
                 endpointServerIdentityId: 'directory-1',
+                canonicalServerUrl: 'https://directory.example.test',
             },
         )).resolves.toEqual(expect.objectContaining({
             url: 'https://oauth.example.test/directory',
@@ -93,6 +95,9 @@ describe('createExternalOAuthProvider', () => {
         expect(requestAtEndpoint.mock.calls[0]?.[0]).toContain(
             'endpointServerIdentityId=directory-1',
         );
+        expect(requestAtEndpoint.mock.calls[0]?.[0]).toContain(
+            'canonicalServerUrl=https%3A%2F%2Fdirectory.example.test',
+        );
     });
 
     it('emits the canonical keyed query only for explicit Account Directory context', async () => {
@@ -105,6 +110,7 @@ describe('createExternalOAuthProvider', () => {
                 credentialTarget: 'account_directory',
                 endpointUrl: 'https://directory.example.test',
                 endpointServerIdentityId: 'directory-1',
+                canonicalServerUrl: 'https://directory.example.test',
                 expiresAt: new Date(Date.now() + 60_000).toISOString(),
             },
         }) as Response);
@@ -117,6 +123,7 @@ describe('createExternalOAuthProvider', () => {
                 purpose: 'account_directory',
                 endpointUrl: 'https://directory.example.test',
                 endpointServerIdentityId: 'directory-1',
+                canonicalServerUrl: 'https://directory.example.test',
             },
         );
 
@@ -134,6 +141,7 @@ describe('createExternalOAuthProvider', () => {
                 credentialTarget: 'account_directory',
                 endpointUrl: 'https://directory.example.test',
                 endpointServerIdentityId: 'directory-tampered',
+                canonicalServerUrl: 'https://directory.example.test',
                 expiresAt: new Date(Date.now() + 60_000).toISOString(),
             },
         }) as Response);
@@ -146,6 +154,38 @@ describe('createExternalOAuthProvider', () => {
                 purpose: 'account_directory',
                 endpointUrl: 'https://directory.example.test',
                 endpointServerIdentityId: 'directory-1',
+                canonicalServerUrl: 'https://directory.example.test',
+            },
+        )).rejects.toThrow('external-auth-unavailable');
+    });
+
+    it.each([
+        { name: 'missing', canonicalServerUrl: undefined },
+        { name: 'changed', canonicalServerUrl: 'https://other-directory.example.test' },
+    ])('rejects Account Directory params with a $name canonical server URL binding', async ({ canonicalServerUrl }) => {
+        const requestAtEndpoint = vi.fn<ExternalOAuthEndpointRequest>(async () => jsonResponse({
+            ok: true,
+            status: 200,
+            body: {
+                url: 'https://oauth.example.test/directory',
+                purpose: 'account_directory',
+                credentialTarget: 'account_directory',
+                endpointUrl: 'https://directory.example.test',
+                endpointServerIdentityId: 'directory-1',
+                ...(canonicalServerUrl ? { canonicalServerUrl } : {}),
+                expiresAt: new Date(Date.now() + 60_000).toISOString(),
+            },
+        }) as Response);
+        const provider = createProvider();
+
+        await expect(provider.getExternalAuthUrl(
+            { mode: 'keyless', proofHash: 'abc123' },
+            {
+                request: requestAtEndpoint,
+                purpose: 'account_directory',
+                endpointUrl: 'https://directory.example.test',
+                endpointServerIdentityId: 'directory-1',
+                canonicalServerUrl: 'https://directory.example.test',
             },
         )).rejects.toThrow('external-auth-unavailable');
     });

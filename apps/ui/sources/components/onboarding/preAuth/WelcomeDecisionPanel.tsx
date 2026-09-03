@@ -10,7 +10,9 @@ import Animated, {
 } from 'react-native-reanimated';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
+import type { AccountServiceEntryOptions } from '@/components/account/auth/useAccountServiceEntryOptions';
 import type { AuthEntryOptions } from '@/components/account/auth/useAuthEntryOptions';
+import { getAuthProvider } from '@/auth/providers/registry';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { Text } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
@@ -50,6 +52,14 @@ const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
 export type WelcomeDecisionPanelProps = Readonly<{
     authEntryOptions: AuthEntryOptions;
+    /**
+     * Advertised methods of the selected sign-in service. When it advertises them, those actions
+     * are the welcome sign-in path and the Home-targeted actions are not offered beside them.
+     */
+    accountServiceEntry?: AccountServiceEntryOptions;
+    onContinueWithAccountServiceProvider?: (providerId: string) => Promise<void> | void;
+    /** Key sign-in on the selected sign-in service. Never touches the focused Home. */
+    onContinueWithAccountServiceKey?: () => Promise<void> | void;
     onCreateAccount: () => Promise<void> | void;
     onCreateAccountViaProvider: (providerId: string) => Promise<void> | void;
     onLoginWithKeylessProvider: (providerId: string) => Promise<void> | void;
@@ -256,9 +266,68 @@ export const WelcomeDecisionPanel = React.memo(function WelcomeDecisionPanel(pro
     // seen flag.
     const isReturningUser = useLocalSetting('hasCompletedAuthOnce');
     const returningGreeting = useReturningGreeting();
+    // The selected sign-in service owns the welcome sign-in whenever it advertises methods this
+    // entry can complete. Its actions replace the Home-targeted ones rather than sitting beside
+    // them, so there is only ever one welcome authentication path.
+    const accountServiceEntry = props.accountServiceEntry;
+    const continueWithAccountServiceProvider = props.onContinueWithAccountServiceProvider;
+    const continueWithAccountServiceKey = props.onContinueWithAccountServiceKey;
+    const accountServiceProviderIds = accountServiceEntry?.status === 'ready' && continueWithAccountServiceProvider
+        ? accountServiceEntry.discovery?.oauthProviderIds ?? []
+        : [];
+    // "Use a key" is offered only when the service itself advertises key login (A7): the
+    // key-only service then owns the welcome sign-in path instead of falling back to the
+    // ordinary active-Home actions.
+    const accountServiceKeyLoginAvailable = accountServiceEntry?.status === 'ready'
+        && !!continueWithAccountServiceKey
+        && (accountServiceEntry.discovery?.keyLoginAvailable ?? false);
+    const accountServiceSignInAvailable = accountServiceProviderIds.length > 0 || accountServiceKeyLoginAvailable;
+    const renderHomeEntryActions = (scanPrimary = false) => (
+        <>
+            <DecisionButton
+                testID="welcome-scan-existing-home"
+                primary={scanPrimary}
+                title={t('connect.scanExistingHomeQrTitle')}
+                iconName="qr-code"
+                onPress={handleLogin}
+            />
+            <DecisionButton
+                testID="welcome-use-different-home"
+                title={t('welcome.useDifferentHome')}
+                onPress={props.onChangeRelay}
+            />
+        </>
+    );
 
     const renderActions = () => {
-        if (options.serverAvailability === 'loading') {
+        if (accountServiceSignInAvailable) {
+            return (
+                <View style={styles.actionStack}>
+                    {accountServiceProviderIds.map((providerId, index) => (
+                        <DecisionButton
+                            key={providerId}
+                            testID={`welcome-account-service-provider-${providerId}`}
+                            primary={index === 0}
+                            title={t('welcome.signUpWithProvider', {
+                                provider: getAuthProvider(providerId)?.displayName ?? providerId,
+                            })}
+                            onPress={() => continueWithAccountServiceProvider!(providerId)}
+                        />
+                    ))}
+                    {accountServiceKeyLoginAvailable ? (
+                        <DecisionButton
+                            testID="welcome-account-service-key"
+                            primary={accountServiceProviderIds.length === 0}
+                            title={t('welcome.continueWithKey')}
+                            onPress={() => continueWithAccountServiceKey!()}
+                        />
+                    ) : null}
+                    {renderHomeEntryActions()}
+                </View>
+            );
+        }
+
+        if (options.serverAvailability === 'loading' || accountServiceEntry?.status === 'loading') {
             return (
                 <View testID="welcome-auth-loading" style={styles.statusBlock}>
                     <ActivitySpinner color={theme.colors.text.primary} />
@@ -283,7 +352,7 @@ export const WelcomeDecisionPanel = React.memo(function WelcomeDecisionPanel(pro
                     <View style={styles.statusActions}>
                         <DecisionButton
                             testID="welcome-auth-blocked-change-relay"
-                            title={t('setupOnboarding.changeRelayAction')}
+                            title={t('welcome.useDifferentHome')}
                             onPress={props.onChangeRelay}
                         />
                         <DecisionButton
@@ -322,19 +391,9 @@ export const WelcomeDecisionPanel = React.memo(function WelcomeDecisionPanel(pro
                     onPress={props.onCreateAccount}
                 />
             );
-            const loginButton = (
-                <DecisionButton
-                    testID="welcome-secondary-login"
-                    primary={isReturningUser}
-                    title={isReturningUser ? t('welcome.welcomeReturningLoginButton') : t('welcome.welcomeSecondaryButton')}
-                    subtitle={t('welcome.welcomeSecondarySubtitle')}
-                    iconName="qr-code"
-                    onPress={handleLogin}
-                />
-            );
             return (
                 <View style={styles.actionStack}>
-                    {isReturningUser ? loginButton : startFreshButton}
+                    {isReturningUser ? renderHomeEntryActions(true) : startFreshButton}
                     {showSecondaryKeylessProviderLogin ? (
                         <DecisionButton
                             testID="welcome-login-provider"
@@ -349,7 +408,7 @@ export const WelcomeDecisionPanel = React.memo(function WelcomeDecisionPanel(pro
                             onPress={() => props.onCreateAccountViaProvider(providerId)}
                         />
                     ) : null}
-                    {isReturningUser ? startFreshButton : loginButton}
+                    {isReturningUser ? startFreshButton : renderHomeEntryActions()}
                 </View>
             );
         }
@@ -370,13 +429,7 @@ export const WelcomeDecisionPanel = React.memo(function WelcomeDecisionPanel(pro
                             onPress={() => props.onLoginWithKeylessProvider(keylessProviderId!)}
                         />
                     ) : null}
-                    <DecisionButton
-                        testID="welcome-secondary-login"
-                        title={t('welcome.welcomeSecondaryButton')}
-                        subtitle={t('welcome.welcomeSecondarySubtitle')}
-                        iconName="qr-code"
-                        onPress={handleLogin}
-                    />
+                    {renderHomeEntryActions()}
                 </View>
             );
         }
@@ -390,13 +443,7 @@ export const WelcomeDecisionPanel = React.memo(function WelcomeDecisionPanel(pro
                         title={primaryAction.title}
                         onPress={() => props.onLoginWithKeylessProvider(keylessProviderId)}
                     />
-                    <DecisionButton
-                        testID="welcome-secondary-login"
-                        title={t('welcome.welcomeSecondaryButton')}
-                        subtitle={t('welcome.welcomeSecondarySubtitle')}
-                        iconName="qr-code"
-                        onPress={handleLogin}
-                    />
+                    {renderHomeEntryActions()}
                 </View>
             );
         }
@@ -417,39 +464,17 @@ export const WelcomeDecisionPanel = React.memo(function WelcomeDecisionPanel(pro
                             onPress={() => props.onLoginWithKeylessProvider(keylessProviderId!)}
                         />
                     ) : null}
-                    <DecisionButton
-                        testID="welcome-secondary-login"
-                        title={t('welcome.welcomeSecondaryButton')}
-                        subtitle={t('welcome.welcomeSecondarySubtitle')}
-                        iconName="qr-code"
-                        onPress={handleLogin}
-                    />
+                    {renderHomeEntryActions()}
                 </View>
             );
         }
 
         return (
             <View style={styles.actionStack}>
-                <DecisionButton
-                    testID="welcome-secondary-login"
-                    primary={primaryAction === null}
-                    title={t('welcome.welcomeSecondaryButton')}
-                    subtitle={t('welcome.welcomeSecondarySubtitle')}
-                    iconName="qr-code"
-                    onPress={handleLogin}
-                />
+                {renderHomeEntryActions(primaryAction === null)}
             </View>
         );
     };
-
-    // First-time visitors see the "Happier is the control room… your account is
-    // a private key" explainer body. Returning users don't need it — they
-    // already know what they're signing into — so we hide it for them.
-    const shouldRenderPrivateKeyCopy = options.serverAvailability !== 'loading'
-        && !showBlocked
-        && options.showAuthActions
-        && options.showAnonymousSignup
-        && !isReturningUser;
 
     return (
         <View testID="welcome-decision-panel" style={styles.root}>
@@ -467,13 +492,8 @@ export const WelcomeDecisionPanel = React.memo(function WelcomeDecisionPanel(pro
                 <Text accessibilityRole="header" style={styles.subtitleTitle}>
                     {isReturningUser ? returningGreeting.subtitle : t('welcome.welcomeQuestionSubtitle')}
                 </Text>
-                {shouldRenderPrivateKeyCopy ? (
-                    <Text testID="welcome-private-key-copy" style={styles.body}>
-                        {t('welcome.welcomeQuestionBody')}
-                    </Text>
-                ) : null}
             </View>
-            {options.showAuthActions && primaryAction === null ? (
+            {!accountServiceSignInAvailable && options.showAuthActions && primaryAction === null ? (
                 <Text testID="welcome-signup-disabled" style={[styles.statusText, styles.signupDisabledNotice]}>
                     {t('errors.signupDisabled')}
                 </Text>
@@ -513,17 +533,6 @@ const stylesheet = StyleSheet.create((theme) => ({
         lineHeight: 44,
         letterSpacing: -1.54,
         color: theme.colors.text.secondary,
-    },
-    body: {
-        ...Typography.default(),
-        fontSize: 16,
-        lineHeight: 24,
-        color: theme.colors.text.secondary,
-        // The previous 8px relied on `headingBlock.gap: 10` for the question→body
-        // breathing room. With the gap removed, bump this to 22 so the rhythm
-        // matches the brand pane (tagline → sub-tagline gap is 22).
-        marginTop: 22,
-        maxWidth: 440,
     },
     actionStack: {
         gap: 12,

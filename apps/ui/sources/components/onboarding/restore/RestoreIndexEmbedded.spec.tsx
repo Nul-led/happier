@@ -54,12 +54,13 @@ describe('RestoreIndexEmbedded', () => {
         try {
             await act(async () => {
                 tree = renderer.create(
-                    <RestoreIndexEmbedded onBack={onBack} onOpenSecretKeyLogin={onOpenSecretKeyLogin} />,
+                    <RestoreIndexEmbedded entryIntent="enter_home" onBack={onBack} onOpenSecretKeyLogin={onOpenSecretKeyLogin} />,
                 );
             });
 
             expect(tree.root.findByType('scan')).toBeTruthy();
             expect(lastScanProps?.embedded).toBe(true);
+            expect(lastScanProps?.entryIntent).toBe('enter_home');
             expect(lastScanProps?.onShowQrInstead).toBeInstanceOf(Function);
 
             await act(async () => {
@@ -68,6 +69,7 @@ describe('RestoreIndexEmbedded', () => {
 
             expect(tree.root.findByType('qr')).toBeTruthy();
             expect(lastQrProps?.embedded).toBe(true);
+            expect(lastQrProps?.entryIntent).toBe('enter_home');
             expect(lastQrProps?.onBack).toBe(onBack);
             expect(lastQrProps?.onOpenSecretKeyLogin).toBe(onOpenSecretKeyLogin);
         } finally {
@@ -87,7 +89,7 @@ describe('RestoreIndexEmbedded', () => {
         try {
             await act(async () => {
                 tree = renderer.create(
-                    <RestoreIndexEmbedded onBack={vi.fn()} initialPairingLink={initialPairingLink} />,
+                    <RestoreIndexEmbedded entryIntent="enter_home" onBack={vi.fn()} initialPairingLink={initialPairingLink} />,
                 );
             });
 

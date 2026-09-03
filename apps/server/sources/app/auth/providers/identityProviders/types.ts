@@ -1,6 +1,11 @@
 import type { Context } from "@/context";
 import type { AuthPolicy } from "@/app/auth/authPolicy";
 import type { LoginEligibilityResult } from "@/app/auth/loginEligibilityResult";
+import type { Tx } from "@/storage/inTx";
+
+export type PreparedIdentityConnection = Readonly<{
+    connectInTx: (tx: Tx) => Promise<void>;
+}>;
 
 export type IdentityProvider = Readonly<{
     id: string;
@@ -11,6 +16,13 @@ export type IdentityProvider = Readonly<{
         refreshToken?: string;
         preferredUsername?: string | null;
     }) => Promise<void>;
+    prepareConnect: (params: {
+        ctx: Context;
+        profile: unknown;
+        accessToken: string;
+        refreshToken?: string;
+        preferredUsername?: string | null;
+    }) => Promise<PreparedIdentityConnection>;
     disconnect: (params: { ctx: Context }) => Promise<void>;
     enforceLoginEligibility?: (params: {
         accountId: string;

@@ -5,6 +5,19 @@ import { resolveHomeEnrollmentTransport } from './homeEnrollmentTransport';
 const releaseSpy = vi.hoisted(() => vi.fn(async () => {}));
 const acquireIrohHomeRuntimeOriginSpy = vi.hoisted(() => vi.fn<(input: unknown) => Promise<unknown>>());
 const createServerFetchAtEndpointSpy = vi.hoisted(() => vi.fn<(input: unknown) => ReturnType<typeof vi.fn>>(() => vi.fn()));
+const resolveBrowserEligibilitySpy = vi.hoisted(() => vi.fn());
+const acquireBrowserIrohHomeCarrierSpy = vi.hoisted(() => vi.fn());
+const browserReleaseSpy = vi.hoisted(() => vi.fn(async () => {}));
+const resolveBrowserHostDecisionSpy = vi.hoisted(() => vi.fn());
+
+vi.mock('@/sync/runtime/browserIroh/hostEligibility', () => ({
+    resolveBrowserIrohHostDecision: () => resolveBrowserHostDecisionSpy(),
+}));
+
+vi.mock('@/sync/runtime/browserIroh/homeCarrier/browserHomeCarrier', () => ({
+    resolveBrowserIrohHomeCarrierEligibility: (...args: unknown[]) => resolveBrowserEligibilitySpy(...args),
+    acquireBrowserIrohHomeCarrier: (input: unknown) => acquireBrowserIrohHomeCarrierSpy(input),
+}));
 
 vi.mock('@/sync/runtime/nativeIrohTunnels/runtime', () => ({
     acquireIrohHomeRuntimeOrigin: (input: unknown) => acquireIrohHomeRuntimeOriginSpy(input),
@@ -30,6 +43,73 @@ describe('resolveHomeEnrollmentTransport', () => {
         });
         releaseSpy.mockClear();
         createServerFetchAtEndpointSpy.mockClear();
+        resolveBrowserEligibilitySpy.mockReset();
+        resolveBrowserEligibilitySpy.mockReturnValue({ eligible: false, reason: 'host_ineligible' });
+        resolveBrowserHostDecisionSpy.mockReset();
+        resolveBrowserHostDecisionSpy.mockReturnValue({ eligible: false, reason: 'native_host' });
+        acquireBrowserIrohHomeCarrierSpy.mockReset();
+        browserReleaseSpy.mockClear();
+    });
+
+    it('acquires the shared browser carrier for credentialless enrollment without inventing a runtime origin', async () => {
+        const homeCarrier = {
+            leaseId: 'browser-lease-home-b',
+            homeServerIdentityId: 'srv_home_b',
+            endpointId: 'iroh-home-b',
+            appliedRelayUrls: ['https://relay.example.test/'],
+            readObservedPath: () => 'relay' as const,
+            request: vi.fn(),
+            createWebSocket: vi.fn(),
+            release: browserReleaseSpy,
+        };
+        resolveBrowserEligibilitySpy.mockReturnValueOnce({
+            eligible: true,
+            endpointId: 'iroh-home-b',
+            relayUrls: ['https://relay.example.test/'],
+        });
+        resolveBrowserHostDecisionSpy.mockReturnValueOnce({ eligible: true });
+        acquireBrowserIrohHomeCarrierSpy.mockResolvedValueOnce(homeCarrier);
+        const descriptor = {
+            v: 1 as const,
+            homeServerIdentityId: 'srv_home_b',
+            canonicalServerUrl: 'http://localhost:3010',
+            revision: 7,
+            endpoints: [{
+                kind: 'iroh' as const,
+                endpointId: 'iroh-home-b',
+                relayUrls: ['https://relay.example.test/'],
+            }],
+        };
+
+        const result = await resolveHomeEnrollmentTransport(descriptor);
+
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+        const expectedRequest = {
+            purpose: 'enrollment',
+            homeServerIdentityId: 'srv_home_b',
+            endpoint: descriptor.endpoints[0],
+            canonicalServerUrl: 'http://localhost:3010',
+        };
+        expect(resolveBrowserEligibilitySpy).toHaveBeenCalledWith(expectedRequest, { eligible: true });
+        expect(acquireBrowserIrohHomeCarrierSpy).toHaveBeenCalledWith(expectedRequest);
+        expect(acquireIrohHomeRuntimeOriginSpy).not.toHaveBeenCalled();
+        expect(result.transport).toMatchObject({
+            endpointUrl: 'http://localhost:3010',
+            runtimeOrigin: null,
+            carrier: 'iroh',
+            authenticatedCredentialDestination: { kind: 'iroh', endpointId: 'iroh-home-b' },
+            homeCarrier,
+        });
+        result.transport.createRequest({ credentials: null });
+        expect(createServerFetchAtEndpointSpy).toHaveBeenCalledWith({
+            endpointUrl: 'http://localhost:3010',
+            homeCarrier,
+            serverId: 'srv_home_b',
+            credentials: null,
+        });
+        await Promise.all([result.transport.close(), result.transport.close()]);
+        expect(browserReleaseSpy).toHaveBeenCalledTimes(1);
     });
 
     it('selects one public HTTPS application endpoint while retaining canonical identity', async () => {
@@ -53,6 +133,10 @@ describe('resolveHomeEnrollmentTransport', () => {
             endpointUrl: 'https://home-b.test',
             runtimeOrigin: 'https://home-b.test',
             carrier: 'https',
+            authenticatedCredentialDestination: {
+                kind: 'https',
+                applicationUrl: 'https://home-b.test',
+            },
         });
         await result.transport.close();
         expect(releaseSpy).not.toHaveBeenCalled();
@@ -75,6 +159,10 @@ describe('resolveHomeEnrollmentTransport', () => {
             descriptorRevision: 7,
             canonicalServerUrl: 'http://localhost:3010',
             verification: { kind: 'enrollment' },
+        });
+        expect(result.transport.authenticatedCredentialDestination).toEqual({
+            kind: 'iroh',
+            endpointId: 'iroh-home-b',
         });
         result.transport.createRequest({ serverId: 'srv_home_b', credentials: null });
         expect(createServerFetchAtEndpointSpy).toHaveBeenCalledWith({
@@ -153,6 +241,30 @@ describe('resolveHomeEnrollmentTransport', () => {
         expect(createServerFetchAtEndpointSpy).not.toHaveBeenCalled();
     });
 
+    it('fails closed when the acquired Iroh lease does not authenticate the selected descriptor endpoint', async () => {
+        releaseSpy.mockRejectedValueOnce(new Error('release failed'));
+        acquireIrohHomeRuntimeOriginSpy.mockResolvedValueOnce({
+            leaseId: 'lease-wrong-endpoint',
+            runtimeOrigin: 'http://127.0.0.1:43123',
+            endpointId: 'iroh-home-c',
+            release: releaseSpy,
+        });
+        const result = await resolveHomeEnrollmentTransport({
+            v: 1,
+            homeServerIdentityId: 'srv_home_b',
+            canonicalServerUrl: 'http://localhost:3010',
+            revision: 1,
+            endpoints: [{ kind: 'iroh', endpointId: 'iroh-home-b' }],
+        });
+        expect(result).toEqual({
+            ok: false,
+            homeServerIdentityId: 'srv_home_b',
+            reason: 'iroh_transport_failed_closed',
+        });
+        expect(releaseSpy).toHaveBeenCalledOnce();
+        expect(createServerFetchAtEndpointSpy).not.toHaveBeenCalled();
+    });
+
     it('fails typed without requesting canonical loopback when pure Iroh acquisition fails', async () => {
         acquireIrohHomeRuntimeOriginSpy.mockRejectedValueOnce(
             Object.assign(new Error('native unavailable'), { name: 'IrohError', code: 'unavailable' }),
@@ -170,6 +282,27 @@ describe('resolveHomeEnrollmentTransport', () => {
             reason: 'iroh_transport_unavailable',
         });
         expect(createServerFetchAtEndpointSpy).not.toHaveBeenCalled();
+    });
+
+    it('reports missing browser relay reachability as retryable unavailability without invoking native Iroh', async () => {
+        resolveBrowserHostDecisionSpy.mockReturnValueOnce({ eligible: true });
+        resolveBrowserEligibilitySpy.mockReturnValueOnce({ eligible: false, reason: 'relays_missing' });
+
+        const result = await resolveHomeEnrollmentTransport({
+            v: 1,
+            homeServerIdentityId: 'srv_home_b',
+            canonicalServerUrl: 'http://localhost:3010',
+            revision: 1,
+            endpoints: [{ kind: 'iroh', endpointId: 'iroh-home-b' }],
+        });
+
+        expect(result).toEqual({
+            ok: false,
+            homeServerIdentityId: 'srv_home_b',
+            reason: 'iroh_transport_unavailable',
+        });
+        expect(acquireIrohHomeRuntimeOriginSpy).not.toHaveBeenCalled();
+        expect(acquireBrowserIrohHomeCarrierSpy).not.toHaveBeenCalled();
     });
 
     it('uses an already resolved runtime origin without double-acquiring Iroh', async () => {

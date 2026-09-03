@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises";
+import { Agent as HttpsAgent, request as httpsRequest } from "node:https";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 
@@ -13,8 +15,13 @@ import {
     loadIrohNodeNative,
     loadIrohNodeNativeAddon,
 } from "@happier-dev/iroh-native/node";
+import { createIrohTestControllerFromNativeAddon } from "@happier-dev/iroh-native/test-controller";
 import { resolvePersonalHomeRuntimeLayout } from "@happier-dev/cli-common/firstPartyRuntime";
 import { FeaturesResponseSchema, type HomeConnectionDescriptorV1 } from "@happier-dev/protocol";
+import {
+    createEphemeralTlsServerFixture,
+    type EphemeralTlsServerFixture,
+} from "@happier-dev/tests/testkit/tls/ephemeralTlsServerFixture";
 
 import { registerApiRoutes } from "@/app/api/api";
 import { startSocket } from "@/app/api/socket";
@@ -24,6 +31,7 @@ import { enableMonitoring } from "@/app/api/utils/enableMonitoring";
 import { resolveApiRateLimitPluginOptions } from "@/app/api/utils/apiRateLimitPolicy";
 import { auth } from "@/app/auth/auth";
 import { initializeServerIdentityCache } from "@/app/serverIdentity/serverIdentity";
+import { createHomeConnectionDescriptorContinuityStoreForServer } from "@/app/features/homeConnectionDescriptorContinuity";
 import { db } from "@/storage/db";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
 
@@ -70,51 +78,153 @@ async function loadTestDaemonIrohRuntimeFactory(): Promise<CreateTestDaemonIrohR
     return module.createDaemonMachineIrohRuntime;
 }
 
-const CANONICAL_HOME_URL = "https://home-iroh-composed.invalid";
-
-type NativeIrohTestController = Readonly<{
-    forceDirectOnly(): Promise<string>;
-    forceRelayOnly(): Promise<string>;
-    restoreAutomatic(): Promise<string>;
-    getObservedPath(): "direct" | "relay" | "unknown";
-    getTestRelayUrl(): string | null;
+type TestDaemonHomeTransport = Readonly<{
+    carrier: "standard" | "iroh";
+    observedPath: "direct" | "relay" | "unknown";
+    release(): Promise<void>;
+    verifyAuthenticated(token: string): Promise<Readonly<{ status: string; errorMessage?: string }>>;
 }>;
 
-function requireSuccessfulTestControllerOperation(raw: string): void {
-    const envelope = JSON.parse(raw) as { ok?: unknown; error?: { message?: unknown } };
-    if (envelope.ok !== true) {
-        throw new Error(
-            typeof envelope.error?.message === "string"
-                ? envelope.error.message
-                : "Iroh native test controller operation failed",
-        );
+type TestServerProfile = Readonly<{
+    id: string;
+    name: string;
+    serverUrl: string;
+    webappUrl: string;
+    createdAt: number;
+    updatedAt: number;
+    lastUsedAt: number;
+    homeConnectionDescriptor?: HomeConnectionDescriptorV1;
+}>;
+
+async function loadTestDaemonHomeTransportOwner(): Promise<(input: Readonly<{
+    runtime: TestDaemonIrohRuntime;
+    profile: TestServerProfile;
+    token?: string;
+}>) => Promise<TestDaemonHomeTransport>> {
+    // Same cross-process composition fixture rule as the daemon Iroh runtime
+    // factory above: resolve the CLI-owned standard/Iroh Home transport
+    // decision owner at runtime so the server package's source-only typecheck
+    // does not absorb the CLI application's private source tree into rootDir.
+    const modulePath = "../../../../cli/src/daemon/peer/iroh/daemonHomeIrohTransport";
+    const module = await vi.importActual<Readonly<{
+        prepareDaemonHomeIrohTransport: (input: Readonly<{
+            runtime: TestDaemonIrohRuntime;
+            profile: TestServerProfile;
+            token?: string;
+        }>) => Promise<TestDaemonHomeTransport>;
+    }>>(modulePath);
+    return module.prepareDaemonHomeIrohTransport;
+}
+
+const CANONICAL_HOME_URL = "https://home-iroh-composed.invalid";
+
+/**
+ * Real TLS ingress material for the standard-carrier leg. It reuses the
+ * repository's ephemeral TLS fixture instead of inventing certificate material,
+ * and its trust stays scoped to the one agent and the one Socket.IO client
+ * below: no global TLS relaxation and no process-wide CA injection.
+ */
+type TestTlsIngress = Readonly<{
+    fixture: EphemeralTlsServerFixture;
+    /** `cert` is one concatenated leaf+issuer chain, not a per-key cert list. */
+    serverOptions: Readonly<{ key: Buffer; cert: Buffer }>;
+    caCertificatePem: string;
+    agent: HttpsAgent;
+}>;
+
+async function createTestTlsIngress(): Promise<TestTlsIngress> {
+    const fixture = await createEphemeralTlsServerFixture();
+    try {
+        const [privateKey, leafCertificate, caCertificate] = await Promise.all([
+            readFile(fixture.privateKeyPath),
+            readFile(fixture.leafCertificatePath),
+            readFile(fixture.caCertificatePath),
+        ]);
+        const caCertificatePem = caCertificate.toString("utf8");
+        return {
+            fixture,
+            serverOptions: {
+                key: privateKey,
+                cert: Buffer.concat([leafCertificate, Buffer.from("\n"), caCertificate]),
+            },
+            caCertificatePem,
+            // Trust is exactly this fixture CA, and certificate verification
+            // stays on: a wrong or missing chain must fail the leg.
+            agent: new HttpsAgent({ ca: caCertificatePem, rejectUnauthorized: true, keepAlive: false }),
+        };
+    } catch (error) {
+        await fixture.cleanup().catch(() => undefined);
+        throw error;
     }
 }
 
-async function setTestTopology(
-    controller: NativeIrohTestController,
-    topology: "direct" | "relay",
-): Promise<void> {
-    const raw = topology === "direct"
-        ? await controller.forceDirectOnly()
-        : await controller.forceRelayOnly();
-    requireSuccessfulTestControllerOperation(raw);
+type TlsHttpResponse = Readonly<{ status: number; body: unknown }>;
+
+/**
+ * One authenticated (or unauthenticated) application request that really
+ * completes a TLS handshake against the ingress certificate above.
+ */
+async function requestOverTls(input: Readonly<{
+    ingress: TestTlsIngress;
+    url: string;
+    method?: string;
+    headers?: Readonly<Record<string, string>>;
+    body?: string;
+}>): Promise<TlsHttpResponse> {
+    return await new Promise<TlsHttpResponse>((resolve, reject) => {
+        const request = httpsRequest(
+            input.url,
+            {
+                agent: input.ingress.agent,
+                method: input.method ?? "GET",
+                headers: { ...(input.headers ?? {}) },
+            },
+            (response) => {
+                const chunks: Buffer[] = [];
+                response.on("data", (chunk: Buffer) => chunks.push(chunk));
+                response.on("error", reject);
+                response.on("end", () => {
+                    const raw = Buffer.concat(chunks).toString("utf8");
+                    try {
+                        resolve({
+                            status: response.statusCode ?? 0,
+                            body: raw.length > 0 ? JSON.parse(raw) : undefined,
+                        });
+                    } catch (error) {
+                        reject(error);
+                    }
+                });
+            },
+        );
+        request.on("error", reject);
+        if (input.body !== undefined) request.write(input.body);
+        request.end();
+    });
 }
 
-async function restoreTestTopology(controller: NativeIrohTestController): Promise<void> {
-    requireSuccessfulTestControllerOperation(await controller.restoreAutomatic());
-}
-
-function createProductionProtocolApp(): AppFastify {
-    const app = Fastify({ logger: false });
-    app.register(import("@fastify/rate-limit"), resolveApiRateLimitPluginOptions(process.env));
-    app.setValidatorCompiler(validatorCompiler);
-    app.setSerializerCompiler(serializerCompiler);
-    const typed = app.withTypeProvider<ZodTypeProvider>() as unknown as AppFastify;
+function createProductionProtocolApp(options?: Readonly<{
+    https?: Readonly<{ key: Buffer; cert: Buffer }>;
+}>): AppFastify {
+    // `https` swaps the underlying Node server type; the composition below is
+    // identical for both, so the ordinary instance type stays the local shape.
+    const typed = (options?.https
+        ? Fastify({ logger: false, https: { key: options.https.key, cert: options.https.cert } })
+            .withTypeProvider<ZodTypeProvider>()
+        : Fastify({ logger: false }).withTypeProvider<ZodTypeProvider>()) as unknown as AppFastify;
+    typed.register(import("@fastify/rate-limit"), resolveApiRateLimitPluginOptions(process.env));
+    typed.setValidatorCompiler(validatorCompiler);
+    typed.setSerializerCompiler(serializerCompiler);
     enableMonitoring(typed);
     enableAuthentication(typed);
     startSocket(typed);
-    registerApiRoutes(typed);
+    registerApiRoutes(typed, {
+        // Production startServer selects this durable owner once and passes it
+        // into route composition. This lower-level real fixture must preserve
+        // the same contract instead of relying on the retired request-time
+        // Personal Home path discovery.
+        homeConnectionDescriptorContinuityStore:
+            createHomeConnectionDescriptorContinuityStoreForServer(process.env),
+    });
     return typed;
 }
 
@@ -122,7 +232,7 @@ function waitForSocketConnection(socket: ReturnType<typeof ioClient>): Promise<v
     return new Promise<void>((resolve, reject) => {
         const timeout = setTimeout(() => {
             cleanup();
-            reject(new Error("Timed out waiting for Socket.IO connection through Iroh"));
+            reject(new Error("Timed out waiting for Socket.IO connection"));
         }, 10_000);
         const cleanup = () => {
             clearTimeout(timeout);
@@ -140,6 +250,17 @@ function waitForSocketConnection(socket: ReturnType<typeof ioClient>): Promise<v
         socket.on("connect", onConnect);
         socket.on("connect_error", onConnectError);
     });
+}
+
+async function waitForSocketApplicationReady(socket: ReturnType<typeof ioClient>): Promise<void> {
+    // Socket.IO's client `connect` event proves the namespace handshake, but
+    // it can race the server's application-listener installation. Events sent
+    // in that narrow window are not replayed. Retry the production ping owner
+    // until it acknowledges so this real-carrier fixture tests application
+    // bytes instead of depending on listener-registration scheduling.
+    await vi.waitFor(async () => {
+        await expect(socket.timeout(1_000).emitWithAck("ping")).resolves.toEqual({});
+    }, { timeout: 15_000, interval: 100 });
 }
 
 async function expectOriginDown(origin: string): Promise<void> {
@@ -188,13 +309,9 @@ describe("composed Home Iroh application bytes", () => {
             throw new Error("The real Iroh application-byte fixture requires an explicit test-feature addon path");
         }
         const rawAddon = loadIrohNodeNativeAddon(explicitAddonPath);
-        const testController = rawAddon as unknown as NativeIrohTestController;
-        for (const operation of ["forceDirectOnly", "forceRelayOnly", "restoreAutomatic", "getObservedPath", "getTestRelayUrl"] as const) {
-            if (typeof testController[operation] !== "function") {
-                throw new Error(`Iroh addon is not a test-relay-fixture build: missing ${operation}`);
-            }
-        }
-        await setTestTopology(testController, topology);
+        const testController = createIrohTestControllerFromNativeAddon(rawAddon);
+        if (topology === "direct") await testController.forceDirectOnly();
+        else await testController.forceRelayOnly();
         expect(testController.getObservedPath()).toBe("unknown");
         if (topology === "relay") {
             const relayUrl = testController.getTestRelayUrl();
@@ -379,7 +496,7 @@ describe("composed Home Iroh application bytes", () => {
             const connected = waitForSocketConnection(socket);
             socket.connect();
             await connected;
-            await expect(socket.timeout(15_000).emitWithAck("ping")).resolves.toEqual({});
+            await waitForSocketApplicationReady(socket);
             expect(socket.io.engine.transport.name).toBe("websocket");
 
             expect(testController.getObservedPath()).toBe(expectedPath);
@@ -400,7 +517,7 @@ describe("composed Home Iroh application bytes", () => {
                 },
             });
             expect(acceptor.status.streamsAccepted).toBeGreaterThanOrEqual(2);
-            await expect(restoreTestTopology(testController)).rejects.toThrow(
+            await expect(testController.restoreAutomatic()).rejects.toThrow(
                 /cannot change while native endpoints are active/,
             );
         } finally {
@@ -419,8 +536,238 @@ describe("composed Home Iroh application bytes", () => {
                 try {
                     await app.close();
                 } finally {
-                    await restoreTestTopology(testController);
+                    await testController.restoreAutomatic();
                     expect(testController.getObservedPath()).toBe("unknown");
+                }
+            }
+        }
+    });
+
+    it("moves the same authenticated HTTP and WebSocket bytes over the ordinary standard transport when the descriptor has no Iroh endpoint", { timeout: 120_000 }, async () => {
+        // A standard-only Home is a native-unavailability carrier fact at the
+        // canonical server owner, never a relay-policy fact: relay-disabled
+        // keeps meaning direct-Iroh-only, not Iroh-off, and no all-Iroh-off
+        // policy exists.
+        expect(process.env[HOME_IROH_RELAY_POLICY_ENV_KEY]).toBe("disabled");
+        expect(process.env.HAPPIER_IROH_REQUIRE_NODE_ADDON).toBe("1");
+        const explicitAddonPath = process.env.HAPPIER_TEST_IROH_NODE_ADDON_PATH?.trim();
+        if (!explicitAddonPath) {
+            throw new Error("The real Iroh application-byte fixture requires an explicit test-feature addon path");
+        }
+        const rawAddon = loadIrohNodeNativeAddon(explicitAddonPath);
+        const native = createIrohNodeNativeModule(rawAddon);
+        // Keep the CLI composition singletons imported below inside the harness.
+        process.env.HAPPIER_HOME_DIR = join(harness.baseDir, "cli-home");
+
+        // A real TLS ingress, not a declared one: the standard carrier only
+        // proves anything if the advertised `https` endpoint is the origin that
+        // actually terminates TLS and serves the application bytes.
+        const ingress = await createTestTlsIngress();
+
+        // startServer initializes this cache before registering/serving routes.
+        // This lower-level composed fixture must preserve that production order.
+        await initializeServerIdentityCache(process.env);
+        const app = createProductionProtocolApp({ https: ingress.serverOptions });
+        let daemonIrohRuntime: TestDaemonIrohRuntime | null = null;
+        let socket: ReturnType<typeof ioClient> | null = null;
+
+        try {
+            await app.listen({ port: 0, host: "127.0.0.1" });
+            const address = app.server.address() as AddressInfo | null;
+            if (!address?.port) throw new Error("Fastify did not bind a loopback port");
+            // The declared standard HTTPS ingress fact is the bound TLS origin.
+            // The descriptor publication owner composes an `https` endpoint only
+            // from this explicit operator input, so the published URL and the
+            // served origin are now the same fact instead of two.
+            const httpsOrigin = `https://127.0.0.1:${address.port}`;
+            process.env.HAPPIER_PUBLIC_SERVER_URL = httpsOrigin;
+
+            // Server composition: the Home Iroh carrier is unavailable on this
+            // target. Production reaches this exact state because
+            // loadHomeIrohNativeLifecycle() resolves to null there; `native: null`
+            // is this owner's documented test-only injection of that boundary.
+            // The Home must stay runnable with the honest unavailable status and
+            // start no native endpoint or Home acceptor.
+            await expect(ensureHomeIrohEndpoint({
+                env: process.env,
+                apiPort: address.port,
+                native: null,
+            })).resolves.toEqual({
+                status: "unavailable",
+                snapshot: null,
+                failureReason: null,
+            });
+            await expect(getHomeIrohEndpointState()).resolves.toEqual({
+                status: "unavailable",
+                snapshot: null,
+                failureReason: null,
+            });
+
+            const featuresResponse = await requestOverTls({ ingress, url: `${httpsOrigin}/v1/features` });
+            expect(featuresResponse.status).toBe(200);
+            const featuresPayload = FeaturesResponseSchema.parse(featuresResponse.body);
+            const publishedDescriptor = featuresPayload.homeConnectionDescriptor;
+            if (!publishedDescriptor) throw new Error("Standard Home feature response omitted its public descriptor");
+            expect(publishedDescriptor).toMatchObject({
+                homeServerIdentityId: expect.any(String),
+                canonicalServerUrl: CANONICAL_HOME_URL,
+                revision: expect.any(Number),
+            });
+            expect(publishedDescriptor.endpoints.map((endpoint) => endpoint.kind)).toEqual(["https"]);
+            expect(publishedDescriptor.endpoints[0]).toEqual({ kind: "https", url: httpsOrigin });
+
+            const missingAuthResponse = await requestOverTls({ ingress, url: `${httpsOrigin}/v1/auth/ping` });
+            expect(missingAuthResponse.status).toBe(401);
+            const invalidAuthResponse = await requestOverTls({
+                ingress,
+                url: `${httpsOrigin}/v1/auth/ping`,
+                headers: { authorization: "Bearer invalid-home-token" },
+            });
+            expect(invalidAuthResponse.status).toBe(401);
+
+            const account = await db.account.create({
+                data: { publicKey: "composed-home-standard-account" },
+                select: { id: true },
+            });
+            const token = await auth.createToken(account.id, undefined, {
+                kind: "account",
+                authority: "present_user",
+            });
+            const authorization = `Bearer ${token}`;
+
+            const authenticatedFeaturesResponse = await requestOverTls({
+                ingress,
+                url: `${httpsOrigin}/v1/features/authenticated`,
+                headers: { authorization },
+            });
+            expect(authenticatedFeaturesResponse.status).toBe(200);
+            const authenticatedFeatures = FeaturesResponseSchema.parse(authenticatedFeaturesResponse.body);
+            const authenticatedDescriptor = authenticatedFeatures.homeConnectionDescriptor;
+            if (!authenticatedDescriptor) throw new Error("Standard Home feature response omitted its authenticated descriptor");
+            expect(authenticatedDescriptor).toEqual({
+                v: 1,
+                homeServerIdentityId: publishedDescriptor.homeServerIdentityId,
+                canonicalServerUrl: CANONICAL_HOME_URL,
+                revision: expect.any(Number),
+                endpoints: [{ kind: "https", url: httpsOrigin }],
+            });
+            // The advertised standard endpoint is the exact URL this leg serves.
+            const advertisedHttpsEndpoint = authenticatedDescriptor.endpoints
+                .find((endpoint) => endpoint.kind === "https");
+            if (!advertisedHttpsEndpoint || advertisedHttpsEndpoint.kind !== "https") {
+                throw new Error("Standard Home descriptor advertised no HTTPS endpoint");
+            }
+            expect(advertisedHttpsEndpoint.url).toBe(httpsOrigin);
+
+            const pingResponse = await requestOverTls({
+                ingress,
+                url: `${advertisedHttpsEndpoint.url}/v1/auth/ping`,
+                headers: { authorization },
+            });
+            expect(pingResponse.status).toBe(200);
+            expect(pingResponse.body).toEqual({ ok: true });
+
+            const profileResponse = await requestOverTls({
+                ingress,
+                url: `${advertisedHttpsEndpoint.url}/v1/account/profile`,
+                headers: { authorization },
+            });
+            expect(profileResponse.status).toBe(200);
+            expect(profileResponse.body).toMatchObject({ id: account.id });
+
+            const sessionsResponse = await requestOverTls({
+                ingress,
+                url: `${advertisedHttpsEndpoint.url}/v1/sessions`,
+                headers: { authorization },
+            });
+            expect(sessionsResponse.status).toBe(200);
+            expect(sessionsResponse.body).toMatchObject({ sessions: [] });
+
+            // Ordinary Socket.IO: the standard carrier does not force the
+            // websocket-only tunnel transport, so the connection may start on
+            // polling and upgrade exactly as the unchanged product behavior allows.
+            socket = ioClient(advertisedHttpsEndpoint.url, {
+                path: "/v1/updates",
+                reconnection: false,
+                autoConnect: false,
+                auth: { token },
+                // Same narrowly scoped trust as the HTTP agent above: this
+                // client trusts the fixture CA only, with verification on, so
+                // both the polling and websocket transports really do TLS.
+                ca: ingress.caCertificatePem,
+                rejectUnauthorized: true,
+            });
+            const connected = waitForSocketConnection(socket);
+            socket.connect();
+            await connected;
+            const engine = socket.io.engine;
+            await vi.waitFor(() => {
+                if (engine.transport.name !== "websocket") {
+                    throw new Error("Standard Socket.IO transport did not upgrade to websocket");
+                }
+            }, { timeout: 10_000, interval: 100 });
+            // `ping` is also an Engine.IO control packet name. Wait until the
+            // ordinary polling connection has completed its real websocket
+            // upgrade before exercising Happier's application-level `ping`
+            // acknowledgement, matching the transport this assertion is meant
+            // to prove rather than racing the lower protocol's probe cycle.
+            await waitForSocketApplicationReady(socket);
+
+            // Client composition: the real daemon Iroh runtime is fully capable
+            // on this target (a real native endpoint is created), so the
+            // standard-carrier decision below cannot be a native-unavailability
+            // accident.
+            const createDaemonMachineIrohRuntime = await loadTestDaemonIrohRuntimeFactory();
+            daemonIrohRuntime = await createDaemonMachineIrohRuntime({
+                happyHomeDir: join(harness.baseDir, "remote-daemon-standard"),
+                relayConfig: { relayPolicy: "disabled", relayUrls: [] },
+                native,
+            });
+            if (!daemonIrohRuntime.available || !daemonIrohRuntime.ensureHomeTunnel) {
+                throw new Error("Required daemon Iroh runtime is unavailable");
+            }
+            const ensureHomeTunnelProbe = vi.fn(daemonIrohRuntime.ensureHomeTunnel);
+            const prepareDaemonHomeIrohTransport = await loadTestDaemonHomeTransportOwner();
+            const transport = await prepareDaemonHomeIrohTransport({
+                runtime: { ...daemonIrohRuntime, ensureHomeTunnel: ensureHomeTunnelProbe },
+                profile: {
+                    id: "composed-standard-home",
+                    name: "Composed Standard Home",
+                    // The production caller is handed the exact URL the Home
+                    // advertises, not a nearby plaintext loopback stand-in.
+                    serverUrl: advertisedHttpsEndpoint.url,
+                    webappUrl: CANONICAL_HOME_URL,
+                    createdAt: Date.now(),
+                    updatedAt: Date.now(),
+                    lastUsedAt: Date.now(),
+                    homeConnectionDescriptor: authenticatedDescriptor,
+                },
+                token,
+            });
+
+            // The production transport decision keeps the ordinary carrier, and
+            // the fully capable native Iroh carrier acquisition is never invoked:
+            // the runtime's ensureHomeTunnel is the single caller of the native
+            // carrier acquisition, so an uncalled probe proves the native carrier
+            // was never started for this Home.
+            expect(transport.carrier).toBe("standard");
+            expect(transport.observedPath).toBe("unknown");
+            expect(ensureHomeTunnelProbe).not.toHaveBeenCalled();
+            // The standard carrier's own readiness contract is a no-op: the
+            // reachability of the advertised HTTPS origin is proven by the real
+            // authenticated TLS bytes above, not by this result.
+            await expect(transport.verifyAuthenticated(token)).resolves.toMatchObject({ status: "ready" });
+            await expect(transport.release()).resolves.toBeUndefined();
+        } finally {
+            try {
+                socket?.close();
+                await daemonIrohRuntime?.shutdown();
+            } finally {
+                try {
+                    await app.close();
+                } finally {
+                    ingress.agent.destroy();
+                    await ingress.fixture.cleanup();
                 }
             }
         }

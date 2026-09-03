@@ -1,4 +1,8 @@
-import { parseSshTarget, SystemTaskJsonValueSchema } from '@happier-dev/protocol';
+import {
+    parseSshTarget,
+    SystemTaskJsonValueSchema,
+    type HomeConnectionDescriptorV1,
+} from '@happier-dev/protocol';
 import {
     buildRemoteBootstrapCommand,
     createRemoteSshBootstrapMachineTaskKind,
@@ -13,11 +17,15 @@ import {
 import type { NativeSshModule } from '@happier-dev/ssh-native';
 
 import { approveTerminalPairing } from '@/auth/terminal/approveTerminalPairing';
+import { resolveHomeEnrollmentTransport } from '@/auth/enrollment/homeEnrollmentTransport';
 import {
     TokenStorage,
 } from '@/auth/storage/tokenStorage';
 import { decodeBase64, encodeBase64 } from '@/encryption/base64';
-import { listServerProfiles } from '@/sync/domains/server/serverProfiles';
+import {
+    buildHomeConnectionDescriptorForProfile,
+    listServerProfiles,
+} from '@/sync/domains/server/serverProfiles';
 import { createServerUrlComparableKey } from '@/sync/domains/server/url/serverUrlCanonical';
 import { isLoopbackHostname } from '@/sync/domains/server/url/serverUrlClassification';
 import {
@@ -184,6 +192,7 @@ function resolveNativeApprovalTarget(parsed: RemoteBootstrapMachineParams): Read
     endpointUrl: string;
     credentialUrl: string;
     serverId: string;
+    descriptor: HomeConnectionDescriptorV1;
 }> {
     const endpointUrl = parsed.relay.relayUrl.trim();
     const credentialUrl = parsed.relay.publicRelayUrl?.trim() || endpointUrl;
@@ -204,7 +213,17 @@ function resolveNativeApprovalTarget(parsed: RemoteBootstrapMachineParams): Read
             'Native SSH bootstrap could not resolve one exact Home credential target.',
         );
     }
-    return { endpointUrl, credentialUrl, serverId: identities[0]! };
+    const matchedProfile = matches.find((profile) => profile.serverIdentityId?.trim() === identities[0]);
+    const descriptor = matchedProfile
+        ? buildHomeConnectionDescriptorForProfile(matchedProfile)
+        : null;
+    if (!descriptor) {
+        throw new SystemTaskExecutionError(
+            'native_ssh_local_approval_target_unavailable',
+            'Native SSH bootstrap could not resolve a verified Home connection descriptor.',
+        );
+    }
+    return { endpointUrl, credentialUrl, serverId: identities[0]!, descriptor };
 }
 
 async function approveNativeLocalAuthRequest(params: Readonly<{
@@ -227,13 +246,28 @@ async function approveNativeLocalAuthRequest(params: Readonly<{
 
     const publicKey = decodeTerminalPublicKey(params.publicKey);
     const pairing = readNativePairingContext(params.pairing);
-    const result = await approveTerminalPairing({
-        target: { endpointUrl: target.endpointUrl, serverId: target.serverId },
-        requesterPublicKey: publicKey,
-        pairingContext: pairing,
-        targetCredentials: credentials,
-        supportsTokenOnly: params.supportsTokenOnly === true,
+    const transportResolution = await resolveHomeEnrollmentTransport(target.descriptor, {
+        runtimeOrigin: target.endpointUrl,
+        runtimeCarrier: 'https',
     });
+    if (!transportResolution.ok) {
+        throw new SystemTaskExecutionError(
+            'native_ssh_local_approval_target_unavailable',
+            `Native SSH bootstrap could not acquire its Home transport: ${transportResolution.reason}`,
+        );
+    }
+    let result: Awaited<ReturnType<typeof approveTerminalPairing>>;
+    try {
+        result = await approveTerminalPairing({
+            target: transportResolution.transport,
+            requesterPublicKey: publicKey,
+            pairingContext: pairing,
+            targetCredentials: credentials,
+            supportsTokenOnly: params.supportsTokenOnly === true,
+        });
+    } finally {
+        await transportResolution.transport.close();
+    }
     if (result === 'not_found') {
         throw new SystemTaskExecutionError(
             'native_ssh_local_approval_not_found',

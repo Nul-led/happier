@@ -15,22 +15,6 @@ export type MachineCarrierRole = 'initiator' | 'acceptor';
 export const MACHINE_CARRIER_UNAVAILABLE_CODE = 'machine_carrier_unavailable' as const;
 export const MACHINE_CARRIER_ROUTE_MISMATCH_CODE = 'machine_carrier_route_mismatch' as const;
 
-/**
- * Admission is the narrow seam consumed by existing transfer/workspace owners.
- * It proves that a request has a usable authenticated machine/1 carrier; byte
- * movement and cancellation remain owned by the existing stream implementations.
- */
-export type MachineCarrierAdmissionInput = Readonly<{
-    operationId: string;
-    sourceMachineId: string;
-    targetMachineId: string;
-    flow: MachineCarrierOperationKind;
-    sourceWorkspaceRefId?: string;
-    targetWorkspaceRefId?: string;
-    signal?: AbortSignal;
-}>;
-export type MachineCarrierAdmission = (input: MachineCarrierAdmissionInput) => Promise<void>;
-
 export class MachineCarrierError extends Error {
     constructor(readonly code: string, message: string) { super(message); this.name = 'MachineCarrierError'; }
 }
@@ -50,27 +34,6 @@ export function machineCarrierRouteMismatchError(): MachineCarrierError {
 }
 
 /**
- * A real duplex machine/1 session. Admission without this stream is
- * deliberately not a usable carrier. `remoteEndpointId` is the authenticated
- * transport identity evidence the connection was admitted against; `alpn`,
- * `operationKind`, and `operationId` echo the validated handshake bindings.
- */
-export type MachineCarrierConnection = Readonly<{
-    alpn: typeof MACHINE_CARRIER_ALPN_V1;
-    operationKind: MachineCarrierOperationKind;
-    operationId: string;
-    remoteEndpointId: string;
-    observedPath: 'direct' | 'relay' | 'unknown';
-    stream: PeerTcpTunnelStreamConnection;
-    close: () => Promise<void>;
-}>;
-
-/** Narrow daemon-consumer seam used by transfer and workspace owners. */
-export type MachineCarrierStreamOpen = (
-    input: MachineCarrierAdmissionInput,
-) => Promise<MachineCarrierConnection>;
-
-/**
  * Transport boundary input. `remoteEndpointId` is the dial/peer hint derived
  * from the validated handshake — it is never treated as transport identity.
  */
@@ -79,7 +42,7 @@ export type MachineCarrierTransportOpenInput = Readonly<{
     remoteEndpointId: string;
     flow: MachineCarrierOperationKind;
     operationId: string;
-    /** Exact canonical handshake bytes parsed and verified by this adapter. */
+    /** Exact canonical handshake bytes parsed and verified by `verifyMachineCarrierHandshakeV1`. */
     handshake: ReturnType<typeof IrohMachineHandshakeV1Schema.parse>;
 }>;
 
@@ -93,16 +56,6 @@ export type MachineCarrierTransportConnection = Readonly<{
     observedPath: 'direct' | 'relay' | 'unknown';
     stream: PeerTcpTunnelStreamConnection;
     close: () => Promise<void>;
-}>;
-
-type MachineCarrierInput = Readonly<{
-    accountId: string;
-    machineId: string;
-    localEndpointId: string;
-    role: MachineCarrierRole;
-    trustRoots: readonly DirectRouteGrantTrustRoot[];
-    nowMs: () => number;
-    connect: (input: MachineCarrierTransportOpenInput) => Promise<MachineCarrierTransportConnection>;
 }>;
 
 export type MachineCarrierHandshakeVerificationInput = Readonly<{
@@ -192,70 +145,4 @@ export function verifyMachineCarrierHandshakeV1(
         );
     }
     return { handshake, remoteEndpointId };
-}
-
-async function closeRejectedConnection(connection: MachineCarrierTransportConnection): Promise<void> {
-    try {
-        await connection.close();
-    } catch {
-        // The transport already failed admission; surface the admission error.
-    }
-}
-
-/**
- * Opens an authenticated machine/1 stream through a mandatory, fail-closed
- * handshake (canonical `IrohMachineHandshakeV1`). The handshake binds the
- * account, typed initiator, target Machine/current endpoint,
- * operation flow and id, and the signed `iroh_peer` grant with its verified
- * ephemeral nonce/proof (expiry is the signed grant's `exp`). The remote
- * endpoint identity is taken from the authenticated Iroh transport, compared
- * against the handshake/grant, and never trusted from caller text. Transfer
- * framing, encryption, receipts, and limits remain owned by the callers.
- */
-export function createMachineCarrierAdapter(input: MachineCarrierInput) {
-    return {
-        async open(request: { handshake: unknown }): Promise<MachineCarrierConnection> {
-            const { handshake, remoteEndpointId } = verifyMachineCarrierHandshakeV1({
-                handshake: request?.handshake,
-                accountId: input.accountId,
-                machineId: input.machineId,
-                localEndpointId: input.localEndpointId,
-                role: input.role,
-                trustRoots: input.trustRoots,
-                nowMs: input.nowMs(),
-            });
-            const connection = await input.connect({
-                alpn: MACHINE_CARRIER_ALPN_V1,
-                remoteEndpointId,
-                flow: handshake.flow,
-                operationId: handshake.operationId,
-                handshake,
-            });
-            // Transport evidence decides: the authenticated remote Iroh endpoint
-            // identity must match the handshake/grant before any byte is handed out.
-            if (typeof connection.remoteEndpointId !== 'string' || connection.remoteEndpointId.length === 0) {
-                await closeRejectedConnection(connection);
-                throw new MachineCarrierError(
-                    'transport_identity_invalid',
-                    'Machine transport did not return an authenticated remote endpoint identity.',
-                );
-            }
-            if (connection.remoteEndpointId !== remoteEndpointId) {
-                await closeRejectedConnection(connection);
-                throw new MachineCarrierError(
-                    'transport_identity_mismatch',
-                    'Authenticated transport endpoint identity does not match the machine handshake.',
-                );
-            }
-            return {
-                alpn: MACHINE_CARRIER_ALPN_V1,
-                operationKind: handshake.flow,
-                operationId: handshake.operationId,
-                remoteEndpointId: connection.remoteEndpointId,
-                observedPath: connection.observedPath,
-                stream: connection.stream,
-                close: connection.close,
-            };
-        },
-    };
 }

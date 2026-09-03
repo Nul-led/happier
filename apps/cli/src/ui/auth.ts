@@ -30,9 +30,7 @@ import { decodeJwtPayload } from '@/cloud/decodeJwtPayload';
 import {
     createTerminalPairingAuthentication,
     openTerminalProvisioningResponse,
-    readTerminalPairingRequirement,
     type TerminalPairingAuthentication,
-    type TerminalPairingRequirement,
 } from '@/auth/terminalProvisioningResponse';
 import { fetchServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
 import { setActiveServerProfileHomeConnectionDescriptor } from '@/server/serverProfiles';
@@ -42,7 +40,6 @@ type InteractiveTerminalAuthContext = Readonly<{
     keypair: tweetnacl.BoxKeyPair;
     claimSecret: string;
     pairing: TerminalPairingAuthentication;
-    pairingRequirement: TerminalPairingRequirement | null;
     serverIdentityId: string;
 }>;
 
@@ -227,7 +224,6 @@ export async function doAuth(): Promise<StoredCredentials | null> {
     const claimSecret = new Uint8Array(randomBytes(32));
     const claimSecretB64Url = Buffer.from(claimSecret).toString('base64url');
     const claimSecretHash = createHash('sha256').update(Buffer.from(claimSecret)).digest('base64url');
-    const pairingRequirement = readTerminalPairingRequirement();
     const pairing = createTerminalPairingAuthentication({
         nowMs: Date.now(),
         randomBytes: (length) => new Uint8Array(randomBytes(length)),
@@ -257,16 +253,23 @@ export async function doAuth(): Promise<StoredCredentials | null> {
     }
 
     // Handle authentication based on selected method
-    const authContext = { keypair, claimSecret: claimSecretB64Url, pairing, pairingRequirement, serverIdentityId };
+    const authContext = { keypair, claimSecret: claimSecretB64Url, pairing, serverIdentityId };
     const credentials = authMethod === 'mobile'
         ? await doMobileAuth(authContext)
         : authMethod === 'web'
             ? await doWebAuth(authContext)
             : await doBothAuth(authContext);
-    const descriptor = featuresSnapshot.status === 'ready'
-        ? featuresSnapshot.features.homeConnectionDescriptor
+    const authenticatedFeaturesSnapshot = credentials
+        ? await fetchServerFeaturesSnapshot({
+            serverUrl: authRuntimeOrigin,
+            token: credentials.token,
+        })
+        : null;
+    const descriptor = authenticatedFeaturesSnapshot?.status === 'ready'
+        && authenticatedFeaturesSnapshot.features.capabilities.serverIdentity.serverIdentityId === serverIdentityId
+        ? authenticatedFeaturesSnapshot.features.homeConnectionDescriptor
         : undefined;
-    if (credentials && descriptor) {
+    if (descriptor) {
         // The descriptor is persisted only after the same Home identity has
         // authorized this credential. A non-persisted env-only server remains
         // usable; its future profile adoption will write the descriptor there.
@@ -316,9 +319,7 @@ async function doBothAuth(params: InteractiveTerminalAuthContext): Promise<Store
     console.log('');
     printServerUrlReachabilityHint(configuration.serverUrl);
     console.log('Recommended: use the mobile app first. It makes linking additional devices easier.');
-    if (params.pairingRequirement === 'v3') {
-        console.log('Authenticated pairing v3 is required. For protection from an untrusted relay, approve with the native mobile app; web pairing trusts the web app origin.');
-    }
+    console.log('Authenticated pairing v3 is required. For protection from an untrusted relay, approve with the native mobile app; web pairing trusts the web app origin.');
     console.log('');
     console.log('Before you continue:');
     if (terminalMobileEmbedsServerUrl) {
@@ -457,9 +458,7 @@ async function doMobileAuth(params: InteractiveTerminalAuthContext): Promise<Sto
     console.log(`Web app URL: ${configuration.webappUrl}\n`);
     printServerUrlReachabilityHint(configuration.serverUrl);
     console.log('Recommended: use the mobile app first. It makes linking additional devices easier.');
-    if (params.pairingRequirement === 'v3') {
-        console.log('Authenticated pairing v3 is required. For protection from an untrusted relay, approve with the native mobile app; web pairing trusts the web app origin.');
-    }
+    console.log('Authenticated pairing v3 is required. For protection from an untrusted relay, approve with the native mobile app; web pairing trusts the web app origin.');
     console.log('If you already have a Happier account on another device, sign in with that same account.\n');
 
     const publicKeyB64Url = encodeBase64Url(params.keypair.publicKey);
@@ -523,9 +522,7 @@ async function doWebAuth(params: InteractiveTerminalAuthContext): Promise<Stored
     }
     console.log(`Web app URL: ${configuration.webappUrl}\n`);
     printServerUrlReachabilityHint(configuration.serverUrl);
-    if (params.pairingRequirement === 'v3') {
-        console.log('Authenticated pairing v3 is required, but web pairing still trusts the web app origin. Use the native mobile app for protection from an untrusted relay.\n');
-    }
+    console.log('Authenticated pairing v3 is required, but web pairing still trusts the web app origin. Use the native mobile app for protection from an untrusted relay.\n');
     console.log('If you already have a Happier account on another device, sign in with that same account.\n');
 
     const publicKeyB64Url = encodeBase64Url(params.keypair.publicKey);
@@ -633,16 +630,11 @@ async function waitForAuthentication(params: InteractiveTerminalAuthContext): Pr
                         terminalSecretKey: params.keypair.secretKey,
                         terminalPublicKey: params.keypair.publicKey,
                         pairing: params.pairing,
-                        requirement: params.pairingRequirement,
                         nowMs: Date.now(),
                         supportsTokenOnly: true,
                     });
                     if (!opened) {
-                        console.log(
-                            params.pairingRequirement === 'v3'
-                                ? '\n\nAuthenticated terminal pairing v3 is required. Update the Happier mobile app and scan a new QR code.'
-                                : '\n\nFailed to decrypt response. Please try again.',
-                        );
+                        console.log('\n\nAuthenticated terminal pairing v3 is required. Update the Happier mobile app and scan a new QR code.');
                         return null;
                     }
 

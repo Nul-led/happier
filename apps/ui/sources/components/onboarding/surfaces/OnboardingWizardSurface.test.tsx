@@ -1161,7 +1161,7 @@ describe('OnboardingWizardSurface', () => {
         expect(screen.findByTestId('welcome-decision-panel')).toBeTruthy();
 
         await act(async () => {
-            await screen.findByTestId('welcome-secondary-login')!.props.onPress?.();
+            await screen.findByTestId('welcome-scan-existing-home')!.props.onPress?.();
         });
         await flushHookEffects({ cycles: 1, turns: 1 });
 
@@ -1844,7 +1844,7 @@ describe('OnboardingWizardSurface', () => {
 
         expect(screen.findByTestId('welcome-auth-loading')).toBeTruthy();
         expect(screen.findAllByTestId('welcome-primary-start')).toHaveLength(0);
-        expect(screen.findAllByTestId('welcome-secondary-login')).toHaveLength(0);
+        expect(screen.findAllByTestId('welcome-scan-existing-home')).toHaveLength(0);
     });
 
     it('shows welcome decision actions when the relay is already known', async () => {
@@ -2018,7 +2018,7 @@ describe('OnboardingWizardSurface', () => {
         expect(screen.findByTestId('welcome-decision-panel')).toBeTruthy();
 
         await act(async () => {
-            await screen.findByTestId('welcome-secondary-login')?.props.onPress?.();
+            await screen.findByTestId('welcome-scan-existing-home')?.props.onPress?.();
         });
         await flushHookEffects({ cycles: 1, turns: 1 });
 
@@ -4516,7 +4516,7 @@ describe('OnboardingWizardSurface', () => {
         });
     });
 
-    it('routes a scanned pairing link without an embedded server url to relay URL entry', async () => {
+    it('refuses a released V1 QR in place without putting its secret into wizard navigation state', async () => {
         webQrScannerSupportedMock.value = true;
         webMobileLikeQrScannerHostMock.value = true;
 
@@ -4533,7 +4533,7 @@ describe('OnboardingWizardSurface', () => {
             }),
         );
 
-        const loginButton = screen.findByTestId('welcome-secondary-login')!;
+        const loginButton = screen.findByTestId('welcome-scan-existing-home')!;
         await act(async () => {
             await loginButton.props.onPress?.();
         });
@@ -4546,7 +4546,17 @@ describe('OnboardingWizardSurface', () => {
         });
         await flushHookEffects({ cycles: 1, turns: 1 });
 
-        expect(screen.findByTestId('onboarding-wizard-relay-url-input')).not.toBeNull();
+        expect(modalMock.spies.alertAsync).toHaveBeenCalledWith(
+            'connect.updateRequiredTitle',
+            'connect.legacyPairingUpdateRequiredBody',
+            [
+                expect.objectContaining({ text: 'connect.scanNewQr' }),
+                expect.objectContaining({ text: 'common.cancel', style: 'cancel' }),
+            ],
+        );
+        expect(screen.findAllByType('QrCodeScannerView')).toHaveLength(0);
+        expect(screen.findByTestId('welcome-decision-panel')).toBeTruthy();
+        expect(screen.findByTestId('onboarding-wizard-relay-url-input')).toBeNull();
     });
 
     it('forwards a scanned V2 Home invite to the restore owner without switching the active server', async () => {
@@ -4556,6 +4566,7 @@ describe('OnboardingWizardSurface', () => {
             invite: {
                 v: 2,
                 intent: 'home_device',
+                direction: 'trusted_home_displays',
                 pairId: 'pair-onboarding-v2',
                 home: {
                     v: 1,
@@ -4584,7 +4595,7 @@ describe('OnboardingWizardSurface', () => {
         );
 
         await act(async () => {
-            await screen.findByTestId('welcome-secondary-login')?.props.onPress?.();
+            await screen.findByTestId('welcome-scan-existing-home')?.props.onPress?.();
         });
         await flushHookEffects({ cycles: 1, turns: 1 });
         const scanner = screen.findByType('QrCodeScannerView')!;
@@ -4619,7 +4630,7 @@ describe('OnboardingWizardSurface', () => {
             }),
         );
 
-        const loginButton = screen.findByTestId('welcome-secondary-login')!;
+        const loginButton = screen.findByTestId('welcome-scan-existing-home')!;
         await act(async () => {
             await loginButton.props.onPress?.();
         });
@@ -4662,7 +4673,7 @@ describe('OnboardingWizardSurface', () => {
             }),
         );
 
-        const loginButton = screen.findByTestId('welcome-secondary-login')!;
+        const loginButton = screen.findByTestId('welcome-scan-existing-home')!;
         await act(async () => {
             await loginButton.props.onPress?.();
         });

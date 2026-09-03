@@ -24,6 +24,8 @@ import {
  */
 export type ServerFeaturesSnapshotStore = Readonly<{
   getSnapshot(): CliServerFeaturesSnapshot | undefined;
+  /** True only while the current parsed Home capability is actively indexing. */
+  isRefreshTransitionActive(): boolean;
   refresh(): Promise<CliServerFeaturesSnapshot | undefined>;
 }>;
 
@@ -59,6 +61,8 @@ export function createServerFeaturesSnapshotStore(params: {
 
   return {
     getSnapshot: () => cached,
+    isRefreshTransitionActive: () => cached?.status === 'ready'
+      && cached.features.capabilities.homeSearch?.reason === 'indexing',
     refresh,
   };
 }
@@ -70,6 +74,7 @@ export function createServerFeaturesSnapshotStore(params: {
  */
 export function createServerUrlServerFeaturesSnapshotStore(params: {
   serverUrl: string | (() => string);
+  token?: string;
   timeoutMs?: number;
   onReady?: (features: Extract<CliServerFeaturesSnapshot, { status: 'ready' }>['features']) => Promise<void> | void;
   onError?: (error: unknown) => void;
@@ -78,6 +83,7 @@ export function createServerUrlServerFeaturesSnapshotStore(params: {
     fetchSnapshot: () =>
       fetchServerFeaturesSnapshot({
         serverUrl: typeof params.serverUrl === 'function' ? params.serverUrl() : params.serverUrl,
+        ...(params.token ? { token: params.token } : {}),
         ...(typeof params.timeoutMs === 'number' ? { timeoutMs: params.timeoutMs } : {}),
       }),
     ...(params.onError ? { onError: params.onError } : {}),

@@ -134,7 +134,9 @@ describe('home Iroh endpoint composition', () => {
         expect(native.createEndpoint).toHaveBeenCalledTimes(1);
         expect(native.createEndpoint.mock.calls[0]?.[0]).toEqual({
             keyPath: keyPathFor(dataDir),
-            relayPolicy: 'disabled',
+            // Unconfigured relay env resolves to the canonical default policy
+            // `automatic` with no operator relay URLs.
+            relayPolicy: 'automatic',
             relayUrls: [],
             capProfile: 'homeInteractive',
         });
@@ -233,8 +235,10 @@ describe('home Iroh endpoint composition', () => {
 
         await owner.ensureHomeIrohEndpoint({ env: envFor(dataDir), apiPort: API_PORT, native });
 
+        // The first ensure used the default `automatic` policy, so the
+        // incompatible repeat must actually switch policy.
         await expect(owner.ensureHomeIrohEndpoint({
-            env: envFor(dataDir, { HAPPIER_IROH_RELAY_POLICY: 'automatic' }),
+            env: envFor(dataDir, { HAPPIER_IROH_RELAY_POLICY: 'disabled' }),
             apiPort: API_PORT,
             native,
         })).rejects.toMatchObject({ name: 'IrohError', code: 'endpoint_config_conflict' });
@@ -576,6 +580,130 @@ describe('home Iroh endpoint composition', () => {
 
         await owner.stopHomeIrohEndpoint();
         expect(native.shutdownEndpoint).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps the endpoint owned when shutdown cleanup rejects, refuses new work meanwhile, and disposes it on retry', async () => {
+        await writeKeyFixture(dataDir);
+        const owner = await loadOwnerModule();
+        let failShutdown = true;
+        const native = createNativeFake({
+            shutdownEndpoint: vi.fn(async () => {
+                if (failShutdown) {
+                    failShutdown = false;
+                    throw new Error('native endpoint shutdown failed');
+                }
+            }),
+        });
+        const env = envFor(dataDir);
+        await owner.ensureHomeIrohEndpoint({ env, apiPort: API_PORT, native });
+
+        await expect(owner.stopHomeIrohEndpoint()).rejects.toThrow('native endpoint shutdown failed');
+        expect(native.stopHomeAcceptor).toHaveBeenCalledTimes(1);
+        expect(native.shutdownEndpoint).toHaveBeenCalledTimes(1);
+
+        // The retained native resource refuses new composition work instead of
+        // creating a second owner.
+        const refused = await owner.ensureHomeIrohEndpoint({ env, apiPort: API_PORT, native });
+        expect(refused).toEqual({ status: 'failed', snapshot: null, failureReason: 'endpoint_cleanup_pending' });
+        expect(native.createEndpoint).toHaveBeenCalledTimes(1);
+        await expect(owner.materializeHomeIrohEndpointDescriptor({
+            env,
+            sourceDescriptorRevision: 7,
+            native,
+        })).resolves.toEqual({ status: 'failed', failureReason: 'endpoint_cleanup_pending' });
+
+        // A later disposal retries only the unsettled step.
+        await owner.stopHomeIrohEndpoint();
+        expect(native.stopHomeAcceptor).toHaveBeenCalledTimes(1);
+        expect(native.shutdownEndpoint).toHaveBeenCalledTimes(2);
+
+        const recomposed = await owner.ensureHomeIrohEndpoint({ env, apiPort: API_PORT, native });
+        expect(recomposed.status).toBe('active');
+        expect(native.createEndpoint).toHaveBeenCalledTimes(2);
+    });
+
+    it('shares one in-flight cleanup between concurrent stops without caching the rejected attempt', async () => {
+        const owner = await loadOwnerModule();
+        let failShutdown = true;
+        const native = createNativeFake({
+            shutdownEndpoint: vi.fn(async () => {
+                if (failShutdown) {
+                    failShutdown = false;
+                    throw new Error('native endpoint shutdown failed');
+                }
+            }),
+        });
+        await owner.ensureHomeIrohEndpoint({ env: envFor(dataDir), apiPort: API_PORT, native });
+
+        const outcomes = await Promise.allSettled([owner.stopHomeIrohEndpoint(), owner.stopHomeIrohEndpoint()]);
+        expect(outcomes.map((outcome) => outcome.status)).toEqual(['rejected', 'rejected']);
+        expect(native.shutdownEndpoint).toHaveBeenCalledTimes(1);
+
+        await owner.stopHomeIrohEndpoint();
+        expect(native.shutdownEndpoint).toHaveBeenCalledTimes(2);
+    });
+
+    it('waits for an admitted composition and prevents its late acceptor from publishing after stop', async () => {
+        const owner = await loadOwnerModule();
+        let resolveAcceptor: ((value: { endpointHandle: string; reused: false; status: { running: true } }) => void) | null = null;
+        const native = createNativeFake({
+            startHomeAcceptor: vi.fn(async (request: { endpointHandle: string }) => await new Promise((resolve) => {
+                resolveAcceptor = resolve;
+            })),
+        });
+
+        const ensure = owner.ensureHomeIrohEndpoint({ env: envFor(dataDir), apiPort: API_PORT, native });
+        await vi.waitFor(() => expect(resolveAcceptor).toBeTypeOf('function'));
+
+        let stopSettled = false;
+        const stop = owner.stopHomeIrohEndpoint().then(() => {
+            stopSettled = true;
+        });
+        await Promise.resolve();
+        expect(stopSettled).toBe(false);
+
+        resolveAcceptor!({
+            endpointHandle: keyPathFor(dataDir),
+            reused: false,
+            status: { running: true },
+        });
+        await expect(ensure).resolves.toMatchObject({ status: 'not-composed' });
+        await stop;
+
+        await expect(owner.getHomeIrohEndpointState()).resolves.toEqual({
+            status: 'not-composed',
+            snapshot: null,
+            failureReason: null,
+        });
+        expect(native.stopHomeAcceptor).toHaveBeenCalledTimes(1);
+        expect(native.shutdownEndpoint).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps a rejected startup-failure cleanup owned and retryable', async () => {
+        const owner = await loadOwnerModule();
+        let failShutdown = true;
+        const native = createNativeFake({
+            startHomeAcceptor: vi.fn(async (request: { endpointHandle: string }) => ({
+                endpointHandle: request.endpointHandle,
+                reused: false,
+                status: { running: false },
+            })),
+            shutdownEndpoint: vi.fn(async () => {
+                if (failShutdown) {
+                    failShutdown = false;
+                    throw new Error('native endpoint shutdown failed');
+                }
+            }),
+        });
+
+        const state = await owner.ensureHomeIrohEndpoint({ env: envFor(dataDir), apiPort: API_PORT, native });
+
+        expect(state).toEqual({ status: 'failed', snapshot: null, failureReason: 'acceptor_not_running' });
+        expect(native.shutdownEndpoint).toHaveBeenCalledTimes(1);
+
+        await owner.stopHomeIrohEndpoint();
+        expect(native.stopHomeAcceptor).toHaveBeenCalledTimes(1);
+        expect(native.shutdownEndpoint).toHaveBeenCalledTimes(2);
     });
 
     it('maps a native config conflict to a typed fail-closed result', async () => {

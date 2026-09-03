@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // The live adapter's contract is delegation to the canonical cli-common relay
 // host engine; the engine facade is the genuine system boundary this adapter
@@ -18,14 +18,14 @@ type AdapterHarness = Readonly<{
   engineFactoryDeps: unknown[];
   ensureLocalFirstPartyComponentCommand: ReturnType<typeof vi.fn>;
   checkRelayRuntimeHealth: ReturnType<typeof vi.fn>;
-  createCanonicalPersonalHomeOperations: ReturnType<typeof vi.fn>;
-  readPersonalHomeStartupReadiness: ReturnType<typeof vi.fn>;
-  removePersonalHomeStartupReadiness: ReturnType<typeof vi.fn>;
-  runCommandStreaming: ReturnType<typeof vi.fn>;
+  createLocalPersonalHomeHost: ReturnType<typeof vi.fn>;
+  personalHomeSystemTaskOperations: Readonly<{ inspect: ReturnType<typeof vi.fn> }>;
+  personalHomeRelocationDestinationOwner: Readonly<{ stage: ReturnType<typeof vi.fn> }>;
 }>;
 
 let harness: AdapterHarness;
 let tempHomeDir: string;
+let adapter: typeof import('./liveRelayRuntime');
 const previousEnv = new Map<string, string | undefined>();
 
 function patchEnv(key: string, value: string | undefined): void {
@@ -62,6 +62,8 @@ function healthResult() {
 }
 
 function createHarness(): AdapterHarness {
+  const personalHomeSystemTaskOperations = { inspect: vi.fn(async () => ({})) };
+  const personalHomeRelocationDestinationOwner = { stage: vi.fn(async () => ({})) };
   return {
     engine: {
       readStatus: vi.fn(async () => statusSnapshot()),
@@ -71,82 +73,62 @@ function createHarness(): AdapterHarness {
     engineFactoryDeps: [],
     ensureLocalFirstPartyComponentCommand: vi.fn(async (_params: Record<string, unknown>) => '/resolved/happier-server'),
     checkRelayRuntimeHealth: vi.fn(async (_params: Record<string, unknown>) => healthResult()),
-    runCommandStreaming: vi.fn(async () => undefined),
-    readPersonalHomeStartupReadiness: vi.fn(async () => ({
-      authenticated: true as const,
-      homeServerIdentityId: 'home-ready',
-      accountCount: 1,
-      sessionCount: 2,
+    createLocalPersonalHomeHost: vi.fn((_target: Record<string, unknown>) => ({
+      releaseRing: 'stable' as const,
+      createOperations: vi.fn(async () => ({})),
+      createSystemTaskOperations: vi.fn(async () => personalHomeSystemTaskOperations),
+      createRelocationDestinationOwner: vi.fn(async () => personalHomeRelocationDestinationOwner),
     })),
-    removePersonalHomeStartupReadiness: vi.fn(async () => undefined),
-    createCanonicalPersonalHomeOperations: vi.fn(async () => ({
-      inspect: async () => ({
-        purpose: 'personal-home' as const,
-        canonicalServerUrl: 'http://127.0.0.1:4123',
-        layout: {},
-        running: true,
-        identity: null,
-        masterSecret: { present: false, fingerprint: null },
-        storage: {
-          databasePresent: false,
-          databaseBytes: null,
-          publicFilesPresent: false,
-          privateFilesPresent: false,
-          backupsCount: 0,
-        },
-      }),
-      backup: async () => ({}),
-      verifyBackup: async () => ({}),
-      restore: async () => ({}),
-      erase: async () => ({}),
-      relocate: async () => ({}),
-    })),
+    personalHomeSystemTaskOperations,
+    personalHomeRelocationDestinationOwner,
   };
 }
 
-async function importAdapter(): Promise<typeof import('./liveRelayRuntime')> {
-  vi.doMock('@happier-dev/cli-common/systemTasks', async (importOriginal) => {
-    const actual = await importOriginal<typeof import('@happier-dev/cli-common/systemTasks')>();
-    return {
-      ...actual,
-      createRelayHostEngine: ((deps: unknown) => {
-        harness.engineFactoryDeps.push(deps);
-        return harness.engine;
-      }) as unknown as typeof actual.createRelayHostEngine,
-      ensureLocalFirstPartyComponentCommand: harness.ensureLocalFirstPartyComponentCommand as unknown as typeof actual.ensureLocalFirstPartyComponentCommand,
-    };
-  });
-  vi.doMock('@happier-dev/cli-common/firstPartyRuntime', async (importOriginal) => {
-    const actual = await importOriginal<typeof import('@happier-dev/cli-common/firstPartyRuntime')>();
-    return {
-      ...actual,
-      checkRelayRuntimeHealth: harness.checkRelayRuntimeHealth as unknown as typeof actual.checkRelayRuntimeHealth,
-      createCanonicalPersonalHomeOperations:
-        harness.createCanonicalPersonalHomeOperations as unknown as typeof actual.createCanonicalPersonalHomeOperations,
-      readPersonalHomeStartupReadiness:
-        harness.readPersonalHomeStartupReadiness as unknown as typeof actual.readPersonalHomeStartupReadiness,
-      removePersonalHomeStartupReadiness:
-        harness.removePersonalHomeStartupReadiness as unknown as typeof actual.removePersonalHomeStartupReadiness,
-    };
-  });
-  vi.doMock('@happier-dev/cli-common/process', async (importOriginal) => {
-    const actual = await importOriginal<typeof import('@happier-dev/cli-common/process')>();
-    return { ...actual, runCommandStreaming: harness.runCommandStreaming };
-  });
-  // Guard against accidental GitHub network access from any pre-existing
-  // implementation path; the canonical engine resolves binaries through the
-  // shared first-party component dependency instead.
-  vi.doMock('@happier-dev/release-runtime/github', async (importOriginal) => {
-    const actual = await importOriginal<typeof import('@happier-dev/release-runtime/github')>();
-    return {
-      ...actual,
-      fetchGitHubReleaseByTag: async () => {
-        throw new Error('GitHub release fetch is disabled in relay runtime adapter tests');
-      },
-    };
-  });
-  return await import('./liveRelayRuntime');
-}
+// The adapter graph is mocked and imported exactly once for the whole file:
+// re-importing it per test re-transformed the large graph on every case and
+// dominated the suite's runtime. Because each mock factory is evaluated only
+// once, every seam forwards at call time to the current per-test harness
+// instead of capturing a harness member while the factory runs.
+vi.doMock('@happier-dev/cli-common/systemTasks', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@happier-dev/cli-common/systemTasks')>();
+  return {
+    ...actual,
+    createRelayHostEngine: ((deps: unknown) => {
+      harness.engineFactoryDeps.push(deps);
+      return harness.engine;
+    }) as unknown as typeof actual.createRelayHostEngine,
+    ensureLocalFirstPartyComponentCommand: ((...args: unknown[]) =>
+      harness.ensureLocalFirstPartyComponentCommand(...args)) as unknown as typeof actual.ensureLocalFirstPartyComponentCommand,
+  };
+});
+vi.doMock('@happier-dev/cli-common/relayHost', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@happier-dev/cli-common/relayHost')>();
+  return {
+    ...actual,
+    createLocalPersonalHomeHost: ((...args: unknown[]) =>
+      harness.createLocalPersonalHomeHost(...args)) as unknown as typeof actual.createLocalPersonalHomeHost,
+    probeLocalRelayRuntimeHealth: ((...args: unknown[]) =>
+      harness.checkRelayRuntimeHealth(...args)) as unknown as typeof actual.probeLocalRelayRuntimeHealth,
+  };
+});
+// Guard against accidental GitHub network access from any pre-existing
+// implementation path; the canonical engine resolves binaries through the
+// shared first-party component dependency instead.
+vi.doMock('@happier-dev/release-runtime/github', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@happier-dev/release-runtime/github')>();
+  return {
+    ...actual,
+    fetchGitHubReleaseByTag: async () => {
+      throw new Error('GitHub release fetch is disabled in relay runtime adapter tests');
+    },
+  };
+});
+
+// One cold import of the adapter graph serves the whole file and may exceed
+// Vitest's default hook timeout under load; every test then reuses the module.
+beforeAll(async () => {
+  adapter = await import('./liveRelayRuntime');
+}, 60_000);
 
 beforeEach(async () => {
   harness = createHarness();
@@ -164,7 +146,6 @@ afterEach(async () => {
     }
   }
   previousEnv.clear();
-  vi.resetModules();
   vi.clearAllMocks();
   await rm(tempHomeDir, { recursive: true, force: true });
 });
@@ -179,96 +160,48 @@ const fullLocalParams = {
 };
 
 describe('liveRelayRuntime adapter delegation', () => {
-  it('composes default Personal Home task operations through the canonical facade and relay host engine lifecycle', { timeout: 60_000 }, async () => {
-    const module = await importAdapter();
-    const operations = await module.createLivePersonalHomeSystemTaskOperations();
+  it('builds Personal Home task operations from the shared local composition owner with a local-only engine', async () => {
+    const operations = await adapter.createLivePersonalHomeSystemTaskOperations();
 
-    await expect(operations.inspect({
-      requestedPurpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:4123' },
-      runtimeTarget: { channel: 'stable', mode: 'user' },
-      progress: () => undefined,
-    })).resolves.toMatchObject({ purpose: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:4123' });
-
-    expect(harness.createCanonicalPersonalHomeOperations).toHaveBeenCalledTimes(1);
-    const composition = harness.createCanonicalPersonalHomeOperations.mock.calls[0]?.[0] as {
-      lifecycle: { isRunning(): Promise<boolean>; stop(): Promise<void>; start(): Promise<void>; healthCheck(): Promise<boolean> };
-      attestActivatedHome(): Promise<Readonly<{ authenticated: true; homeServerIdentityId: string; accountCount: number; sessionCount: number }>>;
-      readPurpose(): Promise<{ kind: 'personal-home'; canonicalServerUrl: string }>;
-      readHappierVersion(): Promise<string>;
-      runMigrationProcess(input: Readonly<{ command: string; args: readonly string[]; env: NodeJS.ProcessEnv }>): Promise<void>;
+    expect(operations).toBe(harness.personalHomeSystemTaskOperations);
+    expect(harness.createLocalPersonalHomeHost).toHaveBeenCalledTimes(1);
+    const target = harness.createLocalPersonalHomeHost.mock.calls[0]?.[0] as {
+      engine: unknown;
+      channel: string;
+      mode: string;
+      homeDir?: string;
     };
-    await expect(composition.readHappierVersion()).resolves.toBe('happier-server-v9');
-    await expect(composition.readPurpose()).resolves.toEqual({
-      kind: 'personal-home',
-      canonicalServerUrl: 'http://127.0.0.1:4123',
-    });
-    harness.engine.readStatus.mockResolvedValueOnce({
-      ...statusSnapshot(),
-      purpose: { kind: 'generic' },
-    });
-    await expect(composition.readPurpose()).rejects.toThrow(/Personal Home/u);
-    await expect(operations.restore({
-      archivePath: '/tmp/home.tar',
-      requestedPurpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:4123' },
-      runtimeTarget: { channel: 'stable', mode: 'user' },
-      progress: () => undefined,
-    })).resolves.toEqual({});
-    const migrationEnv = { DATABASE_URL: 'file:/tmp/staged.sqlite' };
-    await composition.runMigrationProcess({
-      command: '/installed/bin/happier-server',
-      args: ['--migrate-only'],
-      env: migrationEnv,
-    });
-    expect(harness.runCommandStreaming).toHaveBeenCalledWith({
-      cmd: '/installed/bin/happier-server',
-      args: ['--migrate-only'],
-      env: migrationEnv,
-      context: 'personal-home staged migration',
-    });
-    await expect(composition.lifecycle.isRunning()).resolves.toBe(true);
-    await composition.lifecycle.stop();
-    await composition.lifecycle.start();
-    await expect(composition.lifecycle.healthCheck()).resolves.toBe(true);
-    await expect(composition.attestActivatedHome()).resolves.toMatchObject({
-      authenticated: true,
-      homeServerIdentityId: 'home-ready',
-    });
-    expect(harness.removePersonalHomeStartupReadiness).toHaveBeenCalledTimes(1);
-    expect(harness.readPersonalHomeStartupReadiness).toHaveBeenCalledTimes(1);
-    expect(harness.engine.control).toHaveBeenCalledWith(expect.objectContaining({ action: 'stop' }));
-    expect(harness.engine.control).toHaveBeenCalledWith(expect.objectContaining({ action: 'start' }));
+    expect(target).toMatchObject({ channel: 'stable', mode: 'user' });
+    // The CLI host owns only the engine, and that engine stays local-only.
+    expect(target.engine).toBe(harness.engine);
+    expect(target.homeDir).toBeUndefined();
+    const engineDeps = harness.engineFactoryDeps[0] as Readonly<{
+      installRemoteComponent(): Promise<unknown>;
+      resolveRemoteReleaseTarget(): Promise<unknown>;
+      runRemoteText(): Promise<unknown>;
+      copyLocalDirectoryToRemote(): Promise<unknown>;
+    }>;
+    await expect(engineDeps.installRemoteComponent()).rejects.toThrow(/not available/u);
+    await expect(engineDeps.resolveRemoteReleaseTarget()).rejects.toThrow(/not available/u);
+    await expect(engineDeps.runRemoteText()).rejects.toThrow(/not available/u);
+    await expect(engineDeps.copyLocalDirectoryToRemote()).rejects.toThrow(/not available/u);
   });
 
-  it('composes Personal Home operations for the explicitly selected runtime channel and mode', async () => {
-    const module = await importAdapter();
-    const operations = await module.createLivePersonalHomeSystemTaskOperations({
+  it('builds the relocation destination owner from the same composition for the selected channel and mode', async () => {
+    const owner = await adapter.createLivePersonalHomeRelocationDestinationOwner({
       channel: 'preview',
       mode: 'system',
     });
 
-    await operations.inspect({
-      requestedPurpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:4123' },
-      runtimeTarget: { channel: 'stable', mode: 'user' },
-      progress: () => undefined,
-    });
-
-    const composition = harness.createCanonicalPersonalHomeOperations.mock.calls[0]?.[0] as {
-      channel: 'stable' | 'preview' | 'publicdev';
-      mode: 'user' | 'system';
-      readPurpose(): Promise<unknown>;
-    };
-    expect(composition.channel).toBe('preview');
-    expect(composition.mode).toBe('system');
-    await composition.readPurpose();
-    expect(harness.engine.readStatus).toHaveBeenCalledWith({
-      target: { kind: 'local' },
+    expect(owner).toBe(harness.personalHomeRelocationDestinationOwner);
+    expect(harness.createLocalPersonalHomeHost).toHaveBeenCalledTimes(1);
+    expect(harness.createLocalPersonalHomeHost.mock.calls[0]?.[0]).toMatchObject({
       channel: 'preview',
       mode: 'system',
     });
   });
+
   it('delegates readLiveRelayRuntimeStatus to the canonical engine with every parsed param field', async () => {
-    const adapter = await importAdapter();
-
     const status = await adapter.readLiveRelayRuntimeStatus(fullLocalParams);
 
     expect(harness.engine.readStatus).toHaveBeenCalledTimes(1);
@@ -277,8 +210,6 @@ describe('liveRelayRuntime adapter delegation', () => {
   });
 
   it('rejects ssh targets because live relay runtime tasks are local-only', async () => {
-    const adapter = await importAdapter();
-
     await expect(adapter.readLiveRelayRuntimeStatus({
       target: { kind: 'ssh', ssh: { target: 'relay.example.test', auth: 'agent' } },
     })).rejects.toThrow(/local/u);
@@ -287,8 +218,6 @@ describe('liveRelayRuntime adapter delegation', () => {
   });
 
   it('delegates start, restart, stop, and safe uninstall to engine control with the same full params', async () => {
-    const adapter = await importAdapter();
-
     await adapter.startLiveRelayRuntime(fullLocalParams);
     await adapter.restartLiveRelayRuntime(fullLocalParams);
     await adapter.stopLiveRelayRuntime(fullLocalParams);
@@ -302,8 +231,6 @@ describe('liveRelayRuntime adapter delegation', () => {
   });
 
   it('delegates installOrUpdate with the explicit server binary override intact', async () => {
-    const adapter = await importAdapter();
-
     const result = await adapter.installOrUpdateLiveRelayRuntime(fullLocalParams);
 
     expect(harness.engine.installOrUpdate).toHaveBeenCalledTimes(1);
@@ -313,8 +240,6 @@ describe('liveRelayRuntime adapter delegation', () => {
   });
 
   it('resolves the server binary through the shared first-party component dependency when no override is provided', async () => {
-    const adapter = await importAdapter();
-
     await adapter.installOrUpdateLiveRelayRuntime({
       target: { kind: 'local' },
       channel: 'dev',
@@ -338,8 +263,6 @@ describe('liveRelayRuntime adapter delegation', () => {
   });
 
   it('probes health at the engine-resolved base URL instead of reconstructed defaults', async () => {
-    const adapter = await importAdapter();
-
     const health = await adapter.readLiveRelayRuntimeHealth({
       target: { kind: 'local' },
       channel: 'preview',
@@ -348,10 +271,7 @@ describe('liveRelayRuntime adapter delegation', () => {
 
     expect(harness.engine.readStatus).toHaveBeenCalledTimes(1);
     expect(harness.checkRelayRuntimeHealth).toHaveBeenCalledTimes(1);
-    expect(harness.checkRelayRuntimeHealth).toHaveBeenCalledWith(expect.objectContaining({
-      host: '127.0.0.1',
-      port: 4123,
-    }));
+    expect(harness.checkRelayRuntimeHealth).toHaveBeenCalledWith({ baseUrl: 'http://127.0.0.1:4123' });
     expect(health).toEqual(healthResult());
   });
 });

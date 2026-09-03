@@ -6,9 +6,15 @@ import {
     type AuthCredentials,
 } from '@/auth/storage/tokenStorage';
 import { approveTerminalPairing } from '@/auth/terminal/approveTerminalPairing';
+import { resolveHomeEnrollmentTransport } from '@/auth/enrollment/homeEnrollmentTransport';
 import { Modal } from '@/modal';
 import { t } from '@/text';
-import { getActiveServerUrl, listServerProfiles } from '@/sync/domains/server/serverProfiles';
+import {
+    buildHomeConnectionDescriptorForProfile,
+    getActiveServerUrl,
+    listServerProfiles,
+} from '@/sync/domains/server/serverProfiles';
+import type { HomeConnectionDescriptorV1 } from '@happier-dev/protocol';
 import { normalizeServerUrl } from '@/sync/domains/server/activeServerSwitch';
 import { createServerUrlComparableKey } from '@/sync/domains/server/url/serverUrlCanonical';
 import { resolveEffectiveServerUrlOverride } from '@/sync/domains/server/url/serverUrlOverridePolicy';
@@ -26,6 +32,7 @@ interface UseConnectTerminalOptions {
 type TerminalApprovalTarget = Readonly<{
     endpointUrl: string;
     serverId?: string;
+    descriptor?: HomeConnectionDescriptorV1;
     credentials: AuthCredentials | null;
 }>;
 
@@ -47,9 +54,11 @@ async function resolveTerminalApprovalTarget(params: Readonly<{
             )
         ));
     if (matches.length !== 1) return { endpointUrl, credentials: null };
+    const descriptor = buildHomeConnectionDescriptorForProfile(matches[0]!);
+    if (!descriptor) return { endpointUrl, credentials: null };
     const serverId = params.expectedServerIdentityId;
     const credentials = await TokenStorage.getCredentialsForServerUrl(endpointUrl, { serverId });
-    return { endpointUrl, serverId, credentials };
+    return { endpointUrl, serverId, descriptor, credentials };
 }
 
 export function useConnectTerminal(options?: UseConnectTerminalOptions) {
@@ -107,20 +116,29 @@ export function useConnectTerminal(options?: UseConnectTerminalOptions) {
                 // served by upgrading the remote.
                 throw new Error('Terminal pairing requires an authenticated v3 pairing context');
             }
-            const approvalResult = await approveTerminalPairing({
-                target: {
-                    endpointUrl: target.endpointUrl,
-                    ...(target.serverId ? { serverId: target.serverId } : {}),
-                },
-                requesterPublicKey: publicKey,
-                pairingContext: {
-                    secret: pairingSecret,
-                    createdAtMs: parsed.pairing.createdAtMs,
-                    expiresAtMs: parsed.pairing.expiresAtMs,
-                },
-                targetCredentials: activeCredentials,
-                supportsTokenOnly: parsed.supportsTokenOnly === true,
-            });
+            if (!target.descriptor) {
+                throw new Error('Terminal pairing requires a verified Home connection descriptor');
+            }
+            const transportResolution = await resolveHomeEnrollmentTransport(target.descriptor);
+            if (!transportResolution.ok) {
+                throw new Error(`Terminal pairing transport unavailable: ${transportResolution.reason}`);
+            }
+            let approvalResult: Awaited<ReturnType<typeof approveTerminalPairing>>;
+            try {
+                approvalResult = await approveTerminalPairing({
+                    target: transportResolution.transport,
+                    requesterPublicKey: publicKey,
+                    pairingContext: {
+                        secret: pairingSecret,
+                        createdAtMs: parsed.pairing.createdAtMs,
+                        expiresAtMs: parsed.pairing.expiresAtMs,
+                    },
+                    targetCredentials: activeCredentials,
+                    supportsTokenOnly: parsed.supportsTokenOnly === true,
+                });
+            } finally {
+                await transportResolution.transport.close();
+            }
 
             // If we successfully completed a pending connect, clear it.
             clearPendingTerminalConnect();

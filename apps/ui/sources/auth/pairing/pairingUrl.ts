@@ -5,14 +5,15 @@ import {
 } from '@happier-dev/protocol';
 import { tryCreateQRMatrix } from '@/components/qr/qrMatrix';
 import { isAcceptedHappierUrlProtocol, resolveAppUrlScheme } from '@/utils/url/appScheme';
-
-type PairingDeepLinkPayload = {
-    pairId: string;
-    secret: string;
-    serverUrl: string | null;
-};
+import {
+    HOME_QR_ENTRY_INTENT_ROUTE_PARAM,
+    type HomeQrEntryIntent,
+} from './homeQrEntryIntent';
 
 export type HomeQrInviteDeepLinkResult = Readonly<{ invite: HomeQrInviteV2 }>;
+export type LegacyPairingDeepLinkClassification = Readonly<{
+    kind: 'legacy_pairing_update_required';
+}>;
 
 export const HOME_QR_INVITE_RESTORE_ROUTE_PARAM = 'pairingLink';
 
@@ -28,27 +29,24 @@ function isValidPairingLinkTarget(url: URL): boolean {
     return false;
 }
 
-function normalizeServerUrl(raw: string): string | null {
+function isValidLegacyServerUrl(raw: string): boolean {
     let url: URL;
     try {
         url = new URL(raw);
     } catch {
-        return null;
+        return false;
     }
 
-    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
-    if (url.username || url.password) return null;
-
-    const pathname = url.pathname === '/' ? '' : url.pathname;
-    const search = url.search ?? '';
-    return `${url.origin}${pathname}${search}`;
+    return (url.protocol === 'http:' || url.protocol === 'https:') && !url.username && !url.password;
 }
 
 /**
- * Released V1 deep-link reader. V1 exposes `pairId`/`secret` as URL parameters; it remains
- * parse-only reader compatibility. New invites use the opaque bounded V2 payload below.
+ * Recognizes the immutable released V1 invite shape only far enough to refuse it safely.
+ * Decoded V1 material is deliberately never returned to callers.
  */
-function parsePairingDeepLink(rawLink: string): PairingDeepLinkPayload | null {
+export function classifyLegacyPairingDeepLink(rawLink: string): LegacyPairingDeepLinkClassification | null {
+    if (rawLink.length === 0 || rawLink.length > 4_096) return null;
+
     let url: URL;
     try {
         url = new URL(rawLink);
@@ -66,25 +64,9 @@ function parsePairingDeepLink(rawLink: string): PairingDeepLinkPayload | null {
     if (!pairId || !secret) return null;
 
     const server = url.searchParams.get('server');
-    const serverUrl = server ? normalizeServerUrl(server) : null;
+    if (server && !isValidLegacyServerUrl(server)) return null;
 
-    return { pairId, secret, serverUrl };
-}
-
-export { parsePairingDeepLink };
-
-export class LegacyPairingWriterUnavailableError extends Error {
-    readonly code = 'legacy_provisioning_unavailable' as const;
-
-    constructor() {
-        super('V1 pairing link issuance is unavailable; create a canonical Home QR invite');
-        this.name = 'LegacyPairingWriterUnavailableError';
-    }
-}
-
-export function buildPairingDeepLink(input: { pairId: string; secret: string; serverUrl?: string | null }): string {
-    void input;
-    throw new LegacyPairingWriterUnavailableError();
+    return { kind: 'legacy_pairing_update_required' };
 }
 
 /** Build a v2 link carrying one opaque, bounded invite payload. */
@@ -141,8 +123,11 @@ export function parseHomeQrInviteDeepLink(rawLink: string): HomeQrInviteDeepLink
 }
 
 /** Route a validated V2 invite to the canonical restore controller without consuming its input. */
-export function buildHomeQrInviteRestoreRoutePath(rawLink: string): string | null {
+export function buildHomeQrInviteRestoreRoutePath(
+    rawLink: string,
+    entryIntent: HomeQrEntryIntent,
+): string | null {
     const link = String(rawLink ?? '').trim();
     if (!parseHomeQrInviteDeepLink(link)) return null;
-    return `/restore?${HOME_QR_INVITE_RESTORE_ROUTE_PARAM}=${encodeURIComponent(link)}`;
+    return `/restore?${HOME_QR_INVITE_RESTORE_ROUTE_PARAM}=${encodeURIComponent(link)}&${HOME_QR_ENTRY_INTENT_ROUTE_PARAM}=${entryIntent}`;
 }

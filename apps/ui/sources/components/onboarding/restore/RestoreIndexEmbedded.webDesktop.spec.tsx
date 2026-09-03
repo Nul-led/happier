@@ -45,6 +45,31 @@ vi.mock('@/components/account/restore/RestoreQrView', () => ({
 }));
 
 describe('RestoreIndexEmbedded (web desktop)', () => {
+    it('opens the existing scanner first for the explicit add-home intent', async () => {
+        vi.resetModules();
+        lastScanProps = null;
+        lastQrProps = null;
+
+        const { RestoreIndexEmbedded } = await import('./RestoreIndexEmbedded');
+
+        let tree!: renderer.ReactTestRenderer;
+        try {
+            await act(async () => {
+                tree = renderer.create(
+                    <RestoreIndexEmbedded entryIntent="add_home" onBack={vi.fn()} />,
+                );
+            });
+
+            expect(tree.root.findByType('scan')).toBeTruthy();
+            expect((lastScanProps as { entryIntent?: string } | null)?.entryIntent).toBe('add_home');
+            expect(lastQrProps).toBeNull();
+        } finally {
+            act(() => {
+                tree?.unmount();
+            });
+        }
+    });
+
     it('defaults to the QR view and lets the user explicitly switch into the scanner', async () => {
         vi.resetModules();
         lastScanProps = null;
@@ -58,12 +83,13 @@ describe('RestoreIndexEmbedded (web desktop)', () => {
         try {
             await act(async () => {
                 tree = renderer.create(
-                    <RestoreIndexEmbedded onBack={onBack} onOpenSecretKeyLogin={onOpenSecretKeyLogin} />,
+                    <RestoreIndexEmbedded entryIntent="enter_home" onBack={onBack} onOpenSecretKeyLogin={onOpenSecretKeyLogin} />,
                 );
             });
 
             expect(tree.root.findByType('qr')).toBeTruthy();
             expect((lastQrProps as { embedded?: boolean } | null)?.embedded).toBe(true);
+            expect((lastQrProps as { entryIntent?: string } | null)?.entryIntent).toBe('enter_home');
             expect((lastQrProps as { onOpenScanQr?: () => void } | null)?.onOpenScanQr).toBeInstanceOf(Function);
 
             await act(async () => {
@@ -72,6 +98,7 @@ describe('RestoreIndexEmbedded (web desktop)', () => {
 
             expect(tree.root.findByType('scan')).toBeTruthy();
             expect((lastScanProps as { embedded?: boolean } | null)?.embedded).toBe(true);
+            expect((lastScanProps as { entryIntent?: string } | null)?.entryIntent).toBe('enter_home');
             expect((lastScanProps as { onShowQrInstead?: () => void } | null)?.onShowQrInstead).toBeInstanceOf(Function);
 
             await act(async () => {

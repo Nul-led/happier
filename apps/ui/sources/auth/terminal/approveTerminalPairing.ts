@@ -1,19 +1,14 @@
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
-import { authApproveAtEndpoint, type AuthApproveResult } from '@/auth/flows/approve';
+import { authApproveWithTransport, type AuthApproveResult } from '@/auth/flows/approve';
+import type { HomeEnrollmentTransport } from '@/auth/enrollment/homeEnrollmentTransport';
 import { fetchAccountEncryptionMode } from '@/sync/api/account/apiAccountEncryptionMode';
 import { isRuntimeFeatureEnabled } from '@/sync/domains/features/featureDecisionInputs';
-import { createServerFetchAtEndpoint } from '@/sync/http/client';
 import { encodeBase64 } from '@/encryption/base64';
 import { resolveProvisioningMaterial } from './resolveProvisioningMaterial';
 import { buildTerminalResponseV3, buildTerminalTokenOnlyResponseV3 } from './terminalProvisioning';
 
-export type TerminalApprovalTarget = Readonly<{
-    endpointUrl: string;
-    serverId?: string;
-}>;
-
 export async function approveTerminalPairing(params: Readonly<{
-    target: TerminalApprovalTarget;
+    target: HomeEnrollmentTransport;
     requesterPublicKey: Uint8Array;
     pairingContext: Readonly<{ secret: Uint8Array; createdAtMs: number; expiresAtMs: number }>;
     targetCredentials: AuthCredentials;
@@ -25,11 +20,7 @@ export async function approveTerminalPairing(params: Readonly<{
         if (!params.supportsTokenOnly) {
             throw new Error('Token-only terminal pairing requires an authenticated compatible reader');
         }
-        const fetchAt = createServerFetchAtEndpoint({
-            endpointUrl: params.target.endpointUrl,
-            ...(params.target.serverId ? { serverId: params.target.serverId } : {}),
-            credentials: null,
-        });
+        const fetchAt = params.target.createRequest({ credentials: null });
         const [accountMode, plaintextStorageEnabled, keylessAccountsEnabled] = await Promise.all([
             fetchAccountEncryptionMode(params.targetCredentials, {
                 retry: 'none',
@@ -37,15 +28,13 @@ export async function approveTerminalPairing(params: Readonly<{
             }),
             isRuntimeFeatureEnabled({
                 featureId: 'encryption.plaintextStorage',
-                ...(params.target.serverId
-                    ? { scope: { scopeKind: 'spawn' as const, serverId: params.target.serverId }, force: true }
-                    : {}),
+                scope: { scopeKind: 'spawn' as const, serverId: params.target.homeServerIdentityId },
+                force: true,
             }),
             isRuntimeFeatureEnabled({
                 featureId: 'e2ee.keylessAccounts',
-                ...(params.target.serverId
-                    ? { scope: { scopeKind: 'spawn' as const, serverId: params.target.serverId }, force: true }
-                    : {}),
+                scope: { scopeKind: 'spawn' as const, serverId: params.target.homeServerIdentityId },
+                force: true,
             }),
         ]);
         if (accountMode.mode !== 'plain' || !plaintextStorageEnabled || !keylessAccountsEnabled) {
@@ -67,8 +56,8 @@ export async function approveTerminalPairing(params: Readonly<{
         });
     }
 
-    return await authApproveAtEndpoint({
-        ...params.target,
+    return await authApproveWithTransport({
+        transport: params.target,
         token: params.targetCredentials.token,
         publicKeyBase64: encodeBase64(params.requesterPublicKey),
         responseBase64: encodeBase64(sealedResponse),

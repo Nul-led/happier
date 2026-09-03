@@ -2,6 +2,7 @@ import * as React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { renderScreen } from '@/dev/testkit';
+import type { AccountServiceEntryOptions } from '@/components/account/auth/useAccountServiceEntryOptions';
 import type { AuthEntryOptions } from '@/components/account/auth/useAuthEntryOptions';
 
 import { WelcomeDecisionPanel } from './WelcomeDecisionPanel';
@@ -60,7 +61,10 @@ function flattenStyle(style: unknown): Record<string, unknown> {
     return {};
 }
 
-function renderPanel(overrides: Partial<AuthEntryOptions> = {}) {
+function renderPanel(
+    overrides: Partial<AuthEntryOptions> = {},
+    accountServiceEntry?: AccountServiceEntryOptions,
+) {
     const callbacks = {
         onCreateAccount: vi.fn(),
         onCreateAccountViaProvider: vi.fn(),
@@ -68,6 +72,8 @@ function renderPanel(overrides: Partial<AuthEntryOptions> = {}) {
         onLoginWithMtls: vi.fn(),
         onOpenRestore: vi.fn(),
         onChangeRelay: vi.fn(),
+        onContinueWithAccountServiceProvider: vi.fn(),
+        onContinueWithAccountServiceKey: vi.fn(),
     };
 
     return {
@@ -75,9 +81,37 @@ function renderPanel(overrides: Partial<AuthEntryOptions> = {}) {
         screenPromise: renderScreen(
             <WelcomeDecisionPanel
                 authEntryOptions={{ ...baseOptions, ...overrides }}
+                accountServiceEntry={accountServiceEntry}
                 {...callbacks}
             />,
         ),
+    };
+}
+
+function readyAccountServiceEntry(
+    oauthProviderIds: readonly string[],
+    options: Readonly<{ keyLoginAvailable?: boolean }> = {},
+): AccountServiceEntryOptions {
+    return {
+        endpoint: { url: 'https://api.happier.dev', displayName: 'Happier Cloud', source: 'default' },
+        status: 'ready',
+        discovery: {
+            endpointUrl: 'https://api.happier.dev',
+            serverIdentityId: 'srv_cloud_identity',
+            canonicalServerUrl: 'https://api.happier.dev',
+            capability: {
+                version: 1,
+                homeDirectory: true,
+                homeEnrollment: true,
+                homeLoginAssertion: {
+                    keyId: 'a'.repeat(64),
+                    publicKeyBase64Url: 'A'.repeat(43),
+                },
+            },
+            keyLoginAvailable: options.keyLoginAvailable ?? false,
+            oauthProviderIds,
+            preferredProvisionProviderId: oauthProviderIds[0] ?? null,
+        },
     };
 }
 
@@ -87,15 +121,16 @@ describe('WelcomeDecisionPanel', () => {
         const screen = await screenPromise;
 
         expect(screen.findByTestId('welcome-decision-panel')).toBeTruthy();
-        expect(screen.findByTestId('welcome-private-key-copy')).toBeTruthy();
+        expect(screen.findAllByTestId('welcome-private-key-copy')).toHaveLength(0);
         expect(screen.findByTestId('welcome-primary-start-title')).toBeTruthy();
         expect(screen.findByTestId('welcome-primary-start-subtitle')).toBeTruthy();
         expect(screen.findByTestId('welcome-primary-start-icon')).toBeTruthy();
-        expect(screen.findByTestId('welcome-secondary-login-title')).toBeTruthy();
-        expect(screen.findByTestId('welcome-secondary-login-subtitle')).toBeTruthy();
-        expect(screen.findByTestId('welcome-secondary-login-icon')).toBeTruthy();
+        expect(screen.findByTestId('welcome-scan-existing-home-title')).toBeTruthy();
+        expect(screen.findByTestId('welcome-scan-existing-home-icon')).toBeTruthy();
+        expect(screen.findByTestId('welcome-use-different-home-title')).toBeTruthy();
         expect(screen.findByTestId('welcome-primary-start-title')?.props.children).toBe('First time here — let\'s start');
-        expect(screen.findByTestId('welcome-secondary-login-subtitle')?.props.children).toBe('Scan a QR code, or enter your secret key');
+        expect(screen.findByTestId('welcome-scan-existing-home-title')?.props.children).toBe('Scan a QR from an existing Home');
+        expect(screen.findByTestId('welcome-use-different-home-title')?.props.children).toBe('Use a different Home');
         const primaryStyle = flattenStyle(screen.findByTestId('welcome-primary-start')?.props.style);
         const textBlockStyle = flattenStyle(screen.findByTestId('welcome-primary-start-text')?.props.style);
         expect(primaryStyle.minHeight).toBe(66);
@@ -104,10 +139,12 @@ describe('WelcomeDecisionPanel', () => {
         expect(textBlockStyle.gap).toBe(0);
 
         await screen.pressByTestIdAsync('welcome-primary-start');
-        await screen.pressByTestIdAsync('welcome-secondary-login');
+        await screen.pressByTestIdAsync('welcome-scan-existing-home');
+        await screen.pressByTestIdAsync('welcome-use-different-home');
 
         expect(callbacks.onCreateAccount).toHaveBeenCalledTimes(1);
         expect(callbacks.onOpenRestore).toHaveBeenCalledTimes(1);
+        expect(callbacks.onChangeRelay).toHaveBeenCalledTimes(1);
     });
 
     it('uses provider signup without rendering anonymous private-key copy', async () => {
@@ -205,7 +242,7 @@ describe('WelcomeDecisionPanel', () => {
 
         expect(screen.findByTestId('welcome-auth-loading')).toBeTruthy();
         expect(screen.findAllByTestId('welcome-primary-start')).toHaveLength(0);
-        expect(screen.findAllByTestId('welcome-secondary-login')).toHaveLength(0);
+        expect(screen.findAllByTestId('welcome-scan-existing-home')).toHaveLength(0);
         expect(screen.findAllByTestId('welcome-private-key-copy')).toHaveLength(0);
     });
 
@@ -229,6 +266,95 @@ describe('WelcomeDecisionPanel', () => {
         expect(retryServerCheck).toHaveBeenCalledTimes(1);
     });
 
+    it('offers the selected sign-in service methods as familiar provider actions and keeps QR entry', async () => {
+        const { callbacks, screenPromise } = renderPanel(
+            { showAnonymousSignup: true, showProviderSignup: true, providerId: 'github' },
+            readyAccountServiceEntry(['github', 'google']),
+        );
+        const screen = await screenPromise;
+
+        expect(screen.findByTestId('welcome-account-service-provider-github-title')?.props.children)
+            .toBe('Continue with GitHub');
+        expect(screen.findByTestId('welcome-account-service-provider-google')).toBeTruthy();
+        // The Home-targeted welcome actions are replaced, not shown beside the service actions.
+        expect(screen.findAllByTestId('welcome-primary-start')).toHaveLength(0);
+        expect(screen.findAllByTestId('welcome-signup-provider')).toHaveLength(0);
+        expect(screen.findAllByTestId('welcome-private-key-copy')).toHaveLength(0);
+        // Direct QR entry stays available.
+        expect(screen.findByTestId('welcome-scan-existing-home')).toBeTruthy();
+        expect(screen.findByTestId('welcome-use-different-home')).toBeTruthy();
+
+        await screen.pressByTestIdAsync('welcome-account-service-provider-google');
+        await screen.pressByTestIdAsync('welcome-scan-existing-home');
+
+        expect(callbacks.onContinueWithAccountServiceProvider).toHaveBeenCalledWith('google');
+        expect(callbacks.onCreateAccountViaProvider).not.toHaveBeenCalled();
+        expect(callbacks.onOpenRestore).toHaveBeenCalledTimes(1);
+    });
+
+    it('offers the advertised key method for a key-only selected sign-in service', async () => {
+        const { callbacks, screenPromise } = renderPanel(
+            { showAnonymousSignup: true },
+            readyAccountServiceEntry([], { keyLoginAvailable: true }),
+        );
+        const screen = await screenPromise;
+
+        expect(screen.findByTestId('welcome-account-service-key')?.props.accessibilityLabel)
+            .toBe('Use a key');
+        // The key-only service owns the welcome sign-in path; Home-targeted actions stay hidden.
+        expect(screen.findAllByTestId('welcome-primary-start')).toHaveLength(0);
+        expect(screen.findAllByTestId('welcome-private-key-copy')).toHaveLength(0);
+        // Direct QR entry stays available.
+        expect(screen.findByTestId('welcome-scan-existing-home')).toBeTruthy();
+        expect(screen.findByTestId('welcome-use-different-home')).toBeTruthy();
+
+        await screen.pressByTestIdAsync('welcome-account-service-key');
+
+        expect(callbacks.onContinueWithAccountServiceKey).toHaveBeenCalledTimes(1);
+        expect(callbacks.onCreateAccount).not.toHaveBeenCalled();
+        expect(callbacks.onContinueWithAccountServiceProvider).not.toHaveBeenCalled();
+    });
+
+    it('keeps the ordinary Home entry when the selected service does not advertise key login', async () => {
+        const { screenPromise } = renderPanel(
+            { showAnonymousSignup: true },
+            readyAccountServiceEntry([], { keyLoginAvailable: false }),
+        );
+        const screen = await screenPromise;
+
+        expect(screen.findAllByTestId('welcome-account-service-key')).toHaveLength(0);
+        expect(screen.findByTestId('welcome-primary-start')).toBeTruthy();
+    });
+
+    it('waits for the selected sign-in service instead of flashing Home-targeted actions', async () => {
+        const { screenPromise } = renderPanel({}, {
+            endpoint: { url: 'https://api.happier.dev', source: 'default' },
+            status: 'loading',
+            discovery: null,
+        });
+        const screen = await screenPromise;
+
+        expect(screen.findByTestId('welcome-auth-loading')).toBeTruthy();
+        expect(screen.findAllByTestId('welcome-primary-start')).toHaveLength(0);
+    });
+
+    it('keeps the existing Home entry when the selected service advertises no usable method', async () => {
+        const { callbacks, screenPromise } = renderPanel({}, {
+            endpoint: { url: 'https://home.example.test', source: 'user' },
+            status: 'unavailable',
+            discovery: null,
+        });
+        const screen = await screenPromise;
+
+        expect(screen.findAllByTestId('welcome-account-service-provider-github')).toHaveLength(0);
+        expect(screen.findByTestId('welcome-primary-start')).toBeTruthy();
+
+        await screen.pressByTestIdAsync('welcome-primary-start');
+
+        expect(callbacks.onCreateAccount).toHaveBeenCalledTimes(1);
+        expect(callbacks.onContinueWithAccountServiceProvider).not.toHaveBeenCalled();
+    });
+
     it('promotes login and explains the policy when the server exposes no signup action', async () => {
         const { callbacks, screenPromise } = renderPanel({
             showAnonymousSignup: false,
@@ -240,9 +366,10 @@ describe('WelcomeDecisionPanel', () => {
         expect(screen.findByTestId('welcome-signup-disabled')).toBeTruthy();
         expect(screen.findAllByTestId('welcome-primary-start')).toHaveLength(0);
         expect(screen.findAllByTestId('welcome-provider-primary')).toHaveLength(0);
-        expect(screen.findByTestId('welcome-secondary-login')).toBeTruthy();
+        expect(screen.findByTestId('welcome-scan-existing-home')).toBeTruthy();
+        expect(screen.findByTestId('welcome-use-different-home')).toBeTruthy();
 
-        await screen.pressByTestIdAsync('welcome-secondary-login');
+        await screen.pressByTestIdAsync('welcome-scan-existing-home');
 
         expect(callbacks.onOpenRestore).toHaveBeenCalledTimes(1);
         expect(callbacks.onCreateAccount).not.toHaveBeenCalled();

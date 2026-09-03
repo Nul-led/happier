@@ -13,21 +13,12 @@ import { createServerUrlComparableKey } from '@/sync/domains/server/url/serverUr
 import { t } from '@/text';
 import { getServerRetentionPolicy } from '@/sync/api/capabilities/serverRetentionPolicyClient';
 import { formatServerRetentionDisclosure } from '@/sync/domains/server/retention/formatServerRetentionPolicy';
+import {
+    normalizeAuthenticationProviderId,
+    projectAuthenticationMethodCapabilities,
+} from '@/auth/capabilities/authMethodCapabilities';
 
 type AuthEntryServerAvailability = 'loading' | 'ready' | 'legacy' | 'unavailable' | 'incompatible';
-
-type AuthMethodActionMode = 'keyed' | 'keyless' | 'either';
-
-type AuthMethodAction = Readonly<{
-    id: 'login' | 'provision';
-    enabled: boolean;
-    mode: AuthMethodActionMode;
-}>;
-
-type AuthMethod = Readonly<{
-    id: string;
-    actions?: readonly AuthMethodAction[];
-}>;
 
 export type AuthEntryPrimaryAction = Readonly<{
     kind: 'anonymous' | 'provider-keyed' | 'mtls' | 'keyless';
@@ -82,43 +73,11 @@ function readWelcomeServerCheckRetryDelayMs(): number {
     return Math.max(1, Math.min(10_000, parsed));
 }
 
-function normalizeProviderId(value: unknown): string {
-    return String(value ?? '').trim().toLowerCase();
-}
-
-function hasEnabledAction(
-    method: AuthMethod | null,
-    actionId: 'login' | 'provision',
-    modes: readonly AuthMethodActionMode[],
-): boolean {
-    const actions = Array.isArray(method?.actions) ? method.actions : [];
-    return actions.some((action) => action?.enabled === true && action.id === actionId && modes.includes(action.mode));
-}
-
-function resolveMethodById(methods: readonly AuthMethod[], providerId: string): AuthMethod | null {
-    const normalized = normalizeProviderId(providerId);
-    if (!normalized) return null;
-    return methods.find((method) => normalizeProviderId(method.id) === normalized) ?? null;
-}
-
 /** Canonical deterministic provider choice for keyed account provisioning surfaces. */
 export function resolvePreferredProvisionProviderId(features: FeaturesResponse | null): string | null {
-    const authMethodsRaw = features?.capabilities?.auth?.methods ?? [];
-    const authMethods = Array.isArray(authMethodsRaw) ? (authMethodsRaw as readonly AuthMethod[]) : [];
-    const legacySignupMethods = features?.capabilities?.auth?.signup?.methods ?? [];
-    const legacyEnabledSignupIds = legacySignupMethods
-        .filter((method) => method.enabled === true)
-        .map((method) => normalizeProviderId(method.id))
-        .filter(Boolean);
-    const providerIds = authMethods.length > 0
-        ? authMethods
-            .map((method) => normalizeProviderId(method.id))
-            .filter(Boolean)
-            .filter((id) => id !== 'key_challenge' && id !== 'mtls')
-            .filter((id) => hasEnabledAction(resolveMethodById(authMethods, id), 'provision', ['keyed', 'either']))
-        : legacyEnabledSignupIds.filter((id) => id !== 'anonymous');
-    return providerIds.find((id) => features?.capabilities?.oauth?.providers?.[id]?.configured === true)
-        ?? providerIds[0]
+    const methods = projectAuthenticationMethodCapabilities(features);
+    return methods.configuredKeyedProvisionProviderIds[0]
+        ?? methods.keyedProvisionProviderIds[0]
         ?? null;
 }
 
@@ -254,37 +213,18 @@ export function useAuthEntryOptions(): AuthEntryOptions {
                 }
 
                 const features = featuresSnapshot.status === 'ready' ? featuresSnapshot.features : null;
-                const authMethodsRaw = features?.capabilities?.auth?.methods ?? [];
-                const authMethods = Array.isArray(authMethodsRaw) ? (authMethodsRaw as readonly AuthMethod[]) : [];
-
-                const legacySignupMethods = features?.capabilities?.auth?.signup?.methods ?? [];
-                const legacyEnabledSignupIds = legacySignupMethods
-                    .filter((method) => method.enabled === true)
-                    .map((method) => normalizeProviderId(method.id))
-                    .filter(Boolean);
-
-                const legacyLoginMethods = features?.capabilities?.auth?.login?.methods ?? [];
-                const legacyEnabledLoginIds = legacyLoginMethods
-                    .filter((method) => method.enabled === true)
-                    .map((method) => normalizeProviderId(method.id))
-                    .filter(Boolean);
-
-                const anonymousEnabled = authMethods.length > 0
-                    ? hasEnabledAction(resolveMethodById(authMethods, 'key_challenge'), 'provision', ['keyed', 'either'])
-                    : legacyEnabledSignupIds.includes('anonymous');
-
-                const keylessLoginMethodIds = authMethods.length > 0
-                    ? authMethods
-                        .map((method) => normalizeProviderId(method.id))
-                        .filter(Boolean)
-                        .filter((id) => id !== 'key_challenge')
-                        .filter((id) => hasEnabledAction(resolveMethodById(authMethods, id), 'login', ['keyless', 'either']))
-                    : legacyEnabledLoginIds.filter((id) => id !== 'key_challenge');
+                const authMethodCapabilities = projectAuthenticationMethodCapabilities(features);
+                const anonymousEnabled = authMethodCapabilities.anonymousProvisionAvailable;
+                const keylessLoginMethodIds = authMethodCapabilities.keylessLoginMethodIds;
 
                 const mtlsEnabled = keylessLoginMethodIds.includes('mtls');
                 const keylessProviderIds = keylessLoginMethodIds.filter((id) => id !== 'mtls');
 
-                if (!authMethods.length && legacyEnabledSignupIds.length === 0 && legacyEnabledLoginIds.length === 0) {
+                if (
+                    !authMethodCapabilities.usesStructuredMethods
+                    && authMethodCapabilities.legacyEnabledSignupMethodIds.length === 0
+                    && authMethodCapabilities.legacyEnabledLoginMethodIds.length === 0
+                ) {
                     if (mounted) {
                         setOptions({
                             showAuthActions: true,
@@ -320,8 +260,7 @@ export function useAuthEntryOptions(): AuthEntryOptions {
 
                 const preferredProviderId = resolvePreferredProvisionProviderId(features);
 
-                const configuredKeylessProviderId =
-                    keylessProviderIds.find((id) => features?.capabilities?.oauth?.providers?.[id]?.configured === true) ?? null;
+                const configuredKeylessProviderId = authMethodCapabilities.configuredKeylessProviderIds[0] ?? null;
                 const preferredKeylessProviderId = configuredKeylessProviderId ?? keylessProviderIds[0] ?? null;
 
                 const providerSignupTitle = preferredProviderId
@@ -350,15 +289,16 @@ export function useAuthEntryOptions(): AuthEntryOptions {
                                 : null;
 
                 const autoRedirect = features?.capabilities?.auth?.ui?.autoRedirect ?? null;
-                const autoRedirectProviderId = normalizeProviderId(autoRedirect?.providerId);
-                const methodForAutoRedirect = autoRedirectProviderId && authMethods.length > 0
-                    ? resolveMethodById(authMethods, autoRedirectProviderId)
-                    : null;
-                const autoRedirectToKeyedProvision = authMethods.length > 0 && hasEnabledAction(methodForAutoRedirect, 'provision', ['keyed', 'either']);
-                const autoRedirectToKeylessLogin = authMethods.length > 0 && hasEnabledAction(methodForAutoRedirect, 'login', ['keyless', 'either']);
+                const autoRedirectProviderId = normalizeAuthenticationProviderId(autoRedirect?.providerId);
+                const autoRedirectToKeyedProvision = authMethodCapabilities.usesStructuredMethods
+                    && authMethodCapabilities.keyedProvisionProviderIds.includes(autoRedirectProviderId);
+                const autoRedirectToKeylessLogin = authMethodCapabilities.usesStructuredMethods
+                    && authMethodCapabilities.keylessLoginMethodIds.includes(autoRedirectProviderId);
                 const autoRedirectToMtls = autoRedirectProviderId === 'mtls' && mtlsEnabled;
                 const autoRedirectToLegacySignupProvider =
-                    authMethods.length === 0 && autoRedirectProviderId.length > 0 && legacyEnabledSignupIds.includes(autoRedirectProviderId);
+                    !authMethodCapabilities.usesStructuredMethods
+                    && autoRedirectProviderId.length > 0
+                    && authMethodCapabilities.legacyEnabledSignupMethodIds.includes(autoRedirectProviderId);
 
                 if (mounted) {
                     setOptions({

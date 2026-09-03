@@ -8,6 +8,20 @@ import { Text } from '@/components/ui/text/Text';
 import { t } from '@/text';
 import { Typography } from '@/constants/Typography';
 import { focusNativeAccessibilityTarget } from '@/keyboard/focusReturn';
+import { formatEnrollmentExpiry } from '@/auth/pairing/pairingPresentation';
+import {
+    cancelPendingPreferredHomeEnrollment,
+    getPendingPreferredHomeEnrollment,
+    resumePendingPreferredHomeEnrollment,
+    subscribePendingPreferredHomeEnrollment,
+} from '@/sync/ops/accountDirectory/enrollPreferredDirectoryHome';
+import type { HomeLoginContinuationResult } from '@/sync/ops/accountDirectory/homeLoginApproval';
+import { useAccountDirectoryActivePolling } from '@/sync/ops/accountDirectory/useAccountDirectoryActivePolling';
+import {
+    resolveSelectedAccountServiceEndpoint,
+    subscribeAccountServiceEndpoint,
+} from '@/sync/domains/server/serverProfiles';
+import { isSelectedAccountServiceKey } from '@/sync/domains/accountDirectory/accountServiceSelection';
 
 export type AccountServiceOAuthStage =
     | 'verifying_service'
@@ -48,6 +62,19 @@ export type AccountServiceOAuthJourneyState = Readonly<{
     }>
 );
 
+export type AccountServiceApprovalOutcome =
+    | 'enrolled'
+    | 'cancelled'
+    | 'rejected'
+    | 'expired'
+    | 'partial_commit'
+    | 'failed';
+
+type AccountServiceApprovalPresentation =
+    | 'waiting'
+    | 'unavailable'
+    | Exclude<AccountServiceApprovalOutcome, 'enrolled'>;
+
 const stylesheet = StyleSheet.create((theme) => ({
     root: {
         width: '100%',
@@ -63,6 +90,12 @@ const stylesheet = StyleSheet.create((theme) => ({
     recoveryAction: {
         alignSelf: 'center',
         minWidth: 200,
+    },
+    approvalActions: {
+        width: '100%',
+        maxWidth: 360,
+        alignSelf: 'center',
+        gap: 10,
     },
 }));
 
@@ -116,10 +149,24 @@ function failureCopy(failure: AccountServiceOAuthFailure): Readonly<{ title: str
     }
 }
 
+function approvalOutcome(result: HomeLoginContinuationResult | null): AccountServiceApprovalOutcome | null {
+    if (!result || result.kind === 'approval_required' || result.kind === 'transport_unavailable') return null;
+    if (
+        result.kind === 'enrolled'
+        || result.kind === 'cancelled'
+        || result.kind === 'rejected'
+        || result.kind === 'expired'
+        || result.kind === 'partial_commit'
+    ) return result.kind;
+    return 'failed';
+}
+
 export function AccountServiceOAuthJourney(props: Readonly<{
     state: AccountServiceOAuthJourneyState;
     onRecovery: () => void;
     onTerminalPresented?: () => void;
+    approvalContinuation?: boolean;
+    onApprovalOutcome?: (outcome: AccountServiceApprovalOutcome) => void;
 }>): React.ReactElement {
     const styles = stylesheet;
     const host = endpointDisplayName(props.state.endpointUrl);
@@ -137,6 +184,81 @@ export function AccountServiceOAuthJourney(props: Readonly<{
     const recoveryLabel = isError && props.state.signedIn
         ? t('settingsAccount.accountServiceOAuth.actions.openSettings')
         : t('settingsAccount.accountServiceOAuth.actions.startAgain');
+    const approvalActive = props.approvalContinuation === true
+        && sourceStage === 'waiting_approval';
+    const pendingEnrollment = React.useSyncExternalStore(
+        subscribePendingPreferredHomeEnrollment,
+        getPendingPreferredHomeEnrollment,
+        getPendingPreferredHomeEnrollment,
+    );
+    // The selection subscription only invalidates this presentation. Endpoint equality and
+    // replacement authority remain in the canonical Account Service selection owner.
+    React.useSyncExternalStore(
+        subscribeAccountServiceEndpoint,
+        resolveSelectedAccountServiceEndpoint,
+        resolveSelectedAccountServiceEndpoint,
+    );
+    const [approvalPresentation, setApprovalPresentation] =
+        React.useState<AccountServiceApprovalPresentation>('waiting');
+
+    React.useEffect(() => {
+        if (!approvalActive) setApprovalPresentation('waiting');
+    }, [approvalActive]);
+
+    const applyApprovalResult = React.useCallback((result: HomeLoginContinuationResult | null) => {
+        if (result?.kind === 'approval_required') {
+            setApprovalPresentation('waiting');
+            return;
+        }
+        if (result?.kind === 'transport_unavailable') {
+            setApprovalPresentation('unavailable');
+            return;
+        }
+        const outcome = approvalOutcome(result);
+        if (outcome === 'enrolled') {
+            props.onApprovalOutcome?.('enrolled');
+        } else if (outcome) {
+            setApprovalPresentation(outcome);
+        }
+    }, [props.onApprovalOutcome]);
+
+    const resumeApproval = React.useCallback(async (): Promise<'success' | 'transient'> => {
+        try {
+            const result = await resumePendingPreferredHomeEnrollment();
+            applyApprovalResult(result);
+            return result?.kind === 'transport_unavailable' ? 'transient' : 'success';
+        } catch {
+            setApprovalPresentation('unavailable');
+            return 'transient';
+        }
+    }, [applyApprovalResult]);
+
+    useAccountDirectoryActivePolling(
+        resumeApproval,
+        approvalActive
+            && approvalPresentation === 'waiting'
+            && pendingEnrollment?.kind === 'approval_required',
+    );
+
+    React.useEffect(() => {
+        if (!approvalActive || !pendingEnrollment) return;
+        if (isSelectedAccountServiceKey(pendingEnrollment.serviceKey)) return;
+        void cancelPendingPreferredHomeEnrollment(pendingEnrollment).finally(() => {
+            setApprovalPresentation('cancelled');
+        });
+    }, [approvalActive, pendingEnrollment]);
+
+    const cancelApproval = React.useCallback(async () => {
+        await cancelPendingPreferredHomeEnrollment(
+            pendingEnrollment ?? undefined,
+        );
+        setApprovalPresentation('cancelled');
+    }, [pendingEnrollment]);
+
+    const finishApproval = React.useCallback(() => {
+        if (approvalPresentation === 'waiting' || approvalPresentation === 'unavailable') return;
+        props.onApprovalOutcome?.(approvalPresentation);
+    }, [approvalPresentation, props.onApprovalOutcome]);
 
     React.useEffect(() => {
         if (!isError) return;
@@ -154,8 +276,7 @@ export function AccountServiceOAuthJourney(props: Readonly<{
     React.useEffect(() => {
         if (
             isError
-            || (sourceStage !== 'waiting_approval'
-                && sourceStage !== 'account_service_connected'
+            || (sourceStage !== 'account_service_connected'
                 && sourceStage !== 'home_added')
         ) return;
         props.onTerminalPresented?.();
@@ -177,13 +298,39 @@ export function AccountServiceOAuthJourney(props: Readonly<{
             <SurfaceStateCard
                 testID={isError
                     ? `oauth-account-directory-error-${props.state.failure}`
+                    : approvalActive
+                        ? `oauth-account-directory-approval-${approvalPresentation}`
                     : `oauth-account-directory-stage-${stage}`}
-                kind={isError
+                kind={isError || (approvalActive && approvalPresentation !== 'waiting')
                     ? 'error'
                     : 'loading'}
-                title={failure?.title ?? stageTitle(stage!)}
-                reason={failure?.body ?? t('settingsAccount.accountServiceOAuth.focusedHomePreserved')}
-                accessibilitySemantics={isError ? 'alert' : 'status'}
+                title={failure?.title ?? (approvalActive
+                    ? approvalPresentation === 'waiting'
+                        ? t('settingsAccount.accountServiceOAuth.stages.waitingApproval')
+                        : approvalPresentation === 'unavailable'
+                            ? t('settingsAccount.accountServiceOAuth.errors.homeEnrollment.title')
+                            : approvalPresentation === 'rejected'
+                                ? t('approvals.status.rejected')
+                                : approvalPresentation === 'expired'
+                                    ? t('approvals.status.expired')
+                                    : approvalPresentation === 'cancelled'
+                                        ? t('settingsAccount.accountServiceOAuth.approvalWait.cancelledTitle')
+                                        : t('settingsAccount.accountServiceOAuth.errors.homeEnrollment.title')
+                    : stageTitle(stage!))}
+                reason={failure?.body ?? (approvalActive
+                    ? approvalPresentation === 'waiting'
+                        ? `${t('settingsAccount.accountServiceOAuth.approvalWait.waitingBody')}${pendingEnrollment?.kind === 'approval_required'
+                            ? ` ${t('connect.expiresAtLabel')}: ${formatEnrollmentExpiry(pendingEnrollment.expiresAtMs)}`
+                            : ''}`
+                        : approvalPresentation === 'unavailable'
+                            ? t('connect.homeEnrollmentRetryBody')
+                            : approvalPresentation === 'expired'
+                                ? t('settingsAccount.accountServiceOAuth.approvalWait.expiredBody')
+                                : approvalPresentation === 'cancelled'
+                                    ? t('settingsAccount.accountServiceOAuth.approvalWait.cancelledBody')
+                                    : t('settingsAccount.accountServiceOAuth.errors.homeEnrollment.body')
+                    : t('settingsAccount.accountServiceOAuth.focusedHomePreserved'))}
+                accessibilitySemantics={isError || (approvalActive && approvalPresentation !== 'waiting') ? 'alert' : 'status'}
             />
             {isError ? (
                 <View
@@ -197,6 +344,33 @@ export function AccountServiceOAuthJourney(props: Readonly<{
                         accessibilityLabel={recoveryLabel}
                         onPress={props.onRecovery}
                     />
+                </View>
+            ) : approvalActive ? (
+                <View style={styles.approvalActions}>
+                    {approvalPresentation === 'unavailable' ? (
+                        <RoundButton
+                            testID="oauth-account-directory-approval-retry"
+                            size="normal"
+                            title={t('common.retry')}
+                            action={resumeApproval}
+                        />
+                    ) : null}
+                    {approvalPresentation === 'waiting' || approvalPresentation === 'unavailable' ? (
+                        <RoundButton
+                            testID="oauth-account-directory-approval-cancel"
+                            size="normal"
+                            display="inverted"
+                            title={t('approvals.stopWaiting')}
+                            action={cancelApproval}
+                        />
+                    ) : (
+                        <RoundButton
+                            testID="oauth-account-directory-approval-continue"
+                            size="normal"
+                            title={t('common.continue')}
+                            onPress={finishApproval}
+                        />
+                    )}
                 </View>
             ) : null}
         </View>

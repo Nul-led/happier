@@ -4,6 +4,12 @@ import { installLocalStorageMock } from './tokenStorage.web.testHelpers';
 
 installTokenStorageWebPlatformMocks();
 
+function bindCanonicalServerUrl<T extends Readonly<{ endpoint: string }>>(
+    fixture: T,
+): T & Readonly<{ canonicalServerUrl: string; entryIntent: 'connect_service' }> {
+    return { ...fixture, canonicalServerUrl: fixture.endpoint, entryIntent: 'connect_service' };
+}
+
 describe('TokenStorage Account Directory namespaces', () => {
     let restoreLocalStorage: (() => void) | null = null;
 
@@ -140,7 +146,7 @@ describe('TokenStorage Account Directory namespaces', () => {
         const { TokenStorage } = await import('./tokenStorage');
         const now = 1_000_000;
         vi.spyOn(Date, 'now').mockReturnValue(now);
-        const pending = {
+        const pending = bindCanonicalServerUrl({
             endpoint: 'https://directory.example.test',
             serverIdentityId: 'directory-a',
             credentialTarget: 'account_directory' as const,
@@ -150,7 +156,7 @@ describe('TokenStorage Account Directory namespaces', () => {
             createdAt: now - 100,
             expiresAt: now + 10_000,
             returnTo: '/settings/account',
-        };
+        });
 
         await expect(TokenStorage.setPendingAccountDirectoryAuth(pending)).resolves.toBe(true);
         await expect(
@@ -176,7 +182,7 @@ describe('TokenStorage Account Directory namespaces', () => {
         const { TokenStorage } = await import('./tokenStorage');
         const now = 1_000_000;
         vi.spyOn(Date, 'now').mockReturnValue(now);
-        const continuation = {
+        const continuation = bindCanonicalServerUrl({
             endpoint: 'https://directory.example.test',
             serverIdentityId: 'directory-a',
             credentialTarget: 'account_directory' as const,
@@ -186,7 +192,7 @@ describe('TokenStorage Account Directory namespaces', () => {
             expiresAt: now + 10_000,
             mode: 'keyless' as const,
             proof: 'proof-bound-before-redirect',
-        };
+        });
 
         await expect(TokenStorage.setPendingAccountDirectoryAuth(continuation)).resolves.toBe(true);
         await expect(TokenStorage.getPendingAccountDirectoryAuth({
@@ -228,7 +234,7 @@ describe('TokenStorage Account Directory namespaces', () => {
         const { TokenStorage } = await import('./tokenStorage');
         const now = 1_000_000;
         vi.spyOn(Date, 'now').mockReturnValue(now);
-        const continuation = {
+        const continuation = bindCanonicalServerUrl({
             endpoint: 'https://directory.example.test',
             serverIdentityId: 'directory-a',
             credentialTarget: 'account_directory' as const,
@@ -238,7 +244,7 @@ describe('TokenStorage Account Directory namespaces', () => {
             expiresAt: now + 10_000,
             mode: 'keyed' as const,
             secret: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
-        };
+        });
 
         await expect(TokenStorage.setPendingAccountDirectoryAuth(continuation)).resolves.toBe(true);
         await expect(TokenStorage.getPendingAccountDirectoryAuth({
@@ -251,17 +257,18 @@ describe('TokenStorage Account Directory namespaces', () => {
         const { TokenStorage } = await import('./tokenStorage');
         const now = 1_000_000;
         vi.spyOn(Date, 'now').mockReturnValue(now);
-        const base = {
+        const base = bindCanonicalServerUrl({
             endpoint: 'https://directory.example.test',
             serverIdentityId: 'directory-a',
             credentialTarget: 'account_directory' as const,
+            entryIntent: 'connect_service' as const,
             provider: 'github',
             purpose: 'account_directory' as const,
             createdAt: now,
             expiresAt: now + 10_000,
             mode: 'keyless' as const,
             proof: 'proof-bound-before-redirect',
-        };
+        });
 
         await expect(TokenStorage.setPendingAccountDirectoryAuth({
             ...base,
@@ -274,6 +281,7 @@ describe('TokenStorage Account Directory namespaces', () => {
         expect(stored).toEqual(expect.objectContaining({
             endpoint: base.endpoint,
             serverIdentityId: base.serverIdentityId,
+            entryIntent: 'connect_service',
             homeServerIdentityId: 'srv_home_a',
         }));
         // The continuation carries only the stable identity intent — never Home credential
@@ -292,11 +300,37 @@ describe('TokenStorage Account Directory namespaces', () => {
         })).resolves.toBe(false);
     });
 
+    it.each([undefined, 'open_home', '', true])(
+        'rejects a Directory continuation whose semantic entry intent is %j',
+        async (entryIntent) => {
+            const { TokenStorage } = await import('./tokenStorage');
+            const now = 1_000_000;
+            vi.spyOn(Date, 'now').mockReturnValue(now);
+            const setUntrustedPending = TokenStorage.setPendingAccountDirectoryAuth as (
+                value: unknown,
+            ) => Promise<boolean>;
+
+            await expect(setUntrustedPending({
+                endpoint: 'https://directory.example.test',
+                serverIdentityId: 'directory-a',
+                canonicalServerUrl: 'https://directory.example.test',
+                credentialTarget: 'account_directory',
+                entryIntent,
+                provider: 'github',
+                purpose: 'account_directory',
+                createdAt: now,
+                expiresAt: now + 10_000,
+                mode: 'keyless',
+                proof: 'proof-bound-before-redirect',
+            })).resolves.toBe(false);
+        },
+    );
+
     it('rejects Directory pending records without the explicit target marker', async () => {
         const { TokenStorage } = await import('./tokenStorage');
         const now = 1_000_000;
         vi.spyOn(Date, 'now').mockReturnValue(now);
-        const pending = {
+        const pending = bindCanonicalServerUrl({
             endpoint: 'https://directory.example.test',
             serverIdentityId: 'directory-a',
             provider: 'github',
@@ -304,7 +338,7 @@ describe('TokenStorage Account Directory namespaces', () => {
             pending: 'oauth-pending-a',
             createdAt: now - 100,
             expiresAt: now + 10_000,
-        };
+        });
 
         const setUntrustedPending = TokenStorage.setPendingAccountDirectoryAuth as (
             value: unknown,
@@ -313,6 +347,26 @@ describe('TokenStorage Account Directory namespaces', () => {
         await expect(
             TokenStorage.getPendingAccountDirectoryAuth({ endpoint: pending.endpoint, serverIdentityId: pending.serverIdentityId }),
         ).resolves.toBeNull();
+    });
+
+    it('rejects Directory pending records without a canonical server URL', async () => {
+        const { TokenStorage } = await import('./tokenStorage');
+        const now = 1_000_000;
+        vi.spyOn(Date, 'now').mockReturnValue(now);
+        const setUntrustedPending = TokenStorage.setPendingAccountDirectoryAuth as (
+            value: unknown,
+        ) => Promise<boolean>;
+
+        await expect(setUntrustedPending({
+            endpoint: 'https://directory.example.test',
+            serverIdentityId: 'directory-a',
+            credentialTarget: 'account_directory',
+            provider: 'github',
+            purpose: 'account_directory',
+            pending: 'oauth-pending-a',
+            createdAt: now - 100,
+            expiresAt: now + 10_000,
+        })).resolves.toBe(false);
     });
 
     it('continues to parse the legacy Home pending shape without a target discriminator', async () => {
@@ -332,7 +386,7 @@ describe('TokenStorage Account Directory namespaces', () => {
         const { TokenStorage } = await import('./tokenStorage');
         const directory = TokenStorage.accountDirectoryAuthCredentials;
         const endpoint = 'https://directory.example.test';
-        const pending = {
+        const pending = bindCanonicalServerUrl({
             credentialTarget: 'account_directory' as const,
             endpoint,
             serverIdentityId: 'directory-a',
@@ -341,7 +395,7 @@ describe('TokenStorage Account Directory namespaces', () => {
             pending: 'oauth-pending-a',
             createdAt: Date.now() - 100,
             expiresAt: Date.now() + 10_000,
-        };
+        });
 
         await TokenStorage.setCredentialsForServerUrl(
             'https://home.example.test',
@@ -379,7 +433,7 @@ describe('TokenStorage Account Directory namespaces', () => {
             name: 'Home B',
             source: 'manual',
         });
-        const pending = {
+        const pending = bindCanonicalServerUrl({
             endpoint: 'https://directory.example.test',
             serverIdentityId: 'directory-a',
             credentialTarget: 'account_directory' as const,
@@ -388,7 +442,7 @@ describe('TokenStorage Account Directory namespaces', () => {
             pending: 'oauth-pending-a',
             createdAt: Date.now() - 100,
             expiresAt: Date.now() + 10_000,
-        };
+        });
 
         await TokenStorage.setCredentialsForServerUrl(
             homeA.serverUrl,

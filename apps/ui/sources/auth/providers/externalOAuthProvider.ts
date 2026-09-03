@@ -12,6 +12,7 @@ import type {
     AccountDirectoryOAuthStart,
     AuthProvider,
     ExternalAuthStartInput,
+    HomeOAuthRequestContext,
 } from '@/auth/providers/types';
 import {
     ExternalOAuthParamsResponseSchema,
@@ -34,12 +35,19 @@ export function createExternalOAuthProvider(params: {
     async function getExternalAuthUrl(input: ExternalAuthStartInput): Promise<string>;
     async function getExternalAuthUrl(
         input: ExternalAuthStartInput,
+        context: HomeOAuthRequestContext,
+    ): Promise<string>;
+    async function getExternalAuthUrl(
+        input: ExternalAuthStartInput,
         context: AccountDirectoryOAuthRequestContext,
     ): Promise<AccountDirectoryOAuthStart>;
     async function getExternalAuthUrl(
         input: ExternalAuthStartInput,
-        context?: AccountDirectoryOAuthRequestContext,
+        context?: AccountDirectoryOAuthRequestContext | HomeOAuthRequestContext,
     ): Promise<string | AccountDirectoryOAuthStart> {
+        const directoryContext = context && 'purpose' in context
+            ? context
+            : null;
         const query =
             input.mode === 'keyless'
                 ? (() => {
@@ -63,13 +71,14 @@ export function createExternalOAuthProvider(params: {
                       if (!normalizedPublicKey) throw new Error('external-auth-unavailable');
                       // Legacy Home auth omits mode=keyed. The explicit Account
                       // Directory contract is versioned and requires the mode.
-                      return `${context ? 'mode=keyed&' : ''}publicKey=${encodeURIComponent(normalizedPublicKey)}`;
+                      return `${directoryContext ? 'mode=keyed&' : ''}publicKey=${encodeURIComponent(normalizedPublicKey)}`;
                   })();
-        const restrictedContextQuery = context
+        const restrictedContextQuery = directoryContext
             ? [
-                `purpose=${encodeURIComponent(context.purpose)}`,
-                `endpointUrl=${encodeURIComponent(context.endpointUrl)}`,
-                `endpointServerIdentityId=${encodeURIComponent(context.endpointServerIdentityId)}`,
+                `purpose=${encodeURIComponent(directoryContext.purpose)}`,
+                `endpointUrl=${encodeURIComponent(directoryContext.endpointUrl)}`,
+                `endpointServerIdentityId=${encodeURIComponent(directoryContext.endpointServerIdentityId)}`,
+                `canonicalServerUrl=${encodeURIComponent(directoryContext.canonicalServerUrl)}`,
             ].join('&')
             : '';
         const request = context?.request ?? serverFetch;
@@ -96,15 +105,17 @@ export function createExternalOAuthProvider(params: {
             await response.json().catch(() => null),
         );
         if (!parsed.success) throw new Error('external-auth-unavailable');
-        if (!context) return parsed.data.url;
+        if (!directoryContext) return parsed.data.url;
         if (!('purpose' in parsed.data)) {
             throw new Error('external-auth-unavailable');
         }
         const row = parsed.data;
 
-        const expectedEndpointUrl = normalizeAccountDirectoryEndpoint(context.endpointUrl);
+        const expectedEndpointUrl = normalizeAccountDirectoryEndpoint(directoryContext.endpointUrl);
         const endpointUrl = normalizeAccountDirectoryEndpoint(row.endpointUrl);
-        const expectedIdentity = context.endpointServerIdentityId.trim();
+        const expectedCanonicalServerUrl = normalizeAccountDirectoryEndpoint(directoryContext.canonicalServerUrl);
+        const canonicalServerUrl = normalizeAccountDirectoryEndpoint(row.canonicalServerUrl);
+        const expectedIdentity = directoryContext.endpointServerIdentityId.trim();
         const endpointServerIdentityId = row.endpointServerIdentityId.trim();
         const expiresAt = Date.parse(row.expiresAt);
         if (
@@ -112,6 +123,8 @@ export function createExternalOAuthProvider(params: {
             || row.credentialTarget !== 'account_directory'
             || !expectedEndpointUrl
             || endpointUrl !== expectedEndpointUrl
+            || !expectedCanonicalServerUrl
+            || canonicalServerUrl !== expectedCanonicalServerUrl
             || !expectedIdentity
             || endpointServerIdentityId !== expectedIdentity
             || !Number.isFinite(expiresAt)
@@ -125,6 +138,7 @@ export function createExternalOAuthProvider(params: {
             credentialTarget: 'account_directory',
             endpointUrl,
             endpointServerIdentityId,
+            canonicalServerUrl,
             expiresAt,
         };
     }

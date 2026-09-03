@@ -45,6 +45,7 @@ function createV2Context(overrides: Partial<NonNullable<AuthQrWaitOptions['v2Con
         homeServerIdentityId: 'srv_home_b',
         bindingSecret: new Uint8Array(32).fill(17),
         bindingProof: 'bound-proof',
+        direction: 'trusted_home_displays' as const,
         issuedAtMs,
         expiresAtMs: issuedAtMs + 60_000,
         ...overrides,
@@ -276,6 +277,31 @@ describe('authQRWait explicit-target enrollment', () => {
         controller.abort();
 
         await expect(resultPromise).resolves.toEqual({ ok: false, reason: 'cancelled' });
+        expect(endpointFetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('stops at the invite expiry instead of sleeping through a longer retry backoff', async () => {
+        vi.useFakeTimers();
+        const keypair = generateAuthKeyPair();
+        const issuedAtMs = Date.now();
+        const context = createV2Context({
+            issuedAtMs,
+            expiresAtMs: issuedAtMs + 500,
+        });
+        endpointFetchMock.mockRejectedValueOnce(new TypeError('network'));
+
+        let settledResult: Awaited<ReturnType<typeof authQRWait>> | null = null;
+        const resultPromise = authQRWait(keypair, HOME_B_TARGET, { v2Context: context })
+            .then((result) => {
+                settledResult = result;
+                return result;
+            });
+        await vi.waitFor(() => expect(endpointFetchMock).toHaveBeenCalledTimes(1));
+
+        await vi.advanceTimersByTimeAsync(500);
+
+        expect(settledResult).toEqual({ ok: false, reason: 'expired' });
+        await resultPromise;
         expect(endpointFetchMock).toHaveBeenCalledTimes(1);
     });
 

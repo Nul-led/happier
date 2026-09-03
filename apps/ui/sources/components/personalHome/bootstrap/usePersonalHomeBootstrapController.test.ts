@@ -122,6 +122,37 @@ describe('usePersonalHomeBootstrapController', () => {
         expect(hook.getCurrent().snapshot.shouldGateShell).toBe(false);
     });
 
+    it('never lets an operation-scoped stale fact reader overwrite a newer authoritative reader', async () => {
+        const operation = createDeferred<void>();
+        const incomplete = facts();
+        const complete = facts({
+            anonymousSignup: 'disabled',
+            completedPersonalHomeProfile: completedProfile,
+        });
+        const staleReadFacts = vi.fn(async () => incomplete);
+        const currentReadFacts = vi.fn(async () => complete);
+        const ensureHomeReady = vi.fn(async () => await operation.promise);
+
+        const hook = await renderHook((readFacts: () => Promise<PersonalHomeFacts>) => (
+            usePersonalHomeBootstrapController({
+                readFacts,
+                operations: { 'ensure-home-ready': ensureHomeReady },
+            })
+        ), { initialProps: staleReadFacts });
+        await flushHookEffects({ cycles: 3, turns: 2 });
+        expect(ensureHomeReady).toHaveBeenCalledTimes(1);
+
+        await hook.rerender(currentReadFacts);
+        await flushHookEffects({ cycles: 3, turns: 2 });
+        expect(hook.getCurrent().snapshot.shouldGateShell).toBe(false);
+
+        await act(async () => operation.resolve());
+        await flushHookEffects({ cycles: 4, turns: 2 });
+
+        expect(currentReadFacts).toHaveBeenCalled();
+        expect(hook.getCurrent().snapshot.shouldGateShell).toBe(false);
+    });
+
     it('turns operation failures into a retryable blocked snapshot', async () => {
         const readFacts = vi.fn(async () => facts({ relayRuntime: null }));
         const ensureHomeReady = vi.fn(async () => { throw new Error('download failed'); });

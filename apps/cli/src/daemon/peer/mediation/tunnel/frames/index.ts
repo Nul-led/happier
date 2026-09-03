@@ -16,6 +16,7 @@ export {
     decodePeerTcpTunnelBinaryFrameForSession,
     encodePeerTcpTunnelBinaryFrameForSession,
     isSchedulableTimeoutMs,
+    peerTcpTunnelBinaryDecodeFailureReason,
     substreamAbortFrame,
 } from '@happier-dev/peer-transport';
 export type {

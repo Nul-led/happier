@@ -1,6 +1,5 @@
 import * as React from 'react';
 
-import { useSettings } from '@/sync/domains/state/storage';
 import { useHomeViewSelectionSettings } from '@/hooks/server/useHomeViewSelectionSettings';
 import { listServerProfiles } from '@/sync/domains/server/serverProfiles';
 import {
@@ -80,12 +79,11 @@ function useActiveServerSelectionSource(): ActiveServerSelectionSource {
 }
 
 export function useResolvedActiveServerSelection(): ResolvedActiveServerSelection {
-    const accountSettings = useSettings();
     const {
         serverSelectionGroups: groups,
         serverSelectionActiveTargetKind: activeKind,
         serverSelectionActiveTargetId: activeId,
-    } = useHomeViewSelectionSettings(accountSettings);
+    } = useHomeViewSelectionSettings();
     const activeServer = useActiveServerSelectionSource();
 
     return React.useMemo(
@@ -106,12 +104,11 @@ export function useResolvedActiveServerSelection(): ResolvedActiveServerSelectio
 }
 
 export function useEffectiveServerSelection(): EffectiveServerSelection {
-    const accountSettings = useSettings();
     const {
         serverSelectionGroups: groups,
         serverSelectionActiveTargetKind: activeKind,
         serverSelectionActiveTargetId: activeId,
-    } = useHomeViewSelectionSettings(accountSettings);
+    } = useHomeViewSelectionSettings();
     const activeServer = useActiveServerSelectionSource();
 
     return React.useMemo(

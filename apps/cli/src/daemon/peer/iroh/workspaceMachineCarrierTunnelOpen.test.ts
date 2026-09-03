@@ -57,7 +57,7 @@ describe('createWorkspaceMachineCarrierTunnelOpen', () => {
       accountId: 'account-1',
       localMachineId: 'machine-source',
       runtime: { available: true, endpoint: { endpointId: localEndpointId }, openTunnel } as never,
-      trustRoots: [{ keyId: 'key-1', publicKey: base64url(signingKeyPair.publicKey) }],
+      resolveTrustRoots: () => [{ keyId: 'key-1', publicKey: base64url(signingKeyPair.publicKey) }],
       readTargetMachine,
       mintGrant,
       nowMs: () => 2_000,
@@ -104,10 +104,61 @@ describe('createWorkspaceMachineCarrierTunnelOpen', () => {
     const open = createWorkspaceMachineCarrierTunnelOpen({
       accountId: 'account-1', localMachineId: 'machine-source',
       runtime: { available: true, endpoint: { endpointId: 'a'.repeat(64) }, openTunnel } as never,
-      trustRoots: [], readTargetMachine: async () => null, mintGrant: vi.fn(),
+      resolveTrustRoots: () => [], readTargetMachine: async () => null, mintGrant: vi.fn(),
     });
     await expect(open({ operationId: 'operation-1', sourceMachineId: 'machine-source', targetMachineId: 'missing', flow: 'workspace_sync' }))
       .rejects.toMatchObject({ code: 'machine_carrier_unavailable' });
     expect(openTunnel).not.toHaveBeenCalled();
+  });
+
+  it('uses current signing roots and current hints while fencing only the signed target EndpointId', async () => {
+    const signingKeyPair = tweetnacl.sign.keyPair();
+    const targetEndpointId = 'b'.repeat(64);
+    let readCount = 0;
+    const readTargetMachine = vi.fn(async () => ({
+      id: 'machine-target',
+      daemonStateVersion: ++readCount,
+      daemonState: { peerMediation: { iroh: { endpoint: {
+        endpointId: targetEndpointId,
+        directAddresses: [readCount === 1 ? '10.0.0.2:7777' : '10.0.0.3:8888'],
+      } } } },
+    }));
+    const mintGrant = vi.fn(async (request: DirectRouteGrantRequestV2) => {
+      const { kind, ttlMs: _ttlMs, ...binding } = request;
+      const payload = {
+        ...binding,
+        grantId: 'grant-rotated', accountId: 'account-1', iat: 1_000, exp: 301_000,
+        aud: 'happier-daemon-route-grant' as const, proofKind: kind,
+      };
+      return {
+        payload,
+        signature: {
+          keyId: 'key-current', alg: 'Ed25519' as const,
+          valueBase64Url: base64url(tweetnacl.sign.detached(
+            Buffer.from(createDirectRouteGrantSigningInputV2(payload), 'utf8'),
+            signingKeyPair.secretKey,
+          )),
+        },
+      };
+    });
+    const openTunnel = vi.fn(async () => ({
+      localPort: 48123, localCapability: 'd'.repeat(64), remoteEndpointId: targetEndpointId,
+      observedPath: 'direct' as const, close: async () => undefined,
+    }));
+    const open = createWorkspaceMachineCarrierTunnelOpen({
+      accountId: 'account-1', localMachineId: 'machine-source',
+      runtime: { available: true, endpoint: { endpointId: 'a'.repeat(64) }, openTunnel } as never,
+      resolveTrustRoots: () => [{ keyId: 'key-current', publicKey: base64url(signingKeyPair.publicKey) }],
+      readTargetMachine, mintGrant, nowMs: () => 2_000,
+    });
+
+    await expect(open({
+      operationId: 'operation-1', sourceMachineId: 'machine-source',
+      targetMachineId: 'machine-target', flow: 'workspace_sync',
+    })).resolves.toMatchObject({ localPort: 48123 });
+    expect(openTunnel).toHaveBeenCalledWith(expect.any(Object), {
+      endpointId: targetEndpointId,
+      directAddresses: ['10.0.0.3:8888'],
+    });
   });
 });

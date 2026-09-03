@@ -11,7 +11,6 @@ import { fetchServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
 import { buildConfigureServerLinks, buildTerminalConnectLinks } from '@happier-dev/cli-common/links';
 import {
   createTerminalPairingAuthentication,
-  readTerminalPairingRequirement,
 } from '@/auth/terminalProvisioningResponse';
 import {
   ensureProtectedLocalStateDirectory,
@@ -58,7 +57,6 @@ export async function handleAuthRequest(args: string[]): Promise<void> {
   const claimSecret = new Uint8Array(randomBytes(32));
   const claimSecretB64Url = Buffer.from(claimSecret).toString('base64url');
   const claimSecretHash = sha256Base64Url(claimSecret);
-  const pairingRequirement = readTerminalPairingRequirement();
   const pairing = createTerminalPairingAuthentication({
     nowMs: Date.now(),
     randomBytes: (length) => new Uint8Array(randomBytes(length)),
@@ -86,7 +84,7 @@ export async function handleAuthRequest(args: string[]): Promise<void> {
         pairingCreatedAtMs: pairing.createdAtMs,
         pairingExpiresAtMs: pairing.expiresAtMs,
         supportsTokenOnly: true,
-        ...(pairingRequirement ? { pairingRequirement } : {}),
+        pairingRequirement: 'v3',
         createdAt: new Date().toISOString(),
       },
       null,
@@ -124,7 +122,7 @@ export async function handleAuthRequest(args: string[]): Promise<void> {
       expiresAtMs: pairing.expiresAtMs,
     },
     supportsTokenOnly: true,
-    pairingRequirement: pairingRequirement ?? 'compatible',
+    pairingRequirement: 'v3',
     serverId: configuration.activeServerId,
     serverUrl: configuration.serverUrl,
     publicServerUrl: configuration.publicServerUrl,

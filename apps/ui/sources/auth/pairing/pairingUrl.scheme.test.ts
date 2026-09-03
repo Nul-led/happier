@@ -11,43 +11,19 @@ describe('pairingUrl scheme override', () => {
             },
         }));
 
-        const { buildPairingDeepLink, parsePairingDeepLink } = await import('./pairingUrl');
-
-        expect(() =>
-            buildPairingDeepLink({
-                pairId: 'pid123',
-                secret: 'sec_abc',
-                serverUrl: 'https://stack.example.test/path?x=1',
-            }),
-        ).toThrowError(expect.objectContaining({ code: 'legacy_provisioning_unavailable' }));
+        const { classifyLegacyPairingDeepLink } = await import('./pairingUrl');
 
         expect(
-            parsePairingDeepLink('happier-dev:///pair?v=1&pairId=pid123&secret=sec_abc&server=https%3A%2F%2Fstack.example.test'),
-        ).toEqual({
-            pairId: 'pid123',
-            secret: 'sec_abc',
-            serverUrl: 'https://stack.example.test',
-        });
+            classifyLegacyPairingDeepLink('happier-dev:///pair?v=1&pairId=pid123&secret=sec_abc&server=https%3A%2F%2Fstack.example.test'),
+        ).toEqual({ kind: 'legacy_pairing_update_required' });
 
-        expect(parsePairingDeepLink('happier:///pair?v=1&pairId=pid123&secret=sec_abc')).toEqual({
-            pairId: 'pid123',
-            secret: 'sec_abc',
-            serverUrl: null,
-        });
+        expect(classifyLegacyPairingDeepLink('happier:///pair?v=1&pairId=pid123&secret=sec_abc')).toEqual({ kind: 'legacy_pairing_update_required' });
 
-        expect(parsePairingDeepLink('happier-internaldev:///pair?v=1&pairId=pid123&secret=sec_abc')).toEqual({
-            pairId: 'pid123',
-            secret: 'sec_abc',
-            serverUrl: null,
-        });
+        expect(classifyLegacyPairingDeepLink('happier-internaldev:///pair?v=1&pairId=pid123&secret=sec_abc')).toEqual({ kind: 'legacy_pairing_update_required' });
 
-        expect(parsePairingDeepLink('happier-custom:///pair?v=1&pairId=pid123&secret=sec_abc')).toEqual({
-            pairId: 'pid123',
-            secret: 'sec_abc',
-            serverUrl: null,
-        });
+        expect(classifyLegacyPairingDeepLink('happier-custom:///pair?v=1&pairId=pid123&secret=sec_abc')).toEqual({ kind: 'legacy_pairing_update_required' });
 
-        expect(parsePairingDeepLink('otherapp:///pair?v=1&pairId=pid123&secret=sec_abc')).toBeNull();
+        expect(classifyLegacyPairingDeepLink('otherapp:///pair?v=1&pairId=pid123&secret=sec_abc')).toBeNull();
     });
 
     it('still parses the locally configured custom scheme exactly', async () => {
@@ -60,15 +36,8 @@ describe('pairingUrl scheme override', () => {
             },
         }));
 
-        const { buildPairingDeepLink, parsePairingDeepLink } = await import('./pairingUrl');
+        const { classifyLegacyPairingDeepLink } = await import('./pairingUrl');
 
-        expect(() => buildPairingDeepLink({ pairId: 'pid123', secret: 'sec_abc' })).toThrowError(
-            expect.objectContaining({ code: 'legacy_provisioning_unavailable' }),
-        );
-        expect(parsePairingDeepLink('my-team-app:///pair?v=1&pairId=pid123&secret=sec_abc')).toEqual({
-            pairId: 'pid123',
-            secret: 'sec_abc',
-            serverUrl: null,
-        });
+        expect(classifyLegacyPairingDeepLink('my-team-app:///pair?v=1&pairId=pid123&secret=sec_abc')).toEqual({ kind: 'legacy_pairing_update_required' });
     });
 });

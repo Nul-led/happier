@@ -397,10 +397,6 @@ function annotateMySqlEventAutomationFields(schemaBody: string): string {
                     "$1 @db.VarChar(64)",
                 )
                 .replace(
-                    /^(\s*accountCurrentnessWitnessJson\s+String\?)(?![^\n]*@db\.)/m,
-                    "$1 @db.LongText",
-                )
-                .replace(
                     /^(\s*claimResultJson\s+String)(?![^\n]*@db\.)/m,
                     "$1 @db.LongText",
                 ),

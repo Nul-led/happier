@@ -14,16 +14,21 @@ function isEndpointMissing(status: number): boolean {
 
 export async function fetchServerFeaturesSnapshot(params: {
   serverUrl: string;
+  /** Home credential requests the exact authenticated descriptor projection. */
+  token?: string;
   timeoutMs?: number;
   signal?: AbortSignal;
 }): Promise<CliServerFeaturesSnapshot> {
   const timeoutMs = params.timeoutMs ?? 6000;
+  const token = params.token?.trim();
+  const path = token ? '/v1/features/authenticated' : '/v1/features';
 
   try {
     const response = await withAbortTimeout(
       timeoutMs,
-      async (signal) => await fetch(`${normalizeBaseUrl(params.serverUrl)}/v1/features`, {
+      async (signal) => await fetch(`${normalizeBaseUrl(params.serverUrl)}${path}`, {
         method: 'GET',
+        ...(token ? { headers: { Authorization: `Bearer ${token}` } } : {}),
         signal,
       }),
       params.signal,

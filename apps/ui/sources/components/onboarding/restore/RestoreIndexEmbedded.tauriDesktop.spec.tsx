@@ -68,7 +68,7 @@ describe('RestoreIndexEmbedded (Tauri desktop)', () => {
         try {
             await act(async () => {
                 tree = renderer.create(
-                    <RestoreIndexEmbedded onBack={onBack} onOpenSecretKeyLogin={onOpenSecretKeyLogin} />,
+                    <RestoreIndexEmbedded entryIntent="enter_home" onBack={onBack} onOpenSecretKeyLogin={onOpenSecretKeyLogin} />,
                 );
             });
 

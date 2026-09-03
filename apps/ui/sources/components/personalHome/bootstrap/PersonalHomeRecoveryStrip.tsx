@@ -11,10 +11,6 @@ import type { NormalizedSetupDetail } from './personalHomeBootstrapTypes';
 
 const styles = StyleSheet.create((theme) => ({
     root: {
-        position: 'absolute',
-        left: 0,
-        right: 0,
-        bottom: 0,
         padding: 16,
         paddingBottom: 20,
         gap: 10,

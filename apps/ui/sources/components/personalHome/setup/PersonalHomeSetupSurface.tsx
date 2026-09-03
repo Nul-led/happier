@@ -130,6 +130,26 @@ export const PersonalHomeSetupSurface = React.memo(function PersonalHomeSetupSur
                         primaryActionRef={useExistingRef}
                         onUseExisting={props.onUseExisting}
                         onUseAnotherHome={props.onUseAnotherHome}
+                        details={hasLocalDetails ? (
+                            <>
+                                <Pressable
+                                    ref={detailsRef}
+                                    testID="personal-home-bootstrap-details-toggle"
+                                    accessibilityRole="button"
+                                    accessibilityLabel={t('common.details')}
+                                    accessibilityState={{ expanded: detailsOpen }}
+                                    onPress={toggleDetails}
+                                    style={styles.detailsButton}
+                                >
+                                    <Text style={styles.detailsText}>{detailsOpen ? t('common.collapse') : t('common.details')}</Text>
+                                </Pressable>
+                                {showDetails ? (
+                                    <View style={styles.details} testID="personal-home-bootstrap-details-panel">
+                                        <PersonalHomeDiagnosticDetails detail={props.snapshot.detail} activeTask={props.activeTask} />
+                                    </View>
+                                ) : null}
+                            </>
+                        ) : undefined}
                     />
                 ) : null}
 
@@ -142,7 +162,7 @@ export const PersonalHomeSetupSurface = React.memo(function PersonalHomeSetupSur
                     />
                 ) : null}
 
-                {hasLocalDetails && !hasFailure ? (
+                {hasLocalDetails && !hasFailure && !showExistingDecision ? (
                     <Pressable
                         testID="personal-home-bootstrap-details-toggle"
                         accessibilityRole="button"

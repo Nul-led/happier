@@ -23,6 +23,25 @@ type ImportExpiryServer = StartServerResult & Readonly<{
   getNextImportSessionExpiryAt: () => number | null;
 }>;
 
+function createStubDirectTransferServer(
+  stop: () => Promise<void>,
+  port = 46001,
+): StartServerResult {
+  return {
+    port,
+    stop,
+    issueImportOpenAuthorizationToken: vi.fn(() => ({
+      authorizationToken: 'unused-import-open-token',
+      expiresAt: 2_000,
+    })),
+    openTrustedImportSession: vi.fn(async () => ({
+      success: false as const,
+      error: 'unused',
+    })),
+    abortImportTransferSession: vi.fn(async () => {}),
+  };
+}
+
 describe('createDirectTransferServerLifecycle', () => {
   afterEach(() => {
     vi.useRealTimers();
@@ -1395,5 +1414,140 @@ describe('createDirectTransferServerLifecycle', () => {
     await lifecycle.stop();
     await expect(lifecycle.ensureListening()).rejects.toThrow('Direct transfer server lifecycle is stopped');
     expect(startServer).toHaveBeenCalledTimes(1);
+  });
+
+  it('retains listener ownership when a terminal stop fails and retries it on a later disposal', async () => {
+    let stopAttempts = 0;
+    const stopServer = vi.fn(async () => {
+      stopAttempts += 1;
+      if (stopAttempts === 1) {
+        throw new Error('EBUSY: direct transfer listener stop failed');
+      }
+    });
+    const startServer = vi.fn(async () => createStubDirectTransferServer(stopServer));
+    const lifecycle = createDirectTransferServerLifecycle({
+      bindPort: 46001,
+      listenerClasses: ['loopback_http'],
+      startServer,
+    });
+
+    await lifecycle.ensureListening();
+
+    await expect(lifecycle.stop()).rejects.toThrow('EBUSY: direct transfer listener stop failed');
+    expect(stopServer).toHaveBeenCalledTimes(1);
+
+    // The rejected cleanup stays owned by this lifecycle: it must not create a
+    // second owner by restarting, and it must not silently drop the listener.
+    expect(() => lifecycle.publishTransfer({
+      transferId: 'terminal-stop-retry-refused',
+      payload: Buffer.from('payload', 'utf8'),
+    })).toThrow('Direct transfer server lifecycle is stopped');
+    await expect(lifecycle.ensureListening())
+      .rejects.toThrow('Direct transfer server lifecycle is stopped');
+    expect(startServer).toHaveBeenCalledTimes(1);
+
+    await expect(lifecycle.stop()).resolves.toBeUndefined();
+    expect(stopServer).toHaveBeenCalledTimes(2);
+
+    // Once the stop succeeded the listener is no longer owned, so a further
+    // disposal does not stop it again.
+    await lifecycle.stop();
+    expect(stopServer).toHaveBeenCalledTimes(2);
+    expect(lifecycle.getState()).toMatchObject({ status: 'stopped' });
+  });
+
+  it('keeps the running listener owned when an idle stop fails and stops it on the next disposal', async () => {
+    vi.useFakeTimers();
+    let stopAttempts = 0;
+    const stopServer = vi.fn(async () => {
+      stopAttempts += 1;
+      if (stopAttempts === 1) {
+        throw new Error('EBUSY: direct transfer listener stop failed');
+      }
+    });
+    const startServer = vi.fn(async () => createStubDirectTransferServer(stopServer));
+    const lifecycle = createDirectTransferServerLifecycle({
+      bindPort: 46001,
+      listenerClasses: ['loopback_http'],
+      idleStopMs: 1_000,
+      startServer,
+    });
+
+    lifecycle.publishTransfer({
+      transferId: 'idle-stop-failure',
+      payload: Buffer.from('payload', 'utf8'),
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    lifecycle.clearPublishedTransfer('idle-stop-failure');
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(stopServer).toHaveBeenCalledTimes(1);
+    // The listener is still live, so the lifecycle must keep reporting and
+    // owning it instead of marking it stopped before the stop succeeded.
+    expect(lifecycle.getState()).toMatchObject({ status: 'running', port: 46001 });
+
+    await lifecycle.stop();
+    expect(stopServer).toHaveBeenCalledTimes(2);
+    expect(startServer).toHaveBeenCalledTimes(1);
+    expect(lifecycle.getState()).toMatchObject({ status: 'stopped' });
+  });
+
+  it('coalesces concurrent terminal stops into one listener stop attempt', async () => {
+    let releaseStop!: () => void;
+    const stopGate = new Promise<void>((resolve) => {
+      releaseStop = resolve;
+    });
+    const stopServer = vi.fn(async () => {
+      await stopGate;
+    });
+    const startServer = vi.fn(async () => createStubDirectTransferServer(stopServer));
+    const lifecycle = createDirectTransferServerLifecycle({
+      bindPort: 46001,
+      listenerClasses: ['loopback_http'],
+      startServer,
+    });
+
+    await lifecycle.ensureListening();
+
+    const first = lifecycle.stop();
+    const second = lifecycle.stop();
+    releaseStop();
+    await Promise.all([first, second]);
+
+    expect(stopServer).toHaveBeenCalledTimes(1);
+  });
+
+  it('coalesces a terminal stop with the in-flight idle stop of the same listener', async () => {
+    vi.useFakeTimers();
+    let releaseStop!: () => void;
+    const stopGate = new Promise<void>((resolve) => {
+      releaseStop = resolve;
+    });
+    const stopServer = vi.fn(async () => {
+      await stopGate;
+    });
+    const startServer = vi.fn(async () => createStubDirectTransferServer(stopServer));
+    const lifecycle = createDirectTransferServerLifecycle({
+      bindPort: 46001,
+      listenerClasses: ['loopback_http'],
+      idleStopMs: 1_000,
+      startServer,
+    });
+
+    lifecycle.publishTransfer({
+      transferId: 'idle-stop-coalesced',
+      payload: Buffer.from('payload', 'utf8'),
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    lifecycle.clearPublishedTransfer('idle-stop-coalesced');
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(stopServer).toHaveBeenCalledTimes(1);
+
+    const terminal = lifecycle.stop();
+    releaseStop();
+    await terminal;
+
+    expect(stopServer).toHaveBeenCalledTimes(1);
+    expect(lifecycle.getState()).toMatchObject({ status: 'stopped' });
   });
 });

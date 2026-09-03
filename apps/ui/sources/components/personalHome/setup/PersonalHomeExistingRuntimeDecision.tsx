@@ -19,6 +19,7 @@ export const PersonalHomeExistingRuntimeDecision = React.memo(function PersonalH
     primaryActionRef?: React.Ref<React.ElementRef<typeof Pressable>>;
     onUseExisting: () => void;
     onUseAnotherHome: () => void;
+    details?: React.ReactNode;
 }>) {
     const { theme } = useUnistyles();
     return (
@@ -34,6 +35,7 @@ export const PersonalHomeExistingRuntimeDecision = React.memo(function PersonalH
                     <Text style={styles.subtitle}>{t('personalHome.bootstrap.useAnotherDetail')}</Text>
                 </Pressable>
             </View>
+            {props.details}
         </View>
     );
 });

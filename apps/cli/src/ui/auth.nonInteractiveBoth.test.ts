@@ -28,7 +28,7 @@ type ServerFeaturesSnapshotMock =
     }>
   | Readonly<{ status: 'unsupported'; reason: 'endpoint_missing' }>;
 const fetchServerFeaturesSnapshotMock = vi.fn<
-  (params: Readonly<{ serverUrl: string }>) => Promise<ServerFeaturesSnapshotMock>
+  (params: Readonly<{ serverUrl: string; token?: string }>) => Promise<ServerFeaturesSnapshotMock>
 >(async () => ({
   status: 'ready' as const,
   features: {
@@ -172,6 +172,7 @@ describe.sequential('doAuth (non-interactive)', () => {
       expect(out.toLowerCase()).toContain('terminal is connected to: https://server.example.test');
       expect(out).toContain('Web app URL: https://webapp.example.test');
       expect(out.toLowerCase()).toContain('recommended: use the mobile app first');
+      expect(out).toContain('Authenticated pairing v3 is required.');
       expect(out.toLowerCase()).toContain('already have a happier account on another device');
       expect(out).toContain('webapp.example.test/terminal/connect#key=');
       expect(out).toContain('happier://terminal?');
@@ -179,9 +180,13 @@ describe.sequential('doAuth (non-interactive)', () => {
       expect(displayQRCodeMock).toHaveBeenCalledWith(expect.stringContaining(
         'serverIdentityId=srv_interactive_auth_home',
       ));
-      expect(fetchServerFeaturesSnapshotMock).toHaveBeenCalledTimes(1);
-      expect(fetchServerFeaturesSnapshotMock).toHaveBeenCalledWith({
+      expect(fetchServerFeaturesSnapshotMock).toHaveBeenCalledTimes(2);
+      expect(fetchServerFeaturesSnapshotMock).toHaveBeenNthCalledWith(1, {
         serverUrl: 'https://server.example.test',
+      });
+      expect(fetchServerFeaturesSnapshotMock).toHaveBeenNthCalledWith(2, {
+        serverUrl: 'https://server.example.test',
+        token: 'tok',
       });
     } finally {
       output.restore();
@@ -191,7 +196,7 @@ describe.sequential('doAuth (non-interactive)', () => {
     }
   }, 15_000);
 
-  it('persists the exact Home descriptor only after authentication succeeds', async () => {
+  it('fetches and persists the authenticated exact Home descriptor only after authentication succeeds', async () => {
     const home = await createTempDir('happier-cli-auth-home-descriptor-');
     const envScope = createEnvKeyScope(envKeys);
     const restoreTty = setStdioTtyForTest({ stdin: false, stdout: false });
@@ -204,6 +209,11 @@ describe.sequential('doAuth (non-interactive)', () => {
       endpoints: [{ kind: 'iroh', endpointId: 'c'.repeat(64) }],
     };
     fetchServerFeaturesSnapshotMock.mockResolvedValueOnce({
+      status: 'ready',
+      features: {
+        capabilities: { serverIdentity: { serverIdentityId: 'srv_interactive_auth_home' } },
+      },
+    }).mockResolvedValueOnce({
       status: 'ready',
       features: {
         capabilities: { serverIdentity: { serverIdentityId: 'srv_interactive_auth_home' } },
@@ -222,6 +232,10 @@ describe.sequential('doAuth (non-interactive)', () => {
       vi.resetModules();
       const { doAuth } = await import('./auth');
       expect((await doAuth())?.token).toBe('tok');
+      expect(fetchServerFeaturesSnapshotMock).toHaveBeenLastCalledWith({
+        serverUrl: 'https://server.example.test',
+        token: 'tok',
+      });
       expect(setActiveServerProfileHomeConnectionDescriptorMock).toHaveBeenCalledWith(descriptor);
     } finally {
       output.restore();

@@ -712,13 +712,31 @@ async function runHookOperation<Result>(operation: (() => Promise<Result>) | und
     if (!operation) throw new Error('Expected the Personal Home hook operation to be available.');
 
     let operationPromise!: Promise<Result>;
-    await act(async () => {
+    let settled = false;
+    act(() => {
         operationPromise = operation();
         // Attach a rejection handler immediately while the deterministic task timers are drained.
         // The original promise is still returned below so callers can assert its exact failure.
         void operationPromise.catch(() => {});
+        void operationPromise.then(
+            () => { settled = true; },
+            () => { settled = true; },
+        );
     });
-    await flushHookEffects({ cycles: 40, turns: 6, runAllTimers: true });
+    for (let attempt = 0; attempt < 80 && !settled; attempt += 1) {
+        await act(async () => {
+            for (let turn = 0; turn < 8; turn += 1) await Promise.resolve();
+        });
+        act(() => {
+            vi.runOnlyPendingTimers();
+        });
+        await act(async () => {
+            for (let turn = 0; turn < 8; turn += 1) await Promise.resolve();
+        });
+    }
+    if (!settled) {
+        throw new Error(`Personal Home operation did not settle; events=${JSON.stringify(harness.events())}`);
+    }
     return await operationPromise;
 }
 
@@ -750,6 +768,10 @@ describe('usePersonalHomeBootstrapRuntime system-task composition', () => {
         profiles.setActiveServerId(focusedHome.id);
         const homeABefore: ServerProfile | null = profiles.getServerProfileById(focusedHome.id);
         expect(homeABefore).not.toBeNull();
+        const profileEmissions: Array<readonly ServerProfile[]> = [];
+        const unsubscribeProfiles = profiles.subscribeServerProfiles(
+            () => profileEmissions.push(profiles.listServerProfiles()),
+        );
 
         const { usePersonalHomeBootstrapRuntime } = await import('./usePersonalHomeBootstrapRuntime');
         const hook = await renderHook(() => usePersonalHomeBootstrapRuntime());
@@ -762,8 +784,8 @@ describe('usePersonalHomeBootstrapRuntime system-task composition', () => {
 
         harness.markBootstrapStarted();
         await runHookOperation(() => hook.getCurrent().operations['ensure-home-ready']!(initialFacts));
+        unsubscribeProfiles();
         const eventsDuringBootstrap = harness.events();
-        await flushHookEffects({ cycles: 8 });
 
         // 1. The actual specs crossed the bridge in the canonical ordered sequence.
         const specs = harness.recordedSpecs();
@@ -791,6 +813,16 @@ describe('usePersonalHomeBootstrapRuntime system-task composition', () => {
             { AUTH_ANONYMOUS_SIGNUP_ENABLED: '1' },
             { AUTH_ANONYMOUS_SIGNUP_ENABLED: '0' },
         ]);
+        expect(mutations[0]?.params.expectedPersonalHomeState).toEqual({
+            installed: false,
+            canonicalServerUrl: null,
+            dataPresent: false,
+        });
+        expect(mutations[1]?.params.expectedPersonalHomeState).toEqual({
+            installed: true,
+            canonicalServerUrl: harness.CANONICAL_SERVER_URL,
+            dataPresent: true,
+        });
         for (const spec of mutations) {
             expect(spec.params.target).toEqual({ kind: 'local' });
             expect(spec.params.mode).toBe('user');
@@ -871,6 +903,13 @@ describe('usePersonalHomeBootstrapRuntime system-task composition', () => {
             serverIdentityId: harness.HOME_B_IDENTITY,
             personalHomeBootstrapCompleted: true,
         });
+        const personalHomeEmissions = profileEmissions
+            .map((next) => next.filter((profile) => profile.serverIdentityId === harness.HOME_B_IDENTITY))
+            .filter((next) => next.length > 0);
+        expect(personalHomeEmissions).toHaveLength(1);
+        expect(personalHomeEmissions[0]).toEqual([
+            expect.objectContaining({ personalHomeBootstrapCompleted: true }),
+        ]);
 
         // 7. The unrelated focused Home A is unchanged and remains the focused Home; the real
         //    profile owner performed no focus change and focused auth was never used.
@@ -881,7 +920,7 @@ describe('usePersonalHomeBootstrapRuntime system-task composition', () => {
 
         // Re-read facts through the real hook after completion: healthy runtime, closed signup,
         // present auth, adopted profile — the shell-releasing invariants.
-        const facts = await hook.getCurrent().readFacts();
+        const facts = await runHookOperation(() => hook.getCurrent().readFacts());
         expect(facts.relayRuntime).toMatchObject({
             installed: true,
             healthy: true,
@@ -913,7 +952,7 @@ describe('usePersonalHomeBootstrapRuntime system-task composition', () => {
             daemonMachineRegistered: true,
         });
         harness.setDaemonStatusOverrideClearsOnApproval();
-        const wrongAccountFacts = await hook.getCurrent().readFacts();
+        const wrongAccountFacts = await runHookOperation(() => hook.getCurrent().readFacts());
         expect(wrongAccountFacts.daemon).toMatchObject({
             daemonAccountId: 'acct_home_a',
             servesPersonalHome: false,
@@ -983,7 +1022,7 @@ describe('usePersonalHomeBootstrapRuntime system-task composition', () => {
         // 12. Idempotent: rerunning prepare-computer with a correct ready daemon starts no second
         //     setup task and no second pairing.
         const setupCountBefore = harness.recordedSpecs().filter((spec) => spec.kind === 'setup.thisComputer.v1').length;
-        const rerunFacts = await hook.getCurrent().readFacts();
+        const rerunFacts = await runHookOperation(() => hook.getCurrent().readFacts());
         await runHookOperation(() => hook.getCurrent().operations['prepare-computer']!(rerunFacts));
         await flushHookEffects({ cycles: 10, turns: 4 });
         const setupCountAfter = harness.recordedSpecs().filter((spec) => spec.kind === 'setup.thisComputer.v1').length;
@@ -997,7 +1036,7 @@ describe('usePersonalHomeBootstrapRuntime system-task composition', () => {
         // 14. Post-operation readFacts observes the fresh daemon facts through the daemon-control
         //     owner: the correct post-task status yields daemonReady and a ready snapshot while
         //     the shell stays released.
-        const factsAfterComputer = await hook.getCurrent().readFacts();
+        const factsAfterComputer = await runHookOperation(() => hook.getCurrent().readFacts());
         expect(factsAfterComputer.daemon).toMatchObject({
             serviceInstalled: true,
             daemonRunning: true,
@@ -1032,7 +1071,6 @@ describe('usePersonalHomeBootstrapRuntime system-task composition', () => {
         const hook = await renderHook(() => usePersonalHomeBootstrapRuntime());
         harness.markBootstrapStarted();
         await runHookOperation(() => hook.getCurrent().operations['ensure-home-ready']!(initialFacts));
-        await flushHookEffects({ cycles: 8 });
 
         // The managed daemon reports Home A as its connected Home BEFORE the production facts
         // read: the derivation must never classify it as daemonReady for this Personal Home.
@@ -1046,7 +1084,7 @@ describe('usePersonalHomeBootstrapRuntime system-task composition', () => {
             daemonAccountId: 'acct_home_a',
             daemonMachineRegistered: true,
         });
-        const facts = await hook.getCurrent().readFacts();
+        const facts = await runHookOperation(() => hook.getCurrent().readFacts());
         const { derivePersonalHomeBootstrapSnapshot } = await import('./derivePersonalHomeBootstrapSnapshot');
         expect(derivePersonalHomeBootstrapSnapshot(facts).daemonReady).toBe(false);
         harness.markBootstrapStarted();
@@ -1065,7 +1103,7 @@ describe('usePersonalHomeBootstrapRuntime system-task composition', () => {
 
         // Home readiness is untouched by the daemon failure: the shell stays usable and the
         // operation remains retryable, while the daemon still reads as not-ready-for-this-Home.
-        const factsAfterFailure = await hook.getCurrent().readFacts();
+        const factsAfterFailure = await runHookOperation(() => hook.getCurrent().readFacts());
         expect(factsAfterFailure.relayRuntime).toMatchObject({ installed: true, healthy: true, status: 'healthy' });
         expect(factsAfterFailure.localHomeAuth).toBe('present');
         expect(factsAfterFailure.anonymousSignup).toBe('disabled');

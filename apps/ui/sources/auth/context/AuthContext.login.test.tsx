@@ -218,6 +218,61 @@ describe('AuthContext.login', () => {
         }
     });
 
+    it('stores an exact-target Home credential without replacing the newly focused Home auth projection', async () => {
+        const homeA = {
+            id: 'home-a',
+            serverUrl: 'https://home-a.example.test',
+            name: 'Home A',
+            serverIdentityId: 'srv_home_a',
+        };
+        const homeB = {
+            id: 'home-b',
+            serverUrl: 'https://home-b.example.test',
+            name: 'Home B',
+            serverIdentityId: 'srv_home_b',
+        };
+        serverProfilesState.profiles = [homeA, homeB];
+        activeServerSnapshotState.serverId = homeB.serverIdentityId;
+        activeServerSnapshotState.serverUrl = homeB.serverUrl;
+        activeServerSnapshotState.generation = 2;
+        const homeACredentials = { token: buildTokenWithSub('home-a') };
+        const homeBCredentials = { token: buildTokenWithSub('home-b') };
+        const { TokenStorage } = await import('@/auth/storage/tokenStorage');
+        await TokenStorage.setCredentialsForServerUrl(
+            homeB.serverUrl,
+            { serverId: homeB.serverIdentityId },
+            homeBCredentials,
+        );
+        const { AuthProvider, getCurrentAuth } = await import('./AuthContext');
+        const screen = await renderScreen(React.createElement(AuthProvider, {
+            initialCredentials: homeBCredentials,
+            children: React.createElement(React.Fragment, null),
+        }));
+
+        try {
+            const auth = getCurrentAuth();
+            if (!auth) throw new Error('Expected current auth to be set');
+            await expect(auth.loginWithCredentials(homeACredentials, {
+                target: {
+                    serverUrl: homeA.serverUrl,
+                    serverId: homeA.serverIdentityId,
+                },
+            })).resolves.toEqual({ kind: 'completed' });
+
+            await expect(TokenStorage.getCredentialsForServerUrl(
+                homeA.serverUrl,
+                { serverId: homeA.serverIdentityId },
+            )).resolves.toEqual(homeACredentials);
+            expect(getCurrentAuth()).toMatchObject({
+                isAuthenticated: true,
+                credentials: homeBCredentials,
+            });
+            expect(switchConnectionToActiveServerSpy).not.toHaveBeenCalled();
+        } finally {
+            await screen.unmount();
+        }
+    });
+
     it('rebinds the same focused Home when its connection descriptor revision changes', async () => {
         vi.useRealTimers();
         const credentials = { token: buildTokenWithSub('server-test'), secret: 'secret-test' };
@@ -831,7 +886,9 @@ describe('AuthContext.login', () => {
         await accountDirectoryCredentialStorage.set(directoryTarget, { token: 'account-service-token' });
         await TokenStorage.setPendingAccountDirectoryAuth({
             credentialTarget: 'account_directory',
+            entryIntent: 'connect_service',
             ...directoryTarget,
+            canonicalServerUrl: directoryTarget.endpoint,
             provider: 'github',
             purpose: 'account_directory',
             pending: 'pending-account-service-auth',

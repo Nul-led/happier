@@ -23,6 +23,39 @@ const facts: PersonalHomeFacts = {
 };
 
 describe('PersonalHomeBootstrapGate', () => {
+    it.each([
+        { name: 'pending', currentFacts: facts },
+        {
+            name: 'recoverably blocked',
+            currentFacts: {
+                ...facts,
+                relayRuntime: {
+                    relayUrl: 'http://127.0.0.1:3005',
+                    installed: true,
+                    healthy: false,
+                    status: 'needs-repair' as const,
+                    purpose: { kind: 'personal-home' as const, canonicalServerUrl: 'http://127.0.0.1:3005' },
+                },
+            },
+        },
+    ])('does not mount the unauthenticated route tree while Tauri bootstrap is $name', async ({ currentFacts }) => {
+        const unauthenticatedRouteMounted = vi.fn();
+        function UnauthenticatedRoute(): React.ReactElement {
+            unauthenticatedRouteMounted();
+            return <View testID="unauthenticated-home-discovery" />;
+        }
+
+        const screen = await renderScreen(
+            <PersonalHomeBootstrapGate isDesktopHost isDesktopMainWindow readFacts={async () => currentFacts}>
+                <UnauthenticatedRoute />
+            </PersonalHomeBootstrapGate>,
+        );
+
+        expect(screen.findByTestId('personal-home-setup-surface')).not.toBeNull();
+        expect(screen.findByTestId('unauthenticated-home-discovery')).toBeNull();
+        expect(unauthenticatedRouteMounted).not.toHaveBeenCalled();
+    });
+
     it('keeps non-desktop hosts on the normal shell', async () => {
         const screen = await renderScreen(
             <PersonalHomeBootstrapGate isDesktopHost={false} readFacts={async () => facts}>

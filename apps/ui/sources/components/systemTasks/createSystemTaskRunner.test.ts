@@ -407,4 +407,73 @@ describe('createSystemTaskRunner', () => {
         }));
         expect(manual.respondMock).toHaveBeenCalledWith(taskId, { trusted: true });
     });
+
+    it('owns a registered prompt continuation for the task lifetime and answers a replay exactly once', async () => {
+        const { createSystemTaskRunner } = await import('./createSystemTaskRunner');
+        const manual = createManualBridge();
+        const runner = createSystemTaskRunner({ bridge: manual.bridge });
+        const spec = createSpec({
+            kind: 'remote.ssh.manageHost.v1',
+            params: { action: 'personalHome.relocate' },
+        });
+        const taskId = await runner.start(spec);
+        const continuation = vi.fn(async () => ({ descriptor: { revision: 2 } }));
+        runner.registerPromptContinuation?.(taskId, continuation);
+        const prompt = {
+            protocolVersion: 1,
+            taskId,
+            tsMs: 100,
+            type: 'prompt',
+            stepId: 'personalHome.publishLocation',
+            message: 'Publish the destination descriptor',
+            data: {
+                kind: 'personal_home.publish_relocation_descriptor.v1',
+                operationId: 'relocation-1',
+            },
+        } satisfies SystemTaskEvent;
+
+        manual.emitEvent(taskId, prompt);
+        manual.emitEvent(taskId, prompt);
+        await vi.waitFor(() => expect(manual.respondMock).toHaveBeenCalledTimes(1));
+
+        expect(continuation).toHaveBeenCalledTimes(1);
+        expect(manual.respondMock).toHaveBeenCalledWith(taskId, { descriptor: { revision: 2 } });
+        expect(runner.listPromptContinuations?.()).toEqual([{ taskId, spec }]);
+    });
+
+    it('allows a failed prompt continuation to retry when the owner re-registers', async () => {
+        const { createSystemTaskRunner } = await import('./createSystemTaskRunner');
+        const manual = createManualBridge();
+        const runner = createSystemTaskRunner({ bridge: manual.bridge });
+        const taskId = await runner.start(createSpec({
+            kind: 'remote.ssh.manageHost.v1',
+            params: { action: 'personalHome.relocate' },
+        }));
+        const prompt = {
+            protocolVersion: 1,
+            taskId,
+            tsMs: 100,
+            type: 'prompt',
+            stepId: 'personalHome.publishLocation',
+            message: 'Publish the destination descriptor',
+            data: {
+                kind: 'personal_home.publish_relocation_descriptor.v1',
+                operationId: 'relocation-1',
+            },
+        } satisfies SystemTaskEvent;
+        const failedContinuation = vi.fn(async () => {
+            throw new Error('temporary publication failure');
+        });
+        const retryContinuation = vi.fn(async () => ({ descriptor: { revision: 3 } }));
+
+        runner.registerPromptContinuation?.(taskId, failedContinuation);
+        manual.emitEvent(taskId, prompt);
+        await vi.waitFor(() => expect(failedContinuation).toHaveBeenCalledTimes(1));
+
+        runner.registerPromptContinuation?.(taskId, retryContinuation);
+        await vi.waitFor(() => expect(manual.respondMock).toHaveBeenCalledTimes(1));
+
+        expect(retryContinuation).toHaveBeenCalledTimes(1);
+        expect(manual.respondMock).toHaveBeenCalledWith(taskId, { descriptor: { revision: 3 } });
+    });
 });

@@ -130,9 +130,7 @@ function isEligible(params: {
 export function createOidcIdentityProvider(instance: OidcAuthProviderInstanceConfig): IdentityProvider {
     const providerId = instance.id.toString().trim().toLowerCase();
 
-    return Object.freeze({
-        id: providerId,
-        connect: async (params: { ctx: Context; profile: unknown; accessToken: string; refreshToken?: string; preferredUsername?: string | null }) => {
+    const prepareConnect: IdentityProvider["prepareConnect"] = async (params) => {
             const userId = params.ctx.uid;
             const providerUserId = extractSub(params.profile);
             if (!providerUserId) {
@@ -164,12 +162,21 @@ export function createOidcIdentityProvider(instance: OidcAuthProviderInstanceCon
                 throw new Error("provider-already-linked");
             }
 
-            await inTx(async (tx) => {
+            return { connectInTx: async (tx) => {
                 const account = await tx.account.findUnique({
                     where: { id: userId },
                     select: { username: true },
                 });
                 if (!account) throw new Error("account-not-found");
+                const conflictingIdentity = await tx.accountIdentity.findFirst({
+                    where: {
+                        provider: providerId,
+                        providerUserId,
+                        NOT: { accountId: userId },
+                    },
+                    select: { id: true },
+                });
+                if (conflictingIdentity) throw new Error("provider-already-linked");
 
                 const existingUsername = account.username?.toString().trim() || null;
                 let usernameToSet: string | null = null;
@@ -205,7 +212,15 @@ export function createOidcIdentityProvider(instance: OidcAuthProviderInstanceCon
                         data: { username: usernameToSet },
                     });
                 }
-            });
+            }};
+        };
+
+    return Object.freeze({
+        id: providerId,
+        prepareConnect,
+        connect: async (params) => {
+            const prepared = await prepareConnect(params);
+            await inTx(prepared.connectInTx);
         },
         disconnect: async (params: { ctx: Context }) => {
             const userId = params.ctx.uid;

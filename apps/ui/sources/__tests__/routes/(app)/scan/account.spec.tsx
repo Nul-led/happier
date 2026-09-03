@@ -10,6 +10,7 @@ import {
 
 const routerBackSpy = vi.fn();
 const routerReplaceSpy = vi.fn();
+const routerPushSpy = vi.fn();
 const processAccountAuthUrlSpy = vi.fn(async (_url: string) => true);
 const processTerminalAuthUrlSpy = vi.fn(async (_url: string) => true);
 const promptSpy = vi.fn(async (..._args: unknown[]) => null as string | null);
@@ -50,6 +51,7 @@ installScanRouteCommonModuleMocks({
             router: {
                 back: routerBackSpy,
                 replace: routerReplaceSpy,
+                push: routerPushSpy,
                 canGoBack: () => false,
             },
         }).module;
@@ -69,6 +71,7 @@ describe('/scan/account', () => {
     beforeEach(() => {
         routerBackSpy.mockClear();
         routerReplaceSpy.mockClear();
+        routerPushSpy.mockClear();
         promptSpy.mockClear();
         alertAsyncSpy.mockClear();
         processAccountAuthUrlSpy.mockClear();
@@ -109,6 +112,67 @@ describe('/scan/account', () => {
         expect(processAccountAuthUrlSpy).toHaveBeenCalledTimes(1);
         expect(processAccountAuthUrlSpy).toHaveBeenCalledWith('happier:///account?abc123');
         expect(processTerminalAuthUrlSpy).not.toHaveBeenCalled();
+    });
+
+    it('refuses the immutable released V1 invite with guidance and zero scan side effects', async () => {
+        // Exact output from cli-v0.2.1 commit b1d15a8a9c241737d1ca9b167459901e6259173a.
+        const releasedV1Link =
+            'happier-dev:///pair?v=1&pairId=pid123&secret=sec_abc&server=https%3A%2F%2Fstack.example.test%2Fpath%3Fx%3D1';
+        const { default: Screen } = await import('@/app/(app)/scan/account');
+
+        await renderScreen(<Screen />);
+        await act(async () => {
+            await lastScannerProps.onScan(releasedV1Link);
+        });
+
+        expect(alertAsyncSpy).toHaveBeenCalledWith(
+            'connect.updateRequiredTitle',
+            'connect.legacyPairingUpdateRequiredBody',
+            [
+                expect.objectContaining({ text: 'connect.scanNewQr' }),
+                expect.objectContaining({ text: 'common.cancel', style: 'cancel' }),
+            ],
+        );
+        expect(processAccountAuthUrlSpy).not.toHaveBeenCalled();
+        expect(processTerminalAuthUrlSpy).not.toHaveBeenCalled();
+        expect(routerReplaceSpy).not.toHaveBeenCalled();
+        expect(routerBackSpy).not.toHaveBeenCalled();
+        expect(JSON.stringify(alertAsyncSpy.mock.calls)).not.toContain('sec_abc');
+    });
+
+    it('routes a scanned V2 Home invite as an authenticated add-for-later enrollment', async () => {
+        const { buildHomeQrInviteDeepLink } = await import('@/auth/pairing/pairingUrl');
+        const { encodeBase64 } = await import('@/encryption/base64');
+        const inviteLink = buildHomeQrInviteDeepLink({
+            invite: {
+                v: 2,
+                intent: 'home_device',
+                direction: 'trusted_home_displays',
+                pairId: 'pair-settings-scan',
+                home: {
+                    v: 1,
+                    homeServerIdentityId: 'srv_home_b',
+                    canonicalServerUrl: 'https://home-b.test',
+                    revision: 1,
+                    endpoints: [{ kind: 'https', url: 'https://home-b.test' }],
+                },
+                qrSecretBase64Url: encodeBase64(new Uint8Array(32).fill(11), 'base64url'),
+                issuedAtMs: Date.now(),
+                expiresAtMs: Date.now() + 60_000,
+            },
+        });
+        const { default: Screen } = await import('@/app/(app)/scan/account');
+
+        await renderScreen(<Screen />);
+        await act(async () => {
+            await lastScannerProps.onScan(inviteLink);
+        });
+
+        expect(routerPushSpy).toHaveBeenCalledWith(
+            `/restore?pairingLink=${encodeURIComponent(inviteLink)}&entryIntent=add_home`,
+        );
+        expect(processAccountAuthUrlSpy).not.toHaveBeenCalled();
+        expect(alertAsyncSpy).not.toHaveBeenCalled();
     });
 
     it('rejects scanned terminal URLs from the account scanner', async () => {

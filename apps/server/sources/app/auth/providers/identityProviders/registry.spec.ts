@@ -14,6 +14,7 @@ describe("identityProviders registry", () => {
                 identity: {
                     id: "GitHub",
                     connect: async () => {},
+                    prepareConnect: async () => ({ connectInTx: async () => {} }),
                     disconnect: async () => {},
                 },
             },

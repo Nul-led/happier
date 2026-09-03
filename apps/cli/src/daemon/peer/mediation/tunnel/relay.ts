@@ -5,6 +5,7 @@ import {
     PEER_TCP_TUNNEL_JSON_BASE64_ENCODING_V1,
     PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT,
     DEFAULT_MACHINE_TUNNEL_SUBSTREAM_CAPABILITIES,
+    decodePeerTcpTunnelBinaryFrameHeaderV2,
     decodePeerTcpTunnelBinaryFrameV2,
     PeerTcpTunnelRelayEnvelopeSchema,
     verifyPeerTcpTunnelRelayAuthorizationV2,
@@ -28,6 +29,7 @@ import {
     createPeerTcpTunnelStreamSession,
     decodePeerTcpTunnelBinaryFrameForSession,
     encodePeerTcpTunnelBinaryFrameForSession,
+    peerTcpTunnelBinaryDecodeFailureReason,
     type LegacyJsonPeerTcpTunnelFrame,
     type PeerTcpTunnelFrame,
 } from './frames';
@@ -45,10 +47,6 @@ import {
     type PeerTcpTunnelVoiceBinaryTerminalConsumer,
 } from './voiceBinaryAppend';
 import { createAtomicRouteGrantConsumption } from './grantConsumption';
-import {
-    decodePeerTcpTunnelBinaryRoutingHeaderV2,
-    peerTcpTunnelBinaryDecodeFailureReason,
-} from './routingHeader';
 
 type PeerTcpTunnelRelaySocket = Readonly<{
     on: (event: string, handler: (payload?: unknown) => void | Promise<void>) => unknown;
@@ -685,7 +683,7 @@ export function registerPeerTcpTunnelRelayTerminator(
             tunnelId = frameTunnelId(envelope.frame);
             frame = envelope.frame as Exclude<PeerTcpTunnelFrameV1, { kind: 'open' }>;
         } else {
-            const routingHeader = decodePeerTcpTunnelBinaryRoutingHeaderV2({
+            const routingHeader = decodePeerTcpTunnelBinaryFrameHeaderV2({
                 frame: envelope.frame,
                 maxHeaderBytes: maxBinaryHeaderBytes,
             });

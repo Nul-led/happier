@@ -198,6 +198,28 @@ describe("auth token provenance (integration)", () => {
             legacy: true,
         });
 
+        // Stable and preview 0.2 servers issued terminal credentials as the
+        // same pre-marker signed token with a non-empty session extra. The
+        // named ordinary-Home compatibility boundary must retain that released
+        // credential while preserving its narrower automation authority.
+        const releasedLegacyTerminalToken = await generator.new({
+            user: account.id,
+            extras: { tokenEpoch: 0, session: "terminal-auth-request-1" },
+        });
+        await expect(auth.verifyToken(releasedLegacyTerminalToken)).resolves.toBeNull();
+        await expect(auth.verifyLegacyHomeToken(releasedLegacyTerminalToken)).resolves.toMatchObject({
+            userId: account.id,
+            authTokenKind: "terminal",
+            authority: "account_automation",
+            legacy: true,
+        });
+        await expect(auth.verifyTokenForRoute(releasedLegacyTerminalToken)).resolves.toMatchObject({
+            userId: account.id,
+            authTokenKind: "terminal",
+            authority: "account_automation",
+            legacy: true,
+        });
+
         // A malformed new marker is never reinterpreted as a legacy credential.
         const futureMarkerToken = await generator.new({
             user: account.id,

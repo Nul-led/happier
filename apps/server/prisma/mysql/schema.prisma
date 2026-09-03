@@ -595,6 +595,10 @@ model Session {
     pendingCount      Int                 @default(0)
     pendingBlockedCount           Int                          @default(0)
     pendingQueueSeq   Int                 @default(0)
+    pendingActivationRequestId   String?
+    pendingActivationRequestedAt DateTime?
+    pendingActivationStatus      String?
+    pendingActivationFailureCode String?
     // Server-readable per-session activity projection (minimal, E2EE-safe).
     // These fields exist to support authoritative badge counts for background/closed devices.
     lastViewedSessionSeq            Int?
@@ -1436,8 +1440,12 @@ model AutomationRun {
     @@index([state, finishedAt])
     @@index([state, dueAt])
     @@index([replyHandoffState, replyHandoffDueAt])
-    @@unique([triggerId, occurrenceKey])
-    @@unique([automationId, causeKind, occurrenceKey], map: "AutomationRun_automationId_causeKind_occurrenceKey_key")
+    /// The one ordinary nullable composite unique that owns Run rejoin for
+    /// every cause. Trigger identity is already inside the derived occurrence
+    /// key, so a trigger- or cause-scoped unique would be a second dedupe
+    /// owner rather than a stricter one. Schedule, non-idempotent V3 manual,
+    /// and retained released-V2 manual rows keep a null key.
+    @@unique([automationId, occurrenceKey])
     @@unique([automationId, legacyManualIdempotencyKey], map: "AutomationRun_automationId_idempotencyKey_key")
     @@index([triggerId, state])
 }
@@ -1451,9 +1459,6 @@ model AutomationWorkerClaimReceipt {
     account               Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
     machineId             String
     machineInstallationId String
-    runId                 String?
-    claimedAttempt        Int?
-    accountCurrentnessWitnessJson String? @db.LongText
     claimResultJson       String @db.LongText
     expiresAt             DateTime
     createdAt             DateTime @default(now())
@@ -1947,6 +1952,11 @@ model PluginWebhookEndpoint {
     previousTargetMachineInstallationId String? @db.VarChar(256)
     previousTargetMaterializationId   String? @db.VarChar(256)
     previousTargetPluginVersion       String? @db.VarChar(256)
+    /// The highest controller-owned target intent this endpoint has converged, recorded only by
+    /// the plugin-surface `plugin.webhook.endpoint.convergeTarget` operation. It is the ordering
+    /// authority that lets a late retry of a superseded feature intent be refused instead of
+    /// moving delivery back to a retired target; present-user administration does not use it.
+    targetIntentEpoch                 Int?
     createdAt                         DateTime @default(now())
     updatedAt                         DateTime @updatedAt
 

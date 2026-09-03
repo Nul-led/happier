@@ -33,7 +33,8 @@ vi.mock('@/sync/domains/pending/pendingTerminalConnect', () => ({
     getPendingTerminalConnect: () => null,
 }));
 
-vi.mock('@/sync/domains/server/serverProfiles', () => ({
+vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>(),
     getActiveServerUrl: () => activeServerUrl,
 }));
 
@@ -74,11 +75,12 @@ describe('TerminalConnectScreen unauthenticated redirect', () => {
         expect(setPendingMock).toHaveBeenCalledWith({
             publicKeyB64Url: 'abc123',
             serverUrl: 'https://company.example.test',
+            serverIdentityId: '',
         });
         expect(upsertActivateAndSwitchServerMock).toHaveBeenCalledWith({
             serverUrl: 'https://company.example.test',
             source: 'url',
-            scope: 'device',
+            scope: 'tab',
             refreshAuth: undefined,
         });
         expect(replaceMock).toHaveBeenCalledWith('/?server=https%3A%2F%2Fcompany.example.test');
@@ -100,6 +102,7 @@ describe('TerminalConnectScreen unauthenticated redirect', () => {
         expect(setPendingMock).toHaveBeenCalledWith({
             publicKeyB64Url: 'abc123',
             serverUrl: 'http://127.0.0.1:43005',
+            serverIdentityId: '',
         });
         expect(upsertActivateAndSwitchServerMock).not.toHaveBeenCalled();
         expect(replaceMock).toHaveBeenCalledWith('/?server=http%3A%2F%2F127.0.0.1%3A43005');
@@ -121,6 +124,7 @@ describe('TerminalConnectScreen unauthenticated redirect', () => {
         expect(setPendingMock).toHaveBeenCalledWith({
             publicKeyB64Url: 'abc123',
             serverUrl: 'http://happier-repo-dev-a1cc5e0671.localhost:53288',
+            serverIdentityId: '',
         });
         expect(upsertActivateAndSwitchServerMock).not.toHaveBeenCalled();
         expect(replaceMock).toHaveBeenCalledWith('/?server=http%3A%2F%2Fhappier-repo-dev-a1cc5e0671.localhost%3A53288');

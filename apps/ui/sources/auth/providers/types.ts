@@ -20,6 +20,15 @@ export type AccountDirectoryOAuthRequestContext = Readonly<{
     purpose: 'account_directory';
     endpointUrl: string;
     endpointServerIdentityId: string;
+    canonicalServerUrl: string;
+}>;
+
+export type HomeOAuthRequestContext = Readonly<{
+    request: ExternalOAuthEndpointRequest;
+    target: Readonly<{
+        serverUrl: string;
+        serverId: string;
+    }>;
 }>;
 
 export type AccountDirectoryOAuthStart = Readonly<{
@@ -28,11 +37,16 @@ export type AccountDirectoryOAuthStart = Readonly<{
     credentialTarget: 'account_directory';
     endpointUrl: string;
     endpointServerIdentityId: string;
+    canonicalServerUrl: string;
     expiresAt: number;
 }>;
 
 export interface GetExternalAuthUrl {
     (params: ExternalAuthStartInput): Promise<string>;
+    (
+        params: ExternalAuthStartInput,
+        context: HomeOAuthRequestContext,
+    ): Promise<string>;
     (
         params: ExternalAuthStartInput,
         context: AccountDirectoryOAuthRequestContext,

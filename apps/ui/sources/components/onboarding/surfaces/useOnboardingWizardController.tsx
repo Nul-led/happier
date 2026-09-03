@@ -4,6 +4,7 @@ import { router } from 'expo-router';
 import { useUnistyles } from 'react-native-unistyles';
 
 import type { AuthEntryOptions } from '@/components/account/auth/useAuthEntryOptions';
+import type { AccountServiceEntryOptions } from '@/components/account/auth/useAccountServiceEntryOptions';
 import { Text } from '@/components/ui/text/Text';
 import { ActiveRelaySummary } from '@/components/onboarding/ui/ActiveRelaySummary';
 import {
@@ -46,6 +47,7 @@ import { createWizardState, wizardReducer } from '../state/wizardReducer';
 import type { WizardPlatform, WizardRelaySelection, WizardStepId } from '../state/wizardTypes';
 import { ConfirmSwitchRelayStep, type RelaySwitchDecision } from '../steps/ConfirmSwitchRelayStep';
 import { parseOnboardingScanPayload } from '../state/scanPayload';
+import { promptLegacyPairingUpdateRequired } from '@/auth/pairing/legacyPairingUpdateRequired';
 import { useEndpointReadinessMap } from '../hooks/useEndpointReadinessMap';
 import {
     setOnboardingWizardAwaitingAuthResumeIntent,
@@ -81,8 +83,17 @@ export type OnboardingWizardSurfaceProps = Readonly<{
     wizardChromeMode?: 'overlay' | 'embedded' | 'bare';
     wizardLayoutPresentation?: 'auto' | 'card' | 'fullscreen';
     authEntryOptions: AuthEntryOptions;
+    /**
+     * Advertised sign-in methods of the selected sign-in service. Absent for hosts that do not
+     * own an unauthenticated entry (the setup wizard reuses this surface while authenticated).
+     */
+    accountServiceEntry?: AccountServiceEntryOptions;
     initialStepId?: WizardStepId;
 
+    /** Provider sign-in on the selected sign-in service. Never touches the focused Home. */
+    onContinueWithAccountServiceProvider?: (providerId: string) => Promise<void> | void;
+    /** Key sign-in on the selected sign-in service. Never touches the focused Home. */
+    onContinueWithAccountServiceKey?: () => Promise<void> | void;
     onCreateAccount: () => Promise<void> | void;
     onCreateAccountViaProvider: (providerId: string) => Promise<void> | void;
     onLoginWithKeylessProvider: (providerId: string) => Promise<void> | void;
@@ -774,17 +785,20 @@ export function useOnboardingWizardController(props: OnboardingWizardSurfaceProp
         const parsed = parseOnboardingScanPayload(data);
         setRelayAccessTarget(null);
         setRelayAccessShareUrl(null);
+        if (parsed.kind === 'legacy_pairing_update_required') {
+            dispatch({ type: 'wizard/setParsedScanPayload', parsedScanPayload: null });
+            const action = await promptLegacyPairingUpdateRequired();
+            if (action === 'cancel') {
+                dispatch({ type: 'wizard/setScanStepEnabled', enabled: false });
+                dispatch({ type: 'wizard/goToStep', stepId: 'welcome' });
+            }
+            return;
+        }
         dispatch({ type: 'wizard/setParsedScanPayload', parsedScanPayload: parsed });
         if (parsed.kind === 'home_qr_invite') {
             dispatch({ type: 'wizard/setAuthIntent', authIntent: 'restore' });
             dispatch({ type: 'wizard/setScanStepEnabled', enabled: false });
             dispatch({ type: 'wizard/goToStep', stepId: 'auth_restore' });
-            return;
-        }
-        if (parsed.kind === 'pairing_link' && parsed.serverUrl == null) {
-            dispatch({ type: 'wizard/setRelaySelection', relaySelection: { choiceId: 'customUrl', serverUrl: null, relayProfileId: null, locked: true } });
-            dispatch({ type: 'wizard/setScanStepEnabled', enabled: false });
-            dispatch({ type: 'wizard/goToStep', stepId: 'relay_enter_url' });
             return;
         }
         if (parsed.kind === 'relay_url') {
@@ -793,19 +807,6 @@ export function useOnboardingWizardController(props: OnboardingWizardSurfaceProp
             dispatch({ type: 'wizard/setRelayLockConfirmationPending', pending: true });
             dispatch({ type: 'wizard/setScanStepEnabled', enabled: false });
             dispatch({ type: 'wizard/goToStep', stepId: 'confirm_relay_lock' });
-            return;
-        }
-        if (parsed.kind === 'pairing_link') {
-            dispatch({ type: 'wizard/setAuthIntent', authIntent: 'restore' });
-            const relayProfileId = resolveRelayProfileIdForServerUrl({ serverUrl: parsed.serverUrl, canonicalCloudUrl });
-            dispatch({ type: 'wizard/setRelaySelection', relaySelection: { choiceId: 'customUrl', serverUrl: parsed.serverUrl, relayProfileId, locked: false } });
-            dispatch({ type: 'wizard/setScanStepEnabled', enabled: false });
-            if (parsed.serverUrl) {
-                dispatch({ type: 'wizard/setRelayLockConfirmationPending', pending: true });
-                dispatch({ type: 'wizard/goToStep', stepId: 'confirm_relay_lock' });
-                return;
-            }
-            dispatch({ type: 'wizard/goToStep', stepId: 'relay_enter_url' });
             return;
         }
         if (parsed.kind === 'account_connect') {
@@ -1343,6 +1344,7 @@ export function useOnboardingWizardController(props: OnboardingWizardSurfaceProp
         layout: props.layout,
         isDesktopShell: props.isDesktopShell,
         authEntryOptions: props.authEntryOptions,
+        accountServiceEntry: props.accountServiceEntry,
         initialPairingLink,
         canScanQr,
         welcomeHasKnownRelay,
@@ -1370,6 +1372,10 @@ export function useOnboardingWizardController(props: OnboardingWizardSurfaceProp
         relayAccessProviderId: state.context.relayAccessProviderId,
         onRelayAccessProviderIdChange: handleRelayAccessProviderIdChange,
         onRelayAccessProviderDetailsRequested: handleRelayAccessProviderDetailsRequested,
+        // Deliberately not preceded by `ensureActiveServerForAuth()`: sign-in-service
+        // authentication is targeted at the selected service and must not touch the focused Home.
+        onContinueWithAccountServiceProvider: props.onContinueWithAccountServiceProvider,
+        onContinueWithAccountServiceKey: props.onContinueWithAccountServiceKey,
         onCreateAccount: async () => {
             await ensureActiveServerForAuth();
             await props.onCreateAccount();

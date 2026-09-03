@@ -12,9 +12,10 @@ import { Modal } from '@/modal';
 import {
     listServerProfiles,
 } from '@/sync/domains/server/serverProfiles';
-import {
-    setActiveServer,
-} from '@/sync/domains/server/serverRuntime';
+import { setActiveServerAndSwitch } from '@/sync/domains/server/activeServerSwitch';
+import { resolveRoutineServerSelectionScope } from '@/sync/domains/server/selection/serverSelectionScope';
+import { isDesktopHost } from '@/utils/platform/desktopHost';
+import { Platform } from 'react-native';
 import {
     FirstKeyRecoveryModal,
     type FirstKeyRecoveryActionResult,
@@ -75,11 +76,15 @@ export async function presentFirstKeyCredentialLifecycle(
                                 'recovery_failed',
                         };
                     }
-                    setActiveServer({
-                        serverId: targetServerId,
-                        scope: 'device',
-                    });
                     const auth = getCurrentAuth();
+                    const switchResult = await setActiveServerAndSwitch({
+                        serverId: targetServerId,
+                        scope: resolveRoutineServerSelectionScope(Platform.OS, isDesktopHost()),
+                        refreshAuth: auth?.refreshFromActiveServer ?? null,
+                    });
+                    if (switchResult === 'blocked') {
+                        return { kind: 'recovery_failed' };
+                    }
                     const recovered =
                         await recoverAccountEncryptionFirstKeyRejectedCredential({
                             recovery:

@@ -1,7 +1,11 @@
 import { resolveGitHubOAuthConfigFromEnv } from "@/app/oauth/providers/githubOAuthConfig";
 import { githubOAuthProvider } from "@/app/oauth/providers/github";
 
-import { connectGitHubIdentity, disconnectGitHubIdentity } from "@/app/auth/providers/github/identity";
+import {
+    connectGitHubIdentity,
+    disconnectGitHubIdentity,
+    prepareGitHubIdentityConnection,
+} from "@/app/auth/providers/github/identity";
 import { enforceGitHubLoginEligibility } from "@/app/auth/providers/github/loginEligibility";
 import { extractGitHubSocialProfile } from "@/app/auth/providers/github/socialProfile";
 import { resolveGitHubAuthRestrictionsFromEnv } from "@/app/auth/providers/github/restrictions";
@@ -14,6 +18,7 @@ import type { ProviderModule } from "@/app/auth/providers/providerModules";
 
 const githubIdentityProvider: IdentityProvider = Object.freeze({
     id: "github",
+    prepareConnect: prepareGitHubIdentityConnection,
     connect: async (params) =>
         connectGitHubIdentity({
             ctx: params.ctx,

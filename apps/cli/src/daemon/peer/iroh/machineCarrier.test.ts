@@ -10,13 +10,10 @@ import {
     type SignedDirectRouteGrantV2,
 } from '@happier-dev/protocol';
 
+import * as machineCarrierModule from './machineCarrier';
 import {
-    MACHINE_CARRIER_ALPN_V1,
-    createMachineCarrierAdapter,
     verifyMachineCarrierHandshakeV1,
     type MachineCarrierOperationKind,
-    type MachineCarrierRole,
-    type MachineCarrierTransportConnection,
 } from './machineCarrier';
 
 function toBase64Url(bytes: Uint8Array): string {
@@ -137,47 +134,25 @@ function createHandshake(overrides: HandshakeOverrides = {}): IrohMachineHandsha
     };
 }
 
-interface AdapterOverrides {
-    accountId?: string;
-    machineId?: string;
-    localEndpointId?: string;
-    role?: MachineCarrierRole;
-    nowMs?: number;
-    remoteEndpointId?: string;
-}
-
-function createRecordingAdapter(overrides: AdapterOverrides = {}) {
-    const connectInputs: unknown[] = [];
-    const closedStreams: string[] = [];
-    const adapter = createMachineCarrierAdapter({
-        accountId: overrides.accountId ?? ACCOUNT_ID,
-        machineId: overrides.machineId ?? TARGET_MACHINE_ID,
-        localEndpointId: overrides.localEndpointId ?? TARGET_ENDPOINT_ID,
-        role: overrides.role ?? 'acceptor',
-        trustRoots,
-        nowMs: () => overrides.nowMs ?? 2_000,
-        connect: async (connectInput) => {
-            connectInputs.push(connectInput);
-            const connection: MachineCarrierTransportConnection = {
-                remoteEndpointId: overrides.remoteEndpointId ?? SOURCE_ENDPOINT_ID,
-                observedPath: 'direct',
-                stream: {
-                    write: async () => undefined,
-                    endWrite: async () => undefined,
-                    onData: () => () => undefined,
-                    close: async () => undefined,
-                },
-                close: async () => {
-                    closedStreams.push('stream');
-                },
-            };
-            return connection;
-        },
-    });
-    return { adapter, connectInputs, closedStreams };
-}
-
 describe('machine/1 carrier lifecycle', () => {
+    it('exposes only the retained machine-carrier owner surface', () => {
+        // The admission-era facade (`createMachineCarrierAdapter` and its
+        // admission/connection/stream types) has no production or public
+        // consumer. The live dial/accept machine paths own their seams through
+        // `verifyMachineCarrierHandshakeV1`, the transport types, and the
+        // native tunnel runtime; runtime exports are the observable boundary.
+        expect(Object.keys(machineCarrierModule).sort()).toEqual([
+            'MACHINE_CARRIER_ALPN_V1',
+            'MACHINE_CARRIER_ROUTE_MISMATCH_CODE',
+            'MACHINE_CARRIER_UNAVAILABLE_CODE',
+            'MachineCarrierError',
+            'machineCarrierRouteMismatchError',
+            'machineCarrierUnavailableError',
+            'verifyMachineCarrierHandshakeV1',
+        ].sort());
+        expect(machineCarrierModule.MACHINE_CARRIER_ALPN_V1).toBe('happier/machine/1');
+    });
+
     it('verifies accept-side admission without opening transport and binds the authenticated source endpoint', () => {
         const handshake = createHandshake();
         expect(verifyMachineCarrierHandshakeV1({
@@ -202,220 +177,17 @@ describe('machine/1 carrier lifecycle', () => {
         })).toThrow('Authenticated transport endpoint identity does not match the machine handshake.');
     });
 
-    it('admits a validated acceptor handshake and returns the authenticated machine/1 stream', async () => {
-        const { adapter, connectInputs } = createRecordingAdapter();
-        const handshake = createHandshake();
-        const session = await adapter.open({ handshake });
-
-        expect(session).toMatchObject({
-            alpn: MACHINE_CARRIER_ALPN_V1,
-            operationKind: 'file_transfer',
-            operationId: OPERATION_ID,
-            observedPath: 'direct',
-            remoteEndpointId: SOURCE_ENDPOINT_ID,
-        });
-        expect(session.stream).toBeDefined();
-        // The dial hint is derived from the validated handshake, not caller text.
-        expect(connectInputs).toEqual([{
-            alpn: MACHINE_CARRIER_ALPN_V1,
-            remoteEndpointId: SOURCE_ENDPOINT_ID,
-            flow: 'file_transfer',
-            operationId: OPERATION_ID,
-            handshake,
-        }]);
-        await session.close();
-    });
-
-    it('admits an authenticated Account client endpoint without requiring a source Machine', async () => {
-        const { adapter } = createRecordingAdapter();
-        const session = await adapter.open({ handshake: createHandshake({ initiatorKind: 'account_client' }) });
-
-        expect(session.remoteEndpointId).toBe(SOURCE_ENDPOINT_ID);
-        expect(session.operationKind).toBe('file_transfer');
-        await session.close();
-    });
-
-    it('admits a validated initiator handshake against the mirrored transport identity', async () => {
-        const { adapter } = createRecordingAdapter({
-            machineId: SOURCE_MACHINE_ID,
-            localEndpointId: SOURCE_ENDPOINT_ID,
-            role: 'initiator',
-            remoteEndpointId: TARGET_ENDPOINT_ID,
-        });
-        const session = await adapter.open({ handshake: createHandshake() });
-
-        expect(session.remoteEndpointId).toBe(TARGET_ENDPOINT_ID);
-        expect(session.stream).toBeDefined();
-        await session.close();
-    });
-
-    it('admits workspace_sync through both bounded-transfer and machine-rpc grants', async () => {
-        for (const flowKind of ['bounded_transfer', 'machine_rpc'] as const) {
-            const { adapter } = createRecordingAdapter();
-            const handshake = createHandshake({
-                flow: 'workspace_sync',
-                grantOverrides: flowKind === 'machine_rpc'
-                    ? {
-                        flowKind,
-                        scope: {
-                            kind: 'machine_rpc',
-                            rpcScopeId: OPERATION_ID,
-                            allowedMethods: ['workspace.sync'],
-                            maxCalls: 8,
-                            maxIdleMs: 60_000,
-                        },
-                    }
-                    : { flowKind },
-            });
-            const session = await adapter.open({ handshake });
-            expect(session.operationKind).toBe('workspace_sync');
-            await session.close();
-        }
-    });
-
-    it('fails closed when the handshake is missing or malformed, before connecting', async () => {
-        for (const handshake of [undefined, null, {}, { ...createHandshake(), extra: true }, { ...createHandshake(), v: 2 }, {
-            ...createHandshake(),
-            initiator: { kind: 'machine', machineId: SOURCE_MACHINE_ID, endpointId: 'endpoint-1' },
-        }, { ...createHandshake(), grant: { ...createHandshake().grant, payload: { ...createHandshake().grant.payload, v: 1 } } }]) {
-            const { adapter, connectInputs } = createRecordingAdapter();
-            await expect(adapter.open({ handshake })).rejects.toMatchObject({
-                code: 'handshake_invalid',
-            });
-            expect(connectInputs).toEqual([]);
-        }
-    });
-
-    it('fails closed when the transport returns no usable authenticated endpoint identity', async () => {
-        const { adapter, closedStreams } = createRecordingAdapter({ remoteEndpointId: '' });
-        await expect(adapter.open({ handshake: createHandshake() })).rejects.toMatchObject({
-            code: 'transport_identity_invalid',
-        });
-        // The unusable stream is closed; it is never handed back to the caller.
-        expect(closedStreams).toEqual(['stream']);
-    });
-
-    it('fails closed and closes the stream when the authenticated transport identity mismatches the handshake', async () => {
-        const wrongEndpointId = 'c'.repeat(64);
-        const { adapter, closedStreams } = createRecordingAdapter({ remoteEndpointId: wrongEndpointId });
-        await expect(adapter.open({ handshake: createHandshake() })).rejects.toMatchObject({
-            code: 'transport_identity_mismatch',
-        });
-        expect(closedStreams).toEqual(['stream']);
-    });
-
-    it('derives initiator/acceptor roles from the signed relationship and rejects a local mismatch', async () => {
-        const acceptor = createRecordingAdapter({
-            machineId: SOURCE_MACHINE_ID,
-            localEndpointId: SOURCE_ENDPOINT_ID,
+    it('rejects an expired grant through the shared grant verifier before any transport is opened', () => {
+        const expired = createHandshake({ grantOverrides: { exp: 2_000 } });
+        expect(() => verifyMachineCarrierHandshakeV1({
+            handshake: expired,
+            accountId: ACCOUNT_ID,
+            machineId: TARGET_MACHINE_ID,
+            localEndpointId: TARGET_ENDPOINT_ID,
             role: 'acceptor',
-        });
-        await expect(acceptor.adapter.open({ handshake: createHandshake() }))
-            .rejects.toMatchObject({ code: 'handshake_role_mismatch' });
-        expect(acceptor.connectInputs).toEqual([]);
-
-        const initiator = createRecordingAdapter({
-            machineId: SOURCE_MACHINE_ID,
-            localEndpointId: SOURCE_ENDPOINT_ID,
-            role: 'initiator',
-        });
-        await expect(initiator.adapter.open({ handshake: createHandshake({ initiatorKind: 'account_client' }) }))
-            .rejects.toMatchObject({ code: 'handshake_local_machine_mismatch' });
-        expect(initiator.connectInputs).toEqual([]);
-
-        const targetConfiguredAsInitiator = createRecordingAdapter({ role: 'initiator' });
-        await expect(targetConfiguredAsInitiator.adapter.open({ handshake: createHandshake() }))
-            .rejects.toMatchObject({ code: 'handshake_role_mismatch' });
-        expect(targetConfiguredAsInitiator.connectInputs).toEqual([]);
-    });
-
-    it('fails closed when the handshake does not bind the local machine, endpoint, or account', async () => {
-        const machine = createRecordingAdapter();
-        await expect(machine.adapter.open({ handshake: createHandshake({ targetMachineId: 'machine-3' }) }))
-            .rejects.toMatchObject({ code: 'handshake_local_machine_mismatch' });
-
-        const endpoint = createRecordingAdapter({ localEndpointId: 'd'.repeat(64) });
-        await expect(endpoint.adapter.open({ handshake: createHandshake() }))
-            .rejects.toMatchObject({ code: 'handshake_local_endpoint_mismatch' });
-
-        const account = createRecordingAdapter({ accountId: 'account-2' });
-        await expect(account.adapter.open({ handshake: createHandshake() }))
-            .rejects.toMatchObject({ code: 'handshake_account_mismatch' });
-    });
-
-    it('fails closed on degenerate or inverted source/target orientation', async () => {
-        const { adapter, connectInputs } = createRecordingAdapter();
-        const valid = createHandshake();
-        await expect(adapter.open({ handshake: {
-            ...valid,
-            target: { ...valid.target, machineId: SOURCE_MACHINE_ID },
-        } }))
-            .rejects.toMatchObject({ code: 'handshake_invalid' });
-        await expect(adapter.open({ handshake: {
-            ...valid,
-            target: { ...valid.target, endpointId: SOURCE_ENDPOINT_ID },
-        } }))
-            .rejects.toMatchObject({ code: 'handshake_invalid' });
-        expect(connectInputs).toEqual([]);
-    });
-
-    it('fails closed on wrong account, machine, endpoint, route, expiry, or proof before connecting', async () => {
-        const valid = createHandshake();
-        const withPayload = (payload: DirectRouteGrantPayloadV2) => ({
-            ...valid,
-            grant: { ...valid.grant, payload },
-        });
-        const cases: ReadonlyArray<[unknown, string, number?]> = [
-            [withPayload({ ...valid.grant.payload, accountId: 'account-2' }), 'handshake_invalid'],
-            [withPayload({ ...valid.grant.payload, machineId: 'machine-9' }), 'handshake_invalid'],
-            [withPayload({ ...valid.grant.payload, routeKind: 'loopback_direct', iroh: undefined }), 'handshake_invalid'],
-            [withPayload({ ...valid.grant.payload, endpointFingerprint: 'e'.repeat(64) }), 'handshake_invalid'],
-            [createHandshake({ grantOverrides: { exp: 2_000 } }), 'grant_expired'],
-            [createHandshake({ breakProof: true }), 'proof_bad_signature'],
-            [withPayload({ ...valid.grant.payload, routeKind: 'server_relay' as 'iroh_peer' }), 'handshake_invalid'],
-        ];
-        for (const [handshake, code, atMs] of cases) {
-            const { adapter, connectInputs } = createRecordingAdapter({ nowMs: atMs ?? 2_000 });
-            await expect(adapter.open({ handshake }))
-                .rejects.toMatchObject({ code });
-            expect(connectInputs).toEqual([]);
-        }
-    });
-
-    it('fails closed on flow and operation mismatches before connecting', async () => {
-        const { adapter, connectInputs } = createRecordingAdapter();
-        const valid = createHandshake();
-        await expect(adapter.open({ handshake: {
-            ...valid,
-            grant: { ...valid.grant, payload: {
-                ...valid.grant.payload,
-                flowKind: 'machine_rpc',
-                scope: {
-                    kind: 'machine_rpc',
-                    rpcScopeId: OPERATION_ID,
-                    allowedMethods: ['transfer.open'],
-                    maxCalls: 1,
-                    maxIdleMs: 1_000,
-                },
-            } },
-        } })).rejects.toMatchObject({ code: 'handshake_invalid' });
-        await expect(adapter.open({ handshake: {
-            ...valid,
-            flow: 'workspace_sync',
-            grant: { ...valid.grant, payload: {
-                ...valid.grant.payload,
-                flowKind: 'tcp_tunnel',
-                scope: {
-                    kind: 'tcp_tunnel',
-                    tunnelId: 'tunnel-1',
-                    allowedPorts: [8080],
-                    maxIdleMs: 1_000,
-                    maxDurationMs: 1_000,
-                },
-            } },
-        } })).rejects.toMatchObject({ code: 'handshake_invalid' });
-        await expect(adapter.open({ handshake: createHandshake({ operationId: 'operation-2' }) }))
-            .rejects.toMatchObject({ code: 'handshake_invalid' });
-        expect(connectInputs).toEqual([]);
+            trustRoots,
+            nowMs: 2_000,
+            authenticatedRemoteEndpointId: SOURCE_ENDPOINT_ID,
+        })).toThrow('Machine route grant rejected: grant_expired.');
     });
 });

@@ -9,6 +9,7 @@ import {
 } from '@happier-dev/protocol';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { createIrohNodeNativeModule, loadIrohNodeNativeAddon } from '@happier-dev/iroh-native/node';
+import { createIrohTestControllerFromNativeAddon } from '@happier-dev/iroh-native/test-controller';
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { access, mkdir, mkdtemp, open, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
@@ -151,40 +152,11 @@ function recordPerformanceMeasurement(measurement: Readonly<Record<string, strin
   console.info(`[workspace-sync-performance] ${JSON.stringify(measurement)}`);
 }
 
-type NativeIrohTestController = Readonly<{
-  forceDirectOnly(): Promise<string>;
-  forceRelayOnly(): Promise<string>;
-  restoreAutomatic(): Promise<string>;
-  getObservedPath(): 'direct' | 'relay' | 'unknown';
-}>;
-
 type LiveBinaries = Readonly<{
   manager: string;
   agent: string;
   custody: string;
 }>;
-
-function requireSuccessfulTestControllerOperation(raw: string): void {
-  const envelope = JSON.parse(raw) as { ok?: unknown; error?: { message?: unknown } };
-  if (envelope.ok !== true) {
-    throw new Error(
-      typeof envelope.error?.message === 'string'
-        ? envelope.error.message
-        : 'Iroh native test controller operation failed',
-    );
-  }
-}
-
-async function setTestTopology(
-  controller: NativeIrohTestController,
-  topology: 'direct' | 'relay',
-): Promise<void> {
-  requireSuccessfulTestControllerOperation(
-    topology === 'direct'
-      ? await controller.forceDirectOnly()
-      : await controller.forceRelayOnly(),
-  );
-}
 
 function base64url(bytes: Uint8Array): string {
   return Buffer.from(bytes).toString('base64url');
@@ -345,13 +317,9 @@ describe('production handoff -> Mutagen manager -> broker -> controller -> nativ
       const addonPath = process.env.HAPPIER_TEST_IROH_NODE_ADDON_PATH?.trim();
       if (!addonPath) throw new Error('The composed Mutagen/Iroh fixture requires an explicit test-feature addon path');
       const rawAddon = loadIrohNodeNativeAddon(addonPath);
-      const testController = rawAddon as unknown as NativeIrohTestController;
-      for (const operation of ['forceDirectOnly', 'forceRelayOnly', 'restoreAutomatic', 'getObservedPath'] as const) {
-        if (typeof testController[operation] !== 'function') {
-          throw new Error(`Iroh addon is not a test-relay-fixture build: missing ${operation}`);
-        }
-      }
-      await setTestTopology(testController, topology);
+      const testController = createIrohTestControllerFromNativeAddon(rawAddon);
+      if (topology === 'direct') await testController.forceDirectOnly();
+      else await testController.forceRelayOnly();
       const native = createIrohNodeNativeModule(rawAddon);
       const nativeStartMachineTunnel = vi.spyOn(native, 'startMachineTunnel');
       const signingKeyPair = tweetnacl.sign.keyPair();
@@ -454,7 +422,7 @@ describe('production handoff -> Mutagen manager -> broker -> controller -> nativ
           accountId,
           localMachineId: sourceMachineId,
           runtime: sourceIroh,
-          trustRoots,
+          resolveTrustRoots: () => trustRoots,
           readTargetMachine,
           mintGrant: createGrantMint(signingKeyPair.secretKey),
           nowMs: () => nowMs,
@@ -730,7 +698,7 @@ describe('production handoff -> Mutagen manager -> broker -> controller -> nativ
           accountId,
           localMachineId: sourceMachineId,
           runtime: sourceIroh,
-          trustRoots,
+          resolveTrustRoots: () => trustRoots,
           readTargetMachine,
           mintGrant: createGrantMint(signingKeyPair.secretKey, { corruptSignature: true }),
           nowMs: () => nowMs,
@@ -760,7 +728,7 @@ describe('production handoff -> Mutagen manager -> broker -> controller -> nativ
         await admission?.stop().catch(() => undefined);
         await targetAuthority.releaseAllRetainedBootstraps().catch(() => undefined);
         await rm(fixtureRoot, { recursive: true, force: true });
-        requireSuccessfulTestControllerOperation(await testController.restoreAutomatic());
+        await testController.restoreAutomatic();
       }
     },
     runPerformanceAcceptance ? 30 * 60_000 : 180_000,

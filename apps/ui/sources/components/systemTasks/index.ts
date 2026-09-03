@@ -9,6 +9,9 @@ export { useSystemTaskSnapshot } from './useSystemTaskSnapshot';
 export type {
     SystemTaskBridge,
     SystemTaskBridgeListenerSet,
+    SystemTaskPromptContinuation,
+    SystemTaskPromptContinuationRegistration,
+    SystemTaskPromptEnvelope,
     SystemTaskRunState,
     SystemTaskRunState as SystemTaskSnapshot,
     SystemTaskRunStatus,

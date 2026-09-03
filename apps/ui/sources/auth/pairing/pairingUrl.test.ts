@@ -1,47 +1,31 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildPairingDeepLink, parsePairingDeepLink } from './pairingUrl';
+import { classifyLegacyPairingDeepLink } from './pairingUrl';
 
-describe('parsePairingDeepLink', () => {
-    it('parses canonical pairing deep links', () => {
+describe('classifyLegacyPairingDeepLink', () => {
+    it('recognizes the immutable released V1 shape without returning secret-bearing fields', () => {
         expect(
-            parsePairingDeepLink(
+            classifyLegacyPairingDeepLink(
                 'happier:///pair?v=1&pairId=pid123&secret=sec_abc&server=https%3A%2F%2Fstack.example.test',
             ),
-        ).toEqual({
-            pairId: 'pid123',
-            secret: 'sec_abc',
-            serverUrl: 'https://stack.example.test',
+        ).toEqual({ kind: 'legacy_pairing_update_required' });
+        expect(classifyLegacyPairingDeepLink('happier:///pair?pairId=pid123&secret=sec_abc')).toEqual({
+            kind: 'legacy_pairing_update_required',
         });
     });
 
     it('rejects non-pair links', () => {
-        expect(parsePairingDeepLink('happier:///account?abc')).toBeNull();
+        expect(classifyLegacyPairingDeepLink('happier:///account?abc')).toBeNull();
     });
 
-    it('rejects missing required params', () => {
-        expect(parsePairingDeepLink('happier:///pair?v=1&pairId=pid123')).toBeNull();
+    it('keeps malformed and unknown-version pairing input distinct', () => {
+        expect(classifyLegacyPairingDeepLink('happier:///pair?v=1&pairId=pid123')).toBeNull();
+        expect(classifyLegacyPairingDeepLink('happier:///pair?v=3&pairId=pid123&secret=sec_abc')).toBeNull();
     });
 
-    it('ignores unsafe server URL schemes', () => {
-        expect(
-            parsePairingDeepLink('happier:///pair?v=1&pairId=pid123&secret=sec_abc&server=javascript%3Aalert(1)'),
-        ).toEqual({
-            pairId: 'pid123',
-            secret: 'sec_abc',
-            serverUrl: null,
-        });
-    });
-});
-
-describe('buildPairingDeepLink', () => {
-    it('refuses new V1 pairing issuance', () => {
-        expect(() =>
-            buildPairingDeepLink({
-                pairId: 'pid123',
-                secret: 'sec_abc',
-                serverUrl: 'https://stack.example.test/path?x=1',
-            }),
-        ).toThrowError(expect.objectContaining({ code: 'legacy_provisioning_unavailable' }));
+    it('bounds compatibility classification before decoding fields', () => {
+        expect(classifyLegacyPairingDeepLink(
+            `happier:///pair?v=1&pairId=pid123&secret=${'s'.repeat(5_000)}`,
+        )).toBeNull();
     });
 });

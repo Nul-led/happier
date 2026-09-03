@@ -1,12 +1,11 @@
 import * as React from 'react';
-
-import { isDesktopOverlayWindowContext } from '@/desktop/window/isDesktopOverlayWindowContext';
+import { View } from 'react-native';
 
 import { PersonalHomeSetupSurface } from '../setup/PersonalHomeSetupSurface';
 import { PersonalHomeRecoveryStrip } from './PersonalHomeRecoveryStrip';
+import { isPersonalHomeBootstrapRuntimeHost } from './personalHomeBootstrapHost';
 import type { PersonalHomeBootstrapOperation, PersonalHomeFacts } from './personalHomeBootstrapTypes';
 import {
-    isPersonalHomeDesktopHost,
     usePersonalHomeBootstrapController,
     type PersonalHomeBootstrapOperationRunner,
 } from './usePersonalHomeBootstrapController';
@@ -51,8 +50,9 @@ function passThroughFacts(): Promise<PersonalHomeFacts> {
  * derived from facts; there is no success route or remounted frame.
  */
 export function PersonalHomeBootstrapGate(props: PersonalHomeBootstrapGateProps): React.ReactElement {
-    const isDesktop = props.isDesktopHost ?? isPersonalHomeDesktopHost();
-    const isMainWindow = props.isDesktopMainWindow ?? !isDesktopOverlayWindowContext();
+    const runtimeHost = isPersonalHomeBootstrapRuntimeHost();
+    const isDesktop = props.isDesktopHost ?? runtimeHost;
+    const isMainWindow = props.isDesktopMainWindow ?? runtimeHost;
     const enabled = isDesktop && isMainWindow && props.bypass !== true && props.readFacts != null;
     const controller = usePersonalHomeBootstrapController({
         readFacts: props.readFacts ?? passThroughFacts,
@@ -77,7 +77,7 @@ export function PersonalHomeBootstrapGate(props: PersonalHomeBootstrapGateProps)
             && controller.snapshot.homeReady
             && controller.snapshot.shouldGateShell === false;
         return (
-            <>
+            <View style={{ flex: 1 }}>
                 {props.children}
                 {showPostShellRecovery ? (
                     <PersonalHomeRecoveryStrip
@@ -88,7 +88,7 @@ export function PersonalHomeBootstrapGate(props: PersonalHomeBootstrapGateProps)
                         onRetry={controller.retry}
                     />
                 ) : null}
-            </>
+            </View>
         );
     }
 

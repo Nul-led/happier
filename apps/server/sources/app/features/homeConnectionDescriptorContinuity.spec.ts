@@ -1,0 +1,207 @@
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import {
+    HOME_CONNECTION_DESCRIPTOR_CONTINUITY_CACHE_KEY,
+    createHomeConnectionDescriptorContentKey,
+    createSimpleCacheHomeConnectionDescriptorContinuityStore,
+    createHomeConnectionDescriptorContinuityStoreForServer,
+    readHomeConnectionDescriptorContinuity,
+    writeHomeConnectionDescriptorContinuity,
+} from './homeConnectionDescriptorContinuity';
+
+const fixtures: string[] = [];
+
+afterEach(async () => {
+    await Promise.all(fixtures.splice(0).map((path) => rm(path, { recursive: true, force: true })));
+});
+
+describe('Home connection descriptor continuity', () => {
+    it('persists a strict bounded fingerprint that fits the MySQL SimpleCache value', async () => {
+        const values = new Map<string, string>();
+        const store = createSimpleCacheHomeConnectionDescriptorContinuityStore({
+            readSimpleCache: async (key) => values.get(key) ?? null,
+            compareAndSetSimpleCache: async (key, expectedValue, nextValue) => {
+                if ((values.get(key) ?? null) !== expectedValue) return false;
+                values.set(key, nextValue);
+                return true;
+            },
+        });
+        const contentKey = createHomeConnectionDescriptorContentKey({
+            homeServerIdentityId: 'srv_home',
+            canonicalServerUrl: `https://${'home'.repeat(30)}.example.test`,
+            endpoints: [{
+                kind: 'iroh',
+                endpointId: 'a'.repeat(64),
+                relayUrls: Array.from({ length: 8 }, (_, index) => `https://relay-${index}.${'x'.repeat(48)}.example.test`),
+                directAddresses: Array.from({ length: 8 }, (_, index) => `192.0.2.${index + 1}:4242`),
+            }],
+        });
+
+        await store.write({ revision: 8, contentKey });
+
+        const serialized = values.get(HOME_CONNECTION_DESCRIPTOR_CONTINUITY_CACHE_KEY);
+        expect(serialized?.length).toBeLessThanOrEqual(191);
+        expect(serialized).toMatch(/^\{"revision":8,"contentKey":"v1:i:[0-9a-f]{64}"\}$/);
+        await expect(store.read()).resolves.toEqual({ revision: 8, contentKey });
+    });
+
+    it('rejects arbitrary nonempty continuity keys instead of treating them as endpoint history', async () => {
+        const store = createSimpleCacheHomeConnectionDescriptorContinuityStore({
+            readSimpleCache: async () => JSON.stringify({ revision: 8, contentKey: 'junk' }),
+            compareAndSetSimpleCache: async () => true,
+        });
+
+        await expect(store.read()).rejects.toThrow('Home connection descriptor continuity is malformed');
+    });
+
+    it('rejects a persisted revision beyond Number.MAX_SAFE_INTEGER', async () => {
+        const contentKey = createHomeConnectionDescriptorContentKey({
+            homeServerIdentityId: 'srv_home',
+            canonicalServerUrl: 'https://home.example.test',
+            endpoints: [{ kind: 'https', url: 'https://home.example.test' }],
+        });
+        const store = createSimpleCacheHomeConnectionDescriptorContinuityStore({
+            readSimpleCache: async () => JSON.stringify({
+                revision: Number.MAX_SAFE_INTEGER + 1,
+                contentKey,
+            }),
+            compareAndSetSimpleCache: async () => true,
+        });
+
+        await expect(store.read()).rejects.toThrow('Home connection descriptor continuity is malformed');
+    });
+
+    it('prevents an equal-revision candidate from overwriting a concurrently committed value', async () => {
+        let value: string | null = null;
+        const compareCalls: Array<{
+            expectedValue: string | null;
+            nextValue: string;
+            release: () => void;
+        }> = [];
+        const makeStore = () => createSimpleCacheHomeConnectionDescriptorContinuityStore({
+            readSimpleCache: async () => value,
+            compareAndSetSimpleCache: async (_key, expectedValue, nextValue) => {
+                await new Promise<void>((resolve) => {
+                    compareCalls.push({ expectedValue, nextValue, release: resolve });
+                });
+                if (value !== expectedValue) return false;
+                value = nextValue;
+                return true;
+            },
+        });
+        const firstStore = makeStore();
+        const secondStore = makeStore();
+        const first = {
+            revision: 8,
+            contentKey: createHomeConnectionDescriptorContentKey({
+                homeServerIdentityId: 'srv_home',
+                canonicalServerUrl: 'https://home.example.test',
+                endpoints: [{ kind: 'https' as const, url: 'https://first.example.test' }],
+            }),
+        };
+        const second = {
+            revision: 8,
+            contentKey: createHomeConnectionDescriptorContentKey({
+                homeServerIdentityId: 'srv_home',
+                canonicalServerUrl: 'https://home.example.test',
+                endpoints: [{ kind: 'https' as const, url: 'https://second.example.test' }],
+            }),
+        };
+
+        const firstWrite = firstStore.write(first);
+        const secondWrite = secondStore.write(second);
+        await vi.waitFor(() => expect(compareCalls).toHaveLength(2));
+
+        // Both independent publishers observed an absent row. Land the later
+        // candidate first, then let the stale candidate lose its exact-value
+        // compare-and-set and reconcile to the winner.
+        compareCalls[1].release();
+        const committed = await secondWrite;
+        compareCalls[0].release();
+        const superseded = await firstWrite;
+
+        expect(committed).toEqual({ status: 'committed', continuity: second });
+        expect(superseded).toEqual({ status: 'superseded', continuity: second });
+        await expect(firstStore.read()).resolves.toEqual(second);
+    });
+
+    it('uses the existing simple-cache owner for a full PostgreSQL server', async () => {
+        const values = new Map<string, string>();
+        const store = createHomeConnectionDescriptorContinuityStoreForServer({
+            DATABASE_URL: 'postgresql://relay.example.test/happier',
+            HAPPIER_DB_PROVIDER: 'postgres',
+            HAPPIER_SERVER_FLAVOR: 'full',
+        }, {
+            readSimpleCache: async (key) => values.get(key) ?? null,
+            compareAndSetSimpleCache: async (key, expectedValue, value) => {
+                if ((values.get(key) ?? null) !== expectedValue) return false;
+                values.set(key, value);
+                return true;
+            },
+        });
+
+        expect(store).not.toBeNull();
+        await expect(store!.read()).resolves.toBeNull();
+        const contentKey = createHomeConnectionDescriptorContentKey({
+            homeServerIdentityId: 'srv_home',
+            canonicalServerUrl: 'https://home.example.test',
+            endpoints: [{ kind: 'https', url: 'https://home.example.test' }],
+        });
+        await store!.write({ revision: 8, contentKey });
+        expect([...values.keys()]).toEqual([HOME_CONNECTION_DESCRIPTOR_CONTINUITY_CACHE_KEY]);
+        await expect(store!.read()).resolves.toEqual({ revision: 8, contentKey });
+
+        const malformed = createHomeConnectionDescriptorContinuityStoreForServer({
+            HAPPIER_DB_PROVIDER: 'mysql',
+        }, {
+            readSimpleCache: async () => '{not-json',
+            compareAndSetSimpleCache: async () => true,
+        });
+        await expect(malformed!.read()).rejects.toThrow();
+    });
+
+    it('uses existing file-backed state for general and managed Personal Homes', () => {
+        expect(createHomeConnectionDescriptorContinuityStoreForServer({
+            HAPPIER_DB_PROVIDER: 'sqlite',
+            HAPPIER_SERVER_LIGHT_DATA_DIR: '/var/lib/happier',
+        })).not.toBeNull();
+        expect(createHomeConnectionDescriptorContinuityStoreForServer({
+            HAPPIER_MANAGED_RELAY_PURPOSE: 'personal-home',
+            HAPPIER_DB_PROVIDER: 'sqlite',
+            HAPPIER_SERVER_LIGHT_DATA_DIR: '/var/lib/personal-home',
+            DATABASE_URL: 'file:/var/lib/personal-home/happier.sqlite',
+        })).not.toBeNull();
+    });
+
+    it('round-trips the durable outer revision and distinguishes an absent owner', async () => {
+        const fixture = await mkdtemp(join(tmpdir(), 'home-descriptor-continuity-'));
+        fixtures.push(fixture);
+        const path = join(fixture, 'nested', 'home.descriptor.json');
+
+        await expect(readHomeConnectionDescriptorContinuity(path)).resolves.toBeNull();
+        const contentKey = createHomeConnectionDescriptorContentKey({
+            homeServerIdentityId: 'srv_home',
+            canonicalServerUrl: 'https://home.example.test',
+            endpoints: [{ kind: 'https', url: 'https://home.example.test' }],
+        });
+        await writeHomeConnectionDescriptorContinuity(path, { revision: 8, contentKey });
+        await expect(readHomeConnectionDescriptorContinuity(path)).resolves.toEqual({
+            revision: 8,
+            contentKey,
+        });
+    });
+
+    it('fails closed when persisted continuity is malformed', async () => {
+        const fixture = await mkdtemp(join(tmpdir(), 'home-descriptor-continuity-'));
+        fixtures.push(fixture);
+        const path = join(fixture, 'home.descriptor.json');
+        await writeFile(path, '{"revision":0,"contentKey":""}\n', 'utf8');
+
+        await expect(readHomeConnectionDescriptorContinuity(path)).rejects.toThrow(
+            'Home connection descriptor continuity is malformed',
+        );
+    });
+});

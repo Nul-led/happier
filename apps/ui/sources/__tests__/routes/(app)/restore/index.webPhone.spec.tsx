@@ -12,8 +12,9 @@ type ReactActEnvironmentGlobal = typeof globalThis & {
 (globalThis as ReactActEnvironmentGlobal).IS_REACT_ACT_ENVIRONMENT = true;
 
 const restoreRouteIngressState = vi.hoisted(() => ({
-    pairingLink: null as string | null,
+    params: {} as Readonly<Record<string, string | string[]>>,
     scannerProps: null as Record<string, unknown> | null,
+    replaceSpy: vi.fn(),
 }));
 
 installRestoreRouteCommonModuleMocks({
@@ -38,9 +39,13 @@ installRestoreRouteCommonModuleMocks({
     router: async () => {
         const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
         return createExpoRouterMock({
-            params: restoreRouteIngressState.pairingLink
-                ? { pairingLink: restoreRouteIngressState.pairingLink }
-                : {},
+            router: {
+                back: vi.fn(),
+                push: vi.fn(),
+                replace: restoreRouteIngressState.replaceSpy,
+                canGoBack: () => false,
+            },
+            params: () => restoreRouteIngressState.params,
         }).module;
     },
 });
@@ -76,8 +81,9 @@ vi.mock('@/components/account/restore/RestoreScanComputerQrView', () => ({
 afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
-    restoreRouteIngressState.pairingLink = null;
+    restoreRouteIngressState.params = {};
     restoreRouteIngressState.scannerProps = null;
+    restoreRouteIngressState.replaceSpy.mockClear();
 });
 
 describe('/restore (web phone)', () => {
@@ -91,24 +97,67 @@ describe('/restore (web phone)', () => {
         await flushHookEffects();
         const scanner = screen.findAllByProps({ 'data-testid': 'RestoreScanComputerQrView' });
         expect(scanner).toHaveLength(1);
+        expect(restoreRouteIngressState.scannerProps?.entryIntent).toBe('enter_home');
     });
 
-    it('passes a routed V2 link unchanged to the embedded restore owner', async () => {
-        restoreRouteIngressState.pairingLink = 'happier:///pair?v=2&payload=opaque';
-        vi.doMock('expo-router', async () => {
-            const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
-            return createExpoRouterMock({
-                params: { pairingLink: restoreRouteIngressState.pairingLink! },
-            }).module;
-        });
+    it('passes a routed V2 link unchanged to the embedded restore owner under its routed intent', async () => {
+        const pairingLink = 'happier:///pair?v=2&payload=opaque';
+        restoreRouteIngressState.params = { pairingLink, entryIntent: 'add_home' };
         vi.resetModules();
         const { default: Screen } = await import('@/app/(app)/restore/index');
 
         await renderScreen(<Screen />);
 
         expect(restoreRouteIngressState.scannerProps?.initialPairingLink).toBe(
-            restoreRouteIngressState.pairingLink,
+            pairingLink,
         );
+        expect(restoreRouteIngressState.scannerProps?.entryIntent).toBe('add_home');
+    });
+
+    it.each(['missing', 'malformed'] as const)(
+        'refuses to consume a routed V2 link whose entry intent is %s',
+        async (intentCase) => {
+            const pairingLink = 'happier:///pair?v=2&payload=opaque';
+            restoreRouteIngressState.params = intentCase === 'missing'
+                ? { pairingLink }
+                : { pairingLink, entryIntent: 'focus_home' };
+            vi.resetModules();
+            const { default: Screen } = await import('@/app/(app)/restore/index');
+
+            const screen = await renderScreen(<Screen />);
+
+            expect(restoreRouteIngressState.scannerProps).toBeNull();
+            expect(screen.findAllByProps({ 'data-testid': 'RestoreQrView' })).toHaveLength(1);
+        },
+    );
+
+    it('passes the closed add-home intent to the scanner and presents truthful navigation', async () => {
+        vi.stubGlobal('navigator', { maxTouchPoints: 5, userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0)' } as any);
+        restoreRouteIngressState.params = { entryIntent: 'add_home' };
+        vi.resetModules();
+        const { default: Screen } = await import('@/app/(app)/restore/index');
+
+        const screen = await renderScreen(<Screen />);
+
+        expect(restoreRouteIngressState.scannerProps?.entryIntent).toBe('add_home');
+        expect(screen.getTextContent()).toContain('setupOnboarding.addHomeTitle');
+        expect(screen.getTextContent()).toContain('setupOnboarding.addHomeSubtitle');
+
+        screen.pressByTestId('restore-wizard-back');
+        expect(restoreRouteIngressState.replaceSpy).toHaveBeenCalledWith('/settings/account');
+    });
+
+    it('fails a malformed intent safely to the explicit welcome flow', async () => {
+        vi.stubGlobal('navigator', { maxTouchPoints: 5, userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0)' } as any);
+        restoreRouteIngressState.params = { entryIntent: 'focus_home' };
+        vi.resetModules();
+        const { default: Screen } = await import('@/app/(app)/restore/index');
+
+        const screen = await renderScreen(<Screen />);
+
+        expect(restoreRouteIngressState.scannerProps?.entryIntent).toBe('enter_home');
+        expect(screen.getTextContent()).toContain('setupOnboarding.authRestoreTitle');
+        expect(screen.getTextContent()).toContain('setupOnboarding.authRestoreSubtitle');
     });
 
     it('disables the wizard Back action while the joining enrollment is past its commit boundary', async () => {

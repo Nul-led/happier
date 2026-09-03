@@ -1,12 +1,14 @@
 import type { HomeConnectionDescriptorV1, SystemTaskResult } from '@happier-dev/protocol';
 import {
     PersonalHomeCredentialsUnverifiedError,
-    PersonalHomeSignupClosureError,
     runPersonalHomeBootstrap,
     type PersonalHomeBootstrapDeps,
     type PersonalHomeBootstrapResult,
+} from '@happier-dev/cli-common/firstPartyRuntime/personalHome/bootstrap';
+import {
+    PersonalHomeSignupClosureError,
     type PersonalHomeSignupPolicyState,
-} from '@happier-dev/cli-common/firstPartyRuntime';
+} from '@happier-dev/cli-common/firstPartyRuntime/personalHome/signupPolicy';
 import { readRelayRuntimeStatusData } from '@/components/settings/server/localControl/relayRuntimeStatus';
 
 export type PersonalHomeBootstrapTaskKind =
@@ -21,6 +23,11 @@ export type PersonalHomeBootstrapTaskOptions = Readonly<{
         canonicalServerUrl: string;
     }>;
     anonymousSignupEnabled?: boolean;
+    expectedPersonalHomeState?: Readonly<{
+        installed: boolean;
+        canonicalServerUrl: string | null;
+        dataPresent: boolean;
+    }>;
 }>;
 
 export type PersonalHomeEndpointSnapshot =
@@ -365,8 +372,13 @@ export async function runPersonalHomeBootstrapFromSystemTasks(input: Readonly<{
         kind: Exclude<PersonalHomeBootstrapTaskKind, 'relay.runtime.status.v1'>,
         anonymousSignupEnabled: boolean,
         purpose: NonNullable<PersonalHomeBootstrapTaskOptions['purpose']>,
+        expectedPersonalHomeState?: PersonalHomeBootstrapTaskOptions['expectedPersonalHomeState'],
     ): Promise<SystemTaskResult> => requireSuccessfulTask(
-        await input.deps.runRelayTask(kind, { purpose, anonymousSignupEnabled }),
+        await input.deps.runRelayTask(kind, {
+            purpose,
+            anonymousSignupEnabled,
+            ...(expectedPersonalHomeState ? { expectedPersonalHomeState } : {}),
+        }),
         kind,
     );
 
@@ -378,7 +390,7 @@ export async function runPersonalHomeBootstrapFromSystemTasks(input: Readonly<{
         return { kind: 'personal-home' as const, canonicalServerUrl };
     };
 
-    const readMutationStatus = async (expectedAnonymousSignupEnabled: boolean | null): Promise<void> => {
+    const readMutationStatus = async (expectedAnonymousSignupEnabled: boolean | null) => {
         const task = requireSuccessfulTask(
             await input.deps.runRelayTask('relay.runtime.status.v1', {}),
             'Personal Home runtime status readback',
@@ -401,6 +413,7 @@ export async function runPersonalHomeBootstrapFromSystemTasks(input: Readonly<{
                 throw new Error('Personal Home runtime changed during install/update.');
             }
         }
+        return status;
     };
 
     const bootstrapDeps: PersonalHomeBootstrapDeps = {
@@ -428,7 +441,18 @@ export async function runPersonalHomeBootstrapFromSystemTasks(input: Readonly<{
                     mutated = true;
                 }
             } else {
-                await runConfiguredTask('relay.runtime.installOrUpdate.v1', desired.anonymousSignupEnabled, purpose);
+                await runConfiguredTask(
+                    'relay.runtime.installOrUpdate.v1',
+                    desired.anonymousSignupEnabled,
+                    purpose,
+                    {
+                        installed: initialStatus.installed,
+                        canonicalServerUrl: initialStatus.purpose?.kind === 'personal-home'
+                            ? normalizeUrl(initialStatus.purpose.canonicalServerUrl)
+                            : null,
+                        dataPresent: initialStatus.dataPresent,
+                    },
+                );
                 mutated = true;
             }
             if (mutated) await readMutationStatus(desired.anonymousSignupEnabled);
@@ -498,9 +522,18 @@ export async function runPersonalHomeBootstrapFromSystemTasks(input: Readonly<{
             // An explicit erase or uninstall may win the incumbent mutation lock after account
             // work. Re-admit from authoritative status immediately before the next mutation so
             // that operation wins and bootstrap waits for a deliberate Retry.
-            await readMutationStatus(null);
+            const expectedStatus = await readMutationStatus(null);
             const purpose = purposeForDesiredState(desired);
-            await runConfiguredTask('relay.runtime.installOrUpdate.v1', desired.anonymousSignupEnabled, purpose);
+            await runConfiguredTask(
+                'relay.runtime.installOrUpdate.v1',
+                desired.anonymousSignupEnabled,
+                purpose,
+                {
+                    installed: true,
+                    canonicalServerUrl: selectedCanonicalServerUrl,
+                    dataPresent: expectedStatus.dataPresent,
+                },
+            );
             await readMutationStatus(desired.anonymousSignupEnabled);
         },
         readEffectivePolicy: async () => {

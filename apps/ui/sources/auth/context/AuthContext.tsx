@@ -41,13 +41,35 @@ type AuthLogoutOptions = Readonly<{
     scope?: 'focused-home' | 'all-credentials';
 }>;
 
+/** The exact Home a credential belongs to: endpoint URL plus stable identity. */
+export type HomeCredentialTarget = Readonly<{
+    serverUrl: string;
+    serverId?: string;
+}>;
+
+export type AuthCredentialPersistenceOptions = Readonly<{
+        firstKeyRecoveryAuthorization?: AccountEncryptionFirstKeyCredentialPersistenceOptions['firstKeyRecoveryAuthorization'];
+        /**
+         * The exact Home this credential was issued by, captured before the
+         * awaits that produced it. Focus can move to another Home while an
+         * external authentication is still resolving, so a targeted write is
+         * bound to this Home and never to whichever Home happens to be focused
+         * when the token finally arrives.
+         */
+        target?: HomeCredentialTarget;
+    }>;
+
 interface AuthContextType {
     isAuthenticated: boolean;
     credentials: AuthCredentials | null;
-    login: (token: string, secret: string) => Promise<AuthCredentialLifecycleResult>;
+    login: (
+        token: string,
+        secret: string,
+        options?: AuthCredentialPersistenceOptions,
+    ) => Promise<AuthCredentialLifecycleResult>;
     loginWithCredentials: (
         credentials: AuthCredentials,
-        options?: AccountEncryptionFirstKeyCredentialPersistenceOptions,
+        options?: AuthCredentialPersistenceOptions,
     ) => Promise<AuthCredentialLifecycleResult>;
     logout: (
         options?: AuthLogoutOptions,
@@ -74,13 +96,17 @@ function isSameServerTarget(
 ): boolean {
     const leftServerId = String(left.serverId ?? '').trim();
     const rightServerId = String(right.serverId ?? '').trim();
-    if (leftServerId && rightServerId) {
-        return areServerProfileIdentifiersEquivalent(leftServerId, rightServerId);
-    }
     const leftServerUrl = createServerUrlComparableKey(String(left.serverUrl ?? ''));
+    const rightServerUrl = createServerUrlComparableKey(String(right.serverUrl ?? ''));
+    if (leftServerId && rightServerId) {
+        if (!areServerProfileIdentifiersEquivalent(leftServerId, rightServerId)) {
+            return false;
+        }
+        return !leftServerUrl || !rightServerUrl || leftServerUrl === rightServerUrl;
+    }
     return Boolean(
         leftServerUrl
-        && leftServerUrl === createServerUrlComparableKey(String(right.serverUrl ?? '')),
+        && leftServerUrl === rightServerUrl,
     );
 }
 
@@ -106,8 +132,9 @@ export function AuthProvider({ children, initialCredentials }: { children: React
 
     const loginWithCredentials = React.useCallback(async (
         newCredentials: AuthCredentials,
-        options?: AccountEncryptionFirstKeyCredentialPersistenceOptions,
+        options?: AuthCredentialPersistenceOptions,
     ): Promise<AuthCredentialLifecycleResult> => {
+        const target = options?.target ?? null;
         if (
             !isAccountEncryptionFirstKeyCredentialPersistenceAuthorized(
                 options,
@@ -115,12 +142,31 @@ export function AuthProvider({ children, initialCredentials }: { children: React
             )
         ) {
             const guard =
-                await guardAccountEncryptionFirstKeyCredentialMutation();
+                await guardAccountEncryptionFirstKeyCredentialMutation(
+                    target
+                        ? {
+                            serverUrl: target.serverUrl,
+                            ...(target.serverId
+                                ? { serverId: target.serverId }
+                                : {}),
+                        }
+                        : undefined,
+                );
             if (guard.kind !== 'allowed') {
                 return guard;
             }
         }
-        const success = await TokenStorage.setCredentials(newCredentials);
+        // An explicit target writes through the endpoint-scoped setter, which
+        // fails closed when the stable identity no longer owns that URL. Only a
+        // caller with no exact target left (legacy focused-Home login) resolves
+        // the focused server at write time.
+        const success = target
+            ? await TokenStorage.setCredentialsForServerUrl(
+                target.serverUrl,
+                target.serverId ? { serverId: target.serverId } : {},
+                newCredentials,
+            )
+            : await TokenStorage.setCredentials(newCredentials);
         if (!success) {
             throw new Error('Failed to save credentials');
         }
@@ -132,6 +178,18 @@ export function AuthProvider({ children, initialCredentials }: { children: React
         // the warmer "Good to have you back" copy on subsequent visits.
         if (!loadLocalSettings().hasCompletedAuthOnce) {
             applyLocalSettings({ hasCompletedAuthOnce: true });
+        }
+        if (target && !isSameServerTarget(target, getActiveServerSnapshot())) {
+            // The credential belongs to a Home that is no longer focused. It is
+            // persisted there; publishing it as the focused runtime's auth state
+            // would attribute one Home's bearer to another.
+            return { kind: 'completed' };
+        }
+        if (target) {
+            // Focused-Home persistence clears auth auto-redirect suppression;
+            // the endpoint-scoped setter deliberately leaves that active-scoped
+            // fact alone because it also serves non-focused Homes.
+            await TokenStorage.setAuthAutoRedirectSuppressedUntil(0);
         }
         setCredentials(newCredentials);
         setIsAuthenticated(true);
@@ -158,9 +216,10 @@ export function AuthProvider({ children, initialCredentials }: { children: React
         async (
             token: string,
             secret: string,
+            options?: AuthCredentialPersistenceOptions,
         ) => {
             const newCredentials: AuthCredentials = { token, secret };
-            return await loginWithCredentials(newCredentials);
+            return await loginWithCredentials(newCredentials, options);
         },
         [loginWithCredentials],
     );

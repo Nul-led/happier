@@ -1,10 +1,6 @@
-import { createConnection } from 'node:net';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
 
 import {
   createRelayHostEngine,
-  createPersonalHomeSystemTaskOperations,
   ensureLocalFirstPartyComponentCommand,
   type RelayHostEngine,
   type RelayHostEngineDeps,
@@ -13,21 +9,16 @@ import {
   type PersonalHomeSystemTaskOperations,
 } from '@happier-dev/cli-common/systemTasks';
 import {
-  attestPersonalHomeRelocationDestinationWithServerCommand,
-  checkRelayRuntimeHealth,
-  createCanonicalPersonalHomeOperations,
-  createCanonicalPersonalHomeRelocationDestinationOwner,
-  materializePersonalHomeRelocationEndpointWithServerCommand,
   listInstalledVersionIdsNewestFirst,
-  PersonalHomeOperationsError,
-  readPersonalHomeStartupReadiness,
-  removePersonalHomeStartupReadiness,
-  resolveRelayRuntimeDefaults,
   type RelayRuntimeHealthResult,
   type PersonalHomeRelocationDestinationOwner,
 } from '@happier-dev/cli-common/firstPartyRuntime';
+import {
+  checkLocalRelayRuntimeReachability,
+  createLocalPersonalHomeHost,
+  probeLocalRelayRuntimeHealth,
+} from '@happier-dev/cli-common/relayHost';
 import { normalizePublicReleaseRingId } from '@happier-dev/release-runtime/releaseRings';
-import { runCommandStreaming } from '@happier-dev/cli-common/process';
 
 type LiveRelayRuntimeServiceStatus = RelayRuntimeStatusSnapshot['service'];
 
@@ -60,154 +51,34 @@ export function createLocalRelayHostEngine(extraDeps: Partial<Pick<RelayHostEngi
   });
 }
 
+/**
+ * Local Personal Home host adapter. This capability owns only the local-only
+ * relay engine; the shared cli-common composition owns every Personal Home
+ * dependency and policy so the CLI and hsetup hosts cannot drift.
+ */
+function createLiveLocalPersonalHomeHost(params: Readonly<{
+  channel?: 'stable' | 'preview' | 'dev';
+  mode?: 'user' | 'system';
+}>) {
+  return createLocalPersonalHomeHost({
+    engine: createLocalRelayHostEngine(),
+    channel: params.channel ?? 'stable',
+    mode: params.mode ?? 'user',
+  });
+}
+
 export async function createLivePersonalHomeSystemTaskOperations(params: Readonly<{
   channel?: 'stable' | 'preview' | 'dev';
   mode?: 'user' | 'system';
 }> = {}): Promise<PersonalHomeSystemTaskOperations> {
-  const engine = createLocalRelayHostEngine();
-  const runtimeParams = {
-    target: { kind: 'local' as const },
-    channel: params.channel ?? 'stable',
-    mode: params.mode ?? 'user',
-  };
-  const releaseRing = normalizePublicReleaseRingId(runtimeParams.channel) || 'stable';
-  const defaults = resolveRelayRuntimeDefaults({
-    homeDir: homedir(),
-    mode: runtimeParams.mode,
-    channel: releaseRing,
-  });
-  const readinessPath = join(defaults.dataDir, 'startup-receipt.json');
-  const operations = await createCanonicalPersonalHomeOperations({
-    homeDir: homedir(),
-    mode: runtimeParams.mode,
-    channel: releaseRing,
-    readPurpose: async () => {
-      const purpose = (await engine.readStatus(runtimeParams)).purpose;
-      if (purpose?.kind !== 'personal-home' || !purpose.canonicalServerUrl.trim()) {
-        throw new PersonalHomeOperationsError(
-          'purpose_not_personal_home',
-          'Personal Home operations require a fresh personal-home runtime purpose.',
-        );
-      }
-      return purpose;
-    },
-    runMigrationProcess: async ({ command, args, env }) => await runCommandStreaming({
-      cmd: command,
-      args: [...args],
-      env,
-      context: 'personal-home staged migration',
-    }),
-    lifecycle: {
-      isRunning: async () => (await engine.readStatus(runtimeParams)).service.active === true,
-      stop: async () => await engine.control({ ...runtimeParams, action: 'stop' }),
-      start: async () => {
-        await removePersonalHomeStartupReadiness(readinessPath);
-        await engine.control({ ...runtimeParams, action: 'start' });
-      },
-      healthCheck: async () => {
-        const snapshot = await engine.readStatus(runtimeParams);
-        return typeof snapshot.healthy === 'boolean'
-          ? snapshot.healthy
-          : await checkLiveRelayRuntimeHealth({ baseUrl: snapshot.baseUrl });
-      },
-    },
-    attestActivatedHome: async () => await readPersonalHomeStartupReadiness({ path: readinessPath }),
-    readHappierVersion: async () => (await engine.readStatus(runtimeParams)).version ?? 'unknown',
-  });
-  return createPersonalHomeSystemTaskOperations({ operations });
+  return await createLiveLocalPersonalHomeHost(params).createSystemTaskOperations();
 }
 
 export async function createLivePersonalHomeRelocationDestinationOwner(params: Readonly<{
   channel: 'stable' | 'preview' | 'dev';
   mode: 'user' | 'system';
 }>): Promise<PersonalHomeRelocationDestinationOwner> {
-  const engine = createLocalRelayHostEngine();
-  const runtimeParams = { target: { kind: 'local' as const }, channel: params.channel, mode: params.mode };
-  const releaseRing = normalizePublicReleaseRingId(params.channel) || 'stable';
-  const defaults = resolveRelayRuntimeDefaults({ homeDir: homedir(), mode: params.mode, channel: releaseRing });
-  const readinessPath = join(defaults.dataDir, 'startup-receipt.json');
-  const serverBinary = join(defaults.installRoot, 'bin', process.platform === 'win32' ? 'happier-server.exe' : 'happier-server');
-  return await createCanonicalPersonalHomeRelocationDestinationOwner({
-    homeDir: homedir(),
-    mode: params.mode,
-    channel: releaseRing,
-    quarantine: async () => await engine.control({ ...runtimeParams, action: 'quarantine' }),
-    activate: async () => {
-      await removePersonalHomeStartupReadiness(readinessPath);
-      await engine.control({ ...runtimeParams, action: 'activate' });
-    },
-    readServiceStatus: async () => {
-      const service = (await engine.readStatus(runtimeParams)).service;
-      return { running: service.active === true, quarantined: service.active === false && service.enabled === false };
-    },
-    attestActivatedHome: async () => await readPersonalHomeStartupReadiness({ path: readinessPath }),
-    attestStagedHome: async ({ layout }) => await attestPersonalHomeRelocationDestinationWithServerCommand({
-      layout,
-      serverBinary,
-    }),
-    runMigrationProcess: async ({ command, args, env }) => await runCommandStreaming({
-      cmd: command,
-      args: [...args],
-      env,
-      context: 'personal-home relocation destination staged migration',
-    }),
-    materializeEndpoint: async ({ layout, sourceDescriptorRevision }) => {
-      const status = await engine.readStatus(runtimeParams);
-      const canonicalServerUrl = status.canonicalServerUrl?.trim() ?? '';
-      if (!canonicalServerUrl) throw new Error('Relocation destination canonical server URL is unavailable');
-      return await materializePersonalHomeRelocationEndpointWithServerCommand({
-        layout,
-        serverBinary,
-        canonicalServerUrl,
-        sourceDescriptorRevision,
-      });
-    },
-  });
-}
-
-async function probePortOpen(params: Readonly<{ host: string; port: number; timeoutMs: number }>): Promise<boolean> {
-  return await new Promise((resolve) => {
-    const socket = createConnection({ host: params.host, port: params.port });
-    const finish = (value: boolean): void => {
-      socket.removeAllListeners();
-      socket.destroy();
-      resolve(value);
-    };
-    socket.setTimeout(params.timeoutMs);
-    socket.once('connect', () => finish(true));
-    socket.once('timeout', () => finish(false));
-    socket.once('error', () => finish(false));
-  });
-}
-
-async function fetchJson(params: Readonly<{ url: string; timeoutMs: number }>): Promise<Readonly<{ ok: boolean; status: number; body: unknown }>> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), params.timeoutMs);
-  try {
-    const response = await fetch(params.url, {
-      headers: { accept: 'application/json' },
-      signal: controller.signal,
-    });
-    return {
-      ok: response.ok,
-      status: response.status,
-      body: await response.json().catch(() => ({})),
-    };
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-async function probeRelayRuntimeHealthAtBaseUrl(baseUrl: string): Promise<RelayRuntimeHealthResult> {
-  const url = new URL(baseUrl);
-  const port = Number(url.port || (url.protocol === 'https:' ? 443 : 80));
-  return await checkRelayRuntimeHealth({
-    host: url.hostname,
-    port,
-    timeoutMs: 5_000,
-    probePortOpen: async ({ host, port: probePort, timeoutMs }) => await probePortOpen({ host, port: probePort, timeoutMs }),
-    fetchJson: async ({ url: requestUrl, timeoutMs }) => await fetchJson({ url: requestUrl, timeoutMs }),
-  });
+  return await createLiveLocalPersonalHomeHost(params).createRelocationDestinationOwner();
 }
 
 export async function readRelayRuntimeStatus(params: RelayRuntimeTaskParams): Promise<RelayRuntimeStatusSnapshot> {
@@ -224,11 +95,11 @@ export async function readLiveRelayRuntimeServiceStatus(params: RelayRuntimeTask
 
 export async function readLiveRelayRuntimeHealth(params: RelayRuntimeTaskParams): Promise<RelayRuntimeHealthResult> {
   const status = await readRelayRuntimeStatus(params);
-  return await probeRelayRuntimeHealthAtBaseUrl(status.baseUrl);
+  return await probeLocalRelayRuntimeHealth({ baseUrl: status.baseUrl });
 }
 
 export async function checkLiveRelayRuntimeHealth(params: Readonly<{ baseUrl: string }>): Promise<boolean> {
-  return (await probeRelayRuntimeHealthAtBaseUrl(params.baseUrl)).reachable;
+  return await checkLocalRelayRuntimeReachability(params);
 }
 
 export async function startRelayRuntime(params: RelayRuntimeTaskParams): Promise<void> {

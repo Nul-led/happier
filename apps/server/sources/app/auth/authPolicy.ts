@@ -92,6 +92,24 @@ function hasAnyOffboardingRestrictionsConfigured(env: NodeJS.ProcessEnv): boolea
     return hasAnyGitHubOrgAllowlistConfigured(env) || hasAnyOidcAllowlistsConfigured(env);
 }
 
+/**
+ * Canonical current-policy decision for completing an external OAuth account
+ * authentication with `providerId`.
+ *
+ * Finalizers read this immediately from current server policy rather than from
+ * the pending continuation, so a provider removed from `AUTH_SIGNUP_PROVIDERS`
+ * after authorization start can no longer complete an in-flight continuation.
+ * A blank or unlisted provider fails closed.
+ */
+export function isAuthSignupProviderEnabled(
+    env: NodeJS.ProcessEnv,
+    providerId: string,
+): boolean {
+    const normalized = providerId.trim().toLowerCase();
+    if (!normalized) return false;
+    return resolveAuthPolicyFromEnv(env).signupProviders.includes(normalized);
+}
+
 export function resolveAuthPolicyFromEnv(env: NodeJS.ProcessEnv): AuthPolicy {
     const anonymousSignupEnabled = parseBooleanEnv(env.AUTH_ANONYMOUS_SIGNUP_ENABLED, true);
     const signupProviders = Object.freeze(parseProvidersList(env.AUTH_SIGNUP_PROVIDERS));

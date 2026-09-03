@@ -35,4 +35,23 @@ describe('fetchServerFeaturesSnapshot', () => {
     expect(observedSignal?.aborted).toBe(true);
     await expect(pending).resolves.toEqual({ status: 'error', reason: 'timeout' });
   });
+
+  it('uses the authenticated exact-descriptor endpoint only when a credential is supplied', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      capabilities: { serverIdentity: { serverIdentityId: 'srv_home' } },
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await fetchServerFeaturesSnapshot({
+      serverUrl: 'https://server.example.test',
+      token: 'home-token',
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://server.example.test/v1/features/authenticated',
+      expect.objectContaining({
+        headers: { Authorization: 'Bearer home-token' },
+      }),
+    );
+  });
 });

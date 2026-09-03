@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { SYSTEM_TASK_PROTOCOL_VERSION, type SystemTaskJsonObject, type SystemTaskResult, type SystemTaskSpec } from '@happier-dev/protocol';
 import { PERSONAL_HOME_SYSTEM_TASK_KINDS } from '@happier-dev/cli-common/systemTasks';
+import { PersonalHomeRelocationTransferCleanupError } from '@happier-dev/cli-common/firstPartyRuntime';
 
 import { handleHomeCommand, type HomeCommandDeps } from './home';
 
@@ -144,6 +145,97 @@ describe('handleHomeCommand', () => {
     expect(params).not.toHaveProperty('destinationDataDir');
   });
 
+  it('cleans the exact destination-owned transfer reservation after a successful stage', async () => {
+    const consumeRelocationUpload = vi.fn(async () => ({ archivePath: '/tmp/relocation-operation/bundle.tar' }));
+    const cleanupRelocationUpload = vi.fn(async () => undefined);
+    const staged = success('stage', { operationId: 'operation-1', status: 'quarantined' });
+    const { deps, start } = createDeps([homeStatus, staged], { consumeRelocationUpload, cleanupRelocationUpload });
+
+    await handleHomeCommand([
+      'relocation-destination', 'stage',
+      '--operation-id', 'operation-1',
+      '--upload-receipt', '11111111-1111-4111-8111-111111111111',
+      '--bundle-sha256', 'a'.repeat(64),
+      '--expected-home-id', 'home-1',
+      '--expected-canonical-server-url', 'https://source.example.test',
+      '--source-descriptor-revision', '7',
+      '--json',
+    ], deps);
+
+    expect(consumeRelocationUpload).toHaveBeenCalledWith({ operationId: 'operation-1', uploadReceipt: '11111111-1111-4111-8111-111111111111' });
+    expect(cleanupRelocationUpload).toHaveBeenCalledTimes(1);
+    expect(cleanupRelocationUpload).toHaveBeenCalledWith({ operationId: 'operation-1' });
+    const params = (start.mock.calls[1]?.[0] as { spec: SystemTaskSpec }).spec.params as Record<string, unknown>;
+    expect(params).toMatchObject({ operationId: 'operation-1', archivePath: '/tmp/relocation-operation/bundle.tar' });
+  });
+
+  it('still cleans the destination-owned transfer reservation when the stage task fails', async () => {
+    const consumeRelocationUpload = vi.fn(async () => ({ archivePath: '/tmp/relocation-operation/bundle.tar' }));
+    const cleanupRelocationUpload = vi.fn(async () => undefined);
+    const { deps } = createDeps(
+      [homeStatus, failure('stage', 'relocation_stage_failed', 'restore failed')],
+      { consumeRelocationUpload, cleanupRelocationUpload },
+    );
+
+    await expect(handleHomeCommand([
+      'relocation-destination', 'stage',
+      '--operation-id', 'operation-1',
+      '--upload-receipt', '11111111-1111-4111-8111-111111111111',
+      '--bundle-sha256', 'a'.repeat(64),
+      '--expected-home-id', 'home-1',
+      '--expected-canonical-server-url', 'https://source.example.test',
+      '--source-descriptor-revision', '7',
+      '--json',
+    ], deps)).rejects.toMatchObject({ code: 'relocation_stage_failed' });
+    expect(cleanupRelocationUpload).toHaveBeenCalledTimes(1);
+    expect(cleanupRelocationUpload).toHaveBeenCalledWith({ operationId: 'operation-1' });
+  });
+
+  it('surfaces cleanup attention when staging and reservation cleanup both fail', async () => {
+    const consumeRelocationUpload = vi.fn(async () => ({ archivePath: '/tmp/relocation-operation/bundle.tar' }));
+    const cleanupRelocationUpload = vi.fn(async () => { throw new Error('cleanup failed'); });
+    const { deps } = createDeps(
+      [homeStatus, failure('stage', 'relocation_stage_failed', 'restore failed')],
+      { consumeRelocationUpload, cleanupRelocationUpload },
+    );
+
+    const error = await handleHomeCommand([
+      'relocation-destination', 'stage',
+      '--operation-id', 'operation-1',
+      '--upload-receipt', '11111111-1111-4111-8111-111111111111',
+      '--bundle-sha256', 'a'.repeat(64),
+      '--expected-home-id', 'home-1',
+      '--expected-canonical-server-url', 'https://source.example.test',
+      '--source-descriptor-revision', '7',
+      '--json',
+    ], deps).then(() => null, (failure: unknown) => failure);
+
+    expect(error).toBeInstanceOf(PersonalHomeRelocationTransferCleanupError);
+    expect(error).toMatchObject({ transferCleanupNeedsAttention: true });
+    expect(String((error as Error).message)).not.toContain('/tmp/relocation-operation');
+  });
+
+  it('cleans the destination-owned transfer reservation when the upload cannot be consumed', async () => {
+    const consumeRelocationUpload = vi.fn(async () => {
+      throw new Error('Personal Home relocation upload receipt does not match the reserved transfer.');
+    });
+    const cleanupRelocationUpload = vi.fn(async () => undefined);
+    const { deps } = createDeps([homeStatus], { consumeRelocationUpload, cleanupRelocationUpload });
+
+    await expect(handleHomeCommand([
+      'relocation-destination', 'stage',
+      '--operation-id', 'operation-1',
+      '--upload-receipt', '11111111-1111-4111-8111-111111111111',
+      '--bundle-sha256', 'a'.repeat(64),
+      '--expected-home-id', 'home-1',
+      '--expected-canonical-server-url', 'https://source.example.test',
+      '--source-descriptor-revision', '7',
+      '--json',
+    ], deps)).rejects.toThrow('does not match the reserved transfer');
+    expect(cleanupRelocationUpload).toHaveBeenCalledTimes(1);
+    expect(cleanupRelocationUpload).toHaveBeenCalledWith({ operationId: 'operation-1' });
+  });
+
   it('selects the existing live task composition with explicit runtime channel and mode', async () => {
     const createRunner = vi.fn((runtime: Readonly<{ channel: 'stable' | 'preview' | 'dev'; mode: 'user' | 'system' }>) => createDeps([homeStatus, success('inspect', nonEmptyInspectionData)]).deps.createRunner(runtime));
     const deps: HomeCommandDeps = {
@@ -207,40 +299,23 @@ describe('handleHomeCommand', () => {
     await expect(handleHomeCommand(['recover-restore', '--yes'], deps)).rejects.toMatchObject({ code: 'restore_recovery_ambiguous' });
     expect(start).toHaveBeenCalledTimes(2);
   });
-  it('keeps completed restore rollback reachable through recover-restore', async () => {
-    vi.spyOn(console, 'log').mockImplementation(() => {});
+  it('rejects completed restore finalization facts through recover-restore', async () => {
     const finalization = success('inspect', { ...nonEmptyInspectionData, restoreRecovery: { status: 'finalization_available', affectedTargets: ['/data/home', '/data/home.rollback'] } });
-    const recovered = success('recover', { outcome: 'rolled_back', restartedHome: true });
-    const { deps, start } = createDeps([homeStatus, finalization, recovered]);
+    const { deps, start } = createDeps([homeStatus, finalization]);
 
-    await handleHomeCommand(['recover-restore', '--yes'], deps);
+    await expect(handleHomeCommand(['recover-restore', '--yes'], deps))
+      .rejects.toMatchObject({ code: 'personal_home_inspection_incomplete' });
 
-    expect(start).toHaveBeenNthCalledWith(3, { spec: expect.objectContaining({
-      kind: PERSONAL_HOME_SYSTEM_TASK_KINDS.restore,
-      params: expect.objectContaining({ action: 'recover' }),
-    }) });
-  });
-
-  it('inspects completed restore facts, confirms, and finalizes through the restore task kind', async () => {
-    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
-    const finalization = success('inspect', { ...nonEmptyInspectionData, restoreRecovery: { status: 'finalization_available', affectedTargets: ['/data/home', '/data/home.rollback'] } });
-    const finalized = success('finalize', { outcome: 'finalized', removedPaths: ['/data/home.rollback'] });
-    const { deps, start } = createDeps([homeStatus, finalization, finalized]);
-
-    await handleHomeCommand(['finalize-restore', '--yes'], deps);
-
-    expect(log.mock.calls.flat().join('\n')).toContain('/data/home.rollback');
-    expect(start).toHaveBeenNthCalledWith(3, { spec: expect.objectContaining({
-      kind: PERSONAL_HOME_SYSTEM_TASK_KINDS.restore,
-      params: expect.objectContaining({ action: 'finalize' }),
-    }) });
-  });
-
-  it('refuses restore finalization unless inspection proves completed retained material', async () => {
-    const { deps, start } = createDeps([homeStatus, nonEmptyInspection]);
-
-    await expect(handleHomeCommand(['finalize-restore', '--yes'], deps)).rejects.toMatchObject({ code: 'restore_finalization_unavailable' });
     expect(start).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not expose the removed finalize-restore command', async () => {
+    const { deps, start } = createDeps([homeStatus]);
+
+    await expect(handleHomeCommand(['finalize-restore', '--yes'], deps))
+      .rejects.toThrow('Unknown home subcommand: finalize-restore');
+
+    expect(start).toHaveBeenCalledOnce();
   });
   it('starts the exact backup task with a normalized output path and authoritative purpose', async () => {
     vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -268,6 +343,23 @@ describe('handleHomeCommand', () => {
 
     await expect(handleHomeCommand(['status'], deps)).rejects.toThrow(/not a Personal Home/i);
     expect(start).toHaveBeenCalledOnce();
+  });
+
+  it('prints an incomplete backup inventory as a lower bound', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const incompleteInspection = success('inspect', {
+      ...nonEmptyInspectionData,
+      storage: {
+        ...(nonEmptyInspectionData.storage as SystemTaskJsonObject),
+        backupsCount: 32,
+        backupsCountComplete: false,
+      },
+    });
+    const { deps } = createDeps([homeStatus, incompleteInspection]);
+
+    await handleHomeCommand(['status'], deps);
+
+    expect(log.mock.calls.flat().join('\n')).toContain('Backup archives: 32+');
   });
 
   it('verifies before restore and never starts restore when confirmation is declined', async () => {

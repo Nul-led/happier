@@ -172,6 +172,55 @@ describe('prepareDaemonHomeIrohTransport', () => {
     })).rejects.toMatchObject({ code: 'transport_timeout' });
   });
 
+  it('never authenticates canonical or loopback origins when required Iroh is unavailable', async () => {
+    const probe = vi.fn(async () => ({ status: 'ready' as const }));
+
+    await expect(prepareDaemonHomeIrohTransport({
+      runtime: null,
+      profile: {
+        serverUrl: descriptor.canonicalServerUrl,
+        localServerUrl: 'http://127.0.0.1:3005',
+        homeConnectionDescriptor: descriptor,
+      } as never,
+      token: 'account-token',
+      probe,
+      publishRuntimeOrigin: vi.fn(),
+    })).rejects.toThrow(/Iroh/i);
+
+    expect(probe).not.toHaveBeenCalled();
+  });
+
+  it('allows unavailable Iroh to use only the descriptor-declared independently verified HTTPS origin', async () => {
+    const httpsUrl = 'https://public-home.example.test';
+    const descriptorWithHttpsFallback = {
+      ...descriptor,
+      endpoints: [...descriptor.endpoints, { kind: 'https' as const, url: httpsUrl }],
+    };
+    const probe = vi.fn(async ({ serverUrl }: { serverUrl: string }) => (
+      serverUrl === httpsUrl
+        ? { status: 'ready' as const }
+        : { status: 'auth_failed' as const, errorMessage: 'unexpected origin' }
+    ));
+    const publish = vi.fn(() => vi.fn());
+
+    const transport = await prepareDaemonHomeIrohTransport({
+      runtime: null,
+      profile: {
+        serverUrl: descriptor.canonicalServerUrl,
+        localServerUrl: 'http://127.0.0.1:3005',
+        homeConnectionDescriptor: descriptorWithHttpsFallback,
+      } as never,
+      token: 'account-token',
+      probe: probe as never,
+      publishRuntimeOrigin: publish,
+    });
+
+    expect(probe).toHaveBeenCalledTimes(1);
+    expect(probe).toHaveBeenCalledWith(expect.objectContaining({ serverUrl: httpsUrl }));
+    expect(publish).toHaveBeenCalledWith(httpsUrl, 'https');
+    expect(transport).toMatchObject({ carrier: 'standard', observedPath: 'unknown' });
+  });
+
   it('reports a transport outage as unreachable during reacquisition', async () => {
     const runtime = {
       available: true as const,
@@ -331,5 +380,51 @@ describe('prepareDaemonHomeIrohTransport', () => {
 
     expect(releaseFirst).toHaveBeenCalledTimes(2);
     expect(releaseSecond).toHaveBeenCalledTimes(1);
+  });
+
+  it('owns and disposes a replacement that completes after terminal release starts', async () => {
+    const releaseInitial = vi.fn(async () => undefined);
+    const releaseLate = vi.fn(async () => undefined);
+    let resolveLate: ((lease: { runtimeOrigin: string; observedPath: 'relay'; release: typeof releaseLate }) => void) | null = null;
+    const runtime = {
+      available: true as const,
+      ensureHomeTunnel: vi.fn()
+        .mockResolvedValueOnce({
+          runtimeOrigin: 'http://127.0.0.1:48123', observedPath: 'direct' as const, release: releaseInitial,
+        })
+        .mockImplementationOnce(async () => await new Promise((resolve) => {
+          resolveLate = resolve;
+        })),
+    };
+    const unpublishInitial = vi.fn();
+    const unpublishLate = vi.fn();
+    const publish = vi.fn()
+      .mockReturnValueOnce(unpublishInitial)
+      .mockReturnValueOnce(unpublishLate);
+    const transport = await prepareDaemonHomeIrohTransport({
+      runtime: runtime as never,
+      profile: { serverUrl: descriptor.canonicalServerUrl, homeConnectionDescriptor: descriptor } as never,
+      token: 'account-token',
+      readProfile: async () => ({
+        serverUrl: descriptor.canonicalServerUrl,
+        homeConnectionDescriptor: descriptor,
+      }) as never,
+      probe: async () => ({ status: 'ready' }),
+      publishRuntimeOrigin: publish,
+    });
+
+    const reacquire = transport.reacquire();
+    await vi.waitFor(() => expect(resolveLate).toBeTypeOf('function'));
+    const release = transport.release();
+    resolveLate!({
+      runtimeOrigin: 'http://127.0.0.1:48124',
+      observedPath: 'relay',
+      release: releaseLate,
+    });
+
+    await expect(reacquire).resolves.toMatchObject({ status: 'server_unreachable' });
+    await release;
+    expect(unpublishLate).toHaveBeenCalledTimes(1);
+    expect(releaseLate).toHaveBeenCalledTimes(1);
   });
 });

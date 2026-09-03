@@ -8,8 +8,10 @@ import { isWebMobileLikeQrScannerHost } from '@/utils/platform/webMobileHeuristi
 
 import { RestoreQrView } from '@/components/account/restore/RestoreQrView';
 import { RestoreScanComputerQrView } from '@/components/account/restore/RestoreScanComputerQrView';
+import type { HomeQrEntryIntent } from '@/auth/pairing/homeQrEntryIntent';
 
 export type RestoreIndexEmbeddedProps = Readonly<{
+    entryIntent: HomeQrEntryIntent;
     onBack: () => void;
     onOpenSecretKeyLogin?: () => void;
     initialPairingLink?: string | null;
@@ -44,12 +46,17 @@ export const RestoreIndexEmbedded = React.memo(function RestoreIndexEmbedded(pro
     }, [height, isDesktopShell, width]);
     const isWebPhoneWithCamera =
         Platform.OS === 'web' && canUseScanner && isWebMobileLikeQrScannerHost(heuristicViewport);
-    const showScannerFirst = Boolean(props.initialPairingLink) || isNativePhone || isWebPhoneWithCamera;
+    const showScannerFirst =
+        Boolean(props.initialPairingLink)
+        || props.entryIntent === 'add_home'
+        || isNativePhone
+        || isWebPhoneWithCamera;
     const [currentView, setCurrentView] = React.useState<'qr' | 'scanner' | null>(null);
     const activeView = currentView ?? (showScannerFirst ? 'scanner' : 'qr');
 
     return activeView === 'scanner' ? (
         <RestoreScanComputerQrView
+            entryIntent={props.entryIntent}
             embedded
             initialPairingLink={props.initialPairingLink}
             onBack={props.onBack}
@@ -59,10 +66,12 @@ export const RestoreIndexEmbedded = React.memo(function RestoreIndexEmbedded(pro
         />
     ) : (
         <RestoreQrView
+            entryIntent={props.entryIntent}
             embedded
             onBack={props.onBack}
             onOpenSecretKeyLogin={props.onOpenSecretKeyLogin}
             onOpenScanQr={canUseScanner ? () => setCurrentView('scanner') : undefined}
+            onNavigationLockChange={props.onNavigationLockChange}
         />
     );
 });

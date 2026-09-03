@@ -21,6 +21,7 @@ export const loginSpy = vi.fn<
 export const loginWithCredentialsSpy = vi.fn<
     (...args: unknown[]) => Promise<AuthCredentialLifecycleResult>
 >(async () => ({ kind: 'completed' }));
+export const refreshFromActiveServerSpy = vi.fn(async () => {});
 export const getRandomBytesSpy = vi.fn((length = 32) => new Uint8Array(length).fill(9));
 export const upsertAndActivateServerSpy = vi.fn();
 export const trackAccountCreatedSpy = vi.fn();
@@ -115,9 +116,21 @@ export function setPendingExternalConnectState(next: PendingExternalConnect | nu
     pendingExternalConnectState = next;
 }
 
-export function setPendingAccountDirectoryAuthState(next: PendingAccountDirectoryAuth | null) {
-    pendingAccountDirectoryAuthState = next;
+export function setPendingAccountDirectoryAuthState(
+    next: (Omit<PendingAccountDirectoryAuth, 'canonicalServerUrl' | 'entryIntent'> & Partial<Pick<PendingAccountDirectoryAuth, 'canonicalServerUrl' | 'entryIntent'>>) | null,
+) {
+    pendingAccountDirectoryAuthState = next
+        ? {
+            ...next,
+            canonicalServerUrl: next.canonicalServerUrl ?? next.endpoint,
+            entryIntent: next.entryIntent ?? 'connect_service',
+        }
+        : null;
     if (next?.endpoint && next.serverIdentityId) {
+        localSearchParamsMock.mockReturnValue({
+            ...localSearchParamsMock(),
+            canonicalServerUrl: next.canonicalServerUrl ?? next.endpoint,
+        });
         setAccountServiceEndpoint({
             url: next.endpoint,
             serverIdentityId: next.serverIdentityId,
@@ -154,6 +167,7 @@ vi.mock('@/auth/context/AuthContext', () => ({
         credentials: authState.credentials,
         login: loginSpy,
         loginWithCredentials: loginWithCredentialsSpy,
+        refreshFromActiveServer: refreshFromActiveServerSpy,
         logout: vi.fn(async () => {}),
     }),
 }));
@@ -180,6 +194,7 @@ vi.mock('react-native-unistyles', async () => {
 
 vi.mock('@/sync/domains/server/serverRuntime', () => ({
     getActiveServerSnapshot: () => activeServerSnapshotState,
+    getActiveServerHomeCarrier: () => null,
     upsertAndActivateServer: upsertAndActivateServerSpy,
 }));
 
@@ -200,10 +215,16 @@ vi.mock('@/auth/storage/tokenStorage', async () => {
             ...actual.TokenStorage,
             getPendingExternalAuth: async () => (pendingExternalAuthServerMismatch ? null : pendingExternalAuthState),
             readPendingExternalAuthState: readPendingExternalAuthStateMock,
+            readPendingExternalAuthContinuationState:
+                readPendingExternalAuthStateMock,
             clearPendingExternalAuth: clearPendingExternalAuthMock,
             getPendingExternalConnect: async () => pendingExternalConnectState,
             clearPendingExternalConnect: clearPendingExternalConnectMock,
             getCredentials: async () => storedCredentialsState,
+            getCredentialsForServerUrl: async (
+                ...args: Parameters<typeof actual.TokenStorage.getCredentialsForServerUrl>
+            ) => storedCredentialsState
+                ?? await actual.TokenStorage.getCredentialsForServerUrl(...args),
             getPendingAccountDirectoryAuth: pendingAccountDirectoryAuthGetSpy,
             clearPendingAccountDirectoryAuth: pendingAccountDirectoryAuthClearSpy,
             accountDirectoryAuthCredentials: {
@@ -280,6 +301,8 @@ export function resetOAuthHarness() {
     loginSpy.mockResolvedValue({ kind: 'completed' });
     loginWithCredentialsSpy.mockReset();
     loginWithCredentialsSpy.mockResolvedValue({ kind: 'completed' });
+    refreshFromActiveServerSpy.mockReset();
+    refreshFromActiveServerSpy.mockResolvedValue(undefined);
     getRandomBytesSpy.mockReset();
     getRandomBytesSpy.mockImplementation((length = 32) => new Uint8Array(length).fill(9));
     upsertAndActivateServerSpy.mockReset();
