@@ -271,11 +271,12 @@ For the full user guide (UI behavior, defaults, apply timing), see the app docs:
 
 ### Happier Configuration
 
-- `HAPPIER_PUBLIC_SERVER_URL` - Canonical/share server URL (used in QR/deep links; should work from your phone)
+- `HAPPIER_CANONICAL_SERVER_URL` - Stable server authentication identity/audience. Managed Personal Homes set this to their loopback origin.
+- `HAPPIER_PUBLIC_SERVER_URL` - Optional externally reachable ingress/share URL (used in QR/deep links; should work from your phone). A loopback-only Personal Home leaves it unset.
 - `HAPPIER_LOCAL_SERVER_URL` - Optional local API URL optimization (only used for API calls, never embedded in links)
-- `HAPPIER_SERVER_URL` - Legacy/compat server URL
-  - If `HAPPIER_PUBLIC_SERVER_URL` is unset: treated as the canonical/share URL
-  - If `HAPPIER_PUBLIC_SERVER_URL` is set: treated as a local API URL override
+- `HAPPIER_SERVER_URL` - Legacy/compat CLI connection URL
+  - If `HAPPIER_PUBLIC_SERVER_URL` is unset, the CLI treats it as the selected Home URL.
+  - If `HAPPIER_PUBLIC_SERVER_URL` is set, the CLI may use `HAPPIER_SERVER_URL` as its local API route while keeping the public URL for links.
 - `HAPPIER_WEBAPP_URL` - Custom web app URL (default: https://app.happier.dev)
 - `HAPPIER_HOME_DIR` - Custom home directory for Happier data (default: ~/.happier)
 - `HAPPIER_DISABLE_CAFFEINATE` - Disable macOS sleep prevention (set to `true`, `1`, or `yes`)

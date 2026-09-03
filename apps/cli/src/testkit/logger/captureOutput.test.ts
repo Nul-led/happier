@@ -104,4 +104,41 @@ describe('console capture helpers', () => {
       output.restore();
     }
   });
+
+  it('selects the exact JSON command envelope when other captured output contaminates the stream', async () => {
+    const logger = await import('@/testkit/logger/captureOutput').catch(() => null);
+
+    expect(logger).not.toBeNull();
+    const output = logger!.captureConsoleJsonOutput<{ ok: boolean; kind: string }>();
+    try {
+      console.log('[daemon] ordinary runtime diagnostic while the command runs');
+      console.log('{"v":1,"ok":true,"kind":"plugins_create","data":{"pluginId":"acme.example"}}');
+      console.log('[daemon] ordinary runtime shutdown note');
+
+      expect(output.json()).toEqual({
+        v: 1,
+        ok: true,
+        kind: 'plugins_create',
+        data: { pluginId: 'acme.example' },
+      });
+      // The non-JSON captured lines stay visible for diagnosis.
+      expect(output.logs).toHaveLength(3);
+    } finally {
+      output.restore();
+    }
+  });
+
+  it('keeps a contaminated stream failing loudly when it carries no JSON command envelope', async () => {
+    const logger = await import('@/testkit/logger/captureOutput').catch(() => null);
+
+    expect(logger).not.toBeNull();
+    const output = logger!.captureConsoleJsonOutput();
+    try {
+      console.log('plain human output with no envelope at all');
+
+      expect(() => output.json()).toThrow();
+    } finally {
+      output.restore();
+    }
+  });
 });

@@ -2,7 +2,7 @@ export type ScmWorkspaceIntegrationWorkspaceTransferIncludeIgnoredMode = 'exclud
 
 export type ScmWorkspaceIntegrationWorkspaceTransferConflictPolicy = 'create_sibling_copy' | 'replace_existing';
 
-export type ScmWorkspaceIntegrationWorkspaceTransferStrategy = 'transfer_snapshot' | 'sync_changes';
+export type ScmWorkspaceIntegrationWorkspaceTransferStrategy = 'transfer_snapshot';
 
 export const DEFAULT_SCM_WORKSPACE_INTEGRATION_WORKSPACE_TRANSFER_STRATEGY: ScmWorkspaceIntegrationWorkspaceTransferStrategy = 'transfer_snapshot';
 

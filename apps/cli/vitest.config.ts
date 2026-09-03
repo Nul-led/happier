@@ -1,6 +1,7 @@
 import { configDefaults, defineConfig } from 'vitest/config'
+import type { Alias } from 'vite'
 import { realpathSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { join, resolve, sep } from 'node:path'
 import { tmpdir } from 'node:os'
 
 import dotenv from 'dotenv'
@@ -33,6 +34,27 @@ mergedTestEnv.HAPPIER_FEATURE_POLICY_ENV = '';
 // ambient root and fail tests that stub only the Happier variable. Clear it so a
 // case that needs a config root sets one explicitly.
 mergedTestEnv.CLAUDE_CONFIG_DIR = '';
+
+const cliSourceRoot = resolve('./src')
+const uiSourceRoot = resolve('../ui/sources')
+
+// `@/…` is a package-relative source alias that the CLI and the UI both declare. A few CLI tests
+// compose real UI source across an explicit package seam (the Agent-realtime Voice service), and
+// that source resolves `@/…` against the UI package. Pick the root from the importing file so a
+// single alias stays correct for both sides instead of giving either package a second alias.
+const packageSourceAlias: Alias = {
+    find: /^@\//u,
+    replacement: '@/',
+    async customResolver(id, importer, options) {
+        const importerPath = importer?.split('?')[0];
+        const root = importerPath?.startsWith(`${uiSourceRoot}${sep}`)
+            ? uiSourceRoot
+            : cliSourceRoot;
+        const target = join(root, id.slice('@/'.length));
+        const resolved = await this.resolve(target, importer, { skipSelf: true, ...options });
+        return resolved ?? { id: target };
+    },
+}
 
 export default defineConfig({
     test: {
@@ -80,10 +102,7 @@ export default defineConfig({
     },
     resolve: {
         alias: [
-            {
-                find: '@',
-                replacement: resolve('./src'),
-            },
+            packageSourceAlias,
             { find: /^react$/u, replacement: resolve('../ui/node_modules/react/index.js') },
             { find: /^react\/jsx-runtime$/u, replacement: resolve('../ui/node_modules/react/jsx-runtime.js') },
             { find: /^react\/jsx-dev-runtime$/u, replacement: resolve('../ui/node_modules/react/jsx-dev-runtime.js') },

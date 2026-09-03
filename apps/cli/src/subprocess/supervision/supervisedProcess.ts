@@ -16,6 +16,8 @@ type RestartScheduledInfo = Readonly<{
 export type SupervisedProcess = Readonly<{
   id: ManagedProcessId;
   markStopRequested: (request: StopRequest) => void;
+  /** Reset unexpected-exit accounting only after the domain owner observes genuine stable readiness. */
+  markStable: () => void;
   start: () => void;
   dispose: () => void;
 }>;
@@ -110,6 +112,7 @@ export function createSupervisedProcess(params: CreateSupervisedProcessParams): 
       restartController.markStopRequested(request);
       clearTimer();
     },
+    markStable: () => restartController.resetCrashBudget(),
     start: () => {
       if (disposed) return;
       if (running) return;

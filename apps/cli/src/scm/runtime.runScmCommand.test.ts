@@ -5,7 +5,7 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { runScmCommand } from './runtime';
+import { probeScmExecutableAvailable, runScmCommand } from './runtime';
 
 function initRepo(cwd: string): void {
     execFileSync('git', ['init'], { cwd, stdio: 'pipe' });
@@ -71,5 +71,21 @@ describe('runScmCommand output limits', () => {
         expect(result.success).toBe(true);
         expect(result.outputLimitExceeded).not.toBe(true);
         expect(result.stdout.trim()).toBe('true');
+    });
+});
+
+describe('probeScmExecutableAvailable', () => {
+    it('reports an SCM runtime dependency as unavailable when host resolution cannot find it', async () => {
+        const originalPath = process.env.PATH;
+        process.env.PATH = '';
+        try {
+            await expect(probeScmExecutableAvailable({ bin: 'git', timeoutMs: 5000 })).resolves.toBe(false);
+        } finally {
+            process.env.PATH = originalPath;
+        }
+    });
+
+    it('reports an installed SCM runtime dependency as available without a repository', async () => {
+        await expect(probeScmExecutableAvailable({ bin: 'git', timeoutMs: 5000 })).resolves.toBe(true);
     });
 });

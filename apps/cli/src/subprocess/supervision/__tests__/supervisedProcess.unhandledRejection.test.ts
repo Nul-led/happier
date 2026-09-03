@@ -57,4 +57,46 @@ describe('createSupervisedProcess unhandled rejection safety', () => {
       process.off('unhandledRejection', onUnhandled);
     }
   });
+
+  it('resets the crash budget only when its owner marks the replacement stable', async () => {
+    vi.useFakeTimers();
+    const exits: Array<(event: TerminationEvent) => void> = [];
+    const attempts: number[] = [];
+    const supervisor = createSupervisedProcess({
+      id: 'stable-boundary',
+      policy: {
+        kind: 'other',
+        restart: { mode: 'on_unexpected_exit', maxRestarts: 2, baseDelayMs: 1, maxDelayMs: 1, jitterMs: 0 },
+        logging: { logTerminationEvents: false },
+        artifacts: { captureStderr: false },
+        terminateGraceMs: 1,
+      },
+      spawn: async () => ({
+        pid: 123,
+        waitForTermination: async () => await new Promise<TerminationEvent>((resolve) => exits.push(resolve)),
+      }),
+      onTermination: async () => undefined,
+      onRestartScheduled: ({ attempt }) => attempts.push(attempt),
+    });
+
+    try {
+      supervisor.start();
+      await vi.waitFor(() => expect(exits).toHaveLength(1));
+      exits[0]!({ type: 'exited', code: 1 });
+      await vi.advanceTimersByTimeAsync(1);
+      await vi.waitFor(() => expect(exits).toHaveLength(2));
+      exits[1]!({ type: 'exited', code: 1 });
+      await vi.advanceTimersByTimeAsync(1);
+      await vi.waitFor(() => expect(exits).toHaveLength(3));
+      expect(attempts).toEqual([1, 2]);
+
+      supervisor.markStable();
+      exits[2]!({ type: 'exited', code: 1 });
+      await vi.advanceTimersByTimeAsync(1);
+      await vi.waitFor(() => expect(exits).toHaveLength(4));
+      expect(attempts).toEqual([1, 2, 1]);
+    } finally {
+      supervisor.dispose();
+    }
+  });
 });

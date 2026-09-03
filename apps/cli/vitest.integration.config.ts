@@ -20,6 +20,12 @@ const workspaceSyncRealIntegrationTest = 'src/daemon/startup/createDaemonWorkspa
 const workspaceSyncBrokerGoRealIntegrationTest = 'src/workspaces/sync/transport/workspaceSyncBroker.go.real.integration.test.ts';
 const workspaceMachineCarrierRealIntegrationTest = 'src/daemon/peer/iroh/workspaceMachineCarrierLane08.real.integration.test.ts';
 const workspaceMachineCarrierMutagenRealIntegrationTest = 'src/daemon/peer/iroh/workspaceMachineCarrierMutagen.real.integration.test.ts';
+// The external Session-Agent author-journey canary runs the real managed
+// author toolchain: it materializes dependencies from real registries and
+// compiles/bundles a scaffolded plugin, so it needs network access and takes
+// far longer than an ordinary integration file. Keep it opt-in like the other
+// real-dependency rows above rather than making this lane network-bound.
+const sessionAgentCanaryRealIntegrationTest = 'src/cli/commands/plugins.sessionAgentCanary.real.integration.test.ts';
 
 if (mergedTestEnv.HAPPIER_SERVER_URL && !mergedTestEnv.HAPPIER_WEBAPP_URL) {
     mergedTestEnv.HAPPIER_WEBAPP_URL = mergedTestEnv.HAPPIER_SERVER_URL;
@@ -71,6 +77,9 @@ export default defineConfig({
                 && process.env.HAPPIER_RUN_HOME_IROH_REAL_INTEGRATION === '1'
                 ? []
                 : [workspaceMachineCarrierMutagenRealIntegrationTest]),
+            ...(process.env.HAPPIER_RUN_SESSION_AGENT_CANARY === '1'
+                ? []
+                : [sessionAgentCanaryRealIntegrationTest]),
         ],
         globalSetup: ['./src/test-setup.integration.ts'],
         coverage: {

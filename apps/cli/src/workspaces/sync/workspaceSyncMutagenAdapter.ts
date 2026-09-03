@@ -396,12 +396,19 @@ export class WorkspaceSyncMutagenAdapterClient implements WorkspaceSyncMutagenAd
     for (const item of value) {
       const generic = session(item);
       const id = generic.labels['external.relationship_id'];
+      const persistedClaimId = id && this.definitions.has(id)
+        ? id
+        : this.definitions.has(generic.name) ? generic.name : undefined;
       if (!id || generic.name !== id
         || generic.labels['external.owner'] !== 'happier-workspace-sync'
         || generic.labels['external.endpoint_role'] !== 'alpha|beta'
         || generic.labels['external.schema'] !== 'workspace-sync-v1'
         || generic.alpha.endpointId !== deriveWorkspaceSyncEndpointId(id, 'alpha')
         || generic.beta.endpointId !== deriveWorkspaceSyncEndpointId(id, 'beta')) {
+        if (persistedClaimId) {
+          await this.terminateRuntimeSession(persistedClaimId, generic.identifier, signal);
+          continue;
+        }
         throw definitionConflict('Mutagen session identity is not owned by workspace sync');
       }
       const definition = this.definitions.get(id);

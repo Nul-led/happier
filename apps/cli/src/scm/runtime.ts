@@ -2,6 +2,7 @@ import { spawn } from 'child_process';
 import { isAbsolute, relative, sep } from 'path';
 import path, { delimiter as PATH_DELIMITER } from 'node:path';
 import { accessSync, constants as fsConstants, realpathSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 
 import { createScmCapabilities, type ScmWorkingSnapshot } from '@happier-dev/protocol';
 import { resolveWindowsCommandOnPath } from '@happier-dev/cli-common/process';
@@ -12,6 +13,7 @@ import {
     type FilesystemAccessPolicy,
 } from '@/rpc/handlers/fileSystem/accessPolicy/filesystemAccessPolicy';
 import { expandHomeDirPath } from '@/utils/path/expandHomeDirPath';
+import { killProcessTree } from '@/agent/runtime/process/killProcessTree';
 
 export type ScmExecResult = {
     success: boolean;
@@ -112,6 +114,7 @@ export function runScmCommand(input: {
     stdin?: string;
     maxOutputBytes?: number;
     env?: Record<string, string | undefined>;
+    signal?: AbortSignal;
 }): Promise<ScmExecResult> {
     const execEnv = input.env ? { ...process.env, ...input.env } : process.env;
     const resolvedBinPath = resolveSystemScmBinPath(input.bin, execEnv);
@@ -121,6 +124,15 @@ export function runScmCommand(input: {
             success: false,
             stdout: '',
             stderr: `SCM executable not found for ${installableKey} (${input.bin})`,
+            exitCode: -1,
+        });
+    }
+
+    if (input.signal?.aborted) {
+        return Promise.resolve({
+            success: false,
+            stdout: '',
+            stderr: 'SCM command was aborted',
             exitCode: -1,
         });
     }
@@ -138,6 +150,9 @@ export function runScmCommand(input: {
         let resolved = false;
         let timedOut = false;
         let outputLimitExceeded = false;
+        let aborted = false;
+        let abortTerminationSettled = false;
+        let closedResult: ScmExecResult | null = null;
         let outputBytes = 0;
         const timeoutMs = input.timeoutMs ?? 15_000;
         const maxOutputBytes = resolveScmMaxOutputBytes(input.maxOutputBytes);
@@ -145,7 +160,36 @@ export function runScmCommand(input: {
         const done = (result: ScmExecResult) => {
             if (resolved) return;
             resolved = true;
+            input.signal?.removeEventListener('abort', abort);
             resolvePromise(result);
+        };
+
+        const finishClosedResult = () => {
+            if (!closedResult) return;
+            if (aborted && !abortTerminationSettled) return;
+            done(closedResult);
+        };
+
+        const abort = () => {
+            if (aborted || resolved) return;
+            aborted = true;
+            void killProcessTree(child).then(
+                () => {
+                    abortTerminationSettled = true;
+                    finishClosedResult();
+                },
+                (error: unknown) => {
+                    abortTerminationSettled = true;
+                    done({
+                        success: false,
+                        stdout,
+                        stderr: error instanceof Error ? error.message : 'SCM command was aborted',
+                        exitCode: -1,
+                        timedOut,
+                        outputLimitExceeded,
+                    });
+                },
+            );
         };
 
         const appendOutput = (channel: 'stdout' | 'stderr', chunk: Buffer) => {
@@ -209,18 +253,45 @@ export function runScmCommand(input: {
         child.on('close', (exitCode) => {
             clearTimeout(timer);
             const code = typeof exitCode === 'number' ? exitCode : -1;
-            done({
-                success: code === 0 && !timedOut && !outputLimitExceeded,
+            closedResult = {
+                success: code === 0 && !timedOut && !outputLimitExceeded && !aborted,
                 stdout,
-                stderr,
+                stderr: aborted && !stderr ? 'SCM command was aborted' : stderr,
                 exitCode: code,
                 timedOut,
                 outputLimitExceeded,
-            });
+            };
+            finishClosedResult();
         });
 
+        input.signal?.addEventListener('abort', abort, { once: true });
+        if (input.signal?.aborted) abort();
         writeChildStdin(child.stdin, input.stdin);
     });
+}
+
+/**
+ * Availability probe for a declared SCM runtime dependency. It reuses the one
+ * command resolution and spawn owner above, so a missing executable, an
+ * unusable one, and a failing invocation are reported through the same path.
+ */
+export async function probeScmExecutableAvailable(input: {
+    bin: string;
+    installableKey?: string;
+    timeoutMs?: number;
+    signal?: AbortSignal;
+}): Promise<boolean> {
+    const result = await runScmCommand({
+        bin: input.bin,
+        ...(input.installableKey === undefined ? {} : { installableKey: input.installableKey }),
+        // `--version` never reads a repository, so the probe stays outside any
+        // workspace root that could be renamed or removed beneath it.
+        cwd: tmpdir(),
+        args: ['--version'],
+        timeoutMs: input.timeoutMs ?? 10_000,
+        ...(input.signal === undefined ? {} : { signal: input.signal }),
+    });
+    return result.success;
 }
 
 export function resolveCwd(

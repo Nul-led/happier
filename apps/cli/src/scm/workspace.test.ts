@@ -661,7 +661,7 @@ describe('scm workspace integration', () => {
         await expect(resolveWorkspaceReplicationSourceInputsWithScmWorkspace({
             sourcePath: '/repo/packages/app',
             workspaceTransfer: {
-                strategy: 'sync_changes',
+                strategy: 'transfer_snapshot',
                 includeIgnoredMode: 'include_selected',
                 ignoredIncludeGlobs: ['dist/**'],
             },
