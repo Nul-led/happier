@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { readPluginManifest } from '@/plugins/manifest/read';
 import { createResolvedContributionRegistry } from '@/plugins/projection/registry/createResolvedContributionRegistry';
@@ -18,7 +18,10 @@ import {
 
 const PLUGIN_ID = 'acme.readiness-fencing';
 
-async function seedFixture(): Promise<Readonly<{ happyHomeDir: string; pluginRoot: string }>> {
+async function seedFixture(options?: Readonly<{
+    /** Adds one generation-long background service that settles as soon as it starts. */
+    settlingBackgroundService?: boolean;
+}>): Promise<Readonly<{ happyHomeDir: string; pluginRoot: string }>> {
     const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-readiness-fencing-home-'));
     const pluginRoot = await mkdtemp(join(tmpdir(), 'happier-readiness-fencing-plugin-'));
     await mkdir(join(pluginRoot, '.happier-plugin'), { recursive: true });
@@ -41,11 +44,18 @@ async function seedFixture(): Promise<Readonly<{ happyHomeDir: string; pluginRoo
                 executionKind: 'decide',
                 scope: 'agent',
             }],
+            ...(options?.settlingBackgroundService
+                ? { backgroundServices: [{ id: 'watcher' }] }
+                : {}),
         },
     }), 'utf8');
     await writeFile(
         join(pluginRoot, 'daemon.mjs'),
-        'export function activate(api) { api.hooks.register("resolve-prerequisites", async () => ({ decision: "abstain" })); }\n',
+        'export function activate(api) { api.hooks.register("resolve-prerequisites", async () => ({ decision: "abstain" }));'
+        + (options?.settlingBackgroundService
+            ? ' api.backgroundServices.register("watcher", async () => {});'
+            : '')
+        + ' }\n',
         'utf8',
     );
     await seedCurrentLocalPathPluginFixture({
@@ -155,6 +165,59 @@ describe('executable plugin readiness fencing', () => {
                     }],
                 })]);
             expect(hasBlockingPluginReloadDiagnostic(runtime, [PLUGIN_ID])).toBe(true);
+            // Genuinely fenced, not merely unadvertised: the retired generation
+            // refuses its own registered handler without calling plugin code.
+            await expect(handler.handler(undefined, {}))
+                .rejects.toThrow(`Plugin '${PLUGIN_ID}' hook handler is no longer active`);
+        } finally {
+            await runtime?.dispose();
+            await rm(fixture.happyHomeDir, { recursive: true, force: true });
+            await rm(fixture.pluginRoot, { recursive: true, force: true });
+        }
+    }, 60_000);
+    // A generation-long background service that stops while its generation is
+    // still current is the same terminal activation failure the cold-start path
+    // isolates — it is simply observed by the background-service owner instead
+    // of by a readiness step. It must reach the same fence, because the reader
+    // that decides whether a plugin's applied generation may still authorize an
+    // effect reads the registry's final-policy currentness, not the activation
+    // fact.
+    it('fences a live plugin whose generation-long background service settles unexpectedly', async () => {
+        const fixture = await seedFixture({ settlingBackgroundService: true });
+        let runtime: Awaited<ReturnType<typeof resolveExecutablePluginRuntimeRegistry>> | null = null;
+
+        try {
+            const inputs = await resolveFixtureRuntimeInputs(fixture.happyHomeDir);
+            runtime = await resolveExecutablePluginRuntimeRegistry({
+                happyHomeDir: fixture.happyHomeDir,
+                contributes: inputs.contributes,
+                generationAuthority: inputs.generationAuthority,
+            });
+
+            expect(runtime.activatedPluginIds.has(PLUGIN_ID)).toBe(true);
+            expect(runtime.pluginFinalPolicyCurrentGenerationsById?.get(PLUGIN_ID)?.applied)
+                .toBe(true);
+            const handler = (runtime.hookHandlersByHookId.get('agent.resolvePrerequisites') ?? [])
+                .find((entry) => entry.pluginId === PLUGIN_ID);
+            if (!handler) throw new Error('Expected the activated fixture hook handler');
+
+            const active = runtime;
+            active.startAdoptedBackgroundServices?.();
+            await vi.waitFor(() => {
+                expect(active.activatedPluginIds.has(PLUGIN_ID)).toBe(false);
+            }, { timeout: 10_000 });
+
+            // Applied-generation truth is the reader the final-policy owners use.
+            // Leaving it asserting a stale applied generation is the fail-open.
+            await vi.waitFor(() => {
+                expect(active.pluginFinalPolicyCurrentGenerationsById?.get(PLUGIN_ID)?.applied)
+                    .toBe(false);
+                expect(
+                    active.pluginFinalPolicyCurrentGenerationsById
+                        ?.get(PLUGIN_ID)
+                        ?.appliedImmutableGenerationId,
+                ).toBeNull();
+            }, { timeout: 10_000 });
             // Genuinely fenced, not merely unadvertised: the retired generation
             // refuses its own registered handler without calling plugin code.
             await expect(handler.handler(undefined, {}))

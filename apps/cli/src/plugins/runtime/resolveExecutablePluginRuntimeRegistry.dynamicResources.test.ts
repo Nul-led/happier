@@ -1113,7 +1113,7 @@ describe('executable plugin dynamic resource observation (EU-4b)', () => {
             if (!generationAuthority) throw new Error('Expected committed Channels fixture generations');
             reloadController = createPluginReloadController({
                 resolveRuntimeRegistry: async () => {
-                    const targetedContributions = reloadController?.getTargetedContributionsOwner?.();
+                    const targetedContributions = reloadController?.getTargetedContributionsOwner();
                     if (!targetedContributions) {
                         throw new Error('Expected the reload controller targeted-contribution owner');
                     }

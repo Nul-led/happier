@@ -5,7 +5,9 @@ import {
   PluginWebhookActionHttpPathsV1,
   PluginWebhookActionInputSchemasV1,
   PluginWebhookActionOutputSchemasV1,
+  PluginWebhookPluginSurfaceActionHttpPathsV1,
   PluginMachineMaterializationRefV1Schema,
+  isPluginWebhookPluginSurfaceActionIdV1,
   type ActionExecutorDeps,
   type PluginWebhookActionIdV1,
   type PluginMachineMaterializationRefV1,
@@ -19,8 +21,6 @@ import type { StoredCredentials } from '@/persistence';
 import { resolveServerHttpBaseUrl } from '@/session/transport/http/serverHttpBaseUrl';
 
 type ExecutePluginWebhookAction = NonNullable<ActionExecutorDeps['pluginWebhookAction']>;
-
-const CHECK_CORRESPONDENCE_PATH = '/v1/plugins/webhooks/endpoints/check-correspondence';
 
 export type PluginWebhookActionTransport = Readonly<{
   execute(
@@ -41,18 +41,23 @@ function createDefaultTransport(credentials: StoredCredentials): PluginWebhookAc
   return Object.freeze({
     async execute(actionId, rawInput, options = {}) {
       const input = PluginWebhookActionInputSchemasV1[actionId].parse(rawInput);
-      const correspondence = actionId === 'plugin.webhook.endpoint.checkCorrespondence';
-      const path = correspondence
-        ? CHECK_CORRESPONDENCE_PATH
-        : PluginWebhookActionHttpPathsV1[actionId as keyof typeof PluginWebhookActionHttpPathsV1];
+      // Every plugin-surface endpoint operation carries the host-stamped caller
+      // materialization under signed publisher proof; every present-user one
+      // carries only the Account bearer. The Protocol family list is the single
+      // owner of that split, so a new plugin-surface operation cannot be routed
+      // through the present-user body shape by omission.
+      const pluginSurface = isPluginWebhookPluginSurfaceActionIdV1(actionId);
+      const path = pluginSurface
+        ? PluginWebhookPluginSurfaceActionHttpPathsV1[actionId]
+        : PluginWebhookActionHttpPathsV1[actionId];
       if (!path) throw new TypeError(`Unsupported plugin webhook Action transport: ${actionId}`);
-      const body = correspondence
+      const body = pluginSurface
         ? { caller: options.caller, input }
         : input;
-      const publisherHeader = correspondence
+      const publisherHeader = pluginSurface
         ? await createDefaultPluginInstallationPublisherHeader({ method: 'POST', path, body })
         : null;
-      if (correspondence && (!options.caller || !publisherHeader)) {
+      if (pluginSurface && (!options.caller || !publisherHeader)) {
         return failure('plugin_webhook_publisher_proof_unavailable');
       }
       options.signal?.throwIfAborted();
@@ -85,12 +90,12 @@ export function createPluginWebhookActionExecutor(params: Readonly<{
   const transport = params.transport ?? createDefaultTransport(params.credentials);
   const revalidateCallerMaterialization = params.revalidateCallerMaterialization;
   return async (args) => {
-    const correspondence = args.actionId === 'plugin.webhook.endpoint.checkCorrespondence';
-    if ((correspondence && args.caller.kind !== 'plugin') || (!correspondence && args.caller.kind !== 'host')) {
+    const pluginSurface = isPluginWebhookPluginSurfaceActionIdV1(args.actionId);
+    if ((pluginSurface && args.caller.kind !== 'plugin') || (!pluginSurface && args.caller.kind !== 'host')) {
       return failure('plugin_webhook_caller_surface_mismatch');
     }
     let caller: PluginMachineMaterializationRefV1 | undefined;
-    if (correspondence) {
+    if (pluginSurface) {
       // The surface guard above narrows the caller to the plugin branch.
       if (args.caller.kind !== 'plugin') {
         return failure('plugin_webhook_caller_surface_mismatch');

@@ -6,6 +6,7 @@ type PermissionDetailsTranslation = Readonly<{
         requester: string;
         authority: string;
         requestedAt: string;
+        reason: string;
     }>;
     scope: Readonly<{ account: string; project: string; workspace: string }>;
     requester: Readonly<{ user: string; host: string; plugin: string }>;
@@ -28,6 +29,7 @@ export const pluginPermissionTranslations = {
             requester: 'Requester',
             authority: 'Authority',
             requestedAt: 'Request time',
+            reason: 'Reason',
         },
         scope: { account: 'Account', project: 'Project', workspace: 'Workspace' },
         requester: { user: 'User', host: 'Host', plugin: 'Plugin' },
@@ -48,6 +50,7 @@ export const pluginPermissionTranslations = {
             requester: 'Anfragende Stelle',
             authority: 'Autorität',
             requestedAt: 'Zeitpunkt der Anfrage',
+            reason: 'Grund',
         },
         scope: { account: 'Konto', project: 'Projekt', workspace: 'Workspace' },
         requester: { user: 'Benutzer', host: 'Host', plugin: 'Plugin' },
@@ -68,6 +71,7 @@ export const pluginPermissionTranslations = {
             requester: 'Demandeur',
             authority: 'Autorité',
             requestedAt: 'Heure de la demande',
+            reason: 'Motif',
         },
         scope: { account: 'Compte', project: 'Projet', workspace: 'Espace de travail' },
         requester: { user: 'Utilisateur', host: 'Hôte', plugin: 'Plugin' },
@@ -88,6 +92,7 @@ export const pluginPermissionTranslations = {
             requester: 'Инициатор',
             authority: 'Источник разрешения',
             requestedAt: 'Время запроса',
+            reason: 'Причина',
         },
         scope: { account: 'Учётная запись', project: 'Проект', workspace: 'Рабочая область' },
         requester: { user: 'Пользователь', host: 'Хост', plugin: 'Плагин' },
@@ -108,6 +113,7 @@ export const pluginPermissionTranslations = {
             requester: 'Wnioskodawca',
             authority: 'Źródło uprawnienia',
             requestedAt: 'Czas żądania',
+            reason: 'Powód',
         },
         scope: { account: 'Konto', project: 'Projekt', workspace: 'Obszar roboczy' },
         requester: { user: 'Użytkownik', host: 'System hosta', plugin: 'Wtyczka' },
@@ -128,6 +134,7 @@ export const pluginPermissionTranslations = {
             requester: 'Solicitante',
             authority: 'Autoridad',
             requestedAt: 'Hora de la solicitud',
+            reason: 'Motivo',
         },
         scope: { account: 'Cuenta', project: 'Proyecto', workspace: 'Espacio de trabajo' },
         requester: { user: 'Usuario', host: 'Sistema anfitrión', plugin: 'Complemento' },
@@ -148,6 +155,7 @@ export const pluginPermissionTranslations = {
             requester: 'Richiedente',
             authority: 'Autorità',
             requestedAt: 'Ora della richiesta',
+            reason: 'Motivo',
         },
         scope: { account: 'Profilo account', project: 'Progetto', workspace: 'Area di lavoro' },
         requester: { user: 'Utente', host: 'Sistema host', plugin: 'Estensione' },
@@ -168,6 +176,7 @@ export const pluginPermissionTranslations = {
             requester: 'Solicitante',
             authority: 'Autoridade',
             requestedAt: 'Hora do pedido',
+            reason: 'Motivo',
         },
         scope: { account: 'Conta', project: 'Projeto', workspace: 'Espaço de trabalho' },
         requester: { user: 'Utilizador', host: 'Anfitrião', plugin: 'Extensão' },
@@ -188,6 +197,7 @@ export const pluginPermissionTranslations = {
             requester: 'Sol·licitant',
             authority: 'Autoritat',
             requestedAt: 'Hora de la sol·licitud',
+            reason: 'Motiu',
         },
         scope: { account: 'Compte', project: 'Projecte', workspace: 'Espai de treball' },
         requester: { user: 'Usuari', host: 'Amfitrió', plugin: 'Complement' },
@@ -208,6 +218,7 @@ export const pluginPermissionTranslations = {
             requester: '请求方',
             authority: '授权来源',
             requestedAt: '请求时间',
+            reason: '原因',
         },
         scope: { account: '账户', project: '项目', workspace: '工作区' },
         requester: { user: '用户', host: '主机', plugin: '插件' },
@@ -228,6 +239,7 @@ export const pluginPermissionTranslations = {
             requester: '請求者',
             authority: '授權來源',
             requestedAt: '請求時間',
+            reason: '原因',
         },
         scope: { account: '帳戶', project: '專案', workspace: '工作區' },
         requester: { user: '使用者', host: '主機', plugin: '外掛' },
@@ -248,6 +260,7 @@ export const pluginPermissionTranslations = {
             requester: '要求元',
             authority: '権限元',
             requestedAt: '要求日時',
+            reason: '理由',
         },
         scope: { account: 'アカウント', project: 'プロジェクト', workspace: 'ワークスペース' },
         requester: { user: 'ユーザー', host: 'ホスト', plugin: 'プラグイン' },

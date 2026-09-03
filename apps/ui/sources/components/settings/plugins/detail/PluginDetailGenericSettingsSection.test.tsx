@@ -66,7 +66,17 @@ installSettingsViewCommonModuleMocks({
     },
     text: async () => {
         const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
-        return createTextModuleMock({ translate: (key) => key });
+        // Keys render as themselves. The secret-deletion prompt is the one
+        // exception: its interpolated name carries the record-owner label under
+        // test, so that single key keeps its argument.
+        return createTextModuleMock({
+            translate: (key, params) => {
+                const name = (params as Readonly<{ name?: unknown }> | undefined)?.name;
+                return key === 'secrets.prompts.deleteConfirm' && typeof name === 'string'
+                    ? `${key}:${name}`
+                    : key;
+            },
+        });
     },
     router: async () => {
         const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
@@ -718,6 +728,18 @@ describe('PluginDetailGenericSettingsSection', () => {
         // identity resolver — and can no longer join this record at all.
         const { DeclarativePluginSurface } = await import('@/components/plugins/surfaces/DeclarativePluginSurface');
         const { PluginDetailGenericSettingsSection } = await import('./PluginDetailGenericSettingsSection');
+        const declarativeSettings = ['endpoint', 'region'].map((id) => Object.freeze({
+            id,
+            contributionId: 'settings',
+            qualifiedId: `${PLUGIN_ID}/${id}`,
+            descriptor: Object.freeze({
+                id,
+                title: id === 'endpoint' ? 'Endpoint' : 'Region',
+                target: Object.freeze({ kind: 'plugin' as const }),
+                scope: 'daemon' as const,
+                schema: Object.freeze({ type: 'string' as const }),
+            }),
+        }));
         const screen = await renderScreen(
             <>
                 <PluginDetailGenericSettingsSection
@@ -741,7 +763,19 @@ describe('PluginDetailGenericSettingsSection', () => {
                         },
                         visible: true,
                         requiredHostMethods: [],
-                        nodes: [],
+                        declarativeInventory: {
+                            actions: [],
+                            destinations: [],
+                            settings: declarativeSettings.map((setting) => ({
+                                pluginId: PLUGIN_ID,
+                                id: setting.id,
+                                qualifiedId: setting.qualifiedId,
+                                schema: setting.descriptor.schema,
+                                secret: false,
+                                setting,
+                            })),
+                            uiQueries: [],
+                        },
                         root: {
                             kind: 'group',
                             path: 'root',
@@ -752,10 +786,7 @@ describe('PluginDetailGenericSettingsSection', () => {
                                 order: 1,
                                 label: 'Endpoint',
                                 control: { kind: 'text', settingId: 'endpoint' },
-                                setting: {
-                                    id: 'endpoint',
-                                    descriptor: { scope: 'daemon', schema: { type: 'string' } },
-                                },
+                                setting: declarativeSettings[0],
                             }, {
                                 // Declared only here. The generic section never
                                 // asks for it, so it can only render from the
@@ -765,10 +796,7 @@ describe('PluginDetailGenericSettingsSection', () => {
                                 order: 2,
                                 label: 'Region',
                                 control: { kind: 'text', settingId: 'region' },
-                                setting: {
-                                    id: 'region',
-                                    descriptor: { scope: 'daemon', schema: { type: 'string' } },
-                                },
+                                setting: declarativeSettings[1],
                             }],
                         },
                     }}
@@ -1320,9 +1348,11 @@ describe('PluginDetailGenericSettingsSection', () => {
         });
         await flushAsync();
 
+        // The prompt names the Account record that loses the secret, in the
+        // person's language rather than a hardcoded English scope word.
         expect(modalConfirmMock).toHaveBeenCalledWith(
             'secrets.prompts.deleteTitle',
-            'secrets.prompts.deleteConfirm',
+            `secrets.prompts.deleteConfirm:${PLUGIN_ID} · Account token · settings.account`,
             { destructive: true, confirmText: 'common.delete', cancelText: 'common.cancel' },
         );
         expect(accountPluginSecretWriteMock).toHaveBeenNthCalledWith(2, expect.objectContaining({
@@ -1741,6 +1771,65 @@ describe('PluginDetailGenericSettingsSection', () => {
         expect(screen.findByTestId(SECRET_INPUT_ID)?.props.value).toBe('');
         expect(screen.findByTestId(SECRET_SAVE_ID)?.props.accessibilityLabel)
             .toBe('common.save: API token');
+    });
+
+    /**
+     * A declaration's placeholder and `disabledReason` are localized author
+     * copy. The host renderer is the only thing standing between them and the
+     * person, so dropping either leaves a field that is inert for no stated
+     * reason and unlabelled about what belongs in it.
+     */
+    it('carries the declared localized placeholder and disabledReason into the generic control', async () => {
+        const declared: PluginProjectionEditableSettingField = {
+            key: 'endpoint',
+            control: 'text',
+            valueType: 'string',
+            valueSchema: { type: 'string' },
+            title: 'Endpoint URL',
+            secretCustody: null,
+            redaction: 'none',
+            clearWhenEmpty: 'persist',
+            presentation: {
+                control: 'text',
+                placeholder: { key: 'acme.endpoint.placeholder', fallback: 'https://api.example.test' },
+            },
+            availability: {
+                // The host cannot resolve this fact here, and an unresolved
+                // `disabledWhen` fails closed to disabled — still the author's
+                // own condition, so it is the author's reason that is shown.
+                disabledWhen: { fact: 'host.platform', operator: 'equals', value: 'web' },
+                disabledReason: {
+                    key: 'acme.endpoint.disabled',
+                    fallback: 'Connect this machine before changing the endpoint.',
+                },
+            },
+        };
+        const { screen } = await renderSection(createProjection(1, [declared]));
+
+        const input = screen.findByTestId(ENDPOINT_INPUT_ID);
+        expect(input?.props.placeholder).toBe('https://api.example.test');
+        expect(input?.props.editable).toBe(false);
+        expect(screen.findByTestId(
+            `settings.plugins.detail.${PLUGIN_ID}.settings.${GROUP_ID}.endpoint.disabledReason`,
+        )?.props.children).toBe('Connect this machine before changing the endpoint.');
+    });
+
+    it('names the exact machine that loses a daemon-custodied secret', async () => {
+        modalConfirmMock.mockResolvedValue(false);
+        machinePluginSecretStatusMock.mockResolvedValue(secretStatusResult('configured'));
+        const { screen } = await renderSection();
+
+        await act(async () => {
+            screen.pressByTestId(SECRET_DELETE_ID);
+            await Promise.resolve();
+        });
+        await flushAsync();
+
+        expect(modalConfirmMock).toHaveBeenCalledWith(
+            'secrets.prompts.deleteTitle',
+            `secrets.prompts.deleteConfirm:${PLUGIN_ID} · API token · settings.mcpServersBindingTargetMachine`,
+            { destructive: true, confirmText: 'common.delete', cancelText: 'common.cancel' },
+        );
     });
 
     it('keeps generic text controls at least 44 points tall', async () => {
@@ -2304,6 +2393,34 @@ describe('PluginDetailGenericSettingsSection', () => {
         }));
     });
 
+    it('retries an initial settings read failure through the existing scoped record', async () => {
+        machinePluginSettingsGetMock
+            .mockResolvedValueOnce(unsupportedResult)
+            .mockResolvedValueOnce(settingsResult({
+                endpoint: 'https://recovered.example.test',
+                enabled: true,
+            }));
+
+        const { screen } = await renderSection();
+        const errorId = `settings.plugins.detail.${PLUGIN_ID}.settings.error`;
+        expect(screen.getTextContent()).toContain('common.retry');
+
+        await screen.pressByTestIdAsync(errorId);
+        await flushAsync();
+
+        expect(machinePluginSettingsGetMock).toHaveBeenCalledTimes(2);
+        expect(screen.findByTestId(ENDPOINT_INPUT_ID)?.props.value).toBe('https://recovered.example.test');
+    });
+
+    it.each([
+        ['account', 'settingsPlugins.genericSettingsAccountFooter'],
+        ['daemon', 'settingsPlugins.genericSettingsFooter'],
+    ] as const)('uses the %s record footer when the plugin does not declare one', async (scope, footer) => {
+        const { screen } = await renderSection(createProjection(1, undefined, scope));
+
+        expect(screen.getTextContent()).toContain(footer);
+    });
+
     it('keeps a replaced-source draft visible but inert after refresh failure until the replacement source edits it', async () => {
         const refresh = createDeferred<MachinePluginSettingsResult>();
         machinePluginSettingsGetMock
@@ -2311,7 +2428,11 @@ describe('PluginDetailGenericSettingsSection', () => {
                 endpoint: 'https://projection-one.test',
                 enabled: true,
             }))
-            .mockReturnValueOnce(refresh.promise);
+            .mockReturnValueOnce(refresh.promise)
+            .mockResolvedValueOnce(settingsResult({
+                endpoint: 'https://projection-two.test',
+                enabled: true,
+            }));
         machinePluginSettingsSetMock.mockResolvedValueOnce(settingsSetResult({
             endpoint: 'https://local-draft.test',
             enabled: true,
@@ -2347,6 +2468,13 @@ describe('PluginDetailGenericSettingsSection', () => {
         expect(screen.findByTestId(ENDPOINT_INPUT_ID)?.props.value).toBe('https://local-draft.test');
         expect(screen.findByTestId(ENDPOINT_SAVE_ID)?.props.disabled).toBe(true);
         expect(screen.getTextContent()).toContain('settingsPlugins.genericSettingsLoadError');
+        expect(screen.getTextContent()).toContain('common.retry');
+
+        await screen.pressByTestIdAsync(`settings.plugins.detail.${PLUGIN_ID}.settings.error`);
+        await flushAsync();
+
+        expect(machinePluginSettingsGetMock).toHaveBeenCalledTimes(3);
+        expect(screen.findByTestId(`settings.plugins.detail.${PLUGIN_ID}.settings.error`)).toBeNull();
 
         act(() => {
             screen.changeTextByTestId(ENDPOINT_INPUT_ID, 'https://replacement-source-draft.test');

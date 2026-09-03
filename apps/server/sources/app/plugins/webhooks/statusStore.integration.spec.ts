@@ -263,7 +263,7 @@ describe("plugin webhook Account status projection", () => {
 
         await expect(readPluginWebhookAccountStatusV1({
             accountId: ACCOUNT_ID,
-            input: { pageSize: 20 },
+            input: { pageSize: 20, deadLetterPageSize: 0 },
         })).rejects.toThrow("Plugin webhook public URL is unavailable");
     });
 

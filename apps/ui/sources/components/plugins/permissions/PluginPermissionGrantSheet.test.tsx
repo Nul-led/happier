@@ -84,9 +84,10 @@ describe('PluginPermissionGrantSheet', () => {
         expect(screen.getTextContent()).toContain('installation-1');
         expect(screen.getTextContent()).not.toContain('1970-01-01T00:00:00.001Z');
         expect(screen.getTextContent()).toContain('Write approved review comments without another prompt.');
+        const summary = screen.findByTestId('plugin-grant-details')?.props.accessibilityLabel;
+        expect(summary).toContain('Reason: Write approved review comments without another prompt.');
         expect(onGrant).not.toHaveBeenCalled();
         expect(onDismiss).not.toHaveBeenCalled();
-
         await pressTestInstanceAsync(screen.findByTestId('plugin-grant-grant'), 'plugin-grant-grant');
         expect(onGrant).toHaveBeenCalledWith({ requestId: 'request-1' });
 
@@ -148,6 +149,7 @@ describe('PluginPermissionGrantSheet', () => {
         expect(summary).toContain('Credential disclosure: Saved secret');
         expect(summary).toContain('Contribution: acme.voice/conversation');
         expect(summary).not.toContain(': Contribution: acme.voice/conversation');
+        expect(screen.findByTestId('plugin-grant-raw-credential-title')?.props.accessibilityRole).toBe('header');
     });
 
     it('localizes and accessibly groups long permission facts while preserving exact technical values in RTL', async () => {
@@ -329,6 +331,7 @@ describe('PluginPermissionGrantSheet', () => {
         expect(dismiss.props.onPress).toBeUndefined();
         expect(onGrant).not.toHaveBeenCalled();
         expect(onDismiss).not.toHaveBeenCalled();
+
     });
 
     it('does not crash when daemon data contains an out-of-range request timestamp', async () => {

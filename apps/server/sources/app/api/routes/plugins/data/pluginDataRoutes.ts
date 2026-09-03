@@ -107,6 +107,7 @@ function statusForMutationError(code: PluginCollectionMutationOperationError["co
         case "collection_quota_exceeded":
         case "collection_quota_incompatible":
         case "collection_contract_inconsistent":
+        case "collection_revision_exhausted":
             return 409;
     }
 }

@@ -63,6 +63,22 @@ export type PluginUiSessionHeaderActionProjection = UnknownRecord & Readonly<{
     command: PluginUiResolvedSemanticCommandV1;
 }>;
 
+/**
+ * One admitted Universal Search provider.
+ *
+ * It carries identity and the daemon-resolved qualified query Action, and
+ * nothing more: the section's title, icon, availability, execution target and
+ * currentness are the referenced Action's projected facts, read from
+ * `actionsById` by the one host adapter that renders the section.
+ */
+export type PluginUiSearchProviderProjection = UnknownRecord & Readonly<{
+    id: string;
+    pluginId: string;
+    contributionKind: 'searchProvider';
+    descriptorId: string;
+    action: PluginContributionIdentityV1;
+}>;
+
 export type PluginUiHostedWebProjection = UnknownRecord & Readonly<{
     id: string;
     pluginId: string;
@@ -294,6 +310,7 @@ export type PluginUiProjectionModel = Readonly<{
     installedPackagesById: Readonly<Record<string, PluginProjectionInstalledPackageV2>>;
     translationsByPluginId: Readonly<Record<string, PluginUiTranslationsProjection>>;
     sessionHeaderActionsById: Readonly<Record<string, PluginUiSessionHeaderActionProjection>>;
+    searchProvidersById: Readonly<Record<string, PluginUiSearchProviderProjection>>;
     hostedWebById: Readonly<Record<string, PluginUiHostedWebProjection>>;
     reactNativeBundlesById: Readonly<Record<string, PluginUiReactNativeBundleProjection>>;
     surfacePlacementsById: Readonly<Record<string, PluginUiPhysicalSurfacePlacementProjection>>;
@@ -320,6 +337,7 @@ export const EMPTY_PLUGIN_UI_PROJECTION: PluginUiProjectionModel = Object.freeze
     installedPackagesById: Object.freeze({}),
     translationsByPluginId: Object.freeze({}),
     sessionHeaderActionsById: Object.freeze({}),
+    searchProvidersById: Object.freeze({}),
     hostedWebById: Object.freeze({}),
     reactNativeBundlesById: Object.freeze({}),
     surfacePlacementsById: Object.freeze({}),
@@ -413,6 +431,29 @@ function resolveSessionHeaderAction(
         title: title.data,
         ...(icon?.success ? { icon: icon.data } : {}),
         command: command.data,
+    });
+}
+
+/**
+ * A malformed or unqualified descriptor is dropped rather than repaired. A
+ * provider whose Action reference cannot be read has no reachable executor, and
+ * inventing one would be the second decision-maker this family exists to avoid.
+ */
+function resolveSearchProvider(entry: UnknownRecord): PluginUiSearchProviderProjection | null {
+    if (entry.contributionKind !== 'searchProvider') return null;
+    const id = readString(entry.id);
+    const pluginId = readString(entry.pluginId);
+    const descriptorId = readString(entry.descriptorId);
+    const action = PluginContributionIdentityV1Schema.safeParse(entry.action);
+    if (id === null || pluginId === null || descriptorId === null || !action.success) return null;
+    if (action.data.pluginId !== pluginId) return null;
+    return Object.freeze({
+        ...entry,
+        id,
+        pluginId,
+        contributionKind: 'searchProvider' as const,
+        descriptorId,
+        action: action.data,
     });
 }
 
@@ -777,6 +818,7 @@ export function normalizePluginUiProjection(
 
     const translationsByPluginId: Record<string, PluginUiTranslationsProjection> = {};
     const sessionHeaderActionsById: Record<string, PluginUiSessionHeaderActionProjection> = {};
+    const searchProvidersById: Record<string, PluginUiSearchProviderProjection> = {};
     const hostedWebById: Record<string, PluginUiHostedWebProjection> = {};
     const reactNativeBundlesById: Record<string, PluginUiReactNativeBundleProjection> = {};
     const surfacePlacementsById: Record<string, PluginUiPhysicalSurfacePlacementProjection> = {};
@@ -801,6 +843,11 @@ export function normalizePluginUiProjection(
             const action = resolveSessionHeaderAction(entry);
             if (action) {
                 sessionHeaderActionsById[action.id] = action;
+            }
+        } else if (entry.contributionKind === 'searchProvider') {
+            const provider = resolveSearchProvider(entry);
+            if (provider) {
+                searchProvidersById[provider.id] = provider;
             }
         } else if (isHostedWeb(entry)) {
             hostedWebById[entry.id] = Object.freeze(entry);
@@ -884,6 +931,7 @@ export function normalizePluginUiProjection(
         installedPackagesById,
         translationsByPluginId: Object.freeze(translationsByPluginId),
         sessionHeaderActionsById: Object.freeze(sessionHeaderActionsById),
+        searchProvidersById: Object.freeze(searchProvidersById),
         hostedWebById: Object.freeze(hostedWebById),
         reactNativeBundlesById: Object.freeze(reactNativeBundlesById),
         surfacePlacementsById: Object.freeze(surfacePlacementsById),

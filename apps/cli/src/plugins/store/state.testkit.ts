@@ -94,7 +94,7 @@ export function createPluginStateStore(params?: Readonly<{ happyHomeDir?: string
         source: {
           distribution: trust.distribution,
         },
-        updatePolicy: record.install.updatePolicy ?? 'manual',
+        updatePolicy: record.install.updatePolicy ?? 'reviewEveryUpdate',
         optionalAccess: record.install.optionalAccess ?? [],
       };
     }
@@ -196,7 +196,7 @@ export async function writeCommittedLocalPathPluginFixture(params: Readonly<{
     sourceRootPath: params.sourceRootPath,
     manifestRelativePath,
     distribution,
-    updatePolicy: params.plugin.install.updatePolicy ?? 'manual',
+    updatePolicy: params.plugin.install.updatePolicy ?? 'reviewEveryUpdate',
     createdAtMs: params.createdAtMs ?? Date.now(),
   });
   const prepared = await prepareImmutablePluginGeneration({

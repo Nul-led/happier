@@ -32,7 +32,6 @@ import {
 import {
   PluginDistributionIdentitySchema,
   PluginTrustRecordSchema,
-  PluginUpdatePolicySchema,
   pluginDistributionRollbackLineagesEqual,
 } from '../install/trustIdentity';
 import {
@@ -107,6 +106,15 @@ const AlgorithmQualifiedDigestSchema = z.string().regex(
   /^(?:sha256:[a-f0-9]{64}|sha384:[a-f0-9]{96}|sha512:[a-f0-9]{128})$/u,
   'Expected an algorithm-qualified hexadecimal digest',
 );
+
+/**
+ * The predecessor producer's own update-policy vocabulary. These names were
+ * never published and have no current aliases; they survive here only so the
+ * exact predecessor bytes — including their update-policy spelling inside the
+ * generation fingerprint — verify as produced. Runtime readers stay strict on
+ * the canonical current vocabulary.
+ */
+const PredecessorPluginUpdatePolicySchema = z.enum(['automatic', 'manual', 'pinned']);
 
 const GenerationFileSchema = z.object({
   relativePath: PortableRelativePathSchema,
@@ -229,7 +237,7 @@ const PredecessorPluginInstallationStateRecordSchema = z.object({
     distribution: PluginDistributionIdentitySchema,
     admittedIntegrity: AlgorithmQualifiedDigestSchema,
   }).strict(),
-  updatePolicy: PluginUpdatePolicySchema,
+  updatePolicy: PredecessorPluginUpdatePolicySchema,
   optionalAccess: z.array(PluginAccessSelectionSchema).max(512),
   installReviewPrincipalDigest: asHostProtocolZod(PluginInstallReviewPrincipalDigestSchema).optional(),
   installReviewPrincipalPresentation: asHostProtocolZod(PluginInstallReviewPrincipalPresentationV1Schema).optional(),
@@ -338,7 +346,7 @@ const PredecessorPluginStateRecordSchema = z.object({
     manifestDigest: z.string().min(1).nullable().optional(),
     installedPath: z.string().min(1).nullable().optional(),
     trust: PluginTrustRecordSchema.optional(),
-    updatePolicy: PluginUpdatePolicySchema.optional(),
+    updatePolicy: PredecessorPluginUpdatePolicySchema.optional(),
     optionalAccess: z.array(PluginAccessSelectionSchema).optional(),
   }).strict(),
   state: z.object({
@@ -689,7 +697,7 @@ async function verifyGenerationInventory(
 function validateGenerationDigests(input: Readonly<{
   record: PredecessorImmutablePluginGenerationRecord;
   distribution: z.infer<typeof PluginDistributionIdentitySchema>;
-  updatePolicy: z.infer<typeof PluginUpdatePolicySchema>;
+  updatePolicy: z.infer<typeof PredecessorPluginUpdatePolicySchema>;
   catalog: z.infer<typeof PredecessorPluginStateRecordSchema>;
 }>): void {
   const { record, catalog } = input;
@@ -747,7 +755,7 @@ async function verifyPredecessorGeneration(input: Readonly<{
   immutableGenerationId: string;
   expectedPluginId: string;
   distribution: z.infer<typeof PluginDistributionIdentitySchema>;
-  updatePolicy: z.infer<typeof PluginUpdatePolicySchema>;
+  updatePolicy: z.infer<typeof PredecessorPluginUpdatePolicySchema>;
   catalog: z.infer<typeof PredecessorPluginStateRecordSchema>;
   installedArtifactReference?: Readonly<{ relativePath: string; digest: string }>;
 }>): Promise<VerifiedPredecessorGeneration> {

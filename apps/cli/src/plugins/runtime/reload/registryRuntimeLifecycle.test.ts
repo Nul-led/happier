@@ -4,6 +4,8 @@ import { join } from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
 
+import { buildQualifiedPluginContributionKey } from '@happier-dev/protocol';
+
 import { createLocalPathPluginDistributionIdentity, createPluginTrustRecord } from '@/plugins/store/install/trustIdentity';
 import { PluginStateFileV1Schema } from '@/plugins/store/state';
 import {
@@ -394,7 +396,7 @@ async function createExecutableInstallFixture(
           manifestPath: join(pluginRoot, '.happier-plugin', 'plugin.json'),
         },
         compatibility: { status: 'compatible', diagnostics: [] },
-        install: { mode: 'link', manifestVersion: '1.0.0', trust, updatePolicy: 'manual' },
+        install: { mode: 'link', manifestVersion: '1.0.0', trust, updatePolicy: 'reviewEveryUpdate' },
         state: { enabled: true },
       },
     },
@@ -409,7 +411,7 @@ async function createExecutableInstallFixture(
       manifestRelativePath: '.happier-plugin/plugin.json',
       catalogRecord,
       trust,
-      updatePolicy: 'manual' as const,
+      updatePolicy: 'reviewEveryUpdate' as const,
       optionalAccess: Object.freeze([]),
     },
   };
@@ -499,6 +501,13 @@ describe('daemon plugin registry runtime lifecycle owner', () => {
       'acme.retained.hooks',
       { externalSessionHooks: true },
     );
+    // Installed (external) plugin Agents are keyed in `agentRuntimesByAgentId`
+    // by the qualified `{pluginId}/{localId}` routing id, never the bare
+    // manifest local id; registrations inside `activate()` use the local id.
+    const retainedAgentRoutingId = buildQualifiedPluginContributionKey({
+      pluginId: retained.input.pluginId,
+      localId: retained.agentId,
+    });
     const peer = await createExecutableInstallFixture(happyHomeDir, 'acme.retained.peer');
     const resolveRequest = () => ({
       signal: new AbortController().signal,
@@ -517,9 +526,9 @@ describe('daemon plugin registry runtime lifecycle owner', () => {
     await expect(installFixtureCandidate(store, retained.input)).resolves.toMatchObject({ status: 'committed' });
     const beforeReload = await reloadController.acquireRuntimeRegistry();
     const oldHooks = beforeReload.registry.agentRuntimesByAgentId
-      .get(retained.agentId)?.externalSessionHooks;
+      .get(retainedAgentRoutingId)?.externalSessionHooks;
     const oldExternalSessions = beforeReload.registry.agentRuntimesByAgentId
-      .get(retained.agentId)?.externalSessions;
+      .get(retainedAgentRoutingId)?.externalSessions;
     if (!oldHooks) throw new Error('Expected retained Agent hook lease');
     if (!oldExternalSessions) throw new Error('Expected retained Agent External Sessions lease');
     const listRequest = () => ({
@@ -555,7 +564,7 @@ describe('daemon plugin registry runtime lifecycle owner', () => {
     const afterReload = await reloadController.acquireRuntimeRegistry();
     try {
       const currentHooks = afterReload.registry.agentRuntimesByAgentId
-        .get(retained.agentId)?.externalSessionHooks;
+        .get(retainedAgentRoutingId)?.externalSessionHooks;
       if (!currentHooks) throw new Error('Expected rebound Agent hook lease');
       await expect(currentHooks.resolveInstallation(resolveRequest())).resolves.toMatchObject({
         value: {
@@ -1040,7 +1049,7 @@ describe('daemon plugin registry runtime lifecycle owner', () => {
       revision: 3,
     });
 
-    const lease = reloadController.tryAcquireRuntimeRegistry?.();
+    const lease = reloadController.tryAcquireRuntimeRegistry();
     expect(lease).not.toBeNull();
     expect(lease!.registry).toBe(predecessorLease.registry);
     await expect(invokeIdentity(predecessorLease.registry, changed.input.pluginId)).resolves.toMatchObject({
@@ -1100,7 +1109,7 @@ describe('daemon plugin registry runtime lifecycle owner', () => {
       },
     });
 
-    const lease = reloadController.tryAcquireRuntimeRegistry?.();
+    const lease = reloadController.tryAcquireRuntimeRegistry();
     expect(lease).not.toBeNull();
     await expect(invokeIdentity(lease!.registry, changed.input.pluginId)).resolves.toMatchObject({
       status: 'unavailable',
@@ -1228,7 +1237,7 @@ describe('daemon plugin registry runtime lifecycle owner', () => {
     });
     await publicationEntered;
 
-    const lease = reloadController.tryAcquireRuntimeRegistry?.();
+    const lease = reloadController.tryAcquireRuntimeRegistry();
     expect(lease).not.toBeNull();
     await expect(invokeIdentity(lease!.registry, changed.input.pluginId)).resolves.toMatchObject({
       status: 'unavailable',
@@ -1487,7 +1496,7 @@ describe('daemon plugin registry runtime lifecycle owner', () => {
             manifestPath: join(pluginRoot, '.happier-plugin', 'plugin.json'),
           },
           compatibility: { status: 'compatible', diagnostics: [] },
-          install: { mode: 'link', manifestVersion: '1.0.0', trust, updatePolicy: 'manual' },
+          install: { mode: 'link', manifestVersion: '1.0.0', trust, updatePolicy: 'reviewEveryUpdate' },
           state: { enabled: true },
         },
       },
@@ -1512,7 +1521,7 @@ describe('daemon plugin registry runtime lifecycle owner', () => {
       manifestRelativePath: '.happier-plugin/plugin.json',
       catalogRecord: record,
       trust,
-      updatePolicy: 'manual',
+      updatePolicy: 'reviewEveryUpdate',
       optionalAccess: [],
     })).rejects.toThrow(/missing registration/i);
 

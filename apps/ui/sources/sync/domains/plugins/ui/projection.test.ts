@@ -210,6 +210,20 @@ function createProjection(): PluginProjectionV2 {
                             action: { pluginId: 'acme.preview', localId: 'open-preview' },
                         },
                     },
+                    'searchProvider:acme.preview:entries': {
+                        id: 'searchProvider:acme.preview:entries',
+                        pluginId: 'acme.preview',
+                        contributionKind: 'searchProvider',
+                        descriptorId: 'entries',
+                        action: { pluginId: 'acme.preview', localId: 'entries/search-v1' },
+                    },
+                    'searchProvider:acme.preview:foreign': {
+                        id: 'searchProvider:acme.preview:foreign',
+                        pluginId: 'acme.preview',
+                        contributionKind: 'searchProvider',
+                        descriptorId: 'foreign',
+                        action: { pluginId: 'other.plugin', localId: 'search' },
+                    },
                     'hostedWeb:acme.preview:preview-web': {
                         id: 'hostedWeb:acme.preview:preview-web',
                         pluginId: 'acme.preview',
@@ -697,6 +711,13 @@ describe('plugin UI projection normalization', () => {
                 action: { pluginId: 'acme.preview', localId: 'open-preview' },
             },
         });
+        expect(model.searchProvidersById['searchProvider:acme.preview:entries']).toMatchObject({
+            descriptorId: 'entries',
+            action: { pluginId: 'acme.preview', localId: 'entries/search-v1' },
+        });
+        // A descriptor whose reference names another plugin has no reachable
+        // executor here, so it is dropped rather than repaired.
+        expect(model.searchProvidersById['searchProvider:acme.preview:foreign']).toBeUndefined();
         expect(model.hostedWebById['hostedWeb:acme.preview:preview-web']).toMatchObject({
             contributionId: 'preview-web',
             security: {

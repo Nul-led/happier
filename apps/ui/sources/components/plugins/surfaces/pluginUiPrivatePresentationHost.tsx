@@ -12,6 +12,7 @@ import {
     View,
     useWindowDimensions,
 } from 'react-native';
+import { useUnistyles } from 'react-native-unistyles';
 
 import {
     normalizeHappierCodeLanguage,
@@ -22,6 +23,7 @@ import {
 
 import { MarkdownView } from '@/components/markdown/MarkdownView';
 import { CodeBlockView } from '@/components/ui/code/blocks/CodeBlockView';
+import { QRCode } from '@/components/qr/QRCode';
 import { DiffViewer } from '@/components/ui/code/diff/DiffViewer';
 import { resolveInlineDiffVirtualization } from '@/components/ui/code/diff/resolveInlineDiffVirtualization';
 import { resolveInlineDiffVirtualizedMaxHeight } from '@/components/ui/code/diff/resolveInlineDiffVirtualizedMaxHeight';
@@ -224,6 +226,25 @@ function PluginUiPrivateDiffViewer(props: HappierDiffViewerRequest): React.React
     );
 }
 
+/**
+ * Thin plugin-surface adapter over the incumbent app QR renderer. Encoding,
+ * error correction, quiet zone, theme colors, and the platform renderer
+ * (Skia on native, SVG on web) stay with `@/components/qr`; the adapter owns
+ * only the theme projection.
+ */
+function PluginUiPrivateQRCode(props: Readonly<{ data: string; size: number; testID?: string }>): React.ReactElement {
+    const { theme } = useUnistyles();
+    return (
+        <QRCode
+            data={props.data}
+            size={props.size}
+            foregroundColor={theme.colors.text.primary}
+            backgroundColor={theme.colors.surface.base}
+            testID={props.testID}
+        />
+    );
+}
+
 function createPluginUiPrivatePresentationRenderers(direction?: PluginUiIconDirection) {
     return Object.freeze({
     renderMarkdown(input: Readonly<{ value: string; selectable: boolean; testID?: string }>) {
@@ -294,6 +315,9 @@ function createPluginUiPrivatePresentationRenderers(direction?: PluginUiIconDire
                 testID={input.testID}
             />
         );
+    },
+    renderQRCode(input: Readonly<{ data: string; size: number; testID?: string }>) {
+        return <PluginUiPrivateQRCode data={input.data} size={input.size} testID={input.testID} />;
     },
     });
 }

@@ -2,6 +2,7 @@ import {
     encodePluginCollectionIndexTuplePrefixV1,
     getPluginCollectionScalarKindV1,
     nextPluginCollectionIndexPrefixV1,
+    resolveEffectivePluginCollectionLimitsV1,
     type NormalizedPluginAccountCollectionContractV1,
     type PluginCollectionIndexScalarV1,
     type PluginCollectionQuotaDimensionV1,
@@ -20,15 +21,6 @@ export type PluginCollectionQuotaIncompatibility = Readonly<{
     effectiveMaximum: number;
 }>;
 
-export type PluginCollectionEffectiveQuotaLimits = Readonly<{
-    maxRowEncodedBytes: number;
-    maxRows: number;
-    maxCollectionEncodedBytes: number;
-    maxBatchRows: number;
-    maxBatchBytes: number;
-    maxAccountRows: number;
-    maxAccountBytes: number;
-}>;
 
 export type PluginCollectionUsage = Readonly<{
     rows: number;
@@ -267,53 +259,55 @@ export function extendPluginCollectionAccountActivationUsageWithStoredRows(input
 }
 
 /**
- * Resolves the only effective Collection quota policy. Account deployment
- * ceilings additionally bound any individual collection, but Account totals
- * remain separate aggregate checks below.
+ * The effective Collection limits this server enforces, composed by the one
+ * Protocol owner every writer already plans against
+ * (`resolveEffectivePluginCollectionLimitsV1`). Enforcement and planning
+ * therefore cannot name different ceilings for the same bound collection.
+ *
+ * Per-collection dimensions (`maxRows`, `maxCollectionEncodedBytes`,
+ * `maxRowEncodedBytes`) are additionally bounded by the deployment's
+ * Account-wide policy; the Account aggregates themselves stay separate checks
+ * below and are never narrowed by a collection's declared quota.
  */
-export function resolvePluginCollectionEffectiveQuotaLimits(input: Readonly<{
+function resolveEnforcedCollectionLimits(input: Readonly<{
     deployment: PluginDataCollectionsCapabilities;
     quota: PluginCollectionQuotaRequestV1 | undefined;
-}>): PluginCollectionEffectiveQuotaLimits {
-    return Object.freeze({
-        maxRowEncodedBytes: Math.min(
-            input.deployment.maxRowEncodedBytes,
-            input.quota?.maxRowEncodedBytes ?? Number.POSITIVE_INFINITY,
-        ),
-        maxRows: Math.min(
-            input.deployment.maxAccountRows,
-            input.quota?.maxRows ?? Number.POSITIVE_INFINITY,
-        ),
-        maxCollectionEncodedBytes: Math.min(
-            input.deployment.maxAccountBytes,
-            input.quota?.maxCollectionEncodedBytes ?? Number.POSITIVE_INFINITY,
-        ),
-        maxBatchRows: input.deployment.maxBatchRows,
-        maxBatchBytes: input.deployment.maxBatchBytes,
-        maxAccountRows: input.deployment.maxAccountRows,
-        maxAccountBytes: input.deployment.maxAccountBytes,
+}>) {
+    return resolveEffectivePluginCollectionLimitsV1({
+        deployment: input.deployment,
+        quota: input.quota,
     });
 }
 
-/** A declared limit can lower deployment policy but cannot request a higher one. */
+/**
+ * A declared limit can lower deployment policy but cannot request a higher one.
+ *
+ * The ceiling for each declared dimension is the same composition with no
+ * declared quota, so which Account-wide dimension bounds a per-collection field
+ * is stated once, by the Protocol owner, rather than transcribed here.
+ */
 export function findPluginCollectionDeclaredQuotaIncompatibility(input: Readonly<{
     deployment: PluginDataCollectionsCapabilities;
     quota: PluginCollectionQuotaRequestV1 | undefined;
 }>): PluginCollectionQuotaIncompatibility | null {
+    const ceilings = resolveEnforcedCollectionLimits({
+        deployment: input.deployment,
+        quota: undefined,
+    });
     if (
         input.quota?.maxRowEncodedBytes !== undefined
-        && input.quota.maxRowEncodedBytes > input.deployment.maxRowEncodedBytes
+        && input.quota.maxRowEncodedBytes > ceilings.maxRowEncodedBytes
     ) {
-        return { dimension: 'maxRowEncodedBytes', effectiveMaximum: input.deployment.maxRowEncodedBytes };
+        return { dimension: 'maxRowEncodedBytes', effectiveMaximum: ceilings.maxRowEncodedBytes };
     }
-    if (input.quota?.maxRows !== undefined && input.quota.maxRows > input.deployment.maxAccountRows) {
-        return { dimension: 'maxRows', effectiveMaximum: input.deployment.maxAccountRows };
+    if (input.quota?.maxRows !== undefined && input.quota.maxRows > ceilings.maxRows) {
+        return { dimension: 'maxRows', effectiveMaximum: ceilings.maxRows };
     }
     if (
         input.quota?.maxCollectionEncodedBytes !== undefined
-        && input.quota.maxCollectionEncodedBytes > input.deployment.maxAccountBytes
+        && input.quota.maxCollectionEncodedBytes > ceilings.maxCollectionEncodedBytes
     ) {
-        return { dimension: 'maxCollectionEncodedBytes', effectiveMaximum: input.deployment.maxAccountBytes };
+        return { dimension: 'maxCollectionEncodedBytes', effectiveMaximum: ceilings.maxCollectionEncodedBytes };
     }
     return null;
 }
@@ -792,7 +786,7 @@ export function findPluginCollectionMutationQuotaIncompatibility(input: Readonly
         left.pluginId.localeCompare(right.pluginId) || left.collectionId.localeCompare(right.collectionId)
     ));
     for (const collection of collections) {
-        const limits = resolvePluginCollectionEffectiveQuotaLimits({
+        const limits = resolveEnforcedCollectionLimits({
             deployment: input.deployment,
             quota: collection.quota,
         });
@@ -862,7 +856,7 @@ export function findPluginCollectionActivationQuotaIncompatibility(input: Readon
             quota: collection.quota,
         });
         if (declared) return declared;
-        const limits = resolvePluginCollectionEffectiveQuotaLimits({
+        const limits = resolveEnforcedCollectionLimits({
             deployment: input.deployment,
             quota: collection.quota,
         });

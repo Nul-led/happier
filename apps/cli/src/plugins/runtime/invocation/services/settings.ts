@@ -1,4 +1,5 @@
 import {
+    PluginAccountSettingsValuesV1Schema,
     PluginIdSchema,
     PluginJsonSchemaV2Schema,
     PluginSettingsContributionV2Schema,
@@ -36,7 +37,6 @@ import {
 
 export const PLUGIN_SETTINGS_STORAGE_KEY = `${PLUGIN_HOST_STORAGE_KEY_PREFIX}settings/v1`;
 const SETTINGS_RECORD_TYPE = 'happier_plugin_settings_record_v1';
-const MAX_SETTINGS_EVENT_VALUE_BYTES = 512 * 1024;
 const SETTINGS_CHANGED_REF = Object.freeze({
     pluginId: '@happier',
     localId: 'runtime/plugin-settings-changed',
@@ -776,6 +776,37 @@ function recordSatisfiesSettingsPostcondition(
     });
 }
 
+/**
+ * The one canonical Settings record bounds check for a record this owner is
+ * about to grow, read from the single Protocol owner for BOTH scopes.
+ *
+ * `PluginAccountSettingsValuesV1Schema` enforces the declared scoped-record
+ * contract — field count, per-field canonical bytes, JSON depth and total
+ * canonical record bytes (SET-09) — and is the same schema the Account record
+ * adapter and the server storage boundary parse through, so no writer can
+ * disagree with the wire boundary about what a scoped record admits. Scope
+ * changes persistence/transport, never the Settings value contract. This runs
+ * on every growing write. Reset and `pruneRetiredFields` are deliberately
+ * excluded: a record that is already outside the current bounds must stay
+ * readable and stay shrinkable.
+ */
+function settingsValuesWithinCanonicalBounds(
+    values: Readonly<Record<string, JsonValue>>,
+): boolean {
+    return PluginAccountSettingsValuesV1Schema.safeParse({ v: 1, values }).success;
+}
+
+function assertSettingsValuesWithinCanonicalBounds(
+    values: Readonly<Record<string, JsonValue>>,
+): void {
+    if (!settingsValuesWithinCanonicalBounds(values)) {
+        throw settingsError(
+            'plugin_settings_values_too_large',
+            'Plugin settings values exceed their canonical record bounds',
+        );
+    }
+}
+
 function validateRecordForModel(
     model: StablePluginSettingsModel,
     record: CanonicalPluginSettingsRecord,
@@ -933,6 +964,7 @@ export function createStablePluginSettingsOwner(params: Readonly<{
                     throw settingsError('plugin_settings_revision_exhausted', 'Plugin settings revision is exhausted');
                 }
                 const values = { ...record.values, ...patch };
+                assertSettingsValuesWithinCanonicalBounds(values);
                 const next = Object.freeze({
                     t: SETTINGS_RECORD_TYPE,
                     revision: nextRevision,
@@ -1048,13 +1080,9 @@ export function createStablePluginSettingsOwner(params: Readonly<{
                     const values = { ...record.values };
                     if (input.reset) delete values[input.id];
                     else values[input.id] = normalizedValue!;
-                    const visible = Object.freeze({ ...values });
-                    if (Buffer.byteLength(JSON.stringify(visible), 'utf8') > MAX_SETTINGS_EVENT_VALUE_BYTES) {
-                        throw settingsError(
-                            'plugin_settings_values_too_large',
-                            'Plugin settings values exceed the daemon change-event limit',
-                        );
-                    }
+                    // A reset only shrinks the record, so it must stay available
+                    // on a record that is already outside the current bounds.
+                    if (!input.reset) assertSettingsValuesWithinCanonicalBounds(values);
                     const next = Object.freeze({
                         t: SETTINGS_RECORD_TYPE,
                         revision: nextRevision,

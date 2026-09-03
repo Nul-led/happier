@@ -78,6 +78,38 @@ export function createLoggerAndEventsAvailablePluginInvocationServiceBinding(
     );
 }
 
+type PluginNetworkTarget = Extract<
+    PluginHostAccessRequestV2,
+    { capability: 'network' | 'network.client' }
+>['scope']['targets'][number];
+
+/**
+ * The declared targets an ambient (cooperative-disclosure) binding can carry on
+ * its own. A `connectedAccountOrigin` target still needs the Connected Account
+ * owner to resolve a concrete origin, so it only makes the request eligible.
+ */
+function isAmbientlyBoundNetworkTarget(target: PluginNetworkTarget): boolean {
+    return target.kind === 'fixedOrigin'
+        || target.kind === 'httpsHostSuffix'
+        || target.kind === 'connectedAccountOrigin';
+}
+
+function readTargetOrigins(targets: readonly PluginNetworkTarget[]): readonly string[] {
+    return targets.flatMap((target) => (target.kind === 'fixedOrigin' ? [target.origin] : []));
+}
+
+function readTargetHostSuffixes(targets: readonly PluginNetworkTarget[]): readonly string[] {
+    return targets.flatMap((target) => (target.kind === 'httpsHostSuffix' ? [target.hostSuffix] : []));
+}
+
+/** Keeps `hostSuffixes` absent rather than empty for grants that declare none. */
+function withHostSuffixes(
+    targets: readonly PluginNetworkTarget[],
+): Readonly<{ hostSuffixes?: readonly string[] }> {
+    const hostSuffixes = readTargetHostSuffixes(targets);
+    return hostSuffixes.length === 0 ? {} : { hostSuffixes: Object.freeze(hostSuffixes) };
+}
+
 function addNetworkHttpServiceBinding(
     binding: PluginInvocationServiceBinding,
     hostAccessRequests: readonly Readonly<{ request: PluginHostAccessRequestV2; required: boolean }>[],
@@ -87,34 +119,27 @@ function addNetworkHttpServiceBinding(
     for (const { request } of hostAccessRequests) {
         if (
             request.capability === 'network'
-            && request.scope.targets.some((target) => (
-                target.kind === 'fixedOrigin'
-                || target.kind === 'connectedAccountOrigin'
-            ))
+            && request.scope.targets.some(isAmbientlyBoundNetworkTarget)
         ) networkRequests.push(request);
         if (
             request.capability === 'network.client'
             && request.scope.transports.includes('websocket')
-            && request.scope.targets.some((target) => (
-                target.kind === 'fixedOrigin'
-                || target.kind === 'connectedAccountOrigin'
-            ))
+            && request.scope.targets.some(isAmbientlyBoundNetworkTarget)
         ) networkClientRequests.push(request);
     }
     if (networkRequests.length === 0 && networkClientRequests.length === 0) return binding;
-    const origins = new Set(networkRequests.flatMap((request) => request.scope.targets.flatMap((target) => (
-        target.kind === 'fixedOrigin' ? [target.origin] : []
-    ))));
-    const clientOrigins = new Set(networkClientRequests.flatMap((request) => request.scope.targets.flatMap((target) => (
-        target.kind === 'fixedOrigin' ? [target.origin] : []
-    ))));
+    const origins = new Set(networkRequests.flatMap((request) => readTargetOrigins(request.scope.targets)));
+    const hostSuffixes = new Set(networkRequests.flatMap((request) => readTargetHostSuffixes(request.scope.targets)));
+    const clientOrigins = new Set(networkClientRequests.flatMap((request) => readTargetOrigins(request.scope.targets)));
+    const clientHostSuffixes = new Set(networkClientRequests.flatMap((request) => (
+        readTargetHostSuffixes(request.scope.targets)
+    )));
     const scopes = networkRequests.map((request) => Object.freeze({
         authority: 'disclosure' as const,
         accessId: request.id,
         required: hostAccessRequests.find((candidate) => candidate.request === request)?.required ?? true,
-        origins: Object.freeze(request.scope.targets.flatMap((target) => (
-            target.kind === 'fixedOrigin' ? [target.origin] : []
-        ))),
+        origins: Object.freeze(readTargetOrigins(request.scope.targets)),
+        ...(withHostSuffixes(request.scope.targets)),
         ...(request.scope.methods === undefined ? {} : { methods: Object.freeze([...request.scope.methods]) }),
         privateNetwork: request.scope.privateNetwork === true,
     }));
@@ -122,9 +147,8 @@ function addNetworkHttpServiceBinding(
         authority: 'disclosure' as const,
         accessId: request.id,
         required: hostAccessRequests.find((candidate) => candidate.request === request)?.required ?? true,
-        origins: Object.freeze(request.scope.targets.flatMap((target) => (
-            target.kind === 'fixedOrigin' ? [target.origin] : []
-        ))),
+        origins: Object.freeze(readTargetOrigins(request.scope.targets)),
+        ...(withHostSuffixes(request.scope.targets)),
         transports: Object.freeze(request.scope.transports.filter((transport) => transport === 'websocket')),
         privateNetwork: request.scope.privateNetwork === true,
     }));
@@ -135,11 +159,17 @@ function addNetworkHttpServiceBinding(
         ),
         ...(networkRequests.length === 0 ? {} : {
             networkOrigins: Object.freeze([...origins].sort()),
+            ...(hostSuffixes.size === 0
+                ? {}
+                : { networkHostSuffixes: Object.freeze([...hostSuffixes].sort()) }),
             networkRequestIds: Object.freeze(networkRequests.map((request) => request.id)),
             networkScopes: Object.freeze(scopes),
         }),
         ...(networkClientRequests.length === 0 ? {} : {
             networkClientOrigins: Object.freeze([...clientOrigins].sort()),
+            ...(clientHostSuffixes.size === 0
+                ? {}
+                : { networkClientHostSuffixes: Object.freeze([...clientHostSuffixes].sort()) }),
             networkClientRequestIds: Object.freeze(networkClientRequests.map((request) => request.id)),
             networkClientScopes: Object.freeze(clientScopes),
         }),

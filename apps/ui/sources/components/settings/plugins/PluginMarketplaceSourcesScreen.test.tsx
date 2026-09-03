@@ -1,0 +1,404 @@
+import * as React from 'react';
+import { act } from 'react-test-renderer';
+import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
+import type { MarketplaceSourceRegistryV1 } from '@happier-dev/protocol';
+
+import { flushHookEffects, renderSettingsView, standardCleanup } from '@/dev/testkit';
+import { buildActionRowAccessibilityLabel } from '@/components/ui/lists/actionRowAccessibility';
+import { t } from '@/text';
+
+const mocks = vi.hoisted(() => ({
+    prompt: vi.fn(),
+    confirm: vi.fn(),
+    alertAsync: vi.fn(),
+    upsertMarketplaceSource: vi.fn(),
+    setMarketplaceSourceEnabled: vi.fn(),
+    removeMarketplaceSource: vi.fn(),
+    setMarketplaceSourceProfile: vi.fn(),
+    refreshMarketplaceSourceRegistry: vi.fn(),
+    registry: null as MarketplaceSourceRegistryV1 | null,
+    registryLoading: false,
+    registryLoadError: false,
+}));
+
+vi.mock('react-native', async () => (await import('@/dev/testkit/mocks/reactNative')).createReactNativeWebMock({ View: 'View' }));
+vi.mock('react-native-unistyles', async () => (await import('@/dev/testkit/mocks/unistyles')).createUnistylesMock({
+    theme: { colors: { accent: { indigo: 'indigo', green: 'green' } } },
+}));
+vi.mock('@expo/vector-icons', async () => (await import('@/dev/testkit/mocks/icons')).createExpoVectorIconsMock());
+vi.mock('@/modal', async () => (await import('@/dev/testkit/mocks/modal')).createModalModuleMock({
+    spies: { prompt: mocks.prompt, confirm: mocks.confirm, alertAsync: mocks.alertAsync },
+}).module);
+// The composed settings state hook pulls in the whole daemon administration
+// environment (transport, capabilities, projections) behind its facade. This
+// focused lane tests this screen's presentation and identity pass-through
+// around that facade, so the facade is replaced whole here while every real
+// boundary below it keeps its canonical testkit mock.
+vi.mock('./model/usePluginSettingsScreenState', () => ({
+    usePluginSettingsScreenState: () => ({
+        daemonOperationsAvailable: true,
+        daemonAdministrationAvailable: true,
+        administrationTargetSelection: {
+            selectedTarget: null,
+            canExecute: false,
+            resolveExecutionTarget: () => null,
+        },
+        marketplaceSourceRegistry: mocks.registry,
+        marketplaceSourceRegistryLoading: mocks.registryLoading,
+        marketplaceSourceRegistryLoadError: mocks.registryLoadError,
+        refreshMarketplaceSourceRegistry: mocks.refreshMarketplaceSourceRegistry,
+        upsertMarketplaceSource: mocks.upsertMarketplaceSource,
+        setMarketplaceSourceEnabled: mocks.setMarketplaceSourceEnabled,
+        removeMarketplaceSource: mocks.removeMarketplaceSource,
+        setMarketplaceSourceProfile: mocks.setMarketplaceSourceProfile,
+    }),
+}));
+vi.mock('@/components/settings/machines/MachineAdministrationTargetSelector', async () => ({
+    MachineAdministrationTargetSelector: (await import('@/dev/testkit/mocks/components')).createPassThroughComponent('MachineAdministrationTargetSelector'),
+}));
+vi.mock('./NpmRegistryProfilesSection', async () => ({
+    NpmRegistryProfilesSection: (await import('@/dev/testkit/mocks/components')).createPassThroughComponent('NpmRegistryProfilesSection'),
+}));
+vi.mock('@/components/ui/forms/Switch', async () => ({
+    Switch: (await import('@/dev/testkit/mocks/components')).createPassThroughComponent('Switch'),
+}));
+vi.mock('@/components/ui/lists/Item', async () => ({
+    Item: (await import('@/dev/testkit/mocks/components')).createPassThroughComponent('Item'),
+}));
+vi.mock('@/components/ui/lists/ItemGroup', async () => ({
+    ItemGroup: (await import('@/dev/testkit/mocks/components')).createPassThroughComponent('ItemGroup'),
+}));
+vi.mock('@/components/ui/lists/ItemList', async () => ({
+    ItemList: (await import('@/dev/testkit/mocks/components')).createPassThroughComponent('ItemList'),
+}));
+
+import { PluginMarketplaceSourcesScreen } from './PluginMarketplaceSourcesScreen';
+
+function createRegistry(): MarketplaceSourceRegistryV1 {
+    return {
+        t: 'happier_marketplace_source_registry_v1',
+        schemaVersion: 1,
+        sources: [
+            {
+                id: 'marketplace:curated',
+                title: 'Curated',
+                sourceUrl: 'https://curated.example.test/index.json',
+                enabled: true,
+                origin: 'curated',
+                addedAtMs: 1,
+                updatedAtMs: 1,
+            },
+            {
+                id: 'marketplace:user',
+                title: 'My source',
+                sourceUrl: 'https://mine.example.test/index.json',
+                enabled: true,
+                origin: 'user',
+                addedAtMs: 2,
+                updatedAtMs: 2,
+                registryProfileId: 'registry_one',
+            },
+        ],
+    };
+}
+
+describe('PluginMarketplaceSourcesScreen', () => {
+    beforeEach(() => {
+        mocks.prompt.mockReset();
+        mocks.confirm.mockReset();
+        mocks.alertAsync.mockReset();
+        mocks.upsertMarketplaceSource.mockReset();
+        mocks.setMarketplaceSourceEnabled.mockReset();
+        mocks.removeMarketplaceSource.mockReset();
+        mocks.setMarketplaceSourceProfile.mockReset();
+        mocks.upsertMarketplaceSource.mockResolvedValue({ status: 'success' });
+        mocks.setMarketplaceSourceEnabled.mockResolvedValue({ status: 'success' });
+        mocks.removeMarketplaceSource.mockResolvedValue({ status: 'success' });
+        mocks.setMarketplaceSourceProfile.mockResolvedValue({ status: 'success' });
+        mocks.refreshMarketplaceSourceRegistry.mockReset();
+        mocks.registry = createRegistry();
+        mocks.registryLoading = false;
+        mocks.registryLoadError = false;
+    });
+
+    afterEach(() => {
+        standardCleanup();
+    });
+
+    it('edits a user source by replacing the same source identity when its URL changes', async () => {
+        mocks.prompt
+            .mockResolvedValueOnce('https://renamed.example.test/index.json')
+            .mockResolvedValueOnce('Renamed source')
+            .mockResolvedValueOnce('');
+        const screen = await renderSettingsView(React.createElement(PluginMarketplaceSourcesScreen));
+        await act(async () => {
+            screen.pressRow('settings.plugins.sources.source.marketplace:user');
+            await flushHookEffects();
+        });
+
+        expect(mocks.upsertMarketplaceSource).toHaveBeenCalledTimes(1);
+        expect(mocks.upsertMarketplaceSource).toHaveBeenCalledWith({
+            sourceUrl: 'https://renamed.example.test/index.json',
+            title: 'Renamed source',
+            description: null,
+            origin: 'user',
+            enabled: true,
+            registryProfileId: 'registry_one',
+            sourceId: 'marketplace:user',
+        });
+        expect(mocks.alertAsync).not.toHaveBeenCalled();
+    });
+
+    it('adds a source from its URL and lets the daemon derive its display name', async () => {
+        mocks.prompt.mockResolvedValueOnce('https://added.example.test/index.json');
+        const screen = await renderSettingsView(React.createElement(PluginMarketplaceSourcesScreen));
+        await act(async () => {
+            screen.pressRow('settings.plugins.sources.add');
+            await flushHookEffects();
+        });
+
+        expect(mocks.upsertMarketplaceSource).toHaveBeenCalledTimes(1);
+        expect(mocks.upsertMarketplaceSource).toHaveBeenCalledWith({
+            sourceUrl: 'https://added.example.test/index.json',
+            origin: 'user',
+            enabled: true,
+        });
+        expect(mocks.prompt).toHaveBeenCalledTimes(1);
+    });
+
+    it('abandons the new source when its URL prompt is cancelled', async () => {
+        mocks.prompt.mockResolvedValueOnce(null);
+
+        const screen = await renderSettingsView(React.createElement(PluginMarketplaceSourcesScreen));
+        await act(async () => {
+            screen.pressRow('settings.plugins.sources.add');
+            await flushHookEffects();
+        });
+
+        expect(mocks.upsertMarketplaceSource).not.toHaveBeenCalled();
+        expect(mocks.alertAsync).not.toHaveBeenCalled();
+        expect(screen.findRow('settings.plugins.sources.add')?.props.loading).toBe(false);
+    });
+
+    it('abandons an edit when the optional description prompt is cancelled', async () => {
+        mocks.prompt
+            .mockResolvedValueOnce('https://renamed.example.test/index.json')
+            .mockResolvedValueOnce('Renamed source')
+            .mockResolvedValueOnce(null);
+
+        const screen = await renderSettingsView(React.createElement(PluginMarketplaceSourcesScreen));
+        await act(async () => {
+            screen.pressRow('settings.plugins.sources.source.marketplace:user');
+            await flushHookEffects();
+        });
+
+        expect(mocks.upsertMarketplaceSource).not.toHaveBeenCalled();
+        expect(mocks.alertAsync).not.toHaveBeenCalled();
+    });
+
+    it('presents an error and releases the busy state when adding a source fails', async () => {
+        mocks.prompt
+            .mockResolvedValueOnce('https://added.example.test/index.json')
+            .mockResolvedValueOnce('Added source')
+            .mockResolvedValueOnce('');
+        mocks.upsertMarketplaceSource.mockRejectedValueOnce(new Error('machine unreachable'));
+
+        const screen = await renderSettingsView(React.createElement(PluginMarketplaceSourcesScreen));
+        await act(async () => {
+            screen.pressRow('settings.plugins.sources.add');
+            await flushHookEffects();
+        });
+
+        expect(mocks.upsertMarketplaceSource).toHaveBeenCalledTimes(1);
+        expect(mocks.alertAsync).toHaveBeenCalledTimes(1);
+        expect(mocks.alertAsync).toHaveBeenCalledWith(
+            t('common.error'),
+            t('settingsPlugins.sourceAdministration.operationFailed'),
+        );
+        expect(screen.findRow('settings.plugins.sources.add')?.props.loading).toBe(false);
+        expect(screen.findRow('settings.plugins.sources.add')?.props.disabled).toBe(false);
+    });
+
+    it('presents an error when toggling a source fails', async () => {
+        mocks.setMarketplaceSourceEnabled.mockRejectedValueOnce(new Error('request timed out'));
+
+        const screen = await renderSettingsView(React.createElement(PluginMarketplaceSourcesScreen));
+        const sourceRow = screen.findRow('settings.plugins.sources.source.marketplace:user');
+        await act(async () => {
+            sourceRow?.props.rightElement.props.onValueChange(false);
+            await flushHookEffects();
+        });
+
+        expect(mocks.setMarketplaceSourceEnabled).toHaveBeenCalledWith('marketplace:user', false);
+        expect(mocks.alertAsync).toHaveBeenCalledTimes(1);
+        expect(mocks.alertAsync).toHaveBeenCalledWith(
+            t('common.error'),
+            t('settingsPlugins.sourceAdministration.operationFailed'),
+        );
+        expect(screen.findRow('settings.plugins.sources.source.marketplace:user')?.props.loading).toBe(false);
+        expect(screen.findRow('settings.plugins.sources.source.marketplace:user')?.props.disabled).toBe(false);
+    });
+
+    it('presents an issued mutation with an unknown outcome distinctly from a definite failure', async () => {
+        mocks.setMarketplaceSourceEnabled.mockResolvedValueOnce({ status: 'outcomeUnknown' });
+
+        const screen = await renderSettingsView(React.createElement(PluginMarketplaceSourcesScreen));
+        const sourceRow = screen.findRow('settings.plugins.sources.source.marketplace:user');
+        await act(async () => {
+            sourceRow?.props.rightElement.props.onValueChange(false);
+            await flushHookEffects();
+        });
+
+        expect(mocks.alertAsync).toHaveBeenCalledWith(
+            t('settingsPlugins.sourceAdministration.operationOutcomeUnknownTitle'),
+            t('settingsPlugins.sourceAdministration.operationOutcomeUnknownBody'),
+        );
+        expect(mocks.alertAsync).not.toHaveBeenCalledWith(
+            t('common.error'),
+            t('settingsPlugins.sourceAdministration.operationFailed'),
+        );
+    });
+
+    it('exposes the enable switch for a curated source while keeping edit and removal user-only', async () => {
+        const screen = await renderSettingsView(React.createElement(PluginMarketplaceSourcesScreen));
+
+        const curatedRow = screen.findRow('settings.plugins.sources.source.marketplace:curated');
+        const curatedSwitch = curatedRow?.props.rightElement ?? null;
+        if (!curatedSwitch) throw new Error('Expected the curated source row to expose its enable switch');
+        expect(curatedSwitch.props.testID).toBe('settings.plugins.sources.enabled.marketplace:curated');
+        expect(curatedSwitch.props.value).toBe(true);
+        expect(curatedRow?.props.onPress).toBeUndefined();
+        expect(screen.findRow('settings.plugins.sources.remove.marketplace:curated')).toBeNull();
+
+        await act(async () => {
+            curatedSwitch.props.onValueChange(false);
+            await flushHookEffects();
+        });
+
+        expect(mocks.setMarketplaceSourceEnabled).toHaveBeenCalledTimes(1);
+        expect(mocks.setMarketplaceSourceEnabled).toHaveBeenCalledWith('marketplace:curated', false);
+        expect(mocks.alertAsync).not.toHaveBeenCalled();
+    });
+
+    it('confirms before removing, skips the removal on cancel, and presents an error when the removal fails', async () => {
+        mocks.confirm.mockResolvedValueOnce(false);
+        const screen = await renderSettingsView(React.createElement(PluginMarketplaceSourcesScreen));
+
+        await act(async () => {
+            screen.pressRow('settings.plugins.sources.remove.marketplace:user');
+            await flushHookEffects();
+        });
+        expect(mocks.removeMarketplaceSource).not.toHaveBeenCalled();
+        expect(mocks.alertAsync).not.toHaveBeenCalled();
+
+        mocks.confirm.mockResolvedValueOnce(true);
+        mocks.removeMarketplaceSource.mockRejectedValueOnce(new Error('machine unreachable'));
+        await act(async () => {
+            screen.pressRow('settings.plugins.sources.remove.marketplace:user');
+            await flushHookEffects();
+        });
+
+        expect(mocks.confirm).toHaveBeenCalledTimes(2);
+        expect(mocks.removeMarketplaceSource).toHaveBeenCalledTimes(1);
+        expect(mocks.removeMarketplaceSource).toHaveBeenCalledWith('marketplace:user');
+        expect(mocks.alertAsync).toHaveBeenCalledTimes(1);
+        expect(mocks.alertAsync).toHaveBeenCalledWith(
+            t('common.error'),
+            t('settingsPlugins.sourceAdministration.operationFailed'),
+        );
+        expect(screen.findRow('settings.plugins.sources.remove.marketplace:user')?.props.disabled).toBe(false);
+    });
+
+    it('names each repeated remove action with the source it removes', async () => {
+        mocks.registry = {
+            ...createRegistry(),
+            sources: [
+                ...createRegistry().sources,
+                {
+                    id: 'marketplace:user-two',
+                    title: 'Team source',
+                    sourceUrl: 'https://team.example.test/index.json',
+                    enabled: true,
+                    origin: 'user',
+                    addedAtMs: 3,
+                    updatedAtMs: 3,
+                },
+            ],
+        };
+
+        const screen = await renderSettingsView(React.createElement(PluginMarketplaceSourcesScreen));
+
+        expect(screen.findRow('settings.plugins.sources.remove.marketplace:user')?.props.accessibilityLabel)
+            .toBe(buildActionRowAccessibilityLabel([
+                t('settingsPlugins.sourceAdministration.remove'),
+                'My source',
+            ]));
+        expect(screen.findRow('settings.plugins.sources.remove.marketplace:user-two')?.props.accessibilityLabel)
+            .toBe(buildActionRowAccessibilityLabel([
+                t('settingsPlugins.sourceAdministration.remove'),
+                'Team source',
+            ]));
+    });
+
+    it('shows loading without an empty answer while the first registry load is in flight', async () => {
+        mocks.registry = null;
+        mocks.registryLoading = true;
+
+        const screen = await renderSettingsView(React.createElement(PluginMarketplaceSourcesScreen));
+
+        expect(screen.findRow('settings.plugins.sources.loading')).toBeTruthy();
+        expect(screen.findRow('settings.plugins.sources.empty')).toBeNull();
+        expect(screen.findRow('settings.plugins.sources.retry')).toBeNull();
+        // No authoritative registry exists yet, so adding a source stays unavailable.
+        expect(screen.findRow('settings.plugins.sources.add')?.props.disabled).toBe(true);
+    });
+
+    it('retains last-known source rows and indicates refresh while re-reading the registry', async () => {
+        mocks.registryLoading = true;
+
+        const screen = await renderSettingsView(React.createElement(PluginMarketplaceSourcesScreen));
+
+        expect(screen.findRow('settings.plugins.sources.source.marketplace:curated')).toBeTruthy();
+        expect(screen.findRow('settings.plugins.sources.source.marketplace:user')).toBeTruthy();
+        expect(screen.findRow('settings.plugins.sources.loading')).toBeTruthy();
+        expect(screen.findRow('settings.plugins.sources.empty')).toBeNull();
+        // The retained registry remains authoritative, so Add stays available.
+        expect(screen.findRow('settings.plugins.sources.add')?.props.disabled).toBe(false);
+    });
+
+    it('presents the load error and retry without an empty answer when the first load fails', async () => {
+        mocks.registry = null;
+        mocks.registryLoadError = true;
+
+        const screen = await renderSettingsView(React.createElement(PluginMarketplaceSourcesScreen));
+        await act(async () => {
+            screen.pressRow('settings.plugins.sources.retry');
+            await flushHookEffects();
+        });
+
+        expect(mocks.refreshMarketplaceSourceRegistry).toHaveBeenCalledTimes(1);
+        expect(screen.findRow('settings.plugins.sources.empty')).toBeNull();
+        expect(screen.findRow('settings.plugins.sources.loading')).toBeNull();
+    });
+
+    it('retains last-known source rows beside the error and retry when a refresh fails', async () => {
+        mocks.registryLoadError = true;
+
+        const screen = await renderSettingsView(React.createElement(PluginMarketplaceSourcesScreen));
+
+        expect(screen.findRow('settings.plugins.sources.source.marketplace:curated')).toBeTruthy();
+        expect(screen.findRow('settings.plugins.sources.source.marketplace:user')).toBeTruthy();
+        expect(screen.findRow('settings.plugins.sources.retry')).toBeTruthy();
+        expect(screen.findRow('settings.plugins.sources.empty')).toBeNull();
+    });
+
+    it('shows the empty answer only for a settled, authoritative, empty registry', async () => {
+        mocks.registry = { ...createRegistry(), sources: [] };
+
+        const screen = await renderSettingsView(React.createElement(PluginMarketplaceSourcesScreen));
+
+        expect(screen.findRow('settings.plugins.sources.empty')).toBeTruthy();
+        expect(screen.findRow('settings.plugins.sources.loading')).toBeNull();
+        expect(screen.findRow('settings.plugins.sources.retry')).toBeNull();
+    });
+});

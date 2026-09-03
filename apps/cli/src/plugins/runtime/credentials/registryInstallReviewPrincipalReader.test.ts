@@ -17,8 +17,6 @@ describe('registry install-review principal reader', () => {
         packageName: '@acme/voice',
         registryOrigin: 'https://registry.npmjs.org',
       },
-      publisherIdentity: { status: 'unverified', id: 'acme', displayName: 'Acme' },
-      packageSignature: { status: 'verified', keyId: 'acme-key' },
     });
     const principal = derivePluginInstallReviewPrincipalDigest(presentation);
     let principals: Readonly<Record<string, typeof principal>> = { 'acme.voice': principal };

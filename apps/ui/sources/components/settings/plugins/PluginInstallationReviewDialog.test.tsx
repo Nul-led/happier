@@ -1,5 +1,6 @@
 import * as React from 'react';
 import { describe, expect, it, vi } from 'vitest';
+import { createPluginInstallationReviewFixture } from '@happier-dev/protocol/testing/pluginInstallationReviewFixture';
 
 import { renderScreen } from '@/dev/testkit';
 
@@ -23,7 +24,9 @@ installSettingsViewCommonModuleMocks({
     text: async () => {
         const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
         return createTextModuleMock({
-            translate: (key, params) => (params ? `${key}:${JSON.stringify(params)}` : key),
+            translate: (key: string, params?: Record<string, unknown>) => (
+                params ? `${key}:${JSON.stringify(params)}` : key
+            ),
         });
     },
 });
@@ -33,13 +36,38 @@ vi.mock('@/components/ui/forms/Switch', () => ({
 }));
 
 describe('PluginInstallationReviewDialog', () => {
+    const review = createPluginInstallationReviewFixture({
+        packageIdentity: { name: '@acme/example', version: '1.0.0' },
+        source: { kind: 'npm', locator: '@acme/example@1.0.0', integrity: 'sha512-example', integrityBasis: 'expected' },
+        updateChannel: {
+            kind: 'npm',
+            packageName: '@acme/example',
+            registryOrigin: 'https://registry.npmjs.org',
+            marketplaceSource: { id: 'community-npm', kind: 'community-npm', sourceUrl: 'https://registry.npmjs.org' },
+        },
+        curation: { status: 'unreviewed', sourceId: 'community-npm' },
+        requestInterceptors: [{ id: 'api', origins: ['https://api.example.com'], methods: ['GET'], priority: 20 }],
+        rawCredentialAccess: [{
+            accessMode: 'raw',
+            contribution: { pluginId: 'acme.example', localId: 'voice' },
+            credentialSlot: { id: 'voice_auth', title: 'API key', purpose: 'voice.client-auth' },
+            sourceClass: { kind: 'savedSecret', secretKinds: ['apiKey'] },
+            realm: 'daemon',
+            phase: 'connection',
+            request: {
+                kind: 'httpHeaders',
+                origin: 'https://api.example.com',
+                headerNames: ['authorization'],
+            },
+        }],
+    });
+
     it('paints a visible keyboard focus ring on the install decision controls on web', async () => {
         const { PluginInstallationReviewDialog } = await import('./PluginInstallationReviewDialog');
         const screen = await renderScreen(
             <PluginInstallationReviewDialog
-                body="Review the plugin before installation."
+                review={review}
                 target={{ machine: 'Laptop', server: 'Server A' }}
-                optionalHostAccess={[]}
                 onResolve={vi.fn()}
                 onClose={vi.fn()}
             />,
@@ -66,15 +94,16 @@ describe('PluginInstallationReviewDialog', () => {
             const { PluginInstallationReviewDialog } = await import('./PluginInstallationReviewDialog');
             const screen = await renderScreen(
                 <PluginInstallationReviewDialog
-                    body="Review the plugin before installation."
+                    review={createPluginInstallationReviewFixture({
+                        optionalHostAccess: [{
+                            id: 'workspace',
+                            capability: 'Workspace files',
+                            reason: 'Read the selected workspace.',
+                            authorizationClass: 'hostResourceSelection',
+                            normalizedScope: { kind: 'workspace' },
+                        }],
+                    })}
                     target={{ machine: 'Laptop', server: 'Server A' }}
-                    optionalHostAccess={[{
-                        id: 'workspace',
-                        capability: 'Workspace files',
-                        reason: 'Read the selected workspace.',
-                        authorizationClass: 'hostResourceSelection',
-                        normalizedScope: { kind: 'workspace' },
-                    }]}
                     onResolve={vi.fn()}
                     onClose={vi.fn()}
                 />,
@@ -102,9 +131,8 @@ describe('PluginInstallationReviewDialog', () => {
         const { PluginInstallationReviewDialog } = await import('./PluginInstallationReviewDialog');
         const screen = await renderScreen(
             <PluginInstallationReviewDialog
-                body="Review the plugin before installation."
+                review={review}
                 target={{ machine: 'Build box', server: 'Server B' }}
-                optionalHostAccess={[]}
                 onResolve={vi.fn()}
                 onClose={vi.fn()}
             />,
@@ -117,5 +145,217 @@ describe('PluginInstallationReviewDialog', () => {
                 machine: 'Build box',
                 server: 'Server B',
             })}`);
+    });
+
+    it('renders protocol review facts semantically without certification claims', async () => {
+        const { PluginInstallationReviewDialog } = await import('./PluginInstallationReviewDialog');
+        const screen = await renderScreen(
+            <PluginInstallationReviewDialog
+                review={review}
+                target={{ machine: 'Build box', server: 'Server B' }}
+                onResolve={vi.fn()}
+                onClose={vi.fn()}
+            />,
+        );
+
+        expect(screen.findByTestId('settings.plugins.installReview.identity')).toBeTruthy();
+        expect(screen.findByTestId('settings.plugins.installReview.evidence')).toBeTruthy();
+        expect(screen.findByTestId('settings.plugins.installReview.requestInterceptors')).toBeTruthy();
+        expect(screen.findByTestId('settings.plugins.installReview.rawCredentials')).toBeTruthy();
+        expect(screen.findByTestId('settings.plugins.installReview.compatibility')).toBeTruthy();
+        expect(JSON.stringify(screen.tree.toJSON())).not.toMatch(/certif/i);
+    });
+
+    it('uses navigable headings without merging section facts or optional access controls', async () => {
+        const { PluginInstallationReviewDialog } = await import('./PluginInstallationReviewDialog');
+        const screen = await renderScreen(
+            <PluginInstallationReviewDialog
+                review={createPluginInstallationReviewFixture({
+                    optionalHostAccess: [{
+                        id: 'workspace',
+                        capability: 'Workspace files',
+                        reason: 'Read the selected workspace.',
+                        authorizationClass: 'hostResourceSelection',
+                        normalizedScope: { kind: 'workspace' },
+                    }],
+                })}
+                target={{ machine: 'Build box', server: 'Server B' }}
+                onResolve={vi.fn()}
+                onClose={vi.fn()}
+            />,
+        );
+
+        const sectionIds = [
+            'identity',
+            'trustedCode',
+            'executableCode',
+            'requiredAccess',
+            'requestInterceptors',
+            'rawCredentials',
+            'evidence',
+            'compatibility',
+        ];
+        for (const sectionId of sectionIds) {
+            const section = screen.findByTestId(`settings.plugins.installReview.${sectionId}`);
+            expect(section?.props.accessible).not.toBe(true);
+            expect(section?.props.accessibilityRole).not.toBe('summary');
+            expect(section?.findAll((node) => (node.type as unknown) === 'Text' && node.props.accessibilityRole === 'header')).toHaveLength(1);
+        }
+        expect(screen.findByTestId('settings.plugins.installReview.optionalAccess')
+            ?.findAll((node) => (node.type as unknown) === 'Text' && node.props.accessibilityRole === 'header')).toHaveLength(1);
+        expect(screen.findByTestId('settings.plugins.installReview.optional.workspace')?.props.accessibilityRole).toBe('switch');
+
+        const orderedFacts = screen.findAll((node) => (node.type as unknown) === 'View' && typeof node.props.testID === 'string')
+            .map((node) => node.props.testID)
+            .filter((testID) => sectionIds.some((sectionId) => testID === `settings.plugins.installReview.${sectionId}`));
+        expect(orderedFacts).toEqual(sectionIds.map((sectionId) => `settings.plugins.installReview.${sectionId}`));
+    });
+
+    it('shows trusted-code, scope, and credential facts without hardcoded English review vocabulary', async () => {
+        const { PluginInstallationReviewDialog } = await import('./PluginInstallationReviewDialog');
+        const screen = await renderScreen(
+            <PluginInstallationReviewDialog
+                review={createPluginInstallationReviewFixture({
+                    publisherIdentity: { status: 'unverified', id: 'acme', displayName: 'Acme' },
+                    provenance: { status: 'declaredUnverified', predicateType: 'https://slsa.dev/provenance/v1' },
+                    curation: { status: 'unreviewed', sourceId: 'community-npm' },
+                    optionalHostAccess: [{
+                        id: 'workspace',
+                        capability: 'Workspace files',
+                        reason: 'Read the selected workspace.',
+                        authorizationClass: 'hostResourceSelection',
+                        normalizedScope: { kind: 'workspace', mode: 'read' },
+                    }],
+                    rawCredentialAccess: [
+                        ...review.rawCredentialAccess,
+                        {
+                            accessMode: 'raw',
+                            contribution: { pluginId: 'acme.example', localId: 'cloud' },
+                            credentialSlot: { id: 'cloud_auth', title: 'Cloud account', purpose: 'cloud.sync' },
+                            sourceClass: {
+                                kind: 'connectedAccount',
+                                service: { pluginId: 'acme.accounts', localId: 'cloud' },
+                            },
+                            realm: 'daemon',
+                            phase: 'connection',
+                            request: {
+                                kind: 'environment',
+                                keys: ['ACME_TOKEN'],
+                            },
+                        },
+                    ],
+                })}
+                target={{ machine: 'Build box', server: 'Server B' }}
+                onResolve={vi.fn()}
+                onClose={vi.fn()}
+            />,
+        );
+
+        const rendered = JSON.stringify(screen.tree.toJSON());
+        expect(rendered).toContain('settingsPlugins.installReviewSections.trustedCodeDisclosure');
+        expect(rendered).toContain('settingsPlugins.installReviewSections.scope');
+        expect(rendered).toContain('workspace');
+        expect(rendered).toContain('read');
+        expect(rendered).toContain('settingsPlugins.installReviewSections.secretKinds');
+        expect(rendered).toContain('apiKey');
+        expect(rendered).toContain('settingsPlugins.installReviewSections.connectedAccountService');
+        expect(rendered).toContain('acme.accounts/cloud');
+        expect(rendered).toContain('settingsPlugins.installReviewSections.credentialPurpose');
+        expect(rendered).toContain('cloud.sync');
+        expect(rendered).toContain('settingsPlugins.installReviewSections.credentialAccess');
+        expect(rendered).toContain('ACME_TOKEN');
+        expect(rendered).toContain('settingsPlugins.installReviewSections.runtimeApi');
+        expect(rendered).toContain('settingsPlugins.updatePolicy.reviewEveryUpdate');
+        expect(rendered).not.toMatch(/\b(?:declared, unverified|retrieved, unverified|unreviewed|development|runtime API)\b/i);
+    });
+
+    it('renders hosted-web execution as its own isolated realm label', async () => {
+        const { PluginInstallationReviewDialog } = await import('./PluginInstallationReviewDialog');
+        const screen = await renderScreen(
+            <PluginInstallationReviewDialog
+                review={createPluginInstallationReviewFixture({
+                    executableRealms: ['daemon', 'reactNative', 'hostedWeb'],
+                })}
+                target={{ machine: 'Build box', server: 'Server B' }}
+                onResolve={vi.fn()}
+                onClose={vi.fn()}
+            />,
+        );
+
+        const rendered = screen.getTextContent();
+        expect(rendered).toContain('settingsPlugins.installReviewSections.executableRealm.daemon');
+        expect(rendered).toContain('settingsPlugins.installReviewSections.executableRealm.reactNative');
+        expect(rendered).toContain('settingsPlugins.installReviewSections.executableRealm.hostedWeb');
+    });
+
+    it('presents host scope and credential materialization as readable facts, not JSON', async () => {
+        const { PluginInstallationReviewDialog } = await import('./PluginInstallationReviewDialog');
+        const screen = await renderScreen(
+            <PluginInstallationReviewDialog
+                review={createPluginInstallationReviewFixture({
+                    requiredHostAccess: [{
+                        id: 'network',
+                        capability: 'network',
+                        reason: 'Connect to the review service',
+                        authorizationClass: 'cooperativeDisclosure',
+                        normalizedScope: { targets: [{ kind: 'fixedOrigin', origin: 'https://review.example.test' }] },
+                    }],
+                    optionalHostAccess: [{
+                        id: 'workspace',
+                        capability: 'Workspace files',
+                        reason: 'Read the selected workspace.',
+                        authorizationClass: 'hostResourceSelection',
+                        normalizedScope: { kind: 'workspace', mode: 'read' },
+                    }],
+                    rawCredentialAccess: [
+                        {
+                            accessMode: 'raw',
+                            contribution: { pluginId: 'acme.example', localId: 'voice' },
+                            credentialSlot: { id: 'voice_auth', title: 'API key', purpose: 'voice.client-auth' },
+                            sourceClass: { kind: 'savedSecret', secretKinds: ['apiKey'] },
+                            realm: 'daemon',
+                            phase: 'connection',
+                            request: {
+                                kind: 'httpHeaders',
+                                origin: 'https://api.example.com',
+                                headerNames: ['authorization'],
+                            },
+                        },
+                        {
+                            accessMode: 'raw',
+                            contribution: { pluginId: 'acme.example', localId: 'cloud' },
+                            credentialSlot: { id: 'cloud_auth', title: 'Cloud account', purpose: 'cloud.sync' },
+                            sourceClass: {
+                                kind: 'connectedAccount',
+                                service: { pluginId: 'acme.accounts', localId: 'cloud' },
+                            },
+                            realm: 'daemon',
+                            phase: 'connection',
+                            request: { kind: 'environment', keys: ['ACME_TOKEN'] },
+                        },
+                    ],
+                })}
+                target={{ machine: 'Build box', server: 'Server B' }}
+                onResolve={vi.fn()}
+                onClose={vi.fn()}
+            />,
+        );
+
+        // Structured host scope and credential materialization are trust facts
+        // a reader must be able to actually read; a serialized JSON blob is
+        // not a human-readable disclosure of them.
+        const rendered = screen.getTextContent();
+        expect(rendered).not.toContain('\\"targets\\"');
+        expect(rendered).not.toContain('\\"kind\\"');
+        expect(rendered).toContain('targets:');
+        expect(rendered).toContain('kind: fixedOrigin');
+        expect(rendered).toContain('origin: https://review.example.test');
+        expect(rendered).toContain('kind: workspace');
+        expect(rendered).toContain('mode: read');
+        expect(rendered).toContain('settingsPlugins.installReviewSections.credentialRequestHeaders');
+        expect(rendered).toContain('https://api.example.com');
+        expect(rendered).toContain('authorization');
+        expect(rendered).toContain('settingsPlugins.installReviewSections.credentialRequestEnvironment');
+        expect(rendered).toContain('ACME_TOKEN');
     });
 });

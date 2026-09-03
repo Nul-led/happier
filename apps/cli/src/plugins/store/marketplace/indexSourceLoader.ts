@@ -31,7 +31,27 @@ import { resolvePluginStorePaths } from '@/plugins/store/paths';
 import { writeJsonAtomic } from '@/utils/fs/writeJsonAtomic';
 
 const CACHE_MAX_STALE_MS = 7 * 24 * 60 * 60 * 1000;
-const MAX_COMMUNITY_NPM_DISCOVERY_CANDIDATES = 100;
+/**
+ * Community npm discovery is scoped to the plugin ecosystem keyword. It is
+ * composed with the caller's search text rather than replaced by it, so a
+ * user query narrows the ecosystem instead of leaving it.
+ */
+const COMMUNITY_NPM_ECOSYSTEM_QUALIFIER = 'keywords:happier-plugin';
+const COMMUNITY_NPM_SEARCH_TEXT_MAX_LENGTH = 256;
+/**
+ * npm search serves one bounded snapshot per query. The merged marketplace
+ * index owns paging across sources, so each cursor page is cut from the same
+ * source snapshot instead of refetching a wider or differently offset result.
+ * 100 is npm's practical page ceiling and each candidate costs one metadata
+ * request, so it is also the discovery ceiling.
+ */
+const COMMUNITY_NPM_SEARCH_MAX_SIZE = 100;
+/**
+ * npm ranks an exact package name first but still answers with neighbours, so
+ * a targeted request asks for a small window and the parser keeps only the
+ * named package. It is one search request and at most one metadata request.
+ */
+const COMMUNITY_NPM_EXACT_SEARCH_SIZE = 20;
 const MAX_CONCURRENT_COMMUNITY_NPM_METADATA_REQUESTS = 4;
 const INDEX_SOURCE_ERROR_LABEL = 'Marketplace index source';
 /**
@@ -49,11 +69,19 @@ const inFlight = new Map<string, Promise<MarketplaceIndexSourceSnapshotV1>>();
 
 type CacheRecord = Readonly<{
   t: 'happier_marketplace_index_source_cache_v1';
+  /** The configured source identity the snapshot belongs to. */
   sourceUrl: string;
+  /**
+   * The exact request that produced the snapshot. A slot file is shared by
+   * every query of its slot kind, so a record is served — fresh, stale or
+   * 304-revalidated — only when this equals the request being loaded.
+   */
+  requestUrl: string;
   fetchedAtMs: number;
   etag: string | null;
   lastModified: string | null;
   snapshot: MarketplaceIndexSourceSnapshotV1;
+  communityNpmPage: CommunityNpmPage | null;
 }>;
 
 type CommunityNpmSearchCandidate = Readonly<{
@@ -72,6 +100,54 @@ function readCommunityNpmPublisher(candidate: Readonly<Record<string, unknown>>)
   return username ? { id: username, displayName: username } : null;
 }
 
+/**
+ * The one query a marketplace source serves. A community npm source turns it
+ * into exactly one search request; a published catalog document ignores it.
+ *
+ * `exactPackageName` targets the source at one package before any acquisition,
+ * which is how an exact listing is re-resolved without scanning the bounded
+ * discovery snapshot.
+ */
+export type MarketplaceIndexSourceQuery = Readonly<{
+  text: string;
+  exactPackageName?: string;
+  from?: number;
+  size?: number;
+}>;
+
+export type CommunityNpmPage = Readonly<{
+  from: number;
+  size: number;
+  returned: number;
+  total: number;
+}>;
+
+export type LoadedMarketplaceIndexSource = MarketplaceIndexSourceSnapshotV1 & Readonly<{
+  communityNpmPage?: CommunityNpmPage;
+}>;
+
+/**
+ * Builds the query-driven npm search request. The stable source URL stays the
+ * identity of the community npm source; the query only shapes this one
+ * request.
+ */
+export function buildCommunityNpmSearchUrl(sourceUrl: string, query?: MarketplaceIndexSourceQuery): string {
+  const url = new URL(sourceUrl);
+  const terms = [
+    COMMUNITY_NPM_ECOSYSTEM_QUALIFIER,
+    ...(query?.exactPackageName ? [query.exactPackageName] : []),
+    ...(query?.exactPackageName ? [] : [(query?.text ?? '').trim()]),
+  ].filter((term) => term.length > 0);
+  url.searchParams.set('text', terms.join(' ').slice(0, COMMUNITY_NPM_SEARCH_TEXT_MAX_LENGTH));
+  const size = query?.exactPackageName
+    ? COMMUNITY_NPM_EXACT_SEARCH_SIZE
+    : Math.max(1, Math.min(query?.size ?? COMMUNITY_NPM_SEARCH_MAX_SIZE, COMMUNITY_NPM_SEARCH_MAX_SIZE));
+  const from = query?.exactPackageName ? 0 : Math.max(0, query?.from ?? 0);
+  url.searchParams.set('from', String(from));
+  url.searchParams.set('size', String(size));
+  return url.toString();
+}
+
 export async function parseCommunityNpmDiscovery(
   raw: unknown,
   source: { id: string; title: string; sourceUrl: string; kind: 'community-npm' },
@@ -79,16 +155,38 @@ export async function parseCommunityNpmDiscovery(
     client: NpmRegistryJsonClient;
     metadataMaxBytes?: number;
     deadlineAtMonotonicMs?: number;
+    /** Upper bound of search candidates this query resolves metadata for. */
+    maxCandidates?: number;
+    /**
+     * When the request targeted one package, only that package's search hit is
+     * a candidate. npm ranks the exact name first but still returns neighbours,
+     * and resolving metadata for them would be an untargeted scan.
+     */
+    exactPackageName?: string;
+    from?: number;
+    size?: number;
   }>,
-): Promise<MarketplaceIndexSourceSnapshotV1> {
-  const objects = raw && typeof raw === 'object' && Array.isArray((raw as { objects?: unknown }).objects)
-    ? (raw as { objects: unknown[] }).objects.slice(0, MAX_COMMUNITY_NPM_DISCOVERY_CANDIDATES)
-    : [];
+): Promise<LoadedMarketplaceIndexSource> {
+  const maxCandidates = Math.max(1, Math.min(dependencies.maxCandidates ?? COMMUNITY_NPM_SEARCH_MAX_SIZE, COMMUNITY_NPM_SEARCH_MAX_SIZE));
+  const searchHits: readonly unknown[] = isRecord(raw) && Array.isArray(raw.objects) ? raw.objects : [];
+  const total = isRecord(raw) && Number.isSafeInteger(raw.total) && Number(raw.total) >= 0
+    ? Number(raw.total)
+    : searchHits.length;
+  const from = Math.max(0, dependencies.from ?? 0);
+  const size = Math.max(1, Math.min(dependencies.size ?? maxCandidates, COMMUNITY_NPM_SEARCH_MAX_SIZE));
+  // A targeted request keeps only the named package, then the window bound
+  // applies. Bounding first would let the neighbours npm returned ahead of the
+  // exact hit push it out of the window.
+  const objects = (dependencies.exactPackageName
+    ? searchHits.filter((candidate) => (
+      isRecord(candidate) && isRecord(candidate.package) && candidate.package.name === dependencies.exactPackageName
+    ))
+    : searchHits).slice(0, maxCandidates);
 
   const registryOrigin = new URL(source.sourceUrl).origin;
   const requests: CommunityNpmSearchCandidate[] = objects.flatMap((candidate) => {
-    if (!candidate || typeof candidate !== 'object') return [];
-    const pkg = (candidate as { package?: unknown }).package;
+    if (!isRecord(candidate)) return [];
+    const pkg = candidate.package;
     if (!isRecord(pkg)) return [];
     const packageName = pkg.name;
     const version = pkg.version;
@@ -134,7 +232,7 @@ export async function parseCommunityNpmDiscovery(
     }
   }
 
-  return MarketplaceIndexSourceSnapshotV1Schema.parse({
+  const snapshot = MarketplaceIndexSourceSnapshotV1Schema.parse({
     source,
     freshness: { state: 'fresh', fetchedAtMs: null },
     entries,
@@ -145,6 +243,7 @@ export async function parseCommunityNpmDiscovery(
       }]
       : [],
   });
+  return { ...snapshot, communityNpmPage: { from, size, returned: searchHits.length, total } };
 }
 
 function parseCommunityNpmMetadataEntry(
@@ -187,17 +286,28 @@ function parseCommunityNpmMetadataEntry(
     review: { status: 'unreviewed', reviewedAt: null },
     categories: [],
     media: [],
-    updatePolicy: 'manual',
+    updatePolicy: 'reviewEveryUpdate',
     links: {},
   });
   if (!parsed.success) return null;
   return parsed.data;
 }
 
-function sourceCachePath(happyHomeDir: string | undefined, sourceUrl: string): string {
+/**
+ * Cache slots are bounded by source, not by query: one replaceable discovery
+ * slot per configured source, plus — only where the exact lookup's request
+ * URL differs from every discovery request URL, which is true for community
+ * npm — one exact-lookup slot. The file name derives from the configured
+ * source URL because community npm request URLs embed arbitrary search text;
+ * hashing those grew one unretired file per unique search. Query identity
+ * lives in the record's `requestUrl`, which gates every serving path.
+ */
+type MarketplaceIndexSourceCacheSlot = 'discovery' | 'exact';
+
+function sourceCachePath(happyHomeDir: string | undefined, sourceUrl: string, slot: MarketplaceIndexSourceCacheSlot): string {
   const paths = resolvePluginStorePaths({ happyHomeDir });
   const digest = createHash('sha256').update(sourceUrl).digest('hex');
-  return resolve(paths.cacheDir, 'marketplace-index', `${digest}.json`);
+  return resolve(paths.cacheDir, 'marketplace-index', slot === 'discovery' ? `${digest}.json` : `${digest}.exact.json`);
 }
 
 function validateSourceUrl(sourceUrl: string): string {
@@ -211,13 +321,20 @@ async function readCache(
 ): Promise<Readonly<{ record: CacheRecord | null; corrupt: boolean }>> {
   try {
     const raw = JSON.parse(await readFile(path, 'utf8')) as unknown;
-    if (!raw || typeof raw !== 'object') return { record: null, corrupt: true };
+    if (!isRecord(raw)) return { record: null, corrupt: true };
     const record = raw as Partial<CacheRecord>;
-    if (record.t !== 'happier_marketplace_index_source_cache_v1' || record.sourceUrl !== source.sourceUrl || typeof record.fetchedAtMs !== 'number' || record.fetchedAtMs > nowMs) return { record: null, corrupt: true };
+    if (record.t !== 'happier_marketplace_index_source_cache_v1' || record.sourceUrl !== source.sourceUrl || typeof record.requestUrl !== 'string' || typeof record.fetchedAtMs !== 'number' || record.fetchedAtMs > nowMs) return { record: null, corrupt: true };
     const snapshot = MarketplaceIndexSourceSnapshotV1Schema.safeParse(record.snapshot);
     if (!snapshot.success) return { record: null, corrupt: true };
     if (snapshot.data.source.id !== source.id || snapshot.data.source.title !== source.title || snapshot.data.source.kind !== source.kind || snapshot.data.source.sourceUrl !== source.sourceUrl) return { record: null, corrupt: true };
-    return { record: { t: record.t, sourceUrl: source.sourceUrl, fetchedAtMs: record.fetchedAtMs, etag: typeof record.etag === 'string' ? record.etag : null, lastModified: typeof record.lastModified === 'string' ? record.lastModified : null, snapshot: snapshot.data }, corrupt: false };
+    const page = isRecord(record.communityNpmPage)
+      && Number.isSafeInteger(record.communityNpmPage.from)
+      && Number.isSafeInteger(record.communityNpmPage.size)
+      && Number.isSafeInteger(record.communityNpmPage.returned)
+      && Number.isSafeInteger(record.communityNpmPage.total)
+      ? record.communityNpmPage as CommunityNpmPage
+      : null;
+    return { record: { t: record.t, sourceUrl: source.sourceUrl, requestUrl: record.requestUrl, fetchedAtMs: record.fetchedAtMs, etag: typeof record.etag === 'string' ? record.etag : null, lastModified: typeof record.lastModified === 'string' ? record.lastModified : null, snapshot: snapshot.data, communityNpmPage: page }, corrupt: false };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { record: null, corrupt: false };
     return { record: null, corrupt: true };
@@ -253,24 +370,39 @@ function isOfflineRefreshError(error: unknown): boolean {
 export async function loadMarketplaceIndexSource(params: Readonly<{
   source: { id: string; title: string; sourceUrl: string; kind: MarketplaceIndexSourceKindV1 };
   happyHomeDir?: string;
+  /** The discovery query; community npm search requests are built from it. */
+  query?: MarketplaceIndexSourceQuery;
   now?: () => number;
   fetchImpl?: typeof fetch;
   resolveAddresses?: RemoteAcquisitionAddressResolver;
   communityNpmClient?: NpmRegistryJsonClient;
-}>): Promise<MarketplaceIndexSourceSnapshotV1> {
+}>): Promise<LoadedMarketplaceIndexSource> {
   const sourceUrl = validateSourceUrl(params.source.sourceUrl);
-  const cachePath = sourceCachePath(params.happyHomeDir, sourceUrl);
-  const key = `${cachePath}\u0000${params.source.id}`;
+  const requestUrl = params.source.kind === 'community-npm'
+    ? validateSourceUrl(buildCommunityNpmSearchUrl(sourceUrl, params.query))
+    : sourceUrl;
+  // The exact lookup gets its own slot only where its request URL differs
+  // structurally from discovery (community npm): one shared slot would let
+  // every search evict the exact record and vice versa, turning each
+  // alternating refresh into a full refetch. Catalog sources answer every
+  // query from the same request URL, so they keep the single discovery slot.
+  const exactLookupSlot = params.source.kind === 'community-npm' && Boolean(params.query?.exactPackageName);
+  const cachePath = sourceCachePath(params.happyHomeDir, sourceUrl, exactLookupSlot ? 'exact' : 'discovery');
+  // The slot path no longer distinguishes queries, so the request identity
+  // joins the in-flight key: two concurrent searches for one source must
+  // never merge into one fetch and hand one query's snapshot to the other.
+  const key = `${cachePath}\u0000${requestUrl}\u0000${params.source.id}`;
   const existing = inFlight.get(key);
   if (existing) return await existing;
   const operation: Promise<MarketplaceIndexSourceSnapshotV1> = (async (): Promise<MarketplaceIndexSourceSnapshotV1> => {
     const now = params.now ?? Date.now;
     const cacheRead = await readCache(cachePath, { ...params.source, sourceUrl }, now());
     const cached = cacheRead.record;
+    const revalidatable = cached?.requestUrl === requestUrl ? cached : null;
     try {
       const opened = await openRemoteAcquisition({
-        url: sourceUrl,
-        headers: { accept: 'application/json', ...(cached?.etag ? { 'if-none-match': cached.etag } : {}), ...(cached?.lastModified ? { 'if-modified-since': cached.lastModified } : {}) },
+        url: requestUrl,
+        headers: { accept: 'application/json', ...(revalidatable?.etag ? { 'if-none-match': revalidatable.etag } : {}), ...(revalidatable?.lastModified ? { 'if-modified-since': revalidatable.lastModified } : {}) },
         policy: INDEX_SOURCE_ACQUISITION_POLICY,
         timeoutMs: resolvePluginRemoteFetchTimeoutMs(),
         errorLabel: INDEX_SOURCE_ERROR_LABEL,
@@ -279,16 +411,17 @@ export async function loadMarketplaceIndexSource(params: Readonly<{
       });
       try {
         const response = opened.response;
-        if (response.status === 304 && cached) {
-          const snapshot: MarketplaceIndexSourceSnapshotV1 = { ...cached.snapshot, freshness: { state: 'fresh', fetchedAtMs: now() } };
-          await writeJsonAtomic(cachePath, { ...cached, fetchedAtMs: now(), snapshot });
+        if (response.status === 304 && revalidatable) {
+          const snapshot: LoadedMarketplaceIndexSource = { ...revalidatable.snapshot, freshness: { state: 'fresh', fetchedAtMs: now() }, ...(revalidatable.communityNpmPage ? { communityNpmPage: revalidatable.communityNpmPage } : {}) };
+          await writeJsonAtomic(cachePath, { ...revalidatable, fetchedAtMs: now(), snapshot } satisfies CacheRecord);
           return snapshot;
         }
         if (!response.ok) throw new Error(`Marketplace index source fetch failed with ${response.status}`);
         const body = await readResponseBody(response);
-        let parsed: MarketplaceIndexSourceSnapshotV1;
+        let parsed: LoadedMarketplaceIndexSource;
         if (params.source.kind === 'community-npm') {
           const timeoutMs = resolvePluginRemoteFetchTimeoutMs();
+          const size = Number(new URL(requestUrl).searchParams.get('size'));
           parsed = await parseCommunityNpmDiscovery(body, { ...params.source, kind: 'community-npm' }, {
             client: params.communityNpmClient ?? createNpmRegistryHttpsClient({
               registryOrigin: new URL(sourceUrl).origin,
@@ -296,6 +429,10 @@ export async function loadMarketplaceIndexSource(params: Readonly<{
             }),
             metadataMaxBytes: resolvePluginRemoteCatalogMaxBytes(),
             deadlineAtMonotonicMs: performance.now() + timeoutMs,
+            maxCandidates: Number.isSafeInteger(size) && size > 0 ? size : undefined,
+            from: params.query?.from,
+            size: Number.isSafeInteger(size) && size > 0 ? size : undefined,
+            ...(params.query?.exactPackageName ? { exactPackageName: params.query.exactPackageName } : {}),
           });
         } else {
           parsed = MarketplaceIndexSourceSnapshotV1Schema.parse(body);
@@ -304,19 +441,23 @@ export async function loadMarketplaceIndexSource(params: Readonly<{
         const invalidReview = parsed.entries.find((entry) => (
           params.source.kind === 'curated'
             ? entry.review.status === 'unreviewed'
-            : entry.review.status !== 'unreviewed' || entry.updatePolicy === 'curated-auto'
+            : entry.review.status !== 'unreviewed'
         ));
-        if (invalidReview) throw new Error(`Marketplace source '${params.source.id}' claims review/update authority outside its source kind`);
-        const snapshot: MarketplaceIndexSourceSnapshotV1 = { ...parsed, freshness: { state: 'fresh', fetchedAtMs: now() } };
-        await writeJsonAtomic(cachePath, { t: 'happier_marketplace_index_source_cache_v1', sourceUrl, fetchedAtMs: now(), etag: response.headers.get('etag'), lastModified: response.headers.get('last-modified'), snapshot } satisfies CacheRecord);
+        if (invalidReview) throw new Error(`Marketplace source '${params.source.id}' claims review authority outside its source kind`);
+        const { communityNpmPage = null, ...parsedSnapshot } = parsed;
+        const snapshot: LoadedMarketplaceIndexSource = { ...parsedSnapshot, freshness: { state: 'fresh', fetchedAtMs: now() }, ...(communityNpmPage ? { communityNpmPage } : {}) };
+        await writeJsonAtomic(cachePath, { t: 'happier_marketplace_index_source_cache_v1', sourceUrl, requestUrl, fetchedAtMs: now(), etag: response.headers.get('etag'), lastModified: response.headers.get('last-modified'), snapshot: parsedSnapshot, communityNpmPage } satisfies CacheRecord);
         return snapshot;
       } finally {
         await opened.dispose().catch(() => undefined);
       }
     } catch (error) {
       const message = projectPluginFailureText(error);
-      if (cached && now() - cached.fetchedAtMs >= 0 && now() - cached.fetchedAtMs <= CACHE_MAX_STALE_MS) {
-        return { ...cached.snapshot, freshness: { state: isOfflineRefreshError(error) ? 'stale-offline' : 'stale', fetchedAtMs: cached.fetchedAtMs, staleSinceMs: now() }, diagnostics: [...cached.snapshot.diagnostics.slice(0, 127), { code: 'marketplace_source_refresh_failed', message }] };
+      // Stale bytes answer only the exact request that produced them: the
+      // slot may hold another query's snapshot, and serving that as this
+      // query's result would let one search masquerade as another.
+      if (revalidatable && now() - revalidatable.fetchedAtMs >= 0 && now() - revalidatable.fetchedAtMs <= CACHE_MAX_STALE_MS) {
+        return { ...revalidatable.snapshot, freshness: { state: isOfflineRefreshError(error) ? 'stale-offline' : 'stale', fetchedAtMs: revalidatable.fetchedAtMs, staleSinceMs: now() }, diagnostics: [...revalidatable.snapshot.diagnostics.slice(0, 127), { code: 'marketplace_source_refresh_failed', message }], ...(revalidatable.communityNpmPage ? { communityNpmPage: revalidatable.communityNpmPage } : {}) };
       }
       return {
         source: params.source,

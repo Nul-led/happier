@@ -199,7 +199,7 @@ async function prepareRetainedAgentFixture() {
             kind: 'localPath',
             canonicalPath: sourceRootPath,
         },
-        updatePolicy: 'manual',
+        updatePolicy: 'reviewEveryUpdate',
         createdAtMs: 1,
         immutableGenerationId,
     });

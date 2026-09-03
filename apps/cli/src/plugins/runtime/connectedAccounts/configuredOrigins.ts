@@ -384,6 +384,21 @@ export async function resolveConnectedAccountConfiguredOrigins(input: Readonly<{
     if (!await input.isGenerationCurrent(input.generation)) {
         throw new Error('Connected-account plugin generation changed during origin resolution');
     }
+    /**
+     * A declared `httpsHostSuffix` family stays a family here. It is not a
+     * configured Connected Account endpoint and cannot be pre-resolved, so it
+     * is carried onto the bound scope and decided per request by the same
+     * canonical policy — including the private-network decision, which the
+     * fetch owner makes against the real target's resolved addresses.
+     */
+    const hostSuffixesForRequest = (
+        request: Extract<PluginHostAccessRequestV2, { capability: 'network' | 'network.client' }>,
+    ): Readonly<{ hostSuffixes?: readonly string[] }> => {
+        const hostSuffixes = [...new Set(request.scope.targets.flatMap((target) => (
+            target.kind === 'httpsHostSuffix' ? [target.hostSuffix] : []
+        )))].sort();
+        return hostSuffixes.length === 0 ? {} : { hostSuffixes: Object.freeze(hostSuffixes) };
+    };
     const networkScopes = matching.flatMap(({ request, required, hasConnectedAccountTarget }) => {
         if (request.capability !== 'network') return [];
         const fixed = request.scope.targets.flatMap((target) => (
@@ -402,13 +417,14 @@ export async function resolveConnectedAccountConfiguredOrigins(input: Readonly<{
             accessId: request.id,
             required,
             origins: Object.freeze([...new Set(origins)].sort()),
+            ...hostSuffixesForRequest(request),
             ...(request.scope.methods === undefined
                 ? {}
                 : { methods: Object.freeze([...request.scope.methods].sort()) }),
             privateNetwork: request.scope.privateNetwork === true,
             connectedAccountService: input.service,
         });
-        return scope.origins.length > 0 ? [scope] : [];
+        return scope.origins.length > 0 || (scope.hostSuffixes?.length ?? 0) > 0 ? [scope] : [];
     });
     const networkClientScopes = matching.flatMap(({ request, required, hasConnectedAccountTarget }) => {
         if (request.capability !== 'network.client') return [];
@@ -428,11 +444,12 @@ export async function resolveConnectedAccountConfiguredOrigins(input: Readonly<{
             accessId: request.id,
             required,
             origins: Object.freeze([...new Set(origins)].sort()),
+            ...hostSuffixesForRequest(request),
             transports: Object.freeze([...request.scope.transports].sort()),
             privateNetwork: request.scope.privateNetwork === true,
             connectedAccountService: input.service,
         });
-        return scope.origins.length > 0 ? [scope] : [];
+        return scope.origins.length > 0 || (scope.hostSuffixes?.length ?? 0) > 0 ? [scope] : [];
     });
     if (networkScopes.length === 0 && networkClientScopes.length === 0) {
         throw new Error('Connected-account producer network access resolved no allowed origin');

@@ -236,7 +236,7 @@ async function installCurrentSource(input: Readonly<{
             manifestVersion: input.version,
             installedPath: null,
             trust,
-            updatePolicy: 'manual',
+            updatePolicy: 'reviewEveryUpdate',
             optionalAccess: input.optionalAccess,
         },
         state: { enabled: true },

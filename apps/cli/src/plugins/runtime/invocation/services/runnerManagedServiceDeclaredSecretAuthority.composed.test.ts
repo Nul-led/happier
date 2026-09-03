@@ -252,7 +252,7 @@ async function prepareRetainedAgentFixture() {
         sourceRootPath,
         manifestRelativePath: '.happier-plugin/plugin.json',
         distribution: { kind: 'localPath', canonicalPath: sourceRootPath },
-        updatePolicy: 'manual',
+        updatePolicy: 'reviewEveryUpdate',
         createdAtMs: 1,
         immutableGenerationId,
     });

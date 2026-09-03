@@ -620,6 +620,26 @@ describe('external Agent runtime-descriptor opacity', () => {
             },
         });
 
+        // New Session hands the scoped record to this owner as its own
+        // `pluginSettings` argument and lets the owner attach the carrier, so
+        // the same declared setting has to arrive through that shape too.
+        expect(buildSpawnSessionExtrasFromUiState({
+            agentId: EXTERNAL_AGENT_ID,
+            machineId: MACHINE_ID,
+            settings: makeSettings() as never,
+            pluginSettings: { account: { acmeBackendMode: 'turbo' } },
+            resumeSessionId: '',
+            updatedAt: 123,
+        })).toEqual({
+            sessionConfigOptionOverrides: {
+                v: 1,
+                overrides: {
+                    acmeBackendMode: { value: 'turbo', updatedAt: 123 },
+                },
+                updatedAt: 123,
+            },
+        });
+
         // Unset falls to the declared default; an unreadable value never
         // escapes the declared value set.
         expect(buildSpawnSessionExtrasFromUiState({

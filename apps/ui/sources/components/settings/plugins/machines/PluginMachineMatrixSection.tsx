@@ -69,6 +69,12 @@ function cellSubtitle(cell: PluginMachineMatrixCellV1): string | undefined {
     return parts.filter((part) => part.length > 0).join(' · ') || undefined;
 }
 
+function cellAccessibilityLabel(cell: PluginMachineMatrixCellV1): string {
+    const state = `${cell.machineName}: ${stateLabel(cell.state)}`;
+    const subtitle = cellSubtitle(cell);
+    return subtitle ? `${state}. ${subtitle}` : state;
+}
+
 /**
  * The Account-wide, read-only answer to "where is this plugin installed, and
  * where is it broken or missing?".
@@ -157,7 +163,7 @@ export const PluginMachineMatrixSection = React.memo(function PluginMachineMatri
                             title={cell.machineName}
                             subtitle={cellSubtitle(cell)}
                             detail={stateLabel(cell.state)}
-                            accessibilityLabel={`${cell.machineName}: ${stateLabel(cell.state)}`}
+                            accessibilityLabel={cellAccessibilityLabel(cell)}
                             mode="info"
                             showChevron={false}
                         />

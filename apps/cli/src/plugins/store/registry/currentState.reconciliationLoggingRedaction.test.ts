@@ -56,7 +56,7 @@ async function prepareObsoleteGeneration(params: Readonly<{
     sourceRootPath: sourceRoot,
     manifestRelativePath: 'marker',
     distribution: { kind: 'localPath', canonicalPath: sourceRoot },
-    updatePolicy: 'manual',
+    updatePolicy: 'reviewEveryUpdate',
     createdAtMs: 1,
     immutableGenerationId: params.immutableGenerationId,
   });

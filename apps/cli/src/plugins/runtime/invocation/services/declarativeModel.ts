@@ -23,7 +23,6 @@ import {
     type NormalizedPluginCollectionUiQueryDescriptorV1,
     type PluginCollectionUiQueryRequestV1,
     PluginDeclarativeProjectedModelV1Schema,
-    type PluginUiHostMethodV1,
     type PluginUiIconTokenV1,
     type PluginUiRendererV2,
     type PluginUiTargetedContributionSurfaceV1,
@@ -31,6 +30,7 @@ import {
 import { PluginError, type JsonValue } from '@happier-dev/plugin-sdk';
 
 import { clonePluginPlainData } from '../../plainData';
+import type { PluginUiHostMethodV1 } from '@happier-dev/protocol/plugins/ui/client';
 import {
     type StablePluginSettingsField,
     type StablePluginSettingsModel,

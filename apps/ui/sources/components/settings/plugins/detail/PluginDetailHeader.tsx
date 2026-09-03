@@ -70,9 +70,9 @@ export function PluginDetailHeader(props: Readonly<{
                 />
             </View>
             <View style={styles.content}>
-                <Text style={styles.title}>{props.projection?.title ?? props.installed.title}</Text>
+                <Text style={styles.title} accessibilityRole="header">{props.projection?.title ?? props.installed.title}</Text>
                 <Text style={styles.subtitle}>{description}</Text>
-                <Text style={styles.meta}>{[statusLabel, props.installed.version].join(' | ')}</Text>
+                <Text style={styles.meta}>{[props.installed.pluginId, statusLabel, props.installed.version].join(' | ')}</Text>
             </View>
         </View>
     );

@@ -16,6 +16,9 @@ import {
 } from '@/plugins/store/install/trustIdentity';
 import { PluginStateFileV1Schema } from '@/plugins/store/state';
 
+import { createDaemonPluginRuntimeOwner } from '@/plugins/daemon/runtimeOwner';
+import type { StablePluginConnectedAccountsOwner } from '@/plugins/runtime/invocation/services/connectedAccounts';
+
 import { createPluginReloadController } from './controller';
 import { createDaemonPluginRegistryRuntimeLifecycle } from './registryRuntimeLifecycle';
 
@@ -25,6 +28,25 @@ vi.mock('@/plugins/projection/registry/resolveBuiltInContributions', () => ({
         providers: Object.freeze([]),
   }),
 }));
+
+function createUnusedConnectedAccountsOwner(): StablePluginConnectedAccountsOwner {
+  return Object.freeze({
+    getBinding: vi.fn(async () => null),
+    requestSelection: vi.fn(async () => {
+      throw new Error('unexpected connected-account selection');
+    }),
+    materialize: vi.fn(async () => {
+      throw new Error('unexpected connected-account materialization');
+    }),
+    listAccounts: async () => {
+        throw new Error('Connected Account listing is outside this fixture');
+    },
+    materializeListedAccount: async () => {
+        throw new Error('Exact-listed Connected Account materialization is outside this fixture');
+    },
+    watch: vi.fn(() => Object.freeze({ dispose() {} })),
+  });
+}
 
 type FixtureInstallInput = Omit<CommitPluginRegistryInstallationInput, 'preparedGeneration'> & Readonly<{
   sourceRootPath: string;
@@ -119,13 +141,13 @@ async function createPluginFixture(
             manifestPath: join(pluginRoot, '.happier-plugin', 'plugin.json'),
           },
           compatibility: { status: 'compatible', diagnostics: [] },
-          install: { mode: 'link', manifestVersion: version, trust, updatePolicy: 'manual' },
+          install: { mode: 'link', manifestVersion: version, trust, updatePolicy: 'reviewEveryUpdate' },
           state: { enabled: true },
         },
       },
     }).plugins[pluginId]!,
     trust,
-    updatePolicy: 'manual' as const,
+    updatePolicy: 'reviewEveryUpdate' as const,
     optionalAccess: Object.freeze([]),
   });
   return { counterPath, createInput, writeManifest };
@@ -165,6 +187,16 @@ describe('daemon plugin restart isolation', () => {
       }),
     });
     await restartedStore.initialize();
+    // A cold restart publishes the committed registry through the canonical
+    // daemon lifecycle owner exactly as production daemon startup does; a bare
+    // controller deliberately refuses to self-resolve.
+    const restartedOwner = createDaemonPluginRuntimeOwner({
+      happyHomeDir,
+      staleCandidateCleanup: 'disabled',
+      reloadController: restartedController,
+      connectedAccounts: createUnusedConnectedAccountsOwner(),
+    });
+    await restartedOwner.initialize();
     const restartedLease = await restartedController.acquireRuntimeRegistry();
     try {
       for (const pluginId of ['acme.restart.first', 'acme.restart.peer']) {
@@ -203,6 +235,7 @@ describe('daemon plugin restart isolation', () => {
       expect(await count(peer.counterPath, 'cleanup')).toBe(1);
     } finally {
       await activeLease.release();
+      await restartedOwner.changeService.shutdown();
       await restartedController.shutdown();
     }
     expect(await count(first.counterPath, 'activate')).toBe(3);
@@ -243,6 +276,16 @@ describe('daemon plugin restart isolation', () => {
       }),
     });
     await restartedStore.initialize();
+    // A cold restart publishes the committed registry through the canonical
+    // daemon lifecycle owner exactly as production daemon startup does; a bare
+    // controller deliberately refuses to self-resolve.
+    const restartedOwner = createDaemonPluginRuntimeOwner({
+      happyHomeDir,
+      staleCandidateCleanup: 'disabled',
+      reloadController: restartedController,
+      connectedAccounts: createUnusedConnectedAccountsOwner(),
+    });
+    await restartedOwner.initialize();
     const demandLease = await restartedController.acquireRuntimeRegistry();
     try {
       await expect(demandLease.registry.activateContributionsOnDemand([{
@@ -288,6 +331,7 @@ describe('daemon plugin restart isolation', () => {
       expect(await count(peer.counterPath, 'cleanup')).toBe(1);
     } finally {
       await activeLease.release();
+      await restartedOwner.changeService.shutdown();
       await restartedController.shutdown();
     }
     expect(await count(peer.counterPath, 'activate')).toBe(2);

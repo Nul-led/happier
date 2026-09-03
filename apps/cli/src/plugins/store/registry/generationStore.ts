@@ -13,6 +13,8 @@ import {
   PluginInstallReviewPrincipalPresentationV1Schema,
   PluginReleaseFactsV1Schema,
   type PluginId,
+  PluginUpdatePolicyV1Schema,
+  type PluginUpdatePolicyV1,
 } from '@happier-dev/protocol';
 
 import { writeFileAtomically, writeJsonAtomic } from '@/utils/fs/writeJsonAtomic';
@@ -39,7 +41,6 @@ import {
   AlgorithmQualifiedIntegritySchema,
   PluginDistributionIdentitySchema,
   PluginTrustRecordSchema,
-  PluginUpdatePolicySchema,
   isPluginTrustRecordAuthorized,
   pluginDistributionRollbackLineagesEqual,
   type PluginDistributionIdentity,
@@ -217,8 +218,6 @@ export type OwnedPreparedImmutablePluginGeneration = Readonly<{
 // Development drafts produce the same daemon-owned immutable candidate that
 // archive, npm, and path review use. Keep this alias while callers migrate to
 // the neutral ownership seam.
-export type OwnedPreparedPluginDevelopmentGeneration = OwnedPreparedImmutablePluginGeneration;
-
 function createOwnedPreparedImmutablePluginGenerationHandle(input: Readonly<{
   rootPath: string;
   record: ImmutablePluginGenerationRecord;
@@ -335,7 +334,7 @@ export type PluginInstallationStateRecord = {
     distribution: PluginDistributionIdentity;
     admittedIntegrity?: z.infer<typeof AlgorithmQualifiedIntegritySchema>;
   };
-  updatePolicy: z.infer<typeof PluginUpdatePolicySchema>;
+  updatePolicy: PluginUpdatePolicyV1;
   optionalAccess: Array<z.infer<typeof PluginAccessSelectionSchema>>;
   availability?: PluginInstallationAvailabilityProjection;
   installReviewPrincipalDigest?: z.infer<typeof PluginInstallReviewPrincipalDigestSchema>;
@@ -351,7 +350,7 @@ const PluginInstallationStateRecordSchema: z.ZodType<PluginInstallationStateReco
     distribution: PluginDistributionIdentitySchema,
     admittedIntegrity: AlgorithmQualifiedIntegritySchema.optional(),
   }).strict(),
-  updatePolicy: PluginUpdatePolicySchema,
+  updatePolicy: PluginUpdatePolicyV1Schema,
   optionalAccess: z.array(PluginAccessSelectionSchema).max(512),
   availability: PluginInstallationAvailabilityProjectionSchema.optional(),
   installReviewPrincipalDigest: asHostProtocolZod(PluginInstallReviewPrincipalDigestSchema).optional(),
@@ -698,7 +697,7 @@ function createImmutablePluginGenerationRecord(input: Readonly<{
   pluginId: string;
   manifestRelativePath: string;
   distribution: z.input<typeof PluginDistributionIdentitySchema>;
-  updatePolicy: z.input<typeof PluginUpdatePolicySchema>;
+  updatePolicy: PluginUpdatePolicyV1;
   createdAtMs: number;
   immutableGenerationId?: string;
   files: readonly ImmutablePluginGenerationFile[];
@@ -735,7 +734,7 @@ export async function createImmutablePluginGenerationRecordFromSource(input: Rea
   sourceRootPath: string;
   manifestRelativePath: string;
   distribution: z.input<typeof PluginDistributionIdentitySchema>;
-  updatePolicy: z.input<typeof PluginUpdatePolicySchema>;
+  updatePolicy: PluginUpdatePolicyV1;
   createdAtMs: number;
   immutableGenerationId?: string;
   singleFileRelativePath?: string;
@@ -1699,7 +1698,7 @@ export async function prepareOwnedImmutablePluginGeneration(input: Readonly<{
   sourceRootPath: string;
   manifestRelativePath: string;
   distribution: z.input<typeof PluginDistributionIdentitySchema>;
-  updatePolicy: z.input<typeof PluginUpdatePolicySchema>;
+  updatePolicy: PluginUpdatePolicyV1;
   createdAtMs: number;
   immutableGenerationId?: string;
   singleFileRelativePath?: string;
@@ -1893,9 +1892,9 @@ export type OwnedPluginDevelopmentGenerationDraft = Readonly<{
     manifestRelativePath: string;
     generatedManifestContents: string;
     distribution: z.input<typeof PluginDistributionIdentitySchema>;
-    updatePolicy: z.input<typeof PluginUpdatePolicySchema>;
+    updatePolicy: PluginUpdatePolicyV1;
     createdAtMs: number;
-  }>) => Promise<OwnedPreparedPluginDevelopmentGeneration>;
+  }>) => Promise<OwnedPreparedImmutablePluginGeneration>;
   cleanup: () => Promise<void>;
 }>;
 

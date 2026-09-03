@@ -488,7 +488,7 @@ describe('Account Data Collection candidate preparation', () => {
         ]);
     });
 
-    it('does not replay a callback when the exact source-revision stage CAS reports sourceChanged', async () => {
+    it('does not replay a callback inside one sourceChanged attempt but may invoke it again on a later preparation attempt', async () => {
         const migrate = vi.fn((value: Readonly<Record<string, JsonValue>>) => ({
             ...value,
             status: 'open',
@@ -510,7 +510,9 @@ describe('Account Data Collection candidate preparation', () => {
             }
             if (url.endsWith(PLUGIN_COLLECTION_CANDIDATE_PREPARATION_STAGE_HTTP_PATH_V1)) {
                 stage();
-                return { status: 200, data: { results: [{ status: 'sourceChanged' }] } };
+                return stage.mock.calls.length === 1
+                    ? { status: 200, data: { results: [{ status: 'sourceChanged' }] } }
+                    : { status: 200, data: { results: [{ status: 'staged' }] } };
             }
             throw new Error(`Unexpected candidate-preparation request: ${url}`);
         });
@@ -533,6 +535,15 @@ describe('Account Data Collection candidate preparation', () => {
         expect(migrate).toHaveBeenCalledTimes(2);
         expect(sourcePage).toHaveBeenCalledOnce();
         expect(stage).toHaveBeenCalledOnce();
+
+        await expect(candidate.prepare()).resolves.toBeUndefined();
+
+        // A callback has at-least-once semantics until its exact output is
+        // accepted. The host does not retain a second receipt or suppress a
+        // fresh candidate-preparation attempt after the failed stage CAS.
+        expect(migrate).toHaveBeenCalledTimes(4);
+        expect(sourcePage).toHaveBeenCalledTimes(2);
+        expect(stage).toHaveBeenCalledTimes(3);
     });
 
     it('drains an aborted callback before retiring its exact binding and never stages its output', async () => {

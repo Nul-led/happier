@@ -1270,6 +1270,7 @@ describe('target Agent runtime registry', () => {
         const registry = createDeclarativeAcpAgentRuntimeRegistry({
             agents: [{
                 id: 'declarative-agent',
+                identity: { pluginId: 'acme.declarative', localId: 'declarative-agent' },
                 provenance: 'external',
                 source: { kind: 'path' },
                 definition: { kindVersion: 1, id: 'declarative-agent', ownedBackendIds: [] },
@@ -1320,6 +1321,51 @@ describe('target Agent runtime registry', () => {
         expect(open).toHaveBeenCalledOnce();
         expect(open).toHaveBeenCalledWith(request, { transport });
         expect(runtime?.executionRuns).toBeUndefined();
+    });
+
+    it('does not synthesize a declarative Agent contribution identity from its routing id', () => {
+        const definition = PluginContributesV2Schema.parse({
+            agents: [{
+                id: 'assistant/voice',
+                title: 'Assistant Voice',
+                runtime: {
+                    kind: 'acp',
+                    transport: {
+                        kind: 'stdio',
+                        executable: { kind: 'systemTool', id: 'fixture-acp' },
+                    },
+                },
+                primary: 'sessions',
+                capabilities: {
+                    sessions: { open: ['create'], delivery: ['newTurn'], cancel: true },
+                },
+            }],
+        }).agents[0]!;
+        const routingId = 'acme.declarative/assistant/voice';
+        const registry = createDeclarativeAcpAgentRuntimeRegistry({
+            agents: [{
+                id: routingId,
+                identity: { pluginId: 'acme.declarative', localId: 'assistant/voice' },
+                pluginId: 'acme.declarative',
+                provenance: 'external',
+                source: { kind: 'path' },
+                definition: { kindVersion: 1, id: 'assistant/voice', ownedBackendIds: [] },
+                richDefinition: { provenance: 'external', definition },
+                sourceSpec: {
+                    kind: 'path',
+                    locator: '/plugins/acme.declarative',
+                    trustPolicy: 'local_trusted',
+                    installPolicy: 'link',
+                    resolvedVersion: '2.3.4',
+                },
+            }],
+            registered: new Map(),
+            generation: 'generation-9',
+            isGenerationActive: () => true,
+            retirementSignal: TEST_RETIREMENT_SIGNAL,
+        });
+
+        expect(registry.has(routingId)).toBe(false);
     });
 
     it('leases one manifest-joined factory with provider binding and canonical identity', async () => {
@@ -1890,6 +1936,7 @@ describe('target Agent runtime registry', () => {
         };
         const agent = {
             id: agentId,
+            identity: { pluginId, localId: agentId },
             provenance: 'external' as const,
             source: { kind: 'path' as const },
             definition: { kindVersion: 1 as const, id: agentId, ownedBackendIds: [] },

@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import type { MarketplaceIndexSourceSnapshotV1 } from '@happier-dev/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { loadMarketplaceIndexSource, parseCommunityNpmDiscovery } from './indexSourceLoader';
+import { buildCommunityNpmSearchUrl, loadMarketplaceIndexSource, parseCommunityNpmDiscovery } from './indexSourceLoader';
 import type { NpmRegistryJsonClient } from '@/plugins/distribution/npm/resolver';
 import { createPluginStateStore } from '@/plugins/store/state.testkit';
 
@@ -17,7 +17,7 @@ const testResolveAddresses = async (): Promise<readonly Readonly<{ address: stri
   [{ address: '93.184.216.34', family: 4 as const }]
 );
 const source = { id: 'marketplace:curated', title: 'Curated', kind: 'curated' as const, sourceUrl: 'https://marketplace.example.test/catalog.json' };
-const communitySource = { id: 'marketplace:community-npm', title: 'Community npm', kind: 'community-npm' as const, sourceUrl: 'https://registry.npmjs.org/-/v1/search?text=keywords:happier-plugin&size=100' };
+const communitySource = { id: 'marketplace:community-npm', title: 'Community npm', kind: 'community-npm' as const, sourceUrl: 'https://registry.npmjs.org/-/v1/search' };
 const COMMUNITY_INTEGRITY = 'sha512-AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ==';
 
 function communityHappierMetadata(params: Readonly<{
@@ -57,8 +57,9 @@ function communityHappierMetadata(params: Readonly<{
   };
 }
 
-function communityNpmSearchPayload(packageNames: readonly string[] = ['@acme/community']) {
+function communityNpmSearchPayload(packageNames: readonly string[] = ['@acme/community'], total = packageNames.length) {
   return {
+    total,
     objects: packageNames.map((packageName) => ({
       package: {
         name: packageName,
@@ -184,7 +185,7 @@ describe('loadMarketplaceIndexSource', () => {
     const client = communityNpmMetadataClient(communityHappierMetadata());
     const parsed = await parseCommunityNpmDiscovery(communityNpmSearchPayload(), communitySource, { client });
     expect(parsed.entries).toHaveLength(1);
-    expect(parsed.entries[0]).toMatchObject({ pluginId: 'acme.community', review: { status: 'unreviewed' }, updatePolicy: 'manual' });
+    expect(parsed.entries[0]).toMatchObject({ pluginId: 'acme.community', review: { status: 'unreviewed' }, updatePolicy: 'reviewEveryUpdate' });
     expect(client.getJson).toHaveBeenCalledWith(expect.objectContaining({
       url: 'https://registry.npmjs.org/%40acme%2Fcommunity',
       headers: { accept: 'application/json' },
@@ -262,6 +263,139 @@ describe('loadMarketplaceIndexSource', () => {
       code: 'community_npm_metadata_skipped',
       message: 'Skipped metadata for 1 community npm package.',
     }]);
+  });
+
+  it('composes the ecosystem keyword with the caller search text and requests one bounded discovery snapshot', () => {
+    const url = new URL(buildCommunityNpmSearchUrl(communitySource.sourceUrl, { text: 'terminal themes', from: 40, size: 20 }));
+    expect(url.searchParams.get('text'))
+      .toBe('keywords:happier-plugin terminal themes');
+    expect(url.searchParams.get('from')).toBe('40');
+    expect(url.searchParams.get('size')).toBe('20');
+    expect(new URL(buildCommunityNpmSearchUrl(communitySource.sourceUrl, { text: '' })).searchParams.get('text'))
+      .toBe('keywords:happier-plugin');
+    expect(new URL(buildCommunityNpmSearchUrl(communitySource.sourceUrl, { text: '' })).searchParams.get('size')).toBe('100');
+  });
+
+  it('projects npm total and returned search-hit count for honest service paging', async () => {
+    const parsed = await parseCommunityNpmDiscovery(
+      communityNpmSearchPayload(['@acme/community'], 240),
+      communitySource,
+      { client: communityNpmMetadataClient(communityHappierMetadata()), from: 40, size: 20 },
+    );
+    expect(parsed.communityNpmPage).toEqual({ from: 40, size: 20, returned: 1, total: 240 });
+  });
+
+  it('targets one package instead of a discovery page when the query names an exact package', async () => {
+    const fetchImpl = vi.fn(async () => new Response(
+      JSON.stringify(communityNpmSearchPayload(['@acme/neighbour', '@acme/community'])),
+      { status: 200 },
+    ));
+    const client = communityNpmMetadataClient(communityHappierMetadata());
+
+    const result = await loadMarketplaceIndexSource({
+      resolveAddresses: testResolveAddresses,
+      source: communitySource,
+      query: { text: '', exactPackageName: '@acme/community' },
+      fetchImpl,
+      communityNpmClient: client,
+    });
+
+    const requestedUrl = new URL(String((fetchImpl.mock.calls as readonly (readonly unknown[])[])[0]?.[0]));
+    expect(requestedUrl.searchParams.get('text')).toBe('keywords:happier-plugin @acme/community');
+    expect(requestedUrl.searchParams.get('size')).toBe('20');
+    expect(result.entries).toMatchObject([{ pluginId: 'acme.community' }]);
+    // Neighbouring search hits are never acquired: targeting happens before
+    // any package metadata request, not after a full-page scan.
+    expect(client.getJson).toHaveBeenCalledTimes(1);
+    expect(client.getJson).toHaveBeenCalledWith(expect.objectContaining({
+      url: 'https://registry.npmjs.org/%40acme%2Fcommunity',
+    }));
+  });
+
+  it('keeps the last known good bounded community snapshot when its refresh fails', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'happier-marketplace-index-'));
+    homes.push(home);
+    const client = communityNpmMetadataClient(communityHappierMetadata());
+    await loadMarketplaceIndexSource({
+      resolveAddresses: testResolveAddresses,
+      source: communitySource,
+      query: { text: 'themes' },
+      happyHomeDir: home,
+      fetchImpl: async () => new Response(JSON.stringify(communityNpmSearchPayload()), { status: 200 }),
+      communityNpmClient: client,
+      now: () => 100,
+    });
+
+    const continued = await loadMarketplaceIndexSource({
+      resolveAddresses: testResolveAddresses,
+      source: communitySource,
+      query: { text: 'themes' },
+      happyHomeDir: home,
+      fetchImpl: async () => { throw new Error('offline'); },
+      communityNpmClient: client,
+      now: () => 200,
+    });
+
+    expect(continued).toMatchObject({ freshness: { state: 'stale-offline', fetchedAtMs: 100 } });
+    expect(continued.entries).toMatchObject([{ pluginId: 'acme.community' }]);
+  });
+
+  it('keeps one replaceable discovery slot per community npm source across different searches', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'happier-marketplace-index-'));
+    homes.push(home);
+    const client = communityNpmMetadataClient(communityHappierMetadata());
+    const onlineFetch = async () => new Response(JSON.stringify(communityNpmSearchPayload()), { status: 200 });
+
+    await loadMarketplaceIndexSource({ resolveAddresses: testResolveAddresses, source: communitySource, query: { text: 'first search' }, happyHomeDir: home, fetchImpl: onlineFetch, communityNpmClient: client, now: () => 100 });
+    const cacheDir = join(createPluginStateStore({ happyHomeDir: home }).paths.cacheDir, 'marketplace-index');
+    expect(await readdir(cacheDir)).toHaveLength(1);
+
+    await loadMarketplaceIndexSource({ resolveAddresses: testResolveAddresses, source: communitySource, query: { text: 'a completely different search' }, happyHomeDir: home, fetchImpl: onlineFetch, communityNpmClient: client, now: () => 200 });
+    const slots = await readdir(cacheDir);
+    // The second search replaces the same slot instead of growing one file per unique query.
+    expect(slots).toHaveLength(1);
+    const [slotName] = slots;
+    const record = JSON.parse(await readFile(join(cacheDir, slotName ?? ''), 'utf8')) as { t?: unknown; sourceUrl?: unknown; requestUrl?: unknown };
+    expect(record.t).toBe('happier_marketplace_index_source_cache_v1');
+    expect(record.sourceUrl).toBe(communitySource.sourceUrl);
+    // The slot carries the exact request identity of the query that last filled it.
+    expect(record.requestUrl).toBe(buildCommunityNpmSearchUrl(communitySource.sourceUrl, { text: 'a completely different search' }));
+  });
+
+  it('never serves one search snapshot for a different discovery query', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'happier-marketplace-index-'));
+    homes.push(home);
+    const client = communityNpmMetadataClient(communityHappierMetadata());
+    await loadMarketplaceIndexSource({ resolveAddresses: testResolveAddresses, source: communitySource, query: { text: 'first search' }, happyHomeDir: home, fetchImpl: async () => new Response(JSON.stringify(communityNpmSearchPayload()), { status: 200 }), communityNpmClient: client, now: () => 100 });
+
+    const otherQuery = await loadMarketplaceIndexSource({ resolveAddresses: testResolveAddresses, source: communitySource, query: { text: 'a completely different search' }, happyHomeDir: home, fetchImpl: async () => { throw new Error('offline'); }, communityNpmClient: client, now: () => 200 });
+    // Queries share one slot per source, so the identity gate is what keeps
+    // the first search's bytes from answering the second search offline.
+    expect(otherQuery.freshness.state).toBe('unavailable');
+    expect(otherQuery.entries).toEqual([]);
+  });
+
+  it('keeps the exact package lookup in its own slot so discovery and exact revalidation stay independent', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'happier-marketplace-index-'));
+    homes.push(home);
+    const client = communityNpmMetadataClient(communityHappierMetadata());
+    await loadMarketplaceIndexSource({ resolveAddresses: testResolveAddresses, source: communitySource, query: { text: '', exactPackageName: '@acme/community' }, happyHomeDir: home, fetchImpl: async () => new Response(JSON.stringify(communityNpmSearchPayload()), { status: 200, headers: { etag: '"exact-1"' } }), communityNpmClient: client, now: () => 100 });
+    await loadMarketplaceIndexSource({ resolveAddresses: testResolveAddresses, source: communitySource, query: { text: 'themes' }, happyHomeDir: home, fetchImpl: async () => new Response(JSON.stringify(communityNpmSearchPayload()), { status: 200, headers: { etag: '"discovery-1"' } }), communityNpmClient: client, now: () => 150 });
+    const cacheDir = join(createPluginStateStore({ happyHomeDir: home }).paths.cacheDir, 'marketplace-index');
+    // Two bounded slots for the source: discovery and exact lookup.
+    expect(await readdir(cacheDir)).toHaveLength(2);
+
+    const exactRevalidation = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      expect(new Headers(init?.headers).get('if-none-match')).toBe('"exact-1"');
+      return new Response(null, { status: 304 });
+    });
+    await expect(loadMarketplaceIndexSource({ resolveAddresses: testResolveAddresses, source: communitySource, query: { text: '', exactPackageName: '@acme/community' }, happyHomeDir: home, fetchImpl: exactRevalidation, communityNpmClient: client, now: () => 200 })).resolves.toMatchObject({ freshness: { state: 'fresh', fetchedAtMs: 200 } });
+
+    const discoveryRevalidation = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      expect(new Headers(init?.headers).get('if-none-match')).toBe('"discovery-1"');
+      return new Response(null, { status: 304 });
+    });
+    await expect(loadMarketplaceIndexSource({ resolveAddresses: testResolveAddresses, source: communitySource, query: { text: 'themes' }, happyHomeDir: home, fetchImpl: discoveryRevalidation, communityNpmClient: client, now: () => 250 })).resolves.toMatchObject({ freshness: { state: 'fresh', fetchedAtMs: 250 } });
   });
 
   it('reports corrupt cache truth when refresh is unavailable', async () => {

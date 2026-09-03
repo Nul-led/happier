@@ -76,6 +76,8 @@ export type PluginActionsServiceSeed = Readonly<{
     /** Re-read the originating mounted UI caller immediately before provider effect. */
     isMountedCallerCurrent?: () => boolean | Promise<boolean>;
     session?: Readonly<{ id: string }>;
+    /** Host-private active-turn authority for Agent-placed Action execution. */
+    readActiveTurnAdmissionWitness?(): import('./types').AgentInvocationTurnAdmissionWitness | null;
     signal: AbortSignal;
     isGenerationCurrent(): boolean;
     /** Host-private recursion fence; only hook invocation owners may set this. */
@@ -725,12 +727,31 @@ export function createPluginInvocationActionsService(params: Readonly<{
         const actionRequestId = params.seed.correlationId
             ? `${params.seed.correlationId}:${actionId}:${actionInvocationSequence}`
             : undefined;
+        const agentWitness = params.seed.surface === 'agent'
+            ? params.seed.readActiveTurnAdmissionWitness?.() ?? null
+            : null;
         const result = await actionExecutor.execute(actionId, parsedPluginInput.data, {
             ...(params.seed.session ? { defaultSessionId: params.seed.session.id } : {}),
-            surface: 'plugin',
+            surface: params.seed.surface === 'agent' ? 'agent' : 'plugin',
             authority: 'account_automation',
             actionCaller,
             signal,
+            ...(params.seed.surface === 'agent'
+                ? {
+                    callerPermissionMode: agentWitness?.callerPermissionMode ?? null,
+                    causalPermissionAuthority:
+                        agentWitness?.causalPermissionAuthority ?? null,
+                }
+                : {}),
+            ...(agentWitness && params.seed.session
+                ? {
+                    sessionInputSource: {
+                        sourceSessionId: params.seed.session.id,
+                        sourceTurnId: agentWitness.turnId,
+                        via: 'action' as const,
+                    },
+                }
+                : {}),
             ...(actionRequestId ? { actionRequestId } : {}),
             ...(params.seed.bypassActionInterception === true
                 ? { bypassActionInterception: true }

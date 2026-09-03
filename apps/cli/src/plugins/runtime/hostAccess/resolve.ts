@@ -402,6 +402,9 @@ export function createPluginInvocationHostPolicyResolver(params?: Readonly<{
                         networkScopes,
                         networkRequestIds: Object.freeze(networkScopes.map((scope) => scope.accessId)),
                         networkOrigins: Object.freeze([...new Set(networkScopes.flatMap((scope) => scope.origins))].sort()),
+                        networkHostSuffixes: Object.freeze([...new Set(networkScopes.flatMap((scope) => (
+                            scope.hostSuffixes ?? []
+                        )))].sort()),
                     });
                 })()
                 : withPluginInvocationServiceBindingAvailability(
@@ -428,6 +431,9 @@ export function createPluginInvocationHostPolicyResolver(params?: Readonly<{
                         networkClientScopes,
                         networkClientRequestIds: Object.freeze(networkClientScopes.map((scope) => scope.accessId)),
                         networkClientOrigins: Object.freeze([...new Set(networkClientScopes.flatMap((scope) => scope.origins))].sort()),
+                        networkClientHostSuffixes: Object.freeze([...new Set(networkClientScopes.flatMap((scope) => (
+                            scope.hostSuffixes ?? []
+                        )))].sort()),
                     });
                 })()
                 : Object.freeze({
@@ -435,6 +441,7 @@ export function createPluginInvocationHostPolicyResolver(params?: Readonly<{
                     networkClientScopes: Object.freeze([]),
                     networkClientRequestIds: Object.freeze([]),
                     networkClientOrigins: Object.freeze([]),
+                    networkClientHostSuffixes: Object.freeze([]),
                 });
         const mcpRestrictedBinding: PluginInvocationServiceBinding = declaredMcpDecisions.length === 0
             ? withPluginInvocationServiceBindingAvailability(

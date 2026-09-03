@@ -206,28 +206,28 @@ describe('stable plugin approval queue owner', () => {
         }));
 
         await expect(queue.request({
-            actionId: 'session.permission.respond',
+            actionId: 'session.user_action.answer',
             input: {
-                requestId: 'permission-1',
-                decision: 'allow',
+                requestId: 'question-1',
+                decision: 'approve',
             },
         })).resolves.toEqual({ approvalRequestId: 'approval-1' });
         expect(approvalsCreate).toHaveBeenLastCalledWith(expect.objectContaining({
             request: expect.objectContaining({
-                actionId: 'session.permission.respond',
+                actionId: 'session.user_action.answer',
                 actionArgs: {
                     sessionId: 'session-1',
-                    requestId: 'permission-1',
-                    decision: 'allow',
+                    requestId: 'question-1',
+                    decision: 'approve',
                 },
             }),
         }));
 
         await expect(queue.request({
-            actionId: 'session.permission.respond',
+            actionId: 'session.user_action.answer',
             input: {
-                requestId: 'permission-1',
-                decision: 'allow',
+                requestId: 'question-1',
+                decision: 'approve',
                 updatedPermissions: { mode: 'forged' },
             },
         } as never)).rejects.toMatchObject({

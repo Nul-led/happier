@@ -85,6 +85,59 @@ describe('createPluginWebhookActionExecutor', () => {
     );
   });
 
+  it('signs and sends the stamped caller materialization on the target-convergence HTTP path', async () => {
+    transportMocks.post.mockClear();
+    transportMocks.createPublisherHeader.mockClear();
+    transportMocks.createPublisherHeader.mockResolvedValueOnce('publisher-proof');
+    transportMocks.post.mockResolvedValueOnce({
+      data: {
+        kind: 'converged',
+        webhookEndpointId: 'wh_ep_AAECAwQFBgcICQoLDA0ODw',
+        revision: 7,
+        targetMaterialization: { machineId: 'machine-2', materializationId: 'materialization-2', pluginId: 'acme.github' },
+        targetIntentEpoch: 5,
+      },
+    });
+    const executor = createPluginWebhookActionExecutor({
+      credentials,
+      revalidateCallerMaterialization: async () => true,
+    });
+    const input = {
+      webhookEndpointId: 'wh_ep_AAECAwQFBgcICQoLDA0ODw',
+      webhookContribution: { pluginId: 'acme.github', localId: 'issues' },
+      sourceInstanceId: 'source-1',
+      setup: correspondenceSetup,
+      desiredTargetMaterialization: { machineId: 'machine-2', materializationId: 'materialization-2', pluginId: 'acme.github' },
+      targetIntentEpoch: 5,
+    };
+
+    await expect(executor({
+      actionId: 'plugin.webhook.endpoint.convergeTarget',
+      input,
+      caller: {
+        kind: 'plugin',
+        pluginId: 'happier.channels',
+        materialization: callerMaterialization,
+      },
+    })).resolves.toMatchObject({ kind: 'converged', revision: 7 });
+
+    const body = { caller: { ...callerMaterialization }, input };
+    expect(transportMocks.createPublisherHeader).toHaveBeenCalledWith({
+      method: 'POST',
+      path: '/v1/plugins/webhooks/endpoints/converge-target',
+      body,
+    });
+    expect(transportMocks.post).toHaveBeenCalledWith(
+      expect.stringMatching(/\/v1\/plugins\/webhooks\/endpoints\/converge-target$/u),
+      body,
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          [PLUGIN_INSTALLATION_MANIFEST_PUBLISHER_HEADER_V1]: 'publisher-proof',
+        }),
+      }),
+    );
+  });
+
   it('routes present-user operations with host provenance and plugin correspondence with stamped caller identity', async () => {
     const execute = vi.fn(async (_actionId: string) => ({ kind: 'ok' }));
     const revalidateCallerMaterialization = vi.fn(async () => true);
@@ -212,6 +265,22 @@ describe('createPluginWebhookActionExecutor', () => {
       input: { webhookEndpointId: 'wh_ep_AAECAwQFBgcICQoLDA0ODw' },
       caller: { kind: 'plugin', pluginId: 'acme.plugin' },
     })).resolves.toMatchObject({ ok: false, errorCode: 'plugin_webhook_caller_surface_mismatch' });
+    // A host caller cannot borrow the plugin-surface convergence either: its
+    // authorization is the stamped plugin materialization, and a host stamp
+    // has none to sign.
+    const hostStampedPluginSurfaceRequest = {
+      actionId: 'plugin.webhook.endpoint.convergeTarget',
+      input: {
+        webhookEndpointId: 'wh_ep_AAECAwQFBgcICQoLDA0ODw',
+        webhookContribution: { pluginId: 'acme.github', localId: 'issues' },
+        sourceInstanceId: 'source-1',
+        setup: correspondenceSetup,
+        desiredTargetMaterialization: { machineId: 'machine-2', materializationId: 'materialization-2', pluginId: 'acme.github' },
+        targetIntentEpoch: 5,
+      },
+      caller: { kind: 'host' },
+    } as unknown as Parameters<typeof executor>[0]; // Exercise the untyped Action transport boundary that TypeScript callers cannot construct.
+    await expect(executor(hostStampedPluginSurfaceRequest)).resolves.toMatchObject({ ok: false, errorCode: 'plugin_webhook_caller_surface_mismatch' });
     await expect(executor({
       actionId: 'plugin.webhook.endpoint.checkCorrespondence',
       input: {

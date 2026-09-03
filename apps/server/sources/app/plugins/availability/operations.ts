@@ -893,6 +893,127 @@ export type CurrentClaimablePluginMachineMaterialization =
     }>
     | Readonly<{ kind: "notCurrent" }>;
 
+type ClaimableMachineRowV1 = Readonly<{
+    pluginMaterializationRevision: bigint | null;
+    operationProtocolCapabilities: unknown;
+    operationProtocolCapabilitiesRevision: number | null;
+    revokedAt: Date | null;
+    replacedByMachineId: string | null;
+}>;
+
+function isClaimableMachineRowV1(
+    machine: ClaimableMachineRowV1 | null,
+    requiredMachineOperationCapability?: MachineOperationProtocolCapabilityNameV1,
+): machine is ClaimableMachineRowV1 {
+    return machine !== null
+        && machine.pluginMaterializationRevision !== null
+        && classifyMachineAvailabilityState(machine) === "available"
+        && (
+            requiredMachineOperationCapability === undefined
+            || (
+                typeof machine.operationProtocolCapabilitiesRevision === "number"
+                && machine.operationProtocolCapabilitiesRevision >= 1
+                && supportsMachineOperationProtocolCapabilityV1(
+                    machine.operationProtocolCapabilities,
+                    requiredMachineOperationCapability,
+                )
+            )
+        );
+}
+
+/**
+ * Classifies every current materialization for one authenticated machine
+ * installation with a fixed number of database queries. Consumers that select
+ * work across materializations use this projection instead of re-running the
+ * exact currentness reader once per candidate.
+ */
+export async function resolveCurrentClaimablePluginMachineMaterializationsTx(params: Readonly<{
+    tx: Tx;
+    accountId: string;
+    serverIdentityId: string;
+    machineId: string;
+    machineInstallationId: string;
+    requiredMachineOperationCapability?: MachineOperationProtocolCapabilityNameV1;
+}>): Promise<readonly PluginMachineMaterializationV1[]> {
+    const machine = await params.tx.machine.findFirst({
+        where: {
+            accountId: params.accountId,
+            id: params.machineId,
+            installationId: params.machineInstallationId,
+        },
+        select: {
+            pluginMaterializationRevision: true,
+            operationProtocolCapabilities: true,
+            operationProtocolCapabilitiesRevision: true,
+            revokedAt: true,
+            replacedByMachineId: true,
+        },
+    });
+    if (!isClaimableMachineRowV1(machine, params.requiredMachineOperationCapability)) return [];
+
+    const rows = await params.tx.pluginMachineMaterialization.findMany({
+        where: {
+            accountId: params.accountId,
+            serverIdentityId: params.serverIdentityId,
+            machineId: params.machineId,
+            enabled: true,
+            trustState: "trusted",
+            portableRelease: true,
+        },
+        select: {
+            serverIdentityId: true,
+            machineId: true,
+            materializationId: true,
+            pluginId: true,
+            version: true,
+            sourceClass: true,
+            portableRelease: true,
+            archiveDigestSha256: true,
+            uiArtifacts: true,
+            enabled: true,
+            trustState: true,
+            observedAt: true,
+        },
+    });
+    if (rows.length === 0) return [];
+
+    const releases = await params.tx.accountPluginRelease.findMany({
+        where: {
+            accountId: params.accountId,
+            OR: rows.map((row) => ({ pluginId: row.pluginId, version: row.version })),
+        },
+        select: {
+            id: true,
+            accountId: true,
+            pluginId: true,
+            version: true,
+            archiveDigestSha256: true,
+            normalizedManifest: true,
+            collectionContracts: true,
+            uiSlots: true,
+            packageAssetArchive: true,
+        },
+    });
+    const releasesByRef = new Map(
+        releases.map((release) => [`${release.pluginId}\0${release.version}`, release] as const),
+    );
+    return rows.flatMap((row) => {
+        try {
+            const materialization = materializationFromRow(row);
+            const release = releasesByRef.get(`${row.pluginId}\0${row.version}`);
+            return release
+                && isExactPluginMachineMaterializationReleaseCorrespondenceV1(
+                    materialization,
+                    releaseFactsFromRow(release),
+                )
+                ? [materialization]
+                : [];
+        } catch {
+            return [];
+        }
+    });
+}
+
 /**
  * Revalidates the machine installation and its exact current Availability row
  * within the caller's transaction. Consumers use this for admission only;
@@ -923,22 +1044,7 @@ export async function resolveCurrentClaimablePluginMachineMaterializationTx(para
             replacedByMachineId: true,
         },
     });
-    if (
-        machine === null
-        || machine.pluginMaterializationRevision === null
-        || classifyMachineAvailabilityState(machine) !== "available"
-        || (
-            params.requiredMachineOperationCapability !== undefined
-            && (
-                typeof machine.operationProtocolCapabilitiesRevision !== "number"
-                || machine.operationProtocolCapabilitiesRevision < 1
-                || !supportsMachineOperationProtocolCapabilityV1(
-                    machine.operationProtocolCapabilities,
-                    params.requiredMachineOperationCapability,
-                )
-            )
-        )
-    ) {
+    if (!isClaimableMachineRowV1(machine, params.requiredMachineOperationCapability)) {
         return { kind: "notCurrent" };
     }
 

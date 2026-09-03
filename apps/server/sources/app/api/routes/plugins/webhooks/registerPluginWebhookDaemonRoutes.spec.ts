@@ -29,6 +29,7 @@ describe("plugin webhook daemon HTTP routes", () => {
             "/v1/daemon/plugins/webhooks/:deliveryId/complete",
             "/v1/daemon/plugins/webhooks/:deliveryId/fail",
             "/v1/plugins/webhooks/endpoints/check-correspondence",
+            "/v1/plugins/webhooks/endpoints/converge-target",
         ]) {
             const route = getRouteEntry(app, "POST", path);
             expect(route.opts.preHandler).toEqual([app.authenticate, expect.any(Function)]);
@@ -50,6 +51,7 @@ describe("plugin webhook daemon HTTP routes", () => {
             complete: vi.fn(),
             fail: vi.fn(),
             checkCorrespondence,
+            convergeTarget: vi.fn(),
             authenticateCaller,
             verifyPublisher: vi.fn(async () => ({ machineId: "machine-1", installationId: "installation-1" })),
         }, { HAPPIER_FEATURE_PLUGINS_WEBHOOKS__ENABLED: "1" });
@@ -107,6 +109,7 @@ describe("plugin webhook daemon HTTP routes", () => {
             complete: vi.fn(),
             fail: vi.fn(),
             checkCorrespondence,
+            convergeTarget: vi.fn(),
             verifyPublisher: vi.fn(async () => null),
             authenticateCaller: vi.fn(async () => ({ pluginId: "happier.channels" })),
         }, { HAPPIER_FEATURE_PLUGINS_WEBHOOKS__ENABLED: "1" });
@@ -136,6 +139,7 @@ describe("plugin webhook daemon HTTP routes", () => {
             complete: vi.fn(),
             fail: vi.fn(),
             checkCorrespondence,
+            convergeTarget: vi.fn(),
             verifyPublisher: vi.fn(async () => ({ machineId: "machine-1", installationId: "installation-1" })),
             authenticateCaller: vi.fn(async () => null),
         }, { HAPPIER_FEATURE_PLUGINS_WEBHOOKS__ENABLED: "1" });
@@ -173,6 +177,7 @@ describe("plugin webhook daemon HTTP routes", () => {
             complete: vi.fn(),
             fail: vi.fn(),
             checkCorrespondence,
+            convergeTarget: vi.fn(),
             authenticateCaller,
             verifyPublisher: vi.fn(async () => ({ machineId: "machine-1", installationId: "installation-1" })),
         }, { HAPPIER_FEATURE_PLUGINS_WEBHOOKS__ENABLED: "1" });
@@ -200,6 +205,103 @@ describe("plugin webhook daemon HTTP routes", () => {
         expect(checkCorrespondence).not.toHaveBeenCalled();
     });
 
+    /**
+     * Target convergence is a mutation, so it must reach the endpoint owner
+     * through exactly the same publisher-proof and current-caller-materialization
+     * admission the read-only correspondence check uses — and through no other
+     * caller identity, because the Account bearer alone must never be able to
+     * move an endpoint that present-user administration owns.
+     */
+    it("authenticates the exact current caller materialization before converging an endpoint target", async () => {
+        const app = createFakeRouteApp();
+        const convergeTarget = vi.fn(async () => ({
+            kind: "converged" as const,
+            webhookEndpointId: "wh_ep_AAECAwQFBgcICQoLDA0ODw",
+            revision: 6,
+            targetMaterialization: TARGET.materialization,
+            targetIntentEpoch: 5,
+        }));
+        const authenticateCaller = vi.fn(async () => ({ pluginId: "happier.channels" }));
+        registerPluginWebhookDaemonRoutes(app as never, {
+            claim: vi.fn(),
+            renew: vi.fn(),
+            complete: vi.fn(),
+            fail: vi.fn(),
+            checkCorrespondence: vi.fn(),
+            convergeTarget,
+            authenticateCaller,
+            verifyPublisher: vi.fn(async () => ({ machineId: "machine-1", installationId: "installation-1" })),
+        }, { HAPPIER_FEATURE_PLUGINS_WEBHOOKS__ENABLED: "1" });
+        const reply = createReplyStub();
+        const input = {
+            webhookEndpointId: "wh_ep_AAECAwQFBgcICQoLDA0ODw",
+            webhookContribution: { pluginId: "acme.github", localId: "issues" },
+            sourceInstanceId: "source-1",
+            setup: CORRESPONDENCE_SETUP,
+            desiredTargetMaterialization: TARGET.materialization,
+            targetIntentEpoch: 5,
+        };
+
+        await getRouteHandler(app, "POST", "/v1/plugins/webhooks/endpoints/converge-target")({
+            userId: "account-authenticated",
+            method: "POST",
+            url: "/v1/plugins/webhooks/endpoints/converge-target",
+            headers: {},
+            body: { caller: CALLER, input },
+        }, reply);
+
+        expect(authenticateCaller).toHaveBeenCalledWith(expect.objectContaining({
+            accountId: "account-authenticated",
+            caller: CALLER,
+        }));
+        expect(convergeTarget).toHaveBeenCalledWith({
+            accountId: "account-authenticated",
+            callerPluginId: "happier.channels",
+            input,
+        });
+        expect(reply.send).toHaveBeenCalledWith(expect.objectContaining({ kind: "converged", revision: 6 }));
+    });
+
+    it("refuses endpoint convergence when publisher proof or the stamped caller machine does not match", async () => {
+        const input = {
+            webhookEndpointId: "wh_ep_AAECAwQFBgcICQoLDA0ODw",
+            webhookContribution: { pluginId: "acme.github", localId: "issues" },
+            sourceInstanceId: "source-1",
+            setup: CORRESPONDENCE_SETUP,
+            desiredTargetMaterialization: TARGET.materialization,
+            targetIntentEpoch: 5,
+        };
+        for (const attempt of [
+            { caller: CALLER, publisher: null },
+            { caller: { ...CALLER, machineId: "machine-other" }, publisher: { machineId: "machine-1", installationId: "installation-1" } },
+        ]) {
+            const app = createFakeRouteApp();
+            const convergeTarget = vi.fn();
+            registerPluginWebhookDaemonRoutes(app as never, {
+                claim: vi.fn(),
+                renew: vi.fn(),
+                complete: vi.fn(),
+                fail: vi.fn(),
+                checkCorrespondence: vi.fn(),
+                convergeTarget,
+                authenticateCaller: vi.fn(async () => ({ pluginId: "happier.channels" })),
+                verifyPublisher: vi.fn(async () => attempt.publisher),
+            }, { HAPPIER_FEATURE_PLUGINS_WEBHOOKS__ENABLED: "1" });
+            const reply = createReplyStub();
+
+            await getRouteHandler(app, "POST", "/v1/plugins/webhooks/endpoints/converge-target")({
+                userId: "account-authenticated",
+                method: "POST",
+                url: "/v1/plugins/webhooks/endpoints/converge-target",
+                headers: {},
+                body: { caller: attempt.caller, input },
+            }, reply);
+
+            expect(reply.code).toHaveBeenCalledWith(401);
+            expect(convergeTarget).not.toHaveBeenCalled();
+        }
+    });
+
     it("derives Account authority from authentication and never from mutable claim input", async () => {
         const app = createFakeRouteApp();
         const claim = vi.fn(async () => ({ kind: "none" as const, retryAfterMs: 5_000 }));
@@ -209,6 +311,7 @@ describe("plugin webhook daemon HTTP routes", () => {
             complete: vi.fn(),
             fail: vi.fn(),
             checkCorrespondence: vi.fn(),
+            convergeTarget: vi.fn(),
             authenticateCaller: vi.fn(),
             verifyPublisher: vi.fn(async () => ({ machineId: "machine-1", installationId: "installation-1" })),
         }, { HAPPIER_FEATURE_PLUGINS_WEBHOOKS__ENABLED: "1" });
@@ -240,6 +343,7 @@ describe("plugin webhook daemon HTTP routes", () => {
             complete: vi.fn(),
             fail,
             checkCorrespondence: vi.fn(),
+            convergeTarget: vi.fn(),
             authenticateCaller: vi.fn(),
             verifyPublisher: vi.fn(async () => ({ machineId: "machine-1", installationId: "installation-1" })),
         }, { HAPPIER_FEATURE_PLUGINS_WEBHOOKS__ENABLED: "1" });
@@ -292,6 +396,7 @@ describe("plugin webhook daemon HTTP routes", () => {
             complete: vi.fn(),
             fail: vi.fn(),
             checkCorrespondence: vi.fn(),
+            convergeTarget: vi.fn(),
             authenticateCaller: vi.fn(),
             verifyPublisher: vi.fn(async () => ({ machineId: "machine-1", installationId: "installation-1" })),
         }, { HAPPIER_FEATURE_PLUGINS_WEBHOOKS__ENABLED: "1" });
@@ -328,6 +433,7 @@ describe("plugin webhook daemon HTTP routes", () => {
             complete: vi.fn(),
             fail: vi.fn(),
             checkCorrespondence: vi.fn(),
+            convergeTarget: vi.fn(),
             authenticateCaller: vi.fn(),
             verifyPublisher: vi.fn(async () => ({ machineId: "machine-1", installationId: "installation-1" })),
         }, { HAPPIER_FEATURE_PLUGINS_WEBHOOKS__ENABLED: "1" });
@@ -358,6 +464,7 @@ describe("plugin webhook daemon HTTP routes", () => {
             complete: vi.fn(),
             fail: vi.fn(),
             checkCorrespondence: vi.fn(),
+            convergeTarget: vi.fn(),
             authenticateCaller: vi.fn(),
             verifyPublisher: vi.fn(async () => ({ machineId: "machine-other", installationId: "installation-other" })),
         }, { HAPPIER_FEATURE_PLUGINS_WEBHOOKS__ENABLED: "1" });

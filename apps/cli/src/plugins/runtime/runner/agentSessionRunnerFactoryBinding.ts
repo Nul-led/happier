@@ -1,23 +1,23 @@
+import { MAX_AGENT_ROUTING_ID_BYTES } from '@happier-dev/protocol';
+import { MAX_PLUGIN_IDENTIFIER_BYTES } from '@happier-dev/protocol/plugins/plugin-id';
 import type { AgentSessionRunnerFactoryLocatorV1 } from '@happier-dev/plugin-sdk/agents/runtime';
 import { z } from 'zod';
 
-const MAX_PLUGIN_ID_LENGTH = 256;
-const MAX_AGENT_LOCAL_ID_LENGTH = 256;
-const MAX_AGENT_ROUTING_ID_LENGTH =
-    MAX_PLUGIN_ID_LENGTH + 1 + MAX_AGENT_LOCAL_ID_LENGTH;
 // Contribution authority carries the literal `/agents/` namespace. Local ids
 // permit `/`, which the canonical formatter percent-encodes, so reserve the
 // encoding worst case instead of incorrectly applying the routing-id bound.
 const MAX_AGENT_CONTRIBUTION_QUALIFIED_ID_LENGTH =
-    MAX_PLUGIN_ID_LENGTH + '/agents/'.length + (MAX_AGENT_LOCAL_ID_LENGTH * 3);
+    MAX_PLUGIN_IDENTIFIER_BYTES
+    + '/agents/'.length
+    + (MAX_PLUGIN_IDENTIFIER_BYTES * 3);
 
 export const AgentSessionRunnerFactoryBindingV1Schema = z.object({
     v: z.literal(1),
-    pluginId: z.string().trim().min(1).max(256),
+    pluginId: z.string().trim().min(1).max(MAX_PLUGIN_IDENTIFIER_BYTES),
     pluginVersion: z.string().trim().min(1).max(256),
-    // Canonical host routing id; 513 = 256 + '/' + 256.
-    agentId: z.string().trim().min(1).max(MAX_AGENT_ROUTING_ID_LENGTH),
-    localAgentId: z.string().trim().min(1).max(256),
+    // Canonical host routing id; qualified for an installed Agent.
+    agentId: z.string().trim().min(1).max(MAX_AGENT_ROUTING_ID_BYTES),
+    localAgentId: z.string().trim().min(1).max(MAX_PLUGIN_IDENTIFIER_BYTES),
     immutableGenerationId: z.string().trim().min(1).max(512),
     locator: z.object({
         module: z.string().regex(/^\.[/][A-Za-z0-9._/-]+$/u),
@@ -40,11 +40,11 @@ export const AgentSessionRunnerFactoryBindingV1Schema = z.object({
 export const HostDeclarativeAcpRunnerBindingV1Schema = z.object({
     kind: z.literal('host_declarative_acp_v1'),
     v: z.literal(1),
-    pluginId: z.string().trim().min(1).max(256),
+    pluginId: z.string().trim().min(1).max(MAX_PLUGIN_IDENTIFIER_BYTES),
     pluginVersion: z.string().trim().min(1).max(256),
-    agentId: z.string().trim().min(1).max(MAX_AGENT_ROUTING_ID_LENGTH),
+    agentId: z.string().trim().min(1).max(MAX_AGENT_ROUTING_ID_BYTES),
     qualifiedAgentId: z.string().trim().min(1).max(MAX_AGENT_CONTRIBUTION_QUALIFIED_ID_LENGTH),
-    localAgentId: z.string().trim().min(1).max(256),
+    localAgentId: z.string().trim().min(1).max(MAX_PLUGIN_IDENTIFIER_BYTES),
     immutableGenerationId: z.string().trim().min(1).max(512),
 }).strict();
 

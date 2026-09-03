@@ -4,8 +4,8 @@ import { act } from 'react-test-renderer';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type {
-    PluginProjectionEditableSettingField,
-    PluginProjectionEditableSettingsGroup,
+    ResolvedPluginProjectionEditableSettingField as PluginProjectionEditableSettingField,
+    ResolvedPluginProjectionEditableSettingsGroup as PluginProjectionEditableSettingsGroup,
 } from '@/agents/backendCatalog/daemonContributionRegistryProjectionAdapters';
 import { pressTestInstance, renderScreen } from '@/dev/testkit';
 
@@ -18,9 +18,10 @@ installSettingsViewCommonModuleMocks();
 // The field intentionally exercises the real shared Dropdown/Item path. Load
 // that graph once after its boundary mocks are installed so transform work is
 // collection time rather than an unrelated per-test timeout.
-const { PluginSettingMultiSelectField, PluginSettingSelectField } = await import('./PluginSettingChoiceFields');
+const { PluginSettingMultiSelectField, PluginSettingSelectField, PluginSettingSwitchField } = await import('./PluginSettingChoiceFields');
 const { Switch } = await import('@/components/ui/forms/Switch');
 const { Item } = await import('@/components/ui/lists/Item');
+const { DropdownMenu } = await import('@/components/ui/forms/dropdown/DropdownMenu');
 
 afterEach(() => {
     vi.unstubAllGlobals();
@@ -56,6 +57,27 @@ const SELECT_FIELD: PluginProjectionEditableSettingField = {
     },
 };
 
+const DISABLED_REASON = 'Enable this capability in the plugin manifest.';
+
+describe('PluginSettingSwitchField', () => {
+    it('exposes an author-declared disabled reason visibly and as an accessibility hint', async () => {
+        const screen = await renderScreen(
+            <PluginSettingSwitchField
+                pluginId="acme.plugin"
+                group={GROUP}
+                field={{ ...SELECT_FIELD, control: 'switch', valueType: 'boolean', defaultValue: false }}
+                value={false}
+                disabled
+                disabledReason={DISABLED_REASON}
+                onChangeValue={() => {}}
+            />,
+        );
+
+        expect(screen.getTextContent()).toContain(DISABLED_REASON);
+        expect(screen.findAllByType(Switch)[0]?.props.accessibilityHint).toBe(DISABLED_REASON);
+    });
+});
+
 const NULLABLE_SELECT_FIELD: PluginProjectionEditableSettingField = {
     ...SELECT_FIELD,
     valueSchema: { anyOf: [{ type: 'string' }, { type: 'null' }] },
@@ -76,6 +98,24 @@ function findDisabledSelectTrigger(screen: Awaited<ReturnType<typeof renderScree
 }
 
 describe('PluginSettingSelectField', () => {
+    it('exposes an author-declared disabled reason visibly and as an accessibility hint', async () => {
+        const screen = await renderScreen(
+            <PluginSettingSelectField
+                pluginId="acme.plugin"
+                group={GROUP}
+                field={SELECT_FIELD}
+                value="safe"
+                disabled
+                disabledReason={DISABLED_REASON}
+                onChangeValue={() => {}}
+            />,
+        );
+
+        expect(screen.getTextContent()).toContain(DISABLED_REASON);
+        expect(screen.findAllByType(DropdownMenu)[0]?.props.itemTrigger.itemProps.accessibilityHint)
+            .toBe(DISABLED_REASON);
+    });
+
     it('keeps a disabled choice trigger semantically disabled and closed', async () => {
         const onChangeValue = () => {};
         const screen = await renderScreen(
@@ -252,6 +292,26 @@ describe('PluginSettingMultiSelectField', () => {
         valueType: 'array',
         valueSchema: { type: 'array', items: { type: 'string' } },
     };
+
+    it('exposes an author-declared disabled reason on every independently focusable choice', async () => {
+        const screen = await renderScreen(
+            <PluginSettingMultiSelectField
+                pluginId="acme.plugin"
+                group={GROUP}
+                field={MULTI_FIELD}
+                value={['safe']}
+                disabled
+                disabledReason={DISABLED_REASON}
+                onChangeValue={() => {}}
+            />,
+        );
+
+        expect(screen.getTextContent()).toContain(DISABLED_REASON);
+        expect(screen.findAllByType(Switch).map((node) => node.props.accessibilityHint)).toEqual([
+            DISABLED_REASON,
+            DISABLED_REASON,
+        ]);
+    });
 
     it('carries each option description into the option and toggle accessible names', async () => {
         const screen = await renderScreen(

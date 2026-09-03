@@ -14,6 +14,7 @@ import type {
     PluginConnectedAccountMaterializationKind,
     PluginContributionIdentityV1,
     PluginMachineMaterializationRefV1,
+    SessionPermissionMode,
     SessionInputCausalPermissionAuthorityV1,
 } from '@happier-dev/protocol';
 import type { PluginUiSelectedActionInputCarrierV1 } from '@happier-dev/protocol/plugins/ui';
@@ -28,6 +29,8 @@ export type AgentInvocationTurnAdmissionWitness = Readonly<{
     userMessageSeq: number | null;
     userMessageSeqs: readonly number[];
     causalPermissionAuthority?: SessionInputCausalPermissionAuthorityV1;
+    /** Live host Session mode, sampled with the active-turn witness. */
+    callerPermissionMode?: SessionPermissionMode | null;
 }>;
 
 export type PluginInvocationServicesSeed = Readonly<{
@@ -87,6 +90,13 @@ export type PluginNetworkBindingScope = Readonly<{
     accessId: string;
     required: boolean;
     origins: readonly string[];
+    /**
+     * Declared `httpsHostSuffix` families, carried beside the exact origins so
+     * every admission point asks the protocol-owned policy the one question.
+     * A family never becomes a concrete origin here: the private-network and
+     * address decisions still happen per request, against the real target.
+     */
+    hostSuffixes?: readonly string[];
     methods?: readonly HttpMethod[];
     privateNetwork: boolean;
     /**
@@ -102,6 +112,8 @@ export type PluginNetworkClientBindingScope = Readonly<{
     accessId: string;
     required: boolean;
     origins: readonly string[];
+    /** Declared `httpsHostSuffix` families; see PluginNetworkBindingScope. */
+    hostSuffixes?: readonly string[];
     transports: readonly ('websocket' | 'webrtc')[];
     privateNetwork: boolean;
     /** Present when a host-owned Connected Account resolved the target origin. */
@@ -137,9 +149,12 @@ export type PluginInvocationServiceBinding = Readonly<{
     processRequestIds?: readonly string[];
     environmentRequestIds?: readonly string[];
     networkOrigins?: readonly string[];
+    /** Declared HTTPS host-suffix families for the same disclosure surface. */
+    networkHostSuffixes?: readonly string[];
     networkRequestIds?: readonly string[];
     networkScopes?: readonly PluginNetworkBindingScope[];
     networkClientOrigins?: readonly string[];
+    networkClientHostSuffixes?: readonly string[];
     networkClientRequestIds?: readonly string[];
     networkClientScopes?: readonly PluginNetworkClientBindingScope[];
     /**

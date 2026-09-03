@@ -2396,6 +2396,17 @@ async function prepareBundledWorkspaceDependenciesForCli(opts = {}) {
     : resolveCliBundledWorkspacePackageNames({ repoRoot: resolvedRepoRoot });
   const publicationMode = resolveSharedDepsPublicationMode(opts);
   const publishesArtifact = isArtifactPublicationMode(publicationMode);
+  // Bootstrap-built outputs (for example the cli-common helpers materialized to
+  // load this script) are usable for loading but are not derivation evidence for
+  // the final artifact closure: their recreated timestamps cannot prove the
+  // bytes were derived from current source. Names the caller declares
+  // bootstrap-built therefore switch the closure to this owner's `force`
+  // admission, exactly like a publication build.
+  const bootstrapBuiltWorkspaceNames = typeof opts.alreadyBuiltWorkspaceNames?.has === 'function'
+    ? opts.alreadyBuiltWorkspaceNames
+    : null;
+  const mustRebuildBootstrapOutputs = bootstrapBuiltWorkspaceNames !== null
+    && workspaceNames.some((workspaceName) => bootstrapBuiltWorkspaceNames.has(workspaceName));
   const ensureWorkspacePackagesBuilt =
     opts.ensureWorkspacePackagesBuiltByNameImpl ?? ensureWorkspacePackagesBuiltByName;
   const buildResult = await ensureWorkspacePackagesBuiltWithPluginIsolation({
@@ -2413,8 +2424,9 @@ async function prepareBundledWorkspaceDependenciesForCli(opts = {}) {
       // each package lock. Reuse current published package outputs instead of
       // recompiling the entire CLI bundle closure for every daemon refresh. A
       // publication build cannot delegate that judgement: it compiles every
-      // included package so the artifact carries this run's outputs.
-      force: publishesArtifact,
+      // included package so the artifact carries this run's outputs. The same
+      // holds when the caller reports bootstrap-built outputs for this closure.
+      force: publishesArtifact || mustRebuildBootstrapOutputs,
     },
   });
   // The artifact inventory must describe the packages THIS publication build compiled.
@@ -2663,58 +2675,61 @@ export async function main(options = {}) {
       bundledPluginPublicationError = error;
     },
   });
-  const resolveCliCommonHelpers = options.resolveCliCommonWorkspacesHelpersAfterBuildImpl
-    ?? resolveCliCommonWorkspacesHelpersAfterBuild;
-  // Resolve helpers after every package/generator writer has completed, but
-  // before taking the short lock that protects only the shared runtime copy.
-  const cliCommonWorkspacesModule = await resolveCliCommonHelpers({
-    ...options,
-    repoRoot: buildRepoRoot,
-    env: options.env ?? process.env,
-  });
-
-  const protocolDist = resolve(buildRepoRoot, 'packages', 'protocol', 'dist', 'index.js');
-  const exists = options.existsSync ?? existsSync;
-  if (!exists(protocolDist)) {
-    throw new Error(`Expected @happier-dev/protocol build output missing: ${protocolDist}`);
-  }
-
-  const readFile = options.readFileSync ?? readFileSync;
-  const readDir = options.readdirSync ?? readdirSync;
-  const stat = options.statSync ?? statSync;
-  const runtimeSignature = computeSourceDevSharedDepsSignature({
-    repoRoot: buildRepoRoot,
-    workspaceNames,
-    includeDevDependencies: false,
-    existsSync: exists,
-    readFileSync: readFile,
-    readdirSync: readDir,
-    statSync: stat,
-  });
-  const runtimeStampPath = options.stampPath ?? resolveSourceDevSharedDepsStampPath(buildRepoRoot);
-  const runtimeStamp = readSourceDevSharedDepsStamp(runtimeStampPath, readFile);
-  const workspaceNamesToSync = normalizeSourceDevSharedDepsWorkspaceNames([
-    ...resolveSourceDevSharedDepsWorkspaceNamesToSync({
-      repoRoot: buildRepoRoot,
-      stamp: runtimeStamp,
-      signature: runtimeSignature,
-      exists,
-      readFile,
-      readDir,
-      stat,
-    }),
-    ...collectInstalledBundledPluginWorkspaceNamesDivergingFromInventory({
-      repoRoot: buildRepoRoot,
-      workspaceNames,
-    }),
-  ]);
-
   const withLock = options.withBuildSharedDepsLockImpl ?? withBuildSharedDepsLock;
   return withLock(async () => {
     // The closure may have become current before this caller acquired the
     // repository-wide publication lock. Reuse that exact stamped generation
     // instead of rebuilding the same workspace packages again.
     if (canReuseCurrentRuntimeClosure()) return undefined;
+
+    // Resolve helpers after every package/generator writer has completed and
+    // after the exact-closure recheck above: a closure another caller made
+    // current while this caller waited for the lock must be reused without
+    // rebuilding the cli-common helper bundle. Resolving under this lock keeps
+    // the shared runtime copy and its helper snapshot one coherent generation.
+    const resolveCliCommonHelpers = options.resolveCliCommonWorkspacesHelpersAfterBuildImpl
+      ?? resolveCliCommonWorkspacesHelpersAfterBuild;
+    const cliCommonWorkspacesModule = await resolveCliCommonHelpers({
+      ...options,
+      repoRoot: buildRepoRoot,
+      env: options.env ?? process.env,
+    });
+
+    const protocolDist = resolve(buildRepoRoot, 'packages', 'protocol', 'dist', 'index.js');
+    const exists = options.existsSync ?? existsSync;
+    if (!exists(protocolDist)) {
+      throw new Error(`Expected @happier-dev/protocol build output missing: ${protocolDist}`);
+    }
+
+    const readFile = options.readFileSync ?? readFileSync;
+    const readDir = options.readdirSync ?? readdirSync;
+    const stat = options.statSync ?? statSync;
+    const runtimeSignature = computeSourceDevSharedDepsSignature({
+      repoRoot: buildRepoRoot,
+      workspaceNames,
+      includeDevDependencies: false,
+      existsSync: exists,
+      readFileSync: readFile,
+      readdirSync: readDir,
+      statSync: stat,
+    });
+    const runtimeStampPath = options.stampPath ?? resolveSourceDevSharedDepsStampPath(buildRepoRoot);
+    const runtimeStamp = readSourceDevSharedDepsStamp(runtimeStampPath, readFile);
+    const workspaceNamesToSync = normalizeSourceDevSharedDepsWorkspaceNames([
+      ...resolveSourceDevSharedDepsWorkspaceNamesToSync({
+        repoRoot: buildRepoRoot,
+        stamp: runtimeStamp,
+        signature: runtimeSignature,
+        exists,
+        readFile,
+        readDir,
+        stat,
+      }),
+      ...collectInstalledBundledPluginWorkspaceNamesDivergingFromInventory({
+        repoRoot: buildRepoRoot,
+        workspaceNames,
+      }),
+    ]);
 
     // If the CLI currently has bundled workspace deps under apps/cli/node_modules,
     // keep their dist outputs in sync so local builds/tests do not consume stale artifacts.

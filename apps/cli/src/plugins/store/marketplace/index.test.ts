@@ -14,38 +14,48 @@ const entry = (pluginId: string, packageName: string, status: 'approved' | 'with
   compatibility: { happier: '>=1.0.0', platforms: ['darwin', 'linux'] },
   summary: { contributions: ['agents'], requiredHostAccess: ['process'], optionalHostAccess: [], executableRealms: ['daemon'] },
   review: { status, reviewedAt: '2026-07-13T00:00:00.000Z' },
-  categories: ['agents'], media: [], updatePolicy: 'curated-auto', links: { homepage: 'https://example.com/plugin' },
+  categories: ['agents'], media: [], updatePolicy: 'reviewSensitiveChanges', links: { homepage: 'https://example.com/plugin' },
 });
 
 const source = (id: string, kind: 'curated' | 'user' | 'community-npm', entries: MarketplaceIndexSourceSnapshotV1['entries'], freshness: MarketplaceIndexSourceSnapshotV1['freshness'] = { state: 'fresh', fetchedAtMs: 100 }): MarketplaceIndexSourceSnapshotV1 => ({
-  source: { id, title: id, kind, sourceUrl: kind === 'community-npm' ? 'https://registry.npmjs.org/-/v1/search?text=keywords:happier-plugin' : `https://catalog.example/${id}.json` },
+  source: { id, title: id, kind, sourceUrl: kind === 'community-npm' ? 'https://registry.npmjs.org/-/v1/search' : `https://catalog.example/${id}.json` },
   freshness,
   entries,
   diagnostics: [],
 });
 
 describe('createMarketplaceIndex', () => {
-  it('merges deterministically, ranks curated first, and refuses distribution rebinding', () => {
+  it('retains one listing per source and plugin while ranking sources deterministically', () => {
     const curated = entry('acme.agent', '@acme/agent');
-    const unreviewed = { ...curated, review: { status: 'unreviewed' as const, reviewedAt: null }, updatePolicy: 'manual' as const };
+    const unreviewed = { ...curated, review: { status: 'unreviewed' as const, reviewedAt: null }, updatePolicy: 'reviewEveryUpdate' as const };
     const result = createMarketplaceIndex({
       revision: 7,
       sources: [source('community', 'community-npm', [unreviewed]), source('curated', 'curated', [curated]), source('user', 'user', [{ ...unreviewed, distribution: { ...curated.distribution, packageName: '@attacker/rebound' } }])],
       query: { text: '', limit: 20, cursor: null, filters: {} },
     });
 
-    expect(result.items).toHaveLength(1);
-    expect(result.items[0]).toMatchObject({ pluginId: 'acme.agent', source: { kind: 'curated' }, distribution: { packageName: '@acme/agent' }, admission: { curatedInstall: 'allowed', curatedUpdate: 'allowed' } });
-    expect(result.diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'marketplace_distribution_rebinding' })]));
+    expect(result.items).toHaveLength(3);
+    expect(result.items.map((item) => [item.source.kind, item.distribution.packageName])).toEqual([
+      ['curated', '@acme/agent'],
+      ['user', '@attacker/rebound'],
+      ['community-npm', '@acme/agent'],
+    ]);
+    expect(result.diagnostics).toEqual([]);
   });
 
-  it.each([
-    ['approved', 'allowed', 'allowed', false],
-    ['withdrawn', 'refused', 'refused', true],
-    ['blocked', 'refused', 'refused', true],
-  ] as const)('applies %s only to curated admission and never installed trust', (status, install, update, warning) => {
-    const result = createMarketplaceIndex({ revision: 1, sources: [source('curated', 'curated', [entry(`acme.${status}`, `@acme/${status}`, status)])], query: { text: '', limit: 20, cursor: null, filters: { includeUnavailable: true } } });
-    expect(result.items[0]?.admission).toEqual({ curatedInstall: install, curatedUpdate: update, warning, mutatesInstalledTrust: false, disablesInstalledCode: false, directNpmRequiresFullReview: true });
+  it('does not let a withdrawn curated listing shadow an installable Community npm listing', () => {
+    const withdrawn = entry('acme.agent', '@acme/agent', 'withdrawn');
+    const community = {
+      ...withdrawn,
+      review: { status: 'unreviewed' as const, reviewedAt: null },
+      updatePolicy: 'reviewEveryUpdate' as const,
+    };
+    const result = createMarketplaceIndex({
+      revision: 1,
+      sources: [source('curated', 'curated', [withdrawn]), source('community', 'community-npm', [community])],
+      query: { filters: {} },
+    });
+    expect(result.items).toMatchObject([{ pluginId: 'acme.agent', source: { kind: 'community-npm' } }]);
   });
 
   it('uses stable bounded pagination and exposes offline stale truth', () => {
@@ -78,22 +88,49 @@ describe('createMarketplaceIndex', () => {
     })).toThrow('cursor revision is stale');
   });
 
-  it('rejects conflicting integrity for the same exact registry package version', () => {
+  it('rejects conflicting integrity for the same exact release within one source', () => {
     const original = entry('acme.one', '@acme/one');
     const conflict = { ...original, distribution: { ...original.distribution, integrity: 'sha512-AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg==' } };
     const result = createMarketplaceIndex({
       revision: 1,
-      sources: [source('curated-a', 'curated', [original]), source('curated-b', 'curated', [conflict])],
+      sources: [source('curated-a', 'curated', [original, conflict])],
       query: { text: '', limit: 20, cursor: null, filters: { includeUnavailable: true } },
     });
     expect(result.items).toHaveLength(1);
     expect(result.diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'marketplace_distribution_metadata_conflict' })]));
   });
 
-  it('never admits automatic updates for a pinned curated release', () => {
-    const pinned = { ...entry('acme.pinned', '@acme/pinned'), updatePolicy: 'pinned' as const };
-    const result = createMarketplaceIndex({ revision: 1, sources: [source('curated', 'curated', [pinned])], query: { filters: { includeUnavailable: true } } });
-    expect(result.items[0]?.admission.curatedUpdate).toBe('refused');
+  it.each(['approved', 'withdrawn', 'blocked'] as const)(
+    'carries %s through as a discovery fact without touching installed trust',
+    (status) => {
+      // Withdrawal is curation withdrawing a recommendation. It stays visible
+      // on the listing and never becomes a decision that mutates or disables
+      // installed code.
+      const result = createMarketplaceIndex({ revision: 1, sources: [source('curated', 'curated', [entry(`acme.${status}`, `@acme/${status}`, status)])], query: { text: '', limit: 20, cursor: null, filters: { includeUnavailable: true } } });
+      expect(result.items[0]?.review.status).toBe(status);
+      expect(result.items[0]?.admission).toMatchObject({ mutatesInstalledTrust: false, disablesInstalledCode: false });
+    },
+  );
+
+  it('never turns curation into install authorization, whatever the review status or update policy', () => {
+    // Curation recommends discovery. A plausible wrong index would re-derive an
+    // allow/refuse install decision from the review status or update policy;
+    // every listing reaches the same full Install and Trust review instead.
+    const variants = [
+      entry('acme.approved', '@acme/approved'),
+      { ...entry('acme.pinned', '@acme/pinned'), updatePolicy: 'pinned' as const },
+      { ...entry('acme.withdrawn', '@acme/withdrawn', 'withdrawn'), updatePolicy: 'reviewEveryUpdate' as const },
+    ];
+    const result = createMarketplaceIndex({ revision: 1, sources: [source('curated', 'curated', variants)], query: { filters: { includeUnavailable: true } } });
+    expect(result.items).toHaveLength(3);
+    for (const item of result.items) {
+      expect(item.admission).toEqual({
+        install: 'full-review',
+        mutatesInstalledTrust: false,
+        disablesInstalledCode: false,
+        directNpmRequiresFullReview: true,
+      });
+    }
   });
 
   it('does not authenticate a catalog-selected profile even when a host profile exists', () => {
@@ -127,7 +164,7 @@ describe('createMarketplaceIndex', () => {
     const conflicts = Array.from({ length: 200 }, (_, index) => ({
       ...entry('acme.agent', `@attacker/rebound-${index}`),
       review: { status: 'unreviewed' as const, reviewedAt: null },
-      updatePolicy: 'manual' as const,
+      updatePolicy: 'reviewEveryUpdate' as const,
     }));
     const result = createMarketplaceIndex({
       revision: 1,

@@ -117,7 +117,7 @@ describe('resolveExecutablePluginRuntimeRegistry declarative ACP admission', () 
                     kind: 'localPath',
                     canonicalPath: pluginRoot,
                 },
-                updatePolicy: 'manual',
+                updatePolicy: 'reviewEveryUpdate',
                 createdAtMs: 1,
                 immutableGenerationId: `declarative-${sourceKind}-generation`,
             });

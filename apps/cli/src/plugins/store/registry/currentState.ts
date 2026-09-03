@@ -12,6 +12,7 @@ import {
   type PluginMachineMaterializationV1,
   type PluginInstallReviewPrincipalDigest,
   type PluginInstallReviewPrincipalPresentationV1,
+  type PluginUpdatePolicyV1,
 } from '@happier-dev/protocol';
 import { createCanonicalJsonSigningInput } from '@happier-dev/protocol/crypto/canonicalJson';
 import { PluginUiArtifactsManifestV1Schema } from '@happier-dev/protocol/plugins/ui';
@@ -27,7 +28,6 @@ import {
   pluginDistributionRollbackLineagesEqual,
   isPluginTrustRecordAuthorized,
   type PluginTrustRecord,
-  type PluginUpdatePolicy,
 } from '../install/trustIdentity';
 import type { PluginStateFileV1, PluginStateRecord } from '../state';
 import { PluginStateFileV1Schema, PluginStateRecordSchema } from '../state';
@@ -163,7 +163,7 @@ export type CommitPluginRegistryInstallationInput = Readonly<{
   pluginId: string;
   catalogRecord: PluginStateRecord;
   trust: PluginTrustRecord;
-  updatePolicy: PluginUpdatePolicy;
+  updatePolicy: PluginUpdatePolicyV1;
   optionalAccess: readonly PluginAccessSelection[];
   /**
    * Immutable acquisition facts retained with the installation, not an
@@ -258,6 +258,48 @@ export type PluginRegistryAvailabilityInventory = Readonly<{
   >[];
 }>;
 
+/**
+ * Whether this exact installed record may carry that explicit update policy.
+ *
+ * One rule, read by both the durable mutation below and the daemon change
+ * boundary that reports it: a bundled entry ships with the host and has no
+ * user-owned update channel, a record with no host trust left has no channel to
+ * govern, and `reviewSensitiveChanges` means something only on the trusted npm
+ * channel — it is the sole policy that can admit an update *without* a new
+ * present-user review, and only npm supplies the origin/package/version facts
+ * that decision compares. Storing it on an archive or local-path record would
+ * name a guarantee that record can never honour, so it is refused rather than
+ * silently kept as a misleading fact.
+ */
+export function resolvePluginUpdatePolicyChangeRejection(
+  record: PluginStateRecord | undefined,
+  updatePolicy: PluginUpdatePolicyV1,
+): Readonly<{ code: string; message: string }> | null {
+  if (!record) {
+    return { code: 'plugin_not_found', message: 'Unknown plugin id' };
+  }
+  if (record.source.kind === 'bundled') {
+    return {
+      code: 'plugin_update_policy_unsupported',
+      message: 'A bundled first-party plugin ships with the host and has no update policy',
+    };
+  }
+  const trust = record.install.trust;
+  if (!trust || record.source.trustPolicy === 'untrusted') {
+    return {
+      code: 'plugin_update_trust_unavailable',
+      message: 'This plugin has no current trusted update channel to govern',
+    };
+  }
+  if (updatePolicy === 'reviewSensitiveChanges' && trust.distribution.kind !== 'npm') {
+    return {
+      code: 'plugin_update_policy_unsupported',
+      message: 'Only an npm installation can skip review for a non-sensitive update',
+    };
+  }
+  return null;
+}
+
 function resolveChangedPluginIds(
   current: PluginStateFileV1,
   next: PluginStateFileV1,
@@ -333,6 +375,10 @@ export function createPluginRegistryStateStore(params?: Readonly<{
   rollbackWithResult: (pluginId: string) => Promise<PluginRegistryStateMutationResult>;
   setEnabled: (pluginId: string, enabled: boolean) => Promise<PluginStateFileV1>;
   setEnabledWithResult: (pluginId: string, enabled: boolean) => Promise<PluginRegistryStateMutationResult | null>;
+  setUpdatePolicyWithResult: (
+    pluginId: string,
+    updatePolicy: PluginUpdatePolicyV1,
+  ) => Promise<PluginRegistryStateMutationResult | null>;
   forgetTrustWithResult: (pluginId: string) => Promise<PluginRegistryStateMutationResult | null>;
   uninstall: (pluginId: string) => Promise<PluginStateFileV1>;
   uninstallWithResult: (
@@ -1133,15 +1179,6 @@ export function createPluginRegistryStateStore(params?: Readonly<{
   async function install(input: CommitPluginRegistryInstallationInput): Promise<PluginRegistryTransactionResult> {
     requireRuntimeLifecycle();
     const catalogRecordInput = PluginStateRecordSchema.parse(input.catalogRecord);
-    if (
-      input.updatePolicy === 'automatic'
-      && (input.trust.distribution.kind !== 'npm' || !catalogRecordInput.install.curatedUpdateSource)
-    ) {
-      throw new Error('Automatic plugin updates require a reviewed curated npm source binding');
-    }
-    if (input.updatePolicy !== 'automatic' && catalogRecordInput.install.curatedUpdateSource !== undefined) {
-      throw new Error('Only automatic plugin updates may retain a curated source binding');
-    }
     const suppliedAvailability = input.availability === undefined
       ? undefined
       : PluginInstallationAvailabilityProjectionSchema.parse(input.availability);
@@ -1589,6 +1626,84 @@ export function createPluginRegistryStateStore(params?: Readonly<{
     }
   }
 
+  /**
+   * Changes only which explicit update requests this installation admits.
+   *
+   * It is not a trust decision and never restages, reviews, revokes or replaces
+   * anything: the served generation, trust record, distribution, materialization
+   * epoch, enablement, optional access, availability and rollback lineage all
+   * travel through untouched. Both representations of the same fact — the
+   * runtime catalog the daemon serves and the durable installation revision —
+   * move in one commit so a reader can never see them disagree.
+   */
+  async function setUpdatePolicyWithResult(
+    pluginId: string,
+    updatePolicy: PluginUpdatePolicyV1,
+  ): Promise<PluginRegistryStateMutationResult | null> {
+    requireRuntimeLifecycle();
+    while (true) {
+      const current = await readCurrent();
+      const reference = current.commit.pluginGenerations[pluginId];
+      const catalogRecord = current.catalog.plugins[pluginId];
+      const installation = current.revision.plugins[pluginId];
+      if (!reference || !catalogRecord || !installation) {
+        throw new Error(`Unknown plugin id: ${pluginId}`);
+      }
+      const rejection = resolvePluginUpdatePolicyChangeRejection(catalogRecord, updatePolicy);
+      if (rejection) {
+        throw new Error(`Plugin '${pluginId}' cannot use update policy '${updatePolicy}': ${rejection.message}`);
+      }
+      if (
+        catalogRecord.install.updatePolicy === updatePolicy
+        && installation.updatePolicy === updatePolicy
+      ) {
+        return null;
+      }
+
+      const runtimeCatalog = PluginStateFileV1Schema.parse({
+        ...current.catalog,
+        plugins: {
+          ...current.catalog.plugins,
+          [pluginId]: {
+            ...catalogRecord,
+            install: { ...catalogRecord.install, updatePolicy },
+          },
+        },
+      });
+      const createdAtMs = nowMs();
+      const revision: PluginInstallationStateRevision = {
+        ...current.revision,
+        revisionId: `state-${randomUUID()}`,
+        createdAtMs,
+        plugins: {
+          ...current.revision.plugins,
+          [pluginId]: { ...installation, updatePolicy },
+        },
+        runtimeCatalog,
+      };
+      const committed = await commitRevision({
+        current,
+        revision,
+        pluginGenerations: current.commit.pluginGenerations,
+        transactionId: `update-policy-${randomUUID()}`,
+        createdAtMs,
+        mutationKind: 'state',
+        // Nothing about the running code changed; only which future explicit
+        // update requests this record admits.
+        runningSessionDisposition: 'retainRunningSessions',
+        // Policy is registry metadata used by a future explicit update request.
+        // The runtime adopts the new durable catalog without reactivating this
+        // plugin or retiring any of its consumers.
+        changedPluginIds: Object.freeze([]),
+      });
+      if (committed.status === 'conflict') continue;
+      if (committed.status === 'aborted' || committed.status === 'precommit_failed') {
+        throwPrecommitFailure(committed);
+      }
+      return Object.freeze({ catalog: runtimeCatalog, transaction: committed });
+    }
+  }
+
   async function setEnabled(pluginId: string, enabled: boolean): Promise<PluginStateFileV1> {
     return (await setEnabledWithResult(pluginId, enabled))?.catalog ?? (await readCurrent()).catalog;
   }
@@ -1828,6 +1943,7 @@ export function createPluginRegistryStateStore(params?: Readonly<{
     rollbackWithResult,
     setEnabled,
     setEnabledWithResult,
+    setUpdatePolicyWithResult,
     forgetTrustWithResult,
     uninstall,
     uninstallWithResult,

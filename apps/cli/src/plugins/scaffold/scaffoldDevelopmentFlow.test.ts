@@ -36,6 +36,7 @@ import { createDaemonPluginChangeService } from '@/plugins/daemon/changeService'
 import { requestPluginDevelopmentChange } from '@/plugins/daemon/developmentClient';
 import { createDaemonPathPluginChangePreparer } from '@/plugins/daemon/pathChangePreparer';
 import { createTestPluginSdkTarball } from '@/plugins/distribution/testkit/pluginSdkTarball';
+import type { PluginRegistryRuntimeCandidate } from '@/plugins/store/registry/currentState';
 import { readCurrentCommittedPluginGenerations } from '@/plugins/store/registry/generationStore';
 import { resolvePluginStorePaths } from '@/plugins/store/paths';
 import { createEnvKeyScope } from '@/testkit/env/envScope';
@@ -44,6 +45,27 @@ import { isCanonicalAbsolutePathInsideRoot } from '@/utils/path/expandHomeDirPat
 
 const execFileAsync = promisify(execFile);
 const requireFromTest = createRequire(import.meta.url);
+
+/**
+ * Reports exactly what the daemon runtime lifecycle reports after adopting a
+ * committed candidate (`registryRuntimeLifecycle.ts`): one applied generation
+ * per plugin the candidate changed. A stub that adopts silently reports
+ * nothing, so the truthful authoring lifecycle (`developmentClient.ts` plus
+ * `lifecycleStage.ts`) can only ever project `plugin_dev_adoption_pending`
+ * with no applied generation. These canaries prove the real
+ * committed → adopted → current transition, so the harness lifecycle reports
+ * the real adoption fact.
+ */
+function reportAdoptedCandidateGenerations(
+  candidate: PluginRegistryRuntimeCandidate,
+): Readonly<Record<string, string | null>> {
+  return Object.freeze(Object.fromEntries(
+    candidate.changedPluginIds.map((pluginId) => [
+      pluginId,
+      candidate.pluginGenerations[pluginId]?.immutableGenerationId ?? null,
+    ]),
+  ));
+}
 
 function extractPrintedNextCommand(output: string): string {
   const plainOutput = output.replace(/\u001B\[[0-?]*[ -/]*[@-~]/gu, '');
@@ -104,7 +126,10 @@ describe('CLI scaffold development flow', () => {
       prepare: createDaemonPathPluginChangePreparer({
         happyHomeDir,
         runtimeLifecycle: {
-          prepare: async () => ({ abort: async () => undefined, adopt: async () => undefined }),
+          prepare: async (candidate) => ({
+            abort: async () => undefined,
+            adopt: async () => reportAdoptedCandidateGenerations(candidate),
+          }),
         },
         runManagedPluginPnpm,
       }),
@@ -159,7 +184,7 @@ describe('CLI scaffold development flow', () => {
               ? { ...observation, request: { ...observation.request, changedPaths } }
               : observation);
             queueMicrotask(() => controller.abort());
-            return { stop: () => undefined };
+            return { stop: () => undefined, failure: new Promise<Error>(() => {}) };
           },
           requestDevelopmentChange,
         }, { signal: controller.signal });
@@ -255,11 +280,19 @@ describe('CLI scaffold development flow', () => {
         dependencies: { ...(packageJson.dependencies as Record<string, string>), 'fixture-dependency': '1.0.0' },
       }, null, 2)}\n`, 'utf8');
       const preparationCallsBeforeDependencyChange = packageManagerCalls.length;
+      // A dependency-input batch re-materializes the daemon-owned candidate
+      // and adopts it: the truthful lifecycle reports the new generation as
+      // accepted and current, not merely admitted.
       expect(await runDevelopmentCommand(['package.json']))
-        .toContain('plugin_dev_adoption_pending');
+        .toContain('Development candidate accepted');
       expect(packageManagerCalls.length).toBeGreaterThan(preparationCallsBeforeDependencyChange);
-      const stableGeneration = await readCurrentGeneration();
-      await expect(readFile(join(stableGeneration.rootPath, 'node_modules', 'fixture-dependency', 'index.js'), 'utf8'))
+      const generationAfterDependencyChange = await readCurrentGeneration();
+      await expect(readFile(join(
+        generationAfterDependencyChange.rootPath,
+        'node_modules',
+        'fixture-dependency',
+        'index.js',
+      ), 'utf8'))
         .resolves.toContain("installed = 'daemon-owned'");
 
       const failingPackageJson = JSON.parse(await readFile(packageJsonPath, 'utf8')) as Record<string, unknown>;
@@ -268,7 +301,10 @@ describe('CLI scaffold development flow', () => {
       const preparationCallsBeforeFailure = packageManagerCalls.length;
       expect(await runDevelopmentCommand(['package.json'])).toContain('simulated package resolution failure');
       expect(packageManagerCalls.length).toBeGreaterThan(preparationCallsBeforeFailure);
-      expect((await readCurrentGeneration()).immutableGenerationId).toBe(stableGeneration.immutableGenerationId);
+      // The failed dependency preparation never committed, so the adopted
+      // dependency-change generation remains the retained current generation.
+      expect((await readCurrentGeneration()).immutableGenerationId)
+        .toBe(generationAfterDependencyChange.immutableGenerationId);
     } finally {
       await service.shutdown();
       await rm(parentRoot, { recursive: true, force: true });
@@ -521,7 +557,10 @@ describe('CLI scaffold development flow', () => {
       prepare: createDaemonPathPluginChangePreparer({
         happyHomeDir,
         runtimeLifecycle: {
-          prepare: async () => ({ abort: async () => undefined, adopt: async () => undefined }),
+          prepare: async (candidate) => ({
+            abort: async () => undefined,
+            adopt: async () => reportAdoptedCandidateGenerations(candidate),
+          }),
         },
         runManagedPluginPnpm: runManagedPnpmForTest,
       }),
@@ -588,7 +627,7 @@ describe('CLI scaffold development flow', () => {
             if (!observation.ok) throw new Error('The clean external scaffold was not observable.');
             await input.onObservation(observation);
             queueMicrotask(() => devController.abort());
-            return { stop: () => undefined };
+            return { stop: () => undefined, failure: new Promise<Error>(() => {}) };
           },
           requestDevelopmentChange,
         }, { signal: devController.signal });

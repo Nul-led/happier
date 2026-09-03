@@ -196,6 +196,8 @@ describe('DeclarativePluginSurface Account secrets', () => {
         expect(screen.findByTestId('plugin-declarative-field:root.children[0]')?.props.value).toBe('');
         expect(screen.findByTestId(saveTestId)?.props.disabled).toBe(true);
         expect(screen.findByTestId(deleteTestId)?.props.disabled).toBe(false);
+        expect(screen.findByTestId(saveTestId)?.props.accessibilityLabel).toBe('common.save: API token');
+        expect(screen.findByTestId(deleteTestId)?.props.accessibilityLabel).toBe('settingsPlugins.secretFieldActions.delete: API token');
 
         await act(async () => {
             screen.pressByTestId(saveTestId);

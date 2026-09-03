@@ -669,13 +669,16 @@ describe('Account plugin Data storage host', () => {
         }]);
     });
 
-    it('retries a response-lost exact tombstone forget without touching a recreated row', async () => {
+    it('replays a response-lost exact forget as the same single idempotent request', async () => {
         let forgetAttempts = 0;
         const calls: HttpCall[] = [];
         const account = bindHost({
-            get: async (url) => url.endsWith('/v1/plugins/data/get')
-                ? { status: 200, data: { row: null, absenceEpoch: forgetAttempts === 0 ? 7 : 8 } }
-                : { status: 200, data: { mode: 'plain', updatedAt: 1 } },
+            get: async (url) => {
+                if (url.endsWith('/v1/plugins/data/get')) {
+                    throw new Error('Retention forget read Collection currentness');
+                }
+                return { status: 200, data: { mode: 'plain', updatedAt: 1 } };
+            },
             post: async (url, body) => {
                 calls.push({ url, body: JSON.parse(body) });
                 if (!url.endsWith('/v1/plugins/data/forget')) {
@@ -700,76 +703,34 @@ describe('Account plugin Data storage host', () => {
             forgotten: true,
         });
         expect(calls.map(({ body }) => body)).toEqual([
-            expect.objectContaining({ expectedRevision: 4, expectedAbsenceEpoch: 7 }),
-            expect.objectContaining({ expectedRevision: 4, expectedAbsenceEpoch: 8 }),
+            {
+                pluginId: PLUGIN_ID,
+                collectionId: COLLECTION_ID,
+                writerContext: expect.any(Object),
+                rowId: 'task-retained',
+                expectedRevision: 4,
+            },
+            {
+                pluginId: PLUGIN_ID,
+                collectionId: COLLECTION_ID,
+                writerContext: expect.any(Object),
+                rowId: 'task-retained',
+                expectedRevision: 4,
+            },
         ]);
     });
 
-    it('retries a retention forget only while the exact row revision survives an absence-epoch race', async () => {
-        let freshnessReads = 0;
-        const calls: HttpCall[] = [];
-        const account = bindHost({
-            get: async (url) => {
-                if (!url.endsWith('/v1/plugins/data/get')) {
-                    return { status: 200, data: { mode: 'plain', updatedAt: 1 } };
-                }
-                freshnessReads += 1;
-                return {
-                    status: 200,
-                    data: {
-                        row: {
-                            rowId: 'task-retained',
-                            revision: 4,
-                            content: { t: 'plain', v: { privateNote: 'retained value' } },
-                            projection: { status: 'open' },
-                        },
-                        absenceEpoch: freshnessReads === 1 ? 7 : 8,
-                    },
-                };
-            },
-            post: async (url, body) => {
-                calls.push({ url, body: JSON.parse(body) });
-                return {
-                    status: 200,
-                    data: { status: calls.length === 1 ? 'conflict' : 'forgotten' },
-                };
-            },
-        });
-
-        await expect(account.collection(collectionDefinition).forget('task-retained', {
-            expectedRevision: 4,
-        })).resolves.toEqual({ rowId: 'task-retained', forgotten: true });
-        expect(freshnessReads).toBe(2);
-        expect(calls.map(({ body }) => body)).toEqual([
-            expect.objectContaining({ expectedRevision: 4, expectedAbsenceEpoch: 7 }),
-            expect.objectContaining({ expectedRevision: 4, expectedAbsenceEpoch: 8 }),
-        ]);
-    });
-
-    it('rejects a retention forget after one freshness read when the row has a newer revision', async () => {
-        let freshnessReads = 0;
+    it('reports one exact-revision forget conflict rather than re-reading a row a direct read cannot show', async () => {
         const post = vi.fn(async () => ({ status: 200, data: { status: 'conflict' } }));
         const account = bindHost({
+            // A newer tombstone is invisible to the direct reader, so a
+            // freshness read can never resolve this conflict: retrying it would
+            // never terminate. The exact-revision answer is final.
             get: async (url) => {
-                if (!url.endsWith('/v1/plugins/data/get')) {
-                    return { status: 200, data: { mode: 'plain', updatedAt: 1 } };
+                if (url.endsWith('/v1/plugins/data/get')) {
+                    throw new Error('Retention forget read Collection currentness');
                 }
-                freshnessReads += 1;
-                if (freshnessReads > 2) {
-                    throw new Error('Retention forget retried a persistent newer row');
-                }
-                return {
-                    status: 200,
-                    data: {
-                        row: {
-                            rowId: 'task-recreated',
-                            revision: 5,
-                            content: { t: 'plain', v: { privateNote: 'newer value' } },
-                            projection: { status: 'open' },
-                        },
-                        absenceEpoch: 8,
-                    },
-                };
+                return { status: 200, data: { mode: 'plain', updatedAt: 1 } };
             },
             post,
         });
@@ -779,42 +740,27 @@ describe('Account plugin Data storage host', () => {
         })).rejects.toMatchObject({
             code: 'plugin_collection_conflict',
         } satisfies Partial<PluginError>);
-        expect(freshnessReads).toBe(1);
-        expect(post).not.toHaveBeenCalled();
+        expect(post).toHaveBeenCalledTimes(1);
     });
 
     it('atomically retires an exact live row through the Collection owner', async () => {
         const post = vi.fn(async () => ({ status: 200, data: { status: 'forgotten' } }));
-        const account = bindHost({
-            get: async (url) => url.endsWith('/v1/plugins/data/get')
-                ? {
-                    status: 200,
-                    data: {
-                        row: {
-                            rowId: 'task-live',
-                            revision: 4,
-                            content: { t: 'plain', v: { privateNote: 'still live' } },
-                            projection: { status: 'open' },
-                        },
-                        absenceEpoch: 7,
-                    },
+        const bindRetentionHost = () => bindHost({
+            get: async (url) => {
+                if (url.endsWith('/v1/plugins/data/get')) {
+                    throw new Error('Retention forget read Collection currentness');
                 }
-                : { status: 200, data: { mode: 'plain', updatedAt: 1 } },
+                return { status: 200, data: { mode: 'plain', updatedAt: 1 } };
+            },
             post,
         });
 
-        await expect(account.collection(collectionDefinition).forget('task-live', {
+        await expect(bindRetentionHost().collection(collectionDefinition).forget('task-live', {
             expectedRevision: 4,
         })).resolves.toEqual({ rowId: 'task-live', forgotten: true });
         expect(post).toHaveBeenCalledTimes(1);
 
-        const absentAccount = bindHost({
-            get: async (url) => url.endsWith('/v1/plugins/data/get')
-                ? { status: 200, data: { row: null, absenceEpoch: 7 } }
-                : { status: 200, data: { mode: 'plain', updatedAt: 1 } },
-            post,
-        });
-        await expect(absentAccount.collection(collectionDefinition).forget('task-deleted', {
+        await expect(bindRetentionHost().collection(collectionDefinition).forget('task-deleted', {
             expectedRevision: 4,
         })).resolves.toEqual({ rowId: 'task-deleted', forgotten: true });
     });
@@ -1347,7 +1293,13 @@ describe('Account plugin Data storage host', () => {
         });
     });
 
-    it('rebases a daemon per-key mutation over an unrelated aggregate-row conflict', async () => {
+    /**
+     * The Account row is the unit of contention. A concurrent writer that
+     * touched only a disjoint logical key still conflicts the physical CAS, and
+     * the daemon reports that typed conflict instead of re-reading and writing
+     * a second time behind the author's back.
+     */
+    it('reports a typed conflict from one write when only a disjoint aggregate-row key changed', async () => {
         let reads = 0;
         const writes: unknown[] = [];
         const account = bindHost({
@@ -1357,15 +1309,13 @@ describe('Account plugin Data storage host', () => {
                     status: 200,
                     data: {
                         status: 'present' as const,
-                        revision: reads === 1 ? 4 : 5,
+                        revision: 4,
                         content: {
                             t: 'plain' as const,
                             v: {
                                 v: 1 as const,
                                 values: {
-                                    other: reads === 1
-                                        ? { version: 0, value: 'before' }
-                                        : { version: 1, value: 'after' },
+                                    other: { version: 0, value: 'before' },
                                 },
                             },
                         },
@@ -1377,16 +1327,16 @@ describe('Account plugin Data storage host', () => {
                 writes.push(request);
                 return {
                     status: 200,
-                    data: writes.length === 1
-                        ? { status: 'conflict' as const, revision: 5 }
-                        : { status: 'updated' as const, revision: 6 },
+                    data: { status: 'conflict' as const, revision: 5 },
                 };
             },
         });
 
         await expect(account.kv.set('target', 'mine', {
             expectedVersion: 'absent',
-        })).resolves.toEqual({ version: 0 });
+        })).rejects.toMatchObject({
+            code: 'plugin_account_kv_conflict',
+        } satisfies Partial<PluginError>);
 
         expect(writes).toEqual([
             {
@@ -1402,24 +1352,11 @@ describe('Account plugin Data storage host', () => {
                     },
                 },
             },
-            {
-                expectedRevision: 5,
-                content: {
-                    t: 'plain',
-                    v: {
-                        v: 1,
-                        values: {
-                            other: { version: 1, value: 'after' },
-                            target: { version: 0, value: 'mine' },
-                        },
-                    },
-                },
-            },
         ]);
-        expect(reads).toBe(2);
+        expect(reads).toBe(1);
     });
 
-    it('conflicts when a daemon transaction read dependency changes before its derived write commits', async () => {
+    it('never replays a daemon transaction callback whose derived write lost the row CAS', async () => {
         let reads = 0;
         const post = vi.fn(async () => ({
             status: 200,
@@ -1464,10 +1401,16 @@ describe('Account plugin Data storage host', () => {
         } satisfies Partial<PluginError>);
         expect(callback).toHaveBeenCalledOnce();
         expect(post).toHaveBeenCalledOnce();
-        expect(reads).toBe(2);
+        expect(reads).toBe(1);
     });
 
-    it('treats a service write from an Account KV callback as a separate mutation while rejecting a nested transaction', async () => {
+    /**
+     * A service write from inside the callback is a real separate mutation, so
+     * it advances the physical row the enclosing transaction already sampled.
+     * The transaction therefore loses its one CAS and reports a typed conflict
+     * rather than being silently rebased on top of the author's own write.
+     */
+    it('treats a service write from an Account KV callback as a separate mutation that conflicts the enclosing transaction', async () => {
         const wire = createAccountKvWireStore();
         const account = bindHost({ get: wire.get, post: wire.post });
 
@@ -1483,16 +1426,15 @@ describe('Account plugin Data storage host', () => {
                 2,
                 { expectedVersion: 'absent' },
             )).resolves.toEqual({ version: 0 });
-        })).resolves.toBeUndefined();
+        })).rejects.toMatchObject({
+            code: 'plugin_account_kv_conflict',
+        } satisfies Partial<PluginError>);
 
         await expect(account.kv.get('callback-service-write')).resolves.toEqual({
             version: 0,
             value: 2,
         });
-        await expect(account.kv.get('transaction-write')).resolves.toEqual({
-            version: 0,
-            value: 1,
-        });
+        await expect(account.kv.get('transaction-write')).resolves.toBeNull();
         await expect(account.kv.get('nested-transaction-write')).resolves.toBeNull();
     });
 
@@ -1750,7 +1692,7 @@ describe('Account plugin Data storage host', () => {
         } satisfies Partial<PluginError>);
         expect(callback).toHaveBeenCalledOnce();
         expect(post).toHaveBeenCalledOnce();
-        expect(reads).toBe(2);
+        expect(reads).toBe(1);
     });
 
     /**

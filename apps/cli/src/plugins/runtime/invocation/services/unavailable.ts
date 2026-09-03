@@ -558,14 +558,31 @@ export const PLUGIN_SERVICE_DESCRIPTORS = Object.freeze({
             return Object.freeze({
                 current: null,
                 list: fail, get: fail, watch: fail,
-                subagents: Object.freeze({ capabilities: fail, list: fail, get: fail, watch: fail }),
+                subagents: Object.freeze({ list: fail, get: fail, watch: fail }),
                 external: createUnavailableExternalSessionsAuthorService(code, diagnostic),
             });
         },
         createAvailable({ seed, binding, params, interactions }): PluginServices['sessions'] | null {
-            return binding.availability.sessions === 'available' && params.sessions !== undefined
-                ? params.sessions.bind(seed, binding, interactions, params.filesystemRoots)
-                : null;
+            if (binding.availability.sessions !== 'available' || params.sessions === undefined) {
+                return null;
+            }
+            const sessions = params.sessions.bind(
+                seed,
+                binding,
+                interactions,
+                params.filesystemRoots,
+            );
+            // The owner may carry host-only companions for Agent runtimes.
+            // Rebuild the exact public service so none become author-visible
+            // merely because structural typing accepted the richer object.
+            return Object.freeze({
+                current: sessions.current,
+                list: sessions.list,
+                get: sessions.get,
+                watch: sessions.watch,
+                subagents: sessions.subagents,
+                external: sessions.external,
+            });
         },
     },
     resources: {

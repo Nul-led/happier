@@ -355,6 +355,51 @@ describe('Plugin Account release selection controller', () => {
         expect(select).not.toHaveBeenCalled();
     });
 
+    it('records hosting intent through the exact intent CAS and never opts in against an unsupporting server', async () => {
+        const active = createLifetime();
+        const setIntent = vi.fn(async () => Object.freeze({ kind: 'updated' as const, intent: {} as never }));
+        const slot = {
+            contributionId: 'tasks-ui', tier: 'hostedWeb' as const, platform: 'web' as const,
+            artifactDigest: `sha256:${'c'.repeat(64)}` as const,
+            compatibility: { hostUiApiVersion: 1 },
+        };
+        const readerFor = (hostingEnabled: boolean) => ({
+            readCurrentHostedArtifactAdministration: () => ({
+                kind: 'available' as const,
+                availabilityCursor: 4,
+                hostingCapability: hostingEnabled
+                    ? { enabled: true, maxArtifactBytes: 1, maxAccountBytes: 1, maxAccountArtifacts: 1 }
+                    : { enabled: false },
+                intent: { pluginId, desiredVersion: targetVersion, enabled: true, offlineUiHosting: 'disabled' as const, writableCollections: [], revision: 'intent-current' },
+                release: { ref: { pluginId, version: targetVersion }, normalizedManifest: facts.normalizedManifest, uiSlots: [slot] },
+                uiArtifacts: [],
+            }),
+        } as unknown as PluginAccountAvailabilityReader);
+        const controller = createPluginAccountReleaseSelectionController(dependencies({
+            lifetime: active.lifetime, setIntent,
+        }));
+
+        // Operator capability is a server fact; user intent can never claim it.
+        expect(controller.readHostedArtifactStatus({ pluginId, reader: readerFor(false) })).toBe('unsupported');
+        await expect(controller.setHostedArtifactsEnabled({
+            pluginId, reader: readerFor(false), enabled: true,
+        })).resolves.toEqual({ kind: 'unavailable' });
+        expect(setIntent).not.toHaveBeenCalled();
+
+        expect(controller.readHostedArtifactStatus({ pluginId, reader: readerFor(true) })).toBe('notOptedIn');
+        await expect(controller.setHostedArtifactsEnabled({
+            pluginId, reader: readerFor(true), enabled: true,
+        })).resolves.toEqual({ kind: 'updated' });
+        expect(setIntent).toHaveBeenCalledExactlyOnceWith({
+            pluginId,
+            desiredVersion: targetVersion,
+            enabled: true,
+            offlineUiHosting: 'enabled',
+            writableCollections: [],
+            expectedRevision: 'intent-current',
+        });
+    });
+
     it('disables hosting before removing every current qualified link and clears only exact current cache identities', async () => {
         const active = createLifetime();
         const setIntent = vi.fn(async () => Object.freeze({ kind: 'updated' as const, intent: {} as never }));

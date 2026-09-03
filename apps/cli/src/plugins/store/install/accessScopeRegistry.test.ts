@@ -7,11 +7,11 @@ import {
 } from './accessScopeRegistry';
 
 describe('PluginAccessScopeRegistry', () => {
-  it('reports any non-equal canonical scope as changed rather than ranking it', () => {
+  it('ranks a contained canonical scope as narrower and everything else as changed', () => {
     const registry = createDefaultPluginAccessScopeRegistry();
 
-    // Ambient network power is never ranked as a narrowing: a different
-    // canonical scope is simply changed, so its consumers re-enter review.
+    // Dropping a method leaves the candidate inside the previously granted
+    // origin/method reach.
     expect(registry.compare(
       'network',
       {
@@ -22,13 +22,47 @@ describe('PluginAccessScopeRegistry', () => {
         targets: [{ kind: 'fixedOrigin', origin: 'https://api.example.test' }],
         methods: ['GET', 'POST'],
       },
+    )).toEqual({ relation: 'narrower', reason: 'canonical_scope_contained' });
+    // `methods` is read as `undefined || includes(...)`, so omitting it reaches
+    // every method and can never be contained in a declared method set.
+    expect(registry.compare(
+      'network',
+      { targets: [{ kind: 'fixedOrigin', origin: 'https://api.example.test' }] },
+      {
+        targets: [{ kind: 'fixedOrigin', origin: 'https://api.example.test' }],
+        methods: ['GET'],
+      },
     )).toEqual({ relation: 'changed', reason: 'canonical_scope_differs' });
-    // An independently selectable host resource is ranked no differently.
+    // Adding an origin reaches somewhere the grant did not.
+    expect(registry.compare(
+      'network',
+      {
+        targets: [
+          { kind: 'fixedOrigin', origin: 'https://api.example.test' },
+          { kind: 'fixedOrigin', origin: 'https://cdn.example.test' },
+        ],
+        methods: ['GET'],
+      },
+      {
+        targets: [{ kind: 'fixedOrigin', origin: 'https://api.example.test' }],
+        methods: ['GET'],
+      },
+    )).toEqual({ relation: 'changed', reason: 'canonical_scope_differs' });
+    // An independently selectable host resource ranks the same way.
     expect(registry.compare(
       'sessions',
       { access: ['read'], machineIds: ['machine-a'] },
       { access: ['read', 'write'], machineIds: ['machine-a', 'machine-b'] },
+    )).toEqual({ relation: 'narrower', reason: 'canonical_scope_contained' });
+    // `machineIds` is read as `!machineIds || includes(...)`, so dropping the
+    // restriction widens the scope to every machine.
+    expect(registry.compare(
+      'sessions',
+      { access: ['read'] },
+      { access: ['read'], machineIds: ['machine-a'] },
     )).toEqual({ relation: 'changed', reason: 'canonical_scope_differs' });
+    // A structured location entry is ranked by set membership, so a deeper
+    // path prefix under an already-granted root stays conservatively changed.
     expect(registry.compare(
       'filesystem',
       { locations: [{ root: 'workspace', pathPrefix: 'src' }], access: ['read'] },
@@ -77,6 +111,19 @@ describe('PluginAccessScopeRegistry', () => {
         discoverySourceRefs: [localDiscovery, sharedDiscovery],
         operations: ['listTools', 'discover'],
       },
+    )).toEqual({ relation: 'narrower', reason: 'canonical_scope_contained' });
+    expect(registry.compare(
+      'mcp',
+      {
+        serverRefs: ['local-server', server],
+        discoverySourceRefs: [localDiscovery],
+        operations: ['listTools', 'discover'],
+      },
+      {
+        serverRefs: ['local-server'],
+        discoverySourceRefs: [localDiscovery],
+        operations: ['listTools', 'discover'],
+      },
     )).toEqual({ relation: 'changed', reason: 'canonical_scope_differs' });
 
     const selection = registry.createSelection({
@@ -97,7 +144,7 @@ describe('PluginAccessScopeRegistry', () => {
     });
   });
 
-  it('canonicalizes and compares Connected Account materialization authority as an exact set', () => {
+  it('canonicalizes and ranks Connected Account materialization authority', () => {
     const registry = createDefaultPluginAccessScopeRegistry();
     const base = {
       serviceRefs: ['github'],
@@ -113,14 +160,15 @@ describe('PluginAccessScopeRegistry', () => {
       'connectedAccounts',
       { ...base, materializationKinds: ['environment'] },
       { ...base, materializationKinds: ['environment', 'files'] },
-    )).toEqual({ relation: 'changed', reason: 'canonical_scope_differs' });
-    // An omitted materialization set is a distinct authority, not an implicit
-    // subset of a declared one, in either direction.
+    )).toEqual({ relation: 'narrower', reason: 'canonical_scope_contained' });
+    // Materialization is read as `?.includes(kind) !== true`, so omitting the
+    // set materializes nothing: it is the narrowest value, never an implicit
+    // superset of a declared one.
     expect(registry.compare(
       'connectedAccounts',
       base,
       { ...base, materializationKinds: ['environment'] },
-    )).toEqual({ relation: 'changed', reason: 'canonical_scope_differs' });
+    )).toEqual({ relation: 'narrower', reason: 'canonical_scope_contained' });
     expect(registry.compare(
       'connectedAccounts',
       { ...base, materializationKinds: ['environment'] },

@@ -220,8 +220,6 @@ async function writeFullPredecessorFixture(
     v: 1 as const,
     packageIdentity: { pluginId: PLUGIN_ID, packageName: null },
     distributionIdentity: { kind: 'path' as const, development: true },
-    publisherIdentity: { status: 'unavailable' as const },
-    packageSignature: { status: 'unavailable' as const },
   };
   const installReviewPrincipalDigest = derivePluginInstallReviewPrincipalDigest(
     installReviewPrincipalPresentation,

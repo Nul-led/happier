@@ -2,6 +2,7 @@ import {
     PluginWebhookEndpointCheckCorrespondenceResultV1Schema,
     type PluginWebhookEndpointCheckCorrespondenceInputV1,
     type PluginWebhookEndpointCheckCorrespondenceResultV1,
+    type PluginWebhookEndpointSetupV1,
 } from "@happier-dev/protocol";
 
 import type { Tx } from "@/storage/inTx";
@@ -14,6 +15,39 @@ const UNAVAILABLE = {
     kind: "unavailable",
     code: "endpoint_unavailable",
 } as const satisfies PluginWebhookEndpointCheckCorrespondenceResultV1;
+
+/**
+ * The one predicate for "this endpoint row is the one that controller intent
+ * names", independent of where the endpoint currently delivers.
+ *
+ * Correspondence and target convergence both need it and must never diverge on
+ * it: correspondence adds the current-target predicates below, while
+ * convergence deliberately omits them because the whole point of a move is
+ * that the endpoint is not at the desired target yet. Keeping the shared facts
+ * here is what stops a mutation from proving a weaker identity than a read.
+ */
+export function pluginWebhookEndpointControllerCorrespondenceWhereV1(params: Readonly<{
+    accountId: string;
+    webhookEndpointId: string;
+    webhookContribution: Readonly<{ pluginId: string; localId: string }>;
+    sourceInstanceId: string;
+    setup: PluginWebhookEndpointSetupV1;
+    contribution: Readonly<{ handlerActionLocalId: string; routingKind: string }>;
+}>) {
+    return {
+        id: params.webhookEndpointId,
+        accountId: params.accountId,
+        pluginId: params.webhookContribution.pluginId,
+        webhookContributionId: params.webhookContribution.localId,
+        sourceInstanceId: params.sourceInstanceId,
+        setupKind: params.setup.kind,
+        providerInstallationId: params.setup.kind === "githubSharedInstallationV1"
+            ? params.setup.installationId
+            : null,
+        handlerActionId: params.contribution.handlerActionLocalId,
+        routingKind: params.contribution.routingKind,
+    };
+}
 
 /**
  * Sole owner of generic webhook endpoint correspondence.
@@ -60,21 +94,18 @@ export async function checkCurrentPluginWebhookEndpointCorrespondenceTxV1(params
         if (!contribution) return UNAVAILABLE;
         const endpoint = await tx.pluginWebhookEndpoint.findFirst({
             where: {
-                id: input.webhookEndpointId,
-                accountId,
-                pluginId: input.webhookContribution.pluginId,
-                webhookContributionId: input.webhookContribution.localId,
-                sourceInstanceId: input.sourceInstanceId,
-                setupKind: input.setup.kind,
-                providerInstallationId: input.setup.kind === "githubSharedInstallationV1"
-                    ? input.setup.installationId
-                    : null,
+                ...pluginWebhookEndpointControllerCorrespondenceWhereV1({
+                    accountId,
+                    webhookEndpointId: input.webhookEndpointId,
+                    webhookContribution: input.webhookContribution,
+                    sourceInstanceId: input.sourceInstanceId,
+                    setup: input.setup,
+                    contribution,
+                }),
                 targetMachineId: input.targetMaterialization.machineId,
                 targetMaterializationId: input.targetMaterialization.materializationId,
                 targetMachineInstallationId: target.machineInstallationId,
                 targetPluginVersion: target.pluginVersion,
-                handlerActionId: contribution.handlerActionLocalId,
-                routingKind: contribution.routingKind,
             },
             select: {
                 id: true,

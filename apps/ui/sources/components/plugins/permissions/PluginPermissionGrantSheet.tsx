@@ -131,6 +131,9 @@ export function PluginPermissionGrantSheet(props: PluginPermissionGrantSheetProp
         requestedAt
             ? { key: 'requested-at', label: t('pluginPermissions.fields.requestedAt'), value: requestedAt }
             : null,
+        reason
+            ? { key: 'reason', label: t('pluginPermissions.fields.reason'), value: reason }
+            : null,
         ...(props.detailRows ?? []).map((row) => ({ ...row })),
     ].filter((row): row is Readonly<{ key: string; label?: string; value: string }> => row !== null);
     const detailsAccessibilityLabel = t('pluginPermissions.accessibilitySummary', {
@@ -157,7 +160,11 @@ export function PluginPermissionGrantSheet(props: PluginPermissionGrantSheetProp
                 backgroundColor: theme.colors.surface.inset,
             }}
         >
-            <Text style={{ color: theme.colors.text.primary }}>
+            <Text
+                testID={props.testID ? `${props.testID}-title` : undefined}
+                accessibilityRole="header"
+                style={{ color: theme.colors.text.primary }}
+            >
                 {props.labels.title}
             </Text>
             <Text style={{ color: theme.colors.text.secondary }}>
@@ -195,11 +202,6 @@ export function PluginPermissionGrantSheet(props: PluginPermissionGrantSheetProp
                         {describeField(row.label, row.value)}
                     </Text>
                 ))}
-                {reason ? (
-                    <Text style={{ color: theme.colors.text.secondary }}>
-                        {reason}
-                    </Text>
-                ) : null}
             </View>
             <View style={{ flexDirection: 'row', gap: 8, flexWrap: 'wrap' }}>
                 <Pressable

@@ -109,7 +109,7 @@ async function prepareRetainedFactory(input: Readonly<{
       kind: 'localPath',
       canonicalPath: input.sourceRootPath,
     },
-    updatePolicy: 'manual',
+    updatePolicy: 'reviewEveryUpdate',
     createdAtMs: 1,
   });
   const record = {
@@ -203,7 +203,7 @@ async function prepareHostDeclarativeBinding(input: Readonly<{
       kind: 'localPath',
       canonicalPath: input.sourceRootPath,
     },
-    updatePolicy: 'manual',
+    updatePolicy: 'reviewEveryUpdate',
     createdAtMs: 1,
     immutableGenerationId: input.immutableGenerationId,
   });

@@ -81,7 +81,7 @@ async function prepareOpenCodeAgentSupervisionFixture(input: Readonly<{
             kind: 'localPath',
             canonicalPath: sourceRootPath,
         },
-        updatePolicy: 'manual',
+        updatePolicy: 'reviewEveryUpdate',
         createdAtMs: 1,
         immutableGenerationId,
     });
@@ -191,7 +191,7 @@ async function prepareProviderSupervisionFixture(input: Readonly<{
             kind: 'localPath',
             canonicalPath: sourceRootPath,
         },
-        updatePolicy: 'manual',
+        updatePolicy: 'reviewEveryUpdate',
         createdAtMs: 1,
         immutableGenerationId: 'provider-generation-p',
     });
@@ -222,7 +222,7 @@ async function prepareProviderSupervisionFixture(input: Readonly<{
                             approvedAtMs: 1,
                         },
                         source: { distribution },
-                        updatePolicy: 'manual',
+                        updatePolicy: 'reviewEveryUpdate',
                         optionalAccess: [],
                     },
                 },

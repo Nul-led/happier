@@ -153,6 +153,7 @@ type ConnectionResourceRow = Readonly<{
     }> | null;
     bestEffortBeforeDurableAdmission: boolean;
     oldTransportStopUnconfirmed: boolean;
+    endpointRetargetOwed: boolean;
     acceptedPossibleLoss: boolean;
     pollFailure:
       | Readonly<{
@@ -309,6 +310,7 @@ function connectionFixture(overrides: ConnectionResourceRowOverrides = {}): Conn
       historyGap: null,
       bestEffortBeforeDurableAdmission: false,
       oldTransportStopUnconfirmed: false,
+      endpointRetargetOwed: false,
       acceptedPossibleLoss: false,
       pollFailure: null,
       outwardDelivery: {
@@ -708,6 +710,9 @@ function createOfflineChannelsDataClient(input: Readonly<{
     get,
     put,
     delete: remove,
+    forget: async () => {
+      throw new Error('Channels UI does not physically forget state rows; the plugin retention owner owns that proof.');
+    },
     query,
     batch,
     limits: async () => {
@@ -790,8 +795,11 @@ function createDeliveryResolutionDataClient(input: Readonly<{
   const query = vi.fn(async (
     request: Parameters<ChannelDeliveriesCollection['query']>[0],
   ): Promise<ChannelDeliveriesCollectionPage> => {
-    if (request.index !== CHANNEL_DELIVERIES_INDEX_ID.byOwnerAttention) {
+    if (request.index !== CHANNEL_DELIVERIES_INDEX_ID.byConnectionAttention) {
       throw new Error(`Unexpected direct delivery Collection index: ${request.index}.`);
+    }
+    if (request.range?.lower !== true || request.range?.upper !== true) {
+      throw new Error('Expected the canonical unresolved-delivery range on the connection/attention index.');
     }
     if (request.prefix?.[0] !== 'connection-1') {
       throw new Error('Expected the delivery query to stay within the expanded connection.');
@@ -825,6 +833,9 @@ function createDeliveryResolutionDataClient(input: Readonly<{
     delete: async () => {
       throw new Error('Delivery-resolution UI does not delete retained custody.');
     },
+    forget: async () => {
+      throw new Error('Delivery-resolution UI does not physically forget retained custody.');
+    },
     query,
     batch: async () => {
       throw new Error('Delivery-resolution UI does not batch-mutate retained custody.');
@@ -846,6 +857,9 @@ function createDeliveryResolutionDataClient(input: Readonly<{
     },
     delete: async () => {
       throw new Error('Delivery-resolution UI does not delete ingress custody.');
+    },
+    forget: async () => {
+      throw new Error('Delivery-resolution UI does not physically forget ingress custody.');
     },
     query: stateQuery,
     batch: async () => {
@@ -4396,13 +4410,13 @@ describe('Channels settings surface (real source, mounted)', () => {
       renderer,
       `channels-delivery-resolution-accept-${partialCustodyId}`,
     ).some((instance) => (
-      instance.props?.accessibilityRole === 'button'
+      instance.props?.role === 'button'
         && instance.props?.accessibilityLabel === 'Accept as sent'
     ))).toBe(true);
     expect(findByTestId(
       renderer,
       `channels-delivery-resolution-discard-${unknownCustodyId}`,
-    ).some((instance) => instance.props?.accessibilityRole === 'button')).toBe(true);
+    ).some((instance) => instance.props?.role === 'button')).toBe(true);
 
     const readsBeforeResolution = host.readResource.mock.calls.length;
     await act(async () => {
@@ -4412,8 +4426,9 @@ describe('Channels settings surface (real source, mounted)', () => {
 
     expect(host.executeAction).toHaveBeenCalledTimes(1);
     expect(deliveryData.query).toHaveBeenCalledWith({
-      index: CHANNEL_DELIVERIES_INDEX_ID.byOwnerAttention,
+      index: CHANNEL_DELIVERIES_INDEX_ID.byConnectionAttention,
       prefix: ['connection-1'],
+      range: { lower: true, upper: true },
       order: 'asc',
       limit: 50,
     }, expect.any(Object));

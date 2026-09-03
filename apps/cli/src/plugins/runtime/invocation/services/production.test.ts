@@ -394,14 +394,8 @@ describe('production invocation service owners', () => {
             get: vi.fn(async () => null),
             watch: vi.fn(() => Object.freeze({ dispose() {} })),
             subagents: Object.freeze({
-                capabilities: vi.fn(() => ({
-                    list: { status: 'unavailable' as const, code: 'not_bound' },
-                    observe: { status: 'unavailable' as const, code: 'not_bound' },
-                    watch: { status: 'unavailable' as const, code: 'not_bound' },
-                })),
                 list: vi.fn(async () => ({ items: [] })),
                 get: vi.fn(async () => null),
-                observe: vi.fn(async () => { throw new Error('not_bound'); }),
                 watch: vi.fn(() => Object.freeze({ dispose() {} })),
             }),
             external: Object.freeze({
@@ -422,7 +416,15 @@ describe('production invocation service owners', () => {
                 takeover: vi.fn(async () => { throw new Error('not_bound'); }),
             }),
         }) satisfies SessionsService;
-        const bind = vi.fn(() => sessions);
+        const internalSessions = Object.freeze({
+            ...sessions,
+            subagentObservation: Object.freeze({
+                observe: vi.fn(async () => {
+                    throw new Error('host-only');
+                }),
+            }),
+        });
+        const bind = vi.fn(() => internalSessions);
         const owners = createProductionPluginInvocationServiceOwners({
             loggerSink: { write: () => {} },
             sessions: { bind },
@@ -470,7 +472,11 @@ describe('production invocation service owners', () => {
         const services = owners.createServices(seed, policy.serviceBinding);
 
         expect(services.availability('sessions')).toEqual({ status: 'available' });
-        expect(services.sessions).toBe(sessions);
+        expect(services.sessions).not.toBe(internalSessions);
+        expect(services.sessions).not.toHaveProperty('subagentObservation');
+        expect(Object.keys(services.sessions).sort()).toEqual([
+            'current', 'external', 'get', 'list', 'subagents', 'watch',
+        ]);
         expect(policy.serviceBinding.sessionScopes).toEqual([{
             access: ['read'],
             machineIds: ['machine-a'],

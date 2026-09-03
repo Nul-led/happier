@@ -275,6 +275,80 @@ describe('createPluginHttpService', () => {
         expect(openWebSocket).toHaveBeenCalledOnce();
     });
 
+    it('admits a provider-issued endpoint inside a declared host-suffix family and refuses every lookalike', async () => {
+        const connection: PluginWebSocketConnection = Object.freeze({
+            url: 'wss://gateway-us-east1-b.gateway.test/socket',
+            protocol: '',
+            closed: Promise.resolve(Object.freeze({ kind: 'remote' as const, wasClean: true })),
+            send: async () => undefined,
+            receive: async () => Object.freeze({ kind: 'closed' as const, close: {
+                kind: 'remote' as const,
+                wasClean: true,
+            } }),
+            close: () => undefined,
+            dispose: () => undefined,
+        });
+        const openWebSocket = vi.fn(async () => connection);
+        const host = createProductionStablePluginHttpHost({
+            // Only the declared family resolves publicly here: a name inside the
+            // family that resolves into a private range must still be refused.
+            resolveNetworkAddresses: async (hostname: string) => (
+                hostname === 'internal.gateway.test' ? ['127.0.0.1'] : ['93.184.216.34']
+            ),
+            adapter: Object.freeze({
+                request: async () => createResponse('unexpected HTTP request'),
+                openWebSocket,
+            }),
+        });
+        const seed = Object.freeze({
+            plugin: Object.freeze({ id: 'caller.plugin', version: '1.0.0' }),
+            contribution: Object.freeze({ id: 'gateway', qualifiedId: 'caller.plugin/actions/gateway' }),
+            generation: 'generation-websocket-family',
+            correlationId: 'correlation-websocket-family',
+            surface: 'agent' as const,
+            signal: new AbortController().signal,
+            isGenerationCurrent: () => true,
+        });
+        const service = host.bind(seed, createLoggerAndEventsAvailablePluginInvocationServiceBinding(
+            'generation-websocket-family',
+            'binding-websocket-family',
+            [{
+                required: true,
+                request: PluginHostAccessRequestV2Schema.parse({
+                    id: 'gateway',
+                    capability: 'network.client',
+                    reason: 'Maintain the provider-issued gateway connection',
+                    scope: {
+                        targets: [{ kind: 'httpsHostSuffix', hostSuffix: 'gateway.test' }],
+                        transports: ['websocket'],
+                    },
+                }),
+            }],
+        )) as WebSocketCapableHttpService;
+
+        await expect(service.openWebSocket({ url: 'wss://gateway.test/socket' }))
+            .resolves.toBe(connection);
+        await expect(service.openWebSocket({ url: 'wss://gateway-us-east1-b.gateway.test/socket' }))
+            .resolves.toBe(connection);
+        for (const url of [
+            // Suffix confusion, sibling registrable names and a bare prefix.
+            'wss://gateway.test.evil.example/socket',
+            'wss://notgateway.test/socket',
+            'wss://gateway.testz/socket',
+            // A non-standard port and plaintext leave the declared family.
+            'wss://gateway.test:8443/socket',
+            'ws://gateway.test/socket',
+            // A family member that resolves into a private range without the
+            // explicit private-network grant.
+            'wss://internal.gateway.test/socket',
+        ]) {
+            await expect(service.openWebSocket({ url })).rejects.toMatchObject({
+                code: expect.stringMatching(/^plugin_websocket_(permission_denied|insecure_url_denied)$/),
+            });
+        }
+        expect(openWebSocket).toHaveBeenCalledTimes(2);
+    });
+
     it('admits loopback ws only through explicit network.client private-network intent', async () => {
         const connection: PluginWebSocketConnection = Object.freeze({
             url: 'ws://127.0.0.1:4311/socket',

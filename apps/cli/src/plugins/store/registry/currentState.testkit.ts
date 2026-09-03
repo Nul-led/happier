@@ -86,7 +86,7 @@ export async function seedCurrentLocalPathPluginFixture(input: Readonly<{
     sourceRootPath: input.pluginRoot,
     manifestRelativePath: PLUGIN_MANIFEST_RELATIVE_PATH.split('\\').join('/'),
     distribution,
-    updatePolicy: 'manual',
+    updatePolicy: 'reviewEveryUpdate',
     createdAtMs,
   });
   const prepared = await prepareImmutablePluginGeneration({
@@ -114,7 +114,7 @@ export async function seedCurrentLocalPathPluginFixture(input: Readonly<{
       manifestVersion: input.manifestVersion,
       installedPath: prepared.rootPath,
       trust,
-      updatePolicy: 'manual',
+      updatePolicy: 'reviewEveryUpdate',
       optionalAccess: [],
     },
     state: {
@@ -145,7 +145,7 @@ export async function seedCurrentLocalPathPluginFixture(input: Readonly<{
         source: {
           distribution,
         },
-        updatePolicy: 'manual',
+        updatePolicy: 'reviewEveryUpdate',
         optionalAccess: [],
       },
     },

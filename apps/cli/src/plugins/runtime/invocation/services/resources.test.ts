@@ -609,7 +609,8 @@ describe('dynamic plugin resources (EU-4b §3.6.1)', () => {
                 pluginId: 'acme.alpha',
                 localId: 'live',
                 runtime: {
-                    read: () => produced,
+                    // Deliberately cross the plugin boundary with an invalid view below.
+                    read: () => produced as Uint8Array,
                     observe: () => ({ dispose: () => {} }),
                 },
             }],

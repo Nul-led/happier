@@ -552,9 +552,10 @@ describe('production registry session runner factory resolution', () => {
                 transcriptSession: {},
                 messageBuffer: new MessageBuffer(),
                 mcpServers: {},
-                permissionHandler: {},
+                permissionHandler: {
+                    cancelByPlugin: vi.fn(async () => undefined),
+                },
                 getPermissionMode: () => 'default',
-                setThinking: () => {},
                 memoryRecallGuidanceEnabled: false,
                 runnerProcessIdentity: null,
                 startupModelSelection: null,
@@ -568,6 +569,9 @@ describe('production registry session runner factory resolution', () => {
                             userMessageSeq: number;
                         }>,
                     ): Promise<void>;
+                    waitForTurnCompletion(options?: Readonly<{
+                        timeoutMs?: number | null;
+                    }>): Promise<void>;
                     cancelTurn(): Promise<void>;
                     subscribeRuntimeEvents(
                         listener: (event: Readonly<{ kind?: string; channel?: string }>) => void,
@@ -595,6 +599,10 @@ describe('production registry session runner factory resolution', () => {
                 localId: 'input-loaded-success',
                 userMessageSeq: 1,
             });
+            // Terminal event publication settles after the host's terminal
+            // lifecycle work; `waitForTurnCompletion` is the canonical
+            // completion barrier before asserting the terminal sequence.
+            await created.operations.waitForTurnCompletion({ timeoutMs: 10_000 });
             expect(observedEvents.map((event) => event.kind)).toEqual([
                 'input-accepted',
                 'turn-start',
@@ -615,6 +623,7 @@ describe('production registry session runner factory resolution', () => {
                 userMessageSeq: 2,
             });
             await created.operations.cancelTurn();
+            await created.operations.waitForTurnCompletion({ timeoutMs: 10_000 });
             expect(observedEvents.map((event) => event.kind)).toEqual([
                 'input-accepted',
                 'turn-start',

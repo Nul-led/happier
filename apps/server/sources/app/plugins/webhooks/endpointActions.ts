@@ -11,6 +11,8 @@ import {
     type PluginWebhookDeliveryMovePendingInputV1,
     type PluginWebhookEndpointCheckCorrespondenceInputV1,
     type PluginWebhookEndpointCheckCorrespondenceResultV1,
+    type PluginWebhookEndpointConvergeTargetInputV1,
+    type PluginWebhookEndpointConvergeTargetResultV1,
     type PluginWebhookEndpointEnsureInputV1,
     type PluginWebhookEndpointReadInputV1,
     type PluginWebhookEndpointRetargetInputV1,
@@ -32,6 +34,7 @@ import { createGeneratedPluginWebhookCredentialMaterialV1 } from "./credentialMa
 import { resolveCurrentPluginWebhookContributionTxV1 } from "./currentContribution";
 import { resolveCurrentPluginWebhookTargetTxV1 } from "./currentTarget";
 import { checkCurrentPluginWebhookEndpointCorrespondenceTxV1 } from "./endpointCorrespondence";
+import { convergeCurrentPluginWebhookEndpointTargetTxV1 } from "./endpointTargetConvergence";
 import {
     createPluginWebhookEndpointStoreV1,
     PluginWebhookEndpointStoreError,
@@ -319,6 +322,35 @@ export function createPluginWebhookEndpointActionsV1(options: Readonly<{
             }
             const serverIdentityId = await getOrCreateServerIdentityId(process.env);
             return await inTx(async (tx) => await checkCurrentPluginWebhookEndpointCorrespondenceTxV1({
+                tx,
+                serverIdentityId,
+                accountId: params.accountId,
+                input: params.input,
+            }));
+        },
+        /**
+         * Same principal boundary as `checkCorrespondence`: the caller plugin
+         * must be a current enabled plugin for this Account, and the endpoint
+         * decision itself belongs to its single transaction-scoped owner. The
+         * caller plugin is intentionally not required to be the contribution's
+         * provider plugin — a feature owner such as `happier.channels` drives
+         * an endpoint whose contribution belongs to the provider plugin — so
+         * the authorization that matters is the exact opaque endpoint identity
+         * plus its source-instance/setup correspondence.
+         */
+        convergeTarget: async (params: Readonly<{
+            accountId: string;
+            callerPluginId: string;
+            input: PluginWebhookEndpointConvergeTargetInputV1;
+        }>): Promise<PluginWebhookEndpointConvergeTargetResultV1> => {
+            if (
+                params.callerPluginId.length === 0
+                || !await isCurrentCallerPluginEnabledV1(params.accountId, params.callerPluginId)
+            ) {
+                return { kind: "unavailable", code: "endpoint_unavailable" };
+            }
+            const serverIdentityId = await getOrCreateServerIdentityId(process.env);
+            return await inTx(async (tx) => await convergeCurrentPluginWebhookEndpointTargetTxV1({
                 tx,
                 serverIdentityId,
                 accountId: params.accountId,

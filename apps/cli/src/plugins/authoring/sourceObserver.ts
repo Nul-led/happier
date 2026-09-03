@@ -55,10 +55,20 @@ export type PluginDevelopmentSourceObservation =
 export type StartWatchingPluginDirectory = (
   directoryPath: string,
   onChange: (changedPath: string) => void,
-) => () => void;
+) => Readonly<{
+  ready: Promise<void>;
+  stop(): void;
+}>;
 
 export type PluginDevelopmentSourceObserverHandle = Readonly<{
   stop(): void;
+  /**
+   * Settles (rejects) when a post-start scheduled refresh fails. The observer
+   * stops itself exactly once on that failure, and the owning command races
+   * its shutdown against this promise so a failed refresh neither becomes an
+   * unhandled rejection nor leaves the command waiting forever.
+   */
+  readonly failure: Promise<Error>;
 }>;
 
 /**
@@ -330,10 +340,19 @@ export async function inspectPluginDevelopmentSource(input: Readonly<{
 }
 
 const defaultStartWatchingDirectory: StartWatchingPluginDirectory = (directoryPath, onChange) => {
-  return startFileWatcher(directoryPath, onChange, {
+  let resolveReady!: () => void;
+  let rejectReady!: (error: Error) => void;
+  const ready = new Promise<void>((resolvePromise, rejectPromise) => {
+    resolveReady = resolvePromise;
+    rejectReady = rejectPromise;
+  });
+  const stop = startFileWatcher(directoryPath, onChange, {
     emitInitial: false,
     reportEventPath: true,
+    onWatcherAttached: resolveReady,
+    onWatcherUnavailable: rejectReady,
   });
+  return { ready, stop };
 };
 
 export async function startPluginDevelopmentSourceObserver(input: Readonly<{
@@ -346,7 +365,7 @@ export async function startPluginDevelopmentSourceObserver(input: Readonly<{
   startWatchingDirectory?: StartWatchingPluginDirectory;
 }>): Promise<PluginDevelopmentSourceObserverHandle> {
   const startWatchingDirectory = input.startWatchingDirectory ?? defaultStartWatchingDirectory;
-  const stops = new Map<string, () => void>();
+  const watchers = new Map<string, ReturnType<StartWatchingPluginDirectory>>();
   const debounceMs = input.debounceMs ?? 75;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let stopped = false;
@@ -355,23 +374,51 @@ export async function startPluginDevelopmentSourceObserver(input: Readonly<{
   let dependencyInputSignatures: ReadonlyMap<string, string | null> | undefined;
   let observedFileSignatures: ReadonlyMap<string, string> | undefined;
 
-  const reconcileDirectories = (directoryPaths: readonly string[]): void => {
-    if (stopped) return;
-    const nextDirectories = new Set(directoryPaths);
-    for (const [directoryPath, stop] of stops) {
-      if (nextDirectories.has(directoryPath)) continue;
-      stop();
-      stops.delete(directoryPath);
-    }
-    for (const directoryPath of nextDirectories) {
-      if (stops.has(directoryPath)) continue;
-      stops.set(directoryPath, startWatchingDirectory(directoryPath, () => scheduleRefresh()));
-    }
+  let rejectFailure!: (error: Error) => void;
+  const failure = new Promise<Error>((_resolve, rejectPromise) => {
+    rejectFailure = rejectPromise;
+  });
+  // The owner usually races its shutdown against `failure`, but it may stop
+  // first and never observe it. The attached handler keeps an observed failure
+  // from becoming a process-level unhandled rejection while the owner's race
+  // still sees the settlement.
+  void failure.catch(() => undefined);
+
+  const stopWatching = (): void => {
+    for (const watcher of watchers.values()) watcher.stop();
+    watchers.clear();
   };
 
-  const reconcileWatches = (observation: PluginDevelopmentSourceObservation): void => {
+  // Exactly-once termination owned by whichever comes first: the owner's
+  // `stop()` or the first post-start refresh failure.
+  const failAndStop = (error: unknown): void => {
+    if (stopped) return;
+    stopped = true;
+    if (timer) clearTimeout(timer);
+    stopWatching();
+    rejectFailure(error instanceof Error ? error : new Error(String(error)));
+  };
+
+  const reconcileDirectories = async (directoryPaths: readonly string[]): Promise<void> => {
+    if (stopped) return;
+    const nextDirectories = new Set(directoryPaths);
+    for (const [directoryPath, watcher] of watchers) {
+      if (nextDirectories.has(directoryPath)) continue;
+      watcher.stop();
+      watchers.delete(directoryPath);
+    }
+    for (const directoryPath of nextDirectories) {
+      if (watchers.has(directoryPath)) continue;
+      watchers.set(directoryPath, startWatchingDirectory(directoryPath, () => scheduleRefresh()));
+    }
+    await Promise.all([...nextDirectories].map(async (directoryPath) => {
+      await watchers.get(directoryPath)?.ready;
+    }));
+  };
+
+  const reconcileWatches = async (observation: PluginDevelopmentSourceObservation): Promise<void> => {
     if (!observation.ok) return;
-    reconcileDirectories(observation.observedDirectoryPaths);
+    await reconcileDirectories(observation.observedDirectoryPaths);
   };
 
   const refresh = async (): Promise<void> => {
@@ -415,7 +462,7 @@ export async function startPluginDevelopmentSourceObserver(input: Readonly<{
           };
         }
       }
-      reconcileWatches(observation);
+      await reconcileWatches(observation);
       if (observation.ok && observation.request.changedPaths?.length === 0) {
         return;
       }
@@ -447,19 +494,24 @@ export async function startPluginDevelopmentSourceObserver(input: Readonly<{
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => {
       timer = undefined;
-      void refresh();
+      refresh().catch((error) => failAndStop(error));
     }, debounceMs);
   }
 
-  await refresh();
+  try {
+    await refresh();
+  } catch (error) {
+    failAndStop(error);
+    throw error;
+  }
 
   return {
     stop(): void {
       if (stopped) return;
       stopped = true;
       if (timer) clearTimeout(timer);
-      for (const stop of stops.values()) stop();
-      stops.clear();
+      stopWatching();
     },
+    failure,
   };
 }

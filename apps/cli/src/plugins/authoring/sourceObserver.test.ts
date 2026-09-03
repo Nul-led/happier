@@ -168,7 +168,7 @@ describe('plugin development source observation', () => {
     }
   });
 
-  it('reports the exact literal-file revision through the real watcher', async () => {
+  it('is ready to report the first literal-file revision when startup resolves', async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), 'happier-plugin-source-one-file-watch-'));
     const sourcePath = join(projectRoot, 'plugin.ts');
     await writeFile(sourcePath, 'export const sentinel = 1;\n', 'utf8');
@@ -183,7 +183,6 @@ describe('plugin development source observation', () => {
     });
     try {
       expect(changedPathObservations).toEqual([undefined]);
-      await new Promise<void>((resolveReady) => setTimeout(resolveReady, 100));
       await writeFile(sourcePath, 'export const sentinel = 2;\n', 'utf8');
       await vi.waitFor(
         () => expect(changedPathObservations.at(-1)).toEqual(['plugin.ts']),
@@ -216,6 +215,76 @@ describe('plugin development source observation', () => {
     }
   });
 
+  it('stops attached directory watchers when startup readiness fails', async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), 'happier-plugin-source-watch-unavailable-'));
+    const stops: Array<ReturnType<typeof vi.fn>> = [];
+    try {
+      await writeProject(projectRoot);
+      await expect(startPluginDevelopmentSourceObserver({
+        projectRoot,
+        startWatchingDirectory: () => {
+          const stop = vi.fn();
+          stops.push(stop);
+          return { ready: Promise.reject(new Error('watcher unavailable')), stop };
+        },
+        onObservation: () => 'adopted',
+      })).rejects.toThrow('watcher unavailable');
+      expect(stops.length).toBeGreaterThan(0);
+      expect(stops.every((stop) => stop.mock.calls.length === 1)).toBe(true);
+    } finally {
+      await rm(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('settles the handle failure and stops watchers when a scheduled refresh rejects', async () => {
+    vi.useFakeTimers();
+    const projectRoot = await mkdtemp(join(tmpdir(), 'happier-plugin-source-observer-refresh-failure-'));
+    const callbacks = new Map<string, (changedPath: string) => void>();
+    const stopped = new Map<string, ReturnType<typeof vi.fn>>();
+    const startWatchingDirectory: StartWatchingPluginDirectory = (directoryPath, onChange) => {
+      callbacks.set(directoryPath, onChange);
+      const stop = vi.fn();
+      stopped.set(directoryPath, stop);
+      return { ready: Promise.resolve(), stop };
+    };
+    try {
+      await writeProject(projectRoot);
+      const canonicalProjectRoot = await realpath(projectRoot);
+      let observationCount = 0;
+      const handle = await startPluginDevelopmentSourceObserver({
+        projectRoot,
+        debounceMs: 10,
+        startWatchingDirectory,
+        onObservation: async (): Promise<PluginDevelopmentSourceObservationDelivery> => {
+          observationCount += 1;
+          if (observationCount === 1) return 'adopted';
+          throw new Error('post-start refresh failure');
+        },
+      });
+
+      await writeFile(join(projectRoot, 'src', 'index.ts'), "export const message = 'break';\n", 'utf8');
+      callbacks.get(join(canonicalProjectRoot, 'src'))?.(join(canonicalProjectRoot, 'src', 'index.ts'));
+      await vi.advanceTimersByTimeAsync(10);
+
+      // The scheduled refresh must not become an unhandled rejection: its
+      // failure settles the handle exactly once and stops the watcher set.
+      await expect(handle.failure).rejects.toThrow('post-start refresh failure');
+      expect(observationCount).toBe(2);
+      expect([...stopped.values()].every((stop) => stop.mock.calls.length === 1)).toBe(true);
+
+      // The owner's stop is a no-op after the failure stopped the observer,
+      // and a later watcher event must not schedule another refresh.
+      handle.stop();
+      callbacks.get(join(canonicalProjectRoot, 'src'))?.(join(canonicalProjectRoot, 'src', 'index.ts'));
+      await vi.advanceTimersByTimeAsync(50);
+      expect(observationCount).toBe(2);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+      await rm(projectRoot, { recursive: true, force: true });
+    }
+  });
+
   it('observes transitive edits and newly created nested modules with portable directory watches', async () => {
     vi.useFakeTimers();
     const projectRoot = await mkdtemp(join(tmpdir(), 'happier-plugin-source-watch-'));
@@ -225,7 +294,7 @@ describe('plugin development source observation', () => {
       callbacks.set(directoryPath, onChange);
       const stop = vi.fn();
       stopped.set(directoryPath, stop);
-      return stop;
+      return { ready: Promise.resolve(), stop };
     };
     try {
       await writeProject(projectRoot);
@@ -315,7 +384,7 @@ describe('plugin development source observation', () => {
     const callbacks = new Map<string, (changedPath: string) => void>();
     const startWatchingDirectory: StartWatchingPluginDirectory = (directoryPath, onChange) => {
       callbacks.set(directoryPath, onChange);
-      return () => undefined;
+      return { ready: Promise.resolve(), stop: () => undefined };
     };
     try {
       await writeProject(projectRoot);
@@ -373,7 +442,7 @@ describe('plugin development source observation', () => {
     }
   });
 
-  it('observes transitive edits and newly created nested modules through the real filesystem watcher', async () => {
+  it('observes the first package edit immediately after the real filesystem observer starts', async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), 'happier-plugin-source-watch-live-'));
     try {
       await writeProject(projectRoot);
@@ -397,7 +466,6 @@ describe('plugin development source observation', () => {
 
       try {
         expect(observations).toHaveLength(1);
-        await new Promise<void>((resolveReady) => setTimeout(resolveReady, 100));
 
         await writeFile(join(projectRoot, 'src', 'nested', 'message.ts'), "export const message = 'live-two';\n", 'utf8');
         await vi.waitFor(

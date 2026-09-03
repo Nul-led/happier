@@ -16,7 +16,10 @@ import { createPluginActionCallerMaterializationFixture } from './actionCaller.t
 
 type TestActionExecutorOverrides = Pick<
     ActionExecutorDeps,
-    'pluginPermissionGrantAction' | 'sessionPermissionRespond' | 'sessionUserActionAnswer'
+    'pluginPermissionGrantAction'
+    | 'sessionPermissionRespond'
+    | 'sessionUserActionAnswer'
+    | 'pluginWebhookAction'
 >;
 
 function createActionExecutorForTest(overrides: TestActionExecutorOverrides = {}) {
@@ -252,7 +255,7 @@ describe('plugin invocation ActionsService', () => {
         expect(execute).toHaveBeenCalledOnce();
     });
 
-    it('keeps permission and user-action decisions present-user gated', async () => {
+    it('keeps present-user decisions gated on the plugin Actions seam', async () => {
         const sessionUserActionAnswer = vi.fn<NonNullable<ActionExecutorDeps['sessionUserActionAnswer']>>(
             async (_args) => ({ ok: true }),
         );
@@ -273,22 +276,131 @@ describe('plugin invocation ActionsService', () => {
             invokeContributedAction: vi.fn(),
         });
 
-        await expect(Reflect.apply(service.execute, service, ['session.permission.respond', {
-            requestId: 'permission-1',
-            decision: 'allow',
-        }])).rejects.toMatchObject({ code: 'present_user_required' });
-
+        // The local present-user respond id is host-only: the ActionSpec excludes
+        // it from the Plugin surface (pinned by the canonical ActionSpec owner),
+        // so the plugin seam has no local permission-respond path at all. The
+        // plugin-reachable decision path is the mediated remote permission
+        // vertical reached through its own host-stamped owner.
         await expect(service.execute('session.user_action.answer', {
             requestId: 'question-1',
             answers: [{ question: 'Continue?', values: ['Yes'] }],
         })).rejects.toMatchObject({ code: 'present_user_required' });
         expect(sessionUserActionAnswer).not.toHaveBeenCalled();
+    });
 
-        await expect(Reflect.apply(service.execute, service, ['session.permission.respond', {
-            sessionId: 'session-forged',
-            requestId: 'permission-1',
-            decision: 'allow',
-        }])).rejects.toMatchObject({ code: 'present_user_required' });
+    // The daemon-side durable-push transfer repair reaches the generic webhook
+    // endpoint through exactly this seam, so this composition — real plugin
+    // ActionsService over the real canonical executor — is what decides whether
+    // a plugin may observe or move an endpoint at all. Generic observation and
+    // unrestricted retarget stay present-user administration and never reach
+    // the canonical webhook owner from a plugin; the correspondence check and
+    // the correspondence-gated target convergence are the two bounded
+    // capabilities the plugin surface owns.
+    it('keeps generic webhook endpoint observation and retarget outside plugin authority', async () => {
+        const pluginWebhookAction = vi.fn<NonNullable<ActionExecutorDeps['pluginWebhookAction']>>(
+            async () => ({
+                kind: 'ready' as const,
+                webhookEndpointId: 'wh_ep_AAAAAAAAAAAAAAAAAAAAAA',
+                revision: 4,
+            }),
+        );
+        const service = createPluginInvocationActionsService({
+            seed: {
+                plugin: { id: 'happier.channels', version: '1.0.0' },
+                resolveCurrentPluginMaterializationRef: createPluginActionCallerMaterializationFixture('happier.channels').resolveCurrentPluginMaterializationRef,
+                generation: 'generation-1',
+                correlationId: 'connection-transfer-1',
+                surface: 'background',
+                signal: new AbortController().signal,
+                isGenerationCurrent: () => true,
+            },
+            actionExecutor: createActionExecutorForTest({ pluginWebhookAction }),
+            invokeContributedAction: vi.fn(),
+        });
+
+        await expect(service.execute('plugin.webhook.endpoint.read', {
+            webhookEndpointId: 'wh_ep_AAAAAAAAAAAAAAAAAAAAAA',
+        })).rejects.toMatchObject({ code: 'present_user_required' });
+
+        await expect(service.execute('plugin.webhook.endpoint.retarget', {
+            webhookEndpointId: 'wh_ep_AAAAAAAAAAAAAAAAAAAAAA',
+            expectedRevision: 4,
+            targetMaterialization: {
+                machineId: 'machine-2',
+                materializationId: 'materialization-2',
+                pluginId: 'happier.channels',
+            },
+            idempotencyKey: 'xfer.connection-1.5.webhook',
+        })).rejects.toMatchObject({ code: 'present_user_required' });
+
+        expect(pluginWebhookAction).not.toHaveBeenCalled();
+
+        await expect(service.execute('plugin.webhook.endpoint.checkCorrespondence', {
+            webhookEndpointId: 'wh_ep_AAAAAAAAAAAAAAAAAAAAAA',
+            webhookContribution: { pluginId: 'happier.channels', localId: 'webhook' },
+            targetMaterialization: {
+                machineId: 'machine-2',
+                materializationId: 'materialization-2',
+                pluginId: 'happier.channels',
+            },
+            sourceInstanceId: 'channels.connection.connection-1',
+            setup: { kind: 'accountEndpointV1', credential: 'serverGenerated' },
+        })).resolves.toMatchObject({ kind: 'ready' });
+
+        expect(pluginWebhookAction).toHaveBeenCalledOnce();
+    });
+
+    // The composed seam the durable-push transfer actually depends on: a
+    // daemon-side Channels caller with no present user must be able to
+    // converge the endpoint it already owns onto its committed desired
+    // target, carrying the stamped caller through to the canonical webhook
+    // owner and no endpoint revision of its own.
+    it('admits correspondence-gated endpoint target convergence for a daemon-side plugin caller', async () => {
+        const pluginWebhookAction = vi.fn<NonNullable<ActionExecutorDeps['pluginWebhookAction']>>(
+            async () => ({
+                kind: 'converged' as const,
+                webhookEndpointId: 'wh_ep_AAAAAAAAAAAAAAAAAAAAAA',
+                revision: 5,
+                targetMaterialization: {
+                    machineId: 'machine-2',
+                    materializationId: 'materialization-2',
+                    pluginId: 'happier.channels',
+                },
+                targetIntentEpoch: 5,
+            }),
+        );
+        const service = createPluginInvocationActionsService({
+            seed: {
+                plugin: { id: 'happier.channels', version: '1.0.0' },
+                resolveCurrentPluginMaterializationRef: createPluginActionCallerMaterializationFixture('happier.channels').resolveCurrentPluginMaterializationRef,
+                generation: 'generation-1',
+                correlationId: 'connection-transfer-2',
+                surface: 'background',
+                signal: new AbortController().signal,
+                isGenerationCurrent: () => true,
+            },
+            actionExecutor: createActionExecutorForTest({ pluginWebhookAction }),
+            invokeContributedAction: vi.fn(),
+        });
+
+        await expect(service.execute('plugin.webhook.endpoint.convergeTarget', {
+            webhookEndpointId: 'wh_ep_AAAAAAAAAAAAAAAAAAAAAA',
+            webhookContribution: { pluginId: 'happier.channels', localId: 'webhook' },
+            sourceInstanceId: 'channels.connection.connection-1',
+            setup: { kind: 'accountEndpointV1', credential: 'serverGenerated' },
+            desiredTargetMaterialization: {
+                machineId: 'machine-2',
+                materializationId: 'materialization-2',
+                pluginId: 'happier.channels',
+            },
+            targetIntentEpoch: 5,
+        })).resolves.toMatchObject({ kind: 'converged', revision: 5, targetIntentEpoch: 5 });
+
+        expect(pluginWebhookAction).toHaveBeenCalledOnce();
+        expect(pluginWebhookAction.mock.calls[0]?.[0]).toMatchObject({
+            actionId: 'plugin.webhook.endpoint.convergeTarget',
+            caller: { kind: 'plugin', pluginId: 'happier.channels' },
+        });
     });
 
     it('reaches the canonical daemon browser owner with host-stamped identity and composed cancellation', async () => {
@@ -423,6 +535,59 @@ describe('plugin invocation ActionsService', () => {
                 },
                 actionRequestId: 'correlation-1:memory.search:1',
                 signal: retirement.signal,
+            }),
+        );
+    });
+
+    it('binds retained Agent Actions to the active turn authority and source Session', async () => {
+        const execute = vi.fn(async () => ({
+            ok: true as const,
+            result: { sessions: [] },
+        }));
+        const causalPermissionAuthority = Object.freeze({
+            kind: 'admittedSessionInputV1' as const,
+            admittedPermissionCeiling: 'read-only',
+        });
+        const service = createPluginInvocationActionsService({
+            seed: {
+                plugin: { id: 'acme.agent', version: '1.0.0' },
+                resolveCurrentPluginMaterializationRef:
+                    createPluginActionCallerMaterializationFixture('acme.agent')
+                        .resolveCurrentPluginMaterializationRef,
+                contribution: { id: 'agent', qualifiedId: 'acme.agent/agents/agent' },
+                generation: 'generation-1',
+                correlationId: 'invocation-1',
+                surface: 'agent',
+                session: { id: 'session-1' },
+                signal: new AbortController().signal,
+                readActiveTurnAdmissionWitness: () => ({
+                    inputId: 'input-1',
+                    turnId: 'turn-1',
+                    userMessageSeq: 7,
+                    userMessageSeqs: [7],
+                    causalPermissionAuthority,
+                    callerPermissionMode: 'yolo',
+                }),
+                isGenerationCurrent: () => true,
+            },
+            actionExecutor: { execute },
+            invokeContributedAction: vi.fn(),
+        });
+
+        await expect(service.execute('session.list', {})).resolves.toEqual({ sessions: [] });
+        expect(execute).toHaveBeenCalledWith(
+            'session.list',
+            {},
+            expect.objectContaining({
+                surface: 'agent',
+                authority: 'account_automation',
+                callerPermissionMode: 'yolo',
+                causalPermissionAuthority,
+                sessionInputSource: {
+                    sourceSessionId: 'session-1',
+                    sourceTurnId: 'turn-1',
+                    via: 'action',
+                },
             }),
         );
     });

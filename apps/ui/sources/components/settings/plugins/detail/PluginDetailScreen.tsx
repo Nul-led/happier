@@ -1,11 +1,13 @@
 import * as React from 'react';
 import { Redirect, useNavigation } from 'expo-router';
 import type { PluginPortableReleaseManifestV1 } from '@happier-dev/protocol/plugins/availability';
+import { useUnistyles } from 'react-native-unistyles';
 
 import type { PluginProjectionEntry } from '@/agents/backendCatalog/daemonContributionRegistryProjectionAdapters';
 import { MachineAdministrationTargetSelector } from '@/components/settings/machines/MachineAdministrationTargetSelector';
 import { PluginMachineExecutionOriginSelectorView } from '@/components/settings/machines/PluginMachineExecutionOriginSelector';
 import { ItemList } from '@/components/ui/lists/ItemList';
+import { PaneLoadingFallback } from '@/components/ui/panels/PaneLoadingFallback';
 import { usePluginMachineExecutionOriginSelection } from '@/sync/domains/machines/administration/usePluginExecutionOriginSelection';
 import {
     useActivePluginAccountAvailabilityReader,
@@ -33,6 +35,7 @@ import type { InstalledPluginEntry } from '../model/pluginMarketplaceModel';
 import { PluginAccountDataEraseRecoverySection } from '../PluginAccountDataEraseRecoverySection';
 import { PluginAccountReleaseSelectionSection } from '../PluginAccountReleaseSelectionSection';
 import { PluginReadOnlySnapshotNotice } from '../PluginReadOnlySnapshotNotice';
+import { PluginUpdatePolicySection } from './PluginUpdatePolicySection';
 
 type NavigationLike = Readonly<{
     setOptions?: (options: Readonly<{ headerTitle?: string }>) => void;
@@ -66,6 +69,15 @@ function PluginDetailCurrentContent(props: Readonly<{
                     onRetry={props.state.refreshPluginTruth}
                 />
             ) : null}
+            {props.installed ? (
+                <>
+                    <PluginDetailHeader installed={props.installed} projection={props.projection} />
+                    <PluginDetailSummaryGrid
+                        installed={props.installed}
+                        projection={props.projection}
+                    />
+                </>
+            ) : null}
             {/*
               * Two different facts, both true at once, and neither derivable
               * from the other: the plugin EXECUTES on the origin below, while
@@ -75,10 +87,12 @@ function PluginDetailCurrentContent(props: Readonly<{
               */}
             <MachineAdministrationTargetSelector
                 selection={props.state.administrationTargetSelection}
+                groupTitle={t('settingsPlugins.administrationMachineTitle')}
                 testIDPrefix="settings.plugins.detail.administration.target"
             />
             <PluginMachineExecutionOriginSelectorView
                 selection={selection}
+                groupTitle={t('settingsPlugins.executionOriginTitle')}
                 testIDPrefix="settings.plugins.detail.executionOrigin"
             />
             {/*
@@ -92,16 +106,23 @@ function PluginDetailCurrentContent(props: Readonly<{
             />
             {props.installed ? (
                 <>
-                    <PluginDetailHeader installed={props.installed} projection={props.projection} />
-                    <PluginDetailSummaryGrid
-                        installed={props.installed}
-                        projection={props.projection}
-                    />
                     <PluginDetailActionsSection
                         installed={props.installed}
                         actionInFlight={props.state.isPluginActionInFlight(props.installed.pluginId)}
                         canRunActions={props.state.canRefreshInstalledPlugins}
                         onAction={props.state.runInstalledPluginAction}
+                    />
+                    <PluginUpdatePolicySection
+                        installed={props.installed}
+                        targetLabel={props.state.administrationTargetLabel}
+                        disabled={
+                            !props.state.daemonOperationsAvailable
+                            || props.state.isPluginActionInFlight(props.installed.pluginId)
+                        }
+                        onSelect={(policy) => props.state.setInstalledPluginUpdatePolicy(
+                            props.installed!.pluginId,
+                            policy,
+                        )}
                     />
                     <PluginAccountDataEraseRecoverySection
                         pluginId={props.installed.pluginId}
@@ -109,7 +130,7 @@ function PluginDetailCurrentContent(props: Readonly<{
                     />
                 </>
             ) : null}
-            {accountReleaseVersion ? (
+            {accountReleaseVersion || props.accountAvailability ? (
                 <PluginAccountReleaseSelectionSection
                     pluginId={props.pluginId}
                     version={accountReleaseVersion}
@@ -154,6 +175,7 @@ export const PluginDetailScreen = React.memo(function PluginDetailScreen(props: 
     pluginId: string | null;
 }>) {
     const navigation = useNavigation() as NavigationLike;
+    const { theme } = useUnistyles();
     const state = usePluginSettingsScreenState();
     const accountAvailability = useActivePluginAccountAvailabilityReader();
     const installed = props.pluginId ? (state.installedPluginById.get(props.pluginId) ?? null) : null;
@@ -185,7 +207,25 @@ export const PluginDetailScreen = React.memo(function PluginDetailScreen(props: 
         if (headerTitle) navigation.setOptions?.({ headerTitle });
     }, [headerTitle, navigation]);
 
-    if (!props.pluginId || (!installed && !projection && !accountRecoveryPluginId)) {
+    if (!props.pluginId) {
+        return <Redirect href="/settings/plugins" />;
+    }
+
+    if (!installed && !projection && !accountRecoveryPluginId && !state.pluginTruthSettled) {
+        return state.readOnlySnapshotNotice ? (
+            <ItemList style={{ paddingTop: 0 }}>
+                <PluginReadOnlySnapshotNotice
+                    testID="settings.plugins.detail.readOnlySnapshot"
+                    reason={state.readOnlySnapshotNotice.reason}
+                    onRetry={state.refreshPluginTruth}
+                />
+            </ItemList>
+        ) : (
+            <PaneLoadingFallback color={theme.colors.text.secondary} />
+        );
+    }
+
+    if (!installed && !projection && !accountRecoveryPluginId) {
         return <Redirect href="/settings/plugins" />;
     }
 
@@ -238,6 +278,21 @@ export const PluginDetailScreen = React.memo(function PluginDetailScreen(props: 
                     daemonOperationsAvailable={false}
                 />
             ) : null}
+            {/*
+              * Account-hosted UI artifacts outlive every machine installation
+              * — hosting exists precisely so this release still loads when no
+              * daemon offers it. Their status, opt-out, removal and local cache
+              * clear therefore stay reachable on this Account-only route; the
+              * section hides itself when no hosting fact is current.
+              */}
+            <PluginAccountReleaseSelectionSection
+                pluginId={recoveryPluginId}
+                version={null}
+                reader={accountAvailability}
+                projection={null}
+                daemon={{ serverId: null, serverIdentityId: null, machineId: null }}
+                testID={`settings.plugins.detail.${recoveryPluginId}.accountRelease`}
+            />
             <PluginAccountDataEraseRecoverySection
                 pluginId={recoveryPluginId}
                 testID={`settings.plugins.detail.${recoveryPluginId}.accountDataErase`}

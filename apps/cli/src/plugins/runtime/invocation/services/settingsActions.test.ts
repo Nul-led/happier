@@ -122,7 +122,7 @@ describe('generic plugin settings actions', () => {
         });
     });
 
-    it('persists a byte-small deeply nested settings-action patch through the CLI owner', async () => {
+    it('refuses a byte-small deeply nested settings-action patch at the canonical record bound', async () => {
         let record: unknown | null = null;
         const nestedContribution: PluginSettingsContributionV2 = {
             ...contribution,
@@ -163,6 +163,9 @@ describe('generic plugin settings actions', () => {
             execute: async () => ({ patch: { nested: deepPatchValue } }),
         });
 
+        // A declared field schema may admit deep ordinary JSON, but the scoped
+        // persisted-record owner rejects it with the typed bounded-record
+        // result before any write, exactly like the Account scope.
         await expect(invoker.invoke({
             declaration: nestedContribution.actions![0]!,
             contributionId: nestedContribution.id,
@@ -170,12 +173,8 @@ describe('generic plugin settings actions', () => {
             seed: seed(),
             userGesture: true,
             expectedRevision: '0',
-        })).resolves.toMatchObject({
-            revision: '1',
-            changedIds: ['nested'],
-            values: { nested: deepPatchValue },
-        });
-        expect(record).toMatchObject({ values: { nested: deepPatchValue } });
+        })).rejects.toMatchObject({ code: 'plugin_settings_values_too_large' });
+        expect(record).toBeNull();
     });
 
     it('admits only one invocation for the same contribution action at a time', async () => {

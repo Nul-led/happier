@@ -6,12 +6,10 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   createArchivePluginDistributionIdentity,
-  createPluginCuratedUpdateSourceBinding,
   createLocalPathPluginDistributionIdentity,
   createNpmPluginDistributionIdentity,
   createPluginTrustRecord,
   isPluginTrustRecordAuthorized,
-  PluginCuratedUpdateSourceBindingSchema,
   PluginTrustRecordSchema,
   pluginDistributionIdentitiesEqual,
   pluginDistributionRollbackLineagesEqual,
@@ -26,24 +24,6 @@ afterEach(async () => {
 });
 
 describe('whole-plugin installation trust identity', () => {
-  it('retains curated automatic-update authority as canonical source facts, not publisher metadata', () => {
-    const binding = createPluginCuratedUpdateSourceBinding({
-      id: 'marketplace:curated',
-      sourceUrl: 'HTTPS://marketplace.example.test:443/catalog.json',
-      registryProfileId: 'registry_private',
-    });
-
-    expect(binding).toEqual({
-      id: 'marketplace:curated',
-      sourceUrl: 'https://marketplace.example.test/catalog.json',
-      registryProfileId: 'registry_private',
-    });
-    expect(PluginCuratedUpdateSourceBindingSchema.safeParse({
-      ...binding,
-      publisher: { id: 'publisher:untrusted' },
-    }).success).toBe(false);
-  });
-
   it('binds npm trust to plugin id, registry origin, exact registry profile, and package name but not update policy', () => {
     const distribution = createNpmPluginDistributionIdentity({
       registryOrigin: 'https://registry.example.test/',
@@ -87,7 +67,7 @@ describe('whole-plugin installation trust identity', () => {
       }),
     })).toBe(false);
 
-    const automatic = { trust, updatePolicy: 'automatic' as const };
+    const automatic = { trust, updatePolicy: 'reviewSensitiveChanges' as const };
     const pinned = { trust, updatePolicy: 'pinned' as const };
     expect(automatic.trust).toEqual(pinned.trust);
   });

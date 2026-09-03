@@ -3,7 +3,9 @@ import { join, resolve } from 'node:path';
 
 import {
   PluginIdSchema,
+  PluginScaffoldTemplateSchema,
   PluginScaffoldUiModeSchema,
+  type PluginScaffoldTemplate,
   type PluginScaffoldUiMode,
 } from '@happier-dev/protocol';
 import { PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1 } from '@happier-dev/plugin-sdk/ui/build';
@@ -12,6 +14,11 @@ import {
   expandHomeDirPath,
   isCanonicalAbsolutePathInsideRoot,
 } from '@/utils/path/expandHomeDirPath';
+import {
+  createSessionAgentPluginSource,
+  createSessionAgentRunnerSource,
+  createSessionAgentTestSource,
+} from './sessionAgentTemplate';
 
 export type PluginScaffoldDiagnostic = Readonly<{
   code: 'plugin_scaffold_invalid_input' | 'plugin_scaffold_target_exists' | 'plugin_scaffold_failed';
@@ -23,6 +30,7 @@ export type PluginScaffoldDiagnostic = Readonly<{
 // `PluginScaffoldUiModeSchema` so the CLI flag and the `plugins.scaffold`
 // action input cannot diverge.
 export type { PluginScaffoldUiMode };
+export type { PluginScaffoldTemplate };
 
 export type ScaffoldLocalPluginResult =
   | Readonly<{
@@ -237,7 +245,7 @@ function createPluginAuthoringSkillSource(invokerName: string, ui?: PluginScaffo
     `When deliberately preparing from an approved registry origin, pass \`--sdk-registry <origin>\` to \`${invokerName} plugins dev\`, \`${invokerName} plugins dev install .\`, or \`${invokerName} plugins pack .\`.`,
     `3. Make the smallest source change, then use \`${invokerName} plugins dev typecheck .\`, \`${invokerName} plugins dev build .\`, and \`${invokerName} plugins test .\` for focused checks. Validate through the managed source-development lifecycle; do not create or install a local release archive as an additional feature-QA gate.`,
     `4. Use \`${invokerName} plugins doctor .\` to diagnose an import or top-level evaluation issue; it evaluates once and does not prove repeated evaluation is pure.`,
-    '5. Use the installed `node_modules/@happier-dev/plugin-sdk/examples/` as copyable public patterns, then adapt the smallest matching example through documented SDK exports. For a custom persistent Session Agent, start from `node_modules/@happier-dev/plugin-sdk/examples/session-agent/` after the generic scaffold; its package-root entry and import-safe Session runner leaf are the maintained executable reference. Use `node_modules/@happier-dev/plugin-sdk/examples/advanced-package-root/` only when the same package also needs an External Sessions companion, a managed Provider, Connected Accounts, Resources, or daemon-generation background work.',
+    `5. Use the installed \`node_modules/@happier-dev/plugin-sdk/examples/\` as public patterns, then adapt the smallest matching example through documented SDK exports. For a custom persistent Session Agent, start with \`${invokerName} plugins create <name> --template session-agent\`; \`node_modules/@happier-dev/plugin-sdk/examples/session-agent/\` remains the richer deterministic lifecycle reference. Use \`node_modules/@happier-dev/plugin-sdk/examples/advanced-package-root/\` only when the same package also needs External Sessions, a Provider, Connected Accounts, Resources, or background work.`,
     '',
     'The daemon owns prepared-change custody, activation, and the retained last-known-good generation. If dependency preparation, evaluation, or a UI build fails, fix the source and let the normal development cycle retry; do not start another watcher or loader.',
     '',
@@ -816,11 +824,13 @@ export async function scaffoldLocalPlugin(params: Readonly<{
   displayName: string;
   invokerName?: string;
   ui?: PluginScaffoldUiMode;
+  template?: PluginScaffoldTemplate;
 }>): Promise<ScaffoldLocalPluginResult> {
   const rawTargetDir = params.targetDir.trim();
   const pluginId = params.pluginId.trim();
   const displayName = params.displayName.trim();
   const ui = params.ui;
+  const template = params.template;
   const invokerName = params.invokerName?.trim() || 'happier';
 
   if (!rawTargetDir) {
@@ -849,6 +859,18 @@ export async function scaffoldLocalPlugin(params: Readonly<{
     return {
       ok: false,
       diagnostics: [createDiagnostic('plugin_scaffold_invalid_input', 'Only --ui hostedWeb or --ui reactNative is supported for plugin scaffolds')],
+    };
+  }
+  if (template !== undefined && !PluginScaffoldTemplateSchema.safeParse(template).success) {
+    return {
+      ok: false,
+      diagnostics: [createDiagnostic('plugin_scaffold_invalid_input', 'Only --template session-agent is supported for plugin scaffolds')],
+    };
+  }
+  if (template === 'session-agent' && ui !== undefined) {
+    return {
+      ok: false,
+      diagnostics: [createDiagnostic('plugin_scaffold_invalid_input', 'The session-agent template does not include a UI surface; omit --ui')],
     };
   }
 
@@ -883,6 +905,9 @@ export async function scaffoldLocalPlugin(params: Readonly<{
   // is what lets the config import the typed surface declaration directly.
   const uiBuildConfigPath = join(targetDir, 'pluginUiBuild.ts');
   const uiSurfaceModulePath = join(targetDir, ...MAIN_SURFACE_MODULE_RELATIVE_PATH.split('/'));
+  const sessionAgentEntryPath = template === 'session-agent'
+    ? join(targetDir, 'src', 'agent', 'sessionAgent.ts')
+    : undefined;
 
   try {
     await mkdir(join(targetDir, 'src'), { recursive: true });
@@ -890,6 +915,9 @@ export async function scaffoldLocalPlugin(params: Readonly<{
     await mkdir(join(targetDir, ...PLUGIN_AUTHORING_SKILL_DIRECTORY), { recursive: true });
     if (uiEntryPath) {
       await mkdir(join(targetDir, 'src', 'ui'), { recursive: true });
+    }
+    if (sessionAgentEntryPath) {
+      await mkdir(join(targetDir, 'src', 'agent'), { recursive: true });
     }
     await writeFile(
       packageJsonPath,
@@ -903,10 +931,21 @@ export async function scaffoldLocalPlugin(params: Readonly<{
     );
     await writeFile(
       sourceEntryPath,
-      createPluginSource({ pluginId, displayName, ui }),
+      template === 'session-agent'
+        ? createSessionAgentPluginSource({ pluginId, displayName, version: DEFAULT_PLUGIN_VERSION })
+        : createPluginSource({ pluginId, displayName, ui }),
       'utf8',
     );
-    await writeFile(testEntryPath, createPluginTestSource({ pluginId, displayName, ui }), 'utf8');
+    await writeFile(
+      testEntryPath,
+      template === 'session-agent'
+        ? createSessionAgentTestSource()
+        : createPluginTestSource({ pluginId, displayName, ui }),
+      'utf8',
+    );
+    if (sessionAgentEntryPath) {
+      await writeFile(sessionAgentEntryPath, createSessionAgentRunnerSource(), 'utf8');
+    }
     await writeFile(tsconfigPath, createTypeScriptConfig(), 'utf8');
     await writeFile(authoringSkillPath, createPluginAuthoringSkillSource(invokerName, ui), 'utf8');
     if (uiEntryPath && ui !== undefined) {

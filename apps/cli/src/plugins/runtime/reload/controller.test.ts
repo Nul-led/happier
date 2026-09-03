@@ -731,6 +731,74 @@ describe('createPluginReloadController', () => {
         }
     });
 
+    it('forwards a newer Session-access witness to a lease-held predecessor while its adoption hook is still settling', async () => {
+        const applyPredecessorWitness = vi.fn();
+        const applyPreparedWitness = vi.fn();
+        const predecessorRegistry = createRuntimeRegistry('predecessor', {
+            applyResourceSessionAccessWitness: applyPredecessorWitness,
+        });
+        const preparedRegistry = createRuntimeRegistry('prepared', {
+            applyResourceSessionAccessWitness: applyPreparedWitness,
+        });
+        const controller = createPluginReloadController({
+            resolveRuntimeRegistry: async () => predecessorRegistry,
+        });
+        const predecessorLease = await controller.acquireRuntimeRegistry();
+
+        try {
+            const hookPublished = createDeferred<void>();
+            const releaseAdoptionHook = createDeferred<void>();
+            const adoption = controller.adoptPreparedRuntimeRegistry({
+                registry: preparedRegistry,
+                changedPluginIds: [],
+                durableRevision: 1,
+                runningSessionDisposition: 'retainRunningSessions',
+                beforePublish: async (_registry, publish) => {
+                    publish();
+                    hookPublished.resolve();
+                    await releaseAdoptionHook.promise;
+                },
+            });
+            await hookPublished.promise;
+            expect(controller.getState().activeRegistry).toBe(preparedRegistry);
+
+            // The predecessor is lease-held and under shutdown custody while
+            // this blocked post-publication hook settles, so a witness
+            // arriving in that window must still reach its retained Resource
+            // contexts alongside the newly published generation.
+            controller.applyResourceSessionAccessWitness({
+                accountId: 'account-a',
+                witness: {
+                    v: 1,
+                    throughCursor: 13,
+                    entries: [{ sessionId: 'session-new', cursor: 13, status: 'unavailable' }],
+                },
+            });
+            expect(applyPredecessorWitness).toHaveBeenCalledExactlyOnceWith({
+                accountId: 'account-a',
+                witness: {
+                    v: 1,
+                    throughCursor: 13,
+                    entries: [{ sessionId: 'session-new', cursor: 13, status: 'unavailable' }],
+                },
+            });
+            expect(applyPreparedWitness).toHaveBeenCalledExactlyOnceWith({
+                accountId: 'account-a',
+                witness: {
+                    v: 1,
+                    throughCursor: 13,
+                    entries: [{ sessionId: 'session-new', cursor: 13, status: 'unavailable' }],
+                },
+            });
+
+            releaseAdoptionHook.resolve();
+            await adoption;
+        } finally {
+            await predecessorLease.release();
+            await controller.shutdown();
+        }
+    });
+
     it('keeps prepared registry adoption monotonic by durable desired revision', async () => {
         const revisionOne = createRuntimeRegistry('revision-one');
         const revisionTwo = createRuntimeRegistry('revision-two');
@@ -801,7 +869,7 @@ describe('createPluginReloadController', () => {
         });
         await lowerEntered.promise;
 
-        const unrelatedLease = controller.tryAcquireRuntimeRegistry?.();
+        const unrelatedLease = controller.tryAcquireRuntimeRegistry();
         expect(unrelatedLease?.registry).toBe(initialRegistry);
         await unrelatedLease?.release();
 
@@ -885,7 +953,7 @@ describe('createPluginReloadController', () => {
             [['acme.lower']],
             [['acme.higher']],
         ]);
-        const leaseWhileBothPending = controller.tryAcquireRuntimeRegistry?.();
+        const leaseWhileBothPending = controller.tryAcquireRuntimeRegistry();
         expect(leaseWhileBothPending?.registry).toBe(initialRegistry);
         await leaseWhileBothPending?.release();
 
@@ -967,7 +1035,7 @@ describe('createPluginReloadController', () => {
         expect(coldLease.registry).toBe(coldRegistry);
         expect(retireColdPluginConsumers).toHaveBeenCalledExactlyOnceWith(['acme.higher']);
         expect(retireColdConsumers).not.toHaveBeenCalled();
-        const unrelatedLease = controller.tryAcquireRuntimeRegistry?.();
+        const unrelatedLease = controller.tryAcquireRuntimeRegistry();
         expect(unrelatedLease?.registry).toBe(coldRegistry);
         await unrelatedLease?.release();
 
@@ -1009,7 +1077,7 @@ describe('createPluginReloadController', () => {
             beforePublish,
         })).rejects.toBe(failure);
 
-        const immediateLease = controller.tryAcquireRuntimeRegistry?.() ?? null;
+        const immediateLease = controller.tryAcquireRuntimeRegistry();
         const immediateRegistry = immediateLease?.registry ?? null;
         await immediateLease?.release();
         const acquisitionOutcome = await controller.acquireRuntimeRegistry().then(
@@ -1206,6 +1274,78 @@ describe('createPluginReloadController', () => {
         expect(startAdoptedBackgroundServices).not.toHaveBeenCalled();
     });
 
+    it('keeps a published predecessor under shutdown custody across a blocked adoption hook', async () => {
+        const disposeInitial = vi.fn(async () => {});
+        const disposePrepared = vi.fn(async () => {});
+        const initialRegistry = createRuntimeRegistry('initial', { dispose: disposeInitial });
+        const preparedRegistry = createRuntimeRegistry('prepared', { dispose: disposePrepared });
+        const controller = createPluginReloadController({
+            resolveRuntimeRegistry: async () => initialRegistry,
+        });
+        const initialLease = await controller.acquireRuntimeRegistry();
+        await initialLease.release();
+
+        const hookPublished = createDeferred<void>();
+        const releaseAdoptionHook = createDeferred<void>();
+        const adoption = controller.adoptPreparedRuntimeRegistry({
+            registry: preparedRegistry,
+            changedPluginIds: ['acme.plugin'],
+            durableRevision: 1,
+            runningSessionDisposition: 'retainRunningSessions',
+            beforePublish: async (_registry, publish) => {
+                publish();
+                hookPublished.resolve();
+                await releaseAdoptionHook.promise;
+            },
+        });
+        await hookPublished.promise;
+        expect(controller.getState().activeRegistry).toBe(preparedRegistry);
+
+        await controller.shutdown({ timeoutMs: 5_000 });
+        releaseAdoptionHook.resolve();
+
+        await expect(adoption).rejects.toThrow(/shut down/i);
+        expect(disposeInitial).toHaveBeenCalledTimes(1);
+        expect(disposePrepared).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not dispose a leased predecessor through an ordinary release while its adoption hook settles', async () => {
+        const disposeInitial = vi.fn(async () => {});
+        const initialRegistry = createRuntimeRegistry('initial', { dispose: disposeInitial });
+        const preparedRegistry = createRuntimeRegistry('prepared');
+        const controller = createPluginReloadController({
+            resolveRuntimeRegistry: async () => initialRegistry,
+        });
+        const predecessorLease = await controller.acquireRuntimeRegistry();
+
+        const hookPublished = createDeferred<void>();
+        const releaseAdoptionHook = createDeferred<void>();
+        const adoption = controller.adoptPreparedRuntimeRegistry({
+            registry: preparedRegistry,
+            changedPluginIds: ['acme.plugin'],
+            durableRevision: 1,
+            runningSessionDisposition: 'retainRunningSessions',
+            beforePublish: async (_registry, publish) => {
+                publish();
+                hookPublished.resolve();
+                await releaseAdoptionHook.promise;
+            },
+        });
+        await hookPublished.promise;
+
+        // The published predecessor is under shutdown custody until the
+        // adoption settles, so an ordinary retirement release may only drop
+        // the lease count: the publication writer fence is still being
+        // released by the pre-publication owner.
+        await predecessorLease.release();
+        expect(disposeInitial).not.toHaveBeenCalled();
+
+        releaseAdoptionHook.resolve();
+        await adoption;
+        await vi.waitFor(() => expect(disposeInitial).toHaveBeenCalledTimes(1));
+        await controller.shutdown();
+    });
+
     it('waits for cold initialization before adopting a prepared registry', async () => {
         const coldDeferred = createDeferred<ResolvedExecutablePluginRuntimeRegistry>();
         const coldRegistry = createRuntimeRegistry('cold');
@@ -1301,7 +1441,7 @@ describe('createPluginReloadController', () => {
         });
         await preparedEntered.promise;
 
-        const immediateLease = controller.tryAcquireRuntimeRegistry?.() ?? null;
+        const immediateLease = controller.tryAcquireRuntimeRegistry();
         const immediateRegistry = immediateLease?.registry ?? null;
         await immediateLease?.release();
         const predecessorCurrentDuringAdoption =
@@ -1455,11 +1595,11 @@ describe('createPluginReloadController', () => {
             resolveRuntimeRegistry: async () => registry,
         });
 
-        expect(controller.tryAcquireRuntimeRegistry?.()).toBeNull();
+        expect(controller.tryAcquireRuntimeRegistry()).toBeNull();
         const coldLease = await controller.acquireRuntimeRegistry();
         await coldLease.release();
 
-        const activeLease = controller.tryAcquireRuntimeRegistry?.();
+        const activeLease = controller.tryAcquireRuntimeRegistry();
         expect(activeLease?.registry).toBe(registry);
         await activeLease?.release();
     });
@@ -1482,7 +1622,7 @@ describe('createPluginReloadController', () => {
             runningSessionDisposition: 'retainRunningSessions',
         });
 
-        const preparedLease = controller.tryAcquireRuntimeRegistry?.();
+        const preparedLease = controller.tryAcquireRuntimeRegistry();
         expect(preparedLease?.durableRevision).toBe(4);
         await preparedLease?.release();
     });

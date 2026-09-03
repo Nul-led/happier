@@ -18,6 +18,7 @@ import { inTx, type Tx } from "@/storage/inTx";
 import { getActivePrismaRuntime } from "@/storage/prisma";
 
 import { retirePluginCollectionCandidatePreparationStagesTx } from "./collections/candidatePreparationLifecycle";
+import { advancePluginCollectionRevision } from "./collections/mutation";
 
 type PluginAccountDataEraseTombstoneResult = Readonly<{
     status: "tombstoned" | "already-tombstoned";
@@ -51,6 +52,20 @@ type CollectionChange = Readonly<{
     contractDigest: string;
     revision: number;
 }>;
+
+type ErasureLiveCollectionRow = Readonly<{
+    id: string;
+    collectionId: string;
+    contractDigest: string;
+    revision: number;
+}>;
+
+type ErasureHistoricalTombstoneRow = Readonly<{
+    id: string;
+    contentEnvelope: unknown;
+}>;
+
+type ErasureIdRow = Readonly<{ id: string }>;
 
 /**
  * Tombstones one or more server-owned reserved Account KV rows through the
@@ -103,7 +118,7 @@ function mergeCollectionChange(input: Readonly<{
     const candidate: CollectionChange = {
         collectionId: input.row.collectionId,
         contractDigest: input.row.contractDigest,
-        revision: input.row.revision + 1,
+        revision: advancePluginCollectionRevision(input.row.revision),
     };
     const current = input.byCollection.get(candidate.collectionId);
     if (
@@ -189,7 +204,7 @@ export async function erasePluginAccountDataInTx(input: Readonly<{
     let tombstonedRowCount = 0;
     let lastLiveRowId: string | null = null;
     for (;;) {
-        const liveRows = await input.tx.pluginCollectionRow.findMany({
+        const liveRows: ErasureLiveCollectionRow[] = await input.tx.pluginCollectionRow.findMany({
             where: {
                 accountId: input.accountId,
                 pluginId,
@@ -206,6 +221,10 @@ export async function erasePluginAccountDataInTx(input: Readonly<{
             },
         });
         if (liveRows.length === 0) break;
+        // `mergeCollectionChange` allocates each row's tombstone revision
+        // through the canonical Collection allocator, so a row the persisted
+        // column can no longer advance refuses the erase batch — inside this
+        // transaction, before any tombstone write — instead of overflowing.
         for (const row of liveRows) {
             mergeCollectionChange({ byCollection: collectionChangesById, row });
         }
@@ -227,7 +246,7 @@ export async function erasePluginAccountDataInTx(input: Readonly<{
     let scrubbedHistoricalTombstoneContentCount = 0;
     let lastHistoricalTombstoneId: string | null = null;
     for (;;) {
-        const historicalTombstones = await input.tx.pluginCollectionRow.findMany({
+        const historicalTombstones: ErasureHistoricalTombstoneRow[] = await input.tx.pluginCollectionRow.findMany({
             where: {
                 accountId: input.accountId,
                 pluginId,
@@ -255,7 +274,7 @@ export async function erasePluginAccountDataInTx(input: Readonly<{
     let deletedProjectionCount = 0;
     let lastProjectionId: string | null = null;
     for (;;) {
-        const projections = await input.tx.pluginCollectionProjection.findMany({
+        const projections: ErasureIdRow[] = await input.tx.pluginCollectionProjection.findMany({
             where: {
                 accountId: input.accountId,
                 pluginId,
@@ -276,7 +295,7 @@ export async function erasePluginAccountDataInTx(input: Readonly<{
     let resetIndexStateCount = 0;
     let lastIndexStateId: string | null = null;
     for (;;) {
-        const indexStates = await input.tx.pluginCollectionIndexState.findMany({
+        const indexStates: ErasureIdRow[] = await input.tx.pluginCollectionIndexState.findMany({
             where: {
                 accountId: input.accountId,
                 pluginId,
@@ -308,7 +327,7 @@ export async function erasePluginAccountDataInTx(input: Readonly<{
     let retiredRelationCount = 0;
     let lastRelationId: string | null = null;
     for (;;) {
-        const relations = await input.tx.pluginCollectionRelation.findMany({
+        const relations: ErasureIdRow[] = await input.tx.pluginCollectionRelation.findMany({
             where: {
                 accountId: input.accountId,
                 sourcePluginId: pluginId,

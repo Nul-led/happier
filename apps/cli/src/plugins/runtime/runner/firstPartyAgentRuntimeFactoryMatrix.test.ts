@@ -1030,7 +1030,7 @@ describe('first-party runner Agent factory matrix', () => {
                         kind: 'localPath',
                         canonicalPath: stagedSourceRoot,
                     },
-                    updatePolicy: 'manual',
+                    updatePolicy: 'reviewEveryUpdate',
                     createdAtMs: 1,
                 });
                 const prepared = await prepareImmutablePluginGeneration({

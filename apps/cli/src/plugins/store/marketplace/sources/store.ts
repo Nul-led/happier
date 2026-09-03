@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import {
   createDefaultCuratedMarketplaceSourceRegistryV1,
   MarketplaceSourceRegistryV1Schema,
-  type MarketplaceSourceOriginV1,
+  type MarketplaceSourceRegistryMutationV1,
   type MarketplaceSourceRegistryV1,
   type MarketplaceSourceV1,
   resolvePreferredMarketplaceSource,
@@ -16,14 +16,7 @@ import { writeJsonAtomic } from '@/utils/fs/writeJsonAtomic';
 import { MARKETPLACE_SOURCE_REGISTRY_LOCK_NAME, withPluginStoreLock } from '@/plugins/store/lock';
 import { ensurePluginStoreDirectories, resolvePluginStorePaths, type PluginStorePaths } from '@/plugins/store/paths';
 
-export type MarketplaceSourceRegistryInputV1 = Readonly<{
-  title?: string;
-  sourceUrl: string;
-  enabled?: boolean;
-  origin?: MarketplaceSourceOriginV1;
-  description?: string | null;
-  registryProfileId?: string | null;
-}>;
+export type MarketplaceSourceRegistryInputV1 = Extract<MarketplaceSourceRegistryMutationV1, { kind: 'upsert' }>['input'];
 
 const DEFAULT_CURATED_MARKETPLACE_SOURCE_URL = 'https://marketplace.happier.dev/catalog.json';
 
@@ -41,7 +34,7 @@ function createMarketplaceSourceRecord(
     title: input.title ?? undefined,
     description: input.description,
     enabled: input.enabled,
-    origin: input.origin,
+    origin: input.origin ?? undefined,
     registryProfileId: input.registryProfileId,
   }, existing);
 }
@@ -75,6 +68,8 @@ export function createMarketplaceSourceRegistryStore(params?: Readonly<{ happyHo
   upsertSource: (input: MarketplaceSourceRegistryInputV1) => Promise<MarketplaceSourceV1>;
   removeSource: (sourceId: string) => Promise<boolean>;
   setSourceEnabled: (sourceId: string, enabled: boolean) => Promise<MarketplaceSourceV1 | null>;
+  setSourceRegistryProfile: (sourceId: string, registryProfileId: string | null) => Promise<MarketplaceSourceV1 | null>;
+  mutateSource: (mutation: MarketplaceSourceRegistryMutationV1) => Promise<MarketplaceSourceRegistryV1>;
   resolveSourceReference: (reference: string) => Promise<MarketplaceSourceV1 | null>;
   resolvePreferredSource: () => Promise<MarketplaceSourceV1 | null>;
 }> {
@@ -165,9 +160,18 @@ export function createMarketplaceSourceRegistryStore(params?: Readonly<{ happyHo
     const nextSourceUrl = normalizeMarketplaceSourceUrlV1(input.sourceUrl);
     let nextSource: MarketplaceSourceV1 | null = null;
     await update(async (registry) => {
-      const existingIndex = registry.sources.findIndex((entry) => entry.sourceUrl === nextSourceUrl);
+      const sourceId = input.sourceId?.trim() ?? '';
+      const existingIndex = sourceId
+        ? registry.sources.findIndex((entry) => entry.id === sourceId)
+        : registry.sources.findIndex((entry) => entry.sourceUrl === nextSourceUrl);
+      if (sourceId && existingIndex < 0) {
+        throw new Error('Marketplace source is unavailable');
+      }
       const existing = existingIndex >= 0 ? registry.sources[existingIndex] : null;
       const updatedSource = createMarketplaceSourceRecord(input, existing);
+      if (registry.sources.some((entry, index) => index !== existingIndex && entry.sourceUrl === updatedSource.sourceUrl)) {
+        throw new Error('Marketplace source URL is already configured');
+      }
       nextSource = updatedSource;
       const nextSources: MarketplaceSourceV1[] = existingIndex >= 0
         ? registry.sources.map((entry, index) => (index === existingIndex ? updatedSource : entry))
@@ -228,6 +232,42 @@ export function createMarketplaceSourceRegistryStore(params?: Readonly<{ happyHo
     return updated;
   }
 
+  async function setSourceRegistryProfile(
+    sourceId: string,
+    registryProfileId: string | null,
+  ): Promise<MarketplaceSourceV1 | null> {
+    const normalizedSourceId = String(sourceId ?? '').trim();
+    if (!normalizedSourceId) return null;
+    let updated: MarketplaceSourceV1 | null = null;
+    await update(async (registry) => ({
+      ...registry,
+      sources: registry.sources.map((entry) => {
+        if (entry.id !== normalizedSourceId) return entry;
+        if (registryProfileId === null) {
+          const { registryProfileId: _removedRegistryProfileId, ...withoutRegistryProfile } = entry;
+          updated = { ...withoutRegistryProfile, updatedAtMs: Date.now() };
+        } else {
+          updated = { ...entry, registryProfileId, updatedAtMs: Date.now() };
+        }
+        return updated;
+      }),
+    }));
+    return updated;
+  }
+
+  async function mutateSource(mutation: MarketplaceSourceRegistryMutationV1): Promise<MarketplaceSourceRegistryV1> {
+    if (mutation.kind === 'upsert') {
+      await upsertSource(mutation.input);
+    } else if (mutation.kind === 'remove') {
+      await removeSource(mutation.sourceId);
+    } else if (mutation.kind === 'setEnabled') {
+      await setSourceEnabled(mutation.sourceId, mutation.enabled);
+    } else {
+      await setSourceRegistryProfile(mutation.sourceId, mutation.registryProfileId);
+    }
+    return await read();
+  }
+
   async function resolveSourceReference(reference: string): Promise<MarketplaceSourceV1 | null> {
     const normalized = String(reference ?? '').trim();
     if (!normalized) return null;
@@ -236,12 +276,7 @@ export function createMarketplaceSourceRegistryStore(params?: Readonly<{ happyHo
     if (byId) return byId;
     const byUrl = registry.sources.find((entry) => entry.sourceUrl === normalized) ?? null;
     if (byUrl) return byUrl;
-    try {
-      const sourceUrl = normalizeMarketplaceSourceUrlV1(normalized);
-      return createMarketplaceSourceRecord({ sourceUrl }, null);
-    } catch {
-      return null;
-    }
+    return null;
   }
 
   async function resolvePreferredSource(): Promise<MarketplaceSourceV1 | null> {
@@ -258,6 +293,8 @@ export function createMarketplaceSourceRegistryStore(params?: Readonly<{ happyHo
     upsertSource,
     removeSource,
     setSourceEnabled,
+    setSourceRegistryProfile,
+    mutateSource,
     resolveSourceReference,
     resolvePreferredSource,
   };

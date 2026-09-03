@@ -1,10 +1,10 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 
 import {
-  AutomationEventAdmitInputV1Schema,
-  AutomationEventAdmitResultV1Schema,
   PluginWebhookAutomationAdmissionUnresolvedV1Schema,
   PluginWebhookInvocationReferenceV1Schema,
+  type AutomationEventAdmitInputV1,
+  type AutomationEventAdmitResultV1,
   type PluginWebhookAutomationAdmissionUnresolvedV1,
   type PluginWebhookInvocationReferenceV1,
 } from '@happier-dev/protocol';
@@ -62,24 +62,26 @@ export function readCurrentPluginWebhookInvocationSignalV1(): AbortSignal | null
 
 /**
  * Records an exact, already canonical Automation admission pair only while a
- * generic Webhook worker owns the current invocation. Plugin code cannot
- * access this host-private scope or author a summary directly.
+ * generic Webhook worker owns the current invocation. The Event Action owner
+ * parses both halves through their canonical schemas immediately before
+ * calling, so this records rather than revalidates them; only the cross-half
+ * positional invariant, which no schema owns, is still checked here. Plugin
+ * code cannot access this host-private scope or author a summary directly.
  */
 export function recordCurrentPluginWebhookAutomationAdmissionResultV1(params: Readonly<{
-  input: unknown;
-  result: unknown;
+  input: AutomationEventAdmitInputV1;
+  result: AutomationEventAdmitResultV1;
 }>): void {
   const scope = readActiveScopeV1();
   if (!scope || scope.automationAdmissionUnresolved.invalid) return;
-  const input = AutomationEventAdmitInputV1Schema.safeParse(params.input);
-  const result = AutomationEventAdmitResultV1Schema.safeParse(params.result);
-  if (!input.success || !result.success || input.data.definitions.length !== result.data.results.length) {
+  const { input, result } = params;
+  if (input.definitions.length !== result.results.length) {
     scope.automationAdmissionUnresolved.invalid = true;
     return;
   }
-  for (let index = 0; index < input.data.definitions.length; index += 1) {
-    const automationId = input.data.definitions[index]!.automationId;
-    const item = result.data.results[index]!;
+  for (let index = 0; index < input.definitions.length; index += 1) {
+    const automationId = input.definitions[index]!.automationId;
+    const item = result.results[index]!;
     if (scope.automationAdmissionUnresolved.seenAutomationIds.has(automationId)) {
       // A summary has one exact result per Automation. A duplicate membership
       // would require inventing which authoritative result to retain.

@@ -3,17 +3,25 @@ import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderScreen, standardCleanup } from '@/dev/testkit';
+import type { PluginMachineMaterializationAdmission } from '@/sync/domains/plugins/availability/reader';
+import type { InstalledPluginEntry } from '../model/pluginMarketplaceModel';
 
-type AccountSettingsMutation = (raw: Readonly<Record<string, unknown>>) => Record<string, unknown>;
+type AccountSettingsOneShotMutation = Readonly<{
+    expectedSettingsVersion: number;
+    mutate: (raw: Readonly<Record<string, unknown>>) => {
+        settings: Record<string, unknown>;
+        value: unknown;
+    };
+}>;
 
 const fixture = vi.hoisted(() => ({
     accountSettings: {} as Record<string, unknown>,
-    installedPluginById: new Map<string, unknown>(),
+    installedPluginById: new Map<string, InstalledPluginEntry>(),
     materializationAdmission: null as unknown,
     selections: null as unknown,
     snapshots: [] as readonly unknown[],
 }));
-const mutateAccountSettingsMock = vi.hoisted(() => vi.fn());
+const mutateAccountSettingsOnceMock = vi.hoisted(() => vi.fn());
 const administrationTargetSelectorSpy = vi.hoisted(() => vi.fn());
 /** The plugins.home administration selection: a DIFFERENT fact from the origin. */
 const administrationTargetSelection = vi.hoisted(() => Object.freeze({
@@ -60,6 +68,25 @@ function materializationFor(origin: typeof ORIGIN_A | typeof ORIGIN_B) {
         trustState: 'trusted',
         observedAt: 1,
     } as const;
+}
+
+/** Complete current `PluginMachineMaterializationAdmission` available arm. */
+function availableAdmission(
+    availabilityCursor: number,
+    materializations: readonly ReturnType<typeof materializationFor>[],
+): PluginMachineMaterializationAdmission {
+    return {
+        kind: 'available',
+        availabilityCursor,
+        intentReads: [],
+        materializations: materializations.map((row) => ({ ...row })),
+        snapshots: materializations.map((row, index) => ({
+            serverIdentityId: row.serverIdentityId,
+            machineId: row.machineId,
+            revision: index + 1,
+            materializations: [{ ...row }],
+        })),
+    };
 }
 
 function snapshotsFor(origin: typeof ORIGIN_A | typeof ORIGIN_B) {
@@ -134,9 +161,19 @@ vi.mock('@/sync/domains/machines/useMachineInventorySnapshots', () => ({
 }));
 vi.mock('@/sync/store/hooks', () => ({
     useSetting: () => fixture.selections,
+    useSettingsVersion: () => 7,
+}));
+vi.mock('@/sync/domains/state/storageStore', () => ({
+    storage: {
+        getState: () => ({
+            settings: {
+                machineAdministrationSelectionsV1: fixture.selections,
+            },
+        }),
+    },
 }));
 vi.mock('@/sync/runtime/getSyncSingleton', () => ({
-    getSyncSingleton: () => ({ mutateAccountSettings: mutateAccountSettingsMock }),
+    getSyncSingleton: () => ({ mutateAccountSettingsOnce: mutateAccountSettingsOnceMock }),
 }));
 vi.mock('@/sync/domains/machines/administration/useTargetSelection', () => ({
     resolveFreshMachineAdministrationExecutionTarget: ({ serverIdentityId, machineId }: {
@@ -201,27 +238,41 @@ describe('PluginDetailScreen execution-origin ownership', () => {
         fixture.installedPluginById = new Map([['acme.plugin', {
             pluginId: 'acme.plugin',
             title: 'Acme plugin',
+            description: null,
             version: '1.0.0',
             enabled: true,
+            source: {
+                kind: 'localPath',
+                locator: '/plugins/acme.plugin',
+                trustPolicy: 'trusted',
+            },
+            install: {
+                mode: 'copy',
+                manifestVersion: '1.0.0',
+            },
+            compatibility: { status: 'compatible', diagnostics: [] },
+            diagnostics: [],
         }]]);
         fixture.selections = {
             v: 1,
             targetsByKey: {},
             pluginExecutionOriginsByPluginId: {},
         };
-        fixture.materializationAdmission = {
-            kind: 'available',
-            availabilityCursor: 1,
-            materializations: [materializationFor(ORIGIN_A)],
-        };
+        fixture.materializationAdmission = availableAdmission(1, [materializationFor(ORIGIN_A)]);
         fixture.snapshots = snapshotsFor(ORIGIN_A);
         fixture.accountSettings = {
             machineAdministrationSelectionsV1: fixture.selections,
         };
-        mutateAccountSettingsMock.mockReset();
-        mutateAccountSettingsMock.mockImplementation(async (mutate: AccountSettingsMutation) => {
-            fixture.accountSettings = mutate(fixture.accountSettings);
-            fixture.selections = fixture.accountSettings.machineAdministrationSelectionsV1;
+        mutateAccountSettingsOnceMock.mockReset();
+        mutateAccountSettingsOnceMock.mockImplementation(async (params: AccountSettingsOneShotMutation) => {
+            const mutation = params.mutate(fixture.accountSettings);
+            fixture.accountSettings = mutation.settings;
+            fixture.selections = mutation.settings.machineAdministrationSelectionsV1;
+            return {
+                status: 'applied' as const,
+                settingsVersion: params.expectedSettingsVersion + 1,
+                value: undefined,
+            };
         });
         machineRpcWithServerScopeMock.mockReset();
         machineRpcWithServerScopeMock.mockResolvedValue(availableLogResponse());
@@ -243,7 +294,7 @@ describe('PluginDetailScreen execution-origin ownership', () => {
             await flushAsync();
         });
 
-        expect(mutateAccountSettingsMock).toHaveBeenCalledOnce();
+        expect(mutateAccountSettingsOnceMock).toHaveBeenCalledOnce();
         expect(fixture.accountSettings).toMatchObject({
             machineAdministrationSelectionsV1: {
                 pluginExecutionOriginsByPluginId: { 'acme.plugin': ORIGIN_A },
@@ -264,6 +315,10 @@ describe('PluginDetailScreen execution-origin ownership', () => {
                 projection: null,
                 daemon: { serverId: null, serverIdentityId: null, machineId: null },
             });
+        await act(async () => {
+            screen.pressByTestId('settings.plugins.detail.acme.plugin.invocationLogs.refresh');
+            await flushAsync();
+        });
         expect(machineRpcWithServerScopeMock).toHaveBeenLastCalledWith(expect.objectContaining({
             machineId: 'machine-a',
             serverId: 'server-profile-a',
@@ -274,22 +329,22 @@ describe('PluginDetailScreen execution-origin ownership', () => {
             targetsByKey: {},
             pluginExecutionOriginsByPluginId: { 'acme.plugin': ORIGIN_B },
         };
-        fixture.materializationAdmission = {
-            kind: 'available',
-            availabilityCursor: 2,
-            materializations: [materializationFor(ORIGIN_B)],
-        };
+        fixture.materializationAdmission = availableAdmission(2, [materializationFor(ORIGIN_B)]);
         fixture.snapshots = snapshotsFor(ORIGIN_B);
         await act(async () => {
             screen.tree.update(<RerenderablePluginDetailScreen pluginId="acme.plugin" revision={3} />);
             await flushAsync();
         });
 
-        expect(mutateAccountSettingsMock).toHaveBeenCalledOnce();
+        expect(mutateAccountSettingsOnceMock).toHaveBeenCalledOnce();
         expect(screen.findByTestId('settings.plugins.detail.executionOrigin.current')?.props)
             .toMatchObject({ title: 'machine-b', subtitle: 'srv_b', selected: true });
         expect(screen.findByTestId('settings.plugins.detail.acme.plugin.invocationLogs.target')?.props)
             .toMatchObject({ title: 'machine-b', subtitle: 'srv_b', selected: true });
+        await act(async () => {
+            screen.pressByTestId('settings.plugins.detail.acme.plugin.invocationLogs.refresh');
+            await flushAsync();
+        });
         expect(machineRpcWithServerScopeMock).toHaveBeenLastCalledWith(expect.objectContaining({
             machineId: 'machine-b',
             serverId: 'server-profile-b',
@@ -306,6 +361,44 @@ describe('PluginDetailScreen execution-origin ownership', () => {
         expect(administrationTargetSelection.selectedTarget).not.toMatchObject({
             machineId: ORIGIN_B.materializationRef.machineId,
         });
+    });
+
+    /**
+     * The two machine authorities on this screen are different facts: where
+     * Settings, Secrets and lifecycle operations are ADMINISTERED versus where
+     * the plugin EXECUTES. Two sections about different machines must not
+     * share one identical "Target machine" heading, and the administration
+     * target must stay ahead of the consequential controls below it.
+     */
+    it('names the administration-target and execution-origin sections distinctly in reading order', async () => {
+        const { PluginDetailScreen } = await import('./PluginDetailScreen');
+        const screen = await renderScreen(<PluginDetailScreen pluginId="acme.plugin" />);
+        await act(async () => {
+            await flushAsync();
+        });
+
+        expect(administrationTargetSelectorSpy).toHaveBeenCalledWith(expect.objectContaining({
+            selection: administrationTargetSelection,
+            groupTitle: 'settingsPlugins.administrationMachineTitle',
+            testIDPrefix: 'settings.plugins.detail.administration.target',
+        }));
+        expect(screen.findAll((node) => (
+            (node.type as unknown) === 'ItemGroup'
+            && node.props?.title === 'settingsPlugins.executionOriginTitle'
+        ))).toHaveLength(1);
+        expect(screen.findAllByProps({ title: 'settingsProviders.detail.targetMachine' })).toHaveLength(0);
+
+        // Screen-reader order: the administration target precedes the
+        // execution-origin section and every consequential control after it.
+        const hostNodes = screen.findAll((node) => typeof node.type === 'string');
+        const headerIndex = hostNodes.findIndex((node) => (node.type as unknown) === 'PluginDetailHeader');
+        const administrationIndex = hostNodes.findIndex((node) => (node.type as unknown) === 'MachineAdministrationTargetSelector');
+        const executionOriginIndex = hostNodes.findIndex((node) => (
+            (node.type as unknown) === 'ItemGroup' && node.props?.title === 'settingsPlugins.executionOriginTitle'
+        ));
+        expect(headerIndex).toBeGreaterThanOrEqual(0);
+        expect(administrationIndex).toBeGreaterThan(headerIndex);
+        expect(executionOriginIndex).toBeGreaterThan(administrationIndex);
     });
 
     /**

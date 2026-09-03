@@ -1,5 +1,6 @@
 import type { Prisma } from "@prisma/client";
 import {
+    PLUGIN_COLLECTION_REVISION_MAX,
     PluginAccountPluginIntentV1Schema,
     PluginCollectionContentEnvelopeV1Schema,
     PluginCollectionMutationErrorV1Schema,
@@ -224,6 +225,22 @@ export class PluginCollectionMutationOperationError extends Error {
         }
         return PluginCollectionMutationErrorV1Schema.parse({ error: this.code });
     }
+}
+
+/**
+ * The sole Collection currentness allocator. Row revisions and the one
+ * Account/plugin/Collection absence epoch share a monotone space seeded from
+ * each other, and every provider persists them in the same signed 32-bit
+ * `Int` column, so they share this one ceiling. Every increment path — put,
+ * delete, relation nullification, forget's retired revision and epoch,
+ * candidate promotion, Account erase, and the Account encryption transition —
+ * advances through here so none of them can silently overflow the column.
+ */
+export function advancePluginCollectionRevision(previous: number): number {
+    if (previous >= PLUGIN_COLLECTION_REVISION_MAX) {
+        throw new PluginCollectionMutationOperationError("collection_revision_exhausted");
+    }
+    return previous + 1;
 }
 
 function hasOwn(value: Readonly<Record<string, unknown>>, key: string): boolean {
@@ -1573,7 +1590,7 @@ async function applyIncomingRelationDeletesTx(input: Readonly<{
             contractId: pending.sourceRow.contract.id,
             contract: pending.sourceContract,
         });
-        const revision = pending.sourceRow.revision + 1;
+        const revision = advancePluginCollectionRevision(pending.sourceRow.revision);
         await input.tx.pluginCollectionRow.update({
             where: { id: pending.sourceRow.id },
             data: { revision },
@@ -1764,7 +1781,9 @@ async function mutatePluginCollectionInTx(input: Readonly<{
         // history. Seed a later absent create from the Collection absence
         // epoch so an old exact-revision forget can never match a recreated
         // row (the epoch is advanced beyond the forgotten revision below).
-        const revision = existing ? existing.revision + 1 : currentAbsenceEpoch + 1;
+        const revision = advancePluginCollectionRevision(
+            existing ? existing.revision : currentAbsenceEpoch,
+        );
         if (operation.kind === "put") {
             const projection = validatePutContent({
                 contract: resolved.contract,
@@ -2071,28 +2090,31 @@ export async function forgetPluginCollection(input: Readonly<{
         if (row.revision !== request.expectedRevision) {
             return PluginCollectionForgetResultV1Schema.parse({ status: "conflict" });
         }
-        const retiredRevision = row.deletedAt === null ? row.revision + 1 : row.revision;
-        const epoch = await tx.pluginCollectionAbsenceEpoch.upsert({
-            where: { accountId_pluginId_collectionId: {
-                accountId: input.accountId,
-                pluginId: resolved.contract.pluginId,
-                collectionId: resolved.contract.collectionId,
-            } },
-            create: {
-                accountId: input.accountId,
-                pluginId: resolved.contract.pluginId,
-                collectionId: resolved.contract.collectionId,
-                epoch: 0,
-            },
-            update: {},
-            select: { id: true, epoch: true },
+        const retiredRevision = row.deletedAt === null
+            ? advancePluginCollectionRevision(row.revision)
+            : row.revision;
+        // The Account-first fence above serializes every Account-scoped
+        // Collection writer, so reading the one absence epoch and advancing it
+        // past this retired revision is atomic here. Absence currentness stays
+        // a server fact: only the exact row revision witnesses this operation.
+        const epochKey = {
+            accountId: input.accountId,
+            pluginId: resolved.contract.pluginId,
+            collectionId: resolved.contract.collectionId,
+        };
+        const epoch = await tx.pluginCollectionAbsenceEpoch.findUnique({
+            where: { accountId_pluginId_collectionId: epochKey },
+            select: { epoch: true },
         });
-        const nextEpoch = Math.max(epoch.epoch, retiredRevision) + 1;
-        const advanced = await tx.pluginCollectionAbsenceEpoch.updateMany({
-            where: { id: epoch.id, epoch: request.expectedAbsenceEpoch },
-            data: { epoch: nextEpoch },
+        const nextEpoch = advancePluginCollectionRevision(
+            Math.max(epoch?.epoch ?? 0, retiredRevision),
+        );
+        await tx.pluginCollectionAbsenceEpoch.upsert({
+            where: { accountId_pluginId_collectionId: epochKey },
+            create: { ...epochKey, epoch: nextEpoch },
+            update: { epoch: nextEpoch },
+            select: { id: true },
         });
-        if (advanced.count !== 1) return PluginCollectionForgetResultV1Schema.parse({ status: "conflict" });
         if (row.deletedAt === null) {
             const deleted = await mutatePluginCollectionInTx({
                 tx,

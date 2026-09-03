@@ -13,6 +13,7 @@ import { getActivePrismaRuntime } from "@/storage/prisma";
 
 import { readMaterializedPluginCollectionContract } from "./contracts";
 import {
+    advancePluginCollectionRevision,
     assertPluginCollectionStoredContentForAccountTransition,
     PluginCollectionMutationOperationError,
 } from "./mutation";
@@ -739,6 +740,11 @@ export async function applyPluginCollectionAccountEncryptionTransitionInTx(
     for (const row of loaded.rows) {
         const target = targetContentByRowId.get(row.persisted.id);
         if (!target) throw new PluginCollectionAccountEncryptionTransitionConflictError();
+        // The transition advances each participating row exactly once through
+        // the canonical Collection allocator. A row whose revision the
+        // persisted column can no longer advance cannot be relocated, and the
+        // whole activation transaction rolls back rather than overflowing.
+        const nextRevision = advancePluginCollectionRevision(row.persisted.revision);
         const updated = await params.tx.pluginCollectionRow.updateMany({
             where: {
                 id: row.persisted.id,
@@ -759,7 +765,7 @@ export async function applyPluginCollectionAccountEncryptionTransitionInTx(
                 rowDbId: row.persisted.id,
                 rowRevision: row.persisted.revision,
             },
-            data: { rowRevision: row.persisted.revision + 1 },
+            data: { rowRevision: nextRevision },
         });
         if (projections.count !== row.persisted.projections.length) {
             throw new PluginCollectionAccountEncryptionTransitionConflictError();
@@ -770,7 +776,7 @@ export async function applyPluginCollectionAccountEncryptionTransitionInTx(
                 sourceRevision: row.persisted.revision,
                 deletedAt: null,
             },
-            data: { sourceRevision: row.persisted.revision + 1 },
+            data: { sourceRevision: nextRevision },
         });
         if (relations.count !== (relationsByRowId.get(row.persisted.id) ?? []).length) {
             throw new PluginCollectionAccountEncryptionTransitionConflictError();
@@ -784,7 +790,7 @@ export async function applyPluginCollectionAccountEncryptionTransitionInTx(
                         rowId: row.persisted.rowId,
                         rowRevision: row.persisted.revision,
                     },
-                    data: { rowRevision: row.persisted.revision + 1 },
+                    data: { rowRevision: nextRevision },
                 });
                 if (entries.count !== 1) {
                     throw new PluginCollectionAccountEncryptionTransitionConflictError();
@@ -801,7 +807,7 @@ export async function applyPluginCollectionAccountEncryptionTransitionInTx(
         if (currentMaximumRevision === undefined) {
             throw new PluginCollectionAccountEncryptionTransitionConflictError();
         }
-        const revision = currentMaximumRevision + 1;
+        const revision = advancePluginCollectionRevision(currentMaximumRevision);
         if (states.length > 0) {
             const readiness = await params.tx.pluginCollectionIndexState.updateMany({
                 where: {
@@ -832,7 +838,7 @@ export async function applyPluginCollectionAccountEncryptionTransitionInTx(
             pluginId: row.persisted.pluginId,
             collectionId: row.persisted.collectionId,
             contractDigest: row.persisted.contractDigest,
-            revision: row.persisted.revision + 1,
+            revision: advancePluginCollectionRevision(row.persisted.revision),
         };
         const existing = changesByCollection.get(key);
         if (

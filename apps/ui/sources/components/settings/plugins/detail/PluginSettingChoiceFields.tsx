@@ -3,20 +3,14 @@ import * as React from 'react';
 import { useUnistyles } from 'react-native-unistyles';
 
 import type {
-    PluginProjectionEditableSettingField,
-    PluginProjectionEditableSettingsGroup,
+    ResolvedPluginProjectionEditableSettingField as PluginProjectionEditableSettingField,
+    ResolvedPluginProjectionEditableSettingsGroup as PluginProjectionEditableSettingsGroup,
 } from '@/agents/backendCatalog/daemonContributionRegistryProjectionAdapters';
 import { Switch } from '@/components/ui/forms/Switch';
 import { DropdownMenu, type DropdownMenuItem } from '@/components/ui/forms/dropdown/DropdownMenu';
 import { Item } from '@/components/ui/lists/Item';
 import { Icon } from '@/components/ui/icons/Icon';
 import { buildActionRowAccessibilityLabel } from '@/components/ui/lists/actionRowAccessibility';
-
-function localizedPresentationText(
-    value: string | Readonly<{ fallback: string }> | undefined,
-): string {
-    return typeof value === 'string' ? value : value?.fallback ?? '';
-}
 
 type PluginSettingChoiceOption = NonNullable<
     NonNullable<PluginProjectionEditableSettingField['presentation']>['options']
@@ -33,8 +27,8 @@ type PluginSettingChoiceOption = NonNullable<
 export function resolvePluginSettingChoiceOptionSemantics(
     option: PluginSettingChoiceOption,
 ): Readonly<{ id: string; title: string; description: string; accessibilityLabel: string }> {
-    const title = localizedPresentationText(option.title);
-    const description = localizedPresentationText(option.description);
+    const title = option.title;
+    const description = option.description ?? '';
     return Object.freeze({
         id: JSON.stringify(option.value),
         title,
@@ -49,6 +43,7 @@ export function PluginSettingSwitchField(props: Readonly<{
     field: PluginProjectionEditableSettingField;
     value: boolean;
     disabled: boolean;
+    disabledReason?: string | null;
     onChangeValue: (field: PluginProjectionEditableSettingField, value: boolean) => void;
 }>) {
     const { theme } = useUnistyles();
@@ -58,13 +53,15 @@ export function PluginSettingSwitchField(props: Readonly<{
         <Item
             testID={testID}
             title={props.field.title}
-            subtitle={props.field.subtitle ?? undefined}
+            subtitle={[props.field.subtitle, props.disabledReason].filter(Boolean).join('\n') || undefined}
+            accessibilityHint={props.disabledReason ?? undefined}
             icon={<Icon name="sliders-horizontal" size={29} color={theme.colors.text.secondary} />}
             rightElement={(
                 <Switch
                     value={props.value}
                     disabled={props.disabled}
                     accessibilityLabel={props.field.title}
+                    accessibilityHint={props.disabledReason ?? undefined}
                     onValueChange={(nextValue) => props.onChangeValue(props.field, nextValue)}
                 />
             )}
@@ -82,6 +79,7 @@ export function PluginSettingSelectField(props: Readonly<{
     field: PluginProjectionEditableSettingField;
     value: unknown;
     disabled: boolean;
+    disabledReason?: string | null;
     popoverBoundaryRef?: React.RefObject<any> | null;
     onChangeValue: (value: unknown) => void;
 }>) {
@@ -131,9 +129,15 @@ export function PluginSettingSelectField(props: Readonly<{
                 // default trigger behavior would otherwise surface that
                 // description in place of the choice the user made.
                 showSelectedSubtitle: false,
-                subtitle: items.find((item) => item.id === selectedId)?.title ?? props.field.subtitle ?? undefined,
+                subtitle: [
+                    items.find((item) => item.id === selectedId)?.title ?? props.field.subtitle,
+                    props.disabledReason,
+                ].filter(Boolean).join('\n') || undefined,
                 icon: <Icon name="sliders-horizontal" size={29} color={theme.colors.text.secondary} />,
-                itemProps: { disabled: props.disabled },
+                itemProps: {
+                    disabled: props.disabled,
+                    accessibilityHint: props.disabledReason ?? undefined,
+                },
             }}
             items={items}
             onSelect={(itemId) => {
@@ -159,6 +163,7 @@ export function PluginSettingMultiSelectField(props: Readonly<{
     field: PluginProjectionEditableSettingField;
     value: unknown;
     disabled: boolean;
+    disabledReason?: string | null;
     onChangeValue: (value: readonly unknown[]) => void;
 }>) {
     const { theme } = useUnistyles();
@@ -179,14 +184,16 @@ export function PluginSettingMultiSelectField(props: Readonly<{
                     <Item
                         key={optionId}
                         title={semantics.title}
-                        subtitle={semantics.description || undefined}
+                        subtitle={[semantics.description, props.disabledReason].filter(Boolean).join('\n') || undefined}
                         accessibilityLabel={semantics.accessibilityLabel}
+                        accessibilityHint={props.disabledReason ?? undefined}
                         icon={<Icon name="sliders-horizontal" size={29} color={theme.colors.text.secondary} />}
                         rightElement={(
                             <Switch
                                 value={selected}
                                 disabled={props.disabled}
                                 accessibilityLabel={semantics.accessibilityLabel}
+                                accessibilityHint={props.disabledReason ?? undefined}
                                 onValueChange={toggle}
                             />
                         )}

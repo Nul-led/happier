@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  AutomationEventAdmitInputV1Schema,
+  AutomationEventAdmitResultV1Schema,
   createPluginActionInvocation,
   PluginWebhookAutomationAdmissionUnresolvedV1Schema,
 } from '@happier-dev/protocol';
@@ -457,7 +459,7 @@ describe('plugin webhook claimed delivery worker', () => {
     const fail = vi.fn(async () => ({ kind: 'settled' as const, state: 'queued' as const }));
     const execute = vi.fn(async () => {
       recordCurrentPluginWebhookAutomationAdmissionResultV1({
-        input: {
+        input: AutomationEventAdmitInputV1Schema.parse({
           eventRef: { pluginId: 'acme.github', localId: 'automation/repository-pushed-v1' },
           occurrenceId: 'delivery-1',
           occurredAt: 1,
@@ -495,8 +497,8 @@ describe('plugin webhook claimed delivery worker', () => {
               sourceSelectorId: '9d5af559-2c82-4c22-b6a0-ecabce38a631',
             },
           ],
-        },
-        result: {
+        }),
+        result: AutomationEventAdmitResultV1Schema.parse({
           results: [
             { kind: 'blocked', reason: 'capacity', checkpointSafe: false },
             { kind: 'refreshDefinition', reason: 'definitionStale', checkpointSafe: false },
@@ -504,7 +506,7 @@ describe('plugin webhook claimed delivery worker', () => {
             { kind: 'rejoined', runId: 'run-2', checkpointSafe: true },
             { kind: 'skipped', reason: 'filtered', checkpointSafe: true },
           ],
-        },
+        }),
       });
       return { kind: 'retry' as const, code: 'github.automation-unavailable' };
     });
@@ -564,7 +566,7 @@ describe('plugin webhook claimed delivery worker', () => {
     const fail = vi.fn(async (_input: unknown) => ({ kind: 'settled' as const, state: 'queued' as const }));
     const execute = vi.fn(async (_actionId: string, _input: unknown, options?: Readonly<{ signal?: AbortSignal }>) => {
       recordCurrentPluginWebhookAutomationAdmissionResultV1({
-        input: {
+        input: AutomationEventAdmitInputV1Schema.parse({
           eventRef: { pluginId: 'acme.github', localId: 'automation/repository-pushed-v1' },
           occurrenceId: 'delivery-timeout-summary',
           occurredAt: 1,
@@ -576,10 +578,10 @@ describe('plugin webhook claimed delivery worker', () => {
             triggerRevision: 1,
             sourceSelectorId: '9d5af559-2c82-4c22-b6a0-ecabce38a631',
           }],
-        },
-        result: {
+        }),
+        result: AutomationEventAdmitResultV1Schema.parse({
           results: [{ kind: 'blocked', reason: 'temporarilyUnavailable', checkpointSafe: false }],
-        },
+        }),
       });
       await new Promise<void>((resolve) => {
         options?.signal?.addEventListener('abort', () => resolve(), { once: true });
@@ -632,7 +634,7 @@ describe('plugin webhook claimed delivery worker', () => {
     );
     const execute = vi.fn(async () => {
       recordCurrentPluginWebhookAutomationAdmissionResultV1({
-        input: {
+        input: AutomationEventAdmitInputV1Schema.parse({
           eventRef: { pluginId: 'acme.github', localId: 'automation/repository-pushed-v1' },
           occurrenceId: 'delivery-byte-bounded-summary',
           occurredAt: 1,
@@ -644,14 +646,14 @@ describe('plugin webhook claimed delivery worker', () => {
             triggerRevision: 1,
             sourceSelectorId: '9d5af559-2c82-4c22-b6a0-ecabce38a631',
           })),
-        },
-        result: {
+        }),
+        result: AutomationEventAdmitResultV1Schema.parse({
           results: automationIds.map(() => ({
             kind: 'blocked' as const,
             reason: 'capacity' as const,
             checkpointSafe: false as const,
           })),
-        },
+        }),
       });
       return { kind: 'retry' as const, code: 'github.automation-unavailable' };
     });

@@ -45,7 +45,7 @@ function stateRevision(generationId: string): PluginInstallationStateRevision {
           approvedAtMs: 1,
         },
         source: { distribution: { kind: 'localPath', canonicalPath: '/tmp/acme-plugin' } },
-        updatePolicy: 'manual',
+        updatePolicy: 'reviewEveryUpdate',
         optionalAccess: [],
       },
     },

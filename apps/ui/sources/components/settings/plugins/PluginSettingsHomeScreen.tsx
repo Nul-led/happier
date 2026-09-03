@@ -18,8 +18,9 @@ import { MachineAdministrationTargetSelector } from '@/components/settings/machi
 import { SETTINGS_ROUTES } from '@/components/settings/catalog/routes';
 
 import {
-    CatalogEntriesSection,
     DevelopmentPluginsSection,
+    DiscoverListingsSection,
+    DiscoverStatusSummary,
     InstalledPluginsSection,
     PendingPluginChangesSection,
     PluginDiagnosticsSnapshotSection,
@@ -28,7 +29,6 @@ import { PluginMachineMatrixSection } from './machines/PluginMachineMatrixSectio
 import { buildPluginDetailRoute } from './model/pluginDetailRoute';
 import { createPluginSettingsViews } from './model/pluginMarketplaceModel';
 import { usePluginSettingsScreenState } from './model/usePluginSettingsScreenState';
-import { NpmRegistryProfilesSection } from './NpmRegistryProfilesSection';
 import { PluginAccountDataEraseRecoverySection } from './PluginAccountDataEraseRecoverySection';
 import { PluginReadOnlySnapshotNotice } from './PluginReadOnlySnapshotNotice';
 import { NativeAppPluginPanelsSettingsEntry } from './NativeAppPluginPanelsSettingsEntry';
@@ -65,7 +65,20 @@ const stylesheet = StyleSheet.create((theme) => ({
         paddingVertical: 12,
         marginBottom: 12,
     },
+    sourceFilter: {
+        marginBottom: 12,
+    },
 }));
+
+/**
+ * The aggregate All segment. It is a presentation id for "no source filter",
+ * which the state owner models as `null`; it is deliberately not a source id so
+ * it can never collide with one the machine actually has configured.
+ */
+const DISCOVER_ALL_SOURCES_TAB_ID = 'all';
+
+/** Associates the visible Discover search label with its input on the web. */
+const DISCOVER_SEARCH_LABEL_ID = 'settings-plugins-discover-search-label';
 
 export const PluginSettingsHomeScreen = React.memo(function PluginSettingsHomeScreen() {
     const { theme } = useUnistyles();
@@ -77,6 +90,11 @@ export const PluginSettingsHomeScreen = React.memo(function PluginSettingsHomeSc
     // server's public-webhook feature, so the entry only exists where it leads
     // somewhere the server will answer.
     const webhooksAvailable = useFeatureEnabled('plugins.webhooks');
+    // Names the source a running search is narrowed to, so the pane's single
+    // status line can say what is being searched instead of a generic spinner.
+    const selectedDiscoverSourceTitle = state.selectedDiscoverSourceId === null
+        ? null
+        : state.discoverSources.find((source) => source.id === state.selectedDiscoverSourceId)?.title ?? null;
     const views = createPluginSettingsViews((key) => t(key));
     const createDevelopmentPlugin = React.useCallback(async () => {
         if (!state.daemonOperationsAvailable || !state.developmentCreateAvailable) return;
@@ -157,9 +175,22 @@ export const PluginSettingsHomeScreen = React.memo(function PluginSettingsHomeSc
             ) : null}
 
             {/*
-              * Above the management views on purpose: a change waiting on this
-              * user is attention, not one tab's content. A change an Agent
-              * prepared has no other route into the app at all.
+              * Before everything it governs: every consequential action on this
+              * screen — including the approve/reject decisions below — routes
+              * to the exact server and machine disclosed here, so the target
+              * is the first fact the reader establishes.
+              */}
+            <MachineAdministrationTargetSelector
+                selection={state.administrationTargetSelection}
+                testIDPrefix="settings.plugins.administration.target"
+            />
+
+            {/*
+              * Directly under the target it acts on: a change waiting on this
+              * user is attention, not one tab's content, and a change an Agent
+              * prepared has no other route into the app at all. Its review and
+              * reject flows name the same exact machine and server disclosed
+              * above.
               */}
             <PendingPluginChangesSection
                 pendingChanges={state.pendingPluginChanges}
@@ -170,11 +201,6 @@ export const PluginSettingsHomeScreen = React.memo(function PluginSettingsHomeSc
 
             <PluginAccountDataEraseRecoverySection
                 testID="settings.plugins.accountDataErase"
-            />
-
-            <MachineAdministrationTargetSelector
-                selection={state.administrationTargetSelection}
-                testIDPrefix="settings.plugins.administration.target"
             />
 
             {webhooksAvailable ? (
@@ -188,6 +214,16 @@ export const PluginSettingsHomeScreen = React.memo(function PluginSettingsHomeSc
                     />
                 </ItemGroup>
             ) : null}
+
+            <ItemGroup>
+                <Item
+                    testID="settings.plugins.sources"
+                    title={t('settingsPlugins.sourceAdministration.title')}
+                    subtitle={t('settingsPlugins.sourceAdministration.subtitle')}
+                    icon={<Icon name="globe" size={29} color={theme.colors.accent.indigo} />}
+                    onPress={() => router.push(SETTINGS_ROUTES.pluginSources)}
+                />
+            </ItemGroup>
 
             <NativeAppPluginPanelsSettingsEntry />
 
@@ -206,6 +242,10 @@ export const PluginSettingsHomeScreen = React.memo(function PluginSettingsHomeSc
                         testIDPrefix="settings.plugins.management.view"
                         accessibilityLabel={t('settingsPlugins.viewSelectorLabel')}
                         segmentSizing="content"
+                        // The bar owns a horizontal scroller of its own, so the
+                        // platform floor costs a wider track rather than an
+                        // overflowing row or an overlapped neighbour.
+                        targetSize="platform"
                     />
                 </ScrollView>
             </View>
@@ -214,7 +254,6 @@ export const PluginSettingsHomeScreen = React.memo(function PluginSettingsHomeSc
                 <>
                     <InstalledPluginsSection
                         installedPlugins={state.installedPlugins}
-                        catalog={state.catalog}
                         canRunActions={state.canRefreshInstalledPlugins}
                         isPluginActionInFlight={state.isPluginActionInFlight}
                         onNavigateToPlugin={(pluginId) => router.push(buildPluginDetailRoute(pluginId))}
@@ -234,82 +273,106 @@ export const PluginSettingsHomeScreen = React.memo(function PluginSettingsHomeSc
 
             {state.activeView === 'discover' ? (
                 <>
-                    <ItemGroup title={t('settingsPlugins.title')} footer={t('settingsPlugins.subtitle')}>
+                    <ItemGroup title={t('settingsPlugins.discoverTitle')} footer={t('settingsPlugins.subtitle')}>
                         <View style={styles.inputBlock}>
-                            <Text style={styles.label}>{t('settingsPlugins.catalogUrlLabel')}</Text>
+                            <Text style={styles.label} nativeID={DISCOVER_SEARCH_LABEL_ID}>
+                                {t('settingsPlugins.discoverSearchLabel')}
+                            </Text>
                             <TextInput
-                                testID="settings.plugins.marketplace.catalogUrl"
-                                value={state.catalogUrl}
-                                accessibilityLabel={t('settingsPlugins.catalogUrlLabel')}
+                                testID="settings.plugins.marketplace.search"
+                                value={state.discoverSearchText}
+                                accessibilityLabel={t('settingsPlugins.discoverSearchLabel')}
+                                aria-labelledby={DISCOVER_SEARCH_LABEL_ID}
                                 editable={state.daemonOperationsAvailable}
                                 onChangeText={state.daemonOperationsAvailable
-                                    ? state.setCatalogUrl
+                                    ? state.setDiscoverSearchText
                                     : undefined}
-                                placeholder={t('common.urlPlaceholder')}
+                                placeholder={t('settingsPlugins.discoverSearchPlaceholder')}
                                 placeholderTextColor={theme.colors.input.placeholder}
                                 style={[styles.input, { minHeight: minimumInteractiveTargetSize }]}
                                 autoCapitalize="none"
                                 autoCorrect={false}
-                                textContentType="URL"
-                                autoComplete="url"
-                                onSubmitEditing={state.daemonOperationsAvailable
-                                    ? () => {
-                                        void state.loadCatalog();
-                                    }
+                                returnKeyType="search"
+                                onSubmitEditing={state.canRefreshDiscover
+                                    ? state.refreshDiscover
                                     : undefined}
                             />
                         </View>
                         <Item
-                            testID="settings.plugins.marketplace.loadCatalog"
-                            title={t('settingsPlugins.loadCatalog')}
-                            subtitle={state.loadingCatalog ? t('common.loading') : undefined}
-                            icon={<Icon name="arrow-clockwise" size={29} color={theme.colors.accent.blue} />}
-                            onPress={() => {
-                                void state.loadCatalog();
-                            }}
-                            disabled={!state.canLoadCatalog}
-                            loading={state.loadingCatalog}
+                            testID="settings.plugins.marketplace.refreshDiscover"
+                            title={t('settingsPlugins.discoverSearch')}
+                            subtitle={state.discoverStale
+                                ? t('settingsPlugins.discover.status.stale')
+                                : undefined}
+                            subtitleLines={0}
+                            icon={<Icon name="magnifying-glass" size={29} color={theme.colors.accent.blue} />}
+                            onPress={state.refreshDiscover}
+                            disabled={!state.canRefreshDiscover}
+                            loading={state.loadingDiscover}
                             showChevron={false}
                         />
+                        {/*
+                          * The source filter uses the same segmented control as
+                          * the view selector above rather than a second chip
+                          * language: All is one aggregate query over every
+                          * enabled source, and a segment narrows that same query
+                          * before acquisition. It is never a second index.
+                          */}
+                        <View style={styles.sourceFilter}>
+                            <ScrollView
+                                testID="settings.plugins.marketplace.sourceFilterScroller"
+                                horizontal
+                                showsHorizontalScrollIndicator={false}
+                            >
+                                <SegmentedTabBar
+                                    tabs={[
+                                        { id: DISCOVER_ALL_SOURCES_TAB_ID, label: t('settingsPlugins.discoverSourceAll') },
+                                        ...state.discoverSources.map((source) => ({
+                                            id: source.id,
+                                            label: source.title,
+                                        })),
+                                    ]}
+                                    activeTabId={state.selectedDiscoverSourceId ?? DISCOVER_ALL_SOURCES_TAB_ID}
+                                    onSelectTab={(tabId) => state.setSelectedDiscoverSourceId(
+                                        tabId === DISCOVER_ALL_SOURCES_TAB_ID ? null : tabId,
+                                    )}
+                                    testIDPrefix="settings.plugins.marketplace.sourceFilter"
+                                    accessibilityLabel={t('settingsPlugins.discoverSourceFilterLabel')}
+                                    segmentSizing="content"
+                                    targetSize="platform"
+                                />
+                            </ScrollView>
+                        </View>
                     </ItemGroup>
 
-                    <NpmRegistryProfilesSection
-                        daemonOperationsAvailable={state.daemonOperationsAvailable}
-                        targetSelection={state.administrationTargetSelection}
-                        marketplaceSources={state.marketplaceSourceRegistry?.sources ?? []}
-                        onSetMarketplaceSourceProfile={state.setMarketplaceSourceProfile}
+                    {/*
+                      * One status region for the whole pane. Results, source
+                      * health, index diagnostics and listings this machine
+                      * cannot install are all facts about the same search, so
+                      * they are announced once, together, in that order.
+                      */}
+                    <DiscoverStatusSummary
+                        loading={state.loadingDiscover}
+                        error={state.discoverError}
+                        stale={state.discoverStale}
+                        entryCount={state.discoverEntries.length}
+                        sourceStatuses={state.discoverSourceStatuses}
+                        diagnostics={state.discoverDiagnostics}
+                        nonInstallable={state.discoverNonInstallable}
+                        selectedSourceTitle={selectedDiscoverSourceTitle}
                     />
 
-                    <CatalogEntriesSection
-                        catalog={state.catalog}
-                        loadingCatalog={state.loadingCatalog}
-                        resolvedCatalogUrl={state.resolvedCatalogUrl}
-                        loadedCatalogTitle={state.loadedCatalogTitle}
-                        loadedCatalogFooter={state.loadedCatalogFooter}
+                    <DiscoverListingsSection
+                        entries={state.discoverEntries}
+                        loading={state.loadingDiscover}
+                        loadingMore={state.loadingMoreDiscover}
+                        canLoadMore={state.discoverNextCursor !== null}
                         installedPluginById={state.installedPluginById}
-                        canRunCatalogActions={state.canRunCatalogActions}
+                        canRunActions={state.canRunDiscoverActions}
                         isPluginActionInFlight={state.isPluginActionInFlight}
                         onAction={state.runCatalogAction}
+                        onLoadMore={state.loadMoreDiscover}
                     />
-
-                    {state.catalogError ? (
-                        <View
-                            testID="settings.plugins.marketplace.catalog.error"
-                            accessible
-                            accessibilityRole="alert"
-                            accessibilityLiveRegion="assertive"
-                            accessibilityLabel={`${t('common.error')}: ${state.catalogError}`}
-                        >
-                            <ItemGroup title={t('common.error')}>
-                                <Item
-                                    title={t('common.error')}
-                                    subtitle={state.catalogError}
-                                    showChevron={false}
-                                    mode="info"
-                                />
-                            </ItemGroup>
-                        </View>
-                    ) : null}
                 </>
             ) : null}
 

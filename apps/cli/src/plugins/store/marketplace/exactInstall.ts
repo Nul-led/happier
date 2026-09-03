@@ -1,42 +1,50 @@
 import { isDeepStrictEqual } from 'node:util';
 
-import type { MarketplaceIndexItemV1, MarketplaceIndexQueryResultV1 } from '@happier-dev/protocol';
-
-import { requestUserPluginChange, type UserPluginChangeResult } from '@/plugins/daemon/changeClient';
-import type { ExpectedMarketplaceListing } from '@/plugins/daemon/changeContract';
+import {
+  decideMarketplaceListingInstallV1,
+  type MarketplaceIndexItemV1,
+  type MarketplaceIndexQueryResultV1,
+  type MarketplaceListingInstallBlockV1,
+} from '@happier-dev/protocol';
 
 import {
-  COMMUNITY_NPM_MARKETPLACE_SOURCE,
+  COMMUNITY_NPM_MARKETPLACE_SOURCE_ID_V1,
+  type ExpectedMarketplaceListingV1,
+} from '@happier-dev/protocol/marketplace/internal';
+
+import { requestUserPluginChange, type UserPluginChangeResult } from '@/plugins/daemon/changeClient';
+
+import {
   createMarketplaceIndexService,
   type MarketplaceIndexSourceConfig,
 } from './service';
-import { createMarketplaceSourceRegistryStore } from './sources/store';
+
+/** The CLI's user-facing copy for each shared Protocol install block. */
+function marketplaceInstallBlockMessage(block: MarketplaceListingInstallBlockV1): string {
+  switch (block) {
+    case 'unsupported-source-kind':
+      return 'Only exact curated, user, or community npm listings can use this Install and trust action.';
+    case 'curated-review-withdrawn':
+      return 'This marketplace listing was withdrawn and cannot be installed.';
+    case 'curated-review-not-approved':
+      return 'This marketplace listing does not have a current approved review.';
+    case 'full-review-unavailable':
+      return 'This marketplace listing is not available for full review.';
+    case 'source-not-fresh':
+      return 'Fresh marketplace source facts are required before installation.';
+    case 'artifact-unavailable':
+      return 'The marketplace artifact requires a registry profile whose exact host binding is unavailable.';
+  }
+}
 
 export function readMarketplaceInstallAvailability(item: MarketplaceIndexItemV1):
   | Readonly<{ ok: true; listing: MarketplaceIndexItemV1 }>
   | Readonly<{ ok: false; message: string }> {
-  if (item.source.kind !== 'curated' && item.source.kind !== 'community-npm') {
-    return { ok: false, message: 'Only exact curated or community npm listings can use this Install and trust action.' };
+  const decision = decideMarketplaceListingInstallV1(item);
+  if (decision.installable) {
+    return { ok: true, listing: item };
   }
-  if (item.source.kind === 'curated' && (item.review.status !== 'approved' || item.review.reviewedAt === null)) {
-    return { ok: false, message: item.review.status === 'withdrawn'
-      ? 'This marketplace listing was withdrawn and cannot be installed.'
-      : 'This marketplace listing does not have a current approved review.' };
-  }
-  if (item.source.kind === 'curated' && item.admission.curatedInstall !== 'allowed') {
-    return { ok: false, message: 'This marketplace listing is not admitted for curated installation.' };
-  }
-  if (item.source.kind === 'community-npm'
-    && (item.review.status !== 'unreviewed' || item.admission.curatedInstall !== 'full-review')) {
-    return { ok: false, message: 'This community npm listing is not available for full review.' };
-  }
-  if (item.freshness.state !== 'fresh') {
-    return { ok: false, message: 'Fresh marketplace source facts are required before installation.' };
-  }
-  if (item.artifactAccess.state !== 'public' && item.artifactAccess.state !== 'available') {
-    return { ok: false, message: 'The marketplace artifact requires a registry profile whose exact host binding is unavailable.' };
-  }
-  return { ok: true, listing: item };
+  return { ok: false, message: marketplaceInstallBlockMessage(decision.block) };
 }
 
 export function marketplaceInstallUnavailableReason(item: MarketplaceIndexItemV1): string | null {
@@ -69,13 +77,8 @@ export type ExactMarketplaceListingResolution = Readonly<{
 export function projectExpectedMarketplaceListing(
   listing: MarketplaceIndexItemV1,
   registryProfileId: string | null,
-): ExpectedMarketplaceListing {
-  return listing.source.kind === 'community-npm' ? {
-    source: {
-      id: listing.source.id,
-      kind: 'community-npm',
-      sourceUrl: listing.source.sourceUrl,
-    },
+): ExpectedMarketplaceListingV1 {
+  const distribution = {
     pluginId: listing.pluginId,
     publisher: listing.publisher,
     packageName: listing.distribution.packageName,
@@ -83,33 +86,53 @@ export function projectExpectedMarketplaceListing(
     version: listing.distribution.version,
     integrity: listing.distribution.integrity,
     manifestDigest: listing.manifestDigest,
+  } as const;
+  if (listing.source.kind === 'curated') {
+    return {
+      source: { id: listing.source.id, kind: 'curated', sourceUrl: listing.source.sourceUrl },
+      ...distribution,
+      ...(registryProfileId ? { registryProfileId } : {}),
+      review: {
+        status: 'approved',
+        reviewedAt: listing.review.reviewedAt!,
+        ...(listing.review.reason !== undefined ? { reason: listing.review.reason } : {}),
+      },
+      updatePolicy: listing.updatePolicy,
+    };
+  }
+  // The unreviewed listing's declared policy travels unchanged: first-install
+  // trust comes from the mandatory Install and Trust review, not from
+  // curation, so every declared policy — including `reviewSensitiveChanges`
+  // for later explicit updates — is submitted exactly as published.
+  const review = {
     review: { status: 'unreviewed', reviewedAt: null },
-    updatePolicy: listing.updatePolicy === 'pinned' ? 'pinned' : 'manual',
-  } : {
-    source: {
-      id: listing.source.id,
-      kind: 'curated',
-      sourceUrl: listing.source.sourceUrl,
-    },
-    pluginId: listing.pluginId,
-    publisher: listing.publisher,
-    packageName: listing.distribution.packageName,
-    registryOrigin: listing.distribution.registryOrigin,
+    updatePolicy: listing.updatePolicy,
+  } as const;
+  if (listing.source.kind === 'community-npm') {
+    // Community npm is the one synthesized source, never a persisted row, so
+    // it carries the constant id and no private registry binding.
+    return {
+      source: {
+        id: COMMUNITY_NPM_MARKETPLACE_SOURCE_ID_V1,
+        kind: 'community-npm',
+        sourceUrl: listing.source.sourceUrl,
+      },
+      ...distribution,
+      ...review,
+    };
+  }
+  return {
+    source: { id: listing.source.id, kind: 'user', sourceUrl: listing.source.sourceUrl },
+    ...distribution,
+    // The persisted host binding travels with every persisted source kind: a
+    // user catalog can name a private registry just as a curated one can.
     ...(registryProfileId ? { registryProfileId } : {}),
-    version: listing.distribution.version,
-    integrity: listing.distribution.integrity,
-    manifestDigest: listing.manifestDigest,
-    review: {
-      status: 'approved',
-      reviewedAt: listing.review.reviewedAt!,
-      ...(listing.review.reason !== undefined ? { reason: listing.review.reason } : {}),
-    },
-    updatePolicy: listing.updatePolicy === 'curated-auto' ? 'automatic' : listing.updatePolicy,
+    ...review,
   };
 }
 
 export function marketplaceListingMatchesExpected(
-  expected: ExpectedMarketplaceListing,
+  expected: ExpectedMarketplaceListingV1,
   listing: MarketplaceIndexItemV1,
 ): boolean {
   const registryProfileId = listing.artifactAccess.state === 'available'
@@ -123,8 +146,14 @@ export async function resolveExactMarketplaceListingForInstall(
     happyHomeDir: string;
     sourceId: string;
     pluginId: string;
+    /**
+     * The package name of the listing the user acted on. It is untrusted
+     * caller input used only to target the source before acquisition; every
+     * fact installed afterwards comes from the source's own answer.
+     */
+    packageName?: string;
   }>,
-  service?: Pick<ReturnType<typeof createMarketplaceIndexService>, 'querySources'>,
+  serviceOverride?: Pick<ReturnType<typeof createMarketplaceIndexService>, 'queryExactListing'>,
 ): Promise<
   | Readonly<{ ok: true; resolution: ExactMarketplaceListingResolution }>
   | Readonly<{ ok: false; code: 'install_unavailable' | 'source_changed'; message: string }>
@@ -135,34 +164,17 @@ export async function resolveExactMarketplaceListingForInstall(
     return { ok: false, code: 'install_unavailable', message: 'A persisted marketplace source identity and plugin ID are required.' };
   }
 
-  const sourceRegistryStore = createMarketplaceSourceRegistryStore({ happyHomeDir: params.happyHomeDir });
-  const registry = await sourceRegistryStore.read();
-  const configuredSource = registry.sources.find((entry) => entry.id === sourceId) ?? null;
-  const source: MarketplaceIndexSourceConfig | null = configuredSource
-    ?? (sourceId === COMMUNITY_NPM_MARKETPLACE_SOURCE.id ? COMMUNITY_NPM_MARKETPLACE_SOURCE : null);
-  if (!source || !source.enabled || (source.origin !== 'curated' && source.origin !== 'community-npm')) {
-    return { ok: false, code: 'install_unavailable', message: 'No enabled exact marketplace source is configured for this Install and trust action.' };
+  const service = serviceOverride ?? createMarketplaceIndexService({ happyHomeDir: params.happyHomeDir });
+  const exact = await service.queryExactListing({
+    sourceId,
+    pluginId,
+    ...(params.packageName ? { packageName: params.packageName } : {}),
+  });
+  if (!exact.ok) {
+    return exact;
   }
-
-  let result: MarketplaceIndexQueryResultV1;
-  try {
-    result = await queryAllMarketplaceSourceItems(
-      source,
-      service ?? createMarketplaceIndexService({ happyHomeDir: params.happyHomeDir }),
-    );
-  } catch {
-    return { ok: false, code: 'install_unavailable', message: 'The exact marketplace source facts are currently unavailable.' };
-  }
-  const currentSource = source.origin === 'community-npm'
-    ? COMMUNITY_NPM_MARKETPLACE_SOURCE
-    : (await sourceRegistryStore.read()).sources.find((entry) => entry.id === source.id) ?? null;
-  if (!currentSource
-    || !currentSource.enabled
-    || currentSource.origin !== source.origin
-    || currentSource.sourceUrl !== source.sourceUrl
-    || (currentSource.registryProfileId ?? null) !== (source.registryProfileId ?? null)) {
-    return { ok: false, code: 'source_changed', message: 'The persisted marketplace source binding changed while exact facts were loading.' };
-  }
+  const source = exact.source;
+  const result = exact.result;
 
   const listing = result.items.find((item) => (
     item.pluginId === pluginId
@@ -203,10 +215,12 @@ export async function requestExactMarketplaceInstall(
     happyHomeDir: string;
     sourceId: string;
     pluginId: string;
+    /** The clicked listing's package name; see the resolver for why. */
+    packageName?: string;
     approval?: 'prompt' | 'none';
   }>,
   dependencies: Readonly<{
-    marketplaceIndexService?: Pick<ReturnType<typeof createMarketplaceIndexService>, 'querySources'>;
+    marketplaceIndexService?: Pick<ReturnType<typeof createMarketplaceIndexService>, 'queryExactListing'>;
     requestChange?: typeof requestUserPluginChange;
   }> = {},
 ): Promise<ExactMarketplaceInstallResult> {
@@ -214,6 +228,7 @@ export async function requestExactMarketplaceInstall(
     happyHomeDir: params.happyHomeDir,
     sourceId: params.sourceId,
     pluginId: params.pluginId,
+    ...(params.packageName ? { packageName: params.packageName } : {}),
   }, dependencies.marketplaceIndexService);
   if (!resolution.ok) {
     return { ok: false, code: resolution.code, message: resolution.message };

@@ -95,9 +95,9 @@ import {
 import {
   parseGeneratorCliArgs,
   resolvePluginAuthorRuntimeLoadScope,
+  resolveGeneratorAuthoringPreparationPolicy,
   resolveSelectedBundledPluginPackageNames,
   shouldEvaluateBundledRuntimeSource,
-  shouldHoldGeneratorWorkspaceLockDuringGeneration,
   type PluginAuthorRuntimeLoadScope,
   type GeneratorOptions,
   type GeneratorScope,
@@ -156,7 +156,6 @@ async function publishPluginSdkApiGovernanceOutputs(): Promise<void> {
  *
  * `--mode write` is the producer and always publishes the full scope.
  */
-export { shouldHoldGeneratorWorkspaceLockDuringGeneration };
 type AgentsWorkspaceModule = typeof import('@happier-dev/agents');
 type CliCommonWorkspacesModule = typeof import('@happier-dev/cli-common/workspaces');
 type ProtocolWorkspaceModule = typeof import('@happier-dev/protocol');
@@ -317,15 +316,17 @@ async function loadGeneratorWorkspaceDependencies(): Promise<GeneratorWorkspaceD
 }
 
 async function synchronizeGeneratorAuthoringRuntimeClosure(
-  mode: Mode,
+  preparationPolicy: ReturnType<typeof resolveGeneratorAuthoringPreparationPolicy>,
   inheritedLockValue: string | undefined,
 ): Promise<void> {
   // `sourceModule.ts` is loaded through tsx below and therefore resolves its
   // public Protocol/SDK imports from the CLI's materialized dependency tree.
   // Use the shared source-dev owner to make that complete closure current
   // before either canonical generator imports or authoring source imports run.
-  // This invocation is the canonical bundled-plugin publisher, so it asks the
-  // shared owner to synchronize without recursively publishing itself.
+  // The generator asks the shared owner to synchronize without recursively
+  // publishing bundled artifacts. A temporary target consumes the canonical
+  // authoring closure read-only; only a canonical-root write may update its
+  // generated compiler inputs or API governance outputs.
   const sync = async (
     preserveBundledPluginArtifacts: boolean,
     stampPath: string,
@@ -334,10 +335,10 @@ async function synchronizeGeneratorAuthoringRuntimeClosure(
     await syncSharedDepsForSourceDev({
       repoRoot: CANONICAL_GENERATOR_REPO_ROOT,
       workspaceNames,
-      // Generated compiler inputs are publisher-owned source. A drift check may
-      // build ignored package/runtime materialization, but it must not repair
-      // those tracked inputs while deciding whether publication is current.
-      generatedCompilerInputMode: mode,
+      // Generated compiler inputs are canonical publisher-owned source. Checks
+      // and noncanonical target generation may build ignored materialization,
+      // but must not repair tracked canonical inputs.
+      generatedCompilerInputMode: preparationPolicy.generatedCompilerInputMode,
       includeRuntimeDependencies: true,
       publishBundledPluginArtifacts: false,
       preserveBundledPluginArtifacts,
@@ -358,7 +359,7 @@ async function synchronizeGeneratorAuthoringRuntimeClosure(
   // present for publication and then disappear from the immediately following
   // drift projection through a stale materialized Plugin SDK parser.
   await sync(false, GENERATOR_BUILD_PREP_STAMP_PATH, ['plugin-sdk']);
-  if (mode === 'write') {
+  if (preparationPolicy.publishPluginSdkApiGovernance) {
     // The Action map above is a compiler input for the Plugin SDK. Publish its
     // canonical source barrels, rebuilt declarations and public API inventory
     // before any bundled runtime is staged, then synchronize the resulting
@@ -6524,53 +6525,33 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
   const options = parseGeneratorCliArgs(argv);
   const authorRuntimeLoadScope = resolvePluginAuthorRuntimeLoadScope(options);
   const inheritedLockValue = process.env.HAPPIER_WORKSPACE_DIST_BUILD_LOCK_HELD;
+  const preparationPolicy = resolveGeneratorAuthoringPreparationPolicy({
+    mode: options.mode,
+    targetsCanonicalRoot: resolve(options.rootDir) === CANONICAL_GENERATOR_REPO_ROOT,
+  });
   if (!options.aggregateOnly) {
     // Package compilation and app-local runtime materialization are reusable
-    // preparation, not publication. Complete them before taking the short
-    // generator lock for full and scoped manifest publication alike; only the
-    // final source read/validation/commit needs to exclude another publisher.
+    // preparation, not publication. Complete them before taking the generator
+    // lock for full and scoped manifest publication alike.
     // A caller that already owns the canonical lock keeps passing its lease
     // through for safe reentrancy.
-    await synchronizeGeneratorAuthoringRuntimeClosure(options.mode, inheritedLockValue);
+    await synchronizeGeneratorAuthoringRuntimeClosure(preparationPolicy, inheritedLockValue);
     timing.phase('authoring-runtime-synchronization');
   }
-  let authorRuntimeLoaded = false;
-  if (
-    authorRuntimeLoadScope !== 'none'
-    && shouldHoldGeneratorWorkspaceLockDuringGeneration(options.mode)
-  ) {
-    // Module initialization is expensive but does not publish or consume a
-    // mutable snapshot. Warm it before entering the shared publication lock so
-    // unrelated workspace producers are not blocked by TypeScript graph setup.
-    await loadPluginAuthorRuntimeForScope(authorRuntimeLoadScope);
-    authorRuntimeLoaded = true;
-    timing.phase('authoring-runtime-load');
-  }
-  if (shouldHoldGeneratorWorkspaceLockDuringGeneration(options.mode)) {
-    await withGeneratorWorkspaceLock(
-      async (dependencies) => await generateBundledPluginEntries(options, dependencies),
-      inheritedLockValue,
-    );
-    timing.phase('generation-and-publication');
-    return;
-  }
-
-  // A drift check is read-only. Capture the canonical dependency modules under
-  // the publication lock, then release it before initializing the independent
-  // authoring runtime graph and scanning plugins. Package publication itself is
-  // atomic, so warming a consumer graph is not part of the shared critical
-  // section and must not convoy unrelated workspace builds.
-  const dependencies = await withGeneratorWorkspaceLock(
-    async (loadedDependencies) => loadedDependencies,
+  await withGeneratorWorkspaceLock(
+    async (dependencies) => {
+      // The author runtime imports materialized Protocol and Plugin SDK values.
+      // Load it under the same lease as the final read/compare/commit so a
+      // workspace publisher cannot mix two dependency generations.
+      if (authorRuntimeLoadScope !== 'none') {
+        await loadPluginAuthorRuntimeForScope(authorRuntimeLoadScope);
+        timing.phase('authoring-runtime-load');
+      }
+      await generateBundledPluginEntries(options, dependencies);
+    },
     inheritedLockValue,
   );
-  timing.phase('dependency-snapshot');
-  if (authorRuntimeLoadScope !== 'none' && !authorRuntimeLoaded) {
-    await loadPluginAuthorRuntimeForScope(authorRuntimeLoadScope);
-    timing.phase('authoring-runtime-load');
-  }
-  await generateBundledPluginEntries(options, dependencies);
-  timing.phase('projection-and-check');
+  timing.phase('generation-and-publication');
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {

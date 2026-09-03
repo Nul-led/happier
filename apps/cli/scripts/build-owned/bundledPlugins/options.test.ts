@@ -2,16 +2,35 @@ import { describe, expect, it } from 'vitest';
 
 import {
   parseGeneratorCliArgs,
+  resolveGeneratorAuthoringPreparationPolicy,
   resolvePluginAuthorRuntimeLoadScope,
   resolveSelectedBundledPluginPackageNames,
   shouldEvaluateBundledRuntimeSource,
-  shouldHoldGeneratorWorkspaceLockDuringGeneration,
 } from './options.ts';
 
 describe('bundled Plugin publisher options', () => {
-  it('keeps read-only projection checks concurrent and write publication locked', () => {
-    expect(shouldHoldGeneratorWorkspaceLockDuringGeneration('check')).toBe(false);
-    expect(shouldHoldGeneratorWorkspaceLockDuringGeneration('write')).toBe(true);
+  it('keeps noncanonical target generation read-only at canonical preparation owners', () => {
+    expect(resolveGeneratorAuthoringPreparationPolicy({
+      mode: 'write',
+      targetsCanonicalRoot: false,
+    })).toEqual({
+      generatedCompilerInputMode: 'check',
+      publishPluginSdkApiGovernance: false,
+    });
+    expect(resolveGeneratorAuthoringPreparationPolicy({
+      mode: 'write',
+      targetsCanonicalRoot: true,
+    })).toEqual({
+      generatedCompilerInputMode: 'write',
+      publishPluginSdkApiGovernance: true,
+    });
+    expect(resolveGeneratorAuthoringPreparationPolicy({
+      mode: 'check',
+      targetsCanonicalRoot: true,
+    })).toEqual({
+      generatedCompilerInputMode: 'check',
+      publishPluginSdkApiGovernance: false,
+    });
   });
 
   it('does not evaluate executable runtime source for projection-only checks', () => {

@@ -10,8 +10,21 @@ export type GeneratorOptions = Readonly<{
   aggregateOnly: boolean;
 }>;
 
-export function shouldHoldGeneratorWorkspaceLockDuringGeneration(mode: GeneratorMode): boolean {
-  return mode === 'write';
+export function resolveGeneratorAuthoringPreparationPolicy({
+  mode,
+  targetsCanonicalRoot,
+}: Readonly<{
+  mode: GeneratorMode;
+  targetsCanonicalRoot: boolean;
+}>): Readonly<{
+  generatedCompilerInputMode: GeneratorMode;
+  publishPluginSdkApiGovernance: boolean;
+}> {
+  const publishesCanonicalSource = mode === 'write' && targetsCanonicalRoot;
+  return Object.freeze({
+    generatedCompilerInputMode: publishesCanonicalSource ? 'write' : 'check',
+    publishPluginSdkApiGovernance: publishesCanonicalSource,
+  });
 }
 
 export function shouldEvaluateBundledRuntimeSource(scope: GeneratorScope): boolean {

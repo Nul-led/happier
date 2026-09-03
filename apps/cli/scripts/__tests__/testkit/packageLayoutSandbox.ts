@@ -1,7 +1,9 @@
+import { cpSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
 import { createTempDirSync, removeTempDirSync } from '../../../src/testkit/fs/tempDir';
 import { ensureDirectorySync } from '../../../src/testkit/fs/fileHelpers';
+import { PLUGIN_PACKAGE_PREFIX } from '../../build-owned/bundledPluginMembership.ts';
 import { writeSandboxJsonFile, writeSandboxPackage, writeSandboxTextFile } from './cliBinPreflightSandbox';
 
 function resolvePackageDir(baseDir: string, packageName: string): string {
@@ -73,6 +75,77 @@ export function writeWorkspacePackageFixture(options: {
     });
 
     return packageDir;
+}
+
+/**
+ * Canonical package name for a synthetic `packages/plugins/<pluginId>` workspace.
+ * The prefix comes from the membership owner rather than a copied literal, so a
+ * fixture can never claim a name that owner would reject.
+ */
+function bundledPluginPackageName(pluginId: string): string {
+    return `${PLUGIN_PACKAGE_PREFIX}${pluginId}`;
+}
+
+/**
+ * Minimal `src/manifest.ts` body for a synthetic bundled plugin.
+ *
+ * `readBundledPluginPackageNames` requires this file of every shippable
+ * (non-`reservation_only`) `packages/plugins/*` package and fails closed
+ * without it, so a synthetic repository that omits it is not a bundled-plugin
+ * repository at all: every membership-backed reader — source-artifact
+ * inventory verification, publication admission, daemon-readiness stamping —
+ * throws before it can observe the behaviour under test.
+ */
+export function bundledPluginManifestSource(pluginId: string): string {
+    return `export const PLUGIN_MANIFEST = Object.freeze({ id: ${JSON.stringify(pluginId)}, runtime: { apiVersion: 1 }, contributes: {} });\n`;
+}
+
+/**
+ * Writes the source inputs the canonical membership owner requires of a
+ * synthetic bundled plugin workspace. Callers that additionally need build
+ * outputs, a tsconfig, or a bespoke manifest shape write those themselves;
+ * this owns only the membership contract so mtime-ordered fixtures keep
+ * control of when their own files land.
+ */
+export function writeBundledPluginSourceInputs(options: {
+    repoRoot: string;
+    pluginId: string;
+    /** Leave a package.json the caller already wrote with its own exact bytes untouched. */
+    writePackageJson?: boolean;
+}): string {
+    const packageDir = resolve(options.repoRoot, 'packages', 'plugins', options.pluginId);
+
+    if (options.writePackageJson !== false) {
+        writeSandboxJsonFile(join(packageDir, 'package.json'), {
+            name: bundledPluginPackageName(options.pluginId),
+        });
+    }
+    writeSandboxTextFile(
+        join(packageDir, 'src', 'manifest.ts'),
+        bundledPluginManifestSource(options.pluginId),
+    );
+
+    return packageDir;
+}
+
+/**
+ * Materializes `verifyBundledPluginArtifacts.mjs` into a synthetic repository
+ * together with the build-owned module closure it imports. The verifier stopped
+ * being a self-contained file when canonical bundled membership moved to
+ * `build-owned/bundledPluginMembership.ts`; copying the entrypoint alone leaves
+ * a child process that cannot even load it.
+ */
+export function materializeBundledPluginArtifactVerifier(options: {
+    sourceCliScriptsDir: string;
+    targetCliScriptsDir: string;
+}): void {
+    ensureDirectorySync(resolve(options.targetCliScriptsDir, 'build-owned'));
+    for (const relativePath of ['verifyBundledPluginArtifacts.mjs', 'build-owned/bundledPluginMembership.ts']) {
+        cpSync(
+            resolve(options.sourceCliScriptsDir, relativePath),
+            resolve(options.targetCliScriptsDir, relativePath),
+        );
+    }
 }
 
 export function writeRuntimeDependencyStub(options: {

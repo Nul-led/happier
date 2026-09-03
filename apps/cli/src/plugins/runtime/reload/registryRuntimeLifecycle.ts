@@ -293,7 +293,7 @@ export function createDaemonPluginRegistryRuntimeLifecycle(params: Readonly<{
         const stableEventsBroker =
           params.readStableEventsBroker?.() ?? null;
         const targetedContributions =
-          params.reloadController.getTargetedContributionsOwner?.();
+          params.reloadController.getTargetedContributionsOwner();
         registry = await resolveExecutablePluginRuntimeRegistry({
             happyHomeDir: params.happyHomeDir,
             contributes,

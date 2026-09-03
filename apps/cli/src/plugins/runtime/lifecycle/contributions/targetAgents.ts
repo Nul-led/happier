@@ -1808,12 +1808,14 @@ export function createDeclarativeAcpAgentRuntimeRegistry(params: Readonly<{
     const declarations = params.agents
         .flatMap((agent) => {
             const runtime = readAgentPrimaryRuntime(agent.richDefinition?.definition);
+            const identity = agent.identity;
             return agent.pluginId
+                && identity?.pluginId === agent.pluginId
                 && runtime?.kind === 'acp'
                 && readAgentSessionCapabilities(
                     agent.richDefinition?.definition,
                 )
-                ? [{ agent, pluginId: agent.pluginId, runtime }]
+                ? [{ agent, identity, pluginId: agent.pluginId, runtime }]
                 : [];
         })
         .sort((left, right) => (
@@ -1840,8 +1842,7 @@ export function createDeclarativeAcpAgentRuntimeRegistry(params: Readonly<{
         const pluginVersion = existing?.pluginVersion
             ?? declaration.agent.sourceSpec?.resolvedVersion
             ?? null;
-        const localAgentId = declaration.agent.identity?.localId
-            ?? declaration.agent.id;
+        const localAgentId = declaration.identity.localId;
         const immutableGenerationId = existing?.immutableGenerationId
             ?? params.immutableGenerationIdsByPluginId?.get(
                 declaration.pluginId,

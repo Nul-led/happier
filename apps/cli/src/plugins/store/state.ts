@@ -1,17 +1,17 @@
 import { z } from 'zod';
 
-import { PluginIdSchema, PluginSourceSpecV1Schema } from '@happier-dev/protocol';
+import {
+  PluginIdSchema,
+  PluginSourceSpecV1Schema,
+  PluginUpdatePolicyV1Schema,
+} from '@happier-dev/protocol';
 
 import { PluginCompatibilityDiagnosticSchema } from '@/plugins/validation/diagnostics/types';
 import {
   createDefaultPluginAccessScopeRegistry,
   PluginAccessSelectionSchema,
 } from './install/accessScopeRegistry';
-import {
-  PluginTrustRecordSchema,
-  PluginCuratedUpdateSourceBindingSchema,
-  PluginUpdatePolicySchema,
-} from './install/trustIdentity';
+import { PluginTrustRecordSchema } from './install/trustIdentity';
 
 export const PluginCompatibilityStatusSchema = z.enum(['unknown', 'compatible', 'incompatible', 'load_error']);
 export type PluginCompatibilityStatus = z.infer<typeof PluginCompatibilityStatusSchema>;
@@ -38,9 +38,7 @@ export const PluginStateInstallRecordSchema = z.object({
   manifestVersion: z.string().min(1),
   installedPath: z.string().min(1).nullable().optional(),
   trust: PluginTrustRecordSchema.optional(),
-  updatePolicy: PluginUpdatePolicySchema.optional(),
-  /** Present only for reviewed curated automatic-update channels. */
-  curatedUpdateSource: PluginCuratedUpdateSourceBindingSchema.optional(),
+  updatePolicy: PluginUpdatePolicyV1Schema.optional(),
   optionalAccess: z.array(PluginAccessSelectionSchema).optional(),
 }).strict();
 export type PluginStateInstallRecord = z.infer<typeof PluginStateInstallRecordSchema>;

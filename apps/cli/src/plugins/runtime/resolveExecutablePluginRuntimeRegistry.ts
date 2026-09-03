@@ -244,6 +244,7 @@ import type {
     TargetRequestInterceptorBinding,
 } from './lifecycle/contributions/targetRequestInterceptors';
 import type {
+    AgentInvocationTurnAdmissionWitness,
     CreateAgentInvocationServices,
     PluginInvocationServicesSeed,
     PluginProviderOperationsSource,
@@ -932,6 +933,8 @@ export type ResolvedExecutablePluginRuntimeRegistry = Readonly<{
             sessionId: string;
             correlationId: string;
             signal: AbortSignal;
+            readActiveTurnAdmissionWitness?():
+                AgentInvocationTurnAdmissionWitness | null;
             isGenerationCurrent(): boolean;
         }>,
     ): Promise<PluginServices['actions']>;
@@ -2068,6 +2071,12 @@ export async function resolveExecutablePluginRuntimeRegistry(
     let targetActionInvocations: ReturnType<typeof createTargetActionInvocationRegistry> | null = null;
     let disposeInvocationServiceOwners: () => Promise<void> = async () => {};
     let resolvedRuntimeRegistryOwner: ResolvedExecutablePluginRuntimeRegistry | null = null;
+    // Holds `fenceTerminalActivationFailure` below, published once the
+    // projections it refreshes exist. Until then this registry has nothing to
+    // fence: its initial build reads the activation facts a failure already
+    // wrote.
+    let terminalActivationFailureFence:
+        ((pluginId: string) => Promise<void>) | null = null;
     const retainedActivationRegistryLeases = [...(params?.retainedActivationRegistryLeases ?? [])];
     const retainedActivationPluginIds = new Set(
         retainedActivationRegistryLeases.flatMap((lease) => [...lease.pluginIds]),
@@ -2114,9 +2123,21 @@ export async function resolveExecutablePluginRuntimeRegistry(
         happyHomeDir: params?.happyHomeDir,
         resolveActivationSource: resolveCommittedActivationSource,
         adoptActivationComponent: (component) => adoptActivationComponent(component),
-        ...(params?.onTerminalActivationFailure
-            ? { onTerminalActivationFailure: params.onTerminalActivationFailure }
-            : {}),
+        // A generation-long background service that stops while its generation
+        // is current is the same terminal activation failure a rejected
+        // readiness participant is; only the owner that observed it differs.
+        // Route both through this registry's fence before the host callback, so
+        // no reader keeps seeing a fenced plugin's applied generation, stale
+        // diagnostics, or live consumer generation.
+        onTerminalActivationFailure: (pluginId: string) => {
+            void terminalActivationFailureFence?.(pluginId).catch((error: unknown) => {
+                logger.warn('[PLUGIN RUNTIME] Terminal activation-failure fencing failed', {
+                    pluginId,
+                    error: projectPluginFailureText(error),
+                });
+            });
+            params?.onTerminalActivationFailure?.(pluginId);
+        },
         invocationServices: {
             createOrdinaryServiceBinding(
                 bindingGeneration,
@@ -5225,23 +5246,32 @@ export async function resolveExecutablePluginRuntimeRegistry(
     for (const pluginId of activatedRegistry.activatedPluginIds) {
         refreshPluginDiagnostics(pluginId, initialScmDiagnosticsByPluginId);
     }
-    const pluginFinalPolicyCurrentGenerationsById = new Map<string, PluginFinalPolicyCurrentGeneration>();
-    function refreshPluginFinalPolicyCurrentGeneration(pluginId: string): void {
-        const generation = committed?.generations.get(pluginId);
-        if (!generation) {
-            pluginFinalPolicyCurrentGenerationsById.delete(pluginId);
-            return;
+    /**
+     * Derived on read from the same live activation owner the internal
+     * final-policy checks consult. A materialized copy would be a second
+     * decision-maker for one authorization fact: every future path that mutates
+     * activation and forgets to refresh it would keep publishing `applied: true`
+     * for a plugin the activation owner already dropped.
+     */
+    function resolveCurrentPluginFinalPolicyGenerations():
+    ReadonlyMap<string, PluginFinalPolicyCurrentGeneration> {
+        const currentGenerations = new Map<string, PluginFinalPolicyCurrentGeneration>();
+        for (const [pluginId] of committed?.generations ?? []) {
+            const current = resolveCurrentFinalPolicyGeneration(pluginId);
+            if (current) currentGenerations.set(pluginId, current);
         }
-        const current = resolveCurrentFinalPolicyGeneration(pluginId);
-        if (current) {
-            pluginFinalPolicyCurrentGenerationsById.set(pluginId, current);
-        } else {
-            pluginFinalPolicyCurrentGenerationsById.delete(pluginId);
-        }
+        return currentGenerations;
     }
-    for (const [pluginId] of committed?.generations ?? []) {
-        refreshPluginFinalPolicyCurrentGeneration(pluginId);
+    // The activation owner has already recorded the one `unavailable` fact and
+    // dropped the plugin from the activated set, so the derived final-policy
+    // generation is already fenced for every reader. Refresh the diagnostics
+    // projection, which is materialized, and then retire the plugin's live
+    // consumer generation.
+    async function fenceTerminalActivationFailure(pluginId: string): Promise<void> {
+        refreshPluginDiagnostics(pluginId, readCurrentScmBackendDiagnostics());
+        await retirePluginConsumers([pluginId]);
     }
+    terminalActivationFailureFence = fenceTerminalActivationFailure;
 
     function mergeActivatedHookHandlers(): void {
         for (const [hookId, handlers] of activatedRegistry.hookHandlersByHookId.entries()) {
@@ -5323,7 +5353,6 @@ export async function resolveExecutablePluginRuntimeRegistry(
         await refreshCurrentGlobalExternalSessionsAuthor();
         const scmDiagnosticsByPluginId = readCurrentScmBackendDiagnostics();
         for (const result of results) {
-            refreshPluginFinalPolicyCurrentGeneration(result.pluginId);
             refreshPluginDiagnostics(result.pluginId, scmDiagnosticsByPluginId);
         }
         return results;
@@ -5370,7 +5399,6 @@ export async function resolveExecutablePluginRuntimeRegistry(
         await refreshCurrentGlobalExternalSessionsAuthor();
         const scmDiagnosticsByPluginId = readCurrentScmBackendDiagnostics();
         for (const result of results) {
-            refreshPluginFinalPolicyCurrentGeneration(result.pluginId);
             refreshPluginDiagnostics(result.pluginId, scmDiagnosticsByPluginId);
         }
         return results;
@@ -5383,9 +5411,7 @@ export async function resolveExecutablePluginRuntimeRegistry(
     // consumers here fences the live generation while its peers keep serving.
     async function recordPluginActivationFailure(pluginId: string, message: string): Promise<void> {
         activatedRegistry.recordPluginActivationFailure(pluginId, message);
-        await retirePluginConsumers([pluginId]);
-        refreshPluginFinalPolicyCurrentGeneration(pluginId);
-        refreshPluginDiagnostics(pluginId, readCurrentScmBackendDiagnostics());
+        await fenceTerminalActivationFailure(pluginId);
     }
 
     async function acquireManagedProviderRuntime(
@@ -6579,7 +6605,9 @@ export async function resolveExecutablePluginRuntimeRegistry(
         runtimeCapabilitiesByPluginId: activatedRegistry.runtimeCapabilitiesByPluginId,
         eventDeclarationsByPluginId: activatedRegistry.eventDeclarationsByPluginId,
         pluginDiagnosticsByPluginId,
-        pluginFinalPolicyCurrentGenerationsById,
+        get pluginFinalPolicyCurrentGenerationsById() {
+            return resolveCurrentPluginFinalPolicyGenerations();
+        },
         ...(settingsRollbackDeclarations
             ? { settingsRollbackDeclarations }
             : {}),
@@ -7044,6 +7072,12 @@ export async function resolveExecutablePluginRuntimeRegistry(
                     id: agentParams.sessionId,
                 }),
                 signal: agentParams.signal,
+                ...(agentParams.readActiveTurnAdmissionWitness
+                    ? {
+                        readActiveTurnAdmissionWitness:
+                            agentParams.readActiveTurnAdmissionWitness,
+                    }
+                    : {}),
                 isGenerationCurrent:
                     agentParams.isGenerationCurrent,
             });

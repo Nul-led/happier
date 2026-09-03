@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { act } from 'react-test-renderer';
+import { act, type ReactTestInstance } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type {
@@ -7,6 +7,7 @@ import type {
     MarketplaceSourceRegistryV1,
     PluginDiagnosticRecordV1,
 } from '@happier-dev/protocol';
+import type { PluginInstallationReview } from '@happier-dev/protocol/marketplace/internal';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 import {
     clearDaemonMergedProjectionCacheForTests,
@@ -111,6 +112,7 @@ const endpointConnectivityState = vi.hoisted(() => ({
 const invokeWithAlertsMock = vi.hoisted(() => vi.fn());
 const refreshMachineCapabilitiesMock = vi.hoisted(() => vi.fn());
 const machineMarketplaceSourceRegistryGetMock = vi.hoisted(() => vi.fn());
+const machineMarketplaceSourceRegistryMutateMock = vi.hoisted(() => vi.fn());
 const machineMarketplaceIndexQueryMock = vi.hoisted(() => vi.fn());
 const machineNpmRegistryProfilesGetMock = vi.hoisted(() => vi.fn());
 const machineNpmRegistryProfilesMutateMock = vi.hoisted(() => vi.fn());
@@ -140,6 +142,8 @@ const machineAdministrationFixture = vi.hoisted(() => ({
         targetsByKey: {},
         pluginExecutionOriginsByPluginId: {},
     } as Record<string, unknown>,
+    /** Hydrated Account settings version, as the real store reports once loaded. */
+    settingsVersion: 1 as number | null,
     setSelections: vi.fn(),
     storageState: {} as Record<string, unknown>,
 }));
@@ -391,17 +395,18 @@ function createDaemonMarketplaceIndexResult(
         sourceKind?: 'curated' | 'user' | 'community-npm';
         freshnessState?: 'fresh' | 'stale' | 'stale-offline';
         reviewStatus?: 'approved' | 'withdrawn' | 'blocked' | 'unreviewed';
-        curatedInstall?: 'allowed' | 'refused' | 'full-review';
-        curatedUpdate?: 'allowed' | 'refused' | 'not-applicable';
-        warning?: boolean;
         artifactAccessState?: 'public' | 'unverified-profile';
+        sourceDiagnostics?: readonly Readonly<{ code: string; message: string }>[];
+        indexDiagnostics?: readonly Readonly<{ code: string; message: string }>[];
+        revision?: number;
+        nextCursor?: string | null;
     }> = {},
 ): MarketplaceIndexQueryResultV1 {
     const sourceId = options.sourceId ?? 'marketplace:curated';
     const sourceTitle = options.sourceTitle ?? 'Curated Marketplace';
     const sourceUrl = options.sourceUrl ?? 'https://marketplace.example.test/catalog.json';
     return {
-        revision: 1,
+        revision: options.revision ?? 1,
         items: entries.map((entry) => ({
             pluginId: entry.manifestId,
             publisher: { id: 'acme', displayName: 'Acme' },
@@ -422,7 +427,7 @@ function createDaemonMarketplaceIndexResult(
             },
             categories: ['agents'],
             media: [],
-            updatePolicy: 'curated-auto',
+            updatePolicy: 'reviewEveryUpdate',
             links: {},
             source: {
                 id: sourceId,
@@ -431,10 +436,11 @@ function createDaemonMarketplaceIndexResult(
                 sourceUrl,
             },
             freshness: { state: options.freshnessState ?? 'fresh', fetchedAtMs: 1 },
+            // The one canonical admission shape (MarketplaceIndexAdmissionV1Schema):
+            // every install is full-review — curation is discovery only — and a
+            // withdrawal warns without disabling installed code.
             admission: {
-                curatedInstall: options.curatedInstall ?? 'allowed',
-                curatedUpdate: options.curatedUpdate ?? 'allowed',
-                warning: options.warning ?? false,
+                install: 'full-review',
                 mutatesInstalledTrust: false,
                 disablesInstalledCode: false,
                 directNpmRequiresFullReview: true,
@@ -444,13 +450,13 @@ function createDaemonMarketplaceIndexResult(
                 registryProfileId: null,
             },
         })),
-        nextCursor: null,
+        nextCursor: options.nextCursor ?? null,
         sources: [{
             source: { id: sourceId, title: sourceTitle, kind: options.sourceKind ?? 'curated', sourceUrl },
             freshness: { state: options.freshnessState ?? 'fresh', fetchedAtMs: 1 },
-            diagnostics: [],
+            diagnostics: [...(options.sourceDiagnostics ?? [])],
         }],
-        diagnostics: [],
+        diagnostics: [...(options.indexDiagnostics ?? [])],
     };
 }
 
@@ -471,6 +477,7 @@ function createCommunityInstallReviewResult(pendingChangeId: string, action: 'in
                     kind: 'npm',
                     locator: '@acme/community-plugin@2.0.0',
                     integrity: 'sha512-exact',
+                    integrityBasis: 'expected',
                 },
                 updateChannel: {
                     kind: 'npm',
@@ -503,8 +510,9 @@ function createCommunityInstallReviewResult(pendingChangeId: string, action: 'in
                     normalizedScope: { access: ['read'] },
                 }],
                 rawCredentialAccess: [],
+                requestInterceptors: [],
                 compatibility: { happier: '^0.2.0', runtimeApiVersion: 1 },
-                updatePolicy: 'manual',
+                updatePolicy: 'reviewEveryUpdate',
             },
         },
     };
@@ -525,20 +533,88 @@ function createDeferred(): Readonly<{
     return { promise, resolve };
 }
 
+/**
+ * Walks up from a rendered node to the nearest accessible/live-region
+ * announcement parent. Detail rows that assistive technology can traverse
+ * individually have no such ancestor; rows swallowed by an aggregate
+ * accessible parent do.
+ */
+function closestAccessibleAnnouncementAncestor(node: ReactTestInstance | null): ReactTestInstance | null {
+    let current = node?.parent ?? null;
+    while (current !== null) {
+        if (current.props?.accessible === true || typeof current.props?.accessibilityLiveRegion === 'string') {
+            return current;
+        }
+        current = current.parent;
+    }
+    return null;
+}
+
 function findPendingChangeAction(
     screen: Awaited<ReturnType<typeof renderSettingsView>>,
     pendingChangeId: string,
-    actionId: 'approve' | 'reject',
-): Readonly<{ disabled: boolean; onPress: () => void }> | undefined {
+    actionId: 'review' | 'reject',
+): Readonly<{ id: string; title: string; subtitle?: string; disabled: boolean; onPress: () => void }> | undefined {
     return screen.findAllByType('ItemRowActions' as never)
-        .flatMap((node: Readonly<{ props: Readonly<{ overflowTriggerTestID?: string; actions?: readonly Readonly<{ id: string }>[] }> }>) => (
+        .flatMap((node: Readonly<{ props: Readonly<{ overflowTriggerTestID?: string; actions?: readonly Readonly<{ id: string; title: string; subtitle?: string; disabled: boolean; onPress: () => void }>[] }> }>) => (
             node.props.overflowTriggerTestID === `settings.plugins.management.pendingChanges.${pendingChangeId}.actions.overflow`
                 ? node.props.actions ?? []
                 : []
         ))
         .find((action: Readonly<{ id: string }>) => action.id === actionId) as
-        | Readonly<{ disabled: boolean; onPress: () => void }>
+        | Readonly<{ id: string; title: string; subtitle?: string; disabled: boolean; onPress: () => void }>
         | undefined;
+}
+
+type DiscoverListingAction = Readonly<{
+    id: string;
+    title: string;
+    accessibilityLabel?: string;
+    subtitle?: string;
+    disabled: boolean;
+    onPress: () => void;
+}>;
+
+function discoverListingTestID(pluginId: string, sourceId = 'marketplace:curated'): string {
+    return `settings.plugins.marketplace.entry.${sourceId}.${pluginId}`;
+}
+
+/**
+ * The actions a Discover listing carries on its own row.
+ *
+ * One listing is one row, so a listing's actions are looked up through that
+ * row's action cluster rather than through a row of their own.
+ */
+function findDiscoverListingActions(
+    screen: Awaited<ReturnType<typeof renderSettingsView>>,
+    pluginId: string,
+    sourceId = 'marketplace:curated',
+): readonly DiscoverListingAction[] {
+    return screen.findAllByType('ItemRowActions' as never)
+        .flatMap((node: Readonly<{ props: Readonly<{ overflowTriggerTestID?: string; actions?: readonly DiscoverListingAction[] }> }>) => (
+            node.props.overflowTriggerTestID === `${discoverListingTestID(pluginId, sourceId)}.actions.overflow`
+                ? node.props.actions ?? []
+                : []
+        ));
+}
+
+function findDiscoverInstallAction(
+    screen: Awaited<ReturnType<typeof renderSettingsView>>,
+    pluginId: string,
+    sourceId = 'marketplace:curated',
+): DiscoverListingAction | undefined {
+    return findDiscoverListingActions(screen, pluginId, sourceId).find((action) => action.id === 'install');
+}
+
+/** Whether `node` renders inside `ancestor`, used to prove a fact belongs to one row. */
+function isRenderedWithin(node: ReactTestInstance | null, ancestor: ReactTestInstance | null): boolean {
+    if (!node || !ancestor) return false;
+    let current: ReactTestInstance | null = node.parent ?? null;
+    while (current !== null) {
+        if (current === ancestor) return true;
+        current = current.parent;
+    }
+    return false;
 }
 
 async function selectPluginManagementView(
@@ -599,17 +675,13 @@ installSettingsViewCommonModuleMocks({
             useProfile: () => ({ id: 'prof_1', firstName: '', connectedServices: [] }),
         });
     },
+    // The shared runtime's own mock convention (`key` or `key(param=value,...)`)
+    // is used verbatim — no suite-local translation override, so every
+    // parameterized-string assertion below describes the one shape the testkit
+    // produces for any suite.
     text: async () => {
         const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
-        return createTextModuleMock({
-            translate: (key, params) => (
-                key === 'settingsPlugins.marketplaceInstallReviewBody'
-                || key === 'settingsPlugins.developmentTrustSourceRootBody'
-                || key === 'settingsPlugins.pluginChangeConfirmBody'
-            )
-                ? `${key}:${JSON.stringify(params)}`
-                : key,
-        });
+        return createTextModuleMock();
     },
 });
 
@@ -699,6 +771,11 @@ vi.mock('@/sync/store/hooks', () => ({
     useActiveServerAccountScope: () => null,
     useProfile: () => ({ id: 'prof_1', firstName: '', connectedServices: [] }),
     useSetting: () => machineAdministrationFixture.selections,
+    // The administration-target owner persists a sole-candidate initialization
+    // through the versioned Account settings mutation, so a hydrated settings
+    // version is part of this boundary's real contract rather than an optional
+    // extra. Omitting it made every render of this screen throw.
+    useSettingsVersion: () => machineAdministrationFixture.settingsVersion,
     useSettingMutable: () => [
         machineAdministrationFixture.selections,
         machineAdministrationFixture.setSelections,
@@ -714,6 +791,7 @@ vi.mock('@/hooks/machine/useMachineCapabilityInvokeWithAlerts', () => ({
 
 vi.mock('@/sync/ops/machineMarketplaceSources', () => ({
     machineMarketplaceSourceRegistryGet: (...args: unknown[]) => machineMarketplaceSourceRegistryGetMock(...args),
+    machineMarketplaceSourceRegistryMutate: (...args: unknown[]) => machineMarketplaceSourceRegistryMutateMock(...args),
     machineMarketplaceIndexQuery: (...args: unknown[]) => machineMarketplaceIndexQueryMock(...args),
     resolvePreferredMachineMarketplaceSource: (registry: MarketplaceSourceRegistryV1) =>
         registry.sources.find((entry) => entry.enabled && entry.origin === 'curated') ?? registry.sources.find((entry) => entry.enabled) ?? null,
@@ -724,10 +802,42 @@ vi.mock('@/sync/ops/machineNpmRegistryProfiles', () => ({
     machineNpmRegistryProfilesMutate: (...args: unknown[]) => machineNpmRegistryProfilesMutateMock(...args),
 }));
 
-vi.mock('@/sync/ops/machineContributionRegistryProjection', () => ({
+vi.mock('@/sync/ops/machineContributionRegistryProjection', async () => {
+    // The real op only ever hands callers a projection the canonical projection
+    // owner has already parsed, so every defaulted map — families, settings —
+    // is present by the time a reader sees it. Fixtures are normalized through
+    // that same owner here, so a test can never assert against a projection
+    // shape the daemon boundary could not have produced.
+    const { PluginProjectionV2Schema } = await import('@happier-dev/protocol');
+    const normalizeDescribeResult = (result: unknown): unknown => {
+        if (
+            result === null
+            || typeof result !== 'object'
+            || (result as { supported?: unknown }).supported !== true
+        ) return result;
+        const projection = (result as { projection?: unknown }).projection;
+        if (
+            projection === null
+            || typeof projection !== 'object'
+            || (projection as { v?: unknown }).v !== 2
+        ) return result;
+        return {
+            ...result,
+            projection: PluginProjectionV2Schema.parse({
+                // The wire schema defaults the finite family map during daemon
+                // projection construction. These focused fixtures specify only
+                // the families their assertion consumes, so model that parsed
+                // boundary instead of making every fixture repeat an empty map.
+                familiesById: {},
+                ...projection,
+            }),
+        };
+    };
+    return ({
     getMachineContributionRegistryProjectionRevision: () => 0,
     subscribeMachineContributionRegistryProjectionInvalidation: () => () => {},
-    machineContributionRegistryProjectionDescribe: (...args: unknown[]) => machineContributionRegistryProjectionDescribeMock(...args),
+    machineContributionRegistryProjectionDescribe: async (...args: unknown[]) =>
+        normalizeDescribeResult(await machineContributionRegistryProjectionDescribeMock(...args)),
     publishMachineContributionRegistryProjectionInvalidation: (...args: unknown[]) =>
         publishMachineContributionRegistryProjectionInvalidationMock(...args),
     machinePluginStructuredMessageActionExecute: (...args: unknown[]) =>
@@ -854,7 +964,8 @@ vi.mock('@/sync/ops/machineContributionRegistryProjection', () => ({
             },
         }),
     }),
-}));
+    });
+});
 
 vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc', () => ({
     machineRpcWithServerScope: (...args: readonly unknown[]) =>
@@ -929,6 +1040,7 @@ afterEach(() => {
     invokeWithAlertsMock.mockReset();
     refreshMachineCapabilitiesMock.mockReset();
     machineMarketplaceSourceRegistryGetMock.mockReset();
+    machineMarketplaceSourceRegistryMutateMock.mockReset();
     machineMarketplaceIndexQueryMock.mockReset();
     machineNpmRegistryProfilesGetMock.mockReset();
     machineNpmRegistryProfilesMutateMock.mockReset();
@@ -993,7 +1105,7 @@ beforeEach(() => {
     modalShowMock.mockImplementation((config: Readonly<{
         chrome?: Readonly<{ testID?: string }>;
         props?: Readonly<{
-            optionalHostAccess?: readonly Readonly<{ id: string }>[];
+            review?: Readonly<{ optionalHostAccess: readonly Readonly<{ id: string }>[] }>;
             onResolve?: (result: Readonly<{
                 approved: boolean;
                 optionalSelections: readonly Readonly<{ accessId: string; selected: boolean }>[];
@@ -1003,7 +1115,7 @@ beforeEach(() => {
         if (config.chrome?.testID === 'settings.plugins.installReview') {
             config.props?.onResolve?.({
                 approved: true,
-                optionalSelections: (config.props.optionalHostAccess ?? []).map((entry) => ({
+                optionalSelections: (config.props.review?.optionalHostAccess ?? []).map((entry) => ({
                     accessId: entry.id,
                     selected: false,
                 })),
@@ -1057,6 +1169,19 @@ describe('PluginSettingsHomeScreen', () => {
         expect(routerPushSpy).toHaveBeenCalledWith('/settings/plugins/webhooks');
     });
 
+    it('links to Sources & registries outside the Discover view', async () => {
+        useMachineCapabilitiesCacheMock.mockReturnValue({
+            state: createMachineCapabilitiesState([]),
+            refresh: vi.fn(),
+        });
+        const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
+        const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
+
+        expect(screen.findRow('settings.plugins.sources')).toBeTruthy();
+        await act(async () => { screen.pressRow('settings.plugins.sources'); });
+        expect(routerPushSpy).toHaveBeenCalledWith('/settings/plugins/sources');
+    });
+
     it('hides the webhook administration entry when the server webhook feature is unavailable', async () => {
         webhookFeature.enabled = false;
         useMachineCapabilitiesCacheMock.mockReturnValue({
@@ -1072,16 +1197,18 @@ describe('PluginSettingsHomeScreen', () => {
 
     it('defaults to Installed and keeps every plugin-management view reachable through accessible selectors', async () => {
         const installedPlugin = createInstalledPlugin({
-            pluginId: 'installed-plugin',
+            pluginId: 'com.acme.installed-plugin',
             title: 'Installed Plugin',
             version: '1.0.0',
             enabled: true,
             rollbackAvailability: 'available',
         });
+        const capabilityState = createMachineCapabilitiesState([installedPlugin]);
         useMachineCapabilitiesCacheMock.mockReturnValue({
-            state: createMachineCapabilitiesState([installedPlugin]),
+            state: capabilityState,
             refresh: vi.fn(),
         });
+        getMachineCapabilitiesCacheStateMock.mockReturnValue(capabilityState);
         machineMarketplaceSourceRegistryGetMock.mockResolvedValue(null);
         machineContributionRegistryProjectionDescribeMock.mockResolvedValue({
             supported: true,
@@ -1089,8 +1216,8 @@ describe('PluginSettingsHomeScreen', () => {
                 v: 2,
                 generation: 12,
                 installedPackagesById: {
-                    'installed-plugin': {
-                        id: 'installed-plugin',
+                    'com.acme.installed-plugin': {
+                        id: 'com.acme.installed-plugin',
                         displayName: 'Installed Plugin',
                         version: '1.0.0',
                         enabled: true,
@@ -1107,8 +1234,8 @@ describe('PluginSettingsHomeScreen', () => {
                 commandsById: {},
                 resourcesById: {},
                 diagnostics: [createPluginDiagnosticRecord({
-                    id: 'installed-plugin:normalization:capability-missing:0',
-                    pluginId: 'installed-plugin',
+                    id: 'com.acme.installed-plugin:normalization:capability-missing:0',
+                    pluginId: 'com.acme.installed-plugin',
                     severity: 'warning',
                     code: 'plugin_runtime_capability_missing',
                     message: 'Missing actions capability',
@@ -1136,8 +1263,7 @@ describe('PluginSettingsHomeScreen', () => {
         expect(diagnosticsSelector).toBeTruthy();
         expect(diagnosticsSelector?.props.accessibilityState).toMatchObject({ selected: false });
         expect(screen.findByTestId('settings.plugins.management.viewScroller')?.props.horizontal).toBe(true);
-        expect(screen.findRow('settings.plugins.marketplace.installed.installed-plugin')).toBeTruthy();
-        expect(screen.findRow('settings.plugins.marketplace.loadCatalog')).toBeFalsy();
+        expect(screen.findRow('settings.plugins.marketplace.installed.com.acme.installed-plugin')).toBeTruthy();
         expect(screen.findRow('settings.plugins.management.development.empty')).toBeFalsy();
         expect(screen.findRow('settings.plugins.registryDiagnostic.plugin_runtime_capability_missing.0')).toBeFalsy();
 
@@ -1145,27 +1271,42 @@ describe('PluginSettingsHomeScreen', () => {
             screen.pressByTestId('settings.plugins.management.view:discover');
         });
         expect(screen.findByTestId('settings.plugins.management.view:discover')?.props.accessibilityState).toMatchObject({ selected: true });
-        expect(screen.findRow('settings.plugins.marketplace.installed.installed-plugin')).toBeFalsy();
-        expect(screen.findRow('settings.plugins.marketplace.loadCatalog')).toBeTruthy();
-        expect(screen.findRow('settings.plugins.marketplace.catalogUrl')?.props.accessibilityLabel).toBe('settingsPlugins.catalogUrlLabel');
-        expect(flattenTestStyle(screen.findRow('settings.plugins.marketplace.catalogUrl')?.props.style))
-            .toMatchObject({ minHeight: 44 });
-        expect(screen.findRow('settings.plugins.registries.add')).toBeTruthy();
+        expect(screen.findRow('settings.plugins.marketplace.installed.com.acme.installed-plugin')).toBeFalsy();
+        // Discover owns search, an explicit refresh row, and source chips. The
+        // retired catalog-URL/registries home controls no longer exist.
+        const searchInput = screen.findRow('settings.plugins.marketplace.search');
+        expect(searchInput).toBeTruthy();
+        expect(searchInput?.props.accessibilityLabel).toBe('settingsPlugins.discoverSearchLabel');
+        expect(searchInput?.props.value).toBe('');
+        expect(screen.findRow('settings.plugins.marketplace.refreshDiscover')).toBeTruthy();
+        expect(screen.findAllHostsByTestId('settings.plugins.marketplace.sourceFilter:all')).toHaveLength(1);
+        expect(screen.findAllHostsByTestId('settings.plugins.marketplace.sourceFilter:marketplace:community-npm')).toHaveLength(1);
+        // Entering Discover auto-loads the aggregate query: real (empty) search
+        // text, no source filter, no client-side catalog fetch.
         await act(async () => {
-            screen.findRow('settings.plugins.marketplace.catalogUrl')?.props.onChangeText('https://marketplace.example.test/catalog.json');
+            await flushAsync();
+            await flushAsync();
         });
+        expect(machineMarketplaceIndexQueryMock).toHaveBeenCalledTimes(1);
+        expect(machineMarketplaceIndexQueryMock).toHaveBeenCalledWith('machine-1', expect.objectContaining({
+            text: '',
+            cursor: null,
+            filters: { includeUnavailable: true },
+        }), expect.any(Object));
 
         await act(async () => {
             screen.pressByTestId('settings.plugins.management.view:development');
         });
         expect(screen.findByTestId('settings.plugins.management.view:development')?.props.accessibilityState).toMatchObject({ selected: true });
-        expect(screen.findRow('settings.plugins.marketplace.loadCatalog')).toBeFalsy();
         expect(screen.findRow('settings.plugins.management.development.empty')).toBeTruthy();
 
         await act(async () => {
             screen.pressByTestId('settings.plugins.management.view:discover');
         });
-        expect(screen.findRow('settings.plugins.marketplace.catalogUrl')?.props.value).toBe('https://marketplace.example.test/catalog.json');
+        expect(screen.findRow('settings.plugins.marketplace.search')?.props.value).toBe('');
+        // Revisiting Discover does not re-query: the aggregate page is acquired
+        // once per daemon authority, then the user owns refreshes.
+        expect(machineMarketplaceIndexQueryMock).toHaveBeenCalledTimes(1);
 
         await act(async () => {
             screen.pressByTestId('settings.plugins.management.view:diagnostics');
@@ -1173,13 +1314,18 @@ describe('PluginSettingsHomeScreen', () => {
         expect(screen.findByTestId('settings.plugins.management.view:diagnostics')?.props.accessibilityState).toMatchObject({ selected: true });
         expect(screen.findRow('settings.plugins.management.development.empty')).toBeFalsy();
         expect(screen.findRow('settings.plugins.registryDiagnostic.plugin_runtime_capability_missing.0')).toBeTruthy();
+        expect(screen.getTextContent()).toContain('settingsPlugins.diagnosticsIssueTitle');
+        expect(screen.getTextContent()).toContain('settingsPlugins.diagnosticsRecovery');
+        expect(screen.getTextContent()).toContain(
+            'settingsPlugins.diagnosticsTechnicalCode(code=plugin_runtime_capability_missing)',
+        );
         expect(screen.findByTestId('settings.plugins.registryDiagnostic.plugin_runtime_capability_missing.0.code')?.props.selectable).toBe(true);
         expect(screen.findByTestId('settings.plugins.registryDiagnostic.plugin_runtime_capability_missing.0.message')?.props.selectable).toBe(true);
         expect(screen.findByTestId('settings.plugins.management.diagnostics.live')?.props.accessibilityLiveRegion).toBe('polite');
         expect(screen.findByTestId('settings.plugins.management.view:activity')).toBeFalsy();
     }, 120_000);
 
-    it('announces marketplace loading and query failures to assistive technology', async () => {
+    it('announces marketplace loading and query failures through the single polite Discover status region', async () => {
         useMachineCapabilitiesCacheMock.mockReturnValue({
             state: createMachineCapabilitiesState([]),
             refresh: vi.fn(),
@@ -1210,28 +1356,114 @@ describe('PluginSettingsHomeScreen', () => {
         });
         await selectPluginManagementView(screen, 'discover');
 
-        act(() => {
-            screen.pressRow('settings.plugins.marketplace.loadCatalog');
-        });
         await act(async () => {
             await flushAsync();
         });
 
-        const loadingStatus = screen.findByTestId('settings.plugins.marketplace.catalog.loading.status');
-        expect(loadingStatus).toBeTruthy();
-        expect(loadingStatus?.props.accessibilityLiveRegion).toBe('polite');
-        expect(loadingStatus?.props.accessibilityLabel).toBe('common.loading');
+        // Entering Discover starts the aggregate query on its own; loading is
+        // announced by the pane's one accessible status row, not by a separate
+        // loading row.
+        const loadingSummary = screen.findByTestId('settings.plugins.marketplace.discover.status.summary');
+        const loadingAnnouncement = closestAccessibleAnnouncementAncestor(loadingSummary);
+        expect(loadingAnnouncement?.props.accessible).toBe(true);
+        expect(loadingAnnouncement?.props.accessibilityLiveRegion).toBe('polite');
+        expect(loadingAnnouncement?.props.accessibilityLabel).toBe('settingsPlugins.discover.status.loading');
 
         rejectCatalogQuery(new Error('Marketplace query failed'));
         await act(async () => {
             await flushAsync();
             await flushAsync();
         });
-        const errorAlert = screen.findByTestId('settings.plugins.marketplace.catalog.error');
-        expect(errorAlert).toBeTruthy();
-        expect(errorAlert?.props.accessibilityRole).toBe('alert');
-        expect(errorAlert?.props.accessibilityLiveRegion).toBe('assertive');
-        expect(errorAlert?.props.accessibilityLabel).toBe('common.error: Marketplace query failed');
+        const errorSummary = screen.findByTestId('settings.plugins.marketplace.discover.status.summary');
+        const errorAnnouncement = closestAccessibleAnnouncementAncestor(errorSummary);
+        expect(errorAnnouncement?.props.accessibilityRole).toBe('alert');
+        // The unified status region stays polite even for failures; the retired
+        // assertive catalog.error region no longer exists.
+        expect(errorAnnouncement?.props.accessibilityLiveRegion).toBe('polite');
+        expect(errorAnnouncement?.props.accessibilityLabel)
+            .toBe('settingsPlugins.discover.status.errorTitle settingsPlugins.discover.diagnostic.recovery');
+        expect(screen.getTextContent()).not.toContain('Marketplace query failed');
+    });
+
+    it('keeps degraded-source, diagnostic, and non-installable detail rows traversable outside the single polite status announcement', async () => {
+        useMachineCapabilitiesCacheMock.mockReturnValue({
+            state: createMachineCapabilitiesState([]),
+            refresh: vi.fn(),
+        });
+        machineMarketplaceSourceRegistryGetMock.mockResolvedValue({
+            t: 'happier_marketplace_source_registry_v1',
+            schemaVersion: 1,
+            sources: [{
+                id: 'marketplace:curated',
+                title: 'Curated Marketplace',
+                sourceUrl: 'https://marketplace.example.test/catalog.json',
+                enabled: true,
+                origin: 'curated',
+                addedAtMs: 1,
+                updatedAtMs: 1,
+            }],
+        });
+        // One stale source with its own diagnostic, one index-level diagnostic,
+        // and one listing the stale source blocks: every detail family the
+        // status summary only counts.
+        machineMarketplaceIndexQueryMock.mockResolvedValue(createDaemonMarketplaceIndexResult(
+            [createMarketplaceCatalogEntry({ pluginId: 'locked-plugin', title: 'Locked Plugin' })],
+            {
+                freshnessState: 'stale',
+                sourceDiagnostics: [{ code: 'source_index_stale', message: 'Source index is stale' }],
+                indexDiagnostics: [{ code: 'index_partial', message: 'Index served partial results' }],
+            },
+        ));
+
+        const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
+        const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
+        await act(async () => {
+            await flushAsync();
+            await flushAsync();
+        });
+        await selectPluginManagementView(screen, 'discover');
+
+        await act(async () => {
+            // Entering Discover acquires the aggregate page on its own.
+            await flushAsync();
+            await flushAsync();
+        });
+
+        const sourceHealthRow = screen.findByTestId('settings.plugins.marketplace.discover.sourceHealth.marketplace:curated');
+        const sourceDiagnosticRow = screen.findByTestId(
+            'settings.plugins.marketplace.discover.diagnostic.source:marketplace%3Acurated:source_index_stale:0',
+        );
+        const diagnosticRow = screen.findByTestId(
+            'settings.plugins.marketplace.discover.diagnostic.index:index_partial:0',
+        );
+        const nonInstallableRow = screen.findByTestId('settings.plugins.marketplace.discover.nonInstallable.marketplace:curated.locked-plugin');
+        expect(sourceHealthRow).toBeTruthy();
+        expect(sourceDiagnosticRow).toBeTruthy();
+        expect(screen.getTextContent()).toContain('Curated Marketplace · settingsPlugins.discover.diagnostic.title');
+        expect(screen.getTextContent()).toContain('Source index is stale');
+        expect(screen.getTextContent()).toContain('settingsPlugins.diagnosticsTechnicalCode(code=source_index_stale)');
+        expect(diagnosticRow).toBeTruthy();
+        expect(screen.getTextContent()).toContain('settingsPlugins.discover.diagnostic.title');
+        expect(screen.getTextContent()).toContain('settingsPlugins.discover.diagnostic.recovery');
+        expect(screen.getTextContent()).toContain('settingsPlugins.diagnosticsTechnicalCode(code=index_partial)');
+        expect(nonInstallableRow).toBeTruthy();
+
+        // Exactly one polite announcement remains, scoped to the compact
+        // summary row, still carrying the aggregate counts.
+        const summaryRow = screen.findByTestId('settings.plugins.marketplace.discover.status.summary');
+        const announcement = closestAccessibleAnnouncementAncestor(summaryRow);
+        expect(announcement?.props.accessible).toBe(true);
+        expect(announcement?.props.accessibilityLiveRegion).toBe('polite');
+        expect(announcement?.props.accessibilityLabel).not.toContain('settingsPlugins.discover.status.empty');
+        expect(announcement?.props.accessibilityLabel).toContain('settingsPlugins.discover.status.nonInstallable');
+        expect(announcement?.props.accessibilityLabel).toContain('settingsPlugins.discover.status.partial');
+
+        // Each detail row sits outside the accessible announcement parent, so
+        // VoiceOver and TalkBack can traverse the exact failures one by one.
+        expect(closestAccessibleAnnouncementAncestor(sourceHealthRow)).toBeNull();
+        expect(closestAccessibleAnnouncementAncestor(sourceDiagnosticRow)).toBeNull();
+        expect(closestAccessibleAnnouncementAncestor(diagnosticRow)).toBeNull();
+        expect(closestAccessibleAnnouncementAncestor(nonInstallableRow)).toBeNull();
     });
 
     it('uses daemon-projected development diagnostics and exposes only source-scoped safe author actions', async () => {
@@ -1478,7 +1710,7 @@ describe('PluginSettingsHomeScreen', () => {
         // decision waiting on this user is attention, not one view's content.
         expect(screen.findRow('settings.plugins.management.pendingChanges.pending-agent-1')).toBeTruthy();
 
-        const approve = findPendingChangeAction(screen, 'pending-agent-1', 'approve');
+        const approve = findPendingChangeAction(screen, 'pending-agent-1', 'review');
         expect(approve?.disabled).toBe(false);
         await act(async () => {
             approve?.onPress();
@@ -1529,6 +1761,35 @@ describe('PluginSettingsHomeScreen', () => {
         expect(refresh).toHaveBeenCalledTimes(1);
     });
 
+    it('labels pending decision actions truthfully before any review has been seen', async () => {
+        const refresh = vi.fn();
+        useMachineCapabilitiesCacheMock.mockReturnValue({
+            state: createMachineCapabilitiesState([], [], [
+                createCommunityInstallReviewResult('pending-agent-8').change,
+            ]),
+            refresh,
+        });
+
+        const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
+        const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
+        await act(async () => {
+            await flushAsync();
+            await flushAsync();
+        });
+
+        expect(screen.findRow('settings.plugins.management.pendingChanges.pending-agent-8')).toBeTruthy();
+        // The row action opens the full install-and-trust review; nothing has
+        // been approved yet, so it must not be labeled as an approval.
+        const review = findPendingChangeAction(screen, 'pending-agent-8', 'review');
+        expect(review?.title).toBe('settingsPlugins.pendingChangeReviewAction');
+        expect(review?.subtitle).toBe('settingsPlugins.pendingChangesReviewHint');
+        // Reject discards the change without ever opening the review, so its
+        // copy must not claim that it shows one.
+        const reject = findPendingChangeAction(screen, 'pending-agent-8', 'reject');
+        expect(reject?.title).toBe('approvals.reject');
+        expect(reject?.subtitle).toBe('settingsPlugins.pendingChangeRejectHint');
+    });
+
     it('rejects a pending change through the same daemon change owner', async () => {
         const refresh = vi.fn();
         useMachineCapabilitiesCacheMock.mockReturnValue({
@@ -1566,6 +1827,15 @@ describe('PluginSettingsHomeScreen', () => {
             await flushAsync();
         });
 
+        // A rejection is a consequential machine-scoped operation: the exact
+        // server and machine it discards the change on are named before the
+        // user confirms, the same facts every other confirmation on this
+        // screen carries.
+        expect(modalConfirmMock).toHaveBeenCalledWith(
+            'approvals.reject',
+            'settingsPlugins.pendingChangeConfirmRejectBody(machine=machine-1,server=Server A)',
+            expect.objectContaining({ confirmText: 'approvals.reject', cancelText: 'common.cancel', destructive: true }),
+        );
         // A rejection never fabricates approval evidence: it is the daemon's
         // own cancel decision, carrying no actor evidence at all.
         expect(machineRpcWithServerScopeMock).toHaveBeenCalledTimes(1);
@@ -1604,7 +1874,7 @@ describe('PluginSettingsHomeScreen', () => {
             await flushAsync();
         });
         await act(async () => {
-            findPendingChangeAction(screen, 'pending-agent-3', 'approve')?.onPress();
+            findPendingChangeAction(screen, 'pending-agent-3', 'review')?.onPress();
             await flushAsync();
             await flushAsync();
         });
@@ -1614,6 +1884,223 @@ describe('PluginSettingsHomeScreen', () => {
         expect(machineRpcWithServerScopeMock).not.toHaveBeenCalled();
         expect(modalAlertMock).toHaveBeenCalledWith('common.error', 'settingsPlugins.pendingChangeExpired');
         expect(refresh).toHaveBeenCalledTimes(1);
+    });
+
+    it('presents a rejoin whose change the owner already committed as applied, not as a failure', async () => {
+        const refresh = vi.fn();
+        useMachineCapabilitiesCacheMock.mockReturnValue({
+            state: createMachineCapabilitiesState([], [], [
+                createCommunityInstallReviewResult('pending-agent-4').change,
+            ]),
+            refresh,
+        });
+        invokeWithAlertsMock.mockResolvedValue({
+            supported: true,
+            response: {
+                ok: true,
+                result: {
+                    action: 'changeStatus',
+                    pendingChangeId: 'pending-agent-4',
+                    status: {
+                        kind: 'terminal',
+                        pendingChangeId: 'pending-agent-4',
+                        result: { kind: 'committed', pluginId: 'community-plugin' },
+                    },
+                },
+            },
+        });
+
+        const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
+        const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
+        await act(async () => {
+            await flushAsync();
+            await flushAsync();
+        });
+        await act(async () => {
+            findPendingChangeAction(screen, 'pending-agent-4', 'review')?.onPress();
+            await flushAsync();
+            await flushAsync();
+        });
+
+        // The change owner answered `committed` — possibly decided by another
+        // client while this rejoin was in flight. The applied state is the
+        // success answer; re-presenting it as a failure would be untrue.
+        expect(modalAlertMock).toHaveBeenCalledWith('common.success', 'settingsPlugins.pendingChangeCommitted');
+        expect(modalAlertMock).not.toHaveBeenCalledWith('common.error', expect.anything());
+        expect(machineRpcWithServerScopeMock).not.toHaveBeenCalled();
+        expect(refresh).toHaveBeenCalledWith({ bypassCache: true });
+    });
+
+    it('reconciles an ambiguous approve decision against the exact original target instead of reporting failure', async () => {
+        const initialState = createMachineCapabilitiesState([], [], [
+            createCommunityInstallReviewResult('pending-agent-5').change,
+        ]);
+        let authoritativeState: MachineCapabilitiesState = initialState;
+        useMachineCapabilitiesCacheMock.mockReturnValue({
+            state: initialState,
+            refresh: vi.fn(),
+        });
+        getMachineCapabilitiesCacheStateMock.mockImplementation(() => authoritativeState);
+        prefetchMachineCapabilitiesMock.mockImplementationOnce(async () => {
+            authoritativeState = createMachineCapabilitiesState([
+                createInstalledPlugin({
+                    pluginId: 'community-plugin',
+                    title: 'Community Plugin',
+                    version: '2.0.0',
+                }),
+            ]);
+        });
+        invokeWithAlertsMock.mockResolvedValue({
+            supported: true,
+            response: {
+                ok: true,
+                result: {
+                    action: 'changeStatus',
+                    pendingChangeId: 'pending-agent-5',
+                    status: createCommunityInstallReviewResult('pending-agent-5').change,
+                },
+            },
+        });
+        machineRpcWithServerScopeMock.mockResolvedValueOnce({ kind: 'outcomeUnknown', pluginId: 'community-plugin' });
+
+        const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
+        const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
+        await act(async () => {
+            await flushAsync();
+            await flushAsync();
+        });
+        await act(async () => {
+            findPendingChangeAction(screen, 'pending-agent-5', 'review')?.onPress();
+            await flushAsync();
+            await flushAsync();
+            await flushAsync();
+        });
+
+        // Approving is commit-intended: the daemon may have applied the change
+        // after the decision left this device. The answer is reconciled on the
+        // exact original target only — the same path an ordinary install or
+        // update already uses — and a proven landing is a success, never the
+        // old false "was not applied" failure.
+        expect(prefetchMachineCapabilitiesMock).toHaveBeenCalledWith(expect.objectContaining({
+            machineId: 'machine-1',
+            serverId: 'server-a',
+            request: expect.objectContaining({ bypassCache: true }),
+        }));
+        expect(modalAlertMock).toHaveBeenCalledWith('common.success', 'common.done');
+        expect(modalAlertMock).not.toHaveBeenCalledWith('common.error', 'settingsPlugins.pendingChangeFailed');
+    });
+
+    it('presents the truthful unresolved copy when an ambiguous approve cannot be proven on the exact target', async () => {
+        const installedPlugin = createInstalledPlugin({
+            pluginId: 'community-plugin',
+            title: 'Community Plugin',
+            version: '1.0.0',
+        });
+        const capabilityState = createMachineCapabilitiesState([installedPlugin], [], [
+            createCommunityInstallReviewResult('pending-agent-6').change,
+        ]);
+        useMachineCapabilitiesCacheMock.mockReturnValue({
+            state: capabilityState,
+            refresh: vi.fn(),
+        });
+        // The authoritative re-read answers with the unchanged 1.0.0 record, so
+        // the reviewed 2.0.0 commit cannot be proven.
+        getMachineCapabilitiesCacheStateMock.mockReturnValue(capabilityState);
+        invokeWithAlertsMock.mockResolvedValue({
+            supported: true,
+            response: {
+                ok: true,
+                result: {
+                    action: 'changeStatus',
+                    pendingChangeId: 'pending-agent-6',
+                    status: createCommunityInstallReviewResult('pending-agent-6').change,
+                },
+            },
+        });
+        machineRpcWithServerScopeMock.mockResolvedValueOnce({ kind: 'outcomeUnknown', pluginId: 'community-plugin' });
+
+        const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
+        const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
+        await act(async () => {
+            await flushAsync();
+            await flushAsync();
+        });
+        await act(async () => {
+            findPendingChangeAction(screen, 'pending-agent-6', 'review')?.onPress();
+            await flushAsync();
+            await flushAsync();
+            await flushAsync();
+        });
+
+        // Unprovable is not failed: the change may have committed, so the user
+        // gets the truthful unresolved answer naming the exact target instead
+        // of a failure that invites deciding the same change again.
+        expect(modalAlertMock).toHaveBeenCalledWith(
+            'settingsPlugins.pluginChangeOutcomeUnknownTitle',
+            'settingsPlugins.pluginChangeOutcomeUnknownBody(action=settingsPlugins.installAndTrust,name=Community Plugin,machine=machine-1,server=Server A)',
+        );
+        expect(modalAlertMock).not.toHaveBeenCalledWith('common.error', 'settingsPlugins.pendingChangeFailed');
+    });
+
+    it('reconciles a terminal outcome-unknown rejoin against the exact target before the unresolved copy', async () => {
+        const installedPlugin = createInstalledPlugin({
+            pluginId: 'community-plugin',
+            title: 'Community Plugin',
+            version: '1.0.0',
+        });
+        const capabilityState = createMachineCapabilitiesState([installedPlugin], [], [
+            createCommunityInstallReviewResult('pending-agent-7').change,
+        ]);
+        useMachineCapabilitiesCacheMock.mockReturnValue({
+            state: capabilityState,
+            refresh: vi.fn(),
+        });
+        getMachineCapabilitiesCacheStateMock.mockReturnValue(capabilityState);
+        invokeWithAlertsMock.mockResolvedValue({
+            supported: true,
+            response: {
+                ok: true,
+                result: {
+                    action: 'changeStatus',
+                    pendingChangeId: 'pending-agent-7',
+                    status: {
+                        kind: 'terminal',
+                        pendingChangeId: 'pending-agent-7',
+                        result: { kind: 'outcomeUnknown', pluginId: 'community-plugin' },
+                    },
+                },
+            },
+        });
+
+        const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
+        const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
+        await act(async () => {
+            await flushAsync();
+            await flushAsync();
+        });
+        await act(async () => {
+            findPendingChangeAction(screen, 'pending-agent-7', 'review')?.onPress();
+            await flushAsync();
+            await flushAsync();
+            await flushAsync();
+        });
+
+        // A terminal outcome-unknown answer is not "was not applied": the exact
+        // original target is re-read first, and the unresolved copy is the
+        // truthful presentation when the landing still cannot be proven.
+        expect(prefetchMachineCapabilitiesMock).toHaveBeenCalledWith(expect.objectContaining({
+            machineId: 'machine-1',
+            serverId: 'server-a',
+            request: expect.objectContaining({ bypassCache: true }),
+        }));
+        expect(modalAlertMock).toHaveBeenCalledWith(
+            'settingsPlugins.pluginChangeOutcomeUnknownTitle',
+            'settingsPlugins.pluginChangeOutcomeUnknownBody(action=settingsPlugins.installAndTrust,name=community-plugin,machine=machine-1,server=Server A)',
+        );
+        expect(modalAlertMock).not.toHaveBeenCalledWith(
+            'common.error',
+            'settingsPlugins.pendingChangeFailed',
+        );
     });
 
     it('names the exact source root in a separate trust decision before the plugin install review', async () => {
@@ -1689,11 +2176,7 @@ describe('PluginSettingsHomeScreen', () => {
         // the user whose filesystem the daemon will build and run code from.
         expect(modalConfirmMock).toHaveBeenCalledWith(
             'settingsPlugins.developmentTrustSourceRootTitle',
-            `settingsPlugins.developmentTrustSourceRootBody:${JSON.stringify({
-                path: sourceRootPath,
-                machine: 'machine-1',
-                server: 'Server A',
-            })}`,
+            'settingsPlugins.developmentTrustSourceRootBody(path=/workspace/plugins/local-authoring,machine=machine-1,server=Server A)',
             expect.objectContaining({ confirmText: 'settingsPlugins.developmentTrustSourceRootConfirm' }),
         );
         // Trusting a source root is NOT an install commit: the first decision
@@ -1913,6 +2396,55 @@ describe('PluginSettingsHomeScreen', () => {
         expect(screen.findRow('settings.plugins.marketplace.readOnlySnapshot')).toBeFalsy();
     });
 
+    it('keeps direct marketplace administration RPCs available when only the merged projection fails', async () => {
+        useMachineCapabilitiesCacheMock.mockReturnValue({
+            state: createMachineCapabilitiesState([]),
+            refresh: vi.fn(),
+        });
+        machineMarketplaceSourceRegistryGetMock.mockResolvedValue({
+            t: 'happier_marketplace_source_registry_v1',
+            schemaVersion: 1,
+            sources: [],
+        });
+        machineContributionRegistryProjectionDescribeMock.mockResolvedValue({
+            supported: false,
+            reason: 'error',
+        });
+
+        const { PluginMarketplaceSourcesScreen } = await import('./PluginMarketplaceSourcesScreen');
+        await renderSettingsView(React.createElement(PluginMarketplaceSourcesScreen));
+        await act(async () => {
+            await flushAsync();
+            await flushAsync();
+        });
+
+        expect(machineMarketplaceSourceRegistryGetMock).toHaveBeenCalledWith('machine-1', expect.objectContaining({
+            serverId: 'server-a',
+        }));
+        expect(machineNpmRegistryProfilesGetMock).toHaveBeenCalledWith('machine-1', expect.objectContaining({
+            serverId: 'server-a',
+        }));
+    });
+
+    it('keeps direct marketplace administration disabled when the exact daemon target is unreachable', async () => {
+        useMachineCapabilitiesCacheMock.mockReturnValue({
+            state: createMachineCapabilitiesState([]),
+            refresh: vi.fn(),
+        });
+        endpointConnectivityState.status = 'offline';
+
+        const { PluginMarketplaceSourcesScreen } = await import('./PluginMarketplaceSourcesScreen');
+        const screen = await renderSettingsView(React.createElement(PluginMarketplaceSourcesScreen));
+        await act(async () => {
+            await flushAsync();
+            await flushAsync();
+        });
+
+        expect(machineMarketplaceSourceRegistryGetMock).not.toHaveBeenCalled();
+        expect(machineNpmRegistryProfilesGetMock).not.toHaveBeenCalled();
+        expect(screen.findRow('settings.plugins.sources.add')?.props.disabled).toBe(true);
+    });
+
     it('keeps a loaded cached plugin snapshot read-only until same-version reconnect refreshes capabilities and projection', async () => {
         const installedPlugin = createInstalledPlugin({
             pluginId: 'installed-plugin',
@@ -2003,14 +2535,15 @@ describe('PluginSettingsHomeScreen', () => {
 
         await act(async () => {
             screen.pressByTestId('settings.plugins.management.view:discover');
-        });
-        await act(async () => {
-            screen.pressRow('settings.plugins.marketplace.loadCatalog');
             await flushAsync();
             await flushAsync();
         });
         expect(screen.findByTestId('settings.plugins.management.view:discover')?.props.accessibilityState).toMatchObject({ selected: true });
-        expect(screen.findRow('settings.plugins.marketplace.action.update.installed-plugin')?.props.disabled).not.toBe(true);
+        // Entering Discover auto-loads the aggregate page; a listing for
+        // something already installed gets NO lifecycle action row here.
+        expect(machineMarketplaceIndexQueryMock).toHaveBeenCalledTimes(1);
+        expect(screen.findRow(discoverListingTestID('installed-plugin'))).toBeTruthy();
+        expect(findDiscoverListingActions(screen, 'installed-plugin')).toHaveLength(0);
         await act(async () => {
             screen.pressByTestId('settings.plugins.management.view:installed');
         });
@@ -2035,7 +2568,6 @@ describe('PluginSettingsHomeScreen', () => {
         expect(screen.findRow('settings.plugins.marketplace.installed.installed-plugin')).toBeTruthy();
         expect(screen.findRow('settings.plugins.marketplace.readOnlySnapshot')).toBeTruthy();
         expect(screen.findByTestId('settings.plugins.management.view:installed')?.props.accessibilityState).toMatchObject({ selected: true });
-        expect(screen.findRow('settings.plugins.marketplace.loadCatalog')).toBeFalsy();
 
         const disconnectedActions = screen.findAllByType('ItemRowActions' as any)
             .find((node) => node.props.title === 'Installed Plugin')
@@ -2073,11 +2605,12 @@ describe('PluginSettingsHomeScreen', () => {
         await act(async () => {
             screen.pressByTestId('settings.plugins.management.view:discover');
         });
-        expect(screen.findRow('settings.plugins.marketplace.loadCatalog')?.props.disabled).toBe(true);
-        expect(screen.findRow('settings.plugins.marketplace.catalogUrl')?.props.editable).toBe(false);
-        expect(screen.findRow('settings.plugins.marketplace.action.update.installed-plugin')?.props.disabled).toBe(true);
-        expect(screen.findRow('settings.plugins.marketplace.catalogUrl')?.props.onChangeText).toBeUndefined();
-        expect(screen.findRow('settings.plugins.marketplace.catalogUrl')?.props.onSubmitEditing).toBeUndefined();
+        // While the snapshot is read-only, Discover makes no query of its own:
+        // search stays non-editable, refresh is disabled, and the aggregate
+        // query is neither issued nor repeated.
+        expect(screen.findRow('settings.plugins.marketplace.search')?.props.editable).toBe(false);
+        expect(screen.findRow('settings.plugins.marketplace.refreshDiscover')?.props.disabled).toBe(true);
+        expect(machineMarketplaceIndexQueryMock).not.toHaveBeenCalled();
 
         selectedMachine.active = true;
         selectedMachine.activeAt = Date.now();
@@ -2092,7 +2625,6 @@ describe('PluginSettingsHomeScreen', () => {
         expect(screen.findRow('settings.plugins.marketplace.installed.installed-plugin')).toBeFalsy();
         expect(screen.findRow('settings.plugins.marketplace.readOnlySnapshot')).toBeTruthy();
         expect(screen.findByTestId('settings.plugins.management.view:discover')?.props.accessibilityState).toMatchObject({ selected: true });
-        expect(screen.findRow('settings.plugins.marketplace.loadCatalog')?.props.disabled).toBe(true);
         const reconnectCapabilityCacheKeySalt = useMachineCapabilitiesCacheMock.mock.calls.at(-1)?.[0]?.cacheKeySalt;
         expect(reconnectCapabilityCacheKeySalt).not.toBe(initialCapabilityCacheKeySalt);
         expect(machineContributionRegistryProjectionDescribeMock).toHaveBeenCalledTimes(2);
@@ -2106,7 +2638,8 @@ describe('PluginSettingsHomeScreen', () => {
         });
 
         expect(screen.findRow('settings.plugins.marketplace.readOnlySnapshot')).toBeTruthy();
-        expect(screen.findRow('settings.plugins.marketplace.loadCatalog')?.props.disabled).toBe(true);
+        expect(screen.findRow('settings.plugins.marketplace.refreshDiscover')?.props.disabled).toBe(true);
+        expect(machineMarketplaceIndexQueryMock).not.toHaveBeenCalled();
 
         await act(async () => {
             resolveReconnectProjection?.();
@@ -2116,17 +2649,22 @@ describe('PluginSettingsHomeScreen', () => {
 
         expect(screen.findRow('settings.plugins.marketplace.readOnlySnapshot')).toBeFalsy();
         expect(screen.findByTestId('settings.plugins.management.view:discover')?.props.accessibilityState).toMatchObject({ selected: true });
-        expect(screen.findRow('settings.plugins.marketplace.loadCatalog')?.props.disabled).toBe(false);
-        expect(screen.findRow('settings.plugins.marketplace.catalogUrl')?.props.editable).toBe(true);
-        expect(screen.findRow('settings.plugins.marketplace.catalogUrl')?.props.onChangeText).toBeTypeOf('function');
-        expect(screen.findRow('settings.plugins.marketplace.catalogUrl')?.props.onSubmitEditing).toBeTypeOf('function');
-        expect(screen.findRow('settings.plugins.marketplace.action.update.installed-plugin')?.props.disabled).toBe(true);
+        expect(screen.findRow('settings.plugins.marketplace.search')?.props.editable).toBe(true);
+        // With daemon truth current again, Discover acquires the aggregate page
+        // by itself — once — and the installed listing still gets no lifecycle
+        // row; update belongs to the installed record.
+        expect(screen.findRow('settings.plugins.marketplace.refreshDiscover')?.props.disabled).toBe(false);
         await act(async () => {
-            screen.pressRow('settings.plugins.marketplace.loadCatalog');
             await flushAsync();
             await flushAsync();
         });
-        expect(screen.findRow('settings.plugins.marketplace.action.update.installed-plugin')?.props.disabled).not.toBe(true);
+        expect(machineMarketplaceIndexQueryMock).toHaveBeenCalledTimes(1);
+        expect(machineMarketplaceIndexQueryMock).toHaveBeenCalledWith('machine-1', expect.objectContaining({
+            text: '',
+            cursor: null,
+            filters: { includeUnavailable: true },
+        }), expect.any(Object));
+        expect(findDiscoverListingActions(screen, 'installed-plugin')).toHaveLength(0);
         await act(async () => {
             screen.pressByTestId('settings.plugins.management.view:installed');
         });
@@ -2135,6 +2673,9 @@ describe('PluginSettingsHomeScreen', () => {
             ?.props.actions as readonly Readonly<{ id: string; disabled: boolean }>[] | undefined;
         expect(reconnectedActions?.find((action) => action.id === 'reload')).toBeUndefined();
         expect(reconnectedActions?.find((action) => action.id === 'disable')?.disabled).toBe(false);
+        // Update is offered from the installed record itself once the daemon is
+        // current again — never re-created as a Discover-row action.
+        expect(reconnectedActions?.find((action) => action.id === 'update')?.disabled).toBe(false);
         expect(invokeWithAlertsMock).not.toHaveBeenCalled();
         expect(machineContributionRegistryProjectionDescribeMock).toHaveBeenCalledTimes(2);
         expect(machineContributionRegistryProjectionDescribeMock).toHaveBeenCalledWith('machine-1', {
@@ -2205,7 +2746,7 @@ describe('PluginSettingsHomeScreen', () => {
 
     it('renders host-projected plugin details, diagnostics, and only supported mutation actions', async () => {
         const installedPlugin = createInstalledPlugin({
-            pluginId: 'installed-plugin',
+            pluginId: 'com.acme.installed-plugin',
             title: 'Installed Plugin',
             version: '1.0.0',
             enabled: true,
@@ -2213,10 +2754,12 @@ describe('PluginSettingsHomeScreen', () => {
             diagnostics: [{ code: 'install.note', message: 'Installed via host-owned flow' }],
         });
         const refresh = vi.fn();
+        const capabilityState = createMachineCapabilitiesState([installedPlugin]);
         useMachineCapabilitiesCacheMock.mockReturnValue({
-            state: createMachineCapabilitiesState([installedPlugin]),
+            state: capabilityState,
             refresh,
         });
+        getMachineCapabilitiesCacheStateMock.mockReturnValue(capabilityState);
         machineMarketplaceSourceRegistryGetMock.mockResolvedValue(null);
         machineContributionRegistryProjectionDescribeMock.mockResolvedValue({
             supported: true,
@@ -2224,8 +2767,8 @@ describe('PluginSettingsHomeScreen', () => {
                 v: 2,
                 generation: 12,
                 installedPackagesById: {
-                    'installed-plugin': {
-                        id: 'installed-plugin',
+                    'com.acme.installed-plugin': {
+                        id: 'com.acme.installed-plugin',
                         displayName: 'Installed Plugin',
                         version: '1.0.0',
                         enabled: true,
@@ -2238,25 +2781,27 @@ describe('PluginSettingsHomeScreen', () => {
                 agentsById: {},
                 backendsById: {},
                 actionsById: {
-                    'installed-plugin.refresh': {
-                        id: 'installed-plugin.refresh',
-                        pluginId: 'installed-plugin',
+                    'com.acme.installed-plugin.refresh': {
+                        id: 'com.acme.installed-plugin.refresh',
+                        pluginId: 'com.acme.installed-plugin',
                         title: 'Refresh installed plugin',
                         description: 'Refresh plugin-owned resources',
                         scopes: ['settings'],
-                        surfaces: ['settings'],
-                        placement: 'detailsPanel',
+                        surfaces: ['ui'],
+                        execution: { target: 'daemon' },
+                        placementBindings: ['detailsPanel'],
                         dangerLevel: 'safe',
                         available: true,
                     },
-                    'installed-plugin.runSetup': {
-                        id: 'installed-plugin.runSetup',
-                        pluginId: 'installed-plugin',
+                    'com.acme.installed-plugin.runSetup': {
+                        id: 'com.acme.installed-plugin.runSetup',
+                        pluginId: 'com.acme.installed-plugin',
                         title: 'Run setup',
                         description: 'Run plugin setup',
                         scopes: ['settings'],
-                        surfaces: ['settings'],
-                        placement: 'detailsPanel',
+                        surfaces: ['ui'],
+                        execution: { target: 'daemon' },
+                        placementBindings: ['detailsPanel'],
                         dangerLevel: 'safe',
                         available: true,
                     },
@@ -2264,9 +2809,9 @@ describe('PluginSettingsHomeScreen', () => {
                 toolsById: {},
                 commandsById: {},
                 resourcesById: {
-                    'installed-plugin.prompt': {
-                        id: 'installed-plugin.prompt',
-                        pluginId: 'installed-plugin',
+                    'com.acme.installed-plugin.prompt': {
+                        id: 'com.acme.installed-plugin.prompt',
+                        pluginId: 'com.acme.installed-plugin',
                         resourceKind: 'prompt',
                         path: 'resources/review.md',
                         digest: 'sha256:prompt',
@@ -2275,15 +2820,15 @@ describe('PluginSettingsHomeScreen', () => {
                 },
                 diagnostics: [
                     createPluginDiagnosticRecord({
-                        id: 'installed-plugin:normalization:warning:0',
-                        pluginId: 'installed-plugin',
+                        id: 'com.acme.installed-plugin:normalization:warning:0',
+                        pluginId: 'com.acme.installed-plugin',
                         severity: 'warning',
                         code: 'registry.warning',
                         message: 'Registry rebuilt with warnings',
                     }),
                     createPluginDiagnosticRecord({
-                        id: 'installed-plugin:activation:info:0',
-                        pluginId: 'installed-plugin',
+                        id: 'com.acme.installed-plugin:activation:info:0',
+                        pluginId: 'com.acme.installed-plugin',
                         severity: 'info',
                         code: 'plugin.activated',
                         message: 'Plugin activated',
@@ -2297,7 +2842,7 @@ describe('PluginSettingsHomeScreen', () => {
         });
 
         const { PluginDetailScreen } = await import('./detail/PluginDetailScreen');
-        const screen = await renderSettingsView(React.createElement(PluginDetailScreen, { pluginId: 'installed-plugin' }));
+        const screen = await renderSettingsView(React.createElement(PluginDetailScreen, { pluginId: 'com.acme.installed-plugin' }));
 
         await act(async () => {
             await flushAsync();
@@ -2310,20 +2855,20 @@ describe('PluginSettingsHomeScreen', () => {
         expect(navigationSetOptionsSpy).toHaveBeenCalledWith(expect.objectContaining({
             headerTitle: 'Installed Plugin',
         }));
-        expect(screen.findRow('settings.plugins.detail.installed-plugin.header')).toBeTruthy();
-        expect(screen.findRow('settings.plugins.detail.installed-plugin.summary')).toBeTruthy();
+        expect(screen.findRow('settings.plugins.detail.com.acme.installed-plugin.header')).toBeTruthy();
+        expect(screen.findRow('settings.plugins.detail.com.acme.installed-plugin.summary')).toBeTruthy();
         expect(screen.getTextContent()).toContain('trusted');
-        expect(screen.findRow('settings.plugins.detail.installed-plugin.contribution.action.installed-plugin.refresh')).toBeTruthy();
-        expect(screen.findRow('settings.plugins.detail.installed-plugin.contribution.resource.installed-plugin.prompt')).toBeTruthy();
-        expect(screen.findRow('settings.plugins.detail.installed-plugin.action.reload')).toBeFalsy();
-        expect(screen.findRow('settings.plugins.detail.installed-plugin.action.disable')).toBeTruthy();
-        expect(screen.findRow('settings.plugins.detail.installed-plugin.action.rollback')).toBeTruthy();
-        expect(screen.findRow('settings.plugins.detail.installed-plugin.action.uninstall')).toBeTruthy();
-        expect(screen.findRow('settings.plugins.detail.installed-plugin.action.forgetTrust')).toBeTruthy();
+        expect(screen.findRow('settings.plugins.detail.com.acme.installed-plugin.contribution.action.com.acme.installed-plugin.refresh')).toBeTruthy();
+        expect(screen.findRow('settings.plugins.detail.com.acme.installed-plugin.contribution.resource.com.acme.installed-plugin.prompt')).toBeTruthy();
+        expect(screen.findRow('settings.plugins.detail.com.acme.installed-plugin.action.reload')).toBeFalsy();
+        expect(screen.findRow('settings.plugins.detail.com.acme.installed-plugin.action.disable')).toBeTruthy();
+        expect(screen.findRow('settings.plugins.detail.com.acme.installed-plugin.action.rollback')).toBeTruthy();
+        expect(screen.findRow('settings.plugins.detail.com.acme.installed-plugin.action.uninstall')).toBeTruthy();
+        expect(screen.findRow('settings.plugins.detail.com.acme.installed-plugin.action.forgetTrust')).toBeTruthy();
         expect(screen.getTextContent()).toContain('Plugin activated');
         expect(screen.getTextContent()).toContain('Registry rebuilt with warnings');
         await act(async () => {
-            screen.pressRow('settings.plugins.detail.installed-plugin.action.disable');
+            screen.pressRow('settings.plugins.detail.com.acme.installed-plugin.action.disable');
             await flushAsync();
         });
 
@@ -2333,7 +2878,7 @@ describe('PluginSettingsHomeScreen', () => {
             request: expect.objectContaining({
                 id: MARKETPLACE_CAPABILITY_ID,
                 method: 'disable',
-                params: expect.objectContaining({ pluginId: 'installed-plugin' }),
+                params: expect.objectContaining({ pluginId: 'com.acme.installed-plugin' }),
             }),
         }));
         expect(refresh).toHaveBeenCalledWith({ bypassCache: true });
@@ -2466,12 +3011,7 @@ describe('PluginSettingsHomeScreen', () => {
         // selected machine is a different, irreversible action.
         expect(modalConfirmMock).toHaveBeenCalledWith(
             confirmationTitle,
-            `settingsPlugins.pluginChangeConfirmBody:${JSON.stringify({
-                action: confirmationTitle,
-                name: 'Installed Plugin',
-                machine: 'machine-1',
-                server: 'Server A',
-            })}`,
+            `settingsPlugins.pluginChangeConfirmBody(action=${confirmationTitle},name=Installed Plugin,machine=machine-1,server=Server A)`,
             expect.objectContaining({
                 confirmText: confirmationTitle,
                 cancelText: 'common.cancel',
@@ -2678,9 +3218,16 @@ describe('PluginSettingsHomeScreen', () => {
 
         expect(prefetchMachineCapabilitiesMock).toHaveBeenCalledTimes(1);
         expect(modalAlertMock).not.toHaveBeenCalledWith('common.success', 'common.done');
-        expect(modalAlertMock).toHaveBeenCalledWith(
+        // Reconciliation could not read authoritative truth, so the uninstall
+        // may already have landed. Reporting a definite failure here invites a
+        // retry of a change that is not necessarily outstanding.
+        expect(modalAlertMock).not.toHaveBeenCalledWith(
             'common.error',
             'settingsPlugins.marketplaceChangeDecisionFailed',
+        );
+        expect(modalAlertMock).toHaveBeenCalledWith(
+            'settingsPlugins.pluginChangeOutcomeUnknownTitle',
+            'settingsPlugins.pluginChangeOutcomeUnknownBody(action=settingsPlugins.uninstall,name=Installed Plugin,machine=machine-1,server=Server A)',
         );
         expect(publishMachineContributionRegistryProjectionInvalidationMock).toHaveBeenCalledWith({
             machineId: 'machine-1',
@@ -2802,7 +3349,6 @@ describe('PluginSettingsHomeScreen', () => {
                         pluginId: 'acme.hooks',
                         version: 1,
                         title: 'Hooks settings',
-                        description: null,
                         scope: { kind: 'daemon' },
                         target: { kind: 'plugin' },
                         presentation: { sections: [], subagentSections: [] },
@@ -3152,7 +3698,7 @@ describe('PluginSettingsHomeScreen', () => {
         expect(machineContributionRegistryProjectionDescribeMock).toHaveBeenCalledTimes(1);
     });
 
-    it('clears machine-scoped projection and preferred catalog state when the selected machine changes', async () => {
+    it('clears machine-scoped projection and Discover query state when the selected machine changes', async () => {
         const installedPlugin = createInstalledPlugin({
             pluginId: 'installed-plugin',
             title: 'Installed Plugin',
@@ -3177,12 +3723,24 @@ describe('PluginSettingsHomeScreen', () => {
         };
 
         getActiveServerIdMock.mockReturnValue('server-a');
+        const machineOneCapabilityState = createMachineCapabilitiesState([installedPlugin]);
+        const machineTwoCapabilityState = createMachineCapabilitiesState([installedPlugin]);
         useMachineCapabilitiesCacheMock.mockImplementation(({ machineId }: { machineId: string | null }) => ({
-            state: createMachineCapabilitiesState(machineId === 'machine-1' ? [installedPlugin] : [installedPlugin]),
+            state: machineId === 'machine-1' ? machineOneCapabilityState : machineTwoCapabilityState,
             refresh: vi.fn(),
         }));
+        getMachineCapabilitiesCacheStateMock.mockImplementation((machineId: string) => (
+            machineId === 'machine-1' ? machineOneCapabilityState : machineTwoCapabilityState
+        ));
         machineMarketplaceSourceRegistryGetMock.mockImplementation(async (machineId: string) => (
             machineId === 'machine-1' ? curatedMarketplaceRegistry : null
+        ));
+        machineMarketplaceIndexQueryMock.mockImplementation(async (machineId: string) => (
+            machineId === 'machine-1'
+                ? createDaemonMarketplaceIndexResult([
+                    createMarketplaceCatalogEntry({ pluginId: 'sample-plugin', title: 'Sample Plugin', description: 'Descriptor served for machine-1', version: '1.0.0' }),
+                ])
+                : createDaemonMarketplaceIndexResult([])
         ));
         machineContributionRegistryProjectionDescribeMock.mockImplementation(async (machineId: string) => (
             machineId === 'machine-1'
@@ -3209,15 +3767,7 @@ describe('PluginSettingsHomeScreen', () => {
                         toolsById: {},
                         commandsById: {},
                         resourcesById: {},
-                        diagnostics: [
-                            createPluginDiagnosticRecord({
-                                id: 'installed-plugin:normalization:capability-missing:0',
-                                pluginId: 'installed-plugin',
-                                severity: 'warning',
-                                code: 'plugin_runtime_capability_missing',
-                                message: 'Missing actions capability',
-                            }),
-                        ],
+                        diagnostics: [],
                     },
                 }
                 : {
@@ -3240,9 +3790,14 @@ describe('PluginSettingsHomeScreen', () => {
 
         await selectPluginManagementView(screen, 'discover');
 
-        const input = screen.findRow('settings.plugins.marketplace.catalogUrl');
-        expect(input).toBeTruthy();
-        expect(input?.props.value).toBe('https://marketplace.example.test/catalog.json');
+        await act(async () => {
+            await flushAsync();
+            await flushAsync();
+        });
+        // Discover acquired the aggregate page for machine-1 and shows it.
+        expect(machineMarketplaceIndexQueryMock).toHaveBeenCalledTimes(1);
+        expect(machineMarketplaceIndexQueryMock).toHaveBeenCalledWith('machine-1', expect.anything(), expect.any(Object));
+        expect(screen.findRow(discoverListingTestID('sample-plugin'))).toBeTruthy();
         expect(machineContributionRegistryProjectionDescribeMock).toHaveBeenCalledWith('machine-1', {
             serverId: 'server-a',
             timeoutMs: 10_000,
@@ -3267,7 +3822,12 @@ describe('PluginSettingsHomeScreen', () => {
             serverId: 'server-b',
             timeoutMs: 10_000,
         });
-        expect(screen.findRow('settings.plugins.marketplace.catalogUrl')?.props.value).toBe('');
+        // The machine-1 Discover page and its controls are cleared, never shown
+        // as machine-2 truth; machine-2's projection is unsupported, so no new
+        // aggregate query is issued and the stale listing is gone.
+        expect(screen.findRow(discoverListingTestID('sample-plugin'))).toBeFalsy();
+        expect(screen.findRow('settings.plugins.marketplace.search')?.props.value).toBe('');
+        expect(machineMarketplaceIndexQueryMock).toHaveBeenCalledTimes(1);
     });
 
     it('fences a late destructive lifecycle response from the previously selected machine authority', async () => {
@@ -3519,15 +4079,17 @@ describe('PluginSettingsHomeScreen', () => {
 
     it('renders duplicate plugin diagnostic codes with stable unique rows', async () => {
         const installedPlugin = createInstalledPlugin({
-            pluginId: 'installed-plugin',
+            pluginId: 'com.acme.installed-plugin',
             title: 'Installed Plugin',
             version: '1.0.0',
             enabled: true,
         });
+        const capabilityState = createMachineCapabilitiesState([installedPlugin]);
         useMachineCapabilitiesCacheMock.mockReturnValue({
-            state: createMachineCapabilitiesState([installedPlugin]),
+            state: capabilityState,
             refresh: vi.fn(),
         });
+        getMachineCapabilitiesCacheStateMock.mockReturnValue(capabilityState);
         machineMarketplaceSourceRegistryGetMock.mockResolvedValue(null);
         machineContributionRegistryProjectionDescribeMock.mockResolvedValue({
             supported: true,
@@ -3535,8 +4097,8 @@ describe('PluginSettingsHomeScreen', () => {
                 v: 2,
                 generation: 12,
                 installedPackagesById: {
-                    'installed-plugin': {
-                        id: 'installed-plugin',
+                    'com.acme.installed-plugin': {
+                        id: 'com.acme.installed-plugin',
                         displayName: 'Installed Plugin',
                         version: '1.0.0',
                         enabled: true,
@@ -3554,15 +4116,15 @@ describe('PluginSettingsHomeScreen', () => {
                 resourcesById: {},
                 diagnostics: [
                     createPluginDiagnosticRecord({
-                        id: 'installed-plugin:normalization:capability-missing:0',
-                        pluginId: 'installed-plugin',
+                        id: 'com.acme.installed-plugin:normalization:capability-missing:0',
+                        pluginId: 'com.acme.installed-plugin',
                         severity: 'warning',
                         code: 'plugin_runtime_capability_missing',
                         message: 'Missing actions capability',
                     }),
                     createPluginDiagnosticRecord({
-                        id: 'installed-plugin:normalization:capability-missing:1',
-                        pluginId: 'installed-plugin',
+                        id: 'com.acme.installed-plugin:normalization:capability-missing:1',
+                        pluginId: 'com.acme.installed-plugin',
                         severity: 'warning',
                         code: 'plugin_runtime_capability_missing',
                         message: 'Missing resources capability',
@@ -3573,7 +4135,7 @@ describe('PluginSettingsHomeScreen', () => {
 
         const { PluginDetailScreen } = await import('./detail/PluginDetailScreen');
         const screen = await renderSettingsView(React.createElement(PluginDetailScreen, {
-            pluginId: 'installed-plugin',
+            pluginId: 'com.acme.installed-plugin',
         }));
 
         await act(async () => {
@@ -3581,13 +4143,13 @@ describe('PluginSettingsHomeScreen', () => {
             await flushAsync();
         });
 
-        expect(screen.findRow('settings.plugins.detail.installed-plugin.diagnostic.plugin_runtime_capability_missing.0')).toBeTruthy();
-        expect(screen.findRow('settings.plugins.detail.installed-plugin.diagnostic.plugin_runtime_capability_missing.1')).toBeTruthy();
+        expect(screen.findRow('settings.plugins.detail.com.acme.installed-plugin.diagnostic.plugin_runtime_capability_missing.0')).toBeTruthy();
+        expect(screen.findRow('settings.plugins.detail.com.acme.installed-plugin.diagnostic.plugin_runtime_capability_missing.1')).toBeTruthy();
         expect(screen.getTextContent()).toContain('Missing actions capability');
         expect(screen.getTextContent()).toContain('Missing resources capability');
     });
 
-    it('loads curated descriptors from a catalog URL and preserves the machine-installed inventory', async () => {
+    it('queries the aggregate daemon index for Discover and preserves the machine-installed inventory', async () => {
         const installedPlugin = createInstalledPlugin({
             pluginId: 'installed-plugin',
             title: 'Installed Plugin',
@@ -3634,35 +4196,6 @@ describe('PluginSettingsHomeScreen', () => {
             createMarketplaceCatalogEntry({ pluginId: 'new-plugin', title: 'New Plugin', description: 'Descriptor for an uninstalled plugin', version: '0.1.0' }),
         ]));
 
-        const fetchSpy = vi.fn(async (input: RequestInfo | URL) => {
-            expect(String(input)).toBe('https://marketplace.example.test/catalog.json');
-            return {
-                ok: true,
-                json: async () => ({
-                    t: 'happier_plugin_marketplace_catalog_v1',
-                    schemaVersion: 1,
-                    sourceUrl: 'https://marketplace.example.test/catalog.json',
-                    title: 'Curated Marketplace',
-                    description: 'Curated plugin descriptors',
-                    entries: [
-                        createMarketplaceCatalogEntry({
-                            pluginId: 'installed-plugin',
-                            title: 'Installed Plugin',
-                            description: 'Descriptor for the installed plugin',
-                            version: '1.1.0',
-                        }),
-                        createMarketplaceCatalogEntry({
-                            pluginId: 'new-plugin',
-                            title: 'New Plugin',
-                            description: 'Descriptor for an uninstalled plugin',
-                            version: '0.1.0',
-                        }),
-                    ],
-                }),
-            } as Response;
-        });
-        vi.stubGlobal('fetch', fetchSpy);
-
         const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
         const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
 
@@ -3691,129 +4224,263 @@ describe('PluginSettingsHomeScreen', () => {
         expect(screen.getTextContent()).toContain('incompatible');
 
         await selectPluginManagementView(screen, 'discover');
-        const input = screen.findRow('settings.plugins.marketplace.catalogUrl');
-        expect(input).toBeTruthy();
-        expect(input?.props.value).toBe('https://marketplace.example.test/catalog.json');
-
         await act(async () => {
-            screen.pressRow('settings.plugins.marketplace.loadCatalog');
             await flushAsync();
             await flushAsync();
         });
 
-        expect(fetchSpy).not.toHaveBeenCalled();
-        expect(screen.findGroup('Curated Marketplace')).toBeTruthy();
-        expect(screen.findRow('settings.plugins.marketplace.entry.installed-plugin')).toBeTruthy();
-        expect(screen.findRow('settings.plugins.marketplace.entry.new-plugin')).toBeTruthy();
-        expect(screen.findRow('settings.plugins.marketplace.action.install.installed-plugin')).toBeFalsy();
-        expect(screen.findRow('settings.plugins.marketplace.action.enable.installed-plugin')).toBeTruthy();
-        expect(screen.findRow('settings.plugins.marketplace.action.install.new-plugin')).toBeTruthy();
+        expect(screen.findAll((node) => node.props.footer === 'settingsPlugins.subtitle')).toHaveLength(1);
+
+        // All is one aggregate daemon query: real (empty) search text, no
+        // source filter, and no client-side catalog fetch anywhere.
+        expect(machineMarketplaceIndexQueryMock).toHaveBeenCalledTimes(1);
+        expect(machineMarketplaceIndexQueryMock).toHaveBeenCalledWith('machine-1', expect.objectContaining({
+            text: '',
+            cursor: null,
+            filters: { includeUnavailable: true },
+        }), expect.any(Object));
+        expect(screen.findRow(discoverListingTestID('installed-plugin'))).toBeTruthy();
+        expect(screen.findRow(discoverListingTestID('new-plugin'))).toBeTruthy();
+        // An installed listing shows its installed state instead of lifecycle
+        // actions; an uninstalled one gets the full Install & Trust review.
+        expect(screen.getTextContent()).toContain('deps.ui.installedWithVersion(version=1.0.0)');
+        expect(findDiscoverInstallAction(screen, 'installed-plugin')).toBeUndefined();
+        expect(findDiscoverInstallAction(screen, 'new-plugin')).toBeTruthy();
     });
 
-    it('keeps daemon catalog truth visible when an unconfigured URL is entered', async () => {
-        const firstCatalogUrl = 'https://marketplace.example.test/catalog-a.json';
-        const secondCatalogUrl = 'https://marketplace.example.test/catalog-b.json';
-        const secondCatalogGate = createDeferred();
-
+    it('offers the built-in community npm source filter exactly once and narrows the aggregate query per chip', async () => {
         useMachineCapabilitiesCacheMock.mockReturnValue({
             state: createMachineCapabilitiesState([]),
             refresh: vi.fn(),
         });
         machineMarketplaceSourceRegistryGetMock.mockResolvedValue({
             t: 'happier_marketplace_source_registry_v1', schemaVersion: 1,
-            sources: [{ id: 'marketplace:first', title: 'Curated Marketplace', sourceUrl: firstCatalogUrl, enabled: true, origin: 'curated', addedAtMs: 1, updatedAtMs: 1 }],
+            sources: [
+                { id: 'marketplace:curated', title: 'Curated Marketplace', sourceUrl: 'https://marketplace.example.test/catalog.json', enabled: true, origin: 'curated', addedAtMs: 1, updatedAtMs: 1 },
+                { id: 'marketplace:community-npm', title: 'Community npm', sourceUrl: 'https://registry.npmjs.org/-/v1/search?text=keywords:happier-plugin&size=100', enabled: true, origin: 'user', addedAtMs: 2, updatedAtMs: 2 },
+            ],
         });
-        machineMarketplaceIndexQueryMock.mockResolvedValue(createDaemonMarketplaceIndexResult([
-            createMarketplaceCatalogEntry({ pluginId: 'sample-plugin', title: 'Sample Plugin', description: 'Descriptor for the first catalog', version: '1.0.0' }),
-        ]));
-
-        const fetchSpy = vi.fn(async (input: RequestInfo | URL) => {
-            const url = String(input);
-            if (url === firstCatalogUrl) {
-                return {
-                    ok: true,
-                    json: async () => ({
-                        t: 'happier_plugin_marketplace_catalog_v1',
-                        schemaVersion: 1,
-                        sourceUrl: firstCatalogUrl,
-                        title: 'Curated Marketplace',
-                        description: 'First catalog',
-                        entries: [
-                            createMarketplaceCatalogEntry({
-                                pluginId: 'sample-plugin',
-                                title: 'Sample Plugin',
-                                description: 'Descriptor for the first catalog',
-                                version: '1.0.0',
-                                sourceUrl: `${firstCatalogUrl}#sample-plugin`,
-                                packageUrl: 'https://marketplace.example.test/plugins/sample-plugin.tgz',
-                            }),
-                        ],
-                    }),
-                } as Response;
-            }
-
-            if (url === secondCatalogUrl) {
-                await secondCatalogGate.promise;
-                return {
-                    ok: true,
-                    json: async () => ({
-                        t: 'happier_plugin_marketplace_catalog_v1',
-                        schemaVersion: 1,
-                        sourceUrl: secondCatalogUrl,
-                        title: 'Curated Marketplace Refreshed',
-                        description: 'Second catalog',
-                        entries: [
-                            createMarketplaceCatalogEntry({
-                                pluginId: 'replacement-plugin',
-                                title: 'Replacement Plugin',
-                                description: 'Descriptor for the refreshed catalog',
-                                version: '2.0.0',
-                                sourceUrl: `${secondCatalogUrl}#replacement-plugin`,
-                                packageUrl: 'https://marketplace.example.test/plugins/replacement-plugin.tgz',
-                            }),
-                        ],
-                    }),
-                } as Response;
-            }
-
-            throw new Error(`Unexpected marketplace catalog URL: ${url}`);
-        });
-        vi.stubGlobal('fetch', fetchSpy);
+        machineMarketplaceIndexQueryMock.mockResolvedValue(createDaemonMarketplaceIndexResult([]));
 
         const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
         const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
-
+        await act(async () => {
+            await flushAsync();
+            await flushAsync();
+        });
         await selectPluginManagementView(screen, 'discover');
-        const input = screen.findRow('settings.plugins.marketplace.catalogUrl');
-        expect(input).toBeTruthy();
-        await act(async () => {
-            input?.props.onChangeText(firstCatalogUrl);
-        });
 
+        expect(screen.findAllHostsByTestId('settings.plugins.marketplace.sourceFilter:marketplace:community-npm'))
+            .toHaveLength(1);
+        expect(screen.findAllHostsByTestId('settings.plugins.marketplace.sourceFilter:marketplace:curated'))
+            .toHaveLength(1);
+
+        // A chip narrows the same one aggregate query before acquisition; All
+        // sends no source filter at all.
         await act(async () => {
-            screen.pressRow('settings.plugins.marketplace.loadCatalog');
+            screen.pressByTestId('settings.plugins.marketplace.sourceFilter:marketplace:curated');
             await flushAsync();
             await flushAsync();
         });
-
-        const sampleEntry = screen.findRow('settings.plugins.marketplace.entry.sample-plugin');
-        expect(sampleEntry).toBeTruthy();
-
+        expect(machineMarketplaceIndexQueryMock).toHaveBeenLastCalledWith('machine-1', expect.objectContaining({
+            text: '',
+            filters: { sourceIds: ['marketplace:curated'], includeUnavailable: true },
+        }), expect.any(Object));
         await act(async () => {
-            input?.props.onChangeText(secondCatalogUrl);
+            screen.pressByTestId('settings.plugins.marketplace.sourceFilter:all');
+            await flushAsync();
+            await flushAsync();
         });
+        expect(machineMarketplaceIndexQueryMock).toHaveBeenLastCalledWith('machine-1', expect.objectContaining({
+            filters: { includeUnavailable: true },
+        }), expect.any(Object));
+    });
 
-        expect(screen.findRow('settings.plugins.marketplace.loadCatalog')?.props.disabled).toBe(true);
+    it('coalesces source changes to the latest query intent after the current query settles', async () => {
+        useMachineCapabilitiesCacheMock.mockReturnValue({
+            state: createMachineCapabilitiesState([]),
+            refresh: vi.fn(),
+        });
+        machineMarketplaceSourceRegistryGetMock.mockResolvedValue({
+            t: 'happier_marketplace_source_registry_v1', schemaVersion: 1,
+            sources: [
+                { id: 'marketplace:curated', title: 'Curated Marketplace', sourceUrl: 'https://marketplace.example.test/catalog.json', enabled: true, origin: 'curated', addedAtMs: 1, updatedAtMs: 1 },
+            ],
+        });
+        let settleInitial!: (result: MarketplaceIndexQueryResultV1) => void;
+        machineMarketplaceIndexQueryMock
+            .mockImplementationOnce(() => new Promise((resolve) => { settleInitial = resolve; }))
+            .mockResolvedValue(createDaemonMarketplaceIndexResult([]));
 
+        const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
+        const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
         await act(async () => {
-            screen.pressRow('settings.plugins.marketplace.loadCatalog');
+            await flushAsync();
+            await flushAsync();
+        });
+        await selectPluginManagementView(screen, 'discover');
+        await act(async () => {
             await flushAsync();
         });
 
-        expect(screen.findRow('settings.plugins.marketplace.entry.sample-plugin')).toBeTruthy();
+        act(() => {
+            screen.pressByTestId('settings.plugins.marketplace.sourceFilter:marketplace:curated');
+            screen.pressByTestId('settings.plugins.marketplace.sourceFilter:marketplace:community-npm');
+        });
         expect(machineMarketplaceIndexQueryMock).toHaveBeenCalledTimes(1);
-        expect(fetchSpy).not.toHaveBeenCalled();
-        expect(screen.findRow('settings.plugins.marketplace.entry.replacement-plugin')).toBeFalsy();
+
+        settleInitial(createDaemonMarketplaceIndexResult([]));
+        await act(async () => {
+            await flushAsync();
+            await flushAsync();
+        });
+
+        expect(machineMarketplaceIndexQueryMock).toHaveBeenCalledTimes(2);
+        expect(machineMarketplaceIndexQueryMock).toHaveBeenLastCalledWith('machine-1', expect.objectContaining({
+            filters: { sourceIds: ['marketplace:community-npm'], includeUnavailable: true },
+        }), expect.any(Object));
+    });
+
+    it('accepts a same-revision continuation, then keeps shown rows and clears a changed-revision cursor', async () => {
+        useMachineCapabilitiesCacheMock.mockReturnValue({
+            state: createMachineCapabilitiesState([]),
+            refresh: vi.fn(),
+        });
+        machineMarketplaceSourceRegistryGetMock.mockResolvedValue({
+            t: 'happier_marketplace_source_registry_v1', schemaVersion: 1,
+            sources: [{ id: 'marketplace:curated', title: 'Curated Marketplace', sourceUrl: 'https://marketplace.example.test/catalog.json', enabled: true, origin: 'curated', addedAtMs: 1, updatedAtMs: 1 }],
+        });
+        machineMarketplaceIndexQueryMock
+            .mockResolvedValueOnce(createDaemonMarketplaceIndexResult([
+                createMarketplaceCatalogEntry({ pluginId: 'page-one-plugin', title: 'Page One Plugin', description: 'Descriptor on the loaded revision', version: '1.0.0' }),
+            ], { revision: 1, nextCursor: 'cursor-1' }))
+            .mockResolvedValueOnce(createDaemonMarketplaceIndexResult([
+                createMarketplaceCatalogEntry({ pluginId: 'page-two-plugin', title: 'Page Two Plugin', description: 'Descriptor from the loaded revision', version: '2.0.0' }),
+            ], { revision: 1, nextCursor: 'cursor-2' }))
+            .mockResolvedValueOnce(createDaemonMarketplaceIndexResult([
+                createMarketplaceCatalogEntry({ pluginId: 'changed-plugin', title: 'Changed Plugin', description: 'Descriptor from an incompatible revision', version: '2.1.0' }),
+            ], { revision: 2, nextCursor: 'cursor-3' }))
+            .mockResolvedValueOnce(createDaemonMarketplaceIndexResult([
+                createMarketplaceCatalogEntry({ pluginId: 'fresh-plugin', title: 'Fresh Plugin', description: 'Descriptor from the refreshed revision', version: '3.0.0' }),
+            ], { revision: 2 }));
+
+        const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
+        const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
+        await act(async () => {
+            await flushAsync();
+            await flushAsync();
+        });
+        await selectPluginManagementView(screen, 'discover');
+        await act(async () => {
+            await flushAsync();
+            await flushAsync();
+        });
+
+        expect(screen.findRow(discoverListingTestID('page-one-plugin'))).toBeTruthy();
+        expect(machineMarketplaceIndexQueryMock).toHaveBeenCalledTimes(1);
+
+        await act(async () => {
+            screen.pressByTestId('settings.plugins.marketplace.loadMore');
+            await flushAsync();
+            await flushAsync();
+        });
+
+        expect(screen.findRow(discoverListingTestID('page-one-plugin'))).toBeTruthy();
+        expect(screen.findRow(discoverListingTestID('page-two-plugin'))).toBeTruthy();
+        expect(screen.findAllHostsByTestId('settings.plugins.marketplace.loadMore')).toHaveLength(1);
+        expect(machineMarketplaceIndexQueryMock).toHaveBeenCalledTimes(2);
+
+        await act(async () => {
+            screen.pressByTestId('settings.plugins.marketplace.loadMore');
+            await flushAsync();
+            await flushAsync();
+        });
+
+        // Last-known-good rows stay; the incompatible page is discarded — a
+        // revision mismatch is not an empty catalog.
+        expect(screen.findRow(discoverListingTestID('page-one-plugin'))).toBeTruthy();
+        expect(screen.findRow(discoverListingTestID('page-two-plugin'))).toBeTruthy();
+        expect(screen.findRow(discoverListingTestID('changed-plugin'))).toBeFalsy();
+        // The mismatched page's cursor is gone, so the stale list cannot request
+        // another incompatible continuation.
+        expect(screen.findAllHostsByTestId('settings.plugins.marketplace.loadMore')).toHaveLength(0);
+        expect(machineMarketplaceIndexQueryMock).toHaveBeenCalledTimes(3);
+        // The mismatch is announced by the pane's one accessible status row;
+        // its label carries the exact error key like every other status fact.
+        const mismatchSummary = screen.findByTestId('settings.plugins.marketplace.discover.status.summary');
+        expect(closestAccessibleAnnouncementAncestor(mismatchSummary)?.props.accessibilityLabel).toBe(
+            'settingsPlugins.discover.status.errorTitle settingsPlugins.discoverRevisionChanged',
+        );
+
+        // Recovery stays with the user's own fresh query from cursor null.
+        await act(async () => {
+            screen.pressByTestId('settings.plugins.marketplace.refreshDiscover');
+            await flushAsync();
+            await flushAsync();
+        });
+        expect(machineMarketplaceIndexQueryMock).toHaveBeenCalledTimes(4);
+        expect(machineMarketplaceIndexQueryMock).toHaveBeenLastCalledWith('machine-1', expect.objectContaining({
+            cursor: null,
+        }), expect.any(Object));
+        expect(screen.findRow(discoverListingTestID('fresh-plugin'))).toBeTruthy();
+        expect(screen.findAllHostsByTestId('settings.plugins.marketplace.loadMore')).toHaveLength(0);
+    });
+
+    it('keeps the shown daemon listings while the search draft changes until the user searches', async () => {
+        useMachineCapabilitiesCacheMock.mockReturnValue({
+            state: createMachineCapabilitiesState([]),
+            refresh: vi.fn(),
+        });
+        machineMarketplaceSourceRegistryGetMock.mockResolvedValue({
+            t: 'happier_marketplace_source_registry_v1', schemaVersion: 1,
+            sources: [{ id: 'marketplace:curated', title: 'Curated Marketplace', sourceUrl: 'https://marketplace.example.test/catalog.json', enabled: true, origin: 'curated', addedAtMs: 1, updatedAtMs: 1 }],
+        });
+        machineMarketplaceIndexQueryMock
+            .mockResolvedValueOnce(createDaemonMarketplaceIndexResult([
+                createMarketplaceCatalogEntry({ pluginId: 'sample-plugin', title: 'Sample Plugin', description: 'Descriptor for the shown page', version: '1.0.0' }),
+            ]))
+            .mockResolvedValueOnce(createDaemonMarketplaceIndexResult([
+                createMarketplaceCatalogEntry({ pluginId: 'replacement-plugin', title: 'Replacement Plugin', description: 'Descriptor for the searched page', version: '2.0.0' }),
+            ]));
+
+        const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
+        const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
+        await act(async () => {
+            await flushAsync();
+            await flushAsync();
+        });
+        await selectPluginManagementView(screen, 'discover');
+        await act(async () => {
+            await flushAsync();
+            await flushAsync();
+        });
+
+        expect(screen.findRow(discoverListingTestID('sample-plugin'))).toBeTruthy();
+        expect(machineMarketplaceIndexQueryMock).toHaveBeenCalledTimes(1);
+
+        // Typing only drafts the next query: nothing re-queries, and the list
+        // the user is already reading stays on screen.
+        await act(async () => {
+            screen.findRow('settings.plugins.marketplace.search')?.props.onChangeText('replacement');
+        });
+        expect(machineMarketplaceIndexQueryMock).toHaveBeenCalledTimes(1);
+        expect(screen.findRow(discoverListingTestID('sample-plugin'))).toBeTruthy();
+        // The controls now describe a different query than the shown list.
+        expect(screen.getTextContent()).toContain('settingsPlugins.discover.status.stale');
+
+        await act(async () => {
+            screen.pressRow('settings.plugins.marketplace.refreshDiscover');
+            await flushAsync();
+            await flushAsync();
+        });
+
+        expect(machineMarketplaceIndexQueryMock).toHaveBeenCalledTimes(2);
+        expect(machineMarketplaceIndexQueryMock).toHaveBeenLastCalledWith('machine-1', expect.objectContaining({
+            text: 'replacement',
+            cursor: null,
+        }), expect.any(Object));
+        expect(screen.findRow(discoverListingTestID('replacement-plugin'))).toBeTruthy();
+        expect(screen.findRow(discoverListingTestID('sample-plugin'))).toBeFalsy();
     });
 
     it('reconciles exact curated install truth after the private decision response is lost', async () => {
@@ -3853,6 +4520,7 @@ describe('PluginSettingsHomeScreen', () => {
                                 kind: 'npm',
                                 locator: '@acme/new-plugin@0.1.0',
                                 integrity: 'sha512-exact',
+                                integrityBasis: 'expected',
                             },
                             updateChannel: {
                                 kind: 'npm',
@@ -3877,8 +4545,9 @@ describe('PluginSettingsHomeScreen', () => {
                             requiredHostAccess: [],
                             optionalHostAccess: [],
                             rawCredentialAccess: [],
+                            requestInterceptors: [],
                             compatibility: { happier: '^0.2.0', runtimeApiVersion: 1 },
-                            updatePolicy: 'automatic',
+                            updatePolicy: 'reviewEveryUpdate',
                         },
                     },
                 },
@@ -3893,47 +4562,24 @@ describe('PluginSettingsHomeScreen', () => {
             createMarketplaceCatalogEntry({ pluginId: 'new-plugin', title: 'New Plugin', description: 'Descriptor for an uninstalled plugin', version: '0.1.0' }),
         ]));
 
-        vi.stubGlobal('fetch', vi.fn(async () => ({
-            ok: true,
-            json: async () => ({
-                t: 'happier_plugin_marketplace_catalog_v1',
-                schemaVersion: 1,
-                sourceUrl: 'https://marketplace.example.test/catalog.json',
-                title: 'Curated Marketplace',
-                description: 'Curated plugin descriptors',
-                entries: [
-                    createMarketplaceCatalogEntry({
-                        pluginId: 'new-plugin',
-                        title: 'New Plugin',
-                        description: 'Descriptor for an uninstalled plugin',
-                        version: '0.1.0',
-                    }),
-                ],
-            }),
-        }) as Response));
-
         const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
         const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
-
+        await act(async () => {
+            await flushAsync();
+            await flushAsync();
+        });
         await selectPluginManagementView(screen, 'discover');
-        const input = screen.findRow('settings.plugins.marketplace.catalogUrl');
-        expect(input).toBeTruthy();
         await act(async () => {
-            input?.props.onChangeText('https://marketplace.example.test/catalog.json');
-        });
-
-        await act(async () => {
-            screen.pressRow('settings.plugins.marketplace.loadCatalog');
             await flushAsync();
             await flushAsync();
         });
 
-        expect(screen.findRow('settings.plugins.marketplace.entry.new-plugin')).toBeTruthy();
-        const installRow = screen.findRow('settings.plugins.marketplace.action.install.new-plugin');
-        expect(installRow).toBeTruthy();
+        expect(screen.findRow(discoverListingTestID('new-plugin'))).toBeTruthy();
+        const installAction = findDiscoverInstallAction(screen, 'new-plugin');
+        expect(installAction).toBeTruthy();
 
         await act(async () => {
-            screen.pressRow('settings.plugins.marketplace.action.install.new-plugin');
+            installAction?.onPress();
             await flushAsync();
         });
 
@@ -3944,15 +4590,22 @@ describe('PluginSettingsHomeScreen', () => {
                 params: {
                     sourceId: 'marketplace:curated',
                     pluginId: 'new-plugin',
+                    packageName: '@acme/new-plugin',
                 },
             },
         }));
+        // The install review is the shared dialog fed by the exact serialized
+        // protocol review, named to the exact machine and server it grants on.
         expect(modalShowMock).toHaveBeenCalledWith(expect.objectContaining({
             chrome: expect.objectContaining({
-                title: 'settingsPlugins.marketplaceInstallReviewTitle',
+                title: 'settingsPlugins.marketplaceInstallReviewTitle(name=New Plugin,version=0.1.0)',
             }),
             props: expect.objectContaining({
-                body: expect.stringContaining('"identity":"Plugin: new-plugin\\nPackage: @acme/new-plugin 0.1.0'),
+                review: expect.objectContaining({
+                    pluginId: 'new-plugin',
+                    packageIdentity: { name: '@acme/new-plugin', version: '0.1.0' },
+                }),
+                target: { machine: 'machine-1', server: 'Server A' },
             }),
         }));
         expect(machineRpcWithServerScopeMock).toHaveBeenCalledWith(expect.objectContaining({
@@ -4033,8 +4686,6 @@ describe('PluginSettingsHomeScreen', () => {
             sourceUrl: communitySourceUrl,
             sourceKind: 'community-npm',
             reviewStatus: 'unreviewed',
-            curatedInstall: 'full-review',
-            curatedUpdate: 'not-applicable',
         }));
 
         const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
@@ -4045,20 +4696,32 @@ describe('PluginSettingsHomeScreen', () => {
         });
         await selectPluginManagementView(screen, 'discover');
         await act(async () => {
-            screen.pressRow('settings.plugins.marketplace.loadCatalog');
             await flushAsync();
             await flushAsync();
         });
 
-        expect(screen.findRow('settings.plugins.marketplace.entry.community-plugin')).toBeTruthy();
-        expect(screen.findRow('settings.plugins.marketplace.unreviewed.community-plugin')).toBeTruthy();
-        expect(screen.getTextContent()).toContain('settingsPlugins.marketplaceCommunityUnreviewedTitle');
-        expect(screen.getTextContent()).toContain('settingsPlugins.marketplaceCommunityUnreviewedBody');
-        expect(screen.findRow('settings.plugins.marketplace.action.install.community-plugin')).toBeTruthy();
+        // One listing is one row: its unreviewed-community status and its
+        // Install & Trust action are carried by that row, not by extra rows
+        // beneath it. The full disclosure stays in the install review.
+        const communityRow = screen.findRow(discoverListingTestID('community-plugin', 'marketplace:community-npm'));
+        expect(communityRow).toBeTruthy();
+        expect(screen.getTextContent()).toContain('settingsPlugins.discover.publisherLabel(displayName=Acme,id=acme)');
+        expect(screen.getTextContent()).toContain('settingsPlugins.discover.categories(values=agents)');
+        expect(screen.getTextContent()).toContain(
+            'settingsPlugins.discover.runtimeSummary(realms=settingsPlugins.discover.executableRealm.daemon,platforms=settingsPlugins.discover.platform.web)',
+        );
+        expect(screen.findByTestId('settings.plugins.marketplace.reviewStatus.marketplace:community-npm.community-plugin:variant:warning'))
+            .toBeTruthy();
+        expect(screen.getTextContent()).toContain('settingsPlugins.discover.reviewStatus.unreviewed');
+        const communityInstallAction = findDiscoverInstallAction(screen, 'community-plugin', 'marketplace:community-npm');
+        expect(communityInstallAction).toBeTruthy();
+        expect(communityInstallAction?.accessibilityLabel).toBe(
+            'settingsPlugins.installAndTrust. Community Plugin. Community npm',
+        );
 
         modalShowMock.mockImplementationOnce(() => 'plugin-install-review-modal');
         await act(async () => {
-            screen.pressRow('settings.plugins.marketplace.action.install.community-plugin');
+            communityInstallAction?.onPress();
             await flushAsync();
         });
 
@@ -4069,6 +4732,9 @@ describe('PluginSettingsHomeScreen', () => {
                 params: {
                     sourceId: 'marketplace:community-npm',
                     pluginId: 'community-plugin',
+                    // The npm package name is not derivable from the manifest
+                    // plugin id, so the listing's own coordinate must travel.
+                    packageName: '@acme/community-plugin',
                 },
             },
             alerts: expect.objectContaining({ successMessage: null }),
@@ -4079,36 +4745,25 @@ describe('PluginSettingsHomeScreen', () => {
             component: React.ComponentType<Readonly<{
                 onClose: () => void;
                 setChrome?: (chrome: unknown) => void;
-                body: string;
-                optionalHostAccess: readonly Readonly<{
-                    id: string;
-                    capability: string;
-                    reason: string;
-                }>[];
+                review: PluginInstallationReview;
                 onResolve: (result: Readonly<{
                     approved: boolean;
                     optionalSelections: readonly Readonly<{ accessId: string; selected: boolean }>[];
                 }>) => void;
             }>>;
             props: Readonly<{
-                body: string;
-                optionalHostAccess: readonly Readonly<{
-                    id: string;
-                    capability: string;
-                    reason: string;
-                }>[];
+                review: PluginInstallationReview;
                 onResolve: (result: Readonly<{
                     approved: boolean;
                     optionalSelections: readonly Readonly<{ accessId: string; selected: boolean }>[];
                 }>) => void;
             }>;
         }>;
-        expect(reviewModalConfig.props.body).toContain(
-            '"identity":"Plugin: community-plugin\\nPackage: @acme/community-plugin 2.0.0',
-        );
-        expect(reviewModalConfig.props.body).toContain(
-            '"requiredAccess":"network [cooperativeDisclosure]: Connect to the review service',
-        );
+        expect(reviewModalConfig.props.review).toMatchObject({
+            pluginId: 'community-plugin',
+            packageIdentity: { name: '@acme/community-plugin', version: '2.0.0' },
+            requiredHostAccess: [expect.objectContaining({ capability: 'network' })],
+        });
         const reviewModal = await renderSettingsView(React.createElement(reviewModalConfig.component, {
             ...reviewModalConfig.props,
             onClose: vi.fn(),
@@ -4172,7 +4827,7 @@ describe('PluginSettingsHomeScreen', () => {
         machineRpcWithServerScopeMock.mockResolvedValueOnce({ kind: 'cancelled' });
 
         await act(async () => {
-            screen.pressRow('settings.plugins.marketplace.action.install.community-plugin');
+            findDiscoverInstallAction(screen, 'community-plugin', 'marketplace:community-npm')?.onPress();
             await flushAsync();
         });
 
@@ -4188,7 +4843,6 @@ describe('PluginSettingsHomeScreen', () => {
     });
 
     it('reconciles an outcome-unknown exact marketplace update after the private review decision', async () => {
-        const communitySourceUrl = 'https://registry.npmjs.org/-/v1/search?text=keywords:happier-plugin';
         const installedPlugin = createInstalledPlugin({
             pluginId: 'community-plugin',
             title: 'Community Plugin',
@@ -4218,34 +4872,6 @@ describe('PluginSettingsHomeScreen', () => {
             kind: 'outcomeUnknown',
             pluginId: 'community-plugin',
         });
-        machineMarketplaceSourceRegistryGetMock.mockResolvedValue({
-            t: 'happier_marketplace_source_registry_v1',
-            schemaVersion: 1,
-            sources: [{
-                id: 'marketplace:community-npm',
-                title: 'Community npm',
-                sourceUrl: communitySourceUrl,
-                enabled: true,
-                origin: 'community-npm',
-                addedAtMs: 1,
-                updatedAtMs: 1,
-            }],
-        });
-        machineMarketplaceIndexQueryMock.mockResolvedValue(createDaemonMarketplaceIndexResult([
-            createMarketplaceCatalogEntry({
-                pluginId: 'community-plugin',
-                title: 'Community Plugin',
-                version: '2.0.0',
-            }),
-        ], {
-            sourceId: 'marketplace:community-npm',
-            sourceTitle: 'Community npm',
-            sourceUrl: communitySourceUrl,
-            sourceKind: 'community-npm',
-            reviewStatus: 'unreviewed',
-            curatedInstall: 'full-review',
-            curatedUpdate: 'not-applicable',
-        }));
 
         const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
         const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
@@ -4253,17 +4879,18 @@ describe('PluginSettingsHomeScreen', () => {
             await flushAsync();
             await flushAsync();
         });
-        await selectPluginManagementView(screen, 'discover');
-        await act(async () => {
-            screen.pressRow('settings.plugins.marketplace.loadCatalog');
-            await flushAsync();
-            await flushAsync();
-        });
 
-        expect(screen.findRow('settings.plugins.marketplace.action.update.community-plugin')).toBeTruthy();
-        expect(screen.getTextContent()).toContain('settingsPlugins.marketplaceUpdateVersion');
+        // Update starts from the installed record's own row action; Discover
+        // never advertised a lifecycle row for something already installed.
+        const updateAction = screen.findAllByType('ItemRowActions' as any)
+            .find((node) => node.props.title === 'Community Plugin')
+            ?.props.actions
+            ?.find((action: Readonly<{ id: string }>) => action.id === 'update') as
+            | Readonly<{ disabled: boolean; onPress: () => void }>
+            | undefined;
+        expect(updateAction?.disabled).not.toBe(true);
         await act(async () => {
-            screen.pressRow('settings.plugins.marketplace.action.update.community-plugin');
+            updateAction?.onPress();
             await flushAsync();
         });
 
@@ -4279,10 +4906,13 @@ describe('PluginSettingsHomeScreen', () => {
         }));
         expect(modalShowMock).toHaveBeenCalledWith(expect.objectContaining({
             chrome: expect.objectContaining({
-                title: 'settingsPlugins.marketplaceInstallReviewTitle',
+                title: 'settingsPlugins.marketplaceInstallReviewTitle(name=Community Plugin,version=2.0.0)',
             }),
             props: expect.objectContaining({
-                body: expect.stringContaining('"identity":"Plugin: community-plugin\\nPackage: @acme/community-plugin 2.0.0'),
+                review: expect.objectContaining({
+                    pluginId: 'community-plugin',
+                    packageIdentity: { name: '@acme/community-plugin', version: '2.0.0' },
+                }),
             }),
         }));
         expect(machineRpcWithServerScopeMock).toHaveBeenCalledWith(expect.objectContaining({
@@ -4303,7 +4933,6 @@ describe('PluginSettingsHomeScreen', () => {
     });
 
     it('reconciles an ambiguous update against the installed record the update owner advanced, not the catalog version', async () => {
-        const communitySourceUrl = 'https://registry.npmjs.org/-/v1/search?text=keywords:happier-plugin';
         const installedPlugin = createInstalledPlugin({
             pluginId: 'community-plugin',
             title: 'Community Plugin',
@@ -4325,34 +4954,6 @@ describe('PluginSettingsHomeScreen', () => {
             }]);
         });
         invokeWithAlertsMock.mockResolvedValueOnce({ supported: false, reason: 'error' });
-        machineMarketplaceSourceRegistryGetMock.mockResolvedValue({
-            t: 'happier_marketplace_source_registry_v1',
-            schemaVersion: 1,
-            sources: [{
-                id: 'marketplace:community-npm',
-                title: 'Community npm',
-                sourceUrl: communitySourceUrl,
-                enabled: true,
-                origin: 'community-npm',
-                addedAtMs: 1,
-                updatedAtMs: 1,
-            }],
-        });
-        machineMarketplaceIndexQueryMock.mockResolvedValue(createDaemonMarketplaceIndexResult([
-            createMarketplaceCatalogEntry({
-                pluginId: 'community-plugin',
-                title: 'Community Plugin',
-                version: '2.0.0',
-            }),
-        ], {
-            sourceId: 'marketplace:community-npm',
-            sourceTitle: 'Community npm',
-            sourceUrl: communitySourceUrl,
-            sourceKind: 'community-npm',
-            reviewStatus: 'unreviewed',
-            curatedInstall: 'full-review',
-            curatedUpdate: 'not-applicable',
-        }));
 
         const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
         const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
@@ -4360,14 +4961,12 @@ describe('PluginSettingsHomeScreen', () => {
             await flushAsync();
             await flushAsync();
         });
-        await selectPluginManagementView(screen, 'discover');
         await act(async () => {
-            screen.pressRow('settings.plugins.marketplace.loadCatalog');
-            await flushAsync();
-            await flushAsync();
-        });
-        await act(async () => {
-            screen.pressRow('settings.plugins.marketplace.action.update.community-plugin');
+            screen.findAllByType('ItemRowActions' as any)
+                .find((node) => node.props.title === 'Community Plugin')
+                ?.props.actions
+                ?.find((action: Readonly<{ id: string }>) => action.id === 'update')
+                ?.onPress();
             await flushAsync();
         });
 
@@ -4400,13 +4999,15 @@ describe('PluginSettingsHomeScreen', () => {
         });
         await selectPluginManagementView(screen, 'discover');
         await act(async () => {
-            screen.pressRow('settings.plugins.marketplace.loadCatalog');
             await flushAsync();
             await flushAsync();
         });
 
-        expect(screen.findRow('settings.plugins.marketplace.entry.new-plugin')).toBeFalsy();
-        expect(screen.findRow('settings.plugins.marketplace.action.install.new-plugin')).toBeFalsy();
+        // The listing is not silently dropped: it surfaces as a non-installable
+        // row with its reason, and nothing installable or mutating appears.
+        expect(screen.findRow(discoverListingTestID('new-plugin'))).toBeFalsy();
+        expect(screen.findByTestId('settings.plugins.marketplace.discover.nonInstallable.marketplace:curated.new-plugin')).toBeTruthy();
+        expect(findDiscoverInstallAction(screen, 'new-plugin')).toBeUndefined();
         expect(invokeWithAlertsMock).not.toHaveBeenCalled();
     });
 
@@ -4429,9 +5030,6 @@ describe('PluginSettingsHomeScreen', () => {
             createMarketplaceCatalogEntry({ pluginId: 'withdrawn-plugin', title: 'Withdrawn Plugin' }),
         ], {
             reviewStatus: 'withdrawn',
-            curatedInstall: 'refused',
-            curatedUpdate: 'refused',
-            warning: true,
         }));
 
         const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
@@ -4442,27 +5040,29 @@ describe('PluginSettingsHomeScreen', () => {
         });
         await selectPluginManagementView(screen, 'discover');
         await act(async () => {
-            screen.pressRow('settings.plugins.marketplace.loadCatalog');
             await flushAsync();
             await flushAsync();
         });
 
+        // All is the unfiltered aggregate query: the daemon decides what a
+        // withdrawal means, no source filter is sent from the client.
         expect(machineMarketplaceIndexQueryMock).toHaveBeenCalledWith('machine-1', expect.objectContaining({
-            filters: {
-                sourceIds: ['marketplace:curated'],
-                includeUnavailable: true,
-            },
+            filters: { includeUnavailable: true },
         }), expect.any(Object));
-        expect(screen.findRow('settings.plugins.marketplace.entry.withdrawn-plugin')).toBeTruthy();
-        expect(screen.findRow('settings.plugins.marketplace.warning.withdrawn-plugin')).toBeTruthy();
-        expect(screen.getTextContent()).toContain('settingsPlugins.marketplaceWithdrawnTitle');
-        expect(screen.getTextContent()).toContain('settingsPlugins.marketplaceWithdrawnInstalledBody');
-        expect(screen.findRow('settings.plugins.marketplace.action.install.withdrawn-plugin')).toBeFalsy();
-        expect(screen.findRow('settings.plugins.marketplace.action.disable.withdrawn-plugin')).toBeTruthy();
+        const withdrawnRow = screen.findRow(discoverListingTestID('withdrawn-plugin'));
+        expect(withdrawnRow).toBeTruthy();
+        // One status pill carries withdrawal on the listing's own row rather
+        // than duplicating it as a second warning line or a separate row.
+        expect(screen.findByTestId('settings.plugins.marketplace.reviewStatus.marketplace:curated.withdrawn-plugin:variant:warning'))
+            .toBeTruthy();
+        expect(screen.getTextContent()).toContain('settingsPlugins.discover.reviewStatus.withdrawn');
+        // The warning never becomes authority over installed code: Discover
+        // renders no install (or any lifecycle) action for the installed listing.
+        expect(findDiscoverListingActions(screen, 'withdrawn-plugin')).toHaveLength(0);
         expect(invokeWithAlertsMock).not.toHaveBeenCalled();
     });
 
-    it('routes enable and disable through the host capability without advertising another mutation', async () => {
+    it('routes installed-row enable and disable through the host capability', async () => {
         const enabledPlugin = createInstalledPlugin({
             pluginId: 'existing-plugin',
             title: 'Existing Plugin',
@@ -4510,63 +5110,33 @@ describe('PluginSettingsHomeScreen', () => {
             supported: true,
             response: { ok: true, result: { ok: true } },
         });
-        machineMarketplaceSourceRegistryGetMock.mockResolvedValue({
-            t: 'happier_marketplace_source_registry_v1', schemaVersion: 1,
-            sources: [{ id: 'marketplace:curated', title: 'Curated Marketplace', sourceUrl: 'https://marketplace.example.test/catalog.json', enabled: true, origin: 'curated', addedAtMs: 1, updatedAtMs: 1 }],
-        });
-        machineMarketplaceIndexQueryMock.mockResolvedValue(createDaemonMarketplaceIndexResult([
-            createMarketplaceCatalogEntry({ pluginId: 'existing-plugin', title: 'Existing Plugin', description: 'Descriptor for an installed plugin', version: '1.1.0' }),
-            createMarketplaceCatalogEntry({ pluginId: 'disabled-plugin', title: 'Disabled Plugin', description: 'Descriptor for a disabled plugin', version: '2.0.0' }),
-        ]));
-
-        vi.stubGlobal('fetch', vi.fn(async () => ({
-            ok: true,
-            json: async () => ({
-                t: 'happier_plugin_marketplace_catalog_v1',
-                schemaVersion: 1,
-                sourceUrl: 'https://marketplace.example.test/catalog.json',
-                title: 'Curated Marketplace',
-                description: 'Curated plugin descriptors',
-                entries: [
-                    createMarketplaceCatalogEntry({
-                        pluginId: 'existing-plugin',
-                        title: 'Existing Plugin',
-                        description: 'Descriptor for an installed plugin',
-                        version: '1.1.0',
-                    }),
-                    createMarketplaceCatalogEntry({
-                        pluginId: 'disabled-plugin',
-                        title: 'Disabled Plugin',
-                        description: 'Descriptor for an installed plugin that is disabled',
-                        version: '2.0.0',
-                    }),
-                ],
-            }),
-        }) as Response));
 
         const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
         const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
-
-        await selectPluginManagementView(screen, 'discover');
-        const input = screen.findRow('settings.plugins.marketplace.catalogUrl');
-        expect(input).toBeTruthy();
         await act(async () => {
-            input?.props.onChangeText('https://marketplace.example.test/catalog.json');
-        });
-
-        await act(async () => {
-            screen.pressRow('settings.plugins.marketplace.loadCatalog');
             await flushAsync();
             await flushAsync();
         });
 
+        // Enable/disable live on the installed row; Discover renders no
+        // lifecycle actions for installed listings at all.
+        const rowActions = screen.findAllByType('ItemRowActions' as any);
+        const disableAction = rowActions
+            .find((node) => node.props.title === 'Existing Plugin')
+            ?.props.actions.find((action: { id: string }) => action.id === 'disable');
+        const enableAction = rowActions
+            .find((node) => node.props.title === 'Disabled Plugin')
+            ?.props.actions.find((action: { id: string }) => action.id === 'enable');
+        expect(disableAction).toBeTruthy();
+        expect(enableAction).toBeTruthy();
+
         await act(async () => {
-            screen.pressRow('settings.plugins.marketplace.action.disable.existing-plugin');
+            disableAction?.onPress();
             await flushAsync();
         });
 
         await act(async () => {
-            screen.pressRow('settings.plugins.marketplace.action.enable.disabled-plugin');
+            enableAction?.onPress();
             await flushAsync();
         });
 
@@ -4632,6 +5202,10 @@ describe('PluginSettingsHomeScreen', () => {
                 updatedAtMs: 1,
             }],
         });
+        // Discover is the one aggregate daemon query; the retired client-side
+        // catalog-URL loader no longer exists, and the daemon's own listing for
+        // the other source still must not offer Install & Trust for code this
+        // machine already has installed and trusted.
         machineMarketplaceIndexQueryMock.mockResolvedValue(createDaemonMarketplaceIndexResult([
             createMarketplaceCatalogEntry({
                 pluginId: 'existing-plugin',
@@ -4641,47 +5215,28 @@ describe('PluginSettingsHomeScreen', () => {
                 sourceUrl: 'https://catalog-b.example.test/entries/existing-plugin.json',
                 packageUrl: 'https://catalog-b.example.test/plugins/existing-plugin.tgz',
             }),
-        ]));
-
-        vi.stubGlobal('fetch', vi.fn(async () => ({
-            ok: true,
-            json: async () => ({
-                t: 'happier_plugin_marketplace_catalog_v1',
-                schemaVersion: 1,
-                sourceUrl: 'https://catalog-b.example.test/catalog.json',
-                title: 'Other Marketplace',
-                description: 'Another catalog source',
-                entries: [
-                    createMarketplaceCatalogEntry({
-                        pluginId: 'existing-plugin',
-                        title: 'Existing Plugin',
-                        description: 'Descriptor from a different catalog source',
-                        version: '9.9.9',
-                        sourceUrl: 'https://catalog-b.example.test/entries/existing-plugin.json',
-                        packageUrl: 'https://catalog-b.example.test/plugins/existing-plugin.tgz',
-                    }),
-                ],
-            }),
-        }) as Response));
+        ], {
+            sourceId: 'marketplace:other',
+            sourceTitle: 'Other Marketplace',
+            sourceUrl: 'https://catalog-b.example.test/catalog.json',
+        }));
 
         const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
         const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
+        await act(async () => {
+            await flushAsync();
+            await flushAsync();
+        });
 
         await selectPluginManagementView(screen, 'discover');
-        const input = screen.findRow('settings.plugins.marketplace.catalogUrl');
-        expect(input).toBeTruthy();
         await act(async () => {
-            input?.props.onChangeText('https://catalog-b.example.test/catalog.json');
-        });
-
-        await act(async () => {
-            screen.pressRow('settings.plugins.marketplace.loadCatalog');
             await flushAsync();
             await flushAsync();
         });
 
-        expect(screen.findRow('settings.plugins.marketplace.entry.existing-plugin')).toBeTruthy();
-        expect(screen.findRow('settings.plugins.marketplace.action.install.existing-plugin')).toBeFalsy();
+        expect(machineMarketplaceIndexQueryMock).toHaveBeenCalledTimes(1);
+        expect(screen.findRow(discoverListingTestID('existing-plugin', 'marketplace:other'))).toBeTruthy();
+        expect(findDiscoverInstallAction(screen, 'existing-plugin', 'marketplace:other')).toBeUndefined();
         expect(invokeWithAlertsMock).not.toHaveBeenCalled();
     });
 
@@ -4739,24 +5294,6 @@ describe('PluginSettingsHomeScreen', () => {
                 response: { ok: true, result: { ok: true } },
             };
         });
-        vi.stubGlobal('fetch', vi.fn(async () => ({
-            ok: true,
-            json: async () => ({
-                t: 'happier_plugin_marketplace_catalog_v1',
-                schemaVersion: 1,
-                sourceUrl: 'https://marketplace.example.test/catalog.json',
-                title: 'Curated Marketplace',
-                description: 'Curated plugin descriptors',
-                entries: [
-                    createMarketplaceCatalogEntry({
-                        pluginId: 'new-plugin',
-                        title: 'New Plugin',
-                        description: 'Descriptor for an uninstalled plugin',
-                        version: '0.1.0',
-                    }),
-                ],
-            }),
-        }) as Response));
 
         const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
         const screen = await renderSettingsView(React.createElement(PluginSettingsHomeScreen));
@@ -4793,5 +5330,67 @@ describe('PluginSettingsHomeScreen', () => {
         });
 
         expect(refresh).toHaveBeenCalledWith({ bypassCache: true });
+    });
+});
+
+describe('PluginMarketplaceSourcesScreen', () => {
+    it('keeps Community npm read-only and mutates only user sources through the canonical registry operations', async () => {
+        const registry: MarketplaceSourceRegistryV1 = {
+            t: 'happier_marketplace_source_registry_v1',
+            schemaVersion: 1,
+            sources: [
+                {
+                    id: 'curated', title: 'Curated', sourceUrl: 'https://curated.example/index.json',
+                    enabled: true, origin: 'curated', addedAtMs: 1, updatedAtMs: 1,
+                },
+                {
+                    id: 'user', title: 'My source', sourceUrl: 'https://mine.example/index.json',
+                    enabled: true, origin: 'user', addedAtMs: 1, updatedAtMs: 1,
+                },
+            ],
+        };
+        useMachineCapabilitiesCacheMock.mockReturnValue({ state: createMachineCapabilitiesState([]), refresh: vi.fn() });
+        machineMarketplaceSourceRegistryGetMock.mockResolvedValue(registry);
+        // The op's own settlement shape: a parsed registry snapshot on success
+        // (or `outcomeUnknown` after the mutation was issued), never a raw registry.
+        machineMarketplaceSourceRegistryMutateMock.mockImplementation(async () => ({ status: 'success' as const, registry }));
+
+        const { PluginMarketplaceSourcesScreen } = await import('./PluginMarketplaceSourcesScreen');
+        const screen = await renderSettingsView(React.createElement(PluginMarketplaceSourcesScreen));
+        await act(async () => { await flushAsync(); await flushAsync(); });
+
+        const communityNpmRow = screen.findRow('settings.plugins.sources.communityNpm');
+        expect(communityNpmRow).toBeTruthy();
+        expect(communityNpmRow?.props.accessibilityLabel).toBe(
+            'settingsPlugins.sourceAdministration.communityTitle. settingsPlugins.sourceAdministration.communitySubtitle',
+        );
+        expect(communityNpmRow?.props.onPress).toBeUndefined();
+        expect(screen.findRow('settings.plugins.sources.source.curated')).toBeTruthy();
+        expect(screen.findRow('settings.plugins.sources.remove.curated')).toBeNull();
+        expect(screen.findRow('settings.plugins.sources.remove.user')).toBeTruthy();
+
+        await act(async () => {
+            screen.findByTestId('settings.plugins.sources.enabled.user')?.props.onValueChange(false);
+            await flushAsync();
+        });
+        expect(machineMarketplaceSourceRegistryMutateMock).toHaveBeenCalledWith(
+            'machine-1',
+            { kind: 'setEnabled', sourceId: 'user', enabled: false },
+            { serverId: 'server-a' },
+        );
+
+        // Adding a source asks for the address only: the Protocol owner derives
+        // the display title, and Edit stays the owner of optional metadata.
+        modalPromptMock.mockResolvedValueOnce('https://new.example/index.json');
+        await act(async () => {
+            screen.pressRow('settings.plugins.sources.add');
+            await flushAsync();
+            await flushAsync();
+        });
+        expect(machineMarketplaceSourceRegistryMutateMock).toHaveBeenLastCalledWith(
+            'machine-1',
+            { kind: 'upsert', input: { sourceUrl: 'https://new.example/index.json', origin: 'user', enabled: true } },
+            { serverId: 'server-a' },
+        );
     });
 });

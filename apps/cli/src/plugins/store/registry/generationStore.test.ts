@@ -52,7 +52,7 @@ function stateRevision(generationId = 'generation-a'): PluginInstallationStateRe
         source: {
           distribution: { kind: 'localPath', canonicalPath: '/tmp/acme-plugin' },
         },
-        updatePolicy: 'manual',
+        updatePolicy: 'reviewEveryUpdate',
         optionalAccess: [],
       },
     },
@@ -280,8 +280,6 @@ describe('immutable plugin generation store', () => {
       v: 1,
       packageIdentity: { pluginId: 'acme.plugin', packageName: '@acme/plugin' },
       distributionIdentity: { kind: 'archive' },
-      publisherIdentity: { status: 'unavailable' },
-      packageSignature: { status: 'unavailable' },
     });
     const mismatchedDigest = PluginInstallReviewPrincipalDigestSchema.parse('a'.repeat(64));
     const mismatchedState: PluginInstallationStateRevision = {
@@ -361,7 +359,7 @@ describe('immutable plugin generation store', () => {
         manifestRelativePath: '.happier-plugin/plugin.json',
         generatedManifestContents: manifestContents,
         distribution: { kind: 'localPath', canonicalPath: join(sourceRootPath, 'plugin.ts') },
-        updatePolicy: 'manual',
+        updatePolicy: 'reviewEveryUpdate',
         createdAtMs: 1,
         immutableGenerationId: 'generation-one-file-a',
       });
@@ -400,7 +398,7 @@ describe('immutable plugin generation store', () => {
         manifestRelativePath: '.happier-plugin/plugin.json',
         generatedManifestContents: manifestContents,
         distribution: { kind: 'localPath', canonicalPath: join(sourceRootPath, 'plugin.ts') },
-        updatePolicy: 'manual',
+        updatePolicy: 'reviewEveryUpdate',
         createdAtMs: 2,
       });
       await expect(readFile(join(next.rootPath, 'plugin.ts'), 'utf8')).resolves.toContain("'two'");
@@ -437,7 +435,7 @@ describe('immutable plugin generation store', () => {
         sourceRootPath,
         manifestRelativePath: '.happier-plugin/plugin.json',
         distribution: { kind: 'localPath', canonicalPath: sourceRootPath },
-        updatePolicy: 'manual',
+        updatePolicy: 'reviewEveryUpdate',
         createdAtMs: 1,
         immutableGenerationId: 'generation-structural-read',
       });
@@ -494,7 +492,7 @@ describe('immutable plugin generation store', () => {
         sourceRootPath,
         manifestRelativePath: '.happier-plugin/plugin.json',
         distribution: { kind: 'localPath', canonicalPath: sourceRootPath },
-        updatePolicy: 'manual',
+        updatePolicy: 'reviewEveryUpdate',
         createdAtMs: 1,
         immutableGenerationId: 'generation-owned-cleanup',
       });
@@ -525,7 +523,7 @@ describe('immutable plugin generation store', () => {
         sourceRootPath,
         manifestRelativePath: '.happier-plugin/plugin.json',
         distribution: { kind: 'localPath', canonicalPath: sourceRootPath },
-        updatePolicy: 'manual',
+        updatePolicy: 'reviewEveryUpdate',
         createdAtMs: 1,
         immutableGenerationId: 'generation-owned-cleanup',
       })).rejects.toThrow(/already exists/i);
@@ -543,7 +541,7 @@ describe('immutable plugin generation store', () => {
         sourceRootPath,
         manifestRelativePath: '.happier-plugin/plugin.json',
         distribution: { kind: 'localPath', canonicalPath: sourceRootPath },
-        updatePolicy: 'manual',
+        updatePolicy: 'reviewEveryUpdate',
         createdAtMs: 2,
         immutableGenerationId: 'generation-owned-adopted',
       });
@@ -580,7 +578,7 @@ describe('immutable plugin generation store', () => {
           sourceRootPath,
           manifestRelativePath: '.happier-plugin/plugin.json',
           distribution: { kind: 'localPath', canonicalPath: sourceRootPath },
-          updatePolicy: 'manual',
+          updatePolicy: 'reviewEveryUpdate',
           createdAtMs: 1,
           immutableGenerationId: 'generation-write-isolation-g',
         }),
@@ -593,7 +591,7 @@ describe('immutable plugin generation store', () => {
           sourceRootPath,
           manifestRelativePath: '.happier-plugin/plugin.json',
           distribution: { kind: 'localPath', canonicalPath: sourceRootPath },
-          updatePolicy: 'manual',
+          updatePolicy: 'reviewEveryUpdate',
           createdAtMs: 2,
           immutableGenerationId: 'generation-write-isolation-h',
         }),
@@ -624,7 +622,7 @@ describe('immutable plugin generation store', () => {
         sourceRootPath,
         manifestRelativePath: '.happier-plugin/plugin.json',
         distribution,
-        updatePolicy: 'manual',
+        updatePolicy: 'reviewEveryUpdate',
         createdAtMs: 1,
         immutableGenerationId,
       });
@@ -675,7 +673,7 @@ describe('immutable plugin generation store', () => {
         sourceRootPath,
         manifestRelativePath: '.happier-plugin/plugin.json',
         distribution: { kind: 'localPath', canonicalPath: sourceRootPath },
-        updatePolicy: 'manual',
+        updatePolicy: 'reviewEveryUpdate',
         createdAtMs: 1,
         immutableGenerationId: 'generation-opaque-record',
       })).resolves.toEqual({
@@ -723,7 +721,7 @@ describe('immutable plugin generation store', () => {
         sourceRootPath,
         manifestRelativePath: '.happier-plugin/plugin.json',
         distribution: { kind: 'localPath', canonicalPath: sourceRootPath },
-        updatePolicy: 'manual',
+        updatePolicy: 'reviewEveryUpdate',
         createdAtMs: 1,
         immutableGenerationId: 'generation-development-g',
       });
@@ -752,7 +750,7 @@ describe('immutable plugin generation store', () => {
         manifestRelativePath: '.happier-plugin/plugin.json',
         generatedManifestContents: '{}',
         distribution: { kind: 'localPath', canonicalPath: sourceRootPath },
-        updatePolicy: 'manual',
+        updatePolicy: 'reviewEveryUpdate',
         createdAtMs: 2,
       });
 
@@ -828,7 +826,7 @@ describe('immutable plugin generation store', () => {
         sourceRootPath,
         manifestRelativePath: '.happier-plugin/plugin.json',
         distribution: { kind: 'localPath', canonicalPath: sourceRootPath },
-        updatePolicy: 'manual',
+        updatePolicy: 'reviewEveryUpdate',
         createdAtMs: 1,
       });
 
@@ -869,7 +867,7 @@ describe('immutable plugin generation store', () => {
           kind: 'localPath',
           canonicalPath: sourceRootPath,
         },
-        updatePolicy: 'manual',
+        updatePolicy: 'reviewEveryUpdate',
         createdAtMs: 1,
       });
       const record = {
@@ -1911,7 +1909,7 @@ describe('immutable plugin generation store', () => {
                 manifestPath: '/tmp/acme-plugin/.happier-plugin/plugin.json',
               },
               compatibility: { status: 'compatible', diagnostics: [] },
-              install: { mode: 'link', manifestVersion: '1.0.0', updatePolicy: 'manual' },
+              install: { mode: 'link', manifestVersion: '1.0.0', updatePolicy: 'reviewEveryUpdate' },
               state: { enabled: false },
             },
           },
@@ -2371,7 +2369,7 @@ describe('immutable plugin generation store', () => {
       sourceRootPath,
       manifestRelativePath: 'plugin.js',
       distribution: { kind: 'localPath', canonicalPath: sourceRootPath },
-      updatePolicy: 'manual',
+      updatePolicy: 'reviewEveryUpdate',
       createdAtMs: 1,
       immutableGenerationId: generationId,
     });

@@ -314,8 +314,10 @@ describe("plugin Account data erasure", () => {
             declarativeSettings: { status: "tombstoned", revision: 8 },
             collections: {
                 tombstonedRowCount: 2,
+                scrubbedHistoricalTombstoneContentCount: 1,
                 deletedProjectionCount: 2,
                 deletedIndexEntryCount: 2,
+                resetIndexStateCount: 1,
                 retiredRelationCount: 1,
             },
         });
@@ -390,8 +392,10 @@ describe("plugin Account data erasure", () => {
             declarativeSettings: { status: "already-tombstoned", revision: 8 },
             collections: {
                 tombstonedRowCount: 0,
+                scrubbedHistoricalTombstoneContentCount: 0,
                 deletedProjectionCount: 0,
                 deletedIndexEntryCount: 0,
+                resetIndexStateCount: 0,
                 retiredRelationCount: 0,
             },
         });

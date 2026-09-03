@@ -5,7 +5,12 @@ import { join } from 'node:path';
 import type { MarketplaceIndexQueryResultV1, MarketplaceIndexSourceSnapshotV1 } from '@happier-dev/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createMarketplaceIndexService, projectMarketplaceArtifactAccess } from './service';
+import { resolveExactMarketplaceListingForInstall } from './exactInstall';
+import {
+  COMMUNITY_NPM_MARKETPLACE_SOURCE,
+  createMarketplaceIndexService,
+  projectMarketplaceArtifactAccess,
+} from './service';
 import { createMarketplaceSourceRegistryStore } from './sources/store';
 import { createNpmRegistryProfileService } from '@/plugins/distribution/npm/profiles/service';
 
@@ -27,10 +32,23 @@ function snapshot(sourceUrl: string, pluginId: string): MarketplaceIndexSourceSn
       compatibility: { happier: '>=1', platforms: ['linux'] },
       summary: { contributions: [], requiredHostAccess: [], optionalHostAccess: [], executableRealms: ['daemon'] },
       review: { status: 'approved', reviewedAt: '2026-07-13T00:00:00.000Z' },
-      categories: [], media: [], updatePolicy: 'curated-auto', links: {},
+      categories: [], media: [], updatePolicy: 'reviewSensitiveChanges', links: {},
     }],
     diagnostics: [],
   };
+}
+
+function communityEntries(count: number): MarketplaceIndexSourceSnapshotV1['entries'] {
+  return Array.from({ length: count }, (_, index) => {
+    const suffix = String(index).padStart(2, '0');
+    const entry = snapshot(COMMUNITY_NPM_MARKETPLACE_SOURCE.sourceUrl, `acme.community-${suffix}`).entries[0]!;
+    return {
+      ...entry,
+      distribution: { ...entry.distribution, packageName: `@acme/community-${suffix}` },
+      review: { status: 'unreviewed' as const, reviewedAt: null },
+      updatePolicy: 'reviewEveryUpdate' as const,
+    };
+  });
 }
 
 describe('createMarketplaceIndexService', () => {
@@ -78,6 +96,276 @@ describe('createMarketplaceIndexService', () => {
     expect(rebound.revision).not.toBe(first.revision);
   });
 
+  it('selects source ids and kinds before acquisition and keeps the selected duplicate distribution visible', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'happier-marketplace-service-'));
+    homes.push(home);
+    const store = createMarketplaceSourceRegistryStore({ happyHomeDir: home });
+    const curated = (await store.read()).sources[0]!;
+    const user = await store.upsertSource({
+      sourceUrl: 'https://catalog.example/user.json',
+      title: 'Selected user source',
+      origin: 'user',
+    });
+    const loadedSourceIds: string[] = [];
+    const service = createMarketplaceIndexService({
+      happyHomeDir: home,
+      loadSource: async ({ source }) => {
+        loadedSourceIds.push(source.id);
+        const document = snapshot(source.sourceUrl, 'acme.shared');
+        document.source = {
+          id: source.id,
+          title: source.title,
+          kind: source.kind,
+          sourceUrl: source.sourceUrl,
+        };
+        if (source.kind !== 'curated') {
+          document.entries[0]!.review = { status: 'unreviewed', reviewedAt: null };
+          document.entries[0]!.updatePolicy = 'reviewEveryUpdate';
+        }
+        return document;
+      },
+    });
+
+    const selected = await service.query({
+      text: '',
+      cursor: null,
+      limit: 50,
+      filters: { sourceIds: [user.id], includeUnavailable: true },
+    });
+
+    expect(loadedSourceIds).toEqual([user.id]);
+    expect(loadedSourceIds).not.toContain(curated.id);
+    expect(loadedSourceIds).not.toContain(COMMUNITY_NPM_MARKETPLACE_SOURCE.id);
+    expect(selected.items).toMatchObject([{
+      pluginId: 'acme.shared',
+      source: { id: user.id, kind: 'user' },
+    }]);
+    expect(selected.sources).toMatchObject([{
+      source: { id: user.id, kind: 'user' },
+    }]);
+    expect(selected.diagnostics).toEqual([]);
+
+    loadedSourceIds.length = 0;
+    const selectedKind = await service.querySources(
+      { text: '', cursor: null, limit: 50, filters: { sourceKinds: ['user'], includeUnavailable: true } },
+      [curated, user, COMMUNITY_NPM_MARKETPLACE_SOURCE],
+    );
+    expect(loadedSourceIds).toEqual([user.id]);
+    expect(selectedKind.items).toMatchObject([{
+      pluginId: 'acme.shared',
+      source: { id: user.id, kind: 'user' },
+    }]);
+    expect(selectedKind.sources).toMatchObject([{
+      source: { id: user.id, kind: 'user' },
+    }]);
+    expect(selectedKind.diagnostics).toEqual([]);
+  });
+
+  it('keeps one Community npm query revision across pages and changes it for a different query', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'happier-marketplace-service-'));
+    homes.push(home);
+    const queries: unknown[] = [];
+    const entries = communityEntries(60);
+    const service = createMarketplaceIndexService({
+      happyHomeDir: home,
+      loadSource: async ({ source, query }) => {
+        queries.push(query);
+        const from = query?.from ?? 0;
+        const size = query?.size ?? 100;
+        return {
+          source,
+          freshness: { state: 'fresh', fetchedAtMs: 1 },
+          entries: entries.slice(from, from + size),
+          diagnostics: [],
+          communityNpmPage: { from, size, returned: Math.min(size, entries.length - from), total: entries.length },
+        };
+      },
+    });
+
+    const first = await service.querySources(
+      { text: '', cursor: null, limit: 50, filters: {} },
+      [COMMUNITY_NPM_MARKETPLACE_SOURCE],
+    );
+    const second = await service.querySources(
+      { text: '', cursor: first.nextCursor, limit: 50, filters: {} },
+      [COMMUNITY_NPM_MARKETPLACE_SOURCE],
+    );
+    const differentQuery = await service.querySources(
+      { text: 'different', cursor: null, limit: 50, filters: {} },
+      [COMMUNITY_NPM_MARKETPLACE_SOURCE],
+    );
+
+    expect(first.items).toHaveLength(50);
+    expect(first.nextCursor).not.toBeNull();
+    expect(second.items).toHaveLength(10);
+    expect(second.nextCursor).toBeNull();
+    expect(second.revision).toBe(first.revision);
+    expect(differentQuery.revision).not.toBe(first.revision);
+    expect(new Set([...first.items, ...second.items].map((item) => item.pluginId)).size).toBe(60);
+    expect(queries).toEqual([
+      { text: '', from: 0, size: 50 },
+      { text: '', from: 50, size: 50 },
+      { text: 'different', from: 0, size: 50 },
+    ]);
+  });
+
+  it('returns a changed-revision continuation after the selected source profile binding changes', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'happier-marketplace-service-'));
+    homes.push(home);
+    const store = createMarketplaceSourceRegistryStore({ happyHomeDir: home });
+    const privateSource = await store.upsertSource({
+      sourceUrl: 'https://catalog.example/private.json',
+      title: 'Private',
+      origin: 'user',
+      registryProfileId: 'registry_one',
+    });
+    const entries = communityEntries(60);
+    const service = createMarketplaceIndexService({
+      happyHomeDir: home,
+      loadSource: async ({ source, query }) => {
+        if (source.kind !== 'community-npm') {
+          return {
+            source,
+            freshness: { state: 'fresh', fetchedAtMs: 1 },
+            entries: [],
+            diagnostics: [],
+          };
+        }
+        const from = query?.from ?? 0;
+        const size = query?.size ?? 100;
+        const pageEntries = entries.slice(from, from + size);
+        return {
+          source,
+          freshness: { state: 'fresh', fetchedAtMs: 1 },
+          entries: pageEntries,
+          diagnostics: [],
+          communityNpmPage: { from, size, returned: pageEntries.length, total: entries.length },
+        };
+      },
+    });
+
+    const first = await service.query({ text: '', cursor: null, limit: 50, filters: {} });
+    expect(first.nextCursor).not.toBeNull();
+    await store.setSourceRegistryProfile(privateSource.id, 'registry_two');
+
+    const rebound = await service.query({ text: '', cursor: first.nextCursor, limit: 50, filters: {} });
+
+    // This is the daemon response shape consumed by Discover's existing
+    // revision guard: it can discard the page and clear its cursor instead of
+    // turning an authority change into an invalid-request failure.
+    expect(rebound.revision).not.toBe(first.revision);
+  });
+
+  it('keeps a Community continuation revision stable when an unbound registry profile changes', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'happier-marketplace-service-'));
+    homes.push(home);
+    const entries = communityEntries(60);
+    const service = createMarketplaceIndexService({
+      happyHomeDir: home,
+      loadSource: async ({ source, query }) => {
+        const from = query?.from ?? 0;
+        const size = query?.size ?? 100;
+        const pageEntries = entries.slice(from, from + size);
+        return {
+          source,
+          freshness: { state: 'fresh', fetchedAtMs: 1 },
+          entries: pageEntries,
+          diagnostics: [],
+          communityNpmPage: { from, size, returned: pageEntries.length, total: entries.length },
+        };
+      },
+    });
+
+    const first = await service.querySources(
+      { text: '', cursor: null, limit: 50, filters: {} },
+      [COMMUNITY_NPM_MARKETPLACE_SOURCE],
+    );
+    expect(first.nextCursor).not.toBeNull();
+
+    const profileMutation = await createNpmRegistryProfileService({ happyHomeDir: home }).mutate({
+      action: 'add',
+      machineId: 'machine-1',
+      expectedRevision: 0,
+      mutationId: 'mutation-unrelated-profile',
+      profileId: 'unrelated',
+      profile: {
+        displayName: 'Unrelated registry',
+        origin: 'https://registry.unrelated.example',
+        scopes: ['@unrelated'],
+        useAsDefault: false,
+        allowPrivateNetwork: false,
+      },
+    });
+    expect(profileMutation.status).toBe('success');
+
+    const second = await service.querySources(
+      { text: '', cursor: first.nextCursor, limit: 50, filters: {} },
+      [COMMUNITY_NPM_MARKETPLACE_SOURCE],
+    );
+
+    expect(second.revision).toBe(first.revision);
+  });
+
+  it('targets one source and one plugin instead of walking every discovery page', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'happier-marketplace-service-'));
+    homes.push(home);
+    const store = createMarketplaceSourceRegistryStore({ happyHomeDir: home });
+    const source = await store.upsertSource({ sourceUrl: 'https://catalog.example/user.json', origin: 'user' });
+    const queries: unknown[] = [];
+    const service = createMarketplaceIndexService({
+      happyHomeDir: home,
+      loadSource: async (params) => {
+        queries.push(params.query);
+        return {
+          source: { id: source.id, title: source.title, kind: 'user', sourceUrl: source.sourceUrl },
+          freshness: { state: 'fresh', fetchedAtMs: 1 },
+          entries: [
+            ...snapshot(source.sourceUrl, 'acme.other').entries.map((entry) => ({ ...entry, pluginId: 'acme.other', review: { status: 'unreviewed' as const, reviewedAt: null }, updatePolicy: 'reviewEveryUpdate' as const })),
+            ...snapshot(source.sourceUrl, 'acme.wanted').entries.map((entry) => ({ ...entry, pluginId: 'acme.wanted', review: { status: 'unreviewed' as const, reviewedAt: null }, updatePolicy: 'reviewEveryUpdate' as const })),
+          ],
+          diagnostics: [],
+        };
+      },
+    });
+
+    const exact = await service.queryExactListing({ sourceId: source.id, pluginId: 'acme.wanted', packageName: '@acme/wanted' });
+
+    expect(exact).toMatchObject({ ok: true, source: { id: source.id, origin: 'user' } });
+    // One source load, one item — never a cursor walk over the whole source.
+    expect(queries).toHaveLength(1);
+    expect(queries[0]).toMatchObject({ exactPackageName: '@acme/wanted' });
+    expect(exact.ok && exact.result.items.map((item) => item.pluginId)).toEqual(['acme.wanted']);
+  });
+
+  it('keeps the persisted private-registry binding on an exact user-source listing', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'happier-marketplace-service-'));
+    homes.push(home);
+    const store = createMarketplaceSourceRegistryStore({ happyHomeDir: home });
+    const source = await store.upsertSource({ sourceUrl: 'https://catalog.example/private.json', origin: 'user', registryProfileId: 'registry_private' });
+    const service = createMarketplaceIndexService({
+      happyHomeDir: home,
+      loadSource: async () => ({
+        source: { id: source.id, title: source.title, kind: 'user', sourceUrl: source.sourceUrl },
+        freshness: { state: 'fresh', fetchedAtMs: 1 },
+        entries: snapshot(source.sourceUrl, 'acme.private').entries.map((entry) => ({
+          ...entry, pluginId: 'acme.private', review: { status: 'unreviewed' as const, reviewedAt: null }, updatePolicy: 'reviewEveryUpdate' as const,
+        })),
+        diagnostics: [],
+      }),
+    });
+
+    const exact = await service.queryExactListing({ sourceId: source.id, pluginId: 'acme.private' });
+    expect(exact).toMatchObject({ ok: true, source: { registryProfileId: 'registry_private' } });
+  });
+
+  it('reports a source that no longer exists as install-unavailable rather than resolving another source', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'happier-marketplace-service-'));
+    homes.push(home);
+    await expect(createMarketplaceIndexService({ happyHomeDir: home })
+      .queryExactListing({ sourceId: 'marketplace:missing', pluginId: 'acme.wanted' }))
+      .resolves.toMatchObject({ ok: false, code: 'install_unavailable' });
+  });
+
   it('rejects more than 65 active sources including the built-in community source allowance', async () => {
     const home = await mkdtemp(join(tmpdir(), 'happier-marketplace-service-'));
     homes.push(home);
@@ -118,6 +406,43 @@ describe('createMarketplaceIndexService', () => {
     expect(Buffer.byteLength(message, 'utf8')).toBeLessThanOrEqual(2_048);
   });
 
+  it('keeps concurrent source diagnostics and the revision deterministic across opposite failure settlement orders', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'happier-marketplace-service-'));
+    homes.push(home);
+    const pending = new Map<string, (reason: Error) => void>();
+    const service = createMarketplaceIndexService({
+      happyHomeDir: home,
+      loadSource: async ({ source }) => await new Promise<never>((_resolve, reject) => {
+        pending.set(source.id, reject);
+      }),
+    });
+    const sources = [
+      { id: 'marketplace:first', title: 'First', sourceUrl: 'https://catalog.example/first.json', enabled: true, origin: 'user' as const },
+      { id: 'marketplace:second', title: 'Second', sourceUrl: 'https://catalog.example/second.json', enabled: true, origin: 'user' as const },
+    ];
+
+    const queryWithSettlementOrder = async (order: readonly string[]) => {
+      const query = service.querySources({ filters: {} }, sources);
+      await vi.waitFor(() => expect(pending.size).toBe(2));
+      for (const sourceId of order) {
+        pending.get(sourceId)?.(new Error(`${sourceId} unavailable`));
+      }
+      const result = await query;
+      pending.clear();
+      return result;
+    };
+
+    const reverse = await queryWithSettlementOrder(['marketplace:second', 'marketplace:first']);
+    const forward = await queryWithSettlementOrder(['marketplace:first', 'marketplace:second']);
+
+    expect(reverse.diagnostics.map((diagnostic) => diagnostic.message)).toEqual([
+      'marketplace:first unavailable',
+      'marketplace:second unavailable',
+    ]);
+    expect(forward.diagnostics).toEqual(reverse.diagnostics);
+    expect(forward.revision).toBe(reverse.revision);
+  });
+
   it('does not let a remote catalog select a host-owned private registry profile', () => {
     const entry = snapshot('https://catalog.example/private.json', 'acme.private').entries[0]!;
     const item: MarketplaceIndexQueryResultV1['items'][number] = {
@@ -125,7 +450,7 @@ describe('createMarketplaceIndexService', () => {
       distribution: { ...entry.distribution, registryProfileId: 'profile-private' },
       source: { id: 'marketplace:user', title: 'User', kind: 'user', sourceUrl: 'https://catalog.example/private.json' },
       freshness: { state: 'fresh', fetchedAtMs: 1 },
-      admission: { curatedInstall: 'full-review', curatedUpdate: 'not-applicable', warning: true, mutatesInstalledTrust: false, disablesInstalledCode: false, directNpmRequiresFullReview: true },
+      admission: { install: 'full-review', mutatesInstalledTrust: false, disablesInstalledCode: false, directNpmRequiresFullReview: true },
       artifactAccess: { state: 'unverified-profile', registryProfileId: 'profile-private' },
     };
 
@@ -141,7 +466,7 @@ describe('createMarketplaceIndexService', () => {
       distribution: { ...entry.distribution, registryOrigin: 'https://registry.acme.test' },
       source: { id: 'marketplace:user', title: 'User', kind: 'user', sourceUrl: 'https://catalog.example/private.json' },
       freshness: { state: 'fresh', fetchedAtMs: 1 },
-      admission: { curatedInstall: 'full-review', curatedUpdate: 'not-applicable', warning: true, mutatesInstalledTrust: false, disablesInstalledCode: false, directNpmRequiresFullReview: true },
+      admission: { install: 'full-review', mutatesInstalledTrust: false, disablesInstalledCode: false, directNpmRequiresFullReview: true },
       artifactAccess: { state: 'public', registryProfileId: null },
     };
     expect(projectMarketplaceArtifactAccess(item, []).artifactAccess)
@@ -159,7 +484,7 @@ describe('createMarketplaceIndexService', () => {
       },
       source: { id: 'marketplace:private', title: 'Private', kind: 'curated', sourceUrl: 'https://catalog.example/private.json' },
       freshness: { state: 'fresh', fetchedAtMs: 1 },
-      admission: { curatedInstall: 'allowed', curatedUpdate: 'allowed', warning: false, mutatesInstalledTrust: false, disablesInstalledCode: false, directNpmRequiresFullReview: true },
+      admission: { install: 'full-review', mutatesInstalledTrust: false, disablesInstalledCode: false, directNpmRequiresFullReview: true },
       artifactAccess: { state: 'unverified-profile', registryProfileId: 'catalog-controlled' },
     };
     const source = { ...item.source, enabled: true, origin: 'curated' as const, registryProfileId: 'host-bound' };
@@ -181,6 +506,81 @@ describe('createMarketplaceIndexService', () => {
     expect(projectMarketplaceArtifactAccess(item, [{ ...profile, availability: 'sign_in_required' }], source).artifactAccess.state)
       .toBe('auth-unavailable');
     expect(projectMarketplaceArtifactAccess(item, [], source).artifactAccess.state).toBe('source-removed');
+  });
+
+  it('keeps a tested credential-free bound profile installable instead of demanding a sign-in', () => {
+    const entry = snapshot('https://catalog.example/private.json', 'acme.private').entries[0]!;
+    const item: MarketplaceIndexQueryResultV1['items'][number] = {
+      ...entry,
+      distribution: { ...entry.distribution, registryOrigin: 'https://registry.acme.test' },
+      source: { id: 'marketplace:private', title: 'Private', kind: 'curated', sourceUrl: 'https://catalog.example/private.json' },
+      freshness: { state: 'fresh', fetchedAtMs: 1 },
+      admission: { install: 'full-review', mutatesInstalledTrust: false, disablesInstalledCode: false, directNpmRequiresFullReview: true },
+      artifactAccess: { state: 'public', registryProfileId: null },
+    };
+    const source = { ...item.source, enabled: true, origin: 'curated' as const, registryProfileId: 'host-bound' };
+    // An anonymous internal registry is a supported profile: it references no
+    // credential at all, so the canonical profile projection reports it
+    // `available` rather than `sign_in_required`.
+    const credentialFreeProfile = {
+      profileId: 'host-bound',
+      origin: 'https://registry.acme.test',
+      scopes: ['@acme'],
+      useAsDefault: false,
+      hasCredentials: false,
+      availability: 'available' as const,
+    };
+
+    expect(projectMarketplaceArtifactAccess(item, [credentialFreeProfile], source).artifactAccess)
+      .toEqual({ state: 'available', registryProfileId: 'host-bound' });
+    expect(projectMarketplaceArtifactAccess(
+      item,
+      [{ ...credentialFreeProfile, availability: 'sign_in_required' as const }],
+      source,
+    ).artifactAccess).toEqual({ state: 'auth-unavailable', registryProfileId: 'host-bound' });
+  });
+
+  it('resolves an exact install against a bound registry profile that never stored a credential', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'happier-marketplace-credential-free-'));
+    homes.push(home);
+    const sourceStore = createMarketplaceSourceRegistryStore({ happyHomeDir: home });
+    const seeded = (await sourceStore.read()).sources[0]!;
+    const source = await sourceStore.upsertSource({
+      sourceUrl: seeded.sourceUrl,
+      registryProfileId: 'registry_anonymous',
+    });
+    const profiles = createNpmRegistryProfileService({
+      happyHomeDir: home,
+      probe: async () => ({ status: 'available' }),
+    });
+    await profiles.mutate({
+      action: 'add', machineId: 'machine-1', expectedRevision: 0, mutationId: 'mutation-add-anonymous',
+      profileId: 'registry_anonymous',
+      profile: {
+        displayName: 'Anonymous internal', origin: 'https://registry.acme.test', scopes: ['@acme'],
+        useAsDefault: false, allowPrivateNetwork: false,
+      },
+    });
+    // No `login`: the profile intentionally carries no credential reference.
+    await profiles.mutate({
+      action: 'test', machineId: 'machine-1', expectedRevision: 1, mutationId: 'mutation-test-anonymous',
+      profileId: 'registry_anonymous',
+    });
+    const document = snapshot(source.sourceUrl, 'acme.private');
+    document.source = { id: source.id, title: source.title, kind: 'curated', sourceUrl: source.sourceUrl };
+    document.entries[0]!.distribution.registryOrigin = 'https://registry.acme.test';
+    const service = createMarketplaceIndexService({ happyHomeDir: home, loadSource: async () => document });
+
+    const queried = await service.querySources({ filters: { includeUnavailable: true } }, [source]);
+    expect(queried.items[0]?.artifactAccess)
+      .toEqual({ state: 'available', registryProfileId: 'registry_anonymous' });
+
+    const resolved = await resolveExactMarketplaceListingForInstall({
+      happyHomeDir: home,
+      sourceId: source.id,
+      pluginId: 'acme.private',
+    }, service);
+    expect(resolved).toMatchObject({ ok: true, resolution: { registryProfileId: 'registry_anonymous' } });
   });
 
   it('re-reads the current bound profile and revokes marketplace availability after logout', async () => {

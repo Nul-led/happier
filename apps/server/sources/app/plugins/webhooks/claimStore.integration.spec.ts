@@ -1122,64 +1122,92 @@ describe("plugin webhook claim/lease settlement", () => {
             });
     });
 
-    it("marks one stale head offline before the next claim reaches the eligible target", async () => {
+    it("transitions the stale ordered head and still reaches the eligible target with fixed claim work", async () => {
         await seedDelivery();
-        await db.pluginWebhookDelivery.create({
-            data: {
-                id: "delivery-stale",
-                endpointId: "wh_ep_AAECAwQFBgcICQoLDA0ODw",
-                accountId: "account-claim",
-                routeId: "route-claim",
-                deliveryIdentityDigest: "c".repeat(64),
-                verifierKind: "github_hmac_sha256_v1",
-                targetMachineId: TARGET.materialization.machineId,
-                targetMachineInstallationId: TARGET.machineInstallationId,
-                targetMaterializationId: "materialization-stale",
-                targetPluginId: TARGET.materialization.pluginId,
-                targetPluginVersion: "1.0.0",
-                endpointRevision: 1,
-                endpointWebhookContributionId: "github-events",
-                endpointHandlerActionId: "handle-webhook",
-                endpointSourceInstanceId: "source-claim",
-                payloadKind: "plain",
-                payload: ENVELOPE,
-                payloadBytes: 256n,
-                wireVersion: 1,
-                payloadVersion: 1,
-                state: "queued",
-                nextAttemptAt: new Date(NOW.getTime() - 1_000),
-                metadataDeleteAt: new Date(NOW.getTime() + 97 * 24 * 60 * 60 * 1_000),
-                receivedAt: new Date(NOW.getTime() - 1_000),
-            },
+        const seedStaleDelivery = async (params: Readonly<{
+            id: string;
+            digest: string;
+            materializationId: string;
+            dueOffsetMs: number;
+        }>) => {
+            await db.pluginWebhookDelivery.create({
+                data: {
+                    id: params.id,
+                    endpointId: "wh_ep_AAECAwQFBgcICQoLDA0ODw",
+                    accountId: "account-claim",
+                    routeId: "route-claim",
+                    deliveryIdentityDigest: params.digest.repeat(64),
+                    verifierKind: "github_hmac_sha256_v1",
+                    targetMachineId: TARGET.materialization.machineId,
+                    targetMachineInstallationId: TARGET.machineInstallationId,
+                    targetMaterializationId: params.materializationId,
+                    targetPluginId: TARGET.materialization.pluginId,
+                    targetPluginVersion: "1.0.0",
+                    endpointRevision: 1,
+                    endpointWebhookContributionId: "github-events",
+                    endpointHandlerActionId: "handle-webhook",
+                    endpointSourceInstanceId: "source-claim",
+                    payloadKind: "plain",
+                    payload: ENVELOPE,
+                    payloadBytes: 256n,
+                    wireVersion: 1,
+                    payloadVersion: 1,
+                    state: "queued",
+                    nextAttemptAt: new Date(NOW.getTime() + params.dueOffsetMs),
+                    metadataDeleteAt: new Date(NOW.getTime() + 97 * 24 * 60 * 60 * 1_000),
+                    receivedAt: new Date(NOW.getTime() + params.dueOffsetMs),
+                },
+            });
+        };
+        // Two distinct ineligible target materializations sit ahead of the one
+        // eligible row. The claim must not iterate over all of them: it records
+        // the typed transition for the ordered stale head, then selects the
+        // eligible row from the one Availability-classified target set.
+        await seedStaleDelivery({
+            id: "delivery-stale-a",
+            digest: "c",
+            materializationId: "materialization-stale-a",
+            dueOffsetMs: -2_000,
+        });
+        await seedStaleDelivery({
+            id: "delivery-stale-b",
+            digest: "d",
+            materializationId: "materialization-stale-b",
+            dueOffsetMs: -1_000,
         });
 
-        // One claim examines exactly one due head. It records the stale target's
-        // offline transition and returns none; the next wake then reaches the
-        // eligible exact target behind it.
+        // §6.4: a stale/ineligible selected target receives its typed offline
+        // transition WITHOUT starving an eligible target behind it, while one
+        // claim retains fixed query/write work regardless of stale target count.
         await expect(claimPluginWebhookDeliveryV1({
             accountId: "account-claim",
             machine: MACHINE_CLAIM,
             now: NOW,
             randomBytes: () => new Uint8Array(16).fill(8),
-        })).resolves.toMatchObject({ kind: "none" });
-        await expect(db.pluginWebhookDelivery.findUniqueOrThrow({ where: { id: "delivery-stale" } }))
-            .resolves.toMatchObject({
-                state: "queued",
-                attemptCount: 0,
-                offlineSinceAt: NOW,
-                lastErrorCode: "target_offline",
-            });
-
-        await expect(claimPluginWebhookDeliveryV1({
-            accountId: "account-claim",
-            machine: MACHINE_CLAIM,
-            now: new Date(NOW.getTime() + 5_000),
-            randomBytes: () => new Uint8Array(16).fill(9),
         })).resolves.toMatchObject({
             kind: "delivery",
             deliveryId: "delivery-claim",
             target: TARGET,
             pluginVersion: "1.0.0",
         });
+        await expect(db.pluginWebhookDelivery.findUniqueOrThrow({ where: { id: "delivery-stale-a" } }))
+            .resolves.toMatchObject({
+                state: "queued",
+                attemptCount: 0,
+                offlineSinceAt: NOW,
+                lastErrorCode: "target_offline",
+            });
+        await expect(db.pluginWebhookDelivery.findUniqueOrThrow({ where: { id: "delivery-stale-b" } }))
+            .resolves.toMatchObject({
+                state: "queued",
+                attemptCount: 0,
+                offlineSinceAt: null,
+                lastErrorCode: null,
+            });
+        await expect(db.pluginWebhookDelivery.findUniqueOrThrow({ where: { id: "delivery-claim" } }))
+            .resolves.toMatchObject({
+                state: "claimed",
+                claimedByMachineId: MACHINE_CLAIM.machineId,
+            });
     });
 });

@@ -32,6 +32,7 @@ describe('scaffoldLocalPlugin authoring guidance', () => {
         ), 'utf8'),
         readFile(join(
           repositoryRoot,
+          '.agents',
           'skills',
           'happier-plugin-authoring',
           'SKILL.md',

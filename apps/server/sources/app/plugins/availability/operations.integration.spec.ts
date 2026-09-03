@@ -1625,6 +1625,34 @@ describe("plugin Availability operations", () => {
                 platform: slot.platform,
             },
         })).resolves.toMatchObject({ artifact });
+        // Opaque E2EE bytes remove every archive-shape check the plain path
+        // still applies, so exact Artifact identity plus byte-exact envelope
+        // equality is the whole occupied-slot retry contract here.
+        await expect(service.publishUiArtifact({
+            accountId: ACCOUNT_ID,
+            supportsCurrentStoredContentProtocol: true,
+            input: {
+                release: RELEASE,
+                slot,
+                hostCompatibility: hostedArtifactLinkCompatibility(),
+                artifactId: "00000000-0000-4000-8000-000000000003",
+                artifact,
+            },
+        })).resolves.toMatchObject({
+            outcome: "rejoined",
+            link: { artifactId: "00000000-0000-4000-8000-000000000003" },
+        });
+        await expect(service.publishUiArtifact({
+            accountId: ACCOUNT_ID,
+            supportsCurrentStoredContentProtocol: true,
+            input: {
+                release: RELEASE,
+                slot,
+                hostCompatibility: hostedArtifactLinkCompatibility(),
+                artifactId: "00000000-0000-4000-8000-000000000004",
+                artifact,
+            },
+        })).rejects.toMatchObject({ code: "plugin_ui_artifact_conflict" });
         await expect(service.publishUiArtifact({
             accountId: ACCOUNT_ID,
             supportsCurrentStoredContentProtocol: true,
@@ -1639,6 +1667,8 @@ describe("plugin Availability operations", () => {
                 },
             },
         })).rejects.toMatchObject({ code: "plugin_ui_artifact_conflict" });
+        await expect(db.artifact.count()).resolves.toBe(1);
+        await expect(db.accountPluginUiArtifact.count()).resolves.toBe(1);
         await expect(service.removeUiArtifact({
             accountId: ACCOUNT_ID,
             input: {
@@ -1797,6 +1827,17 @@ describe("plugin Availability operations", () => {
             supportsCurrentStoredContentProtocol: true,
             input: { release: RELEASE, artifactId, artifact },
         })).resolves.toMatchObject({ outcome: "rejoined" });
+        // An occupied link never adopts another proposed Artifact identity for
+        // the same bytes; that would silently repoint the protected archive.
+        await expect(service.publishPackageAsset({
+            accountId: ACCOUNT_ID,
+            supportsCurrentStoredContentProtocol: true,
+            input: {
+                release: RELEASE,
+                artifactId: "00000000-0000-4000-8000-000000000005",
+                artifact,
+            },
+        })).rejects.toMatchObject({ code: "plugin_package_asset_conflict" });
         await expect(service.publishPackageAsset({
             accountId: ACCOUNT_ID,
             supportsCurrentStoredContentProtocol: true,

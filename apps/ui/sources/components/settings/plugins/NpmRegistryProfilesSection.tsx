@@ -5,11 +5,13 @@ import type {
     DaemonNpmRegistryProfileSnapshotV1,
 } from '@happier-dev/protocol/rpc';
 import type { MachineAdministrationTargetV1 } from '@happier-dev/protocol';
-import { NpmRegistryOriginV1Schema, NpmRegistryProfileInputV1Schema } from '@happier-dev/protocol/rpc';
 import type { MarketplaceSourceV1 } from '@happier-dev/protocol/marketplace';
 
+import { DropdownMenu } from '@/components/ui/forms/dropdown/DropdownMenu';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { ItemRowActions } from '@/components/ui/lists/ItemRowActions';
+import { buildActionRowAccessibilityLabel } from '@/components/ui/lists/actionRowAccessibility';
 import { Modal } from '@/modal';
 import { randomUUID } from '@/platform/randomUUID';
 import {
@@ -27,6 +29,8 @@ import {
 import { t } from '@/text';
 import { Icon } from '@/components/ui/icons/Icon';
 
+import { showNpmRegistryProfileEditor } from './NpmRegistryProfileEditor';
+
 type LocalRegistryMutation = DaemonNpmRegistryProfileMutationRequestV1 extends infer TMutation
     ? TMutation extends DaemonNpmRegistryProfileMutationRequestV1
         ? Omit<TMutation, 'machineId' | 'expectedRevision' | 'mutationId'>
@@ -39,6 +43,15 @@ type LoadedSnapshot = Readonly<{
     snapshot: DaemonNpmRegistryProfileSnapshotV1;
 }>;
 
+/**
+ * The "no private registry" choice in a source's binding menu.
+ *
+ * Profile ids are lowercase and non-empty by schema, so the empty string cannot
+ * collide with one; unbinding is a real selectable choice rather than a second
+ * control beside the menu.
+ */
+const UNBOUND_REGISTRY_PROFILE_ID = '';
+
 type NpmRegistryProfilesTargetSelection = Pick<
     MachineAdministrationTargetSelectionV1,
     'selectedTarget' | 'canExecute' | 'resolveExecutionTarget'
@@ -48,7 +61,10 @@ export type NpmRegistryProfilesSectionProps = Readonly<{
     daemonOperationsAvailable: boolean;
     targetSelection: NpmRegistryProfilesTargetSelection;
     marketplaceSources?: readonly MarketplaceSourceV1[];
-    onSetMarketplaceSourceProfile?: (sourceId: string, profileId: string | null) => Promise<void>;
+    onSetMarketplaceSourceProfile?: (
+        sourceId: string,
+        profileId: string | null,
+    ) => Promise<Readonly<{ status: 'success' | 'unavailable' | 'outcomeUnknown' | 'superseded' }>>;
 }>;
 
 export function NpmRegistryProfilesSection({
@@ -78,6 +94,7 @@ export function NpmRegistryProfilesSection({
     const [loadError, setLoadError] = React.useState(false);
     const [busyProfileId, setBusyProfileId] = React.useState<string | null>(null);
     const [busyBindingSourceId, setBusyBindingSourceId] = React.useState<string | null>(null);
+    const [openBindingSourceId, setOpenBindingSourceId] = React.useState<string | null>(null);
     const snapshot = loaded?.selectionKey === selectionKey ? loaded.snapshot : null;
 
     const resolveExactExecutionTarget = React.useCallback((
@@ -160,6 +177,9 @@ export function NpmRegistryProfilesSection({
         bindingInFlightRef.current = false;
         setBusyProfileId(null);
         setBusyBindingSourceId(null);
+        // An open binding menu lists the previous machine's profiles; it must
+        // not survive into a selection those profiles do not belong to.
+        setOpenBindingSourceId(null);
     }, [daemonOperationsAvailable, selectionKey]);
 
     const mutate = React.useCallback(async (
@@ -195,7 +215,29 @@ export function NpmRegistryProfilesSection({
                 setLoaded({ selectionKey: requestedSelection, snapshot: result.snapshot });
                 return;
             }
-            if (result.code === 'revision_conflict') await refresh();
+            if (result.status === 'outcomeUnknown') {
+                await refresh();
+                if (
+                    requestId !== mutationRequestIdRef.current
+                    || !daemonOperationsAvailableRef.current
+                    || !isExecutionTargetCurrent(requestedSelection, executionTarget)
+                ) return;
+                await Modal.alert(
+                    t('settingsPlugins.sourceAdministration.operationOutcomeUnknownTitle'),
+                    t('settingsPlugins.sourceAdministration.operationOutcomeUnknownBody'),
+                );
+                return;
+            }
+            if (result.code === 'revision_conflict') {
+                await refresh();
+                if (
+                    requestId !== mutationRequestIdRef.current
+                    || !daemonOperationsAvailableRef.current
+                    || !isExecutionTargetCurrent(requestedSelection, executionTarget)
+                ) return;
+                await Modal.alert(t('settingsPlugins.registriesConflictTitle'), t('settingsPlugins.registriesConflictBody'));
+                return;
+            }
             await Modal.alert(t('settingsPlugins.registriesErrorTitle'), t('settingsPlugins.registriesErrorBody'));
         } catch {
             if (
@@ -213,93 +255,35 @@ export function NpmRegistryProfilesSection({
         }
     }, [isExecutionTargetCurrent, refresh, resolveExactExecutionTarget, selectedTarget, selectionKey, snapshot, targetSelection.canExecute]);
 
-    const add = React.useCallback(async () => {
+    /**
+     * One form answers the whole profile, then one revisioned mutation sends it.
+     *
+     * Creating and editing differ only in which mutation carries the result, so
+     * they share the form rather than each owning a private question chain that
+     * can drift apart.
+     */
+    const openProfileEditor = React.useCallback(async (current: RegistryProfileView | null) => {
         if (!daemonOperationsAvailableRef.current) return;
-        const origin = (await Modal.prompt(
-            t('settingsPlugins.registriesAddTitle'),
-            t('settingsPlugins.registriesAddOriginBody'),
-            { placeholder: 'https://registry.example.com', confirmText: t('common.next'), cancelText: t('common.cancel') },
-        ))?.trim();
-        if (!origin) return;
-        const parsedOrigin = NpmRegistryOriginV1Schema.safeParse(origin);
-        if (!parsedOrigin.success) {
-            await Modal.alert(t('settingsPlugins.registriesInvalidOriginTitle'), t('settingsPlugins.registriesInvalidOriginBody'));
-            return;
-        }
-        const displayName = (await Modal.prompt(
-            t('settingsPlugins.registriesNameTitle'),
-            t('settingsPlugins.registriesNameBody'),
-            { defaultValue: new URL(parsedOrigin.data).hostname, confirmText: t('common.next'), cancelText: t('common.cancel') },
-        ))?.trim();
-        if (!displayName) return;
-        const scopeInput = (await Modal.prompt(
-            t('settingsPlugins.registriesScopesTitle'),
-            t('settingsPlugins.registriesScopesBody'),
-            { placeholder: t('settingsPlugins.registriesScopesPlaceholder'), confirmText: t('common.add'), cancelText: t('common.cancel') },
-        ))?.trim() ?? '';
-        const useAsDefault = await Modal.confirm(
-            t('settingsPlugins.registriesDefaultTitle'),
-            t('settingsPlugins.registriesDefaultBody'),
-            { confirmText: t('settingsPlugins.registriesUseAsDefault'), cancelText: t('settingsPlugins.registriesScopedOnly') },
-        );
-        const allowPrivateNetwork = await Modal.confirm(
-            t('settingsPlugins.registriesPrivateNetworkTitle'),
-            t('settingsPlugins.registriesPrivateNetworkBody'),
-            { confirmText: t('settingsPlugins.registriesAllowPrivateNetwork'), cancelText: t('settingsPlugins.registriesPublicOnly') },
-        );
-        const profile = NpmRegistryProfileInputV1Schema.safeParse({
-            displayName,
-            origin: parsedOrigin.data,
-            scopes: scopeInput.split(',').map((scope) => scope.trim()).filter(Boolean),
-            useAsDefault,
-            allowPrivateNetwork,
-        });
-        if (!profile.success) {
-            await Modal.alert(t('settingsPlugins.registriesInvalidProfileTitle'), t('settingsPlugins.registriesInvalidProfileBody'));
-            return;
-        }
-        await mutate({
-            action: 'add',
-            profileId: `registry_${randomUUID().replaceAll('-', '_')}`,
-            profile: profile.data,
-        });
-    }, [mutate]);
-
-    const edit = React.useCallback(async (current: RegistryProfileView) => {
-        if (!daemonOperationsAvailableRef.current) return;
-        const displayName = (await Modal.prompt(
-            t('settingsPlugins.registriesNameTitle'),
-            t('settingsPlugins.registriesNameBody'),
-            { defaultValue: current.displayName, confirmText: t('common.next'), cancelText: t('common.cancel') },
-        ))?.trim();
-        if (!displayName) return;
-        const scopeInput = (await Modal.prompt(
-            t('settingsPlugins.registriesScopesTitle'),
-            t('settingsPlugins.registriesScopesBody'),
-            { defaultValue: current.scopes.join(', '), confirmText: t('common.next'), cancelText: t('common.cancel') },
-        ))?.trim() ?? '';
-        const useAsDefault = await Modal.confirm(
-            t('settingsPlugins.registriesDefaultTitle'),
-            t('settingsPlugins.registriesDefaultBody'),
-            { confirmText: t('settingsPlugins.registriesUseAsDefault'), cancelText: t('settingsPlugins.registriesScopedOnly') },
-        );
-        const allowPrivateNetwork = await Modal.confirm(
-            t('settingsPlugins.registriesPrivateNetworkTitle'),
-            t('settingsPlugins.registriesPrivateNetworkBody'),
-            { confirmText: t('settingsPlugins.registriesAllowPrivateNetwork'), cancelText: t('settingsPlugins.registriesPublicOnly') },
-        );
-        const profile = NpmRegistryProfileInputV1Schema.safeParse({
-            displayName,
-            origin: current.origin,
-            scopes: scopeInput.split(',').map((scope) => scope.trim()).filter(Boolean),
-            useAsDefault,
-            allowPrivateNetwork,
-        });
-        if (!profile.success) {
-            await Modal.alert(t('settingsPlugins.registriesInvalidProfileTitle'), t('settingsPlugins.registriesInvalidProfileBody'));
-            return;
-        }
-        await mutate({ action: 'update', profileId: current.profileId, profile: profile.data });
+        const profile = await showNpmRegistryProfileEditor(current === null
+            ? { mode: 'create' }
+            : {
+                mode: 'edit',
+                subject: {
+                    displayName: current.displayName,
+                    origin: current.origin,
+                    scopes: current.scopes,
+                    useAsDefault: current.useAsDefault,
+                    allowPrivateNetwork: current.allowPrivateNetwork,
+                },
+            });
+        if (!profile) return;
+        await mutate(current === null
+            ? {
+                action: 'add',
+                profileId: `registry_${randomUUID().replaceAll('-', '_')}`,
+                profile,
+            }
+            : { action: 'update', profileId: current.profileId, profile });
     }, [mutate]);
 
     const login = React.useCallback(async (profileId: string) => {
@@ -338,7 +322,20 @@ export function NpmRegistryProfilesSection({
         bindingInFlightRef.current = true;
         setBusyBindingSourceId(sourceId);
         try {
-            await onSetMarketplaceSourceProfile(sourceId, profileId);
+            const settlement = await onSetMarketplaceSourceProfile(sourceId, profileId);
+            if (
+                requestId !== bindingRequestIdRef.current
+                || !daemonOperationsAvailableRef.current
+                || !isExecutionTargetCurrent(requestedSelection, executionTarget)
+            ) return;
+            if (settlement.status === 'outcomeUnknown') {
+                await Modal.alert(
+                    t('settingsPlugins.sourceAdministration.operationOutcomeUnknownTitle'),
+                    t('settingsPlugins.sourceAdministration.operationOutcomeUnknownBody'),
+                );
+            } else if (settlement.status === 'unavailable') {
+                await Modal.alert(t('settingsPlugins.registriesErrorTitle'), t('settingsPlugins.registriesErrorBody'));
+            }
         } catch {
             if (
                 requestId !== bindingRequestIdRef.current
@@ -359,7 +356,7 @@ export function NpmRegistryProfilesSection({
                 testID="settings.plugins.registries.add"
                 title={t('settingsPlugins.registriesAdd')}
                 icon={<Icon name="plus-circle" size={29} color={theme.colors.accent.blue} />}
-                onPress={() => { void add(); }}
+                onPress={() => { void openProfileEditor(null); }}
                 disabled={!daemonOperationsAvailable || !targetSelection.canExecute || loading || busyProfileId !== null}
                 showChevron={false}
             />
@@ -383,62 +380,86 @@ export function NpmRegistryProfilesSection({
             {snapshot && snapshot.profiles.length === 0 && snapshot.pausedSources.length === 0 ? (
                 <Item testID="settings.plugins.registries.empty" title={t('settingsPlugins.registriesEmpty')} mode="info" showChevron={false} />
             ) : null}
+            {/*
+              * One profile is one row. Edit, sign in or out, test and remove all
+              * act on that same record, so they belong to its row rather than to
+              * four look-alike rows a reader has to keep attributing back to the
+              * profile above them — and that a screen reader traverses as five
+              * separate list entries for one registry.
+              */}
             {snapshot?.profiles.map((profile) => {
                 const busy = busyProfileId === profile.profileId;
                 const mutationsDisabled = !daemonOperationsAvailable || !targetSelection.canExecute || busyProfileId !== null;
                 const status = t(`settingsPlugins.registriesAvailability.${profile.availability}`);
+                const credentialAction = profile.hasCredentials
+                    ? {
+                        id: 'logout',
+                        title: t('settingsPlugins.registriesLogout'),
+                        icon: 'sign-out' as const,
+                        inlineTestID: `settings.plugins.registries.logout.${profile.profileId}`,
+                        onPress: () => { void mutate({ action: 'logout', profileId: profile.profileId }); },
+                    }
+                    : {
+                        id: 'login',
+                        title: t('settingsPlugins.registriesLogin'),
+                        icon: 'sign-in' as const,
+                        inlineTestID: `settings.plugins.registries.login.${profile.profileId}`,
+                        onPress: () => { void login(profile.profileId); },
+                    };
+                const actions = [
+                    {
+                        id: 'edit',
+                        title: t('settingsPlugins.registriesEdit'),
+                        icon: 'pencil-simple' as const,
+                        inlineTestID: `settings.plugins.registries.edit.${profile.profileId}`,
+                        onPress: () => { void openProfileEditor(profile); },
+                    },
+                    credentialAction,
+                    {
+                        id: 'test',
+                        title: t('settingsPlugins.registriesTest'),
+                        icon: 'checks' as const,
+                        inlineTestID: `settings.plugins.registries.test.${profile.profileId}`,
+                        onPress: () => { void mutate({ action: 'test', profileId: profile.profileId }); },
+                    },
+                    {
+                        id: 'remove',
+                        title: t('settingsPlugins.registriesRemove'),
+                        icon: 'trash' as const,
+                        destructive: true,
+                        inlineTestID: `settings.plugins.registries.remove.${profile.profileId}`,
+                        onPress: () => { void remove(profile.profileId, profile.displayName); },
+                    },
+                ].map((action) => ({
+                    ...action,
+                    // Icon controls repeat across profiles, so each one names the
+                    // profile it acts on instead of only what it does.
+                    accessibilityLabel: buildActionRowAccessibilityLabel([action.title, profile.displayName]),
+                    disabled: mutationsDisabled,
+                }));
                 return (
-                    <React.Fragment key={profile.profileId}>
-                        <Item
-                            testID={`settings.plugins.registries.profile.${profile.profileId}`}
-                            title={profile.displayName}
-                            subtitle={`${profile.origin} · ${status}`}
-                            mode="info"
-                            showChevron={false}
-                        />
-                        <Item
-                            testID={`settings.plugins.registries.edit.${profile.profileId}`}
-                            title={t('settingsPlugins.registriesEdit')}
-                            onPress={() => { void edit(profile); }}
-                            disabled={mutationsDisabled}
-                            showChevron={false}
-                        />
-                        {!profile.hasCredentials ? (
-                            <Item
-                                testID={`settings.plugins.registries.login.${profile.profileId}`}
-                                title={t('settingsPlugins.registriesLogin')}
-                                onPress={() => { void login(profile.profileId); }}
-                                disabled={mutationsDisabled}
-                                loading={busy}
-                                showChevron={false}
-                            />
-                        ) : (
-                            <Item
-                                testID={`settings.plugins.registries.logout.${profile.profileId}`}
-                                title={t('settingsPlugins.registriesLogout')}
-                                onPress={() => { void mutate({ action: 'logout', profileId: profile.profileId }); }}
-                                disabled={mutationsDisabled}
-                                loading={busy}
-                                showChevron={false}
+                    <Item
+                        key={profile.profileId}
+                        testID={`settings.plugins.registries.profile.${profile.profileId}`}
+                        title={profile.displayName}
+                        subtitle={`${profile.origin} · ${status}`}
+                        subtitleLines={0}
+                        icon={<Icon name="key" size={29} color={theme.colors.text.secondary} />}
+                        mode="info"
+                        showChevron={false}
+                        // Progress belongs to the record being mutated, not to
+                        // whichever control started it.
+                        loading={busy}
+                        rightElementOutsidePressable
+                        rightElement={(
+                            <ItemRowActions
+                                title={profile.displayName}
+                                compactActionIds={[profile.hasCredentials ? 'edit' : 'login']}
+                                overflowTriggerTestID={`settings.plugins.registries.profile.${profile.profileId}.actions.overflow`}
+                                actions={actions}
                             />
                         )}
-                        <Item
-                            testID={`settings.plugins.registries.test.${profile.profileId}`}
-                            title={t('settingsPlugins.registriesTest')}
-                            onPress={() => { void mutate({ action: 'test', profileId: profile.profileId }); }}
-                            disabled={mutationsDisabled}
-                            loading={busy}
-                            showChevron={false}
-                        />
-                        <Item
-                            testID={`settings.plugins.registries.remove.${profile.profileId}`}
-                            title={t('settingsPlugins.registriesRemove')}
-                            onPress={() => { void remove(profile.profileId, profile.displayName); }}
-                            disabled={mutationsDisabled}
-                            destructive
-                            showChevron={false}
-                        />
-                    </React.Fragment>
+                    />
                 );
             })}
             {snapshot && marketplaceSources.length > 0 ? (
@@ -449,6 +470,14 @@ export function NpmRegistryProfilesSection({
                     showChevron={false}
                 />
             ) : null}
+            {/*
+              * A source's registry is one choice, so it is one row with a
+              * selection menu. Listing every source against every profile made
+              * the pane grow multiplicatively — and still could not express
+              * "use a different profile" without unbinding first, because the
+              * bound state hid the alternatives instead of marking the current
+              * one among them.
+              */}
             {snapshot ? marketplaceSources.map((source) => {
                 const boundProfile = source.registryProfileId
                     ? snapshot.profiles.find((profile) => profile.profileId === source.registryProfileId) ?? null
@@ -459,37 +488,63 @@ export function NpmRegistryProfilesSection({
                     || busyProfileId !== null
                     || busyBindingSourceId !== null;
                 return (
-                    <React.Fragment key={`marketplace-binding:${source.id}`}>
-                        <Item
-                            testID={`settings.plugins.registries.marketplaceSource.${source.id}`}
-                            title={source.title}
-                            subtitle={boundProfile
-                                ? `${boundProfile.displayName} · ${boundProfile.origin}`
-                                : source.registryProfileId ?? source.sourceUrl}
-                            mode="info"
-                            showChevron={false}
-                        />
-                        {source.registryProfileId ? (
+                    <DropdownMenu
+                        key={`marketplace-binding:${source.id}`}
+                        testID={`settings.plugins.registries.marketplaceBinding.${source.id}`}
+                        open={openBindingSourceId === source.id}
+                        onOpenChange={(next) => setOpenBindingSourceId(next ? source.id : null)}
+                        variant="selectable"
+                        rowKind="item"
+                        showCategoryTitles={false}
+                        matchTriggerWidth
+                        connectToTrigger
+                        selectedId={source.registryProfileId ?? UNBOUND_REGISTRY_PROFILE_ID}
+                        trigger={({ open, toggle }) => (
                             <Item
-                                testID={`settings.plugins.registries.unbind.${source.id}`}
-                                title={t('settingsPlugins.registriesMarketplaceUnbind', { source: source.title })}
-                                onPress={() => { void setMarketplaceBinding(source.id, null); }}
+                                testID={`settings.plugins.registries.marketplaceSource.${source.id}`}
+                                title={source.title}
+                                subtitle={boundProfile
+                                    ? `${boundProfile.displayName} · ${boundProfile.origin}`
+                                    : source.registryProfileId ?? source.sourceUrl}
+                                subtitleLines={0}
+                                icon={<Icon name="globe" size={29} color={theme.colors.text.secondary} />}
+                                rightElement={(
+                                    <Icon
+                                        name={open ? 'caret-up' : 'caret-down'}
+                                        size={16}
+                                        color={theme.colors.text.secondary}
+                                    />
+                                )}
+                                onPress={toggle}
                                 disabled={bindingDisabled}
                                 loading={busyBindingSourceId === source.id}
+                                accessibilityExpanded={open}
                                 showChevron={false}
                             />
-                        ) : snapshot.profiles.map((profile) => (
-                            <Item
-                                key={`bind:${source.id}:${profile.profileId}`}
-                                testID={`settings.plugins.registries.bind.${source.id}.${profile.profileId}`}
-                                title={t('settingsPlugins.registriesMarketplaceBind', { profile: profile.displayName, source: source.title })}
-                                onPress={() => { void setMarketplaceBinding(source.id, profile.profileId); }}
-                                disabled={bindingDisabled}
-                                loading={busyBindingSourceId === source.id}
-                                showChevron={false}
-                            />
-                        ))}
-                    </React.Fragment>
+                        )}
+                        items={[
+                            {
+                                id: UNBOUND_REGISTRY_PROFILE_ID,
+                                testID: `settings.plugins.registries.unbind.${source.id}`,
+                                title: t('settingsPlugins.registriesMarketplaceUnbind', { source: source.title }),
+                            },
+                            ...snapshot.profiles.map((profile) => ({
+                                id: profile.profileId,
+                                testID: `settings.plugins.registries.bind.${source.id}.${profile.profileId}`,
+                                title: t('settingsPlugins.registriesMarketplaceBind', {
+                                    profile: profile.displayName,
+                                    source: source.title,
+                                }),
+                                subtitle: profile.origin,
+                            })),
+                        ]}
+                        onSelect={(profileId) => {
+                            void setMarketplaceBinding(
+                                source.id,
+                                profileId === UNBOUND_REGISTRY_PROFILE_ID ? null : profileId,
+                            );
+                        }}
+                    />
                 );
             }) : null}
             {snapshot?.pausedSources.map((source) => (

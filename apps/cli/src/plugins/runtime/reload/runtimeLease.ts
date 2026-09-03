@@ -34,7 +34,7 @@ export async function acquireAuthoritativePluginRuntimeRegistryLease(params?: Re
         || params.happyHomeDir === configuration.happyHomeDir;
     const controller = params?.controller
         ?? (shouldUseSingletonController ? pluginReloadController : null);
-    const lease = controller?.tryAcquireRuntimeRegistry?.() ?? null;
+    const lease = controller?.tryAcquireRuntimeRegistry() ?? null;
     if (lease) {
         return lease;
     }
@@ -54,5 +54,5 @@ export function tryAcquireAuthoritativePluginRuntimeRegistryLease(params?: Reado
         || params.happyHomeDir === configuration.happyHomeDir;
     const controller = params?.controller
         ?? (shouldUseSingletonController ? pluginReloadController : null);
-    return controller?.tryAcquireRuntimeRegistry?.() ?? null;
+    return controller?.tryAcquireRuntimeRegistry() ?? null;
 }

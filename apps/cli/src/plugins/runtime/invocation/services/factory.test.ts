@@ -599,7 +599,10 @@ describe('unavailable plugin invocation services factory', () => {
                 declarationsByPluginId: new Map(),
                 activePluginIds: new Set<string>(),
             },
-            http: createStablePluginHttpHost({ adapter }),
+            http: createStablePluginHttpHost({
+                adapter,
+                resolveNetworkAddresses: async () => ['93.184.216.34'],
+            }),
         })(seed, binding);
 
         expect(services.availability('http')).toEqual({ status: 'available' });

@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
+import { resolveEffectivePluginCollectionLimitsV1 } from '@happier-dev/protocol';
+
 import {
     findPluginCollectionActivationQuotaIncompatibility,
     findPluginCollectionBatchQuotaIncompatibility,
+    findPluginCollectionDeclaredQuotaIncompatibility,
     findPluginCollectionMutationQuotaIncompatibility,
-    resolvePluginCollectionEffectiveQuotaLimits,
 } from './quota';
 
 const deployment = {
@@ -16,36 +18,74 @@ const deployment = {
 };
 
 describe('Plugin Collection quota policy', () => {
-    it('uses deployment Account ceilings as per-collection upper bounds while retaining a narrower declaration', () => {
-        expect(resolvePluginCollectionEffectiveQuotaLimits({
-            deployment,
-            quota: undefined,
-        })).toEqual({
-            maxRowEncodedBytes: 512 * 1024,
-            maxRows: 10_000,
-            maxCollectionEncodedBytes: 256 * 1024 * 1024,
-            maxBatchRows: 100,
-            maxBatchBytes: 16 * 1024 * 1024,
-            maxAccountRows: 10_000,
-            maxAccountBytes: 256 * 1024 * 1024,
-        });
-
-        expect(resolvePluginCollectionEffectiveQuotaLimits({
-            deployment,
-            quota: {
-                maxRowEncodedBytes: 400 * 1024,
-                maxRows: 1_000,
-                maxCollectionEncodedBytes: 64 * 1024 * 1024,
-            },
-        })).toEqual({
+    it('enforces exactly the per-collection ceilings the Protocol owner composes for a writer', () => {
+        // The numbers a plugin plans against come from this one Protocol owner;
+        // enforcement must not re-derive them, or a writer can plan against a
+        // ceiling this server does not apply.
+        const quota = {
             maxRowEncodedBytes: 400 * 1024,
             maxRows: 1_000,
             maxCollectionEncodedBytes: 64 * 1024 * 1024,
-            maxBatchRows: 100,
-            maxBatchBytes: 16 * 1024 * 1024,
-            maxAccountRows: 10_000,
-            maxAccountBytes: 256 * 1024 * 1024,
+        };
+        const planned = resolveEffectivePluginCollectionLimitsV1({ deployment, quota });
+        const activationUsage = (rows: number, encodedBytes: number, maximumRowEncodedBytes: number) => ({
+            rows,
+            encodedBytes,
+            collections: new Map([[
+                'example.tasks\u0000tasks',
+                { rows, encodedBytes, maximumRowEncodedBytes },
+            ]]),
+            contracts: new Map(),
         });
+        const activation = (usage: ReturnType<typeof activationUsage>) => (
+            findPluginCollectionActivationQuotaIncompatibility({
+                deployment,
+                usage,
+                collections: [{ pluginId: 'example.tasks', collectionId: 'tasks', quota }],
+                prefixUsage: [],
+            })
+        );
+
+        expect(activation(activationUsage(planned.maxRows, 1_000, 1_000))).toBeNull();
+        expect(activation(activationUsage(planned.maxRows + 1, 1_000, 1_000)))
+            .toEqual({ dimension: 'maxRows', effectiveMaximum: planned.maxRows });
+        expect(activation(activationUsage(1, planned.maxCollectionEncodedBytes + 1, 1_000)))
+            .toEqual({
+                dimension: 'maxCollectionEncodedBytes',
+                effectiveMaximum: planned.maxCollectionEncodedBytes,
+            });
+        expect(activation(activationUsage(1, 1_000, planned.maxRowEncodedBytes + 1)))
+            .toEqual({ dimension: 'maxRowEncodedBytes', effectiveMaximum: planned.maxRowEncodedBytes });
+    });
+
+    it('bounds a declared per-collection quota by the Account-wide dimension the Protocol owner names', () => {
+        // A declaration may only lower deployment policy. The ceiling for each
+        // per-collection dimension is the same composition with no declaration,
+        // so `maxRows` is bounded by the Account-wide row ceiling rather than by
+        // a number transcribed into the server.
+        const ceilings = resolveEffectivePluginCollectionLimitsV1({ deployment, quota: undefined });
+        expect(ceilings.maxRows).toBe(deployment.maxAccountRows);
+        expect(ceilings.maxCollectionEncodedBytes).toBe(deployment.maxAccountBytes);
+
+        expect(findPluginCollectionDeclaredQuotaIncompatibility({
+            deployment,
+            quota: { maxRows: ceilings.maxRows },
+        })).toBeNull();
+        expect(findPluginCollectionDeclaredQuotaIncompatibility({
+            deployment,
+            quota: { maxRows: ceilings.maxRows + 1 },
+        })).toEqual({ dimension: 'maxRows', effectiveMaximum: ceilings.maxRows });
+        expect(findPluginCollectionDeclaredQuotaIncompatibility({
+            deployment,
+            quota: { maxCollectionEncodedBytes: ceilings.maxCollectionEncodedBytes + 1 },
+        })).toEqual({
+            dimension: 'maxCollectionEncodedBytes',
+            effectiveMaximum: ceilings.maxCollectionEncodedBytes,
+        });
+        expect(findPluginCollectionDeclaredQuotaIncompatibility({
+            deployment,
+            quota: { maxRowEncodedBytes: ceilings.maxRowEncodedBytes + 1 },
+        })).toEqual({ dimension: 'maxRowEncodedBytes', effectiveMaximum: ceilings.maxRowEncodedBytes });
     });
 
     it('allows only a strict reduction of a pre-existing overage and rejects fresh batch excesses', () => {

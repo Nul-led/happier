@@ -67,7 +67,7 @@ describe('getNewSessionPreflightIssues', () => {
             id: 'agent-plugin-settings-loading',
             titleKey: 'settingsPlugins.genericSettingsTitle',
             messageKey: 'settingsPlugins.genericSettingsLoading',
-            confirmTextKey: 'common.openMachine',
+            confirmTextKey: 'connect.openMachine',
             action: 'openMachine',
         });
         expect(getNewSessionPreflightIssues({

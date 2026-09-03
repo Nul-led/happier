@@ -4,7 +4,11 @@ import { join } from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
 
-import type { PluginSettingsContributionV2 } from '@happier-dev/protocol';
+import {
+    PLUGIN_ACCOUNT_SETTINGS_LIMITS_V1,
+    type PluginSettingsContributionV2,
+    type PluginSettingsRollbackDeclarationV1,
+} from '@happier-dev/protocol';
 import type { JsonValue } from '@happier-dev/plugin-sdk';
 
 import { resolvePluginStorePaths } from '@/plugins/store/paths';
@@ -46,14 +50,16 @@ describe('supported rollback window retention and pruning', () => {
         fieldIds: readonly string[] = ['legacyMode'],
         generation = 'generation-rollback',
     ): PluginSettingsRollbackDeclarations => new Map([
-        ['acme.plugin', new Map([
+        ['acme.plugin', new Map<'account' | 'daemon', PluginSettingsRollbackDeclarationV1>([
             ['account', Object.freeze({
                 generation,
-                supported: true,
-                fieldIds,
+                supported: true as const,
+                // The canonical declaration carries the parsed mutable array;
+                // the fixture owns a frozen copy of the caller's ids.
+                fieldIds: [...fieldIds],
             })],
-        ] as const)],
-    ] as const);
+        ])],
+    ]);
 
     function accountFixture(params: Readonly<{
         /** Omit only when the candidate support state is genuinely unknown. */
@@ -1411,5 +1417,130 @@ describe('stable typed settings foundation', () => {
         await Promise.resolve();
         expect(delivered).toEqual([]);
         await disposable.dispose();
+    });
+});
+
+describe('canonical Settings record bounds', () => {
+    function boundedDeclaration(scope: 'account' | 'daemon'): PluginSettingsContributionV2 {
+        return { ...declaration(), scope };
+    }
+
+    function boundedFixture(
+        scope: 'account' | 'daemon',
+        initialValues?: Readonly<Record<string, JsonValue>>,
+        fields: PluginSettingsContributionV2['fields'] = declaration().fields,
+    ) {
+        let record: unknown | null = initialValues === undefined
+            ? null
+            : Object.freeze({
+                t: 'happier_plugin_settings_record_v1',
+                revision: 4,
+                values: Object.freeze({ ...initialValues }),
+            });
+        const recordStore = {
+            supports: () => true,
+            read: async () => record,
+            async update<T>(
+                _model: unknown,
+                operation: (current: unknown | null) => Readonly<{
+                    record: import('./settings').CanonicalPluginSettingsRecord;
+                    result: T;
+                    skipWrite?: boolean;
+                }>,
+            ): Promise<T> {
+                const next = operation(record);
+                if (next.skipWrite !== true) record = next.record;
+                return next.result;
+            },
+        };
+        return {
+            recordStore,
+            model: createStablePluginSettingsModel({
+                pluginId: 'acme.plugin',
+                contribution: { ...boundedDeclaration(scope), fields },
+            }),
+            owner: createStablePluginSettingsOwner({
+                recordStore,
+                broker: createStablePluginEventsBroker(),
+            }),
+            readRecord: () => record,
+        };
+    }
+
+    it('applies the canonical Account record bounds to an Account-scope set', async () => {
+        const fixture = boundedFixture('account');
+        const service = fixture.owner.bind({ model: fixture.model, seed: seed(() => true) });
+
+        // Well under the 512 KiB record ceiling this owner used to transcribe on
+        // its own, so only the canonical Account per-field bound — the same one
+        // the Account record adapter enforces before persisting — can refuse it.
+        await expect(service.set(
+            'endpoint',
+            'x'.repeat(PLUGIN_ACCOUNT_SETTINGS_LIMITS_V1.maximumFieldEncodedBytes),
+        )).rejects.toMatchObject({ code: 'plugin_settings_values_too_large' });
+        expect(fixture.readRecord()).toBeNull();
+
+        await expect(service.set('endpoint', 'https://bounded.example'))
+            .resolves.toEqual({ scope: { kind: 'account' }, revision: '1' });
+    });
+
+    it('applies the same canonical record bounds to a daemon-scope set', async () => {
+        const objectField = {
+            id: 'layout',
+            title: 'Layout',
+            schema: { type: 'object', additionalProperties: true },
+        } satisfies PluginSettingsContributionV2['fields'][number];
+        const fixture = boundedFixture('daemon', undefined, [objectField]);
+        const service = fixture.owner.bind({ model: fixture.model, seed: seed(() => true) });
+
+        // Byte-small but one level deeper than the canonical record depth bound.
+        // Only the one Protocol scoped-record validator sees depth; a byte-total
+        // transcription cannot refuse this, which is exactly why both scopes
+        // must share that validator.
+        let deep: JsonValue = '';
+        for (let depth = 0; depth < PLUGIN_ACCOUNT_SETTINGS_LIMITS_V1.maximumJsonDepth + 1; depth += 1) {
+            deep = { child: deep };
+        }
+        await expect(service.set('layout', deep))
+            .rejects.toMatchObject({ code: 'plugin_settings_values_too_large' });
+        expect(fixture.readRecord()).toBeNull();
+
+        // Individually over the per-field canonical-byte ceiling yet far under
+        // the record ceiling: only the shared per-field bound refuses it.
+        await expect(service.set(
+            'layout',
+            { x: 'y'.repeat(PLUGIN_ACCOUNT_SETTINGS_LIMITS_V1.maximumFieldEncodedBytes) },
+        )).rejects.toMatchObject({ code: 'plugin_settings_values_too_large' });
+        expect(fixture.readRecord()).toBeNull();
+
+        await expect(service.set('layout', { mode: 'compact' }))
+            .resolves.toEqual({ scope: { kind: 'daemon' }, revision: '1' });
+    });
+
+    it('refuses an action patch that grows the record past the canonical record bound', async () => {
+        // Eight retained values, each individually inside the per-field bound,
+        // leaving the stored record just under the canonical record ceiling.
+        const filler = 'y'.repeat(60 * 1024);
+        const retained: Record<string, JsonValue> = {};
+        for (let index = 0; index < 8; index += 1) retained[`retained${index}`] = filler;
+        const fixture = boundedFixture('daemon', retained);
+
+        await expect(fixture.owner.applyActionPatch({
+            model: fixture.model,
+            seed: seed(() => true),
+            contributionId: 'preferences',
+            allowedFieldIds: ['endpoint'],
+            patch: { endpoint: `https://${'z'.repeat(40 * 1024)}.example` },
+        })).rejects.toMatchObject({ code: 'plugin_settings_values_too_large' });
+        expect(fixture.readRecord()).toMatchObject({ revision: 4 });
+
+        // A patch that keeps the record inside the same bound still applies.
+        await expect(fixture.owner.applyActionPatch({
+            model: fixture.model,
+            seed: seed(() => true),
+            contributionId: 'preferences',
+            allowedFieldIds: ['endpoint'],
+            patch: { endpoint: 'https://bounded.example' },
+        })).resolves.toMatchObject({ revision: '5' });
     });
 });

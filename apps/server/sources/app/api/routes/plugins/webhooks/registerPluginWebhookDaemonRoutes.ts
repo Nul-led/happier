@@ -7,6 +7,9 @@ import {
     PluginMachineMaterializationRefV1Schema,
     PluginWebhookEndpointCheckCorrespondenceInputV1Schema,
     PluginWebhookEndpointCheckCorrespondenceResultV1Schema,
+    PluginWebhookEndpointConvergeTargetInputV1Schema,
+    PluginWebhookEndpointConvergeTargetResultV1Schema,
+    PluginWebhookPluginSurfaceActionHttpPathsV1,
     PluginWebhookFailRequestV1Schema,
     PluginWebhookRenewRequestV1Schema,
     PluginWebhookRenewResultV1Schema,
@@ -34,11 +37,20 @@ const DeliveryParamsSchema = z.object({
     deliveryId: z.string().regex(/^[A-Za-z0-9._:-]{1,128}$/u),
 }).strict();
 
-const CHECK_CORRESPONDENCE_PATH = "/v1/plugins/webhooks/endpoints/check-correspondence";
+const CHECK_CORRESPONDENCE_PATH = PluginWebhookPluginSurfaceActionHttpPathsV1[
+    "plugin.webhook.endpoint.checkCorrespondence"
+];
+const CONVERGE_TARGET_PATH = PluginWebhookPluginSurfaceActionHttpPathsV1[
+    "plugin.webhook.endpoint.convergeTarget"
+];
 const EmptyQuerySchema = z.object({}).strict();
 const PluginWebhookCheckCorrespondenceRequestSchema = z.object({
     caller: PluginMachineMaterializationRefV1Schema,
     input: PluginWebhookEndpointCheckCorrespondenceInputV1Schema,
+}).strict();
+const PluginWebhookConvergeTargetRequestSchema = z.object({
+    caller: PluginMachineMaterializationRefV1Schema,
+    input: PluginWebhookEndpointConvergeTargetInputV1Schema,
 }).strict();
 
 type AuthenticatedPluginCallerV1 = Readonly<{ pluginId: string }>;
@@ -60,6 +72,7 @@ type RouteDependencies = Readonly<{
     complete: typeof completePluginWebhookDeliveryV1;
     fail: typeof failPluginWebhookDeliveryV1;
     checkCorrespondence: typeof webhookEndpointActions.checkCorrespondence;
+    convergeTarget: typeof webhookEndpointActions.convergeTarget;
     authenticateCaller: AuthenticatePluginCallerV1;
     verifyPublisher: typeof verifyPluginInstallationPublisherHeader;
 }>;
@@ -81,6 +94,7 @@ const DEFAULT_DEPENDENCIES: RouteDependencies = {
     complete: completePluginWebhookDeliveryV1,
     fail: failPluginWebhookDeliveryV1,
     checkCorrespondence: webhookEndpointActions.checkCorrespondence,
+    convergeTarget: webhookEndpointActions.convergeTarget,
     authenticateCaller: authenticateCurrentPluginCallerV1,
     verifyPublisher: verifyPluginInstallationPublisherHeader,
 };
@@ -133,6 +147,40 @@ export function registerPluginWebhookDaemonRoutes(
 ): void {
     const featureGate = createServerFeatureGatePreHandler("plugins.webhooks", env);
     const authenticatedWebhookPreHandler = [app.authenticate, featureGate];
+    /**
+     * The one plugin-surface endpoint admission. Both bounded plugin endpoint
+     * operations authorize identically — signed publisher proof for the exact
+     * calling machine, then the shared current-caller-materialization owner —
+     * so neither can drift into a weaker principal boundary than the other,
+     * and an unauthenticated caller learns nothing beyond the same opaque
+     * unavailable answer.
+     */
+    const admitPluginSurfaceEndpointCaller = async (params: Readonly<{
+        path: string;
+        accountId: string;
+        request: Parameters<RouteDependencies["verifyPublisher"]>[0]["request"];
+        caller: Readonly<{ pluginId: string; machineId: string; materializationId: string }>;
+    }>): Promise<AuthenticatedPluginCallerV1 | "unauthenticated" | "unavailable"> => {
+        let publisher: Awaited<ReturnType<RouteDependencies["verifyPublisher"]>>;
+        try {
+            publisher = await dependencies.verifyPublisher({
+                accountId: params.accountId,
+                request: params.request,
+                path: params.path,
+                required: true,
+            });
+        } catch {
+            return "unauthenticated";
+        }
+        if (!publisher || params.caller.machineId !== publisher.machineId) return "unauthenticated";
+        const caller = await dependencies.authenticateCaller({
+            accountId: params.accountId,
+            caller: params.caller,
+            publisher,
+        });
+        return caller ?? "unavailable";
+    };
+
     app.post(CHECK_CORRESPONDENCE_PATH, {
         preHandler: authenticatedWebhookPreHandler,
         schema: {
@@ -145,30 +193,46 @@ export function registerPluginWebhookDaemonRoutes(
         },
     }, async (request, reply) => {
         noStore(reply);
-        let publisher: Awaited<ReturnType<RouteDependencies["verifyPublisher"]>>;
-        try {
-            publisher = await dependencies.verifyPublisher({
-                accountId: request.userId,
-                request,
-                path: CHECK_CORRESPONDENCE_PATH,
-                required: true,
-            });
-        } catch {
-            return reply.code(401).send(null);
-        }
-        if (!publisher) return reply.code(401).send(null);
-        if (request.body.caller.machineId !== publisher.machineId) {
-            return reply.code(401).send(null);
-        }
-        const caller = await dependencies.authenticateCaller({
+        const caller = await admitPluginSurfaceEndpointCaller({
+            path: CHECK_CORRESPONDENCE_PATH,
             accountId: request.userId,
+            request,
             caller: request.body.caller,
-            publisher,
         });
-        if (!caller) {
+        if (caller === "unauthenticated") return reply.code(401).send(null);
+        if (caller === "unavailable") {
             return await reply.send({ kind: "unavailable", code: "endpoint_unavailable" });
         }
         return await reply.send(await dependencies.checkCorrespondence({
+            accountId: request.userId,
+            callerPluginId: caller.pluginId,
+            input: request.body.input,
+        }));
+    });
+
+    app.post(CONVERGE_TARGET_PATH, {
+        preHandler: authenticatedWebhookPreHandler,
+        schema: {
+            querystring: EmptyQuerySchema,
+            body: PluginWebhookConvergeTargetRequestSchema,
+            response: {
+                200: PluginWebhookEndpointConvergeTargetResultV1Schema,
+                401: z.null(),
+            },
+        },
+    }, async (request, reply) => {
+        noStore(reply);
+        const caller = await admitPluginSurfaceEndpointCaller({
+            path: CONVERGE_TARGET_PATH,
+            accountId: request.userId,
+            request,
+            caller: request.body.caller,
+        });
+        if (caller === "unauthenticated") return reply.code(401).send(null);
+        if (caller === "unavailable") {
+            return await reply.send({ kind: "unavailable", code: "endpoint_unavailable" });
+        }
+        return await reply.send(await dependencies.convergeTarget({
             accountId: request.userId,
             callerPluginId: caller.pluginId,
             input: request.body.input,

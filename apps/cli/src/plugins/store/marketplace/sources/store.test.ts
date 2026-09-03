@@ -1,4 +1,4 @@
-import { readFileSync, rmSync, mkdtempSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -64,6 +64,48 @@ describe('marketplace source registry store', () => {
     });
   });
 
+  it('fails closed instead of activating a truncated or foreign persisted registry', async () => {
+    const happyHomeDir = mkdtempSync(join(tmpdir(), 'happier-marketplace-registry-'));
+    tempDirs.push(happyHomeDir);
+    envScope = createEnvKeyScope(['HAPPIER_HOME_DIR', 'HAPPIER_MARKETPLACE_CURATED_SOURCE_URL']);
+    envScope.patch({
+      HAPPIER_HOME_DIR: happyHomeDir,
+      HAPPIER_MARKETPLACE_CURATED_SOURCE_URL: 'https://marketplace.example.test/catalog.json',
+    });
+    const stateDir = join(happyHomeDir, 'plugins', 'plugins', 'state');
+    const registryPath = join(stateDir, 'marketplace-source-registry.v1.json');
+    mkdirSync(stateDir, { recursive: true });
+    const store = createMarketplaceSourceRegistryStore({ happyHomeDir });
+
+    writeFileSync(registryPath, JSON.stringify({
+      schemaVersion: 1,
+      sources: [{
+        id: 'marketplace:truncated',
+        title: 'Truncated',
+        sourceUrl: 'https://truncated.example.test/catalog.json',
+      }],
+    }));
+    await expect(store.read()).rejects.toThrow(/Invalid marketplace source registry file/u);
+    const afterTruncatedRead = readFileSync(registryPath, 'utf8');
+    expect(afterTruncatedRead).not.toContain('happier_marketplace_source_registry_v1');
+    expect(JSON.parse(afterTruncatedRead)).toMatchObject({ schemaVersion: 1 });
+
+    writeFileSync(registryPath, JSON.stringify({
+      t: 'happier_marketplace_source_registry_v1',
+      schemaVersion: 1,
+      sources: [{
+        id: 'marketplace:foreign',
+        title: 'Foreign',
+        sourceUrl: 'https://foreign.example.test/catalog.json',
+        enabled: true,
+        origin: 'user',
+        futureAuthorityFlag: 'keep-me',
+      }],
+    }));
+    await expect(store.read()).rejects.toThrow(/Invalid marketplace source registry file/u);
+    expect(readFileSync(registryPath, 'utf8')).toContain('futureAuthorityFlag');
+  });
+
   it('persists and resolves marketplace sources by id and URL', async () => {
     const happyHomeDir = mkdtempSync(join(tmpdir(), 'happier-marketplace-registry-'));
     tempDirs.push(happyHomeDir);
@@ -108,6 +150,7 @@ describe('marketplace source registry store', () => {
       id: source.id,
       sourceUrl: 'https://marketplace.example.test/catalog.json',
     });
+    await expect(store.resolveSourceReference('https://unregistered.example.test/catalog.json')).resolves.toBeNull();
     await expect(store.resolvePreferredSource()).resolves.toMatchObject({
       id: source.id,
       sourceUrl: 'https://marketplace.example.test/catalog.json',

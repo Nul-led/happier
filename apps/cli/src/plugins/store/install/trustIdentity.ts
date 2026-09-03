@@ -2,7 +2,7 @@ import { realpath } from 'node:fs/promises';
 import { posix, resolve, win32 } from 'node:path';
 
 import { z } from 'zod';
-import { normalizeMarketplaceSourceUrlV1, PluginIdSchema } from '@happier-dev/protocol';
+import { PluginIdSchema } from '@happier-dev/protocol';
 import { NpmRegistryProfileIdV1Schema } from '@happier-dev/protocol/rpc';
 
 import { normalizeNpmPackageName, normalizeNpmRegistryOrigin } from '@/plugins/distribution/npm/normalize';
@@ -60,16 +60,6 @@ const CanonicalNpmRegistryProfileIdSchema = z.string().superRefine((value, conte
   const parsed = NpmRegistryProfileIdV1Schema.safeParse(value);
   if (!parsed.success || parsed.data !== value) {
     context.addIssue({ code: 'custom', message: 'Expected a canonical npm registry profile id' });
-  }
-});
-
-const CanonicalMarketplaceSourceIdSchema = z.string().trim().min(1).max(256)
-  .regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/u);
-const CanonicalMarketplaceSourceUrlSchema = z.string().superRefine((value, context) => {
-  try {
-    if (normalizeMarketplaceSourceUrlV1(value) !== value) throw new Error();
-  } catch {
-    context.addIssue({ code: 'custom', message: 'Expected a canonical curated marketplace source URL' });
   }
 });
 
@@ -149,43 +139,27 @@ export const PluginTrustRecordSchema: z.ZodType<PluginTrustRecord> = z.object({
  *
  * - `pinned` — the request is refused (`plugin_update_pinned`). The installation
  *   stays where the user put it until they change this policy.
- * - `manual` — the request proceeds, and the newest compatible candidate is
- *   staged and presented to a present user, who decides it like any install.
- * - `automatic` — the request proceeds and may be admitted *without a new
- *   present-user review*, which is the whole of what "automatic" names. It is
- *   authorized only for an npm channel whose reviewed curated source binding is
- *   still current and unchanged, whose trust record still matches the candidate
- *   distribution, and whose manifest change is not review-sensitive; it also
- *   requires published compatibility metadata, so an unevaluatable candidate is
- *   ineligible rather than silently taken. Any of those failing falls back to
- *   the present-user review, never to a silent upgrade.
+ * - `reviewEveryUpdate` — the request proceeds, and the newest compatible
+ *   candidate is staged and presented to a present user, who decides it like
+ *   any install.
+ * - `reviewSensitiveChanges` — the request proceeds and may be admitted
+ *   *without a new present-user review* only while the trusted npm
+ *   origin/package channel is preserved, whose trust record still matches the
+ *   candidate distribution, and whose manifest change is not review-sensitive;
+ *   it also requires published compatibility metadata, so an unevaluatable
+ *   candidate is ineligible rather than silently taken. Any sensitive
+ *   trust-fact change reopens the present-user review, never a silent upgrade.
+ *   Curation is discovery and recommendation only: a marketplace withdrawal or
+ *   source removal never disables installed code and never blocks this update.
  */
-export const PluginUpdatePolicySchema = z.enum(['automatic', 'manual', 'pinned']);
-export type PluginUpdatePolicy = z.infer<typeof PluginUpdatePolicySchema>;
 
 /**
- * The only durable authority for a curated automatic update. Publisher data is
- * review presentation only and intentionally does not participate here.
+ * The trusted npm channel an installed record updates through. It is the trust
+ * record itself — the exact npm origin, package and optional private profile —
+ * not a marketplace binding: curation recommends discovery and is never the
+ * durable update authority, so withdrawing a marketplace source neither
+ * disables installed code nor blocks an otherwise-preserving update.
  */
-export const PluginCuratedUpdateSourceBindingSchema = z.object({
-  id: CanonicalMarketplaceSourceIdSchema,
-  sourceUrl: CanonicalMarketplaceSourceUrlSchema,
-  registryProfileId: CanonicalNpmRegistryProfileIdSchema.optional(),
-}).strict();
-export type PluginCuratedUpdateSourceBinding = z.infer<typeof PluginCuratedUpdateSourceBindingSchema>;
-
-export function createPluginCuratedUpdateSourceBinding(input: Readonly<{
-  id: string;
-  sourceUrl: string;
-  registryProfileId?: string;
-}>): PluginCuratedUpdateSourceBinding {
-  return PluginCuratedUpdateSourceBindingSchema.parse({
-    id: input.id,
-    sourceUrl: normalizeMarketplaceSourceUrlV1(input.sourceUrl),
-    ...(input.registryProfileId ? { registryProfileId: input.registryProfileId } : {}),
-  });
-}
-
 export function createNpmPluginDistributionIdentity(params: Readonly<{
   registryOrigin: string;
   registryProfileId?: string;

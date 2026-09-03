@@ -39,6 +39,7 @@ import {
     readMaterializedPluginCollectionContract,
 } from "./contracts";
 import {
+    advancePluginCollectionRevision,
     assertNoActiveUniqueCollectionRelationDuplicatesInTx,
     assertPluginCollectionStoredContentForAccountTransition,
     finalizePluginCollectionDerivedStateForPromotionInTx,
@@ -120,6 +121,44 @@ type CandidatePreparationStageQuotaRecord = Readonly<{
     targetContentEnvelope: unknown;
     targetProjection: unknown;
     targetContract: StoredCollectionContract;
+}>;
+
+type CandidatePreparationSourcePageRow = Readonly<{
+    id: string;
+    rowId: string;
+    revision: number;
+    contentEnvelope: unknown;
+    projections: readonly Readonly<{ fieldId: string; typedEncodedValue: string }>[];
+}>;
+
+type CandidatePreparationSourceRevisionRow = Readonly<{
+    id: string;
+    rowId: string;
+    revision: number;
+}>;
+
+type CandidatePreparationStageRevisionRow = Readonly<{
+    sourceRowDbId: string;
+    sourceRevision: number;
+}>;
+
+type CandidatePreparationPromotableLiveRow = Readonly<{
+    id: string;
+    rowId: string;
+    revision: number;
+    contractId: string;
+    schemaVersion: number;
+    contractDigest: string;
+}>;
+
+type CandidatePreparationPromotionStageRow = Readonly<{
+    rowId: string;
+    candidateIdentity: string;
+    candidateArtifactDigest: string;
+    sourceRowDbId: string;
+    sourceRevision: number;
+    targetContentEnvelope: unknown;
+    targetProjection: unknown;
 }>;
 
 type CandidatePreparationProspectiveStage = Readonly<{
@@ -847,6 +886,7 @@ export async function promotePluginCollectionCandidatePreparationInTx(input: Rea
     targetContracts: readonly PluginCollectionContractRefV1[];
 }>): Promise<void> {
     if (!input.currentIntent || input.targetReleaseVersion === null) return;
+    const targetReleaseVersion = input.targetReleaseVersion;
     const currentIntent = promotionIntent(input.currentIntent);
     if (currentIntent.pluginId !== input.pluginId || currentIntent.desiredVersion === null) {
         promotionNotReady();
@@ -897,7 +937,7 @@ export async function promotePluginCollectionCandidatePreparationInTx(input: Rea
         if (!sourceRef || refsMatch(sourceRef, targetRef)) {
             let lastRowId: string | null = null;
             for (;;) {
-                const rows = await input.tx.pluginCollectionRow.findMany({
+                const rows: CandidatePreparationPromotableLiveRow[] = await input.tx.pluginCollectionRow.findMany({
                     where: {
                         ...liveRowWhere,
                         ...(lastRowId ? { id: { gt: lastRowId } } : {}),
@@ -951,7 +991,7 @@ export async function promotePluginCollectionCandidatePreparationInTx(input: Rea
                 targetContractId: target.id,
                 targetSchemaVersion: target.ref.schemaVersion,
                 targetContractDigest: target.ref.contractDigest,
-                candidateReleaseVersion: input.targetReleaseVersion,
+                candidateReleaseVersion: targetReleaseVersion,
             },
             _count: { _all: true },
             having: { candidateIdentity: { _count: { equals: liveRowCount } } },
@@ -981,7 +1021,7 @@ export async function promotePluginCollectionCandidatePreparationInTx(input: Rea
         let maximumPromotedRevision = 0;
         let lastRowId: string | null = null;
         for (;;) {
-            const liveRows = await input.tx.pluginCollectionRow.findMany({
+            const liveRows: CandidatePreparationPromotableLiveRow[] = await input.tx.pluginCollectionRow.findMany({
                 where: {
                     ...liveRowWhere,
                     ...(lastRowId ? { id: { gt: lastRowId } } : {}),
@@ -1001,7 +1041,7 @@ export async function promotePluginCollectionCandidatePreparationInTx(input: Rea
             if (liveRows.some((row) => !isExactPersistedRef({ row, materialized: source }))) {
                 promotionNotReady();
             }
-            const stages = await input.tx.pluginCollectionCandidatePreparationStage.findMany({
+            const stages: CandidatePreparationPromotionStageRow[] = await input.tx.pluginCollectionCandidatePreparationStage.findMany({
                 where: {
                     accountId: input.accountId,
                     pluginId: input.pluginId,
@@ -1012,7 +1052,7 @@ export async function promotePluginCollectionCandidatePreparationInTx(input: Rea
                     targetContractId: target.id,
                     targetSchemaVersion: target.ref.schemaVersion,
                     targetContractDigest: target.ref.contractDigest,
-                    candidateReleaseVersion: input.targetReleaseVersion,
+                    candidateReleaseVersion: targetReleaseVersion,
                     candidateIdentity: selectedCandidateIdentity,
                     sourceRowDbId: { in: liveRows.map((row) => row.id) },
                 },
@@ -1044,7 +1084,7 @@ export async function promotePluginCollectionCandidatePreparationInTx(input: Rea
                         source: source.ref,
                         target: target.ref,
                         candidate: {
-                            releaseVersion: input.targetReleaseVersion,
+                            releaseVersion: targetReleaseVersion,
                             artifactDigest: candidateArtifactDigest.data,
                         },
                     },
@@ -1085,7 +1125,7 @@ export async function promotePluginCollectionCandidatePreparationInTx(input: Rea
                     changes: promotionRows.map((row) => ({
                         rowDbId: row.id,
                         rowId: row.rowId,
-                        revision: row.expectedRevision + 1,
+                        revision: advancePluginCollectionRevision(row.expectedRevision),
                         projection: row.projection,
                     })),
                     maximumBatchRows,
@@ -1099,7 +1139,10 @@ export async function promotePluginCollectionCandidatePreparationInTx(input: Rea
             }
             validatedLiveRows += liveRows.length;
             for (const row of liveRows) {
-                maximumPromotedRevision = Math.max(maximumPromotedRevision, row.revision + 1);
+                maximumPromotedRevision = Math.max(
+                    maximumPromotedRevision,
+                    advancePluginCollectionRevision(row.revision),
+                );
             }
             lastRowId = liveRows[liveRows.length - 1]!.id;
         }
@@ -1113,7 +1156,7 @@ export async function promotePluginCollectionCandidatePreparationInTx(input: Rea
         let promotedLiveRows = 0;
         lastRowId = null;
         for (;;) {
-            const liveRows = await input.tx.pluginCollectionRow.findMany({
+            const liveRows: CandidatePreparationPromotableLiveRow[] = await input.tx.pluginCollectionRow.findMany({
                 where: {
                     ...liveRowWhere,
                     contractId: source.id,
@@ -1133,7 +1176,7 @@ export async function promotePluginCollectionCandidatePreparationInTx(input: Rea
                 },
             });
             if (liveRows.length === 0) break;
-            const stages = await input.tx.pluginCollectionCandidatePreparationStage.findMany({
+            const stages: CandidatePreparationPromotionStageRow[] = await input.tx.pluginCollectionCandidatePreparationStage.findMany({
                 where: {
                     accountId: input.accountId,
                     pluginId: input.pluginId,
@@ -1144,7 +1187,7 @@ export async function promotePluginCollectionCandidatePreparationInTx(input: Rea
                     targetContractId: target.id,
                     targetSchemaVersion: target.ref.schemaVersion,
                     targetContractDigest: target.ref.contractDigest,
-                    candidateReleaseVersion: input.targetReleaseVersion,
+                    candidateReleaseVersion: targetReleaseVersion,
                     candidateIdentity: selectedCandidateIdentity,
                     sourceRowDbId: { in: liveRows.map((row) => row.id) },
                 },
@@ -1176,7 +1219,7 @@ export async function promotePluginCollectionCandidatePreparationInTx(input: Rea
                         source: source.ref,
                         target: target.ref,
                         candidate: {
-                            releaseVersion: input.targetReleaseVersion,
+                            releaseVersion: targetReleaseVersion,
                             artifactDigest: candidateArtifactDigest.data,
                         },
                     },
@@ -1218,7 +1261,7 @@ export async function promotePluginCollectionCandidatePreparationInTx(input: Rea
                     changes: promotionRows.map((row) => ({
                         rowDbId: row.id,
                         rowId: row.rowId,
-                        revision: row.expectedRevision + 1,
+                        revision: advancePluginCollectionRevision(row.expectedRevision),
                         projection: row.projection,
                     })),
                     maximumBatchRows,
@@ -1354,7 +1397,7 @@ export async function pagePluginCollectionCandidatePreparationSource(input: Read
         const afterId = request.cursor
             ? decodeSourcePageCursor({ cursor: request.cursor, fingerprint })
             : undefined;
-        const rows = await tx.pluginCollectionRow.findMany({
+        const rows: CandidatePreparationSourcePageRow[] = await tx.pluginCollectionRow.findMany({
             where: {
                 accountId: input.accountId,
                 pluginId: resolved.source.ref.pluginId,
@@ -1385,7 +1428,7 @@ export async function pagePluginCollectionCandidatePreparationSource(input: Read
             });
         }
         const pageRows = rows.slice(0, request.limit);
-        const stages = pageRows.length === 0
+        const stages: CandidatePreparationStageRevisionRow[] = pageRows.length === 0
             ? []
             : await tx.pluginCollectionCandidatePreparationStage.findMany({
                 where: {
@@ -1462,7 +1505,7 @@ export async function stagePluginCollectionCandidatePreparation(input: Readonly<
             );
         }
 
-        const sourceRows = await tx.pluginCollectionRow.findMany({
+        const sourceRows: CandidatePreparationSourceRevisionRow[] = await tx.pluginCollectionRow.findMany({
             where: {
                 accountId: input.accountId,
                 pluginId: resolved.source.ref.pluginId,

@@ -311,7 +311,7 @@ async function prepareAvailabilityPromotionFixture(input: Readonly<{
         contracts: [target],
     });
     const rowIds = input.rowIds ?? ["task-a", "task-b"];
-    const sourceRows = [];
+    const sourceRows: Array<Awaited<ReturnType<typeof seedLiveSourceRow>>> = [];
     for (const [index, rowId] of rowIds.entries()) {
         sourceRows.push(await seedLiveSourceRow({
             accountId: ACCOUNT_ID,
@@ -882,11 +882,13 @@ describe("plugin Collection candidate preparation", () => {
         });
         await expect(service.setIntent({
             accountId: ACCOUNT_ID,
-            pluginId: PLUGIN_ID,
-            intent: {
+            input: {
+                pluginId: PLUGIN_ID,
                 desiredVersion: TARGET_VERSION,
+                enabled: true,
+                offlineUiHosting: "disabled",
                 writableCollections: [target],
-                revision: "0",
+                expectedRevision: "0",
             },
         })).rejects.toMatchObject({ code: "plugin_intent_writable_collections_not_ready" });
 
@@ -926,11 +928,13 @@ describe("plugin Collection candidate preparation", () => {
         });
         await expect(service.setIntent({
             accountId: ACCOUNT_ID,
-            pluginId: PLUGIN_ID,
-            intent: {
+            input: {
+                pluginId: PLUGIN_ID,
                 desiredVersion: TARGET_VERSION,
+                enabled: true,
+                offlineUiHosting: "disabled",
                 writableCollections: [target],
-                revision: "0",
+                expectedRevision: "0",
             },
         })).rejects.toMatchObject({ code: "plugin_intent_writable_collections_not_ready" });
     });
@@ -1051,11 +1055,13 @@ describe("plugin Collection candidate preparation", () => {
 
         await expect(service.setIntent({
             accountId: ACCOUNT_ID,
-            pluginId: PLUGIN_ID,
-            intent: {
+            input: {
+                pluginId: PLUGIN_ID,
                 desiredVersion: TARGET_VERSION,
+                enabled: true,
+                offlineUiHosting: "disabled",
                 writableCollections: [target],
-                revision: "0",
+                expectedRevision: "0",
             },
         })).resolves.toMatchObject({ intent: { desiredVersion: TARGET_VERSION, revision: "1" } });
 
@@ -1078,11 +1084,13 @@ describe("plugin Collection candidate preparation", () => {
 
         await expect(service.setIntent({
             accountId: ACCOUNT_ID,
-            pluginId: PLUGIN_ID,
-            intent: {
+            input: {
+                pluginId: PLUGIN_ID,
                 desiredVersion: TARGET_VERSION,
+                enabled: true,
+                offlineUiHosting: "disabled",
                 writableCollections: [target],
-                revision: "0",
+                expectedRevision: "0",
             },
         })).rejects.toMatchObject({ code: "plugin_intent_writable_collections_not_ready" });
 
@@ -1129,7 +1137,9 @@ describe("plugin Collection candidate preparation", () => {
             const delegate = <T extends object>(name: string, value: T): T => new Proxy(value, {
                 get(targetDelegate, property, receiver) {
                     if (property === "findMany") {
-                        const findMany = Reflect.get(targetDelegate, property, targetDelegate);
+                        const findMany = Reflect.get(targetDelegate, property, targetDelegate) as (
+                            ...args: unknown[]
+                        ) => Promise<unknown>;
                         return async (...args: unknown[]) => {
                             const request = args[0];
                             if (name === "row" && request && typeof request === "object" && "take" in request) {
@@ -1138,14 +1148,17 @@ describe("plugin Collection candidate preparation", () => {
                             if (name === "stage") {
                                 const sourceRowDbId = request && typeof request === "object"
                                     && "where" in request
-                                    && (request as { where?: { sourceRowDbId?: { in?: unknown[] } } }).where?.sourceRowDbId;
-                                if (sourceRowDbId?.in) observedBatchRows.push(sourceRowDbId.in.length);
+                                    ? (request as { where?: { sourceRowDbId?: { in?: unknown[] } } }).where?.sourceRowDbId
+                                    : undefined;
+                                if (Array.isArray(sourceRowDbId?.in)) observedBatchRows.push(sourceRowDbId.in.length);
                             }
                             return await Reflect.apply(findMany, targetDelegate, args);
                         };
                     }
                     if (property === "createMany") {
-                        const createMany = Reflect.get(targetDelegate, property, targetDelegate);
+                        const createMany = Reflect.get(targetDelegate, property, targetDelegate) as (
+                            ...args: unknown[]
+                        ) => Promise<unknown>;
                         return async (...args: unknown[]) => {
                             const request = args[0] as { data?: unknown[] } | undefined;
                             const data = Array.isArray(request?.data) ? request.data : [];

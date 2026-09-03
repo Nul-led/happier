@@ -2076,7 +2076,6 @@ describe('resolveExecutablePluginRuntimeRegistry (integration)', () => {
                         permissionHandler,
                         mcpServers: {},
                         getPermissionMode: () => 'default' as const,
-                        setThinking: () => undefined,
                         memoryRecallGuidanceEnabled: false,
                         runnerProcessIdentity: null,
                         startupModelSelection: null,

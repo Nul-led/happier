@@ -185,7 +185,7 @@ async function createTrustedLocalLinkInstall(input: Readonly<{
                 distribution,
                 approvedAtMs: Date.now(),
             }),
-            updatePolicy: 'manual' as const,
+            updatePolicy: 'reviewEveryUpdate' as const,
             optionalAccess: Object.freeze([]),
         }),
     });

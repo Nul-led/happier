@@ -4,7 +4,6 @@ import type { StoredCredentials } from '@/persistence';
 
 import {
   buildPluginHostSessionRuntimeOptions,
-  buildPluginSessionLaunchParams,
   buildPluginSessionBindingInput,
 } from './sessionLaunch';
 
@@ -25,15 +24,5 @@ describe('plugin session launch binding', () => {
     const options = buildPluginHostSessionRuntimeOptions(input);
 
     expect(options).toMatchObject({ initialTitle: 'CLI live QA' });
-    expect(buildPluginSessionLaunchParams({
-      backend: { id: 'acme.backend' } as never,
-      agent: { id: 'acme.agent' } as never,
-      input,
-      runtime: {
-        sessionId: 'session-1',
-        directory: '/workspace',
-        metadata: {},
-      },
-    })).not.toHaveProperty('initialTitle');
   });
 });

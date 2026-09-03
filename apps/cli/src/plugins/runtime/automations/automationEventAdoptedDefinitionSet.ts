@@ -3,8 +3,6 @@ import { createHash } from 'node:crypto';
 import {
   AutomationEventAdmitHttpRequestV1Schema,
   AutomationEventAdmitInputV1Schema,
-  MAX_AUTOMATION_EVENT_ADMIT_DEFINITIONS_PER_CALL,
-  MAX_AUTOMATION_EVENT_ADMIT_HTTP_REQUEST_UTF8_BYTES,
   AutomationEventSourceDefinitionV1Schema,
   AutomationEventStoredDefinitionsReadResultV1Schema,
   AutomationEventSourcesListInputV1Schema,
@@ -13,6 +11,7 @@ import {
   MAX_AUTOMATION_EVENT_SOURCE_DEFINITIONS_PER_PAGE,
   buildAutomationPluginEventOccurrenceEvidenceV1,
   createCanonicalJsonSigningInput,
+  createServerHttpRequestBodyItemBudgetV1,
   deriveAutomationOccurrenceTriggerEvidenceEqualityTagV1,
   deriveAutomationOccurrenceKeyV1,
   decodeBase64,
@@ -22,7 +21,6 @@ import {
   isAutomationEventSourcesListPageProgressingV1,
   isSameAutomationEventDeclarationReleaseV1,
   isValidPluginJsonSchemaValue,
-  readAutomationEventAdmitHttpRequestCanonicalUtf8ByteLengthV1,
   sameAutomationAccountContentIdentityV1,
   sealAutomationOccurrenceTriggerEvidenceEnvelopeV1,
   sealAutomationRunTriggerEvidenceEnvelopeV1,
@@ -404,6 +402,28 @@ function projectionMatchesStoredDefinition(
       === createCanonicalJsonSigningInput(storedDefinition.observationTransport);
   } catch {
     return false;
+  }
+}
+
+/**
+ * Fills one complete admission request with the longest ordered run of items
+ * the server transport owner still accepts in a single body. Both Account
+ * modes partition here, so the count of positions a request carries is decided
+ * once, by the transport owner, and never by an Automation-local ceiling.
+ */
+function collectBoundedRequestItems<TItem>(params: Readonly<{
+  /** The exact body this run will be sent in, with its item array still empty. */
+  bodyWithoutItems: unknown;
+  /** Supplies the next ordered item, or `null` once the snapshot is exhausted. */
+  readNextItem: () => TItem | null;
+}>): Readonly<{ items: readonly TItem[]; carried: TItem | null }> {
+  const budget = createServerHttpRequestBodyItemBudgetV1(params.bodyWithoutItems);
+  const items: TItem[] = [];
+  for (;;) {
+    const item = params.readNextItem();
+    if (item === null) return { items, carried: null };
+    if (!budget.tryAdmit(item)) return { items, carried: item };
+    items.push(item);
   }
 }
 
@@ -1178,35 +1198,39 @@ export function createAutomationEventAdoptedDefinitionSetV1(params: Readonly<{
             signal.throwIfAborted();
             if (!await isCurrent(signal)) return;
 
-            let requestToYield: AutomationEventAdmitHttpRequestV1 | null = null;
-            let count = 0;
-            while (
-              definitionIndex + count < admissionInput.definitions.length
-              && count < MAX_AUTOMATION_EVENT_ADMIT_DEFINITIONS_PER_CALL
-            ) {
-              const candidate = AutomationEventAdmitHttpRequestV1Schema.safeParse({
+            const hostEvidence = { ...hostEvidenceBase, accountCurrentness };
+            let cursor = definitionIndex;
+            const run = collectBoundedRequestItems({
+              bodyWithoutItems: {
                 v: 1,
                 caller: request.caller,
-                input: {
-                  ...admissionInput,
-                  definitions: admissionInput.definitions.slice(
-                    definitionIndex,
-                    definitionIndex + count + 1,
-                  ),
-                },
-                hostEvidence: { ...hostEvidenceBase, accountCurrentness },
-              });
-              if (!candidate.success) break;
-              requestToYield = candidate.data;
-              count += 1;
-            }
+                input: { ...admissionInput, definitions: [] },
+                hostEvidence,
+              },
+              readNextItem: () => (cursor < admissionInput.definitions.length
+                ? admissionInput.definitions[cursor++]!
+                : null),
+            });
             // A single definition that cannot form a complete private request
             // leaves the remaining suffix unsafe; E2 owns its public result.
-            if (requestToYield === null) return;
+            if (run.items.length === 0) return;
+            const candidate = AutomationEventAdmitHttpRequestV1Schema.safeParse({
+              v: 1,
+              caller: request.caller,
+              input: {
+                ...admissionInput,
+                definitions: admissionInput.definitions.slice(
+                  definitionIndex,
+                  definitionIndex + run.items.length,
+                ),
+              },
+              hostEvidence,
+            });
+            if (!candidate.success) return;
             signal.throwIfAborted();
             if (!await isCurrent(signal)) return;
-            const successorAccountCurrentness = yield requestToYield;
-            definitionIndex += count;
+            const successorAccountCurrentness = yield candidate.data;
+            definitionIndex += run.items.length;
             // A following request is safe only after E2 returns the
             // server-owned successor from this request's ready continuation.
             if (definitionIndex >= admissionInput.definitions.length) return;
@@ -1325,44 +1349,47 @@ export function createAutomationEventAdoptedDefinitionSetV1(params: Readonly<{
             signal.throwIfAborted();
             if (!await isCurrent(signal)) return;
 
-            const definitions: AutomationEventAdmitEncryptedDefinitionEvidenceV1[] = [];
-            let requestToYield: AutomationEventAdmitHttpRequestV1 | null = null;
-            while (definitions.length < MAX_AUTOMATION_EVENT_ADMIT_DEFINITIONS_PER_CALL) {
-              const evidence: AutomationEventAdmitEncryptedDefinitionEvidenceV1 | null = carriedEvidence ?? (() => {
-                if (definitionIndex >= selected.length) return null;
-                const next = buildEncryptedDefinition(selected[definitionIndex]!);
-                definitionIndex += 1;
-                return next;
-              })();
-              if (evidence === null) break;
-
-              const candidateRequest = {
+            const run = collectBoundedRequestItems({
+              bodyWithoutItems: {
                 v: 1,
                 caller: request.caller,
                 hostEvidence: {
                   ...encryptedHostEvidenceBase,
                   accountCurrentness,
-                  definitions: [...definitions, evidence],
+                  definitions: [],
                 },
-              };
-              const candidateBytes = readAutomationEventAdmitHttpRequestCanonicalUtf8ByteLengthV1(
-                candidateRequest,
-              );
-              if (candidateBytes > MAX_AUTOMATION_EVENT_ADMIT_HTTP_REQUEST_UTF8_BYTES) {
-                if (definitions.length === 0) return;
-                carriedEvidence = evidence;
-                break;
-              }
-              const parsed = AutomationEventAdmitHttpRequestV1Schema.safeParse(candidateRequest);
-              if (!parsed.success) return;
-              definitions.push(evidence);
-              carriedEvidence = null;
-              requestToYield = parsed.data;
-            }
-            if (requestToYield === null) return;
+              },
+              // Evidence rejected by the budget stays sealed and is carried
+              // into the next request rather than being derived twice.
+              readNextItem: (): AutomationEventAdmitEncryptedDefinitionEvidenceV1 | null => {
+                if (carriedEvidence !== null) {
+                  const carried = carriedEvidence;
+                  carriedEvidence = null;
+                  return carried;
+                }
+                if (definitionIndex >= selected.length) return null;
+                const next = buildEncryptedDefinition(selected[definitionIndex]!);
+                definitionIndex += 1;
+                return next;
+              },
+            });
+            carriedEvidence = run.carried;
+            // A single sealed definition that cannot form a complete private
+            // request leaves the remaining suffix unsafe; E2 owns its result.
+            if (run.items.length === 0) return;
+            const parsed = AutomationEventAdmitHttpRequestV1Schema.safeParse({
+              v: 1,
+              caller: request.caller,
+              hostEvidence: {
+                ...encryptedHostEvidenceBase,
+                accountCurrentness,
+                definitions: run.items,
+              },
+            });
+            if (!parsed.success) return;
             signal.throwIfAborted();
             if (!await isCurrent(signal)) return;
-            const successorAccountCurrentness = yield requestToYield;
+            const successorAccountCurrentness = yield parsed.data;
             // Do not let iterator advancement substitute for the server's
             // successor witness; preserve the frozen E2EE key identity too.
             if (definitionIndex >= selected.length && carriedEvidence === null) return;

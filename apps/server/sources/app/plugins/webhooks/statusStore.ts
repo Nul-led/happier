@@ -17,6 +17,7 @@ export async function readPluginWebhookAccountStatusV1(params: Readonly<{
     accountId: string;
     input: PluginWebhookAccountStatusRequestV1;
 }>): Promise<PluginWebhookAccountStatusResultV1> {
+    const input = params.input;
     const serverIdentityId = await getOrCreateServerIdentityId(process.env);
     const publicBaseUrl = resolveConfiguredPublicServerUrl(process.env);
     if (!publicBaseUrl) throw new Error("Plugin webhook public URL is unavailable");
@@ -24,10 +25,10 @@ export async function readPluginWebhookAccountStatusV1(params: Readonly<{
         const rows = await tx.pluginWebhookEndpoint.findMany({
             where: {
                 accountId: params.accountId,
-                ...(params.input.endpointCursor ? { id: { gt: params.input.endpointCursor } } : {}),
+                ...(input.endpointCursor ? { id: { gt: input.endpointCursor } } : {}),
             },
             orderBy: { id: "asc" },
-            take: params.input.pageSize + 1,
+            take: input.pageSize + 1,
             select: {
                 id: true,
                 revision: true,
@@ -59,7 +60,7 @@ export async function readPluginWebhookAccountStatusV1(params: Readonly<{
                 },
             },
         });
-        const page = rows.slice(0, params.input.pageSize);
+        const page = rows.slice(0, input.pageSize);
         const endpointIds = page.map((row) => row.id);
         const counts = endpointIds.length === 0 ? [] : await tx.pluginWebhookDelivery.groupBy({
             by: ["endpointId", "state", "attemptCount"],
@@ -84,7 +85,7 @@ export async function readPluginWebhookAccountStatusV1(params: Readonly<{
             },
             _count: { _all: true },
         });
-        const endpoints = [];
+        const endpoints: PluginWebhookAccountStatusResultV1["endpoints"] = [];
         for (const row of page) {
             if (
                 row.pluginId === null
@@ -180,10 +181,10 @@ export async function readPluginWebhookAccountStatusV1(params: Readonly<{
                 } : {}),
             });
         }
-        const deadLetters = params.input.deadLetterPageSize === 0 ? [] : await tx.pluginWebhookDelivery.findMany({
+        const deadLetters = input.deadLetterPageSize === 0 ? [] : await tx.pluginWebhookDelivery.findMany({
             where: { accountId: params.accountId, state: "dead_letter", deadLetteredAt: { not: null } },
             orderBy: [{ deadLetteredAt: "desc" }, { id: "asc" }],
-            take: params.input.deadLetterPageSize,
+            take: input.deadLetterPageSize,
             select: {
                 id: true,
                 endpointId: true,
@@ -202,7 +203,7 @@ export async function readPluginWebhookAccountStatusV1(params: Readonly<{
         });
         return PluginWebhookAccountStatusResultV1Schema.parse({
             endpoints,
-            nextEndpointCursor: rows.length > params.input.pageSize ? page.at(-1)?.id ?? null : null,
+            nextEndpointCursor: rows.length > input.pageSize ? page.at(-1)?.id ?? null : null,
             deadLetters: deadLetters.flatMap((row) => row.deadLetteredAt ? [{
                 deliveryId: row.id,
                 webhookEndpointId: row.endpointId,

@@ -9,15 +9,18 @@ import {
 } from '@happier-dev/protocol';
 
 /**
- * Scope comparison is exact-equality over the canonical scope. Every consumer
- * of this registry treats any non-`exact` relation identically -- a changed
- * required HostAccess scope re-enters human review, and a changed optional
- * selection is dropped -- so the registry deliberately does not rank a scope
- * as narrower or broader. Admitting a "narrowing" update without review would
- * be a product decision, not a comparison detail.
+ * Scope comparison ranks the candidate scope against the previous scope over
+ * the canonical scope. `exact` and `changed` are the two unconditional
+ * relations; `narrower` is reported only when every canonical field of the
+ * candidate is provably contained in the previous authority, which the
+ * `reviewSensitiveChanges` update policy admits without reopening review.
+ * Direction is never inferred from JSON shape: a capability ranks only the
+ * fields listed in its {@link PluginAccessScopeRegistration.fieldDirections},
+ * and any other differing field keeps the comparison at `changed`.
  */
 export type PluginAccessScopeComparison =
   | Readonly<{ relation: 'exact'; reason: 'canonical_scope_equal' }>
+  | Readonly<{ relation: 'narrower'; reason: 'canonical_scope_contained' }>
   | Readonly<{
       relation: 'changed';
       reason: 'unknown_capability' | 'canonical_scope_differs';
@@ -27,10 +30,32 @@ export type PluginAccessScopeComparison =
       reason: 'candidate_scope_invalid' | 'previous_scope_invalid' | 'canonicalizer_error';
     }>;
 
+/**
+ * How one canonical scope field ranks candidate authority against previous
+ * authority. Each direction is taken from the runtime owner that enforces that
+ * exact field, never from its JSON shape:
+ * - `set` — a mandatory entry set; fewer entries is less authority.
+ * - `setAbsentDenies` — an optional entry set whose absence grants nothing, so
+ *   absence is the narrowest value (`process.envKeys` is read as `?? []`;
+ *   `connectedAccounts.materializationKinds` as `?.includes(...) !== true`).
+ * - `setAbsentAllows` — an optional entry set whose absence removes the
+ *   restriction, so absence is the broadest value (`network.methods`,
+ *   `sessions.machineIds`/`projectIds` are read as `=== undefined || includes(...)`).
+ * - `flagAbsentDenies` — an optional boolean whose absence denies
+ *   (`privateNetwork`).
+ */
+export type PluginAccessScopeFieldDirection =
+  | 'set'
+  | 'setAbsentDenies'
+  | 'setAbsentAllows'
+  | 'flagAbsentDenies';
+
 export type PluginAccessScopeRegistration = Readonly<{
   capability: string;
   scopeSchema: z.ZodType<unknown>;
   canonicalize: (scope: unknown) => unknown;
+  /** Ranked canonical scope fields; unlisted fields are compared for equality. */
+  fieldDirections?: Readonly<Record<string, PluginAccessScopeFieldDirection>>;
 }>;
 
 export type PluginAccessSelection = Readonly<{
@@ -140,6 +165,37 @@ function scopeDigest(value: unknown): string {
   return `sha256-${createHash('sha256').update(canonicalJson(value)).digest('base64')}`;
 }
 
+/** `canonicalJson` rejects `undefined`, so an absent field is compared by presence. */
+function canonicalFieldsEqual(candidate: unknown, previous: unknown): boolean {
+  if (candidate === undefined || previous === undefined) return candidate === previous;
+  return canonicalJson(candidate) === canonicalJson(previous);
+}
+
+function isCanonicalEntrySetContained(candidate: unknown, previous: unknown): boolean {
+  if (!Array.isArray(candidate) || !Array.isArray(previous)) return false;
+  const granted = new Set(previous.map((entry) => canonicalJson(entry)));
+  return candidate.every((entry) => granted.has(canonicalJson(entry)));
+}
+
+function isCanonicalScopeFieldContained(
+  direction: PluginAccessScopeFieldDirection,
+  candidate: unknown,
+  previous: unknown,
+): boolean {
+  switch (direction) {
+    case 'set':
+      return isCanonicalEntrySetContained(candidate, previous);
+    case 'setAbsentDenies':
+      return candidate === undefined
+        || (previous !== undefined && isCanonicalEntrySetContained(candidate, previous));
+    case 'setAbsentAllows':
+      return previous === undefined
+        || (candidate !== undefined && isCanonicalEntrySetContained(candidate, previous));
+    case 'flagAbsentDenies':
+      return candidate !== true || previous === true;
+  }
+}
+
 export function createPluginAccessScopeRegistry(
   registrations: readonly PluginAccessScopeRegistration[],
 ): PluginAccessScopeRegistry {
@@ -160,6 +216,9 @@ export function createPluginAccessScopeRegistry(
       capability,
       scopeSchema: registration.scopeSchema,
       canonicalize: registration.canonicalize,
+      ...(registration.fieldDirections
+        ? { fieldDirections: Object.freeze({ ...registration.fieldDirections }) }
+        : {}),
     }));
   }
 
@@ -185,6 +244,32 @@ export function createPluginAccessScopeRegistry(
     }
   }
 
+  function isContained(
+    registration: PluginAccessScopeRegistration,
+    candidate: unknown,
+    previous: unknown,
+  ): boolean {
+    const directions = registration.fieldDirections;
+    const candidateScope = asScopeRecord(candidate);
+    const previousScope = asScopeRecord(previous);
+    if (!directions || !candidateScope || !previousScope) return false;
+    try {
+      for (const key of new Set([...Object.keys(candidateScope), ...Object.keys(previousScope)])) {
+        const direction = directions[key];
+        if (direction === undefined) {
+          if (!canonicalFieldsEqual(candidateScope[key], previousScope[key])) return false;
+          continue;
+        }
+        if (!isCanonicalScopeFieldContained(direction, candidateScope[key], previousScope[key])) {
+          return false;
+        }
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   function compare(capability: string, candidateScope: unknown, previousScope: unknown): PluginAccessScopeComparison {
     const registration = byCapability.get(capability);
     if (!registration) return { relation: 'changed', reason: 'unknown_capability' };
@@ -200,8 +285,11 @@ export function createPluginAccessScopeRegistry(
         ? { relation: 'invalid', reason: 'previous_scope_invalid' }
         : { relation: 'invalid', reason: 'canonicalizer_error' };
     }
-    return canonicalJson(candidate.value) === canonicalJson(previous.value)
-      ? { relation: 'exact', reason: 'canonical_scope_equal' }
+    if (canonicalJson(candidate.value) === canonicalJson(previous.value)) {
+      return { relation: 'exact', reason: 'canonical_scope_equal' };
+    }
+    return isContained(registration, candidate.value, previous.value)
+      ? { relation: 'narrower', reason: 'canonical_scope_contained' }
       : { relation: 'changed', reason: 'canonical_scope_differs' };
   }
 
@@ -472,6 +560,31 @@ function canonicalizeBuiltInScope(capability: string, value: unknown): unknown {
   }
 }
 
+/**
+ * Ranked canonical scope fields per built-in capability. A field is listed only
+ * where a runtime owner establishes what its absence and its entries mean;
+ * `connectedAccounts.accountScopes` and `browser.origins` have no enforcing
+ * reader today, so they stay unranked and any change to them is `changed`.
+ */
+const BUILT_IN_SCOPE_FIELD_DIRECTIONS: Readonly<Record<
+  string,
+  Readonly<Record<string, PluginAccessScopeFieldDirection>>
+>> = Object.freeze({
+  network: { targets: 'set', methods: 'setAbsentAllows', privateNetwork: 'flagAbsentDenies' },
+  'network.client': { targets: 'set', transports: 'set', privateNetwork: 'flagAbsentDenies' },
+  filesystem: { locations: 'set', access: 'set' },
+  process: { executables: 'set', envKeys: 'setAbsentDenies' },
+  environment: { keys: 'set' },
+  connectedAccounts: { serviceRefs: 'set', operations: 'set', materializationKinds: 'setAbsentDenies' },
+  sessions: { access: 'set', machineIds: 'setAbsentAllows', projectIds: 'setAbsentAllows' },
+  terminal: { operations: 'set' },
+  browser: { operations: 'set' },
+  clipboard: { access: 'set' },
+  externalLinks: { origins: 'set' },
+  'storage.account': {},
+  mcp: { serverRefs: 'set', discoverySourceRefs: 'set', operations: 'set' },
+});
+
 export function createDefaultPluginAccessScopeRegistry(): PluginAccessScopeRegistry {
   return createPluginAccessScopeRegistry(PLUGIN_HOST_ACCESS_CAPABILITY_CATALOG_V2.map((entry) => ({
     capability: entry.capability,
@@ -480,5 +593,8 @@ export function createDefaultPluginAccessScopeRegistry(): PluginAccessScopeRegis
       entry.schema.shape.scope,
     ),
     canonicalize: (scope: unknown) => canonicalizeBuiltInScope(entry.capability, scope),
+    ...(BUILT_IN_SCOPE_FIELD_DIRECTIONS[entry.capability]
+      ? { fieldDirections: BUILT_IN_SCOPE_FIELD_DIRECTIONS[entry.capability] }
+      : {}),
   })));
 }

@@ -448,7 +448,7 @@ export function resolveAgentPluginSettingsPreflightIssue(
         id: `agent-plugin-settings-${readiness.error ?? (readiness.loading ? 'loading' : 'unavailable')}`,
         titleKey: 'settingsPlugins.genericSettingsTitle',
         messageKey,
-        confirmTextKey: 'common.openMachine',
+        confirmTextKey: 'connect.openMachine',
         action: 'openMachine',
     };
 }
@@ -884,7 +884,7 @@ export function getNewSessionPreflightIssues(ctx: NewSessionPreflightContext): r
     const pluginSettingsIssue = resolveAgentPluginSettingsPreflightIssue(ctx.pluginSettingsReadiness);
     if (pluginSettingsIssue) return [pluginSettingsIssue];
     const fn = resolveAgentUiBehavior(ctx.agentId, ctx.machineId).newSession?.getPreflightIssues;
-    return fn ? fn({ ...ctx, settings: mergeAgentBehaviorSettings(ctx.settings, ctx.pluginSettings) }) : [];
+    return fn ? fn(ctx) : [];
 }
 
 export function buildNewSessionOptionsFromUiState(opts: {

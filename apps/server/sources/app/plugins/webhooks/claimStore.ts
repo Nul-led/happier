@@ -16,7 +16,10 @@ import {
 } from "@happier-dev/protocol";
 
 import { acquireAccountEncryptionTransitionFenceInTx } from "@/app/encryption/accountEncryptionTransition";
-import { resolveCurrentClaimablePluginMachineMaterializationTx } from "@/app/plugins/availability/operations";
+import {
+    resolveCurrentClaimablePluginMachineMaterializationTx,
+    resolveCurrentClaimablePluginMachineMaterializationsTx,
+} from "@/app/plugins/availability/operations";
 import { getOrCreateServerIdentityId } from "@/app/serverIdentity/serverIdentity";
 import { db } from "@/storage/db";
 import { inTx, type Tx } from "@/storage/inTx";
@@ -127,18 +130,25 @@ type ClaimCandidateRowV1 = {
     offlineSinceAt: Date | null;
 };
 
+type EligibleClaimTargetV1 = Readonly<{
+    materializationId: string;
+    pluginId: string;
+    version: string;
+}>;
+
 /**
  * Reads the ordered due head delivery for the authenticated machine
- * installation. Exact materialization currentness is still decided only by the
- * canonical owner. A stale head receives its existing offline-aging transition;
- * the AccountChange wake / next claim request then reaches the next due row.
+ * installation, optionally restricted to the exact materializations already
+ * classified current by the canonical Availability owner.
  */
 async function readServerSelectedClaimCandidateTx(params: Readonly<{
     tx: Tx;
     accountId: string;
     machine: ClaimMachineInstallationV1;
     now: Date;
+    eligibleTargets?: readonly EligibleClaimTargetV1[];
 }>): Promise<Readonly<{ candidate: ClaimCandidateRowV1; selectedTarget: ClaimTargetV1 }> | null> {
+    if (params.eligibleTargets?.length === 0) return null;
     const candidate = await params.tx.pluginWebhookDelivery.findFirst({
         where: {
             accountId: params.accountId,
@@ -153,6 +163,13 @@ async function readServerSelectedClaimCandidateTx(params: Readonly<{
                 releasedAt: null,
                 route: { enabled: true, revokedAt: null },
             },
+            ...(params.eligibleTargets === undefined ? {} : {
+                OR: params.eligibleTargets.map((eligible) => ({
+                    targetMaterializationId: eligible.materializationId,
+                    targetPluginId: eligible.pluginId,
+                    targetPluginVersion: eligible.version,
+                })),
+            }),
         },
         orderBy: [{ nextAttemptAt: "asc" }, { receivedAt: "asc" }, { id: "asc" }],
         select: {
@@ -205,22 +222,37 @@ export async function claimPluginWebhookDeliveryV1(params: Readonly<{
         ?? ((length: number) => Uint8Array.from(nodeRandomBytes(length)));
 
     return await inTx(async (tx) => {
-        const selected = await readServerSelectedClaimCandidateTx({
+        // Availability classifies the installation's current materializations
+        // once with fixed query work. The ordered stale head receives its typed
+        // transition, but selection of the eligible row does not walk stale
+        // targets one by one, so none can starve work behind it and the number
+        // of claim queries/writes remains fixed independently of that count.
+        const eligibleTargets = (await resolveCurrentClaimablePluginMachineMaterializationsTx({
+            tx,
+            accountId: params.accountId,
+            serverIdentityId,
+            machineId: params.machine.machineId,
+            machineInstallationId: params.machine.machineInstallationId,
+            requiredMachineOperationCapability: "pluginWebhookClaim",
+        })).map((materialization) => ({
+            materializationId: materialization.materializationId,
+            pluginId: materialization.pluginId,
+            version: materialization.version,
+        }));
+        const eligibleTargetKeys = new Set(eligibleTargets.map((target) => (
+            `${target.materializationId}\0${target.pluginId}\0${target.version}`
+        )));
+        const head = await readServerSelectedClaimCandidateTx({
             tx,
             accountId: params.accountId,
             machine: params.machine,
             now,
         });
-        if (selected === null) return none(5_000);
-        const candidate = selected.candidate;
-        const target = selected.selectedTarget;
-        if (!await isCurrentAuthenticatedTargetInTx({
-            tx,
-            accountId: params.accountId,
-            target,
-            version: candidate.targetPluginVersion,
-            serverIdentityId,
-        })) {
+        if (head === null) return none(5_000);
+        const headKey = `${head.candidate.targetMaterializationId}\0${head.candidate.targetPluginId}\0${head.candidate.targetPluginVersion}`;
+        let selected = head;
+        if (!eligibleTargetKeys.has(headKey)) {
+            const candidate = head.candidate;
             const offlineSinceAt = candidate.offlineSinceAt ?? now;
             const expired = now.getTime() - offlineSinceAt.getTime()
                 >= PLUGIN_WEBHOOK_MAX_QUEUED_AGE_MS_V1;
@@ -238,26 +270,66 @@ export async function claimPluginWebhookDeliveryV1(params: Readonly<{
                         automationAdmissionUnresolved: getActivePrismaRuntime().DbNull,
                         nextAttemptAt: new Date(now.getTime() + 5_000),
                         revision: { increment: 1 },
-                },
+                    },
             });
             if (updated.count !== 1) return none(250);
             await markPluginWebhookAccountChangedInTxV1(tx, {
                 accountId: params.accountId,
                 pluginId: candidate.targetPluginId,
             });
-            return none(5_000);
-        }
-        const fence = await acquireAccountEncryptionTransitionFenceInTx(tx, params.accountId);
-        if (fence.status !== "ready") {
-            return none(5_000);
-        }
-        const storedEnvelope =
-            validatePluginWebhookStoredEnvelopeForAccountCurrentnessV1({
-                currentness: fence.account.currentness,
-                envelope: candidate.payload,
+            const eligible = await readServerSelectedClaimCandidateTx({
+                tx,
+                accountId: params.accountId,
+                machine: params.machine,
+                now,
+                eligibleTargets,
             });
-        if (!storedEnvelope.ok) {
-            const updated = await tx.pluginWebhookDelivery.updateMany({
+            if (eligible === null) return none(5_000);
+            selected = eligible;
+        }
+            const candidate = selected.candidate;
+            const target = selected.selectedTarget;
+            const fence = await acquireAccountEncryptionTransitionFenceInTx(tx, params.accountId);
+            if (fence.status !== "ready") {
+                return none(5_000);
+            }
+            const storedEnvelope =
+                validatePluginWebhookStoredEnvelopeForAccountCurrentnessV1({
+                    currentness: fence.account.currentness,
+                    envelope: candidate.payload,
+                });
+            if (!storedEnvelope.ok) {
+                const updated = await tx.pluginWebhookDelivery.updateMany({
+                    where: {
+                        id: candidate.id,
+                        revision: candidate.revision,
+                        state: "queued",
+                        payloadBytes: { gt: 0n },
+                        nextAttemptAt: { lte: now },
+                    },
+                    data: deadLetterMutation(
+                        now,
+                        storedEnvelope.code,
+                    ),
+                });
+                if (updated.count === 1) {
+                    await markPluginWebhookAccountChangedInTxV1(tx, {
+                        accountId: params.accountId,
+                        pluginId: candidate.targetPluginId,
+                    });
+                }
+                return none(5_000);
+            }
+            const leaseBytes = randomBytes(16);
+            if (leaseBytes.byteLength !== 16) throw new TypeError("Plugin webhook lease identity requires exactly 16 bytes");
+            const leaseId = `wh_lease_${encodeBase64(leaseBytes, "base64url")}`;
+            const firstClaimAt = now;
+            const maxClaimUntil = new Date(now.getTime() + PLUGIN_WEBHOOK_MAX_CONTINUOUS_CLAIM_MS_V1);
+            const expiresAt = new Date(Math.min(
+                now.getTime() + PLUGIN_WEBHOOK_LEASE_MS_V1,
+                maxClaimUntil.getTime(),
+            ));
+            const claimed = await tx.pluginWebhookDelivery.updateMany({
                 where: {
                     id: candidate.id,
                     revision: candidate.revision,
@@ -265,82 +337,52 @@ export async function claimPluginWebhookDeliveryV1(params: Readonly<{
                     payloadBytes: { gt: 0n },
                     nextAttemptAt: { lte: now },
                 },
-                data: deadLetterMutation(
-                    now,
-                    storedEnvelope.code,
-                ),
-            });
-            if (updated.count === 1) {
-                await markPluginWebhookAccountChangedInTxV1(tx, {
-                    accountId: params.accountId,
-                    pluginId: candidate.targetPluginId,
-                });
-            }
-            return none(5_000);
-        }
-        const leaseBytes = randomBytes(16);
-        if (leaseBytes.byteLength !== 16) throw new TypeError("Plugin webhook lease identity requires exactly 16 bytes");
-        const leaseId = `wh_lease_${encodeBase64(leaseBytes, "base64url")}`;
-        const firstClaimAt = now;
-        const maxClaimUntil = new Date(now.getTime() + PLUGIN_WEBHOOK_MAX_CONTINUOUS_CLAIM_MS_V1);
-        const expiresAt = new Date(Math.min(
-            now.getTime() + PLUGIN_WEBHOOK_LEASE_MS_V1,
-            maxClaimUntil.getTime(),
-        ));
-        const claimed = await tx.pluginWebhookDelivery.updateMany({
-            where: {
-                id: candidate.id,
-                revision: candidate.revision,
-                state: "queued",
-                payloadBytes: { gt: 0n },
-                nextAttemptAt: { lte: now },
-            },
-            data: {
-                state: "claimed",
-                leaseId,
-                claimedByMachineId: target.materialization.machineId,
-                claimedByMachineInstallationId: target.machineInstallationId,
-                firstClaimAt,
-                executionStartedAt: null,
-                leaseExpiresAt: expiresAt,
-                offlineSinceAt: null,
-                automationAdmissionUnresolved: getActivePrismaRuntime().DbNull,
-                revision: { increment: 1 },
-            },
-        });
-        if (claimed.count !== 1) return none(250);
-        await markPluginWebhookAccountChangedInTxV1(tx, {
-            accountId: params.accountId,
-            pluginId: candidate.targetPluginId,
-        });
-
-        return PluginWebhookClaimResultV1Schema.parse({
-            kind: "delivery",
-            deliveryId: candidate.id,
-            target,
-            pluginVersion: candidate.targetPluginVersion,
-            endpoint: {
-                webhookEndpointId: candidate.endpointId,
-                revision: candidate.endpointRevision,
-                webhookContribution: {
-                    pluginId: target.materialization.pluginId,
-                    localId: candidate.endpointWebhookContributionId,
+                data: {
+                    state: "claimed",
+                    leaseId,
+                    claimedByMachineId: target.materialization.machineId,
+                    claimedByMachineInstallationId: target.machineInstallationId,
+                    firstClaimAt,
+                    executionStartedAt: null,
+                    leaseExpiresAt: expiresAt,
+                    offlineSinceAt: null,
+                    automationAdmissionUnresolved: getActivePrismaRuntime().DbNull,
+                    revision: { increment: 1 },
                 },
-                handlerActionLocalId: candidate.endpointHandlerActionId,
-                sourceInstanceId: candidate.endpointSourceInstanceId,
-            },
-            attempt: candidate.attemptCount + 1,
-            replay: candidate.replayCount,
-            receivedAtMs: candidate.receivedAt.getTime(),
-            envelope: storedEnvelope.envelope,
-            lease: {
-                leaseId,
-                revision: candidate.revision + 1,
-                firstClaimAtMs: firstClaimAt.getTime(),
-                expiresAtMs: expiresAt.getTime(),
-                maxClaimUntilMs: maxClaimUntil.getTime(),
-            },
-        });
+            });
+            if (claimed.count !== 1) return none(250);
+            await markPluginWebhookAccountChangedInTxV1(tx, {
+                accountId: params.accountId,
+                pluginId: candidate.targetPluginId,
+            });
+
+            return PluginWebhookClaimResultV1Schema.parse({
+                kind: "delivery",
+                deliveryId: candidate.id,
+                target,
+                pluginVersion: candidate.targetPluginVersion,
+                endpoint: {
+                    webhookEndpointId: candidate.endpointId,
+                    revision: candidate.endpointRevision,
+                    webhookContribution: {
+                        pluginId: target.materialization.pluginId,
+                        localId: candidate.endpointWebhookContributionId,
+                    },
+                    handlerActionLocalId: candidate.endpointHandlerActionId,
+                    sourceInstanceId: candidate.endpointSourceInstanceId,
+                },
+                attempt: candidate.attemptCount + 1,
+                replay: candidate.replayCount,
+                receivedAtMs: candidate.receivedAt.getTime(),
+                envelope: storedEnvelope.envelope,
+                lease: {
+                    leaseId,
+                    revision: candidate.revision + 1,
+                    firstClaimAtMs: firstClaimAt.getTime(),
+                    expiresAtMs: expiresAt.getTime(),
+                    maxClaimUntilMs: maxClaimUntil.getTime(),
+                },
+            });
     });
 }
 

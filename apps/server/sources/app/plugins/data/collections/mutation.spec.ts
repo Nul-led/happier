@@ -24,7 +24,9 @@ vi.mock("@/storage/inTx", () => ({
 }));
 
 import type { NormalizedPluginAccountCollectionContractV1 } from "@happier-dev/protocol";
+import { PLUGIN_COLLECTION_REVISION_MAX } from "@happier-dev/protocol";
 import {
+    advancePluginCollectionRevision,
     assertPluginCollectionStoredContentForAccountTransition,
     createPluginCollectionContractValidators,
     measurePluginCollectionCandidateRowEncodedBytes,
@@ -54,6 +56,16 @@ function createTx() {
 }
 
 describe("plugin Collection mutation", () => {
+    it("allocates the last currentness value the persisted column holds and refuses the next", () => {
+        // One allocator serves revisions and the absence epoch, so the boundary
+        // is the persisted signed 32-bit column rather than a per-path number.
+        expect(advancePluginCollectionRevision(0)).toBe(1);
+        expect(advancePluginCollectionRevision(PLUGIN_COLLECTION_REVISION_MAX - 1))
+            .toBe(PLUGIN_COLLECTION_REVISION_MAX);
+        expect(() => advancePluginCollectionRevision(PLUGIN_COLLECTION_REVISION_MAX))
+            .toThrowError(expect.objectContaining({ code: "collection_revision_exhausted" }));
+    });
+
     it("measures the complete stored row with UTF-8 bytes and canonical projection ordering", () => {
         expect(measurePluginCollectionStoredRowEncodedBytes({
             rowId: "row-🙂",

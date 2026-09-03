@@ -190,6 +190,37 @@ function localizedPresentationText(
     return typeof value === 'string' ? value : value?.fallback ?? '';
 }
 
+/**
+ * The author's own reason for a declared `disabledWhen`, and only that. A field
+ * disabled because the scope is unavailable or still loading is a host fact
+ * with its own presentation; borrowing plugin copy for it would misstate why
+ * the control is inert and how the person can recover.
+ */
+function declaredDisabledReason(
+    field: PluginProjectionEditableSettingField,
+    policy: Readonly<{ enabled: boolean }>,
+): string | null {
+    if (policy.enabled) return null;
+    const availability = field.availability;
+    if (!availability || !('disabledReason' in availability)) return null;
+    return localizedPresentationText(availability.disabledReason) || null;
+}
+
+/**
+ * Which record actually loses the value, in the person's language. Account
+ * scope is Account-wide; daemon scope belongs to one exact machine, so it names
+ * that machine instead of saying "Machine" about an unidentified one.
+ */
+function settingsRecordOwnerLabel(
+    group: PluginProjectionEditableSettingsGroup,
+    target: ScopedPluginSettingsTarget | null,
+): string {
+    if (group.scope.kind === 'account') return t('settings.account');
+    return target?.kind === 'daemon' && target.machineId.trim()
+        ? t('settings.mcpServersBindingTargetMachine', { machine: target.machineId })
+        : t('settings.mcpServersBindingTargetMachineTitle');
+}
+
 export function PluginSettingTextField(props: Readonly<{
     pluginId: string;
     group: PluginProjectionEditableSettingsGroup;
@@ -219,6 +250,18 @@ export function PluginSettingTextField(props: Readonly<{
     status?: string | null;
     /** A safe field-local mutation status; never interpolate raw draft bytes. */
     errorMessage?: string | null;
+    /**
+     * The declared, already-localized `disabledReason` for this field, supplied
+     * only when the author's own `disabledWhen` is what disabled it. A host
+     * condition such as loading or an unavailable scope never borrows this copy.
+     */
+    disabledReason?: string | null;
+    /**
+     * Localized record-owner label for the deletion prompt. Callers that know
+     * the exact machine name it, so the prompt says which machine loses the
+     * secret rather than a generic scope word.
+     */
+    scopeLabel?: string;
 }>) {
     const { theme } = useUnistyles();
     const styles = stylesheet;
@@ -227,9 +270,13 @@ export function PluginSettingTextField(props: Readonly<{
     const minimumInteractiveTargetSize = resolveMinimumInteractiveTargetSize(Platform.OS);
     const testID = `settings.plugins.detail.${props.pluginId}.settings.${props.group.id}.${props.field.key}.input`;
     const saveLabel = t(props.saveFailed ? 'common.retry' : 'common.save');
+    const placeholder = localizedPresentationText(props.field.presentation?.placeholder) || undefined;
     const confirmDelete = async (): Promise<void> => {
         if (!props.onDelete) return;
-        const scope = props.group.scope.kind === 'account' ? 'Account' : 'Machine';
+        const scope = props.scopeLabel
+            ?? (props.group.scope.kind === 'account'
+                ? t('settings.account')
+                : t('settings.mcpServersBindingTargetMachineTitle'));
         const confirmed = await Modal.confirm(
             t('secrets.prompts.deleteTitle'),
             t('secrets.prompts.deleteConfirm', {
@@ -244,10 +291,19 @@ export function PluginSettingTextField(props: Readonly<{
         <View testID={`${testID}.row`} style={styles.fieldContainer}>
             <Text style={styles.fieldLabel}>{props.field.title}</Text>
             {props.field.subtitle ? <Text style={styles.fieldHint}>{props.field.subtitle}</Text> : null}
+            {props.disabledReason ? (
+                <Text
+                    testID={`settings.plugins.detail.${props.pluginId}.settings.${props.group.id}.${props.field.key}.disabledReason`}
+                    style={styles.fieldHint}
+                >
+                    {props.disabledReason}
+                </Text>
+            ) : null}
             <TextInput
                 testID={testID}
                 accessibilityLabel={props.field.title}
-                accessibilityHint={props.status ?? undefined}
+                accessibilityHint={props.disabledReason ?? props.status ?? undefined}
+                placeholder={placeholder}
                 value={props.value}
                 onChangeText={(value) => {
                     // Native controls ignore input while non-editable, but
@@ -282,22 +338,37 @@ export function PluginSettingTextField(props: Readonly<{
                     {props.status}
                 </Text>
             ) : null}
+            {/*
+              * The commit that produced this text finished asynchronously and
+              * moves nothing else on screen, so a reader who is not looking at
+              * this field would never learn it failed. Same alert/live
+              * semantics as the incumbent account credential forms.
+              */}
             {props.errorMessage ? (
                 <Text
                     testID={`settings.plugins.detail.${props.pluginId}.settings.${props.group.id}.${props.field.key}.error`}
+                    accessibilityRole="alert"
+                    accessibilityLiveRegion="assertive"
                     style={styles.fieldError}
                 >
                     {props.errorMessage}
                 </Text>
             ) : null}
             <View style={styles.fieldActions}>
+                {/*
+                  * Delete and Remove sit side by side and destroy different
+                  * things: one erases the stored secret, the other only
+                  * detaches it from this setting. Each names its own object,
+                  * and the hint states what survives the press.
+                  */}
                 {props.onDelete ? (
                     <RoundButton
                         testID={`settings.plugins.detail.${props.pluginId}.settings.${props.group.id}.${props.field.key}.delete`}
                         size="normal"
                         display="inverted"
-                        title={t('common.delete')}
-                        accessibilityLabel={`${t('common.delete')}: ${props.field.title}`}
+                        title={t('settingsPlugins.secretFieldActions.delete')}
+                        accessibilityLabel={`${t('settingsPlugins.secretFieldActions.delete')}: ${props.field.title}`}
+                        accessibilityHint={t('settingsPlugins.secretFieldActions.deleteHint')}
                         textStyle={{ color: theme.colors.state.danger.foreground }}
                         disabled={props.saving || props.persistenceDisabled}
                         onPress={() => { void confirmDelete(); }}
@@ -308,8 +379,9 @@ export function PluginSettingTextField(props: Readonly<{
                         testID={`settings.plugins.detail.${props.pluginId}.settings.${props.group.id}.${props.field.key}.unbind`}
                         size="normal"
                         display="inverted"
-                        title={t('common.remove')}
-                        accessibilityLabel={`${t('common.remove')}: ${props.field.title}`}
+                        title={t('settingsPlugins.secretFieldActions.unbind')}
+                        accessibilityLabel={`${t('settingsPlugins.secretFieldActions.unbind')}: ${props.field.title}`}
+                        accessibilityHint={t('settingsPlugins.secretFieldActions.unbindHint')}
                         disabled={props.saving || props.persistenceDisabled}
                         onPress={props.onUnbind}
                     />
@@ -899,6 +971,7 @@ function PluginSettingDaemonSecretField(props: Readonly<{
             saveFailed={saveFailed}
             persistenceDisabled={persistenceDisabled}
             acceptDraftInputWhileBusy={!persistenceDisabled && !saving}
+            scopeLabel={settingsRecordOwnerLabel(props.group, props.target)}
             status={secretConfigured ? t('memorySearchSettings.embeddings.secretSet') : null}
             errorMessage={saveOutcomeUnknown
                 ? t('settingsProviders.errors.mutationOutcomeUnknownDescription')
@@ -1181,9 +1254,11 @@ function PluginDetailScopedSettingsSection(props: PluginDetailGenericSettingsSec
                 <Item
                     testID={`settings.plugins.detail.${props.pluginId}.settings.error`}
                     title={loadError}
+                    detail={t('common.retry')}
+                    accessibilityHint={t('common.retry')}
+                    onPress={() => void scopedSettings.refresh()}
                     icon={<Icon name="warning-circle" size={29} color={theme.colors.state.danger.foreground} />}
-                    showChevron={false}
-                    mode="info"
+                    showChevron
                 />
             </ItemGroup>
         );
@@ -1208,15 +1283,19 @@ function PluginDetailScopedSettingsSection(props: PluginDetailGenericSettingsSec
                             ? t('settingsProviders.errors.mutationOutcomeUnknownDescription')
                             : groupHasSaveError
                                 ? t('settingsPlugins.genericSettingsSaveError')
-                            : group.description ?? t('settingsPlugins.genericSettingsFooter')}
+                            : group.description ?? t(group.scope.kind === 'account'
+                                ? 'settingsPlugins.genericSettingsAccountFooter'
+                                : 'settingsPlugins.genericSettingsFooter')}
                     >
                         {groupIndex === 0 && loadError ? (
                             <Item
                                 testID={`settings.plugins.detail.${props.pluginId}.settings.error`}
                                 title={loadError}
+                                detail={t('common.retry')}
+                                accessibilityHint={t('common.retry')}
+                                onPress={() => void scopedSettings.refresh()}
                                 icon={<Icon name="warning-circle" size={29} color={theme.colors.state.danger.foreground} />}
-                                showChevron={false}
-                                mode="info"
+                                showChevron
                             />
                         ) : null}
                         {fields.length === 0 ? (
@@ -1297,6 +1376,7 @@ function PluginDetailScopedSettingsSection(props: PluginDetailGenericSettingsSec
                                         field={field}
                                         value={model.draft === true}
                                         disabled={disabled}
+                                        disabledReason={declaredDisabledReason(field, policy)}
                                         onChangeValue={(_changedField, value) => {
                                             commitOrdinaryField({ field, model, hasDraft: true, draft: value });
                                         }}
@@ -1312,6 +1392,7 @@ function PluginDetailScopedSettingsSection(props: PluginDetailGenericSettingsSec
                                         field={field}
                                         value={model.draft}
                                         disabled={disabled}
+                                        disabledReason={declaredDisabledReason(field, policy)}
                                         onChangeValue={(nextValue) => {
                                             commitOrdinaryField({ field, model, hasDraft: true, draft: nextValue });
                                         }}
@@ -1324,6 +1405,7 @@ function PluginDetailScopedSettingsSection(props: PluginDetailGenericSettingsSec
                                         field={field}
                                         value={model.draft}
                                         disabled={disabled}
+                                        disabledReason={declaredDisabledReason(field, policy)}
                                         onChangeValue={(nextValue) => {
                                             commitOrdinaryField({ field, model, hasDraft: true, draft: nextValue });
                                         }}
@@ -1342,6 +1424,8 @@ function PluginDetailScopedSettingsSection(props: PluginDetailGenericSettingsSec
                                     saveFailed={model.error !== null}
                                     persistenceDisabled={!policy.enabled || !scopedOperationsAvailable || loading}
                                     commitDisabled={model.pending}
+                                    disabledReason={declaredDisabledReason(field, policy)}
+                                    scopeLabel={settingsRecordOwnerLabel(group, props.target)}
                                     onChangeText={model.setDraft}
                                     onCommit={() => commitOrdinaryField({ field, model, hasDraft: false })}
                                 />

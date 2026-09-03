@@ -9,6 +9,7 @@ import { bundleWorkspacePackageWithRuntimeDependencies } from '../../../../packa
 import { main as publishSharedDeps } from '../buildSharedDeps.mjs';
 import { bundleWorkspaceDeps } from '../bundleWorkspaceDeps.mjs';
 import { createTempDirSync, removeTempDirSync } from '../../src/testkit/fs/tempDir';
+import { bundledPluginManifestSource } from './testkit/packageLayoutSandbox';
 
 const PLUGIN_PACKAGE_NAME = '@happier-dev/plugins-grok';
 const PLUGIN_WORKSPACE_NAME = 'plugins-grok';
@@ -96,7 +97,7 @@ function createSandbox(): Sandbox {
   writeFile(resolve(pluginWorkspaceDir, 'tsconfig.json'), '{}\n');
   writeFile(
     resolve(pluginWorkspaceDir, 'src', 'manifest.ts'),
-    'export const PLUGIN_MANIFEST = Object.freeze({ id: "grok", runtime: { apiVersion: 1 }, contributes: {} });\n',
+    bundledPluginManifestSource('grok'),
   );
   mkdirSync(destDir, { recursive: true });
 

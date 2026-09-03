@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import type { PluginMarketplaceCatalog } from '../readPluginMarketplaceCatalog';
+import { PluginInstallationReviewSchema } from '@happier-dev/protocol/marketplace/internal';
+import { createPluginInstallationReviewFixture } from '@happier-dev/protocol/testing/pluginInstallationReviewFixture';
+
 import {
     createPluginSettingsViews,
-    formatCatalogSubtitle,
-    formatPluginInstallationReviewBody,
     isPluginMutationVisibleAfterRefresh,
     projectInstalledPluginLifecycleCapabilities,
     readPendingPluginChangeReview,
@@ -15,7 +15,12 @@ import {
     type InstalledPluginEntry,
 } from './pluginMarketplaceModel';
 
-const completeReview = {
+/**
+ * Built from the canonical serialized-review fixture beside the cross-process
+ * schema, so these tests parse and present the exact review shape the CLI
+ * daemon projects instead of a UI-local copy that can drift from it.
+ */
+const completeReview = createPluginInstallationReviewFixture({
     pluginId: 'example.plugin',
     displayName: 'Example',
     version: '2.0.0',
@@ -65,8 +70,8 @@ const completeReview = {
     }],
     rawCredentialAccess: [],
     compatibility: { happier: '^0.2.0', runtimeApiVersion: 1 },
-    updatePolicy: 'automatic',
-} as const;
+    updatePolicy: 'reviewEveryUpdate',
+});
 
 const installed: InstalledPluginEntry = {
     pluginId: 'example.plugin',
@@ -75,11 +80,13 @@ const installed: InstalledPluginEntry = {
     version: '1.0.0',
     enabled: true,
     source: {
-        kind: 'catalog',
-        locator: 'https://marketplace.example.test/catalog.json',
+        kind: 'marketplace',
+        locator: '@example/plugin',
+        trustPolicy: 'prompt',
+        installPolicy: 'managed_install',
     },
     install: {
-        mode: 'catalog',
+        mode: 'managed_install',
         manifestVersion: '1',
     },
     compatibility: {
@@ -87,23 +94,6 @@ const installed: InstalledPluginEntry = {
         diagnostics: [],
     },
     diagnostics: [],
-};
-
-const catalog: PluginMarketplaceCatalog = {
-    sourceUrl: 'https://marketplace.example.test/catalog.json',
-    title: 'Example marketplace',
-    description: null,
-    entries: [{
-        id: 'example.plugin',
-        sourceId: 'marketplace:curated',
-        sourceKind: 'curated',
-        reviewStatus: 'approved',
-        title: 'Example',
-        description: null,
-        version: '2.0.0',
-        installable: false,
-        updateable: true,
-    }],
 };
 
 describe('installed plugin lifecycle capabilities', () => {
@@ -123,6 +113,7 @@ describe('installed plugin lifecycle capabilities', () => {
             canRollback: false,
             canUninstall: false,
             canForgetTrust: false,
+            canUpdate: false,
         });
     });
 
@@ -141,7 +132,21 @@ describe('installed plugin lifecycle capabilities', () => {
             canRollback: true,
             canUninstall: true,
             canForgetTrust: false,
+            // A record whose trust was forgotten has no trusted update channel
+            // left for the daemon update owner to advance.
+            canUpdate: false,
         });
+    });
+
+    it('offers the canonical update action from the installed record alone, with no marketplace listing in sight', () => {
+        expect(projectInstalledPluginLifecycleCapabilities({
+            ...installed,
+            enabled: true,
+            source: {
+                ...installed.source,
+                trustPolicy: 'prompt',
+            },
+        })).toMatchObject({ canUpdate: true });
     });
 });
 
@@ -221,10 +226,6 @@ describe('installed marketplace catalog formatting', () => {
         })).toBeNull();
     });
 
-    it('does not advertise an update from a legacy catalog locator', () => {
-        expect(formatCatalogSubtitle({ catalog, installed })).not.toContain('2.0.0');
-    });
-
     it('parses the bounded staged installation review returned by the daemon capability', () => {
         expect(readPendingPluginChangeReview({
             action: 'install',
@@ -258,7 +259,7 @@ describe('installed marketplace catalog formatting', () => {
             signature: { status: 'notProvided' },
             provenance: { status: 'notProvided' },
             curation: { status: 'notApplicable' },
-            updatePolicy: 'manual',
+            updatePolicy: 'reviewEveryUpdate',
         };
 
         expect(readPendingPluginChangeReview({
@@ -319,12 +320,6 @@ describe('installed marketplace catalog formatting', () => {
 
         expect(parsed?.review.compatibility.blockedNewerVersions).toEqual(
             review.compatibility.blockedNewerVersions,
-        );
-        expect(formatPluginInstallationReviewBody(parsed!.review)).toContain(
-            'Newer versions blocked before download:',
-        );
-        expect(formatPluginInstallationReviewBody(parsed!.review)).toContain(
-            '2.1.0 [plugin_manifest_semantic_invalid]: Plugin manifest requires happier >=9999.0.0',
         );
         expect(readPendingPluginChangeReview({
             action: 'install',
@@ -451,7 +446,6 @@ describe('installed marketplace catalog formatting', () => {
         }, 'install', 'example.plugin');
 
         expect(parsed?.review.compatibility).toEqual({ runtimeApiVersion: 1 });
-        expect(formatPluginInstallationReviewBody(parsed!.review)).toContain('Happier: Not provided');
     });
 
     it('fails closed when any complete review-fact class is absent and renders every semantic class', () => {
@@ -471,25 +465,6 @@ describe('installed marketplace catalog formatting', () => {
             },
         }, 'install', 'example.plugin')).toBeNull();
 
-        const body = formatPluginInstallationReviewBody(completeReview);
-        expect(body).toContain('Identity:');
-        expect(body).toContain('Example Publisher');
-        expect(body).toContain('registry profile registry_private');
-        expect(body).toContain('Verification signals:');
-        expect(body).toContain('Reviewed for the curated channel');
-        expect(body).toContain('Contributions: actions (1)');
-        expect(body).toContain('Required disclosures and cooperative services:');
-        expect(body).toContain('Optional host-owned resources');
-        expect(body).toContain('Compatibility and updates:');
-        expect(body).toContain('Update policy: automatic');
-
-        const notProvidedBody = formatPluginInstallationReviewBody({
-            ...completeReview,
-            signature: { status: 'notProvided' },
-            provenance: { status: 'notProvided' },
-        });
-        expect(notProvidedBody).toContain('Signature: Not provided');
-        expect(notProvidedBody).toContain('Provenance: Not provided');
     });
 
     it('requires raw Voice credential disclosures and states that plugin code can receive and copy them', () => {
@@ -521,10 +496,6 @@ describe('installed marketplace catalog formatting', () => {
         const { rawCredentialAccess: _omittedRawCredentialAccess, ...undisclosedReview } = completeReview;
 
         expect(parsed).not.toBeNull();
-        expect(formatPluginInstallationReviewBody(parsed!.review)).toContain('Raw Voice credential access:');
-        expect(formatPluginInstallationReviewBody(parsed!.review)).toContain(
-            'Plugin code in the web realm receives the selected credential directly and can use or copy it.',
-        );
         expect(readPendingPluginChangeReview({
             action: 'install',
             pluginId: 'example.plugin',
@@ -654,6 +625,46 @@ describe('daemon-issued pending plugin changes', () => {
         },
     });
 
+    it('parses a real CLI-projected review directly, by listing, and through the by-id rejoin', () => {
+        // Built exactly as the CLI daemon projects a review with a declared
+        // request policy: schema-sorted origins and methods, integer priority.
+        const review = createPluginInstallationReviewFixture({
+            requestInterceptors: [{
+                id: 'rewrite-example-api',
+                origins: ['https://a.example.test', 'https://b.example.test'],
+                methods: ['GET', 'POST'],
+                priority: 10,
+            }],
+        });
+        // The value must remain one the CLI can actually emit: it satisfies the
+        // one cross-process installation-review schema.
+        expect(PluginInstallationReviewSchema.safeParse(review).success).toBe(true);
+
+        const installationReview = { pendingChangeId: 'pending-cli-review', review };
+
+        // Direct: the change this app started.
+        expect(readPendingPluginChangeReview({
+            action: 'install',
+            pluginId: review.pluginId,
+            change: { kind: 'reviewRequired', pendingChangeId: 'pending-cli-review', review },
+        }, 'install', review.pluginId)).toEqual(installationReview);
+
+        // By-id rejoin: the same review re-read at the daemon change owner.
+        expect(readPendingPluginChangeStatus({
+            action: 'changeStatus',
+            pendingChangeId: 'pending-cli-review',
+            status: { kind: 'reviewRequired', pendingChangeId: 'pending-cli-review', review },
+        })).toEqual({ kind: 'reviewRequired', installationReview });
+
+        // Enumeration: a change some other client prepared.
+        expect(readPendingPluginChanges(stateWith([
+            { kind: 'reviewRequired', ...installationReview },
+        ]) as never)).toEqual([
+            { kind: 'reviewRequired', installationReview },
+        ]);
+
+    });
+
     it('lists both decision shapes and an already-decided change', () => {
         expect(readPendingPluginChanges(
             stateWith([sourceRootEntry, installEntry, { kind: 'applying', pendingChangeId: 'pending-3' }]) as never,
@@ -708,7 +719,24 @@ describe('daemon-issued pending plugin changes', () => {
             kind: 'terminal',
             pendingChangeId: 'pending-1',
             result: { kind: 'committed', pluginId: 'example.plugin' },
-        })).toEqual({ kind: 'terminal', pendingChangeId: 'pending-1', outcome: 'committed' });
+        })).toEqual({
+            kind: 'terminal',
+            pendingChangeId: 'pending-1',
+            outcome: 'committed',
+            pluginId: 'example.plugin',
+        });
+        // A terminal outcome that names no plugin still reconciles by pending
+        // id alone; the affected-plugin identity stays null rather than absent.
+        expect(status({
+            kind: 'terminal',
+            pendingChangeId: 'pending-1',
+            result: { kind: 'cancelled' },
+        })).toEqual({
+            kind: 'terminal',
+            pendingChangeId: 'pending-1',
+            outcome: 'cancelled',
+            pluginId: null,
+        });
         expect(status({ kind: 'somethingElse', pendingChangeId: 'pending-1' })).toBeNull();
         // A status read is never confused with the develop action's envelope.
         expect(readPendingPluginChangeStatus({ action: 'develop', status: sourceRootEntry })).toBeNull();

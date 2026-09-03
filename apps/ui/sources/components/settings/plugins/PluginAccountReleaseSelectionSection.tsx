@@ -21,10 +21,8 @@ type ControllerLifetime = {
 function showResult(result: PluginAccountReleaseSelectionControllerResult): void {
     switch (result.kind) {
         case 'selected':
-            Modal.alert(
-                t('common.success'),
-                t('settingsPlugins.accountReleaseSelection.selectedBody'),
-            );
+            // Availability projects the selected release back into this
+            // section; that visible state is the success confirmation.
             return;
         case 'conflict':
             Modal.alert(
@@ -56,7 +54,12 @@ function showResult(result: PluginAccountReleaseSelectionControllerResult): void
  */
 export function PluginAccountReleaseSelectionSection(props: Readonly<{
     pluginId: string;
-    version: string;
+    /**
+     * The machine-observed release this Account can select, or `null` when no
+     * machine currently holds the plugin. Account hosting outlives every
+     * installation, so its lifecycle stays reachable without one.
+     */
+    version: string | null;
     reader: PluginAccountAvailabilityReader | null;
     /** The live raw daemon projection, if this Account action can use it. */
     projection: PluginProjectionV2 | null;
@@ -66,7 +69,7 @@ export function PluginAccountReleaseSelectionSection(props: Readonly<{
         machineId: string | null;
     }>;
     testID: string;
-}>): React.ReactElement {
+}>): React.ReactElement | null {
     const [pending, setPending] = React.useState(false);
     const [hostedStatus, setHostedStatus] = React.useState<ReturnType<PluginAccountReleaseSelectionController['readHostedArtifactStatus']>>('unavailable');
     const controllerLifetimeRef = React.useRef<ControllerLifetime | null>(null);
@@ -99,14 +102,22 @@ export function PluginAccountReleaseSelectionSection(props: Readonly<{
 
     const runHostedAction = React.useCallback((action: (
         controller: PluginAccountReleaseSelectionController,
-    ) => Promise<Readonly<{ kind: string }>>) => {
+    ) => Promise<Readonly<{ kind: 'updated' | 'conflict' | 'unavailable' }>>) => {
         const lifetime = controllerLifetimeRef.current;
         if (!lifetime || pending || lifetime.controller.isPending()) return;
         setPending(true);
         void action(lifetime.controller).then((result) => {
             if (!lifetime.current || controllerLifetimeRef.current !== lifetime) return;
-            if (result.kind !== 'updated') {
-                Modal.alert(t('common.error'), t('common.requestFailed'));
+            if (result.kind === 'conflict') {
+                Modal.alert(
+                    t('settingsPlugins.accountReleaseSelection.conflictTitle'),
+                    t('settingsPlugins.accountReleaseSelection.conflictBody'),
+                );
+            } else if (result.kind === 'unavailable') {
+                Modal.alert(
+                    t('settingsPlugins.accountReleaseSelection.unavailableTitle'),
+                    t('settingsPlugins.accountReleaseSelection.unavailableBody'),
+                );
             }
         }).catch(() => {
             if (lifetime.current && controllerLifetimeRef.current === lifetime) {
@@ -117,15 +128,16 @@ export function PluginAccountReleaseSelectionSection(props: Readonly<{
         });
     }, [pending]);
 
+    const version = props.version;
     const selectRelease = React.useCallback(() => {
         const lifetime = controllerLifetimeRef.current;
-        if (!lifetime || pending || lifetime.controller.isPending()) return;
+        if (!lifetime || version === null || pending || lifetime.controller.isPending()) return;
         setPending(true);
         void (async () => {
             try {
                 const result = await lifetime.controller.select({
                     pluginId: props.pluginId,
-                    version: props.version,
+                    version,
                     reader: props.reader,
                     projection: props.projection,
                     daemon: props.daemon,
@@ -142,22 +154,28 @@ export function PluginAccountReleaseSelectionSection(props: Readonly<{
                 if (lifetime.current && controllerLifetimeRef.current === lifetime) setPending(false);
             }
         })();
-    }, [pending, props.daemon, props.pluginId, props.projection, props.reader, props.version]);
+    }, [pending, props.daemon, props.pluginId, props.projection, props.reader, version]);
+
+    if (version === null && hostedStatus === 'unavailable') return null;
 
     return (
         <ItemGroup
             title={t('settingsPlugins.accountReleaseSelection.groupTitle')}
-            footer={t('settingsPlugins.accountReleaseSelection.groupFooter')}
+            footer={version === null
+                ? t('settingsPlugins.accountReleaseSelection.hostedGroupFooter')
+                : t('settingsPlugins.accountReleaseSelection.groupFooter')}
         >
-            <Item
-                testID={props.testID}
-                title={t('settingsPlugins.accountReleaseSelection.entryTitle')}
-                subtitle={t('settingsPlugins.accountReleaseSelection.entrySubtitle', { version: props.version })}
-                onPress={selectRelease}
-                disabled={pending}
-                loading={pending}
-                showChevron={false}
-            />
+            {version !== null ? (
+                <Item
+                    testID={props.testID}
+                    title={t('settingsPlugins.accountReleaseSelection.entryTitle')}
+                    subtitle={t('settingsPlugins.accountReleaseSelection.entrySubtitle', { version })}
+                    onPress={selectRelease}
+                    disabled={pending}
+                    loading={pending}
+                    showChevron={false}
+                />
+            ) : null}
             {hostedStatus !== 'unavailable' ? (
                 <Item
                     testID={`${props.testID}.hosting`}

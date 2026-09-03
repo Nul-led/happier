@@ -2,6 +2,7 @@ import * as React from 'react';
 import { act, create } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MachineAdministrationTargetSelectionV1 } from '@/sync/domains/machines/administration/useTargetSelection';
+import { t } from '@/text';
 
 const mocks = vi.hoisted(() => ({
     get: vi.fn(),
@@ -9,6 +10,8 @@ const mocks = vi.hoisted(() => ({
     prompt: vi.fn(),
     confirm: vi.fn(),
     alert: vi.fn(),
+    alertAsync: vi.fn(),
+    show: vi.fn(),
     machineId: 'machine-a' as string | null,
     serverId: 'server-a' as string | null,
 }));
@@ -23,16 +26,112 @@ vi.mock('@/sync/ops/machineNpmRegistryProfiles', () => ({
     machineNpmRegistryProfilesMutate: mocks.mutate,
 }));
 vi.mock('@/modal', async () => (await import('@/dev/testkit/mocks/modal')).createModalModuleMock({
-    spies: { prompt: mocks.prompt, confirm: mocks.confirm, alert: mocks.alert },
+    spies: {
+        prompt: mocks.prompt,
+        confirm: mocks.confirm,
+        alert: mocks.alert,
+        alertAsync: mocks.alertAsync,
+        show: mocks.show,
+    },
 }).module);
 vi.mock('@/components/ui/lists/ItemGroup', async () => ({
     ItemGroup: (await import('@/dev/testkit/mocks/components')).createPassThroughComponent('ItemGroup'),
 }));
-vi.mock('@/components/ui/lists/Item', async () => ({
-    Item: (await import('@/dev/testkit/mocks/components')).createPassThroughComponent('Item'),
+// A row's accessory is part of the row, so the stand-in renders it rather than
+// leaving the row's actions outside the tree the assertions can see.
+vi.mock('@/components/ui/lists/Item', () => ({
+    Item: (props: Readonly<{ rightElement?: React.ReactNode; children?: React.ReactNode }>) =>
+        React.createElement('Item', props, props.rightElement ?? props.children ?? null),
+}));
+vi.mock('@/components/ui/lists/ItemRowActions', async () => ({
+    ItemRowActions: (await import('@/dev/testkit/mocks/components')).createPassThroughComponent('ItemRowActions'),
+}));
+// Only the popover machinery is stood in for: the trigger row it renders is the
+// real one, so a source's row keeps its own title, state and disabled logic.
+vi.mock('@/components/ui/forms/dropdown/DropdownMenu', () => ({
+    DropdownMenu: (props: Readonly<{
+        open?: boolean;
+        onOpenChange?: (next: boolean) => void;
+        trigger?: unknown;
+    }>) => React.createElement(
+        'DropdownMenu',
+        props,
+        typeof props.trigger === 'function'
+            ? (props.trigger as (state: { open: boolean; toggle: () => void }) => React.ReactNode)({
+                open: props.open === true,
+                toggle: () => props.onOpenChange?.(props.open !== true),
+            })
+            : null,
+    ),
 }));
 
 import { NpmRegistryProfilesSection } from './NpmRegistryProfilesSection';
+
+type RegistryRowAction = Readonly<{
+    id: string;
+    title: string;
+    accessibilityLabel?: string;
+    disabled: boolean;
+    onPress: () => void;
+}>;
+
+/** The actions carried by one profile's row. */
+function profileActions(
+    tree: ReturnType<typeof create>,
+    profileId: string,
+): readonly RegistryRowAction[] {
+    return tree.root.findAllByType('ItemRowActions' as never)
+        .flatMap((node) => (
+            (node.props as Readonly<{ overflowTriggerTestID?: string }>).overflowTriggerTestID
+                === `settings.plugins.registries.profile.${profileId}.actions.overflow`
+                ? (node.props as Readonly<{ actions?: readonly RegistryRowAction[] }>).actions ?? []
+                : []
+        ));
+}
+
+function profileAction(
+    tree: ReturnType<typeof create>,
+    profileId: string,
+    actionId: string,
+): RegistryRowAction | undefined {
+    return profileActions(tree, profileId).find((action) => action.id === actionId);
+}
+
+type BindingMenuItem = Readonly<{ id: string; testID?: string; title: string }>;
+
+/** The selection a marketplace source's single row offers for its registry. */
+function bindingMenu(tree: ReturnType<typeof create>, sourceId: string): Readonly<{
+    selectedId: string;
+    items: readonly BindingMenuItem[];
+    select: (profileId: string) => void;
+}> {
+    const node = tree.root.findByProps({
+        testID: `settings.plugins.registries.marketplaceBinding.${sourceId}`,
+    });
+    const props = node.props as Readonly<{
+        selectedId: string;
+        items: readonly BindingMenuItem[];
+        onSelect: (profileId: string) => void;
+    }>;
+    return { selectedId: props.selectedId, items: props.items, select: props.onSelect };
+}
+
+/**
+ * Answers the profile form the way a reader who finished it would.
+ *
+ * The form is a modal the host owns, so the test drives it through that
+ * boundary and leaves the form's own contract to its focused tests.
+ */
+function answerProfileForm(profile: Readonly<Record<string, unknown>> | null): void {
+    mocks.show.mockImplementation((config: Readonly<{
+        props?: Readonly<{ onResolve?: (value: unknown) => void }>;
+        onRequestClose?: () => void;
+    }>) => {
+        if (profile === null) config.onRequestClose?.();
+        else config.props?.onResolve?.(profile);
+        return 'npm-registry-profile-editor';
+    });
+}
 
 type NpmRegistryProfilesTargetSelection = Pick<
     MachineAdministrationTargetSelectionV1,
@@ -130,6 +229,8 @@ describe('NpmRegistryProfilesSection', () => {
         mocks.prompt.mockReset();
         mocks.confirm.mockReset().mockResolvedValue(true);
         mocks.alert.mockReset();
+        mocks.alertAsync.mockReset();
+        mocks.show.mockReset().mockReturnValue('npm-registry-profile-editor');
     });
 
     it('loads secret-free profiles and exposes a sign-in action', async () => {
@@ -139,7 +240,14 @@ describe('NpmRegistryProfilesSection', () => {
         expect(mocks.get).toHaveBeenCalledWith('machine-a', { serverId: 'server-a' });
         const profile = tree.root.findByProps({ testID: 'settings.plugins.registries.profile.registry_acme' });
         expect(profile.props.subtitle).toContain('https://registry.acme.test');
-        expect(tree.root.findByProps({ testID: 'settings.plugins.registries.login.registry_acme' })).toBeTruthy();
+        // One profile is one row: edit, sign in, test and remove are that row's
+        // own actions rather than four more rows about the same registry.
+        expect(profileActions(tree, 'registry_acme').map((action) => action.id))
+            .toEqual(['edit', 'login', 'test', 'remove']);
+        expect(tree.root.findAllByProps({ testID: 'settings.plugins.registries.edit.registry_acme' })).toHaveLength(0);
+        // The repeated icon controls name the profile they act on.
+        expect(profileAction(tree, 'registry_acme', 'login')?.accessibilityLabel)
+            .toContain('Acme');
     });
 
     it('uses the supplied fresh exact target rather than deriving the primary machine', async () => {
@@ -170,12 +278,12 @@ describe('NpmRegistryProfilesSection', () => {
             tree = create(<TestSection daemonOperationsAvailable targetSelection={targetSelection} />);
         });
         await flush();
-        const testItem = tree.root.findByProps({ testID: 'settings.plugins.registries.test.registry_acme' });
-        expect(testItem.props.disabled).toBe(false);
+        const testAction = profileAction(tree, 'registry_acme', 'test');
+        expect(testAction?.disabled).toBe(false);
         const callsBeforeMutation = resolveExecutionTarget.mock.calls.length;
 
         await act(async () => {
-            testItem.props.onPress();
+            testAction?.onPress();
         });
         await flush();
 
@@ -205,7 +313,7 @@ describe('NpmRegistryProfilesSection', () => {
 
         current = null;
         await act(async () => {
-            tree.root.findByProps({ testID: 'settings.plugins.registries.test.registry_acme' }).props.onPress();
+            profileAction(tree, 'registry_acme', 'test')?.onPress();
         });
         await flush();
 
@@ -269,8 +377,18 @@ describe('NpmRegistryProfilesSection', () => {
             />);
         });
         await flush();
+        // One source is one row: its registry is chosen from that row's own
+        // selection rather than from a row per source-and-profile pair.
+        expect(tree.root.findAllByProps({
+            testID: 'settings.plugins.registries.marketplaceSource.marketplace:private',
+        }).length).toBeGreaterThan(0);
+        const unbound = bindingMenu(tree, 'marketplace:private');
+        expect(unbound.items.map((item) => item.testID)).toEqual([
+            'settings.plugins.registries.unbind.marketplace:private',
+            'settings.plugins.registries.bind.marketplace:private.registry_acme',
+        ]);
         await act(async () => {
-            await tree.root.findByProps({ testID: 'settings.plugins.registries.bind.marketplace:private.registry_acme' }).props.onPress();
+            unbound.select('registry_acme');
         });
         expect(setBinding).toHaveBeenCalledWith('marketplace:private', 'registry_acme');
 
@@ -281,8 +399,10 @@ describe('NpmRegistryProfilesSection', () => {
                 onSetMarketplaceSourceProfile={setBinding}
             />);
         });
+        const bound = bindingMenu(tree, 'marketplace:private');
+        expect(bound.selectedId).toBe('registry_acme');
         await act(async () => {
-            await tree.root.findByProps({ testID: 'settings.plugins.registries.unbind.marketplace:private' }).props.onPress();
+            bound.select('');
         });
         expect(setBinding).toHaveBeenLastCalledWith('marketplace:private', null);
     });
@@ -306,7 +426,7 @@ describe('NpmRegistryProfilesSection', () => {
         });
         await flush();
         await act(async () => {
-            await tree.root.findByProps({ testID: 'settings.plugins.registries.unbind.marketplace:private' }).props.onPress();
+            bindingMenu(tree, 'marketplace:private').select('');
         });
         expect(setBinding).toHaveBeenCalledWith('marketplace:private', null);
     });
@@ -316,7 +436,7 @@ describe('NpmRegistryProfilesSection', () => {
         let tree!: ReturnType<typeof create>;
         await act(async () => { tree = create(<TestSection daemonOperationsAvailable />); });
         await flush();
-        await act(async () => { await tree.root.findByProps({ testID: 'settings.plugins.registries.login.registry_acme' }).props.onPress(); });
+        await act(async () => { await profileAction(tree, 'registry_acme', 'login')?.onPress(); });
         expect(mocks.prompt).toHaveBeenCalledWith(expect.any(String), expect.any(String), expect.objectContaining({ inputType: 'secure-text' }));
         expect(mocks.mutate).toHaveBeenCalledWith('machine-a', expect.objectContaining({
             action: 'login', credential: { kind: 'bearer_token', secret: 'boundary-secret' }, expectedRevision: 2,
@@ -358,17 +478,78 @@ describe('NpmRegistryProfilesSection', () => {
         expect(tree.root.findByProps({ testID: 'settings.plugins.registries.empty' })).toBeTruthy();
     });
 
+    it('abandons a new registry profile when the form is dismissed', async () => {
+        answerProfileForm(null);
+        let tree!: ReturnType<typeof create>;
+        await act(async () => { tree = create(<TestSection daemonOperationsAvailable />); });
+        await flush();
+
+        await act(async () => { await tree.root.findByProps({ testID: 'settings.plugins.registries.add' }).props.onPress(); });
+
+        // One form, not a chain of prompts, and nothing is sent from a profile
+        // the reader never finished.
+        expect(mocks.show).toHaveBeenCalledTimes(1);
+        expect(mocks.prompt).not.toHaveBeenCalled();
+        expect(mocks.mutate).not.toHaveBeenCalled();
+    });
+
+    it('adds the whole profile the form produced through one revisioned mutation', async () => {
+        answerProfileForm({
+            displayName: 'Beta',
+            origin: 'https://registry.beta.test',
+            scopes: ['@beta'],
+            useAsDefault: false,
+            allowPrivateNetwork: true,
+        });
+        let tree!: ReturnType<typeof create>;
+        await act(async () => { tree = create(<TestSection daemonOperationsAvailable />); });
+        await flush();
+
+        await act(async () => { await tree.root.findByProps({ testID: 'settings.plugins.registries.add' }).props.onPress(); });
+
+        expect(mocks.show).toHaveBeenCalledTimes(1);
+        expect(mocks.mutate).toHaveBeenCalledTimes(1);
+        expect(mocks.mutate).toHaveBeenCalledWith('machine-a', expect.objectContaining({
+            action: 'add',
+            expectedRevision: 2,
+            profile: {
+                displayName: 'Beta',
+                origin: 'https://registry.beta.test',
+                scopes: ['@beta'],
+                useAsDefault: false,
+                allowPrivateNetwork: true,
+            },
+        }), { serverId: 'server-a' });
+    });
+
     it('edits profile routing and network policy through one revisioned update', async () => {
-        mocks.prompt.mockResolvedValueOnce('Acme updated').mockResolvedValueOnce('@acme, @team');
-        mocks.confirm.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+        answerProfileForm({
+            displayName: 'Acme updated',
+            origin: 'https://registry.acme.test',
+            scopes: ['@acme', '@team'],
+            useAsDefault: true,
+            allowPrivateNetwork: false,
+        });
         let tree!: ReturnType<typeof create>;
         await act(async () => { tree = create(<TestSection daemonOperationsAvailable />); });
         await flush();
 
         await act(async () => {
-            await tree.root.findByProps({ testID: 'settings.plugins.registries.edit.registry_acme' }).props.onPress();
+            await profileAction(tree, 'registry_acme', 'edit')?.onPress();
         });
 
+        // The form opened on the profile as it stands, so the reader reviews
+        // rather than retypes it.
+        expect(mocks.show).toHaveBeenCalledWith(expect.objectContaining({
+            props: expect.objectContaining({
+                mode: 'edit',
+                subject: expect.objectContaining({
+                    displayName: 'Acme',
+                    origin: 'https://registry.acme.test',
+                    scopes: ['@acme'],
+                }),
+            }),
+        }));
         expect(mocks.mutate).toHaveBeenCalledWith('machine-a', expect.objectContaining({
             action: 'update',
             profileId: 'registry_acme',
@@ -412,20 +593,73 @@ describe('NpmRegistryProfilesSection', () => {
         await act(async () => { tree = create(<TestSection daemonOperationsAvailable />); });
         await flush();
         await act(async () => {
-            await tree.root.findByProps({ testID: 'settings.plugins.registries.login.registry_acme' }).props.onPress();
+            await profileAction(tree, 'registry_acme', 'login')?.onPress();
         });
         expect(mocks.alert).toHaveBeenCalled();
-        expect(tree.root.findByProps({ testID: 'settings.plugins.registries.login.registry_acme' }).props.loading).toBe(false);
+        // Progress belongs to the profile row, and it is released on failure.
+        expect(tree.root.findByProps({ testID: 'settings.plugins.registries.profile.registry_acme' }).props.loading)
+            .toBe(false);
     });
 
-    it('rejects an invalid registry origin before collecting or sending more fields', async () => {
-        mocks.prompt.mockResolvedValueOnce('not-a-registry-origin');
+    it('refreshes and presents an issued credential mutation with an unknown outcome without replaying it', async () => {
+        mocks.prompt.mockResolvedValueOnce('boundary-secret');
+        mocks.mutate.mockResolvedValueOnce({ status: 'outcomeUnknown' });
+        mocks.get.mockResolvedValueOnce({ status: 'success', snapshot: snapshot() })
+            .mockResolvedValueOnce({ status: 'success', snapshot: snapshot('registry_acme', 'Acme', true) });
         let tree!: ReturnType<typeof create>;
         await act(async () => { tree = create(<TestSection daemonOperationsAvailable />); });
         await flush();
+
+        await act(async () => {
+            await profileAction(tree, 'registry_acme', 'login')?.onPress();
+        });
+        await flush();
+
+        expect(mocks.mutate).toHaveBeenCalledTimes(1);
+        expect(mocks.get).toHaveBeenCalledTimes(2);
+        expect(mocks.alert).toHaveBeenCalledWith(
+            t('settingsPlugins.sourceAdministration.operationOutcomeUnknownTitle'),
+            t('settingsPlugins.sourceAdministration.operationOutcomeUnknownBody'),
+        );
+        expect(profileAction(tree, 'registry_acme', 'logout')).toBeTruthy();
+    });
+
+    it('presents a revision conflict as changed state after refreshing the canonical snapshot', async () => {
+        mocks.prompt.mockResolvedValueOnce('boundary-secret');
+        mocks.mutate.mockResolvedValueOnce({
+            status: 'error', code: 'revision_conflict', retryable: false, currentRevision: 3,
+        });
+        let tree!: ReturnType<typeof create>;
+        await act(async () => { tree = create(<TestSection daemonOperationsAvailable />); });
+        await flush();
+
+        await act(async () => {
+            await profileAction(tree, 'registry_acme', 'login')?.onPress();
+        });
+
+        expect(mocks.get).toHaveBeenCalledTimes(2);
+        expect(mocks.alert).toHaveBeenCalledWith(
+            t('settingsPlugins.registriesConflictTitle'),
+            t('settingsPlugins.registriesConflictBody'),
+        );
+    });
+
+    it('opens no profile form and sends nothing while the daemon is unavailable', async () => {
+        answerProfileForm({
+            displayName: 'Beta',
+            origin: 'https://registry.beta.test',
+            scopes: [],
+            useAsDefault: false,
+            allowPrivateNetwork: false,
+        });
+        let tree!: ReturnType<typeof create>;
+        await act(async () => { tree = create(<TestSection daemonOperationsAvailable />); });
+        await flush();
+        await act(async () => { tree.update(<TestSection daemonOperationsAvailable={false} />); });
+
         await act(async () => { await tree.root.findByProps({ testID: 'settings.plugins.registries.add' }).props.onPress(); });
-        expect(mocks.alert).toHaveBeenCalled();
-        expect(mocks.prompt).toHaveBeenCalledTimes(1);
+
+        expect(mocks.show).not.toHaveBeenCalled();
         expect(mocks.mutate).not.toHaveBeenCalled();
     });
 
@@ -446,21 +680,22 @@ describe('NpmRegistryProfilesSection', () => {
 
         expect(mocks.get).toHaveBeenCalledTimes(1);
         expect(tree.root.findByProps({ testID: 'settings.plugins.registries.profile.registry_acme' })).toBeTruthy();
-        for (const testID of [
-            'settings.plugins.registries.add',
-            'settings.plugins.registries.edit.registry_acme',
-            'settings.plugins.registries.login.registry_acme',
-            'settings.plugins.registries.test.registry_acme',
-            'settings.plugins.registries.remove.registry_acme',
-            'settings.plugins.registries.logout.registry_beta',
+        expect(tree.root.findByProps({ testID: 'settings.plugins.registries.add' }).props.disabled).toBe(true);
+        for (const action of [
+            ...profileActions(tree, 'registry_acme'),
+            ...profileActions(tree, 'registry_beta'),
         ]) {
-            expect(tree.root.findByProps({ testID }).props.disabled).toBe(true);
+            expect(action.disabled).toBe(true);
         }
+        expect(profileActions(tree, 'registry_acme').map((action) => action.id))
+            .toEqual(['edit', 'login', 'test', 'remove']);
+        expect(profileActions(tree, 'registry_beta').map((action) => action.id))
+            .toEqual(['edit', 'logout', 'test', 'remove']);
 
         await act(async () => {
-            await tree.root.findByProps({ testID: 'settings.plugins.registries.login.registry_acme' }).props.onPress();
-            await tree.root.findByProps({ testID: 'settings.plugins.registries.test.registry_acme' }).props.onPress();
-            await tree.root.findByProps({ testID: 'settings.plugins.registries.logout.registry_beta' }).props.onPress();
+            await profileAction(tree, 'registry_acme', 'login')?.onPress();
+            await profileAction(tree, 'registry_acme', 'test')?.onPress();
+            await profileAction(tree, 'registry_beta', 'logout')?.onPress();
         });
         expect(mocks.prompt).not.toHaveBeenCalled();
         expect(mocks.mutate).not.toHaveBeenCalled();
@@ -495,7 +730,7 @@ describe('NpmRegistryProfilesSection', () => {
         await act(async () => { tree = create(<TestSection daemonOperationsAvailable />); });
         await flush();
         await act(async () => {
-            void tree.root.findByProps({ testID: 'settings.plugins.registries.login.registry_acme' }).props.onPress();
+            void profileAction(tree, 'registry_acme', 'login')?.onPress();
         });
         await flush();
         expect(mocks.mutate).toHaveBeenCalledTimes(1);
@@ -552,9 +787,7 @@ describe('NpmRegistryProfilesSection', () => {
         });
         await flush();
         await act(async () => {
-            void tree.root.findByProps({
-                testID: 'settings.plugins.registries.bind.marketplace:private.registry_acme',
-            }).props.onPress();
+            bindingMenu(tree, 'marketplace:private').select('registry_acme');
         });
 
         mocks.machineId = 'machine-b';
@@ -566,25 +799,27 @@ describe('NpmRegistryProfilesSection', () => {
             />);
         });
         await flush();
-        const betaBindingTestId = 'settings.plugins.registries.bind.marketplace:private.registry_beta';
-        expect(tree.root.findByProps({ testID: betaBindingTestId }).props.disabled).toBe(false);
+        const sourceRowTestId = 'settings.plugins.registries.marketplaceSource.marketplace:private';
+        expect(bindingMenu(tree, 'marketplace:private').items.map((item) => item.id))
+            .toEqual(['', 'registry_beta']);
+        expect(tree.root.findByProps({ testID: sourceRowTestId }).props.disabled).toBe(false);
 
         await act(async () => {
-            void tree.root.findByProps({ testID: betaBindingTestId }).props.onPress();
+            bindingMenu(tree, 'marketplace:private').select('registry_beta');
         });
         expect(setBinding).toHaveBeenCalledTimes(2);
-        expect(tree.root.findByProps({ testID: betaBindingTestId }).props.disabled).toBe(true);
+        expect(tree.root.findByProps({ testID: sourceRowTestId }).props.disabled).toBe(true);
 
         await act(async () => {
             resolveFirstBinding();
             await firstBinding;
         });
-        expect(tree.root.findByProps({ testID: betaBindingTestId }).props.disabled).toBe(true);
+        expect(tree.root.findByProps({ testID: sourceRowTestId }).props.disabled).toBe(true);
 
         await act(async () => {
             resolveSecondBinding();
             await secondBinding;
         });
-        expect(tree.root.findByProps({ testID: betaBindingTestId }).props.disabled).toBe(false);
+        expect(tree.root.findByProps({ testID: sourceRowTestId }).props.disabled).toBe(false);
     });
 });

@@ -1159,7 +1159,7 @@ export function DeclarativePluginSurface(props: Readonly<{
                         <HappierPressable
                             testID={`plugin-declarative-field-delete:${nodePath}`}
                             accessibilityRole="button"
-                            accessibilityLabel={t('common.delete')}
+                            accessibilityLabel={`${t('settingsPlugins.secretFieldActions.delete')}: ${label}`}
                             disabled={disabled}
                             onPress={() => commitSetting({ kind: 'delete' })}
                             style={(state) => ({
@@ -1181,7 +1181,7 @@ export function DeclarativePluginSurface(props: Readonly<{
                     <HappierPressable
                         testID={`plugin-declarative-field-save:${nodePath}`}
                         accessibilityRole="button"
-                        accessibilityLabel={t('common.save')}
+                        accessibilityLabel={`${t('common.save')}: ${label}`}
                         disabled={!canSave}
                         onPress={() => {
                             if (

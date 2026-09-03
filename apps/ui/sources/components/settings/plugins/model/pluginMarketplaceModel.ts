@@ -1,18 +1,13 @@
-import {
-    ConnectedAccountMaterializationRequestSchema,
-    ConnectedAccountPurposeIdSchema,
-    PluginContributionIdentityV1Schema,
-    VoiceCredentialAccessPhaseSchema,
-    VoiceCredentialSlotIdSchema,
-    type ConnectedAccountMaterializationRequest,
-} from '@happier-dev/protocol';
-
 import type { DaemonMergedProjectionPhase } from '@/agents/backendCatalog/useDaemonMergedProjectionInputs';
 import type { useMachineCapabilitiesCache } from '@/hooks/server/useMachineCapabilitiesCache';
 import { type CapabilityId } from '@/sync/api/capabilities/capabilitiesProtocol';
 import { t } from '@/text';
-
-import type { PluginMarketplaceCatalog } from '../readPluginMarketplaceCatalog';
+import {
+    PluginChangePendingReviewResultSchema,
+    type PluginDevelopmentSourceRootReview,
+    type PluginInstallationReview,
+} from '@happier-dev/protocol/marketplace/internal';
+import type { PluginUpdatePolicyV1 } from '@happier-dev/protocol/marketplace';
 
 export const MARKETPLACE_CAPABILITY_ID = 'tool.plugins' as CapabilityId;
 
@@ -40,6 +35,16 @@ export type InstalledPluginDiagnostic = Readonly<{
     message: string;
 }>;
 
+export type InstalledPluginDistribution =
+    | Readonly<{ kind: 'npm'; registryOrigin: string; registryProfileId?: string; packageName: string }>
+    | Readonly<{ kind: 'localPath'; canonicalPath: string }>
+    | Readonly<{
+        kind: 'archive';
+        source: Readonly<{ kind: 'localFile'; canonicalPath: string }>
+            | Readonly<{ kind: 'remoteUrl'; canonicalUrl: string }>;
+        integrity: string;
+    }>;
+
 export type InstalledPluginEntry = Readonly<{
     pluginId: string;
     desiredGeneration?: string | null;
@@ -63,6 +68,13 @@ export type InstalledPluginEntry = Readonly<{
         mode: string;
         manifestVersion: string;
         installedPath?: string | null;
+        updatePolicy?: PluginUpdatePolicyV1;
+        trust?: Readonly<{
+            pluginId: string;
+            distribution: InstalledPluginDistribution;
+            state: 'trusted';
+            approvedAtMs: number;
+        }>;
     }>;
     compatibility: Readonly<{
         status: string;
@@ -77,6 +89,18 @@ export type InstalledPluginLifecycleCapabilities = Readonly<{
     canRollback: boolean;
     canUninstall: boolean;
     canForgetTrust: boolean;
+    /**
+     * Whether the canonical daemon update action can be offered from the
+     * installed record alone.
+     *
+     * The daemon update owner reads the installed record's trusted update
+     * channel; a record with no host trust left has no channel to advance, and
+     * a bundled entry ships with the host. Whether that channel is *pinned* is
+     * not part of the installed capability projection, so a pinned record still
+     * reaches the daemon and is refused there with its own explanation rather
+     * than being silently hidden here.
+     */
+    canUpdate: boolean;
 }>;
 
 /**
@@ -89,12 +113,14 @@ export function projectInstalledPluginLifecycleCapabilities(
     installed: InstalledPluginEntry,
 ): InstalledPluginLifecycleCapabilities {
     const userManaged = installed.source.kind !== 'bundled';
+    const trusted = installed.source.trustPolicy !== 'untrusted';
     return Object.freeze({
         canEnable: userManaged && !installed.enabled,
         canDisable: userManaged && installed.enabled,
         canRollback: userManaged && installed.rollbackAvailability === 'available',
         canUninstall: userManaged,
-        canForgetTrust: userManaged && installed.source.trustPolicy !== 'untrusted',
+        canForgetTrust: userManaged && trusted,
+        canUpdate: userManaged && trusted,
     });
 }
 
@@ -113,9 +139,10 @@ export type DevelopmentPluginEntry = Readonly<{
 }>;
 
 export type PluginMarketplaceActionRequest = Readonly<{
-    method: 'install' | 'update' | 'rollback' | 'uninstall' | 'forgetTrust' | 'enable' | 'disable';
+    method: 'install' | 'update' | 'setUpdatePolicy' | 'rollback' | 'uninstall' | 'forgetTrust' | 'enable' | 'disable';
     pluginId: string;
     sourceId?: string;
+    policy?: PluginUpdatePolicyV1;
 }>;
 
 /**
@@ -200,111 +227,18 @@ export function isPluginMutationVisibleAfterRefresh(params: Readonly<{
         || params.after.appliedGeneration !== params.before.appliedGeneration;
 }
 
-type ReviewRawCredentialSourceClass =
-    | Readonly<{
-        kind: 'savedSecret';
-        secretKinds: readonly ('apiKey' | 'token' | 'password' | 'other')[];
-    }>
-    | Readonly<{
-        kind: 'connectedAccount';
-        service: Readonly<{ pluginId: string; localId: string }>;
-    }>;
-
-type ReviewRawCredentialAccess = Readonly<{
-    accessMode: 'raw';
-    contribution: Readonly<{ pluginId: string; localId: string }>;
-    credentialSlot: Readonly<{ id: string; title: string; purpose: string }>;
-    sourceClass: ReviewRawCredentialSourceClass;
-    realm: 'web' | 'ios' | 'android' | 'daemon';
-    phase: 'settings' | 'prepare' | 'connection' | 'speech';
-    request: ConnectedAccountMaterializationRequest;
-}>;
-
+/**
+ * UI-local decision projection over the protocol-owned serialized review.
+ *
+ * The wire schema for the review facts themselves is
+ * `PluginInstallationReviewSchema` in `@happier-dev/protocol/marketplace/internal`:
+ * the daemon projects it, the CLI control client parses it, and this model
+ * parses the exact same schema. Only the daemon-issued pending id beside the
+ * parsed review is a UI-local carrier.
+ */
 export type PendingPluginChangeReview = Readonly<{
     pendingChangeId: string;
-    review: Readonly<{
-        pluginId: string;
-        displayName: string;
-        version: string;
-        packageIdentity: Readonly<{ name: string | null; version: string }>;
-        publisherIdentity:
-            | Readonly<{ status: 'unavailable' }>
-            | Readonly<{ status: 'unverified'; id: string; displayName: string }>;
-        source:
-            | Readonly<{
-                kind: 'path';
-                locator: string;
-            }>
-            | Readonly<{
-                kind: 'archive';
-                locator: string;
-                integrity: string;
-                integrityBasis: 'observed' | 'expected';
-            }>
-            | Readonly<{
-                kind: 'npm';
-                locator: string;
-                integrity: string;
-                integrityBasis: 'expected';
-            }>;
-        updateChannel:
-            | Readonly<{ kind: 'path'; locator: string; development: boolean }>
-            | Readonly<{ kind: 'archive'; locator: string }>
-            | Readonly<{
-                kind: 'npm';
-                packageName: string;
-                registryOrigin: string;
-                registryProfileId?: string;
-                marketplaceSource?: Readonly<{
-                    id: string;
-                    kind: 'curated' | 'community-npm';
-                    sourceUrl: string;
-                }>;
-            }>;
-        signature:
-            | Readonly<{ status: 'notProvided' }>
-            | Readonly<{ status: 'verified' | 'unsupported'; keyId: string }>;
-        provenance:
-            | Readonly<{ status: 'notProvided' }>
-            | Readonly<{ status: 'declaredUnverified'; predicateType: string }>
-            | Readonly<{ status: 'retrievedUnverified'; predicateTypes: readonly string[] }>
-            | Readonly<{ status: 'unavailable'; code: string }>;
-        curation:
-            | Readonly<{ status: 'notApplicable' }>
-            | Readonly<{ status: 'approved'; sourceId: string; reviewedAt: string; reason?: string | null }>
-            | Readonly<{ status: 'unreviewed'; sourceId: string }>;
-        executableRealms: readonly ('daemon' | 'reactNative')[];
-        contributions: readonly Readonly<{ family: string; count: number }>[];
-        uiArtifacts: Readonly<{
-            status: 'verified' | 'none' | 'unavailable';
-            contributionIds: readonly string[];
-        }>;
-        requiredHostAccess: readonly ReviewHostAccess[];
-        optionalHostAccess: readonly (ReviewHostAccess & Readonly<{ authorizationClass: 'hostResourceSelection' }>)[];
-        rawCredentialAccess: readonly ReviewRawCredentialAccess[];
-        compatibility: Readonly<{
-            happier?: string;
-            runtimeApiVersion: 1;
-            /**
-             * Bounded evaluator-owned reasons for a newer version being
-             * skipped before acquisition. The review only presents them; it
-             * never makes a compatibility decision.
-             */
-            blockedNewerVersions?: readonly Readonly<{
-                version: string;
-                diagnostics: readonly Readonly<{ code: string; message: string }>[];
-            }>[];
-        }>;
-        updatePolicy: 'automatic' | 'manual' | 'pinned';
-    }>;
-}>;
-
-type ReviewHostAccess = Readonly<{
-    id: string;
-    capability: string;
-    reason: string;
-    authorizationClass: 'cooperativeDisclosure' | 'hostResourceSelection' | 'presentIntentOrOs';
-    normalizedScope: Readonly<Record<string, unknown>>;
+    review: PluginInstallationReview;
 }>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -322,307 +256,6 @@ function hasOnlyKeys(value: Record<string, unknown>, keys: readonly string[]): b
     return Object.keys(value).every((key) => allowed.has(key));
 }
 
-function isBoundedJsonValue(value: unknown, depth = 0): boolean {
-    if (depth > 8) return false;
-    if (value === null || typeof value === 'boolean') return true;
-    if (typeof value === 'string') return value.length <= 4_096;
-    if (typeof value === 'number') return Number.isFinite(value);
-    if (Array.isArray(value)) {
-        return value.length <= 256 && value.every((entry) => isBoundedJsonValue(entry, depth + 1));
-    }
-    if (!isRecord(value) || Object.keys(value).length > 256) return false;
-    return Object.entries(value).every(([key, entry]) => (
-        key.length <= 256 && isBoundedJsonValue(entry, depth + 1)
-    ));
-}
-
-function readHostAccessRequests(value: unknown, optional: boolean): readonly ReviewHostAccess[] | null {
-    if (!Array.isArray(value) || value.length > 128) return null;
-    const requests: ReviewHostAccess[] = [];
-    const ids = new Set<string>();
-    for (const entry of value) {
-        if (
-            !isRecord(entry)
-            || !hasOnlyKeys(entry, ['id', 'capability', 'reason', 'authorizationClass', 'normalizedScope'])
-        ) return null;
-        const id = readNonEmptyString(entry.id);
-        const capability = readNonEmptyString(entry.capability);
-        const reason = readNonEmptyString(entry.reason);
-        const authorizationClass = entry.authorizationClass;
-        if (
-            !id
-            || !capability
-            || !reason
-            || ids.has(id)
-            || (
-                authorizationClass !== 'cooperativeDisclosure'
-                && authorizationClass !== 'hostResourceSelection'
-                && authorizationClass !== 'presentIntentOrOs'
-            )
-            || (optional && authorizationClass !== 'hostResourceSelection')
-            || !isRecord(entry.normalizedScope)
-            || !isBoundedJsonValue(entry.normalizedScope)
-        ) return null;
-        ids.add(id);
-        requests.push({ id, capability, reason, authorizationClass, normalizedScope: entry.normalizedScope });
-    }
-    return requests;
-}
-
-function readRawCredentialSourceClass(value: unknown): ReviewRawCredentialSourceClass | null {
-    if (!isRecord(value)) return null;
-    if (value.kind === 'savedSecret') {
-        if (!hasOnlyKeys(value, ['kind', 'secretKinds']) || !Array.isArray(value.secretKinds)) return null;
-        const secretKinds = value.secretKinds.filter((kind): kind is 'apiKey' | 'token' | 'password' | 'other' => (
-            kind === 'apiKey' || kind === 'token' || kind === 'password' || kind === 'other'
-        ));
-        return secretKinds.length === value.secretKinds.length
-            && secretKinds.length > 0
-            && secretKinds.length <= 4
-            && new Set(secretKinds).size === secretKinds.length
-            ? { kind: 'savedSecret', secretKinds }
-            : null;
-    }
-    if (value.kind !== 'connectedAccount' || !hasOnlyKeys(value, ['kind', 'service'])) return null;
-    const service = PluginContributionIdentityV1Schema.safeParse(value.service);
-    return service.success
-        ? {
-            kind: 'connectedAccount',
-            service: { pluginId: service.data.pluginId, localId: service.data.localId },
-        }
-        : null;
-}
-
-function readRawCredentialAccess(
-    value: unknown,
-): readonly ReviewRawCredentialAccess[] | null {
-    if (!Array.isArray(value)) return null;
-    const access: ReviewRawCredentialAccess[] = [];
-    for (const entry of value) {
-        if (
-            !isRecord(entry)
-            || !hasOnlyKeys(entry, [
-                'accessMode', 'contribution', 'credentialSlot', 'sourceClass', 'realm', 'phase', 'request',
-            ])
-            || entry.accessMode !== 'raw'
-        ) return null;
-        const contribution = PluginContributionIdentityV1Schema.safeParse(entry.contribution);
-        const credentialSlot = entry.credentialSlot;
-        if (!contribution.success || !isRecord(credentialSlot)
-            || !hasOnlyKeys(credentialSlot, ['id', 'title', 'purpose'])) return null;
-        const credentialSlotId = VoiceCredentialSlotIdSchema.safeParse(credentialSlot.id);
-        const credentialSlotTitle = readNonEmptyString(credentialSlot.title);
-        const credentialSlotPurpose = ConnectedAccountPurposeIdSchema.safeParse(credentialSlot.purpose);
-        const sourceClass = readRawCredentialSourceClass(entry.sourceClass);
-        const phase = VoiceCredentialAccessPhaseSchema.safeParse(entry.phase);
-        const request = ConnectedAccountMaterializationRequestSchema.safeParse(entry.request);
-        if (
-            !credentialSlotId.success
-            || !credentialSlotTitle
-            || !credentialSlotPurpose.success
-            || !sourceClass
-            || !phase.success
-            || !request.success
-            || (entry.realm !== 'web' && entry.realm !== 'ios' && entry.realm !== 'android' && entry.realm !== 'daemon')
-        ) return null;
-        access.push({
-            accessMode: 'raw',
-            contribution: {
-                pluginId: contribution.data.pluginId,
-                localId: contribution.data.localId,
-            },
-            credentialSlot: {
-                id: credentialSlotId.data,
-                title: credentialSlotTitle,
-                purpose: credentialSlotPurpose.data,
-            },
-            sourceClass,
-            realm: entry.realm,
-            phase: phase.data,
-            request: request.data,
-        });
-    }
-    return access;
-}
-
-function readStringList(value: unknown, maximum: number): readonly string[] | null {
-    if (!Array.isArray(value) || value.length > maximum) return null;
-    const entries = value.map(readNonEmptyString);
-    if (entries.some((entry) => entry === null)) return null;
-    const strings = entries as string[];
-    return new Set(strings).size === strings.length ? strings : null;
-}
-
-function readPluginInstallationReviewSource(
-    value: unknown,
-): PendingPluginChangeReview['review']['source'] | null {
-    if (!isRecord(value)) return null;
-    const locator = readNonEmptyString(value.locator);
-    if (!locator) return null;
-    if (value.kind === 'path') {
-        return hasOnlyKeys(value, ['kind', 'locator'])
-            ? { kind: 'path', locator }
-            : null;
-    }
-    if (value.kind !== 'archive' && value.kind !== 'npm') return null;
-    const integrity = readNonEmptyString(value.integrity);
-    const integrityBasis = value.integrityBasis;
-    if (
-        !hasOnlyKeys(value, ['kind', 'locator', 'integrity', 'integrityBasis'])
-        || !integrity
-        || (integrityBasis !== 'observed' && integrityBasis !== 'expected')
-    ) return null;
-    if (value.kind === 'archive') return { kind: 'archive', locator, integrity, integrityBasis };
-    return integrityBasis === 'expected'
-        ? { kind: 'npm', locator, integrity, integrityBasis }
-        : null;
-}
-
-function readPluginInstallationReviewCompatibility(
-    value: unknown,
-): PendingPluginChangeReview['review']['compatibility'] | null {
-    if (
-        !isRecord(value)
-        || !hasOnlyKeys(value, ['happier', 'runtimeApiVersion', 'blockedNewerVersions'])
-        || value.runtimeApiVersion !== 1
-    ) return null;
-    const happier = value.happier === undefined ? undefined : readNonEmptyString(value.happier);
-    if (value.happier !== undefined && !happier) return null;
-    if (value.blockedNewerVersions === undefined) {
-        return { ...(happier ? { happier } : {}), runtimeApiVersion: 1 };
-    }
-    if (!Array.isArray(value.blockedNewerVersions) || value.blockedNewerVersions.length > 32) return null;
-    const blockedNewerVersions = value.blockedNewerVersions.flatMap((blocked) => {
-        if (
-            !isRecord(blocked)
-            || !hasOnlyKeys(blocked, ['version', 'diagnostics'])
-            || !Array.isArray(blocked.diagnostics)
-            || blocked.diagnostics.length === 0
-            || blocked.diagnostics.length > 4
-        ) return [];
-        const version = readNonEmptyString(blocked.version);
-        const diagnostics = blocked.diagnostics.flatMap((diagnostic) => {
-            if (!isRecord(diagnostic) || !hasOnlyKeys(diagnostic, ['code', 'message'])) return [];
-            const code = readNonEmptyString(diagnostic.code);
-            const message = readNonEmptyString(diagnostic.message);
-            return code && message ? [{ code, message }] : [];
-        });
-        return version && diagnostics.length === blocked.diagnostics.length
-            ? [{ version, diagnostics }]
-            : [];
-    });
-    if (blockedNewerVersions.length !== value.blockedNewerVersions.length) return null;
-    return {
-        ...(happier ? { happier } : {}),
-        runtimeApiVersion: 1,
-        blockedNewerVersions,
-    };
-}
-
-function readPublisherIdentity(value: unknown): PendingPluginChangeReview['review']['publisherIdentity'] | null {
-    if (!isRecord(value)) return null;
-    if (value.status === 'unavailable' && hasOnlyKeys(value, ['status'])) return { status: 'unavailable' };
-    const id = readNonEmptyString(value.id);
-    const displayName = readNonEmptyString(value.displayName);
-    return value.status === 'unverified'
-        && hasOnlyKeys(value, ['status', 'id', 'displayName'])
-        && id
-        && displayName
-        ? { status: 'unverified', id, displayName }
-        : null;
-}
-
-function readUpdateChannel(value: unknown): PendingPluginChangeReview['review']['updateChannel'] | null {
-    if (!isRecord(value)) return null;
-    if (value.kind === 'path') {
-        const locator = readNonEmptyString(value.locator);
-        return hasOnlyKeys(value, ['kind', 'locator', 'development'])
-            && locator
-            && typeof value.development === 'boolean'
-            ? { kind: 'path', locator, development: value.development }
-            : null;
-    }
-    if (value.kind === 'archive') {
-        const locator = readNonEmptyString(value.locator);
-        return hasOnlyKeys(value, ['kind', 'locator']) && locator ? { kind: 'archive', locator } : null;
-    }
-    if (
-        value.kind !== 'npm'
-        || !hasOnlyKeys(value, ['kind', 'packageName', 'registryOrigin', 'registryProfileId', 'marketplaceSource'])
-    ) {
-        return null;
-    }
-    const packageName = readNonEmptyString(value.packageName);
-    const registryOrigin = readNonEmptyString(value.registryOrigin);
-    const registryProfileId = value.registryProfileId === undefined
-        ? null
-        : readNonEmptyString(value.registryProfileId);
-    if (value.registryProfileId !== undefined && !registryProfileId) return null;
-    if (!packageName || !registryOrigin) return null;
-    const channel = {
-        kind: 'npm' as const,
-        packageName,
-        registryOrigin,
-        ...(registryProfileId ? { registryProfileId } : {}),
-    };
-    if (value.marketplaceSource === undefined) return channel;
-    if (
-        !isRecord(value.marketplaceSource)
-        || !hasOnlyKeys(value.marketplaceSource, ['id', 'kind', 'sourceUrl'])
-    ) return null;
-    const id = readNonEmptyString(value.marketplaceSource.id);
-    const sourceUrl = readNonEmptyString(value.marketplaceSource.sourceUrl);
-    const kind = value.marketplaceSource.kind;
-    return id && sourceUrl && (kind === 'curated' || kind === 'community-npm')
-        ? { ...channel, marketplaceSource: { id, kind, sourceUrl } }
-        : null;
-}
-
-function readSignature(value: unknown): PendingPluginChangeReview['review']['signature'] | null {
-    if (!isRecord(value)) return null;
-    if (value.status === 'notProvided' && hasOnlyKeys(value, ['status'])) return { status: 'notProvided' };
-    const keyId = readNonEmptyString(value.keyId);
-    return (value.status === 'verified' || value.status === 'unsupported')
-        && hasOnlyKeys(value, ['status', 'keyId'])
-        && keyId
-        ? { status: value.status, keyId }
-        : null;
-}
-
-function readProvenance(value: unknown): PendingPluginChangeReview['review']['provenance'] | null {
-    if (!isRecord(value)) return null;
-    if (value.status === 'notProvided' && hasOnlyKeys(value, ['status'])) return { status: 'notProvided' };
-    if (value.status === 'declaredUnverified' && hasOnlyKeys(value, ['status', 'predicateType'])) {
-        const predicateType = readNonEmptyString(value.predicateType);
-        return predicateType ? { status: 'declaredUnverified', predicateType } : null;
-    }
-    if (value.status === 'retrievedUnverified' && hasOnlyKeys(value, ['status', 'predicateTypes'])) {
-        const predicateTypes = readStringList(value.predicateTypes, 64);
-        return predicateTypes?.length ? { status: 'retrievedUnverified', predicateTypes } : null;
-    }
-    if (value.status === 'unavailable' && hasOnlyKeys(value, ['status', 'code'])) {
-        const code = readNonEmptyString(value.code);
-        return code ? { status: 'unavailable', code } : null;
-    }
-    return null;
-}
-
-function readCuration(value: unknown): PendingPluginChangeReview['review']['curation'] | null {
-    if (!isRecord(value)) return null;
-    if (value.status === 'notApplicable' && hasOnlyKeys(value, ['status'])) return { status: 'notApplicable' };
-    const sourceId = readNonEmptyString(value.sourceId);
-    if (!sourceId) return null;
-    if (value.status === 'unreviewed' && hasOnlyKeys(value, ['status', 'sourceId'])) {
-        return { status: 'unreviewed', sourceId };
-    }
-    if (value.status !== 'approved' || !hasOnlyKeys(value, ['status', 'sourceId', 'reviewedAt', 'reason'])) return null;
-    const reviewedAt = readNonEmptyString(value.reviewedAt);
-    const reason = value.reason === undefined || value.reason === null ? value.reason : readNonEmptyString(value.reason);
-    return reviewedAt && (value.reason === undefined || value.reason === null || reason)
-        ? { status: 'approved', sourceId, reviewedAt, ...(value.reason !== undefined ? { reason } : {}) }
-        : null;
-}
-
 /**
  * Authorization to evaluate executable code from a local development source
  * root, before any package is reviewed or committed.
@@ -635,29 +268,19 @@ function readCuration(value: unknown): PendingPluginChangeReview['review']['cura
  */
 export type PendingPluginDevelopmentSourceRootReview = Readonly<{
     pendingChangeId: string;
-    review: Readonly<{
-        source: Readonly<{ kind: 'path'; locator: string }>;
-    }>;
+    review: PluginDevelopmentSourceRootReview;
 }>;
 
 export function readPluginDevelopmentSourceRootReviewChange(
     change: unknown,
 ): PendingPluginDevelopmentSourceRootReview | null {
     if (!isRecord(change) || change.kind !== 'sourceRootReviewRequired') return null;
-    const pendingChangeId = readNonEmptyString(change.pendingChangeId);
-    const review = change.review;
-    if (
-        !pendingChangeId
-        || !isRecord(review)
-        || !hasOnlyKeys(review, ['source'])
-        || !isRecord(review.source)
-        || !hasOnlyKeys(review.source, ['kind', 'locator'])
-        || review.source.kind !== 'path'
-    ) return null;
-    const locator = readNonEmptyString(review.source.locator);
-    return locator
-        ? { pendingChangeId, review: { source: { kind: 'path', locator } } }
-        : null;
+    const parsed = PluginChangePendingReviewResultSchema.safeParse(change);
+    if (!parsed.success || parsed.data.kind !== 'sourceRootReviewRequired') return null;
+    return {
+        pendingChangeId: parsed.data.pendingChangeId,
+        review: parsed.data.review,
+    };
 }
 
 /**
@@ -676,10 +299,24 @@ export type PendingPluginChangeDecision =
     | Readonly<{ kind: 'reviewRequired'; installationReview: PendingPluginChangeReview }>;
 
 export function readPendingPluginChangeDecision(change: unknown): PendingPluginChangeDecision | null {
-    const sourceRootReview = readPluginDevelopmentSourceRootReviewChange(change);
-    if (sourceRootReview) return { kind: 'sourceRootReviewRequired', sourceRootReview };
-    const installationReview = readPluginInstallationReviewChange(change, null);
-    return installationReview ? { kind: 'reviewRequired', installationReview } : null;
+    if (!isRecord(change)) return null;
+    const parsed = PluginChangePendingReviewResultSchema.safeParse(change);
+    if (!parsed.success) return null;
+    return parsed.data.kind === 'sourceRootReviewRequired'
+        ? {
+            kind: 'sourceRootReviewRequired',
+            sourceRootReview: {
+                pendingChangeId: parsed.data.pendingChangeId,
+                review: parsed.data.review,
+            },
+        }
+        : {
+            kind: 'reviewRequired',
+            installationReview: {
+                pendingChangeId: parsed.data.pendingChangeId,
+                review: parsed.data.review,
+            },
+        };
 }
 
 /** The daemon-issued id of whichever decision this change is currently at. */
@@ -743,7 +380,7 @@ export function readPendingPluginChangeListingId(entry: PendingPluginChangeListi
 export type PendingPluginChangeStatus =
     | PendingPluginChangeDecision
     | Readonly<{ kind: 'applying'; pendingChangeId: string }>
-    | Readonly<{ kind: 'terminal'; pendingChangeId: string; outcome: string }>
+    | Readonly<{ kind: 'terminal'; pendingChangeId: string; outcome: string; pluginId: string | null }>
     | Readonly<{ kind: 'expired' }>
     | Readonly<{ kind: 'daemonUnavailable' }>;
 
@@ -758,132 +395,36 @@ export function readPendingPluginChangeStatus(result: unknown): PendingPluginCha
     if (status.kind === 'applying') return { kind: 'applying', pendingChangeId };
     if (status.kind !== 'terminal' || !isRecord(status.result)) return null;
     const outcome = readNonEmptyString(status.result.kind);
-    return outcome ? { kind: 'terminal', pendingChangeId, outcome } : null;
+    if (!outcome) return null;
+    // The terminal result names the affected plugin when the daemon knows it,
+    // so a terminal `committed`/`outcomeUnknown` answer can be reconciled
+    // against that exact installed record instead of shown as a bare failure.
+    return {
+        kind: 'terminal',
+        pendingChangeId,
+        outcome,
+        pluginId: readNonEmptyString(status.result.pluginId),
+    };
 }
 
 /**
- * Reads the daemon's bare `reviewRequired` change. Both the capability-invoke
- * envelope and the follow-up returned by a source-root trust decision carry the
- * identical change shape, so they share this one parser rather than growing a
- * second, drifting copy.
+ * Reads the daemon's bare `reviewRequired` change through the one cross-process
+ * review schema owned by `@happier-dev/protocol/marketplace/internal` — the
+ * same schema the daemon projects and the CLI control client parses. Both the
+ * capability-invoke envelope and the follow-up returned by a source-root trust
+ * decision carry the identical change shape, so they share this one reader.
  */
 export function readPluginInstallationReviewChange(
     change: unknown,
     expectedPluginId: string | null,
 ): PendingPluginChangeReview | null {
     if (!isRecord(change) || change.kind !== 'reviewRequired') return null;
-
-    const pendingChangeId = readNonEmptyString(change.pendingChangeId);
-    const review = change.review;
-    if (
-        !pendingChangeId
-        || !isRecord(review)
-        || !hasOnlyKeys(review, [
-            'pluginId', 'displayName', 'version', 'packageIdentity', 'publisherIdentity', 'source',
-            'updateChannel', 'signature', 'provenance', 'curation', 'executableRealms',
-            'contributions', 'uiArtifacts', 'requiredHostAccess', 'optionalHostAccess',
-            'rawCredentialAccess', 'compatibility', 'updatePolicy',
-        ])
-    ) return null;
-
-    const pluginId = readNonEmptyString(review.pluginId);
-    const displayName = readNonEmptyString(review.displayName);
-    const version = readNonEmptyString(review.version);
-    const source = readPluginInstallationReviewSource(review.source);
-    const packageIdentity = review.packageIdentity;
-    const packageName = isRecord(packageIdentity) && packageIdentity.name === null
-        ? null
-        : isRecord(packageIdentity) ? readNonEmptyString(packageIdentity.name) : null;
-    const packageVersion = isRecord(packageIdentity) ? readNonEmptyString(packageIdentity.version) : null;
-    const publisherIdentity = readPublisherIdentity(review.publisherIdentity);
-    const updateChannel = readUpdateChannel(review.updateChannel);
-    const signature = readSignature(review.signature);
-    const provenance = readProvenance(review.provenance);
-    const curation = readCuration(review.curation);
-    if (
-        !pluginId
-        || (expectedPluginId !== null && pluginId !== expectedPluginId)
-        || !displayName
-        || !version
-        || !source
-        || !isRecord(packageIdentity)
-        || !hasOnlyKeys(packageIdentity, ['name', 'version'])
-        || (packageIdentity.name !== null && !packageName)
-        || !packageVersion
-        || packageVersion !== version
-        || !publisherIdentity
-        || !updateChannel
-        || !signature
-        || !provenance
-        || !curation
-    ) {
-        return null;
-    }
-
-    if (!Array.isArray(review.executableRealms) || review.executableRealms.length > 2) return null;
-    const executableRealms = review.executableRealms.flatMap((realm) => (
-        realm === 'daemon' || realm === 'reactNative' ? [realm] : []
-    ));
-    if (executableRealms.length !== review.executableRealms.length || new Set(executableRealms).size !== executableRealms.length) {
-        return null;
-    }
-    if (!Array.isArray(review.contributions) || review.contributions.length > 64) return null;
-    const contributions = review.contributions.flatMap((entry) => {
-        if (!isRecord(entry) || !hasOnlyKeys(entry, ['family', 'count'])) return [];
-        const family = readNonEmptyString(entry.family);
-        return family && Number.isSafeInteger(entry.count) && (entry.count as number) > 0
-            ? [{ family, count: entry.count as number }]
-            : [];
-    });
-    if (
-        contributions.length !== review.contributions.length
-        || new Set(contributions.map((entry) => entry.family)).size !== contributions.length
-    ) return null;
-    if (!isRecord(review.uiArtifacts) || !hasOnlyKeys(review.uiArtifacts, ['status', 'contributionIds'])) return null;
-    const uiArtifactStatus = review.uiArtifacts.status;
-    const uiArtifactIds = readStringList(review.uiArtifacts.contributionIds, 64);
-    if (
-        (uiArtifactStatus !== 'verified' && uiArtifactStatus !== 'none' && uiArtifactStatus !== 'unavailable')
-        || !uiArtifactIds
-        || (uiArtifactStatus === 'none' && uiArtifactIds.length !== 0)
-        || (uiArtifactStatus !== 'none' && uiArtifactIds.length === 0)
-    ) return null;
-    const requiredHostAccess = readHostAccessRequests(review.requiredHostAccess, false);
-    const optionalHostAccess = readHostAccessRequests(review.optionalHostAccess, true);
-    const rawCredentialAccess = readRawCredentialAccess(review.rawCredentialAccess);
-    if (!requiredHostAccess || !optionalHostAccess || !rawCredentialAccess) return null;
-    const compatibility = readPluginInstallationReviewCompatibility(review.compatibility);
-    if (
-        !compatibility
-        || (
-            review.updatePolicy !== 'automatic'
-            && review.updatePolicy !== 'manual'
-            && review.updatePolicy !== 'pinned'
-        )
-    ) return null;
-
+    const parsed = PluginChangePendingReviewResultSchema.safeParse(change);
+    if (!parsed.success || parsed.data.kind !== 'reviewRequired') return null;
+    if (expectedPluginId !== null && parsed.data.review.pluginId !== expectedPluginId) return null;
     return {
-        pendingChangeId,
-        review: {
-            pluginId,
-            displayName,
-            version,
-            packageIdentity: { name: packageName, version: packageVersion },
-            publisherIdentity,
-            source,
-            updateChannel,
-            signature,
-            provenance,
-            curation,
-            executableRealms,
-            contributions,
-            uiArtifacts: { status: uiArtifactStatus, contributionIds: uiArtifactIds },
-            requiredHostAccess,
-            optionalHostAccess: optionalHostAccess as PendingPluginChangeReview['review']['optionalHostAccess'],
-            rawCredentialAccess,
-            compatibility,
-            updatePolicy: review.updatePolicy,
-        },
+        pendingChangeId: parsed.data.pendingChangeId,
+        review: parsed.data.review,
     };
 }
 
@@ -913,129 +454,6 @@ export function readPluginChangeKind(
         || !isRecord(value.change)
     ) return null;
     return readNonEmptyString(value.change.kind);
-}
-
-function formatRawCredentialReviewSourceClass(sourceClass: ReviewRawCredentialSourceClass): string {
-    return sourceClass.kind === 'savedSecret'
-        ? `savedSecret(${sourceClass.secretKinds.join(', ')})`
-        : `connectedAccount(${sourceClass.service.pluginId}/${sourceClass.service.localId})`;
-}
-
-export function formatPluginInstallationReviewBody(review: PendingPluginChangeReview['review']): string {
-    const requiredAccess = review.requiredHostAccess.length > 0
-        ? review.requiredHostAccess.map((entry) => (
-            `${entry.capability} [${entry.authorizationClass}]: ${entry.reason}; `
-            + `${JSON.stringify(entry.normalizedScope)}`
-        )).join('\n')
-        : t('common.none');
-    const optionalAccess = review.optionalHostAccess.length > 0
-        ? review.optionalHostAccess.map((entry) => (
-            `${entry.capability}: ${entry.reason}; ${JSON.stringify(entry.normalizedScope)}`
-        )).join('\n')
-        : t('common.none');
-    const executableRealms = review.executableRealms.length > 0
-        ? review.executableRealms.join(', ')
-        : t('common.none');
-    const publisher = review.publisherIdentity.status === 'unavailable'
-        ? t('common.unavailable')
-        : `${review.publisherIdentity.displayName} (${review.publisherIdentity.id}; unverified marketplace claim)`;
-    const channel = review.updateChannel.kind === 'path'
-        ? `${review.updateChannel.development ? 'development path' : 'path'}: ${review.updateChannel.locator}`
-        : review.updateChannel.kind === 'archive'
-            ? `archive: ${review.updateChannel.locator}`
-            : `npm: ${review.updateChannel.packageName} @ ${review.updateChannel.registryOrigin}${
-                review.updateChannel.registryProfileId
-                    ? ` via registry profile ${review.updateChannel.registryProfileId}`
-                    : ''
-            }${
-                review.updateChannel.marketplaceSource
-                    ? ` via ${review.updateChannel.marketplaceSource.kind} ${review.updateChannel.marketplaceSource.id}`
-                    : ''
-            }`;
-    const identity = [
-        `Plugin: ${review.pluginId}`,
-        `Package: ${review.packageIdentity.name ?? t('common.unavailable')} ${review.packageIdentity.version}`,
-        `Publisher: ${publisher}`,
-        `Source: ${review.source.kind} ${review.source.locator}`,
-        `Update channel: ${channel}`,
-    ].join('\n');
-    const signature = review.signature.status === 'notProvided'
-        ? t('common.notProvided')
-        : review.signature.status === 'verified'
-            ? `verified (${review.signature.keyId})`
-            : `unsupported (${review.signature.keyId})`;
-    const provenance = review.provenance.status === 'notProvided'
-        ? t('common.notProvided')
-        : review.provenance.status === 'declaredUnverified'
-            ? `declared, unverified (${review.provenance.predicateType})`
-            : review.provenance.status === 'retrievedUnverified'
-                ? `retrieved, unverified (${review.provenance.predicateTypes.join(', ')})`
-                : `${t('common.unavailable')} (${review.provenance.code})`;
-    const curation = review.curation.status === 'notApplicable'
-        ? 'not applicable'
-        : review.curation.status === 'unreviewed'
-            ? `unreviewed (${review.curation.sourceId})`
-            : `approved (${review.curation.sourceId}, ${review.curation.reviewedAt})${
-                review.curation.reason ? ` — ${review.curation.reason}` : ''
-            }`;
-    const sourceIntegrity = review.source.kind === 'path'
-        ? t('common.none')
-        : review.source.integrityBasis === 'expected'
-            ? 'matched expected integrity'
-            : 'observed from staged bytes; not independently verified';
-    const verification = [
-        `Source integrity: ${sourceIntegrity}`,
-        `Signature: ${signature}`,
-        `Provenance: ${provenance}`,
-        `Curation: ${curation}`,
-    ].join('\n');
-    const contributions = review.contributions.length > 0
-        ? review.contributions.map((entry) => `${entry.family} (${entry.count})`).join(', ')
-        : t('common.none');
-    const uiArtifacts = review.uiArtifacts.contributionIds.length > 0
-        ? `${review.uiArtifacts.status}: ${review.uiArtifacts.contributionIds.join(', ')}`
-        : t('common.none');
-    const blockedNewerVersions = review.compatibility.blockedNewerVersions ?? [];
-    const compatibility = [
-        `Happier: ${review.compatibility.happier ?? t('common.notProvided')}`,
-        `Plugin runtime API: ${review.compatibility.runtimeApiVersion}`,
-        ...(blockedNewerVersions.length > 0
-            ? [
-                t('settingsPlugins.marketplaceInstallReviewBlockedNewerVersions'),
-                ...blockedNewerVersions.map((blocked) => (
-                    `${blocked.version} ${blocked.diagnostics
-                        .map((diagnostic) => `[${diagnostic.code}]: ${diagnostic.message}`)
-                        .join('; ')}`
-                )),
-            ]
-            : []),
-        `Update policy: ${review.updatePolicy}`,
-    ].join('\n');
-    const reviewBody = t('settingsPlugins.marketplaceInstallReviewBody', {
-        identity,
-        verification,
-        executableRealms,
-        contributions,
-        uiArtifacts,
-        requiredAccess,
-        optionalAccess,
-        compatibility,
-    });
-    if (review.rawCredentialAccess.length === 0) return reviewBody;
-    const rawCredentialAccess = review.rawCredentialAccess.map((access) => t(
-        'settingsPlugins.marketplaceInstallReviewRawCredentialAccessItem',
-        {
-            contribution: `${access.contribution.pluginId}/${access.contribution.localId}`,
-            credential: `${access.credentialSlot.title} (${access.credentialSlot.id}; ${access.credentialSlot.purpose})`,
-            source: formatRawCredentialReviewSourceClass(access.sourceClass),
-            realm: access.realm,
-            phase: access.phase,
-            request: JSON.stringify(access.request),
-        },
-    )).join('\n');
-    return `${reviewBody}\n\n${t('settingsPlugins.marketplaceInstallReviewRawCredentialAccess', {
-        details: rawCredentialAccess,
-    })}`;
 }
 
 type MarketplaceCapabilitySnapshot = Readonly<{
@@ -1068,13 +486,6 @@ type MarketplaceCapabilitySnapshot = Readonly<{
         }>>>;
     };
 }>;
-
-export function resolvePluginMarketplaceErrorMessage(error: unknown): string {
-    if (error instanceof Error && error.message.trim().length > 0) {
-        return error.message;
-    }
-    return t('errors.unknownError');
-}
 
 export function readInstalledPlugins(
     state: ReturnType<typeof useMachineCapabilitiesCache>['state'],
@@ -1229,15 +640,4 @@ export function formatDevelopmentPluginSubtitle(entry: DevelopmentPluginEntry): 
     }
     parts.push(...entry.reload.diagnostics.map((diagnostic) => diagnostic.message));
     return parts.join(' | ');
-}
-
-export function formatCatalogSubtitle(params: Readonly<{
-    catalog: PluginMarketplaceCatalog;
-    installed: InstalledPluginEntry | null;
-}>): string {
-    if (!params.installed) {
-        return params.catalog.description ?? t('deps.ui.notInstalled');
-    }
-
-    return t('deps.ui.installedWithVersion', { version: params.installed.version });
 }

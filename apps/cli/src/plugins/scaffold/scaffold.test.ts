@@ -486,6 +486,50 @@ describe('scaffoldLocalPlugin',
     });
   });
 
+  it('scaffolds the maintained custom Session Agent shape without a manual example copy', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'happier-plugin-scaffold-session-agent-'));
+    const targetDir = join(root, 'session-agent-plugin');
+
+    try {
+      const result = await scaffoldLocalPlugin({
+        targetDir,
+        pluginId: 'acme.session-agent',
+        displayName: 'Acme Session Agent',
+        template: 'session-agent',
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const [source, runner, testSource] = await Promise.all([
+        readFile(result.sourceEntryPath, 'utf8'),
+        readFile(join(targetDir, 'src', 'agent', 'sessionAgent.ts'), 'utf8'),
+        readFile(join(targetDir, 'test', 'index.test.mjs'), 'utf8'),
+      ]);
+      expect(source).toContain('id: "acme.session-agent"');
+      expect(source).toContain('displayName: "Acme Session Agent"');
+      expect(source).toContain('"session-agent": {');
+      expect(source).toContain('module: "./agent/sessionAgent.js"');
+      expect(source).toContain('export: "createSessionAgentRuntime"');
+      expect(source).not.toContain('save-note');
+      expect(runner).toContain("from '@happier-dev/plugin-sdk/agents/runtime'");
+      expect(runner).toContain('export const createSessionAgentRuntime: AgentRuntimeFactory');
+      expect(runner).not.toMatch(/@happier-dev\/(?:protocol|agents)\b|plugin-sdk\/internal\b|from ['"]@\//u);
+      expect(testSource).toContain('sessionRunnerFactory');
+      expect(testSource).not.toContain('save-note');
+
+      expect(await compileGeneratedPlugin(targetDir)).toEqual([]);
+      const generatedSuite = spawnSync(
+        process.execPath,
+        ['--test', 'test/index.test.mjs'],
+        { cwd: targetDir, encoding: 'utf8' },
+      );
+      expect(generatedSuite.status, `${generatedSuite.stdout}\n${generatedSuite.stderr}`).toBe(0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('emits only the code-defined contribution-derived activation ABI', async () => {
     const root = await mkdtemp(join(tmpdir(), 'happier-plugin-scaffold-activate-'));
     const targetDir = join(root, 'template-plugin');

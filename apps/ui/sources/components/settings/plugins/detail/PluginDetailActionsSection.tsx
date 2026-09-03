@@ -10,12 +10,13 @@ import {
     type InstalledPluginEntry,
 } from '../model/pluginMarketplaceModel';
 import { Icon } from '@/components/ui/icons/Icon';
+import type { InstalledPluginActionId } from '../model/usePluginSettingsScreenState';
 
 export function PluginDetailActionsSection(props: Readonly<{
     installed: InstalledPluginEntry;
     actionInFlight: boolean;
     canRunActions: boolean;
-    onAction: (action: 'enable' | 'disable' | 'rollback' | 'uninstall' | 'forgetTrust', pluginId: string) => void;
+    onAction: (action: InstalledPluginActionId, pluginId: string) => void;
 }>) {
     const { theme } = useUnistyles();
     const capabilities = projectInstalledPluginLifecycleCapabilities(props.installed);
@@ -24,6 +25,7 @@ export function PluginDetailActionsSection(props: Readonly<{
     const disabled = !props.canRunActions || props.actionInFlight;
 
     if (!canToggle
+        && !capabilities.canUpdate
         && !capabilities.canRollback
         && !capabilities.canUninstall
         && !capabilities.canForgetTrust) return null;
@@ -57,13 +59,31 @@ export function PluginDetailActionsSection(props: Readonly<{
                     showChevron={false}
                 />
             ) : null}
+            {capabilities.canUpdate ? (
+                <Item
+                    testID={`settings.plugins.detail.${props.installed.pluginId}.action.update`}
+                    title={t('common.update')}
+                    subtitle={t('settingsPlugins.updateFromInstalledRecordSubtitle')}
+                    icon={<Icon name="arrow-circle-up" size={29} color={theme.colors.text.secondary} />}
+                    onPress={() => props.onAction('update', props.installed.pluginId)}
+                    disabled={disabled}
+                    showChevron={false}
+                />
+            ) : null}
+            {/*
+              * Uninstall removes the installation and forgetting trust
+              * withdraws the grant that lets its code run — both discard state
+              * the reader cannot get back by pressing the row again, so they
+              * carry the destructive treatment the rest of the list does not.
+              */}
             {capabilities.canUninstall ? (
                 <Item
                     testID={`settings.plugins.detail.${props.installed.pluginId}.action.uninstall`}
                     title={t('settingsPlugins.uninstall')}
-                    icon={<Icon name="trash" size={29} color={theme.colors.text.secondary} />}
+                    icon={<Icon name="trash" size={29} color={theme.colors.state.danger.foreground} />}
                     onPress={() => props.onAction('uninstall', props.installed.pluginId)}
                     disabled={disabled}
+                    destructive
                     showChevron={false}
                 />
             ) : null}
@@ -71,9 +91,10 @@ export function PluginDetailActionsSection(props: Readonly<{
                 <Item
                     testID={`settings.plugins.detail.${props.installed.pluginId}.action.forgetTrust`}
                     title={t('settingsPlugins.forgetTrust')}
-                    icon={<Icon name="shield" size={29} color={theme.colors.text.secondary} />}
+                    icon={<Icon name="shield" size={29} color={theme.colors.state.danger.foreground} />}
                     onPress={() => props.onAction('forgetTrust', props.installed.pluginId)}
                     disabled={disabled}
+                    destructive
                     showChevron={false}
                 />
             ) : null}

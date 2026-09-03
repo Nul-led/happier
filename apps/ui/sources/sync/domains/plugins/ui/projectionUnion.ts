@@ -7,6 +7,7 @@ import {
     type PluginUiSettingsGroupProjection,
     type PluginUiSettingsPageProjection,
     type PluginUiSessionHeaderActionProjection,
+    type PluginUiSearchProviderProjection,
     type PluginUiPhysicalSurfacePlacementProjection,
     type PluginUiTranslationsProjection,
     type PluginVoiceProviderProjection,
@@ -304,6 +305,7 @@ function memberHasAdmittedContribution(input: Readonly<{
     const projection = input.member.projection;
     return Object.values(projection.translationsByPluginId).some(owns)
         || Object.values(projection.sessionHeaderActionsById).some(owns)
+        || Object.values(projection.searchProvidersById).some(owns)
         || Object.values(projection.hostedWebById).some(owns)
         || Object.values(projection.reactNativeBundlesById).some(owns)
         || Object.values(projection.surfacePlacementsById).some(owns)
@@ -377,6 +379,7 @@ export function unionPluginUiProjections(
         const entries = [
             ...Object.values(model.translationsByPluginId),
             ...Object.values(model.sessionHeaderActionsById),
+            ...Object.values(model.searchProvidersById),
             ...Object.values(model.hostedWebById),
             ...Object.values(model.reactNativeBundlesById),
             ...Object.values(model.surfacePlacementsById),
@@ -433,6 +436,7 @@ export function unionPluginUiProjections(
     const translationsByPluginId: Record<string, PluginUiTranslationsProjection> = {};
     const installedPackagesById: Record<string, PluginProjectionInstalledPackageV2> = {};
     const sessionHeaderActionsById: Record<string, PluginUiSessionHeaderActionProjection> = {};
+    const searchProvidersById: Record<string, PluginUiSearchProviderProjection> = {};
     const hostedWebById: Record<string, PluginUiHostedWebProjection> = {};
     const reactNativeBundlesById: Record<string, PluginUiReactNativeBundleProjection> = {};
     const surfacePlacementsById: Record<string, PluginUiPhysicalSurfacePlacementProjection> = {};
@@ -488,6 +492,10 @@ export function unionPluginUiProjections(
         for (const [id, entry] of Object.entries(model.sessionHeaderActionsById)) {
             const origin = originFor(entry);
             if (origin) publishFirstAdmitted(sessionHeaderActionsById, id, stamp(entry, origin));
+        }
+        for (const [id, entry] of Object.entries(model.searchProvidersById)) {
+            const origin = originFor(entry);
+            if (origin) publishFirstAdmitted(searchProvidersById, id, stamp(entry, origin));
         }
         for (const [id, entry] of Object.entries(model.hostedWebById)) {
             const origin = originFor(entry);
@@ -545,6 +553,7 @@ export function unionPluginUiProjections(
             : deriveUnionGeneration(admittedContributing);
     const entryCount = Object.keys(translationsByPluginId).length
         + Object.keys(sessionHeaderActionsById).length
+        + Object.keys(searchProvidersById).length
         + Object.keys(hostedWebById).length
         + Object.keys(reactNativeBundlesById).length
         + Object.keys(surfacePlacementsById).length
@@ -579,6 +588,7 @@ export function unionPluginUiProjections(
         composerRegionsById: Object.freeze({}),
         translationsByPluginId: Object.freeze(translationsByPluginId),
         sessionHeaderActionsById: Object.freeze(sessionHeaderActionsById),
+        searchProvidersById: Object.freeze(searchProvidersById),
         hostedWebById: Object.freeze(hostedWebById),
         reactNativeBundlesById: Object.freeze(reactNativeBundlesById),
         surfacePlacementsById: Object.freeze(surfacePlacementsById),

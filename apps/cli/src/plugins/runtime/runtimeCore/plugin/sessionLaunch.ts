@@ -3,10 +3,6 @@ import type { StoredCredentials } from '@/persistence';
 import type { AccountSettingsContext } from '@/settings/accountSettings/bootstrapAccountSettingsContext';
 import type { TerminalRuntimeFlags } from '@/terminal/runtime/terminalRuntimeFlags';
 import type { AgentSessionOpenRequest } from '@happier-dev/plugin-sdk/agents/runtime';
-import type {
-    ResolvedAgentRuntimeContribution,
-    ResolvedAgentContribution,
-} from '@/plugins/projection/registry/types';
 import {
   AcpConfigOptionOverridesV1Schema,
     AgentSessionStartupInstructionsV1Schema,
@@ -25,7 +21,6 @@ import {
     type SessionCreationTagV1,
     type SessionModelSelectionV1,
 } from '@happier-dev/protocol';
-import type { PluginSessionLaunchResultCandidate } from './sessionMetadata';
 import { normalizeUnsetEnvKeys } from '@/utils/processEnv/buildScopedProcessEnv';
 import {
   NativeForkSourceSchema,
@@ -84,23 +79,6 @@ export type HostPrivateLateSessionEnvironmentResolver = (
     sessionConnectedAccounts?: NonNullable<AgentSessionOpenRequest['connectedAccounts']>;
   }>
 >;
-
-export type PluginSessionLaunchParams = Readonly<{
-    backend: Readonly<{
-        id: string;
-        agentId: string;
-    }>;
-    sessionId: string;
-    directory: string;
-    metadata: Readonly<Record<string, unknown>>;
-}> & Omit<
-    PluginSessionBindingInput,
-    'sessionCreationTag' | 'sessionCreationCorrespondence' | 'initialTitle'
->;
-
-export type PluginSessionLaunchHandler = (
-    params: PluginSessionLaunchParams,
-) => Promise<PluginSessionLaunchResultCandidate>;
 
 export type PluginHostSessionRuntimeOptions = Readonly<{
     credentials: StoredCredentials;
@@ -396,34 +374,6 @@ export function buildPluginSessionBindingInput(raw: unknown): PluginSessionBindi
                 ? { configurationOptions: parsedConfigurationOptions.data }
                 : {}),
         }),
-    });
-}
-
-export function buildPluginSessionLaunchParams(params: Readonly<{
-    backend: ResolvedAgentRuntimeContribution;
-    agent: ResolvedAgentContribution;
-    input: PluginSessionBindingInput;
-    runtime: Readonly<{
-        sessionId: string;
-        directory: string;
-        metadata: Readonly<Record<string, unknown>>;
-    }>;
-}>): PluginSessionLaunchParams {
-    const {
-        sessionCreationTag: _sessionCreationTag,
-        sessionCreationCorrespondence: _sessionCreationCorrespondence,
-        initialTitle: _initialTitle,
-        ...launchInput
-    } = params.input;
-    return Object.freeze({
-        backend: Object.freeze({
-            id: params.backend.id,
-            agentId: params.agent.id,
-        }),
-        sessionId: params.runtime.sessionId,
-        directory: params.runtime.directory,
-        metadata: params.runtime.metadata,
-        ...launchInput,
     });
 }
 

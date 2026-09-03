@@ -179,6 +179,10 @@ describe('PluginMachineMatrixSection', () => {
             ['machine-a', 'settingsPlugins.machineMatrix.state.installedCurrent'],
             ['machine-b', 'settingsPlugins.machineMatrix.state.staleOffline'],
         ]);
+        expect(cells.map((props) => props.accessibilityLabel)).toEqual([
+            'machine-a: settingsPlugins.machineMatrix.state.installedCurrent. Server One · common.version 1.0.0',
+            'machine-b: settingsPlugins.machineMatrix.state.staleOffline. Server One · common.version 1.0.0 · settingsPlugins.machineMatrix.lastObserved',
+        ]);
     });
 
     it('renders no interactive affordance, so a matrix cell can never retarget administration', async () => {

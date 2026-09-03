@@ -6,10 +6,12 @@ import type {
 } from "@happier-dev/protocol";
 
 import {
+    advancePluginCollectionRevision,
     buildPluginCollectionIndexEntries,
     buildPluginCollectionIndexValues,
     finalizePluginCollectionDerivedStateForPromotionInTx,
     materializePluginCollectionRelationReplacementInTx,
+    PluginCollectionMutationOperationError,
     type PluginCollectionIndexValue,
     type PluginCollectionPreparedRelationReplacement,
     type ResolvedWritableCollection,
@@ -343,6 +345,19 @@ export async function materializeCandidatePromotionSetwiseInTx(
     input: CandidatePromotionMaterializationInput,
 ): Promise<boolean> {
     const sourceRowIds = input.rows.map((row) => row.id);
+    // One allocation per promoted row, through the canonical Collection
+    // allocator, so the row and every derived witness carry the same next
+    // revision and an exhausted row refuses promotion instead of overflowing.
+    const nextRevisionByRowDbId = new Map(input.rows.map((row) => (
+        [row.id, advancePluginCollectionRevision(row.expectedRevision)] as const
+    )));
+    const nextRevisionFor = (rowDbId: string): number => {
+        const revision = nextRevisionByRowDbId.get(rowDbId);
+        if (revision === undefined) {
+            throw new PluginCollectionMutationOperationError("collection_contract_inconsistent");
+        }
+        return revision;
+    };
     const projections = input.rows.flatMap((row) => (
         row.projections.map((projection) => ({
             rowDbId: row.id,
@@ -352,14 +367,14 @@ export async function materializeCandidatePromotionSetwiseInTx(
             rowId: row.rowId,
             fieldId: projection.fieldId,
             typedEncodedValue: projection.typedEncodedValue,
-            rowRevision: row.expectedRevision + 1,
+            rowRevision: nextRevisionFor(row.id),
         }))
     ));
     const indexEntries = input.rows.flatMap((row) => (
         buildPluginCollectionIndexEntries({
             resolved: input.resolved,
             rowId: row.rowId,
-            revision: row.expectedRevision + 1,
+            revision: nextRevisionFor(row.id),
             projection: null,
             values: row.indexValues,
         })
@@ -397,7 +412,7 @@ export async function materializeCandidatePromotionSetwiseInTx(
             rows: rows.map((row) => ({
                 id: row.id,
                 expectedRevision: row.expectedRevision,
-                nextRevision: row.expectedRevision + 1,
+                nextRevision: nextRevisionFor(row.id),
                 contentEnvelopeJson: row.contentEnvelopeJson,
             })),
         });

@@ -234,8 +234,6 @@ const INSTALL_REVIEW_PRESENTATION_A = PluginInstallReviewPrincipalPresentationV1
   v: 1,
   packageIdentity: { pluginId: 'acme.registry.plugin', packageName: null },
   distributionIdentity: { kind: 'path', development: false },
-  publisherIdentity: { status: 'unavailable' },
-  packageSignature: { status: 'unavailable' },
 });
 const INSTALL_REVIEW_PRESENTATION_B = PluginInstallReviewPrincipalPresentationV1Schema.parse({
   ...INSTALL_REVIEW_PRESENTATION_A,
@@ -390,7 +388,7 @@ describe('PluginRegistryStateStore', () => {
             manifestPath,
           },
           compatibility: { status: 'compatible', diagnostics: [] },
-          install: { mode: 'link', manifestVersion: '1.0.0', trust, updatePolicy: 'manual' },
+          install: { mode: 'link', manifestVersion: '1.0.0', trust, updatePolicy: 'reviewEveryUpdate' },
           state: { enabled: true },
         },
       },
@@ -405,7 +403,7 @@ describe('PluginRegistryStateStore', () => {
       sourceRootPath: pluginRoot,
       manifestRelativePath: '.happier-plugin/plugin.json',
       distribution,
-      updatePolicy: 'manual',
+      updatePolicy: 'reviewEveryUpdate',
       createdAtMs: 1,
     });
     await writeFile(join(pluginRoot, 'daemon.mjs'), 'export const candidate = "later";\n', 'utf8');
@@ -414,7 +412,7 @@ describe('PluginRegistryStateStore', () => {
       pluginId,
       catalogRecord,
       trust,
-      updatePolicy: 'manual',
+      updatePolicy: 'reviewEveryUpdate',
       optionalAccess: [],
       admittedIntegrity: `sha256-${Buffer.alloc(32, 1).toString('base64')}`,
       preparedGeneration,
@@ -424,7 +422,7 @@ describe('PluginRegistryStateStore', () => {
       pluginId,
       catalogRecord,
       trust,
-      updatePolicy: 'manual',
+      updatePolicy: 'reviewEveryUpdate',
       optionalAccess: [],
       preparedGeneration,
     })).resolves.toMatchObject({
@@ -482,7 +480,7 @@ describe('PluginRegistryStateStore', () => {
             manifestPath,
           },
           compatibility: { status: 'compatible', diagnostics: [] },
-          install: { mode: 'managed_install', manifestVersion: '1.0.0', trust, updatePolicy: 'manual' },
+          install: { mode: 'managed_install', manifestVersion: '1.0.0', trust, updatePolicy: 'reviewEveryUpdate' },
           state: { enabled: true },
         },
       },
@@ -514,7 +512,7 @@ describe('PluginRegistryStateStore', () => {
       manifestRelativePath: '.happier-plugin/plugin.json',
       catalogRecord,
       trust,
-      updatePolicy: 'manual',
+      updatePolicy: 'reviewEveryUpdate',
       optionalAccess: [],
       admittedIntegrity,
       availability,
@@ -584,8 +582,11 @@ describe('PluginRegistryStateStore', () => {
     });
   });
 
-  it('requires a curated source binding for automatic npm installation', async () => {
-    const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-registry-curated-auto-'));
+  it('commits a review-sensitive npm installation from the trusted npm channel alone', async () => {
+    // Curation is discovery and recommendation. There is no curated source
+    // binding to require, and withdrawing one could never have disabled this
+    // installed code.
+    const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-registry-review-sensitive-'));
     const pluginId = 'acme.curated-auto';
     const pluginRoot = join(happyHomeDir, 'npm-plugin');
     const manifestPath = join(pluginRoot, '.happier-plugin', 'plugin.json');
@@ -617,7 +618,7 @@ describe('PluginRegistryStateStore', () => {
             manifestPath,
           },
           compatibility: { status: 'compatible', diagnostics: [] },
-          install: { mode: 'managed_install', manifestVersion: '1.0.0', trust, updatePolicy: 'automatic' },
+          install: { mode: 'managed_install', manifestVersion: '1.0.0', trust, updatePolicy: 'reviewSensitiveChanges' },
           state: { enabled: true },
         },
       },
@@ -632,28 +633,14 @@ describe('PluginRegistryStateStore', () => {
       manifestRelativePath: '.happier-plugin/plugin.json',
       catalogRecord,
       trust,
-      updatePolicy: 'automatic' as const,
+      updatePolicy: 'reviewSensitiveChanges' as const,
       optionalAccess: [],
     };
 
-    await expect(installPreparedCandidate(store, input))
-      .rejects.toThrow(/reviewed curated npm source binding/i);
-
-    const curatedUpdateSource = {
-      id: 'marketplace:curated',
-      sourceUrl: 'https://marketplace.example.test/catalog.json',
-      registryProfileId: 'registry_private',
-    };
-    await expect(installPreparedCandidate(store, {
-      ...input,
-      catalogRecord: {
-        ...catalogRecord,
-        install: { ...catalogRecord.install, curatedUpdateSource },
-      },
-    })).resolves.toMatchObject({ status: 'committed' });
+    await expect(installPreparedCandidate(store, input)).resolves.toMatchObject({ status: 'committed' });
     await expect(store.read()).resolves.toMatchObject({
       plugins: {
-        [pluginId]: { install: { curatedUpdateSource } },
+        [pluginId]: { install: { updatePolicy: 'reviewSensitiveChanges', trust } },
       },
     });
   });
@@ -685,7 +672,7 @@ describe('PluginRegistryStateStore', () => {
             manifestPath,
           },
           compatibility: { status: 'compatible', diagnostics: [] },
-          install: { mode: 'link', manifestVersion: '1.0.0', trust, updatePolicy: 'manual' },
+          install: { mode: 'link', manifestVersion: '1.0.0', trust, updatePolicy: 'reviewEveryUpdate' },
           state: { enabled: true },
         },
       },
@@ -722,7 +709,7 @@ describe('PluginRegistryStateStore', () => {
       manifestRelativePath: '.happier-plugin/plugin.json',
       catalogRecord,
       trust,
-      updatePolicy: 'manual',
+      updatePolicy: 'reviewEveryUpdate',
       optionalAccess: [],
     });
     events.length = 0;
@@ -769,7 +756,7 @@ describe('PluginRegistryStateStore', () => {
             manifestPath,
           },
           compatibility: { status: 'compatible', diagnostics: [] },
-          install: { mode: 'link', manifestVersion: '1.0.0', trust, updatePolicy: 'manual' },
+          install: { mode: 'link', manifestVersion: '1.0.0', trust, updatePolicy: 'reviewEveryUpdate' },
           state: { enabled: true },
         },
       },
@@ -788,7 +775,7 @@ describe('PluginRegistryStateStore', () => {
       manifestRelativePath: '.happier-plugin/plugin.json',
       catalogRecord,
       trust,
-      updatePolicy: 'manual',
+      updatePolicy: 'reviewEveryUpdate',
       optionalAccess: [],
     });
     const firstInstallCommit = await readPluginRegistryCommitRecord(store.paths);
@@ -833,7 +820,7 @@ describe('PluginRegistryStateStore', () => {
       manifestRelativePath: '.happier-plugin/plugin.json',
       catalogRecord,
       trust,
-      updatePolicy: 'manual',
+      updatePolicy: 'reviewEveryUpdate',
       optionalAccess: [],
     });
     const replacementCommit = await readPluginRegistryCommitRecord(store.paths);
@@ -924,7 +911,7 @@ describe('PluginRegistryStateStore', () => {
               manifestPath: join(pluginRoot, '.happier-plugin', 'plugin.json'),
             },
             compatibility: { status: 'compatible', diagnostics: [] },
-            install: { mode: 'link', manifestVersion: '1.0.0', trust, updatePolicy: 'manual' },
+            install: { mode: 'link', manifestVersion: '1.0.0', trust, updatePolicy: 'reviewEveryUpdate' },
             state: { enabled: true },
           },
         },
@@ -935,7 +922,7 @@ describe('PluginRegistryStateStore', () => {
         manifestRelativePath: '.happier-plugin/plugin.json',
         catalogRecord,
         trust,
-        updatePolicy: 'manual' as const,
+        updatePolicy: 'reviewEveryUpdate' as const,
         optionalAccess: Object.freeze([]),
       };
     };
@@ -1009,7 +996,7 @@ describe('PluginRegistryStateStore', () => {
             manifestPath: join(pluginRoot, '.happier-plugin', 'plugin.json'),
           },
           compatibility: { status: 'compatible', diagnostics: [] },
-          install: { mode: 'link', manifestVersion: '1.0.0', trust, updatePolicy: 'manual' },
+          install: { mode: 'link', manifestVersion: '1.0.0', trust, updatePolicy: 'reviewEveryUpdate' },
           state: { enabled: true },
         },
       },
@@ -1032,7 +1019,7 @@ describe('PluginRegistryStateStore', () => {
       manifestRelativePath: '.happier-plugin/plugin.json',
       catalogRecord: record,
       trust,
-      updatePolicy: 'manual',
+      updatePolicy: 'reviewEveryUpdate',
       optionalAccess: [],
     })).rejects.toThrow('registration graph rejected');
 
@@ -1081,7 +1068,7 @@ describe('PluginRegistryStateStore', () => {
               manifestPath: join(pluginRoot, '.happier-plugin', 'plugin.json'),
             },
             compatibility: { status: 'compatible', diagnostics: [] },
-            install: { mode: 'link', manifestVersion: '1.0.0', trust, updatePolicy: 'manual' },
+            install: { mode: 'link', manifestVersion: '1.0.0', trust, updatePolicy: 'reviewEveryUpdate' },
             state: { enabled: true },
           },
         },
@@ -1092,7 +1079,7 @@ describe('PluginRegistryStateStore', () => {
         manifestRelativePath: '.happier-plugin/plugin.json',
         catalogRecord,
         trust,
-        updatePolicy: 'manual' as const,
+        updatePolicy: 'reviewEveryUpdate' as const,
         optionalAccess: Object.freeze([]),
       };
     };
@@ -1178,7 +1165,7 @@ describe('PluginRegistryStateStore', () => {
             manifestPath,
           },
           compatibility: { status: 'compatible', diagnostics: [] },
-          install: { mode: 'link', manifestVersion: '1.0.0', trust, updatePolicy: 'manual' },
+          install: { mode: 'link', manifestVersion: '1.0.0', trust, updatePolicy: 'reviewEveryUpdate' },
           state: { enabled: true },
         },
       },
@@ -1249,7 +1236,7 @@ describe('PluginRegistryStateStore', () => {
             manifestPath: join(manifestDir, 'plugin.json'),
           },
           compatibility: { status: 'compatible', diagnostics: [] },
-          install: { mode: 'link', manifestVersion: '1.0.0', trust, updatePolicy: 'manual' },
+          install: { mode: 'link', manifestVersion: '1.0.0', trust, updatePolicy: 'reviewEveryUpdate' },
           state: { enabled: true },
         },
       },
@@ -1261,7 +1248,7 @@ describe('PluginRegistryStateStore', () => {
       manifestRelativePath: '.happier-plugin/plugin.json',
       catalogRecord: record,
       trust,
-      updatePolicy: 'manual',
+      updatePolicy: 'reviewEveryUpdate',
       optionalAccess: [],
       installReviewPrincipalDigest: PluginInstallReviewPrincipalDigestSchema.parse('a'.repeat(64)),
       installReviewPrincipalPresentation: INSTALL_REVIEW_PRESENTATION_A,
@@ -1273,7 +1260,7 @@ describe('PluginRegistryStateStore', () => {
       manifestRelativePath: '.happier-plugin/plugin.json',
       catalogRecord: record,
       trust,
-      updatePolicy: 'manual',
+      updatePolicy: 'reviewEveryUpdate',
       optionalAccess: [],
       installReviewPrincipalDigest: INSTALL_REVIEW_PRINCIPAL_A,
       installReviewPrincipalPresentation: INSTALL_REVIEW_PRESENTATION_A,
@@ -1318,7 +1305,7 @@ describe('PluginRegistryStateStore', () => {
       manifestRelativePath: '.happier-plugin/plugin.json',
       catalogRecord: secondRecord,
       trust,
-      updatePolicy: 'manual',
+      updatePolicy: 'reviewEveryUpdate',
       optionalAccess: [],
       installReviewPrincipalDigest: INSTALL_REVIEW_PRINCIPAL_B,
       installReviewPrincipalPresentation: INSTALL_REVIEW_PRESENTATION_B,
@@ -1373,7 +1360,7 @@ describe('PluginRegistryStateStore', () => {
       manifestRelativePath: '.happier-plugin/plugin.json',
       catalogRecord: secondRecord,
       trust,
-      updatePolicy: 'manual',
+      updatePolicy: 'reviewEveryUpdate',
       optionalAccess: [],
       installReviewPrincipalDigest: INSTALL_REVIEW_PRINCIPAL_B,
       installReviewPrincipalPresentation: INSTALL_REVIEW_PRESENTATION_B,
@@ -1429,7 +1416,7 @@ describe('PluginRegistryStateStore', () => {
               manifestPath: join(root, '.happier-plugin', 'plugin.json'),
             },
             compatibility: { status: 'compatible', diagnostics: [] },
-            install: { mode: 'link', manifestVersion: version, trust, updatePolicy: 'manual' },
+            install: { mode: 'link', manifestVersion: version, trust, updatePolicy: 'reviewEveryUpdate' },
             state: { enabled: true },
           },
         },
@@ -1440,7 +1427,7 @@ describe('PluginRegistryStateStore', () => {
         manifestRelativePath: '.happier-plugin/plugin.json',
         catalogRecord: record,
         trust,
-        updatePolicy: 'manual',
+        updatePolicy: 'reviewEveryUpdate',
         optionalAccess: [],
       });
     };
@@ -1494,7 +1481,7 @@ describe('PluginRegistryStateStore', () => {
               manifestPath,
             },
             compatibility: { status: 'compatible', diagnostics: [] },
-            install: { mode: 'managed_install', manifestVersion: version, trust, updatePolicy: 'manual' },
+            install: { mode: 'managed_install', manifestVersion: version, trust, updatePolicy: 'reviewEveryUpdate' },
             state: { enabled: true },
           },
         },
@@ -1505,7 +1492,7 @@ describe('PluginRegistryStateStore', () => {
         manifestRelativePath: '.happier-plugin/plugin.json',
         catalogRecord: record,
         trust,
-        updatePolicy: 'manual',
+        updatePolicy: 'reviewEveryUpdate',
         optionalAccess: [],
         admittedIntegrity,
       });
@@ -1583,7 +1570,7 @@ describe('PluginRegistryStateStore', () => {
             manifestPath: join(pluginRoot, '.happier-plugin', 'plugin.json'),
           },
           compatibility: { status: 'compatible', diagnostics: [] },
-          install: { mode: 'link', manifestVersion: '1.0.0', trust, updatePolicy: 'manual' },
+          install: { mode: 'link', manifestVersion: '1.0.0', trust, updatePolicy: 'reviewEveryUpdate' },
           state: { enabled: true },
         },
       },
@@ -1615,7 +1602,7 @@ describe('PluginRegistryStateStore', () => {
       manifestRelativePath: '.happier-plugin/plugin.json',
       catalogRecord: record,
       trust,
-      updatePolicy: 'manual',
+      updatePolicy: 'reviewEveryUpdate',
       optionalAccess: [],
     });
 

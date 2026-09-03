@@ -104,10 +104,42 @@ describe('PluginAccountReleaseSelectionSection', () => {
             projection: null,
             daemon: { serverId: null, serverIdentityId: null, machineId: null },
         }));
-        expect(alert).toHaveBeenCalledWith(
-            'common.success',
-            'settingsPlugins.accountReleaseSelection.selectedBody',
+        // The selected Account release is already the visible state owner; a
+        // second success modal adds no information and interrupts focus.
+        expect(alert).not.toHaveBeenCalled();
+    });
+
+    it.each([
+        [
+            Object.freeze({ kind: 'conflict' as const, code: 'intent_revision_conflict' as const }),
+            'settingsPlugins.accountReleaseSelection.conflictTitle',
+            'settingsPlugins.accountReleaseSelection.conflictBody',
+        ],
+        [
+            Object.freeze({ kind: 'unavailable' as const, code: 'target_release_unavailable' as const }),
+            'settingsPlugins.accountReleaseSelection.unavailableTitle',
+            'settingsPlugins.accountReleaseSelection.unavailableBody',
+        ],
+    ])('presents %s as its typed release-selection result', async (result, title, body) => {
+        select.mockResolvedValueOnce(result as never);
+        const { PluginAccountReleaseSelectionSection } = await import('./PluginAccountReleaseSelectionSection');
+        const screen = await renderScreen(
+            <PluginAccountReleaseSelectionSection
+                pluginId="example.tasks"
+                version="2.0.0"
+                reader={null}
+                projection={null}
+                daemon={{ serverId: null, serverIdentityId: null, machineId: null }}
+                testID="plugin.release"
+            />,
         );
+
+        await act(async () => {
+            screen.findByTestId('plugin.release')?.props.onPress();
+            await Promise.resolve();
+        });
+
+        expect(alert).toHaveBeenCalledWith(title, body);
     });
 
     it('shows current hosted status and exposes removal plus exact local cache clear actions', async () => {
@@ -139,5 +171,82 @@ describe('PluginAccountReleaseSelectionSection', () => {
             await Promise.resolve();
         });
         expect(disableAndRemoveHostedArtifacts).toHaveBeenCalledWith({ pluginId: 'example.tasks', reader });
+    });
+
+    it.each([
+        ['conflict', 'settingsPlugins.accountReleaseSelection.conflictTitle', 'settingsPlugins.accountReleaseSelection.conflictBody'],
+        ['unavailable', 'settingsPlugins.accountReleaseSelection.unavailableTitle', 'settingsPlugins.accountReleaseSelection.unavailableBody'],
+    ] as const)('presents a hosted-artifact %s with its typed recovery copy', async (kind, title, body) => {
+        readHostedArtifactStatus.mockReturnValue('notOptedIn' as never);
+        setHostedArtifactsEnabled.mockResolvedValueOnce({ kind } as never);
+        const { PluginAccountReleaseSelectionSection } = await import('./PluginAccountReleaseSelectionSection');
+        const reader = { subscribe: () => () => {} } as never;
+        const screen = await renderScreen(
+            <PluginAccountReleaseSelectionSection
+                pluginId="example.tasks"
+                version="2.0.0"
+                reader={reader}
+                projection={null}
+                daemon={{ serverId: null, serverIdentityId: null, machineId: null }}
+                testID="plugin.release"
+            />,
+        );
+
+        await act(async () => {
+            screen.findByTestId('plugin.release.hosting')?.props.onPress();
+            await Promise.resolve();
+            await Promise.resolve();
+        });
+
+        expect(alert).toHaveBeenCalledWith(title, body);
+    });
+
+    it('keeps the Account hosting lifecycle reachable without a machine-selectable release version', async () => {
+        readHostedArtifactStatus.mockReturnValue('hosted');
+        const { PluginAccountReleaseSelectionSection } = await import('./PluginAccountReleaseSelectionSection');
+        const reader = { subscribe: () => () => {} } as never;
+        const screen = await renderScreen(
+            <PluginAccountReleaseSelectionSection
+                pluginId="example.tasks"
+                version={null}
+                reader={reader}
+                projection={null}
+                daemon={{ serverId: null, serverIdentityId: null, machineId: null }}
+                testID="plugin.release"
+            />,
+        );
+
+        // The Account-hosted archive outlives every machine installation, so
+        // its status and removal must not depend on a current machine release.
+        expect(
+            screen.findAllByType('Item')
+                .some((item) => item.props.testID === 'plugin.release'),
+        ).toBe(false);
+        expect(screen.findByTestId('plugin.release.hosting')?.props.subtitle).toBe(
+            'settingsPlugins.accountReleaseSelection.hostedStatusReady',
+        );
+        expect(screen.findByTestId('plugin.release.removeHosted')).not.toBeNull();
+        await act(async () => {
+            screen.findByTestId('plugin.release.clearCache')?.props.onPress();
+            await Promise.resolve();
+        });
+        expect(clearHostedArtifactCache).toHaveBeenCalledWith({ pluginId: 'example.tasks', reader });
+        expect(select).not.toHaveBeenCalled();
+    });
+
+    it('renders nothing when neither a release selection nor Account hosting is current', async () => {
+        const { PluginAccountReleaseSelectionSection } = await import('./PluginAccountReleaseSelectionSection');
+        const screen = await renderScreen(
+            <PluginAccountReleaseSelectionSection
+                pluginId="example.tasks"
+                version={null}
+                reader={{ subscribe: () => () => {} } as never}
+                projection={null}
+                daemon={{ serverId: null, serverIdentityId: null, machineId: null }}
+                testID="plugin.release"
+            />,
+        );
+
+        expect(screen.findAllByType('ItemGroup')).toHaveLength(0);
     });
 });

@@ -200,7 +200,7 @@ async function prepareResolverWithObsoleteGeneration(): Promise<Readonly<{
         sourceRootPath: obsoleteSourceRoot,
         manifestRelativePath: 'marker',
         distribution: { kind: 'localPath', canonicalPath: obsoleteSourceRoot },
-        updatePolicy: 'manual',
+        updatePolicy: 'reviewEveryUpdate',
         createdAtMs: 1,
         immutableGenerationId: obsoleteGenerationId,
     });

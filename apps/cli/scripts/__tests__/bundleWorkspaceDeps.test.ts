@@ -10,6 +10,7 @@ import {
 } from '../bundleWorkspaceDeps.mjs';
 import { materializePrepublicationWorkspacePackageRoots } from '../../../../packages/cli-common/src/workspaces/index';
 import {
+  bundledPluginManifestSource,
   createPackageLayoutSandbox,
   writeCliBundledHostPackage,
   writeRuntimeDependencyStub,
@@ -217,7 +218,7 @@ describe('bundleWorkspaceDeps', () => {
       manifestOverrides: { scripts: { postinstall: 'echo should-not-run' } },
       files: {
         'dist/index.js': 'export const bundledPlugin = true;\n',
-        'src/manifest.ts': 'export const PLUGIN_MANIFEST = Object.freeze({ id: "claude", runtime: { apiVersion: 1 }, contributes: {} });\n',
+        'src/manifest.ts': bundledPluginManifestSource('claude'),
         'src/agent/definition.ts': 'export const AGENT_DEFINITION = Object.freeze({ id: "claude" });\n',
       },
     });
@@ -480,7 +481,7 @@ describe('bundleWorkspaceDeps', () => {
         manifestOverrides: { exports: { '.': { default: './dist/index.js' } } },
         files: {
           'dist/index.js': 'export const bundledPlugin = true;\n',
-          'src/manifest.ts': 'export const PLUGIN_MANIFEST = Object.freeze({ id: "acme", runtime: { apiVersion: 1 }, contributes: {} });\n',
+          'src/manifest.ts': bundledPluginManifestSource('acme'),
           'src/agent/definition.ts': 'export const AGENT_DEFINITION = Object.freeze({ id: "acme" });\n',
         },
       });
@@ -508,7 +509,7 @@ describe('bundleWorkspaceDeps', () => {
         workspacePath: 'packages/plugins/grok',
         packageName: '@happier-dev/plugins-grok',
         files: {
-          'src/manifest.ts': 'export const PLUGIN_MANIFEST = Object.freeze({ id: "grok", runtime: { apiVersion: 1 }, contributes: {} });\n',
+          'src/manifest.ts': bundledPluginManifestSource('grok'),
           'src/agent/definition.ts': 'export const AGENT_DEFINITION = Object.freeze({ id: "grok" });\n',
         },
       });
@@ -581,7 +582,7 @@ describe('bundleWorkspaceDeps', () => {
         files: {
           'dist/index.js': "export { sdk } from '@happier-dev/plugin-sdk';\nexport { surface } from '@happier-dev/plugin-ui';\n",
           'dist/index.d.ts': "export { sdk } from '@happier-dev/plugin-sdk';\nexport { surface } from '@happier-dev/plugin-ui';\n",
-          'src/manifest.ts': 'export const PLUGIN_MANIFEST = Object.freeze({ id: "grok", runtime: { apiVersion: 1 }, contributes: {} });\n',
+          'src/manifest.ts': bundledPluginManifestSource('grok'),
         },
       });
       writeWorkspacePackageFixture({
@@ -600,7 +601,7 @@ describe('bundleWorkspaceDeps', () => {
           'dist/index.js': "export { sdk } from '@happier-dev/plugin-sdk';\n",
           'dist/index.d.ts': "export { sdk } from '@happier-dev/plugin-sdk';\n",
           'dist/happier-plugin-ui/ui-artifacts.json': '{"version":1,"entries":[]}\n',
-          'src/manifest.ts': 'export const PLUGIN_MANIFEST = Object.freeze({ id: "inspector", runtime: { apiVersion: 1 }, contributes: {} });\n',
+          'src/manifest.ts': bundledPluginManifestSource('inspector'),
         },
       });
 
@@ -892,7 +893,7 @@ describe('bundleWorkspaceDeps', () => {
         packageName: '@happier-dev/plugins-grok',
         files: {
           'dist/index.js': 'export const grok = true;\n',
-          'src/manifest.ts': 'export const PLUGIN_MANIFEST = Object.freeze({ id: "grok", runtime: { apiVersion: 1 }, contributes: {} });\n',
+          'src/manifest.ts': bundledPluginManifestSource('grok'),
         },
       });
 
@@ -963,7 +964,7 @@ describe('bundleWorkspaceDeps', () => {
         packageName,
         files: {
           'dist/index.js': 'export const grokDaemon = true;\n',
-          'src/manifest.ts': 'export const PLUGIN_MANIFEST = Object.freeze({ id: "grok", runtime: { apiVersion: 1 }, contributes: {} });\n',
+          'src/manifest.ts': bundledPluginManifestSource('grok'),
         },
       });
       const forcedBuilds: string[] = [];
@@ -1019,7 +1020,7 @@ describe('bundleWorkspaceDeps', () => {
         files: {
           'dist/index.js': stagedEntrySource,
           'dist/.happier-chunks/chunk-GROK0001.js': stagedChunkSource,
-          'src/manifest.ts': 'export const PLUGIN_MANIFEST = Object.freeze({ id: "grok", runtime: { apiVersion: 1 }, contributes: {} });\n',
+          'src/manifest.ts': bundledPluginManifestSource('grok'),
         },
       });
       const nonPluginPackageDir = writeWorkspacePackageFixture({

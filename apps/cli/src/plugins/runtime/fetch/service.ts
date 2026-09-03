@@ -2,7 +2,10 @@ import {
     isBaseCredentialDiagnosticKey,
     splitSensitiveDiagnosticKeySegments,
 } from '@happier-dev/protocol/diagnostics/sensitive-keys';
-import type { PluginRequestInterceptorContributionV1 } from '@happier-dev/protocol';
+import {
+    pluginNetworkOriginPolicyAdmitsOrigin,
+    type PluginRequestInterceptorContributionV1,
+} from '@happier-dev/protocol';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type {
     HttpMethod,
@@ -58,6 +61,8 @@ export type CreatePluginHttpServiceParams = Readonly<{
     interceptorRegistry?: PluginRequestInterceptorRegistryV1;
     pluginId?: string | null;
     allowedUrlOrigins?: readonly string[];
+    /** Declared HTTPS host-suffix families for the same disclosure decision. */
+    allowedUrlHostSuffixes?: readonly string[];
     /** Host-private redaction for invocation-scoped credential representations. */
     redactInterceptorText?(value: string): string;
     /**
@@ -309,6 +314,7 @@ function readHttpUrl(value: string): URL | null {
 function assertValidUrlAndRecordDisclosureMismatch(params: Readonly<{
     request: PluginHttpRequest;
     allowedUrlOrigins: readonly string[] | undefined;
+    allowedUrlHostSuffixes: readonly string[] | undefined;
     pluginId: string | null | undefined;
     recordDisclosureMismatch?: (mismatch: PluginHttpDisclosureMismatch) => void;
 }>): void {
@@ -327,7 +333,13 @@ function assertValidUrlAndRecordDisclosureMismatch(params: Readonly<{
             message: `Plugin '${params.pluginId ?? 'unknown'}' supplied an invalid HTTP method`,
         });
     }
-    if (!allowedUrlOrigins?.includes('*') && !allowedUrlOrigins?.includes(url.origin)) {
+    if (
+        !allowedUrlOrigins?.includes('*')
+        && !pluginNetworkOriginPolicyAdmitsOrigin({
+            origins: allowedUrlOrigins ?? [],
+            hostSuffixes: params.allowedUrlHostSuffixes ?? [],
+        }, url.origin)
+    ) {
         try {
             params.recordDisclosureMismatch?.({
                 capability: 'network',
@@ -752,6 +764,7 @@ function createTerminalFetchAdapter(params: CreatePluginHttpServiceParams): Http
             assertValidUrlAndRecordDisclosureMismatch({
                 request,
                 allowedUrlOrigins: params.allowedUrlOrigins,
+                allowedUrlHostSuffixes: params.allowedUrlHostSuffixes,
                 pluginId: params.pluginId,
                 recordDisclosureMismatch: params.recordDisclosureMismatch,
             });
@@ -980,6 +993,7 @@ export function createStablePluginHttpHost(params: StablePluginHttpHostParams): 
             adapter: params.adapter,
             pluginId: seed.plugin.id,
             allowedUrlOrigins: binding.networkOrigins ?? Object.freeze([]),
+            allowedUrlHostSuffixes: binding.networkHostSuffixes ?? Object.freeze([]),
             ...(params.redactInterceptorText ? {
                 redactInterceptorText: (value: string) => params.redactInterceptorText!({ seed, value }),
             } : {}),
@@ -1003,7 +1017,7 @@ export function createStablePluginHttpHost(params: StablePluginHttpHostParams): 
                     resolverOptions,
                 );
                 const withinBoundScope = selectedResourceScopes.some((scope) => (
-                    scope.origins.includes(url.origin)
+                    pluginNetworkOriginPolicyAdmitsOrigin(scope, url.origin)
                     && (scope.methods === undefined || scope.methods.includes(method as HttpMethod))
                     && (admission.locality !== 'private' || scope.privateNetwork)
                 )) === true;
@@ -1170,7 +1184,7 @@ export function createStablePluginHttpHost(params: StablePluginHttpHostParams): 
                     );
                     const privateNetwork = admission.locality === 'private';
                     const permitted = binding.networkClientScopes?.some((scope) => (
-                        scope.origins.includes(normalized.targetOrigin)
+                        pluginNetworkOriginPolicyAdmitsOrigin(scope, normalized.targetOrigin)
                         && scope.transports.includes('websocket')
                         && (!privateNetwork || scope.privateNetwork)
                     )) === true;

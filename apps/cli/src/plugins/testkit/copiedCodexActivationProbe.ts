@@ -7,6 +7,7 @@ import {
   type PluginReloadController,
   type PluginRuntimeRegistryLease,
 } from '@/plugins/runtime/reload/controller';
+import { resolveExecutablePluginRuntimeRegistry } from '@/plugins/runtime/resolveExecutablePluginRuntimeRegistry';
 
 const CODEX_PLUGIN_ID = 'happier.agent.codex';
 const CODEX_PREREQUISITE_HOOK_ID = 'agent.resolvePrerequisites';
@@ -63,7 +64,11 @@ async function main(): Promise<void> {
     );
   }
 
-  const controller = createPluginReloadController({ happyHomeDir });
+  // The controller never resolves a runtime registry on its own initiative:
+  // the process's one lifecycle owner supplies it at the acquire seam. This
+  // probe is that owner for its own process, exactly as the daemon plugin
+  // runtime owner is for the daemon.
+  const controller = createPluginReloadController();
   let lease: PluginRuntimeRegistryLease | null = null;
   let report: Record<string, unknown> = {
     ok: false,
@@ -75,7 +80,17 @@ async function main(): Promise<void> {
   const logs: Array<Readonly<{ level: 'debug' | 'info' | 'warn'; message: string }>> = [];
 
   try {
-    lease = await controller.acquireRuntimeRegistry();
+    lease = await controller.acquireRuntimeRegistry({
+      resolveRuntimeRegistry: async () => await resolveExecutablePluginRuntimeRegistry({
+        happyHomeDir,
+        generation: controller.getState().generation + 1,
+        // Long-lived plugin contexts must resolve whichever registry the
+        // controller publishes now; a self-targeting registry would pin them
+        // to this cold generation.
+        currentGlobalExternalSessionsRouter: controller.currentGlobalExternalSessions,
+        targetedContributions: controller.getTargetedContributionsOwner(),
+      }),
+    });
     const registryAccepted =
       lease.source === 'active'
       && controller.isRuntimeRegistryCurrent(lease.registry);

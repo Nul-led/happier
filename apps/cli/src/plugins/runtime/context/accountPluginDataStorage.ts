@@ -1433,8 +1433,6 @@ export function createAccountPluginDataStorageHost(params: Readonly<{
                     await assertBoundCurrent(lifecycle, operationSignal);
                     const snapshot = await readAccountKvSnapshot(operationSignal);
                     const row = cloneAccountKvRow(snapshot.row);
-                    const dependencyKeys = new Set<string>();
-                    const writeKeys = new Set<string>();
                     const transactionSignals = new Set<AbortSignal>();
                     let active = true;
                     let mutated = false;
@@ -1452,7 +1450,6 @@ export function createAccountPluginDataStorageHost(params: Readonly<{
                         async get<TValue extends JsonValue = JsonValue>(key: string, options?: Readonly<{ signal?: AbortSignal }>) {
                             await assertTransactionActive(options?.signal);
                             const normalizedKey = normalizeAccountKvKey(key);
-                            dependencyKeys.add(normalizedKey);
                             const entry = accountKvEntryAt(row, normalizedKey);
                             return entry ? toAccountKvEntry<TValue>(entry) : null;
                         },
@@ -1462,8 +1459,6 @@ export function createAccountPluginDataStorageHost(params: Readonly<{
                         }>) {
                             await assertTransactionActive(options?.signal);
                             const normalizedKey = normalizeAccountKvKey(key);
-                            dependencyKeys.add(normalizedKey);
-                            writeKeys.add(normalizedKey);
                             const previous = assertAccountKvExpectedVersion(
                                 row,
                                 normalizedKey,
@@ -1479,8 +1474,6 @@ export function createAccountPluginDataStorageHost(params: Readonly<{
                         }>) {
                             await assertTransactionActive(options?.signal);
                             const normalizedKey = normalizeAccountKvKey(key);
-                            dependencyKeys.add(normalizedKey);
-                            writeKeys.add(normalizedKey);
                             const previous = assertAccountKvExpectedVersion(
                                 row,
                                 normalizedKey,
@@ -1508,12 +1501,9 @@ export function createAccountPluginDataStorageHost(params: Readonly<{
                         await assertBoundCurrent(lifecycle, commitSignal);
                         if (mutated) {
                             await inAccountKvRowAlgebraAsync(async () => await commitPluginAccountKvMutationV1({
-                                initialSnapshot: snapshot,
+                                snapshot,
                                 pendingRow: row,
-                                dependencyKeys: [...dependencyKeys],
-                                writeKeys: [...writeKeys],
                                 assertCurrent: async () => await assertBoundCurrent(lifecycle, commitSignal),
-                                readLatest: async () => await readAccountKvSnapshot(commitSignal),
                                 write: async (currentSnapshot, currentRow) => await writeAccountKvSnapshot({
                                     snapshot: currentSnapshot,
                                     row: currentRow,
@@ -1742,62 +1732,42 @@ export function createAccountPluginDataStorageHost(params: Readonly<{
                     return parsed.data;
                 };
 
+                /**
+                 * The exact revision a retention owner already proved
+                 * unreachable is the whole currentness witness, so this is one
+                 * request. The server advances Collection absence currentness
+                 * inside the same transaction, and a direct read cannot see a
+                 * tombstone anyway — re-reading before retrying could never
+                 * resolve a revision conflict, only spin on it.
+                 */
                 const forgetRowForRetention = async (
                     rowId: string,
                     expectedRevision: number,
                     operationSignal?: AbortSignal,
                 ): Promise<boolean> => {
                     const credentials = await currentCredentials(operationSignal);
-                    // Another row may be forgotten between the freshness read
-                    // and this request because the epoch is Collection-wide.
-                    // Re-read and retry that typed conflict rather than leaving
-                    // exact retention work stranded after its horizon.
-                    for (;;) {
-                        const snapshot = await request({
-                            path: PLUGIN_COLLECTION_GET_HTTP_PATH_V1,
-                            body: PluginCollectionGetRequestV1Schema.parse({
-                                pluginId: lifecycle.pluginId,
-                                collectionId: collection.contract.collectionId,
-                                rowId,
-                            }),
-                            kind: 'read',
-                            credentials,
-                            operationSignal,
-                        });
-                        const parsedSnapshot = PluginCollectionGetResultV1Schema.safeParse(snapshot);
-                        if (!parsedSnapshot.success) {
-                            throw dataError(COLLECTION_PROTOCOL_INVALID_CODE, 'Collection currentness response is invalid');
-                        }
-                        if (
-                            parsedSnapshot.data.row !== null
-                            && parsedSnapshot.data.row.revision !== expectedRevision
-                        ) {
-                            return false;
-                        }
-                        const response = await request({
-                            path: PLUGIN_COLLECTION_FORGET_HTTP_PATH_V1,
-                            body: PluginCollectionForgetRequestV1Schema.parse({
-                                pluginId: lifecycle.pluginId,
-                                collectionId: collection.contract.collectionId,
-                                writerContext: {
-                                    schemaVersion: collection.contract.schemaVersion,
-                                    contractDigest: collection.contract.contractDigest,
-                                },
-                                rowId,
-                                expectedRevision,
-                                expectedAbsenceEpoch: parsedSnapshot.data.absenceEpoch,
-                            }),
-                            kind: 'mutation',
-                            credentials,
-                            operationSignal,
-                        });
-                        const parsed = PluginCollectionForgetResultV1Schema.safeParse(response);
-                        if (!parsed.success) {
-                            throw dataError(COLLECTION_PROTOCOL_INVALID_CODE, 'Collection forget response is invalid');
-                        }
-                        await assertCurrentAccount(credentials, operationSignal);
-                        if (parsed.data.status === 'forgotten') return true;
+                    const response = await request({
+                        path: PLUGIN_COLLECTION_FORGET_HTTP_PATH_V1,
+                        body: PluginCollectionForgetRequestV1Schema.parse({
+                            pluginId: lifecycle.pluginId,
+                            collectionId: collection.contract.collectionId,
+                            writerContext: {
+                                schemaVersion: collection.contract.schemaVersion,
+                                contractDigest: collection.contract.contractDigest,
+                            },
+                            rowId,
+                            expectedRevision,
+                        }),
+                        kind: 'mutation',
+                        credentials,
+                        operationSignal,
+                    });
+                    const parsed = PluginCollectionForgetResultV1Schema.safeParse(response);
+                    if (!parsed.success) {
+                        throw dataError(COLLECTION_PROTOCOL_INVALID_CODE, 'Collection forget response is invalid');
                     }
+                    await assertCurrentAccount(credentials, operationSignal);
+                    return parsed.data.status === 'forgotten';
                 };
 
                 const materialize = (
@@ -1817,7 +1787,7 @@ export function createAccountPluginDataStorageHost(params: Readonly<{
                         options: Readonly<{ expectedRevision: number; signal?: AbortSignal }>,
                     ) {
                         if (!await forgetRowForRetention(rowId, options.expectedRevision, options.signal)) {
-                            throw dataError(COLLECTION_CONFLICT_CODE, 'Collection forget conflicted with a newer row revision or absence epoch');
+                            throw dataError(COLLECTION_CONFLICT_CODE, 'Collection forget conflicted with a newer row revision');
                         }
                         return Object.freeze({ rowId, forgotten: true as const });
                     },

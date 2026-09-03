@@ -1,28 +1,8 @@
-import type { PluginInstallationReview } from '@/plugins/daemon/changeContract';
-
-export function createPluginInstallationReviewFixture(
-  overrides: Partial<PluginInstallationReview> = {},
-): PluginInstallationReview {
-  return {
-    pluginId: 'acme.example',
-    displayName: 'Example',
-    version: '1.0.0',
-    packageIdentity: { name: null, version: '1.0.0' },
-    publisherIdentity: { status: 'unavailable' },
-    source: { kind: 'path', locator: '/tmp/example' },
-    updateChannel: { kind: 'path', locator: '/tmp/example', development: false },
-    signature: { status: 'notProvided' },
-    provenance: { status: 'notProvided' },
-    curation: { status: 'notApplicable' },
-    executableRealms: ['daemon'],
-    contributions: [],
-    requestInterceptors: [],
-    uiArtifacts: { status: 'none', contributionIds: [] },
-    requiredHostAccess: [],
-    optionalHostAccess: [],
-    rawCredentialAccess: [],
-    compatibility: { happier: '^0.2.0', runtimeApiVersion: 1 },
-    updatePolicy: 'manual',
-    ...overrides,
-  };
-}
+// [pending-deletion] The canonical serialized-review fixture moved to
+// `@happier-dev/protocol/testing/pluginInstallationReviewFixture` beside the
+// cross-process review schema it satisfies. Every consumer now imports the
+// protocol fixture directly; this file has no remaining importers and should
+// be removed with the migration that moved the fixture.
+export {
+  createPluginInstallationReviewFixture,
+} from '@happier-dev/protocol/testing/pluginInstallationReviewFixture';

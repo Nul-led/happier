@@ -14,13 +14,8 @@ import {
 
 import {
     createNativeAgentHostSessionRuntimePlan as createPublicPluginSessionRuntimePlan,
-    createPluginSessionRuntimePlan,
 } from './session';
 import { buildPluginHostSessionRuntimeOptions, buildPluginSessionBindingInput } from './sessionLaunch';
-import {
-  decorateRuntimeTurnOperationsWithMetadata,
-  normalizePluginSessionLaunchResult,
-} from './sessionMetadata';
 import type {
   ResolvedAgentContribution,
   ResolvedAgentRuntimeContribution,
@@ -148,7 +143,6 @@ function createHostFactoryParams() {
     mcpServers: {},
     permissionHandler: {} as never,
     getPermissionMode: () => 'default' as const,
-    setThinking: () => undefined,
     memoryRecallGuidanceEnabled: false,
     runnerProcessIdentity: null,
     startupModelSelection: null,
@@ -176,39 +170,7 @@ function createHostFactoryParams() {
 }
 
 describe('plugin session runtime adapters', () => {
-  it('does not synthesize an Agent runtime descriptor when the plugin omits one', () => {
-    const runtime = createRuntimeTurnOperations();
-
-    expect(normalizePluginSessionLaunchResult({
-      result: { runtime },
-    })).toMatchObject({
-      runtime,
-      runtimeDescriptor: null,
-    });
-  });
-
-  it('preserves an Agent-provided runtime descriptor without adding host routing data', () => {
-    const runtime = createRuntimeTurnOperations();
-    const runtimeDescriptor = {
-      v: 1,
-      agentId: 'acme.sample.provider',
-      agent: {
-        providerSessionId: 'acme-session-1',
-        agentExtra: {
-          owner: 'acme.sample.plugin',
-          schemaId: 'acme.sample.runtimeDescriptor',
-          v: 1,
-          opaqueResumeFact: 'agent-owned',
-        },
-      },
-    } as const;
-
-    expect(normalizePluginSessionLaunchResult({
-      result: { runtime, runtimeDescriptor },
-    }).runtimeDescriptor).toEqual(runtimeDescriptor);
-  });
-
-  it('threads the exact selected Agent provider declaration into both host runtime plans', async () => {
+  it('threads the exact selected Agent provider declaration into the host runtime plan', async () => {
     const providerRequirements = Object.freeze({
       acceptsProtocols: ['openai-responses'],
       required: { streaming: true },
@@ -245,18 +207,7 @@ describe('plugin session runtime adapters', () => {
       createSessionRuntime: async () => createRuntimeTurnOperations(),
       sessionInput,
     });
-    const pluginPlan = await createPluginSessionRuntimePlan({
-      backend: createBackendFixture(),
-      agent,
-      launch: async () => ({
-        operations: createRuntimeTurnOperations(),
-      }) as never,
-      sessionInput,
-    });
-
     expect(nativePlan.config.providerRequirements)
-      .toBe(providerRequirements);
-    expect(pluginPlan.config.providerRequirements)
       .toBe(providerRequirements);
   });
 
@@ -325,7 +276,7 @@ describe('plugin session runtime adapters', () => {
     });
   });
 
-  it('preserves the admitted spawn identity through the plugin host runtime binding', async () => {
+  it('preserves the admitted spawn identity through the plugin host runtime binding', () => {
     const sessionCreationTag = deriveSessionCreationTagV1({
       callerCreationNamespace: 'plugin:acme.plugin',
       creationKey: 'external-action-spawn',
@@ -365,32 +316,9 @@ describe('plugin session runtime adapters', () => {
     expect(options.sessionCreationTag).toBe(sessionCreationTag);
     expect(options.sessionCreationCorrespondence).toEqual(sessionCreationCorrespondence);
 
-    let launchParams: unknown = null;
-    const pluginPlan = await createPluginSessionRuntimePlan({
-      backend: createBackendFixture(),
-      agent: createAgentFixture(),
-      launch: async (params) => {
-        launchParams = params;
-        return { runtime: createRuntimeTurnOperations() } as never;
-      },
-      sessionInput: buildPluginSessionBindingInput({
-        credentials,
-        sessionCreationTag,
-        sessionCreationCorrespondence,
-      }),
-    });
-
-    await pluginPlan.config.createSessionRuntime?.(createHostFactoryParams());
-
-    expect(pluginPlan.opts).toMatchObject({
-      sessionCreationTag,
-      sessionCreationCorrespondence,
-    });
-    expect(launchParams).not.toHaveProperty('sessionCreationTag');
-    expect(launchParams).not.toHaveProperty('sessionCreationCorrespondence');
   });
 
-  it('consumes provider-owned deferred-startup policy only on the native Agent plan', async () => {
+  it('consumes provider-owned deferred-startup policy on the native Agent plan', async () => {
     const shouldUseDeferredBootstrap = vi.fn(() => true);
     const baseAgent = createAgentFixture() as unknown as Record<string, unknown>;
     const agent = {
@@ -418,15 +346,6 @@ describe('plugin session runtime adapters', () => {
       createSessionRuntime: async () => createRuntimeTurnOperations(),
       sessionInput,
     });
-    const legacyPlan = await createPluginSessionRuntimePlan({
-      backend: createBackendFixture(),
-      agent,
-      launch: async () => ({
-        operations: createRuntimeTurnOperations(),
-      }) as never,
-      sessionInput,
-    });
-
     expect(nativePlan.config.startupBootstrap?.shouldCreate?.({
       opts: nativePlan.opts,
       seed: {
@@ -463,7 +382,6 @@ describe('plugin session runtime adapters', () => {
       hasPersistedPermissionModeSeed: false,
       hasTerminalTty: expect.any(Boolean),
     });
-    expect(legacyPlan.config.startupBootstrap).toBeUndefined();
   });
 
   it('does not authorize an offline Session stub for native Agent startup', async () => {
@@ -1075,61 +993,6 @@ describe('plugin session runtime adapters', () => {
 
     expect(operations.setOnPromptAcceptedByProvider).toBeUndefined();
     expect(typeof operations.setOnPromptTerminallyRejectedBeforeProvider).toBe('function');
-  });
-
-  it('preserves provider-acceptance user message seqs through runtime metadata decoration', async () => {
-    const runtime = createRuntimeTurnOperations();
-    const decorated = decorateRuntimeTurnOperationsWithMetadata({
-      runtime,
-      runtimeDescriptor: null,
-      runtimeCapabilities: null,
-      runtimeFacets: null,
-    });
-
-    await decorated.sendTurnPrompt('hello', { userMessageSeq: 77 });
-
-    expect(runtime.sendTurnPrompt).toHaveBeenCalledWith('hello', { userMessageSeq: 77 });
-  });
-
-  it('preserves provider-acceptance steer user message seqs through runtime metadata decoration', async () => {
-    const runtime = createRuntimeTurnOperations();
-    const decorated = decorateRuntimeTurnOperationsWithMetadata({
-      runtime,
-      runtimeDescriptor: null,
-      runtimeCapabilities: null,
-      runtimeFacets: null,
-    });
-
-    await decorated.steerInFlightTurn('hello steer', { userMessageSeq: 78 });
-
-    expect(runtime.steerInFlightTurn).toHaveBeenCalledWith('hello steer', { userMessageSeq: 78 });
-  });
-
-  it('preserves provider-acceptance and terminal-rejection hooks through runtime metadata decoration', () => {
-    const setOnPromptAcceptedByProvider = vi.fn();
-    const setOnPromptTerminallyRejectedBeforeProvider = vi.fn();
-    const runtime = {
-      ...createRuntimeTurnOperations(),
-      setOnPromptAcceptedByProvider,
-      setOnPromptTerminallyRejectedBeforeProvider,
-    };
-    const decorated = decorateRuntimeTurnOperationsWithMetadata({
-      runtime,
-      runtimeDescriptor: null,
-      runtimeCapabilities: null,
-      runtimeFacets: null,
-    }) as typeof runtime;
-    const acceptedHandler = vi.fn();
-    const rejectedHandler = vi.fn();
-
-    expect(typeof decorated.setOnPromptAcceptedByProvider).toBe('function');
-    expect(typeof decorated.setOnPromptTerminallyRejectedBeforeProvider).toBe('function');
-
-    decorated.setOnPromptAcceptedByProvider(acceptedHandler);
-    decorated.setOnPromptTerminallyRejectedBeforeProvider(rejectedHandler);
-
-    expect(setOnPromptAcceptedByProvider).toHaveBeenCalledWith(acceptedHandler);
-    expect(setOnPromptTerminallyRejectedBeforeProvider).toHaveBeenCalledWith(rejectedHandler);
   });
 
   it('rebinds canonical native operations after reset and fences stale predecessor events', async () => {

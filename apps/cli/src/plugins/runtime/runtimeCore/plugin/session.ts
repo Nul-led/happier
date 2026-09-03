@@ -28,10 +28,6 @@ import type {
     EngineResolutionAgent,
     EngineResolutionBackend,
 } from '@/agent/runtime/registry/engineRegistryTypes';
-import type {
-    ResolvedAgentContribution,
-    ResolvedAgentRuntimeContribution,
-} from '@/plugins/projection/registry/types';
 import { createProviderTerminalDisplay } from '@/ui/providers/providerTerminalDisplay';
 import {
     getAgentResumeConfig,
@@ -64,10 +60,6 @@ import {
 import { configuration } from '@/configuration';
 import type { PermissionMode } from '@/api/types';
 
-import {
-    decorateRuntimeTurnOperationsWithMetadata,
-    normalizePluginSessionLaunchResult,
-} from './sessionMetadata';
 import type {
     PluginRuntimeApplyConfigDeltaInFlight,
     PluginRuntimeClearTerminalComposer,
@@ -80,8 +72,6 @@ import type {
 import {
     buildPluginHostSessionRuntimeOptions,
     type PluginSessionBindingInput,
-    type PluginSessionLaunchHandler,
-    buildPluginSessionLaunchParams,
 } from './sessionLaunch';
 
 type NativeAgentSessionOpenIntent =
@@ -848,62 +838,6 @@ function resolvePluginPolicyAgentId(params: Readonly<{
     throw new Error(
         `Plugin backend '${params.backend.id}' requires catalogAgentId to resolve to an exact built-in policy agent id before it can become a live session runtime`,
     );
-}
-
-export async function createPluginSessionRuntimePlan(params: Readonly<{
-    backend: ResolvedAgentRuntimeContribution;
-    agent: ResolvedAgentContribution;
-    launch: PluginSessionLaunchHandler;
-    sessionInput: PluginSessionBindingInput;
-}>): Promise<HostSessionRuntimePlan> {
-    const displayName = buildPluginDisplayName(params.agent, params.backend);
-    const policyAgentId = resolvePluginPolicyAgentId({
-        backend: params.backend,
-        agent: params.agent,
-    });
-    const TerminalDisplay = createProviderTerminalDisplay({
-        title: displayName,
-        footerName: displayName,
-        accentColor: 'cyan',
-    });
-
-    return createCatalogHostSessionRuntimePlan({
-        agentId: params.backend.id,
-        opts: buildPluginHostSessionRuntimeOptions(params.sessionInput),
-        config: createCatalogHostSessionRuntimeConfig({
-            agentId: params.backend.id,
-            config: {
-                displayName,
-                flavor: params.backend.id,
-                policyAgentId,
-                providerRequirements:
-                    params.agent.richDefinition?.definition
-                        .providerRequirements,
-                ...(params.agent.catalogEntry?.runtimeActivityApplicability !== undefined
-                    ? { runtimeActivityApplicability: params.agent.catalogEntry.runtimeActivityApplicability }
-                    : {}),
-                terminalDisplay: TerminalDisplay,
-                formatPromptErrorMessage: (error) => `Error: ${error instanceof Error ? error.message : String(error)}`,
-                createNativeRuntime: async (runtimeParams) => {
-                    const sessionLaunchParams = buildPluginSessionLaunchParams({
-                        backend: params.backend,
-                        agent: params.agent,
-                        input: params.sessionInput,
-                        runtime: {
-                            sessionId: runtimeParams.session.sessionId,
-                            directory: runtimeParams.directory,
-                            metadata: runtimeParams.metadata,
-                        },
-                    });
-                    const launchResult = await params.launch(sessionLaunchParams);
-                    const normalized = normalizePluginSessionLaunchResult({
-                        result: launchResult,
-                    });
-                    return decorateRuntimeTurnOperationsWithMetadata(normalized);
-                },
-            },
-        }),
-    });
 }
 
 export async function createNativeAgentHostSessionRuntimePlan(params: Readonly<{

@@ -13,9 +13,10 @@ import {
   type AutomationEventAdmitHttpRequestV1,
   type PluginMachineMaterializationRefV1,
   type PluginWebhookInvocationReferenceV1,
-  MAX_AUTOMATION_EVENT_ADMIT_DEFINITIONS_PER_CALL,
-  MAX_AUTOMATION_EVENT_ADMIT_HTTP_REQUEST_UTF8_BYTES,
-  readAutomationEventAdmitHttpRequestCanonicalUtf8ByteLengthV1,
+  MAX_AUTOMATION_EVENT_PAYLOAD_UTF8_BYTES,
+  MAX_AUTOMATION_EVENT_SOURCE_DEFINITIONS_PER_PAGE,
+  SERVER_HTTP_REQUEST_MAX_BODY_UTF8_BYTES_V1,
+  readServerHttpRequestBodyUtf8ByteLengthV1,
 } from '@happier-dev/protocol';
 
 const transportMocks = vi.hoisted(() => ({
@@ -415,9 +416,13 @@ describe('Automation Event adopted-definition host factory', () => {
     })).resolves.toBeNull();
   });
 
-  it('partitions a plain semantic Action into complete private calls without exposing a cursor', async () => {
+  it('keeps a whole plain snapshot that fits the transport ceiling in one request, without exposing a cursor', async () => {
+    // The snapshot cardinality below is the current source-LIST page maximum.
+    // It is read pagination, never an admission bound: a plain snapshot this
+    // size serializes far below the server transport ceiling, so the ordered
+    // sequence is one complete request and no definition count splits it.
     const definitions = Array.from(
-      { length: MAX_AUTOMATION_EVENT_ADMIT_DEFINITIONS_PER_CALL + 1 },
+      { length: MAX_AUTOMATION_EVENT_SOURCE_DEFINITIONS_PER_PAGE },
       (_, index) => storedDefinition({
         automationId: `automation-plain-${index}`,
         triggerId: AutomationTriggerIdSchema.parse(`trigger-plain-${index}`),
@@ -465,36 +470,31 @@ describe('Automation Event adopted-definition host factory', () => {
     const withoutSuccessor = await prepare();
     if (withoutSuccessor === null) throw new Error('plain admission sequence was unavailable');
     const withoutSuccessorFirst = await withoutSuccessor.next();
-    if (withoutSuccessorFirst.done) throw new Error('plain admission sequence ended before its first batch');
+    if (withoutSuccessorFirst.done) throw new Error('plain admission sequence ended before its first request');
     expect((await withoutSuccessor.next()).done).toBe(true);
 
     const sequence = await prepare();
     if (sequence === null) throw new Error('plain admission sequence was unavailable');
     const first = await sequence.next();
-    if (first.done) throw new Error('plain admission sequence ended before its first batch');
+    if (first.done) throw new Error('plain admission sequence ended before its first request');
     const successor = { mode: 'plain' as const, version: 8, contentKeyFingerprint: null };
-    const second = await sequence.next(successor);
-    if (second.done) throw new Error('plain admission sequence ended before its second batch');
-    const requests = [first.value, second.value];
+    const requests = [first.value];
+    while (true) {
+      const next = await sequence.next(successor);
+      if (next.done) break;
+      requests.push(next.value);
+    }
 
-    expect(requests).toHaveLength(2);
+    expect(requests).toHaveLength(1);
     expect(requests.every((request) => 'input' in request)).toBe(true);
     expect(requests.map((request) => (
       'input' in request ? request.input.definitions : []
-    ))).toEqual([
-      input.definitions.slice(0, MAX_AUTOMATION_EVENT_ADMIT_DEFINITIONS_PER_CALL),
-      input.definitions.slice(MAX_AUTOMATION_EVENT_ADMIT_DEFINITIONS_PER_CALL),
-    ]);
+    ))).toEqual([input.definitions]);
     expect(requests.map((request) => (
       request.hostEvidence.accountCurrentness
     ))).toEqual([
       { mode: 'plain', version: 7, contentKeyFingerprint: null },
-      successor,
     ]);
-    expect(requests.every((request) => (
-      readAutomationEventAdmitHttpRequestCanonicalUtf8ByteLengthV1(request)
-        <= MAX_AUTOMATION_EVENT_ADMIT_HTTP_REQUEST_UTF8_BYTES
-    ))).toBe(true);
   });
 
   it('adopts a durable-push definition at its selected transport without exposing endpoint routing identity', async () => {
@@ -668,7 +668,7 @@ describe('Automation Event adopted-definition host factory', () => {
     })).resolves.toEqual({ kind: 'unavailable' });
   });
 
-  it('exposes one ordered encrypted sequence of complete Protocol-bounded requests', async () => {
+  it('exposes one ordered encrypted sequence of complete transport-bounded requests', async () => {
     const snapshot = createAccountScopedCryptoMaterialSnapshotV1({
       accountEncryptionMode: 'e2ee',
       material: { type: 'legacy', secret: credentials.encryption.secret },
@@ -757,13 +757,13 @@ describe('Automation Event adopted-definition host factory', () => {
     const withoutSuccessor = await prepare();
     if (withoutSuccessor === null) throw new Error('encrypted admission sequence was unavailable');
     const withoutSuccessorFirst = await withoutSuccessor.next();
-    if (withoutSuccessorFirst.done) throw new Error('encrypted admission sequence ended before its first batch');
+    if (withoutSuccessorFirst.done) throw new Error('encrypted admission sequence ended before its first request');
     expect((await withoutSuccessor.next()).done).toBe(true);
 
     const sequence = await prepare();
     if (sequence === null) throw new Error('encrypted admission sequence was unavailable');
     const first = await sequence.next();
-    if (first.done) throw new Error('encrypted admission sequence ended before its first batch');
+    if (first.done) throw new Error('encrypted admission sequence ended before its first request');
     const successor = {
       mode: 'e2ee' as const,
       version: 9,
@@ -772,26 +772,16 @@ describe('Automation Event adopted-definition host factory', () => {
           snapshot.contentPublicKeyFingerprint,
         ),
     };
-    const second = await sequence.next(successor);
-    if (second.done) throw new Error('encrypted admission sequence ended before its second batch');
-    const requests = [first.value, second.value];
+    const requests = [first.value];
     while (true) {
       const next = await sequence.next(successor);
       if (next.done) break;
       requests.push(next.value);
     }
 
-    expect(requests).toHaveLength(Math.ceil(input.definitions.length / MAX_AUTOMATION_EVENT_ADMIT_DEFINITIONS_PER_CALL));
+    expect(requests).toHaveLength(1);
     expect(requests.every((request) => !('input' in request))).toBe(true);
-    expect(requests.every((request) => (
-      readAutomationEventAdmitHttpRequestCanonicalUtf8ByteLengthV1(request)
-        <= MAX_AUTOMATION_EVENT_ADMIT_HTTP_REQUEST_UTF8_BYTES
-    ))).toBe(true);
-    expect(requests.every((request) => (
-      !('input' in request)
-      && request.hostEvidence.definitions.length <= MAX_AUTOMATION_EVENT_ADMIT_DEFINITIONS_PER_CALL
-    ))).toBe(true);
-    expect(requests.slice(0, 2).map((request) => (
+    expect(requests.map((request) => (
       'input' in request ? null : request.hostEvidence.accountCurrentness
     ))).toEqual([
       {
@@ -799,7 +789,6 @@ describe('Automation Event adopted-definition host factory', () => {
         version: 8,
         contentKeyFingerprint: successor.contentKeyFingerprint,
       },
-      successor,
     ]);
     expect(requests.flatMap((request) => (
       'input' in request
@@ -811,6 +800,171 @@ describe('Automation Event adopted-definition host factory', () => {
           sourceSelectorId: definition.sourceSelectorId,
         }))
     ))).toEqual(input.definitions);
+  });
+
+  it('splits a multi-page adopted snapshot at the server transport ceiling, in order, with chained witnesses', async () => {
+    const snapshot = createAccountScopedCryptoMaterialSnapshotV1({
+      accountEncryptionMode: 'e2ee',
+      material: { type: 'legacy', secret: credentials.encryption.secret },
+    });
+    // Every sealed definition carries the occurrence payload, so a maximal
+    // payload plus a catalog spanning several source-list pages is the smallest
+    // realistic snapshot whose single request body would exceed the transport
+    // ceiling this host must never reach.
+    const CURSOR_PREFIX = 'oversized-page-';
+    const payload = {
+      action: 'opened',
+      blob: 'x'.repeat(
+        MAX_AUTOMATION_EVENT_PAYLOAD_UTF8_BYTES
+          - JSON.stringify({ action: 'opened', blob: '' }).length,
+      ),
+    };
+    const definitions = Array.from(
+      { length: MAX_AUTOMATION_EVENT_SOURCE_DEFINITIONS_PER_PAGE * 3 },
+      (_, index) => {
+        const automationId = `automation-oversized-${index}`;
+        const definitionTriggerId = AutomationTriggerIdSchema.parse(`trigger-oversized-${index}`);
+        return {
+          ...storedDefinition({ automationId, triggerId: definitionTriggerId }),
+          storedDefinitionEnvelope: sealAutomationTriggerDefinitionStoredEnvelopeV1({
+            mode: 'e2ee',
+            material: snapshot.material,
+            randomBytes: (length) => new Uint8Array(length).fill(4),
+            binding: {
+              v: 1,
+              automationId,
+              triggerId: definitionTriggerId,
+              triggerRevision,
+              triggerKind: 'pluginEvent',
+              eventRef: { pluginId: caller.pluginId, localId: 'repository-event' },
+              sourceSelectorId,
+            },
+            definition: {
+              v: 1,
+              sourceInstanceId: `repository-${index}`,
+              sourceConfig: { repositoryId: index },
+              displayLabel: `Repository ${index}`,
+              filter: null,
+              maximumObservationAgeMs: null,
+            },
+          }),
+        };
+      },
+    );
+    const owner = createAutomationEventAdoptedDefinitionSetHostV1({
+      credentials,
+      caller,
+      immutableGenerationId,
+      transport: { kind: 'checkpointedPull' },
+      generationSignal: new AbortController().signal,
+      isGenerationCurrent: () => true,
+      revalidateCallerMaterialization: async () => true,
+      revalidateCallerImmutableGeneration: async () => true,
+      // The catalog is served exactly as the canonical page contract allows:
+      // three progressing pages at the page maximum, one stable revision, and
+      // distinct opaque cursors.
+      readStoredDefinitions: async ({ input: readInput }) => {
+        if (readInput.knownRevision === '9') {
+          return { kind: 'unchanged', revision: '9', eventDeclarationRelease };
+        }
+        const pageIndex = readInput.cursor === undefined
+          ? 0
+          : Number.parseInt(readInput.cursor.slice(CURSOR_PREFIX.length), 10);
+        const start = pageIndex * MAX_AUTOMATION_EVENT_SOURCE_DEFINITIONS_PER_PAGE;
+        const pageDefinitions = definitions.slice(
+          start,
+          start + MAX_AUTOMATION_EVENT_SOURCE_DEFINITIONS_PER_PAGE,
+        );
+        return {
+          kind: 'page',
+          revision: '9',
+          eventDeclarationRelease,
+          definitions: pageDefinitions,
+          nextCursor: start + pageDefinitions.length < definitions.length
+            ? `${CURSOR_PREFIX}${pageIndex + 1}`
+            : null,
+        };
+      },
+      resolveAccountEncryptionCurrentness: async () => ({
+        mode: 'e2ee',
+        version: 8,
+        signingKeyFingerprint: 'aemk1_signing',
+        contentKeyFingerprint:
+          convertContentPublicKeyFingerprintToAccountEncryptionMigrateKeyFingerprintV1(
+            snapshot.contentPublicKeyFingerprint,
+          ),
+        updatedAt: 9,
+      }),
+      resolveAccountEncryptionMaterial: async () => snapshot,
+    });
+    const input = {
+      eventRef: { pluginId: caller.pluginId, localId: 'repository-event' },
+      occurrenceId: 'delivery-oversized-1',
+      occurredAt: 1,
+      observationReceivedAt: 2,
+      payload,
+      definitions: definitions.map((definition) => ({
+        automationId: definition.automationId,
+        triggerId: definition.triggerId,
+        triggerRevision: definition.triggerRevision,
+        sourceSelectorId: definition.sourceSelectorId,
+      })),
+    } as const;
+
+    await expect(owner.refresh()).resolves.toEqual({ kind: 'adopted', revision: '9' });
+    const sequence = await owner.prepareAdmission({
+      accountId: 'account-1',
+      caller: actionCaller,
+      input,
+      randomBytes: (length) => new Uint8Array(length),
+    });
+    if (sequence === null) throw new Error('encrypted admission sequence was unavailable');
+    const successor = {
+      mode: 'e2ee' as const,
+      version: 9,
+      contentKeyFingerprint:
+        convertContentPublicKeyFingerprintToAccountEncryptionMigrateKeyFingerprintV1(
+          snapshot.contentPublicKeyFingerprint,
+        ),
+    };
+    // Each request is summarized and released so the assertions never retain
+    // the whole catalog's sealed evidence at once.
+    const observed: Array<Readonly<{
+      bodyBytes: number;
+      firstDefinitionBytes: number;
+      accountCurrentnessVersion: number;
+      selectors: readonly unknown[];
+    }>> = [];
+    for (let call = 0; ; call += 1) {
+      const next = call === 0 ? await sequence.next() : await sequence.next(successor);
+      if (next.done) break;
+      const request = next.value;
+      if ('input' in request) throw new Error('an E2EE snapshot must not yield a plain request');
+      const definitionEvidence = request.hostEvidence.definitions;
+      observed.push({
+        bodyBytes: readServerHttpRequestBodyUtf8ByteLengthV1(request),
+        firstDefinitionBytes: readServerHttpRequestBodyUtf8ByteLengthV1(definitionEvidence[0]),
+        accountCurrentnessVersion: request.hostEvidence.accountCurrentness.version,
+        selectors: definitionEvidence.map((definition) => ({
+          automationId: definition.automationId,
+          triggerId: definition.triggerId,
+          triggerRevision: definition.triggerRevision,
+          sourceSelectorId: definition.sourceSelectorId,
+        })),
+      });
+    }
+
+    expect(observed.length).toBeGreaterThan(1);
+    expect(observed.every((request) => (
+      request.bodyBytes <= SERVER_HTTP_REQUEST_MAX_BODY_UTF8_BYTES_V1
+    ))).toBe(true);
+    // The split lands on the transport boundary itself: the first position of
+    // the following request could not have been carried by its predecessor.
+    expect(observed[0]!.bodyBytes + observed[1]!.firstDefinitionBytes + 1)
+      .toBeGreaterThan(SERVER_HTTP_REQUEST_MAX_BODY_UTF8_BYTES_V1);
+    expect(observed.map((request) => request.accountCurrentnessVersion))
+      .toEqual([8, ...observed.slice(1).map(() => 9)]);
+    expect(observed.flatMap((request) => request.selectors)).toEqual(input.definitions);
   });
 
   it('opens one byte-20 encrypted definition through the exact current Account material', async () => {

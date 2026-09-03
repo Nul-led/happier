@@ -134,22 +134,18 @@ export type PluginReloadController = Readonly<{
         resolveRuntimeRegistry?: () => Promise<ResolvedExecutablePluginRuntimeRegistry>;
         beforePublish?: PluginRuntimeRegistryBeforePublish;
     }>) => Promise<PluginRuntimeRegistryLease>;
-    tryAcquireRuntimeRegistry?: () => PluginRuntimeRegistryLease | null;
+    tryAcquireRuntimeRegistry: () => PluginRuntimeRegistryLease | null;
     isRuntimeRegistryCurrent: (registry: ResolvedExecutablePluginRuntimeRegistry) => boolean;
     /** Refreshes projections derived from the current registry without replacing its generation. */
-    invalidateRuntimeProjection?: () => void;
+    invalidateRuntimeProjection: () => void;
     /** Applies the Account change carrier's current Session-access proof to every live Resource owner. */
     applyResourceSessionAccessWitness: (params: ResourceSessionAccessWitness) => void;
     shutdown: (params?: Readonly<{ timeoutMs?: number }>) => Promise<void>;
     getState: () => PluginReloadState;
     /** Notified after daemon-owned initialization or prepared-registry adoption settles. */
     subscribe: (listener: PluginReloadListener) => () => void;
-    /**
-     * The controller-lifetime target-local contribution owner. Optional only
-     * for narrow pre-existing controller fixtures; real controllers always
-     * expose it and runtime construction must consume that one owner.
-     */
-    getTargetedContributionsOwner?: () => StableTargetedContributionsOwner;
+    /** The controller-lifetime target-local contribution owner. */
+    getTargetedContributionsOwner: () => StableTargetedContributionsOwner;
     /**
      * The controller-lifetime public current-global External Sessions router.
      * Long-lived plugin contexts capture it once and keep resolving whichever
@@ -259,6 +255,18 @@ export function createPluginReloadController(params?: Readonly<{
     let shutdownTimeoutMs = normalizeShutdownTimeoutMs(undefined);
     const outstandingLeaseCounts = new Map<ResolvedExecutablePluginRuntimeRegistry, number>();
     const pendingDisposal = new Set<ResolvedExecutablePluginRuntimeRegistry>();
+    /**
+     * Predecessors retired by a synchronous prepared-registry publication whose
+     * adoption completion has not settled yet. This is shutdown custody, not a
+     * second disposal coordinator: `shutdown` claims these registries through
+     * the same exact-once snapshot as `pendingDisposal`, and every settled
+     * adoption transfers its predecessor into the existing lease-safe
+     * retirement path. A distinct set is required because `pendingDisposal`
+     * membership lets an ordinary last-lease release dispose immediately,
+     * which must not happen to a published predecessor while the
+     * pre-publication owner is still releasing its writer fence.
+     */
+    const shutdownCustodyPredecessors = new Set<ResolvedExecutablePluginRuntimeRegistry>();
     let currentResourceSessionAccessWitness: ResourceSessionAccessWitness | null = null;
     const leaseDrainListeners = new Set<() => void>();
     const reloadListeners = new Set<PluginReloadListener>();
@@ -274,6 +282,12 @@ export function createPluginReloadController(params?: Readonly<{
         const registries = new Set<ResolvedExecutablePluginRuntimeRegistry>();
         if (activeRegistry) registries.add(activeRegistry);
         for (const registry of pendingDisposal) registries.add(registry);
+        // A predecessor under shutdown custody is still lease-held until its
+        // adoption settles into the lease-safe retirement path, so its
+        // retained Resource contexts must stay reachable here too. The single
+        // Set keeps a registry appearing in more than one group from being
+        // notified twice.
+        for (const registry of shutdownCustodyPredecessors) registries.add(registry);
         return registries;
     }
 
@@ -661,6 +675,17 @@ export function createPluginReloadController(params?: Readonly<{
                 adoption.registry.publishDeclaredEventSubscriptions?.();
                 activeRegistryDurableRevision = adoption.durableRevision;
                 activeRegistry = adoption.registry;
+                if (previousRegistry && previousRegistry !== adoption.registry) {
+                    // Shutdown custody, taken synchronously with the atomic
+                    // publication swap: the predecessor is retired as of now,
+                    // but its lease-safe retirement handoff has not run yet.
+                    // Claiming it here keeps shutdown exact-once while the
+                    // awaited adoption hook or post-publication failure paths
+                    // have not settled. Ordinary lease releases must not
+                    // dispose it from this state because the pre-publication
+                    // owner is still releasing its writer fence.
+                    shutdownCustodyPredecessors.add(previousRegistry);
+                }
             };
             try {
                 if (
@@ -713,23 +738,34 @@ export function createPluginReloadController(params?: Readonly<{
                 await adoption.registry.dispose();
                 throw new Error('Plugin runtime registry pre-publication owner returned without publishing');
             }
-            if (shutdownStarted) throw createShutdownError();
             try {
-                adoption.registry.startAdoptedBackgroundServices?.();
-            } catch (error) {
-                logger.warn('[PLUGIN RUNTIME] Adopted background-service start failed', {
-                    error: projectPluginFailureText(error),
-                });
-            }
-            params?.invalidateCaches?.(generation);
-            lastResult = createActiveResult(
-                adoption.registry,
-                changedPluginIds,
-                adoption.runningSessionDisposition,
-            );
-            notifyReloadListeners(lastResult);
-            if (previousRegistry && previousRegistry !== adoption.registry) {
-                disposeRegistryWhenSafeInBackground(previousRegistry);
+                if (shutdownStarted) throw createShutdownError();
+                try {
+                    adoption.registry.startAdoptedBackgroundServices?.();
+                } catch (error) {
+                    logger.warn('[PLUGIN RUNTIME] Adopted background-service start failed', {
+                        error: projectPluginFailureText(error),
+                    });
+                }
+                params?.invalidateCaches?.(generation);
+                lastResult = createActiveResult(
+                    adoption.registry,
+                    changedPluginIds,
+                    adoption.runningSessionDisposition,
+                );
+                notifyReloadListeners(lastResult);
+            } finally {
+                if (previousRegistry && previousRegistry !== adoption.registry) {
+                    // Once shutdown has not claimed the predecessor through its
+                    // custody snapshot, any settled adoption (normal or failed
+                    // housekeeping) transfers it into the existing lease-safe
+                    // retirement path. Ownership stays with the one disposal
+                    // coordinator; the custody entry only covers the gap.
+                    const custodyHeld = shutdownCustodyPredecessors.delete(previousRegistry);
+                    if (custodyHeld && !shutdownStarted) {
+                        disposeRegistryWhenSafeInBackground(previousRegistry);
+                    }
+                }
             }
             return lastResult;
         },
@@ -798,9 +834,11 @@ export function createPluginReloadController(params?: Readonly<{
                 const registriesToDispose = new Set<ResolvedExecutablePluginRuntimeRegistry>();
                 if (activeRegistry) registriesToDispose.add(activeRegistry);
                 for (const registry of pendingDisposal) registriesToDispose.add(registry);
+                for (const registry of shutdownCustodyPredecessors) registriesToDispose.add(registry);
                 activeRegistry = null;
                 activeRegistryDurableRevision = null;
                 pendingDisposal.clear();
+                shutdownCustodyPredecessors.clear();
                 await waitForRegistryLeasesToDrain(registriesToDispose, shutdownTimeoutMs);
                 outstandingLeaseCounts.clear();
                 for (const registry of registriesToDispose) {
