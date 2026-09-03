@@ -59,7 +59,18 @@ type DiscordGatewaySupervisorClock = Readonly<{
 
 type PendingTransportFact = ConversationTransportFactReportInputV1['fact'];
 
-type WorkerStopIntent = 'reconcile' | 'explicit' | 'generationRetired';
+type WorkerStopIntent = 'reconcile' | 'explicit' | 'generationRetired' | 'authorityUnavailable';
+
+/**
+ * Why an authoritative listing/reading failure justifies a continuity-loss
+ * fact for a resumable worker it stops: the connection's reconciliation
+ * authority was unreachable, so the worker's received-but-unsettled progress
+ * and held resume coordinates could not be proven continuous before the stop.
+ */
+const AUTHORITY_UNAVAILABLE_GAP_FACT = Object.freeze({
+  kind: 'historyGap',
+  reason: 'applicationAdmissionLost',
+} as const);
 
 type WorkerEntry = {
   snapshot: ConversationProviderConnectionReconciliationSnapshotV1;
@@ -370,6 +381,17 @@ export function createDiscordGatewaySupervisor(options: DiscordGatewaySupervisor
         ? result.transportFact
         : undefined;
     if (transportFact !== undefined) addFact(entry.snapshot, transportFact);
+    // Only an authoritative listing/reading failure converts the worker's
+    // continuity disclosure into a gap fact. Explicit stops report their own
+    // stopConfirmed custody, and a replaced or retired generation is not a
+    // reconciliation-authority loss.
+    if (
+      entry.stopIntent === 'authorityUnavailable'
+      && result.kind === 'stopped'
+      && result.unprovenContinuity === true
+    ) {
+      addFact(entry.snapshot, AUTHORITY_UNAVAILABLE_GAP_FACT);
+    }
     const providerReadinessFact = providerReadinessFactFromWorkerResult(result);
     if (providerReadinessFact !== undefined) addFact(entry.snapshot, providerReadinessFact);
     if (entry.stopIntent === 'explicit') {
@@ -593,11 +615,16 @@ export function createDiscordGatewaySupervisor(options: DiscordGatewaySupervisor
    * act on a connection, re-read that exact caller-filtered id from Channels'
    * Account authority. The empty or malformed result is intentionally treated
    * as no current connection, never as permission to use the list snapshot.
+   * A read failure is reported separately so the supervisor can treat the
+   * stop of a still-resumable worker as an authority loss, not as removal.
    */
   const readCurrentConnection = async (
     listed: ConversationProviderConnectionReconciliationSnapshotV1,
     context: BackgroundServiceContext,
-  ): Promise<ConversationProviderConnectionReconciliationSnapshotV1 | null> => {
+  ): Promise<
+    | Readonly<{ kind: 'snapshot'; snapshot: ConversationProviderConnectionReconciliationSnapshotV1 }>
+    | Readonly<{ kind: 'readFailed' }>
+  > => {
     let result: unknown;
     try {
       result = await context.services.actions.execute(
@@ -609,16 +636,26 @@ export function createDiscordGatewaySupervisor(options: DiscordGatewaySupervisor
         { signal: context.signal },
       );
     } catch {
-      return null;
+      return { kind: 'readFailed' };
     }
     const parsed = ConversationProviderConnectionReadResultV1Schema.safeParse(result);
-    if (!parsed.success) return null;
+    if (!parsed.success) return { kind: 'readFailed' };
     const entries = Object.entries(parsed.data);
-    if (entries.length !== 1) return null;
+    if (entries.length !== 1) return { kind: 'readFailed' };
     const [connectionId, snapshot] = entries[0]!;
     return connectionId === listed.connectionId && snapshot.connectionId === listed.connectionId
-      ? snapshot
-      : null;
+      ? { kind: 'snapshot', snapshot }
+      : { kind: 'readFailed' };
+  };
+
+  /**
+   * Stops the exact workers whose reconciliation authority could not be
+   * established and waits for their outcomes, so their continuity facts are
+   * queued before the next reconciliation can publish or restart admission.
+   */
+  const stopWorkersForAuthorityLoss = async (entries: readonly WorkerEntry[]): Promise<void> => {
+    for (const entry of entries) stopWorker(entry, 'authorityUnavailable');
+    await Promise.allSettled(entries.map((entry) => entry.completion));
   };
 
   const reconcile = async (context: BackgroundServiceContext): Promise<void> => {
@@ -633,19 +670,30 @@ export function createDiscordGatewaySupervisor(options: DiscordGatewaySupervisor
         { signal: context.signal },
       );
     } catch {
-      stopAllWorkers('reconcile');
+      await stopWorkersForAuthorityLoss([...workers.values()]);
       return;
     }
     const parsed = ConversationProviderConnectionsSnapshotV1Schema.safeParse(source);
     if (!parsed.success) {
-      stopAllWorkers('reconcile');
+      await stopWorkersForAuthorityLoss([...workers.values()]);
       return;
     }
 
     const snapshots: ConversationProviderConnectionReconciliationSnapshotV1[] = [];
+    const authorityLossFactKeys = new Set<string>();
     for (const listed of Object.values(parsed.data)) {
-      const current = await readCurrentConnection(listed, context);
-      if (current !== null) snapshots.push(current);
+      const read = await readCurrentConnection(listed, context);
+      if (read.kind === 'readFailed') {
+        // The list proves the connection exists; only its authoritative read
+        // failed. Stopping its worker is an authority loss, not a removal.
+        const entry = workers.get(listed.connectionId);
+        if (entry !== undefined) {
+          authorityLossFactKeys.add(connectionFactKey(entry.snapshot));
+          await stopWorkersForAuthorityLoss([entry]);
+        }
+        continue;
+      }
+      snapshots.push(read.snapshot);
     }
     const retainedFingerprints = new Set(snapshots.map(connectionFingerprint));
     for (const entry of workers.values()) retainedFingerprints.add(entry.fingerprint);
@@ -657,6 +705,7 @@ export function createDiscordGatewaySupervisor(options: DiscordGatewaySupervisor
     }
     const retainedFactKeys = new Set(snapshots.map(connectionFactKey));
     for (const entry of workers.values()) retainedFactKeys.add(connectionFactKey(entry.snapshot));
+    for (const factKey of authorityLossFactKeys) retainedFactKeys.add(factKey);
     for (const factKey of reportedNotRunning) {
       if (!retainedFactKeys.has(factKey)) reportedNotRunning.delete(factKey);
     }

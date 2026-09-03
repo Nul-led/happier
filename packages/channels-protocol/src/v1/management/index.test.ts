@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
+import { PLUGIN_COLLECTION_REVISION_MAX } from '@happier-dev/plugin-sdk/collections';
+
 import * as management from './index.js';
 
 describe('Channels V1 public management barrel', () => {
@@ -87,5 +89,88 @@ describe('Channels V1 public management barrel', () => {
         expect(management).not.toHaveProperty('ConversationConnectionPrepareInputV1ProtocolSchema');
         expect(management).not.toHaveProperty('ConversationBindingCreateInputV1ProtocolSchema');
         expect(management).not.toHaveProperty('ConversationIngressRetryInputV1ProtocolSchema');
+    });
+});
+
+describe('Channels V1 management currentness witnesses', () => {
+    type JsonSchemaNode = Readonly<Record<string, unknown>>;
+
+    function collectIntegerBounds(
+        node: unknown,
+        propertyName: string | null,
+        found: Map<string, Set<unknown>>,
+    ): void {
+        if (Array.isArray(node)) {
+            for (const entry of node) collectIntegerBounds(entry, propertyName, found);
+            return;
+        }
+        if (node === null || typeof node !== 'object') return;
+        const schema = node as JsonSchemaNode;
+        if (propertyName !== null && schema['type'] === 'integer') {
+            const bounds = found.get(propertyName) ?? new Set<unknown>();
+            bounds.add(schema['maximum']);
+            found.set(propertyName, bounds);
+        }
+        for (const [key, value] of Object.entries(schema)) {
+            if (key === 'properties') {
+                for (const [child, childSchema] of Object.entries(value as JsonSchemaNode)) {
+                    collectIntegerBounds(childSchema, child, found);
+                }
+                continue;
+            }
+            // `anyOf`/`oneOf`/`allOf` arms and `items` keep the property name
+            // their parent introduced; anything else resets it.
+            const inherits = key === 'anyOf' || key === 'oneOf' || key === 'allOf' || key === 'items';
+            collectIntegerBounds(value, inherits ? propertyName : null, found);
+        }
+    }
+
+    function boundsByProperty(): Map<string, Set<unknown>> {
+        const found = new Map<string, Set<unknown>>();
+        for (const [exportName, value] of Object.entries(management)) {
+            if (!exportName.endsWith('JsonSchema')) continue;
+            collectIntegerBounds(value, null, found);
+        }
+        for (const declaration of Object.values(
+            management.CONVERSATION_MANAGEMENT_ACTION_DECLARATIONS_V1,
+        )) {
+            collectIntegerBounds(declaration.inputSchema, null, found);
+            collectIntegerBounds(declaration.resultSchema, null, found);
+        }
+        return found;
+    }
+
+    it('caps every published Collection row revision witness at the Collection column ceiling', () => {
+        const found = boundsByProperty();
+        const revisionProperties = [...found.keys()]
+            .filter((name) => name === 'revision' || name.endsWith('Revision'));
+        // The published management surface must actually carry these witnesses;
+        // an empty sweep would make the assertion below vacuously true.
+        expect(revisionProperties).toEqual(expect.arrayContaining([
+            'revision',
+            'expectedRevision',
+            'expectedConnectionRevision',
+            'expectedBindingRevision',
+            'expectedFrontierRevision',
+            'bindingRevision',
+            'frontierRevision',
+        ]));
+        for (const name of revisionProperties) {
+            expect({ [name]: [...(found.get(name) ?? [])] })
+                .toEqual({ [name]: [PLUGIN_COLLECTION_REVISION_MAX] });
+        }
+    });
+
+    it('keeps Channels-owned authority epochs on the wider safe-integer bound', () => {
+        const found = boundsByProperty();
+        const epochProperties = [...found.keys()].filter((name) => name.endsWith('uthorityEpoch'));
+        expect(epochProperties).toEqual(expect.arrayContaining([
+            'authorityEpoch',
+            'expectedAuthorityEpoch',
+        ]));
+        for (const name of epochProperties) {
+            expect({ [name]: [...(found.get(name) ?? [])] })
+                .toEqual({ [name]: [Number.MAX_SAFE_INTEGER] });
+        }
     });
 });

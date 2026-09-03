@@ -8,6 +8,12 @@ import type { ConversationTransportFactReportInputV1 } from '@happier-dev/channe
 
 export const DISCORD_IDENTIFY_LIMIT_PER_24_HOURS = 1_000;
 export const DISCORD_IDENTIFY_WINDOW_MS = 24 * 60 * 60 * 1_000;
+const DISCORD_GATEWAY_HOST_SUFFIX = 'discord.gg';
+
+function isDiscordGatewayHostname(hostname: string): boolean {
+  return hostname === DISCORD_GATEWAY_HOST_SUFFIX
+    || hostname.endsWith(`.${DISCORD_GATEWAY_HOST_SUFFIX}`);
+}
 
 export type DiscordGatewayResumeState = Readonly<{
   sessionId: string;
@@ -94,7 +100,7 @@ export function normalizeDiscordGatewayUrl(value: unknown): string | null {
     const parsed = new URL(raw);
     if (
       parsed.protocol !== 'wss:'
-      || parsed.hostname !== 'gateway.discord.gg'
+      || !isDiscordGatewayHostname(parsed.hostname)
       || parsed.port !== ''
       || parsed.username !== ''
       || parsed.password !== ''

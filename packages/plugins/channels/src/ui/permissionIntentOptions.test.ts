@@ -40,23 +40,45 @@ describe('Channels permission-intent presentation', () => {
     ]);
   });
 
-  it('keeps English and German mode labels attached to their matching locales', () => {
+  it('keeps English and German outcome labels attached to their matching locales', () => {
     const translate = (locale: 'en' | 'de') => (key: string, fallback: string) =>
       CHANNELS_UI_TRANSLATIONS[locale][key as keyof typeof CHANNELS_UI_TRANSLATIONS.en] ?? fallback;
 
     expect({
       en: {
+        safeYolo: bindingPermissionIntentLabel('safe-yolo', translate('en')),
         yolo: bindingPermissionIntentLabel('yolo', translate('en')),
         plan: bindingPermissionIntentLabel('plan', translate('en')),
       },
       de: {
+        safeYolo: bindingPermissionIntentLabel('safe-yolo', translate('de')),
         yolo: bindingPermissionIntentLabel('yolo', translate('de')),
         plan: bindingPermissionIntentLabel('plan', translate('de')),
       },
     }).toEqual({
-      en: { yolo: 'Yolo mode', plan: 'Plan mode' },
-      de: { yolo: 'Risikomodus', plan: 'Planungsmodus' },
+      en: {
+        safeYolo: 'Auto-accept safe edits',
+        yolo: 'Skip approval prompts',
+        plan: 'Plan mode',
+      },
+      de: {
+        safeYolo: 'Sichere Änderungen automatisch erlauben',
+        yolo: 'Ohne Genehmigungen arbeiten',
+        plan: 'Planungsmodus',
+      },
     });
+  });
+
+  it('never presents the internal permission vocabulary as an outcome', () => {
+    // "Yolo" is an internal Agent permission-intent name. A person choosing a
+    // ceiling for an external conversation must read what will happen, not the
+    // vocabulary of the execution backend.
+    const translate = (key: string, fallback: string) =>
+      CHANNELS_UI_TRANSLATIONS.en[key as keyof typeof CHANNELS_UI_TRANSLATIONS.en] ?? fallback;
+
+    for (const option of bindingPermissionIntentOptions(translate)) {
+      expect(option.label.toLowerCase()).not.toContain('yolo');
+    }
   });
 
   it('rejects an unknown permission intent instead of presenting a different intent', () => {

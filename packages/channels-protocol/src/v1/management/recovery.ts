@@ -2,23 +2,21 @@ import type { PluginJsonSchema } from '@happier-dev/plugin-sdk/protocol';
 
 import {
     defineProtocolLiteral,
-    defineProtocolNumber,
     defineProtocolObject,
     defineProtocolString,
     defineProtocolUnion,
 } from '@happier-dev/plugin-sdk/protocol';
 
+import { ConversationCollectionRowRevisionV1ProtocolSchema } from '../identity.js';
+
 const opaqueCustodyIdV1 = defineProtocolString({ pattern: '^[A-Za-z0-9_-]{43}$' });
-const positiveSafeInteger = defineProtocolNumber({
-    integer: true,
-    minimum: 1,
-    maximum: Number.MAX_SAFE_INTEGER,
-});
+/** One exact Account Collection row revision witness; see its Protocol owner. */
+const collectionRowRevision = ConversationCollectionRowRevisionV1ProtocolSchema;
 
 /** @internal Relative-only exact ingress-obligation retry input. */
 export const ConversationIngressRetryInputV1ProtocolSchema = defineProtocolObject({
     obligationId: opaqueCustodyIdV1,
-    expectedRevision: positiveSafeInteger,
+    expectedRevision: collectionRowRevision,
 }, { policy: 'closed' });
 
 /** Retries one exact blocked ingress obligation; it cannot supply new ingress. */
@@ -33,7 +31,7 @@ export const ConversationIngressRetryInputV1JsonSchema: PluginJsonSchema =
 export const ConversationIngressRetryResultV1ProtocolSchema = defineProtocolObject({
     kind: defineProtocolLiteral('retryScheduled'),
     obligationId: opaqueCustodyIdV1,
-    revision: positiveSafeInteger,
+    revision: collectionRowRevision,
 }, { policy: 'closed' });
 
 export const ConversationIngressRetryResultV1Schema = ConversationIngressRetryResultV1ProtocolSchema;
@@ -46,7 +44,7 @@ export const ConversationIngressRetryResultV1JsonSchema: PluginJsonSchema =
 /** @internal Relative-only explicit settlement of one ambiguous delivery custody row. */
 export const ConversationDeliveryResolveInputV1ProtocolSchema = defineProtocolObject({
     custodyId: opaqueCustodyIdV1,
-    expectedRevision: positiveSafeInteger,
+    expectedRevision: collectionRowRevision,
     resolution: defineProtocolUnion([
         defineProtocolLiteral('accepted'),
         defineProtocolLiteral('discarded'),
@@ -70,7 +68,7 @@ export const ConversationDeliveryResolveInputV1JsonSchema: PluginJsonSchema =
 export const ConversationDeliveryResolveResultV1ProtocolSchema = defineProtocolObject({
     kind: defineProtocolLiteral('resolved'),
     custodyId: opaqueCustodyIdV1,
-    revision: positiveSafeInteger,
+    revision: collectionRowRevision,
     resolution: defineProtocolUnion([
         defineProtocolLiteral('accepted'),
         defineProtocolLiteral('discarded'),

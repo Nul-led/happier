@@ -22,15 +22,25 @@ import {
     MIN_CONVERSATION_OBSERVATION_AGE_MS,
 } from '../bounds.js';
 import { ConversationProviderFailureV1ProtocolSchema } from '../diagnostics.js';
-import { ConversationConnectionIdV1ProtocolSchema } from '../identity.js';
+import {
+    ConversationCollectionRowRevisionV1ProtocolSchema,
+    ConversationConnectionIdV1ProtocolSchema,
+} from '../identity.js';
 import { ConversationJsonValueV1ProtocolSchema } from '../json.js';
 import { ConversationQualifiedConnectedAccountRefV1ProtocolSchema } from '../provider/connection.js';
 
-const positiveSafeInteger = defineProtocolNumber({
+/**
+ * A Channels-owned authority epoch. It is advanced by this package rather
+ * than persisted as a Collection row revision, so it keeps the wide
+ * safe-integer bound instead of the Collection column ceiling.
+ */
+const authorityEpochV1 = defineProtocolNumber({
     integer: true,
     minimum: 1,
     maximum: Number.MAX_SAFE_INTEGER,
 });
+/** One exact Account Collection row revision witness; see its Protocol owner. */
+const collectionRowRevision = ConversationCollectionRowRevisionV1ProtocolSchema;
 const observationAgeV1 = defineProtocolNumber({
     integer: true,
     minimum: MIN_CONVERSATION_OBSERVATION_AGE_MS,
@@ -154,8 +164,8 @@ const conversationConnectionMutationResultV1 = defineProtocolObject({
         defineProtocolLiteral('unchanged'),
     ]),
     connectionId: ConversationConnectionIdV1ProtocolSchema,
-    revision: positiveSafeInteger,
-    authorityEpoch: positiveSafeInteger,
+    revision: collectionRowRevision,
+    authorityEpoch: authorityEpochV1,
 }, { policy: 'closed' });
 
 const conversationConnectionEndpointRequiredResultV1 = defineProtocolObject({
@@ -212,8 +222,8 @@ const conversationConnectionTransferResultV1 = defineProtocolUnion([
             defineProtocolLiteral('transferPendingOldStop'),
         ]),
         connectionId: ConversationConnectionIdV1ProtocolSchema,
-        revision: positiveSafeInteger,
-        authorityEpoch: positiveSafeInteger,
+        revision: collectionRowRevision,
+        authorityEpoch: authorityEpochV1,
     }, { policy: 'closed' }),
     conversationConnectionEndpointRequiredResultV1,
     conversationConnectionWebhookEndpointSetupRequiredResultV1,
@@ -227,8 +237,8 @@ const conversationConnectionDeleteResultV1 = defineProtocolObject({
         defineProtocolLiteral('rejoined'),
     ]),
     connectionId: ConversationConnectionIdV1ProtocolSchema,
-    revision: positiveSafeInteger,
-    authorityEpoch: positiveSafeInteger,
+    revision: collectionRowRevision,
+    authorityEpoch: authorityEpochV1,
     acceptedPossibleLoss: protocolBoolean,
 }, { policy: 'closed' });
 
@@ -273,8 +283,8 @@ export const ConversationConnectionCreateInputV1JsonSchema: PluginJsonSchema =
  */
 export const ConversationConnectionTransferInputV1Schema = defineProtocolObject({
     connectionId: ConversationConnectionIdV1ProtocolSchema,
-    expectedRevision: positiveSafeInteger,
-    expectedAuthorityEpoch: positiveSafeInteger,
+    expectedRevision: collectionRowRevision,
+    expectedAuthorityEpoch: authorityEpochV1,
     providerSelection: targetedContributionSelectionV1,
     providerSetupInput: ConversationJsonValueV1ProtocolSchema,
     credentialRef: ConversationQualifiedConnectedAccountRefV1ProtocolSchema.nullable(),
@@ -292,7 +302,7 @@ export const ConversationConnectionTransferInputV1JsonSchema: PluginJsonSchema =
 
 export const ConversationConnectionUpdateInputV1Schema = defineProtocolObject({
     connectionId: ConversationConnectionIdV1ProtocolSchema,
-    expectedRevision: positiveSafeInteger,
+    expectedRevision: collectionRowRevision,
     enabled: protocolBoolean,
     maximumObservationAgeMs: observationAgeV1,
 }, { policy: 'closed' });
@@ -311,7 +321,7 @@ export const ConversationConnectionUpdateResultV1JsonSchema: PluginJsonSchema =
 
 export const ConversationConnectionDeleteInputV1Schema = defineProtocolObject({
     connectionId: ConversationConnectionIdV1ProtocolSchema,
-    expectedRevision: positiveSafeInteger,
+    expectedRevision: collectionRowRevision,
 }, { policy: 'closed' });
 export type ConversationConnectionDeleteInputV1 = ReturnType<
     typeof ConversationConnectionDeleteInputV1Schema.parse

@@ -1,23 +1,22 @@
 import type { PluginJsonSchema } from '@happier-dev/plugin-sdk/protocol';
 import {
     defineProtocolLiteral,
-    defineProtocolNumber,
     defineProtocolObject,
 } from '@happier-dev/plugin-sdk/protocol';
 
-import { ConversationBindingIdV1ProtocolSchema } from '../identity.js';
+import {
+    ConversationBindingIdV1ProtocolSchema,
+    ConversationCollectionRowRevisionV1ProtocolSchema,
+} from '../identity.js';
 import type { ConversationActionDeclarationV1 } from '../actionDeclarations.js';
 
-const positiveSafeInteger = defineProtocolNumber({
-    integer: true,
-    minimum: 1,
-    maximum: Number.MAX_SAFE_INTEGER,
-});
+/** One exact Account Collection row revision witness; see its Protocol owner. */
+const collectionRowRevision = ConversationCollectionRowRevisionV1ProtocolSchema;
 
 export const ConversationSessionProjectionBaselineAcceptInputV1Schema = defineProtocolObject({
     bindingId: ConversationBindingIdV1ProtocolSchema,
-    expectedBindingRevision: positiveSafeInteger,
-    expectedFrontierRevision: positiveSafeInteger,
+    expectedBindingRevision: collectionRowRevision,
+    expectedFrontierRevision: collectionRowRevision,
 }, { policy: 'closed' });
 export type ConversationSessionProjectionBaselineAcceptInputV1 = ReturnType<
     typeof ConversationSessionProjectionBaselineAcceptInputV1Schema.parse
@@ -28,8 +27,8 @@ export const ConversationSessionProjectionBaselineAcceptInputV1JsonSchema: Plugi
 export const ConversationSessionProjectionBaselineAcceptResultV1Schema = defineProtocolObject({
     kind: defineProtocolLiteral('baselineAccepted'),
     bindingId: ConversationBindingIdV1ProtocolSchema,
-    bindingRevision: positiveSafeInteger,
-    frontierRevision: positiveSafeInteger,
+    bindingRevision: collectionRowRevision,
+    frontierRevision: collectionRowRevision,
 }, { policy: 'closed' });
 export type ConversationSessionProjectionBaselineAcceptResultV1 = ReturnType<
     typeof ConversationSessionProjectionBaselineAcceptResultV1Schema.parse

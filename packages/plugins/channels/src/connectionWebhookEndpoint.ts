@@ -198,34 +198,57 @@ export async function assertConversationConnectionWebhookEndpointCorrespondence(
 }
 
 /**
- * Retargets the already-owned generic Account endpoint for an exact
- * durable-push connection transfer. The endpoint remains a generic webhook
- * lifecycle object: Channels only verifies its retained identity, moves its
- * target, and proves the replacement correspondence before its own CAS.
+ * Converges the already-owned generic Account endpoint onto the target this
+ * connection's committed transfer intent names.
+ *
+ * The endpoint stays a generic webhook lifecycle object with its own
+ * present-user administration; Channels contributes only the two facts it
+ * actually owns — the exact endpoint correspondence of its connection, and the
+ * replacement authority epoch that orders one transfer against another — and
+ * the webhook owner decides the move in one transaction.
+ *
+ * The retired chain this replaces read the endpoint, compared its target, then
+ * retargeted under the revision it had just observed, then rechecked
+ * correspondence. That chain was wrong twice: a daemon-side Channels caller is
+ * never the present user those generic operations require, and any unrelated
+ * endpoint write between the read and the retarget turned a correct retry into
+ * a permanent revision conflict. Nothing here observes or CASes an endpoint
+ * revision, so neither failure is reachable.
+ *
+ * Supersession is the webhook owner's answer, not a local comparison: an older
+ * in-flight attempt whose transfer a newer one already replaced is refused
+ * rather than allowed to drag delivery back to the retired target.
  */
-export async function retargetConversationConnectionWebhookEndpointForTransfer(input: Readonly<{
+export async function convergeConversationConnectionWebhookEndpointTarget(input: Readonly<{
   context: Pick<PluginInvocationContext, 'services' | 'signal'>;
-  connectionId: string;
-  expectedConnectionRevision: number;
+  /**
+   * The replacement authority epoch frozen by the committed transfer. It is
+   * the one durable identity of this attempt, so every resume of the same
+   * committed intent carries the same intent ordering and rejoins rather than
+   * writing a second endpoint revision.
+   */
+  transferAuthorityEpoch: number;
   webhookEndpointId: PluginWebhookEndpointIdV1;
   webhookContribution: Readonly<{ pluginId: string; localId: string }>;
   sourceInstanceId: string;
-  currentTargetMaterialization: Readonly<{
-    pluginId: string;
-    machineId: string;
-    materializationId: string;
-  }>;
   nextTargetMaterialization: Readonly<{
     pluginId: string;
     machineId: string;
     materializationId: string;
   }>;
 }>): Promise<void> {
-  let endpoint: PluginActionResultById['plugin.webhook.endpoint.read'];
+  let converged: PluginActionResultById['plugin.webhook.endpoint.convergeTarget'];
   try {
-    endpoint = await input.context.services.actions.execute(
-      'plugin.webhook.endpoint.read',
-      { webhookEndpointId: input.webhookEndpointId } satisfies PluginActionInputById['plugin.webhook.endpoint.read'],
+    converged = await input.context.services.actions.execute(
+      'plugin.webhook.endpoint.convergeTarget',
+      {
+        webhookEndpointId: input.webhookEndpointId,
+        webhookContribution: { ...input.webhookContribution },
+        sourceInstanceId: input.sourceInstanceId,
+        setup: { ...CONVERSATION_CONNECTION_WEBHOOK_ENDPOINT_ENSURE_SETUP_V1 },
+        desiredTargetMaterialization: { ...input.nextTargetMaterialization },
+        targetIntentEpoch: input.transferAuthorityEpoch,
+      } satisfies PluginActionInputById['plugin.webhook.endpoint.convergeTarget'],
       { signal: input.context.signal },
     );
   } catch (cause) {
@@ -233,76 +256,29 @@ export async function retargetConversationConnectionWebhookEndpointForTransfer(i
     if (isPluginError(cause)) throw cause;
     throw webhookEndpointPluginError(
       'channels_connection_transfer_endpoint_unavailable',
-      'The durable-push endpoint could not be read for connection transfer.',
+      'The durable-push endpoint could not be converged for connection transfer.',
       true,
     );
   }
-  if (endpoint.webhookEndpointId !== input.webhookEndpointId
-    || endpoint.routing !== 'accountEndpoint'
-    || endpoint.revokedAt !== undefined
-    || endpoint.sourceInstanceId !== input.sourceInstanceId
-    || endpoint.contribution.pluginId !== input.webhookContribution.pluginId
-    || endpoint.contribution.localId !== input.webhookContribution.localId) {
+  if (converged.kind === 'superseded') {
+    // A later transfer already owns this endpoint. This attempt must not move
+    // it back, and its own retained row is stale, so the caller rereads.
     throw webhookEndpointPluginError(
-      'channels_connection_transfer_endpoint_mismatch',
-      'The retained durable-push endpoint no longer belongs to this connection.',
+      'channels_connection_transfer_endpoint_superseded',
+      'A later connection transfer already owns this durable-push endpoint target.',
+      true,
     );
   }
-
-  if (!arePluginMachineMaterializationRefsEqual(
-    endpoint.targetMaterialization,
-    input.nextTargetMaterialization,
-  )) {
-    if (!arePluginMachineMaterializationRefsEqual(
-      endpoint.targetMaterialization,
-      input.currentTargetMaterialization,
+  if (converged.kind !== 'converged'
+    || converged.webhookEndpointId !== input.webhookEndpointId
+    || !arePluginMachineMaterializationRefsEqual(
+      converged.targetMaterialization,
+      input.nextTargetMaterialization,
     )) {
-      throw webhookEndpointPluginError(
-        'channels_connection_transfer_endpoint_target_mismatch',
-        'The durable-push endpoint has already moved to a different target.',
-      );
-    }
-    let retargeted: PluginActionResultById['plugin.webhook.endpoint.retarget'];
-    try {
-      retargeted = await input.context.services.actions.execute(
-        'plugin.webhook.endpoint.retarget',
-        {
-          webhookEndpointId: input.webhookEndpointId,
-          expectedRevision: endpoint.revision,
-          targetMaterialization: { ...input.nextTargetMaterialization },
-          // This exact connection revision identifies one durable transfer
-          // attempt. Generic webhook retarget owns response-loss rejoin.
-          idempotencyKey: `xfer.${input.connectionId}.${input.expectedConnectionRevision}.webhook`,
-        } satisfies PluginActionInputById['plugin.webhook.endpoint.retarget'],
-        { signal: input.context.signal },
-      );
-    } catch (cause) {
-      if (input.context.signal.aborted) throw cause;
-      if (isPluginError(cause)) throw cause;
-      throw webhookEndpointPluginError(
-        'channels_connection_transfer_endpoint_unavailable',
-        'The durable-push endpoint could not be retargeted for connection transfer.',
-        true,
-      );
-    }
-    if ((retargeted.kind !== 'retargeted' && retargeted.kind !== 'alreadyRetargeted')
-      || retargeted.webhookEndpointId !== input.webhookEndpointId
-      || !arePluginMachineMaterializationRefsEqual(
-        retargeted.targetMaterialization,
-        input.nextTargetMaterialization,
-      )) {
-      throw webhookEndpointPluginError(
-        'channels_connection_transfer_endpoint_retarget_rejected',
-        'The durable-push endpoint did not accept the replacement target.',
-        true,
-      );
-    }
+    throw webhookEndpointPluginError(
+      'channels_connection_transfer_endpoint_unavailable',
+      'The durable-push endpoint did not converge on this connection target.',
+      true,
+    );
   }
-  await assertConversationConnectionWebhookEndpointCorrespondence({
-    context: input.context,
-    webhookEndpointId: input.webhookEndpointId,
-    webhookContribution: input.webhookContribution,
-    targetMaterialization: input.nextTargetMaterialization,
-    sourceInstanceId: input.sourceInstanceId,
-  });
 }

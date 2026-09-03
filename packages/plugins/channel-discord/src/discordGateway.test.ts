@@ -38,6 +38,16 @@ describe('Discord Gateway receive-progress owner', () => {
     expect(normalizeDiscordGatewayUrl('wss://gateway.discord.gg/?compress=zlib-stream&v=9&encoding=etf')).toBe(
       'wss://gateway.discord.gg/?v=10&encoding=json',
     );
+    expect(normalizeDiscordGatewayUrl('wss://gateway-us-east1-b.discord.gg/socket')).toBe(
+      'wss://gateway-us-east1-b.discord.gg/socket?v=10&encoding=json',
+    );
+    // The provider-owned hostname family is matched on a DNS label boundary;
+    // suffix-adjacent and unrelated names still fail closed.
+    expect(normalizeDiscordGatewayUrl('wss://gateway.discord.gg.evil.example')).toBeNull();
+    expect(normalizeDiscordGatewayUrl('wss://gateway.discord.gg:8080@evil.example')).toBeNull();
+    expect(normalizeDiscordGatewayUrl('wss://gateway.discord.ggz')).toBeNull();
+    expect(normalizeDiscordGatewayUrl('wss://gateway.discord.com')).toBeNull();
+    expect(normalizeDiscordGatewayUrl('ws://gateway.discord.gg')).toBeNull();
   });
 
   it('returns an authenticated Dispatch effect while retaining receive progress separately from Channels admission', () => {

@@ -1943,6 +1943,8 @@ describe('Channels target-persisting binding management', () => {
           contributionId: 'test-provider',
           immutableGenerationId: 'provider-generation-1',
         },
+        predecessorTransportKind: 'socket',
+        endpointRetarget: 'notRequired',
         overlapSafety: 'safe',
         stopRequest: {
           v: 1,

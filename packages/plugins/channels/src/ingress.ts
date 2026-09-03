@@ -2,6 +2,7 @@ import {
   isPluginError,
   PluginError,
   arePluginMachineExecutionOriginsEqual,
+  createCanonicalJsonSigningInput,
   type JsonValue,
   type PluginInvocationCaller,
   type PluginInvocationContext,
@@ -26,7 +27,6 @@ import {
   type AutomationConversationResultDeliveryV1,
 } from '@happier-dev/plugin-sdk/automations';
 import { SessionSpawnNewInputV2Schema } from '@happier-dev/plugin-sdk/sessions';
-import { createCanonicalJsonSigningInput } from '@happier-dev/protocol/crypto/canonicalJson';
 import {
   areConversationEndpointIdentitiesEqual,
   CONVERSATION_AUTOMATION_RESULT_DELIVERY_ACTION_REF_V1,
@@ -99,9 +99,8 @@ import {
 import { requireChannelsAccountStorage } from './requiredAccountStorage.js';
 import { conversationRetryDelayMs } from './retryBackoff.js';
 import {
-  acceptConversationOutwardDeliveryReady,
+  admitConversationOutwardDeliveryReady,
   createConversationOutwardDeliveryCollectionStore,
-  prepareConversationOutwardDeliveryReady,
   type ConversationControlResponseKind,
   type ConversationOutwardDeliveryObligation,
 } from './outwardDelivery.js';
@@ -387,28 +386,9 @@ type IngressCensusCompacted = Readonly<{
   shell: ConversationAuthenticatedObservationShellV1;
   /** One digest over the replay-relevant text and Event candidate together. */
   replayDigest: string;
-  /** Legacy compacted rows covered text only and age out at the same horizon. */
-  legacyTextOnly?: true;
   /** Exact terminal-attention members retained until this census horizon. */
   retainedAttentionObligationRowIds: readonly string[];
-  /**
-   * Exact revisions of terminal member tombstones that the compact census
-   * already made redundant. They remain only until this same census reaches
-   * its existing replay horizon, when retention forgets them before the
-   * census itself. This is not another retention store: it is the durable
-   * completion witness for the one ingress unit that logically deleted them.
-   */
-  prunedObligationTombstones: readonly Readonly<{ rowId: string; revision: number }>[];
 }>;
-
-type IngressCensusCompactedStored = Readonly<{
-  shell: ConversationAuthenticatedObservationShellV1;
-  retainedAttentionObligationRowIds: readonly string[];
-  prunedObligationTombstones: readonly Readonly<{ rowId: string; revision: number }>[];
-}> & (
-  | Readonly<{ replayDigest: string }>
-  | Readonly<{ textDigest: string }>
-);
 
 type IngressCensusCommonPayload = Readonly<{
   phase: 'preparing' | 'prepared';
@@ -1072,48 +1052,23 @@ function readIngressCensusCompacted(value: JsonValue | undefined): IngressCensus
   if (value === null) return null;
   if (!isJsonRecord(value)) return undefined;
   const replayDigest = own(value, 'replayDigest');
-  const legacyTextDigest = own(value, 'textDigest');
   const shell = ConversationAuthenticatedObservationShellV1Schema.safeParse(own(value, 'shell'));
   const retainedAttentionObligationRowIds = own(value, 'retainedAttentionObligationRowIds');
-  const prunedObligationTombstones = own(value, 'prunedObligationTombstones');
-  const hasReplayDigest = typeof replayDigest === 'string'
-    && /^[A-Za-z0-9_-]{43}$/u.test(replayDigest);
-  const hasLegacyTextDigest = typeof legacyTextDigest === 'string'
-    && /^[A-Za-z0-9_-]{43}$/u.test(legacyTextDigest);
   if (
-    Object.keys(value).length !== 4
-    || hasReplayDigest === hasLegacyTextDigest
+    Object.keys(value).length !== 3
+    || typeof replayDigest !== 'string'
+    || !/^[A-Za-z0-9_-]{43}$/u.test(replayDigest)
     || !shell.success
     || !Array.isArray(retainedAttentionObligationRowIds)
     || retainedAttentionObligationRowIds.some((rowId) => (
       typeof rowId !== 'string' || !/^[A-Za-z0-9_-]{43}$/u.test(rowId)
     ))
     || new Set(retainedAttentionObligationRowIds).size !== retainedAttentionObligationRowIds.length
-    || !Array.isArray(prunedObligationTombstones)
-    || prunedObligationTombstones.some((entry) => (
-      !isJsonRecord(entry)
-      || Object.keys(entry).length !== 2
-      || typeof entry.rowId !== 'string'
-      || !/^[A-Za-z0-9_-]{43}$/u.test(entry.rowId)
-      || !isPositiveSafeInteger(entry.revision)
-    ))
-    || new Set(prunedObligationTombstones.map((entry) => (
-      isJsonRecord(entry) && typeof entry.rowId === 'string' ? entry.rowId : ''
-    ))).size !== prunedObligationTombstones.length
   ) return undefined;
-  const parsedReplayDigest = typeof replayDigest === 'string'
-    ? replayDigest
-    : legacyTextDigest;
-  if (typeof parsedReplayDigest !== 'string') return undefined;
   return {
     shell: shell.data,
-    replayDigest: parsedReplayDigest,
-    ...(hasLegacyTextDigest ? { legacyTextOnly: true as const } : {}),
+    replayDigest,
     retainedAttentionObligationRowIds: retainedAttentionObligationRowIds as readonly string[],
-    prunedObligationTombstones: prunedObligationTombstones as readonly Readonly<{
-      rowId: string;
-      revision: number;
-    }>[],
   };
 }
 
@@ -1357,7 +1312,6 @@ async function immutableIngressMatches(
       routingIdentityKey,
       text: normalized.observation.message.text,
       eventCandidate: input.eventCandidate,
-      legacyTextOnly: compacted.legacyTextOnly,
     }) === compacted.replayDigest
   ) return true;
   // Only a full-text admission can be superseded by an unsupported edit, and
@@ -1640,7 +1594,6 @@ async function deriveIngressCensusReplayDigest(input: Readonly<{
   routingIdentityKey: string;
   text: string;
   eventCandidate: ConversationIngressAutomationEventCandidateV1 | null;
-  legacyTextOnly?: boolean;
 }>): Promise<string> {
   const subtle = globalThis.crypto?.subtle;
   if (subtle === undefined) {
@@ -1654,13 +1607,11 @@ async function deriveIngressCensusReplayDigest(input: Readonly<{
   return await signLengthPrefixedUtf8HmacSha256Base64Url({
     subtle,
     key,
-    parts: input.legacyTextOnly === true
-      ? ['channels:ingress:v1', 'ingress-census-text', input.text]
-      : [
-        'channels:ingress:v1',
-        'ingress-census-replay',
-        createCanonicalJsonSigningInput({ text: input.text, eventCandidate: input.eventCandidate }),
-      ],
+    parts: [
+      'channels:ingress:v1',
+      'ingress-census-replay',
+      createCanonicalJsonSigningInput({ text: input.text, eventCandidate: input.eventCandidate }),
+    ],
   });
 }
 
@@ -3580,18 +3531,14 @@ async function acceptIngressControlResponseCustody(input: Readonly<{
   invalidMessage: string;
 }>): Promise<IngressCheckpointOutcome> {
   const stateCollection = requireChannelsAccountStorage(input.context).collection(CHANNEL_STATE_COLLECTION);
-  const prepared = await prepareConversationOutwardDeliveryReady({
+  const accepted = await admitConversationOutwardDeliveryReady({
     stateCollection,
-    signal: input.context.signal,
-    obligation: input.outward,
-  });
-  const accepted = await acceptConversationOutwardDeliveryReady({
     store: createConversationOutwardDeliveryCollectionStore({
       stateCollection,
       deliveriesCollection: requireChannelsAccountStorage(input.context).collection(CHANNEL_DELIVERIES_COLLECTION),
       signal: input.context.signal,
     }),
-    prepared,
+    obligation: input.outward,
     signal: input.context.signal,
   });
   switch (accepted.kind) {
@@ -4977,11 +4924,22 @@ async function ingestConversationObservationForInvocation(
       { signal: context.signal },
     )) ?? null);
     if (obligation === undefined) {
-      throw pluginError(
-        'channels_ingress_obligation_missing',
-        'The immutable ingress census has no corresponding durable obligation.',
-        true,
-      );
+      // Retention retires members before it compacts or deletes the census
+      // that names them, so an interrupted pass leaves exactly one benign
+      // absent shape: a census that already proves the settled
+      // retention-eligible state this same owner's sweep requires. Absence
+      // counts as terminally retired only under that proof — the replay stays
+      // checkpoint-safe with no recreated obligation or provider effect —
+      // while any other absent member is missing durable state, never a
+      // retention outcome.
+      if (await readSettledIngressUnit({ context, census }) === undefined) {
+        throw pluginError(
+          'channels_ingress_obligation_missing',
+          'The immutable ingress census has no corresponding durable obligation.',
+          true,
+        );
+      }
+      continue;
     }
     if (obligation.value.payload.censusId !== census.value.id) {
       throw pluginError(
@@ -5262,33 +5220,13 @@ async function deleteIngressRetentionCandidate(input: Readonly<{
   candidate: IngressRetentionCandidate;
 }>): Promise<boolean> {
   const collection = requireChannelsAccountStorage(input.context).collection(CHANNEL_STATE_COLLECTION);
-  const compacted = input.candidate.census.value.payload.compacted;
-  if (compacted === null) {
-    // Bodyless routable refusals have no compacted replay envelope to carry a
-    // staged tombstone list. They reach this branch only after the same frozen
-    // horizon, so their terminal members can use DATA's atomic exact retire
-    // operation directly before the census.
-    if (input.candidate.census.value.payload.normalizedIngress.kind === 'fullText') return false;
-    if (!await deleteAndForgetIngressObligationsAtHorizon({
-      context: input.context,
-      obligations: input.candidate.obligations,
-    })) return false;
-  } else {
-    // The horizon owner first stages every terminal member deletion in the
-    // compact census, so it never loses its exact tombstone revision between
-    // logical deletion and physical reclamation. A retained attention member
-    // must take that same path before the census may disappear.
-    if (input.candidate.obligations.length !== 0) return false;
-    if (!await settleStagedIngressObligationTombstones({
-      context: input.context,
-      censusId: input.candidate.census.value.id,
-      tombstones: compacted.prunedObligationTombstones,
-    })) return false;
-    if (!await forgetIngressObligationTombstones({
-      context: input.context,
-      tombstones: compacted.prunedObligationTombstones,
-    })) return false;
-  }
+  // Every retained member is redundant once the unit is past its frozen
+  // horizon, so the same atomic retirement that compaction uses removes them
+  // before the census that names them.
+  if (!await retireIngressObligations({
+    context: input.context,
+    obligations: input.candidate.obligations,
+  })) return false;
   assertNotAborted(input.context.signal);
   try {
     // The unit-wide predicate above has already proven this exact live census
@@ -5305,7 +5243,14 @@ async function deleteIngressRetentionCandidate(input: Readonly<{
   }
 }
 
-async function deleteAndForgetIngressObligationsAtHorizon(input: Readonly<{
+/**
+ * DATA r0.33 retires an exact live row in one transaction: logical cleanup,
+ * absence-epoch advancement, and physical removal commit together. Retention
+ * therefore never stages a tombstone revision of its own, and an interrupted
+ * pass resumes from the census that still names every member: an already
+ * retired identity simply reads absent on the next wake.
+ */
+async function retireIngressObligations(input: Readonly<{
   context: PluginInvocationContext;
   obligations: readonly Readonly<{ row: StateRow; value: IngressObligationRecord }>[];
 }>): Promise<boolean> {
@@ -5325,80 +5270,16 @@ async function deleteAndForgetIngressObligationsAtHorizon(input: Readonly<{
 }
 
 /**
- * Compaction records the exact tombstone revision established by the
- * Collection mutation owner before it removes a member from the live census
- * fanout. That owner advances every successful delete by one revision, and
- * this helper checks the returned revision before treating the member as
- * logically deleted.
- * Keeping the reference on the already-retained census makes an interrupted
- * compaction resumable without an Account-wide tombstone scan or new queue.
- */
-async function settleStagedIngressObligationTombstones(input: Readonly<{
-  context: PluginInvocationContext;
-  censusId: string;
-  tombstones: readonly Readonly<{ rowId: string; revision: number }>[];
-}>): Promise<boolean> {
-  const collection = requireChannelsAccountStorage(input.context).collection(CHANNEL_STATE_COLLECTION);
-  for (const tombstone of input.tombstones) {
-    assertNotAborted(input.context.signal);
-    const obligation = asIngressObligation(readStateRow(await collection.get(
-      tombstone.rowId,
-      { signal: input.context.signal },
-    )) ?? null);
-    // A logical tombstone and a previously forgotten identity are both absent
-    // from normal Collection reads. The exact-revision forget below remains
-    // idempotent for either state at the horizon.
-    if (obligation === undefined) continue;
-    const expectedLiveRevision = tombstone.revision - 1;
-    if (
-      !isPositiveSafeInteger(expectedLiveRevision)
-      || obligation.row.revision !== expectedLiveRevision
-      || obligation.value.payload.censusId !== input.censusId
-      || !obligation.value.terminal
-      || obligation.value.payload.lifecycle.phase !== 'terminal'
-    ) return false;
-    const result = await collection.batch([{
-      kind: 'delete',
-      rowId: tombstone.rowId,
-      expectedRevision: expectedLiveRevision,
-    }], { signal: input.context.signal });
-    if (result.status !== 'updated') return false;
-    const deleted = result.results[0];
-    if (!deleted?.deleted || deleted.revision !== tombstone.revision) return false;
-  }
-  return true;
-}
-
-async function forgetIngressObligationTombstones(input: Readonly<{
-  context: PluginInvocationContext;
-  tombstones: readonly Readonly<{ rowId: string; revision: number }>[];
-}>): Promise<boolean> {
-  const collection = requireChannelsAccountStorage(input.context).collection(CHANNEL_STATE_COLLECTION);
-  for (const tombstone of input.tombstones) {
-    assertNotAborted(input.context.signal);
-    try {
-      await collection.forget(tombstone.rowId, {
-        expectedRevision: tombstone.revision,
-        signal: input.context.signal,
-      });
-    } catch {
-      return false;
-    }
-  }
-  return true;
-}
-
-/**
  * In-place compaction of a settled unit. The full admitted ingress is replaced
  * by the envelope the protocol already publishes without a body plus one
- * connection-keyed digest of the admitted text, so the message text stops
- * being duplicated outside the Session transcript for the rest of the frozen
- * window while replay equality, the retention anchor, and sender-refusal
- * custody all keep deciding from the retained envelope.
+ * connection-keyed digest of the admitted text and its Event candidate, so the
+ * message text stops being duplicated outside the Session transcript for the
+ * rest of the frozen window while replay equality, the retention anchor, and
+ * sender-refusal custody all keep deciding from the retained envelope.
  */
 function compactedIngressCensusValue(input: Readonly<{
   census: IngressCensusRecord;
-  compacted: IngressCensusCompactedStored;
+  compacted: IngressCensusCompacted;
   now: number;
 }>): JsonRecord {
   const {
@@ -5464,12 +5345,11 @@ async function compactSettledIngressCensus(input: Readonly<{
   if (normalizedIngress !== null && normalizedIngress.kind !== 'fullText') return false;
   const collection = requireChannelsAccountStorage(input.context).collection(CHANNEL_STATE_COLLECTION);
   // Ordinary terminal attention remains independently inspectable until the
-  // frozen horizon and its compact census keeps the exact row identities for
-  // deletion. A census conflict is already the durable minimal explanation;
-  // all terminal member rows are redundant and must be removed instead of
-  // becoming unreachable orphans.
+  // frozen horizon deletes the whole unit, and its compact census keeps the
+  // exact row identities for that deletion. A census conflict is already the
+  // durable minimal explanation; all terminal member rows are redundant and
+  // must be removed instead of becoming unreachable orphans.
   const retainedAttentionObligations = census.value.payload.conflict === null
-    && !isIngressCensusPastFrozenRetentionHorizon({ census: census.value, now: input.now })
     ? input.candidate.obligations.filter((obligation) => obligation.value.attention)
     : [];
   const retainedAttentionRowIds = new Set(
@@ -5499,72 +5379,53 @@ async function compactSettledIngressCensus(input: Readonly<{
   const nextRetainedAttentionObligationRowIds = retainedAttentionObligations.map(
     (obligation) => obligation.row.rowId,
   );
-  const priorPrunedObligationTombstones = priorCompacted?.prunedObligationTombstones ?? [];
-  const nextPrunedObligationTombstones = [
-    ...priorPrunedObligationTombstones,
-    ...prunableObligations.map((obligation) => ({
-      rowId: obligation.row.rowId,
-      revision: obligation.row.revision + 1,
-    })),
-  ];
-  if (nextPrunedObligationTombstones.some((tombstone) => !isPositiveSafeInteger(tombstone.revision))) {
-    return false;
-  }
+  // An already-compact unit with nothing left to retire and the same retained
+  // attention set is settled: rewriting it would only churn its revision.
   if (
     normalizedIngress === null
     && priorCompacted !== null
+    && prunableObligations.length === 0
     && pluginJsonValuesEqual(
       priorCompacted.retainedAttentionObligationRowIds,
       nextRetainedAttentionObligationRowIds,
     )
-    && pluginJsonValuesEqual(
-      priorCompacted.prunedObligationTombstones,
-      nextPrunedObligationTombstones,
-    )
   ) return false;
+  // Retire every redundant member before the census stops naming it. Until the
+  // compact value commits, the census keeps the complete frozen fanout, so an
+  // interrupted pass re-derives the same member identities on its next wake and
+  // simply observes the already retired ones as absent.
+  if (!await retireIngressObligations({
+    context: input.context,
+    obligations: prunableObligations,
+  })) return false;
+  const witness = normalizedIngress === null
+    ? priorCompacted
+    : {
+      shell: ingressShell(normalizedIngress),
+      replayDigest: await deriveIngressCensusReplayDigest({
+        routingIdentityKey: connection.value.payload.routingIdentityKey,
+        text: normalizedIngress.observation.message.text,
+        eventCandidate: census.value.payload.eventCandidate,
+      }),
+    };
+  // A census carrying neither an admitted body nor a compact witness has no
+  // replay identity to preserve, so it is not this owner's to rewrite.
+  if (witness === null) return false;
   assertNotAborted(input.context.signal);
   const result = await collection.batch([{
     kind: 'put',
     value: compactedIngressCensusValue({
       census: census.value,
-      compacted: normalizedIngress === null
-        ? (priorCompacted as IngressCensusCompacted).legacyTextOnly === true
-          ? {
-            shell: (priorCompacted as IngressCensusCompacted).shell,
-            textDigest: (priorCompacted as IngressCensusCompacted).replayDigest,
-            retainedAttentionObligationRowIds: nextRetainedAttentionObligationRowIds,
-            prunedObligationTombstones: nextPrunedObligationTombstones,
-          }
-          : {
-            shell: (priorCompacted as IngressCensusCompacted).shell,
-            replayDigest: (priorCompacted as IngressCensusCompacted).replayDigest,
-            retainedAttentionObligationRowIds: nextRetainedAttentionObligationRowIds,
-            prunedObligationTombstones: nextPrunedObligationTombstones,
-          }
-        : {
-          shell: ingressShell(normalizedIngress),
-          replayDigest: await deriveIngressCensusReplayDigest({
-            routingIdentityKey: connection.value.payload.routingIdentityKey,
-            text: normalizedIngress.observation.message.text,
-            eventCandidate: census.value.payload.eventCandidate,
-          }),
-          retainedAttentionObligationRowIds: nextRetainedAttentionObligationRowIds,
-          prunedObligationTombstones: nextPrunedObligationTombstones,
-        },
+      compacted: {
+        shell: witness.shell,
+        replayDigest: witness.replayDigest,
+        retainedAttentionObligationRowIds: nextRetainedAttentionObligationRowIds,
+      },
       now: input.now,
     }),
     expectedRevision: census.row.revision,
   }], { signal: input.context.signal });
-  if (result.status !== 'updated') return false;
-  // The staged revisions make a failed member delete retryable on the next
-  // ordinary retention pass. The census is already compacted, so returning a
-  // successful compaction here never reports physical reclamation early.
-  await settleStagedIngressObligationTombstones({
-    context: input.context,
-    censusId: census.value.id,
-    tombstones: nextPrunedObligationTombstones,
-  });
-  return true;
+  return result.status === 'updated';
 }
 
 export type ConversationIngressRetentionRunResult = Readonly<{
@@ -5614,30 +5475,10 @@ export async function runConversationIngressRetentionForInvocation(input: Readon
       census.value.payload.conflict === null
       && isIngressCensusPastFrozenRetentionHorizon({ census: census.value, now })
     ) {
-      if (
-        census.value.payload.compacted === null
-        && census.value.payload.normalizedIngress.kind !== 'fullText'
-      ) {
-        if (await deleteIngressRetentionCandidate({ context, candidate })) deletedCensuses += 1;
-        continue;
-      }
-      // First retain any exact member tombstone revisions on the compact
-      // census. This is normally already done by the pre-horizon compaction,
-      // but a first retention pass may arrive only after the horizon. Re-read
-      // through the same canonical parser before physically forgetting.
-      if (census.value.payload.compacted === null || candidate.obligations.length !== 0) {
-        if (!await compactSettledIngressCensus({ context, candidate, now })) continue;
-        compactedCensuses += 1;
-        const compacted = asIngressCensus(readStateRow(await collection.get(
-          census.row.rowId,
-          { signal: context.signal },
-        )) ?? null);
-        if (compacted === undefined) continue;
-        const compactedCandidate = await readSettledIngressUnit({ context, census: compacted });
-        if (compactedCandidate === undefined || compactedCandidate.obligations.length !== 0) continue;
-        if (await deleteIngressRetentionCandidate({ context, candidate: compactedCandidate })) deletedCensuses += 1;
-        continue;
-      }
+      // Past the frozen horizon the whole unit is expendable, so its retained
+      // members and the census itself retire together. Compaction is no longer
+      // an intermediate step: deletion removes the same body it would have
+      // discarded, and an interrupted deletion resumes from the census.
       if (await deleteIngressRetentionCandidate({ context, candidate })) deletedCensuses += 1;
       continue;
     }
@@ -7526,14 +7367,17 @@ export async function runConversationCheckpointedPollForInvocation(input: Readon
         ...(result.diagnostic === undefined ? {} : { diagnostic: result.diagnostic }),
       },
       ...(result.retryAfterMs === undefined ? {} : { retryAfterMs: result.retryAfterMs }),
-      // A provider conflict is retryable only when its provider attached an
-      // explicit bounded retry hint (for example Telegram's exclusive
-      // getUpdates slot during restart overlap). A permanent conflict remains
-      // blocked without widening the public failure vocabulary.
+      // A provider conflict is the provider's restart-overlap arm (for
+      // example Telegram's exclusive getUpdates slot during a daemon
+      // restart), so it consumes the same bounded attempt budget as the
+      // other transient reasons. The shared backoff supplies the delay; a
+      // retry_after the provider itself supplies still wins. The budget
+      // end, not the conflict itself, is what blocks a permanent conflict,
+      // without widening the public failure vocabulary.
       retryableProviderResult:
         result.reason === 'network'
         || result.reason === 'rateLimited'
-        || (result.reason === 'providerConflict' && result.retryAfterMs !== undefined),
+        || result.reason === 'providerConflict',
     });
     if (failure.kind === 'ineligible') {
       await settleCapturedCheckpointedPollStop({

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  PLUGIN_COLLECTION_REVISION_MAX,
   PluginMachineExecutionOriginV1JsonSchema,
 } from '@happier-dev/plugin-sdk/collections';
 import { QualifiedConnectedAccountRefJsonSchema } from '@happier-dev/plugin-sdk/connected-accounts';
@@ -374,9 +375,21 @@ describe('Channels collection declarations', () => {
         'transportOrigin',
         'providerContributionSelection',
         'stopRequest',
+        'predecessorTransportKind',
+        'endpointRetarget',
         'overlapSafety',
         'acceptedPossibleLoss',
       ],
+    });
+    // The retired transport and its outstanding endpoint obligation are frozen
+    // with the slot; the replaced row transport can never answer for them.
+    expect(frozenSlot?.properties?.predecessorTransportKind).toEqual({
+      type: 'string',
+      enum: ['checkpointedPull', 'socket', 'durablePush'],
+    });
+    expect(frozenSlot?.properties?.endpointRetarget).toEqual({
+      type: 'string',
+      enum: ['notRequired', 'pending'],
     });
     expect(frozenSlot?.properties?.predecessorCheckpointedPollInvocation).toMatchObject({
       type: 'object',
@@ -568,5 +581,74 @@ describe('Channels collection declarations', () => {
       recordKind: 'ingress-obligation',
       ingressTargetKind: 'automation',
     })).toBe(true);
+  });
+});
+
+describe('Channel Collection currentness witnesses', () => {
+  type SchemaNode = Readonly<Record<string, unknown>>;
+
+  function collectIntegerBounds(
+    node: unknown,
+    propertyName: string | null,
+    found: Map<string, Set<unknown>>,
+  ): void {
+    if (Array.isArray(node)) {
+      for (const entry of node) collectIntegerBounds(entry, propertyName, found);
+      return;
+    }
+    if (node === null || typeof node !== 'object') return;
+    const schema = node as SchemaNode;
+    if (propertyName !== null && schema['type'] === 'integer') {
+      const bounds = found.get(propertyName) ?? new Set<unknown>();
+      bounds.add(schema['maximum']);
+      found.set(propertyName, bounds);
+    }
+    for (const [key, value] of Object.entries(schema)) {
+      if (key === 'properties') {
+        for (const [child, childSchema] of Object.entries(value as SchemaNode)) {
+          collectIntegerBounds(childSchema, child, found);
+        }
+        continue;
+      }
+      const inherits = key === 'anyOf' || key === 'oneOf' || key === 'allOf' || key === 'items';
+      collectIntegerBounds(value, inherits ? propertyName : null, found);
+    }
+  }
+
+  // The static declarations are what a host installs and validates rows
+  // against, so the shipped contract is measured rather than a local schema.
+  function persistedBounds(): Map<string, Set<unknown>> {
+    const found = new Map<string, Set<unknown>>();
+    for (const collection of CHANNEL_ACCOUNT_COLLECTION_DECLARATIONS) {
+      collectIntegerBounds(collection.schema, null, found);
+    }
+    collectIntegerBounds(CHANNEL_STATE_COLLECTION.schema, null, found);
+    collectIntegerBounds(CHANNEL_DELIVERIES_COLLECTION.schema, null, found);
+    return found;
+  }
+
+  it('bounds every retained Collection row revision witness by the Collection column ceiling', () => {
+    const found = persistedBounds();
+    // Named explicitly: a witness that silently disappeared from the persisted
+    // contract would otherwise make this assertion vacuous.
+    for (const witness of ['connectionRevision', 'bindingRevision']) {
+      expect({ [witness]: [...(found.get(witness) ?? [])] })
+        .toEqual({ [witness]: [PLUGIN_COLLECTION_REVISION_MAX] });
+    }
+  });
+
+  it('keeps Channels-owned authority epochs and payload counters on the wider bound', () => {
+    const found = persistedBounds();
+    // `revision` here is the Channels-owned checkpoint/frontier/rotation
+    // counter this plugin advances itself, not a Collection row revision.
+    for (const counter of [
+      'authorityEpoch',
+      'connectionAuthorityEpoch',
+      'bindingAuthorityEpoch',
+      'revision',
+    ]) {
+      expect({ [counter]: [...(found.get(counter) ?? [])] })
+        .toEqual({ [counter]: [Number.MAX_SAFE_INTEGER] });
+    }
   });
 });

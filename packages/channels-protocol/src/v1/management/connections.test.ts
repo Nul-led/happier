@@ -125,6 +125,7 @@ describe('Channels V1 connection management contracts', () => {
         const transfer = {
             connectionId: 'connection-1',
             expectedRevision: 7,
+            expectedAuthorityEpoch: 3,
             providerSelection,
             providerSetupInput: { botToken: 'opaque' },
             credentialRef: null,

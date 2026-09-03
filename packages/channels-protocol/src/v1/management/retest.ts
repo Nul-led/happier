@@ -7,27 +7,37 @@ import {
     defineProtocolUnion,
 } from '@happier-dev/plugin-sdk/protocol';
 
-import { ConversationConnectionIdV1ProtocolSchema } from '../identity.js';
+import {
+    ConversationCollectionRowRevisionV1ProtocolSchema,
+    ConversationConnectionIdV1ProtocolSchema,
+} from '../identity.js';
 import { ConversationProviderFailureV1ProtocolSchema } from '../diagnostics.js';
 import type { ConversationActionDeclarationV1 } from '../actionDeclarations.js';
 
-const positiveSafeInteger = defineProtocolNumber({
+/**
+ * A Channels-owned authority epoch. It is advanced by this package rather
+ * than persisted as a Collection row revision, so it keeps the wide
+ * safe-integer bound instead of the Collection column ceiling.
+ */
+const authorityEpochV1 = defineProtocolNumber({
     integer: true,
     minimum: 1,
     maximum: Number.MAX_SAFE_INTEGER,
 });
+/** One exact Account Collection row revision witness; see its Protocol owner. */
+const collectionRowRevision = ConversationCollectionRowRevisionV1ProtocolSchema;
 
 const conversationConnectionRetestInputV1 = defineProtocolObject({
     connectionId: ConversationConnectionIdV1ProtocolSchema,
-    expectedRevision: positiveSafeInteger,
-    authorityEpoch: positiveSafeInteger,
+    expectedRevision: collectionRowRevision,
+    authorityEpoch: authorityEpochV1,
 }, { policy: 'closed' });
 
 const conversationConnectionRetestReadyV1 = defineProtocolObject({
     kind: defineProtocolLiteral('ready'),
     connectionId: ConversationConnectionIdV1ProtocolSchema,
-    revision: positiveSafeInteger,
-    authorityEpoch: positiveSafeInteger,
+    revision: collectionRowRevision,
+    authorityEpoch: authorityEpochV1,
 }, { policy: 'closed' });
 
 /**

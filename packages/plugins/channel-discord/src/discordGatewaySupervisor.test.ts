@@ -1235,6 +1235,210 @@ describe('Discord Gateway supervisor', () => {
     await supervisor.dispose();
   });
 
+  it('reports the continuity gap of a resumable worker stopped by an unavailable reconciliation authority before recovery', async () => {
+    const current = snapshot();
+    let listAvailable = true;
+    const reportedFacts: unknown[] = [];
+    const events: string[] = [];
+    const workerResults: DiscordGatewayWorkerResult[] = [];
+    const workerStops: Array<() => void> = [];
+    const workerFactory = vi.fn(() => {
+      events.push('worker');
+      return {
+        result: new Promise<DiscordGatewayWorkerResult>((resolve) => {
+          workerStops.push(() => resolve(workerResults.shift() ?? { kind: 'stopped' }));
+        }),
+        stop: vi.fn(() => workerStops.at(-1)?.()),
+      };
+    });
+    const supervisor = createDiscordGatewaySupervisor({ workerFactory });
+    const executeCore = async (action: Readonly<{ localId: string }>, actionInput: unknown) => {
+      if (action.localId === CONVERSATION_CORE_PROVIDER_ACTION_IDS_V1.connectionsList) {
+        if (!listAvailable) throw new Error('Channels connections list is unavailable.');
+        return { [current.connectionId]: current };
+      }
+      if (action.localId === CONVERSATION_CORE_PROVIDER_ACTION_IDS_V1.transportFactReport) {
+        events.push('fact');
+        reportedFacts.push(actionInput);
+        return { kind: 'recorded' };
+      }
+      throw new Error(`Unexpected core Action ${action.localId}`);
+    };
+    const { background } = supervisorBackgroundHarness({
+      supervisor,
+      connectedAccounts: {
+        materialize: vi.fn(async () => ({ kind: 'environment' as const, env: { DISCORD_BOT_TOKEN: 'bot-token' } })),
+      },
+      http: {
+        request: vi.fn(async (request: Readonly<{ url: string }>) => response(
+          request.url.endsWith('/oauth2/applications/@me')
+            ? { id: 'application-1', flags: 0, flags_new: '0' }
+            : { id: 'bot-1', username: 'Happier Bot', bot: true },
+        )),
+        openWebSocket: vi.fn(),
+      },
+      executeCore,
+    });
+
+    await supervisor.reconcile(background);
+    await vi.waitFor(() => expect(workerFactory).toHaveBeenCalledTimes(1));
+
+    // The reconciliation authority becomes unavailable while the worker still
+    // holds Discord resume coordinates from a live session. The stop cannot
+    // prove continuity, so the provider must queue the same history-gap fact
+    // it already owns and publish it through the existing transport-fact
+    // owner once the authority is reachable again — before any replacement
+    // worker resumes product admission.
+    listAvailable = false;
+    workerResults.push({ kind: 'stopped', unprovenContinuity: true });
+    await supervisor.reconcile(background);
+    await supervisor.reconcile(background);
+
+    listAvailable = true;
+    await supervisor.reconcile(background);
+    await vi.waitFor(() => expect(workerFactory).toHaveBeenCalledTimes(2));
+
+    expect(reportedFacts).toEqual([
+      {
+        connectionId: 'connection-1',
+        authorityEpoch: 7,
+        fact: { kind: 'historyGap', reason: 'applicationAdmissionLost' },
+      },
+    ]);
+    expect(events).toEqual(['worker', 'fact', 'worker']);
+    await supervisor.dispose();
+  });
+
+  it('reports the continuity gap of a resumable worker whose authoritative connection read fails before recovery', async () => {
+    const current = snapshot();
+    let readAvailable = true;
+    const reportedFacts: unknown[] = [];
+    const workerResults: DiscordGatewayWorkerResult[] = [];
+    const workerStops: Array<() => void> = [];
+    const workerFactory = vi.fn(() => ({
+      result: new Promise<DiscordGatewayWorkerResult>((resolve) => {
+        workerStops.push(() => resolve(workerResults.shift() ?? { kind: 'stopped' }));
+      }),
+      stop: vi.fn(() => workerStops.at(-1)?.()),
+    }));
+    const supervisor = createDiscordGatewaySupervisor({ workerFactory });
+    const executeCore = async (action: Readonly<{ localId: string }>, actionInput: unknown) => {
+      if (action.localId === CONVERSATION_CORE_PROVIDER_ACTION_IDS_V1.connectionsList) {
+        return { [current.connectionId]: current };
+      }
+      if (action.localId === CONVERSATION_CORE_PROVIDER_ACTION_IDS_V1.transportFactReport) {
+        reportedFacts.push(actionInput);
+        return { kind: 'recorded' };
+      }
+      throw new Error(`Unexpected core Action ${action.localId}`);
+    };
+    const { background } = supervisorBackgroundHarness({
+      supervisor,
+      connectedAccounts: {
+        materialize: vi.fn(async () => ({ kind: 'environment' as const, env: { DISCORD_BOT_TOKEN: 'bot-token' } })),
+      },
+      http: {
+        request: vi.fn(async (request: Readonly<{ url: string }>) => response(
+          request.url.endsWith('/oauth2/applications/@me')
+            ? { id: 'application-1', flags: 0, flags_new: '0' }
+            : { id: 'bot-1', username: 'Happier Bot', bot: true },
+        )),
+        openWebSocket: vi.fn(),
+      },
+      executeCore,
+      readConnection: async () => {
+        if (!readAvailable) return null;
+        return current;
+      },
+    });
+
+    await supervisor.reconcile(background);
+    await vi.waitFor(() => expect(workerFactory).toHaveBeenCalledTimes(1));
+
+    readAvailable = false;
+    workerResults.push({ kind: 'stopped', unprovenContinuity: true });
+    await supervisor.reconcile(background);
+
+    readAvailable = true;
+    await supervisor.reconcile(background);
+    await vi.waitFor(() => expect(workerFactory).toHaveBeenCalledTimes(2));
+
+    expect(reportedFacts).toEqual([
+      {
+        connectionId: 'connection-1',
+        authorityEpoch: 7,
+        fact: { kind: 'historyGap', reason: 'applicationAdmissionLost' },
+      },
+    ]);
+    await supervisor.dispose();
+  });
+
+  it('does not report a continuity gap when an explicit stop stops a resumable worker', async () => {
+    let current = snapshot({ requiresFullSharedMessageContent: true });
+    const reportedFacts: unknown[] = [];
+    let resolveWorker!: (result: DiscordGatewayWorkerResult) => void;
+    const worker = {
+      result: new Promise<DiscordGatewayWorkerResult>((resolve) => { resolveWorker = resolve; }),
+      stop: vi.fn(() => resolveWorker({ kind: 'stopped', unprovenContinuity: true })),
+    };
+    const workerFactory = vi.fn(() => worker);
+    const supervisor = createDiscordGatewaySupervisor({ workerFactory });
+    const executeCore = async (action: Readonly<{ localId: string }>, actionInput: unknown) => {
+      if (action.localId === CONVERSATION_CORE_PROVIDER_ACTION_IDS_V1.connectionsList) {
+        return { [current.connectionId]: current };
+      }
+      if (action.localId === CONVERSATION_CORE_PROVIDER_ACTION_IDS_V1.transportFactReport) {
+        reportedFacts.push(actionInput);
+        return { kind: 'recorded' };
+      }
+      throw new Error(`Unexpected core Action ${action.localId}`);
+    };
+    const { background } = supervisorBackgroundHarness({
+      supervisor,
+      connectedAccounts: {
+        materialize: vi.fn(async () => ({ kind: 'environment' as const, env: { DISCORD_BOT_TOKEN: 'bot-token' } })),
+      },
+      http: {
+        request: vi.fn(async (request: Readonly<{ url: string }>) => response(
+          request.url.endsWith('/oauth2/applications/@me')
+            ? { id: 'application-1', flags: 1 << 18, flags_new: String(1 << 18) }
+            : { id: 'bot-1', username: 'Happier Bot', bot: true },
+        )),
+        openWebSocket: vi.fn(),
+      },
+      executeCore,
+    });
+
+    await supervisor.reconcile(background);
+    await vi.waitFor(() => expect(workerFactory).toHaveBeenCalledTimes(1));
+
+    // A deliberate stop is core-owned transfer custody with its own
+    // stopConfirmed fact. The worker's continuity disclosure must not become
+    // a second, competing gap claim on that path.
+    await expect(supervisor.stop({
+      v: 1,
+      connectionId: 'connection-1',
+      providerConnectionKey: 'discord:application:application-1',
+      providerConfigVersion: 1,
+      providerConfig: current.providerConfig,
+      credentialRef,
+      authorityEpoch: 8,
+      reason: 'delete',
+    }, channelsCoreContext())).resolves.toEqual({ kind: 'stopped' });
+
+    current = snapshot({ authorityEpoch: 8, enabled: false, deletionState: 'pendingStopReconciliation' });
+    await supervisor.reconcile(background);
+
+    expect(reportedFacts).toEqual([
+      {
+        connectionId: 'connection-1',
+        authorityEpoch: 8,
+        fact: { kind: 'stopConfirmed', reason: 'explicitStop' },
+      },
+    ]);
+    await supervisor.dispose();
+  });
+
   it('retries an authentication-failed connection after the host reports a Connected Account credential resync', async () => {
     // Gateway close 4004 means the selected bot token is wrong. Repairing it
     // inside the same Connected Account changes nothing the core reconciliation

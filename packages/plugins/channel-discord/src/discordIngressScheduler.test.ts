@@ -161,6 +161,58 @@ describe('Discord inbound scheduler', () => {
     await expect(queuedResult).resolves.toBe('queued-result');
   });
 
+  it('rotates fairly across busy endpoint lanes instead of letting one lane starve another', async () => {
+    const scheduler = createDiscordIngressScheduler({
+      maxConcurrent: 1,
+      maxQueuedPerKey: 2,
+      maxQueuedTotal: 4,
+    });
+    const first = deferred<void>();
+    const second = deferred<void>();
+    const secondStarted = deferred<void>();
+    const started: string[] = [];
+
+    const firstResult = scheduler.schedule({
+      connectionId: 'connection-a',
+      endpointId: 'discord:channel:one',
+      run: async () => {
+        started.push('one-first');
+        await first.promise;
+        return 'one-first-result';
+      },
+    });
+    const oneQueued = scheduler.schedule({
+      connectionId: 'connection-a',
+      endpointId: 'discord:channel:one',
+      run: async () => {
+        started.push('one-second');
+        return 'one-second-result';
+      },
+    });
+    const twoQueued = scheduler.schedule({
+      connectionId: 'connection-a',
+      endpointId: 'discord:channel:two',
+      run: async () => {
+        started.push('two-first');
+        secondStarted.resolve();
+        await second.promise;
+        return 'two-first-result';
+      },
+    });
+
+    expect(started).toEqual(['one-first']);
+    first.resolve();
+    await expect(firstResult).resolves.toBe('one-first-result');
+    await secondStarted.promise;
+    // The other endpoint's queued admission reaches the slot before the busy
+    // endpoint wins it a second time.
+    expect(started).toEqual(['one-first', 'two-first']);
+    second.resolve();
+    await expect(twoQueued).resolves.toBe('two-first-result');
+    await expect(oneQueued).resolves.toBe('one-second-result');
+    expect(started).toEqual(['one-first', 'two-first', 'one-second']);
+  });
+
   it('cancels queued work before it can enter a later current lane', async () => {
     const scheduler = createDiscordIngressScheduler({
       maxConcurrent: 1,

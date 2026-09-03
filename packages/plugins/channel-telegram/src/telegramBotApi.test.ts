@@ -44,7 +44,7 @@ describe('Telegram Bot API adapter', () => {
     ]);
   });
 
-  it('reports a getUpdates 409 as a retryable conflict because Telegram serves one exclusive poll consumer', async () => {
+  it('reports a getUpdates 409 as the exclusive-poll conflict without claiming a retry hint Telegram did not send', async () => {
     const api = createTelegramBotApi({
       token: 'secret-token',
       http: {
@@ -58,10 +58,35 @@ describe('Telegram Bot API adapter', () => {
       },
     });
 
+    // The bounded restart-overlap retry is Channels policy driven by the
+    // shared backoff curve. The conflict result itself carries no delay: a
+    // local policy constant must not masquerade as provider-supplied
+    // `retryAfterMs` evidence.
     await expect(api.getUpdates({ offset: '42', limit: 50, timeoutSeconds: 30 })).resolves.toEqual({
       kind: 'providerConflict',
       diagnostic: 'Conflict: terminated by other getUpdates request',
-      retryAfterMs: 1_000,
+    });
+  });
+
+  it('keeps a retry_after Telegram supplies on a getUpdates 409 as provider evidence', async () => {
+    const api = createTelegramBotApi({
+      token: 'secret-token',
+      http: {
+        async request() {
+          return jsonResponse({
+            ok: false,
+            error_code: 409,
+            description: 'Conflict: terminated by other getUpdates request',
+            parameters: { retry_after: 3 },
+          }, 409);
+        },
+      },
+    });
+
+    await expect(api.getUpdates({ offset: '42', limit: 50, timeoutSeconds: 30 })).resolves.toEqual({
+      kind: 'providerConflict',
+      diagnostic: 'Conflict: terminated by other getUpdates request',
+      retryAfterMs: 3_000,
     });
   });
 

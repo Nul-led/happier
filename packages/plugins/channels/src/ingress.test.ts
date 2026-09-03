@@ -559,6 +559,7 @@ function replaceConnectionDuringCapturedPoll(input: Readonly<{
         },
         authorityEpoch: current.payload.authorityEpoch + 1,
         reason: 'transfer',
+        predecessorTransportKind: 'socket',
         overlapSafety: input.incumbentOverlapSafety ?? current.payload.overlapSafety,
       }),
     },
@@ -1207,6 +1208,8 @@ function deploymentLimits(
 ): PluginCollectionLimits {
   return {
     maxRowEncodedBytes: 512 * 1024,
+    maxRows: 10_000,
+    maxCollectionEncodedBytes: 256 * 1024 * 1024,
     maxBatchBytes: input.maxBatchBytes,
     maxBatchRows: input.maxBatchRows,
     maxAccountRows: 10_000,
@@ -4390,7 +4393,11 @@ describe('Conversation provider observation ingress', () => {
       await expect(runConversationIngressRetentionForInvocation({ now: 61_000, limit: 1 }, harness.context))
         .resolves.toMatchObject({ deletedCensuses: 0 });
       expect(harness.rows.get(census.rowId)?.deleted).not.toBe(true);
-      expect(harness.rows.get(obligation.rowId)?.deleted).toBe(true);
+      // Retirement is one atomic Collection operation, so a settled member
+      // leaves no staged tombstone for a second pass to reconcile.
+      expect(harness.rows.get(obligation.rowId)).toBeUndefined();
+      expect(record(record(harness.rows.get(census.rowId)?.value ?? {}).payload).compacted)
+        .not.toHaveProperty('prunedObligationTombstones');
 
       await expect(runConversationIngressRetentionForInvocation({ now: 61_001, limit: 1 }, harness.context))
         .resolves.toMatchObject({ deletedCensuses: 1 });
@@ -4401,7 +4408,7 @@ describe('Conversation provider observation ingress', () => {
     }
   });
 
-  it('keeps horizon-expired ingress retryable when physical forgetting loses its exact CAS', async () => {
+  it('keeps the retained body of a settled census whose member retirement loses its exact CAS', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(1_000);
     try {
@@ -4412,7 +4419,11 @@ describe('Conversation provider observation ingress', () => {
         },
       });
       await ingestConversationProviderObservationForInvocation(
-        observation({ messageRevision: 'retention:forget-conflict', occurredAt: 1_000 }),
+        observation({
+          messageRevision: 'retention:forget-conflict',
+          messageText: 'Retirement conflict body',
+          occurredAt: 1_000,
+        }),
         harness.context,
       );
       const census = markIngressCensusCheckpointCovered(harness.rows, 1_000);
@@ -4420,12 +4431,14 @@ describe('Conversation provider observation ingress', () => {
         row.deleted !== true && row.value['record-kind'] === 'ingress-obligation'
       ));
       if (obligation === undefined) throw new Error('Expected the terminal ingress obligation.');
+
+      // Retirement precedes compaction, so a lost CAS leaves the whole unit
+      // exactly as it was: the census still owns the only copy of the body and
+      // its member is still live and re-derivable from the frozen fanout.
       await expect(runConversationIngressRetentionForInvocation({ now: 2_000, limit: 1 }, harness.context))
-        .resolves.toMatchObject({ compactedCensuses: 1, deletedCensuses: 0 });
-      expect(record(record(harness.rows.get(census.rowId)?.value ?? {}).payload).compacted)
-        .toMatchObject({
-          prunedObligationTombstones: [{ rowId: obligation.rowId, revision: obligation.revision + 1 }],
-        });
+        .resolves.toMatchObject({ compactedCensuses: 0, deletedCensuses: 0 });
+      expect(JSON.stringify(harness.rows.get(census.rowId)?.value)).toContain('Retirement conflict body');
+      expect(harness.rows.get(obligation.rowId)?.revision).toBe(obligation.revision);
 
       await expect(runConversationIngressRetentionForInvocation({ now: 61_001, limit: 1 }, harness.context))
         .resolves.toMatchObject({ deletedCensuses: 0 });
@@ -4435,6 +4448,152 @@ describe('Conversation provider observation ingress', () => {
       await expect(runConversationIngressRetentionForInvocation({ now: 61_002, limit: 1 }, harness.context))
         .resolves.toMatchObject({ deletedCensuses: 1 });
       expect(harness.rows.get(census.rowId)).toBeUndefined();
+      expect(harness.rows.get(obligation.rowId)).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('resumes member retirement after an interrupted pass and compacts the same census anchor', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    try {
+      let forgetsBeforeInterruption = 2;
+      const harness = createIngressHarness({
+        beforeCollectionForget: () => {
+          if (forgetsBeforeInterruption <= 0) throw new Error('Simulated crash mid-retirement.');
+          forgetsBeforeInterruption -= 1;
+        },
+      });
+      addMatchingBinding(harness.rows, 'binding-2');
+      addMatchingBinding(harness.rows, 'binding-3');
+      await ingestConversationProviderObservationForInvocation(
+        observation({
+          messageRevision: 'retention:interrupted-retirement',
+          messageText: 'Interrupted retirement body',
+          occurredAt: 1_000,
+        }),
+        harness.context,
+      );
+      const census = markIngressCensusCheckpointCovered(harness.rows, 1_000);
+      const members = [...harness.rows.values()].filter((row) => (
+        row.deleted !== true && row.value['record-kind'] === 'ingress-obligation'
+      ));
+      expect(members).toHaveLength(3);
+      expect(harness.send).toHaveBeenCalledTimes(3);
+
+      // Two of three members retire, then the pass dies. The census is still
+      // uncompacted, so it remains the complete crash/resume anchor: its frozen
+      // fanout re-derives every member identity on the next wake.
+      await expect(runConversationIngressRetentionForInvocation({ now: 2_000, limit: 1 }, harness.context))
+        .resolves.toMatchObject({ compactedCensuses: 0, deletedCensuses: 0 });
+      expect(members.filter((member) => harness.rows.get(member.rowId) === undefined)).toHaveLength(2);
+      const interrupted = record(record(harness.rows.get(census.rowId)?.value ?? {}).payload);
+      expect(interrupted.compacted).toBeNull();
+      expect(interrupted.matchedBindings).toHaveLength(3);
+
+      // The interrupted window is exactly where an exact replay arrives. The
+      // census already proves the settled retention-eligible state — prepared,
+      // checkpoint-covered, and every surviving member terminal — so its two
+      // retired-absent members count as terminally retired: the replay stays
+      // checkpoint-safe, recreates no obligation, dispatch, or delivery, and
+      // leaves the uncompacted census anchor untouched for the resuming pass.
+      vi.setSystemTime(2_001);
+      await expect(ingestConversationProviderObservationForInvocation(
+        observation({
+          messageRevision: 'retention:interrupted-retirement',
+          messageText: 'Interrupted retirement body',
+          occurredAt: 1_000,
+        }),
+        harness.context,
+      )).resolves.toBeUndefined();
+      expect(harness.send).toHaveBeenCalledTimes(3);
+      expect([...harness.rows.values()].filter((row) => (
+        row.deleted !== true && row.value['record-kind'] === 'ingress-obligation'
+      ))).toHaveLength(1);
+      expect(record(record(harness.rows.get(census.rowId)?.value ?? {}).payload).compacted).toBeNull();
+      expect(JSON.stringify(harness.rows.get(census.rowId)?.value))
+        .toContain('Interrupted retirement body');
+
+      forgetsBeforeInterruption = Number.MAX_SAFE_INTEGER;
+      await expect(runConversationIngressRetentionForInvocation({ now: 2_001, limit: 1 }, harness.context))
+        .resolves.toMatchObject({ compactedCensuses: 1, deletedCensuses: 0 });
+      for (const member of members) expect(harness.rows.get(member.rowId)).toBeUndefined();
+      expect(JSON.stringify(harness.rows.get(census.rowId)?.value))
+        .not.toContain('Interrupted retirement body');
+
+      // Converged: an exact replay rejoins the compact witness instead of
+      // recreating any retired member, dispatch, or delivery.
+      vi.setSystemTime(2_002);
+      await expect(ingestConversationProviderObservationForInvocation(
+        observation({
+          messageRevision: 'retention:interrupted-retirement',
+          messageText: 'Interrupted retirement body',
+          occurredAt: 1_000,
+        }),
+        harness.context,
+      )).resolves.toBeUndefined();
+      expect(harness.send).toHaveBeenCalledTimes(3);
+      expect([...harness.rows.values()].filter((row) => (
+        row.deleted !== true && row.value['record-kind'] === 'ingress-obligation'
+      ))).toEqual([]);
+      expect(harness.rows.get(census.rowId)?.value.attention).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('still refuses a replay whose census does not prove the settled retention-eligible state', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    try {
+      const harness = createIngressHarness();
+      addMatchingBinding(harness.rows, 'binding-2');
+      await ingestConversationProviderObservationForInvocation(
+        observation({ messageRevision: 'retention:unproven-absence', occurredAt: 1_000 }),
+        harness.context,
+      );
+      const members = [...harness.rows.values()].filter((row) => (
+        row.deleted !== true && row.value['record-kind'] === 'ingress-obligation'
+      ));
+      expect(members).toHaveLength(2);
+
+      // Corrupt shape, never a retention outcome: one member is gone while
+      // its census is neither checkpoint-covered nor otherwise proven
+      // settled, so absence cannot be trusted as terminally retired.
+      harness.rows.delete(members[0]!.rowId);
+      await expect(ingestConversationProviderObservationForInvocation(
+        observation({ messageRevision: 'retention:unproven-absence', occurredAt: 1_000 }),
+        harness.context,
+      )).rejects.toMatchObject({ code: 'channels_ingress_obligation_missing' });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('writes a compacted census the shipped Collection schema accepts with only the canonical replay digest', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    try {
+      const validateChannelState = compilePluginJsonSchema(CHANNEL_STATE_COLLECTION.schema);
+      const harness = createIngressHarness();
+      await ingestConversationProviderObservationForInvocation(
+        withTelegramAutomationEventCandidate(observation({
+          messageRevision: 'retention:compaction-schema',
+          messageText: 'Schema-checked compaction body',
+          occurredAt: 1_000,
+        })),
+        harness.context,
+      );
+      const census = markIngressCensusCheckpointCovered(harness.rows, 1_000);
+      await expect(runConversationIngressRetentionForInvocation({ now: 2_000, limit: 1 }, harness.context))
+        .resolves.toMatchObject({ compactedCensuses: 1 });
+
+      const compactedRow = harness.rows.get(census.rowId);
+      expect(isValidPluginJsonSchemaValue(validateChannelState, compactedRow?.value)).toBe(true);
+      const compacted = record(record(record(compactedRow?.value ?? {}).payload).compacted);
+      expect(Object.keys(compacted).sort())
+        .toEqual(['replayDigest', 'retainedAttentionObligationRowIds', 'shell']);
     } finally {
       vi.useRealTimers();
     }
@@ -4584,12 +4743,16 @@ describe('Conversation provider observation ingress', () => {
         input: ConversationProviderObservationIngestInputV1,
       ): ConversationProviderObservationIngestInputV1 => {
         const withCandidate = withTelegramAutomationEventCandidate(input);
+        const eventCandidate = withCandidate.entry.eventCandidate;
+        if (eventCandidate === null) {
+          throw new Error('Expected the Telegram fixture to carry an Event candidate');
+        }
         return {
           connectionId: withCandidate.connectionId,
           entry: {
             observation: withCandidate.entry.observation,
             eventCandidate: {
-              ...withCandidate.entry.eventCandidate,
+              ...eventCandidate,
               payload: { chatId: '100', messageId: 'telegram:message:6' },
             },
           },
@@ -5113,7 +5276,7 @@ describe('Conversation provider observation ingress', () => {
 
       await expect(runConversationIngressRetentionForInvocation({ now: 2_002, limit: 1 }, harness.context))
         .resolves.toMatchObject({ compactedCensuses: 1, deletedCensuses: 0 });
-      expect(harness.rows.get(obligation.rowId)?.deleted).toBe(true);
+      expect(harness.rows.get(obligation.rowId)).toBeUndefined();
       const retained = record(record(harness.rows.get(censusId)?.value ?? {}).payload);
       expect(retained).toMatchObject({
         conflict: { kind: 'occurrenceEvidenceMismatch' },
@@ -5619,13 +5782,13 @@ describe('Conversation provider observation ingress', () => {
       });
       expect(compactedPayload.eventCandidate).toBeNull();
       expect(compactedPayload.matchedBindings).toEqual([]);
-      expect(harness.rows.get(obligation.rowId)?.deleted).toBe(true);
+      expect(harness.rows.get(obligation.rowId)).toBeUndefined();
 
       await expect(runConversationIngressRetentionForInvocation({ now: 61_001, limit: 1 }, harness.context))
         .resolves.toMatchObject({ deletedCensuses: 0 });
 
       expect(harness.rows.get(conflicted.rowId)?.deleted).not.toBe(true);
-      expect(harness.rows.get(obligation.rowId)?.deleted).toBe(true);
+      expect(harness.rows.get(obligation.rowId)).toBeUndefined();
     } finally {
       vi.useRealTimers();
     }
@@ -5659,7 +5822,7 @@ describe('Conversation provider observation ingress', () => {
       await expect(runConversationIngressRetentionForInvocation({ now: 2_000, limit: 1 }, harness.context))
         .resolves.toMatchObject({ compactedCensuses: 1, deletedCensuses: 0 });
 
-      expect(harness.rows.get(obligation.rowId)?.deleted).toBe(true);
+      expect(harness.rows.get(obligation.rowId)).toBeUndefined();
       expect(harness.rows.get(conflicted.rowId)).toMatchObject({
         value: {
           attention: true,
@@ -5677,7 +5840,7 @@ describe('Conversation provider observation ingress', () => {
       await expect(runConversationIngressRetentionForInvocation({ now: 61_001, limit: 1 }, harness.context))
         .resolves.toMatchObject({ deletedCensuses: 0 });
       expect(harness.rows.get(conflicted.rowId)?.deleted).not.toBe(true);
-      expect(harness.rows.get(obligation.rowId)?.deleted).toBe(true);
+      expect(harness.rows.get(obligation.rowId)).toBeUndefined();
     } finally {
       vi.useRealTimers();
     }
@@ -6351,13 +6514,13 @@ describe('Conversation checkpointed-poll ingress', () => {
     await expect(oldPoll).resolves.toEqual({ kind: 'ineligible' });
     expect(record(record(rows.get('connection-1')?.value).payload).pendingOldTransportStop).toBeNull();
     // The replacement poll overlaps the old daemon's exclusive getUpdates
-    // slot. Telegram answers 409 with a retry hint, and the incumbent budget
-    // retries instead of latching the
+    // slot. The exclusive-consumer conflict consumes the incumbent bounded
+    // retry budget with the shared backoff instead of latching the
     // connection into a blocked manual-retry state.
     await expect(runConversationCheckpointedPollForInvocation({
       connectionId: 'connection-1',
       waitMs: 0,
-    }, harness.context)).resolves.toEqual({ kind: 'retry', retryAfterMs: 1_000 });
+    }, harness.context)).resolves.toEqual({ kind: 'retry' });
     const retried = rows.get('connection-1');
     if (retried === undefined) throw new Error('Expected the retrying replacement Channel connection.');
     const retriedPollFailure = record(record(retried.value).payload).pollFailure;
@@ -7015,6 +7178,7 @@ describe('Conversation checkpointed-poll ingress', () => {
           },
           authorityEpoch: 5,
           reason: 'delete',
+          predecessorTransportKind: 'socket',
           overlapSafety: current.payload.overlapSafety,
         }),
       },
@@ -7130,6 +7294,7 @@ describe('Conversation checkpointed-poll ingress', () => {
         },
         authorityEpoch: settledConnection.lifecycle.authorityEpoch + 1,
         reason: 'transfer',
+        predecessorTransportKind: 'socket',
         overlapSafety: settledConnection.lifecycle.overlapSafety,
       }),
       replacement: {
@@ -7221,10 +7386,14 @@ describe('Conversation checkpointed-poll ingress', () => {
       incumbentOverlapSafety: 'providerExclusive',
     });
 
+    // The exclusive-consumer conflict is the provider's restart-overlap arm:
+    // it enters the shared bounded retry budget at attempt one and only the
+    // provider hint (when Telegram actually supplies one) can override the
+    // shared backoff delay.
     await expect(runConversationCheckpointedPollForInvocation({
       connectionId: 'connection-1',
       waitMs: 0,
-    }, harness.context)).resolves.toEqual({ kind: 'blocked' });
+    }, harness.context)).resolves.toEqual({ kind: 'retry' });
 
     expect(harness.rows.get('connection-1')).toMatchObject({
       revision: 3,
@@ -7236,7 +7405,9 @@ describe('Conversation checkpointed-poll ingress', () => {
             stopRequest: { reason: 'transfer', authorityEpoch: 5 },
           },
           pollFailure: {
-            phase: 'blocked',
+            phase: 'retryDue',
+            attemptCount: 1,
+            retryNotBeforeMs: expect.any(Number),
             evidence: { kind: 'provider', reason: 'providerConflict' },
           },
         },
@@ -7446,6 +7617,7 @@ describe('Conversation checkpointed-poll ingress', () => {
       predecessorCheckpointedPollInvocation: capturedInvocation,
       authorityEpoch: original.payload.authorityEpoch + 1,
       reason: 'transfer',
+      predecessorTransportKind: 'socket',
       overlapSafety: original.payload.overlapSafety,
     }).stopRequest;
     const exact = createIngressHarness();

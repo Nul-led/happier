@@ -315,15 +315,21 @@ function canPhysicallyForgetOutwardCustody(input: Readonly<{
   record: ConversationOutwardDeliveryRecord;
   currentBindingIds: ReadonlySet<string>;
   mediationsByBindingId: ReadonlyMap<string, PermissionWaitMediationSnapshot>;
+  unreachableControlSourceIds: ReadonlySet<string>;
 }>): boolean {
   const source = input.record.obligation.source;
   // Session and Automation producers can revisit the same deterministic
   // occurrence while their own frontier/handoff remains behind. Their
   // content-free terminal custody is therefore the dedupe proof until those
-  // owners expose affirmative unreachability. Control responses are one-shot
-  // producer effects and remain eligible for ordinary coarse retirement.
+  // owners expose affirmative unreachability.
   if (source.kind === 'sessionProjection' || source.kind === 'automationResult') return false;
-  if (source.kind !== 'permissionWait') return true;
+  // A control response is not a one-shot effect either: its identity is the
+  // durable ingress row that produced it, and that row stays addressable until
+  // ingress retention proves the occurrence past its replay horizon. Only that
+  // owner's own proof — the row's absence — may retire the dedupe evidence.
+  if (source.kind === 'controlResponse') {
+    return input.unreachableControlSourceIds.has(source.controlId);
+  }
   const bindingId = input.record.obligation.bindingId;
   if (bindingId === undefined) return false;
   if (!input.currentBindingIds.has(bindingId)) return true;
@@ -333,6 +339,39 @@ function canPhysicallyForgetOutwardCustody(input: Readonly<{
   }
   return !mediation.truncated
     && !mediation.pendingRequestKeys.has(permissionWaitRequestIdentityKey(source));
+}
+
+/**
+ * Reads the one affirmative unreachability proof a control response has: the
+ * absence of the ingress census/obligation row whose id is its control id.
+ * Ingress owns that row's replay horizon and physically forgets it only after
+ * the occurrence can never be observed again, so this consults the existing
+ * proof instead of introducing a second horizon. Only the ids this retention
+ * page actually selected are read, and an unreadable row stays fail-closed.
+ */
+async function readUnreachableControlSourceIds(input: Readonly<{
+  context: BackgroundServiceContext;
+  records: readonly ConversationOutwardDeliveryRecord[];
+}>): Promise<ReadonlySet<string>> {
+  const controlIds = new Set(input.records.flatMap((record) => (
+    record.obligation.source.kind === 'controlResponse'
+      ? [record.obligation.source.controlId]
+      : []
+  )));
+  const unreachable = new Set<string>();
+  if (controlIds.size === 0) return unreachable;
+  const collection = requireChannelsAccountStorage(input.context).collection(CHANNEL_STATE_COLLECTION);
+  for (const controlId of controlIds) {
+    if (input.context.signal.aborted) return new Set();
+    try {
+      const row = await collection.get(controlId, { signal: input.context.signal });
+      if (row === null) unreachable.add(controlId);
+    } catch {
+      // An unreadable ingress row is not an absent one; leave the logical
+      // tombstone in place and let the next wake re-decide.
+    }
+  }
+  return unreachable;
 }
 
 async function readCurrentBindingIds(context: BackgroundServiceContext): Promise<readonly string[]> {
@@ -689,6 +728,10 @@ export async function runConversationOutwardDeliveryCycle(
         return cycleResult();
       }
       if (scanned.records.length > 0) {
+        const unreachableControlSourceIds = await readUnreachableControlSourceIds({
+          context,
+          records: scanned.records,
+        });
         const retired = await deliveryStore.retireSelected({
           records: scanned.records.map((record) => ({
             custodyId: record.custodyId,
@@ -697,6 +740,7 @@ export async function runConversationOutwardDeliveryCycle(
               record,
               currentBindingIds,
               mediationsByBindingId: permissionMediationsByBindingId,
+              unreachableControlSourceIds,
             }),
           })),
         });

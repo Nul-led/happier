@@ -28,6 +28,7 @@ import {
   List,
   LoadingState,
   Metadata,
+  QRCode,
   Screen,
   ScrollArea,
   Stack,
@@ -631,6 +632,7 @@ function parseConnection(value: unknown): ChannelsConnection | undefined {
   const sharedEndpointInputModes = parseSharedEndpointInputModes(value.sharedEndpointInputModes);
   const bestEffortBeforeDurableAdmission = value.attention.bestEffortBeforeDurableAdmission;
   const oldTransportStopUnconfirmed = value.attention.oldTransportStopUnconfirmed;
+  const endpointRetargetOwed = value.attention.endpointRetargetOwed;
   const acceptedPossibleLoss = value.attention.acceptedPossibleLoss;
   if (historyGap === undefined
     || providerReadiness === undefined
@@ -648,8 +650,10 @@ function parseConnection(value: unknown): ChannelsConnection | undefined {
     || typeof enabled !== 'boolean'
     || typeof bestEffortBeforeDurableAdmission !== 'boolean'
     || typeof oldTransportStopUnconfirmed !== 'boolean'
+    || typeof endpointRetargetOwed !== 'boolean'
     || typeof acceptedPossibleLoss !== 'boolean'
     || (acceptedPossibleLoss && !oldTransportStopUnconfirmed)
+    || (endpointRetargetOwed && !oldTransportStopUnconfirmed)
     || sharedEndpointInputModes === 'invalid'
     || (integrationPrincipalLabel !== undefined && !isNonEmptyString(integrationPrincipalLabel))) {
     return undefined;
@@ -673,6 +677,7 @@ function parseConnection(value: unknown): ChannelsConnection | undefined {
       pollFailure,
       bestEffortBeforeDurableAdmission,
       oldTransportStopUnconfirmed,
+      endpointRetargetOwed,
       acceptedPossibleLoss,
       outwardDelivery,
     },
@@ -1612,8 +1617,17 @@ function parseResourceErrorMessage(
   return t('plugins.channels.surface.resourceConnectionInvalid', 'The connection Resource contains an invalid connection.');
 }
 
-function connectionLabel(connection: ChannelsConnection, providerDisplayName: string): string {
-  return connection.integrationPrincipalLabel ?? providerDisplayName;
+/**
+ * The collapsed connection row's name: the integration account label when the
+ * provider supplies one, otherwise the connection's short identity instead of
+ * repeating the provider name that the subtitle already states (two unlabeled
+ * connections of one provider would otherwise be indistinguishable).
+ */
+function connectionLabel(connection: ChannelsConnection): string {
+  const principalLabel = connection.integrationPrincipalLabel?.trim();
+  return principalLabel !== undefined && principalLabel !== ''
+    ? principalLabel
+    : shortRowIdentity(connection.connectionId);
 }
 
 function providerReadinessLabel(
@@ -1627,6 +1641,43 @@ function providerReadinessLabel(
     return t('plugins.channels.surface.providerCredentialInvalid', 'Connected Account credential needs attention');
   }
   return t('plugins.channels.surface.providerConfigurationInvalid', 'Provider configuration needs attention');
+}
+
+/**
+ * The saved enablement policy, stated on its own.
+ *
+ * It cannot share the row's single status accessory with runtime health: any
+ * observed attention takes that accessory, and a person reading "Polling needs
+ * attention" would have no way to see that they themselves paused this
+ * connection.
+ */
+function connectionPolicyLabel(connection: ChannelsConnection, t: Translate): string {
+  return connection.enabled
+    ? t('plugins.channels.surface.enabled', 'Enabled')
+    : t('plugins.channels.surface.connectionPaused', 'Paused');
+}
+
+/**
+ * Collapsed summaries must separate policy from runtime placement: the
+ * selected machine is a saved policy fact, while these Resource-observed
+ * attention states already prove the runtime placement is not currently
+ * healthy. Nothing here invents or persists health.
+ */
+function connectionMachinePlacementLabel(connection: ChannelsConnection, t: Translate): string {
+  if (connection.attention.endpointRetargetOwed) {
+    return t('plugins.channels.surface.machinePlacementRetargetOwed', 'Delivery still points at the previous machine');
+  }
+  if (connection.attention.oldTransportStopUnconfirmed) {
+    return t('plugins.channels.surface.machinePlacementStopUnconfirmed', 'Previous machine stop unconfirmed');
+  }
+  if (connection.attention.pollFailure?.phase === 'blocked') {
+    return t('plugins.channels.surface.machinePlacementPollBlocked', 'Selected machine is not receiving messages');
+  }
+  // Placement is where the connection is assigned. Only an enabled connection
+  // is actually running there, so a paused one is never described as running.
+  return connection.enabled
+    ? t('plugins.channels.surface.selectedMachineSummary', 'Runs on your selected machine')
+    : t('plugins.channels.surface.machinePlacementPausedAssigned', 'Assigned to your selected machine');
 }
 
 function connectionStatus(connection: ChannelsConnection, t: Translate) {
@@ -1644,6 +1695,9 @@ function connectionStatus(connection: ChannelsConnection, t: Translate) {
   }
   if (connection.attention.providerReadiness !== null) {
     return { tone: 'warning' as const, label: providerReadinessLabel(connection.attention.providerReadiness, t) };
+  }
+  if (connection.attention.endpointRetargetOwed) {
+    return { tone: 'warning' as const, label: t('plugins.channels.surface.endpointRetargetOwed', 'Delivery target needs repair') };
   }
   if (connection.attention.oldTransportStopUnconfirmed) {
     return { tone: 'warning' as const, label: t('plugins.channels.surface.oldTransportStopUnconfirmed', 'Old transport stop is unconfirmed') };
@@ -1666,13 +1720,21 @@ function connectionStatus(connection: ChannelsConnection, t: Translate) {
   if (connection.attention.outwardDelivery.retryDue) {
     return { tone: 'warning' as const, label: t('plugins.channels.surface.deliveryRetryDue', 'Delivery is waiting to retry') };
   }
+  // A paused connection is not delivering, so the live-admission disclosure
+  // below has nothing to warn about; the pause itself is reported as policy.
   if (!connection.enabled) {
-    return { tone: 'neutral' as const, label: t('plugins.channels.surface.disabled', 'Disabled') };
+    return {
+      tone: 'neutral' as const,
+      label: t('plugins.channels.surface.connectionNoAttention', 'Nothing needs attention'),
+    };
   }
   if (connection.attention.bestEffortBeforeDurableAdmission) {
     return { tone: 'warning' as const, label: t('plugins.channels.surface.bestEffort', 'Best effort before durable admission') };
   }
-  return { tone: 'success' as const, label: t('plugins.channels.surface.enabled', 'Enabled') };
+  return {
+    tone: 'success' as const,
+    label: t('plugins.channels.surface.connectionNoAttention', 'Nothing needs attention'),
+  };
 }
 
 /**
@@ -1715,6 +1777,43 @@ function bindingEndpointLabel(binding: ChannelsBinding, t: Translate): string {
   return label === undefined || label === ''
     ? t('plugins.channels.surface.bindingEndpointFallback', 'External conversation')
     : label;
+}
+
+/**
+ * A collapsed row without any provider-derived human label still names itself:
+ * the stable row identity is shortened to its discriminating head so two
+ * unlabeled rows stay distinguishable in text and to a screen reader. This is
+ * a presentation shortening only; every mutation keeps using the full id.
+ */
+function shortRowIdentity(id: string): string {
+  const tail = id.slice(id.lastIndexOf('-') + 1);
+  return tail.length <= 8 ? tail : tail.slice(0, 8);
+}
+
+/**
+ * The collapsed binding row's name: the provider endpoint label when one
+ * exists, otherwise the binding's short identity instead of a generic word
+ * that would read identically on every unlabeled row.
+ */
+function bindingRowLabel(binding: ChannelsBinding): string {
+  const label = binding.endpoint.label?.trim();
+  return label === undefined || label === ''
+    ? shortRowIdentity(binding.bindingId)
+    : label;
+}
+
+/**
+ * The connection (integration account) a binding delivers through, as its own
+ * labeled fact. A provider can serve several accounts, so the row states which
+ * one it targets alongside the provider brand.
+ */
+function bindingConnectionAccountSummary(
+  connection: ChannelsConnection | undefined,
+  t: Translate,
+): string | undefined {
+  const principalLabel = connection?.integrationPrincipalLabel?.trim();
+  if (principalLabel === undefined || principalLabel === '') return undefined;
+  return `${t('plugins.channels.surface.connectionAccount', 'Account')}: ${principalLabel}`;
 }
 
 function bindingAudienceLabel(audience: BindingEndpointAudience, t: Translate): string {
@@ -1806,7 +1905,7 @@ function bindingStatus(presentation: BindingPresentation, t: Translate) {
 function bindingMachineSummary(connection: ChannelsConnection | undefined, t: Translate): string {
   return connection === undefined
     ? t('plugins.channels.surface.bindingConnectionUnavailable', 'Connection details are unavailable')
-    : t('plugins.channels.surface.selectedMachineSummary', 'Runs on your selected machine');
+    : connectionMachinePlacementLabel(connection, t);
 }
 
 function bindingTargetSummary(binding: ChannelsBinding, t: Translate): string {
@@ -1887,6 +1986,13 @@ function oldTransportStopUnconfirmedDescription(t: Translate): string {
   return t(
     'plugins.channels.surface.oldTransportStopUnconfirmedDescription',
     'Happier has not confirmed that the previous transport stopped. New connection authority is protected while reconciliation continues.',
+  );
+}
+
+function endpointRetargetOwedDescription(t: Translate): string {
+  return t(
+    'plugins.channels.surface.endpointRetargetOwedDescription',
+    'This connection moved to another machine, but the endpoint that receives its messages has not been pointed there yet. Nothing is lost while it waits — repair it to finish the move.',
   );
 }
 
@@ -2021,7 +2127,9 @@ function connectionContinuityDescriptions(connection: ChannelsConnection, t: Tra
   if (connection.attention.ingressConflict !== null) {
     descriptions.push(ingressOccurrenceConflictDescription(t));
   }
-  if (connection.attention.oldTransportStopUnconfirmed) {
+  if (connection.attention.endpointRetargetOwed) {
+    descriptions.push(endpointRetargetOwedDescription(t));
+  } else if (connection.attention.oldTransportStopUnconfirmed) {
     descriptions.push(oldTransportStopUnconfirmedDescription(t));
   }
   if (connection.attention.acceptedPossibleLoss) {
@@ -2048,6 +2156,50 @@ function connectionContinuityDescriptions(connection: ChannelsConnection, t: Tra
   return descriptions;
 }
 
+/**
+ * The one route from a rejected credential to the owner that can replace it.
+ *
+ * Connected Services owns every Connected Account credential, so this surface
+ * hands over rather than growing a second place to re-enter one. The handoff is
+ * the provider-neutral overview the public Host API already exposes: Channels
+ * names no service, no Connected Account id, and never touches the credential.
+ * Hosts that do not serve the method simply do not advertise it, and the
+ * disclosure stays a plain explanation.
+ */
+function ConnectedAccountsHandoffAction(props: Readonly<{
+  t: Translate;
+}>): React.ReactElement | null {
+  const hostApi = usePluginHostApi();
+  const [unavailable, setUnavailable] = React.useState(false);
+  const open = React.useCallback(() => {
+    setUnavailable(false);
+    void hostApi.openConnectedAccounts().catch(() => { setUnavailable(true); });
+  }, [hostApi]);
+  if (!hostApi.version().methods.includes('openConnectedAccounts')) return null;
+  return (
+    <Stack gap="small">
+      <Button
+        testID="channels-provider-credential-invalid-open-connected-accounts"
+        title={props.t(
+          'plugins.channels.surface.providerCredentialInvalidOpenConnectedAccounts',
+          'Open Connected Services',
+        )}
+        onPress={open}
+      />
+      {unavailable ? (
+        <Status
+          testID="channels-provider-credential-invalid-open-connected-accounts-unavailable"
+          tone="warning"
+          label={props.t(
+            'plugins.channels.surface.providerCredentialInvalidOpenConnectedAccountsUnavailable',
+            'Connected Services could not be opened here. Open Settings to review this Connected Account.',
+          )}
+        />
+      ) : null}
+    </Stack>
+  );
+}
+
 function ConnectionContinuityDisclosures(props: Readonly<{
   connection: ChannelsConnection;
   t: Translate;
@@ -2057,6 +2209,7 @@ function ConnectionContinuityDisclosures(props: Readonly<{
   const ingressConflict = props.connection.attention.ingressConflict;
   const hasBestEffortBeforeDurableAdmission = props.connection.attention.bestEffortBeforeDurableAdmission;
   const hasOldTransportStopUnconfirmed = props.connection.attention.oldTransportStopUnconfirmed;
+  const endpointRetargetOwed = props.connection.attention.endpointRetargetOwed;
   const acceptedPossibleLoss = props.connection.attention.acceptedPossibleLoss;
   const pollFailure = props.connection.attention.pollFailure;
   const outwardDelivery = props.connection.attention.outwardDelivery;
@@ -2098,6 +2251,9 @@ function ConnectionContinuityDisclosures(props: Readonly<{
           tone="warning"
           title={providerReadinessLabel(providerReadiness, props.t)}
           description={providerReadinessDescription(providerReadiness, props.t)}
+          action={providerReadiness.code === 'providerCredentialInvalid'
+            ? <ConnectedAccountsHandoffAction t={props.t} />
+            : undefined}
         />
       ) : null}
       {ingressConflict !== null ? (
@@ -2111,7 +2267,18 @@ function ConnectionContinuityDisclosures(props: Readonly<{
           description={ingressOccurrenceConflictDescription(props.t)}
         />
       ) : null}
-      {hasOldTransportStopUnconfirmed ? (
+      {endpointRetargetOwed ? (
+        <Banner
+          testID="channels-connection-endpoint-retarget-owed"
+          tone="warning"
+          title={props.t(
+            'plugins.channels.surface.endpointRetargetOwedTitle',
+            'Message delivery still points at the previous machine',
+          )}
+          description={endpointRetargetOwedDescription(props.t)}
+        />
+      ) : null}
+      {hasOldTransportStopUnconfirmed && !endpointRetargetOwed ? (
         <Banner
           testID="channels-old-transport-stop-unconfirmed"
           tone={acceptedPossibleLoss ? 'danger' : 'warning'}
@@ -2387,6 +2554,7 @@ function BindingRow(props: Readonly<{
     && props.outcomeUnknownDeletedBindingId === binding.bindingId;
   const status = bindingStatus(props.presentation, props.t);
   const detail = bindingDetail(props.presentation, props.t);
+  const connectionAccountSummary = bindingConnectionAccountSummary(props.presentation.connection, props.t);
   const unknownEnablementDescription = props.t(
     'plugins.channels.surface.bindingSaveUnknownDescription',
     'The change may already be saved. Refresh binding details before changing it again.',
@@ -2399,10 +2567,11 @@ function BindingRow(props: Readonly<{
   return (
     <List.Item
       testID={`channels-binding-${binding.bindingId}`}
-      title={bindingEndpointLabel(binding, props.t)}
+      title={bindingRowLabel(binding)}
       subtitle={bindingTargetSummary(binding, props.t)}
       detail={[
         detail,
+        ...(connectionAccountSummary === undefined ? [] : [connectionAccountSummary]),
         ...(needsUnknownEnablementRefresh ? [unknownEnablementDescription] : []),
         ...(needsUnknownDeleteRefresh ? [unknownDeleteDescription] : []),
       ].join(' · ')}
@@ -2540,10 +2709,11 @@ function BindingRow(props: Readonly<{
         </Stack>
       )}
       accessibilityLabel={[
-        `${bindingEndpointLabel(binding, props.t)}.`,
+        `${bindingRowLabel(binding)}.`,
         ...(providerPluginId === undefined
           ? []
           : [`${props.t('plugins.channels.surface.provider', 'Provider')}: ${providerDisplayName}.`]),
+        ...(connectionAccountSummary === undefined ? [] : [`${connectionAccountSummary}.`]),
         `${bindingTargetSummary(binding, props.t)}.`,
         `${detail}.`,
         ...(needsUnknownEnablementRefresh ? [unknownEnablementDescription] : []),
@@ -2732,6 +2902,129 @@ function bindingEditorTargetFromBinding(binding: ConversationBindingV1): Binding
     automationId: binding.target.automationId,
     policy: binding.target.policy,
   };
+}
+
+/** Outgoing-message admission breadth; a higher rank admits more senders. */
+const BINDING_INPUT_MODE_BREADTH: Readonly<Record<BindingInputMode, number>> = Object.freeze({
+  directMentionsOnly: 0,
+  addressedMessages: 1,
+  allAllowedMessages: 2,
+});
+
+/**
+ * The ONE authority comparison for binding edits, so a widening change can
+ * never pass one editor unconfirmed while the other requires confirmation.
+ *
+ * The cold-offline editor consults it to decide when its draft must pass the
+ * shared confirmation boundary; the daemon-backed editor routes every change
+ * through that boundary, which confirms a superset of what this comparison
+ * requires.
+ *
+ * A change widens authority unless every changed fact is a provable pure
+ * narrowing (fewer senders, a smaller audience, a pause). Facts this surface
+ * cannot rank — in particular any permission-ceiling change — are confirmed
+ * rather than classified here, so the safer question is always asked.
+ */
+function bindingEditWidensAuthority(previous: BindingEditorDraft, next: BindingEditorDraft): boolean {
+  if (!previous.enabled && next.enabled) return true;
+  if (!previous.allowBotSenders && next.allowBotSenders) return true;
+  if (BINDING_INPUT_MODE_BREADTH[next.inputMode] > BINDING_INPUT_MODE_BREADTH[previous.inputMode]) return true;
+  if (next.allowedPrincipalIds.some((principalId) => (
+    !previous.allowedPrincipalIds.includes(principalId)
+  ))) return true;
+  if (previous.target.kind !== next.target.kind) return true;
+  if (previous.target.kind === 'session' && next.target.kind === 'session') {
+    const previousPolicy = previous.target.policy;
+    const nextPolicy = next.target.policy;
+    if (previousPolicy.deliveryMode === 'repliesOnly' && nextPolicy.deliveryMode === 'mirrorSession') return true;
+    if (previousPolicy.permissionCeiling !== nextPolicy.permissionCeiling) return true;
+    if (previousPolicy.approvals.kind === 'off' && nextPolicy.approvals.kind === 'enabled') return true;
+    if (previousPolicy.approvals.kind === 'enabled' && nextPolicy.approvals.kind === 'enabled') {
+      if (previousPolicy.approvals.maximumScope === 'request'
+        && nextPolicy.approvals.maximumScope === 'session') return true;
+      const previousApprovalIds = previousPolicy.approvals.principalIds;
+      if (previousApprovalIds !== undefined
+        && nextPolicy.approvals.principalIds?.some((principalId) => (
+          !previousApprovalIds.includes(principalId)
+        ))) return true;
+    }
+    if (previousPolicy.newSession.kind === 'off' && nextPolicy.newSession.kind === 'enabled') return true;
+    return false;
+  }
+  if (previous.target.kind === 'automation' && next.target.kind === 'automation') {
+    return previous.target.policy.resultDelivery === 'none'
+      && next.target.policy.resultDelivery === 'finalResult';
+  }
+  return false;
+}
+
+/**
+ * The one confirmation boundary both binding editors present before a widening
+ * change is saved: destination, admitted principals, execution machine,
+ * permission scope, and consequence. The create journey's review summary is
+ * the same presentation for a new binding.
+ */
+function BindingEditConfirmationSummary(props: Readonly<{
+  draft: BindingEditorDraft;
+  connection: ChannelsConnection | undefined;
+  t: Translate;
+}>): React.ReactElement {
+  const { draft, t } = props;
+  return (
+    <Stack gap="medium">
+      <Metadata
+        title={t('plugins.channels.surface.bindingEditSummary', 'Binding change summary')}
+        entries={[
+          { label: t('plugins.channels.surface.bindingCreateConversation', 'Conversation'), value: draft.endpointLabel },
+          { label: t('plugins.channels.surface.bindingCreateAllowedSender', 'Allowed senders'), value: draft.allowedPrincipalIds.join(', ') },
+          { label: t('plugins.channels.surface.bindingCreateTarget', 'Target'), value: bindingEditorTargetLabel(draft.target, t) },
+          ...(draft.target.kind === 'session' ? [
+            {
+              label: t('plugins.channels.surface.bindingCreateDeliveryMode', 'Session delivery'),
+              value: bindingDeliveryModeLabel(draft.target.policy.deliveryMode, t),
+            },
+            {
+              label: t('plugins.channels.surface.bindingCreatePermissionCeiling', 'Permission ceiling'),
+              value: bindingPermissionIntentLabel(draft.target.policy.permissionCeiling, t),
+            },
+          ] : [
+            {
+              label: t('plugins.channels.surface.bindingEditResultDelivery', 'Result delivery'),
+              value: bindingDeliveryModeLabel(draft.target.policy.resultDelivery, t),
+            },
+          ]),
+          {
+            label: t('plugins.channels.surface.bindingCreateApprovals', 'Approvals'),
+            value: bindingApprovalAudienceLabel(draft.target, t),
+          },
+          {
+            label: t('plugins.channels.surface.bindingCreateInputMode', 'Incoming messages'),
+            value: bindingInputModeLabel(draft.inputMode, t),
+          },
+          { label: t('plugins.channels.surface.bindingEditDebounce', 'Inbound debounce (ms)'), value: draft.inboundDebounceMs },
+          {
+            label: t('plugins.channels.surface.bindingCreateLinkPreview', 'Link previews'),
+            value: bindingCreateLinkPreviewPolicyLabel(draft.linkPreviewPolicy, t),
+          },
+          {
+            label: t('plugins.channels.surface.bindingCreateSenderFeedback', 'Sender feedback'),
+            value: bindingCreateSenderFeedbackLabel(draft.senderFeedback, t),
+          },
+          { label: t('plugins.channels.surface.bindingEditEnabled', 'Enable this binding'), value: bindingEnabledLabel(draft.enabled, t) },
+        ]}
+      />
+      <Metadata
+        title={t('plugins.channels.surface.technicalDetails', 'Technical details')}
+        entries={[
+          {
+            label: t('plugins.channels.surface.selectedMachineId', 'Selected machine ID'),
+            value: props.connection?.selectedMachineId
+              ?? t('plugins.channels.surface.bindingCreateConnectionUnavailable', 'Connection unavailable'),
+          },
+        ]}
+      />
+    </Stack>
+  );
 }
 
 /**
@@ -3455,6 +3748,8 @@ function BindingCreatePairingHandoff(props: Readonly<{
   pairing: BindingCreatePairingContext;
   signal: AbortSignal;
   onBindingsRefresh: () => void;
+  /** Invoked with the finalize-returned binding id when review can continue. */
+  onCompleted?: (bindingId: string) => void;
   onClose: () => void;
   t: Translate;
 }>): React.ReactElement {
@@ -3470,6 +3765,12 @@ function BindingCreatePairingHandoff(props: Readonly<{
     | 'unavailable'
     | undefined
   >();
+  /**
+   * The binding id the finalize Action returned. Retaining it lets the
+   * Review-and-enable action open the existing binding editor for exactly the
+   * created row instead of merely closing the pairing view.
+   */
+  const [completedBindingId, setCompletedBindingId] = React.useState<string | undefined>();
   const mountedRef = React.useRef(true);
   const parsedResource = React.useMemo(
     () => (resource.value === undefined ? undefined : parsePairingResource(resource.value)),
@@ -3547,6 +3848,7 @@ function BindingCreatePairingHandoff(props: Readonly<{
       return;
     }
     if (result.data.kind === 'created' || result.data.kind === 'rejoined') {
+      setCompletedBindingId(result.data.binding.id);
       setFeedback('completed');
       props.onBindingsRefresh();
       refresh();
@@ -3664,7 +3966,13 @@ function BindingCreatePairingHandoff(props: Readonly<{
   }
 
   const feedbackContent = feedback === undefined ? null : feedback === 'completed' ? (
-    <Status tone="success" label={props.t('plugins.channels.surface.bindingCreatePairingCompleted', 'Pairing completed')} />
+    <Status
+      tone="success"
+      label={props.t(
+        'plugins.channels.surface.bindingCreatePairingCompletedPaused',
+        'Conversation paired. The binding is saved paused until you review and enable it.',
+      )}
+    />
   ) : (
     <Banner
       tone="warning"
@@ -3710,6 +4018,17 @@ function BindingCreatePairingHandoff(props: Readonly<{
     return (
       <Stack gap="small">
         {feedbackContent}
+        <Button
+          testID="channels-binding-create-pairing-review-enable"
+          title={props.t('plugins.channels.surface.bindingCreatePairingReviewEnable', 'Review and enable')}
+          onPress={() => {
+            if (completedBindingId !== undefined && props.onCompleted !== undefined) {
+              props.onCompleted(completedBindingId);
+              return;
+            }
+            props.onClose();
+          }}
+        />
         <Button
           title={props.t('plugins.channels.surface.bindingCreatePairingClose', 'Close pairing')}
           variant="secondary"
@@ -3774,6 +4093,18 @@ function BindingCreatePairingHandoff(props: Readonly<{
             testID="channels-binding-create-pairing-countdown"
             tone="info"
             value={`${props.t('plugins.channels.surface.bindingCreatePairingExpiresIn', 'Expires in')} ${challengeExpiry.countdown}`}
+          />
+        )}
+        {/*
+          The QR encodes the exact Action-issued deep link. It is never the only
+          representation: the token and link below stay copyable, so a host
+          without the QR renderer loses no pairing capability.
+        */}
+        {challenge.deepLinkUrl === null ? null : (
+          <QRCode
+            testID="channels-binding-create-pairing-qr"
+            data={challenge.deepLinkUrl}
+            size={180}
           />
         )}
         <Metadata
@@ -3864,6 +4195,11 @@ function BindingCreateJourney(props: Readonly<{
   resource: ResourcePresentation;
   signal: AbortSignal;
   onRefresh: () => void;
+  /** Invoked when a completed pairing returns its binding id for review. */
+  onPairingCompleted?: (bindingId: string) => void;
+  /** One request to open this journey with a just-created connection selected. */
+  openRequest?: Readonly<{ connectionId: string; requestId: number }>;
+  onOpenConsumed?: () => void;
   t: Translate;
 }>): React.ReactElement {
   const hostApi = usePluginHostApi();
@@ -4023,6 +4359,25 @@ function BindingCreateJourney(props: Readonly<{
     restoreOpenerFocusRef.current = true;
     resetJourney();
   }, [resetJourney]);
+
+  // Compose, do not merge: the just-created connection already exists through
+  // its own connection Action, and this only opens the incumbent journey with
+  // it preselected. No second mutation, receipt, or transaction is created.
+  const consumedOpenRequestRef = React.useRef<Readonly<{ connectionId: string; requestId: number }> | undefined>(undefined);
+  React.useEffect(() => {
+    const request = props.openRequest;
+    if (request === undefined || consumedOpenRequestRef.current === request) return;
+    if (!availableConnections.some((connection) => connection.connectionId === request.connectionId)) {
+      // The refreshed connection snapshot has not reached this journey yet.
+      // Stay pending; this effect reruns when the rows arrive.
+      return;
+    }
+    consumedOpenRequestRef.current = request;
+    resetJourney();
+    setConnectionId(request.connectionId);
+    setStage('endpoint');
+    props.onOpenConsumed?.();
+  }, [availableConnections, props.onOpenConsumed, props.openRequest, resetJourney]);
 
   const onBindingCreateOutcomeReconciled = React.useCallback(() => {
     createAction.reset();
@@ -4864,6 +5219,13 @@ function BindingCreateJourney(props: Readonly<{
               pairing={pairingContext}
               signal={props.signal}
               onBindingsRefresh={props.onRefresh}
+              onCompleted={(bindingId) => {
+                // The pairing view is finished: the returned binding continues
+                // through the existing binding editor, which is the one owner
+                // of reviewing and enabling a saved binding.
+                resetJourney();
+                props.onPairingCompleted?.(bindingId);
+              }}
               onClose={cancelJourney}
               t={props.t}
             />
@@ -4903,11 +5265,6 @@ function BindingCreateJourney(props: Readonly<{
                       label: props.t('plugins.channels.surface.provider', 'Provider'),
                       value: providerDisplayName,
                     },
-                    {
-                      label: props.t('plugins.channels.surface.selectedMachineId', 'Selected machine ID'),
-                      value: currentConnection?.selectedMachineId
-                        ?? props.t('plugins.channels.surface.bindingCreateConnectionUnavailable', 'Connection unavailable'),
-                    },
                     ...(currentConnection === undefined ? [] : [{
                       label: props.t('plugins.channels.surface.transport', 'Transport'),
                       value: transportLabel(currentConnection.selectedTransport, props.t),
@@ -4925,6 +5282,16 @@ function BindingCreateJourney(props: Readonly<{
                     {
                       label: props.t('plugins.channels.surface.bindingCreateTarget', 'Target'),
                       value: target.label,
+                    },
+                  ]}
+                />
+                <Metadata
+                  title={props.t('plugins.channels.surface.technicalDetails', 'Technical details')}
+                  entries={[
+                    {
+                      label: props.t('plugins.channels.surface.selectedMachineId', 'Selected machine ID'),
+                      value: currentConnection?.selectedMachineId
+                        ?? props.t('plugins.channels.surface.bindingCreateConnectionUnavailable', 'Connection unavailable'),
                     },
                   ]}
                 />
@@ -6191,20 +6558,7 @@ function BindingEditJourney(props: Readonly<{
       {stage === 'review' && draft !== undefined ? (
         <Stack gap="small">
           <Heading level={2} value={props.t('plugins.channels.surface.bindingEditReview', 'Review changes')} focusTarget={stageFocusTarget} />
-          <Metadata
-            title={props.t('plugins.channels.surface.bindingEditSummary', 'Binding change summary')}
-            entries={[
-              { label: props.t('plugins.channels.surface.bindingCreateConversation', 'Conversation'), value: draft.endpointLabel },
-              { label: props.t('plugins.channels.surface.bindingCreateAllowedSender', 'Allowed senders'), value: draft.allowedPrincipalIds.join(', ') },
-              { label: props.t('plugins.channels.surface.bindingCreateTarget', 'Target'), value: bindingEditorTargetLabel(draft.target, props.t) },
-              { label: props.t('plugins.channels.surface.bindingCreateApprovals', 'Approvals'), value: bindingApprovalAudienceLabel(draft.target, props.t) },
-              { label: props.t('plugins.channels.surface.bindingCreateInputMode', 'Incoming messages'), value: bindingInputModeLabel(draft.inputMode, props.t) },
-              { label: props.t('plugins.channels.surface.bindingEditDebounce', 'Inbound debounce (ms)'), value: draft.inboundDebounceMs },
-              { label: props.t('plugins.channels.surface.bindingCreateLinkPreview', 'Link previews'), value: bindingCreateLinkPreviewPolicyLabel(draft.linkPreviewPolicy, props.t) },
-              { label: props.t('plugins.channels.surface.bindingCreateSenderFeedback', 'Sender feedback'), value: bindingCreateSenderFeedbackLabel(draft.senderFeedback, props.t) },
-              { label: props.t('plugins.channels.surface.bindingEditEnabled', 'Enable this binding'), value: bindingEnabledLabel(draft.enabled, props.t) },
-            ]}
-          />
+          <BindingEditConfirmationSummary draft={draft} connection={currentConnection} t={props.t} />
           {savedPolicyClamped ? (
             <Banner
               tone="warning"
@@ -6608,12 +6962,17 @@ type OnlineBindingsContentProps = Omit<
   connections: readonly ChannelsConnection[];
   signal: AbortSignal;
   onRefreshConnections: () => void;
+  /** One open request for the create journey, aimed at a just-created connection. */
+  bindingCreateRequest?: Readonly<{ connectionId: string; requestId: number }>;
+  onBindingCreateOpened?: () => void;
 }>;
 
 function OnlineBindingsContent({
   connections,
   signal,
   onRefreshConnections,
+  bindingCreateRequest,
+  onBindingCreateOpened,
   ...bindingsProps
 }: OnlineBindingsContentProps): React.ReactElement {
   const action = useExecutePluginAction(
@@ -6648,6 +7007,15 @@ function OnlineBindingsContent({
     if (binding.deletionState !== 'none') return;
     setEditingBinding({ bindingId: binding.bindingId, originFocusTarget });
   }, []);
+  // A completed pairing hands back the created binding id. Review continues in
+  // the existing binding editor — the single owner of reviewing and enabling a
+  // saved binding — rather than just closing the pairing view. The editor moves
+  // focus itself once its detail read settles, so the origin target here is a
+  // placeholder whose restoration is a deliberate no-op.
+  const pairingReviewFocusTarget = usePluginUiFocusTarget();
+  const onPairingCompleted = React.useCallback((bindingId: string) => {
+    setEditingBinding({ bindingId, originFocusTarget: pairingReviewFocusTarget });
+  }, [pairingReviewFocusTarget]);
   const closeEditor = React.useCallback((restoreOriginFocus: boolean) => {
     if (restoreOriginFocus) restoreEditFocusRef.current = editingBinding?.originFocusTarget;
     setEditingBinding(undefined);
@@ -6674,6 +7042,9 @@ function OnlineBindingsContent({
           resource={bindingsProps.resource}
           signal={signal}
           onRefresh={bindingsProps.onRefresh}
+          onPairingCompleted={onPairingCompleted}
+          openRequest={bindingCreateRequest}
+          onOpenConsumed={onBindingCreateOpened}
           t={bindingsProps.t}
         />
       )}
@@ -6811,6 +7182,7 @@ function AccountLocalBindingPolicyEditor(props: Readonly<{
   const [draft, setDraft] = React.useState<BindingEditorDraft | undefined>();
   const [detailPending, setDetailPending] = React.useState(true);
   const [feedback, setFeedback] = React.useState<AccountLocalBindingEditorFeedback | undefined>();
+  const [reviewing, setReviewing] = React.useState(false);
   const mountedRef = React.useRef(true);
   const initialReadStartedRef = React.useRef(false);
 
@@ -6907,6 +7279,18 @@ function AccountLocalBindingPolicyEditor(props: Readonly<{
     || finalizingDelete
     || summaryChanged;
 
+  // The same authority comparison the daemon-backed editor consults decides
+  // when a draft must pass the shared confirmation boundary. A provable pure
+  // narrowing (or an unchanged draft) stays immediately savable — the offline
+  // path never adds confirmation friction to reducing a binding's authority.
+  const widensAuthority = detail !== undefined && draft !== undefined
+    && bindingEditWidensAuthority(bindingEditorDraftFromBinding(detail.binding), draft);
+
+  React.useEffect(() => {
+    if (!reviewing) return;
+    stageFocusTarget.focus();
+  }, [reviewing, stageFocusTarget]);
+
   // Reload is the exit from an ambiguous outcome, so it must stay available
   // while that state is latched; only an in-flight read or write blocks it.
   const reloadLocked = detailPending || saving;
@@ -6962,8 +7346,10 @@ function AccountLocalBindingPolicyEditor(props: Readonly<{
     if (settled.status === 'success') {
       props.onRefresh();
       // The saved confirmation is reported from the authoritative reread, so it
-      // never claims a change the Account has not returned.
+      // never claims a change the Account has not returned. The editor also
+      // leaves the review boundary: the change it summarized is saved.
       if (await readDetail({ preserveDraft: false }) === 'ready' && mountedRef.current) {
+        setReviewing(false);
         setFeedback('updated');
       }
       return;
@@ -7187,13 +7573,45 @@ function AccountLocalBindingPolicyEditor(props: Readonly<{
           )}
         />
       )}
-      <Button
-        testID="channels-account-local-binding-save"
-        title={props.t('plugins.channels.surface.bindingEditSave', 'Save binding')}
-        busy={saving}
-        disabled={saveLocked}
-        onPress={() => { void submit(); }}
-      />
+      {reviewing ? (
+        <BindingEditConfirmationSummary
+          draft={draft}
+          connection={props.presentation?.connection}
+          t={props.t}
+        />
+      ) : null}
+      {reviewing ? (
+        <Button
+          testID="channels-account-local-binding-save"
+          title={props.t('plugins.channels.surface.bindingEditSave', 'Save binding')}
+          busy={saving}
+          disabled={saveLocked}
+          onPress={() => { void submit(); }}
+        />
+      ) : widensAuthority ? (
+        <Button
+          testID="channels-account-local-binding-review"
+          title={props.t('plugins.channels.surface.bindingEditReview', 'Review changes')}
+          disabled={actionLocked || finalizingDelete || debounceMs === undefined}
+          onPress={() => setReviewing(true)}
+        />
+      ) : (
+        <Button
+          testID="channels-account-local-binding-save"
+          title={props.t('plugins.channels.surface.bindingEditSave', 'Save binding')}
+          busy={saving}
+          disabled={saveLocked}
+          onPress={() => { void submit(); }}
+        />
+      )}
+      {reviewing ? (
+        <Button
+          title={props.t('plugins.channels.surface.bindingCreateBack', 'Back')}
+          variant="plain"
+          disabled={saving}
+          onPress={() => setReviewing(false)}
+        />
+      ) : null}
       <Button
         title={props.t('plugins.channels.surface.cancel', 'Cancel')}
         variant="plain"
@@ -7498,7 +7916,7 @@ function ConnectionRow(props: Readonly<{
   const status = connectionStatus(props.connection, props.t);
   const provider = usePluginBrandDisplayName(props.connection.providerPluginId)
     ?? props.t('plugins.channels.surface.providerFallback', 'Integration provider');
-  const label = connectionLabel(props.connection, provider);
+  const label = connectionLabel(props.connection);
   const continuityDescriptions = connectionContinuityDescriptions(props.connection, props.t);
 
   React.useEffect(() => {
@@ -7571,7 +7989,8 @@ function ConnectionRow(props: Readonly<{
         title={label}
         subtitle={`${props.t('plugins.channels.surface.provider', 'Provider')}: ${provider}`}
         detail={[
-          props.t('plugins.channels.surface.selectedMachineSummary', 'Runs on your selected machine'),
+          connectionPolicyLabel(props.connection, props.t),
+          connectionMachinePlacementLabel(props.connection, props.t),
           transportLabel(props.connection.selectedTransport, props.t),
         ].join(' · ')}
         icon={(
@@ -7593,6 +8012,10 @@ function ConnectionRow(props: Readonly<{
         accessibilityLabel={[
           `${label}.`,
           `${props.t('plugins.channels.surface.provider', 'Provider')}: ${provider}.`,
+          // Policy and runtime placement reach a screen reader as the two
+          // separate facts the sighted detail line states.
+          `${connectionPolicyLabel(props.connection, props.t)}.`,
+          `${connectionMachinePlacementLabel(props.connection, props.t)}.`,
           `${transportLabel(props.connection.selectedTransport, props.t)}.`,
           `${status.label}.`,
           ...continuityDescriptions,
@@ -7766,7 +8189,7 @@ function ConnectionPolicyEditor(props: Readonly<{
   }, [mutationUnavailable, props.draft.maximumObservationAgeMs, props.onSave, props.t, updateUnavailable]);
 
   const status = connectionStatus(props.connection, props.t);
-  const label = connectionLabel(props.connection, props.provider);
+  const label = connectionLabel(props.connection);
   const observationAgeRange = `${formatObservationAge(MIN_CONVERSATION_OBSERVATION_AGE_MS, props.t)} ${props.t(
     'plugins.channels.surface.through',
     'through',
@@ -8138,11 +8561,17 @@ function ConnectionLifecycleControls(props: Readonly<{
   const abandonAction = useExecutePluginAction(
     CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionAbandon,
   );
+  // An owed durable-push target move is repaired, never accepted as a loss:
+  // the endpoint is still ours to move, and deleting the connection drops it
+  // altogether, so both remain honest offers while it waits.
+  const mayRepairEndpointRetarget = props.connection.attention.endpointRetargetOwed;
   const mayAbandon = props.connection.attention.oldTransportStopUnconfirmed
-    && !props.connection.attention.acceptedPossibleLoss;
+    && !props.connection.attention.acceptedPossibleLoss
+    && !mayRepairEndpointRetarget;
   const mayDelete = props.connection.deletionState === 'none'
     && (!props.connection.attention.oldTransportStopUnconfirmed
-      || props.connection.attention.acceptedPossibleLoss);
+      || props.connection.attention.acceptedPossibleLoss
+      || mayRepairEndpointRetarget);
   const activeAction = mayAbandon ? abandonAction : deleteAction;
   const confirmation = useDestructiveConfirmation();
   const outcomeUnknown = activeAction.execution.status === 'outcomeUnknown';
@@ -8189,7 +8618,28 @@ function ConnectionLifecycleControls(props: Readonly<{
     await execute();
   }, [dismissConfirmation, execute]);
 
-  if (!mayAbandon && !mayDelete) return null;
+  const repairBusy = abandonAction.execution.status === 'pending';
+  const repairEndpointRetarget = React.useCallback(async () => {
+    if (!mayRepairEndpointRetarget
+      || abandonAction.execution.status === 'pending'
+      || abandonAction.execution.status === 'outcomeUnknown') {
+      return;
+    }
+    const settled = await abandonAction.execute({
+      connectionId: props.connection.connectionId,
+      expectedRevision: props.connection.revision,
+    });
+    if (settled.status !== 'pending' && settled.status !== 'outcomeUnknown') {
+      props.onRefresh();
+    }
+  }, [abandonAction, mayRepairEndpointRetarget, props.connection, props.onRefresh]);
+
+  if (!mayAbandon && !mayDelete && !mayRepairEndpointRetarget) return null;
+
+  const repairTitle = props.t(
+    'plugins.channels.surface.repairEndpointRetarget',
+    'Repair delivery target',
+  );
 
   const busy = activeAction.execution.status === 'pending';
   const title = mayAbandon
@@ -8209,6 +8659,37 @@ function ConnectionLifecycleControls(props: Readonly<{
     );
   return (
     <Stack testID="channels-connection-lifecycle-controls" gap="small">
+      {mayRepairEndpointRetarget ? (
+        <Button
+          testID="channels-connection-repair-endpoint"
+          title={repairBusy
+            ? props.t('plugins.channels.surface.repairingEndpointRetarget', 'Repairing…')
+            : repairTitle}
+          accessibilityLabel={repairTitle}
+          busy={repairBusy}
+          disabled={repairBusy
+            || abandonAction.execution.status === 'outcomeUnknown'
+            || confirmation.open}
+          onPress={() => { void repairEndpointRetarget(); }}
+        />
+      ) : null}
+      {mayRepairEndpointRetarget && abandonAction.execution.status === 'error' ? (
+        <Banner
+          testID="channels-connection-endpoint-repair-error"
+          tone="warning"
+          title={props.t(
+            'plugins.channels.surface.endpointRepairFailedTitle',
+            'Could not move the delivery target yet',
+          )}
+          description={endpointRetargetOwedDescription(props.t)}
+          action={(
+            <Action.Refresh
+              title={props.t('plugins.channels.surface.refresh', 'Refresh')}
+              onRefresh={props.onRefresh}
+            />
+          )}
+        />
+      ) : null}
       <Button
         testID={mayAbandon ? 'channels-connection-accept-loss' : 'channels-connection-delete'}
         title={busy
@@ -8354,7 +8835,10 @@ function WebhookEndpointSetupInstructions(props: Readonly<{
                 ),
               }]
             : [{
-                label: props.t('plugins.channels.surface.webhookEndpointSecret', 'Webhook secret (shown once)'),
+                label: props.t(
+                  'plugins.channels.surface.webhookEndpointSecretShownOnce',
+                  'Webhook secret (shown once)',
+                ),
                 value: props.setup.oneTimeGeneratedSecret,
               }]),
         ]}
@@ -8413,13 +8897,35 @@ function ConnectionTransferControls(props: Readonly<{
   const [selectionUnavailable, setSelectionUnavailable] = React.useState(false);
   const [transferFailed, setTransferFailed] = React.useState(false);
   const [endpointSetupRequired, setEndpointSetupRequired] = React.useState<EndpointSetupPresentation | undefined>();
+  // The transfer form's two phases announce themselves through the same mounted
+  // focus owner the binding wizards use: opening the form and returning to
+  // provider selection move logical focus to the form heading, and choosing a
+  // provider moves it to the transport phase's first control.
+  const formHeadingFocusTarget = usePluginUiFocusTarget();
+  const transportPhaseFocusTarget = usePluginUiFocusTarget();
+  React.useEffect(() => {
+    if (!open) return;
+    if (selectedOperationKey !== undefined) transportPhaseFocusTarget.focus();
+    else formHeadingFocusTarget.focus();
+  }, [formHeadingFocusTarget, open, selectedOperationKey, transportPhaseFocusTarget]);
   const selectionPendingRef = React.useRef(false);
   const selectedProviderSetupActionInputRef = React.useRef<SelectedProviderSetupActionInput | undefined>(undefined);
   const selectedProviderSetupLifetimeRef = React.useRef<AbortController | undefined>(undefined);
+  /**
+   * The exact endpoint-ensure input the core minted for this attempt, retained
+   * only while an ensure outcome is unknown. A deliberate second Confirm
+   * replays these bytes — the same core-minted idempotency key — instead of
+   * running the no-continuation transfer again and minting a second endpoint
+   * attempt. The key is never derived here; its producer is the transfer result.
+   */
+  const retainedEndpointEnsureRef = React.useRef<ConnectionEndpointContinuation | undefined>(undefined);
   const retireSelectedProviderSetup = React.useCallback(() => {
     selectedProviderSetupLifetimeRef.current?.abort();
     selectedProviderSetupLifetimeRef.current = undefined;
     selectedProviderSetupActionInputRef.current = undefined;
+    // A definite lifecycle ending or a form identity reset retires the retained
+    // attempt together with the selection it belonged to.
+    retainedEndpointEnsureRef.current = undefined;
   }, []);
   const mountedRef = React.useRef(true);
   const operations = React.useMemo(
@@ -8435,11 +8941,15 @@ function ConnectionTransferControls(props: Readonly<{
     || (props.connection.attention.oldTransportStopUnconfirmed
       && !props.connection.attention.acceptedPossibleLoss);
   const transferOutcomeUnknown = transferAction.execution.status === 'outcomeUnknown';
+  // An ambiguous endpoint ensure admits only a deliberate second Confirm:
+  // provider and transport identity stay frozen around the retained
+  // core-minted idempotency key while that press rejoins the exact same ensure.
   const actionUnavailable = transferBlocked
     || selectionPending
     || transferAction.execution.status === 'pending'
     || transferOutcomeUnknown
-    || ensureEndpointAction.execution.status === 'pending'
+    || ensureEndpointAction.execution.status === 'pending';
+  const transferIdentityUnavailable = actionUnavailable
     || ensureEndpointAction.execution.status === 'outcomeUnknown';
   const defaultTransport = isConversationConnectionSelectableTransportV1(props.connection.selectedTransport)
     ? props.connection.selectedTransport
@@ -8587,13 +9097,16 @@ function ConnectionTransferControls(props: Readonly<{
   }, [ensureEndpointAction.execution.status, hostApi, props.signal, retireSelectedProviderSetup, transferAction, transferBlocked]);
 
   const transfer = React.useCallback(async () => {
+    // An ambiguous endpoint ensure stays admitted here: the next deliberate
+    // press re-enters the existing reset-and-rejoin block below with the same
+    // retained ensure input. A definite transfer ambiguity still requires the
+    // refresh/reread reconciliation before another press.
     if (props.signal.aborted
       || transferBlocked
       || selectionPendingRef.current
       || transferAction.execution.status === 'pending'
       || transferAction.execution.status === 'outcomeUnknown'
-      || ensureEndpointAction.execution.status === 'pending'
-      || ensureEndpointAction.execution.status === 'outcomeUnknown') {
+      || ensureEndpointAction.execution.status === 'pending') {
       return;
     }
     const selectedActionInput = selectedProviderSetupActionInputRef.current;
@@ -8625,58 +9138,76 @@ function ConnectionTransferControls(props: Readonly<{
     setSelectionUnavailable(false);
     setTransferFailed(false);
     setEndpointSetupRequired(undefined);
-    // One selected Connected Account remains purpose-bound to this mounted
-    // transfer through provider setup, endpoint ensure, continuation, and a
-    // response-loss rejoin. It is retired only after a definite terminal
-    // outcome or explicit abandonment; no credential material enters plugin
-    // state or the public transfer input.
-    const settled = await transferAction.execute(parsedInput.data, {
-      signal: props.signal,
-      selectedActionInput,
-    });
-    if (!mountedRef.current || props.signal.aborted) return;
-    if (settled.status !== 'success') {
-      if (settled.status === 'error') setTransferFailed(true);
-      return;
-    }
-    const result = ConversationConnectionTransferResultV1Schema.safeParse(settled.result);
-    if (!result.success) {
-      setTransferFailed(true);
-      return;
-    }
-    if (result.data.kind === 'transferred'
-      || result.data.kind === 'rejoined'
-      || result.data.kind === 'transferPendingOldStop') {
-      retireSelectedProviderSetup();
-      setSelectedOperationKey(undefined);
-      setTransferFailed(false);
-      props.onRefresh();
-      return;
-    }
-    if (result.data.kind !== 'endpointRequired') {
-      setTransferFailed(true);
-      return;
+    // A retained attempt already created the connection and already carries the
+    // core-minted endpoint key, so the no-continuation transfer is skipped
+    // entirely: re-running it would mint a second endpoint attempt for the same
+    // visible press.
+    let retained = retainedEndpointEnsureRef.current;
+    if (retained === undefined) {
+      // One selected Connected Account remains purpose-bound to this mounted
+      // transfer through provider setup, endpoint ensure, continuation, and a
+      // response-loss rejoin. It is retired only after a definite terminal
+      // outcome or explicit abandonment; no credential material enters plugin
+      // state or the public transfer input.
+      const settled = await transferAction.execute(parsedInput.data, {
+        signal: props.signal,
+        selectedActionInput,
+      });
+      if (!mountedRef.current || props.signal.aborted) return;
+      if (settled.status !== 'success') {
+        if (settled.status === 'error') setTransferFailed(true);
+        return;
+      }
+      const result = ConversationConnectionTransferResultV1Schema.safeParse(settled.result);
+      if (!result.success) {
+        setTransferFailed(true);
+        return;
+      }
+      if (result.data.kind === 'transferred'
+        || result.data.kind === 'rejoined'
+        || result.data.kind === 'transferPendingOldStop') {
+        retireSelectedProviderSetup();
+        setSelectedOperationKey(undefined);
+        setTransferFailed(false);
+        props.onRefresh();
+        return;
+      }
+      if (result.data.kind !== 'endpointRequired') {
+        setTransferFailed(true);
+        return;
+      }
+      retained = {
+        connectionId: result.data.connectionId,
+        endpointEnsureInput: {
+          webhookContribution: { ...result.data.webhookContribution },
+          targetMaterialization: { ...result.data.targetMaterialization },
+          sourceInstanceId: result.data.sourceInstanceId,
+          setup: { ...result.data.webhookEndpointSetup },
+          idempotencyKey: result.data.webhookEndpointIdempotencyKey,
+        },
+      };
+      retainedEndpointEnsureRef.current = retained;
     }
 
     if (ensureEndpointAction.execution.status === 'outcomeUnknown') {
       ensureEndpointAction.reset();
     }
-    const ensured = await ensureEndpointAction.execute({
-      webhookContribution: { ...result.data.webhookContribution },
-      targetMaterialization: { ...result.data.targetMaterialization },
-      sourceInstanceId: result.data.sourceInstanceId,
-      setup: { ...result.data.webhookEndpointSetup },
-      idempotencyKey: result.data.webhookEndpointIdempotencyKey,
-    }, { signal: props.signal, selectedActionInput });
+    const ensured = await ensureEndpointAction.execute(
+      retained.endpointEnsureInput,
+      { signal: props.signal },
+    );
     if (!mountedRef.current || props.signal.aborted) return;
     if (ensured.status === 'outcomeUnknown') {
-      // The core-minted idempotency key makes the next deliberate transfer
-      // press an ambiguity-safe ensure rejoin; reset only controller display.
-      ensureEndpointAction.reset();
-      setTransferFailed(true);
+      // The endpoint may already exist. Keep the controller truthfully in its
+      // unknown-outcome state and keep the retained input, so the next
+      // deliberate press replays these exact bytes; no second endpoint attempt
+      // is minted and no definite-failure presentation replaces the ambiguity.
       return;
     }
     if (ensured.status !== 'success') {
+      // A definite ensure failure ends this attempt: the retained rejoin has
+      // nothing left to reconcile and the next press starts a fresh transfer.
+      retainedEndpointEnsureRef.current = undefined;
       setTransferFailed(true);
       return;
     }
@@ -8697,13 +9228,16 @@ function ConnectionTransferControls(props: Readonly<{
       }
       setEndpointSetupRequired(setupRequired.data);
     }
+    // The one selected Connected Account stays purpose-bound through the
+    // continuation too. Dropping the carrier here would make the continuation
+    // an unselected invocation of the same mounted transfer attempt.
     const continuationSettled = await transferAction.execute({
       ...parsedInput.data,
       endpointContinuation: {
-        connectionId: result.data.connectionId,
+        connectionId: retained.connectionId,
         webhookEndpointId: ensured.result.webhookEndpointId,
       },
-    }, { signal: props.signal });
+    }, { signal: props.signal, selectedActionInput });
     if (!mountedRef.current || props.signal.aborted) return;
     if (continuationSettled.status !== 'success') {
       if (continuationSettled.status === 'error') setTransferFailed(true);
@@ -8751,6 +9285,7 @@ function ConnectionTransferControls(props: Readonly<{
           <Heading
             level={3}
             value={props.t('plugins.channels.surface.connectionTransferTitle', 'Transfer connection')}
+            focusTarget={formHeadingFocusTarget}
           />
           <Text
             value={props.t(
@@ -8774,7 +9309,7 @@ function ConnectionTransferControls(props: Readonly<{
                 key={operationKey}
                 operation={operation}
                 busy={selectionPending}
-                disabled={actionUnavailable}
+                disabled={transferIdentityUnavailable}
                 onPress={selectProvider}
                 t={props.t}
               />
@@ -8799,9 +9334,13 @@ function ConnectionTransferControls(props: Readonly<{
                   label: transportLabel(transport, props.t),
                 }))}
                 value={selectedTransport}
-                disabled={actionUnavailable}
+                disabled={transferIdentityUnavailable}
+                focusTarget={transportPhaseFocusTarget}
                 onChange={(next) => {
-                  if (isConversationConnectionSelectableTransportV1(next)) setSelectedTransport(next);
+                  if (!transferIdentityUnavailable
+                    && isConversationConnectionSelectableTransportV1(next)) {
+                    setSelectedTransport(next);
+                  }
                 }}
               />
               <Button
@@ -8880,6 +9419,20 @@ function ConnectionTransferControls(props: Readonly<{
                   title={props.t('plugins.channels.surface.refresh', 'Refresh')}
                   onRefresh={requestRefresh}
                 />
+              )}
+            />
+          ) : null}
+          {ensureEndpointAction.execution.status === 'outcomeUnknown' ? (
+            <Banner
+              testID="channels-connection-transfer-endpoint-ensure-outcome-unknown"
+              tone="warning"
+              title={props.t(
+                'plugins.channels.surface.connectionTransferEndpointEnsureUnknownTitle',
+                'Could not confirm the endpoint change',
+              )}
+              description={props.t(
+                'plugins.channels.surface.connectionTransferEndpointEnsureUnknownDescription',
+                'The endpoint may already be configured. Press Confirm transfer again to rejoin the same endpoint attempt; nothing is created twice.',
               )}
             />
           ) : null}
@@ -9501,7 +10054,11 @@ function ConnectionDeliveryResolutionControls(props: Readonly<{
     'plugins.channels.surface.deliveryResolutionUnknownDescription',
     'The decision may already be saved. Refresh delivery details before making another choice.',
   );
-
+  // The privacy-safe delivery projection carries no endpoint or content label,
+  // so each row's controls are named by the delivery's short custody identity;
+  // two ambiguous deliveries otherwise present identical button names.
+  const deliveryRowName = (custodyId: string): string =>
+    `${props.t('plugins.channels.surface.deliveryResolutionTitle', 'Resolve delivery outcome')} — ${shortRowIdentity(custodyId)}`;
   return (
     <Stack testID="channels-delivery-resolution-controls" gap="small">
       <Heading
@@ -9571,7 +10128,10 @@ function ConnectionDeliveryResolutionControls(props: Readonly<{
                     'plugins.channels.surface.deliveryResolutionRetryAfterUnarchive',
                     'Unarchived it — send again',
                   )}
-                busy={busy}
+                accessibilityLabel={`${props.t(
+                  'plugins.channels.surface.deliveryResolutionRetryAfterUnarchive',
+                  'Unarchived it — send again',
+                )} (${deliveryRowName(row.custodyId)})`}                busy={busy}
                 disabled={actionUnavailable}
                 onPress={() => resolve(row, 'retryAfterUnarchive')}
               />
@@ -9593,6 +10153,10 @@ function ConnectionDeliveryResolutionControls(props: Readonly<{
               title={busy && activeCustodyId === row.custodyId
                 ? props.t('plugins.channels.surface.deliveryResolutionAccepting', 'Accepting…')
                 : props.t('plugins.channels.surface.deliveryResolutionAccept', 'Accept as sent')}
+              accessibilityLabel={`${props.t(
+                'plugins.channels.surface.deliveryResolutionAccept',
+                'Accept as sent',
+              )} (${deliveryRowName(row.custodyId)})`}
               busy={busy}
               disabled={actionUnavailable}
               onPress={() => resolve(row, 'accepted')}
@@ -9603,6 +10167,10 @@ function ConnectionDeliveryResolutionControls(props: Readonly<{
                 ? props.t('plugins.channels.surface.deliveryResolutionDiscarding', 'Discarding…')
                 : props.t('plugins.channels.surface.deliveryResolutionDiscard', 'Discard delivery')}
               variant="secondary"
+              accessibilityLabel={`${props.t(
+                'plugins.channels.surface.deliveryResolutionDiscard',
+                'Discard delivery',
+              )} (${deliveryRowName(row.custodyId)})`}
               busy={busy}
               disabled={actionUnavailable}
               onPress={() => resolve(row, 'discarded')}
@@ -10872,6 +11440,9 @@ function ConnectionsContent(props: Readonly<{
   expandedConnectionId: string | undefined;
   onExpand: (connectionId: string) => void;
   onConnectionCreated: (connectionId: string) => void;
+  /** The connection this surface just created, while its direct next step is pending. */
+  createdConnectionId?: string;
+  onContinueCreatedConnection?: (connectionId: string) => void;
   onRefresh: () => void;
   t: Translate;
 }>): React.ReactElement {
@@ -10918,6 +11489,34 @@ function ConnectionsContent(props: Readonly<{
           onConnectionCreated={props.onConnectionCreated}
           t={props.t}
         />
+      )}
+
+      {/*
+        First setup must not dead-end after the connection exists. The two
+        domain Actions stay separate; this composes their UI journeys with one
+        direct next step that opens the incumbent binding-create journey with
+        the just-created connection selected.
+      */}
+      {props.createdConnectionId === undefined || props.onContinueCreatedConnection === undefined ? null : (
+        <Stack gap="small" testID="channels-connection-created-continue">
+          <Status
+            testID="channels-connection-created-continue-status"
+            tone="success"
+            label={props.t(
+              'plugins.channels.surface.connectionCreatedAwaitingBinding',
+              'Connection created. Add the conversation it should deliver to.',
+            )}
+          />
+          <Button
+            testID="channels-connection-created-continue-open"
+            title={props.t('plugins.channels.surface.bindingCreateAction', 'Create binding')}
+            onPress={() => {
+              if (props.createdConnectionId !== undefined) {
+                props.onContinueCreatedConnection?.(props.createdConnectionId);
+              }
+            }}
+          />
+        </Stack>
       )}
 
       {!hasExpandedConnection ? (
@@ -11014,6 +11613,10 @@ function DaemonChannelsSurface(props: Readonly<{
   const { resource: bindingsResource, refresh: refreshBindings } = useLivePluginResource(CHANNELS_BINDINGS_RESOURCE);
   const { resource, refresh } = useLivePluginResource(CHANNELS_CONNECTIONS_RESOURCE);
   const [expandedConnectionId, setExpandedConnectionId] = React.useState<string | undefined>();
+  const [pendingBindingConnectionId, setPendingBindingConnectionId] = React.useState<string | undefined>();
+  const [bindingCreateRequest, setBindingCreateRequest] = React.useState<
+    Readonly<{ connectionId: string; requestId: number }> | undefined
+  >();
   const parsedBindings = React.useMemo(
     () => (bindingsResource.value === undefined ? undefined : parseBindingsResource(bindingsResource.value)),
     [bindingsResource.value],
@@ -11028,8 +11631,22 @@ function DaemonChannelsSurface(props: Readonly<{
   );
   const onConnectionCreated = React.useCallback((connectionId: string) => {
     setExpandedConnectionId(connectionId);
+    setPendingBindingConnectionId(connectionId);
     refresh();
   }, [refresh]);
+  // The connection and binding Actions stay separate domain mutations; this
+  // only composes their existing UI journeys: one direct next step that opens
+  // the incumbent binding-create journey with the new connection selected.
+  const onContinueCreatedConnection = React.useCallback((connectionId: string) => {
+    setBindingCreateRequest((current) => ({
+      connectionId,
+      requestId: (current?.requestId ?? 0) + 1,
+    }));
+  }, []);
+  const onBindingCreateOpened = React.useCallback(() => {
+    setBindingCreateRequest(undefined);
+    setPendingBindingConnectionId(undefined);
+  }, []);
   const bindings = React.useMemo(
     () => buildBindingPresentations(
       parsedBindings?.kind === 'ready' ? parsedBindings.bindings : [],
@@ -11079,6 +11696,8 @@ function DaemonChannelsSurface(props: Readonly<{
       onRefreshConnections={refresh}
       connections={connections}
       signal={props.signal}
+      bindingCreateRequest={bindingCreateRequest}
+      onBindingCreateOpened={onBindingCreateOpened}
       connectionsContent={(
         <>
           <IngressAttentionControls
@@ -11097,6 +11716,8 @@ function DaemonChannelsSurface(props: Readonly<{
               setExpandedConnectionId((current) => current === connectionId ? undefined : connectionId);
             }}
             onConnectionCreated={onConnectionCreated}
+            createdConnectionId={pendingBindingConnectionId}
+            onContinueCreatedConnection={onContinueCreatedConnection}
             onRefresh={refresh}
             t={t}
           />

@@ -108,6 +108,7 @@ function frozenOldStop(overrides: Readonly<Record<string, JsonValue>> = {}): Jso
       },
       authorityEpoch: 8,
       reason: 'transfer',
+      predecessorTransportKind: 'socket',
       overlapSafety: 'destructive',
     }),
     ...overrides,

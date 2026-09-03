@@ -198,7 +198,26 @@ export type ConversationOutwardDeliveryRecord = Readonly<{
   custody: ConversationDeliveryCustody;
 }>;
 
+export type ConversationOutwardDeliveryLookup =
+  | Readonly<{ kind: 'rejoined'; record: ConversationOutwardDeliveryRecord }>
+  | Readonly<{ kind: 'absent' }>
+  | Readonly<{ kind: 'conflict' }>
+  | Readonly<{ kind: 'invalid'; reason: 'invalidRow' | 'rowTooLarge' }>
+  | Readonly<{
+    kind: 'unavailable';
+    reason: 'cancelled' | 'connectionUnavailable' | 'connectionCorrupt' | 'storageUnavailable';
+  }>;
+
 export interface ConversationOutwardDeliveryStore {
+  /**
+   * Resolves the deterministic channel-deliveries row without writing. It
+   * exists so admission can settle an already-durable obligation before any
+   * mutable route fact is read: an accepted response that was lost must rejoin
+   * the same custody even after its binding was edited, disabled, or deleted,
+   * because route currentness governs only whether a *new* obligation may be
+   * created.
+   */
+  lookup(obligation: ConversationOutwardDeliveryObligation): Promise<ConversationOutwardDeliveryLookup>;
   /**
    * Atomically creates or rejoins the deterministic channel-deliveries row,
    * after canonical schema and complete encoded-row-size validation.
@@ -665,7 +684,8 @@ async function matchesConversationOutwardDeliveryObligation(input: Readonly<{
   stored: ConversationStoredOutwardDeliveryObligation;
   storedCustody: ConversationDeliveryCustody;
   incoming: ConversationOutwardDeliveryObligation;
-  routingIdentityKey: string;
+  /** `null` once connection deletion destroyed the retained identity key. */
+  routingIdentityKey: string | null;
 }>): Promise<boolean> {
   const terminal = isConversationDeliveryAutomaticTerminal(input.storedCustody);
   if (terminal
@@ -673,6 +693,14 @@ async function matchesConversationOutwardDeliveryObligation(input: Readonly<{
     : !sameConversationOutwardDeliveryLiveObligation(input.stored, input.incoming)) return false;
   if (hasRetainedConversationOutwardDeliveryContent(input.stored)) {
     return input.stored.content === input.incoming.content;
+  }
+  if (input.routingIdentityKey === null) {
+    // The connection row was physically deleted, destroying the routing
+    // identity key behind both this fingerprint and the deterministic custody
+    // id. Only terminal evidence can remain — attempting, partial, and
+    // unknown custody block deletion — so the exact connection/binding/source
+    // identity match is the exactness proof that stays verifiable.
+    return terminal;
   }
   const fingerprint = await deriveConversationOutwardDeliveryContentFingerprint({
     routingIdentityKey: input.routingIdentityKey,
@@ -1198,68 +1226,173 @@ export function createConversationOutwardDeliveryCollectionStore(
     }
   };
 
-  return {
-    async ensure(obligation) {
+  /** Creation facts a live connection still supplies for an absent obligation. */
+  type ExistingCustodyCreation = Readonly<{
+    collections: ConversationCollectionsModule;
+    custodyId: string;
+    routingIdentityKey: string;
+  }>;
+
+  /**
+   * Connection deletion physically removes the row that carried the routing
+   * identity key, so the deterministic custody id can no longer be derived.
+   * Deletion settles every non-terminal custody row first — attempting,
+   * partial, and unknown custody block the finalizer — so whatever remains is
+   * terminal evidence whose connection/binding/source identity is intact.
+   * This walks the same owner-attention index the deletion finalizer walks
+   * and resolves the exact existing custody without a live connection; only
+   * creating an absent delivery still requires one.
+   */
+  const resolveExistingWithoutLiveConnection = async (
+    obligation: ConversationOutwardDeliveryObligation,
+    collections: ConversationCollectionsModule,
+  ): Promise<
+    | Exclude<ConversationOutwardDeliveryLookup, Readonly<{ kind: 'absent' }>>
+    | Readonly<{ kind: 'absent' }>
+  > => {
+    let cursor: string | undefined;
+    do {
       if (input.signal.aborted) return { kind: 'unavailable', reason: 'cancelled' };
-      let collections: ConversationCollectionsModule;
+      let page: Awaited<ReturnType<ChannelDeliveriesCollection['query']>>;
       try {
-        collections = await loadConversationCollectionsModule();
+        page = await input.deliveriesCollection.query({
+          index: collections.CHANNEL_DELIVERIES_INDEX_ID.byOwnerAttention,
+          prefix: [obligation.connectionId],
+          order: 'asc',
+          limit: PLUGIN_COLLECTION_QUERY_MAX_ROWS_V1,
+          ...(cursor === undefined ? {} : { cursor }),
+        }, { signal: input.signal });
       } catch {
-        return { kind: 'unavailable', reason: 'storageUnavailable' };
-      }
-      let accountLocalBindingPolicy: ConversationAccountLocalBindingPolicyModule;
-      try {
-        accountLocalBindingPolicy = await loadConversationAccountLocalBindingPolicyModule();
-      } catch {
-        return { kind: 'unavailable', reason: 'storageUnavailable' };
-      }
-      if (!isConversationOutwardSourceV1(obligation.source)
-        || !ConversationConnectionIdV1Schema.safeParse(obligation.connectionId).success
-        || (obligation.bindingId !== undefined
-          && !ConversationBindingIdV1Schema.safeParse(obligation.bindingId).success)
-        || !hasConversationOutwardRouteAuthority({
-          bindingId: obligation.bindingId,
-          routeAuthority: obligation.routeAuthority,
-        })) {
-        return { kind: 'invalid', reason: 'invalidRow' };
-      }
-      let connection: StoredCollectionRow | null;
-      try {
-        connection = await input.stateCollection.get(
-          obligation.connectionId,
-          { signal: input.signal },
-        ) as unknown as StoredCollectionRow | null;
-      } catch (error) {
         return {
           kind: 'unavailable',
           reason: input.signal.aborted ? 'cancelled' : 'storageUnavailable',
         };
       }
-      if (connection === null) return { kind: 'unavailable', reason: 'connectionUnavailable' };
-      const connectionFacts = readConnectionFacts({
-        accountLocalBindingPolicy,
-        row: connection,
-        connectionId: obligation.connectionId,
-      });
-      if (connectionFacts === null) return { kind: 'unavailable', reason: 'connectionCorrupt' };
-      const custodyId = await deriveConversationOutwardDeliveryCustodyId({
-        routingIdentityKey: connectionFacts.routingIdentityKey,
-        obligation,
-      });
-      if (custodyId === null) return { kind: 'unavailable', reason: 'connectionCorrupt' };
-      const existing = await readDelivery({ collections, custodyId });
-      if (existing.kind === 'unavailable') return existing;
-      if (existing.kind === 'invalid') return { kind: 'invalid', reason: 'invalidRow' };
-      if (existing.kind === 'found') {
+      for (const row of page.rows) {
+        const record = readConversationOutwardDeliveryRecord({
+          collections,
+          row: row as unknown as StoredCollectionRow,
+        });
+        // The deletion finalizer refuses to remove a connection whose scoped
+        // custody rows are unreadable, so an unreadable row here is corrupt
+        // durable state and fails closed like every other identity read.
+        if (record === null) return { kind: 'unavailable', reason: 'connectionCorrupt' };
+        if (!sameConversationOutwardDeliveryCustodyIdentity(record.obligation, obligation)) continue;
         return await matchesConversationOutwardDeliveryObligation({
-          stored: existing.record.obligation,
-          storedCustody: existing.record.custody,
+          stored: record.obligation,
+          storedCustody: record.custody,
           incoming: obligation,
-          routingIdentityKey: connectionFacts.routingIdentityKey,
+          routingIdentityKey: null,
         })
-          ? { kind: 'rejoined', record: existing.record }
+          ? { kind: 'rejoined', record }
           : { kind: 'conflict' };
       }
+      cursor = page.nextCursor;
+    } while (cursor !== undefined);
+    return { kind: 'absent' };
+  };
+
+  /**
+   * The one deterministic-identity resolver shared by read-only lookup and
+   * create-or-rejoin admission, so the two can never disagree about which row
+   * an obligation addresses or whether it matches.
+   */
+  const resolveExisting = async (
+    obligation: ConversationOutwardDeliveryObligation,
+  ): Promise<
+    | Exclude<ConversationOutwardDeliveryLookup, Readonly<{ kind: 'absent' }>>
+    | Readonly<{ kind: 'absent'; creation?: ExistingCustodyCreation }>
+  > => {
+    if (input.signal.aborted) return { kind: 'unavailable', reason: 'cancelled' };
+    let collections: ConversationCollectionsModule;
+    try {
+      collections = await loadConversationCollectionsModule();
+    } catch {
+      return { kind: 'unavailable', reason: 'storageUnavailable' };
+    }
+    let accountLocalBindingPolicy: ConversationAccountLocalBindingPolicyModule;
+    try {
+      accountLocalBindingPolicy = await loadConversationAccountLocalBindingPolicyModule();
+    } catch {
+      return { kind: 'unavailable', reason: 'storageUnavailable' };
+    }
+    if (!isConversationOutwardSourceV1(obligation.source)
+      || !ConversationConnectionIdV1Schema.safeParse(obligation.connectionId).success
+      || (obligation.bindingId !== undefined
+        && !ConversationBindingIdV1Schema.safeParse(obligation.bindingId).success)
+      || !hasConversationOutwardRouteAuthority({
+        bindingId: obligation.bindingId,
+        routeAuthority: obligation.routeAuthority,
+      })) {
+      return { kind: 'invalid', reason: 'invalidRow' };
+    }
+    let connection: StoredCollectionRow | null;
+    try {
+      connection = await input.stateCollection.get(
+        obligation.connectionId,
+        { signal: input.signal },
+      ) as unknown as StoredCollectionRow | null;
+    } catch {
+      return {
+        kind: 'unavailable',
+        reason: input.signal.aborted ? 'cancelled' : 'storageUnavailable',
+      };
+    }
+    if (connection === null) {
+      return await resolveExistingWithoutLiveConnection(obligation, collections);
+    }
+    const connectionFacts = readConnectionFacts({
+      accountLocalBindingPolicy,
+      row: connection,
+      connectionId: obligation.connectionId,
+    });
+    if (connectionFacts === null) return { kind: 'unavailable', reason: 'connectionCorrupt' };
+    const custodyId = await deriveConversationOutwardDeliveryCustodyId({
+      routingIdentityKey: connectionFacts.routingIdentityKey,
+      obligation,
+    });
+    if (custodyId === null) return { kind: 'unavailable', reason: 'connectionCorrupt' };
+    const existing = await readDelivery({ collections, custodyId });
+    if (existing.kind === 'unavailable') return existing;
+    if (existing.kind === 'invalid') return { kind: 'invalid', reason: 'invalidRow' };
+    if (existing.kind === 'found') {
+      return await matchesConversationOutwardDeliveryObligation({
+        stored: existing.record.obligation,
+        storedCustody: existing.record.custody,
+        incoming: obligation,
+        routingIdentityKey: connectionFacts.routingIdentityKey,
+      })
+        ? { kind: 'rejoined', record: existing.record }
+        : { kind: 'conflict' };
+    }
+    return {
+      kind: 'absent',
+      creation: {
+        collections,
+        custodyId,
+        routingIdentityKey: connectionFacts.routingIdentityKey,
+      },
+    };
+  };
+
+  return {
+    async lookup(obligation) {
+      const existing = await resolveExisting(obligation);
+      return existing.kind === 'absent' ? { kind: 'absent' } : existing;
+    },
+    async ensure(obligation) {
+      const resolved = await resolveExisting(obligation);
+      if (resolved.kind !== 'absent') return resolved;
+      const creation = resolved.creation;
+      if (creation === undefined) {
+        // The live connection is gone, so there is neither a route to admit a
+        // new delivery against nor an identity key to mint its custody id
+        // from. Creating an absent delivery still requires the live
+        // connection; only the exact-custody rejoin resolves without it.
+        return { kind: 'unavailable', reason: 'connectionUnavailable' };
+      }
+      const { collections, custodyId } = creation;
+      const connectionFacts = { routingIdentityKey: creation.routingIdentityKey };
 
       const createdAt = now();
       const value = serializeConversationOutwardDeliveryRecord({
@@ -2622,13 +2755,10 @@ export async function acceptConversationPermissionWaitOutwardDelivery(input: Rea
     request: input.request,
   });
   if (obligation === null) return { kind: 'unavailable', reason: 'stateCorrupt' };
-  return await acceptConversationOutwardDeliveryReady({
+  return await admitConversationOutwardDeliveryReady({
+    stateCollection: input.stateCollection,
     store: input.store,
-    prepared: await prepareConversationOutwardDeliveryReady({
-      stateCollection: input.stateCollection,
-      signal: input.signal,
-      obligation,
-    }),
+    obligation,
     signal: input.signal,
   });
 }
@@ -2728,6 +2858,57 @@ export async function acceptConversationOutwardDeliveryReady(input: Readonly<{
       reason: input.signal.aborted ? 'cancelled' : 'storageUnavailable',
     };
   }
+}
+
+/**
+ * The one ready-custody admission entry point every outward producer uses.
+ *
+ * It resolves the deterministic custody identity *before* any mutable route
+ * fact is read. An accepted response that never reached its caller must rejoin
+ * exactly the same durable obligation, so a replay that arrives after the
+ * binding was edited, disabled, or deleted still settles `accepted` and creates
+ * no second external effect. Route currentness keeps its full authority over
+ * the only decision it actually owns: whether a *new* obligation may be
+ * created. This adds no second custody owner — rejoin, conflict, and creation
+ * all remain the store's deterministic-identity resolution.
+ */
+export async function admitConversationOutwardDeliveryReady(input: Readonly<{
+  stateCollection: ChannelStateCollection;
+  store: ConversationOutwardDeliveryStore;
+  obligation: ConversationOutwardDeliveryObligation;
+  signal: AbortSignal;
+}>): Promise<ConversationOutwardDeliveryReadyAcceptance> {
+  const existing = await input.store.lookup(input.obligation);
+  if (existing.kind === 'rejoined') {
+    return {
+      kind: 'accepted',
+      custodyId: existing.record.custodyId,
+      custody: existing.record.custody,
+    };
+  }
+  if (existing.kind === 'conflict') return { kind: 'invalid', reason: 'routeMismatch' };
+  if (existing.kind === 'invalid') return existing;
+  if (existing.kind === 'unavailable') {
+    return {
+      kind: 'unavailable',
+      reason: existing.reason === 'connectionCorrupt'
+        ? 'stateCorrupt'
+        : existing.reason === 'connectionUnavailable'
+          ? 'stateUnavailable'
+          : existing.reason === 'storageUnavailable'
+            ? 'storageUnavailable'
+            : 'cancelled',
+    };
+  }
+  return await acceptConversationOutwardDeliveryReady({
+    store: input.store,
+    prepared: await prepareConversationOutwardDeliveryReady({
+      stateCollection: input.stateCollection,
+      signal: input.signal,
+      obligation: input.obligation,
+    }),
+    signal: input.signal,
+  });
 }
 
 const CONVERSATION_CONTROL_RESPONSE_KINDS = new Set<ConversationControlResponseKind>([

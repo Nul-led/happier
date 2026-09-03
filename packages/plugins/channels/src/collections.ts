@@ -2,6 +2,7 @@ import type { JsonValue } from '@happier-dev/plugin-sdk';
 import type { PluginJsonSchema } from '@happier-dev/plugin-sdk/protocol';
 import {
   defineAccountCollection,
+  PLUGIN_COLLECTION_REVISION_MAX,
   PluginMachineExecutionOriginV1JsonSchema,
 } from '@happier-dev/plugin-sdk/collections';
 import { QualifiedConnectedAccountRefJsonSchema } from '@happier-dev/plugin-sdk/connected-accounts';
@@ -21,6 +22,7 @@ import {
   CONVERSATION_DELIVERY_LINK_PREVIEW_POLICIES_V1,
   CONVERSATION_DELIVERY_MENTION_POLICIES_V1,
   CONVERSATION_OUTBOUND_TEXT_UNITS_V1,
+  CONVERSATION_TRANSPORT_KINDS_V1,
   ConversationBindingIdV1Schema,
   ConversationBindingIdV1JsonSchema,
   ConversationConnectionIdV1Schema,
@@ -142,6 +144,17 @@ const NON_NEGATIVE_SAFE_INTEGER_SCHEMA = {
   type: 'integer',
   minimum: 0,
   maximum: MAX_SAFE_INTEGER,
+} satisfies PluginJsonSchema;
+/**
+ * A retained witness of one exact Account Collection row revision. Its ceiling
+ * is the Collection owner's persisted `Int` column, so a durable fence can
+ * never name a revision the host would refuse to reach. Channels-owned
+ * authority epochs and payload counters keep the wider safe-integer bound.
+ */
+const COLLECTION_ROW_REVISION_SCHEMA = {
+  type: 'integer',
+  minimum: 1,
+  maximum: PLUGIN_COLLECTION_REVISION_MAX,
 } satisfies PluginJsonSchema;
 
 function boundedString(maxLength: number): PluginJsonSchema {
@@ -295,7 +308,7 @@ const OLD_TRANSPORT_STOP_REQUEST_DELETE_SCHEMA: PluginJsonSchema = {
 const CHECKPOINTED_POLL_INVOCATION_BASIS_SCHEMA: PluginJsonSchema = {
   type: 'object',
   properties: {
-    connectionRevision: POSITIVE_SAFE_INTEGER_SCHEMA,
+    connectionRevision: COLLECTION_ROW_REVISION_SCHEMA,
     authorityEpoch: POSITIVE_SAFE_INTEGER_SCHEMA,
     transportOrigin: PluginMachineExecutionOriginV1JsonSchema,
   },
@@ -306,6 +319,7 @@ const CHECKPOINTED_POLL_INVOCATION_BASIS_SCHEMA: PluginJsonSchema = {
 function pendingOldTransportStopSchema(input: Readonly<{
   predecessorCheckpointedPollInvocation: PluginJsonSchema;
   stopRequest: PluginJsonSchema;
+  endpointRetarget: PluginJsonSchema;
   acceptedPossibleLoss: PluginJsonSchema;
 }>): PluginJsonSchema {
   return {
@@ -315,6 +329,14 @@ function pendingOldTransportStopSchema(input: Readonly<{
       transportOrigin: PluginMachineExecutionOriginV1JsonSchema,
       providerContributionSelection: ConversationProviderContributionSelectionJsonSchema,
       stopRequest: input.stopRequest,
+      // The retired transport, frozen with the slot. The row's own transport
+      // already names the replacement once a transfer commits, so this is the
+      // only durable predecessor authority a settlement may read.
+      predecessorTransportKind: {
+        type: 'string',
+        enum: [...CONVERSATION_TRANSPORT_KINDS_V1],
+      },
+      endpointRetarget: input.endpointRetarget,
       overlapSafety: {
         type: 'string',
         enum: ['safe', 'providerExclusive', 'destructive'],
@@ -326,6 +348,8 @@ function pendingOldTransportStopSchema(input: Readonly<{
       'transportOrigin',
       'providerContributionSelection',
       'stopRequest',
+      'predecessorTransportKind',
+      'endpointRetarget',
       'overlapSafety',
       'acceptedPossibleLoss',
     ],
@@ -333,27 +357,41 @@ function pendingOldTransportStopSchema(input: Readonly<{
   };
 }
 
+/**
+ * The retained endpoint-retarget obligation. Only a retired durable-push
+ * transport can owe one; the canonical slot decoder is the owner of that
+ * cross-field rule, so the persisted shape stays a plain bounded field.
+ */
+const PENDING_ENDPOINT_RETARGET_SCHEMA: PluginJsonSchema = {
+  type: 'string',
+  enum: ['notRequired', 'pending'],
+};
+
 const PENDING_OLD_TRANSPORT_STOP_SCHEMA = pendingOldTransportStopSchema({
   predecessorCheckpointedPollInvocation: CHECKPOINTED_POLL_INVOCATION_BASIS_SCHEMA,
   stopRequest: OLD_TRANSPORT_STOP_REQUEST_TRANSFER_OR_DELETE_SCHEMA,
+  endpointRetarget: PENDING_ENDPOINT_RETARGET_SCHEMA,
   acceptedPossibleLoss: BOOLEAN_SCHEMA,
 });
 
 const PENDING_OLD_TRANSPORT_STOP_TRANSFER_SCHEMA = pendingOldTransportStopSchema({
   predecessorCheckpointedPollInvocation: CHECKPOINTED_POLL_INVOCATION_BASIS_SCHEMA,
   stopRequest: OLD_TRANSPORT_STOP_REQUEST_TRANSFER_SCHEMA,
+  endpointRetarget: PENDING_ENDPOINT_RETARGET_SCHEMA,
   acceptedPossibleLoss: BOOLEAN_SCHEMA,
 });
 
 const PENDING_OLD_TRANSPORT_STOP_DELETE_UNACCEPTED_SCHEMA = pendingOldTransportStopSchema({
   predecessorCheckpointedPollInvocation: CHECKPOINTED_POLL_INVOCATION_BASIS_SCHEMA,
   stopRequest: OLD_TRANSPORT_STOP_REQUEST_DELETE_SCHEMA,
+  endpointRetarget: { type: 'string', const: 'notRequired' },
   acceptedPossibleLoss: { type: 'boolean', const: false },
 });
 
 const PENDING_OLD_TRANSPORT_STOP_DELETE_ACCEPTED_SCHEMA = pendingOldTransportStopSchema({
   predecessorCheckpointedPollInvocation: CHECKPOINTED_POLL_INVOCATION_BASIS_SCHEMA,
   stopRequest: OLD_TRANSPORT_STOP_REQUEST_DELETE_SCHEMA,
+  endpointRetarget: { type: 'string', const: 'notRequired' },
   acceptedPossibleLoss: { type: 'boolean', const: true },
 });
 
@@ -928,7 +966,7 @@ const INGRESS_OBLIGATION_PAYLOAD_SCHEMA = {
         connectionAuthorityEpoch: POSITIVE_SAFE_INTEGER_SCHEMA,
         // Provider Event obligations are connection-owned. Binding-owned
         // Session/Automation obligations retain their existing exact fence.
-        bindingRevision: nullable(POSITIVE_SAFE_INTEGER_SCHEMA),
+        bindingRevision: nullable(COLLECTION_ROW_REVISION_SCHEMA),
         bindingAuthorityEpoch: nullable(POSITIVE_SAFE_INTEGER_SCHEMA),
       },
       required: ['connectionAuthorityEpoch', 'bindingRevision', 'bindingAuthorityEpoch'],
@@ -1010,7 +1048,7 @@ const INGRESS_CENSUS_MATCHED_BINDING_SCHEMA = {
   type: 'object',
   properties: {
     bindingId: BINDING_ID_SCHEMA,
-    bindingRevision: POSITIVE_SAFE_INTEGER_SCHEMA,
+    bindingRevision: COLLECTION_ROW_REVISION_SCHEMA,
     bindingAuthorityEpoch: POSITIVE_SAFE_INTEGER_SCHEMA,
   },
   required: ['bindingId', 'bindingRevision', 'bindingAuthorityEpoch'],
@@ -1027,13 +1065,17 @@ const INGRESS_CENSUS_NORMALIZED_INGRESS_SCHEMA = ConversationNormalizedIngressV1
 /**
  * The body-free replay identity a settled census keeps: the authenticated
  * envelope the protocol already publishes without a body, plus one full
- * base64url HMAC-SHA256 digest of the admitted text.
+ * base64url HMAC-SHA256 digest of the replay-relevant admission.
+ *
+ * `replayDigest` is the sole digest domain and covers the canonical
+ * `{text, eventCandidate}` pair together, so a redelivered occurrence whose
+ * provider Event candidate changed conflicts instead of silently rejoining.
  */
 const INGRESS_CENSUS_COMPACTED_SCHEMA = {
   type: 'object',
   properties: {
     shell: ConversationAuthenticatedObservationShellV1JsonSchema,
-    textDigest: { type: 'string', pattern: '^[A-Za-z0-9_-]{43}$' },
+    replayDigest: { type: 'string', pattern: '^[A-Za-z0-9_-]{43}$' },
     // A settled attention row remains independently visible until this
     // census's frozen horizon. Persist its exact identity here so retention
     // never needs an Account-wide reverse scan after discarding fan-out.
@@ -1041,24 +1083,8 @@ const INGRESS_CENSUS_COMPACTED_SCHEMA = {
       type: 'array',
       items: OPAQUE_ROUTING_ROW_ID_SCHEMA,
     },
-    // Compaction can logically delete terminal non-attention members before
-    // the whole occurrence reaches its replay horizon. Keep only their exact
-    // tombstone revisions here so that same horizon can physically forget
-    // them before removing this census; no Account-wide tombstone scan exists.
-    prunedObligationTombstones: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: {
-          rowId: OPAQUE_ROUTING_ROW_ID_SCHEMA,
-          revision: { type: 'integer', minimum: 1 },
-        },
-        required: ['rowId', 'revision'],
-        additionalProperties: false,
-      },
-    },
   },
-  required: ['shell', 'textDigest', 'retainedAttentionObligationRowIds', 'prunedObligationTombstones'],
+  required: ['shell', 'replayDigest', 'retainedAttentionObligationRowIds'],
   additionalProperties: false,
 } satisfies PluginJsonSchema;
 
@@ -1637,7 +1663,7 @@ const DELIVERY_ROUTE_AUTHORITY_SCHEMA: PluginJsonSchema = {
       type: 'object',
       properties: {
         connectionAuthorityEpoch: POSITIVE_SAFE_INTEGER_SCHEMA,
-        bindingRevision: POSITIVE_SAFE_INTEGER_SCHEMA,
+        bindingRevision: COLLECTION_ROW_REVISION_SCHEMA,
         bindingAuthorityEpoch: POSITIVE_SAFE_INTEGER_SCHEMA,
       },
       required: [

@@ -25,9 +25,8 @@ import {
 import { requireChannelsAccountStorage } from './requiredAccountStorage.js';
 import { conversationRetryDelayMs } from './retryBackoff.js';
 import {
-  acceptConversationOutwardDeliveryReady,
+  admitConversationOutwardDeliveryReady,
   createConversationOutwardDeliveryCollectionStore,
-  prepareConversationOutwardDeliveryReady,
   type ConversationOutwardDeliveryObligation,
   type ConversationOutwardDeliverySuppressionReason,
 } from './outwardDelivery.js';
@@ -245,28 +244,14 @@ export async function deliverConversationAutomationResultForInvocation(
     linkPreviewPolicy: admission.route.linkPreviewPolicy,
   } satisfies ConversationOutwardDeliveryObligation;
   const stateCollection = requireChannelsAccountStorage(context).collection(CHANNEL_STATE_COLLECTION);
-  const prepared = await prepareConversationOutwardDeliveryReady({
+  const accepted = await admitConversationOutwardDeliveryReady({
     stateCollection,
-    signal: context.signal,
-    obligation,
-  });
-  if (prepared.kind === 'suppressed') return resultForSuppressedCustody(prepared.reason);
-  if (prepared.kind === 'invalid') return { kind: 'blocked', code: 'invalidCustodyRequest' };
-  if (prepared.kind === 'unavailable') {
-    return {
-      kind: 'retry',
-      retryAfterMs: conversationRetryDelayMs(1),
-      code: 'temporarilyUnavailable',
-    };
-  }
-
-  const accepted = await acceptConversationOutwardDeliveryReady({
     store: createConversationOutwardDeliveryCollectionStore({
       stateCollection,
       deliveriesCollection: requireChannelsAccountStorage(context).collection(CHANNEL_DELIVERIES_COLLECTION),
       signal: context.signal,
     }),
-    prepared,
+    obligation,
     signal: context.signal,
   });
   if (accepted.kind === 'accepted') {

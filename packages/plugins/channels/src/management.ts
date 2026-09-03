@@ -75,6 +75,7 @@ import {
   type ConversationResolvedEndpointV1,
   type ConversationResolvedPrincipalV1,
   type ConversationTransportFactReportResultV1,
+  type ConversationTransportKindV1,
 } from '@happier-dev/channels-protocol/v1';
 
 import {
@@ -92,7 +93,7 @@ import {
   CONVERSATION_CONNECTION_WEBHOOK_ENDPOINT_ENSURE_SETUP_V1,
   mintConversationConnectionWebhookEndpointAttemptIdentity,
   readCanonicalConversationWebhookEndpointId,
-  retargetConversationConnectionWebhookEndpointForTransfer,
+  convergeConversationConnectionWebhookEndpointTarget,
 } from './connectionWebhookEndpoint.js';
 import { requireChannelsAccountStorage } from './requiredAccountStorage.js';
 import {
@@ -936,20 +937,33 @@ function hasSamePersistedProviderContributionSelection(input: Readonly<{
     && input.persisted.immutableGenerationId === input.requested.contributor.immutableGenerationId;
 }
 
-function readTransferTransportKind(
+/**
+ * The one reader of a saved connection's live transport kind. It answers only
+ * for the row as it stands: once a transfer commits, the retired transport is
+ * owned by the frozen custody slot's `predecessorTransportKind`, never by a
+ * second read of this replaced field.
+ */
+function readConnectionTransportKind(
   current: ConversationConnectionUpdateRow,
-): 'checkpointedPull' | 'socket' | 'durablePush' {
+  unsupported: Readonly<{ code: string; message: string }>,
+): ConversationTransportKindV1 {
   const transport = own(current.payload, 'transport');
   if (!isJsonRecord(transport)
     || (transport.kind !== 'checkpointedPull'
       && transport.kind !== 'socket'
       && transport.kind !== 'durablePush')) {
-    throw pluginError(
-      'channels_connection_transfer_transport_unsupported',
-      'Connection transfer found an unsupported retained transport.',
-    );
+    throw pluginError(unsupported.code, unsupported.message);
   }
   return transport.kind;
+}
+
+function readTransferTransportKind(
+  current: ConversationConnectionUpdateRow,
+): ConversationTransportKindV1 {
+  return readConnectionTransportKind(current, {
+    code: 'channels_connection_transfer_transport_unsupported',
+    message: 'Connection transfer found an unsupported retained transport.',
+  });
 }
 
 /** Reads the exact generic endpoint facts retained on a durable-push row. */
@@ -1042,36 +1056,147 @@ function isRequestedTransferAlreadyCurrent(input: Readonly<{
     && transport.kind === input.transferInput.selectedTransport
     && (
       input.transferInput.selectedTransport !== 'durablePush'
+      // A durable-push→durable-push transfer keeps its retained endpoint and
+      // is refused an endpoint continuation, so only a request that carries
+      // one has an endpoint identity to compare.
+      || input.transferInput.endpointContinuation === undefined
       || own(transport, 'webhookEndpointId')
-        === input.transferInput.endpointContinuation?.webhookEndpointId
+        === input.transferInput.endpointContinuation.webhookEndpointId
     );
 }
 
-/** A lost transfer response may rejoin only the one immediate committed transfer CAS. */
-function isImmediateLostTransferCommit(input: Readonly<{
+/**
+ * How a retained row that has moved past this request's basis can still relate
+ * to the transfer that request asked for.
+ *
+ * `marked` retains the frozen custody a transfer commits, fenced at the
+ * replacement epoch. Only a transfer taking that exact `E→E+1` step can create
+ * it, so the placement such a row names was necessarily written by a transfer.
+ *
+ * `settled` retains no marker. An unrelated authority change — an enabled
+ * toggle, plus any later revision-only edit — leaves every requested provider
+ * fact current and is otherwise indistinguishable from this caller's own
+ * committed transfer, while still naming the incumbent placement the caller
+ * asked to leave. The placement this request resolves is therefore the only
+ * evidence left, and a settled row may not be decided without it.
+ */
+type CommittedTransferReplacementState = 'marked' | 'settled' | 'none';
+
+/**
+ * A lost transfer response may rejoin only the writes this exact request
+ * produced: the committed replacement CAS, and the settlement that same
+ * journey performs for its own frozen custody.
+ *
+ * The replacement epoch is the fence. It advances exactly once per authority
+ * change, so requiring `E+1` plus requested-state equality bounds the candidate
+ * to this caller's basis; the settlement write that follows it moves only the
+ * row revision. Anything further from that basis — a second authority change, a
+ * different replacement — is not this journey and stays a conflict the caller
+ * resolves by rereading.
+ */
+function readCommittedTransferReplacementState(input: Readonly<{
+  row: StateRow;
+  current: ConversationConnectionUpdateRow;
+  transferInput: ConversationConnectionTransferInputV1;
+}>): CommittedTransferReplacementState {
+  const pending = input.current.lifecycle.pendingOldTransportStop;
+  const transport = own(input.current.payload, 'transport');
+  if (input.transferInput.expectedRevision >= Number.MAX_SAFE_INTEGER
+    || input.transferInput.expectedAuthorityEpoch >= Number.MAX_SAFE_INTEGER
+    || input.current.lifecycle.authorityEpoch !== input.transferInput.expectedAuthorityEpoch + 1
+    || !isRequestedTransferAlreadyCurrent({
+      current: input.current,
+      transferInput: input.transferInput,
+    })) {
+    return 'none';
+  }
+  if (input.row.revision === input.transferInput.expectedRevision + 1
+    && pending !== null
+    && pending.stopRequest.reason === 'transfer'
+    && pending.stopRequest.connectionId === input.transferInput.connectionId
+    && pending.stopRequest.authorityEpoch === input.current.lifecycle.authorityEpoch) {
+    return 'marked';
+  }
+  // A transfer whose predecessor needs no provider stop commits in one retained
+  // revision with no pending slot, and a journey that also settled its own
+  // custody — the endpoint retarget or the frozen provider stop — wrote a
+  // second revision before its response was lost.
+  return pending === null
+    && isJsonRecord(transport)
+    && (input.row.revision === input.transferInput.expectedRevision + 1
+      || input.row.revision === input.transferInput.expectedRevision + 2)
+    ? 'settled'
+    : 'none';
+}
+
+function isLostResponseCommittedTransfer(input: Readonly<{
+  row: StateRow;
+  current: ConversationConnectionUpdateRow;
+  transferInput: ConversationConnectionTransferInputV1;
+  /** The placement this request's selected provider setup actually resolved. */
+  requestedTransportOrigin: ConnectionTransportOrigin;
+}>): boolean {
+  const state = readCommittedTransferReplacementState(input);
+  return state === 'marked'
+    || (state === 'settled' && arePluginMachineExecutionOriginsEqual(
+      input.current.transportOrigin,
+      input.requestedTransportOrigin,
+    ));
+}
+
+/**
+ * Resumes only the unresolved durable endpoint move already frozen by a
+ * committed transfer. The caller must hold the current row revision and
+ * authority epoch, while the retained slot must still prove the complete
+ * predecessor → replacement E+1 transition. This is deliberately distinct
+ * from stale lost-response rejoin: settled transfers remain immediate-only.
+ */
+function isCurrentUnacceptedTransferResume(input: Readonly<{
   row: StateRow;
   current: ConversationConnectionUpdateRow;
   transferInput: ConversationConnectionTransferInputV1;
 }>): boolean {
   const pending = input.current.lifecycle.pendingOldTransportStop;
   const transport = own(input.current.payload, 'transport');
-  return input.transferInput.expectedRevision < Number.MAX_SAFE_INTEGER
-    && input.transferInput.expectedAuthorityEpoch < Number.MAX_SAFE_INTEGER
-    && input.row.revision === input.transferInput.expectedRevision + 1
-    && input.current.lifecycle.authorityEpoch === input.transferInput.expectedAuthorityEpoch + 1
-    && isRequestedTransferAlreadyCurrent({
+  if (pending === null
+    || input.row.revision !== input.transferInput.expectedRevision
+    || input.current.lifecycle.authorityEpoch !== input.transferInput.expectedAuthorityEpoch
+    || input.current.lifecycle.deletionState !== 'none'
+    || pending.acceptedPossibleLoss
+    || pending.stopRequest.reason !== 'transfer'
+    || pending.stopRequest.connectionId !== input.transferInput.connectionId
+    || pending.predecessorTransportKind !== 'durablePush'
+    || pending.endpointRetarget !== 'pending'
+    || pending.overlapSafety !== 'safe'
+    || pending.stopRequest.authorityEpoch !== input.current.lifecycle.authorityEpoch
+    || pending.predecessorCheckpointedPollInvocation.authorityEpoch >= Number.MAX_SAFE_INTEGER
+    || pending.predecessorCheckpointedPollInvocation.authorityEpoch + 1
+      !== input.current.lifecycle.authorityEpoch
+    || pending.predecessorCheckpointedPollInvocation.connectionRevision >= input.row.revision
+    || !arePluginMachineExecutionOriginsEqual(
+      pending.predecessorCheckpointedPollInvocation.transportOrigin,
+      pending.transportOrigin,
+    )
+    || pending.transportOrigin.materializationRef.pluginId !== input.current.providerPluginId
+    || input.current.transportOrigin.materializationRef.pluginId !== input.current.providerPluginId
+    || input.transferInput.selectedTransport !== 'durablePush'
+    || input.transferInput.endpointContinuation !== undefined
+    || !isRequestedTransferAlreadyCurrent({
       current: input.current,
       transferInput: input.transferInput,
     })
-    && ((pending !== null
-      && pending.stopRequest.reason === 'transfer'
-      && pending.stopRequest.connectionId === input.transferInput.connectionId
-      && pending.stopRequest.authorityEpoch === input.current.lifecycle.authorityEpoch)
-      // A transfer whose predecessor needs no provider stop commits in one
-      // retained-row revision with no pending slot. Exact requested-state
-      // equality above makes rejoining that same committed outcome safe for
-      // both durable-push retargets and durable-push detachment onto pull.
-      || (pending === null && isJsonRecord(transport)));
+    || !isJsonRecord(transport)
+    || transport.kind !== 'durablePush'
+    || !isJsonRecord(transport.webhookContributionRef)
+    || transport.webhookContributionRef.pluginId !== input.current.providerPluginId
+    || typeof transport.webhookContributionRef.localId !== 'string'
+    || typeof transport.webhookEndpointId !== 'string'
+    || transport.webhookSourceInstanceId
+      !== conversationConnectionWebhookSourceInstanceIdV1(input.transferInput.connectionId)) {
+    return false;
+  }
+  const immutableIdentity = readTransferImmutableConnectionIdentity(input.current);
+  return pending.stopRequest.providerConnectionKey === immutableIdentity.providerConnectionKey;
 }
 
 function assertTransferStartAccepted(input: ReturnType<typeof startConversationConnectionTransfer>): Extract<
@@ -3111,6 +3236,10 @@ export async function deleteConversationConnectionForInvocation(
           payload: current.payload,
           authorityEpoch: current.lifecycle.authorityEpoch + 1,
         }),
+        predecessorTransportKind: readConnectionTransportKind(current, {
+          code: 'channels_connection_delete_transport_unsupported',
+          message: 'Connection deletion found an unsupported retained transport.',
+        }),
       },
     });
     if (start.kind === 'rejected') {
@@ -3144,8 +3273,7 @@ export async function deleteConversationConnectionForInvocation(
   if (frozen === null || frozen.stopRequest.reason !== 'delete') {
     throw pluginError('channels_connection_delete_corrupt', 'Pending connection deletion lost its exact old-stop custody.');
   }
-  const transport = own(current.payload, 'transport');
-  if (isJsonRecord(transport) && transport.kind === 'checkpointedPull') {
+  if (frozen.predecessorTransportKind === 'checkpointedPull') {
     // Checkpointed pulls have no provider-local consumer to stop. The one core
     // poll supervisor observes the fenced row become ineligible after any
     // in-flight poll returns, then settles this exact durable custody itself.
@@ -3156,7 +3284,7 @@ export async function deleteConversationConnectionForInvocation(
       lifecycle: pending,
     });
   }
-  if (isJsonRecord(transport) && transport.kind === 'durablePush') {
+  if (frozen.predecessorTransportKind === 'durablePush') {
     // Generic webhook dispatch has no provider-local connection worker. The
     // delete fence already makes this Channels reference ineligible; finalize
     // that reference without claiming a provider stop or revoking the generic
@@ -3235,9 +3363,44 @@ export async function deleteConversationConnectionForInvocation(
 }
 
 /**
- * Explicit present-user escape from unrecoverable old-stop custody. Delete
- * advances to finalization; transfer retains its frozen slot as accepted-loss
- * disclosure. Neither path writes physical-stop proof or a history-gap fact.
+ * The custody-resolution answer for an owed durable-endpoint move.
+ *
+ * That obligation is a target change on an endpoint this Account already owns,
+ * so the honest resolution is to repair it through the same committed-intent
+ * owner a transfer resume uses. A loss marker here would settle nothing and
+ * freeze the endpoint on the retired target, so an endpoint owner that is
+ * still unavailable is reported as exactly that.
+ */
+async function repairOwedTransferEndpointRetarget(input: Readonly<{
+  collection: ChannelStateCollection;
+  connectionId: string;
+  pendingRevision: number;
+}>, context: PluginInvocationContext): Promise<ConversationConnectionDeleteResult> {
+  let repaired: Awaited<ReturnType<typeof runCommittedTransferEndpointRetarget>>;
+  try {
+    repaired = await runCommittedTransferEndpointRetarget(input, context);
+  } catch (cause) {
+    assertNotAborted(context.signal);
+    throw new PluginError({
+      code: 'channels_connection_abandon_endpoint_retarget_unrepaired',
+      message: 'The durable-push endpoint has not reached the current connection target yet; repairing it again is the only settlement.',
+      retryable: true,
+    }, { cause });
+  }
+  return deleteResult({
+    kind: 'rejoined',
+    connectionId: input.connectionId,
+    revision: repaired.revision,
+    lifecycle: repaired.lifecycle,
+  });
+}
+
+/**
+ * Explicit present-user resolution of unsettled old-stop custody. Delete
+ * advances to finalization; a retired provider transport retains its frozen
+ * slot as accepted-loss disclosure; an owed durable-endpoint move is repaired
+ * instead, because Happier owns that endpoint and can still move it. No path
+ * writes physical-stop proof or a history-gap fact.
  */
 export async function abandonConversationConnectionForInvocation(
   input: JsonValue,
@@ -3296,6 +3459,13 @@ export async function abandonConversationConnectionForInvocation(
     throw pluginError('channels_connection_abandon_not_pending', 'Connection abandon requires an exact pending old-transport stop request.');
   }
   if (transition.kind === 'rejected') {
+    if (transition.code === 'endpointRetargetRepairRequired') {
+      return await repairOwedTransferEndpointRetarget({
+        collection,
+        connectionId: abandonInput.connectionId,
+        pendingRevision: row.revision,
+      }, context);
+    }
     throw pluginError('channels_connection_abandon_authority_epoch_exhausted', 'Connection authority cannot advance further.');
   }
   if (transition.kind === 'rejoined') {
@@ -5074,6 +5244,124 @@ async function settleTransferOldTransportStop(input: Readonly<{
     : pendingResult;
 }
 
+/**
+ * Runs the one committed durable-push endpoint convergence and settles its
+ * custody through the connection lifecycle owner.
+ *
+ * The retained row already names the replacement target and still carries the
+ * `pending` retarget intent, so the generic endpoint move is idempotent and
+ * resumable: a retry, a response-loss rejoin, and the first attempt all reach
+ * the endpoint through this single path instead of leaving the endpoint and
+ * the row pointed at different targets with nothing recording why.
+ *
+ * Every input the move needs is reread from that retained row: the endpoint
+ * identity it kept, the target it currently desires, and the frozen
+ * replacement epoch that orders this intent against any later one. A repair
+ * that arrives after the desire moved on therefore converges the endpoint on
+ * the desire the row names now, not on a target only this attempt remembers.
+ */
+async function runCommittedTransferEndpointRetarget(input: Readonly<{
+  collection: ChannelStateCollection;
+  connectionId: string;
+  pendingRevision: number;
+}>, context: PluginInvocationContext): Promise<Readonly<{
+  revision: number;
+  lifecycle: ConversationConnectionLifecycleStateV1;
+}>> {
+  const row = await input.collection.get(input.connectionId, { signal: context.signal });
+  assertNotAborted(context.signal);
+  if (row === null || row.revision !== input.pendingRevision) {
+    throw pluginError(
+      'channels_connection_transfer_endpoint_retarget_conflict',
+      'Connection transfer lost its committed endpoint-retarget custody.',
+      true,
+    );
+  }
+  const current = readConversationConnectionUpdateRow({ row, connectionId: input.connectionId });
+  const pending = current.lifecycle.pendingOldTransportStop;
+  if (pending === null
+    || pending.stopRequest.reason !== 'transfer'
+    || pending.endpointRetarget !== 'pending'
+    || pending.stopRequest.authorityEpoch !== current.lifecycle.authorityEpoch) {
+    throw pluginError(
+      'channels_connection_transfer_endpoint_retarget_conflict',
+      'Connection transfer no longer retains a committed endpoint-retarget intent.',
+      true,
+    );
+  }
+  const endpoint = readDurablePushTransferEndpoint({
+    current,
+    connectionId: input.connectionId,
+  });
+  await convergeConversationConnectionWebhookEndpointTarget({
+    context,
+    // The frozen replacement authority epoch is the one identity of this
+    // transfer attempt, so every resume carries the same intent ordering and
+    // an older attempt can never move the endpoint back.
+    transferAuthorityEpoch: pending.stopRequest.authorityEpoch,
+    webhookEndpointId: readCanonicalConversationWebhookEndpointId(endpoint.webhookEndpointId),
+    webhookContribution: endpoint.webhookContributionRef,
+    sourceInstanceId: endpoint.webhookSourceInstanceId,
+    nextTargetMaterialization: current.transportOrigin.materializationRef,
+  });
+  assertNotAborted(context.signal);
+  const settled = finalizeConversationConnectionTransferWithoutProviderStop({
+    current: current.lifecycle,
+    provenEndpointRetarget: true,
+  });
+  if (settled.kind !== 'transportStopConfirmed') {
+    throw pluginError(
+      'channels_connection_transfer_lifecycle_stale',
+      'Connection transfer lost its durable-push lifecycle currentness.',
+      true,
+    );
+  }
+  const revision = await persistConversationConnectionLifecycle({
+    collection: input.collection,
+    row,
+    current,
+    lifecycle: settled.connection,
+    operation: 'channels_connection_transfer_endpoint_retarget',
+  }, context);
+  return { revision, lifecycle: settled.connection };
+}
+
+/**
+ * Speaks the transfer result vocabulary for the committed retarget intent.
+ * The replacement authority is already durable, so an endpoint move that
+ * cannot complete now is disclosed as retained custody the next attempt
+ * resumes — never as a failure of an Action whose write already succeeded.
+ */
+async function settleTransferPendingEndpointRetarget(input: Readonly<{
+  collection: ChannelStateCollection;
+  connectionId: string;
+  pendingRevision: number;
+  authorityEpoch: number;
+}>, context: PluginInvocationContext): Promise<ConversationConnectionTransferResult> {
+  let repaired: Awaited<ReturnType<typeof runCommittedTransferEndpointRetarget>>;
+  try {
+    repaired = await runCommittedTransferEndpointRetarget({
+      collection: input.collection,
+      connectionId: input.connectionId,
+      pendingRevision: input.pendingRevision,
+    }, context);
+  } catch {
+    assertNotAborted(context.signal);
+    return {
+      kind: 'transferPendingOldStop',
+      connectionId: input.connectionId,
+      revision: input.pendingRevision,
+      authorityEpoch: input.authorityEpoch,
+    };
+  }
+  return {
+    kind: 'transferred',
+    connectionId: input.connectionId,
+    revision: repaired.revision,
+    authorityEpoch: input.authorityEpoch,
+  };
+}
+
 /** Rejoins a response-lost transfer without replaying setup, test, or endpoint work. */
 async function rejoinCommittedConversationConnectionTransfer(input: Readonly<{
   collection: ChannelStateCollection;
@@ -5081,7 +5369,8 @@ async function rejoinCommittedConversationConnectionTransfer(input: Readonly<{
   row: StateRow;
   current: ConversationConnectionUpdateRow;
 }>, context: PluginInvocationContext): Promise<ConversationConnectionTransferResult> {
-  if (input.current.lifecycle.pendingOldTransportStop === null) {
+  const pending = input.current.lifecycle.pendingOldTransportStop;
+  if (pending === null) {
     return {
       kind: 'transferred',
       connectionId: input.connectionId,
@@ -5089,7 +5378,20 @@ async function rejoinCommittedConversationConnectionTransfer(input: Readonly<{
       authorityEpoch: input.current.lifecycle.authorityEpoch,
     };
   }
-  if (readTransferTransportKind(input.current) === 'durablePush') {
+  // The committed row already names the replacement transport, so only the
+  // frozen slot can say what was retired and what that predecessor still owes.
+  if (pending.endpointRetarget === 'pending') {
+    return await settleTransferPendingEndpointRetarget({
+      collection: input.collection,
+      connectionId: input.connectionId,
+      pendingRevision: input.row.revision,
+      authorityEpoch: input.current.lifecycle.authorityEpoch,
+    }, context);
+  }
+  if (pending.predecessorTransportKind !== 'socket') {
+    // A retired checkpointed pull is settled by the one core poll supervisor
+    // and a detached durable push has no provider worker at all; neither may
+    // be handed to the frozen provider-stop path.
     return {
       kind: 'transferPendingOldStop',
       connectionId: input.connectionId,
@@ -5102,6 +5404,106 @@ async function rejoinCommittedConversationConnectionTransfer(input: Readonly<{
     connectionId: input.connectionId,
     pendingRevision: input.row.revision,
     authorityEpoch: input.current.lifecycle.authorityEpoch,
+  }, context);
+}
+
+/**
+ * Runs the one selected-provider preparation every transfer decision needs and
+ * rereads the retained row behind it.
+ *
+ * Setup and connection test are external effects, so no row observation taken
+ * before them survives. The ordinary transfer and the settled-rejoin decision
+ * both read the incumbent through this single owner rather than keeping their
+ * own pre-effect view of it.
+ */
+async function prepareTransferProviderAndRereadRetainedRow(input: Readonly<{
+  collection: ChannelStateCollection;
+  transferInput: ConversationConnectionTransferInputV1;
+  basis: ConversationConnectionUpdateRow;
+}>, context: PluginInvocationContext): Promise<
+  | Readonly<{ kind: 'notReady'; result: ConversationConnectionTransferResult }>
+  | Readonly<{
+    kind: 'prepared';
+    provider: CurrentProvider;
+    prepared: Extract<ProviderConnectionPreparation, Readonly<{ kind: 'ready' }>>;
+    row: StateRow;
+    current: ConversationConnectionUpdateRow;
+  }>
+> {
+  const provider = await readCurrentSelectedProvider({
+    context,
+    selection: input.transferInput.providerSelection,
+  });
+  // Provider plugin identity is immutable across a transfer. Reject it before
+  // setup so this Action cannot become a covert new-connection path.
+  assertTransferProviderPluginIdentity({
+    current: input.basis,
+    providerPluginId: provider.pluginId,
+  });
+  const prepared = await runProviderSetupAndTest({
+    context,
+    setupInput: input.transferInput,
+    provider,
+    connectionIdForTest: input.transferInput.connectionId,
+  });
+  if (prepared.kind === 'notReady') return { kind: 'notReady', result: prepared };
+  const row = await input.collection.get(input.transferInput.connectionId, { signal: context.signal });
+  assertNotAborted(context.signal);
+  if (row === null) {
+    throw pluginError(
+      'channels_connection_transfer_conflict',
+      'Connection transfer lost its retained-row currentness during provider setup.',
+      true,
+    );
+  }
+  return {
+    kind: 'prepared',
+    provider,
+    prepared,
+    row,
+    current: readConversationConnectionUpdateRow({ row, connectionId: input.transferInput.connectionId }),
+  };
+}
+
+/**
+ * Decides a retained row that has settled past this request's basis without
+ * keeping any marker of the transfer that would have moved it.
+ *
+ * Such a row is reached only by resolving the placement this request asks for,
+ * because that placement is the single requested fact a settled row can still
+ * contradict. The journey deliberately stops there: the row is already past the
+ * caller's basis, so its only outcomes are rejoining an outcome this request
+ * already produced or the ordinary conflict a fresh exact-row transfer
+ * resolves. No Account authority, frozen stop, or endpoint effect is replayed.
+ */
+async function rejoinSettledConversationConnectionTransfer(input: Readonly<{
+  collection: ChannelStateCollection;
+  transferInput: ConversationConnectionTransferInputV1;
+  basis: ConversationConnectionUpdateRow;
+}>, context: PluginInvocationContext): Promise<ConversationConnectionTransferResult> {
+  const preparation = await prepareTransferProviderAndRereadRetainedRow(input, context);
+  if (preparation.kind === 'notReady') return preparation.result;
+  if (!isLostResponseCommittedTransfer({
+    row: preparation.row,
+    current: preparation.current,
+    transferInput: input.transferInput,
+    requestedTransportOrigin: preparation.prepared.transportOrigin,
+  })) {
+    throw pluginError(
+      'channels_connection_transfer_conflict',
+      'Connection transfer requires the current retained row revision.',
+      true,
+    );
+  }
+  assertTransferImmutableConnectionIdentity({
+    current: preparation.current,
+    setup: preparation.prepared.setup,
+  });
+  return await rejoinCommittedConversationConnectionTransfer({
+    collection: input.collection,
+    connectionId: input.transferInput.connectionId,
+    row: preparation.row,
+    current: preparation.current,
   }, context);
 }
 
@@ -5126,10 +5528,12 @@ export async function transferConversationConnectionForInvocation(
     row.revision !== transferInput.expectedRevision
     || current.lifecycle.authorityEpoch !== transferInput.expectedAuthorityEpoch
   ) {
-    // A lost transfer response never replays setup or test. The frozen stop is
-    // idempotent and addressed to the exact retired origin, so its replay is
-    // the one settlement this Action still owns for its committed custody.
-    if (isImmediateLostTransferCommit({ row, current, transferInput })) {
+    const committed = readCommittedTransferReplacementState({ row, current, transferInput });
+    // A marked row still holds this transfer's own frozen custody, so it needs
+    // no setup or test to be identified. The frozen stop is idempotent and
+    // addressed to the exact retired origin, so its replay is the one
+    // settlement this Action still owns for that committed custody.
+    if (committed === 'marked') {
       return await rejoinCommittedConversationConnectionTransfer({
         collection,
         connectionId: transferInput.connectionId,
@@ -5137,13 +5541,32 @@ export async function transferConversationConnectionForInvocation(
         current,
       }, context);
     }
-    throw pluginError(
-      'channels_connection_transfer_conflict',
-      'Connection transfer requires the current retained row revision.',
-      true,
-    );
+    if (committed === 'none') {
+      throw pluginError(
+        'channels_connection_transfer_conflict',
+        'Connection transfer requires the current retained row revision.',
+        true,
+      );
+    }
+    return await rejoinSettledConversationConnectionTransfer({
+      collection,
+      transferInput,
+      basis: current,
+    }, context);
   }
+  // A row that still owes its committed endpoint move is only *possibly* this
+  // request's resume. Nothing is decided here: the retained row names a
+  // desired physical origin, and only running this request's selected provider
+  // setup can say whether the same input still resolves to it. Deciding before
+  // that would converge the endpoint onto a placement the selected provider no
+  // longer occupies.
+  const endpointResumeCandidate = isCurrentUnacceptedTransferResume({ row, current, transferInput });
   const oldTransport = readTransferTransportKind(current);
+  // A durable-push→durable-push transfer keeps the same Account endpoint and
+  // only moves its target. That move is the one old-transport obligation this
+  // transfer commits before touching the generic endpoint owner.
+  const requiresEndpointRetarget = oldTransport === 'durablePush'
+    && transferInput.selectedTransport === 'durablePush';
   if (
     transferInput.endpointContinuation !== undefined
     && (oldTransport === 'durablePush' || transferInput.selectedTransport !== 'durablePush')
@@ -5160,67 +5583,54 @@ export async function transferConversationConnectionForInvocation(
   });
   // This pure preflight rejects delete/pending custody before selected setup or
   // test can touch the provider. Final lifecycle facts are recomputed after
-  // provider setup is admitted below.
-  assertTransferStartAccepted(startConversationConnectionTransfer({
-    current: current.lifecycle,
-    pendingOldTransportStop: {
-      predecessorCheckpointedPollInvocation: {
-        connectionRevision: row.revision,
-        authorityEpoch: current.lifecycle.authorityEpoch,
+  // provider setup is admitted below. A candidate resume of this connection's
+  // own owed endpoint move is the one row that legitimately still holds
+  // pending custody, so it is preflighted after setup instead — where the
+  // resolved physical origin can decide whether it really is that resume.
+  if (!endpointResumeCandidate) {
+    assertTransferStartAccepted(startConversationConnectionTransfer({
+      current: current.lifecycle,
+      pendingOldTransportStop: {
+        predecessorCheckpointedPollInvocation: {
+          connectionRevision: row.revision,
+          authorityEpoch: current.lifecycle.authorityEpoch,
+          transportOrigin: current.transportOrigin,
+        },
         transportOrigin: current.transportOrigin,
+        providerContributionSelection: current.providerContributionSelection,
+        stopRequest: initialFrozenOldStopRequest,
+        predecessorTransportKind: oldTransport,
+        endpointRetarget: requiresEndpointRetarget ? 'pending' : 'notRequired',
       },
-      transportOrigin: current.transportOrigin,
-      providerContributionSelection: current.providerContributionSelection,
-      stopRequest: initialFrozenOldStopRequest,
-    },
-    replacement: {
-      enabled: current.lifecycle.enabled,
-      overlapSafety: current.lifecycle.overlapSafety,
-      historyGap: current.lifecycle.historyGap,
-    },
-  }));
+      replacement: {
+        enabled: current.lifecycle.enabled,
+        overlapSafety: current.lifecycle.overlapSafety,
+        historyGap: current.lifecycle.historyGap,
+      },
+    }));
+  }
 
-  const provider = await readCurrentSelectedProvider({
-    context,
-    selection: transferInput.providerSelection,
-  });
-  // Provider plugin identity is immutable across a transfer. Reject it before
-  // setup so this Action cannot become a covert new-connection path.
-  assertTransferProviderPluginIdentity({
-    current,
-    providerPluginId: provider.pluginId,
-  });
-  const prepared = await runProviderSetupAndTest({
-    context,
-    setupInput: transferInput,
-    provider,
-    connectionIdForTest: transferInput.connectionId,
-  });
-  if (prepared.kind === 'notReady') return prepared;
   // Setup/test are external effects. Every result path, including changed-origin
   // transfer, must re-read the exact incumbent before a later checkpoint or
   // retained-row CAS can act on the pre-effect authority.
-  const postSetupRow = await collection.get(transferInput.connectionId, { signal: context.signal });
-  assertNotAborted(context.signal);
-  if (postSetupRow === null) {
-    throw pluginError(
-      'channels_connection_transfer_conflict',
-      'Connection transfer lost its retained-row currentness during provider setup.',
-      true,
-    );
-  }
-  const postSetupCurrent = readConversationConnectionUpdateRow({
-    row: postSetupRow,
-    connectionId: transferInput.connectionId,
-  });
+  const preparation = await prepareTransferProviderAndRereadRetainedRow({
+    collection,
+    transferInput,
+    basis: current,
+  }, context);
+  if (preparation.kind === 'notReady') return preparation.result;
+  const { provider, prepared } = preparation;
+  const postSetupRow = preparation.row;
+  const postSetupCurrent = preparation.current;
   if (
     postSetupRow.revision !== transferInput.expectedRevision
     || postSetupCurrent.lifecycle.authorityEpoch !== transferInput.expectedAuthorityEpoch
   ) {
-    if (isImmediateLostTransferCommit({
+    if (isLostResponseCommittedTransfer({
       row: postSetupRow,
       current: postSetupCurrent,
       transferInput,
+      requestedTransportOrigin: prepared.transportOrigin,
     })) {
       return await rejoinCommittedConversationConnectionTransfer({
         collection,
@@ -5236,6 +5646,27 @@ export async function transferConversationConnectionForInvocation(
     );
   }
   assertTransferImmutableConnectionIdentity({ current: postSetupCurrent, setup: prepared.setup });
+  // The owed endpoint move is resumed only when this request's selected setup
+  // still resolves the exact physical origin the committed intent desires.
+  // Equal Action input is not equal placement: a provider that now materializes
+  // somewhere else is a different transfer, and resuming it would converge the
+  // endpoint onto a machine the replacement no longer runs on. Such a request
+  // falls through to the ordinary path, where the retained pending custody is
+  // reported as the blocker it is until the owed move settles.
+  if (endpointResumeCandidate
+    && isCurrentUnacceptedTransferResume({
+      row: postSetupRow,
+      current: postSetupCurrent,
+      transferInput,
+    })
+    && arePluginMachineExecutionOriginsEqual(postSetupCurrent.transportOrigin, prepared.transportOrigin)) {
+    return await rejoinCommittedConversationConnectionTransfer({
+      collection,
+      connectionId: transferInput.connectionId,
+      row: postSetupRow,
+      current: postSetupCurrent,
+    }, context);
+  }
   if (isRequestedTransferAlreadyCurrent({ current: postSetupCurrent, transferInput })
     && arePluginMachineExecutionOriginsEqual(postSetupCurrent.transportOrigin, prepared.transportOrigin)) {
     return {
@@ -5316,6 +5747,8 @@ export async function transferConversationConnectionForInvocation(
       transportOrigin: incumbent.transportOrigin,
       providerContributionSelection: incumbent.providerContributionSelection,
       stopRequest: frozenOldStopRequest,
+      predecessorTransportKind: oldTransport,
+      endpointRetarget: requiresEndpointRetarget ? 'pending' : 'notRequired',
     },
     replacement: {
       enabled: incumbent.lifecycle.enabled,
@@ -5325,24 +5758,15 @@ export async function transferConversationConnectionForInvocation(
   }));
 
   let durablePushEndpoint: ConversationConnectionWebhookEndpoint | undefined;
-  if (oldTransport === 'durablePush' && transferInput.selectedTransport === 'durablePush') {
+  if (requiresEndpointRetarget) {
+    // Only the retained endpoint identity is read here. Moving its target is
+    // deferred until the row CAS below has committed the recoverable intent,
+    // so a lost or conflicting write can never leave the generic endpoint
+    // delivering to a target the retained connection does not name.
     durablePushEndpoint = readDurablePushTransferEndpoint({
       current: incumbent,
       connectionId: transferInput.connectionId,
     });
-    await retargetConversationConnectionWebhookEndpointForTransfer({
-      context,
-      connectionId: transferInput.connectionId,
-      expectedConnectionRevision: incumbentRow.revision,
-      webhookEndpointId: readCanonicalConversationWebhookEndpointId(
-        durablePushEndpoint.webhookEndpointId,
-      ),
-      webhookContribution: durablePushEndpoint.webhookContributionRef,
-      sourceInstanceId: durablePushEndpoint.webhookSourceInstanceId,
-      currentTargetMaterialization: incumbent.transportOrigin.materializationRef,
-      nextTargetMaterialization: prepared.transportOrigin.materializationRef,
-    });
-    assertNotAborted(context.signal);
   } else if (transferInput.selectedTransport === 'durablePush') {
     if (transferInput.endpointContinuation === undefined || oldTransport === 'durablePush') {
       throw pluginError(
@@ -5362,10 +5786,11 @@ export async function transferConversationConnectionForInvocation(
   // A prior durable-push transport has no provider worker to stop. Moving
   // away detaches only the Channels reference, while the generic webhook
   // owner retains endpoint lifecycle independently.
-  const settledLifecycle = oldTransport === 'durablePush'
+  const settledLifecycle = oldTransport === 'durablePush' && !requiresEndpointRetarget
     ? (() => {
       const finalized = finalizeConversationConnectionTransferWithoutProviderStop({
         current: lifecycleStart.connection,
+        provenEndpointRetarget: false,
       });
       if (finalized.kind !== 'transportStopConfirmed') {
         throw pluginError(
@@ -5433,6 +5858,14 @@ export async function transferConversationConnectionForInvocation(
       'Connection transfer did not return its retained connection result.',
       true,
     );
+  }
+  if (requiresEndpointRetarget) {
+    return await settleTransferPendingEndpointRetarget({
+      collection,
+      connectionId: transferInput.connectionId,
+      pendingRevision: persisted.revision,
+      authorityEpoch: lifecycleStart.connection.authorityEpoch,
+    }, context);
   }
   if (oldTransport === 'checkpointedPull') {
     // A checkpointed pull has no provider-local consumer to stop. The one core

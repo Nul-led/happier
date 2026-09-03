@@ -1,8 +1,10 @@
 import type { PluginJsonSchema } from '@happier-dev/plugin-sdk/protocol';
 
 import {
+    defineProtocolNumber,
     defineProtocolString,
 } from '@happier-dev/plugin-sdk/protocol';
+import { PLUGIN_COLLECTION_REVISION_MAX } from '@happier-dev/plugin-sdk/collections';
 
 import {
     MAX_CONVERSATION_CHANNEL_RELATION_ID_ASCII_BYTES,
@@ -29,6 +31,25 @@ export type ConversationConnectionIdV1 = ConversationChannelRelationIdV1;
 export const ConversationConnectionIdV1JsonSchema: PluginJsonSchema = ConversationChannelRelationIdV1JsonSchema;
 /** @internal Relative-only alias; do not export from the public V1 barrel. */
 export const ConversationConnectionIdV1ProtocolSchema = ConversationChannelRelationIdV1ProtocolSchema;
+
+/**
+ * @internal Relative-only witness of one exact Account Collection row revision.
+ *
+ * Every Channels connection, binding, obligation, frontier, and delivery-custody
+ * row is an Account Collection row, so a revision a caller presents or a result
+ * reports is that row's `PluginCollectionRow.revision`. Its ceiling therefore
+ * belongs to the Collection owner's persisted `Int` column, not to a Channels
+ * policy number: admitting a wider value would let a caller name an exact-CAS
+ * revision only the SQLite provider can ever reproduce.
+ *
+ * Authority epochs and Channels-owned payload counters are separate spaces that
+ * this package advances itself, and they keep their own safe-integer bound.
+ */
+export const ConversationCollectionRowRevisionV1ProtocolSchema = defineProtocolNumber({
+    integer: true,
+    minimum: 1,
+    maximum: PLUGIN_COLLECTION_REVISION_MAX,
+});
 
 export const ConversationBindingIdV1Schema = ConversationChannelRelationIdV1Schema;
 export type ConversationBindingIdV1 = ConversationChannelRelationIdV1;

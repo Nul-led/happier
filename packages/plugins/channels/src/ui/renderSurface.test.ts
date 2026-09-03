@@ -169,6 +169,7 @@ function connectionsResourceForTransport(selectedTransport: 'checkpointedPull' |
         pollFailure: null,
         bestEffortBeforeDurableAdmission: false,
         oldTransportStopUnconfirmed: false,
+        endpointRetargetOwed: false,
         acceptedPossibleLoss: false,
         outwardDelivery: {
           retryDue: false,
@@ -206,6 +207,7 @@ const connectionsResourceWithoutSharedAllMessages: ResourceContent = jsonResourc
       pollFailure: null,
       bestEffortBeforeDurableAdmission: false,
       oldTransportStopUnconfirmed: false,
+      endpointRetargetOwed: false,
       acceptedPossibleLoss: false,
       outwardDelivery: {
         retryDue: false,
@@ -218,7 +220,7 @@ const connectionsResourceWithoutSharedAllMessages: ResourceContent = jsonResourc
 }, '3');
 
 function connectionsResourceWithProviderReadiness(input: Readonly<{
-  code: 'providerPermissionMissing' | 'providerConfigurationInvalid';
+  code: 'providerPermissionMissing' | 'providerConfigurationInvalid' | 'providerCredentialInvalid';
   diagnostic?: string;
 }>): ResourceContent {
   return jsonResource({
@@ -242,6 +244,7 @@ function connectionsResourceWithProviderReadiness(input: Readonly<{
         pollFailure: null,
         bestEffortBeforeDurableAdmission: false,
         oldTransportStopUnconfirmed: false,
+        endpointRetargetOwed: false,
         acceptedPossibleLoss: false,
         outwardDelivery: {
           retryDue: false,
@@ -279,6 +282,7 @@ function connectionsResourceWithIngressConflict(): ResourceContent {
         },
         bestEffortBeforeDurableAdmission: false,
         oldTransportStopUnconfirmed: false,
+        endpointRetargetOwed: false,
         acceptedPossibleLoss: false,
         outwardDelivery: {
           retryDue: false,
@@ -318,6 +322,7 @@ function connectionsResourceWithHistoryGap(input: Readonly<{
         pollFailure: null,
         bestEffortBeforeDurableAdmission: false,
         oldTransportStopUnconfirmed: false,
+        endpointRetargetOwed: false,
         acceptedPossibleLoss: false,
         outwardDelivery: {
           retryDue: false,
@@ -329,6 +334,80 @@ function connectionsResourceWithHistoryGap(input: Readonly<{
     }],
   }, input.digestDigit);
 }
+
+/**
+ * A connection an owner deliberately paused whose selected machine is also not
+ * receiving messages. Saved enablement and runtime placement are two different
+ * facts, and this row is the case where presenting only one of them hides the
+ * other.
+ */
+const pausedAndPollBlockedConnectionsResource = jsonResource({
+  connections: [{
+    connectionId: 'connection-1',
+    revision: 1,
+    authorityEpoch: 1,
+    providerPluginId: providerSetupOperation.contributor.pluginId,
+    selectedMachineId: 'machine-1',
+    selectedTransport: 'checkpointedPull',
+    integrationPrincipalLabel: 'Example conversation',
+    enabled: false,
+    deletionState: 'none',
+    maximumObservationAgeMs: 60_000,
+    attention: {
+      historyGap: null,
+      providerReadiness: null,
+      ingressConflict: null,
+      pollFailure: {
+        phase: 'blocked',
+        attemptCount: 1,
+        retryNotBeforeMs: null,
+        evidence: { kind: 'provider', reason: 'credentialInvalid' },
+      },
+      bestEffortBeforeDurableAdmission: false,
+      oldTransportStopUnconfirmed: false,
+      endpointRetargetOwed: false,
+      acceptedPossibleLoss: false,
+      outwardDelivery: {
+        retryDue: false,
+        notDelivered: false,
+        partial: false,
+        outcomeUnknown: false,
+      },
+    },
+  }],
+}, '2');
+
+/** The same paused policy with a completely healthy runtime placement. */
+const pausedHealthyConnectionsResource = jsonResource({
+  connections: [{
+    connectionId: 'connection-1',
+    revision: 1,
+    authorityEpoch: 1,
+    providerPluginId: providerSetupOperation.contributor.pluginId,
+    selectedMachineId: 'machine-1',
+    selectedTransport: 'checkpointedPull',
+    integrationPrincipalLabel: 'Example conversation',
+    enabled: false,
+    deletionState: 'none',
+    maximumObservationAgeMs: 60_000,
+    attention: {
+      historyGap: null,
+      providerReadiness: null,
+      ingressConflict: null,
+      pollFailure: null,
+      bestEffortBeforeDurableAdmission: false,
+      oldTransportStopUnconfirmed: false,
+      endpointRetargetOwed: false,
+      acceptedPossibleLoss: false,
+      outwardDelivery: {
+        retryDue: false,
+        notDelivered: false,
+        partial: false,
+        outcomeUnknown: false,
+      },
+    },
+  }],
+}, '5');
 
 const oldTransportStopUnconfirmedConnectionsResource = jsonResource({
   connections: [{
@@ -347,6 +426,7 @@ const oldTransportStopUnconfirmedConnectionsResource = jsonResource({
       pollFailure: null,
       bestEffortBeforeDurableAdmission: false,
       oldTransportStopUnconfirmed: true,
+      endpointRetargetOwed: false,
       acceptedPossibleLoss: false,
       outwardDelivery: {
         retryDue: false,
@@ -357,6 +437,35 @@ const oldTransportStopUnconfirmedConnectionsResource = jsonResource({
     },
   }],
 }, 'c');
+
+const endpointRetargetOwedConnectionsResource = jsonResource({
+  connections: [{
+    connectionId: 'connection-1',
+    revision: 1,
+    authorityEpoch: 1,
+    providerPluginId: providerSetupOperation.contributor.pluginId,
+    selectedMachineId: 'machine-1',
+    selectedTransport: 'durablePush',
+    integrationPrincipalLabel: 'Example conversation',
+    enabled: true,
+    deletionState: 'none',
+    maximumObservationAgeMs: 60_000,
+    attention: {
+      historyGap: null,
+      pollFailure: null,
+      bestEffortBeforeDurableAdmission: false,
+      oldTransportStopUnconfirmed: true,
+      endpointRetargetOwed: true,
+      acceptedPossibleLoss: false,
+      outwardDelivery: {
+        retryDue: false,
+        notDelivered: false,
+        partial: false,
+        outcomeUnknown: false,
+      },
+    },
+  }],
+}, 'f');
 
 const acceptedPossibleLossConnectionsResource = jsonResource({
   connections: [{
@@ -375,6 +484,7 @@ const acceptedPossibleLossConnectionsResource = jsonResource({
       pollFailure: null,
       bestEffortBeforeDurableAdmission: false,
       oldTransportStopUnconfirmed: true,
+      endpointRetargetOwed: false,
       acceptedPossibleLoss: true,
       outwardDelivery: {
         retryDue: false,
@@ -2842,6 +2952,34 @@ describe('Channels mounted binding creation', () => {
     let finalizeAttempts = 0;
     let outcomeRefreshRequested = false;
     let outcomeRefreshReads = 0;
+    const pairingCreatedBinding = {
+      v: 1,
+      id: 'binding-pairing',
+      connectionId: 'connection-1',
+      endpoint: { kind: 'direct', audience: 'direct', id: 'chat-ada' },
+      target: {
+        kind: 'session',
+        sessionId: 'session-pairing',
+        policy: {
+          deliveryMode: 'repliesOnly',
+          permissionCeiling: 'read-only',
+          approvals: { kind: 'off' },
+          newSession: { kind: 'off' },
+        },
+      },
+      allowedPrincipalIds: ['principal-ada'],
+      allowBotSenders: false,
+      inputMode: 'allAllowedMessages',
+      inboundDebounceMs: 750,
+      linkPreviewPolicy: 'suppress',
+      senderFeedback: 'off',
+      authorityEpoch: 1,
+      enabled: false,
+      deletionState: 'none',
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const bindingReadIds: Array<string | undefined> = [];
     const pairingChallengeResource = jsonResource({
       generationId: 'pairing-generation',
       observedAt: 1,
@@ -2910,6 +3048,12 @@ describe('Channels mounted binding creation', () => {
           deepLinkUrl: 'https://example.test/pair?token=ABCDEFGH',
         };
       }
+      if (action === CONVERSATION_MANAGEMENT_ACTION_IDS_V1.bindingRead) {
+        // The binding editor opened from the pairing completion reads the exact
+        // finalize-returned row.
+        bindingReadIds.push((input as Readonly<{ bindingId?: string }>).bindingId);
+        return { kind: 'ready', revision: 1, binding: pairingCreatedBinding };
+      }
       if (action === CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionPairingFinalize) {
         finalizeAttempts += 1;
         if (finalizeAttempts === 1) {
@@ -2917,37 +3061,25 @@ describe('Channels mounted binding creation', () => {
         }
         return {
           kind: 'created',
-          binding: {
-            v: 1,
-            id: 'binding-pairing',
-            connectionId: 'connection-1',
-            endpoint: { kind: 'direct', audience: 'direct', id: 'chat-ada' },
-            target: {
-              kind: 'session',
-              sessionId: 'session-pairing',
-              policy: {
-                deliveryMode: 'repliesOnly',
-                permissionCeiling: 'read-only',
-                approvals: { kind: 'off' },
-                newSession: { kind: 'off' },
-              },
-            },
-            allowedPrincipalIds: ['principal-ada'],
-            allowBotSenders: false,
-            inputMode: 'allAllowedMessages',
-            inboundDebounceMs: 750,
-            linkPreviewPolicy: 'suppress',
-            senderFeedback: 'off',
-            authorityEpoch: 1,
-            enabled: false,
-            deletionState: 'none',
-            createdAt: 1,
-            updatedAt: 1,
-          },
+          binding: pairingCreatedBinding,
         };
       }
       throw new Error(`Unexpected mounted Action: ${String(action)}`);
     });
+    // The QR is drawn by the incumbent host renderer, never by this plugin, so
+    // the only thing this surface can be held to is the exact payload it hands
+    // that seam.
+    const renderedQrPayloads: string[] = [];
+    const presentationHost = {
+      renderMarkdown: () => null,
+      renderCodeBlock: () => null,
+      renderPopover: () => null,
+      renderIcon: () => null,
+      renderQRCode: ({ data }) => {
+        renderedQrPayloads.push(data);
+        return null;
+      },
+    } satisfies PluginUiPresentationHost;
     const fixture = await createPluginUiTestkit({
       identity: {
         pluginId: 'happier.channels',
@@ -2966,7 +3098,7 @@ describe('Channels mounted binding creation', () => {
           'plugins.channels.surface.bindingCreatePairingCountdown': '{minutes} хв {seconds} с',
         },
       },
-      adapter: createChannelsSemanticAdapter(),
+      adapter: createChannelsSemanticAdapter(emptyDataClient, presentationHost),
       handlers: {
         selectActionInput: async () => ({ kind: 'cancelled' as const }),
         executeAction,
@@ -3043,9 +3175,23 @@ describe('Channels mounted binding creation', () => {
       expect(countdown?.textContent).not.toContain('m ');
       expect(countdown?.getAttribute('role')).not.toBe('status');
       expect(countdown?.getAttribute('aria-live')).toBeNull();
+      // The QR carries the exact Action-issued deep link and nothing derived
+      // from it, and it is offered through the incumbent host presentation
+      // seam rather than any Channels-local encoder.
+      // The live countdown re-renders this challenge every second, so the
+      // stable contract is WHICH payload reaches the host renderer, never how
+      // many times React asked it to draw the same one.
+      await vi.waitFor(() => {
+        expect(renderedQrPayloads.length).toBeGreaterThan(0);
+      });
+      expect([...new Set(renderedQrPayloads)]).toEqual(['https://example.test/pair?token=ABCDEFGH']);
+      // A QR is never the only representation of the payload: the token and
+      // link stay copyable and openable, so a host without the QR renderer
+      // loses no pairing capability.
       await fixture.press(await fixture.getByRole('button', { name: 'Copy pairing token' }));
+      await fixture.press(await fixture.getByRole('button', { name: 'Copy pairing link' }));
       await fixture.press(await fixture.getByRole('button', { name: 'Open pairing link' }));
-      expect(copiedValues).toEqual(['ABCDEFGH']);
+      expect(copiedValues).toEqual(['ABCDEFGH', 'https://example.test/pair?token=ABCDEFGH']);
       expect(openedLinks).toEqual(['https://example.test/pair?token=ABCDEFGH']);
 
       const pairingRefreshActions = await fixture.getAllByRole('button', { name: 'Refresh pairing status' });
@@ -3076,7 +3222,28 @@ describe('Channels mounted binding creation', () => {
       await vi.waitFor(() => {
         expect(finalizeAttempts).toBe(2);
       });
-      await expect(fixture.getByText('Pairing completed')).resolves.toBeDefined();
+      // Finalizing proves the conversation; it does not start delivering. The
+      // canonical Action saved this binding disabled, so a bare "Pairing
+      // completed" would promise a live conversation that is actually paused.
+      await expect(fixture.getByText(
+        'Conversation paired. The binding is saved paused until you review and enable it.',
+      )).resolves.toBeDefined();
+      expect(document.body.textContent).not.toContain('Pairing completed');
+      await expect(
+        fixture.getByRole('button', { name: 'Review and enable' }),
+      ).resolves.toBeDefined();
+
+      // Reviewing continues in the existing binding editor — the single owner
+      // of reviewing and enabling a saved binding — opened for the exact
+      // binding id the finalize Action returned, not a bare close of the
+      // pairing view.
+      await fixture.press(await fixture.getByRole('button', { name: 'Review and enable' }));
+      await vi.waitFor(() => {
+        expect(bindingReadIds).toEqual(['binding-pairing']);
+      });
+      await expect(fixture.getByRole('heading', { name: 'Edit binding' })).resolves.toBeDefined();
+      await expect(fixture.getByRole('button', { name: 'Review changes' })).resolves.toBeDefined();
+      expect(document.body.textContent).not.toContain('Review and enable');
     } finally {
       await fixture.dispose();
     }
@@ -4274,6 +4441,7 @@ describe('Channels mounted binding editor', () => {
           pollFailure: null,
           bestEffortBeforeDurableAdmission: false,
           oldTransportStopUnconfirmed: false,
+          endpointRetargetOwed: false,
           acceptedPossibleLoss: false,
           outwardDelivery: {
             retryDue: false,
@@ -4715,6 +4883,12 @@ describe('Channels mounted binding editor', () => {
       await fixture.press(await fixture.getByRole('radio', { name: 'This Session' }));
       await fixture.press(await fixture.getByRole('button', { name: 'Review changes' }));
       await expect(fixture.getByText('All admitted principals')).resolves.toBeDefined();
+      // The confirmation boundary for a widening change states the execution
+      // machine and the permission scope (delivery + ceiling) alongside the
+      // destination and admitted principals.
+      expect(document.body.textContent).toContain('machine-1');
+      expect(document.body.textContent).toContain('Permission ceiling');
+      expect(document.body.textContent).toContain('Session delivery');
       await fixture.press(await fixture.getByRole('button', { name: 'Save binding' }));
 
       await vi.waitFor(() => {
@@ -5679,6 +5853,7 @@ describe('Channels connection lifecycle actions', () => {
           pollFailure: null,
           bestEffortBeforeDurableAdmission: false,
           oldTransportStopUnconfirmed: false,
+          endpointRetargetOwed: false,
           acceptedPossibleLoss: false,
           outwardDelivery: {
             retryDue: false,
@@ -5855,6 +6030,102 @@ describe('Channels connection lifecycle actions', () => {
     }
   });
 
+  it('announces each transfer phase through the mounted focus owner', async () => {
+    const submittedProviderSetup = {
+      kind: 'submitted' as const,
+      action: providerSetupOperation.action,
+      input: { repository: 'happier-dev/happier' },
+      selection: {
+        target: {
+          pluginId: 'happier.channels',
+          immutableGenerationId: 'channels-target-generation-a',
+        },
+        point: providerSetupOperation.point,
+        contributor: providerSetupOperation.contributor,
+      },
+      connectedAccount: { kind: 'none' as const },
+    };
+    const executeAction = vi.fn(async ({ action }: PluginUiTestkitExecuteActionInput): Promise<JsonValue> => {
+      if (action !== CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionTransfer) {
+        throw new Error(`Unexpected mounted Action: ${String(action)}`);
+      }
+      return {
+        kind: 'transferred',
+        connectionId: 'connection-1',
+        revision: 2,
+        authorityEpoch: 2,
+      };
+    });
+    const focusTarget = vi.fn((target: unknown): boolean => {
+      const focus = (target as Readonly<{ focus?: () => void }> | null)?.focus;
+      if (typeof focus !== 'function') return false;
+      focus.call(target);
+      return true;
+    });
+    const presentationHost = {
+      focusTarget,
+      renderMarkdown: () => null,
+      renderCodeBlock: () => null,
+      renderPopover: () => null,
+      renderIcon: () => null,
+    } satisfies PluginUiPresentationHost;
+    const fixture = await createPluginUiTestkit({
+      identity: {
+        pluginId: 'happier.channels',
+        pluginVersion: '0.0.0',
+        viewId: 'channels-account',
+        generation: 'channels-connection-transfer-phase-focus',
+        sessionId: 'session-1',
+      },
+      surface: renderSurface,
+      surfaceContext: createChannelsSurfaceContext(),
+      adapter: createChannelsSemanticAdapter(emptyDataClient, presentationHost),
+      handlers: {
+        selectActionInput: async () => submittedProviderSetup,
+        executeAction,
+        readResource: async ({ resource }) => {
+          const localId = typeof resource === 'string' ? resource : resource.localId;
+          if (localId === BINDINGS_RESOURCE.localId) return bindingsResource;
+          if (localId === CONNECTIONS_RESOURCE.localId) return connectionsResource;
+          throw new Error(`Unexpected Resource: ${localId}`);
+        },
+      },
+    });
+
+    const headingFor = (title: string): HTMLElement | undefined => (
+      Array.from(document.querySelectorAll<HTMLElement>('[role="heading"]')).find((node) => node.textContent === title)
+    );
+
+    try {
+      await pressButtonWithAccessibleLabelFragment('Example conversation');
+      await fixture.press(await fixture.getByRole('button', { name: 'Transfer connection' }));
+      // Opening the form announces the provider-selection phase.
+      await vi.waitFor(() => {
+        expect(focusTarget).toHaveBeenCalledTimes(1);
+        expect(document.activeElement).toBe(headingFor('Transfer connection'));
+      });
+
+      // Choosing a provider advances the transport phase and moves logical
+      // focus to its first control.
+      await fixture.press(await fixture.getByRole('button', { name: 'Transfer with Integration provider' }));
+      await vi.waitFor(() => {
+        expect(focusTarget).toHaveBeenCalledTimes(2);
+        const transportField = document.querySelector<HTMLElement>('[data-testid="channels-connection-transfer-transport"]');
+        expect(transportField).not.toBeNull();
+        expect(transportField?.contains(document.activeElement) || document.activeElement === transportField).toBe(true);
+      });
+
+      // Back returns to provider selection and announces it the same way.
+      await fixture.press(await fixture.getByRole('button', { name: 'Back' }));
+      await vi.waitFor(() => {
+        expect(focusTarget).toHaveBeenCalledTimes(3);
+        expect(document.activeElement).toBe(headingFor('Transfer connection'));
+      });
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
   it('ensures and continues a durable-push transfer with the same selected provider input', async () => {
     const submittedProviderSetup = {
       kind: 'submitted' as const,
@@ -5871,8 +6142,15 @@ describe('Channels connection lifecycle actions', () => {
       connectedAccount: { kind: 'none' as const },
     };
     const selectedActionInput = { operation: providerSetupOperation, result: submittedProviderSetup } as const;
-    const executeAction = vi.fn(async (request: PluginUiTestkitExecuteActionInput) => {
+    // Requests are recorded rather than asserted inside the boundary mock: a
+    // failed expectation there surfaces only as a rejected Action, which this
+    // surface presents as an ordinary transfer failure.
+    const transferRequests: PluginUiTestkitExecuteActionInput[] = [];
+    const executeAction = vi.fn(async (
+      request: PluginUiTestkitExecuteActionInput,
+    ): Promise<JsonValue> => {
       if (request.action === 'plugin.webhook.endpoint.ensure') {
+        expect(request.selectedActionInput).toBeUndefined();
         return {
           webhookEndpointId: 'wh_ep_AAECAwQFBgcICQoLDA0ODw',
           publicUrl: 'https://example.test/webhooks/channels',
@@ -5883,7 +6161,7 @@ describe('Channels connection lifecycle actions', () => {
       if (request.action !== CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionTransfer) {
         throw new Error(`Unexpected mounted Action: ${String(request.action)}`);
       }
-      expect(request.selectedActionInput).toEqual(selectedActionInput);
+      transferRequests.push(request);
       const input = request.input as Readonly<{ endpointContinuation?: unknown }>;
       if (input.endpointContinuation === undefined) {
         return {
@@ -5903,10 +6181,6 @@ describe('Channels connection lifecycle actions', () => {
           webhookEndpointIdempotencyKey: 'channels-transfer-endpoint-1',
         };
       }
-      expect(input.endpointContinuation).toEqual({
-        connectionId: 'connection-1',
-        webhookEndpointId: 'wh_ep_AAECAwQFBgcICQoLDA0ODw',
-      });
       return {
         kind: 'transferPendingOldStop',
         connectionId: 'connection-1',
@@ -5946,6 +6220,192 @@ describe('Channels connection lifecycle actions', () => {
         'plugin.webhook.endpoint.ensure',
         CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionTransfer,
       ]));
+      // A terminal transfer retires the purpose-bound selection, so the
+      // transport step collapses and no failure is presented.
+      await vi.waitFor(() => {
+        expect(document.querySelector('[data-testid="channels-connection-transfer-submit"]')).toBeNull();
+      });
+      expect(document.querySelector('[data-testid="channels-connection-transfer-result-failed"]')).toBeNull();
+      // Both halves of the one visible attempt carried the same selection.
+      expect(transferRequests.map((request) => (
+        request.input as Readonly<{ endpointContinuation?: unknown }>
+      ).endpointContinuation)).toEqual([
+        undefined,
+        { connectionId: 'connection-1', webhookEndpointId: 'wh_ep_AAECAwQFBgcICQoLDA0ODw' },
+      ]);
+      expect(transferRequests.map((request) => request.selectedActionInput))
+        .toEqual([selectedActionInput, selectedActionInput]);
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  it('rejoins the exact retained durable-push ensure after an ambiguous ensure on a deliberate second press', async () => {
+    const submittedProviderSetup = {
+      kind: 'submitted' as const,
+      action: providerSetupOperation.action,
+      input: { repository: 'happier-dev/happier' },
+      selection: {
+        target: {
+          pluginId: 'happier.channels',
+          immutableGenerationId: 'channels-target-generation-a',
+        },
+        point: providerSetupOperation.point,
+        contributor: providerSetupOperation.contributor,
+      },
+      connectedAccount: { kind: 'none' as const },
+    };
+    const selectedActionInput = { operation: providerSetupOperation, result: submittedProviderSetup } as const;
+    const endpointRequiredResult = {
+      kind: 'endpointRequired',
+      connectionId: 'connection-1',
+      webhookContribution: {
+        pluginId: 'com.example.conversation-provider',
+        localId: 'webhook',
+      },
+      targetMaterialization: {
+        pluginId: 'com.example.conversation-provider',
+        machineId: 'machine-example',
+        materializationId: 'materialization-example',
+      },
+      sourceInstanceId: 'channels.connection.connection-1',
+      webhookEndpointSetup: { kind: 'accountEndpointV1', credential: 'serverGenerated' },
+      webhookEndpointIdempotencyKey: 'channels-transfer-endpoint-1',
+    };
+    const endpointEnsureInput = {
+      webhookContribution: endpointRequiredResult.webhookContribution,
+      targetMaterialization: endpointRequiredResult.targetMaterialization,
+      sourceInstanceId: endpointRequiredResult.sourceInstanceId,
+      setup: endpointRequiredResult.webhookEndpointSetup,
+      idempotencyKey: endpointRequiredResult.webhookEndpointIdempotencyKey,
+    };
+    let endpointEnsureCalls = 0;
+    // The core mints a fresh endpoint idempotency key on every no-continuation
+    // transfer. Handing back a stable key would let a surface that silently
+    // re-ran the first transfer still look like an exact rejoin, so the
+    // producer varies it and the assertion below can tell the two apart.
+    let mintedEndpointKeys = 0;
+    const ensureInputs: unknown[] = [];
+    const executeAction = vi.fn(async (
+      request: PluginUiTestkitExecuteActionInput,
+    ): Promise<JsonValue> => {
+      if (request.action === 'plugin.webhook.endpoint.ensure') {
+        ensureInputs.push(request.input);
+        endpointEnsureCalls += 1;
+        if (endpointEnsureCalls === 1) {
+          throw new PluginError({
+            code: 'timeout',
+            message: 'The endpoint ensure response was lost.',
+          });
+        }
+        return {
+          webhookEndpointId: 'wh_ep_AAECAwQFBgcICQoLDA0ODw',
+          publicUrl: 'https://example.test/webhooks/channels',
+          readiness: 'ready',
+          revision: 1,
+        };
+      }
+      if (request.action !== CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionTransfer) {
+        throw new Error(`Unexpected mounted Action: ${String(request.action)}`);
+      }
+      expect(request.selectedActionInput).toEqual(selectedActionInput);
+      const input = request.input as Readonly<{ endpointContinuation?: unknown }>;
+      if (input.endpointContinuation === undefined) {
+        mintedEndpointKeys += 1;
+        return {
+          ...endpointRequiredResult,
+          webhookEndpointIdempotencyKey: `channels-transfer-endpoint-${mintedEndpointKeys}`,
+        };
+      }
+      expect(input.endpointContinuation).toEqual({
+        connectionId: 'connection-1',
+        webhookEndpointId: 'wh_ep_AAECAwQFBgcICQoLDA0ODw',
+      });
+      return {
+        kind: 'transferPendingOldStop',
+        connectionId: 'connection-1',
+        revision: 2,
+        authorityEpoch: 2,
+      };
+    });
+    const fixture = await createPluginUiTestkit({
+      identity: {
+        pluginId: 'happier.channels',
+        pluginVersion: '0.0.0',
+        viewId: 'channels-account',
+        generation: 'channels-transfer-ensure-ambiguity-rejoin',
+        sessionId: 'session-1',
+      },
+      surface: renderSurface,
+      surfaceContext: createChannelsSurfaceContext(),
+      adapter: createChannelsSemanticAdapter(),
+      handlers: {
+        selectActionInput: async () => submittedProviderSetup,
+        executeAction,
+        readResource: bindingResourceReader(),
+      },
+    });
+
+    try {
+      await pressButtonWithAccessibleLabelFragment('Example conversation');
+      await fixture.press(await fixture.getByRole('button', { name: 'Transfer connection' }));
+      await fixture.press(await fixture.getByRole('button', { name: 'Transfer with Integration provider' }));
+      await fixture.press(await fixture.getByRole('radio', {
+        name: 'Durable push',
+        state: { checked: false },
+      }));
+      await fixture.press(await fixture.getByRole('button', { name: 'Confirm transfer' }));
+      await vi.waitFor(() => {
+        expect(executeAction.mock.calls.map(([request]) => request.action)).toEqual([
+          CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionTransfer,
+          'plugin.webhook.endpoint.ensure',
+        ]);
+      });
+      // The ambiguity is presented truthfully: no definite provider-failure
+      // banner replaces the unknown outcome, and the retained attempt stays
+      // visible so the deliberate second press can rejoin it.
+      await vi.waitFor(() => {
+        expect(document.querySelector(
+          '[data-testid="channels-connection-transfer-endpoint-ensure-outcome-unknown"]',
+        )).not.toBeNull();
+      });
+      expect(document.querySelector(
+        '[data-testid="channels-connection-transfer-result-failed"]',
+      )).toBeNull();
+      await expect(fixture.getByRole('button', {
+        name: 'Transfer with Integration provider',
+        state: { disabled: true },
+      })).resolves.toBeDefined();
+      await expect(fixture.getByRole('radio', {
+        name: 'Durable push',
+        state: { checked: true, disabled: true },
+      })).resolves.toBeDefined();
+      await expect(fixture.getByRole('button', {
+        name: 'Confirm transfer',
+      })).resolves.toBeDefined();
+
+      await fixture.press(await fixture.getByRole('button', { name: 'Confirm transfer' }));
+      // The deliberate second press skips the no-continuation transfer: it
+      // rejoins the retained ensure directly, then runs only the final
+      // continuation transfer.
+      await vi.waitFor(() => expect(executeAction.mock.calls.map(([request]) => request.action)).toEqual([
+        CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionTransfer,
+        'plugin.webhook.endpoint.ensure',
+        'plugin.webhook.endpoint.ensure',
+        CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionTransfer,
+      ]));
+      // Exactly one endpoint key was ever minted, and both ensure dispatches
+      // carry those same retained bytes, so the rejoin addresses the original
+      // endpoint effect rather than a second attempt.
+      expect(mintedEndpointKeys).toBe(1);
+      expect(ensureInputs).toHaveLength(2);
+      expect(ensureInputs[0]).toEqual(endpointEnsureInput);
+      expect(ensureInputs[1]).toEqual(endpointEnsureInput);
+      await vi.waitFor(() => {
+        expect(document.querySelector(
+          '[data-testid="channels-connection-transfer-endpoint-ensure-outcome-unknown"]',
+        )).toBeNull();
+      });
     } finally {
       await fixture.dispose();
     }
@@ -6392,6 +6852,71 @@ describe('Channels connection lifecycle actions', () => {
     }
   });
 
+  it('offers endpoint repair instead of accept-loss while a durable-push target move is owed', async () => {
+    const executeAction = vi.fn(async ({ action }: PluginUiTestkitExecuteActionInput) => {
+      if (action === CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionAbandon) {
+        return {
+          kind: 'rejoined',
+          connectionId: 'connection-1',
+          revision: 2,
+          authorityEpoch: 1,
+          acceptedPossibleLoss: false,
+        };
+      }
+      throw new Error(`Unexpected mounted Action: ${String(action)}`);
+    });
+    const fixture = await createPluginUiTestkit({
+      identity: {
+        pluginId: 'happier.channels',
+        pluginVersion: '0.0.0',
+        viewId: 'channels-account',
+        generation: 'channels-connection-endpoint-repair',
+        sessionId: 'session-1',
+      },
+      surface: renderSurface,
+      surfaceContext: createChannelsSurfaceContext(),
+      adapter: createChannelsSemanticAdapter(),
+      handlers: {
+        selectActionInput: async () => ({ kind: 'cancelled' as const }),
+        executeAction,
+        readResource: async ({ resource }) => {
+          const localId = typeof resource === 'string' ? resource : resource.localId;
+          if (localId === BINDINGS_RESOURCE.localId) return bindingsResource;
+          if (localId === CONNECTIONS_RESOURCE.localId) return endpointRetargetOwedConnectionsResource;
+          throw new Error(`Unexpected Resource: ${localId}`);
+        },
+      },
+    });
+
+    try {
+      await pressButtonWithAccessibleLabelFragment('Example conversation');
+
+      // Nothing was lost: the Account endpoint is still deliverable and only
+      // needs to be moved, so this must not be presented as a stop that may
+      // never be confirmed or as a loss the owner has to accept.
+      expect(document.querySelector('[data-testid="channels-connection-endpoint-retarget-owed"]')).not.toBeNull();
+      expect(document.querySelector('[data-testid="channels-old-transport-stop-unconfirmed"]')).toBeNull();
+      expect(document.querySelector('[data-testid="channels-connection-accept-loss"]')).toBeNull();
+      // Deleting the connection drops the endpoint reference entirely, so it
+      // stays available and this state is never a dead end.
+      expect(document.querySelector('[data-testid="channels-connection-delete"]')).not.toBeNull();
+
+      // Repair is not destructive, so it runs without a loss confirmation.
+      await pressByTestId('channels-connection-repair-endpoint');
+      await vi.waitFor(() => {
+        expect(executeAction).toHaveBeenCalledWith(expect.objectContaining({
+          action: CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionAbandon,
+          input: {
+            connectionId: 'connection-1',
+            expectedRevision: 1,
+          },
+        }));
+      });
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
   it('keeps accepted-loss disclosure, hides repeat abandonment, and permits the next delete operation', async () => {
     const executeAction = vi.fn(async ({ action }: PluginUiTestkitExecuteActionInput) => {
       if (action === CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionDelete) {
@@ -6572,6 +7097,10 @@ describe('Channels offline Account-local binding policy', () => {
         name: 'Allow bot senders',
         state: { checked: false },
       }));
+      // Admitting bot senders widens the binding's authority, so the shared
+      // authority comparison routes the save through the same confirmation
+      // boundary the daemon-backed editor uses.
+      await fixture.press(await fixture.getByRole('button', { name: 'Review changes' }));
       await fixture.press(await fixture.getByRole('button', { name: 'Save binding' }));
 
       await vi.waitFor(() => {
@@ -6746,6 +7275,12 @@ describe('Channels offline Account-local binding policy', () => {
         name: 'Mirror Session',
         state: { checked: false },
       }));
+      // Mirroring the whole Session outward widens the binding's authority, so
+      // the shared confirmation boundary (with the execution machine fact)
+      // comes before the save.
+      await fixture.press(await fixture.getByRole('button', { name: 'Review changes' }));
+      expect(document.body.textContent).toContain('machine-1');
+      expect(document.body.textContent).toContain('Session delivery');
       await fixture.press(await fixture.getByRole('button', { name: 'Save binding' }));
 
       await vi.waitFor(() => {
@@ -7254,6 +7789,516 @@ describe('Channels Session destination', () => {
       expect(mount.container.textContent).not.toContain('Conversation connections');
     } finally {
       mount.unmount();
+    }
+  });
+});
+
+describe('Channels connection row placement presentation', () => {
+  async function mountConnectionRows(connections: ResourceContent): Promise<PluginUiTestkit> {
+    return await createPluginUiTestkit({
+      identity: {
+        pluginId: 'happier.channels',
+        pluginVersion: '0.0.0',
+        viewId: 'channels-account',
+        generation: 'channels-connection-placement',
+        sessionId: 'session-1',
+      },
+      surface: renderSurface,
+      surfaceContext: createChannelsSurfaceContext(),
+      adapter: createChannelsSemanticAdapter(),
+      handlers: {
+        selectActionInput: async () => ({ kind: 'cancelled' as const }),
+        executeAction: async ({ action }: PluginUiTestkitExecuteActionInput): Promise<JsonValue> => {
+          throw new Error(`Unexpected mounted Action: ${String(action)}`);
+        },
+        readResource: async ({ resource }) => {
+          const localId = typeof resource === 'string' ? resource : resource.localId;
+          if (localId === BINDINGS_RESOURCE.localId) return bindingsResource;
+          if (localId === CONNECTIONS_RESOURCE.localId) return connections;
+          throw new Error(`Unexpected Resource: ${localId}`);
+        },
+      },
+    });
+  }
+
+  async function collapsedConnectionRow(): Promise<Readonly<{ text: string; accessibleName: string }>> {
+    return await vi.waitFor(() => {
+      const row = document.querySelector<HTMLElement>('[data-testid="channels-connection-connection-1"]');
+      expect(row, 'Expected the collapsed connection row').not.toBeNull();
+      const named = row?.closest<HTMLElement>('[aria-label]') ?? row;
+      return {
+        text: row?.textContent ?? '',
+        accessibleName: named?.getAttribute('aria-label') ?? '',
+      };
+    });
+  }
+
+  it('states saved enablement and runtime placement as separate facts on a collapsed row', async () => {
+    // A runtime attention takes the single status accessory, so without a
+    // policy fact of its own the row silently loses the deliberate pause.
+    const fixture = await mountConnectionRows(pausedAndPollBlockedConnectionsResource);
+    try {
+      const row = await collapsedConnectionRow();
+      expect(row.text).toContain('Paused');
+      expect(row.text).toContain('Selected machine is not receiving messages');
+      expect(row.text).not.toContain('Runs on your selected machine');
+      // Both facts must reach a screen reader, not only the sighted detail.
+      expect(row.accessibleName).toContain('Paused');
+      expect(row.accessibleName).toContain('Selected machine is not receiving messages');
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  it('does not claim a paused connection is running on its selected machine', async () => {
+    const fixture = await mountConnectionRows(pausedHealthyConnectionsResource);
+    try {
+      const row = await collapsedConnectionRow();
+      expect(row.text).toContain('Paused');
+      // Placement is where the connection is assigned; only an enabled
+      // connection is actually running there.
+      expect(row.text).toContain('Assigned to your selected machine');
+      expect(row.text).not.toContain('Runs on your selected machine');
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  it('keeps an enabled healthy connection reading as enabled and running', async () => {
+    const fixture = await mountConnectionRows(connectionsResource);
+    try {
+      const row = await collapsedConnectionRow();
+      expect(row.text).toContain('Enabled');
+      expect(row.text).toContain('Runs on your selected machine');
+      expect(row.text).not.toContain('Paused');
+    } finally {
+      await fixture.dispose();
+    }
+  });
+});
+
+describe('Channels collapsed row identity', () => {
+  // A provider can serve several accounts and several unlabeled endpoints, so
+  // each collapsed row must remain individually addressable: the integration
+  // account appears as its own fact, and a row without any human label falls
+  // back to its short stable identity instead of a generic word.
+  const labeledConnectionConnections = jsonResource({
+    connections: [{
+      connectionId: 'connection-1',
+      revision: 1,
+      authorityEpoch: 1,
+      providerPluginId: 'com.example.conversation-provider',
+      selectedMachineId: 'machine-1',
+      selectedTransport: 'checkpointedPull',
+      integrationPrincipalLabel: 'Team bot',
+      enabled: true,
+      deletionState: 'none',
+      maximumObservationAgeMs: 60_000,
+      attention: {
+        historyGap: null,
+        pollFailure: null,
+        bestEffortBeforeDurableAdmission: false,
+        oldTransportStopUnconfirmed: false,
+        endpointRetargetOwed: false,
+        acceptedPossibleLoss: false,
+        outwardDelivery: {
+          retryDue: false,
+          notDelivered: false,
+          partial: false,
+          outcomeUnknown: false,
+        },
+      },
+    }, {
+      connectionId: 'connection-c7tQm2xwAbCdEfGh',
+      revision: 1,
+      authorityEpoch: 1,
+      providerPluginId: 'com.example.conversation-provider',
+      selectedMachineId: 'machine-1',
+      selectedTransport: 'checkpointedPull',
+      enabled: true,
+      deletionState: 'none',
+      maximumObservationAgeMs: 60_000,
+      attention: {
+        historyGap: null,
+        pollFailure: null,
+        bestEffortBeforeDurableAdmission: false,
+        oldTransportStopUnconfirmed: false,
+        endpointRetargetOwed: false,
+        acceptedPossibleLoss: false,
+        outwardDelivery: {
+          retryDue: false,
+          notDelivered: false,
+          partial: false,
+          outcomeUnknown: false,
+        },
+      },
+    }],
+  }, '5');
+  const identityBindingsResource = jsonResource({
+    bindings: [{
+      bindingId: 'binding-1',
+      revision: 1,
+      connectionId: 'connection-1',
+      endpoint: { audience: 'direct', label: 'Project room' },
+      target: { kind: 'session', summary: 'Example session' },
+      inputMode: 'allAllowedMessages',
+      deliveryMode: 'repliesOnly',
+      approval: { kind: 'off' },
+      enabled: true,
+      deletionState: 'none',
+    }, {
+      bindingId: 'binding-Qm2xwAbCdEfGh7k',
+      revision: 1,
+      connectionId: 'connection-c7tQm2xwAbCdEfGh',
+      endpoint: { audience: 'direct' },
+      target: { kind: 'session', summary: 'Other session' },
+      inputMode: 'directMentionsOnly',
+      deliveryMode: 'repliesOnly',
+      approval: { kind: 'off' },
+      enabled: false,
+      deletionState: 'none',
+    }],
+  }, '6');
+
+  function collapsedRowByIdentity(
+    testId: string,
+  ): Promise<Readonly<{ text: string; accessibleName: string }>> {
+    return vi.waitFor(() => {
+      const row = document.querySelector<HTMLElement>(`[data-testid="${testId}"]`);
+      expect(row, `Expected collapsed row ${testId}`).not.toBeNull();
+      const named = row?.closest<HTMLElement>('[aria-label]') ?? row;
+      return {
+        text: row?.textContent ?? '',
+        accessibleName: named?.getAttribute('aria-label') ?? '',
+      };
+    });
+  }
+
+  it('mount the labeled binding rows with account, provider, and endpoint facts', async () => {
+    const fixture = await createPluginUiTestkit({
+      identity: {
+        pluginId: 'happier.channels',
+        pluginVersion: '0.0.0',
+        viewId: 'channels-account',
+        generation: 'channels-collapsed-row-identity',
+        sessionId: 'session-1',
+      },
+      surface: renderSurface,
+      surfaceContext: createChannelsSurfaceContext(),
+      adapter: createChannelsSemanticAdapter(),
+      handlers: {
+        selectActionInput: async () => ({ kind: 'cancelled' as const }),
+        executeAction: async () => {
+          throw new Error('Unexpected mounted Action');
+        },
+        readResource: async ({ resource }) => {
+          const localId = typeof resource === 'string' ? resource : resource.localId;
+          if (localId === BINDINGS_RESOURCE.localId) return identityBindingsResource;
+          if (localId === CONNECTIONS_RESOURCE.localId) return labeledConnectionConnections;
+          throw new Error(`Unexpected Resource: ${localId}`);
+        },
+      },
+    });
+
+    try {
+      const labeled = await collapsedRowByIdentity('channels-binding-binding-1');
+      // The integration account is its own fact, distinct from the provider
+      // brand and the endpoint label, in both the visible row and its
+      // accessible name.
+      expect(labeled.accessibleName).toContain('Project room');
+      expect(labeled.accessibleName).toContain('Provider:');
+      expect(labeled.accessibleName).toContain('Account: Team bot');
+      expect(labeled.text).toContain('Team bot');
+
+      const unlabeled = await collapsedRowByIdentity('channels-binding-binding-Qm2xwAbCdEfGh7k');
+      // Without an endpoint label the row names itself by its short stable
+      // identity rather than a generic word shared by every unlabeled row.
+      expect(unlabeled.accessibleName).toContain('Qm2xwAbC');
+      expect(unlabeled.text).toContain('Qm2xwAbC');
+      expect(unlabeled.text).not.toContain('External conversation');
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  it('names an unlabeled connection by its short identity instead of repeating the provider', async () => {
+    const fixture = await createPluginUiTestkit({
+      identity: {
+        pluginId: 'happier.channels',
+        pluginVersion: '0.0.0',
+        viewId: 'channels-account',
+        generation: 'channels-collapsed-row-identity-connection',
+        sessionId: 'session-1',
+      },
+      surface: renderSurface,
+      surfaceContext: createChannelsSurfaceContext(),
+      adapter: createChannelsSemanticAdapter(),
+      handlers: {
+        selectActionInput: async () => ({ kind: 'cancelled' as const }),
+        executeAction: async () => {
+          throw new Error('Unexpected mounted Action');
+        },
+        readResource: async ({ resource }) => {
+          const localId = typeof resource === 'string' ? resource : resource.localId;
+          if (localId === BINDINGS_RESOURCE.localId) return identityBindingsResource;
+          if (localId === CONNECTIONS_RESOURCE.localId) return labeledConnectionConnections;
+          throw new Error(`Unexpected Resource: ${localId}`);
+        },
+      },
+    });
+
+    try {
+      const row = await collapsedRowByIdentity('channels-connection-connection-c7tQm2xwAbCdEfGh');
+      expect(row.accessibleName).toContain('c7tQm2xw');
+      expect(row.accessibleName).toContain('Provider:');
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  it('names each ambiguous delivery decision by its short custody identity offline', async () => {
+    const account = createOfflineChannelStateFixture();
+    const first = offlineAmbiguousDeliveryRow();
+    const secondCustodyId = 'd'.repeat(43);
+    const second = {
+      ...offlineAmbiguousDeliveryRow(),
+      rowId: secondCustodyId,
+      value: {
+        ...offlineAmbiguousDeliveryRow().value,
+        id: secondCustodyId,
+      },
+    };
+    account.deliveries.rows.set(first.rowId, first);
+    account.deliveries.rows.set(second.rowId, second);
+    const fixture = await createPluginUiTestkit({
+      identity: {
+        pluginId: 'happier.channels',
+        pluginVersion: '0.0.0',
+        viewId: 'channels-account',
+        generation: 'channels-offline-delivery-identity',
+        sessionId: 'session-1',
+      },
+      surface: renderSurface,
+      surfaceContext: createChannelsSurfaceContext(),
+      adapter: createChannelsSemanticAdapter(account.dataClient),
+      handlers: {
+        selectActionInput: async () => ({ kind: 'cancelled' as const }),
+      },
+    });
+
+    try {
+      await pressButtonWithAccessibleLabelFragment('Example conversation');
+      await vi.waitFor(() => {
+        expect(document.querySelectorAll('[data-testid^="channels-delivery-resolution-accept-"]').length).toBe(2);
+      });
+      // The privacy-safe delivery projection carries no endpoint label, so the
+      // two rows' identical buttons are distinguished by their short custody
+      // identities in the accessible names.
+      const firstName = 'Accept as sent (Resolve delivery outcome — cccccccc)';
+      const secondName = 'Accept as sent (Resolve delivery outcome — dddddddd)';
+      await expect(fixture.getByRole('button', { name: firstName })).resolves.toBeDefined();
+      await expect(fixture.getByRole('button', { name: secondName })).resolves.toBeDefined();
+      await expect(fixture.getByRole('button', {
+        name: `Discard delivery (Resolve delivery outcome — dddddddd)`,
+      })).resolves.toBeDefined();
+    } finally {
+      await fixture.dispose();
+    }
+  });
+});
+
+describe('Channels Connected Services handoff', () => {
+  it('sends an invalid Connected Account credential to its canonical owner instead of re-collecting it', async () => {
+    const openConnectedAccountsRequests: unknown[] = [];
+    const executeAction = vi.fn(async ({ action }: PluginUiTestkitExecuteActionInput): Promise<JsonValue> => {
+      throw new Error(`Unexpected mounted Action: ${String(action)}`);
+    });
+    const fixture = await createPluginUiTestkit({
+      identity: {
+        pluginId: 'happier.channels',
+        pluginVersion: '0.0.0',
+        viewId: 'channels-account',
+        generation: 'channels-connected-services-handoff',
+        sessionId: 'session-1',
+      },
+      surface: renderSurface,
+      surfaceContext: createChannelsSurfaceContext(),
+      adapter: createChannelsSemanticAdapter(),
+      handlers: {
+        selectActionInput: async () => ({ kind: 'cancelled' as const }),
+        executeAction,
+        openConnectedAccounts: ({ request }) => { openConnectedAccountsRequests.push(request); },
+        readResource: async ({ resource }) => {
+          const localId = typeof resource === 'string' ? resource : resource.localId;
+          if (localId === BINDINGS_RESOURCE.localId) return bindingsResource;
+          if (localId === CONNECTIONS_RESOURCE.localId) {
+            return connectionsResourceWithProviderReadiness({ code: 'providerCredentialInvalid' });
+          }
+          throw new Error(`Unexpected Resource: ${localId}`);
+        },
+      },
+    });
+
+    try {
+      await pressButtonWithAccessibleLabelFragment('Example conversation');
+      // The collapsed row summarizes the same readiness fact, so this asserts
+      // the expanded disclosure by its own identity rather than by a text
+      // query that legitimately matches both zoom levels.
+      await vi.waitFor(() => {
+        const disclosure = document.querySelector<HTMLElement>(
+          '[data-testid="channels-provider-readiness-disclosure"]',
+        );
+        expect(disclosure?.textContent).toContain('Connected Account credential needs attention');
+      });
+
+      // The credential owner is Connected Services. This surface names that
+      // destination in words and hands over; it never grows a second place to
+      // replace or re-enter the credential.
+      await fixture.press(await fixture.getByRole('button', { name: 'Open Connected Services' }));
+      await vi.waitFor(() => {
+        expect(openConnectedAccountsRequests).toHaveLength(1);
+      });
+      expect(executeAction).not.toHaveBeenCalled();
+    } finally {
+      await fixture.dispose();
+    }
+  });
+});
+
+describe('Channels first connection continuation', () => {
+  it('continues a newly created connection into the incumbent binding journey with that connection selected', async () => {
+    const createdConnectionId = 'connection-from-first-setup';
+    const submittedProviderSetup = {
+      kind: 'submitted' as const,
+      action: providerSetupOperation.action,
+      input: { repository: 'happier-dev/happier' },
+      selection: {
+        target: {
+          pluginId: 'happier.channels',
+          immutableGenerationId: 'channels-target-generation-a',
+        },
+        point: providerSetupOperation.point,
+        contributor: providerSetupOperation.contributor,
+      },
+      connectedAccount: { kind: 'none' as const },
+    };
+    let connectionCreated = false;
+    const createdConnectionsResource = jsonResource({
+      connections: [{
+        connectionId: createdConnectionId,
+        revision: 1,
+        authorityEpoch: 1,
+        providerPluginId: providerSetupOperation.contributor.pluginId,
+        selectedMachineId: 'machine-1',
+        selectedTransport: 'checkpointedPull',
+        integrationPrincipalLabel: 'Example conversation',
+        enabled: true,
+        deletionState: 'none',
+        maximumObservationAgeMs: 60_000,
+        attention: {
+          historyGap: null,
+          providerReadiness: null,
+          ingressConflict: null,
+          pollFailure: null,
+          bestEffortBeforeDurableAdmission: false,
+          oldTransportStopUnconfirmed: false,
+          endpointRetargetOwed: false,
+          acceptedPossibleLoss: false,
+          outwardDelivery: {
+            retryDue: false,
+            notDelivered: false,
+            partial: false,
+            outcomeUnknown: false,
+          },
+        },
+      }],
+    }, '6');
+    const emptyConnectionsResource = jsonResource({ connections: [] }, '7');
+    const executeAction = vi.fn(async (request: PluginUiTestkitExecuteActionInput): Promise<JsonValue> => {
+      if (request.action === CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionPrepare) {
+        return {
+          kind: 'ready',
+          supportedTransports: ['checkpointedPull'],
+          recommendedTransport: 'checkpointedPull',
+          overlapSafety: 'safe',
+          replayContinuity: 'none',
+          outboundTextLimit: { maximum: 4_000, unit: 'unicodeCodePoints' },
+        };
+      }
+      if (request.action === CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionCreate) {
+        connectionCreated = true;
+        return { kind: 'created', connectionId: createdConnectionId };
+      }
+      if (request.action === CONVERSATION_MANAGEMENT_ACTION_IDS_V1.bindingResolve) {
+        return { kind: 'endpointCandidates', candidates: [bindingEndpointCandidate] };
+      }
+      throw new Error(`Unexpected mounted Action: ${String(request.action)}`);
+    });
+    const fixture = await createPluginUiTestkit({
+      identity: {
+        pluginId: 'happier.channels',
+        pluginVersion: '0.0.0',
+        viewId: 'channels-account',
+        generation: 'channels-first-connection-continuation',
+        sessionId: 'session-1',
+      },
+      surface: renderSurface,
+      surfaceContext: createChannelsSurfaceContext(),
+      adapter: createChannelsSemanticAdapter(),
+      handlers: {
+        selectActionInput: async () => submittedProviderSetup,
+        executeAction,
+        readResource: async ({ resource }) => {
+          const localId = typeof resource === 'string' ? resource : resource.localId;
+          if (localId === BINDINGS_RESOURCE.localId) return bindingsResource;
+          if (localId === CONNECTIONS_RESOURCE.localId) {
+            return connectionCreated ? createdConnectionsResource : emptyConnectionsResource;
+          }
+          throw new Error(`Unexpected Resource: ${localId}`);
+        },
+      },
+    });
+
+    try {
+      await fixture.press(await fixture.getByRole('button', { name: 'Set up Integration provider' }));
+      // Creation only becomes offerable once the canonical prepare settles.
+      await vi.waitFor(async () => {
+        await expect(fixture.getByRole('button', { name: 'Create connection' })).resolves.toBeDefined();
+      });
+      await fixture.press(await fixture.getByRole('button', { name: 'Create connection' }));
+      await vi.waitFor(() => {
+        expect(executeAction).toHaveBeenCalledWith(expect.objectContaining({
+          action: CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionCreate,
+        }));
+      });
+
+      // A connection alone delivers nothing. The person must land on one
+      // prominent next step rather than an inert list row.
+      await vi.waitFor(() => {
+        expect(
+          document.querySelector('[data-testid="channels-connection-created-continue"]'),
+        ).not.toBeNull();
+      });
+      await pressByTestId('channels-connection-created-continue-open');
+
+      // The two domain Actions stay separate; only their journeys compose, so
+      // the incumbent binding journey opens with the new connection selected
+      // and no second connection mutation is dispatched.
+      await enterTextByTestId('channels-binding-create-endpoint-query', bindingEndpointSelection.query);
+      await fixture.press(await fixture.getByRole('button', { name: 'Search endpoints' }));
+      await vi.waitFor(() => {
+        expect(executeAction).toHaveBeenCalledWith(expect.objectContaining({
+          action: CONVERSATION_MANAGEMENT_ACTION_IDS_V1.bindingResolve,
+          input: expect.objectContaining({ connectionId: createdConnectionId }),
+        }));
+      });
+      expect(
+        executeAction.mock.calls.filter(([request]) => (
+          request.action === CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionCreate
+        )),
+      ).toHaveLength(1);
+    } finally {
+      await fixture.dispose();
     }
   });
 });

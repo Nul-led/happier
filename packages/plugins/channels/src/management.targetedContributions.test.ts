@@ -16,7 +16,9 @@ import {
   CHANNEL_STATE_INDEX_ID,
   CHANNEL_STATE_RECORD_KIND,
 } from './collections.js';
+import { convergeConversationConnectionWebhookEndpointTarget } from './connectionWebhookEndpoint.js';
 import {
+  abandonConversationConnectionForInvocation,
   createConversationConnectionForInvocation,
   deleteConversationConnectionForInvocation,
   prepareConversationConnectionForInvocation,
@@ -27,6 +29,7 @@ import {
 } from './management.js';
 import {
   createCurrentConversationConnectionFixture,
+  createCurrentConversationPendingOldTransportStopFixture,
   type ConversationConnectionFixtureAuthority,
 } from './testkit/currentConnectionFixture.js';
 import { assertChannelsTestCollectionQueryLimit } from './testkit/collectionQueryBound.js';
@@ -2489,6 +2492,208 @@ describe('transferConversationConnectionForInvocation targeted provider selectio
     });
   });
 
+  it('resumes unresolved durable-push retarget custody from the current policy-edited row', async () => {
+    const connectionId = 'connection-transfer-push-retarget-policy-edit';
+    const oldExecutionOrigin = {
+      serverIdentityId: 'srv-example',
+      materializationRef: {
+        pluginId: providerSelection.contributor.pluginId,
+        machineId: 'machine-old',
+        materializationId: 'materialization-old',
+      },
+    } as const;
+    const replacementExecutionOrigin = {
+      serverIdentityId: 'srv-example',
+      materializationRef: {
+        pluginId: providerSelection.contributor.pluginId,
+        machineId: 'machine-example',
+        materializationId: 'materialization-example',
+      },
+    } as const;
+    const collection = createMutableConnectionStateCollection();
+    collection.rows.set(connectionId, {
+      rowId: connectionId,
+      revision: 4,
+      value: createCurrentConversationConnectionFixture({
+        connectionId,
+        authority: {
+          providerPluginId: providerSelection.contributor.pluginId,
+          providerContributionSelection: {
+            contributionId: providerSelection.contributor.contributionId,
+            immutableGenerationId: providerSelection.contributor.immutableGenerationId,
+          },
+          providerSetupInput: { source: 'same' },
+          credentialRef: null,
+          transportOrigin: oldExecutionOrigin,
+          providerConnectionKey: 'example:connection',
+          providerConfig: { opaque: true },
+          routingIdentityKey: 'r'.repeat(43),
+          integrationPrincipal: { id: 'example-bot' },
+          authorityEpoch: 4,
+        },
+        transport: {
+          kind: 'durablePush',
+          webhookContributionRef: {
+            pluginId: providerSelection.contributor.pluginId,
+            localId: 'webhook',
+          },
+          webhookEndpointId: DURABLE_PUSH_WEBHOOK_ENDPOINT_ID,
+          webhookSourceInstanceId: `channels.connection.${connectionId}`,
+        },
+        overlapSafety: 'safe',
+        replayContinuity: 'none',
+        outboundTextLimit: { maximum: 4_000, unit: 'unicodeCodePoints' },
+      }),
+    });
+
+    let endpointTarget: Readonly<{
+      pluginId: string;
+      machineId: string;
+      materializationId: string;
+    }> = oldExecutionOrigin.materializationRef;
+    let endpointIntentEpoch: number | null = null;
+    let endpointRevision = 4;
+    let failNextConverge = true;
+    const convergeInputs: unknown[] = [];
+    const endpointActions = vi.fn(async (actionId: string, actionInput: unknown) => {
+      if (actionId === 'plugin.webhook.endpoint.convergeTarget') {
+        convergeInputs.push(actionInput);
+        if (failNextConverge) {
+          failNextConverge = false;
+          throw new Error('simulated endpoint convergence interruption');
+        }
+        const request = actionInput as Readonly<{
+          desiredTargetMaterialization: typeof replacementExecutionOrigin.materializationRef;
+          targetIntentEpoch: number;
+        }>;
+        if (endpointIntentEpoch !== null && endpointIntentEpoch > request.targetIntentEpoch) {
+          return {
+            kind: 'superseded',
+            webhookEndpointId: DURABLE_PUSH_WEBHOOK_ENDPOINT_ID,
+            currentTargetIntentEpoch: endpointIntentEpoch,
+          };
+        }
+        endpointTarget = request.desiredTargetMaterialization;
+        endpointIntentEpoch = request.targetIntentEpoch;
+        endpointRevision += 1;
+        return {
+          kind: 'converged',
+          webhookEndpointId: DURABLE_PUSH_WEBHOOK_ENDPOINT_ID,
+          revision: endpointRevision,
+          targetMaterialization: endpointTarget,
+          targetIntentEpoch: request.targetIntentEpoch,
+        };
+      }
+      if (actionId === 'plugin.webhook.endpoint.checkCorrespondence') {
+        return {
+          kind: 'ready',
+          webhookEndpointId: DURABLE_PUSH_WEBHOOK_ENDPOINT_ID,
+          revision: endpointRevision,
+        };
+      }
+      throw new Error(`Unexpected endpoint Action: ${actionId}`);
+    });
+    const providerActions = durablePushCreateActionExecutor({});
+    const context = invocationContext({
+      actions: {
+        execute: endpointActions,
+        executeAdmittedTargetedOperationWithExecutionOrigin:
+          providerActions.executeAdmittedTargetedOperationWithExecutionOrigin,
+      } as unknown as ActionsService,
+      targetedContributions: targetedContributionsFixture({
+        contributorImmutableGenerationId: providerSelection.contributor.immutableGenerationId,
+        operations: {
+          setup: setupAction,
+          connectionTest: connectionTestAction,
+          messageDeliver: messageDeliverAction,
+          connectionStop: connectionStopAction,
+          observationsPoll: observationsPollAction,
+        },
+      }),
+      stateCollection: collection,
+    });
+    const initialTransferInput = {
+      connectionId,
+      expectedRevision: 4,
+      expectedAuthorityEpoch: 4,
+      providerSelection,
+      providerSetupInput: { source: 'same' },
+      credentialRef: null,
+      selectedTransport: 'durablePush',
+    } as const;
+
+    await expect(transferConversationConnectionForInvocation(initialTransferInput, context)).resolves.toEqual({
+      kind: 'transferPendingOldStop',
+      connectionId,
+      revision: 5,
+      authorityEpoch: 5,
+    });
+    expect(providerActions.executeAdmittedTargetedOperationWithExecutionOrigin).toHaveBeenCalledTimes(2);
+    expect(convergeInputs).toEqual([expect.objectContaining({
+      webhookEndpointId: DURABLE_PUSH_WEBHOOK_ENDPOINT_ID,
+      desiredTargetMaterialization: replacementExecutionOrigin.materializationRef,
+      targetIntentEpoch: 5,
+    })]);
+
+    await expect(updateConversationConnectionForInvocation({
+      connectionId,
+      expectedRevision: 5,
+      enabled: true,
+      maximumObservationAgeMs: 120_000,
+    }, context)).resolves.toMatchObject({
+      kind: 'updated',
+      connectionId,
+      revision: 6,
+      authorityEpoch: 5,
+    });
+
+    // Once another allowed write advances the row, the original stale
+    // R/E request is no longer the immediate committed successor. Recovery
+    // requires the caller to reread and present the current R+2/E+1 facts.
+    await expect(transferConversationConnectionForInvocation(initialTransferInput, context))
+      .rejects.toMatchObject({ code: 'channels_connection_transfer_conflict' });
+    expect(providerActions.executeAdmittedTargetedOperationWithExecutionOrigin).toHaveBeenCalledTimes(2);
+    expect(convergeInputs).toHaveLength(1);
+
+    await expect(transferConversationConnectionForInvocation({
+      ...initialTransferInput,
+      expectedRevision: 6,
+      expectedAuthorityEpoch: 5,
+    }, context)).resolves.toEqual({
+      kind: 'transferred',
+      connectionId,
+      revision: 7,
+      authorityEpoch: 5,
+    });
+    // Resuming the owed endpoint move runs this request's selected setup/test
+    // pair first: equal Action input does not prove equal placement, and only
+    // the resolved physical origin can say that this really is the same
+    // transfer rather than one that would converge the endpoint elsewhere.
+    expect(providerActions.executeAdmittedTargetedOperationWithExecutionOrigin).toHaveBeenCalledTimes(4);
+    expect(convergeInputs).toEqual([
+      expect.objectContaining({
+        webhookEndpointId: DURABLE_PUSH_WEBHOOK_ENDPOINT_ID,
+        targetIntentEpoch: 5,
+      }),
+      expect.objectContaining({
+        webhookEndpointId: DURABLE_PUSH_WEBHOOK_ENDPOINT_ID,
+        targetIntentEpoch: 5,
+      }),
+    ]);
+    expect(collection.rows.get(connectionId)).toMatchObject({
+      revision: 7,
+      value: {
+        payload: {
+          maximumObservationAgeMs: 120_000,
+          authorityEpoch: 5,
+          pendingOldTransportStop: null,
+          transportOrigin: replacementExecutionOrigin,
+          transport: { webhookEndpointId: DURABLE_PUSH_WEBHOOK_ENDPOINT_ID },
+        },
+      },
+    });
+  });
+
   it('converts durable push to checkpointed pull without a provider stop or webhook mutation', async () => {
     const connectionId = 'connection-transfer-push-to-pull';
     const oldExecutionOrigin = {
@@ -2555,9 +2760,11 @@ describe('transferConversationConnectionForInvocation targeted provider selectio
       authorityEpoch: 5,
     });
 
-    // The response-loss rejoin reads the exact committed transfer before any
-    // selected setup/test or endpoint Action can replay.
-    expect(selected.executeAdmittedTargetedOperationWithExecutionOrigin).toHaveBeenCalledTimes(2);
+    // Detachment settles in one revision and keeps no frozen custody, so the
+    // response-loss rejoin resolves this request's placement through the same
+    // selected setup/test seam — one pair per attempt — before agreeing the
+    // retained state is the one it committed. No endpoint Action replays.
+    expect(selected.executeAdmittedTargetedOperationWithExecutionOrigin).toHaveBeenCalledTimes(4);
     expect(selected.correspondenceInputs).toHaveLength(0);
     expect(collection.rows.get(connectionId)).toMatchObject({
       revision: 5,
@@ -3779,6 +3986,1160 @@ describe('durablePush connection create endpoint continuation', () => {
     expect(second.correspondenceInputs[0]).toMatchObject({
       webhookContribution: { pluginId: externalPluginId },
       targetMaterialization: { pluginId: externalPluginId },
+    });
+  });
+});
+
+/**
+ * The connection-transfer recovery vertical. Every case here settles from the
+ * frozen predecessor custody rather than from the row's replaced transport,
+ * and proves the durable-push endpoint move is committed as recoverable intent
+ * before the generic endpoint owner is touched at all.
+ */
+describe('transferConversationConnectionForInvocation predecessor custody recovery', () => {
+  const OLD_ORIGIN = {
+    serverIdentityId: 'srv-example',
+    materializationRef: {
+      pluginId: providerSelection.contributor.pluginId,
+      machineId: 'machine-old',
+      materializationId: 'materialization-old',
+    },
+  } as const;
+  const REPLACEMENT_MATERIALIZATION = {
+    pluginId: providerSelection.contributor.pluginId,
+    machineId: 'machine-example',
+    materializationId: 'materialization-example',
+  } as const;
+
+  function transferAuthority(): ConversationConnectionFixtureAuthority {
+    return {
+      providerPluginId: providerSelection.contributor.pluginId,
+      providerContributionSelection: {
+        contributionId: providerSelection.contributor.contributionId,
+        immutableGenerationId: providerSelection.contributor.immutableGenerationId,
+      },
+      providerSetupInput: { source: 'same' },
+      credentialRef: null,
+      transportOrigin: OLD_ORIGIN,
+      providerConnectionKey: 'example:connection',
+      providerConfig: { opaque: true },
+      routingIdentityKey: 'r'.repeat(43),
+      integrationPrincipal: { id: 'example-bot' },
+      authorityEpoch: 4,
+    };
+  }
+
+  /**
+   * The generic webhook endpoint boundary.
+   *
+   * It models the canonical owner's convergence contract rather than a
+   * pass-through stub, because that contract is exactly what the transfer
+   * journey depends on: intent epochs order competing transfers, an equal
+   * epoch already at its desired target rejoins without a second write, and a
+   * lower epoch is refused so a late retry can never drag delivery back. The
+   * endpoint keeps its own revision so a test can prove whether it really
+   * moved, and the transfer owner never observes or supplies that revision.
+   */
+  function webhookEndpointBoundary(input: Readonly<{
+    connectionId: string;
+    collection: ReturnType<typeof createMutableConnectionStateCollection>;
+  }>) {
+    const state = {
+      target: { ...OLD_ORIGIN.materializationRef } as Readonly<Record<string, string>>,
+      targetIntentEpoch: null as number | null,
+      revision: 4,
+      failNextConverge: false,
+      abortNextConverge: undefined as AbortController | undefined,
+      /** Retained row revision observed at each endpoint call, in order. */
+      observedRevisions: [] as Array<number | undefined>,
+      convergeInputs: [] as unknown[],
+      correspondenceInputs: [] as unknown[],
+    };
+    const execute = vi.fn(async (actionId: string, actionInput: unknown) => {
+      state.observedRevisions.push(input.collection.rows.get(input.connectionId)?.revision);
+      if (actionId === 'plugin.webhook.endpoint.convergeTarget') {
+        if (state.abortNextConverge !== undefined) {
+          const controller = state.abortNextConverge;
+          state.abortNextConverge = undefined;
+          controller.abort();
+          throw new Error('aborted while converging the durable-push endpoint');
+        }
+        if (state.failNextConverge) {
+          state.failNextConverge = false;
+          throw new Error('endpoint owner unavailable');
+        }
+        state.convergeInputs.push(actionInput);
+        const request = actionInput as Readonly<{
+          desiredTargetMaterialization: Readonly<Record<string, string>>;
+          targetIntentEpoch: number;
+        }>;
+        if (state.targetIntentEpoch !== null && state.targetIntentEpoch > request.targetIntentEpoch) {
+          return {
+            kind: 'superseded',
+            webhookEndpointId: DURABLE_PUSH_WEBHOOK_ENDPOINT_ID,
+            currentTargetIntentEpoch: state.targetIntentEpoch,
+          };
+        }
+        const atDesiredTarget = JSON.stringify(state.target)
+          === JSON.stringify(request.desiredTargetMaterialization);
+        if (!(state.targetIntentEpoch === request.targetIntentEpoch && atDesiredTarget)) {
+          state.target = { ...request.desiredTargetMaterialization };
+          state.targetIntentEpoch = request.targetIntentEpoch;
+          state.revision += 1;
+        }
+        return {
+          kind: 'converged',
+          webhookEndpointId: DURABLE_PUSH_WEBHOOK_ENDPOINT_ID,
+          revision: state.revision,
+          targetMaterialization: { ...state.target },
+          targetIntentEpoch: request.targetIntentEpoch,
+        };
+      }
+      if (actionId === 'plugin.webhook.endpoint.checkCorrespondence') {
+        state.correspondenceInputs.push(actionInput);
+        return {
+          kind: 'ready',
+          webhookEndpointId: DURABLE_PUSH_WEBHOOK_ENDPOINT_ID,
+          revision: state.revision,
+        };
+      }
+      throw new Error(`Unexpected generic Action: ${actionId}`);
+    });
+    return { state, execute };
+  }
+
+  /**
+   * One selected provider whose setup/test return the replacement origin and
+   * whose stop Action is observable. Nothing here decides transport policy;
+   * the transfer owner does.
+   */
+  function transferProviderExecutor(input: Readonly<{
+    supportedTransports: readonly string[];
+    recommendedTransport: string;
+    replayContinuity: 'checkpointed' | 'sessionBound' | 'none';
+    stopInputs: unknown[];
+    stopOrigins: unknown[];
+    /** The origin this replacement setup/test proves; defaults to the first one. */
+    replacementMaterialization?: Readonly<{
+      pluginId: string;
+      machineId: string;
+      materializationId: string;
+    }>;
+  }>) {
+    const replacementMaterialization = input.replacementMaterialization ?? REPLACEMENT_MATERIALIZATION;
+    return vi.fn(async (action: unknown, actionInput: unknown, options?: unknown) => {
+      if (action === setupAction) {
+        return {
+          result: {
+            v: 1,
+            credentialRef: null,
+            providerConnectionKey: 'example:connection',
+            providerConfigVersion: 1,
+            providerConfig: { opaque: true },
+            integrationPrincipal: { id: 'example-bot' },
+            supportedTransports: [...input.supportedTransports],
+            recommendedTransport: input.recommendedTransport,
+            overlapSafety: 'safe',
+            replayContinuity: input.replayContinuity,
+            outboundTextLimit: { maximum: 4_000, unit: 'unicodeCodePoints' },
+            // A webhook contribution may only be declared by a setup that
+            // actually offers durable push.
+            ...(input.supportedTransports.includes('durablePush')
+              ? {
+                webhookContributionRef: {
+                  pluginId: providerSelection.contributor.pluginId,
+                  localId: 'webhook',
+                },
+              }
+              : {}),
+          },
+          executionOrigin: {
+            serverIdentityId: 'srv-example',
+            materializationRef: replacementMaterialization,
+          },
+        };
+      }
+      if (action === connectionTestAction) {
+        return {
+          result: {
+            kind: 'ready',
+            integrationPrincipal: { id: 'example-bot' },
+            providerConnectionKey: 'example:connection',
+          },
+          executionOrigin: {
+            serverIdentityId: 'srv-example',
+            materializationRef: replacementMaterialization,
+          },
+        };
+      }
+      if (action === connectionStopAction) {
+        input.stopInputs.push(actionInput);
+        input.stopOrigins.push((options as Readonly<{ expectedExecutionOrigin?: unknown }> | undefined)
+          ?.expectedExecutionOrigin);
+        return {
+          result: { kind: 'stopped' },
+          executionOrigin: OLD_ORIGIN,
+        };
+      }
+      throw new Error('Expected only the selected setup, test, and stop Actions.');
+    });
+  }
+
+  function transferContext(input: Readonly<{
+    stateCollection: unknown;
+    provider: ReturnType<typeof transferProviderExecutor>;
+    execute?: ReturnType<typeof vi.fn>;
+    signal?: AbortSignal;
+  }>): PluginInvocationContext {
+    return invocationContext({
+      actions: {
+        executeAdmittedTargetedOperationWithExecutionOrigin: input.provider,
+        ...(input.execute === undefined ? {} : { execute: input.execute }),
+      } as unknown as ActionsService,
+      targetedContributions: targetedContributionsFixture({
+        contributorImmutableGenerationId: providerSelection.contributor.immutableGenerationId,
+        operations: {
+          setup: setupAction,
+          connectionTest: connectionTestAction,
+          messageDeliver: messageDeliverAction,
+          connectionStop: connectionStopAction,
+          observationsPoll: observationsPollAction,
+        },
+      }),
+      stateCollection: input.stateCollection,
+      signal: input.signal,
+    });
+  }
+
+  it('commits a durable-push endpoint retarget as recoverable intent that a cancelled attempt can resume', async () => {
+    const connectionId = 'connection-transfer-push-to-push';
+    const collection = createMutableConnectionStateCollection();
+    collection.rows.set(connectionId, {
+      rowId: connectionId,
+      revision: 4,
+      value: createCurrentConversationConnectionFixture({
+        connectionId,
+        authority: transferAuthority(),
+        transport: {
+          kind: 'durablePush',
+          webhookContributionRef: {
+            pluginId: providerSelection.contributor.pluginId,
+            localId: 'webhook',
+          },
+          webhookEndpointId: DURABLE_PUSH_WEBHOOK_ENDPOINT_ID,
+          webhookSourceInstanceId: `channels.connection.${connectionId}`,
+        },
+        overlapSafety: 'safe',
+        replayContinuity: 'none',
+        outboundTextLimit: { maximum: 4_000, unit: 'unicodeCodePoints' },
+      }),
+    });
+    const stopInputs: unknown[] = [];
+    const stopOrigins: unknown[] = [];
+    const endpoint = webhookEndpointBoundary({ connectionId, collection });
+    const provider = transferProviderExecutor({
+      supportedTransports: ['checkpointedPull', 'socket', 'durablePush'],
+      recommendedTransport: 'durablePush',
+      replayContinuity: 'none',
+      stopInputs,
+      stopOrigins,
+    });
+    const transferInput = {
+      connectionId,
+      expectedRevision: 4,
+      expectedAuthorityEpoch: 4,
+      providerSelection,
+      providerSetupInput: { source: 'same' },
+      credentialRef: null,
+      selectedTransport: 'durablePush',
+    } as const;
+
+    // The endpoint owner is unreachable for this attempt. The replacement
+    // authority still commits, and the retarget stays owed rather than being
+    // performed against a row write that had not happened yet.
+    endpoint.state.failNextConverge = true;
+    const pending = await transferConversationConnectionForInvocation(
+      transferInput,
+      transferContext({ stateCollection: collection, provider, execute: endpoint.execute }),
+    );
+    expect(pending).toEqual({
+      kind: 'transferPendingOldStop',
+      connectionId,
+      revision: 5,
+      authorityEpoch: 5,
+    });
+    // Every endpoint call happened after the retained row already carried the
+    // committed intent; nothing touched the endpoint at the pre-CAS revision.
+    expect(endpoint.state.observedRevisions).toEqual([5]);
+    expect(endpoint.state.target).toEqual(OLD_ORIGIN.materializationRef);
+    expect(collection.rows.get(connectionId)).toMatchObject({
+      revision: 5,
+      value: {
+        payload: {
+          authorityEpoch: 5,
+          transportOrigin: { materializationRef: REPLACEMENT_MATERIALIZATION },
+          transport: {
+            kind: 'durablePush',
+            webhookEndpointId: DURABLE_PUSH_WEBHOOK_ENDPOINT_ID,
+          },
+          pendingOldTransportStop: {
+            predecessorTransportKind: 'durablePush',
+            endpointRetarget: 'pending',
+            transportOrigin: OLD_ORIGIN,
+            stopRequest: { reason: 'transfer', authorityEpoch: 5 },
+          },
+        },
+      },
+    });
+
+    // A cancelled resume keeps the intent exactly where it was.
+    const cancelled = new AbortController();
+    endpoint.state.abortNextConverge = cancelled;
+    await expect(transferConversationConnectionForInvocation(
+      transferInput,
+      transferContext({
+        stateCollection: collection,
+        provider,
+        execute: endpoint.execute,
+        signal: cancelled.signal,
+      }),
+    )).rejects.toThrow();
+    expect(endpoint.state.target).toEqual(OLD_ORIGIN.materializationRef);
+    expect(collection.rows.get(connectionId)?.revision).toBe(5);
+
+    // A stale request that is not the immediate committed successor is still a
+    // conflict; recovery never widens into an unbounded retry window.
+    await expect(transferConversationConnectionForInvocation(
+      { ...transferInput, expectedRevision: 3, expectedAuthorityEpoch: 3 },
+      transferContext({ stateCollection: collection, provider, execute: endpoint.execute }),
+    )).rejects.toMatchObject({ code: 'channels_connection_transfer_conflict' });
+
+    // The response-loss rejoin resumes the exact committed intent: no replayed
+    // setup or test, the endpoint moves once, and custody settles.
+    const providerCallsBeforeRejoin = provider.mock.calls.length;
+    const settled = await transferConversationConnectionForInvocation(
+      transferInput,
+      transferContext({ stateCollection: collection, provider, execute: endpoint.execute }),
+    );
+    expect(settled).toEqual({
+      kind: 'transferred',
+      connectionId,
+      revision: 6,
+      authorityEpoch: 5,
+    });
+    expect(provider.mock.calls.length).toBe(providerCallsBeforeRejoin);
+    expect(stopInputs).toEqual([]);
+    expect(endpoint.state.target).toEqual(REPLACEMENT_MATERIALIZATION);
+    expect(endpoint.state.convergeInputs).toHaveLength(1);
+    expect(endpoint.state.convergeInputs[0]).toMatchObject({
+      webhookEndpointId: DURABLE_PUSH_WEBHOOK_ENDPOINT_ID,
+      sourceInstanceId: `channels.connection.${connectionId}`,
+      desiredTargetMaterialization: REPLACEMENT_MATERIALIZATION,
+      targetIntentEpoch: 5,
+    });
+    expect(collection.rows.get(connectionId)).toMatchObject({
+      revision: 6,
+      value: { payload: { authorityEpoch: 5, pendingOldTransportStop: null } },
+    });
+  });
+
+  const SECOND_REPLACEMENT_MATERIALIZATION = {
+    pluginId: providerSelection.contributor.pluginId,
+    machineId: 'machine-second',
+    materializationId: 'materialization-second',
+  } as const;
+
+  function durablePushConnectionRow(input: Readonly<{
+    connectionId: string;
+    revision: number;
+    authority: ConversationConnectionFixtureAuthority;
+    pendingOldTransportStop?: ReturnType<typeof createCurrentConversationPendingOldTransportStopFixture>;
+  }>) {
+    return {
+      rowId: input.connectionId,
+      revision: input.revision,
+      value: createCurrentConversationConnectionFixture({
+        connectionId: input.connectionId,
+        authority: input.authority,
+        transport: {
+          kind: 'durablePush',
+          webhookContributionRef: {
+            pluginId: providerSelection.contributor.pluginId,
+            localId: 'webhook',
+          },
+          webhookEndpointId: DURABLE_PUSH_WEBHOOK_ENDPOINT_ID,
+          webhookSourceInstanceId: `channels.connection.${input.connectionId}`,
+        },
+        overlapSafety: 'safe',
+        replayContinuity: 'none',
+        outboundTextLimit: { maximum: 4_000, unit: 'unicodeCodePoints' },
+        ...(input.pendingOldTransportStop === undefined
+          ? {}
+          : { pendingOldTransportStop: input.pendingOldTransportStop }),
+      }),
+    };
+  }
+
+  it('converges a stranded endpoint on the target the next transfer desires', async () => {
+    const connectionId = 'connection-transfer-push-stranded-endpoint';
+    const collection = createMutableConnectionStateCollection();
+    collection.rows.set(connectionId, durablePushConnectionRow({
+      connectionId,
+      revision: 4,
+      authority: transferAuthority(),
+    }));
+    const stopInputs: unknown[] = [];
+    const stopOrigins: unknown[] = [];
+    const endpoint = webhookEndpointBoundary({ connectionId, collection });
+    const provider = transferProviderExecutor({
+      supportedTransports: ['durablePush'],
+      recommendedTransport: 'durablePush',
+      replayContinuity: 'none',
+      stopInputs,
+      stopOrigins,
+    });
+
+    // The endpoint owner is unreachable, so the committed O→A move stays owed
+    // and the endpoint keeps delivering to the retired origin.
+    endpoint.state.failNextConverge = true;
+    await expect(transferConversationConnectionForInvocation({
+      connectionId,
+      expectedRevision: 4,
+      expectedAuthorityEpoch: 4,
+      providerSelection,
+      providerSetupInput: { source: 'same' },
+      credentialRef: null,
+      selectedTransport: 'durablePush',
+    }, transferContext({ stateCollection: collection, provider, execute: endpoint.execute })))
+      .resolves.toEqual({
+        kind: 'transferPendingOldStop',
+        connectionId,
+        revision: 5,
+        authorityEpoch: 5,
+      });
+    expect(endpoint.state.target).toEqual(OLD_ORIGIN.materializationRef);
+
+    // The owner moves on to a third origin instead of accepting a loss the
+    // Account endpoint cannot suffer. The replacement desire supersedes the
+    // owed move, and the same repair converges the endpoint on B even though
+    // it never reached A.
+    const secondProvider = transferProviderExecutor({
+      supportedTransports: ['durablePush'],
+      recommendedTransport: 'durablePush',
+      replayContinuity: 'none',
+      stopInputs,
+      stopOrigins,
+      replacementMaterialization: SECOND_REPLACEMENT_MATERIALIZATION,
+    });
+    await expect(transferConversationConnectionForInvocation({
+      connectionId,
+      expectedRevision: 5,
+      expectedAuthorityEpoch: 5,
+      providerSelection,
+      // A different requested setup is a new transfer rather than a resume of
+      // the identical committed one.
+      providerSetupInput: { source: 'second' },
+      credentialRef: null,
+      selectedTransport: 'durablePush',
+    }, transferContext({ stateCollection: collection, provider: secondProvider, execute: endpoint.execute })))
+      .resolves.toEqual({
+        kind: 'transferred',
+        connectionId,
+        revision: 7,
+        authorityEpoch: 6,
+      });
+    expect(stopInputs).toEqual([]);
+    expect(endpoint.state.target).toEqual(SECOND_REPLACEMENT_MATERIALIZATION);
+    expect(endpoint.state.convergeInputs).toEqual([expect.objectContaining({
+      webhookEndpointId: DURABLE_PUSH_WEBHOOK_ENDPOINT_ID,
+      desiredTargetMaterialization: SECOND_REPLACEMENT_MATERIALIZATION,
+      targetIntentEpoch: 6,
+    })]);
+    expect(collection.rows.get(connectionId)).toMatchObject({
+      revision: 7,
+      value: {
+        payload: {
+          authorityEpoch: 6,
+          transportOrigin: { materializationRef: SECOND_REPLACEMENT_MATERIALIZATION },
+          pendingOldTransportStop: null,
+        },
+      },
+    });
+  });
+
+  /**
+   * The race the intent epoch exists for. An older transfer attempt that was
+   * still in flight when a later transfer replaced it must never drag the
+   * endpoint back to the target only it remembers, and it must learn that
+   * from the canonical owner rather than from a local comparison it could
+   * make against stale bytes.
+   */
+  it('refuses an older in-flight endpoint move once a later transfer owns the endpoint', async () => {
+    const connectionId = 'connection-transfer-push-superseded-intent';
+    const collection = createMutableConnectionStateCollection();
+    collection.rows.set(connectionId, durablePushConnectionRow({
+      connectionId,
+      revision: 4,
+      authority: transferAuthority(),
+    }));
+    const stopInputs: unknown[] = [];
+    const stopOrigins: unknown[] = [];
+    const endpoint = webhookEndpointBoundary({ connectionId, collection });
+    const provider = transferProviderExecutor({
+      supportedTransports: ['durablePush'],
+      recommendedTransport: 'durablePush',
+      replayContinuity: 'none',
+      stopInputs,
+      stopOrigins,
+    });
+
+    await expect(transferConversationConnectionForInvocation({
+      connectionId,
+      expectedRevision: 4,
+      expectedAuthorityEpoch: 4,
+      providerSelection,
+      providerSetupInput: { source: 'same' },
+      credentialRef: null,
+      selectedTransport: 'durablePush',
+    }, transferContext({ stateCollection: collection, provider, execute: endpoint.execute })))
+      .resolves.toMatchObject({ kind: 'transferred', authorityEpoch: 5 });
+    expect(endpoint.state.target).toEqual(REPLACEMENT_MATERIALIZATION);
+
+    const secondProvider = transferProviderExecutor({
+      supportedTransports: ['durablePush'],
+      recommendedTransport: 'durablePush',
+      replayContinuity: 'none',
+      stopInputs,
+      stopOrigins,
+      replacementMaterialization: SECOND_REPLACEMENT_MATERIALIZATION,
+    });
+    await expect(transferConversationConnectionForInvocation({
+      connectionId,
+      expectedRevision: 6,
+      expectedAuthorityEpoch: 5,
+      providerSelection,
+      providerSetupInput: { source: 'second' },
+      credentialRef: null,
+      selectedTransport: 'durablePush',
+    }, transferContext({ stateCollection: collection, provider: secondProvider, execute: endpoint.execute })))
+      .resolves.toMatchObject({ kind: 'transferred', authorityEpoch: 6 });
+    expect(endpoint.state.target).toEqual(SECOND_REPLACEMENT_MATERIALIZATION);
+    expect(endpoint.state.targetIntentEpoch).toBe(6);
+
+    // The predecessor attempt finally reaches the endpoint. It carries its own
+    // frozen epoch 5 and the placement that transfer desired, and is refused.
+    const endpointRevisionBeforeStaleRetry = endpoint.state.revision;
+    await expect(convergeConversationConnectionWebhookEndpointTarget({
+      context: transferContext({ stateCollection: collection, provider, execute: endpoint.execute }),
+      transferAuthorityEpoch: 5,
+      webhookEndpointId: DURABLE_PUSH_WEBHOOK_ENDPOINT_ID,
+      webhookContribution: { pluginId: providerSelection.contributor.pluginId, localId: 'webhook' },
+      sourceInstanceId: `channels.connection.${connectionId}`,
+      nextTargetMaterialization: REPLACEMENT_MATERIALIZATION,
+    })).rejects.toMatchObject({ code: 'channels_connection_transfer_endpoint_superseded' });
+    expect(endpoint.state.target).toEqual(SECOND_REPLACEMENT_MATERIALIZATION);
+    expect(endpoint.state.targetIntentEpoch).toBe(6);
+    expect(endpoint.state.revision).toBe(endpointRevisionBeforeStaleRetry);
+    // No rollback custody, no compensating write: the row that the later
+    // transfer settled is untouched by the refused predecessor.
+    expect(collection.rows.get(connectionId)).toMatchObject({
+      value: {
+        payload: {
+          authorityEpoch: 6,
+          transportOrigin: { materializationRef: SECOND_REPLACEMENT_MATERIALIZATION },
+          pendingOldTransportStop: null,
+        },
+      },
+    });
+  });
+
+  /**
+   * Equal Action input is not equal placement. A request that would otherwise
+   * look like a resume of the owed endpoint move must run its selected
+   * provider setup first and compare the physical origin that setup actually
+   * resolved. When that origin moved, this is not the committed intent being
+   * replayed: it is a later transfer, and it must converge the endpoint on the
+   * origin it resolved now rather than on the one only the stale intent
+   * remembers.
+   */
+  it('treats a moved physical origin as a later transfer instead of resuming the owed endpoint move', async () => {
+    const connectionId = 'connection-transfer-push-origin-moved';
+    const collection = createMutableConnectionStateCollection();
+    collection.rows.set(connectionId, durablePushConnectionRow({
+      connectionId,
+      revision: 4,
+      authority: transferAuthority(),
+    }));
+    const stopInputs: unknown[] = [];
+    const stopOrigins: unknown[] = [];
+    const endpoint = webhookEndpointBoundary({ connectionId, collection });
+    const provider = transferProviderExecutor({
+      supportedTransports: ['durablePush'],
+      recommendedTransport: 'durablePush',
+      replayContinuity: 'none',
+      stopInputs,
+      stopOrigins,
+    });
+
+    endpoint.state.failNextConverge = true;
+    await expect(transferConversationConnectionForInvocation({
+      connectionId,
+      expectedRevision: 4,
+      expectedAuthorityEpoch: 4,
+      providerSelection,
+      providerSetupInput: { source: 'same' },
+      credentialRef: null,
+      selectedTransport: 'durablePush',
+    }, transferContext({ stateCollection: collection, provider, execute: endpoint.execute })))
+      .resolves.toEqual({
+        kind: 'transferPendingOldStop',
+        connectionId,
+        revision: 5,
+        authorityEpoch: 5,
+      });
+    expect(endpoint.state.target).toEqual(OLD_ORIGIN.materializationRef);
+
+    // The caller rereads and presents the current R+1/E+1 facts with the exact
+    // same setup input, but the selected provider now materializes elsewhere.
+    const movedProvider = transferProviderExecutor({
+      supportedTransports: ['durablePush'],
+      recommendedTransport: 'durablePush',
+      replayContinuity: 'none',
+      stopInputs,
+      stopOrigins,
+      replacementMaterialization: SECOND_REPLACEMENT_MATERIALIZATION,
+    });
+    await expect(transferConversationConnectionForInvocation({
+      connectionId,
+      expectedRevision: 5,
+      expectedAuthorityEpoch: 5,
+      providerSelection,
+      providerSetupInput: { source: 'same' },
+      credentialRef: null,
+      selectedTransport: 'durablePush',
+    }, transferContext({ stateCollection: collection, provider: movedProvider, execute: endpoint.execute })))
+      .resolves.toMatchObject({ kind: 'transferred', authorityEpoch: 6 });
+    // The endpoint converged on the origin this request actually resolved,
+    // under a new intent epoch — never on the stale desired origin, and with
+    // no rollback of the superseded pending intent.
+    expect(endpoint.state.target).toEqual(SECOND_REPLACEMENT_MATERIALIZATION);
+    expect(endpoint.state.targetIntentEpoch).toBe(6);
+    expect(endpoint.state.convergeInputs.at(-1)).toMatchObject({
+      desiredTargetMaterialization: SECOND_REPLACEMENT_MATERIALIZATION,
+      targetIntentEpoch: 6,
+    });
+    expect(collection.rows.get(connectionId)).toMatchObject({
+      value: {
+        payload: {
+          authorityEpoch: 6,
+          transportOrigin: { materializationRef: SECOND_REPLACEMENT_MATERIALIZATION },
+          pendingOldTransportStop: null,
+        },
+      },
+    });
+  });
+
+  it('converges an endpoint stranded under a retained accepted-loss marker', async () => {
+    const connectionId = 'connection-transfer-push-accepted-loss';
+    const collection = createMutableConnectionStateCollection();
+    const acceptedAuthority = {
+      ...transferAuthority(),
+      transportOrigin: {
+        serverIdentityId: 'srv-example',
+        materializationRef: REPLACEMENT_MATERIALIZATION,
+      },
+      authorityEpoch: 5,
+    } satisfies ConversationConnectionFixtureAuthority;
+    collection.rows.set(connectionId, durablePushConnectionRow({
+      connectionId,
+      revision: 4,
+      authority: acceptedAuthority,
+      // Durable custody written before endpoint moves were repairable: the row
+      // already names A while the endpoint never left O.
+      pendingOldTransportStop: createCurrentConversationPendingOldTransportStopFixture({
+        connectionId,
+        authority: transferAuthority(),
+        predecessorCheckpointedPollInvocation: {
+          connectionRevision: 2,
+          authorityEpoch: 3,
+          transportOrigin: OLD_ORIGIN,
+        },
+        authorityEpoch: 4,
+        reason: 'transfer',
+        predecessorTransportKind: 'durablePush',
+        endpointRetarget: 'pending',
+        overlapSafety: 'safe',
+        acceptedPossibleLoss: true,
+      }),
+    }));
+    const stopInputs: unknown[] = [];
+    const stopOrigins: unknown[] = [];
+    const endpoint = webhookEndpointBoundary({ connectionId, collection });
+    const provider = transferProviderExecutor({
+      supportedTransports: ['durablePush'],
+      recommendedTransport: 'durablePush',
+      replayContinuity: 'none',
+      stopInputs,
+      stopOrigins,
+      replacementMaterialization: SECOND_REPLACEMENT_MATERIALIZATION,
+    });
+
+    await expect(transferConversationConnectionForInvocation({
+      connectionId,
+      expectedRevision: 4,
+      expectedAuthorityEpoch: 5,
+      providerSelection,
+      providerSetupInput: { source: 'same' },
+      credentialRef: null,
+      selectedTransport: 'durablePush',
+    }, transferContext({ stateCollection: collection, provider, execute: endpoint.execute })))
+      .resolves.toEqual({
+        kind: 'transferred',
+        connectionId,
+        revision: 6,
+        authorityEpoch: 6,
+      });
+    expect(endpoint.state.target).toEqual(SECOND_REPLACEMENT_MATERIALIZATION);
+    expect(collection.rows.get(connectionId)).toMatchObject({
+      revision: 6,
+      value: { payload: { authorityEpoch: 6, pendingOldTransportStop: null } },
+    });
+  });
+
+  it('rejoins a settled durable-push transfer whose success response was lost', async () => {
+    const connectionId = 'connection-transfer-push-settled-response-loss';
+    const collection = createMutableConnectionStateCollection();
+    collection.rows.set(connectionId, durablePushConnectionRow({
+      connectionId,
+      revision: 4,
+      authority: transferAuthority(),
+    }));
+    const stopInputs: unknown[] = [];
+    const stopOrigins: unknown[] = [];
+    const endpoint = webhookEndpointBoundary({ connectionId, collection });
+    const provider = transferProviderExecutor({
+      supportedTransports: ['durablePush'],
+      recommendedTransport: 'durablePush',
+      replayContinuity: 'none',
+      stopInputs,
+      stopOrigins,
+    });
+    const transferInput = {
+      connectionId,
+      expectedRevision: 4,
+      expectedAuthorityEpoch: 4,
+      providerSelection,
+      providerSetupInput: { source: 'same' },
+      credentialRef: null,
+      selectedTransport: 'durablePush',
+    } as const;
+
+    // The transfer commits its replacement authority and then settles its own
+    // endpoint move, so the successful journey ends two revisions on.
+    await expect(transferConversationConnectionForInvocation(
+      transferInput,
+      transferContext({ stateCollection: collection, provider, execute: endpoint.execute }),
+    )).resolves.toEqual({
+      kind: 'transferred',
+      connectionId,
+      revision: 6,
+      authorityEpoch: 5,
+    });
+    const providerCalls = provider.mock.calls.length;
+    const endpointCalls = endpoint.execute.mock.calls.length;
+
+    // The caller never saw that result. Its retry must rejoin the outcome it
+    // already produced instead of failing a journey that fully succeeded.
+    await expect(transferConversationConnectionForInvocation(
+      transferInput,
+      transferContext({ stateCollection: collection, provider, execute: endpoint.execute }),
+    )).resolves.toEqual({
+      kind: 'transferred',
+      connectionId,
+      revision: 6,
+      authorityEpoch: 5,
+    });
+    // A fully settled row keeps no marker of its own transfer, so the rejoin
+    // resolves this request's placement through the selected setup/test seam
+    // before agreeing that the retained state is the one it committed. No
+    // committed effect is replayed: the endpoint owner is never called again
+    // and the retained row does not move.
+    expect(provider.mock.calls.length).toBe(providerCalls + 2);
+    expect(endpoint.execute.mock.calls.length).toBe(endpointCalls);
+    expect(collection.rows.get(connectionId)?.revision).toBe(6);
+  });
+
+  it('repairs an owed endpoint retarget instead of accepting its loss', async () => {
+    const connectionId = 'connection-transfer-push-repair-abandon';
+    const collection = createMutableConnectionStateCollection();
+    collection.rows.set(connectionId, durablePushConnectionRow({
+      connectionId,
+      revision: 4,
+      authority: transferAuthority(),
+    }));
+    const stopInputs: unknown[] = [];
+    const stopOrigins: unknown[] = [];
+    const endpoint = webhookEndpointBoundary({ connectionId, collection });
+    const provider = transferProviderExecutor({
+      supportedTransports: ['durablePush'],
+      recommendedTransport: 'durablePush',
+      replayContinuity: 'none',
+      stopInputs,
+      stopOrigins,
+    });
+
+    endpoint.state.failNextConverge = true;
+    await expect(transferConversationConnectionForInvocation({
+      connectionId,
+      expectedRevision: 4,
+      expectedAuthorityEpoch: 4,
+      providerSelection,
+      providerSetupInput: { source: 'same' },
+      credentialRef: null,
+      selectedTransport: 'durablePush',
+    }, transferContext({ stateCollection: collection, provider, execute: endpoint.execute })))
+      .resolves.toMatchObject({ kind: 'transferPendingOldStop', revision: 5 });
+
+    // The custody-resolution Action repairs this obligation. While the endpoint
+    // owner stays unavailable it must say so rather than mark an accepted loss
+    // that would freeze the endpoint on the retired origin forever.
+    endpoint.state.failNextConverge = true;
+    await expect(abandonConversationConnectionForInvocation(
+      { connectionId, expectedRevision: 5 },
+      transferContext({ stateCollection: collection, provider, execute: endpoint.execute }),
+    )).rejects.toMatchObject({
+      code: 'channels_connection_abandon_endpoint_retarget_unrepaired',
+      retryable: true,
+    });
+    expect(endpoint.state.target).toEqual(OLD_ORIGIN.materializationRef);
+    expect(collection.rows.get(connectionId)).toMatchObject({
+      revision: 5,
+      value: {
+        payload: {
+          pendingOldTransportStop: {
+            endpointRetarget: 'pending',
+            acceptedPossibleLoss: false,
+          },
+        },
+      },
+    });
+
+    await expect(abandonConversationConnectionForInvocation(
+      { connectionId, expectedRevision: 5 },
+      transferContext({ stateCollection: collection, provider, execute: endpoint.execute }),
+    )).resolves.toEqual({
+      kind: 'rejoined',
+      connectionId,
+      revision: 6,
+      authorityEpoch: 5,
+      acceptedPossibleLoss: false,
+    });
+    expect(endpoint.state.target).toEqual(REPLACEMENT_MATERIALIZATION);
+    expect(collection.rows.get(connectionId)).toMatchObject({
+      revision: 6,
+      value: { payload: { authorityEpoch: 5, pendingOldTransportStop: null } },
+    });
+  });
+
+  it('settles a response-lost socket-to-durable-push transfer through the frozen socket predecessor', async () => {
+    const connectionId = 'connection-transfer-socket-to-push';
+    const collection = createMutableConnectionStateCollection();
+    collection.rows.set(connectionId, {
+      rowId: connectionId,
+      revision: 4,
+      value: createCurrentConversationConnectionFixture({
+        connectionId,
+        authority: transferAuthority(),
+        transport: { kind: 'socket' },
+        overlapSafety: 'safe',
+        replayContinuity: 'none',
+        outboundTextLimit: { maximum: 4_000, unit: 'unicodeCodePoints' },
+      }),
+    });
+    const stopInputs: unknown[] = [];
+    const stopOrigins: unknown[] = [];
+    const endpoint = webhookEndpointBoundary({ connectionId, collection });
+    const provider = transferProviderExecutor({
+      supportedTransports: ['socket', 'durablePush'],
+      recommendedTransport: 'durablePush',
+      replayContinuity: 'none',
+      stopInputs,
+      stopOrigins,
+    });
+    const transferInput = {
+      connectionId,
+      expectedRevision: 4,
+      expectedAuthorityEpoch: 4,
+      providerSelection,
+      providerSetupInput: { source: 'same' },
+      credentialRef: null,
+      selectedTransport: 'durablePush',
+      endpointContinuation: {
+        connectionId,
+        webhookEndpointId: DURABLE_PUSH_WEBHOOK_ENDPOINT_ID,
+      },
+    } as const;
+
+    collection.loseNextUpdatedBatchResponse();
+    await expect(transferConversationConnectionForInvocation(
+      transferInput,
+      transferContext({ stateCollection: collection, provider, execute: endpoint.execute }),
+    )).rejects.toThrow('simulated response loss after Account write commit');
+    expect(stopInputs).toEqual([]);
+
+    // The committed row already names durable push. Only the frozen slot still
+    // knows a socket consumer is running and must be stopped.
+    const rejoined = await transferConversationConnectionForInvocation(
+      transferInput,
+      transferContext({ stateCollection: collection, provider, execute: endpoint.execute }),
+    );
+    expect(rejoined).toEqual({
+      kind: 'transferred',
+      connectionId,
+      revision: 6,
+      authorityEpoch: 5,
+    });
+    expect(stopInputs).toEqual([expect.objectContaining({
+      connectionId,
+      reason: 'transfer',
+      authorityEpoch: 5,
+    })]);
+    expect(stopOrigins).toEqual([OLD_ORIGIN]);
+    expect(collection.rows.get(connectionId)).toMatchObject({
+      revision: 6,
+      value: { payload: { authorityEpoch: 5, pendingOldTransportStop: null } },
+    });
+  });
+
+  it('leaves a response-lost checkpointed-pull-to-socket transfer to the poll supervisor without a provider stop', async () => {
+    const connectionId = 'connection-transfer-pull-to-socket';
+    const collection = createMutableConnectionStateCollection();
+    collection.rows.set(connectionId, {
+      rowId: connectionId,
+      revision: 4,
+      value: createCurrentConversationConnectionFixture({
+        connectionId,
+        authority: transferAuthority(),
+        transport: { kind: 'checkpointedPull' },
+        overlapSafety: 'safe',
+        replayContinuity: 'checkpointed',
+        outboundTextLimit: { maximum: 4_000, unit: 'unicodeCodePoints' },
+      }),
+    });
+    const stopInputs: unknown[] = [];
+    const stopOrigins: unknown[] = [];
+    const provider = transferProviderExecutor({
+      supportedTransports: ['checkpointedPull', 'socket'],
+      recommendedTransport: 'socket',
+      replayContinuity: 'none',
+      stopInputs,
+      stopOrigins,
+    });
+    const transferInput = {
+      connectionId,
+      expectedRevision: 4,
+      expectedAuthorityEpoch: 4,
+      providerSelection,
+      providerSetupInput: { source: 'same' },
+      credentialRef: null,
+      selectedTransport: 'socket',
+    } as const;
+
+    collection.loseNextUpdatedBatchResponse();
+    await expect(transferConversationConnectionForInvocation(
+      transferInput,
+      transferContext({ stateCollection: collection, provider }),
+    )).rejects.toThrow('simulated response loss after Account write commit');
+
+    const rejoined = await transferConversationConnectionForInvocation(
+      transferInput,
+      transferContext({ stateCollection: collection, provider }),
+    );
+    expect(rejoined).toEqual({
+      kind: 'transferPendingOldStop',
+      connectionId,
+      revision: 5,
+      authorityEpoch: 5,
+    });
+    // A retired checkpointed pull has no provider-local consumer; inventing a
+    // stop Action for it would claim proof the core cannot have.
+    expect(stopInputs).toEqual([]);
+    expect(collection.rows.get(connectionId)).toMatchObject({
+      revision: 5,
+      value: {
+        payload: {
+          transport: { kind: 'socket' },
+          pendingOldTransportStop: {
+            predecessorTransportKind: 'checkpointedPull',
+            endpointRetarget: 'notRequired',
+          },
+        },
+      },
+    });
+  });
+
+  /**
+   * A placement-only transfer: every persisted provider fact the retained row
+   * already holds matches the request, so only the placement the selected setup
+   * resolves says the caller asked to move execution at all.
+   */
+  function placementMoveTransferInput(connectionId: string) {
+    return {
+      connectionId,
+      expectedRevision: 4,
+      expectedAuthorityEpoch: 4,
+      providerSelection,
+      providerSetupInput: { source: 'same' },
+      credentialRef: null,
+      selectedTransport: 'durablePush',
+    } as const;
+  }
+
+  it('refuses a settled placement move that an unrelated enable toggle made stale', async () => {
+    const connectionId = 'connection-transfer-placement-move-toggle';
+    const collection = createMutableConnectionStateCollection();
+    collection.rows.set(connectionId, durablePushConnectionRow({
+      connectionId,
+      revision: 4,
+      authority: transferAuthority(),
+    }));
+    const endpoint = webhookEndpointBoundary({ connectionId, collection });
+    const provider = transferProviderExecutor({
+      supportedTransports: ['durablePush'],
+      recommendedTransport: 'durablePush',
+      replayContinuity: 'none',
+      stopInputs: [],
+      stopOrigins: [],
+    });
+
+    // A concurrent policy edit advances the retained row to R+1/E+1 while
+    // performing no transfer at all. Every requested provider fact still
+    // matches, so this row is byte-indistinguishable from a committed transfer.
+    await expect(updateConversationConnectionForInvocation(
+      { connectionId, expectedRevision: 4, enabled: false, maximumObservationAgeMs: 60_000 },
+      transferContext({ stateCollection: collection, provider, execute: endpoint.execute }),
+    )).resolves.toMatchObject({ kind: 'updated', revision: 5, authorityEpoch: 5 });
+
+    // This caller's transfer never ran. Its requested placement is not the
+    // retained one, so reporting `transferred` would claim a move no row holds.
+    await expect(transferConversationConnectionForInvocation(
+      placementMoveTransferInput(connectionId),
+      transferContext({ stateCollection: collection, provider, execute: endpoint.execute }),
+    )).rejects.toMatchObject({
+      code: 'channels_connection_transfer_conflict',
+      retryable: true,
+    });
+    expect(collection.rows.get(connectionId)).toMatchObject({
+      revision: 5,
+      value: { payload: { authorityEpoch: 5, transportOrigin: OLD_ORIGIN } },
+    });
+    expect(endpoint.state.target).toEqual(OLD_ORIGIN.materializationRef);
+  });
+
+  it('refuses that same settled placement collision once a revision-only edit reaches R+2', async () => {
+    const connectionId = 'connection-transfer-placement-move-toggle-r2';
+    const collection = createMutableConnectionStateCollection();
+    collection.rows.set(connectionId, durablePushConnectionRow({
+      connectionId,
+      revision: 4,
+      authority: transferAuthority(),
+    }));
+    const endpoint = webhookEndpointBoundary({ connectionId, collection });
+    const provider = transferProviderExecutor({
+      supportedTransports: ['durablePush'],
+      recommendedTransport: 'durablePush',
+      replayContinuity: 'none',
+      stopInputs: [],
+      stopOrigins: [],
+    });
+
+    await expect(updateConversationConnectionForInvocation(
+      { connectionId, expectedRevision: 4, enabled: false, maximumObservationAgeMs: 60_000 },
+      transferContext({ stateCollection: collection, provider, execute: endpoint.execute }),
+    )).resolves.toMatchObject({ kind: 'updated', revision: 5, authorityEpoch: 5 });
+    // A configuration-only edit moves the revision without touching authority,
+    // reproducing the exact `R+2/E+1` shape a fully settled transfer leaves.
+    await expect(updateConversationConnectionForInvocation(
+      { connectionId, expectedRevision: 5, enabled: false, maximumObservationAgeMs: 120_000 },
+      transferContext({ stateCollection: collection, provider, execute: endpoint.execute }),
+    )).resolves.toMatchObject({ kind: 'updated', revision: 6, authorityEpoch: 5 });
+
+    await expect(transferConversationConnectionForInvocation(
+      placementMoveTransferInput(connectionId),
+      transferContext({ stateCollection: collection, provider, execute: endpoint.execute }),
+    )).rejects.toMatchObject({
+      code: 'channels_connection_transfer_conflict',
+      retryable: true,
+    });
+    expect(collection.rows.get(connectionId)).toMatchObject({
+      revision: 6,
+      value: { payload: { authorityEpoch: 5, transportOrigin: OLD_ORIGIN } },
+    });
+    expect(endpoint.state.target).toEqual(OLD_ORIGIN.materializationRef);
+  });
+
+  it('rejoins a settled durable-push detachment once its selected setup proves the same placement', async () => {
+    const connectionId = 'connection-transfer-push-detach-response-loss';
+    const collection = createMutableConnectionStateCollection();
+    collection.rows.set(connectionId, durablePushConnectionRow({
+      connectionId,
+      revision: 4,
+      authority: transferAuthority(),
+    }));
+    const stopInputs: unknown[] = [];
+    const stopOrigins: unknown[] = [];
+    const endpoint = webhookEndpointBoundary({ connectionId, collection });
+    const provider = transferProviderExecutor({
+      supportedTransports: ['durablePush', 'checkpointedPull'],
+      recommendedTransport: 'checkpointedPull',
+      replayContinuity: 'none',
+      stopInputs,
+      stopOrigins,
+    });
+    const transferInput = {
+      connectionId,
+      expectedRevision: 4,
+      expectedAuthorityEpoch: 4,
+      providerSelection,
+      providerSetupInput: { source: 'same' },
+      credentialRef: null,
+      selectedTransport: 'checkpointedPull',
+    } as const;
+
+    // Detaching a durable push settles in one revision and keeps no frozen
+    // custody, so the committed row carries no marker of its own transfer.
+    collection.loseNextUpdatedBatchResponse();
+    await expect(transferConversationConnectionForInvocation(
+      transferInput,
+      transferContext({ stateCollection: collection, provider, execute: endpoint.execute }),
+    )).rejects.toThrow('simulated response loss after Account write commit');
+    const providerCallsBeforeRejoin = provider.mock.calls.length;
+
+    await expect(transferConversationConnectionForInvocation(
+      transferInput,
+      transferContext({ stateCollection: collection, provider, execute: endpoint.execute }),
+    )).resolves.toEqual({
+      kind: 'transferred',
+      connectionId,
+      revision: 5,
+      authorityEpoch: 5,
+    });
+    // Placement is the only evidence a settled row still holds, so the rejoin
+    // resolves it through the same selected setup/test seam. No committed
+    // effect — Account authority, frozen stop, or endpoint — is replayed.
+    expect(provider.mock.calls.length).toBe(providerCallsBeforeRejoin + 2);
+    expect(stopInputs).toEqual([]);
+    expect(endpoint.execute.mock.calls).toEqual([]);
+    expect(collection.rows.get(connectionId)).toMatchObject({
+      revision: 5,
+      value: {
+        payload: {
+          authorityEpoch: 5,
+          transport: { kind: 'checkpointedPull' },
+          transportOrigin: { materializationRef: REPLACEMENT_MATERIALIZATION },
+          pendingOldTransportStop: null,
+        },
+      },
     });
   });
 });

@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 
 import {
   compilePluginJsonSchema,
@@ -111,15 +111,20 @@ function firstNonJsonPath(value: unknown, path = '$'): string | null {
 
 const PRIVATE_PROTOCOL_PACKAGE = ['@happier-dev', 'protocol'].join('/');
 
-const C1_PUBLIC_BOUNDARY_SOURCE_FILES = [
-  'activate.ts',
-  'activate.test.ts',
-  'collections.ts',
-  'manifest.ts',
-  'manifest.test.ts',
-  'reconciliation.ts',
-  'sessionInfoResource.ts',
-] as const;
+/**
+ * Every TypeScript file this plugin ships or tests with, not a hand-kept
+ * sample of them: `@happier-dev/protocol` is a host-internal package the
+ * plugin never declares, so any file reaching it crosses the public seam
+ * silently. An allowlist here would only re-open the gap it just closed.
+ */
+async function listPluginSourceUrls(directory: URL): Promise<readonly URL[]> {
+  const entries = await readdir(directory, { withFileTypes: true });
+  const nested = await Promise.all(entries.map(async (entry) => {
+    const entryUrl = new URL(`${entry.name}${entry.isDirectory() ? '/' : ''}`, directory);
+    return entry.isDirectory() ? await listPluginSourceUrls(entryUrl) : [entryUrl];
+  }));
+  return nested.flat().filter((fileUrl) => fileUrl.href.endsWith('.ts') || fileUrl.href.endsWith('.tsx'));
+}
 
 describe('Channels core manifest', () => {
   it('consumes the canonical Composer control-state Resource contract through public SDK UI', () => {
@@ -187,16 +192,16 @@ describe('Channels core manifest', () => {
   });
 
   it('keeps the C1 implementation and verification boundary on public SDK seams', async () => {
-    const sources = await Promise.all(C1_PUBLIC_BOUNDARY_SOURCE_FILES.map(
-      async (path) => await readFile(new URL(`./${path}`, import.meta.url), 'utf8'),
-    ));
+    const sourceUrls = await listPluginSourceUrls(new URL('./', import.meta.url));
     const packageJson = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')) as Readonly<{
       dependencies?: Readonly<Record<string, string>>;
       devDependencies?: Readonly<Record<string, string>>;
     }>;
 
-    for (const source of sources) {
-      expect(source).not.toContain(PRIVATE_PROTOCOL_PACKAGE);
+    expect(sourceUrls.length).toBeGreaterThan(0);
+    for (const sourceUrl of sourceUrls) {
+      const source = await readFile(sourceUrl, 'utf8');
+      expect(source, sourceUrl.pathname).not.toContain(`from '${PRIVATE_PROTOCOL_PACKAGE}`);
     }
     expect(packageJson.dependencies?.[PRIVATE_PROTOCOL_PACKAGE]).toBeUndefined();
     expect(packageJson.devDependencies?.[PRIVATE_PROTOCOL_PACKAGE]).toBeUndefined();
@@ -1472,9 +1477,8 @@ describe('Channels core manifest', () => {
             providerTimestamp: 1,
           },
         },
-        textDigest: 'E'.repeat(43),
+        replayDigest: 'E'.repeat(43),
         retainedAttentionObligationRowIds: [],
-        prunedObligationTombstones: [],
       },
     };
     expect(isValidPluginJsonSchemaValue(validate, {
@@ -1485,7 +1489,21 @@ describe('Channels core manifest', () => {
       ...ingressCensus,
       payload: {
         ...compactedCensusPayload,
-        compacted: { ...compactedCensusPayload.compacted, textDigest: 'not-a-digest' },
+        compacted: { ...compactedCensusPayload.compacted, replayDigest: 'not-a-digest' },
+      },
+    })).toBe(false);
+    // `replayDigest` is the only digest domain: it covers the canonical
+    // `{text, eventCandidate}` replay identity, and no predecessor text-only
+    // arm remains readable or writable.
+    expect(isValidPluginJsonSchemaValue(validate, {
+      ...ingressCensus,
+      payload: {
+        ...compactedCensusPayload,
+        compacted: {
+          shell: compactedCensusPayload.compacted.shell,
+          textDigest: 'E'.repeat(43),
+          retainedAttentionObligationRowIds: [],
+        },
       },
     })).toBe(false);
     expect(isValidPluginJsonSchemaValue(validate, {
@@ -1493,8 +1511,20 @@ describe('Channels core manifest', () => {
       payload: {
         ...compactedCensusPayload,
         compacted: {
+          shell: compactedCensusPayload.compacted.shell,
+          retainedAttentionObligationRowIds: [],
+        },
+      },
+    })).toBe(false);
+    // Retirement is atomic at the Collection owner, so a compact census never
+    // stages member tombstone revisions of its own.
+    expect(isValidPluginJsonSchemaValue(validate, {
+      ...ingressCensus,
+      payload: {
+        ...compactedCensusPayload,
+        compacted: {
           ...compactedCensusPayload.compacted,
-          prunedObligationTombstones: [{ rowId: 'not-a-row-id', revision: 1 }],
+          prunedObligationTombstones: [],
         },
       },
     })).toBe(false);
@@ -1721,6 +1751,7 @@ describe('Channels core manifest', () => {
       },
       authorityEpoch: 1,
       reason: 'delete',
+      predecessorTransportKind: 'durablePush',
       overlapSafety: connection.payload.overlapSafety,
     });
 

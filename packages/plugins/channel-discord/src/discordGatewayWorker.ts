@@ -17,6 +17,7 @@ import {
   DISCORD_DEFAULT_RECONNECT_DELAY_BOUNDS,
   calculateDiscordReconnectDelayMs,
   createDiscordGatewaySession,
+  normalizeDiscordGatewayUrl,
   type DiscordGatewayEffect,
   type DiscordGatewayReconnectDelayBounds,
   type DiscordGatewayResumeState,
@@ -69,7 +70,16 @@ export type DiscordGatewayWorkerConnection = Readonly<{
 }>;
 
 export type DiscordGatewayWorkerResult =
-  | Readonly<{ kind: 'stopped' }>
+  | Readonly<{
+      kind: 'stopped';
+      /**
+       * The worker was stopped while its Gateway session still held Discord
+       * resume coordinates. The replacement session cannot prove continuity
+       * across this boundary; whether that becomes a reportable history gap
+       * is the stop intent's decision, owned by the supervisor.
+       */
+      unprovenContinuity?: true;
+    }>
   | Extract<ConversationTransportFactReportInputV1['fact'], Readonly<{ kind: 'historyGap' }>>
   | DiscordGatewayMessageContentIntentRecovery
   | Readonly<{
@@ -489,7 +499,7 @@ export function startDiscordGatewayWorker(input: DiscordGatewayWorkerInput): Dis
           completedResult = workerFailure('invalidConfiguration', 'Discord Gateway session start facts are unavailable.');
           break;
         }
-        const socketUrl = resume?.resumeGatewayUrl ?? gateway?.gatewayUrl;
+        const socketUrl = normalizeDiscordGatewayUrl(resume?.resumeGatewayUrl ?? gateway?.gatewayUrl);
         if (!socketUrl) {
           completedResult = workerFailure('invalidConfiguration', 'Discord Gateway URL is unavailable.');
           break;
@@ -702,6 +712,9 @@ export function startDiscordGatewayWorker(input: DiscordGatewayWorkerInput): Dis
           if (activeSocket === socket) activeSocket = null;
         }
 
+        // An abort here — or during the later reconnect backoff — falls to
+        // the single result tail, which is the one place the continuity of
+        // the abandoned session is disclosed.
         if (signal.aborted) break;
         if (providerFailure !== null) {
           completedResult = { kind: 'notReady', failure: providerFailure };
@@ -748,7 +761,13 @@ export function startDiscordGatewayWorker(input: DiscordGatewayWorkerInput): Dis
         : { kind: 'notReady', failure: providerFailure, transportFact };
     }
     if (providerFailure !== null) return { kind: 'notReady', failure: providerFailure };
-    return completedResult ?? { kind: 'stopped' };
+    // A stop that abandons a still-resumable session loses the resume
+    // coordinates with this worker, so the replacement session cannot prove
+    // continuity. Admission loss keeps its own stronger fact; deliberate and
+    // retired-generation stops are scoped by the supervisor's stop intent.
+    return completedResult ?? (resume !== undefined
+      ? { kind: 'stopped', unprovenContinuity: true }
+      : { kind: 'stopped' });
   })().finally(() => input.signal.removeEventListener('abort', abortFromParent));
 
   return Object.freeze({

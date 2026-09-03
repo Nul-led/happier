@@ -46,6 +46,7 @@ describe('current Channels connection fixture', () => {
       },
       authorityEpoch: 1,
       reason: 'delete',
+      predecessorTransportKind: 'socket',
       overlapSafety: 'safe',
     });
     const validate = compilePluginJsonSchema(CHANNEL_STATE_COLLECTION.schema);
@@ -88,6 +89,8 @@ describe('current Channels connection fixture', () => {
       'predecessorCheckpointedPollInvocation',
       'providerContributionSelection',
       'stopRequest',
+      'predecessorTransportKind',
+      'endpointRetarget',
       'overlapSafety',
       'acceptedPossibleLoss',
     ] as const) {

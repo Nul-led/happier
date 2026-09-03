@@ -6,7 +6,7 @@ import { PluginError, type JsonValue } from '@happier-dev/plugin-sdk';
 import {
   compilePluginJsonSchema,
   isValidPluginJsonSchemaValue,
-} from '@happier-dev/protocol/plugins/actions/json-schema-validation';
+} from '@happier-dev/plugin-sdk/manifest';
 import { createPluginActionHandlerNotStartedError } from '@happier-dev/plugin-sdk/host/registration';
 import type {
   TargetedContributionPointRef,
@@ -183,13 +183,26 @@ class MemoryDeliveryStore implements ConversationOutwardDeliveryStore {
   readonly rows = new Map<string, ConversationOutwardDeliveryRecord>();
   lastEncodedRowBytes: number | undefined;
 
-  async ensure(obligation: ConversationOutwardDeliveryObligation) {
-    this.events.push('ensure');
-    const custodyId = JSON.stringify([
+  private custodyIdOf(obligation: ConversationOutwardDeliveryObligation): string {
+    return JSON.stringify([
       obligation.connectionId,
       obligation.bindingId ?? null,
       obligation.source,
     ]);
+  }
+
+  async lookup(obligation: ConversationOutwardDeliveryObligation) {
+    this.events.push('lookup');
+    const existing = this.rows.get(this.custodyIdOf(obligation));
+    if (existing === undefined) return { kind: 'absent' as const };
+    return existing.obligation.deliveryKey === obligation.deliveryKey
+      ? { kind: 'rejoined' as const, record: existing }
+      : { kind: 'conflict' as const };
+  }
+
+  async ensure(obligation: ConversationOutwardDeliveryObligation) {
+    this.events.push('ensure');
+    const custodyId = this.custodyIdOf(obligation);
     const existing = this.rows.get(custodyId);
     if (existing) {
       return existing.obligation.deliveryKey === obligation.deliveryKey

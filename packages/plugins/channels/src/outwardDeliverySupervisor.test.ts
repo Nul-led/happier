@@ -1013,6 +1013,61 @@ describe('Channels outward-delivery supervisor', () => {
     ))).toEqual(expect.arrayContaining(['partial', 'outcomeUnknown']));
   });
 
+  it('keeps a content-free control-response tombstone until its ingress source row is gone', async () => {
+    const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1_000;
+    let persistedAt = 100;
+    const state = new MemoryCollection();
+    const deliveries = new MemoryCollection();
+    await state.put(connectionRow(), { expectedRevision: 'absent' });
+    // The control response's identity is the durable ingress row that produced
+    // it. While that row is still addressable the same provider occurrence can
+    // replay inside its horizon, so only a logical tombstone may remain.
+    await state.put({
+      id: 'ingress-census-1',
+      'record-kind': 'ingress-census',
+      v: 1,
+      'connection-id': 'connection-1',
+      'created-at': 0,
+      'updated-at': 0,
+      payload: {},
+    }, { expectedRevision: 'absent' });
+    const store = createConversationOutwardDeliveryCollectionStore({
+      stateCollection: state as never,
+      deliveriesCollection: deliveries as never,
+      signal: new AbortController().signal,
+      now: () => persistedAt,
+    });
+    const settleTerminal = async (controlId: string) => {
+      const created = await store.ensure(retireableControlOutwardObligation(controlId));
+      if (created.kind !== 'created') throw new Error('Expected retained custody fixture.');
+      const settled = await store.compareAndSwap({
+        custodyId: created.record.custodyId,
+        expectedRevision: created.record.revision,
+        custody: { state: 'delivered', attemptCount: 1, providerMessageIds: ['provider-1'] },
+      });
+      if (settled.kind !== 'updated') throw new Error('Expected terminal custody fixture.');
+      return settled.record;
+    };
+    const retained = await settleTerminal('ingress-census-1');
+    const unreachable = await settleTerminal('ingress-census-gone');
+
+    persistedAt += THIRTY_DAYS_MS;
+    await runConversationOutwardDeliveryCycle({
+      context: backgroundContext({
+        state,
+        deliveries,
+        execute: vi.fn(async () => { throw new Error('Unexpected Action.'); }),
+        executeAdmittedTargetedOperationWithExecutionOrigin: vi.fn(),
+      }),
+      now: () => persistedAt,
+    });
+
+    expect(await deliveries.get(retained.custodyId)).toBeNull();
+    expect(deliveries.rows.get(retained.custodyId)?.deleted).toBe(true);
+    expect(await deliveries.get(unreachable.custodyId)).toBeNull();
+    expect(deliveries.rows.get(unreachable.custodyId)).toBeUndefined();
+  });
+
   it('forgets already-selected outward retention rows directly at their exact live revisions', async () => {
     const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1_000;
     let persistedAt = 100;

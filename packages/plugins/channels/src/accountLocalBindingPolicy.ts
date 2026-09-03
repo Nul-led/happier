@@ -34,6 +34,7 @@ import {
 } from './collections.js';
 import {
   freezeConversationPendingOldTransportStop,
+  owesOnlyConversationEndpointRetarget,
   transitionConversationConnection,
   type ConversationCheckpointedPollInvocationBasisV1,
   type ConversationConnectionEnabledResultV1,
@@ -165,6 +166,13 @@ export type ConversationConnectionManagementRow = Readonly<{
     pollFailure: ConversationConnectionPollFailureAttentionV1 | null;
     bestEffortBeforeDurableAdmission: boolean;
     oldTransportStopUnconfirmed: boolean;
+    /**
+     * Whether the unconfirmed custody is only the durable-push endpoint move
+     * this connection still owes. That obligation is repairable through the
+     * same Account endpoint Happier owns, so the surface must offer repair
+     * rather than a loss the endpoint cannot actually suffer.
+     */
+    endpointRetargetOwed: boolean;
     acceptedPossibleLoss: boolean;
   }>;
 }>;
@@ -363,11 +371,20 @@ function readPersistedPendingOldTransportStop(
   );
   const overlapSafety = ownChannelStateValue(value, 'overlapSafety');
   const acceptedPossibleLoss = ownChannelStateValue(value, 'acceptedPossibleLoss');
+  const predecessorTransportKind = ownChannelStateValue(value, 'predecessorTransportKind');
+  const endpointRetarget = ownChannelStateValue(value, 'endpointRetarget');
   if (stopRequest === undefined
     || (overlapSafety !== 'safe'
       && overlapSafety !== 'providerExclusive'
       && overlapSafety !== 'destructive')
-    || typeof acceptedPossibleLoss !== 'boolean') {
+    || typeof acceptedPossibleLoss !== 'boolean'
+    || (predecessorTransportKind !== 'checkpointedPull'
+      && predecessorTransportKind !== 'socket'
+      && predecessorTransportKind !== 'durablePush')
+    || (endpointRetarget !== 'notRequired' && endpointRetarget !== 'pending')
+    // A committed endpoint retarget can only be owed by a retired durable-push
+    // transport; anything else is an incoherent slot rather than live custody.
+    || (endpointRetarget === 'pending' && predecessorTransportKind !== 'durablePush')) {
     throw policyError('channels_connection_update_corrupt', 'Connection update target has an incomplete old-stop custody slot.');
   }
   let parsedStopRequest: ConversationProviderConnectionStopInputV1;
@@ -387,6 +404,8 @@ function readPersistedPendingOldTransportStop(
     transportOrigin,
     providerContributionSelection,
     stopRequest: parsedStopRequest,
+    predecessorTransportKind,
+    endpointRetarget,
     overlapSafety,
     acceptedPossibleLoss,
   });
@@ -657,6 +676,9 @@ function projectConversationConnectionManagementRow(
       bestEffortBeforeDurableAdmission: selectedTransport === 'socket'
         && replayContinuity === 'sessionBound',
       oldTransportStopUnconfirmed: current.lifecycle.pendingOldTransportStop !== null,
+      endpointRetargetOwed: owesOnlyConversationEndpointRetarget(
+        current.lifecycle.pendingOldTransportStop,
+      ),
       acceptedPossibleLoss: current.lifecycle.pendingOldTransportStop?.acceptedPossibleLoss === true,
     },
   };

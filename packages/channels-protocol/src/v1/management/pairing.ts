@@ -15,7 +15,10 @@ import {
     MAX_CONVERSATION_CONNECTIONS_PER_ACCOUNT,
     MAX_CONVERSATION_PAIRING_DEEP_LINK_TEMPLATE_UTF8_BYTES,
 } from '../bounds.js';
-import { ConversationConnectionIdV1ProtocolSchema } from '../identity.js';
+import {
+    ConversationCollectionRowRevisionV1ProtocolSchema,
+    ConversationConnectionIdV1ProtocolSchema,
+} from '../identity.js';
 import { ConversationEndpointDisplayLabelV1ProtocolSchema } from '../provider/resolution.js';
 import {
     ConversationAutomationTargetNotVerifiedResultV1ProtocolSchema,
@@ -31,11 +34,8 @@ const pairingIdentifier = defineProtocolString({
     maxLength: 256,
     pattern: '^(?!\\s)[\\s\\S]*\\S$',
 });
-const positiveSafeInteger = defineProtocolNumber({
-    integer: true,
-    minimum: 1,
-    maximum: Number.MAX_SAFE_INTEGER,
-});
+/** One exact Account Collection row revision witness; see its Protocol owner. */
+const collectionRowRevision = ConversationCollectionRowRevisionV1ProtocolSchema;
 
 const conversationPairingCancelByChallengeInputV1 = defineProtocolObject({
     generationId: pairingIdentifier,
@@ -97,7 +97,7 @@ const conversationPairingCreateResultV1 = defineProtocolUnion([
 const conversationPairingChallengeResourceEntryV1 = defineProtocolObject({
     challengeId: pairingIdentifier,
     connectionId: ConversationConnectionIdV1ProtocolSchema,
-    expectedConnectionRevision: positiveSafeInteger,
+    expectedConnectionRevision: collectionRowRevision,
     pairingRequestId: pairingIdentifier,
     ...conversationPairingChallengePresentationV1,
 }, { policy: 'closed' });
@@ -107,7 +107,7 @@ const conversationPairingProposalResourceEntryV1 = defineProtocolObject({
     challengeId: pairingIdentifier,
     proposalId: pairingIdentifier,
     connectionId: ConversationConnectionIdV1ProtocolSchema,
-    expectedConnectionRevision: positiveSafeInteger,
+    expectedConnectionRevision: collectionRowRevision,
     expiresAt: defineProtocolNumber({
         integer: true,
         minimum: 0,
@@ -153,7 +153,7 @@ const conversationPairingResourceV1 = defineProtocolObject({
  */
 export const ConversationPairingCreateInputV1ProtocolSchema = defineProtocolObject({
     connectionId: ConversationConnectionIdV1ProtocolSchema,
-    expectedConnectionRevision: positiveSafeInteger,
+    expectedConnectionRevision: collectionRowRevision,
     pairingRequestId: pairingIdentifier,
     endpointSelection: ConversationBindingEndpointSelectionV1ProtocolSchema,
     target: ConversationBindingTargetV1ProtocolSchema,
@@ -202,7 +202,7 @@ export const ConversationPairingFinalizeInputV1Schema = defineProtocolObject({
     generationId: pairingIdentifier,
     proposalId: pairingIdentifier,
     connectionId: ConversationConnectionIdV1ProtocolSchema,
-    expectedConnectionRevision: positiveSafeInteger,
+    expectedConnectionRevision: collectionRowRevision,
     finalizeIdempotencyKey: pairingIdentifier,
 }, { policy: 'closed' });
 export type ConversationPairingFinalizeInputV1 = ReturnType<

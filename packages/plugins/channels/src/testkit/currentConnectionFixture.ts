@@ -3,6 +3,7 @@ import type { PluginMachineExecutionOriginV1 } from '@happier-dev/plugin-sdk/act
 import type {
   ConversationBindingInputModeV1,
   ConversationProviderConnectionStopInputV1,
+  ConversationTransportKindV1,
 } from '@happier-dev/channels-protocol/v1';
 
 import {
@@ -15,6 +16,7 @@ import type {
   ConversationConnectionOverlapSafetyV1,
   ConversationConnectionPollFailureV1,
   ConversationConnectionProviderReadinessV1,
+  ConversationPendingEndpointRetargetV1,
   ConversationPendingOldTransportStopV1,
 } from '../connectionLifecycle.js';
 
@@ -166,6 +168,8 @@ export function createCurrentConversationPendingOldTransportStopFixture<
   predecessorCheckpointedPollInvocation: ConversationCheckpointedPollInvocationBasisV1;
   authorityEpoch: number;
   reason: TReason;
+  predecessorTransportKind: ConversationTransportKindV1;
+  endpointRetarget?: ConversationPendingEndpointRetargetV1;
   overlapSafety: ConversationConnectionOverlapSafetyV1;
   acceptedPossibleLoss?: boolean;
 }>): Omit<ConversationPendingOldTransportStopV1, 'stopRequest'> & Readonly<{
@@ -186,6 +190,8 @@ export function createCurrentConversationPendingOldTransportStopFixture<
       authorityEpoch: input.authorityEpoch,
       reason: input.reason,
     },
+    predecessorTransportKind: input.predecessorTransportKind,
+    endpointRetarget: input.endpointRetarget ?? 'notRequired',
     overlapSafety: input.overlapSafety,
     acceptedPossibleLoss: input.acceptedPossibleLoss ?? false,
   };

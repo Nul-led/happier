@@ -502,13 +502,19 @@ export function createTelegramBotApi(input: Readonly<{
         requestInput.timeoutSeconds * 1_000 + TELEGRAM_LONG_POLL_DEADLINE_OVERHEAD_MS,
       ));
       if (!envelope) return { kind: 'notReady', reason: 'network' };
-      // Telegram serves one exclusive getUpdates consumer. A 409 here is a
-      // provider conflict with an explicit retry hint so Channels can spend
-      // its incumbent bounded backoff budget; other Bot API 409s remain
-      // permanent conflicts without that hint.
+      // Telegram serves one exclusive getUpdates consumer. A 409 here is the
+      // restart-overlap conflict that Channels' bounded poll-failure budget
+      // retries with its shared backoff curve; other Bot API 409s remain
+      // permanent conflicts. Only a retry_after parameter Telegram itself
+      // supplies may cross this boundary as `retryAfterMs` evidence — a local
+      // policy delay must never be presented as a provider hint.
       if (!envelope.ok) {
         return envelope.errorCode === 409
-          ? { kind: 'providerConflict', diagnostic: envelope.description, retryAfterMs: 1_000 }
+          ? {
+              kind: 'providerConflict',
+              diagnostic: envelope.description,
+              ...(envelope.retryAfterMs === undefined ? {} : { retryAfterMs: envelope.retryAfterMs }),
+            }
           : mapReadFailure(envelope);
       }
       if (!Array.isArray(envelope.result)) {

@@ -161,7 +161,7 @@ function createDiscordPlugin() {
         capability: 'network.client',
         reason: 'Maintain the selected Discord Gateway connection for authenticated conversation events.',
         scope: {
-          targets: [{ kind: 'fixedOrigin', origin: 'https://gateway.discord.gg' }],
+          targets: [{ kind: 'httpsHostSuffix', hostSuffix: 'discord.gg' }],
           transports: ['websocket'],
         },
       },

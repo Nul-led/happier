@@ -1,7 +1,10 @@
 /**
  * Provider-owned ingress ordering. Discord messages for one endpoint retain
- * arrival order, while unrelated endpoints can consume the bounded global
- * pool independently. This does not replace Channels admission/currentness.
+ * arrival order, while unrelated endpoints each run their own bounded lane.
+ * The connection's bounded concurrency slots are handed out round-robin
+ * across the endpoint lanes that are waiting, so a busy endpoint cannot
+ * consume the next slot ahead of another endpoint that is also waiting. This
+ * does not replace Channels admission/currentness.
  */
 
 export type DiscordIngressSchedulerOptions = Readonly<{
@@ -128,6 +131,7 @@ export function createDiscordIngressScheduler(options: DiscordIngressSchedulerOp
   let activeCount = 0;
   let queuedCount = 0;
   let draining = false;
+  let lastServedLaneKey: string | null = null;
 
   const removeIdleLane = (key: string, lane: Lane): void => {
     if (!lane.running && lane.queued.length === 0) lanes.delete(key);
@@ -149,6 +153,7 @@ export function createDiscordIngressScheduler(options: DiscordIngressSchedulerOp
     queuedCount -= 1;
     activeCount += 1;
     lane.running = true;
+    lastServedLaneKey = key;
     task.detachAbortListener();
     task.start(() => {
       activeCount -= 1;
@@ -158,12 +163,30 @@ export function createDiscordIngressScheduler(options: DiscordIngressSchedulerOp
     });
   };
 
+  /**
+   * Round-robin lane selection. The search starts after the lane served
+   * last, wrapping once, so every waiting endpoint reaches a slot before a
+   * busy endpoint wins a second one. A lane key that has since been removed
+   * falls back to the front of the order.
+   */
+  const nextReadyLane = (): [string, Lane] | null => {
+    const entries = [...lanes.entries()];
+    const startOffset = lastServedLaneKey === null
+      ? 0
+      : entries.findIndex(([key]) => key === lastServedLaneKey) + 1;
+    for (let offset = 0; offset < entries.length; offset += 1) {
+      const entry = entries[(startOffset + offset) % entries.length]!;
+      if (!entry[1].running && entry[1].queued.length > 0) return entry;
+    }
+    return null;
+  };
+
   const drain = (): void => {
     if (draining) return;
     draining = true;
     try {
       while (activeCount < maxConcurrent) {
-        const next = [...lanes.entries()].find(([, lane]) => !lane.running && lane.queued.length > 0);
+        const next = nextReadyLane();
         if (!next) return;
         launch(next[0], next[1]);
       }

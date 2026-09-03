@@ -68,6 +68,7 @@ describe('Conversation connection lifecycle', () => {
           authorityEpoch: 8,
           reason: 'delete',
         },
+        predecessorTransportKind: 'durablePush',
       },
     });
     if (deleting.kind !== 'deletePending') throw new Error('Expected pending delete state.');
@@ -118,6 +119,8 @@ describe('Conversation connection lifecycle', () => {
           authorityEpoch: 8,
           reason: 'transfer',
         },
+        predecessorTransportKind: 'durablePush',
+        endpointRetarget: 'notRequired',
       },
       replacement: { enabled: true, overlapSafety: 'safe', historyGap: null },
     });
@@ -125,6 +128,7 @@ describe('Conversation connection lifecycle', () => {
 
     expect(finalizeConversationConnectionTransferWithoutProviderStop({
       current: started.connection,
+      provenEndpointRetarget: false,
     })).toEqual({
       kind: 'transportStopConfirmed',
       connection: {
@@ -170,6 +174,7 @@ describe('Conversation connection lifecycle', () => {
         transportOrigin,
         providerContributionSelection,
         stopRequest,
+        predecessorTransportKind: 'socket',
       },
     });
 
@@ -194,6 +199,8 @@ describe('Conversation connection lifecycle', () => {
           transportOrigin,
           providerContributionSelection,
           stopRequest,
+          predecessorTransportKind: 'socket',
+          endpointRetarget: 'notRequired',
           overlapSafety: 'safe',
           acceptedPossibleLoss: false,
         },
@@ -278,6 +285,8 @@ describe('Conversation connection lifecycle', () => {
           authorityEpoch: 8,
           reason: 'transfer',
         },
+        predecessorTransportKind: 'socket',
+        endpointRetarget: 'notRequired',
       },
       replacement: {
         enabled: true,
@@ -300,6 +309,8 @@ describe('Conversation connection lifecycle', () => {
           transportOrigin: transferStart.pendingOldTransportStop.transportOrigin,
           providerContributionSelection: transferStart.pendingOldTransportStop.providerContributionSelection,
           stopRequest: transferStart.pendingOldTransportStop.stopRequest,
+          predecessorTransportKind: 'socket',
+          endpointRetarget: 'notRequired',
           overlapSafety: 'safe',
           acceptedPossibleLoss: false,
         },
@@ -360,6 +371,8 @@ describe('Conversation connection lifecycle', () => {
           contributionId: 'incumbent-contribution',
           immutableGenerationId: 'incumbent-generation',
         },
+        predecessorTransportKind: 'socket',
+        endpointRetarget: 'notRequired',
         stopRequest: {
           v: 1,
           connectionId: 'connection-lifecycle',
@@ -413,6 +426,8 @@ describe('Conversation connection lifecycle', () => {
         transportOrigin: acceptedStop.transportOrigin,
         providerContributionSelection: acceptedStop.providerContributionSelection,
         stopRequest: { ...acceptedStop.stopRequest, reason: 'transfer' as const },
+        predecessorTransportKind: 'socket',
+        endpointRetarget: 'notRequired',
       },
       replacement: {
         enabled: false,
@@ -477,6 +492,8 @@ describe('Conversation connection lifecycle', () => {
           authorityEpoch: 8,
           reason: 'transfer',
         },
+        predecessorTransportKind: 'socket',
+        endpointRetarget: 'notRequired',
         overlapSafety: 'destructive',
         acceptedPossibleLoss: false,
       },
@@ -495,6 +512,7 @@ describe('Conversation connection lifecycle', () => {
         authorityEpoch: 9,
         reason: 'delete' as const,
       },
+      predecessorTransportKind: 'socket' as const,
     };
     const replacementStop = {
       predecessorCheckpointedPollInvocation: {
@@ -510,6 +528,8 @@ describe('Conversation connection lifecycle', () => {
         authorityEpoch: 9,
         reason: 'transfer' as const,
       },
+      predecessorTransportKind: 'socket' as const,
+      endpointRetarget: 'notRequired' as const,
     };
 
     expect(startConversationConnectionDelete({
@@ -1044,5 +1064,230 @@ describe('Conversation connection lifecycle', () => {
       reportedAuthorityEpoch: 3,
       fact: { kind: 'providerReadiness', status: 'ready' },
     })).toEqual({ kind: 'staleAuthority' });
+  });
+});
+
+describe('Conversation connection transfer predecessor custody', () => {
+  const transportOrigin = {
+    serverIdentityId: 'srv_connection_lifecycle',
+    materializationRef: {
+      pluginId: 'happier.channel.lifecycle',
+      machineId: 'machine-lifecycle',
+      materializationId: 'materialization-lifecycle',
+    },
+  } as const;
+
+  function transferStopRequest() {
+    return {
+      v: 1 as const,
+      connectionId: 'connection-transfer-custody',
+      providerConnectionKey: 'provider:connection-transfer-custody',
+      providerConfigVersion: 1 as const,
+      providerConfig: {},
+      credentialRef: null,
+      authorityEpoch: 8,
+      reason: 'transfer' as const,
+    };
+  }
+
+  function startTransfer(input: Readonly<{
+    predecessorTransportKind: 'checkpointedPull' | 'socket' | 'durablePush';
+    endpointRetarget: 'notRequired' | 'pending';
+    current?: ConversationConnectionLifecycleStateV1;
+  }>) {
+    const current = input.current ?? connection();
+    return startConversationConnectionTransfer({
+      current,
+      pendingOldTransportStop: {
+        predecessorCheckpointedPollInvocation: {
+          connectionRevision: 1,
+          authorityEpoch: current.authorityEpoch,
+          transportOrigin,
+        },
+        transportOrigin,
+        providerContributionSelection: {
+          contributionId: 'transfer-contribution',
+          immutableGenerationId: 'transfer-generation',
+        },
+        stopRequest: { ...transferStopRequest(), authorityEpoch: current.authorityEpoch + 1 },
+        predecessorTransportKind: input.predecessorTransportKind,
+        endpointRetarget: input.endpointRetarget,
+      },
+      replacement: { enabled: true, overlapSafety: 'safe', historyGap: null },
+    });
+  }
+
+  function startDelete(current: ConversationConnectionLifecycleStateV1) {
+    return startConversationConnectionDelete({
+      current,
+      pendingOldTransportStop: {
+        predecessorCheckpointedPollInvocation: {
+          connectionRevision: 1,
+          authorityEpoch: current.authorityEpoch,
+          transportOrigin,
+        },
+        transportOrigin,
+        providerContributionSelection: {
+          contributionId: 'transfer-contribution',
+          immutableGenerationId: 'transfer-generation',
+        },
+        stopRequest: {
+          ...transferStopRequest(),
+          authorityEpoch: current.authorityEpoch + 1,
+          reason: 'delete' as const,
+        },
+        predecessorTransportKind: 'durablePush',
+      },
+    });
+  }
+
+  function transferPending(input: Readonly<{
+    predecessorTransportKind: 'checkpointedPull' | 'socket' | 'durablePush';
+    endpointRetarget: 'notRequired' | 'pending';
+    current?: ConversationConnectionLifecycleStateV1;
+  }>): ConversationConnectionLifecycleStateV1 {
+    const started = startTransfer(input);
+    if (started.kind !== 'transferPendingOldStop') throw new Error('Expected transfer state.');
+    return started.connection;
+  }
+
+  it('freezes the retired transport kind so a later settlement never reads the replacement transport', () => {
+    const started = startTransfer({ predecessorTransportKind: 'socket', endpointRetarget: 'notRequired' });
+    if (started.kind !== 'transferPendingOldStop') throw new Error('Expected transfer state.');
+    expect(started.connection.pendingOldTransportStop).toMatchObject({
+      predecessorTransportKind: 'socket',
+      endpointRetarget: 'notRequired',
+    });
+    // A socket predecessor owns a provider stop; nothing here may detach it as
+    // if the replacement's durable-push transport had no worker to stop.
+    expect(finalizeConversationConnectionTransferWithoutProviderStop({
+      current: started.connection,
+      provenEndpointRetarget: false,
+    })).toEqual({ kind: 'staleAuthority' });
+  });
+
+  it('commits a durable-push endpoint retarget as recoverable intent before it may be settled', () => {
+    const started = startTransfer({ predecessorTransportKind: 'durablePush', endpointRetarget: 'pending' });
+    if (started.kind !== 'transferPendingOldStop') throw new Error('Expected transfer state.');
+    expect(started.connection.pendingOldTransportStop).toMatchObject({
+      predecessorTransportKind: 'durablePush',
+      endpointRetarget: 'pending',
+    });
+    expect(finalizeConversationConnectionTransferWithoutProviderStop({
+      current: started.connection,
+      provenEndpointRetarget: false,
+    })).toEqual({ kind: 'staleAuthority' });
+    expect(finalizeConversationConnectionTransferWithoutProviderStop({
+      current: started.connection,
+      provenEndpointRetarget: true,
+    })).toEqual({
+      kind: 'transportStopConfirmed',
+      connection: { ...started.connection, pendingOldTransportStop: null },
+    });
+  });
+
+  it('settles a durable-push detachment that never owed an endpoint retarget without fabricating one', () => {
+    const started = startTransfer({ predecessorTransportKind: 'durablePush', endpointRetarget: 'notRequired' });
+    if (started.kind !== 'transferPendingOldStop') throw new Error('Expected transfer state.');
+    expect(finalizeConversationConnectionTransferWithoutProviderStop({
+      current: started.connection,
+      provenEndpointRetarget: true,
+    })).toEqual({ kind: 'staleAuthority' });
+    expect(finalizeConversationConnectionTransferWithoutProviderStop({
+      current: started.connection,
+      provenEndpointRetarget: false,
+    })).toEqual({
+      kind: 'transportStopConfirmed',
+      connection: { ...started.connection, pendingOldTransportStop: null },
+    });
+  });
+
+  it('refuses an endpoint-retarget obligation for a predecessor that owns no durable endpoint', () => {
+    expect(startTransfer({ predecessorTransportKind: 'checkpointedPull', endpointRetarget: 'pending' }))
+      .toEqual({ kind: 'rejected', code: 'stopRequestInvalid' });
+    expect(startTransfer({ predecessorTransportKind: 'socket', endpointRetarget: 'pending' }))
+      .toEqual({ kind: 'rejected', code: 'stopRequestInvalid' });
+  });
+
+  it('repairs an owed endpoint retarget instead of accepting its loss', () => {
+    // The Account endpoint is Happier's own object and its move is idempotent,
+    // so there is no external loss to accept: marking one would freeze a
+    // permanent mistarget that no later owner action could correct.
+    expect(abandonConversationConnectionStop({
+      current: transferPending({ predecessorTransportKind: 'durablePush', endpointRetarget: 'pending' }),
+    })).toEqual({ kind: 'rejected', code: 'endpointRetargetRepairRequired' });
+
+    // A retired socket consumer really can be permanently unreachable, so its
+    // custody keeps the explicit accept-loss escape.
+    expect(abandonConversationConnectionStop({
+      current: transferPending({ predecessorTransportKind: 'socket', endpointRetarget: 'notRequired' }),
+    })).toMatchObject({
+      kind: 'transferAbandoned',
+      connection: { pendingOldTransportStop: { acceptedPossibleLoss: true } },
+    });
+  });
+
+  it('lets the next transfer or delete supersede an unrepaired endpoint retarget', () => {
+    const owedRetarget = transferPending({
+      predecessorTransportKind: 'durablePush',
+      endpointRetarget: 'pending',
+    });
+
+    // A retransfer names the new desired target, and the same idempotent repair
+    // converges the endpoint onto it. The older move is superseded, not lost.
+    expect(startTransfer({
+      predecessorTransportKind: 'durablePush',
+      endpointRetarget: 'pending',
+      current: owedRetarget,
+    })).toMatchObject({ kind: 'transferPendingOldStop' });
+
+    // Delete drops the Channels reference to that endpoint entirely, so the
+    // owed move has nothing left to serve.
+    expect(startDelete(owedRetarget)).toMatchObject({ kind: 'deletePending' });
+
+    // A retired socket consumer still owes a real provider stop, which no
+    // replacement desire can discharge.
+    const owedSocketStop = transferPending({
+      predecessorTransportKind: 'socket',
+      endpointRetarget: 'notRequired',
+    });
+    expect(startTransfer({
+      predecessorTransportKind: 'socket',
+      endpointRetarget: 'notRequired',
+      current: owedSocketStop,
+    })).toEqual({ kind: 'rejected', code: 'oldTransportStopPending' });
+    expect(startDelete(owedSocketStop)).toEqual({ kind: 'rejected', code: 'oldTransportStopPending' });
+  });
+
+  it('finalizes a delete without a provider stop only for a frozen durable-push predecessor', () => {
+    const deleteStart = (predecessorTransportKind: 'checkpointedPull' | 'socket' | 'durablePush') => {
+      const started = startConversationConnectionDelete({
+        current: connection(),
+        pendingOldTransportStop: {
+          predecessorCheckpointedPollInvocation: {
+            connectionRevision: 1,
+            authorityEpoch: 7,
+            transportOrigin,
+          },
+          transportOrigin,
+          providerContributionSelection: {
+            contributionId: 'transfer-contribution',
+            immutableGenerationId: 'transfer-generation',
+          },
+          stopRequest: { ...transferStopRequest(), reason: 'delete' as const },
+          predecessorTransportKind,
+        },
+      });
+      if (started.kind !== 'deletePending') throw new Error('Expected pending delete state.');
+      return started.connection;
+    };
+    expect(deleteStart('durablePush').pendingOldTransportStop).toMatchObject({
+      predecessorTransportKind: 'durablePush',
+      endpointRetarget: 'notRequired',
+    });
+    expect(finalizeConversationConnectionDeleteWithoutProviderStop({ current: deleteStart('socket') }))
+      .toEqual({ kind: 'staleAuthority' });
+    expect(finalizeConversationConnectionDeleteWithoutProviderStop({ current: deleteStart('durablePush') }))
+      .toMatchObject({ kind: 'deleteFinalizing' });
   });
 });

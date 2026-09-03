@@ -2576,6 +2576,7 @@
     ],
     "scmBackends": [],
     "scmHostingProviders": [],
+    "searchProviders": [],
     "sessionHeaderActions": [],
     "sessionInfoSections": [],
     "settings": [],
@@ -2855,8 +2856,8 @@
           "privateNetwork": false,
           "targets": [
             {
-              "kind": "fixedOrigin",
-              "origin": "https://gateway.discord.gg"
+              "hostSuffix": "discord.gg",
+              "kind": "httpsHostSuffix"
             }
           ],
           "transports": [

@@ -1207,6 +1207,51 @@ describe('Discord Gateway worker', () => {
     expect(admitObservation).toHaveBeenCalledTimes(1);
   });
 
+  it('discloses unproven continuity when a stop abandons a still-resumable Gateway session', async () => {
+    const parent = new AbortController();
+    const socket = socketUntilClosed([
+      { op: 10, d: { heartbeat_interval: 60_000 } },
+      {
+        op: 0,
+        s: 1,
+        t: 'READY',
+        d: {
+          session_id: 'session-abandoned-resume',
+          resume_gateway_url: 'wss://gateway.discord.gg/?v=10&encoding=json',
+        },
+      },
+    ]);
+    const worker = startDiscordGatewayWorker({
+      connection: {
+        connectionId: 'connection-abandoned-resume',
+        authorityEpoch: 8,
+        applicationId: 'application-1',
+        botUserId: 'bot-1',
+        token: 'bot-token',
+        runtime: { requiresFullSharedMessageContent: false },
+        applicationMessageContentIntentPermission: { kind: 'disabled', source: 'flags' },
+      },
+      api: {
+        getGatewayBot: vi.fn(async () => gatewayBot()),
+        getChannel: vi.fn(),
+        getGuildMember: vi.fn(async () => null),
+      },
+      webSockets: { openWebSocket: vi.fn(async () => socket) },
+      admitObservation: vi.fn(),
+      signal: parent.signal,
+    });
+
+    // READY proves a Dispatch interval existed and Discord returned usable
+    // resume coordinates. Killing that session without a resume handoff loses
+    // the coordinates along with the worker, so the replacement session
+    // cannot prove continuity across this boundary. The third receive call is
+    // the blocked wait after Hello and READY were both consumed.
+    await vi.waitFor(() => expect(socket.receive).toHaveBeenCalledTimes(3));
+    worker.stop();
+
+    await expect(worker.result).resolves.toEqual({ kind: 'stopped', unprovenContinuity: true });
+  });
+
   it('prefers application-admission loss when a pending admission rejects during terminal outer teardown', async () => {
     const parent = new AbortController();
     const frames = [

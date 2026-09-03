@@ -22,6 +22,7 @@ import type {
 import { ConversationProviderFailureV1ProtocolSchema } from '../diagnostics.js';
 import {
     ConversationBindingIdV1ProtocolSchema,
+    ConversationCollectionRowRevisionV1ProtocolSchema,
     ConversationConnectionIdV1ProtocolSchema,
 } from '../identity.js';
 import {
@@ -38,11 +39,18 @@ import {
 } from './targets.js';
 import type { ConversationSessionBindingTargetV1 } from './targets.js';
 
-const positiveSafeInteger = defineProtocolNumber({
+/**
+ * A Channels-owned authority epoch. It is advanced by this package rather
+ * than persisted as a Collection row revision, so it keeps the wide
+ * safe-integer bound instead of the Collection column ceiling.
+ */
+const authorityEpochV1 = defineProtocolNumber({
     integer: true,
     minimum: 1,
     maximum: Number.MAX_SAFE_INTEGER,
 });
+/** One exact Account Collection row revision witness; see its Protocol owner. */
+const collectionRowRevision = ConversationCollectionRowRevisionV1ProtocolSchema;
 const protocolBoolean = defineProtocolUnion([
     defineProtocolLiteral(true),
     defineProtocolLiteral(false),
@@ -198,13 +206,13 @@ const conversationBindingHumanPrincipalSelectionV1 = defineProtocolObject({
 }, { policy: 'closed' });
 
 const conversationBindingAudienceSelectionV1 = defineProtocolObject({
-    expectedConnectionRevision: positiveSafeInteger,
+    expectedConnectionRevision: collectionRowRevision,
     endpointSelection: ConversationBindingEndpointSelectionV1ProtocolSchema,
     principalSelection: conversationBindingPrincipalSelectionV1,
 }, { policy: 'closed' });
 
 const conversationBindingHumanAudienceSelectionV1 = defineProtocolObject({
-    expectedConnectionRevision: positiveSafeInteger,
+    expectedConnectionRevision: collectionRowRevision,
     endpointSelection: ConversationBindingEndpointSelectionV1ProtocolSchema,
     principalSelection: conversationBindingHumanPrincipalSelectionV1,
 }, { policy: 'closed' });
@@ -214,14 +222,14 @@ export const ConversationBindingResolveInputV1ProtocolSchema = defineProtocolUni
     defineProtocolObject({
         kind: defineProtocolLiteral('endpoint'),
         connectionId: ConversationConnectionIdV1ProtocolSchema,
-        expectedConnectionRevision: positiveSafeInteger,
+        expectedConnectionRevision: collectionRowRevision,
         query: ConversationResolutionQueryV1ProtocolSchema,
         kinds: ConversationEndpointResolveKindsV1ProtocolSchema.optional(),
     }, { policy: 'closed' }),
     defineProtocolObject({
         kind: defineProtocolLiteral('principal'),
         connectionId: ConversationConnectionIdV1ProtocolSchema,
-        expectedConnectionRevision: positiveSafeInteger,
+        expectedConnectionRevision: collectionRowRevision,
         endpointSelection: ConversationBindingEndpointSelectionV1ProtocolSchema,
         query: ConversationResolutionQueryV1ProtocolSchema,
     }, { policy: 'closed' }),
@@ -282,7 +290,7 @@ export const ConversationBindingResolveResultV1JsonSchema: PluginJsonSchema =
 
 const conversationBindingCreateFieldsV1 = {
     connectionId: ConversationConnectionIdV1ProtocolSchema,
-    expectedConnectionRevision: positiveSafeInteger,
+    expectedConnectionRevision: collectionRowRevision,
     endpointSelection: ConversationBindingEndpointSelectionV1ProtocolSchema,
     target: mutableBindingPolicyFieldsV1.target,
     inputMode: mutableBindingPolicyFieldsV1.inputMode.optional(),
@@ -324,7 +332,7 @@ export const ConversationBindingReadInputV1JsonSchema: PluginJsonSchema =
 export const ConversationBindingReadResultV1Schema = defineProtocolUnion([
     defineProtocolObject({
         kind: defineProtocolLiteral('ready'),
-        revision: positiveSafeInteger,
+        revision: collectionRowRevision,
         binding: ConversationBindingV1ProtocolSchema,
     }, { policy: 'closed' }),
     defineProtocolObject({
@@ -337,7 +345,7 @@ export const ConversationBindingReadResultV1JsonSchema: PluginJsonSchema =
 
 const conversationBindingUpdateFieldsV1 = {
     bindingId: ConversationBindingIdV1ProtocolSchema,
-    expectedRevision: positiveSafeInteger,
+    expectedRevision: collectionRowRevision,
     target: mutableBindingPolicyFieldsV1.target.optional(),
     inputMode: mutableBindingPolicyFieldsV1.inputMode.optional(),
     inboundDebounceMs: mutableBindingPolicyFieldsV1.inboundDebounceMs.optional(),
@@ -372,8 +380,8 @@ const conversationBindingUpdateResultV1 = defineProtocolObject({
         defineProtocolLiteral('unchanged'),
     ]),
     bindingId: ConversationBindingIdV1ProtocolSchema,
-    revision: positiveSafeInteger,
-    authorityEpoch: positiveSafeInteger,
+    revision: collectionRowRevision,
+    authorityEpoch: authorityEpochV1,
 }, { policy: 'closed' });
 
 /** @internal Relative-only input for composed Channels management schemas. */
@@ -387,7 +395,7 @@ export const ConversationAutomationTargetNotVerifiedResultV1ProtocolSchema = def
 
 export const ConversationBindingSetEnabledInputV1Schema = defineProtocolObject({
     bindingId: ConversationBindingIdV1ProtocolSchema,
-    expectedRevision: positiveSafeInteger,
+    expectedRevision: collectionRowRevision,
     enabled: protocolBoolean,
 }, { policy: 'closed' });
 export type ConversationBindingSetEnabledInputV1 = ReturnType<
@@ -399,7 +407,7 @@ export const ConversationBindingSetEnabledInputV1JsonSchema: PluginJsonSchema =
 /** @internal Relative-only idempotent binding deletion request. */
 export const ConversationBindingDeleteInputV1ProtocolSchema = defineProtocolObject({
     bindingId: ConversationBindingIdV1ProtocolSchema,
-    expectedRevision: positiveSafeInteger,
+    expectedRevision: collectionRowRevision,
 }, { policy: 'closed' });
 
 export const ConversationBindingDeleteInputV1Schema = ConversationBindingDeleteInputV1ProtocolSchema;
