@@ -1,4 +1,13 @@
 import type { AgentMessage } from '@/agent/core/AgentMessage';
+import type { SessionInputCausalPermissionAuthorityV1 } from '@happier-dev/protocol';
+
+type ExecutionRunPromptMeta = Readonly<{
+    localInputId?: string | null;
+    localInputIds?: readonly string[];
+    userMessageSeq?: number | null;
+    userMessageSeqs?: readonly number[];
+    causalPermissionAuthority?: SessionInputCausalPermissionAuthorityV1;
+}>;
 
 export type ExecutionRunHostRuntimeMessageHandler = (message: AgentMessage) => void;
 
@@ -34,22 +43,12 @@ export type ExecutionRunHostRuntime = Readonly<{
     sendPrompt: (
         sessionId: string,
         prompt: string,
-        meta?: Readonly<{
-            localInputId?: string | null;
-            localInputIds?: readonly string[];
-            userMessageSeq?: number | null;
-            userMessageSeqs?: readonly number[];
-        }>,
+        meta?: ExecutionRunPromptMeta,
     ) => Promise<unknown>;
     sendSteerPrompt?: (
         sessionId: string,
         prompt: string,
-        meta?: Readonly<{
-            localInputId?: string | null;
-            localInputIds?: readonly string[];
-            userMessageSeq?: number | null;
-            userMessageSeqs?: readonly number[];
-        }>,
+        meta?: ExecutionRunPromptMeta,
     ) => Promise<void>;
     cancel: (sessionId: string) => Promise<void>;
     subscribeMessages: (handler: ExecutionRunHostRuntimeMessageHandler) => () => void;

@@ -46,6 +46,12 @@ const prepared = {
 
 function createDeps(overrides: Record<string, unknown> = {}) {
   const calls: string[] = [];
+  const workspaceSyncAdapter = {
+    prepare: vi.fn(async () => { throw new Error('unexpected workspace preparation'); }),
+    finalize: vi.fn(async () => { throw new Error('unexpected workspace finalization'); }),
+    commit: vi.fn(async () => { throw new Error('unexpected workspace commit'); }),
+    abort: vi.fn(async () => undefined),
+  };
   return {
     calls,
     deps: {
@@ -84,42 +90,13 @@ function createDeps(overrides: Record<string, unknown> = {}) {
       abort: vi.fn(async () => undefined),
       publishOwnerUpdate: vi.fn(),
       wait: vi.fn(async () => undefined),
+      workspaceSyncAdapter,
       ...overrides,
     },
   };
 }
 
 describe('tracked session handoff coordinator', () => {
-  it('fails closed before stopping the source when a canonical workspace action has no production adapter', async () => {
-    const { deps } = createDeps();
-
-    const result = await coordinateTrackedSessionHandoff({
-      input: {
-        operationId: 'action-request-1',
-        sessionId: 'session-1',
-        targetMachineId: 'target-machine',
-        workspaceAction: {
-          kind: 'copy_once',
-          contentPolicy: allFilesContentPolicy,
-        },
-        workspaceSyncSourceRootPath: '/source/repo',
-        workspaceSyncTargetRootPath: '/target/repo',
-        workspaceSyncSourceWorkspaceRefId: 'source-ref',
-        workspaceSyncTargetWorkspaceRefId: 'target-ref',
-      },
-      signal: new AbortController().signal,
-      ...deps,
-    });
-
-    expect(result).toEqual({
-      ok: false,
-      errorCode: 'workspace_sync_unavailable',
-      error: 'workspace_sync_unavailable',
-    });
-    expect(deps.start).not.toHaveBeenCalled();
-    expect(deps.prepareTarget).not.toHaveBeenCalled();
-  });
-
   it('prepares daemon-owned relationship creation from roots and host Account scope without pre-created refs', async () => {
     const workspaceSyncAdapter = {
       prepare: vi.fn(async (input: { operationId: string; action: { kind: 'create_relationship' } }) => ({

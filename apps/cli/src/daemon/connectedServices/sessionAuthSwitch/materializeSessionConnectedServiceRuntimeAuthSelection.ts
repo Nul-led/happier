@@ -95,9 +95,6 @@ export async function materializeSessionConnectedServiceRuntimeAuthSelection(par
     ...(params.input.runtimeAuthApplyReason
       ? { applyReason: params.input.runtimeAuthApplyReason }
       : {}),
-    ...(params.input.requireDirectLiveHotApply
-      ? { requireDirectLiveHotApply: true }
-      : {}),
     ...(binding.selection === 'group'
       ? {
           groupId: binding.groupId,

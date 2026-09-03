@@ -5,6 +5,7 @@ import {
   ReviewFindingsV1Schema,
   ReviewFindingsV2Schema,
   ReviewFollowUpInputSchema,
+  type SessionInputCausalPermissionAuthorityV1,
 } from '@happier-dev/protocol';
 
 import type { ACPMessageData, ACPProvider } from '@/api/session/sessionMessageTypes';
@@ -64,6 +65,8 @@ export async function applyExecutionRunAction(args: Readonly<{
   materializeReviewHostAction?: (
     readCurrentCandidate: () => ReviewCommentHostActionCandidate | null,
   ) => Promise<ReviewCommentHostActionMaterializationResult>;
+  causalPermissionAuthority?: SessionInputCausalPermissionAuthorityV1;
+  effectiveCallerPermissionMode?: string;
 }>): Promise<ExecutionRunActionResult> {
   const run = args.runs.get(args.runId);
   if (!run) return { ok: false, errorCode: 'execution_run_not_found', error: 'Not found' };
@@ -131,7 +134,10 @@ export async function applyExecutionRunAction(args: Readonly<{
         assumptions: existingPayload.assumptions,
       },
       ...(run.display ? { display: run.display } : {}),
-      permissionMode: run.permissionMode,
+      permissionMode: args.effectiveCallerPermissionMode ?? run.permissionMode,
+      ...(args.causalPermissionAuthority
+        ? { causalPermissionAuthority: args.causalPermissionAuthority }
+        : {}),
       retentionPolicy: run.resumeHandle ? 'resumable' : 'ephemeral',
       runClass: 'bounded',
       ioMode: 'streaming',
@@ -159,7 +165,13 @@ export async function applyExecutionRunAction(args: Readonly<{
           const raw = Number(v?.maxChars ?? 0);
           return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : undefined;
         })();
-        const committed = await args.voiceAgentManager.commit({ voiceAgentId: ctrl.voiceAgentId, ...(maxChars ? { maxChars } : {}) });
+        const committed = await args.voiceAgentManager.commit({
+          voiceAgentId: ctrl.voiceAgentId,
+          ...(maxChars ? { maxChars } : {}),
+          ...(args.causalPermissionAuthority
+            ? { causalPermissionAuthority: args.causalPermissionAuthority }
+            : {}),
+        });
         const updatedResumeHandle = run.retentionPolicy === 'resumable' ? args.voiceAgentManager.getResumeHandle(ctrl.voiceAgentId) : null;
         if (updatedResumeHandle && run.retentionPolicy === 'resumable') {
           const latest = args.runs.get(args.runId) ?? null;
@@ -188,7 +200,13 @@ export async function applyExecutionRunAction(args: Readonly<{
           const raw = typeof v?.welcomeText === 'string' ? v.welcomeText.trim() : '';
           return raw ? raw : undefined;
         })();
-        const welcomed = await args.voiceAgentManager.welcome({ voiceAgentId: ctrl.voiceAgentId, ...(welcomeText ? { welcomeText } : {}) });
+        const welcomed = await args.voiceAgentManager.welcome({
+          voiceAgentId: ctrl.voiceAgentId,
+          ...(welcomeText ? { welcomeText } : {}),
+          ...(args.causalPermissionAuthority
+            ? { causalPermissionAuthority: args.causalPermissionAuthority }
+            : {}),
+        });
         await args.onVoiceAgentWelcomed?.(args.runId, ctrl.transcript.epoch);
         return { ok: true, result: { assistantText: welcomed.assistantText } };
       } catch (e) {

@@ -106,6 +106,8 @@ import {
 } from './committedUserMessageSeqTracker';
 import { loadCommittedTranscriptLocalIdBaseline } from './client/transcript/committedTranscriptLocalIdBaseline';
 import { fetchEncryptedTranscriptMessagesPage } from '@/session/replay/fetchEncryptedTranscriptMessages';
+import { resolveServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
+import { findTranscriptEncryptedMessageByLocalIdV2 } from './transcriptMessageLookup';
 import {
     mergeLocallyConsumedUserMessageSeqsV1,
     readLocallyConsumedUserMessageSeqsV1,
@@ -3108,10 +3110,10 @@ export class ApiSessionClient extends EventEmitter {
      * This adds no acceptance fact. It reads the two the Pending owner already keeps: the
      * committed transcript row a resolved delivery produces, and the server's own pending
      * projection. A row whose status proves no provider effect is `not_accepted`; any live or
-     * archived status for which a provider effect remains possible is `unknown`. Absence is not positive
-     * acceptance evidence because the row may have disappeared before provider dispatch; only
-     * the exact committed transcript row proves acceptance. A failed read stays `unknown` so no
-     * caller may read it as either outcome.
+     * archived status for which a provider effect remains possible is `unknown`. The process-local
+     * tracker is only a fast path: after restart, the existing exact transcript lookup recovers the
+     * committed row before Pending absence is interpreted. A failed exact lookup stays `unknown` so
+     * no caller may read an unavailable acceptance fact as either outcome.
      */
     async readDurableProviderInputAcceptanceV1(
         localId: string,
@@ -3120,6 +3122,19 @@ export class ApiSessionClient extends EventEmitter {
         if (!normalizedLocalId) return 'unknown';
         if (this.getCommittedUserMessageSeq(normalizedLocalId) !== null) return 'accepted';
         try {
+            const transcriptLookup = await findTranscriptEncryptedMessageByLocalIdV2({
+                token: this.token,
+                serverUrl: resolveServerHttpBaseUrl(),
+                sessionId: this.sessionId,
+                localId: normalizedLocalId,
+            });
+            if (transcriptLookup.type === 'found') {
+                return transcriptLookup.message.localId === normalizedLocalId
+                    ? 'accepted'
+                    : 'unknown';
+            }
+            if (transcriptLookup.type !== 'not_found') return 'unknown';
+
             const statuses = await listPendingQueueV2DeliveryStatusesFromServer({
                 token: this.token,
                 sessionId: this.sessionId,

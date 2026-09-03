@@ -1967,6 +1967,138 @@ describe('ExecutionRunManager (long-lived runs)', () => {
     });
   });
 
+  it('admits only one concurrent voice_agent resume occurrence', async () => {
+    let releaseResumeProvision!: () => void;
+    let resumeProvisionStarted!: () => void;
+    const resumeProvisionGate = new Promise<void>((resolve) => {
+      releaseResumeProvision = resolve;
+    });
+    const resumeProvisionStartedPromise = new Promise<void>((resolve) => {
+      resumeProvisionStarted = resolve;
+    });
+    let runtimeCount = 0;
+    const manager = createExecutionRunManager({
+      parentProvider: TEST_PRIMARY_BACKEND_ID,
+      cwd: process.cwd(),
+      createRuntime: () => {
+        runtimeCount += 1;
+        return createPromptRuntime(() => {}, {
+          resumeSupported: true,
+          onProvisionSession: async (opts) => {
+            if (!opts?.resumeSessionId) return;
+            resumeProvisionStarted();
+            await resumeProvisionGate;
+          },
+        });
+      },
+      sendAcp: async () => {},
+      getNowMs: () => 1_700_000_000_000,
+    });
+
+    try {
+      const started = await manager.start({
+        sessionId: 'parent_session_1',
+        intent: 'voice_agent',
+        backendTarget: { kind: 'builtInAgent', agentId: TEST_PRIMARY_BACKEND_ID },
+        permissionMode: 'read_only',
+        retentionPolicy: 'resumable',
+        runClass: 'long_lived',
+        ioMode: 'streaming',
+      });
+      await manager.stop(started.runId);
+
+      const first = manager.ensure(started.runId, { resume: true });
+      await resumeProvisionStartedPromise;
+      const second = manager.ensure(started.runId, { resume: true });
+      releaseResumeProvision();
+
+      await expect(first).resolves.toEqual({ ok: true });
+      await expect(second).resolves.toMatchObject({
+        ok: false,
+        errorCode: 'execution_run_not_allowed',
+      });
+      expect(runtimeCount).toBe(2);
+      expect(manager.get(started.runId)?.status).toBe('running');
+    } finally {
+      await manager.dispose();
+    }
+  });
+
+  it('does not revive a running voice_agent occurrence stopped while resume provisioning is pending', async () => {
+    let releaseResumeProvision!: () => void;
+    let resumeProvisionStarted!: () => void;
+    const resumeProvisionGate = new Promise<void>((resolve) => {
+      releaseResumeProvision = resolve;
+    });
+    const resumeProvisionStartedPromise = new Promise<void>((resolve) => {
+      resumeProvisionStarted = resolve;
+    });
+    let runtimeCount = 0;
+    let resumedRuntimeDisposals = 0;
+    const publicStates: Array<Record<string, unknown>> = [];
+    const manager = createExecutionRunManager({
+      parentProvider: TEST_PRIMARY_BACKEND_ID,
+      cwd: process.cwd(),
+      createRuntime: () => {
+        runtimeCount += 1;
+        const isResumedRuntime = runtimeCount === 2;
+        return createPromptRuntime(() => {}, {
+          resumeSupported: true,
+          onProvisionSession: async (opts) => {
+            if (!isResumedRuntime || !opts?.resumeSessionId) return;
+            resumeProvisionStarted();
+            await resumeProvisionGate;
+          },
+          onDispose: async () => {
+            if (isResumedRuntime) resumedRuntimeDisposals += 1;
+          },
+        });
+      },
+      sendAcp: async () => {},
+      onPublicStateUpdated: (run) => publicStates.push(run as Record<string, unknown>),
+      getNowMs: () => 1_700_000_000_000,
+    });
+
+    try {
+      const started = await manager.start({
+        sessionId: 'parent_session_1',
+        intent: 'voice_agent',
+        backendTarget: { kind: 'builtInAgent', agentId: TEST_PRIMARY_BACKEND_ID },
+        permissionMode: 'read_only',
+        retentionPolicy: 'resumable',
+        runClass: 'long_lived',
+        ioMode: 'streaming',
+      });
+      await manager.stop(started.runId);
+
+      // A daemon-rehydrated running Run has no in-memory controller until ensure resumes it.
+      const internalRuns = (manager as unknown as { runs: Map<string, ExecutionRunState> }).runs;
+      const stopped = internalRuns.get(started.runId);
+      if (!stopped) throw new Error('missing stopped run');
+      internalRuns.set(started.runId, {
+        ...stopped,
+        status: 'running',
+        finishedAtMs: undefined,
+      });
+
+      const resume = manager.ensure(started.runId, { resume: true });
+      await resumeProvisionStartedPromise;
+      await expect(manager.stop(started.runId)).resolves.toEqual({ ok: true });
+      const updatesAfterStop = publicStates.length;
+      releaseResumeProvision();
+
+      await expect(resume).resolves.toMatchObject({
+        ok: false,
+        errorCode: 'execution_run_not_allowed',
+      });
+      expect(manager.get(started.runId)?.status).toBe('cancelled');
+      expect(publicStates).toHaveLength(updatesAfterStop);
+      expect(resumedRuntimeDisposals).toBe(1);
+    } finally {
+      await manager.dispose();
+    }
+  });
+
   it('terminalizes and resumes a public voice_agent run after its nested runtime idles out', async () => {
     let nowMs = 0;
     vi.useFakeTimers();

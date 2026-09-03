@@ -21,6 +21,11 @@ import {
     createConnectedAccountRequestAuthSubjectRegistry,
 } from '../requestAuth/ConnectedAccountRequestAuthSubjectRegistry';
 import { createExecutionRunConnectedServicesBridge } from './executionRunMaterialization';
+import type { CreateExecutionRunConnectedServicesBridgeDeps } from './executionRunMaterialization';
+
+type ResolveAuthForSpawnInput = Parameters<
+    CreateExecutionRunConnectedServicesBridgeDeps['resolveAuthForSpawn']
+>[0];
 
 const RUN_BINDINGS = {
     v: 1,
@@ -77,7 +82,7 @@ const REQUEST_AUTH_CONTRIBUTIONS = {
 
 function createBridge(overrides: Partial<Parameters<typeof createExecutionRunConnectedServicesBridge>[0]> = {}) {
     const cleanupOnExit = vi.fn();
-    const resolveAuthForSpawn = vi.fn(async () => ({
+    const resolveAuthForSpawn = vi.fn(async (_input: ResolveAuthForSpawnInput) => ({
         env: { CODEX_HOME: '/materialized/run_abc/codex-home', [HAPPIER_CONNECTED_SERVICE_SELECTIONS_ENV_KEY]: '[]' },
         cleanupOnFailure: null,
         cleanupOnExit,
@@ -462,11 +467,11 @@ describe('createExecutionRunConnectedServicesBridge', () => {
         });
         expect(JSON.stringify(result.registration)).not.toContain('codex-home');
         expect(resolveAuthForSpawn).toHaveBeenCalledTimes(1);
-        expect((resolveAuthForSpawn.mock.calls as unknown[][])[0]?.[0]).toMatchObject({
+        expect(resolveAuthForSpawn).toHaveBeenCalledWith(expect.objectContaining({
             agentId: 'codex',
             materializationKey: 'run_abc',
             connectedServicesBindingsRaw: RUN_BINDINGS,
-        });
+        }));
         expect(registerRunTargets).toHaveBeenCalledWith({
             runKey: 'run_abc',
             runnerPid: 4242,

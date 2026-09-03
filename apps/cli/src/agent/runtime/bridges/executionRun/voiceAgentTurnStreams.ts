@@ -8,7 +8,10 @@ import type {
   PendingVoiceAgentTranscriptTurn,
 } from '@/agent/executionRuns/controllers/types';
 import type { VoiceAgentTurnStreamEvent, VoiceAgentTurnStreamReadResult } from '@/agent/voice/agent/voiceAgentTypes';
-import type { ExecutionRunUserTranscriptDirective } from '@happier-dev/protocol';
+import type {
+  ExecutionRunUserTranscriptDirective,
+  SessionInputCausalPermissionAuthorityV1,
+} from '@happier-dev/protocol';
 
 type DurableVoiceAgentTranscriptTurnWriter = Readonly<{
   appendUserTextCommitted?: (
@@ -151,6 +154,7 @@ export async function startVoiceAgentTurnStream(args: Readonly<{
     message: string;
     displayMessage?: string;
     userTranscript?: ExecutionRunUserTranscriptDirective;
+    causalPermissionAuthority?: SessionInputCausalPermissionAuthorityV1;
   }>;
   runs: ReadonlyMap<string, ExecutionRunState>;
   controllers: ReadonlyMap<string, ExecutionRunController>;
@@ -241,6 +245,9 @@ export async function startVoiceAgentTurnStream(args: Readonly<{
     const started = await args.voiceAgentManager.startTurnStream({
       voiceAgentId: ctrl.voiceAgentId,
       userText,
+      ...(args.params.causalPermissionAuthority
+        ? { causalPermissionAuthority: args.params.causalPermissionAuthority }
+        : {}),
       ...(pendingTurn && transcriptWriter
         ? {
             onTurnFinal: async (assistantText: string) => {

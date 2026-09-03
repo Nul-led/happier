@@ -46,7 +46,15 @@ function createDeps(overrides: Partial<ActionExecutorDeps> = {}): ActionExecutor
  * which is the only production caller of the agent-only `execution.run.ensure`.
  */
 const UI_CALLER = { surface: 'ui' } as const;
-const RUN_DISPATCHER_CALLER = { surface: 'agent' } as const;
+const ACTIVE_TURN_AUTHORITY = {
+  kind: 'admittedSessionInputV1',
+  admittedPermissionCeiling: 'read-only',
+} as const;
+const RUN_DISPATCHER_CALLER = {
+  surface: 'agent',
+  callerPermissionMode: 'yolo',
+  causalPermissionAuthority: ACTIVE_TURN_AUTHORITY,
+} as const;
 
 const RUN_START_BASE = {
   sessionId: 's1',
@@ -573,6 +581,51 @@ describe('createActionExecutor run options parity (model + effort)', () => {
       errorCode: 'execution_run_not_allowed',
       error: 'Execution runs disabled',
     });
+  });
+
+  it('requires and threads active-turn authority for every Agent existing-run effect', async () => {
+    const executionRunSend = vi.fn(async () => ({}));
+    const executionRunEnsure = vi.fn(async () => ({}));
+    const executionRunEnsureOrStart = vi.fn(async () => ({}));
+    const executionRunStreamStart = vi.fn(async () => ({}));
+    const executionRunAction = vi.fn(async () => ({}));
+    const executor = createActionExecutor(createDeps({
+      executionRunSend,
+      executionRunEnsure,
+      executionRunEnsureOrStart,
+      executionRunStreamStart,
+      executionRunAction,
+    }));
+
+    const effects = [
+      ['execution.run.send', { sessionId: 's1', runId: 'run_1', message: 'continue' }, executionRunSend],
+      ['execution.run.ensure', { sessionId: 's1', runId: 'run_1' }, executionRunEnsure],
+      ['execution.run.ensure_or_start', { sessionId: 's1', runId: 'run_1' }, executionRunEnsureOrStart],
+      ['execution.run.stream.start', { sessionId: 's1', runId: 'run_1', message: 'continue' }, executionRunStreamStart],
+      ['execution.run.action', { sessionId: 's1', runId: 'run_1', actionId: 'task.commit', input: {} }, executionRunAction],
+    ] as const;
+
+    for (const [actionId, input, dependency] of effects) {
+      await expect(executor.execute(actionId, input, {
+        surface: 'agent',
+        callerPermissionMode: 'yolo',
+      })).resolves.toMatchObject({
+        ok: false,
+        errorCode: 'causal_permission_authority_invalid',
+      });
+      expect(dependency).not.toHaveBeenCalled();
+
+      await expect(executor.execute(actionId, input, RUN_DISPATCHER_CALLER)).resolves.toMatchObject({ ok: true });
+      expect(dependency).toHaveBeenCalledWith(
+        's1',
+        expect.anything(),
+        expect.objectContaining({
+          causalPermissionAuthority: ACTIVE_TURN_AUTHORITY,
+          effectiveCallerPermissionMode: 'read-only',
+        }),
+      );
+      dependency.mockClear();
+    }
   });
 
   it('fails closed before detached start when the exact target lacks the V2 execution-run capability', async () => {

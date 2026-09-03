@@ -539,6 +539,7 @@ type GroupSwitchTargetEligibility =
   | Readonly<{ status: 'no_eligible_target'; retryAfterMs: number | null; decisionTrace?: unknown }>
   | Readonly<{ status: 'no_meaningfully_better_target'; retryAfterMs: number | null; decisionTrace?: unknown }>;
 type QuotaWorkPhase = 'tick' | 'hydrate_group' | 'probe_group' | 'soft_switch' | 'same_account_fanout';
+const CONNECTED_SERVICE_GROUP_QUOTA_PROBE_MAX_CONCURRENCY = 4;
 export type ConnectedServiceQuotaCoordinatorDiagnostic = Readonly<{
   event: 'quota_work_deferred' | 'quota_work_suppressed' | 'quota_work_requested';
   phase: QuotaWorkPhase;
@@ -4197,7 +4198,7 @@ export class ConnectedServiceQuotasCoordinator {
     const controller = new AbortController();
     const timeoutHandle = setTimeout(() => controller.abort('quota-group-probe-deadline'), this.fetchTimeoutMs);
     (timeoutHandle as unknown as { unref?: () => void }).unref?.();
-    let completedProfileCount = 0;
+    const completedProfileIds = new Set<string>();
     try {
     const qualifiedPeerClass =
       this.qualifiedConnectedAccountRuntime?.resolvePeerClass() ?? null;
@@ -4208,7 +4209,8 @@ export class ConnectedServiceQuotasCoordinator {
           serviceId,
         );
       if (!service) return incomplete(0, 'probe_unavailable');
-      if (!runtime?.listGroupQuotaTargets || !this.accountUsageStore) return incomplete(0, 'probe_unavailable');
+      const accountUsageStore = this.accountUsageStore;
+      if (!runtime?.listGroupQuotaTargets || !accountUsageStore) return incomplete(0, 'probe_unavailable');
       controller.signal.throwIfAborted();
       const profiles = await runtime.listGroupQuotaTargets({
         service,
@@ -4217,42 +4219,57 @@ export class ConnectedServiceQuotasCoordinator {
         signal: controller.signal,
       });
       const targetsByAccountId = new Map(profiles.map((target) => [target.profile.ref.accountId, target]));
-      for (const profileId of profileIds) {
-        if (controller.signal.aborted) break;
-        const target = targetsByAccountId.get(profileId);
-        const profile = target?.profile;
-        if (!target || !profile || !isConnectedServiceCredentialHealthStatusUsable(profile.status)) continue;
-        const invocation = await runtime.establishedRuntimeOwner.invokeWithReceipt({
-          account: profile.ref,
-          operation: Object.freeze({ kind: 'quota' as const }),
-          signal: controller.signal,
-        });
-        controller.signal.throwIfAborted();
-        if (!invocation.result || !invocation.basis.isCurrent()) continue;
-        const snapshot = buildProviderAccountUsageSnapshotFromPluginConnectedAccountQuota({
-          profile,
-          quota: invocation.result,
-          staleAfterMs: this.quotaPersistenceMinFreshnessMs,
-        });
-        this.accountUsageStore.recordSnapshot(snapshot, {
-          sources: [{
-            serviceId,
-            profileId,
-            bindingKind: 'group_member',
-            groupId,
-            groupGeneration: target.groupGeneration,
-          }],
-        });
-        completedProfileCount += 1;
-      }
-      if (controller.signal.aborted) return incomplete(completedProfileCount, 'deadline_exceeded');
-      if (completedProfileCount !== profileIds.length) return incomplete(completedProfileCount, 'probe_unavailable');
-      return { status: 'complete', requestedProfileCount: profileIds.length, completedProfileCount };
+      let nextProfileIndex = 0;
+      const worker = async (): Promise<void> => {
+        while (!controller.signal.aborted) {
+          const profileIndex = nextProfileIndex;
+          nextProfileIndex += 1;
+          const profileId = profileIds[profileIndex];
+          if (!profileId) return;
+          const target = targetsByAccountId.get(profileId);
+          const profile = target?.profile;
+          if (!target || !profile || !isConnectedServiceCredentialHealthStatusUsable(profile.status)) continue;
+          try {
+            const invocation = await runtime.establishedRuntimeOwner.invokeWithReceipt({
+              account: profile.ref,
+              operation: Object.freeze({ kind: 'quota' as const }),
+              signal: controller.signal,
+            });
+            controller.signal.throwIfAborted();
+            if (!invocation.result || !invocation.basis.isCurrent()) continue;
+            const snapshot = buildProviderAccountUsageSnapshotFromPluginConnectedAccountQuota({
+              profile,
+              quota: invocation.result,
+              staleAfterMs: this.quotaPersistenceMinFreshnessMs,
+            });
+            accountUsageStore.recordSnapshot(snapshot, {
+              sources: [{
+                serviceId,
+                profileId,
+                bindingKind: 'group_member',
+                groupId,
+                groupGeneration: target.groupGeneration,
+              }],
+            });
+            completedProfileIds.add(profileId);
+          } catch {
+            if (controller.signal.aborted) return;
+          }
+        }
+      };
+      const workerCount = Math.min(
+        CONNECTED_SERVICE_GROUP_QUOTA_PROBE_MAX_CONCURRENCY,
+        profileIds.length,
+      );
+      await Promise.all(Array.from({ length: workerCount }, () => worker()));
+      if (controller.signal.aborted) return incomplete(completedProfileIds.size, 'deadline_exceeded');
+      if (completedProfileIds.size !== profileIds.length) return incomplete(completedProfileIds.size, 'probe_unavailable');
+      return { status: 'complete', requestedProfileCount: profileIds.length, completedProfileCount: completedProfileIds.size };
     }
     return incomplete(0, 'probe_unavailable');
     } catch {
       return incomplete(
-        completedProfileCount,
+        completedProfileIds.size,
         controller.signal.aborted ? 'deadline_exceeded' : 'probe_unavailable',
       );
     } finally {

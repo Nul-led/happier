@@ -58,7 +58,11 @@ export type AgentExecutionRunStopResult = Readonly<{
 export interface AgentExecutionRunRuntime extends Disposable {
   send(
     input: AgentSessionInput,
-    options?: Readonly<{ signal?: AbortSignal }>,
+    options?: Readonly<{
+      signal?: AbortSignal;
+      /** Exact immutable authority admitted for the host input that sends this turn. */
+      causalPermissionAuthority?: AgentSessionSendRequest['causalPermissionAuthority'];
+    }>,
   ): Promise<AgentExecutionRunSendResult>;
   stop(options?: Readonly<{ signal?: AbortSignal }>): Promise<AgentExecutionRunStopResult>;
   /**
@@ -141,7 +145,7 @@ type AgentExecutionRunLifecycleOptions = Readonly<{
   send(
     lifecycle: AgentExecutionRunLifecycle,
     input: AgentSessionInput,
-    options?: Readonly<{ signal?: AbortSignal }>,
+    options?: Parameters<AgentExecutionRunRuntime['send']>[1],
   ): Promise<AgentExecutionRunSendResult>;
   stop(
     lifecycle: AgentExecutionRunLifecycle,
@@ -308,12 +312,14 @@ function createExecutionRunRuntimeFromSession(
       activeInputIds = inputIds;
       let result: Awaited<ReturnType<AgentSessionRuntime['send']>>;
       try {
+        const causalPermissionAuthority = sendOptions?.causalPermissionAuthority
+          ?? options.request.causalPermissionAuthority;
         result = await session.send({
           inputIds: [...inputIds],
           input,
           delivery: { kind: 'newTurn', turnId },
-          ...(options.request.causalPermissionAuthority
-            ? { causalPermissionAuthority: options.request.causalPermissionAuthority }
+          ...(causalPermissionAuthority
+            ? { causalPermissionAuthority }
             : {}),
         }, sendOptions);
       } catch (error) {

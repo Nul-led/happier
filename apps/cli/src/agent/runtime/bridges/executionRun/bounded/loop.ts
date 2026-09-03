@@ -89,14 +89,21 @@ export async function executeBoundedBackendRun(args: Readonly<{
       return backendCtrl.pendingExternalMessagesSignal.promise;
     }
 
-    async function sendTurnPrompt(turnPrompt: string): Promise<void> {
+    async function sendTurnPrompt(
+      turnPrompt: string,
+      causalPermissionAuthority?: import('@happier-dev/protocol').SessionInputCausalPermissionAuthorityV1,
+    ): Promise<void> {
       backendCtrl.turnCount += 1;
       backendCtrl.turnEpoch += 1;
       backendCtrl.turnInFlight = true;
       backendCtrl.buffer = '';
       backendCtrl.sidechainStreamBuffer = '';
       backendCtrl.sidechainStreamKey = '';
-      await backendCtrl.backend.sendPrompt(backendCtrl.childSessionId!, turnPrompt);
+      await backendCtrl.backend.sendPrompt(
+        backendCtrl.childSessionId!,
+        turnPrompt,
+        causalPermissionAuthority ? { causalPermissionAuthority } : undefined,
+      );
     }
 
     async function waitForTurnComplete(sendPromptPromise: Promise<void>): Promise<void> {
@@ -167,7 +174,13 @@ export async function executeBoundedBackendRun(args: Readonly<{
 
         if (action === 'steer') {
           try {
-            await backendCtrl.backend.sendSteerPrompt!(backendCtrl.childSessionId!, next.message);
+            await backendCtrl.backend.sendSteerPrompt!(
+              backendCtrl.childSessionId!,
+              next.message,
+              next.causalPermissionAuthority
+                ? { causalPermissionAuthority: next.causalPermissionAuthority }
+                : undefined,
+            );
             next.resolve();
           } catch (e: any) {
             next.reject(e instanceof Error ? e : new Error('Steer failed'));
@@ -195,7 +208,7 @@ export async function executeBoundedBackendRun(args: Readonly<{
             : `User update:\n${updateText}`;
         }
         const updatedPrompt = profile.buildPrompt({ ...start, instructions: effectiveInstructions });
-        const updatedSendPromise = sendTurnPrompt(updatedPrompt);
+        const updatedSendPromise = sendTurnPrompt(updatedPrompt, next.causalPermissionAuthority);
         // ACK as soon as the bounded runtime adopts the replacement turn. Waiting for the backend
         // send promise to settle can incorrectly surface "Run is busy" even though the follow-up
         // prompt has already been accepted into the run state machine.

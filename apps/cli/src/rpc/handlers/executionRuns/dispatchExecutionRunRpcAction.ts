@@ -19,6 +19,7 @@ import {
   type PluginPermissionGrantRequestActionInputV1,
   isRuntimeActionIdV1,
   type RuntimeActionIdV1,
+  type SessionInputCausalPermissionAuthorityV1,
   waitForExecutionRunTerminal,
   withExecutionRunStartFailureDetails,
 } from '@happier-dev/protocol';
@@ -177,6 +178,7 @@ export function createExecutionRunRpcActionDeps(params: ExecutionRunRpcActionDep
       defaultSessionId: string;
       serverId?: string | null;
       callerPermissionMode?: string | null;
+      causalPermissionAuthority?: SessionInputCausalPermissionAuthorityV1;
     }>,
   ): Promise<ActionExecuteResult> {
     if (!actionDeps) {
@@ -190,6 +192,9 @@ export function createExecutionRunRpcActionDeps(params: ExecutionRunRpcActionDep
       authority: 'account_automation',
       placement: null,
       ...(context.callerPermissionMode ? { callerPermissionMode: context.callerPermissionMode } : {}),
+      ...(context.causalPermissionAuthority
+        ? { causalPermissionAuthority: context.causalPermissionAuthority }
+        : {}),
     });
   }
 
@@ -446,7 +451,7 @@ export function createExecutionRunRpcActionDeps(params: ExecutionRunRpcActionDep
       return projectExecutionRunGetResponse(parsed.runId, parsed.includeStructured === true)
         ?? executionRunNotFound();
     },
-    executionRunSend: async (sessionId, request) => {
+    executionRunSend: async (sessionId, request, actionOptions) => {
       const disabled = ensureEnabled();
       if (disabled) return disabled;
       if (!isAuthoritativeScope(sessionId)) return executionRunScopeMismatch();
@@ -456,6 +461,9 @@ export function createExecutionRunRpcActionDeps(params: ExecutionRunRpcActionDep
         message: parsed.message,
         resume: parsed.resume,
         delivery: parsed.delivery,
+        ...(actionOptions?.causalPermissionAuthority
+          ? { causalPermissionAuthority: actionOptions.causalPermissionAuthority }
+          : {}),
       });
       if (!sent.ok) {
         return {
@@ -466,13 +474,18 @@ export function createExecutionRunRpcActionDeps(params: ExecutionRunRpcActionDep
       }
       return { ok: true };
     },
-    executionRunEnsure: async (sessionId, request) => {
+    executionRunEnsure: async (sessionId, request, actionOptions) => {
       const disabled = ensureEnabled();
       if (disabled) return disabled;
       if (!isAuthoritativeScope(sessionId)) return executionRunScopeMismatch();
       const parsed = ExecutionRunEnsureRequestSchema.parse(request);
       if (!getRunInAuthoritativeScope(parsed.runId, sessionId)) return executionRunNotFound();
-      const ensured = await params.manager.ensure(parsed.runId, { resume: parsed.resume });
+      const ensured = await params.manager.ensure(parsed.runId, {
+        resume: parsed.resume,
+        ...(actionOptions?.causalPermissionAuthority
+          ? { causalPermissionAuthority: actionOptions.causalPermissionAuthority }
+          : {}),
+      });
       if (!ensured.ok) {
         return {
           ok: false,
@@ -490,7 +503,12 @@ export function createExecutionRunRpcActionDeps(params: ExecutionRunRpcActionDep
       const runId = typeof parsed.runId === 'string' ? parsed.runId.trim() : '';
       if (runId) {
         if (!getRunInAuthoritativeScope(runId, sessionId)) return executionRunNotFound();
-        const ensured = await params.manager.ensure(runId, { resume: parsed.resume });
+        const ensured = await params.manager.ensure(runId, {
+          resume: parsed.resume,
+          ...(actionOptions?.causalPermissionAuthority
+            ? { causalPermissionAuthority: actionOptions.causalPermissionAuthority }
+            : {}),
+        });
         if (!ensured.ok) {
           return {
             ok: false,
@@ -505,7 +523,7 @@ export function createExecutionRunRpcActionDeps(params: ExecutionRunRpcActionDep
       if (!started.ok) return started;
       return { ok: true, runId: started.runId, created: true };
     },
-    executionRunStreamStart: async (sessionId, request) => {
+    executionRunStreamStart: async (sessionId, request, actionOptions) => {
       const disabled = ensureEnabled();
       if (disabled) return disabled;
       if (!isAuthoritativeScope(sessionId)) return executionRunScopeMismatch();
@@ -515,6 +533,9 @@ export function createExecutionRunRpcActionDeps(params: ExecutionRunRpcActionDep
         message: parsed.message,
         ...(typeof parsed.displayMessage === 'string' ? { displayMessage: parsed.displayMessage } : {}),
         resume: parsed.resume,
+        ...(actionOptions?.causalPermissionAuthority
+          ? { causalPermissionAuthority: actionOptions.causalPermissionAuthority }
+          : {}),
       });
       if (!started.ok) {
         return { ok: false, error: started.error, errorCode: started.errorCode };
@@ -582,14 +603,26 @@ export function createExecutionRunRpcActionDeps(params: ExecutionRunRpcActionDep
           {
             defaultSessionId: sessionId,
             ...(opts?.serverId ? { serverId: opts.serverId } : {}),
-            callerPermissionMode: runState.permissionMode,
+            callerPermissionMode: opts?.effectiveCallerPermissionMode ?? runState.permissionMode,
+            ...(opts?.causalPermissionAuthority
+              ? { causalPermissionAuthority: opts.causalPermissionAuthority }
+              : {}),
           },
         ));
       }
       const acted = await params.manager.applyAction(parsed.runId, {
         actionId: parsed.actionId,
         input: parsed.input,
-      });
+      }, opts?.causalPermissionAuthority || opts?.effectiveCallerPermissionMode
+        ? {
+            ...(opts?.causalPermissionAuthority
+              ? { causalPermissionAuthority: opts.causalPermissionAuthority }
+              : {}),
+            ...(opts?.effectiveCallerPermissionMode
+              ? { effectiveCallerPermissionMode: opts.effectiveCallerPermissionMode }
+              : {}),
+          }
+        : undefined);
       if (!acted.ok) {
         return {
           ok: false,

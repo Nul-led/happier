@@ -1,5 +1,5 @@
 import type { ExecutionBudgetRegistry } from '@/daemon/executionBudget/ExecutionBudgetRegistry';
-import type { BackendTargetRefV1 } from '@happier-dev/protocol';
+import type { BackendTargetRefV1, SessionInputCausalPermissionAuthorityV1 } from '@happier-dev/protocol';
 
 import type { ACPMessageData, ACPProvider } from '@/api/session/sessionMessageTypes';
 import type { StreamedTranscriptWriterSession } from '@/api/session/streamedTranscriptWriter';
@@ -22,7 +22,12 @@ import { settleExecutionRunController } from '../settleExecutionRunController';
 
 export async function sendBackendLongLivedRun(args: Readonly<{
   runId: string;
-  params: Readonly<{ message: string; resume?: boolean; delivery?: unknown }>;
+  params: Readonly<{
+    message: string;
+    resume?: boolean;
+    delivery?: unknown;
+    causalPermissionAuthority?: SessionInputCausalPermissionAuthorityV1;
+  }>;
   runs: Map<string, ExecutionRunState>;
   controllers: Map<string, ExecutionRunController>;
   budgetRegistry: ExecutionBudgetRegistry | null;
@@ -31,6 +36,7 @@ export async function sendBackendLongLivedRun(args: Readonly<{
     backendId: string;
     backendTarget?: BackendTargetRefV1;
     permissionMode: string;
+    causalPermissionAuthority?: SessionInputCausalPermissionAuthorityV1;
     accountSettings?: Readonly<Record<string, unknown>> | null;
   }) => ExecutionRunHostRuntime;
   maxTurns: number | null;
@@ -79,6 +85,9 @@ export async function sendBackendLongLivedRun(args: Readonly<{
         writeActivityMarker: args.writeActivityMarker,
         getNowMs: args.getNowMs,
         profileCatalog: args.profileCatalog,
+        ...(args.params.causalPermissionAuthority
+          ? { causalPermissionAuthority: args.params.causalPermissionAuthority }
+          : {}),
         ...(args.onPublicStateUpdated ? { onPublicStateUpdated: args.onPublicStateUpdated } : {}),
         requireReplayCapture: run.runClass === 'long_lived',
         onModelOutput: () => {
@@ -103,6 +112,13 @@ export async function sendBackendLongLivedRun(args: Readonly<{
   }
 
   if (ctrl2.turnInFlight) {
+    // A provider-side AbortError after invocation cannot prove whether the prompt was
+    // accepted. Keep the existing turn custody exclusive until the runtime supplies a
+    // completion/terminal fact (or the Run is explicitly stopped); steering or replacing
+    // it here could execute a second input beside the first.
+    if (ctrl2.turnCancelReason === 'outcome_unknown') {
+      return { ok: false, errorCode: 'execution_run_busy', error: 'Run is busy' };
+    }
     const hasSteer = typeof ctrl2.backend.sendSteerPrompt === 'function';
     const action = resolveInFlightDeliveryAction({ delivery, hasSteer });
     if (action === 'busy') {
@@ -110,7 +126,13 @@ export async function sendBackendLongLivedRun(args: Readonly<{
     }
     if (action === 'steer') {
       try {
-        await ctrl2.backend.sendSteerPrompt!(ctrl2.childSessionId, args.params.message);
+        await ctrl2.backend.sendSteerPrompt!(
+          ctrl2.childSessionId,
+          args.params.message,
+          args.params.causalPermissionAuthority
+            ? { causalPermissionAuthority: args.params.causalPermissionAuthority }
+            : undefined,
+        );
       } catch (e) {
         return { ok: false, errorCode: 'execution_run_failed', error: e instanceof Error ? e.message : 'Steer failed' };
       }
@@ -148,7 +170,13 @@ export async function sendBackendLongLivedRun(args: Readonly<{
   // One effectful provider send only. An AbortError after invocation does not prove the
   // provider rejected the prompt, so replaying it here could execute the same input twice.
   const sendPromise = Promise.resolve().then(async () => {
-    await ctrl2.backend.sendPrompt(ctrl2.childSessionId!, args.params.message);
+    await ctrl2.backend.sendPrompt(
+      ctrl2.childSessionId!,
+      args.params.message,
+      args.params.causalPermissionAuthority
+        ? { causalPermissionAuthority: args.params.causalPermissionAuthority }
+        : undefined,
+    );
   });
 
   const runCompletionLoop = async (): Promise<void> => {
@@ -162,7 +190,16 @@ export async function sendBackendLongLivedRun(args: Readonly<{
       }
       throwIfExecutionRunControllerFailed(ctrl2);
 
-      if (ctrl2.turnEpoch === thisEpoch) ctrl2.turnInFlight = false;
+      if (ctrl2.turnEpoch === thisEpoch) {
+        ctrl2.turnInFlight = false;
+        if (
+          ctrl2.turnCancelReason === 'outcome_unknown'
+          && ctrl2.turnCancelEpoch === thisEpoch
+        ) {
+          ctrl2.turnCancelReason = null;
+          ctrl2.turnCancelEpoch = null;
+        }
+      }
       await ctrl2.streamWriter?.flushAll({ reason: 'turn-end' });
 
       const rawText = ctrl2.buffer.trim();
@@ -262,8 +299,21 @@ export async function sendBackendLongLivedRun(args: Readonly<{
   } catch (e: any) {
     if (isAbortLikeError(e)) {
       await args.writeActivityMarker(args.runId, args.getNowMs(), { force: true }).catch(() => {});
-      if (ctrl2.turnEpoch === thisEpoch) ctrl2.turnInFlight = false;
-      return { ok: false, errorCode: 'execution_run_failed', error: e instanceof Error ? e.message : 'Turn cancelled' };
+      if (ctrl2.turnEpoch === thisEpoch) {
+        ctrl2.turnCancelReason = 'outcome_unknown';
+        ctrl2.turnCancelEpoch = thisEpoch;
+      }
+      // Only an actual completion observer may release ambiguous provider custody. A
+      // backend without one stays busy until its existing terminal/liveness/stop path
+      // settles the controller.
+      if (ctrl2.backend.waitForTurnCompletion) {
+        void runCompletionLoop();
+      }
+      return {
+        ok: false,
+        errorCode: 'execution_run_send_outcome_unknown',
+        error: 'The prompt may have been accepted before the provider cancelled the request',
+      };
     }
 
     await args.writeActivityMarker(args.runId, args.getNowMs(), { force: true }).catch(() => {});

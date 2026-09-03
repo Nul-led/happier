@@ -77,7 +77,7 @@ type CoordinatorInput = Readonly<{
   abort: (request: Readonly<{ machineId: string; handoffId: string; reason: string }>) => Promise<unknown>;
   publishOwnerUpdate: (update: ActionOperationOwnerUpdate) => void;
   wait?: (signal: AbortSignal) => Promise<void>;
-  workspaceSyncAdapter?: WorkspaceSyncHandoffAdapter;
+  workspaceSyncAdapter: WorkspaceSyncHandoffAdapter;
 }>;
 
 function asRecord(value: unknown): Readonly<Record<string, unknown>> | null {
@@ -250,7 +250,7 @@ export async function coordinateTrackedSessionHandoff(
   let workspaceAbortFailure: unknown;
   const workspaceOperationId = input.input.operationId?.trim() ?? '';
   const abortWorkspace = async (): Promise<void> => {
-    if (!preparedWorkspace || !input.workspaceSyncAdapter) return;
+    if (!preparedWorkspace) return;
     const prepared = preparedWorkspace;
     preparedWorkspace = undefined;
     try {
@@ -278,23 +278,10 @@ export async function coordinateTrackedSessionHandoff(
   // interpreted or forwarded.
   const workspaceSyncAction = input.input.workspaceAction;
 
-  if (
-    workspaceSyncAction
-    && workspaceSyncAction.kind !== 'none'
-    && !input.workspaceSyncAdapter
-  ) {
-    return {
-      ok: false,
-      errorCode: 'workspace_sync_unavailable',
-      error: 'workspace_sync_unavailable',
-    };
-  }
-
   // Workspace preparation is intentionally before source stop (start()). The adapter owns
   // bootstrap/readiness and never falls back to the retired replication engine.
   if (
-    input.workspaceSyncAdapter
-    && workspaceSyncAction
+    workspaceSyncAction
     && workspaceSyncAction.kind !== 'none'
   ) {
     const sourceWorkspaceRefId = input.input.workspaceSyncSourceWorkspaceRefId?.trim();
@@ -370,7 +357,7 @@ export async function coordinateTrackedSessionHandoff(
   // delta before preparing or resuming the target so the target never observes
   // an empty/stale root. Finalize also durably publishes a newly-created
   // relationship; the post-target adapter commit only releases its fence.
-  if (preparedWorkspace && input.workspaceSyncAdapter) {
+  if (preparedWorkspace) {
     publishPhase(input.publishOwnerUpdate, 'finalizing_workspace', 'Finalizing workspace');
     try {
       finalizedWorkspace = await input.workspaceSyncAdapter.finalize({
@@ -528,7 +515,7 @@ export async function coordinateTrackedSessionHandoff(
 
   let workspaceCommitted: WorkspaceSyncHandoffCommitted | undefined;
   let workspaceCleanupFailure: Failure | null = null;
-  if (preparedWorkspace && input.workspaceSyncAdapter) {
+  if (preparedWorkspace) {
     try {
       workspaceCommitted = await input.workspaceSyncAdapter.commit({
         operationId: workspaceOperationId,

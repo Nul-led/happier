@@ -68,7 +68,6 @@ export function projectConnectedServiceRuntimeAuthSelection(
     ...(kind ? { kind } : {}),
     ...(generation === null ? {} : { generation }),
     ...(groupGeneration === null ? {} : { groupGeneration }),
-    ...(value.requireDirectLiveHotApply === true ? { requireDirectLiveHotApply: true } : {}),
     ...(credentialRevision.success ? { credentialRevision: credentialRevision.data } : {}),
   });
 }
@@ -114,7 +113,6 @@ export function projectConnectedServiceRuntimeAuthTargetInput(input: Readonly<{
     ? async () => await applyAuthGenerationSource({
         serviceId: selectedServiceId,
         ...(applyReason ? { reason: applyReason } : {}),
-        ...(selection.requireDirectLiveHotApply ? { requireDirectLiveHotApply: true } : {}),
         expected: {
           ...(selection.activeProfileId ?? selection.profileId
             ? { profileId: selection.activeProfileId ?? selection.profileId }

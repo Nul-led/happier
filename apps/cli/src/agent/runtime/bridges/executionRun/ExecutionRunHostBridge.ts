@@ -627,6 +627,7 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
     backendId: string;
     backendTarget?: BackendTargetRefV1;
     permissionMode: string;
+    causalPermissionAuthority?: SessionInputCausalPermissionAuthorityV1;
     modelId?: string;
     modelSelection?: ProviderBoundModelRef;
     accountSettings?: Readonly<Record<string, unknown>> | null;
@@ -639,6 +640,9 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
       backendId: opts.backendId,
       ...(opts.backendTarget ? { backendTarget: opts.backendTarget } : {}),
       permissionMode: opts.permissionMode,
+      ...(opts.causalPermissionAuthority
+        ? { causalPermissionAuthority: opts.causalPermissionAuthority }
+        : {}),
       accountSettings: opts.accountSettings ?? null,
       ...(opts.engineRegistry ? { engineRegistry: opts.engineRegistry } : {}),
       ...(opts.modelId !== undefined
@@ -1023,7 +1027,12 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
 
   async send(
     runId: string,
-    params: Readonly<{ message: string; resume?: boolean; delivery?: unknown }>,
+    params: Readonly<{
+      message: string;
+      resume?: boolean;
+      delivery?: unknown;
+      causalPermissionAuthority?: SessionInputCausalPermissionAuthorityV1;
+    }>,
   ): Promise<{ ok: boolean; errorCode?: string; error?: string }> {
     this.ensurePermissionResponseTargetHandlerRegistered();
     const run = this.runs.get(runId) ?? null;
@@ -1107,6 +1116,9 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
           delivery: (normalized === 'prompt' || normalized === 'steer_if_supported' || normalized === 'interrupt')
             ? normalized
             : 'prompt',
+          ...(params.causalPermissionAuthority
+            ? { causalPermissionAuthority: params.causalPermissionAuthority }
+            : {}),
           authorizeProviderEffect: async () => {
             const admission = await this.authorizeConnectedServicesProviderEffect(runId);
             if (!admission.ok) {
@@ -1162,8 +1174,15 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
       runs: this.runs,
       controllers: this.controllers,
       budgetRegistry: this.budgetRegistry,
-      createRuntime: ({ runId: resumedRunId, backendId, backendTarget, permissionMode, accountSettings }) =>
-        this.createResumeExecutionRunRuntime({ runId: resumedRunId, backendId, backendTarget, permissionMode, accountSettings }),
+      createRuntime: ({ runId: resumedRunId, backendId, backendTarget, permissionMode, causalPermissionAuthority, accountSettings }) =>
+        this.createResumeExecutionRunRuntime({
+          runId: resumedRunId,
+          backendId,
+          backendTarget,
+          permissionMode,
+          ...(causalPermissionAuthority ? { causalPermissionAuthority } : {}),
+          accountSettings,
+        }),
       maxTurns: this.maxTurns,
       getNowMs: this.getNowMs,
       finishRun: this.finishRun.bind(this),
@@ -1191,7 +1210,13 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
     return result;
   }
 
-  async ensure(runId: string, params: Readonly<{ resume?: boolean }>): Promise<{ ok: boolean; errorCode?: string; error?: string }> {
+  async ensure(
+    runId: string,
+    params: Readonly<{
+      resume?: boolean;
+      causalPermissionAuthority?: SessionInputCausalPermissionAuthorityV1;
+    }>,
+  ): Promise<{ ok: boolean; errorCode?: string; error?: string }> {
     this.ensurePermissionResponseTargetHandlerRegistered();
     const resolution = await this.resolveExecutionRunProfileCatalog();
     const runtimeSnapshot = this.bindExecutionRunRuntimeSnapshot(
@@ -1225,13 +1250,19 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
     runId?: string | null;
     start?: ExecutionRunManagerStartParams;
     resume?: boolean;
+    causalPermissionAuthority?: SessionInputCausalPermissionAuthorityV1;
   }>): Promise<
     | { ok: true; runId: string; created: boolean }
     | { ok: false; errorCode?: string; error: string }
   > {
     const runId = typeof params.runId === 'string' ? params.runId.trim() : '';
     if (runId) {
-      const ensured = await this.ensure(runId, { resume: params.resume });
+      const ensured = await this.ensure(runId, {
+        resume: params.resume,
+        ...(params.causalPermissionAuthority
+          ? { causalPermissionAuthority: params.causalPermissionAuthority }
+          : {}),
+      });
       if (!ensured.ok) return { ok: false, error: ensured.error ?? 'Ensure failed', ...(ensured.errorCode ? { errorCode: ensured.errorCode } : {}) };
       return { ok: true, runId, created: false };
     }
@@ -1248,10 +1279,16 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
       displayMessage?: string;
       resume?: boolean;
       userTranscript?: ExecutionRunUserTranscriptDirective;
+      causalPermissionAuthority?: SessionInputCausalPermissionAuthorityV1;
     }>,
   ): Promise<{ ok: true; streamId: string } | { ok: false; errorCode: string; error: string }> {
     if (params.resume === true) {
-      const ensured = await this.ensure(runId, { resume: true });
+      const ensured = await this.ensure(runId, {
+        resume: true,
+        ...(params.causalPermissionAuthority
+          ? { causalPermissionAuthority: params.causalPermissionAuthority }
+          : {}),
+      });
       if (!ensured.ok) return { ok: false, errorCode: ensured.errorCode ?? 'execution_run_failed', error: ensured.error ?? 'Ensure failed' };
     }
     return startVoiceAgentTurnStream({
@@ -1260,6 +1297,9 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
         message: params.message,
         ...(typeof params.displayMessage === 'string' ? { displayMessage: params.displayMessage } : {}),
         ...(params.userTranscript ? { userTranscript: params.userTranscript } : {}),
+        ...(params.causalPermissionAuthority
+          ? { causalPermissionAuthority: params.causalPermissionAuthority }
+          : {}),
       },
       runs: this.runs,
       controllers: this.controllers,
@@ -1385,6 +1425,9 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
 
       const remainingControllers = [...this.controllers.entries()];
       await Promise.allSettled(remainingControllers.map(async ([runId, ctrl]) => {
+        if (this.controllers.get(runId) !== ctrl) return;
+        ctrl.cancelled = true;
+        this.budgetRegistry?.releaseExecutionRun(runId);
         if (ctrl.kind === 'voice_agent') {
           try {
             await this.voiceAgentManager.stop({ voiceAgentId: ctrl.voiceAgentId });
@@ -1494,7 +1537,14 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
     return { ok: true, delivery };
   }
 
-  async applyAction(runId: string, params: ExecutionRunActionParams): Promise<ExecutionRunActionResult> {
+  async applyAction(
+    runId: string,
+    params: ExecutionRunActionParams,
+    opts?: Readonly<{
+      causalPermissionAuthority?: SessionInputCausalPermissionAuthorityV1;
+      effectiveCallerPermissionMode?: string;
+    }>,
+  ): Promise<ExecutionRunActionResult> {
     const run = this.runs.get(runId) ?? null;
     if (!run) {
       return { ok: false, errorCode: 'execution_run_not_found', error: 'Not found' };
@@ -1513,6 +1563,12 @@ export class ExecutionRunHostBridge implements ExecutionRunHostBridgeContract {
           : {}),
         parentProvider: this.parentProvider,
         profileCatalog: resolution.profileCatalog,
+        ...(opts?.causalPermissionAuthority
+          ? { causalPermissionAuthority: opts.causalPermissionAuthority }
+          : {}),
+        ...(opts?.effectiveCallerPermissionMode
+          ? { effectiveCallerPermissionMode: opts.effectiveCallerPermissionMode }
+          : {}),
         ...(this.materializeReviewHostAction ? { materializeReviewHostAction: this.materializeReviewHostAction } : {}),
         onVoiceAgentWelcomed: async (welcomedRunId, welcomedEpoch) => {
           if (this.runs.get(welcomedRunId)?.sessionId === null) return;

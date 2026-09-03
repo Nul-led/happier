@@ -3040,6 +3040,7 @@ describe('ConnectedServiceQuotasCoordinator', () => {
       groupId: 'team',
       profileIds: ['primary', 'backup'],
     });
+    await vi.advanceTimersByTimeAsync(0);
     await vi.advanceTimersByTimeAsync(50);
 
     await expect(probe).resolves.toEqual({
@@ -3048,9 +3049,104 @@ describe('ConnectedServiceQuotasCoordinator', () => {
       completedProfileCount: 0,
       reason: 'deadline_exceeded',
     });
-    expect(startedProfileIds).toEqual(['primary']);
-    expect(abortedProfileIds).toEqual(['primary']);
+    expect(startedProfileIds).toEqual(['primary', 'backup']);
+    expect(abortedProfileIds).toEqual(['primary', 'backup']);
     expect(loadQuota).not.toHaveBeenCalled();
+  });
+
+  it('completes a large qualified group probe within one shared deadline using bounded concurrency', async () => {
+    const profileIds = Array.from({ length: 13 }, (_, index) => `profile-${index + 1}`);
+    const probeProfiles = profileIds.map((accountId): QualifiedConnectedAccountProfileV4 => ({
+      ref: { service: CODEX_QUALIFIED_SERVICE, accountId },
+      status: 'connected',
+      authenticationModeId: 'oauth',
+      revisionSemantics: 'revisioned',
+      credentialRevision: 'csr_0123456789ABCDEFGHJKMNPQRS',
+      configurationReady: true,
+      configurationRevision: null,
+      providerIdentity: { accountId: `acct-${accountId}` },
+      displayName: accountId,
+      scopes: [],
+    }));
+    let activeInvocations = 0;
+    let maxActiveInvocations = 0;
+    const pendingInvocations = new Map<string, () => void>();
+    const invokeWithReceipt = vi.fn((input: Readonly<{
+      account: QualifiedConnectedAccountProfileV4['ref'];
+      signal?: AbortSignal;
+    }>) => new Promise((resolve) => {
+      activeInvocations += 1;
+      maxActiveInvocations = Math.max(maxActiveInvocations, activeInvocations);
+      pendingInvocations.set(input.account.accountId, () => {
+        pendingInvocations.delete(input.account.accountId);
+        activeInvocations -= 1;
+        resolve({
+          result: {
+            observedAtMs: Date.now(),
+            limits: [{ id: 'weekly', used: 20, remaining: 80, resetsAtMs: Date.now() + 60_000 }],
+          },
+          basis: {
+            credentialRevision: 'csr_0123456789ABCDEFGHJKMNPQRS',
+            credentialConfigurationRevision: null,
+            isCurrent: () => !input.signal?.aborted,
+          },
+        });
+      });
+    }));
+    const coordinator = new ConnectedServiceQuotasCoordinator({
+      api: {
+        getAccountEncryptionMode: vi.fn(async () => 'plain' as const),
+      } as unknown as QuotaApi,
+      credentials: {
+        token: 'happy-token',
+        encryption: { type: 'legacy', secret: new Uint8Array(32).fill(9) },
+      },
+      quotaFetchers: [],
+      now: () => 1_000_000,
+      randomBytes: (length: number) => new Uint8Array(length),
+      fetchTimeoutMs: 60_000,
+      discoveryEnabled: false,
+      accountUsageStore: createProviderAccountUsageStore(),
+      qualifiedConnectedAccountRuntime: {
+        resolvePeerClass: () => 'advertised_v4' as const,
+        establishedRuntimeOwner: { invokeWithReceipt },
+        listScheduledAccounts: vi.fn(async () => []),
+        listGroupQuotaTargets: vi.fn(async () => probeProfiles.map((profile) => ({
+          profile,
+          groupGeneration: 7,
+        }))),
+      } as unknown as QualifiedConnectedAccountQuotaRuntime,
+    });
+
+    const probe = coordinator.probeGroupQuotaSnapshots({
+      serviceId: 'openai-codex',
+      groupId: 'team',
+      profileIds,
+    });
+    for (let index = 0; index < 10 && pendingInvocations.size < 4; index += 1) {
+      await Promise.resolve();
+    }
+    expect([...pendingInvocations.keys()]).toEqual(profileIds.slice(0, 4));
+    let resolvedInvocationCount = 0;
+    while (resolvedInvocationCount < profileIds.length) {
+      for (let index = 0; index < 20 && pendingInvocations.size === 0; index += 1) {
+        await Promise.resolve();
+      }
+      const currentBatch = [...pendingInvocations.values()];
+      expect(currentBatch.length).toBeGreaterThan(0);
+      resolvedInvocationCount += currentBatch.length;
+      currentBatch.forEach((resolve) => resolve());
+      for (let index = 0; index < 10; index += 1) await Promise.resolve();
+    }
+
+    await expect(probe).resolves.toEqual({
+      status: 'complete',
+      requestedProfileCount: 13,
+      completedProfileCount: 13,
+    });
+    expect(invokeWithReceipt).toHaveBeenCalledTimes(13);
+    expect(maxActiveInvocations).toBeGreaterThan(1);
+    expect(maxActiveInvocations).toBeLessThanOrEqual(4);
   });
 
   function createJwtWithSub(sub: string, marker: string): string {

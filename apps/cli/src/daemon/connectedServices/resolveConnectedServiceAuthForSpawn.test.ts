@@ -615,7 +615,11 @@ function externalPurposeBindingStore(): ConnectedAccountPurposeBindingStore {
     },
     subscribe(listener) {
       listeners.add(listener);
-      return { dispose: () => listeners.delete(listener) };
+      return {
+        dispose: () => {
+          listeners.delete(listener);
+        },
+      };
     },
   };
 }

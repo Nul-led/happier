@@ -771,6 +771,32 @@ function resolveAgentExecutionRunPermission(
   return assertAgentPermission(ctx, requestedMode, supportedModes);
 }
 
+function bindAgentExistingExecutionRunAuthority(
+  ctx: ActionExecutorContext,
+  opts: ExecutionRunCallOptions | undefined,
+): Readonly<
+  | { ok: true; opts: ExecutionRunCallOptions | undefined }
+  | { ok: false; error: ActionExecuteFailure }
+> {
+  if (!isAgentCaller(ctx)) return { ok: true, opts };
+  if (!Object.prototype.hasOwnProperty.call(ctx, 'causalPermissionAuthority')) {
+    return { ok: false, error: causalPermissionAuthorityFailure() };
+  }
+  const effective = resolveAgentEffectivePermission(ctx);
+  if (!effective.ok) return effective;
+  if (!effective.causalPermissionAuthority) {
+    return { ok: false, error: causalPermissionAuthorityFailure() };
+  }
+  return {
+    ok: true,
+    opts: {
+      ...(opts ?? {}),
+      causalPermissionAuthority: effective.causalPermissionAuthority,
+      effectiveCallerPermissionMode: effective.effectiveCallerMode,
+    },
+  };
+}
+
 function resolveSessionIdFromInput(input: unknown, ctx: ActionExecutorContext): string | null {
   const sessionId = normalizeId(readRecord(input).sessionId);
   if (sessionId) return sessionId;
@@ -3792,7 +3818,9 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
             sessionId === null ? ctx.defaultSessionId : undefined,
             sessionId === null ? ctx.executionRunTargetMachineId : undefined,
           );
-          const capability = await checkDetachedExecutionRunProtocolV2(deps, sessionId, opts, { startAndWait: false });
+          const authority = bindAgentExistingExecutionRunAuthority(ctx, opts);
+          if (!authority.ok) return authority.error;
+          const capability = await checkDetachedExecutionRunProtocolV2(deps, sessionId, authority.opts, { startAndWait: false });
           if (!capability.ok) return capability;
           const res = await deps.executionRunSend(sessionId, {
             runId: data.runId,
@@ -3817,7 +3845,9 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
             sessionId === null ? ctx.defaultSessionId : undefined,
             sessionId === null ? ctx.executionRunTargetMachineId : undefined,
           );
-          const capability = await checkDetachedExecutionRunProtocolV2(deps, sessionId, opts, { startAndWait: false });
+          const authority = bindAgentExistingExecutionRunAuthority(ctx, opts);
+          if (!authority.ok) return authority.error;
+          const capability = await checkDetachedExecutionRunProtocolV2(deps, sessionId, authority.opts, { startAndWait: false });
           if (!capability.ok) return capability;
           const res = await deps.executionRunEnsure(sessionId, {
             runId: data.runId,
@@ -3838,7 +3868,11 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
             sessionId === null ? ctx.defaultSessionId : undefined,
             sessionId === null ? ctx.executionRunTargetMachineId : undefined,
           );
-          const capability = await checkDetachedExecutionRunProtocolV2(deps, sessionId, opts, { startAndWait: false });
+          const existingAuthority = data.runId
+            ? bindAgentExistingExecutionRunAuthority(ctx, opts)
+            : { ok: true as const, opts };
+          if (!existingAuthority.ok) return existingAuthority.error;
+          const capability = await checkDetachedExecutionRunProtocolV2(deps, sessionId, existingAuthority.opts, { startAndWait: false });
           if (!capability.ok) return capability;
           let start = data.start ? withoutExecutionRunScope(data.start) : undefined;
           let dispatchOpts = capability.opts;
@@ -3885,7 +3919,9 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
             sessionId === null ? ctx.defaultSessionId : undefined,
             sessionId === null ? ctx.executionRunTargetMachineId : undefined,
           );
-          const capability = await checkDetachedExecutionRunProtocolV2(deps, sessionId, opts, { startAndWait: false });
+          const authority = bindAgentExistingExecutionRunAuthority(ctx, opts);
+          if (!authority.ok) return authority.error;
+          const capability = await checkDetachedExecutionRunProtocolV2(deps, sessionId, authority.opts, { startAndWait: false });
           if (!capability.ok) return capability;
           const res = await deps.executionRunStreamStart(sessionId, {
             runId: data.runId,
@@ -3964,7 +4000,9 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
             sessionId === null ? ctx.defaultSessionId : undefined,
             sessionId === null ? ctx.executionRunTargetMachineId : undefined,
           );
-          const capability = await checkDetachedExecutionRunProtocolV2(deps, sessionId, opts, { startAndWait: false });
+          const authority = bindAgentExistingExecutionRunAuthority(ctx, opts);
+          if (!authority.ok) return authority.error;
+          const capability = await checkDetachedExecutionRunProtocolV2(deps, sessionId, authority.opts, { startAndWait: false });
           if (!capability.ok) return capability;
           const res = await deps.executionRunAction(sessionId, { runId: data.runId, actionId: data.actionId, input: data.input }, capability.opts);
           return completeExecutionRunServiceActionResult(actionId, res);

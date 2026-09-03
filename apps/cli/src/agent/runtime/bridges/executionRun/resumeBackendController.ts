@@ -1,5 +1,10 @@
 import type { ExecutionBudgetRegistry } from '@/daemon/executionBudget/ExecutionBudgetRegistry';
-import { convertBackendTargetRefV2ToV1, readBackendTargetRefV2, type BackendTargetRefV1 } from '@happier-dev/protocol';
+import {
+  convertBackendTargetRefV2ToV1,
+  readBackendTargetRefV2,
+  type BackendTargetRefV1,
+  type SessionInputCausalPermissionAuthorityV1,
+} from '@happier-dev/protocol';
 
 import type { ExecutionRunState } from './executionRunTypes';
 import type { ExecutionRunBackendController, ExecutionRunController } from '@/agent/executionRuns/controllers/types';
@@ -17,6 +22,7 @@ import { createStreamedTranscriptWriter, type StreamedTranscriptWriterSession } 
 import type { ExecutionRunTranscriptPublisher } from './executionRunTranscriptPublisher';
 import type { ExecutionRunHostRuntime } from './executionRunHostRuntime';
 import type { ExecutionRunPermissionRequestStoreProvider } from './executionRunPermissionResponseTarget';
+import { isExecutionRunControllerCurrent, settleExecutionRunController } from './settleExecutionRunController';
 
 export async function resumeBackendControllerForResumableRun(args: Readonly<{
   runId: string;
@@ -29,6 +35,7 @@ export async function resumeBackendControllerForResumableRun(args: Readonly<{
     backendId: string;
     backendTarget?: BackendTargetRefV1;
     permissionMode: string;
+    causalPermissionAuthority?: SessionInputCausalPermissionAuthorityV1;
     accountSettings?: Readonly<Record<string, unknown>> | null;
   }) => ExecutionRunHostRuntime;
   sendAcp: ExecutionRunTranscriptPublisher;
@@ -41,12 +48,17 @@ export async function resumeBackendControllerForResumableRun(args: Readonly<{
   onModelOutput?: () => void;
   requireReplayCapture?: boolean;
   profileCatalog?: ExecutionRunProfileContributionCatalog;
+  causalPermissionAuthority?: SessionInputCausalPermissionAuthorityV1;
 }>): Promise<
   | { ok: true }
   | { ok: false; errorCode: string; error: string }
 > {
   if (args.run.retentionPolicy !== 'resumable') {
     return { ok: false, errorCode: 'execution_run_not_allowed', error: 'Not resumable' };
+  }
+
+  if (args.controllers.has(args.runId)) {
+    return { ok: false, errorCode: 'execution_run_not_allowed', error: 'Resume already in progress' };
   }
 
   if (args.budgetRegistry && !args.budgetRegistry.tryAcquireExecutionRun(args.runId, args.run.intent)) {
@@ -62,25 +74,27 @@ export async function resumeBackendControllerForResumableRun(args: Readonly<{
     return { ok: false, errorCode: 'execution_run_not_allowed', error: 'Missing resume handle' };
   }
 
-  const backend = args.createRuntime({
-    runId: args.runId,
-    backendId: args.run.backendId,
-    backendTarget: args.run.backendTarget,
-    permissionMode: args.run.permissionMode,
-    accountSettings: args.run.runtimeSettings?.accountSettings ?? null,
-  });
-  const wantsReplayCapture = args.requireReplayCapture === true;
-  const canResume = await backend.readResumeSupport({ captureReplay: wantsReplayCapture });
-  if (!canResume) {
-    await backend.dispose().catch(() => {});
+  let backend: ExecutionRunHostRuntime;
+  try {
+    backend = args.createRuntime({
+      runId: args.runId,
+      backendId: args.run.backendId,
+      backendTarget: args.run.backendTarget,
+      permissionMode: args.run.permissionMode,
+      ...(args.causalPermissionAuthority
+        ? { causalPermissionAuthority: args.causalPermissionAuthority }
+        : {}),
+      accountSettings: args.run.runtimeSettings?.accountSettings ?? null,
+    });
+  } catch (error: unknown) {
     args.budgetRegistry?.releaseExecutionRun(args.runId);
     return {
       ok: false,
-      errorCode: 'execution_run_not_allowed',
-      error: wantsReplayCapture ? 'Backend does not support resumable long-lived runs' : 'Backend does not support resume',
+      errorCode: 'execution_run_failed',
+      error: error instanceof Error ? error.message : 'Resume failed',
     };
   }
-
+  const wantsReplayCapture = args.requireReplayCapture === true;
   let resolveTerminal!: () => void;
   const terminalPromise = new Promise<void>((resolve) => {
     resolveTerminal = resolve;
@@ -89,7 +103,7 @@ export async function resumeBackendControllerForResumableRun(args: Readonly<{
   const resumeCtrl: ExecutionRunBackendController = {
     kind: 'backend',
     backend,
-    backendSupportsResume: true,
+    backendSupportsResume: false,
     childSessionId: null,
     buffer: '',
     sidechainStreamBuffer: '',
@@ -123,42 +137,91 @@ export async function resumeBackendControllerForResumableRun(args: Readonly<{
     terminalPromise,
     resolveTerminal,
   };
+  args.controllers.set(args.runId, resumeCtrl);
 
-  const profile = args.profileCatalog
-    ? resolveExecutionRunIntentProfileFromCatalog(args.profileCatalog, args.run.intent, args.run.profileId)
-    : resolveExecutionRunIntentProfile(args.run.intent);
-  const shouldMaterializeInTranscript = args.run.sessionId !== null
-    && profile.transcriptMaterialization !== 'none';
-  const sendAcp: ExecutionRunTranscriptPublisher = shouldMaterializeInTranscript
-    ? args.sendAcp
-    : async () => {};
-  const computeSidechainStreamText = createExecutionRunSidechainStreamText(profile);
+  const isCurrentResumeOccurrence = (): boolean => (
+    args.runs.get(args.runId) === args.run
+    && isExecutionRunControllerCurrent({
+      runId: args.runId,
+      controller: resumeCtrl,
+      controllers: args.controllers,
+    })
+  );
 
-  const onMessage = createExecutionRunControllerMessageHandler({
-    ctrl: resumeCtrl,
-    runId: args.runId,
-    sidechainId: args.run.sidechainId,
-    ioMode: args.run.ioMode,
-    computeSidechainStreamText,
-    sendAcp,
-    parentProvider: args.parentProvider,
-    runs: args.runs,
-    backendSupportsResume: true,
-    writeActivityMarker: args.writeActivityMarker,
-    getNowMs: args.getNowMs,
-    getPermissionRequestStore: args.getPermissionRequestStore,
-    onPublicStateUpdated: args.onPublicStateUpdated,
-    onModelOutput: args.onModelOutput,
-  });
-  backend.subscribeMessages(onMessage);
+  const retireResumeOccurrence = async (): Promise<boolean> => {
+    const owned = isExecutionRunControllerCurrent({
+      runId: args.runId,
+      controller: resumeCtrl,
+      controllers: args.controllers,
+    });
+    if (owned) {
+      // Release while the exact controller claim is still current. Settling first
+      // would open a window where a successor can acquire the same run token and
+      // then have that successor token released by this stale occurrence.
+      resumeCtrl.cancelled = true;
+      args.budgetRegistry?.releaseExecutionRun(args.runId);
+    }
+    await settleExecutionRunController({
+      runId: args.runId,
+      controller: resumeCtrl,
+      controllers: args.controllers,
+    });
+    return owned;
+  };
 
   try {
+    const canResume = await backend.readResumeSupport({ captureReplay: wantsReplayCapture });
+    if (!isCurrentResumeOccurrence()) {
+      await retireResumeOccurrence();
+      return { ok: false, errorCode: 'execution_run_not_allowed', error: 'Resume was superseded' };
+    }
+    if (!canResume) {
+      await retireResumeOccurrence();
+      return {
+        ok: false,
+        errorCode: 'execution_run_not_allowed',
+        error: wantsReplayCapture ? 'Backend does not support resumable long-lived runs' : 'Backend does not support resume',
+      };
+    }
+    resumeCtrl.backendSupportsResume = true;
+
+    const profile = args.profileCatalog
+      ? resolveExecutionRunIntentProfileFromCatalog(args.profileCatalog, args.run.intent, args.run.profileId)
+      : resolveExecutionRunIntentProfile(args.run.intent);
+    const shouldMaterializeInTranscript = args.run.sessionId !== null
+      && profile.transcriptMaterialization !== 'none';
+    const sendAcp: ExecutionRunTranscriptPublisher = shouldMaterializeInTranscript
+      ? args.sendAcp
+      : async () => {};
+    const computeSidechainStreamText = createExecutionRunSidechainStreamText(profile);
+
     const loaded = await backend.provisionSession({
       resumeSessionId: providerSessionId,
       ...(wantsReplayCapture ? { captureReplay: true } : {}),
     });
+    if (!isCurrentResumeOccurrence()) {
+      await backend.cancel(loaded.sessionId).catch(() => {});
+      await retireResumeOccurrence();
+      return { ok: false, errorCode: 'execution_run_not_allowed', error: 'Resume was superseded' };
+    }
     resumeCtrl.childSessionId = loaded.sessionId;
-    args.controllers.set(args.runId, resumeCtrl);
+    const onMessage = createExecutionRunControllerMessageHandler({
+      ctrl: resumeCtrl,
+      runId: args.runId,
+      sidechainId: args.run.sidechainId,
+      ioMode: args.run.ioMode,
+      computeSidechainStreamText,
+      sendAcp,
+      parentProvider: args.parentProvider,
+      runs: args.runs,
+      backendSupportsResume: true,
+      writeActivityMarker: args.writeActivityMarker,
+      getNowMs: args.getNowMs,
+      getPermissionRequestStore: args.getPermissionRequestStore,
+      onPublicStateUpdated: args.onPublicStateUpdated,
+      onModelOutput: args.onModelOutput,
+    });
+    backend.subscribeMessages(onMessage);
     args.runs.set(args.runId, {
       ...args.run,
       status: 'running',
@@ -168,9 +231,12 @@ export async function resumeBackendControllerForResumableRun(args: Readonly<{
     });
     args.onPublicStateUpdated?.(args.runId);
     return { ok: true };
-  } catch (e: any) {
-    await backend.dispose().catch(() => {});
-    args.budgetRegistry?.releaseExecutionRun(args.runId);
-    return { ok: false, errorCode: 'execution_run_failed', error: e instanceof Error ? e.message : 'Resume failed' };
+  } catch (error: unknown) {
+    await retireResumeOccurrence();
+    return {
+      ok: false,
+      errorCode: 'execution_run_failed',
+      error: error instanceof Error ? error.message : 'Resume failed',
+    };
   }
 }

@@ -339,6 +339,101 @@ function createResponseTimeoutCaptureBackend(responseText = 'ok'): VoiceTestRunt
 }
 
 describe('VoiceAgentManager', () => {
+  it('does not let a late start overwrite a newer instance with the same id', async () => {
+    let releaseFirstProvision!: () => void;
+    let firstProvisionStarted!: () => void;
+    const firstProvisionGate = new Promise<void>((resolve) => {
+      releaseFirstProvision = resolve;
+    });
+    const firstProvisionStartedPromise = new Promise<void>((resolve) => {
+      firstProvisionStarted = resolve;
+    });
+    const firstDispose = vi.fn(async () => {});
+    let runtimeCount = 0;
+    const manager = new VoiceAgentManager({
+      createBackend: () => {
+        runtimeCount += 1;
+        const occurrence = runtimeCount;
+        return createTestExecutionRunHostRuntime({
+          sessionId: `voice-session-${occurrence}`,
+          onProvisionSession: async () => {
+            if (occurrence !== 1) return;
+            firstProvisionStarted();
+            await firstProvisionGate;
+          },
+          ...(occurrence === 1 ? { onDispose: firstDispose } : {}),
+        });
+      },
+    });
+    const params = {
+      voiceAgentId: 'shared-voice-agent',
+      backendTarget: { kind: 'builtInAgent', agentId: 'claude' } as const,
+      chatModelId: 'chat-model',
+      commitModelId: 'commit-model',
+      permissionIntent: 'read-only' as const,
+      idleTtlSeconds: 60,
+      initialContext: 'CTX',
+    };
+
+    try {
+      const lateFirst = manager.start(params);
+      await firstProvisionStartedPromise;
+      await expect(manager.start(params)).resolves.toMatchObject({
+        voiceAgentId: 'shared-voice-agent',
+      });
+      releaseFirstProvision();
+
+      await expect(lateFirst).rejects.toMatchObject({ code: 'VOICE_AGENT_START_FAILED' });
+      expect(firstDispose).toHaveBeenCalledTimes(1);
+      expect(manager.getResumeHandle('shared-voice-agent')).toMatchObject({
+        kind: 'provider_session.v1',
+        providerSessionId: 'voice-session-2',
+      });
+    } finally {
+      releaseFirstProvision();
+      await manager.dispose();
+    }
+  });
+
+  it('does not register a late start after the manager was disposed', async () => {
+    let releaseProvision!: () => void;
+    let provisionStarted!: () => void;
+    const provisionGate = new Promise<void>((resolve) => {
+      releaseProvision = resolve;
+    });
+    const provisionStartedPromise = new Promise<void>((resolve) => {
+      provisionStarted = resolve;
+    });
+    const disposeRuntime = vi.fn(async () => {});
+    const manager = new VoiceAgentManager({
+      createBackend: () => createTestExecutionRunHostRuntime({
+        sessionId: 'late-session',
+        onProvisionSession: async () => {
+          provisionStarted();
+          await provisionGate;
+        },
+        onDispose: disposeRuntime,
+      }),
+    });
+
+    const start = manager.start({
+      voiceAgentId: 'late-voice-agent',
+      backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
+      chatModelId: 'chat-model',
+      commitModelId: 'commit-model',
+      permissionIntent: 'read-only',
+      idleTtlSeconds: 60,
+      initialContext: 'CTX',
+    });
+    await provisionStartedPromise;
+    await manager.dispose();
+    releaseProvision();
+
+    await expect(start).rejects.toMatchObject({ code: 'VOICE_AGENT_START_FAILED' });
+    expect(disposeRuntime).toHaveBeenCalledTimes(1);
+    expect(manager.getResumeHandle('late-voice-agent')).toBeNull();
+  });
+
   it('clears the reaper interval when disposed', async () => {
 
       const clearIntervalSpy = vi.spyOn(globalThis, 'clearInterval');

@@ -1,5 +1,13 @@
 import type { ExecutionRunController } from '@/agent/executionRuns/controllers/types';
 
+export function isExecutionRunControllerCurrent(args: Readonly<{
+  runId: string;
+  controller: ExecutionRunController;
+  controllers: ReadonlyMap<string, ExecutionRunController>;
+}>): boolean {
+  return !args.controller.cancelled && args.controllers.get(args.runId) === args.controller;
+}
+
 export async function settleExecutionRunController(args: Readonly<{
   runId: string;
   controller: ExecutionRunController;

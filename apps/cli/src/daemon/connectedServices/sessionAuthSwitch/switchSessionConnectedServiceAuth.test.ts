@@ -2463,7 +2463,7 @@ describe('switchSessionConnectedServiceAuth', () => {
     expect(registerHotApplyTargets).toHaveBeenCalledWith(expect.objectContaining({ tracked }));
   });
 
-  it('falls back to restart when hot-apply verification still sees the old provider account (cmptxauhy0k2ptmqe6o4l8i48)', async () => {
+  it('reports a hot-apply adoption mismatch without replacing the provider runtime (cmptxauhy0k2ptmqe6o4l8i48)', async () => {
     const tracked = trackedSession({
       spawnOptions: {
         directory: '/tmp/project',
@@ -2512,13 +2512,16 @@ describe('switchSessionConnectedServiceAuth', () => {
 
     const result = await switchSessionConnectedServiceAuth(input);
     expect(result).toMatchObject({
-      ok: true,
-      action: 'restart_requested',
-      continuityByServiceId: { 'openai-codex': 'restart_rematerialize' },
+      ok: false,
+      errorCode: 'provider_account_adoption_mismatch',
+      diagnostics: {
+        attemptedAction: 'hot_applied',
+        failurePhase: 'post_switch_verification',
+      },
     });
     expect(JSON.stringify(result)).not.toContain('raw-secret-token');
 
-    expect(restartSession).toHaveBeenCalledWith(tracked);
+    expect(restartSession).not.toHaveBeenCalled();
     expect(recoverAfterRuntimeAuthSwitch).not.toHaveBeenCalled();
     expect(verifyProviderAccountAdoption).toHaveBeenNthCalledWith(1, expect.objectContaining({
       serviceId: 'openai-codex',
@@ -2526,16 +2529,15 @@ describe('switchSessionConnectedServiceAuth', () => {
       action: 'hot_applied',
     }));
     expect(verifyProviderAccountAdoption).toHaveBeenCalledOnce();
-    expect(continueAfterRuntimeAuthSwitch).toHaveBeenCalledOnce();
+    expect(continueAfterRuntimeAuthSwitch).not.toHaveBeenCalled();
     expect(emitSessionEvent).toHaveBeenCalledWith('sess_1', expect.objectContaining({
-      type: 'connected_service_account_switch',
-      serviceId: 'openai-codex',
-      toProfileId: 'bot',
-      mode: 'restart_resume',
+      type: 'connected_service_account_switch_attempt',
+      ok: false,
+      attemptedContinuityMode: 'hot_apply',
     }));
   });
 
-  it('falls back to restart when hot-apply verification cannot read the active provider account id', async () => {
+  it('reports unavailable hot-apply verification without replacing the provider runtime', async () => {
     const tracked = trackedSession({
       spawnOptions: {
         directory: '/tmp/project',
@@ -2581,11 +2583,14 @@ describe('switchSessionConnectedServiceAuth', () => {
     });
 
     expect(result).toMatchObject({
-      ok: true,
-      action: 'restart_requested',
-      continuityByServiceId: { 'openai-codex': 'restart_rematerialize' },
+      ok: false,
+      errorCode: 'post_switch_verification_failed',
+      diagnostics: {
+        attemptedAction: 'hot_applied',
+        failurePhase: 'post_switch_verification',
+      },
     });
-    expect(restartSession).toHaveBeenCalledWith(tracked);
+    expect(restartSession).not.toHaveBeenCalled();
     expect(recoverAfterRuntimeAuthSwitch).not.toHaveBeenCalled();
     expect(verifyProviderAccountAdoption).toHaveBeenCalledOnce();
     expect(verifyProviderAccountAdoption).toHaveBeenCalledWith(expect.objectContaining({
@@ -2593,20 +2598,15 @@ describe('switchSessionConnectedServiceAuth', () => {
       target: expect.objectContaining({ profileId: 'bot' }),
       action: 'hot_applied',
     }));
-    expect(continueAfterRuntimeAuthSwitch).toHaveBeenCalledOnce();
-    expect(continueAfterRuntimeAuthSwitch).toHaveBeenCalledWith(expect.objectContaining({
-      action: 'restart_requested',
-      serviceIds: new Set(['openai-codex']),
-    }));
+    expect(continueAfterRuntimeAuthSwitch).not.toHaveBeenCalled();
     expect(emitSessionEvent).toHaveBeenCalledWith('sess_1', expect.objectContaining({
-      type: 'connected_service_account_switch',
-      serviceId: 'openai-codex',
-      toProfileId: 'bot',
-      mode: 'restart_resume',
+      type: 'connected_service_account_switch_attempt',
+      ok: false,
+      attemptedContinuityMode: 'hot_apply',
     }));
   });
 
-  it('escalates a retryable hot-apply adoption mismatch through restart rematerialization before continuing', async () => {
+  it('keeps a retryable hot-apply adoption mismatch within the declared hot-apply contract', async () => {
     const tracked = trackedSession({
       spawnOptions: {
         directory: '/tmp/project',
@@ -2670,21 +2670,15 @@ describe('switchSessionConnectedServiceAuth', () => {
     };
 
     await expect(switchSessionConnectedServiceAuth(input)).resolves.toMatchObject({
-      ok: true,
-      action: 'restart_requested',
-      normalizedBindings: codexBindings('leeroy'),
-      continuityByServiceId: { 'openai-codex': 'restart_rematerialize' },
+      ok: false,
+      errorCode: 'provider_account_adoption_mismatch',
+      diagnostics: { attemptedAction: 'hot_applied' },
     });
 
     expect(hotApply).toHaveBeenCalledOnce();
-    expect(restartSession).toHaveBeenCalledWith(tracked);
+    expect(restartSession).not.toHaveBeenCalled();
     expect(recoverAfterRuntimeAuthSwitch).not.toHaveBeenCalled();
-    expect(continueAfterRuntimeAuthSwitch).toHaveBeenCalledTimes(1);
-    expect(continueAfterRuntimeAuthSwitch).toHaveBeenCalledWith(expect.objectContaining({
-      action: 'restart_requested',
-      serviceIds: new Set(['openai-codex']),
-      switchReason: 'manual',
-    }));
+    expect(continueAfterRuntimeAuthSwitch).not.toHaveBeenCalled();
     expect(verifyProviderAccountAdoption).toHaveBeenCalledOnce();
     expect(verifyProviderAccountAdoption).toHaveBeenCalledWith(expect.objectContaining({
       action: 'hot_applied',
@@ -2694,8 +2688,6 @@ describe('switchSessionConnectedServiceAuth', () => {
     expect(calls).toEqual([
       'hot_apply',
       'verify:hot_applied',
-      'restart',
-      'continue:restart_requested',
     ]);
   });
 
@@ -3430,7 +3422,7 @@ describe('switchSessionConnectedServiceAuth', () => {
         },
       },
     });
-    const runtimeAuthSelection = { kind: 'runtime-auth-selection', requireDirectLiveHotApply: true };
+    const runtimeAuthSelection = { kind: 'runtime-auth-selection' };
     const materializeRuntimeAuthSelection = vi.fn(async () => runtimeAuthSelection);
     const resolveContinuity = vi.fn(async ({ runtimeAuthSelection: receivedSelection }) => {
       expect(receivedSelection).toBe(runtimeAuthSelection);
@@ -3511,7 +3503,7 @@ describe('switchSessionConnectedServiceAuth', () => {
     expect(continueAfterRuntimeAuthSwitch).toHaveBeenCalledOnce();
   });
 
-  it('escalates unchanged group hot-apply adoption mismatch through restart rematerialization', async () => {
+  it('reports an unchanged-group hot-apply adoption mismatch without replacing the provider runtime', async () => {
     const tracked = trackedSession({
       spawnOptions: {
         directory: '/tmp/project',
@@ -3594,17 +3586,17 @@ describe('switchSessionConnectedServiceAuth', () => {
         },
       },
     })).resolves.toMatchObject({
-      ok: true,
-      action: 'restart_requested',
-      continuityByServiceId: { anthropic: 'restart_rematerialize' },
+      ok: false,
+      errorCode: 'provider_account_adoption_mismatch',
+      diagnostics: {
+        attemptedAction: 'hot_applied',
+        failurePhase: 'post_switch_verification',
+      },
     });
 
-    expect(restartSession).toHaveBeenCalledWith(tracked);
+    expect(restartSession).not.toHaveBeenCalled();
     expect(recoverAfterRuntimeAuthSwitch).not.toHaveBeenCalled();
-    expect(continueAfterRuntimeAuthSwitch).toHaveBeenCalledWith(expect.objectContaining({
-      action: 'restart_requested',
-      serviceIds: new Set(['anthropic']),
-    }));
+    expect(continueAfterRuntimeAuthSwitch).not.toHaveBeenCalled();
     expect(verifyProviderAccountAdoption).toHaveBeenCalledOnce();
     expect(verifyProviderAccountAdoption).toHaveBeenCalledWith(expect.objectContaining({
       action: 'hot_applied',
@@ -3612,8 +3604,6 @@ describe('switchSessionConnectedServiceAuth', () => {
     }));
     expect(calls).toEqual([
       'verify:hot_applied',
-      'restart',
-      'continue:restart_requested',
     ]);
   });
 
@@ -4162,8 +4152,28 @@ describe('switchSessionConnectedServiceAuth', () => {
     }));
   });
 
-  it('restarts without rollback when hot apply reports restart recovery', async () => {
-    const tracked = trackedSession();
+  it('does not turn a declared hot-apply continuity into restart recovery', async () => {
+    const service = { pluginId: 'happier.agent.codex', localId: 'openai-codex' } as const;
+    const serviceKey = 'happier.agent.codex/openai-codex';
+    const oldBindings: ConnectedServiceBindingsV1 = {
+      v: 1,
+      bindingsByServiceId: {
+        [serviceKey]: { source: 'connected', selection: 'profile', profileId: 'old-profile' },
+      },
+    };
+    const newBindings: ConnectedServiceBindingsV1 = {
+      v: 1,
+      bindingsByServiceId: {
+        [serviceKey]: { source: 'connected', selection: 'profile', profileId: 'new-profile' },
+      },
+    };
+    const tracked = trackedSession({
+      spawnOptions: {
+        directory: '/tmp/project',
+        backendTarget: { kind: 'backend', backendId: 'codex', sourceKind: 'built_in' },
+        connectedServices: oldBindings,
+      },
+    });
     const restartSession = vi.fn(async () => {});
     const persistSessionBindings = vi.fn(async () => {});
     const registerHotApplyTargets = vi.fn();
@@ -4174,11 +4184,23 @@ describe('switchSessionConnectedServiceAuth', () => {
       postSwitchVerificationMode: testOnlyPostSwitchVerificationBypass(),
       getChildren: () => [tracked],
       api: {
-        listConnectedServiceProfiles: async () => ({
-          serviceId: 'anthropic',
-          profiles: [{ profileId: 'new-profile', status: 'connected' }],
+        listConnectedServiceProfiles: async () => ({ serviceId: 'openai-codex', profiles: [] }),
+      },
+      qualifiedConnectedAccountApi: {
+        readGroup: async () => null,
+        listAccounts: async () => QualifiedConnectedAccountListResponseV4Schema.parse({
+          service,
+          accounts: [{
+            ref: { service, accountId: 'new-profile' },
+            status: 'connected',
+            authenticationModeId: 'oauth',
+            revisionSemantics: 'revisioned',
+            credentialRevision: 'csr_aaaaaaaaaaaaaaaaaaaaaa',
+            configurationReady: true,
+            configurationRevision: null,
+            scopes: [],
+          }],
         }),
-        getConnectedServiceAuthGroup: async () => null,
       },
       resolveContinuity: async () => ({ mode: 'hot_apply' }),
       restartSession,
@@ -4186,34 +4208,37 @@ describe('switchSessionConnectedServiceAuth', () => {
       hotApply: async () => ({
         ok: false,
         errorCode: 'hot_apply_restart_required',
-        serviceId: 'anthropic',
+        serviceId: serviceKey,
         serviceResultsByServiceId: {
-          anthropic: { status: 'failed', errorCode: 'hot_apply_restart_required' },
+          [serviceKey]: { status: 'failed', errorCode: 'hot_apply_restart_required' },
         },
       }),
       registerHotApplyTargets,
       emitSessionEvent,
       request: {
         sessionId: 'sess_1',
-        agentId: 'claude',
-        bindings: bindings('new-profile'),
+        agentId: 'codex',
+        bindings: newBindings,
       },
     })).resolves.toMatchObject({
-      ok: true,
-      action: 'restart_requested',
-      normalizedBindings: bindings('new-profile'),
-      continuityByServiceId: {
-        anthropic: 'restart_rematerialize',
+      ok: false,
+      errorCode: 'hot_apply_failed',
+      diagnostics: {
+        failurePhase: 'hot_apply',
       },
     });
 
-    expect(tracked.spawnOptions?.connectedServices).toEqual(bindings('new-profile'));
-    expect(persistSessionBindings).toHaveBeenCalledOnce();
-    expect(persistSessionBindings).toHaveBeenCalledWith(expect.objectContaining({
+    expect(tracked.spawnOptions?.connectedServices).toEqual(oldBindings);
+    expect(persistSessionBindings).toHaveBeenCalledTimes(2);
+    expect(persistSessionBindings).toHaveBeenNthCalledWith(1, expect.objectContaining({
       sessionId: 'sess_1',
-      normalizedBindings: bindings('new-profile'),
+      normalizedBindings: newBindings,
     }));
-    expect(restartSession).toHaveBeenCalledWith(tracked);
+    expect(persistSessionBindings).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      sessionId: 'sess_1',
+      normalizedBindings: oldBindings,
+    }));
+    expect(restartSession).not.toHaveBeenCalled();
     expect(registerHotApplyTargets).not.toHaveBeenCalled();
     expect(emitSessionEvent).toHaveBeenCalled();
   });
@@ -4644,12 +4669,10 @@ describe('switchSessionConnectedServiceAuth', () => {
     expect(hotApply).not.toHaveBeenCalled();
     expect(restartSession).toHaveBeenCalledWith(tracked);
   });
-  it('keeps a partly applied multi-service switch applied when the follow-up restart never signals', async () => {
-    // POST-EFFECT SETTLEMENT: `anthropic` already took the new credential, so the restart that was
-    // supposed to converge the remaining service is a SECOND remediation, not the operation's only
-    // effect. When it fails before signalling, restoring the previous persisted bindings would make
-    // the canonical record claim `anthropic` still holds the old account while its runtime holds the
-    // new one -- the same false rollback-safe report the plain hot-apply branch already refuses.
+  it('keeps a partly applied multi-service switch applied without translating hot apply into restart', async () => {
+    // POST-EFFECT SETTLEMENT: `anthropic` already took the new credential. Restoring the previous
+    // persisted bindings would make the canonical record contradict the live runtime, while a
+    // provider-declared hot apply must never authorize replacing that runtime.
     const tracked = trackedSession({
       spawnOptions: {
         directory: '/tmp/project',
@@ -4677,9 +4700,7 @@ describe('switchSessionConnectedServiceAuth', () => {
         getConnectedServiceAuthGroup: async () => null,
       },
       resolveContinuity: async () => ({ mode: 'hot_apply' }),
-      restartSession: async () => {
-        throw new Error('restart_disallowed_by_execution_policy');
-      },
+      restartSession: vi.fn(async () => {}),
       persistSessionBindings,
       hotApply: async () => ({
         ok: false,
@@ -4707,7 +4728,7 @@ describe('switchSessionConnectedServiceAuth', () => {
         failurePhase: 'reconciliation',
         application: {
           status: 'partial_applied_pending_reconciliation',
-          phase: 'restart',
+          phase: 'hot_apply',
         },
       },
     });
@@ -4719,12 +4740,7 @@ describe('switchSessionConnectedServiceAuth', () => {
     }));
   });
 
-  it('keeps a hot-applied switch applied when the verification-driven restart never signals', async () => {
-    // POST-EFFECT SETTLEMENT: the hot apply and its commit already completed, so the new authority
-    // is ACTIVE. The restart is an extra remediation for an inconclusive (retryable) verification;
-    // when it fails before signalling, rolling the persisted bindings back to the old account writes
-    // a canonical claim that contradicts the live runtime. The single-service rematerialize path
-    // already returns the typed restart failure without touching persisted state.
+  it('keeps a hot-applied switch applied and reports inconclusive verification without restart', async () => {
     const tracked = trackedSession({
       spawnOptions: {
         directory: '/tmp/project',
@@ -4753,9 +4769,7 @@ describe('switchSessionConnectedServiceAuth', () => {
         getConnectedServiceAuthGroup: async () => null,
       },
       resolveContinuity: async () => ({ mode: 'hot_apply' }),
-      restartSession: async () => {
-        throw new Error('restart_disallowed_by_execution_policy');
-      },
+      restartSession: vi.fn(async () => {}),
       hotApply: async () => ({ ok: true }),
       recoverAfterRuntimeAuthSwitch: vi.fn<RecoverAfterRuntimeAuthSwitch>(async () => ({ ok: true })),
       continueAfterRuntimeAuthSwitch: vi.fn(async () => {}),
@@ -4772,7 +4786,11 @@ describe('switchSessionConnectedServiceAuth', () => {
 
     await expect(switchSessionConnectedServiceAuth(input)).resolves.toMatchObject({
       ok: false,
-      errorCode: 'restart_failed',
+      errorCode: 'provider_account_adoption_mismatch',
+      diagnostics: {
+        attemptedAction: 'hot_applied',
+        failurePhase: 'post_switch_verification',
+      },
     });
 
     expect(persistSessionBindings).toHaveBeenCalledTimes(1);

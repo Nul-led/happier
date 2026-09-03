@@ -558,6 +558,12 @@ type ExecutionRunActionOptions = Readonly<{
    */
   causalPermissionAuthority?: SessionInputCausalPermissionAuthorityV1;
   /**
+   * Permission mode after the Action owner clamps the current mutable Session
+   * mode to the admitted-turn ceiling. Existing-run nested Actions and child
+   * Runs must use this value instead of the historical Run mode.
+   */
+  effectiveCallerPermissionMode?: string;
+  /**
    * The contextual Session that selected the exact daemon when the requested
    * execution-run scope is detached. This is transport context, never Action
    * input, so callers cannot retarget a run by mutating the request.

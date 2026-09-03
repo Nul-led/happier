@@ -155,6 +155,28 @@ describe('createExecutionRunHostBackendFromSessionRuntime', () => {
     await execution.dispose();
   });
 
+  it('uses the current send authority instead of reusing the Run open authority', async () => {
+    const harness = createSessionHarness();
+    const currentTurnAuthority = Object.freeze({
+      kind: 'admittedSessionInputV1' as const,
+      admittedPermissionCeiling: 'default' as const,
+    });
+    const execution = await createExecutionRunHostBackendFromSessionRuntime({
+      request: { ...createResumeRequest(), causalPermissionAuthority },
+      openSession: async () => harness.session,
+    });
+
+    await execution.send(
+      { text: 'Continue under the current turn.' },
+      { causalPermissionAuthority: currentTurnAuthority },
+    );
+
+    expect(harness.sendCalls[0]?.[0]).toMatchObject({
+      causalPermissionAuthority: currentTurnAuthority,
+    });
+    await execution.dispose();
+  });
+
   it('terminalizes rejected initial admission, clears cancellation state, and disposes once', async () => {
     const harness = createSessionHarness();
     harness.setSend(async () => ({

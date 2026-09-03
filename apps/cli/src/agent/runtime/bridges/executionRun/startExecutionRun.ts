@@ -51,7 +51,7 @@ import { resolveExecutionRunRuntimeSettings } from './runtimeSettings';
 import { permissionMode } from '@/agent/executionRuns/policy/permissionMode';
 import type { ResolvedContributionRegistry } from '@/plugins/projection/registry/types';
 import type { ExecutionRunTranscriptPublisher } from './executionRunTranscriptPublisher';
-import { settleExecutionRunController } from './settleExecutionRunController';
+import { isExecutionRunControllerCurrent, settleExecutionRunController } from './settleExecutionRunController';
 
 type SendAcp = ExecutionRunTranscriptPublisher;
 
@@ -176,7 +176,7 @@ async function retireProvisionedChildWithoutDispatch(params: Readonly<{
   controller: ExecutionRunBackendController;
   controllers: Map<string, ExecutionRunController>;
 }>): Promise<boolean> {
-  if (!params.controller.cancelled && params.controllers.get(params.runId) === params.controller) {
+  if (isExecutionRunControllerCurrent(params)) {
     return false;
   }
   try {
@@ -631,7 +631,7 @@ export async function startExecutionRun(args: Readonly<{
         const supportsInitialResume = await backend.readResumeSupport();
         return [supportsResume, supportsInitialResume] as const;
       })();
-    if (ctrl.cancelled || args.controllers.get(runId) !== ctrl) {
+    if (!isExecutionRunControllerCurrent({ runId, controller: ctrl, controllers: args.controllers })) {
       await settleExecutionRunController({ runId, controller: ctrl, controllers: args.controllers });
       return { runId, callId, sidechainId };
     }

@@ -160,14 +160,23 @@ describe('sendBackendLongLivedRun (resume)', () => {
     expect(sendPrompt).not.toHaveBeenCalled();
   });
 
-  it('does not replay an effectful replacement prompt after an ambiguous AbortError', async () => {
-    const sendPrompt = vi.fn(async () => {
-      throw Object.assign(new Error('replacement prompt outcome is ambiguous'), { name: 'AbortError' });
+  it('keeps custody after an effectful send has an ambiguous AbortError until canonical completion', async () => {
+    let resolveCompletion!: () => void;
+    const completion = new Promise<void>((resolve) => {
+      resolveCompletion = resolve;
     });
-    const cancel = vi.fn(async () => undefined);
+    const providerEffects: string[] = [];
+    const sendPrompt = vi.fn(async (_sessionId: string, prompt: string) => {
+      providerEffects.push(prompt);
+      if (providerEffects.length === 1) {
+        throw Object.assign(new Error('prompt outcome is ambiguous'), { name: 'AbortError' });
+      }
+    });
+    const sendSteerPrompt = vi.fn(async () => undefined);
     const { runtime } = createTestExecutionRunHostRuntime({
       sendPrompt,
-      cancel,
+      sendSteerPrompt,
+      waitForTurnCompletion: async () => await completion,
     });
     const run = createLongLivedResumableRun({ status: 'running' });
     const runs = new Map([[run.runId, run]]);
@@ -181,9 +190,9 @@ describe('sendBackendLongLivedRun (resume)', () => {
       sidechainStreamKey: '',
       streamWriter: null,
       cancelled: false,
-      turnCount: 1,
-      turnEpoch: 1,
-      turnInFlight: true,
+      turnCount: 0,
+      turnEpoch: 0,
+      turnInFlight: false,
       turnCancelReason: null,
       turnCancelEpoch: null,
       pendingExternalMessages: [],
@@ -196,9 +205,8 @@ describe('sendBackendLongLivedRun (resume)', () => {
     };
     const controllers = new Map([[run.runId, controller]]);
 
-    const result = await sendBackendLongLivedRun({
+    const sendArgs = {
       runId: run.runId,
-      params: { message: 'replacement', delivery: 'interrupt' },
       runs,
       controllers,
       budgetRegistry: null,
@@ -210,10 +218,97 @@ describe('sendBackendLongLivedRun (resume)', () => {
       parentProvider: 'acme.runtime.provider' as any,
       streamedTranscriptSession: null,
       writeActivityMarker: async () => undefined,
+    } as const;
+
+    const result = await sendBackendLongLivedRun({
+      ...sendArgs,
+      params: { message: 'first', delivery: 'steer_if_supported' },
     });
 
-    expect(result).toMatchObject({ ok: false, errorCode: 'execution_run_failed' });
-    expect(cancel).toHaveBeenCalledOnce();
+    expect(result).toMatchObject({ ok: false, errorCode: 'execution_run_send_outcome_unknown' });
+    expect(providerEffects).toEqual(['first']);
+    expect(sendPrompt).toHaveBeenCalledOnce();
+    expect(controller.turnInFlight).toBe(true);
+    expect(controller.turnCancelReason).toBe('outcome_unknown');
+
+    await expect(sendBackendLongLivedRun({
+      ...sendArgs,
+      params: { message: 'must not overlap', delivery: 'steer_if_supported' },
+    })).resolves.toMatchObject({ ok: false, errorCode: 'execution_run_busy' });
+    expect(sendPrompt).toHaveBeenCalledOnce();
+    expect(sendSteerPrompt).not.toHaveBeenCalled();
+
+    resolveCompletion();
+    await vi.waitFor(() => {
+      expect(controller.turnInFlight).toBe(false);
+      expect(controller.turnCancelReason).toBeNull();
+    });
+
+    await expect(sendBackendLongLivedRun({
+      ...sendArgs,
+      params: { message: 'after completion', delivery: 'steer_if_supported' },
+    })).resolves.toEqual({ ok: true });
+    expect(providerEffects).toEqual(['first', 'after completion']);
+  });
+
+  it('keeps an owner-proven pre-effect rejection retryable without acquiring turn custody', async () => {
+    const sendPrompt = vi.fn(async () => undefined);
+    const { runtime } = createTestExecutionRunHostRuntime({ sendPrompt });
+    const run = createLongLivedResumableRun({ status: 'running' });
+    const runs = new Map([[run.runId, run]]);
+    const controller: ExecutionRunBackendController = {
+      kind: 'backend',
+      backend: runtime,
+      backendSupportsResume: true,
+      childSessionId: 'child_session_active',
+      buffer: '',
+      sidechainStreamBuffer: '',
+      sidechainStreamKey: '',
+      streamWriter: null,
+      cancelled: false,
+      turnCount: 0,
+      turnEpoch: 0,
+      turnInFlight: false,
+      turnCancelReason: null,
+      turnCancelEpoch: null,
+      pendingExternalMessages: [],
+      pendingExternalMessagesSignal: null,
+      lastMarkerWriteAtMs: 0,
+      failureSignal: failureSignal(),
+      pendingHostBarrier: Promise.resolve(),
+      terminalPromise: new Promise<void>(() => {}),
+      resolveTerminal: () => undefined,
+    };
+    const controllers = new Map([[run.runId, controller]]);
+    const authorizeProviderEffect = vi.fn()
+      .mockResolvedValueOnce({ ok: false, errorCode: 'permission_denied', error: 'Denied before effect' })
+      .mockResolvedValueOnce({ ok: true });
+    const sendArgs = {
+      runId: run.runId,
+      params: { message: 'retryable' },
+      runs,
+      controllers,
+      budgetRegistry: null,
+      createRuntime: () => runtime,
+      maxTurns: null,
+      getNowMs: () => 123,
+      finishRun: async () => undefined,
+      sendAcp: async () => {},
+      parentProvider: 'acme.runtime.provider' as any,
+      streamedTranscriptSession: null,
+      writeActivityMarker: async () => undefined,
+      authorizeProviderEffect,
+    } as const;
+
+    await expect(sendBackendLongLivedRun(sendArgs)).resolves.toEqual({
+      ok: false,
+      errorCode: 'permission_denied',
+      error: 'Denied before effect',
+    });
+    expect(controller.turnInFlight).toBe(false);
+    expect(sendPrompt).not.toHaveBeenCalled();
+
+    await expect(sendBackendLongLivedRun(sendArgs)).resolves.toEqual({ ok: true });
     expect(sendPrompt).toHaveBeenCalledOnce();
   });
 });

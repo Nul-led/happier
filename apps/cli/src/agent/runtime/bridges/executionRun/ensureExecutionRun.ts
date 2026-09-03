@@ -8,6 +8,7 @@ import {
   type BackendTargetRefV1,
   type ConnectedServiceBindingsV1,
   type ProviderBoundModelRef,
+  type SessionInputCausalPermissionAuthorityV1,
 } from '@happier-dev/protocol';
 import { resumeBackendControllerForResumableRun } from './resumeBackendController';
 import type { ACPMessageData, ACPProvider } from '@/api/session/sessionMessageTypes';
@@ -17,10 +18,14 @@ import { areExecutionRunBackendTargetsEqual } from './backendTargets';
 import type { ExecutionRunHostRuntime } from './executionRunHostRuntime';
 import type { ExecutionRunPermissionRequestStoreProvider } from './executionRunPermissionResponseTarget';
 import type { ExecutionRunProfileContributionCatalog } from '@/agent/executionRuns/profiles/intentRegistry';
+import { isExecutionRunControllerCurrent, settleExecutionRunController } from './settleExecutionRunController';
 
 export async function ensureExecutionRun(args: Readonly<{
   runId: string;
-  params: Readonly<{ resume?: boolean }>;
+  params: Readonly<{
+    resume?: boolean;
+    causalPermissionAuthority?: SessionInputCausalPermissionAuthorityV1;
+  }>;
   runs: Map<string, ExecutionRunState>;
   controllers: Map<string, ExecutionRunController>;
   budgetRegistry: ExecutionBudgetRegistry | null;
@@ -29,6 +34,7 @@ export async function ensureExecutionRun(args: Readonly<{
     backendId: string;
     backendTarget?: BackendTargetRefV1;
     permissionMode: string;
+    causalPermissionAuthority?: SessionInputCausalPermissionAuthorityV1;
     modelId?: string;
     modelSelection?: ProviderBoundModelRef;
     sessionConfigOptionOverrides?: AcpConfigOptionOverridesV1;
@@ -51,6 +57,7 @@ export async function ensureExecutionRun(args: Readonly<{
   const wantsResume = args.params.resume === true;
   const ctrl = args.controllers.get(args.runId) ?? null;
   if (run.status === 'running' && ctrl) return { ok: true };
+  if (ctrl) return { ok: false, errorCode: 'execution_run_not_allowed', error: 'Resume already in progress' };
 
   if (!wantsResume) return { ok: false, errorCode: 'execution_run_not_allowed', error: 'Not running' };
   if (run.retentionPolicy !== 'resumable') return { ok: false, errorCode: 'execution_run_not_allowed', error: 'Not resumable' };
@@ -75,12 +82,54 @@ export async function ensureExecutionRun(args: Readonly<{
       return { ok: false, errorCode: 'execution_run_budget_exceeded', error: 'Execution run budget exceeded' };
     }
 
-    try {
-      let resolveTerminal!: () => void;
-      const terminalPromise = new Promise<void>((resolve) => {
-        resolveTerminal = resolve;
-      });
+    let resolveTerminal!: () => void;
+    const terminalPromise = new Promise<void>((resolve) => {
+      resolveTerminal = resolve;
+    });
+    const voiceCtrl: ExecutionRunVoiceAgentController = {
+      kind: 'voice_agent',
+      voiceAgentId: args.runId,
+      cancelled: false,
+      lastMarkerWriteAtMs: 0,
+      terminalPromise,
+      resolveTerminal,
+      transcript: config.transcript,
+      externalStreamIdByInternal: new Map(),
+      internalStreamIdByExternal: new Map(),
+      pendingTranscriptTurnByExternalStreamId: new Map(),
+      terminalReadByExternalStreamId: new Map(),
+      readInFlightByExternalStreamId: new Map(),
+    };
+    args.controllers.set(args.runId, voiceCtrl);
 
+    const isCurrentResumeOccurrence = (): boolean => (
+      args.runs.get(args.runId) === run
+      && isExecutionRunControllerCurrent({
+        runId: args.runId,
+        controller: voiceCtrl,
+        controllers: args.controllers,
+      })
+    );
+
+    const retireVoiceResumeOccurrence = async (): Promise<boolean> => {
+      const owned = isExecutionRunControllerCurrent({
+        runId: args.runId,
+        controller: voiceCtrl,
+        controllers: args.controllers,
+      });
+      if (owned) {
+        voiceCtrl.cancelled = true;
+        if (needsBudget) args.budgetRegistry?.releaseExecutionRun(args.runId);
+      }
+      await settleExecutionRunController({
+        runId: args.runId,
+        controller: voiceCtrl,
+        controllers: args.controllers,
+      });
+      return owned;
+    };
+
+    try {
       const startedVoice = await args.voiceAgentManager.start({
         voiceAgentId: args.runId,
         backendTarget: run.backendTarget,
@@ -122,25 +171,17 @@ export async function ensureExecutionRun(args: Readonly<{
             ...(modelSelection ? { modelSelection } : {}),
             ...(sessionConfigOptionOverrides ? { sessionConfigOptionOverrides } : {}),
             permissionMode: permissionIntent,
+            ...(args.params.causalPermissionAuthority
+              ? { causalPermissionAuthority: args.params.causalPermissionAuthority }
+              : {}),
             ...(connectedServices !== undefined ? { connectedServices } : {}),
           }),
       });
-
-      const voiceCtrl: ExecutionRunVoiceAgentController = {
-        kind: 'voice_agent',
-        voiceAgentId: startedVoice.voiceAgentId,
-        cancelled: false,
-        lastMarkerWriteAtMs: 0,
-        terminalPromise,
-        resolveTerminal,
-        transcript: config.transcript,
-        externalStreamIdByInternal: new Map(),
-        internalStreamIdByExternal: new Map(),
-        pendingTranscriptTurnByExternalStreamId: new Map(),
-        terminalReadByExternalStreamId: new Map(),
-        readInFlightByExternalStreamId: new Map(),
-      };
-      args.controllers.set(args.runId, voiceCtrl);
+      if (!isCurrentResumeOccurrence()) {
+        await args.voiceAgentManager.stop({ voiceAgentId: startedVoice.voiceAgentId }).catch(() => {});
+        await retireVoiceResumeOccurrence();
+        return { ok: false, errorCode: 'execution_run_not_allowed', error: 'Resume was superseded' };
+      }
 
       const nextResumeHandle = args.voiceAgentManager.getResumeHandle(startedVoice.voiceAgentId) ?? resumeHandle;
       args.runs.set(args.runId, {
@@ -155,9 +196,9 @@ export async function ensureExecutionRun(args: Readonly<{
       await args.writeActivityMarker(args.runId, args.getNowMs(), { force: true });
       args.onPublicStateUpdated?.(args.runId);
       return { ok: true };
-    } catch (e: any) {
-      if (needsBudget) args.budgetRegistry?.releaseExecutionRun(args.runId);
-      const message = e instanceof Error ? e.message : 'Resume failed';
+    } catch (error: unknown) {
+      await retireVoiceResumeOccurrence();
+      const message = error instanceof Error ? error.message : 'Resume failed';
       return { ok: false, errorCode: 'execution_run_not_allowed', error: message };
     }
   }
@@ -168,8 +209,15 @@ export async function ensureExecutionRun(args: Readonly<{
     runs: args.runs,
     controllers: args.controllers,
     budgetRegistry: args.budgetRegistry,
-    createRuntime: ({ backendId, backendTarget, permissionMode, accountSettings }) =>
-      args.createRuntime({ runId: args.runId, backendId, backendTarget, permissionMode, accountSettings }),
+    createRuntime: ({ backendId, backendTarget, permissionMode, causalPermissionAuthority, accountSettings }) =>
+      args.createRuntime({
+        runId: args.runId,
+        backendId,
+        backendTarget,
+        permissionMode,
+        ...(causalPermissionAuthority ? { causalPermissionAuthority } : {}),
+        accountSettings,
+      }),
     sendAcp: args.sendAcp,
     parentProvider: args.parentProvider,
     streamedTranscriptSession: args.streamedTranscriptSession,
@@ -177,6 +225,9 @@ export async function ensureExecutionRun(args: Readonly<{
     writeActivityMarker: args.writeActivityMarker,
     getNowMs: args.getNowMs,
     profileCatalog: args.profileCatalog,
+    ...(args.params.causalPermissionAuthority
+      ? { causalPermissionAuthority: args.params.causalPermissionAuthority }
+      : {}),
     ...(args.onPublicStateUpdated ? { onPublicStateUpdated: args.onPublicStateUpdated } : {}),
     requireReplayCapture: run.runClass === 'long_lived',
     onModelOutput: () => {

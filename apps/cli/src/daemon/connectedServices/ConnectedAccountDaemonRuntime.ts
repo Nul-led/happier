@@ -167,7 +167,7 @@ export function createConnectedAccountDaemonRuntime(params: Readonly<{
         generation: string;
         immutableGenerationId: string;
     }>): Promise<boolean> => {
-        const lease = params.reloadController.tryAcquireRuntimeRegistry?.() ?? null;
+        const lease = params.reloadController.tryAcquireRuntimeRegistry();
         if (!lease) return false;
         try {
             if (String(lease.registry.generation) !== input.generation) return false;
@@ -219,7 +219,7 @@ export function createConnectedAccountDaemonRuntime(params: Readonly<{
             }
         },
         async isCurrent(admission) {
-            const registryLease = params.reloadController.tryAcquireRuntimeRegistry?.() ?? null;
+            const registryLease = params.reloadController.tryAcquireRuntimeRegistry();
             if (!registryLease) return false;
             try {
                 // A currentness question is answered from the cold projection: the executable

@@ -68,7 +68,7 @@ type CoordinatorDeps = Readonly<{
     signal: AbortSignal;
   }>) => Promise<Readonly<{ type: 'success'; sessionId: string } | { type: 'error'; errorCode: string; errorMessage: string }>>;
   wait?: (signal: AbortSignal) => Promise<void>;
-  workspaceSyncAdapter?: WorkspaceSyncHandoffAdapter;
+  workspaceSyncAdapter: WorkspaceSyncHandoffAdapter;
   resolveWorkspaceTransferRoot?: typeof resolveWorkspaceTransferRootWithScmWorkspace;
   refreshWorkspaceSettings?: (input: Readonly<{
     credentials: StoredCredentials;
@@ -250,7 +250,7 @@ export function createTrackedSessionHandoffCoordinator(deps: CoordinatorDeps) {
     let sessionRelativeCwd = '';
     let sourceWorkspaceRootPath = source.sourceRootPath;
     let relationshipContentSelection: 'git_worktree' | 'all_files' | undefined;
-    if (workspaceAction && workspaceAction.kind !== 'none' && !daemonMaterializesEndpoints && deps.workspaceSyncAdapter) {
+    if (workspaceAction && workspaceAction.kind !== 'none' && !daemonMaterializesEndpoints) {
       const minSettingsVersion = typeof rawInput.workspaceSyncSettingsVersion === 'number'
         && Number.isSafeInteger(rawInput.workspaceSyncSettingsVersion)
         && rawInput.workspaceSyncSettingsVersion >= 0
@@ -432,7 +432,7 @@ export function createTrackedSessionHandoffCoordinator(deps: CoordinatorDeps) {
         return await rpc(machineId, RPC_METHODS.DAEMON_SESSION_HANDOFF_ABORT_V3, request);
       },
       publishOwnerUpdate: hostInput.publishOwnerUpdate,
-      ...(deps.workspaceSyncAdapter ? { workspaceSyncAdapter: deps.workspaceSyncAdapter } : {}),
+      workspaceSyncAdapter: deps.workspaceSyncAdapter,
       ...(deps.wait ? { wait: deps.wait } : {}),
     });
   };

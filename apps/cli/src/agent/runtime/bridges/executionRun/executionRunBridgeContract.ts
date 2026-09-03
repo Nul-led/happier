@@ -1,4 +1,8 @@
-import type { ExecutionRunListRequest, ExecutionRunPublicState } from '@happier-dev/protocol';
+import type {
+  ExecutionRunListRequest,
+  ExecutionRunPublicState,
+  SessionInputCausalPermissionAuthorityV1,
+} from '@happier-dev/protocol';
 
 import type {
   ExecutionRunActionParams,
@@ -41,13 +45,22 @@ export interface ExecutionRunHostBridgeContract {
   start(params: ExecutionRunManagerStartParams): Promise<ExecutionRunStartResult>;
   send(
     runId: string,
-    params: Readonly<{ message: string; resume?: boolean; delivery?: unknown }>,
+    params: Readonly<{
+      message: string;
+      resume?: boolean;
+      delivery?: unknown;
+      causalPermissionAuthority?: SessionInputCausalPermissionAuthorityV1;
+    }>,
   ): Promise<{ ok: boolean; errorCode?: string; error?: string }>;
-  ensure(runId: string, params: Readonly<{ resume?: boolean }>): Promise<{ ok: boolean; errorCode?: string; error?: string }>;
+  ensure(
+    runId: string,
+    params: Readonly<{ resume?: boolean; causalPermissionAuthority?: SessionInputCausalPermissionAuthorityV1 }>,
+  ): Promise<{ ok: boolean; errorCode?: string; error?: string }>;
   ensureOrStart(params: Readonly<{
     runId?: string | null;
     start?: ExecutionRunManagerStartParams;
     resume?: boolean;
+    causalPermissionAuthority?: SessionInputCausalPermissionAuthorityV1;
   }>): Promise<
     | { ok: true; runId: string; created: boolean }
     | { ok: false; errorCode?: string; error: string }
@@ -59,6 +72,7 @@ export interface ExecutionRunHostBridgeContract {
       displayMessage?: string;
       resume?: boolean;
       userTranscript?: ExecutionRunUserTranscriptDirective;
+      causalPermissionAuthority?: SessionInputCausalPermissionAuthorityV1;
     }>,
   ): Promise<{ ok: true; streamId: string } | { ok: false; errorCode: string; error: string }>;
   readTurnStream(
@@ -86,5 +100,12 @@ export interface ExecutionRunHostBridgeContract {
       responseTarget?: ExecutionRunParentSessionPermissionResponseTarget | null;
     }>,
   ): Promise<ExecutionRunPermissionResponseBridgeResult>;
-  applyAction(runId: string, params: ExecutionRunActionParams): Promise<ExecutionRunActionResult>;
+  applyAction(
+    runId: string,
+    params: ExecutionRunActionParams,
+    opts?: Readonly<{
+      causalPermissionAuthority?: SessionInputCausalPermissionAuthorityV1;
+      effectiveCallerPermissionMode?: string;
+    }>,
+  ): Promise<ExecutionRunActionResult>;
 }

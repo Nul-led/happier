@@ -3,6 +3,7 @@ import type { ExecutionRunControllerFailureSignal } from './failureSignal';
 import type { ExecutionRunHostRuntime } from '@/agent/runtime/bridges/executionRun/executionRunHostRuntime';
 import type { StreamedTranscriptWriter } from '@/api/session/streamedTranscriptWriter';
 import type { VoiceAgentTurnStreamReadResult } from '@/agent/voice/agent/voiceAgentTypes';
+import type { SessionInputCausalPermissionAuthorityV1 } from '@happier-dev/protocol';
 
 export type PendingVoiceAgentTranscriptTurn = {
   mode: 'legacy_pair' | 'assistant_only';
@@ -21,6 +22,7 @@ export type ExecutionRunSendDelivery = 'prompt' | 'steer_if_supported' | 'interr
 export type ExecutionRunExternalMessage = Readonly<{
   message: string;
   delivery: ExecutionRunSendDelivery;
+  causalPermissionAuthority?: SessionInputCausalPermissionAuthorityV1;
   authorizeProviderEffect?: () => Promise<void>;
   resolve: () => void;
   reject: (e: Error) => void;
@@ -39,7 +41,7 @@ export type ExecutionRunBackendController = {
   turnCount: number;
   turnEpoch: number;
   turnInFlight: boolean;
-  turnCancelReason: 'steer' | 'stop' | 'timeout' | null;
+  turnCancelReason: 'steer' | 'stop' | 'timeout' | 'outcome_unknown' | null;
   turnCancelEpoch: number | null;
   pendingExternalMessages: ExecutionRunExternalMessage[];
   pendingExternalMessagesSignal: { promise: Promise<void>; resolve: () => void } | null;

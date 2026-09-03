@@ -70,6 +70,19 @@ vi.mock('./pendingQueueV2Transport', async (importOriginal) => {
   };
 });
 
+function createTranscriptLookupHttpError(params: {
+  message: string;
+  status?: number;
+  data?: unknown;
+  code?: string;
+}): Error {
+  return Object.assign(new Error(params.message), {
+    isAxiosError: true,
+    ...(params.status !== undefined ? { response: { status: params.status, data: params.data } } : {}),
+    ...(params.code ? { code: params.code } : {}),
+  });
+}
+
 describe('ApiSessionClient provider-input settlement', () => {
   afterEach(() => {
     vi.useRealTimers();
@@ -646,6 +659,11 @@ describe('ApiSessionClient provider-input settlement', () => {
     sessionSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
     userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
     const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
+    vi.spyOn(axios, 'get').mockRejectedValue(createTranscriptLookupHttpError({
+      message: 'Message not found',
+      status: 404,
+      data: { error: 'Message not found' },
+    }));
 
     // Only a status that proves no provider effect is classified as not accepted.
     listDeliveryStatusesMock.mockResolvedValueOnce([
@@ -728,9 +746,10 @@ describe('ApiSessionClient provider-input settlement', () => {
       .resolves.toBe('accepted');
     expect(listDeliveryStatusesMock).not.toHaveBeenCalled();
 
-    const notFound = Object.assign(new Error('Message not found'), {
-      isAxiosError: true,
-      response: { status: 404, data: { error: 'Message not found' } },
+    const notFound = createTranscriptLookupHttpError({
+      message: 'Message not found',
+      status: 404,
+      data: { error: 'Message not found' },
     });
     transcriptGet.mockRejectedValueOnce(notFound);
     listDeliveryStatusesMock.mockResolvedValueOnce([
@@ -749,12 +768,13 @@ describe('ApiSessionClient provider-input settlement', () => {
   });
 
   it.each([
-    ['auth failure', Object.assign(new Error('unauthorized'), {
-      isAxiosError: true,
-      response: { status: 401, data: { error: 'Unauthorized' } },
+    ['auth failure', createTranscriptLookupHttpError({
+      message: 'unauthorized',
+      status: 401,
+      data: { error: 'Unauthorized' },
     })],
-    ['unhealthy lookup', Object.assign(new Error('connection reset'), {
-      isAxiosError: true,
+    ['unhealthy lookup', createTranscriptLookupHttpError({
+      message: 'connection reset',
       code: 'ECONNRESET',
     })],
   ])('keeps durable provider-input acceptance unknown on %s', async (_label, lookupError) => {
@@ -770,14 +790,35 @@ describe('ApiSessionClient provider-input settlement', () => {
     await client.close();
   });
 
-  it('keeps durable provider-input acceptance unknown on an invalid exact lookup response', async () => {
+  it('keeps durable provider-input acceptance unknown on mismatched or invalid exact lookup responses', async () => {
     sessionSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
     userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
     const client = new ApiSessionClient('tok', createPlainSessionFixture({ id: 's1' }));
-    vi.spyOn(axios, 'get').mockResolvedValueOnce({
-      status: 200,
-      data: { message: { id: 'malformed' } },
-    } as never);
+    vi.spyOn(axios, 'get')
+      .mockResolvedValueOnce({
+        status: 200,
+        data: {
+          message: {
+            id: 'wrong-message',
+            seq: 42,
+            localId: 'another-local-id',
+            sidechainId: null,
+            createdAt: 100,
+            updatedAt: 101,
+            content: {
+              t: 'plain',
+              v: { role: 'user', content: { type: 'text', text: 'another prompt' } },
+            },
+          },
+        },
+      } as never)
+      .mockResolvedValueOnce({
+        status: 200,
+        data: { message: { id: 'malformed' } },
+      } as never);
+
+    await expect(client.readDurableProviderInputAcceptanceV1('lookup-mismatched'))
+      .resolves.toBe('unknown');
 
     await expect(client.readDurableProviderInputAcceptanceV1('lookup-malformed'))
       .resolves.toBe('unknown');
