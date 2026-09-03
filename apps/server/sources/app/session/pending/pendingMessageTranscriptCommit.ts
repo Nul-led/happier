@@ -154,20 +154,34 @@ export async function createSessionMessageFromPending(tx: Tx, params: {
             return { ok: false, error: "transcript-conflict", conflict: "message-role" };
         }
 
+        // A provider-written transcript anchor predating settlement carries no
+        // host admission identity. An absent identity is compatible with the
+        // incoming admission and is backfilled below, so the joined row
+        // converges to the same settled shape the insert path persists; a
+        // present-but-different identity means another message already owns
+        // this localId and stays a conflict.
+        const existingInputAdmissionReceipt = existing.inputAdmissionReceipt == null
+            ? null
+            : SessionInputAdmissionReceiptV1Schema.safeParse(existing.inputAdmissionReceipt);
         if (
             inputAdmissionReceipt !== undefined
+            && existingInputAdmissionReceipt !== null
             && (
-                !SessionInputAdmissionReceiptV1Schema.safeParse(existing.inputAdmissionReceipt).success
-                || !isDeepStrictEqual(existing.inputAdmissionReceipt, inputAdmissionReceipt.data)
+                !existingInputAdmissionReceipt.success
+                || !isDeepStrictEqual(existingInputAdmissionReceipt.data, inputAdmissionReceipt.data)
             )
         ) {
             return { ok: false, error: "transcript-conflict", conflict: "input-admission" };
         }
+        const existingRequestEqualityEvidenceV1 = existing.requestEqualityEvidenceV1 == null
+            ? null
+            : SessionInputRequestEqualityEvidenceV1Schema.safeParse(existing.requestEqualityEvidenceV1);
         if (
             effectiveRequestEqualityEvidenceV1 !== undefined
+            && existingRequestEqualityEvidenceV1 !== null
             && (
-                !SessionInputRequestEqualityEvidenceV1Schema.safeParse(existing.requestEqualityEvidenceV1).success
-                || !isDeepStrictEqual(existing.requestEqualityEvidenceV1, effectiveRequestEqualityEvidenceV1)
+                !existingRequestEqualityEvidenceV1.success
+                || !isDeepStrictEqual(existingRequestEqualityEvidenceV1.data, effectiveRequestEqualityEvidenceV1)
             )
         ) {
             return { ok: false, error: "transcript-conflict", conflict: "input-admission" };
@@ -187,19 +201,28 @@ export async function createSessionMessageFromPending(tx: Tx, params: {
 
         const needsRoleUpdate = compatibility.backfillsRole;
         const needsDeliveryResolutionUpdate = params.deliveryResolution !== undefined && existingDeliveryResolution === null;
-        const row = needsRoleUpdate || needsDeliveryResolutionUpdate
+        const needsAdmissionIdentityBackfill =
+            inputAdmissionReceipt !== undefined && existing.inputAdmissionReceipt == null
+            || effectiveRequestEqualityEvidenceV1 !== undefined && existing.requestEqualityEvidenceV1 == null;
+        const row = needsRoleUpdate || needsDeliveryResolutionUpdate || needsAdmissionIdentityBackfill
             ? await tx.sessionMessage.update({
                 where: { id: existing.id },
                 data: {
                     ...(needsRoleUpdate ? { messageRole } : {}),
                     ...(needsDeliveryResolutionUpdate ? { deliveryResolution: params.deliveryResolution } : {}),
+                    ...(inputAdmissionReceipt !== undefined && existing.inputAdmissionReceipt == null
+                        ? { inputAdmissionReceipt: inputAdmissionReceipt.data }
+                        : {}),
+                    ...(effectiveRequestEqualityEvidenceV1 !== undefined && existing.requestEqualityEvidenceV1 == null
+                        ? { requestEqualityEvidenceV1: effectiveRequestEqualityEvidenceV1 }
+                        : {}),
                     rowRevision: { increment: BigInt(1) },
                 },
                 select: { id: true, seq: true, localId: true, messageRole: true, content: true, deliveryResolution: true, createdAt: true, updatedAt: true },
             })
             : existing;
 
-        if (needsRoleUpdate || needsDeliveryResolutionUpdate) {
+        if (needsRoleUpdate || needsDeliveryResolutionUpdate || needsAdmissionIdentityBackfill) {
             notifySessionTranscriptMutationAfterCommit(tx, {
                 kind: 'upsert',
                 message: {
@@ -217,7 +240,7 @@ export async function createSessionMessageFromPending(tx: Tx, params: {
         return {
             ok: true,
             didWrite: false,
-            didUpdate: needsRoleUpdate || needsDeliveryResolutionUpdate,
+            didUpdate: needsRoleUpdate || needsDeliveryResolutionUpdate || needsAdmissionIdentityBackfill,
             message: {
                 id: row.id,
                 seq: row.seq,

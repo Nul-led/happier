@@ -10,6 +10,7 @@ import type { CurrentSessionRunnerProcessIdentity } from '@/sync/domains/models/
 import type { ResumeSessionOptions, ResumeSessionResult } from '@/sync/ops/sessions';
 import type {
     PendingRequestedActionV1,
+    SessionInactiveResumePolicy,
     SessionInputAdmissionRejectionCodeV1,
 } from '@happier-dev/protocol';
 
@@ -88,6 +89,8 @@ export type SubmitSessionUserMessageOptions = Readonly<{
     metaOverrides?: Record<string, unknown>;
     configuredMode: MessageSendMode;
     busySteerSendPolicy?: BusySteerSendPolicy;
+    /** How ordinary input may resume an inactive/offline runtime. */
+    sessionInactiveResumePolicy?: SessionInactiveResumePolicy;
     explicitMode?: MessageSendMode;
     forceImmediate?: boolean;
     /** Action explicitly selected for an already-durable row. */
@@ -172,6 +175,13 @@ export interface SessionSubmitPort {
         }>,
     ): Promise<DirectMessageSubmitResult>;
     ensureSessionRuntimeForPendingInput(options: ResumeSessionOptions): Promise<ResumeSessionResult>;
+    shouldDelegatePendingActivationToDaemon?(
+        session: Session,
+        serverId?: string | null,
+        machineId?: string | null,
+    ): Promise<boolean>;
+    /** Current reachability of the exact resume target; used only for a user-present one-shot attempt. */
+    isMachineReachable?(machineId: string): boolean;
     refreshSessionForSubmit?(
         sessionId: string,
         options?: Readonly<{ serverId?: string | null }>,

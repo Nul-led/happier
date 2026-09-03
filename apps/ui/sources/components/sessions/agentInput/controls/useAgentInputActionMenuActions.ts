@@ -13,6 +13,7 @@ export function useAgentInputActionMenuActions(params: Readonly<{
     hasAnyActions: boolean;
     tint: string;
     agentId: string;
+    agentIdentityIcon?: React.ReactNode;
     profileLabel: string | null;
     profileIcon: IconName;
     envVarsCount?: number;
@@ -57,6 +58,7 @@ export function useAgentInputActionMenuActions(params: Readonly<{
             hasAnyActions: params.hasAnyActions,
             tint: params.tint,
             agentId: params.agentId,
+            agentIdentityIcon: params.agentIdentityIcon,
             profileLabel: params.profileLabel,
             profileIcon: params.profileIcon,
             envVarsCount: params.envVarsCount,
@@ -85,6 +87,7 @@ export function useAgentInputActionMenuActions(params: Readonly<{
         params.actionBarIsCollapsed,
         params.actionMenuAnchorRef,
         params.agentId,
+        params.agentIdentityIcon,
         params.agentLabel,
         params.engineLabel,
         params.blurInput,

@@ -194,4 +194,16 @@ describe('createSyncSocketTransport', () => {
             expect.objectContaining({ intentional: false }),
         );
     });
+
+    it('leaves Engine.IO transport selection alone when no websocket implementation is injected', async () => {
+        vi.resetModules();
+        const socket = createSocketStub();
+        const ioSpy = vi.fn(() => socket);
+        vi.doMock('socket.io-client', () => ({ io: ioSpy }));
+
+        const { createSyncSocketTransport } = await import('./createSyncSocketTransport');
+        createSyncSocketTransport({ endpoint: 'https://api.example.test', token: 'token-a' });
+
+        expect(ioSpy.mock.calls[0]?.[1]).not.toHaveProperty('transports');
+    });
 });

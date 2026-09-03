@@ -8,7 +8,6 @@ import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList, ItemListStatic } from '@/components/ui/lists/ItemList';
 import { Text } from '@/components/ui/text/Text';
 import { t } from '@/text';
-import { useSettings } from '@/sync/domains/state/storage';
 import { useHomeViewSelectionSettings } from '@/hooks/server/useHomeViewSelectionSettings';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { listServerProfiles, resolveServerProfileScopeId } from '@/sync/domains/server/serverProfiles';
@@ -119,12 +118,11 @@ export function NewSessionServerSelectionContent(props: NewSessionServerSelectio
         return pickNewSessionRouteParams(params);
     }, [params]);
     const pickerFallbackHref = React.useMemo(() => buildNewSessionPickerFallbackHref(params), [params]);
-    const accountSettings = useSettings();
     const {
         serverSelectionGroups,
         serverSelectionActiveTargetKind,
         serverSelectionActiveTargetId,
-    } = useHomeViewSelectionSettings(accountSettings);
+    } = useHomeViewSelectionSettings();
 
     const activeServer = getActiveServerSnapshot();
     const serverProfiles = React.useMemo(() => {

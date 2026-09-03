@@ -810,6 +810,7 @@ export type SessionTranscriptPublicationPendingProjection = Readonly<{
     changedByAccountId?: string;
     meaningfulActivityAt?: Date | number;
     pendingActivationRequestId?: string;
+    pendingActivationAuthorization?: import('@happier-dev/protocol').PendingActivationAuthorizationV1 | null;
 }>;
 
 /**

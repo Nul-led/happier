@@ -317,6 +317,7 @@ function buildPendingOutboxProjection(
             createdAt: row.createdAt,
             updatedAt: row.createdAt,
             source: 'local_outbound',
+            messageRole: 'user',
             deliveryStatus: 'accepted',
             pendingOutboxScope: outboxScope,
             pendingDeliveryStatus: 'blocked',
@@ -344,6 +345,7 @@ function buildPendingOutboxProjection(
         createdAt: row.createdAt,
         updatedAt: row.createdAt,
         source: 'local_outbound',
+        messageRole: 'user',
         deliveryStatus: 'queued',
         pendingOutboxScope: outboxScope,
         pendingOutboxOperation: row.operation === 'cancel' ? 'cancel' : 'enqueue',
@@ -811,6 +813,7 @@ function withPendingDeliveryState<T extends PendingMessage>(row: PendingRow, mes
             : null;
     return {
         ...message,
+        messageRole: row.messageRole,
         pendingDeliveryStatus,
         ...(row.deliveryStatus.status === 'delivering' && row.deliveryStatus.detail
             ? { pendingDeliveryDetail: row.deliveryStatus.detail }

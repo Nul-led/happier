@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { type Fastify } from "../../types";
-import { buildMessageUpdatedUpdate, buildNewMessageUpdate, buildPendingChangedUpdate, eventRouter } from "@/app/events/eventRouter";
+import { buildMessageUpdatedUpdate, buildNewMessageUpdate, eventRouter } from "@/app/events/eventRouter";
 import { refreshSessionParticipantBadgePushes } from "@/app/activity/refreshAccountActivityBadgePushes";
 import { serializePendingMaterializedMessage } from "@/app/session/pending/serializePendingMaterializedMessage";
 import {
@@ -10,6 +10,7 @@ import {
     enqueuePendingMessage,
     listPendingMessages,
     blockPendingDelivery,
+    markPendingActivationFailed,
     markPendingDeliveryHandled,
     reorderPendingMessages,
     sendPendingDeliveryAsNew,
@@ -27,13 +28,13 @@ import {
     PendingLocalIdSchema,
     PendingMessageMutationFingerprintV1Schema,
     PendingRequestedActionV1Schema,
+    PendingActivationFailureRequestV1Schema,
     SessionStoredMessageContentSchema,
 } from "@happier-dev/protocol";
 import { resolveApiHotEndpointRateLimit } from "@/app/api/utils/apiRateLimitCatalog";
 import {
-    loadSessionTranscriptPublicationRecipientProjection,
-    projectSessionTranscriptPublicationPendingProjection,
-} from "@/app/session/sessionTranscriptPublicationPolicy";
+    emitPendingChanged,
+} from "@/app/session/pending/publishPendingMutation";
 
 type SessionStoredMessageContent = z.infer<typeof SessionStoredMessageContentSchema>;
 
@@ -70,88 +71,6 @@ function toPendingStateJson(value: { pendingCount: number; pendingBlockedCount?:
         ...(typeof value.pendingBlockedCount === "number" ? { pendingBlockedCount: value.pendingBlockedCount } : {}),
         pendingVersion: value.pendingVersion,
     };
-}
-
-async function emitPendingChanged(params: {
-    sessionId: string;
-    changedByAccountId: string;
-    pendingCount: number;
-    pendingBlockedCount?: number;
-    pendingVersion: number;
-    meaningfulActivityAt?: Date;
-    participantCursors: Array<{ accountId: string; cursor: number }>;
-    activationTarget?: Readonly<{ accountId: string; requestId: string }>;
-}): Promise<void> {
-    const rawProjection = {
-        pendingCount: params.pendingCount,
-        ...(typeof params.pendingBlockedCount === "number" ? { pendingBlockedCount: params.pendingBlockedCount } : {}),
-        pendingVersion: params.pendingVersion,
-        changedByAccountId: params.changedByAccountId,
-        ...(params.meaningfulActivityAt ? { meaningfulActivityAt: params.meaningfulActivityAt } : {}),
-        ...(params.activationTarget
-            ? { pendingActivationRequestId: params.activationTarget.requestId }
-            : {}),
-    };
-    const session = await loadSessionTranscriptPublicationRecipientProjection(params.sessionId);
-    if (!session) return;
-    const results = await Promise.allSettled(
-        params.participantCursors.map(async ({ accountId, cursor }) => {
-            const projection = projectSessionTranscriptPublicationPendingProjection(
-                rawProjection,
-                session,
-                accountId,
-            );
-            if (projection.kind === "suppress") return;
-            const payload = buildPendingChangedUpdate(
-                {
-                    sessionId: params.sessionId,
-                    ...projection.value,
-                },
-                cursor,
-                randomKeyNaked(12),
-            );
-            eventRouter.emitUpdate({
-                userId: accountId,
-                payload,
-                recipientFilter: { type: "all-interested-in-session", sessionId: params.sessionId },
-            });
-        }),
-    );
-    results.forEach((result, index) => {
-        if (result.status === "fulfilled") return;
-        const accountId = params.participantCursors[index]?.accountId ?? "unknown";
-        log(
-            { module: "session-pending-routes", level: "warn", sessionId: params.sessionId, accountId },
-            "failed to emit pending-changed update",
-            result.reason,
-        );
-    });
-    if (params.activationTarget) {
-        const ownerCursor = params.participantCursors.find(
-            ({ accountId }) => accountId === params.activationTarget!.accountId,
-        )?.cursor;
-        if (typeof ownerCursor === "number") {
-            const projection = projectSessionTranscriptPublicationPendingProjection(
-                rawProjection,
-                session,
-                params.activationTarget.accountId,
-            );
-            if (projection.kind === "suppress") return;
-            const payload = buildPendingChangedUpdate(
-                {
-                    sessionId: params.sessionId,
-                    ...projection.value,
-                },
-                ownerCursor,
-                randomKeyNaked(12),
-            );
-            eventRouter.emitUpdate({
-                userId: params.activationTarget.accountId,
-                payload,
-                recipientFilter: { type: "user-machine-scoped-only" },
-            });
-        }
-    }
 }
 
 async function emitCommittedPendingDeliveryMessage(params: {
@@ -431,9 +350,50 @@ export function sessionPendingRoutes(app: Fastify) {
                     pendingBlockedCount: res.pendingBlockedCount,
                     pendingVersion: res.pendingVersion,
                     participantCursors: res.participantCursors,
+                    ...(res.activationTarget ? { activationTarget: res.activationTarget } : {}),
                 });
             }
             return reply.send({ ok: true, didUpdate: res.didUpdate, requestedAction: res.requestedAction, ...toPendingStateJson(res) });
+        },
+    );
+
+    app.post(
+        "/v2/sessions/:sessionId/pending/activation/fail",
+        {
+            preHandler: app.authenticate,
+            schema: {
+                params: z.object({ sessionId: z.string() }),
+                body: PendingActivationFailureRequestV1Schema,
+            },
+            config: {
+                rateLimit: resolveApiHotEndpointRateLimit(process.env, "session.pending"),
+            },
+        },
+        async (request, reply) => {
+            const res = await markPendingActivationFailed({
+                actorUserId: request.userId,
+                sessionId: request.params.sessionId,
+                requestId: request.body.requestId,
+                requestedAt: request.body.requestedAt,
+                failureCode: request.body.failureCode,
+            });
+            if (!res.ok) {
+                if (res.error === "invalid-params") return reply.code(400).send({ error: res.error });
+                if (res.error === "forbidden") return reply.code(403).send({ error: res.error });
+                if (res.error === "session-not-found") return reply.code(404).send({ error: res.error });
+                return reply.code(500).send({ error: res.error });
+            }
+            if (res.didFail) {
+                await emitPendingChanged({
+                    sessionId: request.params.sessionId,
+                    changedByAccountId: request.userId,
+                    pendingCount: res.pendingCount,
+                    pendingBlockedCount: res.pendingBlockedCount,
+                    pendingVersion: res.pendingVersion,
+                    participantCursors: res.participantCursors,
+                });
+            }
+            return reply.send({ ok: true, didFail: res.didFail });
         },
     );
 

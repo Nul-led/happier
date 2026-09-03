@@ -19,6 +19,7 @@ const AGENT_CHIP_LOGO_SLOT_STYLE = {
 export function createAgentSelectionActionChip(params: Readonly<{
     anchorRef: React.RefObject<ViewInstance | null>;
     agentId: string;
+    agentIdentityIcon?: React.ReactNode;
     tint: string;
     showLabel: boolean;
     label: string;
@@ -54,7 +55,7 @@ export function createAgentSelectionActionChip(params: Readonly<{
         >
             <View style={AGENT_CHIP_LOGO_SLOT_STYLE}>
                 {normalizeNodeForView(
-                    <AgentIcon
+                    params.agentIdentityIcon ?? <AgentIcon
                         agentId={params.agentId}
                         size={AGENT_CHIP_LOGO_SIZE}
                         color={params.tint}

@@ -95,6 +95,7 @@ import {
     type SessionLifecycleAdmissionResult,
 } from "@/app/automations/automationSessionLifecycleAdmission";
 import { rejoinAutomationOccurrenceInsertRace } from "@/app/automations/automationOccurrencePersistence";
+import { producesAutomationSessionLifecycleOccurrence } from "@/app/automations/automationSessionLifecycleTerminalTruth";
 import { notifySessionTranscriptMutationAfterCommit } from './sessionTranscriptMutationObserver';
 
 export {
@@ -114,13 +115,14 @@ function scheduleSessionLifecycleAdmissionDiagnostics(params: Readonly<{
     sourceTurnId: string;
 }>): void {
     for (const admission of params.admissions) {
-        if (admission.result.kind !== "ineligible") continue;
+        const result = admission.result;
+        if (result.kind !== "ineligible") continue;
         afterTx(params.tx, () => {
             warn(
                 {
                     module: "session-write",
                     event: "automation_session_lifecycle_admission_ineligible",
-                    reason: admission.result.reason,
+                    reason: result.reason,
                     triggerId: admission.triggerId,
                     accountId: params.accountId,
                     sourceSessionId: params.sourceSessionId,
@@ -2452,6 +2454,20 @@ export async function updateSessionAgentState(params: {
                 return { ok: false, error: access.error };
             }
 
+            // An attention occurrence makes this the canonical Automation
+            // admission transaction, so it takes the same existing Account
+            // transition fence terminal settlement takes, in the same order:
+            // before the AgentState row it settles can change.
+            if (parsedUserActionRequiredOccurrences.data.length > 0) {
+                const accountFence = await acquireAccountEncryptionTransitionFenceInTx(
+                    tx,
+                    access.sessionOwnerId,
+                );
+                if (accountFence.status !== "ready") {
+                    return { ok: false, error: "internal" };
+                }
+            }
+
             const session = await tx.session.findUnique({
                 where: { id: sessionId },
                 select: {
@@ -2482,6 +2498,28 @@ export async function updateSessionAgentState(params: {
                 };
             }
 
+            // Canonical turn settlement zeroes this projection because a
+            // finished turn has no request awaiting the user. An Agent-state
+            // write that was formed before that settlement and serialized
+            // after it still carries the pre-terminal snapshot, so the terminal
+            // decision wins here too rather than relighting attention for a
+            // turn that is over.
+            const parentTurnIsTerminal = isTerminalPrimaryTurnStatus(
+                parseStoredPrimaryTurnStatus(session.latestTurnStatus),
+            );
+            const settledPendingPermissionRequestCount =
+                typeof pendingPermissionRequestCount === "number" && parentTurnIsTerminal
+                    ? 0
+                    : pendingPermissionRequestCount;
+            const settledPendingUserActionRequestCount =
+                typeof pendingUserActionRequestCount === "number" && parentTurnIsTerminal
+                    ? 0
+                    : pendingUserActionRequestCount;
+            const settledPendingRequestObservedAt =
+                pendingRequestObservedAt !== undefined && parentTurnIsTerminal
+                    ? null
+                    : pendingRequestObservedAt;
+
             const { count } = await tx.session.updateMany({
                 where: {
                     id: sessionId,
@@ -2492,18 +2530,18 @@ export async function updateSessionAgentState(params: {
                 data: {
                     agentState: agentStateCiphertext,
                     agentStateVersion: expectedVersion + 1,
-                    ...(typeof pendingPermissionRequestCount === "number"
-                        ? { pendingPermissionRequestCount }
+                    ...(typeof settledPendingPermissionRequestCount === "number"
+                        ? { pendingPermissionRequestCount: settledPendingPermissionRequestCount }
                         : {}),
-                    ...(typeof pendingUserActionRequestCount === "number"
-                        ? { pendingUserActionRequestCount }
+                    ...(typeof settledPendingUserActionRequestCount === "number"
+                        ? { pendingUserActionRequestCount: settledPendingUserActionRequestCount }
                         : {}),
-                    ...(pendingRequestObservedAt !== undefined
+                    ...(settledPendingRequestObservedAt !== undefined
                         ? {
                             pendingRequestObservedAt:
-                                pendingRequestObservedAt === null
+                                settledPendingRequestObservedAt === null
                                     ? null
-                                    : new Date(pendingRequestObservedAt),
+                                    : new Date(settledPendingRequestObservedAt),
                         }
                         : {}),
                 },
@@ -2574,14 +2612,14 @@ export async function updateSessionAgentState(params: {
                 toSessionActivityBadgeInputs(session),
                 {
                     ...toSessionActivityBadgeInputs(session),
-                    ...(typeof pendingPermissionRequestCount === "number"
-                        ? { pendingPermissionRequestCount }
+                    ...(typeof settledPendingPermissionRequestCount === "number"
+                        ? { pendingPermissionRequestCount: settledPendingPermissionRequestCount }
                         : {}),
-                    ...(typeof pendingUserActionRequestCount === "number"
-                        ? { pendingUserActionRequestCount }
+                    ...(typeof settledPendingUserActionRequestCount === "number"
+                        ? { pendingUserActionRequestCount: settledPendingUserActionRequestCount }
                         : {}),
-                    ...(pendingRequestObservedAt !== undefined
-                        ? { pendingRequestObservedAt }
+                    ...(settledPendingRequestObservedAt !== undefined
+                        ? { pendingRequestObservedAt: settledPendingRequestObservedAt }
                         : {}),
                 },
             );
@@ -2591,14 +2629,14 @@ export async function updateSessionAgentState(params: {
                 agentState: agentStateCiphertext,
                 participantCursors,
                 badgeAttentionChanged,
-                ...(typeof pendingPermissionRequestCount === "number"
-                    ? { pendingPermissionRequestCount }
+                ...(typeof settledPendingPermissionRequestCount === "number"
+                    ? { pendingPermissionRequestCount: settledPendingPermissionRequestCount }
                     : {}),
-                ...(typeof pendingUserActionRequestCount === "number"
-                    ? { pendingUserActionRequestCount }
+                ...(typeof settledPendingUserActionRequestCount === "number"
+                    ? { pendingUserActionRequestCount: settledPendingUserActionRequestCount }
                     : {}),
-                ...(pendingRequestObservedAt !== undefined
-                    ? { pendingRequestObservedAt }
+                ...(settledPendingRequestObservedAt !== undefined
+                    ? { pendingRequestObservedAt: settledPendingRequestObservedAt }
                     : {}),
             };
         });
@@ -3232,12 +3270,13 @@ async function applySessionTurnMutationWithOwnerAccessInTx(params: {
             });
         }
 
-        // Completion is also the canonical exact-turn Automation admission
-        // transaction. Take the existing Account transition fence before a
-        // new mutation receipt or SessionTurn can be changed so a non-current
-        // Account cannot commit the turn without its eligible Run. A committed
-        // mutation receipt remains independently replayable above.
-        if (params.turnMutation.action === "complete") {
+        // Every terminal settlement is a canonical exact-turn Automation
+        // admission transaction, not completion alone. Take the existing
+        // Account transition fence before a new mutation receipt or
+        // SessionTurn can be changed so a non-current Account cannot commit
+        // the turn without its eligible Run. A committed mutation receipt
+        // remains independently replayable above.
+        if (resolveSessionTurnTerminalStatus(params.turnMutation) !== null) {
             const accountFence = await acquireAccountEncryptionTransitionFenceInTx(
                 tx,
                 writeAuthority.accountId,
@@ -3602,7 +3641,11 @@ async function applySessionTurnMutationWithOwnerAccess(params: {
             markParticipants: true,
         }),
     );
-    return params.turnMutation.action === "complete"
+    // Failure, cancellation, and end-of-session settle lifecycle occurrences
+    // exactly like completion, so they need the same occurrence-uniqueness
+    // restart. Only this caller owns its transaction; the composed in-caller
+    // form cannot restart someone else's transaction and is excluded.
+    return producesAutomationSessionLifecycleOccurrence(params.turnMutation.action)
         ? await rejoinAutomationOccurrenceInsertRace(operation)
         : await operation();
 }

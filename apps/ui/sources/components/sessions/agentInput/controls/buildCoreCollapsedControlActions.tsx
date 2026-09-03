@@ -24,6 +24,7 @@ function resolveAgentDisplayLabel<T extends string | null | undefined>(agentId: 
 export function buildCoreCollapsedControlActions(opts: Readonly<{
     tint: string;
     agentId: string;
+    agentIdentityIcon?: React.ReactNode;
     profileLabel: string | null;
     profileIcon: IconName;
     envVarsCount?: number;
@@ -85,7 +86,7 @@ export function buildCoreCollapsedControlActions(opts: Readonly<{
         controlActionsById.engine = [{
             id: 'agent',
             label: resolvedEngineLabel,
-            icon: (
+            icon: opts.agentIdentityIcon ?? (
                 <AgentIcon
                     agentId={opts.agentId}
                     size={16}

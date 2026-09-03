@@ -5,7 +5,11 @@ import {
     CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION,
     buildAccountStoredContentCompatibilitySocketAuthV1,
 } from '@happier-dev/protocol';
-import { resolveSocketIoTransportsForCarrier } from '@/sync/runtime/socketIoTransports';
+import {
+    resolveSocketIoTransportsForCarrier,
+    resolveSocketIoTransportsForHomeCarrier,
+} from '@/sync/runtime/socketIoTransports';
+import type { HomeCarrierWebSocketFactory } from '@/sync/runtime/homeCarrier';
 
 type SyncSocket = Socket;
 
@@ -18,17 +22,30 @@ function isAlreadyDisconnectedSocketError(error: unknown): boolean {
     return error.message.toLowerCase().includes('socket has been disconnected');
 }
 
+/**
+ * Engine.IO's `createSocket` contract: given the URI Engine.IO wants to reach,
+ * return a `WebSocket`-like object. A carrier that owns its own byte transport —
+ * today only the relay-only browser Iroh Home carrier, which cannot point the
+ * platform WebSocket at an Iroh stream — supplies one. Nothing here selects a
+ * carrier: without this parameter, Engine.IO's own transport selection and the
+ * default HTTPS/native semantics are untouched.
+ */
+export type SyncSocketWebSocketFactory = HomeCarrierWebSocketFactory;
+
 export function createSyncSocketTransport(params: Readonly<{
     endpoint: string;
     token: string;
     transports?: string[];
     carrier?: 'https' | 'iroh';
+    websocketFactory?: SyncSocketWebSocketFactory;
 }>): Readonly<{
     socket: SyncSocket;
     transport: ManagedConnectionTransport;
 }> {
     const endpoint = String(params.endpoint ?? '').trim().replace(/\/+$/, '');
-    const transports = resolveSocketIoTransportsForCarrier(params.carrier, params.transports);
+    const transports = params.websocketFactory
+        ? resolveSocketIoTransportsForHomeCarrier(params.websocketFactory)
+        : resolveSocketIoTransportsForCarrier(params.carrier, params.transports);
     const socket = io(endpoint, {
         // Socket.IO mounts on an Engine.IO endpoint that expects a trailing slash on the wire
         // (`/v1/updates/?EIO=...`). Some browser environments can otherwise surface this as

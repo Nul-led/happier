@@ -10,6 +10,19 @@ const transcriptWriter = vi.hoisted(() => ({
     writeSessionTranscriptMessageInTx: vi.fn(),
 }));
 
+// The canonical join branch registers derived-projection work through
+// `afterTx`, which is only valid for transactions created by `inTx()`. The
+// owner boundary under test is the join decision, not transaction plumbing,
+// so collect the callbacks exactly like sessionTranscriptMutationObserver.spec.ts.
+const afterTxCallbacks = vi.hoisted(() => ({ callbacks: [] as Array<() => void> }));
+vi.mock("@/storage/inTx", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("@/storage/inTx")>();
+    return {
+        ...actual,
+        afterTx: (_tx: unknown, callback: () => void) => afterTxCallbacks.callbacks.push(callback),
+    };
+});
+
 vi.mock("@/app/session/sessionTranscriptWrite", async (importOriginal) => {
     const actual = await importOriginal<typeof import("@/app/session/sessionTranscriptWrite")>();
     return {
@@ -33,6 +46,7 @@ const tx = {
 describe("Pending transcript commit", () => {
     beforeEach(() => {
         vi.clearAllMocks();
+        afterTxCallbacks.callbacks.splice(0);
         transcriptWriter.validateSessionTranscriptStoredContent.mockReturnValue({ ok: true });
         transcriptWriter.validateSessionTranscriptWriteAuthorityInTx.mockResolvedValue({ ok: true });
         (tx.sessionMessage.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue(null);
@@ -211,6 +225,104 @@ describe("Pending transcript commit", () => {
             where: { id: "message-existing" },
             data: { messageRole: "user", rowRevision: { increment: BigInt(1) } },
         }));
+    });
+
+    it("joins a provider-written anchor without an admission identity and backfills it at settlement", async () => {
+        const content = { t: "plain" as const, v: { type: "user", text: "hello" } };
+        const inputAdmissionReceipt = {
+            v: 1,
+            issuer: "authenticatedAccount",
+            actorAccountId: "account-1",
+            sessionRelationship: "owner",
+        } as const;
+        const requestEqualityEvidenceV1 = {
+            kind: "plainDigest",
+            digest: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        } as const;
+        (tx.sessionMessage.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue({
+            id: "message-provider-anchor",
+            seq: 1,
+            localId: "pending-anchor",
+            messageRole: "user",
+            content,
+            deliveryResolution: null,
+            inputAdmissionReceipt: null,
+            requestEqualityEvidenceV1: null,
+            createdAt,
+            updatedAt: createdAt,
+        });
+        (tx.sessionMessage.update as ReturnType<typeof vi.fn>).mockResolvedValue({
+            id: "message-provider-anchor",
+            seq: 1,
+            localId: "pending-anchor",
+            messageRole: "user",
+            content,
+            deliveryResolution: null,
+            createdAt,
+            updatedAt: createdAt,
+        });
+
+        await expect(createSessionMessageFromPending(tx, {
+            sessionId: "session-1",
+            sessionEncryptionMode: "plain",
+            storagePolicy: "optional",
+            localId: "pending-anchor",
+            content,
+            messageRole: "user",
+            inputAdmissionReceipt,
+            requestEqualityEvidenceV1,
+        } as never)).resolves.toMatchObject({ ok: true, didWrite: false, didUpdate: true });
+
+        expect(tx.sessionMessage.update).toHaveBeenCalledWith(expect.objectContaining({
+            where: { id: "message-provider-anchor" },
+            data: expect.objectContaining({
+                inputAdmissionReceipt,
+                requestEqualityEvidenceV1,
+                rowRevision: { increment: BigInt(1) },
+            }),
+        }));
+    });
+
+    it("keeps a joined anchor holding a different admission identity as an input-admission conflict", async () => {
+        const content = { t: "plain" as const, v: { type: "user", text: "hello" } };
+        (tx.sessionMessage.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue({
+            id: "message-other-admission",
+            seq: 1,
+            localId: "pending-other-admission",
+            messageRole: "user",
+            content,
+            deliveryResolution: null,
+            inputAdmissionReceipt: {
+                v: 1,
+                issuer: "authenticatedAccount",
+                actorAccountId: "account-2",
+                sessionRelationship: "owner",
+            },
+            requestEqualityEvidenceV1: null,
+            createdAt,
+            updatedAt: createdAt,
+        });
+
+        await expect(createSessionMessageFromPending(tx, {
+            sessionId: "session-1",
+            sessionEncryptionMode: "plain",
+            storagePolicy: "optional",
+            localId: "pending-other-admission",
+            content,
+            messageRole: "user",
+            inputAdmissionReceipt: {
+                v: 1,
+                issuer: "authenticatedAccount",
+                actorAccountId: "account-1",
+                sessionRelationship: "owner",
+            },
+        } as never)).resolves.toEqual({
+            ok: false,
+            error: "transcript-conflict",
+            conflict: "input-admission",
+        });
+
+        expect(tx.sessionMessage.update).not.toHaveBeenCalled();
     });
 
     it("keeps established-role disagreement as a typed Pending transcript conflict", async () => {

@@ -10,6 +10,7 @@ export function buildAgentInputActionMenuActions(opts: {
     hasAnyActions: boolean;
     tint: string;
     agentId: string;
+    agentIdentityIcon?: React.ReactNode;
     profileLabel: string | null;
     profileIcon: IconName;
     envVarsCount?: number;

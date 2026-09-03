@@ -43,8 +43,8 @@ vi.mock('@/hooks/ui/useKeyboardHeight', () => ({
     useKeyboardHeight: () => keyboardLayoutState.keyboardHeight,
 }));
 
-vi.mock('@/agents/registry/AgentIcon', () => ({
-    AgentIcon: 'AgentIcon',
+vi.mock('@/components/sessions/presentation/SessionAgentCatalogIdentityIcon', () => ({
+    SessionAgentCatalogIdentityIcon: 'SessionAgentCatalogIdentityIcon',
 }));
 
 vi.mock('@/sync/domains/state/storage', async () => {
@@ -210,6 +210,7 @@ describe('TranscriptSendToSessionModal', () => {
                 metadata: {
                     ...sameServerMetadata,
                     flavor: 'claude',
+                    machineId: 'machine-a',
                 },
             }),
         ];
@@ -224,7 +225,11 @@ describe('TranscriptSendToSessionModal', () => {
             />,
         );
 
-        expect(screen.findByTestId('transcript-send-to-session-agent-logo-same-server')).not.toBeNull();
+        expect(screen.findByTestId('transcript-send-to-session-agent-logo-same-server')?.props).toMatchObject({
+            agentId: 'claude',
+            machineId: 'machine-a',
+            serverId: 'server-a',
+        });
         const meta = screen.findByTestId('transcript-send-to-session-meta-same-server');
         expect(meta).not.toBeNull();
         expect(screen.getTextContent()).toContain('working...');

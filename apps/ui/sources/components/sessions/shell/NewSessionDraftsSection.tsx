@@ -8,8 +8,7 @@ import {
     resolveNewSessionDraftAgentId,
     type NewSessionDraftAvailabilitySummary,
 } from '@/components/sessions/drafts/newSessionDraftPresentation';
-import { AgentIcon } from '@/agents/registry/AgentIcon';
-import { getAgentPickerIconScale } from '@/agents/catalog/catalog';
+import { SessionAgentCatalogIdentityIcon } from '@/components/sessions/presentation/SessionAgentCatalogIdentityIcon';
 import { summarizeComposerAttachmentDraftAvailability } from '@/components/sessions/composer/composerScopeAdapters';
 import { useAppShellPluginUiProjection } from '@/components/appShell/plugins/AppShellPluginUiProjection';
 import { Icon, ICON_SIZE } from '@/components/ui/icons/Icon';
@@ -91,6 +90,7 @@ const NewSessionDraftRow = React.memo(function NewSessionDraftRow(props: Readonl
     pressableRef: React.Ref<FocusableDraftTarget>;
     deleteDisabled: boolean;
     density: SessionRowDensity;
+    serverId: string | null;
 }>) {
     const { theme } = useUnistyles();
     const isTablet = useIsTablet();
@@ -118,6 +118,12 @@ const NewSessionDraftRow = React.memo(function NewSessionDraftRow(props: Readonl
         readableNativePhoneMinimal,
     });
     const agentId = resolveNewSessionDraftAgentId(props.draft);
+    const machineIdValue = props.draft.document.target.kind === 'newSession'
+        ? props.draft.document.target.authoring.machineId?.value
+        : null;
+    const machineId = typeof machineIdValue === 'string' && machineIdValue.trim()
+        ? machineIdValue.trim()
+        : null;
     const subtitleTextMetrics = SESSION_LIST_ROW_STATUS_TEXT_METRICS[props.density];
     const accessibleSummary = [
         presentation.title, status, t('sessionDrafts.continueEditing'),
@@ -139,11 +145,12 @@ const NewSessionDraftRow = React.memo(function NewSessionDraftRow(props: Readonl
             titleStyle={titleTextMetrics}
             subtitleStyle={subtitleTextMetrics}
             leftElement={minimal ? (
-                <AgentIcon
+                <SessionAgentCatalogIdentityIcon
                     agentId={agentId}
+                    machineId={machineId}
+                    serverId={props.serverId}
                     size={identityMetrics.agentLogoSize}
                     color={theme.colors.text.primary}
-                    style={{ transform: [{ scale: getAgentPickerIconScale(agentId) }] }}
                     testID={`session-draft-agent-logo:new-session:${draftId}`}
                 />
             ) : undefined}
@@ -194,6 +201,7 @@ export const NewSessionDraftsSectionView = React.memo(function NewSessionDraftsS
     onDelete: (draftId: string) => Promise<boolean>;
     deleteDisabledDraftIds?: ReadonlySet<string>;
     density?: SessionRowDensity;
+    serverId?: string | null;
 }>) {
     const rowTargetsRef = React.useRef(new Map<string, FocusableDraftTarget>());
     const listFocusFallbackRef = useFocusReturnFallbackRef<FocusReturnTarget>();
@@ -246,6 +254,7 @@ export const NewSessionDraftsSectionView = React.memo(function NewSessionDraftsS
                         pressableRef={(target) => registerRowTarget(draft.draftId, target)}
                         deleteDisabled={props.deleteDisabledDraftIds?.has(draft.draftId) === true}
                         density={props.density ?? 'default'}
+                        serverId={props.serverId ?? null}
                     />
                 ))}
             </ItemGroup>
@@ -346,6 +355,7 @@ export const NewSessionDraftsSection = React.memo(function NewSessionDraftsSecti
             onDelete={handleDelete}
             deleteDisabledDraftIds={deleteDisabledDraftIds}
             density={props.density}
+            serverId={scope?.serverId ?? null}
         />
     );
 });

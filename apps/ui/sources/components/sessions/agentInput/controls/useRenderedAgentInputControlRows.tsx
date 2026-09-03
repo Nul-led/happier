@@ -58,6 +58,7 @@ export function useRenderedAgentInputControlRows(params: Readonly<{
     hasAgentSelection: boolean;
     agentChipAnchorRef: React.RefObject<View | null>;
     agentId: string;
+    agentIdentityIcon?: React.ReactNode;
     agentLabel: string;
     engineLabel: string;
     /** Hover/focus/press-in on the Agent chip, before the picker opens. */
@@ -140,6 +141,7 @@ export function useRenderedAgentInputControlRows(params: Readonly<{
             hasAgentSelection: params.hasAgentSelection,
             agentChipAnchorRef: params.agentChipAnchorRef,
             agentId: params.agentId,
+            agentIdentityIcon: params.agentIdentityIcon,
             agentLabel: params.agentLabel,
             engineLabel: params.engineLabel,
             onAgentIntent: params.onAgentIntent,
@@ -193,6 +195,7 @@ export function useRenderedAgentInputControlRows(params: Readonly<{
         params.actionMenuAnchorRef,
         params.agentChipAnchorRef,
         params.agentId,
+        params.agentIdentityIcon,
         params.agentLabel,
         params.engineLabel,
         params.onAgentIntent,

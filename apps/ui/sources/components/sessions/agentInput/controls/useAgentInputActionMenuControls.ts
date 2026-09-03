@@ -33,6 +33,7 @@ export function useAgentInputActionMenuControls(params: Readonly<{
     hasAnyActions: boolean;
     tint: string;
     agentId: string;
+    agentIdentityIcon?: React.ReactNode;
     profileLabel: string | null;
     profileIcon: IconName;
     envVarsCount?: number;
@@ -154,6 +155,7 @@ export function useAgentInputActionMenuControls(params: Readonly<{
         hasAnyActions: params.hasAnyActions,
         tint: params.tint,
         agentId: params.agentId,
+        agentIdentityIcon: params.agentIdentityIcon,
         profileLabel: params.profileLabel,
         profileIcon: params.profileIcon,
         envVarsCount: params.envVarsCount,

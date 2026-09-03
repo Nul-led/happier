@@ -273,6 +273,47 @@ describe('SessionExecutionRunDetailsView', () => {
         expect(messageDetailsSpy.mock.calls.at(-1)?.[0]).not.toHaveProperty('presentation');
     });
 
+    /**
+     * A run result is arbitrary JSON, so `false`, `0`, `''` and `null` are all
+     * results the run really produced. Only absence means there is nothing to
+     * show, and absence on this wire is `undefined` — the field is optional.
+     */
+    it.each([
+        ['false', false],
+        ['zero', 0],
+        ['an empty string', ''],
+        ['null', null],
+    ])('shows the latest tool result when the run settled on %s', async (_label, latestToolResult) => {
+        getRunSpy.mockImplementation(async () => ({
+            ...createExecutionRunGetResponse(),
+            latestToolResult,
+        }));
+        const { SessionExecutionRunDetailsView } = await import('./SessionExecutionRunDetailsView');
+
+        const screen = await renderScreen(<SessionExecutionRunDetailsView
+                    sessionId="s1"
+                    runId="run_1"
+                    presentation="panel"
+                />);
+        tree = screen.tree;
+
+        expect(screen.findAllHostsByTestId('session-run-details-latest-tool-result')).toHaveLength(1);
+    });
+
+    it('hides the latest tool result only when the run reported no result at all', async () => {
+        getRunSpy.mockImplementation(async () => createExecutionRunGetResponse());
+        const { SessionExecutionRunDetailsView } = await import('./SessionExecutionRunDetailsView');
+
+        const screen = await renderScreen(<SessionExecutionRunDetailsView
+                    sessionId="s1"
+                    runId="run_1"
+                    presentation="panel"
+                />);
+        tree = screen.tree;
+
+        expect(screen.findAllHostsByTestId('session-run-details-latest-tool-result')).toHaveLength(0);
+    });
+
     it('passes explicit server scope through execution-run get, send, and stop RPCs', async () => {
         const sessionExecutionRuns = await import('@/sync/ops/sessionExecutionRuns');
         const sendSpy = vi.mocked(sessionExecutionRuns.sessionExecutionRunSend);

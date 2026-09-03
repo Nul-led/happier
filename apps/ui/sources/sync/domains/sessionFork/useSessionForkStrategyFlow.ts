@@ -138,6 +138,7 @@ export function useSessionForkStrategyFlow(params: Readonly<{
         route: SessionForkOperationRoute,
         childSessionId: string,
     ): Promise<void> => {
+        if (!mountedRef.current) return;
         applyPhase({ type: 'opening', route, childSessionId, stalled: false });
         let navigated = false;
         try {
@@ -146,6 +147,7 @@ export function useSessionForkStrategyFlow(params: Readonly<{
                 parentSessionId: request.parentSessionId,
                 serverId: request.serverId,
                 navigate: async (targetSessionId, options) => {
+                    if (!mountedRef.current) return;
                     navigated = true;
                     await navigate(targetSessionId, options);
                 },
@@ -154,6 +156,7 @@ export function useSessionForkStrategyFlow(params: Readonly<{
                 writeForkInitialPrompt: request.writeForkInitialPrompt === true,
             });
         } catch {
+            if (!mountedRef.current) return;
             // Anything that fails AFTER navigation is best-effort follow-up: the
             // fork exists and the user is already looking at it, and the restored
             // draft was written only after the child lineage was proven. Only a
@@ -163,6 +166,7 @@ export function useSessionForkStrategyFlow(params: Readonly<{
                 return;
             }
         }
+        if (!mountedRef.current) return;
         applyPhase({ type: 'navigated' });
         onNavigated();
     }, [applyPhase, navigate, onNavigated, request]);

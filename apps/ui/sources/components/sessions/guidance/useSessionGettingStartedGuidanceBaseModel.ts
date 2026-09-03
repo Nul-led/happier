@@ -1,7 +1,7 @@
 import * as React from 'react';
 
 import { useVisibleSessionListSummaryState } from '@/hooks/session/useVisibleSessionListSummaryState';
-import { useAllMachines, useMachineListByServerId, useSettings } from '@/sync/domains/state/storage';
+import { useAllMachines, useMachineListByServerId } from '@/sync/domains/state/storage';
 import { useHomeViewSelectionSettings } from '@/hooks/server/useHomeViewSelectionSettings';
 import { useLocalDaemonControl } from '@/components/settings/machines/localControl/useLocalDaemonControl';
 
@@ -11,8 +11,7 @@ import { useSessionGettingStartedActiveServerProfile } from './useSessionGetting
 
 export function useSessionGettingStartedGuidanceBaseModel(): SessionGettingStartedViewModel {
     const { selection: summarySelection, summary: sessionSummary } = useVisibleSessionListSummaryState();
-    const accountSettings = useSettings();
-    const { serverSelectionGroups } = useHomeViewSelectionSettings(accountSettings);
+    const { serverSelectionGroups } = useHomeViewSelectionSettings();
     const activeMachines = useAllMachines();
     const machineListByServerId = useMachineListByServerId();
     const localDaemonControl = useLocalDaemonControl();

@@ -29,7 +29,9 @@ describe("session update handler on SQLite", () => {
 
     it("ACKs the canonical Runtime Activity publisher claim only after active reachability commits", async () => {
         const owner = await db.account.create({
-            data: { publicKey: `pk-${randomUUID()}` },
+            // A Session-owning Account is current: terminal turn settlement
+            // takes the canonical Account transition fence.
+            data: { publicKey: `pk-${randomUUID()}`, encryptionMode: "plain" },
             select: { id: true },
         });
         const machineId = `machine-${randomUUID()}`;
@@ -101,7 +103,9 @@ describe("session update handler on SQLite", () => {
 
     it("advertises transcript observation support before the Antigravity publisher claim without admitting observations", async () => {
         const owner = await db.account.create({
-            data: { publicKey: `pk-${randomUUID()}` },
+            // A Session-owning Account is current: terminal turn settlement
+            // takes the canonical Account transition fence.
+            data: { publicKey: `pk-${randomUUID()}`, encryptionMode: "plain" },
             select: { id: true },
         });
         const machineId = `machine-${randomUUID()}`;
@@ -244,7 +248,9 @@ describe("session update handler on SQLite", () => {
         // ordinary localId is admitted below, so this proves the refusal is the reserved
         // namespace rather than any authorization state.
         const owner = await db.account.create({
-            data: { publicKey: `pk-${randomUUID()}` },
+            // A Session-owning Account is current: terminal turn settlement
+            // takes the canonical Account transition fence.
+            data: { publicKey: `pk-${randomUUID()}`, encryptionMode: "plain" },
             select: { id: true },
         });
         const machineId = `machine-${randomUUID()}`;
@@ -338,7 +344,9 @@ describe("session update handler on SQLite", () => {
 
     it("rejects active metadata publication from a publisher superseded after its runtime effect", async () => {
         const owner = await db.account.create({
-            data: { publicKey: `pk-${randomUUID()}` },
+            // A Session-owning Account is current: terminal turn settlement
+            // takes the canonical Account transition fence.
+            data: { publicKey: `pk-${randomUUID()}`, encryptionMode: "plain" },
             select: { id: true },
         });
         const machineId = `machine-${randomUUID()}`;
@@ -442,7 +450,9 @@ describe("session update handler on SQLite", () => {
 
     it("closes the exact current publisher through the canonical runtime-activity close event", async () => {
         const owner = await db.account.create({
-            data: { publicKey: `pk-${randomUUID()}` },
+            // A Session-owning Account is current: terminal turn settlement
+            // takes the canonical Account transition fence.
+            data: { publicKey: `pk-${randomUUID()}`, encryptionMode: "plain" },
             select: { id: true },
         });
         const machineId = `machine-${randomUUID()}`;
@@ -545,7 +555,9 @@ describe("session update handler on SQLite", () => {
         process.env.HAPPIER_DB_TX_MAX_WAIT_MS = "1000";
 
         const owner = await db.account.create({
-            data: { publicKey: `pk-${randomUUID()}` },
+            // A Session-owning Account is current: terminal turn settlement
+            // takes the canonical Account transition fence.
+            data: { publicKey: `pk-${randomUUID()}`, encryptionMode: "plain" },
             select: { id: true },
         });
         const machineId = `machine-${randomUUID()}`;
@@ -625,7 +637,9 @@ describe("session update handler on SQLite", () => {
 
     it("orders exact close behind an already accepted released alive backlog", async () => {
         const owner = await db.account.create({
-            data: { publicKey: `pk-${randomUUID()}` },
+            // A Session-owning Account is current: terminal turn settlement
+            // takes the canonical Account transition fence.
+            data: { publicKey: `pk-${randomUUID()}`, encryptionMode: "plain" },
             select: { id: true },
         });
         const machineId = `machine-${randomUUID()}`;
@@ -733,7 +747,9 @@ describe("session update handler on SQLite", () => {
 
     it("returns a typed retry ACK when provider acceptance cannot acquire a transaction", async () => {
         const owner = await db.account.create({
-            data: { publicKey: `pk-${randomUUID()}` },
+            // A Session-owning Account is current: terminal turn settlement
+            // takes the canonical Account transition fence.
+            data: { publicKey: `pk-${randomUUID()}`, encryptionMode: "plain" },
             select: { id: true },
         });
         const machineId = `machine-${randomUUID()}`;

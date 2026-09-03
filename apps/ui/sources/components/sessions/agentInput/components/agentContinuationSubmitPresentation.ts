@@ -158,9 +158,10 @@ export function resolveArmedSubmitContinuation<TTarget>(params: Readonly<{
 export function resolveAgentContinuationSubmitPresentation(input: Readonly<{
     agentId: string;
     agentLabel: string;
+    hasIdentityMark?: boolean;
 }>): AgentContinuationSubmitPresentation {
     const accessibilityLabel = t('session.agentContinuation.sendLabel', { agent: input.agentLabel });
-    if (!isBundledAgentId(input.agentId)) {
+    if (!isBundledAgentId(input.agentId) && input.hasIdentityMark !== true) {
         // No mark to stand in for the name, so the words keep carrying it. This is
         // the one case where the drawn sentence and the spoken one are the same
         // string — an unknown id has no glyph to substitute.
@@ -182,7 +183,9 @@ export function resolveAgentContinuationSubmitPresentation(input: Readonly<{
         // so exactly one side carries words and joining them cannot reorder them.
         label: [before, after].filter((part) => part.length > 0).join(' '),
         markPlacement: before.length === 0 ? 'leading' : 'trailing',
-        markAgentId: input.agentId,
-        markSize: Math.round(AGENT_MARK_NOMINAL_SIZE * getAgentPickerIconScale(input.agentId)),
+        markAgentId: isBundledAgentId(input.agentId) ? input.agentId : null,
+        markSize: isBundledAgentId(input.agentId)
+            ? Math.round(AGENT_MARK_NOMINAL_SIZE * getAgentPickerIconScale(input.agentId))
+            : AGENT_MARK_NOMINAL_SIZE,
     };
 }

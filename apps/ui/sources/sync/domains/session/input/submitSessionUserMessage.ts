@@ -1,4 +1,9 @@
-import { readPendingLocalId, withSessionUserMessageDeliveryIntentMeta } from '@happier-dev/protocol';
+import {
+    DEFAULT_SESSION_INACTIVE_RESUME_POLICY,
+    readPendingLocalId,
+    withSessionUserMessageDeliveryIntentMeta,
+    type PendingRequestedActionV1,
+} from '@happier-dev/protocol';
 
 import { getPendingQueueWakeResumeOptions } from '@/sync/domains/pending/pendingQueueWake';
 import { classifyAgentSessionComposerNonSteerablePayload } from '@/agents/registry/registryUiBehavior';
@@ -106,6 +111,7 @@ function resolveSubmitDecision(opts: SubmitSessionUserMessageOptions): SessionMe
     return decideSessionMessageDelivery({
         configuredMode: opts.configuredMode,
         busySteerSendPolicy: opts.busySteerSendPolicy,
+        sessionInactiveResumePolicy: opts.sessionInactiveResumePolicy,
         explicitMode: opts.explicitMode,
         session: opts.session,
         nowMs: opts.nowMs,
@@ -332,6 +338,31 @@ async function switchRemoteAfterPendingEnqueueIfNeeded(
     }
 }
 
+function requestedActionRequiresRuntimeActivation(action: PendingRequestedActionV1): boolean {
+    return action.kind === 'send_now' || action.kind === 'steer_now';
+}
+
+function shouldAttemptOnlineOnlyResume(
+    opts: SubmitSessionUserMessageOptions,
+    decision: SessionMessageDeliveryDecision,
+    requestedAction: PendingRequestedActionV1,
+): boolean {
+    return (opts.sessionInactiveResumePolicy ?? DEFAULT_SESSION_INACTIVE_RESUME_POLICY) === 'online_only'
+        && opts.requestedAction === undefined
+        && decision.intent === 'default'
+        && requestedAction.kind === 'enqueue'
+        && (opts.session.active === false || opts.session.presence !== 'online');
+}
+
+async function shouldWakePendingInputFromUi(
+    port: SessionSubmitPort,
+    opts: SubmitSessionUserMessageOptions,
+    machineId: string,
+): Promise<boolean> {
+    if (!port.shouldDelegatePendingActivationToDaemon) return true;
+    return !(await port.shouldDelegatePendingActivationToDaemon(opts.session, opts.serverId, machineId));
+}
+
 async function directSend(
     port: SessionSubmitPort,
     opts: SubmitSessionUserMessageOptions,
@@ -397,14 +428,15 @@ async function enqueuePending(
     decision: SessionMessageDeliveryDecision,
 ): Promise<SubmitSessionUserMessageResult> {
     const requestedAction = opts.requestedAction ?? decision.requestedAction ?? { v: 1, kind: 'enqueue' as const };
-    const wakeOpts = getPendingQueueWakeResumeOptions({
+    const attemptOnlineOnlyResume = shouldAttemptOnlineOnlyResume(opts, decision, requestedAction);
+    const wakeOpts = requestedActionRequiresRuntimeActivation(requestedAction) || attemptOnlineOnlyResume ? getPendingQueueWakeResumeOptions({
         sessionId: opts.sessionId,
         session: opts.session,
         resumeCapabilityOptions: opts.resumeCapabilityOptions,
         resumeTargetOverride: opts.resumeTargetOverride,
         permissionOverride: opts.permissionOverride,
         canWakeMachineId: port.canWakeMachineId,
-    });
+    }) : null;
 
     let enqueueResult: PendingMessageSubmitResult;
     let handoffLocalId: string | undefined;
@@ -468,6 +500,24 @@ async function enqueuePending(
     if (!wakeOpts) {
         return {
             type: 'wake_pending',
+            persistence: 'pending',
+            wake: { attempted: false, state: 'not_needed' },
+            localId,
+        };
+    }
+
+    if (attemptOnlineOnlyResume && port.isMachineReachable?.(wakeOpts.machineId) !== true) {
+        return {
+            type: 'wake_pending',
+            persistence: 'pending',
+            wake: { attempted: false, state: 'not_needed' },
+            localId,
+        };
+    }
+
+    if (!attemptOnlineOnlyResume && !(await shouldWakePendingInputFromUi(port, opts, wakeOpts.machineId))) {
+        return {
+            type: 'success',
             persistence: 'pending',
             wake: { attempted: false, state: 'not_needed' },
             localId,
@@ -579,16 +629,16 @@ export async function submitSessionUserMessage(
                 localId,
             };
         }
-        const wakeOpts = getPendingQueueWakeResumeOptions({
+        const wakeOpts = requestedActionRequiresRuntimeActivation(requestedAction) ? getPendingQueueWakeResumeOptions({
             sessionId: effectiveOpts.sessionId,
             session: effectiveOpts.session,
             resumeCapabilityOptions: effectiveOpts.resumeCapabilityOptions,
             resumeTargetOverride: effectiveOpts.resumeTargetOverride,
             permissionOverride: effectiveOpts.permissionOverride,
             canWakeMachineId: port.canWakeMachineId,
-        });
+        }) : null;
         if (!wakeOpts) {
-            if (effectiveOpts.session.active === false) {
+            if (requestedActionRequiresRuntimeActivation(requestedAction) && effectiveOpts.session.active === false) {
                 const errorMessage = 'This inactive session cannot be resumed; the pending message remains queued.';
                 return {
                     type: 'wake_failed',
@@ -599,7 +649,7 @@ export async function submitSessionUserMessage(
                     localId,
                 };
             }
-        } else {
+        } else if (await shouldWakePendingInputFromUi(port, effectiveOpts, wakeOpts.machineId)) {
             try {
                 const wakeResult = await port.ensureSessionRuntimeForPendingInput({
                     ...wakeOpts,

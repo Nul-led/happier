@@ -1,10 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act } from 'react-test-renderer';
 
 import { createTextModuleMock } from '@/dev/testkit/mocks/text';
 import { renderHook } from '@/dev/testkit';
 import { installTokenStorageWebPlatformMocks } from '@/auth/storage/tokenStorage.testHelpers';
 import { installLocalStorageMock, type LocalStorageMockHandle } from '@/auth/storage/tokenStorage.web.testHelpers';
+import type { ServerProfile } from '@/sync/domains/server/serverProfiles';
 
 installTokenStorageWebPlatformMocks();
 
@@ -12,6 +13,7 @@ const socketBoundary = vi.hoisted(() => ({
     connects: vi.fn(),
     emits: vi.fn(),
     fetches: vi.fn(),
+    controls: new Map<string, Readonly<{ disconnect: () => void; reconnect: () => void }>>(),
 }));
 const modalBoundary = vi.hoisted(() => ({
     alert: vi.fn(),
@@ -71,16 +73,20 @@ vi.mock('@/utils/system/sentry', async (importOriginal) => ({
 vi.mock('socket.io-client', () => ({
     io: (serverUrl: string, options: { auth?: { token?: string } }) => {
         const listeners = new Map<string, Set<(...args: unknown[]) => void>>();
+        const publish = (event: string, ...args: unknown[]) => {
+            for (const listener of listeners.get(event) ?? []) listener(...args);
+        };
         const socket = {
             connected: false,
             id: 'composed-socket',
             connect() {
                 socket.connected = true;
                 socketBoundary.connects(serverUrl, options.auth?.token);
-                for (const listener of listeners.get('connect') ?? []) listener();
+                publish('connect');
             },
             disconnect() {
                 socket.connected = false;
+                publish('disconnect', 'io client disconnect');
             },
             on(event: string, listener: (...args: unknown[]) => void) {
                 const registered = listeners.get(event) ?? new Set();
@@ -107,6 +113,13 @@ vi.mock('socket.io-client', () => ({
             },
             emit: vi.fn(),
         };
+        socketBoundary.controls.set(serverUrl, {
+            disconnect: () => {
+                socket.connected = false;
+                publish('disconnect', 'transport close');
+            },
+            reconnect: () => socket.connect(),
+        });
         return socket;
     },
 }));
@@ -120,9 +133,43 @@ describe('multi-Home Session creation composition', () => {
     let localStorageHandle: LocalStorageMockHandle;
     let navigatorLocksDescriptor: PropertyDescriptor | undefined;
     const previousScope = process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE;
+    let profiles: typeof import('@/sync/domains/server/serverProfiles');
+    let TokenStorage: typeof import('@/auth/storage/tokenStorage')['TokenStorage'];
+    let sync: typeof import('@/sync/sync')['sync'];
 
     beforeEach(async () => {
-        vi.resetModules();
+        const {
+            CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
+            MACHINE_PLAIN_DATA_KEY_MARKER,
+        } = await import('@happier-dev/protocol');
+        const { setRuntimeFetch } = await import('@/utils/system/runtimeFetch');
+        setRuntimeFetch(async (input) => {
+            const url = String(input);
+            socketBoundary.fetches(url);
+            if (url.endsWith('/v1/features')) {
+                return Response.json({
+                    features: {},
+                    capabilities: {
+                        accountStoredContentCompatibility: {
+                            v: 1,
+                            minimumProtocolVersion: CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
+                            currentProtocolVersion: CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
+                            declarationTransport: 'http-header-and-socket-auth-v1',
+                        },
+                    },
+                });
+            }
+            if (url.includes('/v1/machines/machine-b')) {
+                return Response.json({
+                    machine: { id: 'machine-b', dataEncryptionKey: MACHINE_PLAIN_DATA_KEY_MARKER },
+                });
+            }
+            if (url.endsWith('/v1/auth/ping') || url.endsWith('/health')) return Response.json({ ok: true });
+            return Response.json({ ok: false }, { status: 404 });
+        });
+    });
+
+    beforeAll(async () => {
         localStorageHandle = installLocalStorageMock();
         navigatorLocksDescriptor = Object.getOwnPropertyDescriptor(globalThis.navigator, 'locks');
         Object.defineProperty(globalThis.navigator, 'locks', {
@@ -138,80 +185,32 @@ describe('multi-Home Session creation composition', () => {
             },
         });
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = `multi_home_create_${Date.now()}_${Math.random()}`;
-        socketBoundary.connects.mockClear();
-        socketBoundary.emits.mockClear();
-        socketBoundary.fetches.mockClear();
-        modalBoundary.alert.mockClear();
-        modalBoundary.confirm.mockClear();
-        observabilityBoundary.capture.mockClear();
         routeBoundary.params = {
             machineId: 'machine-b',
             directory: '/workspace/project',
+            spawnServerId: 'srv_home_b',
         };
 
-        const { sync } = await import('@/sync/sync');
+        ({ sync } = await import('@/sync/sync'));
         syncSingletonHarness.current = sync;
-
-        const {
-            CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
-            MACHINE_PLAIN_DATA_KEY_MARKER,
-        } = await import('@happier-dev/protocol');
-        const { setRuntimeFetch } = await import('@/utils/system/runtimeFetch');
-        setRuntimeFetch(async (input) => {
-            const url = String(input);
-            socketBoundary.fetches(url);
-            if (url.endsWith('/v1/features')) {
-                return new Response(JSON.stringify({
-                    features: {},
-                    capabilities: {
-                        accountStoredContentCompatibility: {
-                            v: 1,
-                            minimumProtocolVersion: CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
-                            currentProtocolVersion: CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
-                            declarationTransport: 'http-header-and-socket-auth-v1',
-                        },
-                    },
-                }), { status: 200, headers: { 'content-type': 'application/json' } });
-            }
-            if (url.includes('/v1/machines/machine-b')) {
-                return new Response(JSON.stringify({
-                    machine: { id: 'machine-b', dataEncryptionKey: MACHINE_PLAIN_DATA_KEY_MARKER },
-                }), { status: 200, headers: { 'content-type': 'application/json' } });
-            }
-            if (url.endsWith('/v1/auth/ping')) {
-                return new Response(JSON.stringify({ ok: true }), {
-                    status: 200,
-                    headers: { 'content-type': 'application/json' },
-                });
-            }
-            if (url.endsWith('/health')) {
-                return new Response(JSON.stringify({ ok: true }), {
-                    status: 200,
-                    headers: { 'content-type': 'application/json' },
-                });
-            }
-            return new Response(JSON.stringify({ ok: false }), {
-                status: 404,
-                headers: { 'content-type': 'application/json' },
-            });
-        });
+        profiles = await import('@/sync/domains/server/serverProfiles');
+        ({ TokenStorage } = await import('@/auth/storage/tokenStorage'));
     });
 
-    afterEach(async () => {
+    afterAll(async () => {
         const { resetRuntimeFetch } = await import('@/utils/system/runtimeFetch');
         resetRuntimeFetch();
+        sync.disconnectServer();
         localStorageHandle.restore();
         if (navigatorLocksDescriptor) Object.defineProperty(globalThis.navigator, 'locks', navigatorLocksDescriptor);
         else Reflect.deleteProperty(globalThis.navigator, 'locks');
         if (previousScope === undefined) delete process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE;
         else process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = previousScope;
-        vi.restoreAllMocks();
+        socketBoundary.controls.clear();
         syncSingletonHarness.current = null;
     });
 
     async function arrangeFocusedHomeA() {
-        const profiles = await import('@/sync/domains/server/serverProfiles');
-        const { TokenStorage } = await import('@/auth/storage/tokenStorage');
         const homeA = await profiles.adoptHomeProfile({
             descriptor: {
                 v: 1,
@@ -271,100 +270,147 @@ describe('multi-Home Session creation composition', () => {
             : model.wizardProps.footer.handleCreateSession;
     }
 
-    it('adopts B without focus mutation and creates only through B selected by device-global HomeView', async () => {
-        const { profiles, homeA, homeAScopeId, homeAToken } = await arrangeFocusedHomeA();
+    let homeA!: ServerProfile;
+    let homeB!: ServerProfile;
+    let homeAScopeId = '';
+    let homeBScopeId = '';
+    let homeAToken = '';
+    let homeBToken = '';
+
+    it('adopts two Homes and keeps explicit B creation scoped across A to B to A focus and reconnect', async () => {
+        ({ homeA, homeAScopeId, homeAToken } = await arrangeFocusedHomeA());
         const focusBefore = profiles.getActiveServerSnapshot();
         const groupsBefore = profiles.loadHomeViewState()?.groups;
         const { adoptHomeProfileWithCredentials } = await import('@/sync/domains/server/adoptHomeProfile');
-        const { TokenStorage } = await import('@/auth/storage/tokenStorage');
-        const homeBToken = tokenFor('account-b');
+        homeBToken = tokenFor('account-b');
 
-        const homeB = await adoptHomeProfileWithCredentials({
-            descriptor: {
-                v: 1,
-                homeServerIdentityId: 'srv_home_b',
-                canonicalServerUrl: 'https://home-b.example.test',
-                revision: 1,
-                endpoints: [{ kind: 'https', url: 'https://home-b.example.test' }],
-            },
-            source: 'account-directory',
-            preserveUserLabel: true,
-            credentials: { token: homeBToken },
+        await act(async () => {
+            homeB = await adoptHomeProfileWithCredentials({
+                descriptor: {
+                    v: 1,
+                    homeServerIdentityId: 'srv_home_b',
+                    canonicalServerUrl: 'https://home-b.example.test',
+                    revision: 1,
+                    endpoints: [{ kind: 'https', url: 'https://home-b.example.test' }],
+                },
+                source: 'account-directory',
+                preserveUserLabel: true,
+                credentials: { token: homeBToken },
+            });
         });
-        const homeBScopeId = profiles.resolveServerProfileScopeId(homeB);
+        homeBScopeId = profiles.resolveServerProfileScopeId(homeB);
+        expect(profiles.getActiveServerSnapshot()).toMatchObject({
+            serverId: focusBefore.serverId,
+            serverUrl: focusBefore.serverUrl,
+        });
+        expect(profiles.loadHomeViewState()?.groups).toEqual(groupsBefore);
         profiles.saveHomeViewState({
             version: 1,
             activeTargetKind: 'server',
             activeTargetId: homeBScopeId,
             groups: groupsBefore ?? [],
         });
-
         const createHook = await renderProductionCreateCaller({
             activeServerId: homeAScopeId,
             targetServerId: homeBScopeId,
         });
-        const model = createHook.getCurrent();
-        expect(model.variant === 'simple' ? model.simpleProps.targetServerId : model.wizardProps.machine.serverId)
-            .toBe(homeBScopeId);
-        expect(socketBoundary.connects).toHaveBeenCalledWith(homeB.serverUrl, homeBToken);
-        expect(socketBoundary.connects).not.toHaveBeenCalledWith(homeA.serverUrl, homeAToken);
-        socketBoundary.fetches.mockClear();
-        socketBoundary.emits.mockClear();
-        await act(async () => {
-            await readProductionCreateAction(createHook.getCurrent())({ initialMessage: 'skip' });
-        });
+        expect(createHook.getCurrent().variant === 'simple'
+            ? createHook.getCurrent().simpleProps.targetServerId
+            : createHook.getCurrent().wizardProps.machine.serverId).toBe(homeBScopeId);
 
-        expect(profiles.listServerProfiles().filter((profile) => profile.serverIdentityId === 'srv_home_b')).toHaveLength(1);
-        await expect(TokenStorage.getCredentialsForServerUrl(homeB.serverUrl, { serverId: homeBScopeId }))
-            .resolves.toEqual({ token: homeBToken });
-        await expect(TokenStorage.getCredentialsForServerUrl(homeA.serverUrl, { serverId: homeAScopeId }))
-            .resolves.toEqual({ token: homeAToken });
-        expect(profiles.getActiveServerSnapshot()).toMatchObject({
-            serverId: focusBefore.serverId,
-            serverUrl: focusBefore.serverUrl,
-        });
-        expect(profiles.loadHomeViewState()?.groups).toEqual(groupsBefore);
-        expect(socketBoundary.fetches.mock.calls.length).toBeGreaterThan(0);
-        expect(socketBoundary.fetches.mock.calls.every(([url]) =>
-            String(url).startsWith(homeB.serverUrl))).toBe(true);
-        expect(socketBoundary.emits).toHaveBeenCalledTimes(1);
-        expect(socketBoundary.emits.mock.calls[0]?.[0]).toMatchObject({
-            serverUrl: homeB.serverUrl,
-            token: homeBToken,
-            payload: {
-                method: 'machine-b:session.spawnNew',
-                params: { executionTarget: { serverId: homeBScopeId, machineId: 'machine-b' } },
-            },
-        });
-        expect(modalBoundary.alert).toHaveBeenCalledOnce();
-        expect(modalBoundary.alert).toHaveBeenCalledWith('common.error', 'newSession.failedToStart');
-        expect(observabilityBoundary.capture).not.toHaveBeenCalled();
+        try {
+            await act(async () => profiles.setActiveServerId(homeB.id, { scope: 'device' }));
+            expect(profiles.getActiveServerSnapshot().serverId).toBe(homeBScopeId);
+            await act(async () => profiles.setActiveServerId(homeA.id, { scope: 'device' }));
+            expect(profiles.getActiveServerSnapshot().serverId).toBe(homeAScopeId);
 
-        await createHook.unmount();
+            const homeBSocket = socketBoundary.controls.get(homeB.serverUrl);
+            expect(homeBSocket).toBeDefined();
+            const homeBConnectsBeforeOutage = socketBoundary.connects.mock.calls
+                .filter(([url]) => url === homeB.serverUrl).length;
+            await act(async () => {
+                homeBSocket?.disconnect();
+                homeBSocket?.reconnect();
+            });
+            expect(socketBoundary.connects.mock.calls.filter(([url]) => url === homeB.serverUrl)).toHaveLength(
+                homeBConnectsBeforeOutage + 1,
+            );
+            expect(profiles.getActiveServerSnapshot().serverId).toBe(homeAScopeId);
+
+            socketBoundary.fetches.mockClear();
+            socketBoundary.emits.mockClear();
+            await act(async () => {
+                await readProductionCreateAction(createHook.getCurrent())({ initialMessage: 'skip' });
+            });
+            expect(socketBoundary.fetches.mock.calls.length).toBeGreaterThan(0);
+            expect(socketBoundary.fetches.mock.calls
+                .every(([url]) => String(url).startsWith(homeB.serverUrl))).toBe(true);
+            expect(socketBoundary.emits).toHaveBeenCalledTimes(1);
+            expect(socketBoundary.emits.mock.calls[0]?.[0]).toMatchObject({
+                serverUrl: homeB.serverUrl,
+                token: homeBToken,
+                payload: {
+                    method: 'machine-b:session.spawnNew',
+                    params: { executionTarget: { serverId: homeBScopeId, machineId: 'machine-b' } },
+                },
+            });
+            expect(modalBoundary.alert).toHaveBeenCalledWith('common.error', 'newSession.failedToStart');
+            expect(observabilityBoundary.capture).not.toHaveBeenCalled();
+        } finally {
+            await createHook.unmount().catch(() => undefined);
+        }
     });
 
-    it('rejects an explicit missing B target without falling back to focused A or issuing create', async () => {
-        const { profiles, homeA, homeAScopeId, homeAToken } = await arrangeFocusedHomeA();
-        routeBoundary.params.spawnServerId = 'srv_missing_home_b';
-        const createHook = await renderProductionCreateCaller({ activeServerId: homeAScopeId });
-        const model = createHook.getCurrent();
-        expect(model.variant === 'simple' ? model.simpleProps.targetServerId : model.wizardProps.machine.serverId)
-            .toBeNull();
-        socketBoundary.fetches.mockClear();
-        socketBoundary.connects.mockClear();
-        socketBoundary.emits.mockClear();
-        await act(async () => {
-            await readProductionCreateAction(createHook.getCurrent())({ initialMessage: 'skip' });
+    it('keeps Home removal and push cleanup scoped, then fails the retired explicit B target closed', async () => {
+        ({ homeA, homeAScopeId, homeAToken } = await arrangeFocusedHomeA());
+        await expect(TokenStorage.setCredentialsForServerUrl(
+            homeB.serverUrl,
+            { serverId: homeBScopeId },
+            { token: homeBToken },
+        )).resolves.toBe(true);
+        const createHook = await renderProductionCreateCaller({
+            activeServerId: homeAScopeId,
+            targetServerId: homeBScopeId,
         });
+        try {
+            const { saveLastRegisteredExpoPushToken } = await import('@/sync/domains/state/pushTokenRegistration');
+            saveLastRegisteredExpoPushToken('ExponentPushToken[multi-home]');
+            socketBoundary.fetches.mockClear();
+            const { removeServerProfileUiAction } = await import('@/components/serverProfiles/removeServerProfileUiAction');
+            await act(async () => {
+                await expect(removeServerProfileUiAction({
+                    profileId: homeBScopeId,
+                    serverUrl: homeB.serverUrl,
+                })).resolves.toEqual({ kind: 'completed' });
+            });
+            await expect(TokenStorage.getCredentialsForServerUrl(homeB.serverUrl, { serverId: homeBScopeId }))
+                .resolves.toBeNull();
+            await expect(TokenStorage.getCredentialsForServerUrl(homeA.serverUrl, { serverId: homeAScopeId }))
+                .resolves.toEqual({ token: homeAToken });
+            await vi.waitFor(() => {
+                expect(socketBoundary.fetches.mock.calls.some(([url]) =>
+                    String(url) === `${homeB.serverUrl}/v1/push-tokens/ExponentPushToken%5Bmulti-home%5D`)).toBe(true);
+            });
+            expect(socketBoundary.fetches.mock.calls.some(([url]) => String(url).startsWith(`${homeA.serverUrl}/v1/push-tokens`)))
+                .toBe(false);
 
-        expect(profiles.getActiveServerSnapshot().serverId).toBe(homeAScopeId);
-        const { TokenStorage } = await import('@/auth/storage/tokenStorage');
-        await expect(TokenStorage.getCredentialsForServerUrl(homeA.serverUrl, { serverId: homeAScopeId }))
-            .resolves.toEqual({ token: homeAToken });
-        expect(socketBoundary.fetches).not.toHaveBeenCalled();
-        expect(socketBoundary.connects).not.toHaveBeenCalled();
-        expect(socketBoundary.emits).not.toHaveBeenCalled();
-
-        await createHook.unmount();
+            expect(profiles.getActiveServerSnapshot().serverId).toBe(homeAScopeId);
+            expect(profiles.listServerProfiles().filter((profile) => profile.serverIdentityId === 'srv_home_b')).toHaveLength(0);
+            await createHook.rerender();
+            expect(createHook.getCurrent().variant === 'simple'
+                ? createHook.getCurrent().simpleProps.targetServerId
+                : createHook.getCurrent().wizardProps.machine.serverId).toBeNull();
+            socketBoundary.fetches.mockClear();
+            socketBoundary.emits.mockClear();
+            await act(async () => {
+                await readProductionCreateAction(createHook.getCurrent())({ initialMessage: 'skip' });
+            });
+            expect(socketBoundary.fetches).not.toHaveBeenCalled();
+            expect(socketBoundary.emits).not.toHaveBeenCalled();
+            expect(modalBoundary.alert).toHaveBeenCalledWith('common.error', 'newSession.failedToStart');
+            expect(observabilityBoundary.capture).not.toHaveBeenCalled();
+        } finally {
+            await createHook.unmount().catch(() => undefined);
+        }
     });
 });

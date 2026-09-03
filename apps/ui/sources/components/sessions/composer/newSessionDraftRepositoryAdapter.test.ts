@@ -50,6 +50,62 @@ afterEach(() => {
 });
 
 describe('newSessionDraftRepositoryAdapter', () => {
+    it('projects a published 0.2 draft into canonical 0.3 selections without deleting predecessor fields', () => {
+        const draftId = 'predecessor-draft';
+        writeNewSessionDraft({
+            scope,
+            draftId,
+            patch: {
+                text: 'Continue on another device',
+                // Reader-compatibility fixture: current writers intentionally exclude predecessor keys.
+                authoring: {
+                    machineId: 'machine-legacy',
+                    serverId: 'server-legacy',
+                    agentId: 'codex',
+                    backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+                    modelId: 'gpt-5',
+                    codexBackendMode: 'appServer',
+                } as never,
+            },
+            materializationIntent: 'userEdit',
+        });
+
+        const recovered = readNewSessionDraftFromRepository({ scope, draftId });
+        expect(recovered).toMatchObject({
+            input: 'Continue on another device',
+            selectedMachineId: 'machine-legacy',
+            targetServerId: 'server-legacy',
+            executionTarget: { serverId: 'server-legacy', machineId: 'machine-legacy' },
+            agentType: 'codex',
+            agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.codex', localId: 'codex' } },
+            modelSelection: {
+                v: 1,
+                ref: {
+                    agentTargetKey: 'agent:happier.agent.codex/codex',
+                    providerConnectionId: null,
+                    modelId: 'gpt-5',
+                },
+            },
+        });
+
+        writeNewSessionDraftToRepository({ scope, draftId, draft: recovered! });
+        expect(getSessionDraftSnapshot(scope, { kind: 'newSession', draftId })?.document.target).toMatchObject({
+            kind: 'newSession',
+            authoring: {
+                machineId: { value: 'machine-legacy' },
+                serverId: { value: 'server-legacy' },
+                agentId: { value: 'codex' },
+                backendTarget: { value: { kind: 'builtInAgent', agentId: 'codex' } },
+                modelId: { value: 'gpt-5' },
+                codexBackendMode: { value: 'appServer' },
+                executionTarget: { value: { serverId: 'server-legacy', machineId: 'machine-legacy' } },
+                agentTarget: {
+                    value: { kind: 'agent', identity: { pluginId: 'happier.agent.codex', localId: 'codex' } },
+                },
+            },
+        });
+    });
+
     it('persists delayed authoring fields without rewriting the canonical composer document', () => {
         const draftId = 'draft-a';
         writeNewSessionDraft({
@@ -101,6 +157,37 @@ describe('newSessionDraftRepositoryAdapter', () => {
             executionTarget: { serverId: 'server-a', machineId: 'machine-b' },
             agentType: 'codex',
             agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.codex', localId: 'codex' } },
+        });
+    });
+
+    it('sanitizes incomplete synchronized Automation trigger rows when materializing a local draft', () => {
+        const draftId = 'incomplete-automation-draft';
+        writeNewSessionDraft({
+            scope,
+            draftId,
+            patch: {
+                authoring: {
+                    automation: {
+                        enabled: true,
+                        name: 'Continue later',
+                        description: '',
+                        triggers: [{
+                            clientId: 'trigger-a',
+                            kind: 'sessionLifecycle',
+                            persisted: null,
+                            enabled: true,
+                            definition: null,
+                        }],
+                    },
+                },
+            },
+            materializationIntent: 'userEdit',
+        });
+
+        expect(readNewSessionDraftFromRepository({ scope, draftId })?.automationDraft).toMatchObject({
+            enabled: true,
+            name: 'Continue later',
+            triggers: [],
         });
     });
 

@@ -1,4 +1,4 @@
-import type { BackendTargetRefV1 } from '@happier-dev/protocol';
+import { ExecutionRunLaunchOriginSchema, type BackendTargetRefV1, type ExecutionRunLaunchOrigin } from '@happier-dev/protocol';
 
 import { resolveToolTranscriptSidechainId } from '@/components/tools/shell/views/resolveToolTranscriptSidechainId';
 import type { Message, ToolCallMessage } from '@/sync/domains/messages/messageTypes';
@@ -29,6 +29,7 @@ export type TranscriptExecutionRunState = {
     retentionPolicy?: string | null;
     runClass?: string | null;
     ioMode?: string | null;
+    launchOrigin?: ExecutionRunLaunchOrigin | null;
     startedAtMs?: number;
     updatedAtMs?: number;
     finishedAtMs?: number;
@@ -66,6 +67,11 @@ function readBackendTargetRef(value: unknown): BackendTargetRefV1 | null {
         return { kind: 'configuredAcpBackend', backendId: record.backendId.trim() };
     }
     return null;
+}
+
+function readLaunchOrigin(value: unknown): ExecutionRunLaunchOrigin | null {
+    const parsed = ExecutionRunLaunchOriginSchema.safeParse(value);
+    return parsed.success ? parsed.data : null;
 }
 
 function readTranscriptBackendTarget(params: Readonly<{
@@ -142,6 +148,7 @@ export function deriveTranscriptExecutionRunStateIndex(messages: readonly Messag
             retentionPolicy: readOptionalString(inputRecord, 'retentionPolicy') ?? readOptionalString(resultRecord, 'retentionPolicy') ?? current?.retentionPolicy ?? null,
             runClass: readOptionalString(inputRecord, 'runClass') ?? readOptionalString(resultRecord, 'runClass') ?? current?.runClass ?? null,
             ioMode: readOptionalString(inputRecord, 'ioMode') ?? readOptionalString(resultRecord, 'ioMode') ?? current?.ioMode ?? null,
+            launchOrigin: readLaunchOrigin(inputRecord.launchOrigin) ?? readLaunchOrigin(resultRecord.launchOrigin) ?? current?.launchOrigin ?? null,
             startedAtMs: typeof toolMessage.createdAt === 'number' ? toolMessage.createdAt : current?.startedAtMs,
             updatedAtMs: typeof toolMessage.createdAt === 'number' ? toolMessage.createdAt : current?.updatedAtMs,
             finishedAtMs: nextStatus === 'running' ? undefined : (typeof toolMessage.createdAt === 'number' ? toolMessage.createdAt : current?.finishedAtMs),

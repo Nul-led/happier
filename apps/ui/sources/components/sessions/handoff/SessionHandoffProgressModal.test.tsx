@@ -5,6 +5,12 @@ import { describe, expect, it, vi } from 'vitest';
 import { renderScreen } from '@/dev/testkit';
 import { installSessionHandoffCommonModuleMocks } from './sessionHandoffTestHelpers';
 
+const requestActionOperationStopMock = vi.hoisted(() => vi.fn(async () => ({ kind: 'requested' as const })));
+
+vi.mock('@/components/inbox/actionOperations/requestActionOperationStop', () => ({
+    requestActionOperationStop: requestActionOperationStopMock,
+}));
+
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 installSessionHandoffCommonModuleMocks();
@@ -60,6 +66,41 @@ async function expandProgressDetails(screen: Awaited<ReturnType<typeof renderScr
 }
 
 describe('SessionHandoffProgressModal', () => {
+    it('keeps the shared operation Stop and Collapse controls in the rich running presentation', async () => {
+        const { SessionHandoffProgressModal } = await import('./SessionHandoffProgressModal');
+        const setChrome = vi.fn();
+        const onClose = vi.fn();
+        const operation = {
+            version: 1 as const,
+            operationId: 'handoff-operation-controls',
+            requestId: 'request-controls',
+            revision: 1,
+            actionId: 'session.handoff',
+            state: 'running' as const,
+            scope: { accountId: 'account-1', machineId: 'source-machine', sessionId: 'session-1' },
+            title: 'Hand off session',
+            createdAt: 1,
+            startedAt: 1,
+            cancellation: 'supported' as const,
+        };
+
+        await renderScreen(
+            <SessionHandoffProgressModal
+                onClose={onClose}
+                setChrome={setChrome}
+                operation={operation}
+            />,
+        );
+
+        const chrome = setChrome.mock.calls.at(-1)?.[0];
+        expect(React.isValidElement(chrome?.footer)).toBe(true);
+        const footer = await renderScreen(chrome.footer);
+        await footer.pressByTestIdAsync('action-operation-cancel');
+        expect(requestActionOperationStopMock).toHaveBeenCalledWith(operation);
+        await footer.pressByTestIdAsync('action-operation-collapse');
+        expect(onClose).toHaveBeenCalledTimes(1);
+    });
+
     it('uses three localized primary stages and keeps technical operation details behind one disclosure', async () => {
         const { SessionHandoffProgressModal } = await import('./SessionHandoffProgressModal');
         const screen = await renderScreen(

@@ -38,6 +38,7 @@ import {
     parseSessionMessageDeliveryResolutionV1,
     pendingDeliveryStatusV1ToPersistedFields,
     type PendingDeliveryBlockedReason,
+    type PendingActivationFailureCodeV1,
     type PendingDeliveryStatusTransitionTargetV1,
     type PendingDeliveryStatusV1,
     type PendingRequestedActionV1,
@@ -69,12 +70,14 @@ import {
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { warn } from "@/utils/logging/log";
+import {
+    armPendingActivationAuthorizationInTx,
+    markPendingActivationAuthorizationFailedInTx,
+    reconcilePendingActivationAuthorizationForRemovedRequestInTx,
+    type PendingActivationTarget,
+} from "@/app/session/pending/pendingActivationAuthorization";
 
 type ParticipantCursor = SessionParticipantCursor;
-type PendingActivationTarget = Readonly<{
-    accountId: string;
-    requestId: string;
-}>;
 
 function pendingRequestedActionReplacementData(
     requestedAction: PendingRequestedActionV1,
@@ -794,10 +797,13 @@ async function enqueuePendingMessageWithAdmission(
                 },
             });
 
-            const activationTarget =
-                requestedAction.kind === "send_now" && session.active === false
-                    ? { accountId: session.accountId, requestId: localId }
-                    : undefined;
+            const activationTarget = await armPendingActivationAuthorizationInTx({
+                tx,
+                sessionId,
+                requestId: localId,
+                actorAccountId: actorUserId,
+                admissionKind: admission.kind,
+            });
             const { pendingCount, pendingBlockedCount, pendingVersion, participantCursors, badgeAttentionChanged, meaningfulActivityAt } = await applyPendingSessionStateChange({
                 tx,
                 sessionId,
@@ -1142,6 +1148,7 @@ export async function settlePendingInputAdmission(params: Readonly<{
                         requestEqualityEvidenceV1,
                     },
                 });
+                await reconcilePendingActivationAuthorizationForRemovedRequestInTx({ tx, sessionId, requestId: localId });
                 const state = await applyPendingSessionStateChange({
                     tx,
                     sessionId,
@@ -1193,6 +1200,7 @@ export async function settlePendingInputAdmission(params: Readonly<{
             await tx.sessionPendingMessage.delete({
                 where: { sessionId_localId: { sessionId, localId } },
             });
+            await reconcilePendingActivationAuthorizationForRemovedRequestInTx({ tx, sessionId, requestId: localId });
             const state = await applyPendingSessionStateChange({
                 tx,
                 sessionId,
@@ -1234,6 +1242,7 @@ export type UpdatePendingRequestedActionResult =
         pendingCount: number;
         pendingBlockedCount: number;
         participantCursors: ParticipantCursor[];
+        activationTarget?: PendingActivationTarget;
       }
     | { ok: false; error: "session-not-found" | "forbidden" | "invalid-params" | "not-found" | "action-conflict" | "internal" };
 
@@ -1305,6 +1314,24 @@ export async function updatePendingRequestedAction(params: Readonly<{
                 if (retained !== 1) {
                     return { ok: false, error: "action-conflict" } as const;
                 }
+                if (requestedActionResult.data.kind === "send_now") {
+                    await reconcileSessionPendingQueueStateInTx(tx, sessionId);
+                    const activationTarget = await armPendingActivationAuthorizationInTx({
+                        tx,
+                        sessionId,
+                        requestId: localId,
+                        actorAccountId: actorUserId,
+                        admissionKind: "account",
+                    });
+                    const state = await applyPendingSessionStateChange({ tx, sessionId, activationTarget });
+                    return {
+                        ok: true,
+                        didUpdate: true,
+                        requestedAction: currentAction,
+                        ...(activationTarget ? { activationTarget } : {}),
+                        ...state,
+                    } as const;
+                }
                 const session = await reconcileSessionPendingQueueStateInTx(tx, sessionId);
                 const participantCursors = session.didRepair
                     ? await markPendingStateChangedParticipants({
@@ -1334,6 +1361,18 @@ export async function updatePendingRequestedAction(params: Readonly<{
             if (updatedCount !== 1) {
                 return { ok: false, error: "action-conflict" } as const;
             }
+            const activationTarget = requestedActionResult.data.kind === "send_now"
+                ? await armPendingActivationAuthorizationInTx({
+                    tx,
+                    sessionId,
+                    requestId: localId,
+                    actorAccountId: actorUserId,
+                    admissionKind: "account",
+                })
+                : undefined;
+            if (requestedActionResult.data.kind !== "send_now") {
+                await reconcilePendingActivationAuthorizationForRemovedRequestInTx({ tx, sessionId, requestId: localId });
+            }
             const pendingCount = await tx.sessionPendingMessage.count({ where: { sessionId, status: "queued" } });
             const pendingBlockedCount = await tx.sessionPendingMessage.count({
                 where: { sessionId, status: "queued", deliveryState: "blocked" },
@@ -1349,6 +1388,7 @@ export async function updatePendingRequestedAction(params: Readonly<{
                 pendingCount: session.pendingCount,
                 pendingBlockedCount: session.pendingBlockedCount,
                 pendingVersion: session.pendingVersion,
+                activationTarget,
             });
             return {
                 ok: true,
@@ -1358,6 +1398,7 @@ export async function updatePendingRequestedAction(params: Readonly<{
                 pendingBlockedCount: session.pendingBlockedCount,
                 pendingVersion: session.pendingVersion,
                 participantCursors,
+                ...(activationTarget ? { activationTarget } : {}),
             } as const;
         });
     } catch {
@@ -1466,6 +1507,7 @@ export async function updatePendingMessage(params: {
                     status: true,
                     deliveryState: true,
                     deliveryBlockedReason: true,
+                    providerAction: true,
                 },
             });
             if (!existing) {
@@ -1501,6 +1543,15 @@ export async function updatePendingMessage(params: {
                 } as const;
             }
             if (isOrdinaryPendingMutationFenced(existing)) {
+                // Exact provider custody (a real claim with providerAction) has
+                // consumed the editable draft: the ordinary editor sees the
+                // same absence the in-flight message has, and only the
+                // delivery settlement owners may still mutate the row. Rows
+                // that are provider-effect-possible without an exact claim
+                // keep the explicit settlement fence.
+                if (existing.deliveryState === "delivering" && existing.providerAction !== null) {
+                    return { ok: false, error: "not-found" } as const;
+                }
                 return { ok: false, error: "delivery-settlement-conflict" } as const;
             }
 
@@ -1529,6 +1580,9 @@ export async function updatePendingMessage(params: {
                         }),
                 },
             });
+            if (replacementLocalId) {
+                await reconcilePendingActivationAuthorizationForRemovedRequestInTx({ tx, sessionId, requestId: localId });
+            }
 
             const { pendingVersion, pendingCount, pendingBlockedCount, participantCursors, badgeAttentionChanged } = await applyPendingSessionStateChange({
                 tx,
@@ -1597,6 +1651,7 @@ export async function deletePendingMessage(params: {
             await tx.sessionPendingMessage.delete({
                 where: { sessionId_localId: { sessionId, localId } },
             });
+            await reconcilePendingActivationAuthorizationForRemovedRequestInTx({ tx, sessionId, requestId: localId });
 
             const { pendingVersion, pendingCount, pendingBlockedCount, participantCursors, badgeAttentionChanged } = await applyPendingSessionStateChange({
                 tx,
@@ -1605,6 +1660,56 @@ export async function deletePendingMessage(params: {
                 pendingBlockedCountDelta: existing.status === "queued" && existing.deliveryState === "blocked" ? -1 : 0,
             });
             return { ok: true, pendingVersion, pendingCount, pendingBlockedCount, participantCursors, badgeAttentionChanged };
+        });
+    } catch {
+        return { ok: false, error: "internal" };
+    }
+}
+
+export type MarkPendingActivationFailedResult =
+    | { ok: true; didFail: boolean; pendingCount: number; pendingBlockedCount: number; pendingVersion: number; participantCursors: ParticipantCursor[] }
+    | { ok: false; error: "session-not-found" | "forbidden" | "invalid-params" | "internal" };
+
+/** Marks only the exact current waiting activation terminal-failed; stale reports are no-ops. */
+export async function markPendingActivationFailed(params: Readonly<{
+    actorUserId: string;
+    sessionId: string;
+    requestId: string;
+    requestedAt: number;
+    failureCode: PendingActivationFailureCodeV1;
+}>): Promise<MarkPendingActivationFailedResult> {
+    if (
+        !params.actorUserId
+        || !params.sessionId
+        || !params.requestId
+        || !Number.isSafeInteger(params.requestedAt)
+        || params.requestedAt < 0
+    ) return { ok: false, error: "invalid-params" };
+    const access = await resolveSessionPendingOwnerAccess(params.actorUserId, params.sessionId);
+    if (!access.ok) return { ok: false, error: access.error };
+    try {
+        return await inTx(async (tx) => {
+            const didFail = await markPendingActivationAuthorizationFailedInTx({
+                tx,
+                sessionId: params.sessionId,
+                requestId: params.requestId,
+                requestedAt: new Date(params.requestedAt),
+                failureCode: params.failureCode,
+            });
+            const session = await tx.session.findUniqueOrThrow({
+                where: { id: params.sessionId },
+                select: { pendingCount: true, pendingBlockedCount: true, pendingVersion: true },
+            });
+            const participantCursors = didFail
+                ? await markPendingStateChangedParticipants({
+                    tx,
+                    sessionId: params.sessionId,
+                    pendingCount: session.pendingCount,
+                    pendingBlockedCount: session.pendingBlockedCount,
+                    pendingVersion: session.pendingVersion,
+                })
+                : [];
+            return { ok: true, didFail, ...session, participantCursors } as const;
         });
     } catch {
         return { ok: false, error: "internal" };
@@ -1850,6 +1955,11 @@ async function commitResolvedPendingDelivery(
             }],
             reason: "unknown",
         });
+        await reconcilePendingActivationAuthorizationForRemovedRequestInTx({
+            tx,
+            sessionId: params.sessionId,
+            requestId: params.localId,
+        });
         const { pendingVersion, pendingCount, pendingBlockedCount, participantCursors, badgeAttentionChanged } = await applyPendingSessionStateChange({
             tx,
             sessionId: params.sessionId,
@@ -1880,6 +1990,11 @@ async function commitResolvedPendingDelivery(
 
     await tx.sessionPendingMessage.delete({
         where: { sessionId_localId: { sessionId: params.sessionId, localId: params.localId } },
+    });
+    await reconcilePendingActivationAuthorizationForRemovedRequestInTx({
+        tx,
+        sessionId: params.sessionId,
+        requestId: params.localId,
     });
 
     const previousDeliveryStatus = readPendingDeliveryStatus(params.existing);
@@ -2124,6 +2239,7 @@ export async function blockPendingDelivery(params: {
                 if (updated.count !== 1) {
                     return { ok: false, error: "delivery-settlement-conflict" } as const;
                 }
+                await reconcilePendingActivationAuthorizationForRemovedRequestInTx({ tx, sessionId, requestId: localId });
                 const state = await applyPendingSessionStateChange({ tx, sessionId });
                 return { ok: true, ...state, didUpdate: true } as const;
             }
@@ -2145,6 +2261,7 @@ export async function blockPendingDelivery(params: {
                     discardedReason: persisted.discardedReason,
                 },
             });
+            await reconcilePendingActivationAuthorizationForRemovedRequestInTx({ tx, sessionId, requestId: localId });
 
             const { pendingVersion, pendingCount, pendingBlockedCount, participantCursors, badgeAttentionChanged } = await applyPendingSessionStateChange({
                 tx,
@@ -2255,6 +2372,7 @@ export async function sendPendingDeliveryAsNew(params: {
                     discardedAt: new Date(),
                 },
             });
+            await reconcilePendingActivationAuthorizationForRemovedRequestInTx({ tx, sessionId, requestId: localId });
             await tx.sessionPendingMessage.create({
                 data: {
                     sessionId,
@@ -2405,6 +2523,7 @@ export async function dismissPendingDelivery(params: {
                     discardedReason: persisted.discardedReason,
                 },
             });
+            await reconcilePendingActivationAuthorizationForRemovedRequestInTx({ tx, sessionId, requestId: localId });
             const state = await applyPendingSessionStateChange({
                 tx,
                 sessionId,
@@ -2450,10 +2569,10 @@ export async function discardPendingMessage(params: {
                 select: { status: true, deliveryState: true, deliveryBlockedReason: true, discardedReason: true },
             });
             if (!existing) return { ok: false, error: "not-found" } as const;
-            if (isOrdinaryPendingMutationFenced(existing)) {
-                return { ok: false, error: "delivery-settlement-conflict" } as const;
-            }
-
+            // Explicit discard is a durable user cancellation, so the delivery
+            // status transition protocol owns the decision below: delivering
+            // and external-handoff custody may be discarded, while archived
+            // uncertainty identities stay reserved by the reason guard above.
             const target = { status: "discarded", reason } as const;
             if (readPendingDeliveryStatus(existing).status === "discarded" || !canTransitionPendingDeliveryStatus(existing, target)) {
                 const session = await tx.session.findUnique({
@@ -2481,6 +2600,7 @@ export async function discardPendingMessage(params: {
                     discardedReason: persisted.discardedReason,
                 },
             });
+            await reconcilePendingActivationAuthorizationForRemovedRequestInTx({ tx, sessionId, requestId: localId });
 
             const { pendingVersion, pendingCount, pendingBlockedCount, participantCursors, badgeAttentionChanged } = await applyPendingSessionStateChange({
                 tx,
@@ -2559,7 +2679,7 @@ export async function restorePendingMessage(params: {
 
 export type ReorderPendingMessagesResult =
     | { ok: true; pendingVersion: number; pendingCount: number; pendingBlockedCount: number; participantCursors: ParticipantCursor[]; badgeAttentionChanged: boolean; meaningfulActivityAt?: Date }
-    | { ok: false; error: "session-not-found" | "forbidden" | "invalid-params" | "delivery-settlement-conflict" | "internal" };
+    | { ok: false; error: "session-not-found" | "forbidden" | "invalid-params" | "internal" };
 
 export async function reorderPendingMessages(params: {
     actorUserId: string;
@@ -2598,7 +2718,10 @@ export async function reorderPendingMessages(params: {
                     isOrdinaryPendingMutationFenced({ status: "queued", ...row })
                     && orderedIndexByLocalId.get(row.localId) !== existingIndex
                 ) {
-                    return { ok: false, error: "delivery-settlement-conflict" } as const;
+                    // A provider-effect-possible row keeps its queue slot, so
+                    // an ordering that would move it is invalid for the
+                    // current queue rather than a settlement conflict.
+                    return { ok: false, error: "invalid-params" } as const;
                 }
             }
 

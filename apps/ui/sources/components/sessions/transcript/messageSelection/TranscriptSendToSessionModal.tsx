@@ -9,9 +9,7 @@ import {
     useUnistyles,
 } from 'react-native-unistyles';
 
-import {
-} from '@/agents/catalog/catalog';
-import { AgentIcon } from '@/agents/registry/AgentIcon';
+import { SessionAgentCatalogIdentityIcon } from '@/components/sessions/presentation/SessionAgentCatalogIdentityIcon';
 import { SelectionList, type SelectionListOption, type SelectionListStep } from '@/components/ui/selectionList';
 import { Text } from '@/components/ui/text/Text';
 import { useKeyboardHeight } from '@/hooks/ui/useKeyboardHeight';
@@ -245,9 +243,12 @@ export const TranscriptSendToSessionModal = React.memo(function TranscriptSendTo
             label: getSessionName(session),
             subtitle: getSessionSubtitle(session),
             icon: (
-                <AgentIcon
+                <SessionAgentCatalogIdentityIcon
                     agentId={resolveSessionAgentId(session)}
+                    machineId={normalizeNonEmptyString(session.metadata?.machineId)}
+                    serverId={session.serverId}
                     size={20}
+                    color={theme.colors.text.secondary}
                     testID={`transcript-send-to-session-agent-logo-${session.id}`}
                 />
             ),

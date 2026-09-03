@@ -1,5 +1,6 @@
 import { markSessionParticipantsChanged, type SessionParticipantCursor } from "@/app/session/changeTracking/markSessionParticipantsChanged";
 import type { Tx } from "@/storage/inTx";
+import { buildPendingActivationRequestHint } from "@/app/session/pending/publishPendingMutation";
 
 export async function markPendingStateChangedParticipants(params: {
     tx: Tx;
@@ -27,7 +28,7 @@ export async function markPendingStateChangedParticipants(params: {
         ...(params.activationTarget
             ? {
                 hintForParticipant: (accountId: string) => accountId === params.activationTarget!.accountId
-                    ? { ...hint, pendingActivationRequestId: params.activationTarget!.requestId }
+                    ? { ...hint, ...buildPendingActivationRequestHint(params.activationTarget) }
                     : hint,
             }
             : {}),

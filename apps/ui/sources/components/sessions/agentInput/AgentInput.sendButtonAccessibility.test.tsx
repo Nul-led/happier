@@ -757,6 +757,81 @@ describe('AgentInput (send button accessibility)', () => {
         await screen.unmount();
     });
 
+    it('uses the selected external Agent catalog mark on the continuation submit control', async () => {
+        const { AgentInput } = await import('./AgentInput');
+        const entry = {
+            agentId: 'plugin:acme.review',
+            qualifiedId: 'acme.plugin/review',
+            identity: { pluginId: 'acme.plugin', localId: 'review' },
+            isBuiltIn: false,
+        };
+        const screen = await renderScreen(<AgentInput
+            sessionId="session-1"
+            value="ship it"
+            placeholder="Type"
+            onChangeText={() => {}}
+            onSend={() => {}}
+            agentType="codex"
+            agentPickerOptions={[{
+                id: 'agent:acme.plugin/review',
+                label: 'Acme Review',
+                icon: React.createElement('AgentCatalogIdentityIcon', {
+                    entry,
+                    machineId: 'machine-a',
+                    serverId: 'server-a',
+                    current: true,
+                }),
+            }]}
+            agentPickerSelectedOptionId="agent:acme.plugin/review"
+            armedContinuationTarget={{
+                agentId: 'plugin:acme.review',
+                backendTargetKey: 'agent:acme.plugin/review',
+                label: 'Acme Review',
+            }}
+            autocompleteKinds={[]}
+            autocompleteSuggestions={async () => []}
+        />);
+
+        const mark = screen.findByTestId('agent-input-continuation-submit-logo');
+        expect(mark?.type).toBe('AgentCatalogIdentityIcon');
+        expect(mark?.props).toMatchObject({
+            entry,
+            machineId: 'machine-a',
+            serverId: 'server-a',
+            current: true,
+        });
+        expect(screen.findByTestId('session-composer-send')?.props.accessibilityLabel)
+            .toBe('session.agentContinuation.sendLabel');
+
+        await screen.update(<AgentInput
+            sessionId="session-1"
+            value="ship it"
+            placeholder="Type"
+            onChangeText={() => {}}
+            onSend={() => {}}
+            agentType="codex"
+            agentPickerOptions={[{
+                id: 'agent:other.plugin/review',
+                label: 'Other Review',
+                icon: React.createElement('AgentCatalogIdentityIcon', {
+                    entry: { ...entry, identity: { pluginId: 'other.plugin', localId: 'review' } },
+                    machineId: 'machine-a',
+                    serverId: 'server-a',
+                    current: true,
+                }),
+            }]}
+            agentPickerSelectedOptionId="agent:other.plugin/review"
+            armedContinuationTarget={{
+                agentId: 'plugin:acme.review',
+                backendTargetKey: 'agent:acme.plugin/review',
+                label: 'Acme Review',
+            }}
+            autocompleteKinds={[]}
+            autocompleteSuggestions={async () => []}
+        />);
+        expect(screen.findByTestId('agent-input-continuation-submit-logo')).toBeNull();
+    });
+
     it('names the armed Agent while it is still on that Agent\u2019s own model settings', async () => {
         const { AgentInput } = await import('./AgentInput');
 

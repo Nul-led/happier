@@ -129,6 +129,8 @@ export const AgentInputSubmitButton = React.memo(function AgentInputSubmitButton
      * says so, at the moment of consequence.
      */
     armedContinuationTarget?: Readonly<{ agentId: string; label: string }> | null;
+    /** Exact selected picker mark for an external/machine-qualified target. */
+    armedContinuationIdentityMark?: React.ReactNode;
     onSend: () => void;
     onStop?: () => void;
 }>) {
@@ -170,10 +172,14 @@ export const AgentInputSubmitButton = React.memo(function AgentInputSubmitButton
         armedContinuationTarget: props.armedContinuationTarget,
         otherActionHoldsSubmit: showDictation || showStopWhenEmpty,
     });
+    const canonicalIdentityMark = React.isValidElement<Record<string, unknown>>(
+        props.armedContinuationIdentityMark,
+    ) ? props.armedContinuationIdentityMark : null;
     const armedContinuation = armedTarget
         ? resolveAgentContinuationSubmitPresentation({
             agentId: armedTarget.agentId,
             agentLabel: armedTarget.label,
+            hasIdentityMark: canonicalIdentityMark !== null,
         })
         : null;
 
@@ -201,7 +207,13 @@ export const AgentInputSubmitButton = React.memo(function AgentInputSubmitButton
     ]);
 
     if (armedContinuation) {
-        const mark = armedContinuation.markAgentId ? (
+        const canonicalMark = canonicalIdentityMark
+            ? React.cloneElement(canonicalIdentityMark, {
+                size: armedContinuation.markSize,
+                testID: 'agent-input-continuation-submit-logo',
+            })
+            : undefined;
+        const mark = canonicalMark ?? (armedContinuation.markAgentId ? (
             // The same mark the Agent rail used to offer this target, at the
             // registry's own optical size and tinted by the button's token, so
             // it reads at the weight the reader just saw.
@@ -210,7 +222,7 @@ export const AgentInputSubmitButton = React.memo(function AgentInputSubmitButton
                 size={armedContinuation.markSize}
                 color={theme.colors.button.primary.tint}
             />
-        ) : undefined;
+        ) : undefined);
         return (
             <AgentInputSubmitShape>
                 <RoundButton

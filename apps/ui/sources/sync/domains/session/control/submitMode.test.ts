@@ -45,8 +45,28 @@ describe('decideSessionMessageDelivery row actions', () => {
             .toMatchObject({ mode: 'server_pending', requestedAction: { v: 1, kind: 'send_now' } });
     });
 
-    it('uses send_now for inactive sessions so wake can consume the same row', () => {
+    it('defaults inactive sessions to an enqueue row without durable activation', () => {
         expect(decideSessionMessageDelivery({ configuredMode: 'agent_queue', session: { ...idle, active: false }, nowMs: now }))
+            .toMatchObject({ requestedAction: { v: 1, kind: 'enqueue' } });
+    });
+
+    it('uses the inactive-session resume policy for inactive and offline sessions', () => {
+        const inactive = { ...idle, active: false, presence: 0 };
+        const offline = { ...idle, presence: 0 };
+
+        expect(decideSessionMessageDelivery({ configuredMode: 'agent_queue', session: inactive, nowMs: now }))
+            .toMatchObject({ requestedAction: { v: 1, kind: 'enqueue' } });
+        expect(decideSessionMessageDelivery({ configuredMode: 'agent_queue', session: inactive, nowMs: now, sessionInactiveResumePolicy: 'when_available' }))
             .toMatchObject({ requestedAction: { v: 1, kind: 'send_now' } });
+        expect(decideSessionMessageDelivery({ configuredMode: 'agent_queue', session: inactive, nowMs: now, sessionInactiveResumePolicy: 'manual' }))
+            .toMatchObject({ requestedAction: { v: 1, kind: 'enqueue' } });
+        expect(decideSessionMessageDelivery({ configuredMode: 'agent_queue', session: offline, nowMs: now, sessionInactiveResumePolicy: 'when_available' }))
+            .toMatchObject({ requestedAction: { v: 1, kind: 'send_now' } });
+        expect(decideSessionMessageDelivery({ configuredMode: 'agent_queue', session: offline, nowMs: now, sessionInactiveResumePolicy: 'online_only' }))
+            .toMatchObject({ requestedAction: { v: 1, kind: 'enqueue' } });
+        expect(decideSessionMessageDelivery({ configuredMode: 'agent_queue', explicitMode: 'server_pending', session: offline, nowMs: now }))
+            .toMatchObject({ reason: 'offline_pending', requestedAction: { v: 1, kind: 'enqueue' } });
+        expect(decideSessionMessageDelivery({ configuredMode: 'agent_queue', session: { ...steerable, presence: 0 }, nowMs: now }))
+            .toMatchObject({ reason: 'offline_pending', requestedAction: { v: 1, kind: 'enqueue' } });
     });
 });

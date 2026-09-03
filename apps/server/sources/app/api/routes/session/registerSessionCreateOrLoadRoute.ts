@@ -36,6 +36,7 @@ import {
     applySessionCreationPlacementInTx,
     readSessionOrganizationPlacementInTx,
 } from "@/app/session/organization/organizationMutations";
+import { mapPendingActivationAuthorization } from "@/app/session/pending/pendingActivationAuthorization";
 
 import { type Fastify } from "../../types";
 
@@ -663,6 +664,7 @@ export function registerSessionCreateOrLoadRoute(app: Fastify) {
                 pendingCount: resolvedSession.pendingCount,
                 pendingBlockedCount: resolvedSession.pendingBlockedCount,
                 pendingVersion: resolvedSession.pendingVersion,
+                pendingActivationAuthorization: mapPendingActivationAuthorization(resolvedSession),
                 active: resolvedSession.active,
                 activeAt: resolvedSession.lastActiveAt.getTime(),
                 createdAt: resolvedSession.createdAt.getTime(),

@@ -112,6 +112,8 @@ import {
     type AgentId,
 } from '@/agents/catalog/catalog';
 import { AgentIcon } from '@/agents/registry/AgentIcon';
+import { AgentCatalogIdentityIcon } from '@/agents/presentation/AgentCatalogIdentityIcon';
+import type { ResolvedAgentCatalogEntry } from '@/agents/backendCatalog/agentCatalogProjection';
 // From the registry rather than the catalog facade: this narrows an id the picker
 // supplied, which is the same check the send control's presentation resolver makes.
 import { isBundledAgentId } from '@/agents/registry/registryCore';
@@ -433,6 +435,13 @@ interface AgentInputProps {
     onFileViewerPress?: () => void;
     agentType?: string;
     agentLabel?: string | null;
+    /** Current machine-qualified catalog identity for the running/preflight Agent. */
+    agentCatalogIdentity?: Readonly<{
+        entry: ResolvedAgentCatalogEntry;
+        machineId: string | null;
+        serverId: string | null;
+        current: boolean;
+    }>;
     onAgentClick?: () => void;
     agentPickerTitle?: string;
     agentPickerOptions?: ReadonlyArray<AgentInputChipPickerOption>;
@@ -483,6 +492,8 @@ interface AgentInputProps {
      */
     armedContinuationTarget?: Readonly<{
         agentId: string;
+        /** Exact catalog target key the selected picker row came from. */
+        backendTargetKey?: string;
         label: string;
         /**
          * The label of the model chosen for the target Agent, or null while it is
@@ -2552,15 +2563,21 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                 id: `engine:${props.agentType}`,
                 label: effectiveAgentLabel,
                 icon: (
-                    <AgentIcon
-                        agentId={props.agentType}
-                        size={12}
-                        style={{ transform: [{ scale: getAgentPickerIconScale(props.agentType) }] }}
-                    />
+                    props.agentCatalogIdentity
+                    && (
+                        props.agentType === props.agentCatalogIdentity.entry.agentId
+                        || props.agentType === props.agentCatalogIdentity.entry.qualifiedId
+                    )
+                        ? <AgentCatalogIdentityIcon {...props.agentCatalogIdentity} size={12} />
+                        : <AgentIcon
+                            agentId={props.agentType}
+                            size={12}
+                            style={{ transform: [{ scale: getAgentPickerIconScale(props.agentType) }] }}
+                        />
                 ),
             }
             : null
-    ), [effectiveAgentLabel, props.agentType]);
+    ), [effectiveAgentLabel, props.agentCatalogIdentity, props.agentType]);
 
     const internalAgentPickerOptions = React.useMemo<ReadonlyArray<AgentInputChipPickerOption>>(() => {
         if (!hasInternalAgentPickerOptions || !props.agentType || !currentAgentPickerRow) return [];
@@ -2784,6 +2801,51 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
             ? armedComposerTarget.agentId
             : (props.agentType ?? agentId)
     );
+    const engineChipIdentityIcon = React.useMemo(() => {
+        const identity = props.agentCatalogIdentity;
+        if (identity) {
+            const entryMatches = engineChipAgentId === identity.entry.agentId
+                || engineChipAgentId === identity.entry.qualifiedId;
+            if (entryMatches) {
+                return (
+                    <AgentCatalogIdentityIcon
+                        {...identity}
+                        size={16}
+                        color={theme.colors.composer.chipTint}
+                        testID="agent-input-agent-chip-logo"
+                    />
+                );
+            }
+        }
+        const selectedOption = agentPickerOptions.find(
+            (option) => option.id === effectiveAgentPickerSelectedOptionId,
+        );
+        if (armedComposerTarget && (
+            !armedComposerTarget.backendTargetKey
+            || selectedOption?.id !== armedComposerTarget.backendTargetKey
+        )) return undefined;
+        return React.isValidElement<Record<string, unknown>>(selectedOption?.icon)
+            ? React.cloneElement(selectedOption.icon, {
+                size: 16,
+                testID: 'agent-input-agent-chip-logo',
+            })
+            : undefined;
+    }, [
+        agentPickerOptions,
+        effectiveAgentPickerSelectedOptionId,
+        engineChipAgentId,
+        props.agentCatalogIdentity,
+        theme.colors.composer.chipTint,
+    ]);
+    const armedContinuationIdentityMark = React.useMemo(() => {
+        if (!armedComposerTarget) return undefined;
+        const selectedOption = agentPickerOptions.find(
+            (option) => option.id === effectiveAgentPickerSelectedOptionId,
+        );
+        return selectedOption?.id === armedComposerTarget.backendTargetKey
+            ? selectedOption.icon
+            : undefined;
+    }, [agentPickerOptions, armedComposerTarget, effectiveAgentPickerSelectedOptionId]);
     const hasRecipient = React.useMemo(() => {
         return (props.extraActionChips ?? []).some((chip) => chip.controlId === 'recipient');
     }, [props.extraActionChips]);
@@ -3026,6 +3088,7 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
         hasAnyActions,
         tint: theme.colors.composer.chipTint,
         agentId: engineChipAgentId,
+        agentIdentityIcon: engineChipIdentityIcon,
         profileLabel,
         profileIcon,
         envVarsCount: props.envVarsCount,
@@ -3104,6 +3167,7 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
         hasAgentSelection: hasAgent,
         agentChipAnchorRef,
         agentId: engineChipAgentId,
+        agentIdentityIcon: engineChipIdentityIcon,
         agentLabel: resolvedAgentLabel,
         engineLabel: engineChipLabel,
         onAgentPress: handleAgentPress,
@@ -3665,6 +3729,7 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                                         dictationPressHandler={dictationPressHandler}
                                         dictationStatus={dictationStatus}
                                         armedContinuationTarget={props.armedContinuationTarget ?? null}
+                                        armedContinuationIdentityMark={armedContinuationIdentityMark}
                                         onSend={handleSend}
                                         onStop={handleAbortPress}
                                     />
@@ -3868,6 +3933,7 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                                             dictationPressHandler={dictationPressHandler}
                                             dictationStatus={dictationStatus}
                                             armedContinuationTarget={props.armedContinuationTarget ?? null}
+                                            armedContinuationIdentityMark={armedContinuationIdentityMark}
                                             onSend={handleSend}
                                             onStop={handleAbortPress}
                                         />

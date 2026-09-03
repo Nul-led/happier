@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
+import { buildQualifiedPluginContributionKey } from '@happier-dev/protocol/plugins/contribution-identity';
+import { MAX_PLUGIN_IDENTIFIER_BYTES } from '@happier-dev/protocol/plugins/plugin-id';
 import type { SessionServerStartSpawnDraftV1 } from '@happier-dev/protocol/sessions/creation/sessionSpawnNewInputV2';
 
 import {
@@ -40,6 +42,26 @@ describe('Session server-start draft composer', () => {
         expect(outcome).toEqual({ kind: 'submitted', draft: serverStartDraft });
         expect(present).toHaveBeenCalledWith(expect.objectContaining({
             seed: { directory: '/workspace', agentId: 'claude', permissionMode: 'default' },
+        }));
+    });
+
+    it('seeds a maximum-length installed Agent routing id instead of refusing the draft', async () => {
+        const agentId = buildQualifiedPluginContributionKey({
+            pluginId: `${'a'.repeat(MAX_PLUGIN_IDENTIFIER_BYTES - 2)}.b`,
+            localId: 'c'.repeat(MAX_PLUGIN_IDENTIFIER_BYTES),
+        });
+        const present = vi.fn(() => presentResolved(serverStartDraft));
+
+        const outcome = await composeSessionServerStartDraft({
+            draft: { directory: '/workspace', agentId },
+            isCurrent: () => true,
+            target,
+            present,
+        });
+
+        expect(outcome).toEqual({ kind: 'submitted', draft: serverStartDraft });
+        expect(present).toHaveBeenCalledWith(expect.objectContaining({
+            seed: { directory: '/workspace', agentId },
         }));
     });
 

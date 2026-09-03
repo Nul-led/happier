@@ -19,9 +19,12 @@ import { SOCKET_RPC_EVENTS } from "@happier-dev/protocol/socketRpc";
 import type { Server } from "socket.io";
 
 import { fetchAutomationAccountCurrentnessWitnessTx } from "@/app/automations/automationAccountCurrentness";
-import { decodeAutomationRunCause } from "@/app/automations/automationRunCauseCodec";
+import { automationRunCauseSelect } from "@/app/automations/automationPersistenceSelect";
+import {
+    decodeAutomationRunCause,
+    type CauseRow,
+} from "@/app/automations/automationRunCauseCodec";
 import { retainAutomationRunProducedSession } from "@/app/automations/automationRunService";
-import type { AutomationRunItem } from "@/app/automations/automationTypes";
 import { classifyMachineAvailabilityState } from "@/app/machines/machineStateGuards";
 import { inTx } from "@/storage/inTx";
 
@@ -289,26 +292,13 @@ export function createSessionServerStartDaemonDispatcher(params: Readonly<{
     };
 }
 
-type SessionServerStartIngressRun = Readonly<{
+/** The ingress Run read: the complete immutable cause plus its claim facts. */
+type SessionServerStartIngressRun = CauseRow & Readonly<{
     automationId: string;
     state: string;
     claimedByMachineId: string | null;
     attempt: number;
     leaseExpiresAt: Date | null;
-    triggerId: string | null;
-    causeKind: AutomationRunItem["causeKind"];
-    causeTriggerKind: AutomationRunItem["causeTriggerKind"];
-    causeTriggerRevision: number | null;
-    causeOccurredAt: Date | null;
-    causeEventPluginId: string | null;
-    causeEventLocalId: string | null;
-    causeScheduledFor: Date | null;
-    causeSessionLifecycleEvent: AutomationRunItem["causeSessionLifecycleEvent"];
-    causeSourceSessionId: string | null;
-    causeSourceTurnId: string | null;
-    occurrenceKey: string | null;
-    causeSourceSelectorId: string | null;
-    createdAt: Date;
     executionInputEnvelope: string | null;
 }>;
 
@@ -459,25 +449,12 @@ async function resolveSessionServerStartDispatchFromServer(params: Readonly<{
                     now,
                 }),
                 select: {
+                    ...automationRunCauseSelect,
                     automationId: true,
                     state: true,
                     claimedByMachineId: true,
                     attempt: true,
                     leaseExpiresAt: true,
-                    triggerId: true,
-                    causeKind: true,
-                    causeTriggerKind: true,
-                    causeTriggerRevision: true,
-                    causeOccurredAt: true,
-                    causeEventPluginId: true,
-                    causeEventLocalId: true,
-                    causeScheduledFor: true,
-                    causeSessionLifecycleEvent: true,
-                    causeSourceSessionId: true,
-                    causeSourceTurnId: true,
-                    occurrenceKey: true,
-                    causeSourceSelectorId: true,
-                    createdAt: true,
                     executionInputEnvelope: true,
                 },
             }),

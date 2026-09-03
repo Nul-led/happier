@@ -5,6 +5,7 @@ import { createRouteTestBuilder } from "../../testkit/routeTestBuilder";
 const emitUpdate = vi.fn();
 const buildPendingChangedUpdate = vi.fn(() => ({ type: "pending-changed" }));
 const updatePendingRequestedAction = vi.fn();
+const markPendingActivationFailed = vi.fn();
 const sessionFindUnique = vi.fn();
 
 const HOSTED_RECIPIENT_PROJECTION = {
@@ -38,7 +39,7 @@ vi.mock("@/storage/db", () => ({
 }));
 vi.mock("@/app/session/pending/pendingMessageService", async (importOriginal) => {
     const actual = await importOriginal<typeof import("@/app/session/pending/pendingMessageService")>();
-    return { ...actual, updatePendingRequestedAction };
+    return { ...actual, updatePendingRequestedAction, markPendingActivationFailed };
 });
 
 describe("sessionPendingRoutes requested action", () => {
@@ -47,8 +48,44 @@ describe("sessionPendingRoutes requested action", () => {
         emitUpdate.mockReset();
         buildPendingChangedUpdate.mockClear();
         updatePendingRequestedAction.mockReset();
+        markPendingActivationFailed.mockReset();
         sessionFindUnique.mockReset();
         sessionFindUnique.mockResolvedValue(HOSTED_RECIPIENT_PROJECTION);
+    });
+
+    it("marks only the exact waiting activation authorization failed", async () => {
+        markPendingActivationFailed.mockResolvedValueOnce({
+            ok: true,
+            didFail: false,
+            pendingCount: 1,
+            pendingBlockedCount: 0,
+            pendingVersion: 8,
+            participantCursors: [],
+        });
+        const { sessionPendingRoutes } = await import("./pendingRoutes");
+        const route = createRouteTestBuilder({
+            method: "POST",
+            path: "/v2/sessions/:sessionId/pending/activation/fail",
+            registerRoutes(app) {
+                sessionPendingRoutes(app as any);
+            },
+        });
+
+        const { response } = await route.invoke({
+            userId: "actor",
+            params: { sessionId: "s1" },
+            body: { requestId: "pending-1", requestedAt: 1_234, failureCode: "runtime_start_failed" },
+        });
+
+        expect(markPendingActivationFailed).toHaveBeenCalledWith({
+            actorUserId: "actor",
+            sessionId: "s1",
+            requestId: "pending-1",
+            requestedAt: 1_234,
+            failureCode: "runtime_start_failed",
+        });
+        expect(response).toEqual({ ok: true, didFail: false });
+        expect(emitUpdate).not.toHaveBeenCalled();
     });
 
     it("registers only PATCH and does not publish an idempotent action retry", async () => {

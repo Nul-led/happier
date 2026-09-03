@@ -2,9 +2,8 @@ import * as React from 'react';
 import { View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
-import { AgentIcon } from '@/agents/registry/AgentIcon';
-import { getAgentPickerIconScale } from '@/agents/registry/registryUi';
 import { ICON_LABEL_OPTICAL_NUDGE_STYLE } from '@/components/ui/icons/iconOpticalAlignment';
+import { SessionAgentCatalogIdentityIcon } from '@/components/sessions/presentation/SessionAgentCatalogIdentityIcon';
 import { TRANSCRIPT_SEPARATOR_TITLE_TEXT_STYLE } from '@/components/sessions/transcript/separators/TranscriptSeparatorRow';
 import { Text } from '@/components/ui/text/Text';
 import { t } from '@/text';
@@ -114,10 +113,8 @@ export function buildAgentTransitionTitleParts(params: Readonly<{
  * space the sentence mostly does not use, so a box-centred mark reads high
  * against the ink the eye actually weighs. `ICON_LABEL_OPTICAL_NUDGE_STYLE` is
  * the app's one answer to that — the same nudge the composer's Agent chip and
- * every menu row glyph carry — and it is composed with the registry's per-Agent
- * optical scale exactly as the chip composes them, so a mark here reads at the
- * weight the reader just saw in the rail. A second constant tuned by eye for
- * this one row would be a competing rule for the same problem.
+ * every menu row glyph carry. Mark identity and sizing stay with the canonical
+ * machine-scoped presentation owner; this row owns only its baseline alignment.
  *
  * WIDTH is a hierarchy decision. The chip cannot always hold the sentence on a
  * phone, and the two Agents are the only part of it that carries information —
@@ -127,6 +124,8 @@ export function buildAgentTransitionTitleParts(params: Readonly<{
 export function AgentTransitionDividerTitle(props: Readonly<{
     testID?: string;
     parts: readonly AgentTransitionTitlePart[];
+    machineId: string | null;
+    serverId: string | null;
 }>): React.ReactElement {
     const { theme } = useUnistyles();
     return (
@@ -144,16 +143,13 @@ export function AgentTransitionDividerTitle(props: Readonly<{
                 : (
                     <View key={`agent-${index}`} style={styles.agent}>
                         {part.agent.markAgentId ? (
-                            <View style={styles.markBox}>
-                                <AgentIcon
+                            <View style={[styles.markBox, ICON_LABEL_OPTICAL_NUDGE_STYLE]}>
+                                <SessionAgentCatalogIdentityIcon
                                     agentId={part.agent.markAgentId}
+                                    machineId={props.machineId}
+                                    serverId={props.serverId}
                                     size={MARK_BOX_SIZE}
-                                    style={{
-                                        transform: [
-                                            { scale: getAgentPickerIconScale(part.agent.markAgentId) },
-                                            ...ICON_LABEL_OPTICAL_NUDGE_STYLE.transform,
-                                        ],
-                                    }}
+                                    color={theme.colors.text.secondary}
                                     testID={`${AGENT_TRANSITION_DIVIDER_MARK_TEST_ID_PREFIX}${part.agent.markAgentId}`}
                                 />
                             </View>

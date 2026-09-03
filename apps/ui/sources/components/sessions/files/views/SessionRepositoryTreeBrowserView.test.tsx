@@ -306,6 +306,41 @@ describe('SessionRepositoryTreeBrowserView', () => {
         expect(screen.findByTestId('search-results:after.txt')).toBeTruthy();
     });
 
+    /**
+     * The search owner (`searchWorkspaceFiles`) accepts an AbortSignal that reaches the
+     * machine ripgrep RPC. The view used to debounce with a timer and drop stale results
+     * through a `cancelled` boolean while ignoring that signal — so every keystroke left the
+     * previous remote search running to completion. Changing the query must abort the
+     * in-flight RPC, and the newest call must carry a fresh, live signal.
+     */
+    it('aborts the in-flight file search RPC when the query changes', async () => {
+        searchWorkspaceFilesSpy.mockImplementation(async () => new Promise(() => undefined));
+
+        const { screen } = await renderRepositoryTreeBrowserView();
+
+        await updateSearchQuery(screen, 'first');
+        await waitForTestId(screen, 'search-results:empty');
+        while (searchWorkspaceFilesSpy.mock.calls.length === 0) {
+            await act(async () => {
+                await new Promise((resolve) => setTimeout(resolve, 5));
+            });
+        }
+        const firstSignal = searchWorkspaceFilesSpy.mock.calls[0]?.[0]?.signal as AbortSignal;
+        expect(firstSignal).toBeInstanceOf(AbortSignal);
+        expect(firstSignal.aborted).toBe(false);
+
+        await updateSearchQuery(screen, 'second');
+        while (searchWorkspaceFilesSpy.mock.calls.length < 2) {
+            await act(async () => {
+                await new Promise((resolve) => setTimeout(resolve, 5));
+            });
+        }
+        const secondSignal = searchWorkspaceFilesSpy.mock.calls[1]?.[0]?.signal as AbortSignal;
+
+        expect(firstSignal.aborted).toBe(true);
+        expect(secondSignal.aborted).toBe(false);
+    });
+
     it('renders repository tree when the session is inactive but machine is reachable', async () => {
         sessionActive = false;
 

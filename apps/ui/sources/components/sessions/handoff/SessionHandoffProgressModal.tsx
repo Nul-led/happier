@@ -23,6 +23,7 @@ import { Icon } from '@/components/ui/icons/Icon';
 import { ExpandableItem } from '@/components/ui/lists/ExpandableItem';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { ActionOperationDetailControls } from '@/components/inbox/actionOperations/ActionOperationDetailControls';
 
 type Props = CustomModalInjectedProps & Readonly<{
     title?: string;
@@ -405,7 +406,7 @@ function translateCheckpoint(checkpoint: SessionHandoffProgressCheckpoint): stri
     }
 }
 
-export function SessionHandoffProgressModal({ setChrome, title, message, status, operation, onResume }: Props) {
+export function SessionHandoffProgressModal({ onClose, setChrome, title, message, status, operation, onResume }: Props) {
     const { theme } = useUnistyles();
     const styles = stylesheet;
 
@@ -550,6 +551,9 @@ export function SessionHandoffProgressModal({ setChrome, title, message, status,
             setResumeInFlight(false);
         });
     }, [onResume]);
+    const operationTerminal = Boolean(operation?.state === 'succeeded'
+        || operation?.state === 'failed'
+        || operation?.state === 'cancelled');
 
     const chrome = React.useMemo(() => ({
         kind: 'card' as const,
@@ -557,7 +561,16 @@ export function SessionHandoffProgressModal({ setChrome, title, message, status,
         testID: 'session-handoff-progress-modal',
         bodyScroll: 'auto' as const,
         dimensions: { width: 420, maxHeightRatio: 0.92 },
-    }), [resolvedTitle]);
+        footer: (
+            <ActionOperationDetailControls
+                operation={operation}
+                terminal={operationTerminal}
+                canCancel={!operationTerminal && operation?.cancellation === 'supported'}
+                onClose={onClose}
+                placement="modal-footer"
+            />
+        ),
+    }), [onClose, operation, operationTerminal, resolvedTitle]);
 
     useModalCardChrome(setChrome, chrome);
 

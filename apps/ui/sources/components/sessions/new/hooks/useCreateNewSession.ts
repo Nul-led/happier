@@ -504,12 +504,15 @@ export function useCreateNewSession(params: Readonly<{
                 const accountLifetime = captureActiveServerAccountScopeLifetime();
                 const exactDefinitions = automation.triggers.flatMap((trigger) => (
                     trigger.definition.kind === 'sessionLifecycle'
-                    && trigger.definition.scope.kind === 'exactTurn'
-                        ? [trigger.definition]
+                    && trigger.definition.policy.kind === 'currentTurn'
+                        ? [{
+                            definition: trigger.definition,
+                            sourceTurnId: trigger.definition.policy.sourceTurnId,
+                        }]
                         : []
                 ));
-                const authorities = exactDefinitions.flatMap((definition) => {
-                    const sourceSessionId = definition.scope.sourceSessionId;
+                const authorities = exactDefinitions.flatMap(({ definition, sourceTurnId }) => {
+                    const sourceSessionId = definition.sourceSessionId;
                     const authority = captureSessionAutomationAuthority({
                         session: storage.getState().sessions[sourceSessionId] ?? null,
                         routeSessionId: sourceSessionId,
@@ -527,7 +530,7 @@ export function useCreateNewSession(params: Readonly<{
                             accountSettings: storage.getState().settings,
                         }),
                     });
-                    return authority ? [{ authority, sourceSessionId, sourceTurnId: definition.scope.sourceTurnId }] : [];
+                    return authority ? [{ authority, sourceSessionId, sourceTurnId }] : [];
                 });
                 if (authorities.length !== exactDefinitions.length) return null;
                 return () => isLaunchScopeStillActive() && authorities.every((entry) => (
@@ -1399,6 +1402,7 @@ export function useCreateNewSession(params: Readonly<{
                     selectedPath: effectiveSelectedPath,
                 },
             });
+            if (!mountedRef.current) return;
             if (isAutomationTemplateEncryptionMaterialUnavailableError(error)) {
                 Modal.alert(
                     t('settingsAccount.restoreRequiredTitle'),

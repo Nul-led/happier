@@ -3,26 +3,29 @@ import { computeWorkspaceSyncPolicyDigest } from '@happier-dev/protocol';
 
 const openSessionHandoffPickerMock = vi.hoisted(() => vi.fn());
 const executeSessionHandoffActionMock = vi.hoisted(() => vi.fn());
-const modalConfirmMock = vi.hoisted(() => vi.fn());
-const readSessionHandoffSessionActivityMock = vi.hoisted(() => vi.fn());
 const releaseUserRequestLeaseMock = vi.hoisted(() => vi.fn());
 const acquireUserRequestLeaseMock = vi.hoisted(() => vi.fn(() => releaseUserRequestLeaseMock));
+const presentationRegisterMock = vi.hoisted(() => vi.fn());
+const progressCloseMock = vi.hoisted(() => vi.fn());
+const openObservedProgressMock = vi.hoisted(() => vi.fn(() => ({
+    close: progressCloseMock,
+    isAttached: () => true,
+})));
 
 vi.mock('@/components/sessions/handoff/openSessionHandoffPicker', () => ({
     openSessionHandoffPicker: (...args: unknown[]) => openSessionHandoffPickerMock(...args),
-}));
-vi.mock('@/modal', async () => {
-    const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
-    return createModalModuleMock({ spies: { confirm: (...args: unknown[]) => modalConfirmMock(...args) } }).module;
-});
-vi.mock('./readSessionHandoffSessionActivity', () => ({
-    readSessionHandoffSessionActivity: (...args: unknown[]) => readSessionHandoffSessionActivityMock(...args),
 }));
 vi.mock('./executeSessionHandoffAction', () => ({
     executeSessionHandoffAction: (...args: unknown[]) => executeSessionHandoffActionMock(...args),
 }));
 vi.mock('@/sync/sync', () => ({
     sync: { acquireUserRequestLease: acquireUserRequestLeaseMock },
+}));
+vi.mock('@/components/inbox/actionOperations/actionOperationPresentationRuntime', () => ({
+    actionOperationPresentationCoordinator: { register: presentationRegisterMock },
+}));
+vi.mock('@/components/sessions/handoff/openSessionHandoffProgressModal', () => ({
+    openObservedSessionHandoffProgressModal: (...args: unknown[]) => openObservedProgressMock(...args),
 }));
 
 const policyFields = {
@@ -38,11 +41,11 @@ describe('runSessionHandoffPickerFlow', () => {
     beforeEach(() => {
         openSessionHandoffPickerMock.mockReset();
         executeSessionHandoffActionMock.mockReset();
-        modalConfirmMock.mockReset();
-        readSessionHandoffSessionActivityMock.mockReset();
-        readSessionHandoffSessionActivityMock.mockReturnValue({ active: false });
         acquireUserRequestLeaseMock.mockClear();
         releaseUserRequestLeaseMock.mockClear();
+        presentationRegisterMock.mockReset();
+        progressCloseMock.mockReset();
+        openObservedProgressMock.mockClear();
     });
 
     it('returns null when the picker is dismissed', async () => {
@@ -77,33 +80,59 @@ describe('runSessionHandoffPickerFlow', () => {
             workspaceAction,
         }));
         expect(executeSessionHandoffActionMock).toHaveBeenCalledTimes(1);
-        expect(modalConfirmMock).not.toHaveBeenCalled();
     });
 
-    it('requires destination-specific confirmation before mirror intent is submitted', async () => {
+    it('submits an ordinary active-session handoff without a second generic confirmation', async () => {
         openSessionHandoffPickerMock.mockResolvedValueOnce({
-            targetMachineId: 'target-id', targetMachineLabel: 'Build Mac', targetPath: '/target/repo', sourceRootPath: '/source/repo',
-            workspaceAction: { kind: 'create_relationship', mode: 'mirror_exactly', contentPolicy, flushBeforeCommit: true },
+            targetMachineId: 'target',
+            targetSessionStorageMode: 'persisted',
+            workspaceAction: { kind: 'none' },
         });
-        modalConfirmMock.mockResolvedValueOnce(false);
+        executeSessionHandoffActionMock.mockResolvedValueOnce({ ok: true, handoffId: 'handoff_1' });
         const { runSessionHandoffPickerFlow } = await import('./runSessionHandoffPickerFlow');
 
-        await expect(runSessionHandoffPickerFlow({
-            execute: vi.fn(), sessionId: 'sess_1', sourceMachineId: 'source-id', serverId: 'server', placement: 'session_info',
-        })).resolves.toEqual({ ok: false, handled: true });
+        await runSessionHandoffPickerFlow({
+            execute: vi.fn(), sessionId: 'sess_active', sourceMachineId: 'source', serverId: 'server', placement: 'session_action_menu',
+        });
 
-        expect(modalConfirmMock).toHaveBeenCalledWith(
-            expect.any(String),
-            expect.stringContaining('/target/repo'),
-            expect.objectContaining({ destructive: true }),
-        );
-        expect(modalConfirmMock.mock.calls[0]?.[1]).toContain('Build Mac');
-        expect(modalConfirmMock.mock.calls[0]?.[1]).toContain('/source/repo');
-        expect(executeSessionHandoffActionMock).not.toHaveBeenCalled();
-        expect(acquireUserRequestLeaseMock).not.toHaveBeenCalled();
+        expect(executeSessionHandoffActionMock).toHaveBeenCalledTimes(1);
     });
 
-    it('shows only the combined destination-specific mirror confirmation', async () => {
+    it('opens one live progress surface and registers the same surface for active-operation reentry', async () => {
+        openSessionHandoffPickerMock.mockResolvedValueOnce({
+            targetMachineId: 'target',
+            targetSessionStorageMode: 'persisted',
+            workspaceAction: { kind: 'none' },
+        });
+        executeSessionHandoffActionMock.mockResolvedValueOnce({ ok: true, handoffId: 'handoff_1' });
+        const { runSessionHandoffPickerFlow } = await import('./runSessionHandoffPickerFlow');
+
+        await runSessionHandoffPickerFlow({
+            execute: vi.fn(), sessionId: 'sess_1', sourceMachineId: 'source', serverId: 'server', placement: 'session_info',
+        });
+
+        expect(openObservedProgressMock).toHaveBeenCalledWith(expect.objectContaining({
+            requestId: expect.any(String),
+            sessionId: 'sess_1',
+            workspaceSyncEnabled: false,
+        }));
+        expect(presentationRegisterMock).toHaveBeenCalledWith(expect.objectContaining({
+            requestId: expect.any(String),
+            onStart: 'current',
+            origin: expect.objectContaining({ resolve: expect.any(Function) }),
+        }));
+        const registration = presentationRegisterMock.mock.calls[0]?.[0];
+        const running = { state: 'running' } as const;
+        const succeeded = { state: 'succeeded' } as const;
+        const reopen = registration.origin.resolve(running);
+        expect(reopen).toEqual(expect.any(Function));
+        reopen();
+        expect(openObservedProgressMock).toHaveBeenCalledTimes(2);
+        expect(registration.origin.resolve(succeeded)).toBeNull();
+        expect(progressCloseMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('leaves the single mirror confirmation to the daemon-bound Action approval', async () => {
         openSessionHandoffPickerMock.mockResolvedValueOnce({
             targetMachineId: 'target-id',
             targetMachineLabel: 'Build Mac',
@@ -116,18 +145,24 @@ describe('runSessionHandoffPickerFlow', () => {
                 flushBeforeCommit: true,
             },
         });
-        modalConfirmMock.mockResolvedValue(true);
         executeSessionHandoffActionMock.mockResolvedValueOnce({ ok: true, handoffId: 'handoff_1' });
+        const execute = vi.fn();
         const { runSessionHandoffPickerFlow } = await import('./runSessionHandoffPickerFlow');
 
         await runSessionHandoffPickerFlow({
-            execute: vi.fn(), sessionId: 'sess_1', sourceMachineId: 'source-id', serverId: 'server', placement: 'session_info',
+            execute, sessionId: 'sess_1', sourceMachineId: 'source-id', serverId: 'server', placement: 'session_info',
         });
 
-        expect(modalConfirmMock).toHaveBeenCalledTimes(1);
-        expect(modalConfirmMock.mock.calls[0]?.[1]).toContain('/target/repo');
+        // The destination approval is stamped by the target daemon inside the
+        // Action corridor, so the picker must not raise its own unbound prompt.
+        expect(executeSessionHandoffActionMock).toHaveBeenCalledTimes(1);
         expect(executeSessionHandoffActionMock).toHaveBeenCalledWith(expect.objectContaining({
-            workspaceAction: expect.not.objectContaining({ destructiveTargetReuseApproved: true }),
+            execute,
+            targetMachineId: 'target-id',
+            targetPath: '/target/repo',
+            workspaceAction: expect.objectContaining({ mode: 'mirror_exactly' }),
         }));
+        expect(executeSessionHandoffActionMock.mock.calls[0]?.[0]?.workspaceAction)
+            .not.toHaveProperty('destructiveTargetReuseApproved');
     });
 });

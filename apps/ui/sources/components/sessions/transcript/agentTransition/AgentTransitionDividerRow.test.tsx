@@ -1,3 +1,4 @@
+import * as React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { renderScreen } from '@/dev/testkit';
@@ -36,6 +37,12 @@ vi.mock('@/sync/ops/actions/defaultActionExecutor', () => ({
 vi.mock('@/sync/runtime/orchestration/serverScopedRpc/resolvePreferredServerIdForSessionId', () => ({
     resolveServerIdForSessionIdFromLocalCache: () => 'server-1',
     resolvePreferredServerIdForSessionId: () => 'server-1',
+}));
+
+vi.mock('@/components/sessions/presentation/SessionAgentCatalogIdentityIcon', () => ({
+    SessionAgentCatalogIdentityIcon: (props: Record<string, unknown>) => (
+        React.createElement('SessionAgentCatalogIdentityIcon', props)
+    ),
 }));
 
 type ShownHandedOverContextModal = Readonly<{
@@ -115,7 +122,7 @@ describe('Agent transition divider', () => {
         expect(run.filter((token) => token.startsWith('mark:'))).toEqual(['mark:claude', 'mark:codex']);
     });
 
-    it('still names an Agent the catalog no longer knows, rather than dropping it', async () => {
+    it('still names an Agent the catalog no longer knows and gives it the canonical neutral identity mark', async () => {
         const screen = await renderScreen(
             <TranscriptEventRow localId={DIVIDER_LOCAL_ID} event={dividerEvent({ v: 1, fromAgentId: 'claude', toAgentId: 'retired-agent', sourceCutoffSeqInclusive: 12 })} />,
         );
@@ -123,8 +130,7 @@ describe('Agent transition divider', () => {
         const run = titleRun(screen.findByTestId('transcript-agent-transition-divider-title'));
         expect(run.filter((token) => !token.startsWith('mark:')).join(' '))
             .toBe(sentence(CLAUDE, 'retired-agent'));
-        // No mark to draw and none invented: the name still carries the boundary.
-        expect(run.filter((token) => token.startsWith('mark:'))).toEqual(['mark:claude']);
+        expect(run.filter((token) => token.startsWith('mark:'))).toEqual(['mark:claude', 'mark:retired-agent']);
     });
 
     /**

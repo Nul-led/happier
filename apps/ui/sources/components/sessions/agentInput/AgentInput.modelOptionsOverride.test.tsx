@@ -119,6 +119,10 @@ vi.mock('expo-image', () => ({
     Image: (props: Record<string, unknown>) => React.createElement('Image', props, null),
 }));
 
+vi.mock('@/agents/presentation/AgentCatalogIdentityIcon', () => ({
+    AgentCatalogIdentityIcon: (props: Record<string, unknown>) => React.createElement('AgentCatalogIdentityIcon', props),
+}));
+
 vi.mock('@/components/tools/shell/permissions/PermissionFooter', () => ({
     PermissionFooter: () => null,
 }));
@@ -134,6 +138,7 @@ vi.mock('@/sync/domains/state/storageStore', async () => {
 vi.mock('@/agents/catalog/catalog', () => ({
     AGENT_IDS: ['codex', 'claude', 'opencode', 'gemini'],
     DEFAULT_AGENT_ID: 'codex',
+    isBundledAgentId: (agentId: string) => ['codex', 'claude', 'opencode', 'gemini'].includes(agentId),
     resolveAgentIdFromFlavor: () => null,
     getAgentIconSvgXml: (agentId: string) => (
         agentId === 'codex' || agentId === 'pi' || agentId === 'opencode'
@@ -1545,6 +1550,47 @@ describe('AgentInput (modelOptionsOverride)', () => {
         expect(logo?.props.width).toBe(16);
         expect(logo?.props.height).toBe(16);
         expect(logo?.props.style.transform).toContainEqual({ scale: 0.9 });
+    });
+
+    it('renders an external engine chip through the exact machine-qualified catalog identity', async () => {
+        const { AgentInput } = await import('./AgentInput');
+        const entry = {
+            agentId: 'acme.review',
+            qualifiedId: 'acme.plugin/review',
+            identity: { pluginId: 'acme.plugin', localId: 'review' },
+            isBuiltIn: false,
+        };
+        const screen = await renderScreen(React.createElement(AgentInput, {
+            value: 'hello',
+            placeholder: 'placeholder',
+            onChangeText: () => {},
+            onSend: () => {},
+            autocompleteKinds: [],
+            autocompleteSuggestions: async () => [],
+            agentType: 'acme.review',
+            agentLabel: 'Acme Review',
+            agentCatalogIdentity: {
+                entry,
+                machineId: 'machine-a',
+                serverId: 'server-a',
+                current: true,
+            },
+            permissionMode: 'default',
+            onPermissionModeChange: () => {},
+            modelMode: 'review-model',
+            onModelModeChange: () => {},
+            modelOptionsOverride: [
+                { value: 'review-model', label: 'Review Model', description: '' },
+            ],
+        } as any));
+
+        expect(screen.findByTestId('agent-input-agent-chip-logo')?.type).toBe('AgentCatalogIdentityIcon');
+        expect(screen.findByTestId('agent-input-agent-chip-logo')?.props).toMatchObject({
+            entry,
+            machineId: 'machine-a',
+            serverId: 'server-a',
+            current: true,
+        });
     });
 
     it('caps the engine popover at 570px when the rail is hidden in stacked layout', async () => {

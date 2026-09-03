@@ -148,13 +148,9 @@ export function useNewSessionBackendTargetState(params: Readonly<{
             return null;
         }
         if (matched?.kind === 'pluginBackend') {
-            if (matched.catalogAgentId && isBundledAgentId(matched.catalogAgentId)) {
-                return matched.catalogAgentId;
-            }
-            // An installed Agent with no bundled backing still has an
-            // operational runtime identity: the Agent the catalog resolved from
-            // the current projection. Discarding it is what makes model, mode
-            // and configuration probing silently disappear for that Agent.
+            // catalogAgentId is presentation/default backing only. Runtime
+            // probing, scoped settings, spawn, and resume must all address the
+            // operational Agent the current projection resolved.
             return matched.agentId.trim() || null;
         }
         if (matched?.kind === 'configuredBackend') {

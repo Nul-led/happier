@@ -1,24 +1,48 @@
-import type { ActionOperationSnapshotV1, SessionHandoffStatus } from '@happier-dev/protocol';
 import { Modal } from '@/modal';
+import { subscribeActionOperationByRequestId } from '@/sync/domains/actionOperations/subscribeActionOperationByRequestId';
+import type { ActionOperationStore } from '@/sync/domains/actionOperations/actionOperationStore';
 
 import { SessionHandoffProgressModal } from './SessionHandoffProgressModal';
 
-export function openSessionHandoffProgressModal(params?: Readonly<{
-    title?: string;
-    message?: string;
-    status?: SessionHandoffStatus;
-    operation?: ActionOperationSnapshotV1;
+export type SessionHandoffProgressPresentation = Readonly<{
+    close: () => void;
+    isAttached: () => boolean;
+}>;
+
+export function openObservedSessionHandoffProgressModal(params: Readonly<{
+    requestId: string;
+    sessionId: string;
     workspaceSyncEnabled?: boolean;
-}>): string {
-    return Modal.show({
+    store?: ActionOperationStore;
+}>): SessionHandoffProgressPresentation {
+    let attached = true;
+    let unsubscribe = () => {};
+    const detach = (): void => {
+        if (!attached) return;
+        attached = false;
+        unsubscribe();
+    };
+    const modalId = Modal.show({
         component: SessionHandoffProgressModal,
         props: {
-            ...(params?.title ? { title: params.title } : {}),
-            ...(params?.message ? { message: params.message } : {}),
-            ...(params?.status ? { status: params.status } : {}),
-            ...(params?.operation ? { operation: params.operation } : {}),
-            ...(params?.workspaceSyncEnabled ? { workspaceSyncEnabled: true } : {}),
+            ...(params.workspaceSyncEnabled ? { workspaceSyncEnabled: true } : {}),
         },
+        onRequestClose: detach,
         closeOnBackdrop: false,
+    });
+    unsubscribe = subscribeActionOperationByRequestId({
+        requestId: params.requestId,
+        ...(params.store ? { store: params.store } : {}),
+        onUpdate: (operation) => {
+            if (attached) Modal.update(modalId, { operation });
+        },
+    });
+    return Object.freeze({
+        close: () => {
+            if (!attached) return;
+            detach();
+            Modal.hide(modalId);
+        },
+        isAttached: () => attached,
     });
 }

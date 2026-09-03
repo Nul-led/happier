@@ -379,7 +379,7 @@ export function useNewSessionScreenModel(input?: Readonly<{
     const [secretBindingsByProfileId, setSecretBindingsByProfileId] = useCurrentSecretBindingsByProfileIdMutable();
     const sessionDefaultPermissionModeByTargetKey = useSetting('sessionDefaultPermissionModeByTargetKey');
     const accountSettings = useSettings() ?? settingsDefaults;
-    const homeViewSelectionSettings = useHomeViewSelectionSettings(accountSettings);
+    const homeViewSelectionSettings = useHomeViewSelectionSettings();
     const settings = React.useMemo(() => ({
         ...accountSettings,
         ...homeViewSelectionSettings,

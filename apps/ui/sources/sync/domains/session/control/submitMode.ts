@@ -1,5 +1,10 @@
 import { resolveAgentIdFromSessionMetadata } from '@happier-dev/agents';
-import { isNonSteerablePromptPayload, type PendingRequestedActionV1 } from '@happier-dev/protocol';
+import {
+    DEFAULT_SESSION_INACTIVE_RESUME_POLICY,
+    isNonSteerablePromptPayload,
+    type PendingRequestedActionV1,
+    type SessionInactiveResumePolicy,
+} from '@happier-dev/protocol';
 import type { Session } from '@/sync/domains/state/storageTypes';
 import {
     getVersionSupportState,
@@ -238,6 +243,8 @@ export function decideSessionMessageDelivery(opts: {
     session: Session | null;
     nowMs?: number;
     forceImmediate?: boolean;
+    /** How ordinary input may resume an inactive/offline runtime. */
+    sessionInactiveResumePolicy?: SessionInactiveResumePolicy;
     providerNonSteerableReason?: ProviderNonSteerableSendReason | null;
     text?: string;
     nonSteerableSendPrompt?: 'on' | 'off';
@@ -286,7 +293,13 @@ export function decideSessionMessageDelivery(opts: {
             intent,
             reason: 'inactive_session',
             pendingSupportState,
-            requestedAction: { v: 1, kind: 'send_now' },
+            requestedAction: {
+                v: 1,
+                kind: opts.forceImmediate === true
+                    || (opts.sessionInactiveResumePolicy ?? DEFAULT_SESSION_INACTIVE_RESUME_POLICY) === 'when_available'
+                    ? 'send_now'
+                    : 'enqueue',
+            },
         };
     }
 
@@ -304,6 +317,21 @@ export function decideSessionMessageDelivery(opts: {
             requestedAction: {
                 v: 1,
                 kind: canSteerBusyTurnNow ? 'steer_now' : 'send_now',
+            },
+        };
+    }
+
+    if (!runtimeState.isOnline) {
+        return {
+            mode: 'server_pending',
+            intent,
+            reason: 'offline_pending',
+            pendingSupportState,
+            requestedAction: {
+                v: 1,
+                kind: (opts.sessionInactiveResumePolicy ?? DEFAULT_SESSION_INACTIVE_RESUME_POLICY) === 'when_available'
+                    ? 'send_now'
+                    : 'enqueue',
             },
         };
     }
@@ -385,11 +413,9 @@ export function decideSessionMessageDelivery(opts: {
             ? 'local_control_pending'
             : runtimeState.isBusy
                 ? 'busy_policy_pending'
-                : !runtimeState.isOnline
-                    ? 'offline_pending'
-                    : !runtimeState.agentReady
-                        ? 'agent_not_ready_pending'
-                        : 'configured_pending',
+                : !runtimeState.agentReady
+                    ? 'agent_not_ready_pending'
+                    : 'configured_pending',
         pendingSupportState,
         requestedAction: { v: 1, kind: 'enqueue' },
         ...(typeof unavailableReason === 'string' && unavailableReason.trim().length > 0

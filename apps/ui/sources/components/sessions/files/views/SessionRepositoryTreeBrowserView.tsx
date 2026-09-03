@@ -156,7 +156,6 @@ export const SessionRepositoryTreeBrowserView = React.memo((props: SessionReposi
     }, [machineRpcTargetAvailable, props.sessionId, treeReloadNonce]);
 
     React.useEffect(() => {
-        let cancelled = false;
         const q = searchQuery.trim();
         if (showChangedOnly) {
             setSearchResults([]);
@@ -170,11 +169,14 @@ export const SessionRepositoryTreeBrowserView = React.memo((props: SessionReposi
         }
 
         setIsSearching(true);
+        // The AbortSignal is what actually cancels the machine RPC; the timeout only debounces
+        // keystrokes. Dropping stale results with a boolean while the remote search kept
+        // running wasted the machine it ran on.
+        const controller = new AbortController();
         const handle = setTimeout(() => {
             void (async () => {
                 try {
                     if (!workspaceScope) {
-                        if (cancelled) return;
                         setSearchResults([]);
                         return;
                     }
@@ -182,18 +184,22 @@ export const SessionRepositoryTreeBrowserView = React.memo((props: SessionReposi
                         scope: workspaceScope,
                         query: q,
                         limit: 200,
+                        signal: controller.signal,
                     });
-                    if (cancelled) return;
                     setSearchResults(results);
+                } catch {
+                    // A superseded search rejects with its abort error; the newer query owns
+                    // the results and spinner from here.
                 } finally {
-                    if (cancelled) return;
-                    setIsSearching(false);
+                    if (!controller.signal.aborted) {
+                        setIsSearching(false);
+                    }
                 }
             })();
         }, 120);
 
         return () => {
-            cancelled = true;
+            controller.abort();
             clearTimeout(handle);
         };
     }, [props.sessionId, searchQuery, showChangedOnly, treeReloadNonce, workspaceScope]);

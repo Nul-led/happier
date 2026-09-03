@@ -10,7 +10,6 @@ import { createDeferred, renderHook, renderScreen } from '@/dev/testkit';
 import { installNewSessionScreenModelCommonModuleMocks } from './newSessionScreenModelTestHelpers';
 import type { HandleCreateSessionOptions } from './useCreateNewSession';
 
-
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 type StorageState = {
@@ -765,6 +764,7 @@ describe('useCreateNewSession (ACP mode seeding)', () => {
     await createPromise;
     await hook.unmount();
   });
+
 
   it('does not turn observer socket loss into terminal failure after the canonical store has daemon custody', async () => {
     const mountedRef = { current: true };

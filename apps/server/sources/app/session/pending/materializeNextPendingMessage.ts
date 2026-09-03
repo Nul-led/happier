@@ -34,6 +34,7 @@ import {
     type PendingClaimForegroundState,
     type PendingProviderAction,
 } from "@/app/session/pending/selectPendingProviderInvocation";
+import { reconcilePendingActivationAuthorizationForRemovedRequestInTx } from "@/app/session/pending/pendingActivationAuthorization";
 
 type ParticipantCursor = SessionParticipantCursor;
 class PublisherAuthorityLostError extends Error {}
@@ -402,7 +403,7 @@ export async function materializeNextPendingMessageInTx(
                     status: "blocked",
                     reason: invocationSelection.blockedReason,
                 });
-                await tx.sessionPendingMessage.updateMany({
+                const blocked = await tx.sessionPendingMessage.updateMany({
                     where: {
                         sessionId,
                         localId: invocationSelection.blockedLocalId,
@@ -414,6 +415,13 @@ export async function materializeNextPendingMessageInTx(
                         deliveryBlockedReason: blockedFields.deliveryBlockedReason,
                     },
                 });
+                if (blocked.count === 1) {
+                    await reconcilePendingActivationAuthorizationForRemovedRequestInTx({
+                        tx,
+                        sessionId,
+                        requestId: invocationSelection.blockedLocalId,
+                    });
+                }
                 const pendingBlockedCount = await tx.sessionPendingMessage.count({
                     where: { sessionId, status: "queued", deliveryState: "blocked" },
                 });
@@ -592,6 +600,12 @@ export async function materializeNextPendingMessageInTx(
                         deliveryState: noopDeliveryState,
                     } as const;
                 }
+
+                await reconcilePendingActivationAuthorizationForRemovedRequestInTx({
+                    tx,
+                    sessionId,
+                    requestId: localId,
+                });
 
                 const pendingCount = await tx.sessionPendingMessage.count({
                     where: { sessionId, status: "queued" },

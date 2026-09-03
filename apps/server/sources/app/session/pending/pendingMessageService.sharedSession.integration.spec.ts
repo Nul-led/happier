@@ -630,6 +630,85 @@ describe("pendingMessageService (shared sessions)", () => {
             status: "discarded",
             discardedReason: "session_input_cancelled",
         });
+
+        // Cancellation is the only durable terminal input rejection: a Run
+        // that settled outcome_uncertain may already have started its target
+        // effect, so the exact Run-scoped input still settles normally instead
+        // of being rejected with every cancellation-adjacent state.
+        const uncertainRun = await db.automationRun.create({
+            data: {
+                automationId: automation.id,
+                accountId: owner.id,
+                state: "outcome_uncertain",
+                triggerId: null,
+                causeKind: "manual",
+                causeOccurredAt: new Date(),
+                scheduledAt: new Date(),
+                dueAt: new Date(),
+                finishedAt: new Date(),
+            },
+            select: { id: true },
+        });
+        const uncertainLocalId = `automation:run:${uncertainRun.id}`;
+        const uncertainRequestMeta = {
+            sentFrom: "cli",
+            happierInputRequestV1: {
+                v: 1,
+                producer: "automation",
+                caller: { kind: "host" },
+                automation: { automationId: automation.id, runId: uncertainRun.id },
+                permission: {},
+            },
+        } as const;
+        const uncertainFinalMeta = {
+            sentFrom: "cli",
+            happierInputAuthorityV1: {
+                v: 1,
+                producer: "automation",
+                caller: { kind: "host" },
+                automation: { automationId: automation.id, runId: uncertainRun.id },
+                permission: { admittedPermissionCeiling: "default" },
+            },
+        } as const;
+        await expect(enqueuePendingMessageByAuthenticatedMachine({
+            accountId: owner.id,
+            sourceMachineId,
+            targetMachineId: publisher.machineId,
+            sessionId: session.id,
+            localId: uncertainLocalId,
+            content: {
+                t: "plain",
+                v: { role: "user", content: { type: "text", text: "uncertain" }, meta: uncertainRequestMeta },
+            },
+            requestedAction: { v: 1, kind: "enqueue" },
+        })).resolves.toEqual({ status: "accepted", localId: uncertainLocalId });
+        await markPendingProviderDeliveryClaimed({ sessionId: session.id, localId: uncertainLocalId });
+
+        await expect(settlePendingInputAdmission({
+            actorUserId: owner.id,
+            sessionId: session.id,
+            localId: uncertainLocalId,
+            publisherAuthority: authority,
+            decision: {
+                kind: "admit",
+                finalContent: {
+                    t: "plain",
+                    v: { role: "user", content: { type: "text", text: "uncertain" }, meta: uncertainFinalMeta },
+                },
+                validation: {
+                    automation: { automationId: automation.id, runId: uncertainRun.id },
+                },
+            },
+        })).resolves.toMatchObject({
+            ok: true,
+            result: { status: "accepted", localId: uncertainLocalId },
+        });
+        await expect(db.sessionMessage.findUnique({
+            where: { sessionId_localId: { sessionId: session.id, localId: uncertainLocalId } },
+        })).resolves.toEqual(expect.objectContaining({ localId: uncertainLocalId }));
+        await expect(db.sessionPendingMessage.findUnique({
+            where: { sessionId_localId: { sessionId: session.id, localId: uncertainLocalId } },
+        })).resolves.toBeNull();
     });
 
     it("rejects a whitespace-only localId at every Pending service boundary without mutation", async () => {

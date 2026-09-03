@@ -264,7 +264,7 @@ describe('useNewSessionBackendTargetState', () => {
         expect((observed as ReturnType<typeof useNewSessionBackendTargetState> | null)?.selectedRuntimeCarrierAgentId).toBeNull();
     });
 
-    it('uses projected provider carrier metadata for plugin backend runtime selection', async () => {
+    it('keeps the projected external Agent id as the plugin backend runtime selection', async () => {
         const pluginEntries: ReadonlyArray<ResolvedBackendCatalogEntry> = [
             resolvedEntryFixture({
                 backendTarget: { kind: 'backend', backendId: 'acme.review.backend' },
@@ -296,7 +296,7 @@ describe('useNewSessionBackendTargetState', () => {
         await renderScreen(React.createElement(Probe));
 
         expect((observed as ReturnType<typeof useNewSessionBackendTargetState> | null)?.selectedCatalogAgentId).toBe('claude');
-        expect((observed as ReturnType<typeof useNewSessionBackendTargetState> | null)?.selectedRuntimeCarrierAgentId).toBe('claude');
+        expect((observed as ReturnType<typeof useNewSessionBackendTargetState> | null)?.selectedRuntimeCarrierAgentId).toBe('plugin:acme.review');
     });
 
     it('persists plugin backend selection without writing lastUsedAgent (V1 compatibility only)', async () => {

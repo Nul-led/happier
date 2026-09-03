@@ -10,6 +10,8 @@ import { WORKSPACE_SYNC_FILE_PREVIEW_MAX_BYTES } from '@happier-dev/protocol';
 import { DiffViewer } from '@/components/ui/code/diff/DiffViewer';
 import { IconButton } from '@/components/ui/buttons/IconButton';
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
+import { Icon } from '@/components/ui/icons/Icon';
+import { ExpandableItem } from '@/components/ui/lists/ExpandableItem';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
@@ -89,6 +91,17 @@ function readErrorCode(error: unknown): string | null {
     if (!error || typeof error !== 'object') return null;
     const code = (error as { code?: unknown }).code;
     return typeof code === 'string' ? code : null;
+}
+
+function workspaceSyncConflictKindTranslationKey(
+    kind: WorkspaceSyncConflictV1['alpha']['kind'],
+): 'workspaceSync.conflictKind.file' | 'workspaceSync.conflictKind.directory' | 'workspaceSync.conflictKind.symlink' | 'workspaceSync.conflictKind.missing' {
+    switch (kind) {
+        case 'file': return 'workspaceSync.conflictKind.file';
+        case 'directory': return 'workspaceSync.conflictKind.directory';
+        case 'symlink': return 'workspaceSync.conflictKind.symlink';
+        case 'missing': return 'workspaceSync.conflictKind.missing';
+    }
 }
 
 function fileStateLabel(result: ReadWorkspaceSyncFileResultV1): string {
@@ -171,6 +184,7 @@ export const WorkspaceSyncConflictDetailsView = React.memo(function WorkspaceSyn
     const [previewLoading, setPreviewLoading] = React.useState(false);
     const [previewUnavailable, setPreviewUnavailable] = React.useState(false);
     const [resolvingSide, setResolvingSide] = React.useState<'alpha' | 'beta' | null>(null);
+    const [diagnosticsExpanded, setDiagnosticsExpanded] = React.useState(false);
     const [resolutionError, setResolutionError] = React.useState<'changed' | 'failed' | null>(null);
     const snapshot = getWorkspaceSyncConflictSnapshot(scope);
     const statusSnapshot = getWorkspaceSyncStatusSnapshot(scope);
@@ -422,17 +436,6 @@ export const WorkspaceSyncConflictDetailsView = React.memo(function WorkspaceSyn
                     mode="info"
                 />
             </ItemGroup>
-            <ItemGroup title={t('workspaceSync.diagnostics.title')}>
-                <Item title={t('workspaceSync.diagnostics.relationshipId')} subtitle={props.resource.relationshipId} subtitleLines={0} copy={props.resource.relationshipId} showChevron={false} />
-                <Item title={t('workspaceSync.diagnostics.controllerMachineId')} subtitle={props.resource.controllerMachineId} subtitleLines={0} copy={props.resource.controllerMachineId} showChevron={false} />
-                {props.resource.alpha.machineId ? <Item title={t('workspaceSync.diagnostics.alphaMachineId')} subtitle={props.resource.alpha.machineId} subtitleLines={0} copy={props.resource.alpha.machineId} showChevron={false} /> : null}
-                {props.resource.beta.machineId ? <Item title={t('workspaceSync.diagnostics.betaMachineId')} subtitle={props.resource.beta.machineId} subtitleLines={0} copy={props.resource.beta.machineId} showChevron={false} /> : null}
-                {alphaIdentity.rootPath ? <Item title={t('workspaceSync.diagnostics.alphaRoot')} subtitle={alphaIdentity.rootPath} subtitleLines={0} copy={alphaIdentity.rootPath} showChevron={false} /> : null}
-                {betaIdentity.rootPath ? <Item title={t('workspaceSync.diagnostics.betaRoot')} subtitle={betaIdentity.rootPath} subtitleLines={0} copy={betaIdentity.rootPath} showChevron={false} /> : null}
-                <Item title={t('workspaceSync.diagnostics.engineMode')} subtitle={status?.mode ?? props.resource.mode} subtitleLines={0} copy={status?.mode ?? props.resource.mode} showChevron={false} />
-                {status ? <Item title={t('workspaceSync.diagnostics.engineState')} subtitle={status.state} subtitleLines={0} copy={status.state} showChevron={false} /> : null}
-                {status?.errorCode ? <Item title={t('workspaceSync.diagnostics.errorCode')} subtitle={status.errorCode} subtitleLines={0} copy={status.errorCode} showChevron={false} /> : null}
-            </ItemGroup>
             <ItemGroup title={t('workspaceSync.conflictsTitle')}>
                 {snapshot.phase === 'error' ? <Item title={t('workspaceSync.state.controllerUnavailable')} mode="info" /> : null}
                 {snapshot.list?.totalCount === 0 ? <Item title={t('workspaceSync.noConflicts')} mode="info" /> : null}
@@ -440,7 +443,7 @@ export const WorkspaceSyncConflictDetailsView = React.memo(function WorkspaceSyn
                     <Item
                         key={conflict.path}
                         title={conflict.path}
-                        subtitle={`${props.resource.alpha.label}: ${conflict.alpha.kind} · ${props.resource.beta.label}: ${conflict.beta.kind}`}
+                        subtitle={`${props.resource.alpha.label}: ${t(workspaceSyncConflictKindTranslationKey(conflict.alpha.kind))} · ${props.resource.beta.label}: ${t(workspaceSyncConflictKindTranslationKey(conflict.beta.kind))}`}
                         onPress={() => setSelected(conflict)}
                     />
                 ))}
@@ -449,6 +452,42 @@ export const WorkspaceSyncConflictDetailsView = React.memo(function WorkspaceSyn
                 ) : null}
                 {snapshot.phase === 'loading' ? <Item title={t('common.loading')} mode="info" /> : null}
                 <Item title={t('workspaceSync.actions.refresh')} onPress={() => void refreshWorkspaceSyncConflicts(scope).catch(() => undefined)} />
+            </ItemGroup>
+            {/*
+              * Diagnostics are last and closed by default: raw relationship,
+              * controller and machine identifiers, live roots and engine
+              * mode/state/error read as noise beside the conflict decision, but
+              * they must stay selectable and copyable for support. One
+              * disclosure — not a second page, modal or store.
+              */}
+            <ItemGroup>
+                <ExpandableItem
+                    testID="workspace-sync-conflict-diagnostics"
+                    expanded={diagnosticsExpanded}
+                    onExpandedChange={setDiagnosticsExpanded}
+                    showDivider={false}
+                    header={({ expanded, headerProps }) => (
+                        <Item
+                            {...headerProps}
+                            testID="workspace-sync-conflict-diagnostics-toggle"
+                            title={t('workspaceSync.diagnostics.title')}
+                            showChevron={false}
+                            rightElement={<Icon name={expanded ? 'caret-down' : 'caret-right'} size={16} />}
+                        />
+                    )}
+                >
+                    <View>
+                        <Item title={t('workspaceSync.diagnostics.relationshipId')} subtitle={props.resource.relationshipId} subtitleLines={0} copy={props.resource.relationshipId} showChevron={false} />
+                        <Item title={t('workspaceSync.diagnostics.controllerMachineId')} subtitle={props.resource.controllerMachineId} subtitleLines={0} copy={props.resource.controllerMachineId} showChevron={false} />
+                        {props.resource.alpha.machineId ? <Item title={t('workspaceSync.diagnostics.alphaMachineId')} subtitle={props.resource.alpha.machineId} subtitleLines={0} copy={props.resource.alpha.machineId} showChevron={false} /> : null}
+                        {props.resource.beta.machineId ? <Item title={t('workspaceSync.diagnostics.betaMachineId')} subtitle={props.resource.beta.machineId} subtitleLines={0} copy={props.resource.beta.machineId} showChevron={false} /> : null}
+                        {alphaIdentity.rootPath ? <Item title={t('workspaceSync.diagnostics.alphaRoot')} subtitle={alphaIdentity.rootPath} subtitleLines={0} copy={alphaIdentity.rootPath} showChevron={false} /> : null}
+                        {betaIdentity.rootPath ? <Item title={t('workspaceSync.diagnostics.betaRoot')} subtitle={betaIdentity.rootPath} subtitleLines={0} copy={betaIdentity.rootPath} showChevron={false} /> : null}
+                        <Item title={t('workspaceSync.diagnostics.engineMode')} subtitle={status?.mode ?? props.resource.mode} subtitleLines={0} copy={status?.mode ?? props.resource.mode} showChevron={false} />
+                        {status ? <Item title={t('workspaceSync.diagnostics.engineState')} subtitle={status.state} subtitleLines={0} copy={status.state} showChevron={false} /> : null}
+                        {status?.errorCode ? <Item title={t('workspaceSync.diagnostics.errorCode')} subtitle={status.errorCode} subtitleLines={0} copy={status.errorCode} showChevron={false} /> : null}
+                    </View>
+                </ExpandableItem>
             </ItemGroup>
         </ItemList>
     );

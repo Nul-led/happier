@@ -2,6 +2,7 @@ import {
     SessionServerStartSpawnDraftV1Schema,
     type SessionServerStartSpawnDraftV1,
 } from '@happier-dev/protocol/sessions/creation/sessionSpawnNewInputV2';
+import { MAX_AGENT_ROUTING_ID_BYTES } from '@happier-dev/protocol';
 import {
     PLUGIN_UI_LAUNCH_INPUT_MAX_UTF8_BYTES_V1,
     PluginUiSessionCheckoutIntentV1Schema,
@@ -16,7 +17,9 @@ import { isPermissionMode, type PermissionMode } from '@/sync/domains/permission
 
 const SessionServerStartDraftSeedSchema = z.object({
     directory: z.string().trim().min(1).max(4_096).optional(),
-    agentId: z.string().trim().min(1).max(256).optional(),
+    // Host Agent routing id: qualified `<pluginId>/<localId>` for an installed
+    // Agent, so the seed bound is that contract rather than a bare local id.
+    agentId: z.string().trim().min(1).max(MAX_AGENT_ROUTING_ID_BYTES).optional(),
     permissionMode: z.string().trim().min(1).max(64).optional(),
     profileId: z.string().trim().min(1).optional(),
     executionTarget: z.object({

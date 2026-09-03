@@ -1,5 +1,5 @@
 import type { NewSessionDraftProjection } from '@/sync/ops/sessionDrafts/sessionDraftRepository';
-import { DEFAULT_AGENT_ID, resolveAgentIdFromFlavor } from '@/agents/catalog/catalog';
+import { resolveAgentIdFromFlavor } from '@/agents/catalog/catalog';
 import { t, type TranslationKey } from '@/text';
 
 export type NewSessionDraftRowPresentation = Readonly<{
@@ -46,8 +46,14 @@ function readAutomationName(draft: NewSessionDraftProjection): string | null {
     return readNonblankString((value as Readonly<Record<string, unknown>>).name);
 }
 
-export function resolveNewSessionDraftAgentId(draft: NewSessionDraftProjection) {
-    return resolveAgentIdFromFlavor(readNonblankString(readAuthoringValue(draft, 'agentId'))) ?? DEFAULT_AGENT_ID;
+/**
+ * The Agent the draft is authored against, normalized to its bundled id when it
+ * names one. An installed Agent keeps its own id, and a draft that names no
+ * Agent resolves to none: the row shows no mark rather than the default Agent's.
+ */
+export function resolveNewSessionDraftAgentId(draft: NewSessionDraftProjection): string {
+    const authoredAgentId = readNonblankString(readAuthoringValue(draft, 'agentId'));
+    return resolveAgentIdFromFlavor(authoredAgentId) ?? authoredAgentId ?? '';
 }
 
 function resolveStatusKey(

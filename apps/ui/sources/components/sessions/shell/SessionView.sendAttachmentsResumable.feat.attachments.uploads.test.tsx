@@ -3611,6 +3611,9 @@ describe('SessionView (attachments.uploads resumable send)', () => {
             // under a fresh identity. The true state — admitted input, no
             // runtime — is the one the Session's queued-message banner already
             // owns, so it is raised instead of a second banner beside it.
+            sessionState.session.active = false;
+            sessionState.session.presence = 0;
+            syncPendingRowForLocalId('armed-local-id');
             const screen = await sendArmedAndReadBanner({
                 type: 'partially_applied',
                 localId: 'armed-local-id',
@@ -3622,7 +3625,7 @@ describe('SessionView (attachments.uploads resumable send)', () => {
                 expect(screen.getTextContent())
                     .not.toContain('session.agentContinuation.transition.switched');
                 expect(screen.findAllByTestId('session.agentTransitionOutcome.banner')).toHaveLength(0);
-                expect(screen.findAllByTestId('session-pendingQueue-resumeFailed').length)
+                expect(screen.findAllByTestId('session-pendingActivation').length)
                     .toBeGreaterThan(0);
             } finally {
                 act(() => { screen.tree?.unmount(); });
@@ -3638,19 +3641,24 @@ describe('SessionView (attachments.uploads resumable send)', () => {
          * publishes in production.
          */
         function syncPendingRowForLocalId(localId: string) {
+            const row = {
+                id: `pending-${localId}`,
+                localId,
+                createdAt: 1,
+                updatedAt: 1,
+                source: 'server_pending' as const,
+                messageRole: 'user' as const,
+                pendingDeliveryStatus: 'server_queued' as const,
+                pendingRequestedAction: { v: 1 as const, kind: 'enqueue' as const },
+                text: 'queued message',
+                rawRecord: { role: 'user', content: { type: 'text', text: 'queued message' } },
+            };
             canonicalSessionPendingState.s1 = {
-                messages: [{
-                    id: `pending-${localId}`,
-                    localId,
-                    createdAt: 1,
-                    updatedAt: 1,
-                    source: 'server_pending',
-                    text: 'queued message',
-                    rawRecord: { role: 'user', content: { type: 'text', text: 'queued message' } },
-                }],
+                messages: [row],
                 discarded: [],
                 isLoaded: true,
             } as SessionPending;
+            sessionPendingMessagesState.current = [row];
             act(() => {
                 for (const listener of sessionPendingMessagesState.listeners) listener();
             });
@@ -3666,15 +3674,17 @@ describe('SessionView (attachments.uploads resumable send)', () => {
             try {
                 expect(modalAlertSpy).not.toHaveBeenCalled();
                 // Nothing yet, correctly: no canonical fact has arrived.
-                expect(screen.findAllByTestId('session-pendingQueue-resumeFailed')).toHaveLength(0);
+                expect(screen.findAllByTestId('session-pendingActivation')).toHaveLength(0);
 
+                sessionState.session.active = false;
+                sessionState.session.presence = 0;
                 syncPendingRowForLocalId('armed-local-id');
 
-                expect(screen.findAllByTestId('session-pendingQueue-resumeFailed').length)
+                expect(screen.findAllByTestId('session-pendingActivation').length)
                     .toBeGreaterThan(0);
                 // Never an invitation to send the same input twice: the only action
                 // is the Session's own resume owner, which drains the queue.
-                expect(screen.findAllByTestId('session-pendingQueue-resumeFailed-retry').length)
+                expect(screen.findAllByTestId('session-pendingActivation-resume').length)
                     .toBeGreaterThan(0);
             } finally {
                 act(() => { screen.tree?.unmount(); });
@@ -3682,7 +3692,7 @@ describe('SessionView (attachments.uploads resumable send)', () => {
             }
         });
 
-        it('does not let a live Session view silence an activation failure the daemon proved', async () => {
+        it('does not show a stale queued-input activation banner while the Session and machine are reachable', async () => {
             // `target_start_failed` is the daemon's own account: the input was
             // admitted and the target then failed to start. A client-side liveness
             // read must never weaken a definite daemon arm, so this must be stated
@@ -3698,18 +3708,7 @@ describe('SessionView (attachments.uploads resumable send)', () => {
                 code: 'target_start_failed',
             });
             try {
-                const queuedWarning = screen.findByTestId('session-pendingQueue-resumeFailed');
-                expect(queuedWarning).toBeTruthy();
-                // The input is already in canonical custody. The existing
-                // queued-message banner and resume handler stay authoritative,
-                // but its action must not imply resending it.
-                const retry = screen.findByTestId('session-pendingQueue-resumeFailed-retry');
-                expect(retry).toBeTruthy();
-                expect(retry?.props.accessibilityLabel)
-                    .toBe('session.agentContinuation.transition.resumeAction');
-                expect(retry?.findAll((node) => (
-                    node.props.children === 'session.agentContinuation.transition.resumeAction'
-                )).length).toBeGreaterThan(0);
+                expect(screen.findAllByTestId('session-pendingActivation')).toHaveLength(0);
             } finally {
                 sessionState.session.active = restoreActive;
                 sessionState.session.presence = restorePresence;
@@ -3723,26 +3722,16 @@ describe('SessionView (attachments.uploads resumable send)', () => {
             // and the reader was told NOTHING — new Agent on screen, message
             // never processed, Session inactive, no banner. `accepted` only ever
             // meant "spawn acknowledged"; there is no readiness wait behind it.
-            canonicalSessionPendingState.s1 = {
-                messages: [{
-                    id: 'pending-armed-local-id',
-                    localId: 'armed-local-id',
-                    createdAt: 1,
-                    updatedAt: 1,
-                    source: 'server_pending',
-                    text: 'queued message',
-                    rawRecord: { role: 'user', content: { type: 'text', text: 'queued message' } },
-                }],
-                discarded: [],
-                isLoaded: true,
-            };
+            sessionState.session.active = false;
+            sessionState.session.presence = 0;
+            syncPendingRowForLocalId('armed-local-id');
             const screen = await sendArmedAndReadBanner({ type: 'accepted', localId: 'armed-local-id' });
             try {
                 expect(modalAlertSpy).not.toHaveBeenCalled();
                 // Still no second banner of its own — the Session's existing
                 // queued-message owner says it, exactly as for `target_start_failed`.
                 expect(screen.findAllByTestId('session.agentTransitionOutcome.banner')).toHaveLength(0);
-                expect(screen.findAllByTestId('session-pendingQueue-resumeFailed').length)
+                expect(screen.findAllByTestId('session-pendingActivation').length)
                     .toBeGreaterThan(0);
             } finally {
                 act(() => { screen.tree?.unmount(); });
@@ -3756,7 +3745,7 @@ describe('SessionView (attachments.uploads resumable send)', () => {
             // reported as one whose message never went. Nothing is queued here.
             const screen = await sendArmedAndReadBanner({ type: 'accepted', localId: 'armed-local-id' });
             try {
-                expect(screen.findAllByTestId('session-pendingQueue-resumeFailed')).toHaveLength(0);
+                expect(screen.findAllByTestId('session-pendingActivation')).toHaveLength(0);
                 expect(screen.findAllByTestId('session.agentTransitionOutcome.banner')).toHaveLength(0);
             } finally {
                 act(() => { screen.tree?.unmount(); });

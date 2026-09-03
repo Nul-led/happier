@@ -9,6 +9,7 @@ import type { EphemeralUpdate } from '@happier-dev/protocol/updates';
 import type { ActionOperationSnapshotEphemeralV1 } from '@happier-dev/protocol';
 import type { Session } from '@/sync/domains/state/storageTypes';
 import type { Machine } from '@/sync/domains/state/storageTypes';
+import { buildPendingChangedSessionPatch } from './pendingChangedSessionPatch';
 import {
     getSessionSurfaceVisibilitySnapshot,
     isSessionSurfaceVisible,
@@ -508,18 +509,6 @@ function readSocketSessionId(body: unknown): string | null {
     if (!body || typeof body !== 'object') return null;
     const candidate = (body as { id?: unknown; sid?: unknown }).id ?? (body as { sid?: unknown }).sid;
     return typeof candidate === 'string' && candidate.trim().length > 0 ? candidate.trim() : null;
-}
-
-function buildPendingChangedSessionPatch(body: unknown): Pick<Session, 'pendingCount' | 'pendingVersion'> & Pick<Partial<Session>, 'pendingBlockedCount' | 'meaningfulActivityAt'> {
-    const pendingBody = body as { pendingCount: number; pendingVersion: number; pendingBlockedCount?: unknown; meaningfulActivityAt?: unknown };
-    const meaningfulActivityAt = finiteTimestamp(pendingBody.meaningfulActivityAt);
-    const pendingBlockedCount = finiteNonNegativeInteger(pendingBody.pendingBlockedCount);
-    return {
-        pendingCount: pendingBody.pendingCount,
-        pendingVersion: pendingBody.pendingVersion,
-        ...(pendingBlockedCount === undefined ? {} : { pendingBlockedCount }),
-        ...(meaningfulActivityAt === undefined ? {} : { meaningfulActivityAt }),
-    };
 }
 
 function buildShareSessionPatch(body: unknown): Partial<Pick<Session, 'accessLevel' | 'canApprovePermissions' | 'updatedAt'>> {

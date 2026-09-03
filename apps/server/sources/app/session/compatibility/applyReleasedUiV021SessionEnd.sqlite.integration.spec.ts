@@ -21,8 +21,14 @@ describe("released UI v0.2.1 Stop lifecycle compatibility", () => {
     afterAll(async () => harness.close());
 
     it("settles the current turn, publisher lifecycle, and Runtime Activity exactly once for the owner", async () => {
-        const owner = await db.account.create({ data: { publicKey: `owner-${randomUUID()}` } });
-        const other = await db.account.create({ data: { publicKey: `other-${randomUUID()}` } });
+        // A Session-owning Account is current: terminal turn settlement takes
+        // the canonical Account transition fence.
+        const owner = await db.account.create({
+            data: { publicKey: `owner-${randomUUID()}`, encryptionMode: "plain" },
+        });
+        const other = await db.account.create({
+            data: { publicKey: `other-${randomUUID()}`, encryptionMode: "plain" },
+        });
         const session = await db.session.create({
             data: {
                 accountId: owner.id,

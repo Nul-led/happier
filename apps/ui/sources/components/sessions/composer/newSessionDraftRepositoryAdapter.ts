@@ -5,6 +5,7 @@ import {
 } from '@happier-dev/protocol';
 import { isPermissionMode } from '@/sync/domains/permissions/permissionTypes';
 import {
+    projectPredecessorSessionDraftAuthoringFields,
     projectNewSessionDraftSyncedAuthoringFields,
     projectSyncedSessionAuthoringFields,
 } from '@/sync/domains/input/drafts/sessionAuthoringDraftProjection';
@@ -22,6 +23,7 @@ import {
     writeSessionDraftLocalSupplement,
 } from '@/sync/ops/sessionDrafts/sessionDraftRepository';
 import { buildNewSessionDraftLocalState } from '@/sync/ops/sessionDrafts/newSessionDraftLocalState';
+import { sanitizeNewSessionAutomationDraft } from '@/sync/domains/automations/automationDraft';
 import { fireAndForget } from '@/utils/system/fireAndForget';
 
 function strictJson(value: unknown): StrictJsonValue {
@@ -38,14 +40,26 @@ export function readNewSessionDraftFromRepository(input: Readonly<{
         [fieldId, field.value]
     )));
     const authoring = projectSyncedSessionAuthoringFields(fields);
+    const predecessorAuthoring = projectPredecessorSessionDraftAuthoringFields(fields, snapshot.updatedAt);
     const attachments = Array.isArray(snapshot.document.composer.attachments.value)
         ? snapshot.document.composer.attachments.value.flatMap((value) => {
             const parsed = ComposerAttachmentDraftV1Schema.safeParse(value);
             return parsed.success ? [parsed.data] : [];
         })
         : [];
-    const executionTarget = authoring.executionTarget ?? null;
-    const agentTarget = authoring.agentTarget ?? null;
+    const hasCanonicalExecutionTarget = Object.prototype.hasOwnProperty.call(authoring, 'executionTarget');
+    const hasCanonicalAgentTarget = Object.prototype.hasOwnProperty.call(authoring, 'agentTarget');
+    const executionTarget = hasCanonicalExecutionTarget
+        ? authoring.executionTarget ?? null
+        : predecessorAuthoring.executionTarget ?? null;
+    const agentTarget = hasCanonicalAgentTarget
+        ? authoring.agentTarget ?? null
+        : predecessorAuthoring.agentTarget ?? null;
+    const modelSelection = Object.prototype.hasOwnProperty.call(authoring, 'modelSelection')
+        ? authoring.modelSelection
+        : hasCanonicalAgentTarget
+            ? undefined
+            : predecessorAuthoring.modelSelection;
     const backendTarget = resolveDraftBackendTarget({ agentTarget }) ?? undefined;
     const localState = snapshot.localSupplement.newSessionLocalState;
     return {
@@ -89,13 +103,15 @@ export function readNewSessionDraftFromRepository(input: Readonly<{
             ? { transcriptStorage: authoring.transcriptStorage }
             : {}),
         permissionMode: isPermissionMode(authoring.permissionMode) ? authoring.permissionMode : 'default',
-        ...(authoring.modelSelection !== undefined ? { modelSelection: authoring.modelSelection } : {}),
+        ...(modelSelection !== undefined ? { modelSelection } : {}),
         ...(authoring.mcpSelection !== undefined ? { mcpSelection: authoring.mcpSelection } : {}),
         acpSessionModeId: authoring.acpSessionModeId ?? null,
         sessionConfigOptionOverrides: localState?.sessionConfigOptionOverrides ?? null,
         backendNewSessionOptionStateByTargetKey: localState?.backendNewSessionOptionStateByTargetKey ?? null,
         ...(authoring.resumeSessionId ? { resumeSessionId: authoring.resumeSessionId } : {}),
-        ...(authoring.automation ? { automationDraft: authoring.automation } : {}),
+        ...(authoring.automation
+            ? { automationDraft: sanitizeNewSessionAutomationDraft(authoring.automation) }
+            : {}),
         updatedAt: snapshot.updatedAt,
     };
 }

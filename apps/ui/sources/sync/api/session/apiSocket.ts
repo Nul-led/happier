@@ -59,6 +59,7 @@ import {
     requireCurrentAccountStoredContentServerCompatibility,
 } from '@/sync/api/capabilities/accountStoredContentCompatibility';
 import { resolveActiveServerRuntimeOrigin } from '@/sync/runtime/nativeLoopbackTunnels/runtimeOrigin';
+import { getActiveServerHomeCarrier } from '@/sync/domains/server/serverRuntime';
 
 const STATIC_EXPO_PUBLIC_HAPPIER_SOCKET_ACK_AUTH_SETTLE_TIMEOUT_MS =
     process.env.EXPO_PUBLIC_HAPPIER_SOCKET_ACK_AUTH_SETTLE_TIMEOUT_MS;
@@ -299,9 +300,13 @@ class ApiSocket {
         const hasIndependentHttpsIngress = resolveIndependentHttpsServerOrigin(
             focusedProfile?.publicServerUrl ?? '',
         ) !== null;
+        // `carrier` is set by — and only by — a completed transport publication,
+        // whether that published a runtime origin or a semantic carrier that has
+        // none. Waiting on `runtimeOrigin` alone would strand a browser Home
+        // whose verified carrier is exactly the thing without an origin.
         const awaitsVerifiedIrohOrigin = Boolean(
             focusedProfile?.irohEndpoint
-            && !snapshot.runtimeOrigin
+            && !snapshot.carrier
             && !hasIndependentHttpsIngress,
         );
 
@@ -338,6 +343,7 @@ class ApiSocket {
                     ...(canonicalizeServerUrl(nextRuntimeOrigin) === canonicalizeServerUrl(this.config.endpoint)
                         ? {}
                         : { runtimeOrigin: nextRuntimeOrigin }),
+                    homeCarrier: getActiveServerHomeCarrier(),
                 }).then(() => {
                     if (this.currentConnectionState.phase === 'online') this.handleReachabilityStateChange(this.currentConnectionState);
                 });
@@ -350,6 +356,7 @@ class ApiSocket {
             serverUrl,
             token,
             ...(canonicalizeServerUrl(runtimeOrigin) === canonicalizeServerUrl(serverUrl) ? {} : { runtimeOrigin }),
+            homeCarrier: getActiveServerHomeCarrier(),
         });
     }
 
@@ -822,6 +829,7 @@ class ApiSocket {
                 serverUrl,
                 token: newToken,
                 ...(canonicalizeServerUrl(runtimeOrigin) === canonicalizeServerUrl(serverUrl) ? {} : { runtimeOrigin }),
+                homeCarrier: getActiveServerHomeCarrier(),
             });
 
             if (this.socket) {
@@ -886,7 +894,11 @@ class ApiSocket {
         if (!this.config) return;
         const snapshot = getActiveServerSnapshot();
         const transportEndpoint = resolveActiveServerRuntimeOrigin(snapshot) || this.config.endpoint;
-        const key = `${transportEndpoint}|${this.config.token}`;
+        // A replaced carrier is a replaced transport even when the endpoint URL
+        // is unchanged — which is exactly the browser Iroh case, where the URL is
+        // always the canonical Home URL — so it belongs in the identity key.
+        const homeCarrier = getActiveServerHomeCarrier();
+        const key = `${transportEndpoint}|${this.config.token}|${homeCarrier?.endpointId ?? ''}`;
         if (this.socketTransport && this.socketTransportKey === key && this.socket) {
             return;
         }
@@ -904,6 +916,7 @@ class ApiSocket {
             token: this.config.token,
             transports: resolveSocketIoTransports(),
             carrier: snapshot.carrier,
+            ...(homeCarrier ? { websocketFactory: homeCarrier.createWebSocket } : {}),
         });
         this.socket = socket;
         this.socketTransport = transport;

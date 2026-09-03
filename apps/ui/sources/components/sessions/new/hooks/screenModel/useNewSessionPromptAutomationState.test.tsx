@@ -187,9 +187,9 @@ describe('useNewSessionPromptAutomationState', () => {
                     definition: {
                         kind: 'sessionLifecycle',
                         enabled: true,
-                        event: 'parentTurnCompleted',
-                        scope: { kind: 'exactTurn', sourceSessionId: 'source-session', sourceTurnId: 'turn-7' },
-                        consumption: 'once',
+                        sourceSessionId: 'source-session',
+                        events: ['parentTurnCompleted'],
+                        policy: { kind: 'currentTurn', sourceTurnId: 'turn-7' },
                     },
                 },
             ],
@@ -198,10 +198,16 @@ describe('useNewSessionPromptAutomationState', () => {
             sourceSessionId: string;
             sourceTurnId: string;
             sourceServerId: string;
+            events: readonly ['parentTurnCompleted'];
         } | null = null;
         const readExactTurn = (sourceSessionId: string) => (
             sourceSessionId === 'source-session'
-                ? { sourceSessionId, sourceTurnId: liveCurrentTurn.value, sourceServerId: 'server-1' }
+                ? {
+                    sourceSessionId,
+                    sourceTurnId: liveCurrentTurn.value,
+                    sourceServerId: 'server-1',
+                    events: ['parentTurnCompleted'] as const,
+                }
                 : null
         );
 
@@ -219,7 +225,7 @@ describe('useNewSessionPromptAutomationState', () => {
         await flushHookEffects({ cycles: 2, turns: 1 });
 
         expect(hook.getCurrent().automationDraft.triggers[1]).toMatchObject({
-            definition: { scope: { kind: 'exactTurn', sourceTurnId: 'turn-7' } },
+            definition: { policy: { kind: 'currentTurn', sourceTurnId: 'turn-7' } },
         });
 
         // The user explicitly adopts the advanced current turn.
@@ -228,13 +234,17 @@ describe('useNewSessionPromptAutomationState', () => {
             sourceSessionId: 'source-session',
             sourceTurnId: 'turn-8',
             sourceServerId: 'server-1',
+            events: ['parentTurnCompleted'],
         };
         await hook.rerender();
         await flushHookEffects({ cycles: 2, turns: 1 });
 
         const draft = hook.getCurrent().automationDraft;
         expect(draft.triggers[1]).toMatchObject({
-            definition: { scope: { kind: 'exactTurn', sourceSessionId: 'source-session', sourceTurnId: 'turn-8' } },
+            definition: {
+                sourceSessionId: 'source-session',
+                policy: { kind: 'currentTurn', sourceTurnId: 'turn-8' },
+            },
         });
         // Every unrelated draft field and row survived the retarget untouched.
         expect(draft.name).toBe('Drafted name');
@@ -248,7 +258,7 @@ describe('useNewSessionPromptAutomationState', () => {
         await hook.rerender();
         await flushHookEffects({ cycles: 2, turns: 1 });
         expect(hook.getCurrent().automationDraft.triggers[1]).toMatchObject({
-            definition: { scope: { sourceTurnId: 'turn-8' } },
+            definition: { policy: { sourceTurnId: 'turn-8' } },
         });
     });
 });

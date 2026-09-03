@@ -58,13 +58,14 @@ vi.mock('@/components/ui/icons/Icon', () => ({
     Icon: (props: any) => React.createElement('Icon', props),
     ICON_SIZE: { xs: 14, sm: 16, md: 20, lg: 24, xl: 29 },
 }));
-vi.mock('@/agents/registry/AgentIcon', () => ({
-    AgentIcon: (props: any) => React.createElement('AgentIcon', props),
+vi.mock('@/components/sessions/presentation/SessionAgentCatalogIdentityIcon', () => ({
+    SessionAgentCatalogIdentityIcon: (props: any) => React.createElement('SessionAgentCatalogIdentityIcon', props),
 }));
-vi.mock('@/agents/catalog/catalog', () => ({
-    DEFAULT_AGENT_ID: 'claude',
+// The catalog is internal logic and the testkit's own fixtures read it, so this
+// keeps the real module and overrides only the presentation leaves in play.
+vi.mock('@/agents/catalog/catalog', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('@/agents/catalog/catalog')>()),
     getAgentPickerIconScale: () => 1,
-    resolveAgentIdFromFlavor: (value: unknown) => value === 'codex' || value === 'claude' ? value : null,
 }));
 
 function draft(
@@ -235,6 +236,8 @@ describe('NewSessionDraftsSection', () => {
         });
         expect(row?.props.leftElement?.props).toMatchObject({
             agentId: 'codex',
+            machineId: 'machine-a',
+            serverId: null,
             size: 14,
             testID: `session-draft-agent-logo:new-session:${projection.draftId}`,
         });
@@ -269,6 +272,67 @@ describe('NewSessionDraftsSection', () => {
         });
         expect(detailed.findByTestId(`session-draft-row:new-session:${projection.draftId}`)?.props.leftElement).toBeUndefined();
         await detailed.unmount();
+    });
+
+    it('renders an external draft through its exact machine-qualified Agent identity', async () => {
+        const projection = draft();
+        if (projection.document.target.kind !== 'newSession') throw new Error('expected new-session draft');
+        const externalProjection: NewSessionDraftProjection = {
+            ...projection,
+            document: {
+                ...projection.document,
+                target: {
+                    ...projection.document.target,
+                    authoring: {
+                        ...projection.document.target.authoring,
+                        agentId: { mutationId: 'm-agent-external', value: 'plugin:acme.review' },
+                    },
+                },
+            },
+        };
+        const screen = await renderScreen(
+            <NewSessionDraftsSectionView
+                drafts={[externalProjection]}
+                serverId="server-a"
+                density="minimal"
+                onContinue={vi.fn()}
+                onDelete={vi.fn(async () => false)}
+            />,
+        );
+
+        expect(screen.findByTestId(`session-draft-row:new-session:${projection.draftId}`)?.props.leftElement?.props)
+            .toMatchObject({
+                agentId: 'plugin:acme.review',
+                machineId: 'machine-a',
+                serverId: 'server-a',
+            });
+    });
+
+    it('keeps an installed Agent’s draft on its own identity instead of the default mark', async () => {
+        const projection = draft({
+            document: {
+                ...draft().document,
+                target: {
+                    kind: 'newSession',
+                    authoring: {
+                        directory: { mutationId: 'm-dir', value: '/Users/alice/private-project' },
+                        machineId: { mutationId: 'm-machine', value: 'machine-a' },
+                        agentId: { mutationId: 'm-agent', value: 'acme.plugin/ultracode' },
+                    },
+                },
+            },
+        } as Partial<NewSessionDraftProjection>);
+        const screen = await renderScreen(
+            <NewSessionDraftsSectionView
+                drafts={[projection]}
+                density="minimal"
+                onContinue={vi.fn()}
+                onDelete={vi.fn(async () => false)}
+            />,
+        );
+
+        const row = screen.findByTestId(`session-draft-row:new-session:${projection.draftId}`);
+        expect(row?.props.leftElement?.props.agentId).not.toBe('claude');
     });
 
     it('renders nothing when the repository has no saved new-session drafts', async () => {

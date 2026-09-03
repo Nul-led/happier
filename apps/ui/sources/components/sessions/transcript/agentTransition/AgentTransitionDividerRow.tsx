@@ -29,15 +29,16 @@ import { openAgentTransitionHandedOverContextModal } from './openAgentTransition
  * is a worse label than a display name but a far better one than nothing, so an
  * unknown id degrades to itself rather than to "Unknown".
  *
- * Name and mark degrade TOGETHER, on the same fact. An id the catalog cannot
- * name has no mark to draw either, and drawing one for an Agent this client
- * cannot identify would be inventing a brand for it.
+ * The machine-qualified presentation owner decides whether a branded mark is
+ * current. Passing the durable id for every slot lets that owner degrade an
+ * unknown or uninstalled Agent to its neutral mark without inventing a brand.
  */
 function resolveAgentSlot(agentId: string): AgentTransitionTitleAgent {
     const displayNameKey = getAgentCore(agentId)?.displayNameKey;
-    return displayNameKey
-        ? { label: t(displayNameKey), markAgentId: agentId }
-        : { label: agentId, markAgentId: null };
+    return {
+        label: displayNameKey ? t(displayNameKey) : agentId,
+        markAgentId: agentId,
+    };
 }
 
 /**
@@ -81,6 +82,7 @@ export function AgentTransitionDividerRow(props: Readonly<{
     // `.subscriptionWidth` test); a string compares by value, so it now re-renders
     // exactly when the answer moves.
     const machineId = useSessionMachineId(sessionId);
+    const serverId = resolvePreferredServerIdForSessionId(sessionId) ?? null;
 
     // `0` is a recorded cutoff meaning "nothing was carried over" — a fact the
     // card says its own sentence for. It is never absent: the sidecar schema
@@ -93,7 +95,7 @@ export function AgentTransitionDividerRow(props: Readonly<{
         openAgentTransitionHandedOverContextModal({
             sessionId,
             machineId,
-            serverId: resolvePreferredServerIdForSessionId(sessionId) ?? null,
+            serverId,
             sourceCutoffSeqInclusive: cutoff,
             // Present only on a native return, and the reason the card can show
             // that boundary's away-delta at all: the bound it came from is
@@ -119,6 +121,7 @@ export function AgentTransitionDividerRow(props: Readonly<{
         props.divider.returningAgentLastSeenSeqInclusive,
         props.divider.toAgentId,
         router,
+        serverId,
         sessionId,
         title,
     ]);
@@ -130,7 +133,12 @@ export function AgentTransitionDividerRow(props: Readonly<{
             iconName="arrows-left-right"
             title={title}
             titleContent={(
-                <AgentTransitionDividerTitle testID="transcript-agent-transition-divider-title" parts={titleParts} />
+                <AgentTransitionDividerTitle
+                    testID="transcript-agent-transition-divider-title"
+                    parts={titleParts}
+                    machineId={machineId}
+                    serverId={serverId}
+                />
             )}
             // Stated even on the inert arm: the label is a run of words and
             // marks, so the sentence has to be carried by the accessible name

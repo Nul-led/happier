@@ -48,6 +48,7 @@ export function buildCoreAgentInputControlNodes(params: Readonly<{
     envVarsCount?: number;
     onEnvVarsPress: () => void;
     agentId: string;
+    agentIdentityIcon?: React.ReactNode;
     hasAgentSelection: boolean;
     agentChipAnchorRef: React.RefObject<View | null>;
     agentLabel: string;
@@ -141,6 +142,7 @@ export function buildCoreAgentInputControlNodes(params: Readonly<{
     const agentChip = params.hasAgentSelection ? createAgentSelectionActionChip({
         anchorRef: params.agentChipAnchorRef,
         agentId: params.agentId,
+        agentIdentityIcon: params.agentIdentityIcon,
         tint: params.tint,
         showLabel: params.showChipLabels,
         label: params.engineLabel,

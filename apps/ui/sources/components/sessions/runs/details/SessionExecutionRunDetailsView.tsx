@@ -237,7 +237,11 @@ export const SessionExecutionRunDetailsView = React.memo(React.forwardRef<Sessio
         <View style={{ gap: 10 }}>
             <View style={{ gap: 4 }}>
                 {props.showInfoCard === false ? null : (
-                    <SessionExecutionRunInfoCard run={state.run} daemonProcessLine={daemonProcessLine} />
+                    <SessionExecutionRunInfoCard
+                        run={state.run}
+                        hostSessionId={props.sessionId}
+                        daemonProcessLine={daemonProcessLine}
+                    />
                 )}
                 {!transcriptMessage && transcriptToolRouteId ? (
                     <Pressable
@@ -397,15 +401,20 @@ export const SessionExecutionRunDetailsView = React.memo(React.forwardRef<Sessio
                 </View>
             ) : null}
 
-            {state.latestToolResult ? (
-                <View style={{
-                    padding: 12,
-                    borderRadius: 12,
-                    backgroundColor: theme.colors.surface.inset,
-                    borderWidth: 1,
-                    borderColor: theme.colors.border.default,
-                    gap: 6,
-                }}>
+            {/* Presence, not truthiness: a valid run result may be false, 0,
+                empty string, or null; only absence (undefined) hides the card. */}
+            {state.latestToolResult !== undefined ? (
+                <View
+                    testID="session-run-details-latest-tool-result"
+                    style={{
+                        padding: 12,
+                        borderRadius: 12,
+                        backgroundColor: theme.colors.surface.inset,
+                        borderWidth: 1,
+                        borderColor: theme.colors.border.default,
+                        gap: 6,
+                    }}
+                >
                     <Text style={{ color: theme.colors.text.primary, fontWeight: '600' }}>{t('runs.runDetails.latestToolResultTitle')}</Text>
                     <Text style={{ color: theme.colors.text.secondary, fontFamily: 'Menlo' }}>
                         {JSON.stringify(state.latestToolResult, null, 2)}

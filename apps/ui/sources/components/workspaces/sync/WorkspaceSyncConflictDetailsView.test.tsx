@@ -61,8 +61,37 @@ vi.mock('@/components/ui/buttons/IconButton', () => ({
 vi.mock('@/components/ui/buttons/RoundButton', () => ({
     RoundButton: (props: object) => React.createElement('RoundButton', props),
 }));
+vi.mock('@/components/ui/icons/Icon', () => ({
+    Icon: (props: object) => React.createElement('Icon', props),
+}));
 vi.mock('@/components/ui/lists/Item', () => ({
     Item: (props: { title?: string; subtitle?: string; detail?: string; copy?: string | boolean }) => React.createElement('Item', props),
+}));
+vi.mock('@/components/ui/lists/ExpandableItem', () => ({
+    ExpandableItem: (props: React.PropsWithChildren<{
+        expanded: boolean;
+        onExpandedChange: (next: boolean) => void;
+        header: (state: Readonly<{
+            expanded: boolean;
+            headerProps: Readonly<{
+                onPress: () => void;
+                accessibilityRole: 'button';
+                accessibilityState: Readonly<{ expanded: boolean }>;
+            }>;
+        }>) => React.ReactNode;
+    }>) => React.createElement(
+        'ExpandableItem',
+        props,
+        props.header({
+            expanded: props.expanded,
+            headerProps: {
+                onPress: () => props.onExpandedChange(!props.expanded),
+                accessibilityRole: 'button',
+                accessibilityState: { expanded: props.expanded },
+            },
+        }),
+        props.expanded ? props.children : null,
+    ),
 }));
 vi.mock('@/components/ui/lists/ItemGroup', () => ({
     ItemGroup: (props: React.PropsWithChildren<{ title?: string }>) => React.createElement('ItemGroup', props, props.children),
@@ -120,7 +149,7 @@ describe('WorkspaceSyncConflictDetailsView', () => {
         }];
     });
 
-    it('shows the immutable relationship mode, live human status, last sync, and directional endpoints before conflicts', async () => {
+    it('leads with the relationship summary, then conflicts and refresh, and keeps diagnostics closed behind one disclosure', async () => {
         const { WorkspaceSyncConflictDetailsView } = await import('./WorkspaceSyncConflictDetailsView');
         const screen = await renderScreen(<WorkspaceSyncConflictDetailsView resource={resource} />);
 
@@ -132,12 +161,62 @@ describe('WorkspaceSyncConflictDetailsView', () => {
             expect.objectContaining({ props: expect.objectContaining({ title: expect.stringContaining('workspaceSync.endpoint.destination'), subtitle: 'Beta workstation · /live/destination' }) }),
         ]));
         expect(items.some((item) => String(item.props.subtitle).includes('workspaceSync.lastSynced'))).toBe(true);
-        expect(screen.findAllByType('ItemGroup').map((group) => group.props.title)).toContain('workspaceSync.conflictsTitle');
 
-        const diagnosticItems = items.filter((item) => item.props.copy);
+        // Summary first, then the conflicts/refresh task group, and only then the
+        // untitled group that carries the single diagnostics disclosure.
+        expect(screen.findAllByType('ItemGroup').map((group) => group.props.title)).toEqual([
+            'workspaceSync.title',
+            'workspaceSync.conflictsTitle',
+            undefined,
+        ]);
+
+        const titles = items.map((item) => item.props.title);
+        expect(titles.indexOf('src/index.ts')).toBeLessThan(titles.indexOf('workspaceSync.diagnostics.title'));
+        expect(titles.indexOf('workspaceSync.actions.refresh')).toBeLessThan(titles.indexOf('workspaceSync.diagnostics.title'));
+
+        const disclosures = screen.findAllByType('ExpandableItem');
+        expect(disclosures).toHaveLength(1);
+        expect(disclosures[0]?.props.expanded).toBe(false);
+
+        // Closed by default: no raw identifier, live root, mode/state or error
+        // code is rendered until the reader opens diagnostics.
+        expect(items.filter((item) => item.props.copy)).toEqual([]);
+        expect(screen.getTextContent()).not.toContain('workspaceSync.diagnostics.relationshipId');
+    });
+
+    it('labels each conflicting path with localized file states instead of raw protocol kinds', async () => {
+        shared.conflictSnapshot.list.conflicts = [{
+            relationshipId: 'relationship-1',
+            path: 'src/index.ts',
+            alpha: { kind: 'file', digest: 'a'.repeat(40), size: 12 },
+            beta: { kind: 'directory' },
+        }];
+        const { WorkspaceSyncConflictDetailsView } = await import('./WorkspaceSyncConflictDetailsView');
+        const screen = await renderScreen(<WorkspaceSyncConflictDetailsView resource={resource} />);
+        const conflictItem = screen.findAllByType('Item').find((node) => node.props.title === 'src/index.ts');
+        expect(conflictItem?.props.subtitle).toBe(
+            'Local project: workspaceSync.conflictKind.file · Remote project: workspaceSync.conflictKind.directory',
+        );
+    });
+
+    it('exposes selectable, copyable identifiers, live roots and engine state once diagnostics are opened', async () => {
+        const { WorkspaceSyncConflictDetailsView } = await import('./WorkspaceSyncConflictDetailsView');
+        const screen = await renderScreen(<WorkspaceSyncConflictDetailsView resource={resource} />);
+
+        const toggle = screen.findAllByType('Item').find((item) => item.props.title === 'workspaceSync.diagnostics.title');
+        expect(toggle?.props.accessibilityRole).toBe('button');
+        expect(toggle?.props.accessibilityState).toEqual({ expanded: false });
+        await act(async () => {
+            await toggle?.props.onPress();
+        });
+
+        expect(screen.findAllByType('ExpandableItem')[0]?.props.expanded).toBe(true);
+        const diagnosticItems = screen.findAllByType('Item').filter((item) => item.props.copy);
         expect(diagnosticItems).toEqual(expect.arrayContaining([
             expect.objectContaining({ props: expect.objectContaining({ title: 'workspaceSync.diagnostics.relationshipId', subtitle: 'relationship-1', copy: 'relationship-1' }) }),
             expect.objectContaining({ props: expect.objectContaining({ title: 'workspaceSync.diagnostics.controllerMachineId', subtitle: 'machine-alpha', copy: 'machine-alpha' }) }),
+            expect.objectContaining({ props: expect.objectContaining({ title: 'workspaceSync.diagnostics.alphaMachineId', subtitle: 'machine-alpha', copy: 'machine-alpha' }) }),
+            expect.objectContaining({ props: expect.objectContaining({ title: 'workspaceSync.diagnostics.betaMachineId', subtitle: 'machine-beta', copy: 'machine-beta' }) }),
             expect.objectContaining({ props: expect.objectContaining({ title: 'workspaceSync.diagnostics.alphaRoot', subtitle: '/live/source', copy: '/live/source' }) }),
             expect.objectContaining({ props: expect.objectContaining({ title: 'workspaceSync.diagnostics.betaRoot', subtitle: '/live/destination', copy: '/live/destination' }) }),
             expect.objectContaining({ props: expect.objectContaining({ title: 'workspaceSync.diagnostics.engineState', subtitle: 'watching', copy: 'watching' }) }),
