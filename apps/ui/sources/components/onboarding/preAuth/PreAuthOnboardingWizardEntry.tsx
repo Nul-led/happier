@@ -16,6 +16,7 @@ import { digest } from '@/platform/digest';
 import { getRandomBytesAsync } from '@/platform/cryptoRandom';
 import { Modal } from '@/modal';
 import { accountDirectoryAuthClient } from '@/auth/accountDirectory/accountDirectoryAuthClient';
+import { normalizeAccountDirectoryEndpoint } from '@/sync/domains/accountDirectory/accountDirectoryEndpoint';
 import {
     authenticateSelectedAccountServiceWithKey,
     refreshAndEnrollAccountServiceDirectory,
@@ -237,6 +238,42 @@ export const PreAuthOnboardingWizardEntry = React.memo(function PreAuthOnboardin
     // The selected sign-in service is resolved independently of the focused Home, so a fresh
     // device with zero Home profiles still reaches its advertised sign-in methods.
     const accountServiceEntry = useAccountServiceEntryOptions();
+    const chooseAccountService = React.useCallback(async () => {
+        const entered = await Modal.prompt(
+            t('welcome.chooseSignInService'),
+            t('welcome.signInServiceUrlPrompt'),
+            {
+                defaultValue: accountServiceEntry.endpoint.url,
+                placeholder: 'https://accounts.example.com',
+                confirmText: t('common.continue'),
+                cancelText: t('common.cancel'),
+            },
+        );
+        if (entered == null) return;
+        const endpointUrl = normalizeAccountDirectoryEndpoint(entered);
+        if (!endpointUrl) {
+            Modal.alert(t('welcome.signInServiceUnsupportedTitle'), t('welcome.signInServiceInvalidAddress'));
+            return;
+        }
+        try {
+            const discovery = await accountDirectoryAuthClient.discoverAuthenticationMethods({
+                endpointUrl,
+                expectedServerIdentityId: null,
+            });
+            if (discovery.kind !== 'supported_account_service') {
+                Modal.alert(t('welcome.signInServiceUnsupportedTitle'), t('welcome.signInServiceUnsupportedBody'));
+                return;
+            }
+            setAccountServiceEndpoint({
+                url: discovery.endpointUrl,
+                serverIdentityId: discovery.serverIdentityId,
+                displayName: new URL(discovery.endpointUrl).host,
+                source: 'user',
+            });
+        } catch {
+            Modal.alert(t('welcome.signInServiceUnavailableTitle'), t('welcome.signInServiceUnavailableBody', { serverUrl: endpointUrl }));
+        }
+    }, [accountServiceEntry.endpoint.url]);
     const accountServiceEndpoint = accountServiceEntry.endpoint;
     const accountServiceDiscovery = accountServiceEntry.discovery;
     const [accountServiceApprovalPending, setAccountServiceApprovalPending] = React.useState(false);
@@ -707,6 +744,7 @@ export const PreAuthOnboardingWizardEntry = React.memo(function PreAuthOnboardin
         initialStepId: resolvedInitialStepId,
         onContinueWithAccountServiceProvider: continueWithAccountServiceProvider,
         onContinueWithAccountServiceKey: continueWithAccountServiceKey,
+        onChooseAccountService: chooseAccountService,
         onCreateAccount: createAccount,
         onCreateAccountViaProvider: createAccountViaProvider,
         onLoginWithKeylessProvider: loginWithKeylessProvider,

@@ -153,7 +153,7 @@ function getArchivedSessionKey(session: ArchivedScreenSession): string {
 }
 
 export function buildArchivedTranscriptEligibleSessionIds(
-    sessions: ReadonlyArray<ArchivedScreenSession>,
+    sessions: ReadonlyArray<Pick<ArchivedScreenSession, 'id' | 'serverId'>>,
     serverId: string,
 ): string[] {
     const exactServerId = serverId.trim();

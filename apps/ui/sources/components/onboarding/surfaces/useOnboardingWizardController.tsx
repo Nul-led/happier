@@ -94,6 +94,7 @@ export type OnboardingWizardSurfaceProps = Readonly<{
     onContinueWithAccountServiceProvider?: (providerId: string) => Promise<void> | void;
     /** Key sign-in on the selected sign-in service. Never touches the focused Home. */
     onContinueWithAccountServiceKey?: () => Promise<void> | void;
+    onChooseAccountService?: () => Promise<void> | void;
     onCreateAccount: () => Promise<void> | void;
     onCreateAccountViaProvider: (providerId: string) => Promise<void> | void;
     onLoginWithKeylessProvider: (providerId: string) => Promise<void> | void;
@@ -1376,6 +1377,7 @@ export function useOnboardingWizardController(props: OnboardingWizardSurfaceProp
         // authentication is targeted at the selected service and must not touch the focused Home.
         onContinueWithAccountServiceProvider: props.onContinueWithAccountServiceProvider,
         onContinueWithAccountServiceKey: props.onContinueWithAccountServiceKey,
+        onChooseAccountService: props.onChooseAccountService,
         onCreateAccount: async () => {
             await ensureActiveServerForAuth();
             await props.onCreateAccount();

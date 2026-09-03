@@ -105,6 +105,7 @@ export function renderOnboardingWizardStepBody(params: Readonly<{
 
     onContinueWithAccountServiceProvider?: (providerId: string) => Promise<void> | void;
     onContinueWithAccountServiceKey?: () => Promise<void> | void;
+    onChooseAccountService?: () => Promise<void> | void;
     onCreateAccount: () => Promise<void> | void;
     onCreateAccountViaProvider: (providerId: string) => Promise<void> | void;
     onLoginWithKeylessProvider: (providerId: string) => Promise<void> | void;
@@ -145,6 +146,7 @@ export function renderOnboardingWizardStepBody(params: Readonly<{
                 accountServiceEntry={params.accountServiceEntry}
                 onContinueWithAccountServiceProvider={params.onContinueWithAccountServiceProvider}
                 onContinueWithAccountServiceKey={params.onContinueWithAccountServiceKey}
+                onChooseAccountService={params.onChooseAccountService}
                 onCreateAccount={params.onCreateAccount}
                 onCreateAccountViaProvider={params.onCreateAccountViaProvider}
                 onLoginWithKeylessProvider={params.onLoginWithKeylessProvider}
