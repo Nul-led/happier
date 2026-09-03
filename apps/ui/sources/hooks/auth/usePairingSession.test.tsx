@@ -74,6 +74,7 @@ vi.mock('@/sync/domains/server/serverRuntime', () => ({
 
 let cachedCanonicalServerUrl: string | null = null;
 let cachedServerIdentityId: string | null = null;
+let cachedSnapshotOnlyUnscoped = false;
 let descriptorOverride: import('@happier-dev/protocol').HomeConnectionDescriptorV1 | null = null;
 const serverProfileMocks = vi.hoisted(() => ({
     getServerProfileById: vi.fn(() => ({ id: 'srv-a' })),
@@ -84,7 +85,10 @@ vi.mock('@/sync/domains/server/serverProfiles', () => ({
     buildHomeConnectionDescriptorForProfile: serverProfileMocks.buildHomeConnectionDescriptorForProfile,
 }));
 vi.mock('@/sync/api/capabilities/serverFeaturesClient', () => ({
-    getCachedServerFeaturesSnapshot: () =>
+    getCachedServerFeaturesSnapshot: (params?: { serverId?: string }) =>
+        cachedSnapshotOnlyUnscoped && params?.serverId
+            ? null
+            :
         cachedCanonicalServerUrl
             ? {
                 status: 'ready',
@@ -132,6 +136,7 @@ describe('usePairingSession (pairing deep link server URL)', () => {
         enrollmentTransportCloseMock.mockClear();
         cachedCanonicalServerUrl = null;
         cachedServerIdentityId = null;
+        cachedSnapshotOnlyUnscoped = false;
         activeServerUrl = 'http://localhost:53288';
         activeShareableServerUrl = null;
         activeShareableServerUrlValidatedAgainstServerUrl = null;
@@ -155,6 +160,26 @@ describe('usePairingSession (pairing deep link server URL)', () => {
             };
         });
         appState.currentState = 'active';
+    });
+
+    it('starts from the ready active runtime snapshot when no profile-scoped cache entry exists', async () => {
+        cachedCanonicalServerUrl = 'http://localhost:53288';
+        cachedServerIdentityId = 'srv_home_a';
+        cachedSnapshotOnlyUnscoped = true;
+
+        const { usePairingSession } = await import('./usePairingSession');
+        let hookApi: ReturnType<typeof usePairingSession> | null = null;
+        function Probe() { hookApi = usePairingSession({ enabled: true, isAuthenticated: true }); return null; }
+        const screen = await renderScreen(<Probe />);
+        try {
+            await act(async () => {
+                await expect(hookApi!.startPairing()).resolves.toEqual({ ok: true });
+            });
+            expect(pairingStartMock).toHaveBeenCalledOnce();
+            expect(hookApi!.presentation).toMatchObject({ phase: 'ready' });
+        } finally {
+            act(() => screen.tree.unmount());
+        }
     });
 
     it('preserves the canonical profile descriptor revision and Iroh endpoint', async () => {

@@ -291,7 +291,7 @@ export function UniversalSearchController(props: UniversalSearchControllerProps)
         return { serverId, machineId: target.machineId, rootPath: target.basePath };
     }, [activeSession, scope.machineId, scope.rootPath, scope.serverId]);
     const workspaceResolverKey = workspaceScope
-        ? `${workspaceScope.serverId}:${workspaceScope.machineId}:${workspaceScope.rootPath}`
+        ? `${workspaceScope.serverId}:${workspaceScope.machineId}:${workspaceScope.rootPath}:${selectedCredentialBinding?.accountId ?? ''}:${selectedCredentialBinding?.revision ?? -1}`
         : '';
     const workspaceRef = React.useMemo(
         () => workspaceScope ? findWorkspaceRefByScope(workspaceRefs, workspaceScope) : null,

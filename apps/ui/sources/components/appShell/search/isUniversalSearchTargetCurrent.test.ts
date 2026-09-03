@@ -13,6 +13,7 @@ describe('isUniversalSearchTargetCurrent', () => {
             workspaces: [],
             settingsPages: new Map(),
             resolveSessionWorkspaceTarget: () => null,
+            isWorkspaceScopeReachable: () => true,
         })).toBe(true);
     });
 
@@ -23,6 +24,7 @@ describe('isUniversalSearchTargetCurrent', () => {
             workspaces: [],
             settingsPages: new Map(),
             resolveSessionWorkspaceTarget: () => null,
+            isWorkspaceScopeReachable: () => true,
         })).toBe(false);
     });
 
@@ -53,13 +55,14 @@ describe('isUniversalSearchTargetCurrent', () => {
                 workspaceCacheKey: 'server-a:machine-a:c:/repo',
             };
             let currentScope: WorkspaceTargetForSession | null = originalScope;
+            let reachable = true;
             const isCurrent = () => isUniversalSearchTargetCurrent({
                 target,
                 accountScope: { serverId: 'server-a', current: true },
                 workspaces: [],
                 settingsPages: new Map(),
                 resolveSessionWorkspaceTarget: () => currentScope,
-                isWorkspaceScopeReachable: () => true,
+                isWorkspaceScopeReachable: () => reachable,
             });
 
             expect(isCurrent()).toBe(true);
@@ -74,6 +77,10 @@ describe('isUniversalSearchTargetCurrent', () => {
             }
 
             currentScope = null;
+            expect(isCurrent()).toBe(false);
+
+            currentScope = originalScope;
+            reachable = false;
             expect(isCurrent()).toBe(false);
         },
     );

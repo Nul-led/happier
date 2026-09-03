@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
     findFirst: vi.fn(),
     updateMany: vi.fn(),
     resolveTarget: vi.fn(),
+    markAccountChanged: vi.fn(async () => 123),
 }));
 
 vi.mock("@/storage/inTx", () => ({
@@ -27,6 +28,9 @@ vi.mock("@/app/plugins/availability/operations", () => ({
 }));
 vi.mock("@/app/serverIdentity/serverIdentity", () => ({
     getOrCreateServerIdentityId: vi.fn(async () => "server-identity-1"),
+}));
+vi.mock("./accountChange", () => ({
+    markPluginWebhookAccountChangedInTxV1: mocks.markAccountChanged,
 }));
 
 import {
@@ -57,12 +61,11 @@ describe("plugin webhook settlement target currentness", () => {
         mocks.resolveTarget.mockResolvedValue({ kind: "notCurrent" });
     });
 
-    it("loses renew, complete, and fail authority after the frozen target is no longer current", async () => {
+    it("loses renew authority after the frozen target is no longer current", async () => {
         mocks.findFirst.mockResolvedValue({
             firstClaimAt: new Date(NOW.getTime() - 1_000),
             executionStartedAt: new Date(NOW.getTime() - 500),
             leaseExpiresAt: new Date(NOW.getTime() + 60_000),
-            attemptCount: 1,
             targetPluginVersion: "1.0.0",
             endpoint: { enabled: true, revokedAt: null, releasedAt: null },
         });
@@ -75,6 +78,97 @@ describe("plugin webhook settlement target currentness", () => {
             transition: "renew",
             now: NOW,
         })).resolves.toEqual({ kind: "leaseLost" });
+
+        expect(mocks.resolveTarget).toHaveBeenCalledTimes(1);
+        expect(mocks.updateMany).not.toHaveBeenCalled();
+    });
+
+    it("settles an already-started attempt under its exact unexpired lease after currentness is lost", async () => {
+        // The handler has run: `executionStartedAt` is set and the daemon holds
+        // the exact lease. Re-deriving plugin/endpoint currentness here would
+        // throw the known result away and force a duplicate execution once the
+        // lease expires.
+        mocks.findFirst.mockResolvedValue({ attemptCount: 1 });
+
+        await expect(completePluginWebhookDeliveryV1({
+            accountId: "account-1",
+            deliveryId: "delivery-1",
+            target: TARGET,
+            lease: LEASE,
+            disposition: "accepted",
+            now: NOW,
+        })).resolves.toEqual({ kind: "settled", state: "succeeded" });
+        await expect(failPluginWebhookDeliveryV1({
+            accountId: "account-1",
+            deliveryId: "delivery-1",
+            target: TARGET,
+            lease: LEASE,
+            result: { kind: "retry", code: "provider_busy" },
+            retryDelayMs: 5_000,
+            now: NOW,
+        })).resolves.toEqual({ kind: "settled", state: "queued" });
+
+        expect(mocks.resolveTarget).not.toHaveBeenCalled();
+        expect(mocks.updateMany).toHaveBeenCalledTimes(2);
+    });
+
+    it("settles an already-started attempt after its endpoint was revoked", async () => {
+        mocks.findFirst.mockResolvedValue({ attemptCount: 1 });
+
+        await expect(completePluginWebhookDeliveryV1({
+            accountId: "account-1",
+            deliveryId: "delivery-1",
+            target: TARGET,
+            lease: LEASE,
+            disposition: "accepted",
+            now: NOW,
+        })).resolves.toEqual({ kind: "settled", state: "succeeded" });
+
+        // A revoked or disabled endpoint stops new ingress and new claims. It
+        // cannot strand an attempt that already produced its result.
+        for (const call of mocks.updateMany.mock.calls) {
+            expect(call[0].where).not.toHaveProperty("endpoint");
+        }
+        for (const call of mocks.findFirst.mock.calls) {
+            expect(call[0].where).not.toHaveProperty("endpoint");
+        }
+    });
+
+    it("settles only for the exact claimant machine installation, lease, revision and unexpired lease", async () => {
+        mocks.findFirst.mockResolvedValue({ attemptCount: 1 });
+
+        await completePluginWebhookDeliveryV1({
+            accountId: "account-1",
+            deliveryId: "delivery-1",
+            target: TARGET,
+            lease: LEASE,
+            disposition: "accepted",
+            now: NOW,
+        });
+
+        expect(mocks.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+            where: expect.objectContaining({
+                id: "delivery-1",
+                accountId: "account-1",
+                state: "claimed",
+                leaseId: LEASE.leaseId,
+                revision: LEASE.revision,
+                executionStartedAt: { not: null },
+                leaseExpiresAt: { gt: NOW },
+                targetMachineId: TARGET.materialization.machineId,
+                targetMachineInstallationId: TARGET.machineInstallationId,
+                targetMaterializationId: TARGET.materialization.materializationId,
+                targetPluginId: TARGET.materialization.pluginId,
+                claimedByMachineId: TARGET.materialization.machineId,
+                claimedByMachineInstallationId: TARGET.machineInstallationId,
+            }),
+        }));
+    });
+
+    it("reports leaseLost when the exact custody row no longer matches", async () => {
+        mocks.findFirst.mockResolvedValue(null);
+        mocks.updateMany.mockResolvedValue({ count: 0 });
+
         await expect(completePluginWebhookDeliveryV1({
             accountId: "account-1",
             deliveryId: "delivery-1",
@@ -92,8 +186,6 @@ describe("plugin webhook settlement target currentness", () => {
             retryDelayMs: 5_000,
             now: NOW,
         })).resolves.toEqual({ kind: "leaseLost" });
-
-        expect(mocks.resolveTarget).toHaveBeenCalledTimes(3);
-        expect(mocks.updateMany).not.toHaveBeenCalled();
+        expect(mocks.markAccountChanged).not.toHaveBeenCalled();
     });
 });

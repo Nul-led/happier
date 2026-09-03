@@ -88,9 +88,11 @@ describe('/scan/account', () => {
 
         const wizard = screen.findByType('WizardModalShell' as never);
         expect(wizard.props.testID).toBe('scan-account-wizard');
-        expect(wizard.props.stepIndex).toBe(1);
+        expect(wizard.props.stepIndex).toBe(0);
         expect(wizard.props.stepCount).toBe(1);
         expect(wizard.props.showSkip).toBe(false);
+        expect(wizard.props.title).toBe('connect.linkNewDeviceTitle');
+        expect(wizard.props.subtitle).toBe('connect.linkNewDeviceSubtitle');
 
         expect(lastScannerProps?.embedded).toBe(true);
         expect(lastScannerProps?.title).toBe('connect.linkNewDeviceTitle');

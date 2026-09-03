@@ -3419,7 +3419,7 @@ describe("Automation Event admission", () => {
         });
     });
 
-    it("blocks every net-new Event candidate in one request that capacity cannot hold together", async () => {
+    it("admits the ordered net-new Event prefix up to remaining capacity and returns capacity for the rest of one request", async () => {
         await seed();
         await db.automationTrigger.create({
             data: {
@@ -3475,15 +3475,136 @@ describe("Automation Event admission", () => {
             },
         });
 
-        // One bounded request is net-new-capacity atomic. Admitting a prefix
-        // would make the caller's checkpoint-safety depend on request ordering
-        // and leave a partially consumed request with no rejoinable remainder.
+        // Deterministic prefix admission: one net-new slot remains, so the
+        // first ordered candidate fills it and the second returns typed
+        // capacity as the request's retryable checkpoint-unsafe remainder.
         expect(result.results).toEqual([
-            { kind: "blocked", reason: "capacity", checkpointSafe: false },
+            { kind: "admitted", runId: expect.any(String), checkpointSafe: true },
             { kind: "blocked", reason: "capacity", checkpointSafe: false },
         ]);
         await expect(db.automationRun.count({ where: { accountId: ACCOUNT_ID } }))
-            .resolves.toBe(MAX_NON_TERMINAL_EVENT_CONVERSATION_RUNS_PER_ACCOUNT - 1);
+            .resolves.toBe(MAX_NON_TERMINAL_EVENT_CONVERSATION_RUNS_PER_ACCOUNT);
+    });
+
+    it("rejoins the committed prefix on retry and admits the capacity-blocked suffix once capacity frees", async () => {
+        await seed();
+        await db.automationTrigger.create({
+            data: {
+                id: SECOND_TRIGGER_ID,
+                automationId: AUTOMATION_ID,
+                kind: "pluginEvent",
+                enabled: true,
+                revision: 1,
+                eventPluginId: PLUGIN_ID,
+                eventLocalId: EVENT_LOCAL_ID,
+                sourceSelectorId: SOURCE_SELECTOR_ID,
+                sourceContractVersion: 1,
+                observationTransport: "checkpointedPull",
+                watcherMachineId: MACHINE_ID,
+                watcherMachineInstallationId: MACHINE_INSTALLATION_ID,
+                watcherPluginId: PLUGIN_ID,
+                watcherMaterializationId: MATERIALIZATION_ID,
+                definitionEnvelope: triggerDefinitionEnvelope({
+                    triggerId: SECOND_TRIGGER_ID,
+                    sourceSelectorId: SOURCE_SELECTOR_ID,
+                }),
+            },
+        });
+        const now = new Date();
+        await db.automationRun.createMany({
+            data: Array.from({ length: MAX_NON_TERMINAL_EVENT_CONVERSATION_RUNS_PER_ACCOUNT - 1 }, (_, index) => (
+                pluginEventCapacityRunSeed({
+                    id: `retry-capacity-run-${index}`,
+                    automationId: AUTOMATION_ID,
+                    triggerId: TRIGGER_ID,
+                    sourceSelectorId: SOURCE_SELECTOR_ID,
+                    occurrenceId: `retry-capacity-occurrence-${index}`,
+                    scheduledAt: now,
+                    dueAt: now,
+                })
+            )),
+        });
+        const batchInput = {
+            ...input({ occurrenceId: "retry-capacity-next" }),
+            definitions: [
+                input().definitions[0]!,
+                {
+                    automationId: AUTOMATION_ID,
+                    triggerId: SECOND_TRIGGER_ID,
+                    triggerRevision: 1,
+                    sourceSelectorId: SOURCE_SELECTOR_ID,
+                },
+            ],
+        };
+
+        const first = await admitAutomationEventV1({
+            accountId: ACCOUNT_ID,
+            caller,
+            input: batchInput,
+        });
+        expect(first.results).toEqual([
+            { kind: "admitted", runId: expect.any(String), checkpointSafe: true },
+            { kind: "blocked", reason: "capacity", checkpointSafe: false },
+        ]);
+        const admittedRunId = (first.results[0] as { runId: string }).runId;
+
+        // The retry rejoins the committed prefix through the canonical
+        // occurrence owner; the rejoined row consumes no capacity, so the
+        // blocked suffix stays blocked at zero remaining.
+        const retryAtCapacity = await admitAutomationEventV1({
+            accountId: ACCOUNT_ID,
+            caller,
+            input: batchInput,
+        });
+        expect(retryAtCapacity.results).toEqual([
+            { kind: "rejoined", runId: admittedRunId, checkpointSafe: true },
+            { kind: "blocked", reason: "capacity", checkpointSafe: false },
+        ]);
+        await expect(db.automationRun.count({ where: { accountId: ACCOUNT_ID } }))
+            .resolves.toBe(MAX_NON_TERMINAL_EVENT_CONVERSATION_RUNS_PER_ACCOUNT);
+
+        // Ordinary terminal recovery frees one slot. The same retry now
+        // rejoins the prefix and admits the suffix, and only the genuinely new
+        // suffix row consumes the freed slot.
+        await db.automationRun.update({
+            where: { id: "retry-capacity-run-9999" },
+            data: {
+                state: "failed",
+                executionDispatchState: "settled",
+                executionAttempt: 3,
+                executionDispatchDueAt: null,
+                executionNativeRunId: null,
+                executionNativeCallId: null,
+                executionNativeSidechainId: null,
+                claimedByMachineId: null,
+                leaseExpiresAt: null,
+                finishedAt: now,
+                errorCode: "execution_run_retry_exhausted",
+            },
+        });
+        const retryAfterRelease = await admitAutomationEventV1({
+            accountId: ACCOUNT_ID,
+            caller,
+            input: batchInput,
+        });
+        expect(retryAfterRelease.results).toEqual([
+            { kind: "rejoined", runId: admittedRunId, checkpointSafe: true },
+            { kind: "admitted", runId: expect.any(String), checkpointSafe: true },
+        ]);
+        const suffixRunId = (retryAfterRelease.results[1] as { runId: string }).runId;
+        expect(suffixRunId).not.toEqual(admittedRunId);
+        await expect(db.automationRun.count({ where: { accountId: ACCOUNT_ID } }))
+            .resolves.toBe(MAX_NON_TERMINAL_EVENT_CONVERSATION_RUNS_PER_ACCOUNT + 1);
+        await expect(db.automationRun.count({
+            where: {
+                accountId: ACCOUNT_ID,
+                OR: [
+                    { causeKind: "conversation" },
+                    { causeKind: "trigger", causeTriggerKind: "pluginEvent" },
+                ],
+                state: { in: ["queued", "claimed", "running"] },
+            },
+        })).resolves.toBe(MAX_NON_TERMINAL_EVENT_CONVERSATION_RUNS_PER_ACCOUNT);
     });
 
     it("admits every net-new Event candidate in one request when remaining capacity holds them all", async () => {

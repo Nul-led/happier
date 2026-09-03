@@ -244,7 +244,7 @@ describe('authoritative Automation Run cancellation causes', () => {
       expect(AutomationRunStateChangedHostEventV1Schema.safeParse({
         runId: 'run-1',
         automationId: 'automation-1',
-        runCause: { kind: 'manual' },
+        runCause: { kind: 'manual', invokedAt: 1 },
         previousState: 'running',
         currentState: 'outcome_uncertain',
         transitionedAt: 1,

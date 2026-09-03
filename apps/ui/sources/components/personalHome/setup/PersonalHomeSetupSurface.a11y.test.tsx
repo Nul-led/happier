@@ -3,10 +3,38 @@ import { act } from 'react-test-renderer';
 import { describe, expect, it, vi } from 'vitest';
 
 import { renderScreen } from '@/dev/testkit';
+import { t } from '@/text';
 
 import { PersonalHomeSetupSurface } from './PersonalHomeSetupSurface';
 
 describe('PersonalHomeSetupSurface accessibility', () => {
+    it('includes each existing-runtime consequence in the accessible action description', async () => {
+        const screen = await renderScreen(
+            <PersonalHomeSetupSurface
+                snapshot={{
+                    shouldGateShell: true,
+                    homeReady: false,
+                    daemonReady: false,
+                    phase: 'blocked',
+                    daemonState: 'not-started',
+                    action: 'choose-existing-runtime',
+                    detail: { message: 'An existing Home runtime was found.', retryable: false },
+                }}
+                onUseExisting={() => {}}
+                onUseAnotherHome={() => {}}
+            />,
+        );
+
+        expect(screen.findByTestId('personal-home-use-existing')?.props).toMatchObject({
+            accessibilityLabel: t('personalHome.bootstrap.useExisting'),
+            accessibilityHint: t('personalHome.bootstrap.useExistingDetail'),
+        });
+        expect(screen.findByTestId('personal-home-use-another')?.props).toMatchObject({
+            accessibilityLabel: t('personalHome.bootstrap.useAnother'),
+            accessibilityHint: t('personalHome.bootstrap.useAnotherDetail'),
+        });
+    });
+
     it('uses one polite phase announcement and one non-repeating failure alert', async () => {
         const screen = await renderScreen(
             <PersonalHomeSetupSurface

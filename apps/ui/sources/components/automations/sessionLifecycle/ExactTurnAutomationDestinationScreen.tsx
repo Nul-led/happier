@@ -21,6 +21,7 @@ import { useAutomationDefinitionPagination } from '@/components/automations/list
 import { useResolveExistingSessionAutomationDetails } from '@/components/automations/list/useResolveExistingSessionAutomationDetails';
 
 import {
+    adoptExactTurnAutomationPrefill,
     areExactTurnAutomationPrefillsEqual,
     buildExactTurnAutomationRouteParams,
     readExactActiveParentTurn,
@@ -284,10 +285,9 @@ export function ExactTurnAutomationDestinationScreen(props: Readonly<{
                 {...(current ? {
                     action: {
                         label: t('automations.exactTurn.useCurrentTurn'),
-                        onPress: () => router.setParams(buildExactTurnAutomationRouteParams({
-                            ...current,
-                            events: props.observed.events,
-                        })),
+                        onPress: () => router.setParams(buildExactTurnAutomationRouteParams(
+                            adoptExactTurnAutomationPrefill(props.observed, current),
+                        )),
                     },
                 } : {})}
                 accessibilitySemantics="alert"

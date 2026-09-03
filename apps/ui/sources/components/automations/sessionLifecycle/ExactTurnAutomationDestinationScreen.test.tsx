@@ -486,7 +486,15 @@ describe('ExactTurnAutomationDestinationScreen', () => {
         const screen = await renderScreen(<ExactTurnAutomationDestinationScreen observed={observed} />);
 
         const stale = screen.findByProps({ testID: 'exact-turn-automation-stale' });
+        // An alert role alone announces nothing. What the reader needs is the
+        // condition and its recovery, so the alert must carry its own title and
+        // an explanatory reason rather than reusing the generic
+        // no-active-parent-turn copy, which would state a false cause.
         expect(stale.props.accessibilitySemantics).toBe('alert');
+        expect(stale.props.title).toBe('automations.exactTurn.staleTitle');
+        expect(stale.props.reason).toBe('automations.exactTurn.staleBody');
+        expect(stale.props.reason).not.toBe(stale.props.title);
+        expect(stale.props.reason).not.toBe('automations.exactTurn.unavailable');
         expect(stale.props.action.label).toBe('automations.exactTurn.useCurrentTurn');
         expect(routerMock.push).not.toHaveBeenCalled();
         expect(routerMock.setParams).not.toHaveBeenCalled();
@@ -541,7 +549,13 @@ describe('ExactTurnAutomationDestinationScreen', () => {
         await act(async () => {});
 
         const failed = screen.findByProps({ testID: 'exact-turn-automation-refresh-failed' });
+        // Same rule as the staleness alert: the announced reason has to name
+        // the failed refresh. The no-active-parent-turn copy is a different,
+        // false cause and must not be reused here.
         expect(failed.props.accessibilitySemantics).toBe('alert');
+        expect(failed.props.title).toBe('automations.exactTurn.refreshFailedTitle');
+        expect(failed.props.reason).toBe('automations.exactTurn.refreshFailedBody');
+        expect(failed.props.reason).not.toBe('automations.exactTurn.unavailable');
         expect(failed.props.action.label).toBe('common.retry');
         expect(screen.findAllByProps({ testID: 'exact-turn-automation-destination' })).toHaveLength(0);
 

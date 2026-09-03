@@ -98,9 +98,11 @@ describe('/scan/terminal', () => {
 
         const wizard = screen.findByType('WizardModalShell' as never);
         expect(wizard.props.testID).toBe('scan-terminal-wizard');
-        expect(wizard.props.stepIndex).toBe(1);
+        expect(wizard.props.stepIndex).toBe(0);
         expect(wizard.props.stepCount).toBe(1);
         expect(wizard.props.showSkip).toBe(false);
+        expect(wizard.props.title).toBe('modals.authenticateTerminal');
+        expect(wizard.props.subtitle).toBe('connect.scanQrCodeOnDevice');
 
         expect(lastScannerProps?.embedded).toBe(true);
         expect(lastScannerProps?.title).toBe('modals.authenticateTerminal');

@@ -16,8 +16,10 @@ export default function ScanAccountQrScreen() {
     return (
         <WizardModalShell
             testID="scan-account-wizard"
-            stepIndex={1}
+            stepIndex={0}
             stepCount={1}
+            title={t('connect.linkNewDeviceTitle')}
+            subtitle={t('connect.linkNewDeviceSubtitle')}
             onBack={handleBack}
             showSkip={false}
         >

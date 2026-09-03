@@ -340,7 +340,7 @@ describe('session history navigation', () => {
     it('does not admit another Home archived row with the same session id into the selected Home transcript query', async () => {
         const { buildArchivedTranscriptEligibleSessionIds } = await import('@/app/(app)/session/archived');
 
-        expect(buildArchivedTranscriptEligibleSessionIds([
+        const rows = [
             {
                 id: 'shared-archived-session',
                 serverId: 'home-b',
@@ -349,7 +349,11 @@ describe('session history navigation', () => {
                 active: false,
                 metadata: { name: 'Home B archived session' },
             },
-        ], 'home-a')).toEqual([]);
+        ];
+
+        expect(buildArchivedTranscriptEligibleSessionIds(rows, 'home-a')).toEqual([]);
+        expect(buildArchivedTranscriptEligibleSessionIds(rows, 'home-b')).toEqual(['shared-archived-session']);
+        expect(buildArchivedTranscriptEligibleSessionIds(rows, '')).toEqual([]);
     });
 
     it('shows inactive sessions before archived sessions on the archived screen when hide inactive sessions is enabled', async () => {

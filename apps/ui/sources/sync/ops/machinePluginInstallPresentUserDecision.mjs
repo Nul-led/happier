@@ -10,19 +10,18 @@ import {
  *   isAuthorityCurrent: () => boolean | Promise<boolean>;
  *   callAuthenticatedPrivateRpc: (method: typeof HOST_PRIVATE_PLUGIN_INSTALL_DECISION_RPC_METHOD, payload: import('@happier-dev/protocol/marketplace/internal').HostPrivatePluginInstallDecisionV1) => Promise<T>;
  * }} params
- * @param {(() => Record<string, unknown>) | null} buildAffirmative
- *   Deferred on purpose: actor evidence is minted only after the authority
- *   recheck below, so a decision abandoned mid-confirmation leaves no evidence
- *   of an interaction that never authorized anything.
+ * @param {Record<string, unknown> | null} affirmative
+ *   The affirmative decision body, or `null` when the present user declined and
+ *   the pending change is cancelled instead.
  * @returns {Promise<T>}
  */
-async function sendPresentUserDecision(params, buildAffirmative) {
+async function sendPresentUserDecision(params, affirmative) {
     if (!await params.isAuthorityCurrent()) {
         throw new Error('Authenticated plugin install authority changed during present-user confirmation');
     }
 
-    const payload = HostPrivatePluginInstallDecisionV1Schema.parse(buildAffirmative !== null
-        ? buildAffirmative()
+    const payload = HostPrivatePluginInstallDecisionV1Schema.parse(affirmative !== null
+        ? affirmative
         : {
             v: 1,
             pendingChangeId: params.pendingChangeId,
@@ -39,7 +38,9 @@ async function sendPresentUserDecision(params, buildAffirmative) {
  * Canonical present-user boundary for affirmative private install decisions.
  *
  * UI confirmation and authenticated transport stay injected so composed tests can exercise
- * this exact boundary without recreating actor evidence or exposing a public decision command.
+ * this exact boundary without exposing a public decision command. The decision names the
+ * daemon-issued pending change and nothing about its own author: the authenticated RPC is
+ * what establishes the present user, and the daemon stamps approval time from its own clock.
  *
  * @template T
  * @param {{
@@ -47,35 +48,28 @@ async function sendPresentUserDecision(params, buildAffirmative) {
  *   confirmPresentUser: () => Promise<ReadonlyArray<{ accessId: string; selected: boolean }> | null>;
  *   isAuthorityCurrent: () => boolean | Promise<boolean>;
  *   callAuthenticatedPrivateRpc: (method: typeof HOST_PRIVATE_PLUGIN_INSTALL_DECISION_RPC_METHOD, payload: import('@happier-dev/protocol/marketplace/internal').HostPrivatePluginInstallDecisionV1) => Promise<T>;
- *   createInteractionId: () => string;
- *   nowMs: () => number;
  * }} params
  * @returns {Promise<T>}
  */
 export async function decideMachinePluginInstallReviewAsPresentUser(params) {
     const optionalSelections = await params.confirmPresentUser();
     return await sendPresentUserDecision(params, optionalSelections !== null
-        ? () => ({
+        ? {
             v: 1,
             pendingChangeId: params.pendingChangeId,
             decision: 'installAndTrust',
-            actorEvidence: {
-                kind: 'authenticatedLocalUser',
-                interactionId: params.createInteractionId(),
-                occurredAtMs: params.nowMs(),
-            },
             optionalSelections,
-        })
+        }
         : null);
 }
 
 /**
  * Canonical present-user boundary for authorizing a **local development source
- * root**. It shares this module's actor evidence, authority recheck, schema and
- * transport with the install decision rather than growing a second private
- * decision path, but it is a genuinely different authorization: it grants no
- * optional host access and commits no plugin — it only lets the daemon evaluate
- * executable code from the exact root the user was shown.
+ * root**. It shares this module's authority recheck, schema and transport with
+ * the install decision rather than growing a second private decision path, but
+ * it is a genuinely different authorization: it grants no optional host access
+ * and commits no plugin — it only lets the daemon evaluate executable code from
+ * the exact root the user was shown.
  *
  * @template T
  * @param {{
@@ -83,23 +77,16 @@ export async function decideMachinePluginInstallReviewAsPresentUser(params) {
  *   confirmPresentUser: () => Promise<boolean>;
  *   isAuthorityCurrent: () => boolean | Promise<boolean>;
  *   callAuthenticatedPrivateRpc: (method: typeof HOST_PRIVATE_PLUGIN_INSTALL_DECISION_RPC_METHOD, payload: import('@happier-dev/protocol/marketplace/internal').HostPrivatePluginInstallDecisionV1) => Promise<T>;
- *   createInteractionId: () => string;
- *   nowMs: () => number;
  * }} params
  * @returns {Promise<T>}
  */
 export async function decideMachinePluginDevelopmentSourceRootAsPresentUser(params) {
     const approved = await params.confirmPresentUser();
     return await sendPresentUserDecision(params, approved === true
-        ? () => ({
+        ? {
             v: 1,
             pendingChangeId: params.pendingChangeId,
             decision: 'trustSourceRoot',
-            actorEvidence: {
-                kind: 'authenticatedLocalUser',
-                interactionId: params.createInteractionId(),
-                occurredAtMs: params.nowMs(),
-            },
-        })
+        }
         : null);
 }

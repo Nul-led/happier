@@ -21,6 +21,7 @@ const selectionHolder = vi.hoisted(() => ({
 const credentialMutationListeners = vi.hoisted(() => new Set<(event: { serverId: string; serverUrl: string; kind: 'credentials_set' | 'credentials_removed' }) => void>());
 const credentialAccounts = vi.hoisted(() => new Map<string, string>([
     ['server-a', 'account-a'],
+    ['server-b', 'account-b'],
     ['home-b', 'account-b'],
 ]));
 
@@ -195,6 +196,7 @@ afterEach(() => {
     credentialMutationListeners.clear();
     credentialAccounts.clear();
     credentialAccounts.set('server-a', 'account-a');
+    credentialAccounts.set('server-b', 'account-b');
     credentialAccounts.set('home-b', 'account-b');
     standardCleanup();
 });
@@ -298,7 +300,10 @@ describe('useSessionListMemorySearchAugmentation', () => {
         });
         await flushHookEffects({ advanceTimersMs: 300, cycles: 4 });
 
-        expect(homeSearchMock).toHaveBeenCalledWith(expect.objectContaining({ serverId: 'home-b' }));
+        expect(homeSearchMock).toHaveBeenCalledWith(expect.objectContaining({
+            serverId: 'home-b',
+            accountId: 'account-b',
+        }));
         expect([...hook.getCurrent().memoryMatchedSessionKeys]).toEqual(['home-b:same-session']);
         expect(hook.getCurrent().memoryMatchedSessionTargets).toEqual([
             expect.objectContaining({ serverId: 'home-b', sessionId: 'same-session' }),

@@ -74,6 +74,7 @@ function renderPanel(
         onChangeRelay: vi.fn(),
         onContinueWithAccountServiceProvider: vi.fn(),
         onContinueWithAccountServiceKey: vi.fn(),
+        onChooseAccountService: vi.fn(),
     };
 
     return {
@@ -137,6 +138,8 @@ describe('WelcomeDecisionPanel', () => {
         expect(primaryStyle.paddingHorizontal).toBe(18);
         expect(primaryStyle.paddingVertical).toBe(10);
         expect(textBlockStyle.gap).toBe(0);
+        expect(screen.findByTestId('welcome-primary-start')?.props.accessibilityHint)
+            .toBe("Create a new account with a new recovery key");
 
         await screen.pressByTestIdAsync('welcome-primary-start');
         await screen.pressByTestIdAsync('welcome-scan-existing-home');
@@ -338,21 +341,45 @@ describe('WelcomeDecisionPanel', () => {
         expect(screen.findAllByTestId('welcome-primary-start')).toHaveLength(0);
     });
 
-    it('keeps the existing Home entry when the selected service advertises no usable method', async () => {
+    it('keeps an unavailable custom sign-in service authoritative and offers recovery without focused-Home auth', async () => {
+        const retry = vi.fn();
         const { callbacks, screenPromise } = renderPanel({}, {
-            endpoint: { url: 'https://home.example.test', source: 'user' },
+            endpoint: { url: 'https://accounts.company.test', source: 'user' },
             status: 'unavailable',
             discovery: null,
-        });
+            retry,
+        } as unknown as AccountServiceEntryOptions);
         const screen = await screenPromise;
 
         expect(screen.findAllByTestId('welcome-account-service-provider-github')).toHaveLength(0);
-        expect(screen.findByTestId('welcome-primary-start')).toBeTruthy();
+        expect(screen.findAllByTestId('welcome-primary-start')).toHaveLength(0);
+        expect(screen.findAllByTestId('welcome-provider-primary')).toHaveLength(0);
+        expect(screen.findByTestId('welcome-account-service-recovery')).toBeTruthy();
+        expect(screen.findByTestId('welcome-account-service-choose')).toBeTruthy();
+        expect(screen.findByTestId('welcome-scan-existing-home')).toBeTruthy();
+        expect(screen.findByTestId('welcome-use-different-home')).toBeTruthy();
 
-        await screen.pressByTestIdAsync('welcome-primary-start');
+        await screen.pressByTestIdAsync('welcome-account-service-retry');
+        await screen.pressByTestIdAsync('welcome-account-service-choose');
 
-        expect(callbacks.onCreateAccount).toHaveBeenCalledTimes(1);
+        expect(retry).toHaveBeenCalledTimes(1);
+        expect(callbacks.onChooseAccountService).toHaveBeenCalledTimes(1);
+        expect(callbacks.onCreateAccount).not.toHaveBeenCalled();
         expect(callbacks.onContinueWithAccountServiceProvider).not.toHaveBeenCalled();
+    });
+
+    it('keeps an unsupported selected sign-in service authoritative', async () => {
+        const { screenPromise } = renderPanel({}, {
+            endpoint: { url: 'https://ordinary-home.test', source: 'user' },
+            status: 'unsupported',
+            discovery: null,
+            retry: vi.fn(),
+        } as unknown as AccountServiceEntryOptions);
+        const screen = await screenPromise;
+
+        expect(screen.findByTestId('welcome-account-service-recovery')).toBeTruthy();
+        expect(screen.findAllByTestId('welcome-primary-start')).toHaveLength(0);
+        expect(screen.findAllByTestId('welcome-provider-primary')).toHaveLength(0);
     });
 
     it('promotes login and explains the policy when the server exposes no signup action', async () => {

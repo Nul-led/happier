@@ -140,7 +140,12 @@ export function usePairingSession(params: Readonly<{ enabled: boolean; isAuthent
         let acquiredTarget: PairingCallTarget | null = null;
         try {
             const active = getActiveServerSnapshot();
-            const cached = getCachedServerFeaturesSnapshot({ serverId: active.serverId });
+            // Main-selection bootstraps populate the profile-scoped cache, while an
+            // otherwise identical active-runtime bootstrap can populate only the
+            // unscoped entry. Both are observations of this exact active Home; the
+            // descriptor/identity equality below remains the admission boundary.
+            const cached = getCachedServerFeaturesSnapshot({ serverId: active.serverId })
+                ?? getCachedServerFeaturesSnapshot();
             const observedIdentity = cached?.status === 'ready' ? String(cached.serverIdentityId ?? '').trim() : '';
             const profile = getServerProfileById(active.serverId);
             const descriptor = profile ? buildHomeConnectionDescriptorForProfile(profile) : null;

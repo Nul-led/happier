@@ -16,8 +16,10 @@ export default function ScanTerminalQrScreen() {
     return (
         <WizardModalShell
             testID="scan-terminal-wizard"
-            stepIndex={1}
+            stepIndex={0}
             stepCount={1}
+            title={t('modals.authenticateTerminal')}
+            subtitle={t('connect.scanQrCodeOnDevice')}
             onBack={handleBack}
             showSkip={false}
         >

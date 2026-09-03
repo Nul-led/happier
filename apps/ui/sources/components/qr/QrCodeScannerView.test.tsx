@@ -218,6 +218,8 @@ describe('QrCodeScannerView', () => {
         const closeIcon = screen.root.findByProps({ testID: 'test-close-icon' });
         const closeStyle = flattenStyle(closeButton.props.style);
         expect(closeStyle.backgroundColor).toBe(lightTheme.colors.overlay.foreground);
+        expect(closeStyle.minWidth).toBe(44);
+        expect(closeStyle.minHeight).toBe(44);
         expect(closeIcon.props.color).toBe(lightTheme.colors.text.primary);
     });
 

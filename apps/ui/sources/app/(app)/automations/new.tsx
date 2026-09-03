@@ -4,6 +4,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import NewSessionScreen from '@/app/(app)/new/index';
 import { AutomationsGate } from '@/components/automations/gating/AutomationsGate';
 import {
+    adoptExactTurnAutomationPrefill,
     areExactTurnAutomationPrefillsEqual,
     buildExactTurnAutomationRouteParams,
     parseExactTurnAutomationPrefillRoute,
@@ -171,10 +172,13 @@ function ExactTurnNewAutomationRoute(props: Readonly<{
                         onPress: () => {
                             // Explicit adoption: the binding and the composer's
                             // incumbent automation-draft owner are the mutation
-                            // owners; params are updated as URL truth only.
-                            setBinding(current);
-                            setRetargetRequest(current);
-                            router.setParams(buildExactTurnAutomationRouteParams(current));
+                            // owners; params are updated as URL truth only. The
+                            // shared adoption owner retargets the turn without
+                            // discarding the author's chosen lifecycle events.
+                            const adopted = adoptExactTurnAutomationPrefill(binding, current);
+                            setBinding(adopted);
+                            setRetargetRequest(adopted);
+                            router.setParams(buildExactTurnAutomationRouteParams(adopted));
                         },
                     },
                 } : {})}

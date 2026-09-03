@@ -43,7 +43,7 @@ export function useServerCredentialAccountScopes(
         mountedRef.current = true;
         const trackedServerIds = new Set(normalizedServerIds);
 
-        const invalidate = (serverId: string): number => {
+        const invalidate = (serverId: string, publish = true): number => {
             const retirements = retirementCallbacksRef.current.get(serverId);
             retirementCallbacksRef.current.delete(serverId);
             for (const retire of retirements ?? []) {
@@ -55,12 +55,14 @@ export function useServerCredentialAccountScopes(
             }
             const revision = (revisionsRef.current.get(serverId) ?? 0) + 1;
             revisionsRef.current.set(serverId, revision);
-            setBindings((current) => {
-                if (!current.has(serverId)) return current;
-                const next = new Map(current);
-                next.delete(serverId);
-                return next;
-            });
+            if (publish) {
+                setBindings((current) => {
+                    if (!current.has(serverId)) return current;
+                    const next = new Map(current);
+                    next.delete(serverId);
+                    return next;
+                });
+            }
             return revision;
         };
 
@@ -128,7 +130,7 @@ export function useServerCredentialAccountScopes(
         return () => {
             mountedRef.current = false;
             unsubscribe();
-            for (const serverId of trackedServerIds) invalidate(serverId);
+            for (const serverId of trackedServerIds) invalidate(serverId, false);
         };
         // The sorted key is the identity of the requested set. The profile
         // generation deliberately retriggers credential resolution after a
