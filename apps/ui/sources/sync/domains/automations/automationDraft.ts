@@ -79,19 +79,19 @@ export function replaceExactTurnAutomationRowsWithCurrentTurns(params: Readonly<
     let changed = false;
     const triggers = params.automation.triggers.map((trigger) => {
         const definition = trigger.definition;
-        if (definition.kind !== 'sessionLifecycle' || definition.scope.kind !== 'exactTurn') return trigger;
-        const exact = params.readExactTurn(definition.scope.sourceSessionId);
+        if (definition.kind !== 'sessionLifecycle' || definition.policy.kind !== 'currentTurn') return trigger;
+        const exact = params.readExactTurn(definition.sourceSessionId);
         if (!exact) {
             canReplace = false;
             return trigger;
         }
-        if (exact.sourceTurnId === definition.scope.sourceTurnId) return trigger;
+        if (exact.sourceTurnId === definition.policy.sourceTurnId) return trigger;
         changed = true;
         return {
             ...trigger,
             definition: {
                 ...definition,
-                scope: { ...definition.scope, sourceTurnId: exact.sourceTurnId },
+                policy: { ...definition.policy, sourceTurnId: exact.sourceTurnId },
             },
         };
     });

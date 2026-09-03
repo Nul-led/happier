@@ -74,7 +74,7 @@ describe('formatAutomationTriggerLabel', () => {
         expect(formatAutomationNextRun(1_700_000_000_000)).toBe('Próxima: fecha-localizada');
     });
 
-    it('presents each trigger status from its canonical trigger projection', () => {
+    it('presents each lifecycle trigger from its selected Events, policy, and canonical status', () => {
         const lifecycleTrigger = AutomationTriggerListItemSchema.parse({
             id: 'turn-trigger-1',
             revision: 1,
@@ -83,12 +83,14 @@ describe('formatAutomationTriggerLabel', () => {
             updatedAt: 1,
             kind: 'sessionLifecycle',
             sourceSessionId: 'session-1',
-            events: ['parentTurnCompleted'],
-            policy: { kind: 'currentTurn', sourceTurnId: 'turn-1' },
-            remainingOccurrences: 1,
+            events: ['parentTurnFailed', 'userActionRequired'],
+            policy: { kind: 'nextMatches', count: 3 },
+            remainingOccurrences: 2,
             status: { state: 'sourceCancelled', runId: null },
         });
         if (lifecycleTrigger.kind !== 'sessionLifecycle') throw new Error('expected lifecycle trigger fixture');
+        expect(formatAutomationTriggerLabel(lifecycleTrigger))
+            .toBe('Turn failed · Needs your attention · Next matching events · 3 · session-1');
         expect(formatAutomationTriggerStatusLabel(lifecycleTrigger)).toBe('Source turn cancelled');
         expect(formatAutomationTriggerStatusLabel(lifecycleTrigger, false)).toBe('Source turn cancelled');
 
@@ -158,7 +160,7 @@ describe('immutable Run cause presentation', () => {
 
     it('keeps a retired trigger cause renderable after its mutable row is removed', () => {
         expect(formatAutomationRunCauseLabel(retiredLifecycleCause))
-            .toBe('Session turn completed');
+            .toBe('Turn completed successfully · Current turn only');
         expect(formatAutomationRunCauseLabel(AutomationRunCauseSchema.parse({
             kind: 'trigger',
             triggerId: 'retired-event-trigger',

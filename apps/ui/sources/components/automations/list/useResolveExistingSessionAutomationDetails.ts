@@ -86,9 +86,26 @@ export function useResolveExistingSessionAutomationDetails(params: Readonly<{
         (automation) => activeKeys.has(directDetailKey(params.accountScopeKey, automation)),
     ), [activeKeys, candidates, params.accountScopeKey]);
 
-    return {
+    // Identities whose direct read failed, so list hosts can keep them visible
+    // as disabled recoverable rows instead of silently omitting them.
+    const failedAutomationIds = React.useMemo(() => {
+        const ids = new Set<string>();
+        for (const automation of candidates) {
+            if (failedKeys.has(directDetailKey(params.accountScopeKey, automation))) {
+                ids.add(automation.id);
+            }
+        }
+        return ids;
+    }, [candidates, failedKeys, params.accountScopeKey]);
+
+    // A stable result identity: hosts derive step content (and list identity)
+    // from this object, so a fresh literal every render would invalidate them
+    // for nothing.
+    const retry = React.useCallback(() => setFailedKeys(new Set()), []);
+    return React.useMemo(() => ({
         resolving: params.enabled && (pending.length > 0 || hasActive),
         hasFailure,
-        retry: React.useCallback(() => setFailedKeys(new Set()), []),
-    } as const;
+        failedAutomationIds,
+        retry,
+    }), [failedAutomationIds, hasActive, hasFailure, params.enabled, pending.length, retry]);
 }

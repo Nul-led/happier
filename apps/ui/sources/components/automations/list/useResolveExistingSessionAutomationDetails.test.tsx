@@ -76,7 +76,11 @@ describe('useResolveExistingSessionAutomationDetails', () => {
                 {
                     ...automations[0]!,
                     linkedExistingSessionId: 'session-a',
-                    detail: { kind: 'loaded' },
+                    detail: {
+                        kind: 'unavailable',
+                        templateVersion: 1,
+                        code: 'automation_stored_content_unavailable',
+                    },
                 },
                 automations[1]!,
             ],

@@ -63,6 +63,21 @@ export const AutomationSessionLifecycleEventsSchema = z.array(
   }
 });
 
+/**
+ * A selected Event set is a set: only its membership decides admission. Authors
+ * and clients may submit any order, so the canonical order below is the one
+ * comparable projection persistence and equality use. It is applied by the
+ * persistence owner rather than by the request schema, which must stay
+ * JSON-Schema representable for the public API boundary.
+ */
+export function canonicalizeAutomationSessionLifecycleEvents(
+  events: readonly AutomationSessionLifecycleEvent[],
+): AutomationSessionLifecycleEvent[] {
+  return AutomationSessionLifecycleEventSchema.options.filter(
+    (candidate) => events.includes(candidate),
+  );
+}
+
 export const AutomationSessionLifecycleConfigurationSchema = z.object({
   sourceSessionId: asProtocolZod(SessionIdSchema),
   events: AutomationSessionLifecycleEventsSchema,

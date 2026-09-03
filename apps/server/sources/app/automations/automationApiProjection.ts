@@ -18,6 +18,7 @@ import {
 
 import type { AutomationEventStatusProjection } from "./automationEventStatusProjection";
 import type { AutomationSessionLifecycleTriggerStatus } from "@happier-dev/protocol";
+import { classifyAutomationReplyHandoffDispatchability } from "./automationReplyHandoffDispatchability";
 import { decodeAutomationRunCause } from "./automationRunCauseCodec";
 import {
     assertAutomationExecutionInputEnvelopeOuterForMode,
@@ -203,7 +204,7 @@ function triggerProjection(
     if (trigger.kind === "sessionLifecycle") {
         const lifecycle = decodeAutomationSessionLifecycleConfiguration(trigger);
         return {
-            ...common, kind: "sessionLifecycle" as const,
+            ...common,
             ...lifecycle.definition,
             remainingOccurrences: lifecycle.remainingOccurrences,
             status: required(lifecycleStatuses.get(trigger.id), "sessionLifecycle status"),
@@ -403,6 +404,24 @@ function storedFailureDetail(raw: string | null, mode: "plain" | "e2ee"): string
     return raw;
 }
 
+/**
+ * Whether a present user can do anything about a blocked Conversation reply
+ * handoff. It asks the one dispatchability owner the claim path uses, so the
+ * product never offers a recovery the server is guaranteed to refuse. Only a
+ * `blocked` handoff answers this question; every other state is either still
+ * moving or already settled.
+ */
+function isAutomationReplyHandoffRecoverable(
+    item: AutomationRunItem | AutomationRunDetailItem,
+    mode: "plain" | "e2ee",
+): boolean | null {
+    if (item.replyHandoffState !== "blocked") return null;
+    return classifyAutomationReplyHandoffDispatchability({
+        facts: item,
+        mode,
+    }) === "dispatchable";
+}
+
 export function toAutomationRunV3DetailApiDto(
     item: AutomationRunItem | AutomationRunDetailItem,
     mode: "plain" | "e2ee",
@@ -410,6 +429,7 @@ export function toAutomationRunV3DetailApiDto(
     const listItem = toAutomationRunV3ListApiDto(item);
     const common = {
         ...listItem,
+        replyHandoffRecoverable: isAutomationReplyHandoffRecoverable(item, mode),
         executionNativeRunId: item.executionNativeRunId,
         executionNativeCallId: item.executionNativeCallId,
         executionNativeSidechainId: item.executionNativeSidechainId,

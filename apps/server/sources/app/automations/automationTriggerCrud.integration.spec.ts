@@ -73,13 +73,9 @@ function lifecycleDefinition(params: Readonly<{
 }>) {
     return {
         kind: "sessionLifecycle" as const,
-        event: "parentTurnCompleted" as const,
-        scope: {
-            kind: "exactTurn" as const,
-            sourceSessionId: params.sourceSessionId,
-            sourceTurnId: params.sourceTurnId,
-        },
-        consumption: "once" as const,
+        sourceSessionId: params.sourceSessionId,
+        events: ["parentTurnCompleted"] as ["parentTurnCompleted"],
+        policy: { kind: "currentTurn" as const, sourceTurnId: params.sourceTurnId },
     };
 }
 
@@ -91,6 +87,19 @@ function lifecycleTrigger(params: Readonly<{
     return {
         ...lifecycleDefinition(params),
         enabled: params.enabled,
+    };
+}
+
+function boundedLifecycleDefinition(params: Readonly<{
+    sourceSessionId: string;
+    events: Array<"parentTurnCompleted" | "parentTurnFailed" | "parentTurnCancelled" | "userActionRequired">;
+    count: number;
+}>) {
+    return {
+        kind: "sessionLifecycle" as const,
+        sourceSessionId: params.sourceSessionId,
+        events: params.events,
+        policy: { kind: "nextMatches" as const, count: params.count },
     };
 }
 
@@ -655,6 +664,93 @@ describe("automation trigger-set CRUD", () => {
             where: { id: created.id },
             select: { targetType: true, templateVersion: true },
         })).resolves.toMatchObject({ targetType: "new_session", templateVersion: 1 });
+    });
+
+    it("preserves the lifecycle occurrence budget across pause, resume, and reordered Event submissions", async () => {
+        const account = await db.account.create({
+            data: { id: `account-${randomUUID()}`, encryptionMode: "plain" },
+            select: { id: true },
+        });
+        const source = await seedActiveSourceTurn(account.id);
+        const created = await createAutomation({
+            accountId: account.id,
+            input: {
+                automationId: randomUUID(),
+                name: "Bounded lifecycle budget",
+                enabled: false,
+                executionRecipe: executionRecipe(1),
+                triggers: [{
+                    triggerId: automationTriggerId(),
+                    trigger: {
+                        ...boundedLifecycleDefinition({
+                            sourceSessionId: source.sessionId,
+                            events: ["parentTurnCompleted", "parentTurnFailed"],
+                            count: 3,
+                        }),
+                        enabled: true,
+                    },
+                }],
+            },
+        });
+        const trigger = created.triggers[0]!;
+        // Runtime consumption of two of the three configured matches.
+        await db.automationTrigger.update({
+            where: { id: trigger.id },
+            data: { remainingOccurrences: 1 },
+        });
+
+        const paused = await updateAutomationTrigger({
+            accountId: account.id,
+            automationId: created.id,
+            triggerId: trigger.id,
+            expectedRevision: trigger.revision,
+            enabled: false,
+        });
+        await expect(db.automationTrigger.findUniqueOrThrow({
+            where: { id: trigger.id },
+            select: { remainingOccurrences: true },
+        })).resolves.toEqual({ remainingOccurrences: 1 });
+
+        // Resuming with the same Event membership in a different submitted
+        // order is the same registration, not a new one.
+        const resumed = await updateAutomationTrigger({
+            accountId: account.id,
+            automationId: created.id,
+            triggerId: trigger.id,
+            expectedRevision: paused!.triggers[0]!.revision,
+            enabled: true,
+            trigger: boundedLifecycleDefinition({
+                sourceSessionId: source.sessionId,
+                events: ["parentTurnFailed", "parentTurnCompleted"],
+                count: 3,
+            }),
+        });
+        await expect(db.automationTrigger.findUniqueOrThrow({
+            where: { id: trigger.id },
+            select: { remainingOccurrences: true, sessionLifecycleEventsJson: true },
+        })).resolves.toEqual({
+            remainingOccurrences: 1,
+            sessionLifecycleEventsJson: JSON.stringify(["parentTurnCompleted", "parentTurnFailed"]),
+        });
+
+        // A changed Event membership is a new registration and restarts the
+        // configured budget.
+        await updateAutomationTrigger({
+            accountId: account.id,
+            automationId: created.id,
+            triggerId: trigger.id,
+            expectedRevision: resumed!.triggers[0]!.revision,
+            enabled: true,
+            trigger: boundedLifecycleDefinition({
+                sourceSessionId: source.sessionId,
+                events: ["parentTurnCompleted"],
+                count: 3,
+            }),
+        });
+        await expect(db.automationTrigger.findUniqueOrThrow({
+            where: { id: trigger.id },
+            select: { remainingOccurrences: true },
+        })).resolves.toEqual({ remainingOccurrences: 3 });
     });
 
     it("does not block unrelated editor edits on an unchanged terminal exact-turn trigger", async () => {

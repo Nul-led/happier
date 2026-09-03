@@ -1327,7 +1327,6 @@ describe("Automation Event admission", () => {
             sourceSelectorId: AutomationSourceSelectorIdV1;
         }>>;
         beforeFirstAdmit?: () => Promise<void>;
-        afterFirstAdmit?: () => Promise<void>;
     }>) {
         const { github } = params.sources;
         const githubMaterialization = {
@@ -1452,7 +1451,6 @@ describe("Automation Event admission", () => {
                     admitRouteCalls += 1;
                     const result = AutomationEventAdmitHttpResultV1Schema.parse(response.json());
                     continuations.push(result.continuation);
-                    if (admitRouteCalls === 1) await params.afterFirstAdmit?.();
                     return result;
                 },
             };
@@ -2022,7 +2020,7 @@ describe("Automation Event admission", () => {
         await expect(db.automationRun.count({ where: { accountId: ACCOUNT_ID } })).resolves.toBe(1);
     });
 
-    it("does not rejoin plain Event evidence retained under another Automation", async () => {
+    it("never rejoins plain Event evidence retained under another Automation", async () => {
         await seed();
         const originalInput = input({ occurrenceId: "plain-automation-identity" });
         const admitted = await admitAutomationEventV1({
@@ -2047,13 +2045,23 @@ describe("Automation Event admission", () => {
             data: { automationId: SECOND_AUTOMATION_ID },
         });
 
-        await expect(admitAutomationEventV1({
+        // Occurrence identity is `(automationId, occurrenceKey)`. A Run held by
+        // another Automation is a different occurrence, so it is neither
+        // rejoined nor allowed to block this Automation's admission; the
+        // observed Automation gets its own truthful Run.
+        const readmitted = await admitAutomationEventV1({
             accountId: ACCOUNT_ID,
             caller,
             input: originalInput,
-        })).resolves.toEqual({
-            results: [{ kind: "blocked", reason: "occurrenceConflict", checkpointSafe: false }],
         });
+        expect(readmitted.results).toEqual([
+            { kind: "admitted", runId: expect.any(String), checkpointSafe: true },
+        ]);
+        expect((readmitted.results[0] as { runId: string }).runId).not.toBe(runId);
+        await expect(db.automationRun.findUnique({
+            where: { id: runId },
+            select: { automationId: true },
+        })).resolves.toEqual({ automationId: SECOND_AUTOMATION_ID });
     });
 
     it("rejoins one concurrent matching Event occurrence after the unique race and conflicts on changed evidence", async () => {
@@ -2233,7 +2241,10 @@ describe("Automation Event admission", () => {
                 watcherPluginId: null,
                 watcherMaterializationId: null,
                 definitionEnvelope: null,
-                sessionLifecycleEvent: null,
+                sessionLifecycleEventsJson: null,
+                sessionLifecyclePolicyKind: null,
+                sessionLifecycleMatchCount: null,
+                remainingOccurrences: null,
                 sourceSessionId: null,
                 sourceTurnId: null,
             },
@@ -2437,31 +2448,6 @@ describe("Automation Event admission", () => {
             hostEvidence,
         })).resolves.toEqual({
             results: [{ kind: "rejoined", runId: existingRunId, checkpointSafe: true }],
-            continuation: { kind: "ready", accountCurrentness: e2ee.accountCurrentness },
-        });
-
-        await db.automation.create({
-            data: {
-                id: SECOND_AUTOMATION_ID,
-                accountId: ACCOUNT_ID,
-                name: "Wrong encrypted retained Run parent",
-                enabled: false,
-                targetType: "new_session",
-                templateCiphertext: e2eeRecipe,
-                templateVersion: 1,
-            },
-        });
-        await db.automationRun.update({
-            where: { id: existingRunId },
-            data: { automationId: SECOND_AUTOMATION_ID },
-        });
-        await expect(admitAutomationEventV1Raw({
-            accountId: ACCOUNT_ID,
-            caller,
-            input: originalInput,
-            hostEvidence,
-        })).resolves.toEqual({
-            results: [{ kind: "blocked", reason: "occurrenceConflict", checkpointSafe: false }],
             continuation: { kind: "ready", accountCurrentness: e2ee.accountCurrentness },
         });
 
@@ -2751,6 +2737,71 @@ describe("Automation Event admission", () => {
             },
         ]);
         expect(await db.automationRun.count({ where: { accountId: ACCOUNT_ID } })).toBe(2);
+    });
+
+    it("never rejoins E2EE Event evidence retained under another Automation", async () => {
+        await seed();
+        const { e2ee, e2eeRecipe } = await configureE2eeEventAutomation();
+        const originalInput = input({ occurrenceId: "e2ee-automation-identity" });
+        const hostEvidence = encryptedHostEvidence({
+            event: originalInput,
+            snapshot: e2ee.snapshot,
+            accountCurrentness: e2ee.accountCurrentness,
+        });
+        const admitted = await admitAutomationEventV1Raw({
+            accountId: ACCOUNT_ID,
+            caller,
+            input: originalInput,
+            hostEvidence,
+        });
+        expect(admitted.results).toEqual([
+            { kind: "admitted", runId: expect.any(String), checkpointSafe: true },
+        ]);
+        const runId = (admitted.results[0] as { runId: string }).runId;
+        await db.automation.create({
+            data: {
+                id: SECOND_AUTOMATION_ID,
+                accountId: ACCOUNT_ID,
+                name: "Wrong encrypted retained Run parent",
+                enabled: false,
+                targetType: "new_session",
+                templateCiphertext: e2eeRecipe,
+                templateVersion: 1,
+            },
+        });
+        await db.automationRun.update({
+            where: { id: runId },
+            data: { automationId: SECOND_AUTOMATION_ID },
+        });
+
+        // Occurrence identity is `(automationId, occurrenceKey)` on the
+        // encrypted arm too: a Run held by another Automation is a different
+        // occurrence, so it is neither rejoined nor allowed to block this
+        // Automation's admission, and its opaque evidence stays untouched.
+        const readmitted = await admitAutomationEventV1Raw({
+            accountId: ACCOUNT_ID,
+            caller,
+            input: originalInput,
+            hostEvidence: encryptedHostEvidence({
+                event: originalInput,
+                snapshot: e2ee.snapshot,
+                accountCurrentness: {
+                    ...e2ee.accountCurrentness,
+                    version: (await db.account.findUniqueOrThrow({
+                        where: { id: ACCOUNT_ID },
+                        select: { seq: true },
+                    })).seq,
+                },
+            }),
+        });
+        expect(readmitted.results).toEqual([
+            { kind: "admitted", runId: expect.any(String), checkpointSafe: true },
+        ]);
+        expect((readmitted.results[0] as { runId: string }).runId).not.toBe(runId);
+        await expect(db.automationRun.findUnique({
+            where: { id: runId },
+            select: { automationId: true },
+        })).resolves.toEqual({ automationId: SECOND_AUTOMATION_ID });
     });
 
     it("commits an Event Run wake and hands its initial revision to the incumbent claim owner", async () => {
@@ -3368,7 +3419,7 @@ describe("Automation Event admission", () => {
         });
     });
 
-    it("admits net-new Event candidates in request order until capacity is exhausted", async () => {
+    it("blocks every net-new Event candidate in one request that capacity cannot hold together", async () => {
         await seed();
         await db.automationTrigger.create({
             data: {
@@ -3424,8 +3475,151 @@ describe("Automation Event admission", () => {
             },
         });
 
+        // One bounded request is net-new-capacity atomic. Admitting a prefix
+        // would make the caller's checkpoint-safety depend on request ordering
+        // and leave a partially consumed request with no rejoinable remainder.
+        expect(result.results).toEqual([
+            { kind: "blocked", reason: "capacity", checkpointSafe: false },
+            { kind: "blocked", reason: "capacity", checkpointSafe: false },
+        ]);
+        await expect(db.automationRun.count({ where: { accountId: ACCOUNT_ID } }))
+            .resolves.toBe(MAX_NON_TERMINAL_EVENT_CONVERSATION_RUNS_PER_ACCOUNT - 1);
+    });
+
+    it("admits every net-new Event candidate in one request when remaining capacity holds them all", async () => {
+        await seed();
+        await db.automationTrigger.create({
+            data: {
+                id: SECOND_TRIGGER_ID,
+                automationId: AUTOMATION_ID,
+                kind: "pluginEvent",
+                enabled: true,
+                revision: 1,
+                eventPluginId: PLUGIN_ID,
+                eventLocalId: EVENT_LOCAL_ID,
+                sourceSelectorId: SOURCE_SELECTOR_ID,
+                sourceContractVersion: 1,
+                observationTransport: "checkpointedPull",
+                watcherMachineId: MACHINE_ID,
+                watcherMachineInstallationId: MACHINE_INSTALLATION_ID,
+                watcherPluginId: PLUGIN_ID,
+                watcherMaterializationId: MATERIALIZATION_ID,
+                definitionEnvelope: triggerDefinitionEnvelope({
+                    triggerId: SECOND_TRIGGER_ID,
+                    sourceSelectorId: SOURCE_SELECTOR_ID,
+                }),
+            },
+        });
+        const now = new Date();
+        await db.automationRun.createMany({
+            data: Array.from({ length: MAX_NON_TERMINAL_EVENT_CONVERSATION_RUNS_PER_ACCOUNT - 2 }, (_, index) => (
+                pluginEventCapacityRunSeed({
+                    id: `exact-fit-capacity-run-${index}`,
+                    automationId: AUTOMATION_ID,
+                    triggerId: TRIGGER_ID,
+                    sourceSelectorId: SOURCE_SELECTOR_ID,
+                    occurrenceId: `exact-fit-capacity-occurrence-${index}`,
+                    scheduledAt: now,
+                    dueAt: now,
+                })
+            )),
+        });
+
+        const result = await admitAutomationEventV1({
+            accountId: ACCOUNT_ID,
+            caller,
+            input: {
+                ...input({ occurrenceId: "exact-fit-capacity-next" }),
+                definitions: [
+                    input().definitions[0]!,
+                    {
+                        automationId: AUTOMATION_ID,
+                        triggerId: SECOND_TRIGGER_ID,
+                        triggerRevision: 1,
+                        sourceSelectorId: SOURCE_SELECTOR_ID,
+                    },
+                ],
+            },
+        });
+
         expect(result.results).toEqual([
             { kind: "admitted", runId: expect.any(String), checkpointSafe: true },
+            { kind: "admitted", runId: expect.any(String), checkpointSafe: true },
+        ]);
+        await expect(db.automationRun.count({ where: { accountId: ACCOUNT_ID } }))
+            .resolves.toBe(MAX_NON_TERMINAL_EVENT_CONVERSATION_RUNS_PER_ACCOUNT);
+    });
+
+    it("rejoins an already admitted Event occurrence at full capacity while blocking the net-new remainder", async () => {
+        await seed();
+        await db.automationTrigger.create({
+            data: {
+                id: SECOND_TRIGGER_ID,
+                automationId: AUTOMATION_ID,
+                kind: "pluginEvent",
+                enabled: true,
+                revision: 1,
+                eventPluginId: PLUGIN_ID,
+                eventLocalId: EVENT_LOCAL_ID,
+                sourceSelectorId: SOURCE_SELECTOR_ID,
+                sourceContractVersion: 1,
+                observationTransport: "checkpointedPull",
+                watcherMachineId: MACHINE_ID,
+                watcherMachineInstallationId: MACHINE_INSTALLATION_ID,
+                watcherPluginId: PLUGIN_ID,
+                watcherMaterializationId: MATERIALIZATION_ID,
+                definitionEnvelope: triggerDefinitionEnvelope({
+                    triggerId: SECOND_TRIGGER_ID,
+                    sourceSelectorId: SOURCE_SELECTOR_ID,
+                }),
+            },
+        });
+        const rejoinInput = {
+            ...input({ occurrenceId: "rejoin-at-capacity" }),
+            definitions: [
+                input().definitions[0]!,
+                {
+                    automationId: AUTOMATION_ID,
+                    triggerId: SECOND_TRIGGER_ID,
+                    triggerRevision: 1,
+                    sourceSelectorId: SOURCE_SELECTOR_ID,
+                },
+            ],
+        };
+        const first = await admitAutomationEventV1({
+            accountId: ACCOUNT_ID,
+            caller,
+            input: { ...rejoinInput, definitions: [rejoinInput.definitions[0]!] },
+        });
+        expect(first.results).toEqual([
+            { kind: "admitted", runId: expect.any(String), checkpointSafe: true },
+        ]);
+        const admittedRunId = (first.results[0] as { runId: string }).runId;
+
+        const now = new Date();
+        await db.automationRun.createMany({
+            data: Array.from({ length: MAX_NON_TERMINAL_EVENT_CONVERSATION_RUNS_PER_ACCOUNT - 1 }, (_, index) => (
+                pluginEventCapacityRunSeed({
+                    id: `rejoin-capacity-run-${index}`,
+                    automationId: AUTOMATION_ID,
+                    triggerId: TRIGGER_ID,
+                    sourceSelectorId: SOURCE_SELECTOR_ID,
+                    occurrenceId: `rejoin-capacity-occurrence-${index}`,
+                    scheduledAt: now,
+                    dueAt: now,
+                })
+            )),
+        });
+
+        // Exact rejoin is decided before capacity: an already committed
+        // occurrence is not net-new work and stays checkpoint-safe.
+        const replay = await admitAutomationEventV1({
+            accountId: ACCOUNT_ID,
+            caller,
+            input: rejoinInput,
+        });
+        expect(replay.results).toEqual([
+            { kind: "rejoined", runId: admittedRunId, checkpointSafe: true },
             { kind: "blocked", reason: "capacity", checkpointSafe: false },
         ]);
         await expect(db.automationRun.count({ where: { accountId: ACCOUNT_ID } }))
@@ -3497,7 +3691,7 @@ describe("Automation Event admission", () => {
         expect(await db.automationRun.count({ where: { accountId: ACCOUNT_ID } })).toBe(0);
     });
 
-    it("carries each server-derived successor witness across all 15/15/1 composed admission requests", async () => {
+    it("carries the server-derived successor witness across one complete >15-definition composed admission request", async () => {
         const sources = await loadCurrentAutomationAdmissionSources();
         const publisherKeyPair = tweetnacl.sign.keyPair();
         const definitions = await seedGithubBoundedAdmissionDefinitions({
@@ -3515,29 +3709,11 @@ describe("Automation Event admission", () => {
             definitions,
         });
 
-        expect(execution.admitRouteCalls).toBe(3);
+        expect(execution.admitRouteCalls).toBe(1);
         expect(execution.witnessVersions).toEqual([
             Number(initial.seq),
-            Number(initial.seq) + 15,
-            Number(initial.seq) + 30,
         ]);
         expect(execution.continuations).toEqual([
-            {
-                kind: "ready",
-                accountCurrentness: {
-                    mode: "plain",
-                    version: Number(initial.seq) + 15,
-                    contentKeyFingerprint: null,
-                },
-            },
-            {
-                kind: "ready",
-                accountCurrentness: {
-                    mode: "plain",
-                    version: Number(initial.seq) + 30,
-                    contentKeyFingerprint: null,
-                },
-            },
             {
                 kind: "ready",
                 accountCurrentness: {
@@ -3555,64 +3731,6 @@ describe("Automation Event admission", () => {
             })),
         ));
         expect(await db.automationRun.count({ where: { accountId: ACCOUNT_ID } })).toBe(31);
-    });
-
-    it("stops after an external Account marker moves between bounded admission requests", async () => {
-        const sources = await loadCurrentAutomationAdmissionSources();
-        const publisherKeyPair = tweetnacl.sign.keyPair();
-        const definitions = await seedGithubBoundedAdmissionDefinitions({
-            github: sources.github,
-            keyPair: publisherKeyPair,
-        });
-        const initial = await db.account.findUniqueOrThrow({
-            where: { id: ACCOUNT_ID },
-            select: { seq: true },
-        });
-
-        const execution = await executeGithubBoundedAdmission({
-            sources,
-            keyPair: publisherKeyPair,
-            definitions,
-            afterFirstAdmit: async () => {
-                await inTx(async (tx) => {
-                    await markAccountChanged(tx, {
-                        accountId: ACCOUNT_ID,
-                        kind: "machine",
-                        entityId: MACHINE_ID,
-                    });
-                });
-            },
-        });
-
-        expect(execution.admitRouteCalls).toBe(2);
-        expect(execution.witnessVersions).toEqual([
-            Number(initial.seq),
-            Number(initial.seq) + 15,
-        ]);
-        expect(execution.continuations).toEqual([
-            {
-                kind: "ready",
-                accountCurrentness: {
-                    mode: "plain",
-                    version: Number(initial.seq) + 15,
-                    contentKeyFingerprint: null,
-                },
-            },
-            { kind: "stopped", reason: "accountCurrentnessMoved" },
-        ]);
-        expect(execution.result.results).toHaveLength(31);
-        expect(execution.result.results.slice(0, 15)).toEqual(expect.arrayContaining(
-            Array.from({ length: 15 }, () => expect.objectContaining({
-                kind: "admitted",
-                checkpointSafe: true,
-            })),
-        ));
-        expect(execution.result.results.slice(15)).toEqual(Array.from({ length: 16 }, () => ({
-            kind: "blocked",
-            reason: "temporarilyUnavailable",
-            checkpointSafe: false,
-        })));
-        expect(await db.automationRun.count({ where: { accountId: ACCOUNT_ID } })).toBe(15);
     });
 
     it("preserves all-rejoin results but stops the remaining suffix when the frozen initial witness moved", async () => {
@@ -3648,17 +3766,12 @@ describe("Automation Event admission", () => {
             { kind: "stopped", reason: "accountCurrentnessMoved" },
         ]);
         expect(execution.result.results).toHaveLength(31);
-        expect(execution.result.results.slice(0, 15)).toEqual(expect.arrayContaining(
-            Array.from({ length: 15 }, () => expect.objectContaining({
+        expect(execution.result.results).toEqual(expect.arrayContaining(
+            Array.from({ length: 31 }, () => expect.objectContaining({
                 kind: "rejoined",
                 checkpointSafe: true,
             })),
         ));
-        expect(execution.result.results.slice(15)).toEqual(Array.from({ length: 16 }, () => ({
-            kind: "blocked",
-            reason: "temporarilyUnavailable",
-            checkpointSafe: false,
-        })));
         expect(await db.automationRun.count({ where: { accountId: ACCOUNT_ID } })).toBe(31);
     });
 

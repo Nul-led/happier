@@ -11,6 +11,7 @@ const syncSpies = vi.hoisted(() => ({
     getAutomationRunDetailInspection: vi.fn<(automationId: string, runId: string) => Promise<unknown>>(),
     cancelAutomationRun: vi.fn(async () => null),
     retryAutomationReplyHandoff: vi.fn(async () => null),
+    deliverAutomationResultAgain: vi.fn(async () => null),
 }));
 const routeParamsState = vi.hoisted(() => ({ id: 'a1', runId: 'run-1' }));
 const routerPushSpy = vi.hoisted(() => vi.fn());
@@ -84,6 +85,8 @@ installAutomationScreensCommonModuleMocks({
             if (key === 'automations.detail.runMeta.cause.manual') return 'Manual';
             if (key === 'automations.detail.runMeta.cause.conversation') return 'Conversation';
             if (key === 'automations.detail.runMeta.cause.sessionLifecycle') return 'Session turn completed';
+            if (key === 'automations.pluralEditor.lifecycleEvent.parentTurnCompleted') return 'Turn completed successfully';
+            if (key === 'automations.pluralEditor.lifecyclePolicy.currentTurn') return 'Current turn only';
             if (key === 'automations.list.event') return `Event: ${String(params?.eventId ?? '')}`;
             if (key === 'automations.detail.runMeta.triggerIdentityTitle') return 'Trigger identity';
             if (key === 'automations.detail.runMeta.triggerIdentity') return `${String(params?.id ?? '')} · revision ${String(params?.revision ?? '')}`;
@@ -284,6 +287,14 @@ describe('AutomationRunDetailScreen', () => {
             finishedAt: 12,
             updatedAt: 12,
         });
+        syncSpies.deliverAutomationResultAgain.mockReset();
+        syncSpies.deliverAutomationResultAgain.mockResolvedValue({
+            ...runsState.list[0],
+            replyHandoffState: 'ready',
+            replyHandoffDueAt: 12,
+            revision: 8,
+            updatedAt: 12,
+        });
         syncSpies.retryAutomationReplyHandoff.mockReset();
         syncSpies.retryAutomationReplyHandoff.mockResolvedValue({
             ...runsState.list[0],
@@ -380,11 +391,20 @@ describe('AutomationRunDetailScreen', () => {
 
         const screen = await renderScreen(React.createElement(AutomationRunDetailScreen));
 
-        expect(screen.findByProps({ title: 'Cause', detail: 'Session turn completed' })).toBeTruthy();
+        expect(screen.findByProps({ title: 'Cause', detail: 'Turn completed successfully · Current turn only' })).toBeTruthy();
         expect(screen.getTextContent()).toContain('turn-trigger-retired · revision 7');
         expect(screen.getTextContent()).toContain('Trigger retired');
         expect(screen.getTextContent()).toContain('session-source');
         expect(screen.getTextContent()).toContain('turn-exact');
+        for (const [title, expectedCopy] of [
+            ['Source session', 'session-source'],
+            ['Exact source turn', 'turn-exact'],
+        ] as const) {
+            const copyRow = screen.findByProps({ title });
+            expect(copyRow.props.copy).toBe(expectedCopy);
+            expect(copyRow.props.mode).not.toBe('info');
+            expect(copyRow.props.subtitleLines).toBe(0);
+        }
     });
 
     it('keeps the bounded Run cache visible when its private detail read fails', async () => {
@@ -522,6 +542,23 @@ describe('AutomationRunDetailScreen', () => {
         expect(screen.getTextContent()).toContain('The admitted issue was reviewed.');
         expect(screen.getTextContent()).toContain('Failure detail');
         expect(screen.getTextContent()).toContain('The worker could not open /private/project.');
+        for (const [title, expectedCopy] of [
+            ['Trigger identity', 'trigger-1@3'],
+            ['Occurrence', 'occurrence-1'],
+            ['Observation source', 'selector-1'],
+            ['Event reference', 'happier.scm.github/pull-request-opened-v1'],
+            ['Source instance', 'repository-acme-example'],
+            ['Frozen target', 'Existing session: session-1'],
+            ['Payload', '{"issue":{"number":42}}'],
+            ['Frozen prompt', 'Review the admitted issue.'],
+            ['Final result', 'The admitted issue was reviewed.'],
+            ['Failure detail', 'The worker could not open /private/project.'],
+        ] as const) {
+            const copyRow = screen.findByProps({ title });
+            expect(copyRow.props.copy).toBe(expectedCopy);
+            expect(copyRow.props.mode).not.toBe('info');
+            expect(copyRow.props.subtitleLines).toBe(0);
+        }
         const rendered = JSON.stringify(screen.tree.toJSON());
         expect(rendered).not.toContain('sealed-trigger-evidence');
         expect(rendered).not.toContain('sealed-execution-recipe');
@@ -964,6 +1001,88 @@ describe('AutomationRunDetailScreen', () => {
         });
 
         expect(syncSpies.retryAutomationReplyHandoff).toHaveBeenCalledWith('run-1');
+    });
+
+    it('states the truth instead of offering a retry the server can never dispatch', async () => {
+        runsState.list = [{
+            ...runsState.list[0],
+            state: 'succeeded',
+            replyHandoffState: 'blocked',
+            replyHandoffAttempt: 2,
+        }];
+        syncSpies.getAutomationRunDetailInspection.mockResolvedValue(inspectRunDetail({
+            ...runsState.list[0],
+            replyHandoffRecoverable: false,
+            triggerEvidenceEnvelope: null,
+            executionInputEnvelope: null,
+            resultEnvelope: null,
+            legacySummaryCiphertext: null,
+        }));
+        const { AutomationRunDetailScreen } = await import('./AutomationRunDetailScreen');
+        const screen = await renderScreen(React.createElement(AutomationRunDetailScreen));
+
+        expect(screen.findAllByProps({ testID: 'automation-run-retry-reply-handoff' })).toHaveLength(0);
+        expect(screen.findByProps({ testID: 'automation-run-reply-handoff-unrecoverable' })).toBeTruthy();
+        expect(syncSpies.retryAutomationReplyHandoff).not.toHaveBeenCalled();
+    });
+
+    it('authorizes a new delivery of accepted custody at the exact revision it showed', async () => {
+        runsState.list = [{
+            ...runsState.list[0],
+            state: 'succeeded',
+            replyHandoffState: 'accepted',
+            replyHandoffAttempt: 2,
+            revision: 7,
+        }];
+        syncSpies.getAutomationRunDetailInspection.mockResolvedValue(inspectRunDetail({
+            ...runsState.list[0],
+            triggerEvidenceEnvelope: null,
+            executionInputEnvelope: null,
+            resultEnvelope: null,
+            legacySummaryCiphertext: null,
+        }));
+        modalConfirmSpy.mockResolvedValueOnce(true);
+        const { AutomationRunDetailScreen } = await import('./AutomationRunDetailScreen');
+        const screen = await renderScreen(React.createElement(AutomationRunDetailScreen));
+        // A retry would rejoin the delivery whose outcome is unknown, so the
+        // accepted state offers the deliberate new delivery instead.
+        expect(screen.findAllByProps({ testID: 'automation-run-retry-reply-handoff' })).toHaveLength(0);
+        const deliverAgain = screen.findByProps({ testID: 'automation-run-deliver-result-again' });
+
+        await act(async () => {
+            await deliverAgain.props.onPress();
+        });
+
+        expect(syncSpies.deliverAutomationResultAgain).toHaveBeenCalledWith({
+            runId: 'run-1',
+            expectedRevision: 7,
+        });
+    });
+
+    it('does not deliver again when the user declines the confirmation', async () => {
+        runsState.list = [{
+            ...runsState.list[0],
+            state: 'succeeded',
+            replyHandoffState: 'accepted',
+            revision: 7,
+        }];
+        syncSpies.getAutomationRunDetailInspection.mockResolvedValue(inspectRunDetail({
+            ...runsState.list[0],
+            triggerEvidenceEnvelope: null,
+            executionInputEnvelope: null,
+            resultEnvelope: null,
+            legacySummaryCiphertext: null,
+        }));
+        modalConfirmSpy.mockResolvedValueOnce(false);
+        const { AutomationRunDetailScreen } = await import('./AutomationRunDetailScreen');
+        const screen = await renderScreen(React.createElement(AutomationRunDetailScreen));
+        const deliverAgain = screen.findByProps({ testID: 'automation-run-deliver-result-again' });
+
+        await act(async () => {
+            await deliverAgain.props.onPress();
+        });
+
+        expect(syncSpies.deliverAutomationResultAgain).not.toHaveBeenCalled();
     });
 
     it('does not let a pre-cancel direct read reclaim the route after cancellation commits', async () => {

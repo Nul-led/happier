@@ -14,13 +14,13 @@ import {
   AutomationEventAdmitHttpInputV1Schema,
   AutomationEventAdmitInputV1Schema,
   AutomationEventFilterV1Schema,
+  AutomationEventSourceCatalogScopeKeyV1Schema,
   AutomationEventSourceCatalogStatusStateV1Schema,
   AutomationEventSourceObservationTransportV1Schema,
   AutomationEventSourcesListInputV1Schema,
   AutomationEventSourceStatusCodeV1Schema,
   AutomationEventSourceStatusReportV1Schema,
   AutomationEventSourceStatusStateV1Schema,
-  MAX_AUTOMATION_EVENT_ADMIT_DEFINITIONS_PER_CALL,
   MAX_AUTOMATION_EVENT_SOURCE_DEFINITIONS_PER_PAGE,
   OPAQUE_CURSOR_SCHEMA,
   UNSIGNED_DECIMAL_BIGINT_SCHEMA,
@@ -175,9 +175,11 @@ export {
   AutomationEventCheckpointRetirementCandidateV1Schema,
   AutomationEventCheckpointRetirementsV1Schema,
   AutomationEventFilterV1Schema,
+  AutomationEventSourceCatalogScopeKeyV1Schema,
   AutomationEventSourceCatalogScopeV1Schema,
   AutomationEventSourceCatalogStatusStateV1Schema,
   AutomationEventSourceDefinitionV1Schema,
+  automationEventSourceCatalogScopeKeyV1,
   AutomationEventSourceObservationTransportV1Schema,
   AutomationEventSourcesListInputV1Schema,
   AutomationEventSourcesListResultV1Schema,
@@ -191,7 +193,6 @@ export {
   MAX_AUTOMATION_EVENT_FILTER_CLAUSES,
   MAX_AUTOMATION_EVENT_FILTER_IN_VALUES,
   MAX_AUTOMATION_EVENT_FILTER_VALUE_CODE_POINTS,
-  MAX_AUTOMATION_EVENT_ADMIT_DEFINITIONS_PER_CALL,
   MAX_AUTOMATION_EVENT_SOURCE_DEFINITIONS_PER_PAGE,
 } from './automationActionSpecsV1.js';
 export type {
@@ -213,6 +214,7 @@ export type {
   AutomationEventCheckpointRetirementsV1,
   AutomationEventFilterClauseV1,
   AutomationEventFilterV1,
+  AutomationEventSourceCatalogScopeKeyV1,
   AutomationEventSourceCatalogScopeV1,
   AutomationEventSourceCatalogStatusStateV1,
   AutomationEventSourceDefinitionV1,
@@ -304,21 +306,9 @@ export type {
 
 export const MAX_AUTOMATION_PROVIDER_CHECKPOINT_UTF8_BYTES = 64 * 1024;
 export const MAX_AUTOMATION_OBSERVATIONS_PER_POLL = 100;
-/**
- * Every private Event-admission body has this canonical UTF-8 transport ceiling,
- * regardless of its Account encryption mode. E3 partitions the public Action
- * aggregate before E2 signs and sends each complete private request.
- */
-export const MAX_AUTOMATION_EVENT_ADMIT_HTTP_REQUEST_UTF8_BYTES = 16 * 1024 * 1024;
 export const MAX_NON_TERMINAL_EVENT_CONVERSATION_RUNS_PER_ACCOUNT = 10_000;
 
 const UTF8_ENCODER = new TextEncoder();
-
-export function readAutomationEventAdmitHttpRequestCanonicalUtf8ByteLengthV1(
-  value: unknown,
-): number {
-  return UTF8_ENCODER.encode(createCanonicalJsonSigningInput(value)).byteLength;
-}
 
 const PRIVATE_STORED_DEFINITION_SCOPE_SCHEMA = z.string().regex(/^[A-Za-z0-9_-]{43}$/u);
 
@@ -925,8 +915,7 @@ export const AutomationEventAdmitEncryptedHostEvidenceV1Schema = z.object({
     eventRef: asProtocolZod(AutomationQualifiedPluginContributionRefV1Schema),
     eventDeclarationRelease: AutomationEventDeclarationReleaseV1Schema,
     definitions: z.array(AutomationEventAdmitEncryptedDefinitionEvidenceV1Schema)
-      .min(1)
-      .max(MAX_AUTOMATION_EVENT_ADMIT_DEFINITIONS_PER_CALL),
+      .min(1),
     webhookInvocationReference: PluginWebhookInvocationReferenceV1Schema.optional(),
   }).strict().superRefine((value, context) => {
     if (value.accountCurrentness.mode !== 'e2ee') {
@@ -1305,22 +1294,6 @@ export type AutomationReplyHandoffDispatchResultV1 = z.infer<
   typeof AutomationReplyHandoffDispatchResultV1Schema
 >;
 
-const AUTOMATION_DURABLE_PUSH_SCOPE_PREFIX = 'durablePush:';
-const AutomationEventSourceCatalogScopeKeyV1Schema = z.string().superRefine((value, context) => {
-  if (value === 'checkpointedPull') return;
-  if (!value.startsWith(AUTOMATION_DURABLE_PUSH_SCOPE_PREFIX)) {
-    context.addIssue({ code: z.ZodIssueCode.custom, message: 'Unknown Automation source catalog scope' });
-    return;
-  }
-  const endpointId = value.slice(AUTOMATION_DURABLE_PUSH_SCOPE_PREFIX.length);
-  if (!PluginWebhookEndpointIdV1Schema.safeParse(endpointId).success) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: 'Durable-push catalog scopes require one canonical webhook endpoint ID',
-    });
-  }
-});
-
 export const AutomationEventSourceStatusV1Schema = z.object({
   automationId: asProtocolZod(AutomationIdV1Schema),
   triggerId: AutomationTriggerIdSchema,
@@ -1609,15 +1582,7 @@ export const AutomationEventAdmitEncryptedHttpRequestV1Schema = z.object({
 export const AutomationEventAdmitHttpRequestV1Schema = z.union([
   AutomationEventAdmitPlainHttpRequestV1Schema,
   AutomationEventAdmitEncryptedHttpRequestV1Schema,
-]).superRefine((value, context) => {
-  if (readAutomationEventAdmitHttpRequestCanonicalUtf8ByteLengthV1(value)
-    > MAX_AUTOMATION_EVENT_ADMIT_HTTP_REQUEST_UTF8_BYTES) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: 'Event admission HTTP request exceeds the canonical byte limit',
-    });
-  }
-});
+]);
 export type AutomationEventAdmitPlainHttpRequestV1 = z.infer<
   typeof AutomationEventAdmitPlainHttpRequestV1Schema
 >;

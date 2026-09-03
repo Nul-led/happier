@@ -1,6 +1,6 @@
 import React from 'react';
 import { View } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useNavigation, useRouter } from 'expo-router';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { AutomationTriggerEditor } from '@/components/automations/editor/AutomationPluralEditorScreen';
@@ -41,6 +41,12 @@ import { sync } from '@/sync/sync';
 import { isAutomationApiErrorCode } from '@/sync/api/automations/apiAutomations';
 import { t } from '@/text';
 import { navigateWithBlurOnWeb } from '@/utils/platform/deferOnWeb';
+import {
+    type ActiveUnsavedChangesGuard,
+} from '@/utils/navigation/runGuardedNavigation';
+import { useActiveUnsavedChangesGuard } from '@/utils/navigation/useActiveUnsavedChangesGuard';
+import { useUnsavedChangesBeforeRemoveGuard } from '@/utils/navigation/useUnsavedChangesBeforeRemoveGuard';
+import { promptUnsavedChangesAlert } from '@/utils/ui/promptUnsavedChangesAlert';
 import { getSessionName } from '@/utils/sessions/sessionUtils';
 
 const stylesheet = StyleSheet.create((theme) => ({
@@ -100,6 +106,7 @@ export function SessionAutomationCreateScreen(props: Readonly<{
 }>) {
     useUnistyles();
     const router = useRouter();
+    const navigation = useNavigation();
     const routeHydrationState = useHydrateSessionForRoute(
         props.sessionId,
         'SessionAutomationCreateScreen.hydrateTargetSession',
@@ -126,6 +133,27 @@ export function SessionAutomationCreateScreen(props: Readonly<{
     latestEditorRef.current = editorDraft;
     const [submitting, setSubmitting] = React.useState(false);
     const submittingRef = React.useRef(false);
+
+    // Unsaved-changes guard basis. Both route-local draft stores — the Session
+    // authoring draft and the trigger/metadata editor draft — are compared with
+    // their clean route baselines; no second draft store is introduced and the
+    // incumbent beforeRemove owner consumes the derived dirty fact.
+    const routeBaselineRef = React.useRef<SessionAutomationTriggerDraft | null>(null);
+    if (routeBaselineRef.current === null) routeBaselineRef.current = initialEditorDraft();
+    const [createCommitted, setCreateCommitted] = React.useState(false);
+    const routeDraftDirty = React.useMemo(() => {
+        if (createCommitted) return false;
+        if (Boolean(draft?.prompt.trim())) return true;
+        const baseline = routeBaselineRef.current;
+        if (!baseline) return false;
+        return editorDraft.name !== baseline.name
+            || editorDraft.description !== baseline.description
+            || editorDraft.enabled !== baseline.enabled
+            || editorDraft.triggers.length > 0
+            || editorDraft.removedTriggers.length > 0;
+    }, [createCommitted, draft?.prompt, editorDraft]);
+    const isDirtyRef = React.useRef(false);
+    isDirtyRef.current = routeDraftDirty;
 
     React.useEffect(() => {
         if (editorDraftLifetimeIdentity === editorLifetimeIdentity) return;
@@ -180,8 +208,8 @@ export function SessionAutomationCreateScreen(props: Readonly<{
         && editorLifetimeIdentity !== null
         && Boolean(session && machineId && draft?.prompt.trim() && editorDraft.name.trim());
 
-    const handleCreate = React.useCallback(async () => {
-        if (submittingRef.current) return;
+    const handleCreate = React.useCallback(async (): Promise<boolean> => {
+        if (submittingRef.current) return false;
         const accountLifetime = captureActiveServerAccountScopeLifetime();
         const capturedEditorLifetimeIdentity = editorDraftLifetimeIdentity;
         const authority = captureSessionAutomationAuthority({
@@ -216,15 +244,18 @@ export function SessionAutomationCreateScreen(props: Readonly<{
                 accountLifetime?.scope ?? null,
                 `${props.sessionId}:new`,
             )
-        ) return;
+        ) return false;
         submittingRef.current = true;
         setSubmitting(true);
         const sourceDefinitions = currentEditor.triggers.flatMap((trigger) => (
             trigger.definition?.kind === 'sessionLifecycle' && trigger.definition.policy.kind === 'currentTurn'
-                ? [trigger.definition]
+                ? [{
+                    definition: trigger.definition,
+                    sourceTurnId: trigger.definition.policy.sourceTurnId,
+                }]
                 : []
         ));
-        const sourceAuthorities = sourceDefinitions.flatMap((definition) => {
+        const sourceAuthorities = sourceDefinitions.flatMap(({ definition, sourceTurnId }) => {
             if (definition.sourceSessionId === props.sessionId) return [];
             const sourceSessionId = definition.sourceSessionId;
             const sourceAuthority = captureSessionAutomationAuthority({
@@ -247,7 +278,7 @@ export function SessionAutomationCreateScreen(props: Readonly<{
             return sourceAuthority ? [{
                 authority: sourceAuthority,
                 sourceSessionId,
-                sourceTurnId: definition.policy.sourceTurnId,
+                sourceTurnId,
             }] : [];
         });
         const sourceTurnsMatchDraft = sourceAuthorities.length === sourceDefinitions.length
@@ -266,7 +297,7 @@ export function SessionAutomationCreateScreen(props: Readonly<{
             else if (!replacement) await Modal.alert(t('automations.exactTurn.staleTitle'), t('automations.exactTurn.staleBody'));
             submittingRef.current = false;
             setSubmitting(false);
-            return;
+            return false;
         }
         const isCurrent = () => authority.isCurrent()
             && capturedEditorLifetimeIdentity === editorLifetimeIdentity
@@ -299,7 +330,14 @@ export function SessionAutomationCreateScreen(props: Readonly<{
                 assignments: [{ machineId, enabled: true, priority: 100 }],
             };
             const saved = await sync.saveAutomationEditorDraft(saveDraft, { isCurrent });
-            if (isCurrent()) navigateWithBlurOnWeb(() => router.replace(`/automations/${saved.id}` as any));
+            if (isCurrent()) {
+                // The committed create owns navigation to the detail route; the
+                // guard must not treat this route as dirty on the way out.
+                setCreateCommitted(true);
+                navigateWithBlurOnWeb(() => router.replace(`/automations/${saved.id}` as any));
+                return true;
+            }
+            return false;
         } catch (error) {
             const exactTurnStale = isAutomationApiErrorCode(error, 'sourceTurnNotCurrent')
                 || isAutomationApiErrorCode(error, 'sourceTurnNotInProgress')
@@ -321,6 +359,7 @@ export function SessionAutomationCreateScreen(props: Readonly<{
             submittingRef.current = false;
             setSubmitting(false);
         }
+        return false;
     }, [
         editorDraftLifetimeIdentity,
         editorLifetimeIdentity,
@@ -332,10 +371,65 @@ export function SessionAutomationCreateScreen(props: Readonly<{
         session?.serverId,
     ]);
 
+    // The incumbent unsaved-changes-before-remove owner, exactly as the edit
+    // route uses it: browser/edge/header route removal is prevented while any
+    // route-local draft edit is unsaved, global navigation surfaces consult the
+    // active guard, and the offered save IS the create action (continueOnSave:
+    // false because a committed create navigates to the detail itself).
+    const requestUnsavedChangesDecision = React.useCallback(() => promptUnsavedChangesAlert(
+        (title, message, buttons) => Modal.alert(title, message, buttons),
+        {
+            title: t('common.discardChanges'),
+            message: t('common.unsavedChangesWarning'),
+            discardText: t('common.discard'),
+            saveText: t('common.save'),
+            keepEditingText: t('common.keepEditing'),
+        },
+    ), []);
+    const discardDraft = React.useCallback(() => {
+        // The incumbent guard has already cleared isDirtyRef before this runs;
+        // the abandoned drafts die with the route that is being removed.
+        isDirtyRef.current = false;
+    }, []);
+    const continueNavigation = React.useCallback((action: unknown) => {
+        const dispatch = (navigation as { dispatch?: (nextAction: unknown) => void } | null)?.dispatch;
+        if (action && typeof dispatch === 'function') {
+            dispatch(action);
+            return;
+        }
+        router.back();
+    }, [navigation, router]);
+    const unsavedChangesGuard = React.useMemo<ActiveUnsavedChangesGuard>(() => ({
+        isDirtyRef,
+        requestDecision: requestUnsavedChangesDecision,
+        onDiscard: discardDraft,
+        onSave: handleCreate,
+        continueOnSave: false,
+        tag: 'SessionAutomationCreateScreen.beforeRemove',
+    }), [discardDraft, handleCreate, requestUnsavedChangesDecision]);
+    useUnsavedChangesBeforeRemoveGuard({
+        isDirty: routeDraftDirty,
+        isDirtyRef,
+        requestDecision: requestUnsavedChangesDecision,
+        onDiscard: discardDraft,
+        onSave: handleCreate,
+        continueOnSave: false,
+        onContinue: continueNavigation,
+        tag: unsavedChangesGuard.tag,
+    });
+    useActiveUnsavedChangesGuard({
+        navigation,
+        guard: unsavedChangesGuard,
+        enabled: routeDraftDirty,
+    });
+
     const missingReason = React.useMemo(() => getExistingSessionAutomationUnavailableReason(availability), [availability]);
     return (
         <View style={stylesheet.container}>
-            <ItemList style={{ paddingTop: 0 }}>
+            {/* The authoring surface is a form with focusable name, description,
+                prompt, and trigger fields, so it uses the list's shared native
+                keyboard owner instead of letting the keyboard cover them. */}
+            <ItemList style={{ paddingTop: 0 }} keyboardAware>
                 <View style={{ maxWidth: layout.maxWidth, alignSelf: 'center', width: '100%' }}>
                     <ExistingSessionAutomationAuthoringSurface
                         formVariant="create"

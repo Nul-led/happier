@@ -1,9 +1,14 @@
 import type { Session } from '@/sync/domains/state/storageTypes';
+import {
+    AutomationSessionLifecycleEventsSchema,
+    type AutomationSessionLifecycleEvent,
+} from '@happier-dev/protocol';
 
 export type ExactTurnAutomationPrefill = Readonly<{
     sourceSessionId: string;
     sourceTurnId: string;
     sourceServerId: string;
+    events: readonly AutomationSessionLifecycleEvent[];
 }>;
 
 function nonEmpty(value: unknown): string | null {
@@ -21,7 +26,12 @@ export function readExactActiveParentTurn(
     const sourceTurnId = nonEmpty(session.latestTurnId);
     const sourceServerId = nonEmpty(session.serverId);
     return sourceSessionId && sourceTurnId && sourceServerId
-        ? Object.freeze({ sourceSessionId, sourceTurnId, sourceServerId })
+        ? Object.freeze({
+            sourceSessionId,
+            sourceTurnId,
+            sourceServerId,
+            events: Object.freeze(['parentTurnCompleted'] as const),
+        })
         : null;
 }
 
@@ -42,17 +52,33 @@ export function parseExactTurnAutomationPrefillRoute(input: Readonly<{
     sourceSessionId?: unknown;
     sourceTurnId?: unknown;
     sourceServerId?: unknown;
+    sessionLifecycleEvents?: unknown;
 }>): ExactTurnAutomationPrefillRoute {
-    const expressesExactTurnIntent = ['sourceSessionId', 'sourceTurnId', 'sourceServerId']
+    const expressesExactTurnIntent = [
+        'sourceSessionId',
+        'sourceTurnId',
+        'sourceServerId',
+        'sessionLifecycleEvents',
+    ]
         .some((key) => Object.prototype.hasOwnProperty.call(input, key));
     if (!expressesExactTurnIntent) return { kind: 'absent' };
     const sourceSessionId = nonEmpty(input.sourceSessionId);
     const sourceTurnId = nonEmpty(input.sourceTurnId);
     const sourceServerId = nonEmpty(input.sourceServerId);
     if (!sourceSessionId || !sourceTurnId || !sourceServerId) return { kind: 'invalid' };
+    const eventsInput = Object.prototype.hasOwnProperty.call(input, 'sessionLifecycleEvents')
+        ? nonEmpty(input.sessionLifecycleEvents)?.split(',')
+        : ['parentTurnCompleted'];
+    const events = AutomationSessionLifecycleEventsSchema.safeParse(eventsInput);
+    if (!events.success) return { kind: 'invalid' };
     return {
         kind: 'valid',
-        prefill: Object.freeze({ sourceSessionId, sourceTurnId, sourceServerId }),
+        prefill: Object.freeze({
+            sourceSessionId,
+            sourceTurnId,
+            sourceServerId,
+            events: Object.freeze(events.data),
+        }),
     };
 }
 
@@ -70,5 +96,6 @@ export function buildExactTurnAutomationRouteParams(prefill: ExactTurnAutomation
         sourceSessionId: prefill.sourceSessionId,
         sourceTurnId: prefill.sourceTurnId,
         sourceServerId: prefill.sourceServerId,
+        sessionLifecycleEvents: prefill.events.join(','),
     } as const;
 }

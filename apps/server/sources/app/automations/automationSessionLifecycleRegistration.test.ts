@@ -10,7 +10,7 @@ const input = {
     kind: "sessionLifecycle" as const,
     enabled: true,
     sourceSessionId: "source-session",
-    events: ["parentTurnCompleted"] as const,
+    events: ["parentTurnCompleted"] as ["parentTurnCompleted"],
     policy: { kind: "currentTurn" as const, sourceTurnId: "source-turn" },
 };
 

@@ -1,9 +1,14 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
+import type { AutomationReplyHandoffDispatchRequestV1 } from "@happier-dev/protocol";
+
 import { db } from "@/storage/db";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
 
-import { DEFAULT_AUTOMATION_REPLY_HANDOFF_RETRY_AFTER_MS } from "./automationReplyHandoffService";
+import {
+    DEFAULT_AUTOMATION_REPLY_HANDOFF_RETRY_AFTER_MS,
+    retryBlockedAutomationReplyHandoff,
+} from "./automationReplyHandoffService";
 import { runAutomationReplyHandoffWorkerPass } from "./automationReplyHandoffWorker";
 
 const ACCOUNT_ID = "account-reply-handoff-worker";
@@ -276,6 +281,247 @@ describe("Automation reply handoff worker", () => {
             replyHandoffState: "ready",
             replyHandoffDueAt: new Date(NOW.getTime() + DEFAULT_AUTOMATION_REPLY_HANDOFF_RETRY_AFTER_MS),
         });
+    });
+
+    function dispatchedFrozenIdentity(request: AutomationReplyHandoffDispatchRequestV1) {
+        // The durable custody obligation Channels dedupes by. `Account.seq`
+        // advances with every claim/settlement publication, so the claim-time
+        // currentness witness is deliberately excluded from this identity.
+        return {
+            handoffId: request.handoff.handoffId,
+            runId: request.handoff.runId,
+            automationId: request.handoff.automationId,
+            occurrenceKey: request.handoff.occurrenceKey,
+            cause: request.handoff.cause,
+            resultEnvelope: request.handoff.resultEnvelope,
+            replyContextEnvelope: request.handoff.replyContextEnvelope,
+            target: request.target,
+        };
+    }
+
+    it("moves contractInvalid custody through one retry, blocked custody, and manual reopen of the same handoff identity", async () => {
+        await seedReadyHandoff();
+        const dispatched: AutomationReplyHandoffDispatchRequestV1[] = [];
+        const recordDispatch = () => async (request: unknown) => {
+            dispatched.push(request as AutomationReplyHandoffDispatchRequestV1);
+            return { kind: "unavailable" as const, code: "contractInvalid" as const };
+        };
+        const retryAt = new Date(NOW.getTime() + DEFAULT_AUTOMATION_REPLY_HANDOFF_RETRY_AFTER_MS);
+        const firstReopenAt = new Date(retryAt.getTime() + DEFAULT_AUTOMATION_REPLY_HANDOFF_RETRY_AFTER_MS);
+        const secondReopenAt = new Date(firstReopenAt.getTime() + DEFAULT_AUTOMATION_REPLY_HANDOFF_RETRY_AFTER_MS);
+
+        // First automatic attempt: the matched custody Action returned an
+        // invalid result, so custody may already have committed. The ambiguity
+        // budget schedules exactly one retry of the same durable handoff.
+        await runAutomationReplyHandoffWorkerPass({ now: NOW, dispatch: recordDispatch() });
+        await expect(db.automationRun.findUniqueOrThrow({
+            where: { id: RUN_ID },
+            select: {
+                replyHandoffState: true,
+                replyHandoffAttempt: true,
+                replyHandoffDueAt: true,
+                replyHandoffReceiptEnvelope: true,
+            },
+        })).resolves.toEqual({
+            replyHandoffState: "ready",
+            replyHandoffAttempt: 1,
+            replyHandoffDueAt: retryAt,
+            replyHandoffReceiptEnvelope: null,
+        });
+
+        // Second absolute attempt: an invalid result cannot become valid
+        // through unattended repetition, so the existing typed blocked custody
+        // takes over.
+        await runAutomationReplyHandoffWorkerPass({ now: retryAt, dispatch: recordDispatch() });
+        await expect(db.automationRun.findUniqueOrThrow({
+            where: { id: RUN_ID },
+            select: {
+                replyHandoffState: true,
+                replyHandoffAttempt: true,
+                replyHandoffDueAt: true,
+                replyHandoffReceiptEnvelope: true,
+            },
+        })).resolves.toEqual({
+            replyHandoffState: "blocked",
+            replyHandoffAttempt: 2,
+            replyHandoffDueAt: null,
+            replyHandoffReceiptEnvelope: null,
+        });
+
+        // Present-user recovery reopens the same custody in place: identical
+        // frozen identity, preserved absolute attempt budget.
+        await expect(retryBlockedAutomationReplyHandoff({
+            accountId: ACCOUNT_ID,
+            runId: RUN_ID,
+            now: firstReopenAt,
+        })).resolves.toMatchObject({
+            id: RUN_ID,
+            replyHandoffState: "ready",
+            replyHandoffDueAt: firstReopenAt,
+        });
+        await expect(db.automationRun.findUniqueOrThrow({
+            where: { id: RUN_ID },
+            select: { replyHandoffAttempt: true, replyHandoffId: true },
+        })).resolves.toEqual({ replyHandoffAttempt: 2, replyHandoffId: HANDOFF_ID });
+
+        // Absolute attempt semantics: the reopened custody receives exactly
+        // one more dispatch, and a still-invalid result blocks again instead
+        // of retry-looping.
+        await runAutomationReplyHandoffWorkerPass({ now: firstReopenAt, dispatch: recordDispatch() });
+        await expect(db.automationRun.findUniqueOrThrow({
+            where: { id: RUN_ID },
+            select: { replyHandoffState: true, replyHandoffAttempt: true },
+        })).resolves.toEqual({ replyHandoffState: "blocked", replyHandoffAttempt: 3 });
+
+        // A deliberate manual retry that succeeds settles the same custody
+        // through the ordinary accepted path.
+        await expect(retryBlockedAutomationReplyHandoff({
+            accountId: ACCOUNT_ID,
+            runId: RUN_ID,
+            now: secondReopenAt,
+        })).resolves.toMatchObject({ id: RUN_ID, replyHandoffState: "ready" });
+        await runAutomationReplyHandoffWorkerPass({
+            now: secondReopenAt,
+            dispatch: async (request) => {
+                dispatched.push(request as AutomationReplyHandoffDispatchRequestV1);
+                const accountCurrentness = await readCurrentness();
+                return {
+                    kind: "settled" as const,
+                    settlement: { kind: "accepted" as const },
+                    accountCurrentness,
+                    receiptEnvelope: {
+                        t: "plain" as const,
+                        v: {
+                            v: 1 as const,
+                            correspondence: {
+                                accountId: ACCOUNT_ID,
+                                automationId: AUTOMATION_ID,
+                                runId: RUN_ID,
+                                handoffId: HANDOFF_ID,
+                            },
+                            result: { kind: "accepted" as const, custodyId: "custody-reopened" },
+                        },
+                    },
+                };
+            },
+        });
+        await expect(db.automationRun.findUniqueOrThrow({
+            where: { id: RUN_ID },
+            select: {
+                replyHandoffState: true,
+                replyHandoffDueAt: true,
+                replyHandoffReceiptEnvelope: true,
+            },
+        })).resolves.toMatchObject({
+            replyHandoffState: "accepted",
+            replyHandoffDueAt: null,
+        });
+
+        // Every dispatch rejoined the one durable custody obligation: the
+        // frozen handoff identity never rotated and no second Run/queue row
+        // was created.
+        expect(dispatched).toHaveLength(4);
+        const frozenIdentity = dispatchedFrozenIdentity(dispatched[0]!);
+        for (const request of dispatched) {
+            expect(dispatchedFrozenIdentity(request)).toEqual(frozenIdentity);
+        }
+        await expect(db.automationRun.count()).resolves.toBe(1);
+    });
+
+    it("blocks the second absolute attempt after a malformed dispatch response and reopens the same frozen identity", async () => {
+        await seedReadyHandoff();
+        const dispatched: AutomationReplyHandoffDispatchRequestV1[] = [];
+        const retryAt = new Date(NOW.getTime() + DEFAULT_AUTOMATION_REPLY_HANDOFF_RETRY_AFTER_MS);
+        const reopenAt = new Date(retryAt.getTime() + DEFAULT_AUTOMATION_REPLY_HANDOFF_RETRY_AFTER_MS);
+
+        await runAutomationReplyHandoffWorkerPass({
+            now: NOW,
+            dispatch: async (request) => {
+                dispatched.push(request as AutomationReplyHandoffDispatchRequestV1);
+                return { kind: "settled", settlement: { kind: "accepted" } } as never;
+            },
+        });
+        await expect(db.automationRun.findUniqueOrThrow({
+            where: { id: RUN_ID },
+            select: {
+                replyHandoffState: true,
+                replyHandoffAttempt: true,
+                replyHandoffDueAt: true,
+            },
+        })).resolves.toEqual({
+            replyHandoffState: "ready",
+            replyHandoffAttempt: 1,
+            replyHandoffDueAt: retryAt,
+        });
+
+        await runAutomationReplyHandoffWorkerPass({
+            now: retryAt,
+            dispatch: async (request) => {
+                dispatched.push(request as AutomationReplyHandoffDispatchRequestV1);
+                return { kind: "settled", settlement: { kind: "accepted" } } as never;
+            },
+        });
+        await expect(db.automationRun.findUniqueOrThrow({
+            where: { id: RUN_ID },
+            select: {
+                replyHandoffState: true,
+                replyHandoffAttempt: true,
+                replyHandoffDueAt: true,
+            },
+        })).resolves.toEqual({
+            replyHandoffState: "blocked",
+            replyHandoffAttempt: 2,
+            replyHandoffDueAt: null,
+        });
+
+        await expect(retryBlockedAutomationReplyHandoff({
+            accountId: ACCOUNT_ID,
+            runId: RUN_ID,
+            now: reopenAt,
+        })).resolves.toMatchObject({ id: RUN_ID, replyHandoffState: "ready" });
+        await runAutomationReplyHandoffWorkerPass({
+            now: reopenAt,
+            dispatch: async (request) => {
+                dispatched.push(request as AutomationReplyHandoffDispatchRequestV1);
+                const accountCurrentness = await readCurrentness();
+                return {
+                    kind: "settled" as const,
+                    settlement: { kind: "accepted" as const },
+                    accountCurrentness,
+                    receiptEnvelope: {
+                        t: "plain" as const,
+                        v: {
+                            v: 1 as const,
+                            correspondence: {
+                                accountId: ACCOUNT_ID,
+                                automationId: AUTOMATION_ID,
+                                runId: RUN_ID,
+                                handoffId: HANDOFF_ID,
+                            },
+                            result: { kind: "accepted" as const, custodyId: "custody-rejoined" },
+                        },
+                    },
+                };
+            },
+        });
+        await expect(db.automationRun.findUniqueOrThrow({
+            where: { id: RUN_ID },
+            select: {
+                replyHandoffState: true,
+                replyHandoffDueAt: true,
+                replyHandoffReceiptEnvelope: true,
+            },
+        })).resolves.toMatchObject({
+            replyHandoffState: "accepted",
+            replyHandoffDueAt: null,
+        });
+
+        expect(dispatched).toHaveLength(3);
+        const frozenIdentity = dispatchedFrozenIdentity(dispatched[0]!);
+        for (const request of dispatched) {
+            expect(dispatchedFrozenIdentity(request)).toEqual(frozenIdentity);
+        }
+        await expect(db.automationRun.count()).resolves.toBe(1);
     });
 
     it("retries a malformed dispatch response because custody may already have committed", async () => {

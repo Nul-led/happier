@@ -3,10 +3,15 @@ import {
     MAX_NON_TERMINAL_EVENT_CONVERSATION_RUNS_PER_ACCOUNT,
     serializeAutomationStoredDefinitionExecutionRecipeV1,
 } from "@happier-dev/protocol";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { applySessionTurnMutation } from "@/app/session/sessionWriteService";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+    applySessionTurnMutation,
+    updateSessionAgentState,
+} from "@/app/session/sessionWriteService";
+import { eventRouter } from "@/app/events/eventRouter";
 import { db } from "@/storage/db";
 import { inTx } from "@/storage/inTx";
+import { createSignedAccountContentBinding } from "@/testkit/accountEncryption";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
 
 import { automationPortableQueryChunks } from "./automationPortableQueryChunks";
@@ -40,6 +45,49 @@ function failRunCreate(automationId: string) {
     return () => { mutable.$transaction = original; };
 }
 
+/**
+ * Injects one canonical occurrence-uniqueness collision on the first Run
+ * insert for an Automation. The database unique constraint is the admission
+ * concurrency owner, so a concurrent winner must restart the settlement
+ * transaction and rejoin rather than failing terminal Session settlement.
+ */
+function failFirstRunCreateWithOccurrenceConflict(automationId: string) {
+    const mutable = db as any;
+    const original = mutable.$transaction;
+    let injected = false;
+    mutable.$transaction = async (...args: unknown[]) => {
+        const operation = args[0];
+        if (typeof operation !== "function") return await Reflect.apply(original, mutable, args);
+        return await Reflect.apply(original, mutable, [async (tx: any) => {
+            const runs = new Proxy(tx.automationRun, {
+                get(target, property, receiver) {
+                    if (property !== "create") return Reflect.get(target, property, receiver);
+                    return (...createArgs: unknown[]) => {
+                        const query = createArgs[0] as { data?: { automationId?: unknown } } | undefined;
+                        if (!injected && query?.data?.automationId === automationId) {
+                            injected = true;
+                            throw Object.assign(new Error("Unique constraint failed"), {
+                                code: "P2002",
+                                meta: { target: ["automationId", "occurrenceKey"] },
+                            });
+                        }
+                        return Reflect.apply(target.create, target, createArgs);
+                    };
+                },
+            });
+            return await operation(new Proxy(tx, {
+                get(target, property, receiver) {
+                    return property === "automationRun" ? runs : Reflect.get(target, property, receiver);
+                },
+            }));
+        }, ...args.slice(1)]);
+    };
+    return {
+        restore: () => { mutable.$transaction = original; },
+        didInject: () => injected,
+    } as const;
+}
+
 describe("Session lifecycle Automation admission on SQLite", () => {
     let harness: LightSqliteHarness;
     beforeAll(async () => {
@@ -57,9 +105,19 @@ describe("Session lifecycle Automation admission on SQLite", () => {
     async function source(params: Readonly<{
         agentId?: string;
         agentTurnId?: string;
+        /** An E2EE Account whose content-key binding is absent is not current. */
+        inconsistentE2ee?: boolean;
     }> = {}) {
         const suffix = randomUUID();
-        const account = await db.account.create({ data: { publicKey: `key-${suffix}`, encryptionMode: "plain" }, select: { id: true } });
+        const account = await db.account.create({
+            data: params.inconsistentE2ee === true
+                ? {
+                    publicKey: createSignedAccountContentBinding().publicKey,
+                    encryptionMode: "e2ee",
+                }
+                : { publicKey: `key-${suffix}`, encryptionMode: "plain" },
+            select: { id: true },
+        });
         const session = await db.session.create({
             data: { accountId: account.id, tag: `source-${suffix}`, encryptionMode: "plain", metadata: "{}" },
             select: { id: true },
@@ -412,6 +470,116 @@ describe("Session lifecycle Automation admission on SQLite", () => {
         { action: "fail" as const, event: "parentTurnFailed" as const },
         { action: "cancel" as const, event: "parentTurnCancelled" as const },
         { action: "end_session" as const, event: "parentTurnCancelled" as const },
+        { action: "complete" as const, event: "parentTurnCompleted" as const },
+    ])("rejoins a concurrent occurrence winner instead of failing $action settlement", async ({ action, event }) => {
+        const current = await source();
+        const created = await trigger({ ...current, events: [event] });
+        const observedAt = Date.now();
+        const injection = failFirstRunCreateWithOccurrenceConflict(created.automationId);
+        try {
+            await expect(applySessionTurnMutation({
+                actorUserId: current.accountId,
+                mutation: {
+                    v: 1,
+                    sessionId: current.sessionId,
+                    mutationId: `${action}-occurrence-race-${current.suffix}`,
+                    action,
+                    turnId: current.turnId,
+                    observedAt,
+                    ...(action === "fail" ? { issue: {
+                        v: 1 as const,
+                        scope: "primary_session" as const,
+                        status: "failed" as const,
+                        code: "opencode_prompt_submission_failed" as const,
+                        source: "agent_session_error" as const,
+                        occurredAt: observedAt,
+                        provider: "opencode",
+                        sanitizedPreview: "test",
+                    } } : {}),
+                },
+            })).resolves.toMatchObject({ ok: true, didApply: true });
+        } finally { injection.restore(); }
+
+        expect(injection.didInject()).toBe(true);
+        await expect(db.automationRun.count({ where: { triggerId: created.id } })).resolves.toBe(1);
+        await expect(db.sessionTurn.findUniqueOrThrow({
+            where: { sessionId_turnId: { sessionId: current.sessionId, turnId: current.turnId } },
+            select: { status: true },
+        })).resolves.toEqual({
+            status: action === "complete"
+                ? "completed"
+                : action === "fail" ? "failed" : "cancelled",
+        });
+    });
+
+    it.each(["fail", "cancel", "end_session"] as const)(
+        "publishes one content-free Automation invalidation when %s consumes the budget without a Run",
+        async (action) => {
+            const current = await source();
+            const created = await trigger(current);
+            const emitUpdate = vi.spyOn(eventRouter, "emitUpdate").mockImplementation(() => {});
+            const observedAt = Date.now();
+            try {
+                await expect(applySessionTurnMutation({
+                    actorUserId: current.accountId,
+                    mutation: {
+                        v: 1,
+                        sessionId: current.sessionId,
+                        mutationId: `${action}-invalidate-${current.suffix}`,
+                        action,
+                        turnId: current.turnId,
+                        observedAt,
+                        ...(action === "fail" ? { issue: {
+                            v: 1 as const,
+                            scope: "primary_session" as const,
+                            status: "failed" as const,
+                            code: "opencode_prompt_submission_failed" as const,
+                            source: "agent_session_error" as const,
+                            occurredAt: observedAt,
+                            provider: "opencode",
+                            sanitizedPreview: "test",
+                        } } : {}),
+                    },
+                })).resolves.toMatchObject({ ok: true, didApply: true });
+
+                await expect(db.automationTrigger.findUniqueOrThrow({
+                    where: { id: created.id },
+                    select: { remainingOccurrences: true },
+                })).resolves.toEqual({ remainingOccurrences: 0 });
+                await expect(db.automationRun.count({
+                    where: { triggerId: created.id },
+                })).resolves.toBe(0);
+
+                const invalidations = emitUpdate.mock.calls.filter(([update]) => (
+                    update.payload.body.t === "automation-source-status-updated"
+                ));
+                expect(invalidations).toHaveLength(1);
+                expect(invalidations[0]?.[0]).toEqual(expect.objectContaining({
+                    userId: current.accountId,
+                    payload: expect.objectContaining({
+                        body: { t: "automation-source-status-updated" },
+                    }),
+                    recipientFilter: { type: "user-scoped-only" },
+                }));
+            } finally { emitUpdate.mockRestore(); }
+
+            await expect(db.accountChange.findUnique({
+                where: {
+                    accountId_kind_entityId: {
+                        accountId: current.accountId,
+                        kind: "automation",
+                        entityId: created.automationId,
+                    },
+                },
+                select: { entityId: true },
+            })).resolves.toEqual({ entityId: created.automationId });
+        },
+    );
+
+    it.each([
+        { action: "fail" as const, event: "parentTurnFailed" as const },
+        { action: "cancel" as const, event: "parentTurnCancelled" as const },
+        { action: "end_session" as const, event: "parentTurnCancelled" as const },
     ])("admits the selected $event terminal occurrence", async ({ action, event }) => {
         const current = await source();
         const created = await trigger({ ...current, events: [event] });
@@ -468,16 +636,22 @@ describe("Session lifecycle Automation admission on SQLite", () => {
             accountId: current.accountId,
             occurrence: first,
         }));
+        const secondOccurrence = {
+            ...first,
+            event: "parentTurnFailed" as const,
+            sourceTurnId: `${current.turnId}-2`,
+            occurredAt: first.occurredAt + 2,
+        };
         await inTx(async (tx) => await admitSessionLifecycleAutomationRunsTx({
             tx,
             accountId: current.accountId,
-            occurrence: {
-                ...first,
-                event: "parentTurnFailed",
-                sourceTurnId: `${current.turnId}-2`,
-                occurredAt: first.occurredAt + 2,
-            },
+            occurrence: secondOccurrence,
         }));
+        await expect(inTx(async (tx) => await admitSessionLifecycleAutomationRunsTx({
+            tx,
+            accountId: current.accountId,
+            occurrence: secondOccurrence,
+        }))).resolves.toMatchObject([{ triggerId: created.id, result: { kind: "rejoined" } }]);
         await inTx(async (tx) => await admitSessionLifecycleAutomationRunsTx({
             tx,
             accountId: current.accountId,
@@ -549,6 +723,78 @@ describe("Session lifecycle Automation admission on SQLite", () => {
         await expect(db.automationRun.count({ where: { triggerId: created.id } })).resolves.toBe(1);
     });
 
+    it("never admits a main-turn attention occurrence for a superseded or terminalized turn", async () => {
+        const current = await source();
+        const created = await trigger({
+            ...current,
+            events: ["userActionRequired"],
+            policy: { kind: "everyMatch" },
+        });
+        const attention = (sourceTurnId: string, requestId: string, occurredAt: number) => ({
+            v: 1 as const,
+            kind: "sessionLifecycle" as const,
+            event: "userActionRequired" as const,
+            sourceSessionId: current.sessionId,
+            sourceTurnId,
+            requestId,
+            requestKind: "permission" as const,
+            occurredAt,
+        });
+        const occurredAt = Date.now();
+
+        // Control: the live parent turn still admits its attention occurrence.
+        await expect(inTx(async (tx) => await admitSessionLifecycleAutomationRunsTx({
+            tx,
+            accountId: current.accountId,
+            occurrence: attention(current.turnId, "request-live", occurredAt),
+        }))).resolves.toHaveLength(1);
+
+        // Superseded: a newer parent turn is the Session's current turn, so a
+        // late publisher's occurrence for the previous turn binds to nothing.
+        const supersedingTurnId = `${current.turnId}-next`;
+        await expect(applySessionTurnMutation({
+            actorUserId: current.accountId,
+            mutation: {
+                v: 1,
+                sessionId: current.sessionId,
+                mutationId: `begin-next-${current.suffix}`,
+                action: "begin",
+                turnId: supersedingTurnId,
+                observedAt: occurredAt + 1,
+            },
+        })).resolves.toMatchObject({ ok: true, didApply: true });
+        await expect(db.sessionTurn.findFirstOrThrow({
+            where: { sessionId: current.sessionId, turnId: current.turnId },
+            select: { status: true },
+        })).resolves.toEqual({ status: "in_progress" });
+        await expect(inTx(async (tx) => await admitSessionLifecycleAutomationRunsTx({
+            tx,
+            accountId: current.accountId,
+            occurrence: attention(current.turnId, "request-superseded", occurredAt + 2),
+        }))).resolves.toEqual([]);
+
+        // Terminalized: the exact turn is the Session's current turn but has
+        // already settled, so its pending request cannot still be awaiting a user.
+        await expect(applySessionTurnMutation({
+            actorUserId: current.accountId,
+            mutation: {
+                v: 1,
+                sessionId: current.sessionId,
+                mutationId: `complete-next-${current.suffix}`,
+                action: "complete",
+                turnId: supersedingTurnId,
+                observedAt: occurredAt + 3,
+            },
+        })).resolves.toMatchObject({ ok: true, didApply: true });
+        await expect(inTx(async (tx) => await admitSessionLifecycleAutomationRunsTx({
+            tx,
+            accountId: current.accountId,
+            occurrence: attention(supersedingTurnId, "request-terminal", occurredAt + 4),
+        }))).resolves.toEqual([]);
+
+        await expect(db.automationRun.count({ where: { triggerId: created.id } })).resolves.toBe(1);
+    });
+
     it("keeps a failed exact turn terminal and never admits it", async () => {
         const current = await source();
         const created = await trigger(current);
@@ -598,6 +844,118 @@ describe("Session lifecycle Automation admission on SQLite", () => {
             },
         })).resolves.toMatchObject({ ok: true, didApply: false });
         await expect(db.automationRun.count({ where: { triggerId: created.id } })).resolves.toBe(0);
+    });
+
+    it.each([
+        { action: "fail" as const },
+        { action: "cancel" as const },
+        { action: "end_session" as const },
+    ])("fails closed before settling a $action turn for a non-current Account", async ({ action }) => {
+        const current = await source({ inconsistentE2ee: true });
+        const created = await trigger({
+            ...current,
+            events: ["parentTurnCompleted", "parentTurnFailed", "parentTurnCancelled"],
+        });
+        const observedAt = Date.now();
+        const base = {
+            v: 1 as const,
+            sessionId: current.sessionId,
+            mutationId: `${action}-${current.suffix}`,
+            turnId: current.turnId,
+            observedAt,
+        };
+        await expect(applySessionTurnMutation({
+            actorUserId: current.accountId,
+            mutation: action === "fail"
+                ? {
+                    ...base,
+                    action,
+                    issue: {
+                        v: 1,
+                        scope: "primary_session",
+                        status: "failed",
+                        code: "opencode_prompt_submission_failed",
+                        source: "agent_session_error",
+                        occurredAt: observedAt,
+                        provider: "opencode",
+                        sanitizedPreview: "test",
+                    },
+                }
+                : { ...base, action },
+        })).resolves.toEqual({ ok: false, error: "internal" });
+
+        // Terminal settlement is the exact-turn admission transaction, so it
+        // must not commit the turn without its eligible Run.
+        await expect(db.automationRun.count({ where: { triggerId: created.id } })).resolves.toBe(0);
+        await expect(db.sessionTurn.findFirstOrThrow({
+            where: { sessionId: current.sessionId, turnId: current.turnId },
+            select: { status: true },
+        })).resolves.toEqual({ status: "in_progress" });
+    });
+
+    it("fails closed before settling a main-turn attention occurrence for a non-current Account", async () => {
+        const current = await source({ inconsistentE2ee: true });
+        const created = await trigger({
+            ...current,
+            events: ["userActionRequired"],
+        });
+        const session = await db.session.findUniqueOrThrow({
+            where: { id: current.sessionId },
+            select: { agentStateVersion: true },
+        });
+
+        await expect(updateSessionAgentState({
+            actorUserId: current.accountId,
+            sessionId: current.sessionId,
+            expectedVersion: session.agentStateVersion,
+            agentStateCiphertext: "{}",
+            userActionRequiredOccurrences: [{
+                requestId: "request-non-current-account",
+                sourceTurnId: current.turnId,
+                requestKind: "permission",
+                occurredAt: Date.now(),
+            }],
+        })).resolves.toEqual({ ok: false, error: "internal" });
+
+        await expect(db.automationRun.count({ where: { triggerId: created.id } })).resolves.toBe(0);
+        await expect(db.session.findUniqueOrThrow({
+            where: { id: current.sessionId },
+            select: { agentStateVersion: true },
+        })).resolves.toEqual({ agentStateVersion: session.agentStateVersion });
+    });
+
+    it("keeps an exact-turn trigger inert when its selected occurrence cannot admit a Run", async () => {
+        const current = await source();
+        const created = await trigger(current);
+        // Removing every execution assignment makes admission permanently
+        // ineligible for this occurrence without changing the occurrence.
+        await db.automationAssignment.deleteMany({ where: { automationId: created.automationId } });
+        const emitUpdate = vi.spyOn(eventRouter, "emitUpdate").mockImplementation(() => {});
+
+        try {
+            await expect(applySessionTurnMutation({
+                actorUserId: current.accountId,
+                mutation: {
+                    v: 1,
+                    sessionId: current.sessionId,
+                    mutationId: `complete-${current.suffix}`,
+                    action: "complete",
+                    turnId: current.turnId,
+                    observedAt: Date.now(),
+                },
+            })).resolves.toMatchObject({ ok: true, didApply: true });
+
+            await expect(db.automationRun.count({ where: { triggerId: created.id } })).resolves.toBe(0);
+            await expect(db.automationTrigger.findUniqueOrThrow({
+                where: { id: created.id },
+                select: { remainingOccurrences: true },
+            })).resolves.toEqual({ remainingOccurrences: 0 });
+            // The consumed budget changed the projected trigger status without
+            // producing a Run, so the canonical invalidation still fires.
+            expect(emitUpdate.mock.calls.filter(([update]) => (
+                update.payload.body.t === "automation-source-status-updated"
+            ))).toHaveLength(1);
+        } finally { emitUpdate.mockRestore(); }
     });
 
     it.each([

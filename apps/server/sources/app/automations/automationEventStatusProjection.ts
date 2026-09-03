@@ -1,6 +1,8 @@
 import {
     AutomationEventSourceStatusV1Schema,
     AutomationEventSourceCatalogStatusSchema,
+    automationEventSourceCatalogScopeKeyV1,
+    type AutomationEventSourceCatalogScopeKeyV1,
     type AutomationEventSourceStatusV1,
     type AutomationEventSourceCatalogStatus,
     type PluginMachineMaterializationRefV1,
@@ -26,7 +28,9 @@ type CatalogStatusLookup = Readonly<{
     reporterMachineId: string;
     reporterMachineInstallationId: string;
     reporterMaterializationId: string;
-    scopeKey: "checkpointedPull" | "socket" | `durablePush:${string}`;
+    // Protocol owns the durable scope-key grammar for the canonical scope
+    // union; this reader never restates it.
+    scopeKey: AutomationEventSourceCatalogScopeKeyV1;
 }>;
 
 /**
@@ -130,7 +134,7 @@ function assignedWatcherCatalogLookup(accountId: string, trigger: PluginEventTri
         reporterMachineId: trigger.watcherMachineId,
         reporterMachineInstallationId: trigger.watcherMachineInstallationId,
         reporterMaterializationId: trigger.watcherMaterializationId,
-        scopeKey: trigger.observationTransport,
+        scopeKey: automationEventSourceCatalogScopeKeyV1({ kind: trigger.observationTransport }),
     };
 }
 
@@ -270,7 +274,10 @@ export async function loadAutomationEventStatusProjections(params: Readonly<{
             reporterMachineId: endpoint.targetMachineId,
             reporterMachineInstallationId: endpoint.targetMachineInstallationId,
             reporterMaterializationId: endpoint.targetMaterializationId,
-            scopeKey: `durablePush:${endpoint.id}`,
+            scopeKey: automationEventSourceCatalogScopeKeyV1({
+                kind: "durablePush",
+                webhookEndpointId: endpoint.id,
+            }),
         };
         durablePushEndpointMaterializationRefByTriggerId.set(trigger.id, {
             machineId: endpoint.targetMachineId,

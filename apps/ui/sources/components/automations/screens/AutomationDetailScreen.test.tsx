@@ -10,6 +10,7 @@ import {
     AutomationPluginEventTriggerProjectionSchema,
     AutomationTriggerIdSchema,
     sealAutomationTriggerDefinitionStoredEnvelopeV1,
+    type AutomationAssignmentInput,
     type AutomationEventSourceCatalogStatus,
     type AutomationEventSourceStatusV1,
     type AutomationTriggerListItem,
@@ -30,6 +31,11 @@ type FetchAutomationRuns = (
     limit?: number,
     cursor?: string,
 ) => Promise<{ nextCursor: string | null }>;
+
+type ReplaceAutomationAssignments = (
+    automationId: string,
+    assignments: ReadonlyArray<AutomationAssignmentInput>,
+) => Promise<void>;
 
 type EventTriggerFixture = Extract<AutomationTriggerListItem, Readonly<{ kind: 'pluginEvent' }>>;
 
@@ -107,6 +113,10 @@ const modalConfirmSpy = vi.hoisted(() => vi.fn(async () => true));
 const modalAlertSpy = vi.hoisted(() => vi.fn(async () => {}));
 const eventRuntimeProjectionState = vi.hoisted(() => ({
     immutableGenerationId: 'github-generation-1',
+    eligibleEvents: [] as any[],
+}));
+const sessionsState = vi.hoisted(() => ({
+    list: [] as any[],
 }));
 const syncSpies = vi.hoisted(() => ({
     getCredentials: vi.fn(() => null),
@@ -118,7 +128,7 @@ const syncSpies = vi.hoisted(() => ({
     resumeAutomation: vi.fn(async () => {}),
     deleteAutomation: vi.fn(async () => {}),
     clearAutomationRunHistory: vi.fn(async () => ({ clearedRuns: 0 })),
-    replaceAutomationAssignments: vi.fn(async () => {}),
+    replaceAutomationAssignments: vi.fn<ReplaceAutomationAssignments>(async () => {}),
 }));
 const automationState = vi.hoisted(() => ({
     // Every test installs a schema-parsed value in beforeEach. This placeholder
@@ -195,6 +205,13 @@ installAutomationScreensCommonModuleMocks({
                 'automations.detail.trigger.sourceTurn': 'Exact source turn',
                 'automations.detail.runMeta.state.queued': 'Queued',
                 'automations.detail.runMeta.state.claimed': 'Claimed',
+                'automations.form.trigger.target': 'Execution target',
+                'automations.form.trigger.targetNewSession': 'New session',
+                'automations.form.trigger.targetExistingSession': 'Existing session',
+                'automations.form.trigger.targetExecutionRun': 'Execution run',
+                'automations.form.trigger.executionNoTools': 'No tools',
+                'automations.form.trigger.executionReadOnly': 'Read only',
+                'common.unavailable': 'Unavailable',
                 'automations.detail.runMeta.state.running': 'Running',
                 'automations.detail.runMeta.state.succeeded': 'Succeeded',
                 'automations.detail.runMeta.state.failed': 'Failed',
@@ -263,6 +280,7 @@ installAutomationScreensCommonModuleMocks({
             useAutomationRuns: () => automationRunsState.list,
             useAutomationRunNextCursor: () => automationRunCursorState.nextCursor,
             useAllMachines: () => machinesState.list,
+            useSessions: () => sessionsState.list,
         });
     },
     unistyles: async () => {
@@ -283,7 +301,7 @@ vi.mock('@/agents/backendCatalog/useDaemonMergedProjectionInputs', () => ({
     useDaemonMergedProjectionInputs: () => ({
         phase: 'ready',
         inputs: {
-            automationEligibleEvents: [],
+            automationEligibleEvents: eventRuntimeProjectionState.eligibleEvents,
             pluginProjectionV2: {
                 v: 2,
                 generation: 1,
@@ -402,6 +420,8 @@ describe('AutomationDetailScreen', () => {
         activeAccountLifetimeState.current = true;
         activeAccountScopeState.scope = { serverId: 'server-1', accountId: 'account-1' };
         eventRuntimeProjectionState.immutableGenerationId = 'github-generation-1';
+        eventRuntimeProjectionState.eligibleEvents = [];
+        sessionsState.list = [];
         runHistoryListMock.state.reset();
         routeParamsState.id = 'a1';
         automationState.missing = false;
@@ -622,6 +642,94 @@ describe('AutomationDetailScreen', () => {
             (instance: any) => instance.props.accessibilityLabel === 'Observation watcher',
         );
         expect(watcher?.props.detail).toBe('Unwatched');
+    });
+
+    it('names the Event trigger with the already-loaded human catalog label', async () => {
+        automationState.automation = currentEventDefinitionForEditor('executionRun');
+        eventRuntimeProjectionState.eligibleEvents = [{
+            event: {
+                id: 'github-pull-request-opened',
+                identity: { pluginId: 'happier.scm.github', localId: 'pull-request-opened-v1' },
+                title: 'Pull request opened',
+            },
+        }];
+        const { AutomationDetailScreen } = await import('./AutomationDetailScreen');
+
+        const screen = await renderScreen(React.createElement(AutomationDetailScreen));
+        await act(async () => {
+            await Promise.resolve();
+        });
+
+        // The daemon contribution catalog is already loaded beside the private
+        // detail, so the trigger group names the Event like the composer does.
+        expect(JSON.stringify(screen.tree.toJSON())).toContain('Pull request opened');
+        expect(JSON.stringify(screen.tree.toJSON())).not.toContain('Event: pull-request-opened-v1');
+    });
+
+    it.each([
+        {
+            name: 'execution target with its permission mode',
+            targetType: 'executionRun' as const,
+            sessions: [] as any[],
+            expected: 'Execution run · Read only',
+        },
+        {
+            name: 'existing-session target with the loaded session name',
+            targetType: 'existingSession' as const,
+            sessions: [{ id: 'session-existing', metadata: { summaryText: 'Demo session' } }],
+            expected: 'Existing session · Demo session',
+        },
+        {
+            name: 'existing-session target falls back to the identifier when the session is unknown',
+            targetType: 'existingSession' as const,
+            sessions: [] as any[],
+            expected: 'Existing session · session-existing',
+        },
+    ])('summarizes the $name compactly in the overview', async ({ targetType, sessions, expected }) => {
+        automationState.automation = currentEventDefinitionForEditor(targetType);
+        sessionsState.list = sessions;
+        const { AutomationDetailScreen } = await import('./AutomationDetailScreen');
+
+        const screen = await renderScreen(React.createElement(AutomationDetailScreen));
+        await act(async () => {
+            await Promise.resolve();
+        });
+
+        const summaryRow = screen.findByProps({ testID: 'automation-detail-target-summary' });
+        expect(summaryRow.props.detail).toBe(expected);
+        expect(summaryRow.props.title).toBe('Execution target');
+    });
+
+    it.each([
+        {
+            name: 'a still-unloaded private recipe',
+            detail: { kind: 'unloaded', templateVersion: 3 } as const,
+        },
+        {
+            name: 'a permanently unavailable private recipe',
+            detail: {
+                kind: 'unavailable',
+                templateVersion: 3,
+                code: 'automation_stored_content_unavailable',
+            } as const,
+        },
+    ])('reports the execution permission as unavailable for $name instead of omitting the target', async ({ detail }) => {
+        // The bounded list projection still owns the target kind, so the row
+        // stays present and states what it cannot read rather than vanishing.
+        automationState.automation = {
+            ...currentEventDefinitionForEditor('executionRun'),
+            detail,
+        } as AutomationDefinition;
+        const { AutomationDetailScreen } = await import('./AutomationDetailScreen');
+
+        const screen = await renderScreen(React.createElement(AutomationDetailScreen));
+        await act(async () => {
+            await Promise.resolve();
+        });
+
+        const summaryRow = screen.findByProps({ testID: 'automation-detail-target-summary' });
+        expect(summaryRow.props.detail).toBe('Execution run · Unavailable');
+        expect(summaryRow.props.title).toBe('Execution target');
     });
 
     it.each([
@@ -1199,13 +1307,26 @@ describe('AutomationDetailScreen', () => {
                 await firstReplacement.promise;
                 automationState.automation = {
                     ...automationState.automation,
-                    assignments: assignments.map((assignment) => ({ ...assignment, updatedAt: 2 })),
+                    // Normalize the API input rows into the stored projection the
+                    // real Sync owner materializes: enabled/priority are optional
+                    // on the wire and required on the definition.
+                    assignments: assignments.map((assignment) => ({
+                        machineId: assignment.machineId,
+                        enabled: assignment.enabled ?? true,
+                        priority: assignment.priority ?? 0,
+                        updatedAt: 2,
+                    })),
                 };
             })
             .mockImplementationOnce(async (_automationId, assignments) => {
                 automationState.automation = {
                     ...automationState.automation,
-                    assignments: assignments.map((assignment) => ({ ...assignment, updatedAt: 3 })),
+                    assignments: assignments.map((assignment) => ({
+                        machineId: assignment.machineId,
+                        enabled: assignment.enabled ?? true,
+                        priority: assignment.priority ?? 0,
+                        updatedAt: 3,
+                    })),
                 };
             });
 
@@ -1318,7 +1439,12 @@ describe('AutomationDetailScreen', () => {
             .mockImplementationOnce(async (_automationId, assignments) => {
                 automationState.automation = {
                     ...automationState.automation,
-                    assignments: assignments.map((assignment) => ({ ...assignment, updatedAt: 4 })),
+                    assignments: assignments.map((assignment) => ({
+                        machineId: assignment.machineId,
+                        enabled: assignment.enabled ?? true,
+                        priority: assignment.priority ?? 0,
+                        updatedAt: 4,
+                    })),
                 };
                 secondReplacementStarted.resolve();
             });
@@ -1769,6 +1895,16 @@ describe('AutomationDetailScreen', () => {
             id: 'm1',
             metadata: { displayName: 'Primary machine', host: 'primary.local', platform: 'macOS' },
         }];
+        automationRunsState.list = [{
+            id: 'cached-run', automationId: 'a1', revision: 1,
+            triggerId: null, triggerRetired: false, state: 'succeeded',
+            cause: { kind: 'manual', invokedAt: 10 }, dueAt: 10,
+            claimedAt: null, startedAt: null, finishedAt: 11,
+            claimedByMachineId: null, leaseExpiresAt: null, attempt: 1,
+            errorCode: null, producedSessionId: null, executionDispatchState: null,
+            executionAttempt: 0, replyHandoffState: 'none', replyHandoffAttempt: 0,
+            replyHandoffDueAt: null, createdAt: 10, updatedAt: 11,
+        }];
         syncSpies.refreshAutomations.mockRejectedValueOnce(new Error('network unavailable'));
         const { AutomationDetailScreen } = await import('./AutomationDetailScreen');
 
@@ -1785,6 +1921,10 @@ describe('AutomationDetailScreen', () => {
         expect(findTestInstanceByTypeContainingText(screen, 'Pressable', 'automations.detail.pauseAutomation')?.props.disabled).toBe(true);
         expect(findTestInstanceByTypeContainingText(screen, 'Pressable', 'Delete automation')?.props.disabled).toBe(true);
         expect(screen.findByType('Switch').props.disabled).toBe(true);
+        expect(findTestInstanceByTypeContainingText(screen, 'Text', 'Succeeded')).toBeDefined();
+        expect(screen.findAllByProps({ testID: 'automation-detail-history-loading' })).toHaveLength(0);
+        expect(findTestInstanceByTypeContainingText(screen, 'Text', 'runs.empty')).toBeUndefined();
+        expect(syncSpies.fetchAutomationRuns).not.toHaveBeenCalled();
 
         await act(async () => {
             pressTestInstance(screen.findByProps({ testID: 'automation-detail-stale-refresh-retry' }), 'Retry');
@@ -1814,6 +1954,8 @@ describe('AutomationDetailScreen', () => {
         expect(syncSpies.fetchAutomationRuns).toHaveBeenCalledWith('a1');
         expect(findTestInstanceByTypeContainingText(screen, 'Pressable', 'Run now')?.props.disabled).toBe(false);
         expect(findTestInstanceByTypeContainingText(screen, 'Pressable', 'automations.detail.pauseAutomation')?.props.disabled).toBe(false);
+        expect(findTestInstanceByTypeContainingText(screen, 'Text', 'runs.empty')).toBeUndefined();
+        expect(findTestInstanceByTypeContainingText(screen, 'Text', 'common.loading')).toBeDefined();
 
         await act(async () => {
             historyRefresh.resolve({ nextCursor: null });
@@ -1840,6 +1982,25 @@ describe('AutomationDetailScreen', () => {
             await Promise.resolve();
         });
         expect(syncSpies.fetchAutomationRuns).toHaveBeenCalledTimes(2);
+    });
+
+    it('claims No runs yet only after a successful empty history response', async () => {
+        const historyRefresh = createDeferred<{ nextCursor: string | null }>();
+        syncSpies.fetchAutomationRuns.mockImplementationOnce(() => historyRefresh.promise);
+        const { AutomationDetailScreen } = await import('./AutomationDetailScreen');
+
+        const screen = await renderScreen(React.createElement(AutomationDetailScreen));
+        expect(findTestInstanceByTypeContainingText(screen, 'Text', 'runs.empty')).toBeUndefined();
+        expect(screen.findByProps({ testID: 'automation-detail-history-loading' })).toBeDefined();
+
+        await act(async () => {
+            historyRefresh.resolve({ nextCursor: null });
+            await historyRefresh.promise;
+        });
+
+        expect(syncSpies.fetchAutomationRuns).toHaveBeenCalledWith('a1');
+        expect(findTestInstanceByTypeContainingText(screen, 'Text', 'runs.empty')).toBeDefined();
+        expect(findTestInstanceByTypeContainingText(screen, 'Pressable', 'common.loading')).toBeUndefined();
     });
 
     it('continues run history from the server-provided cursor instead of stopping at the first page', async () => {

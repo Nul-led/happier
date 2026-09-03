@@ -6,7 +6,6 @@ import { markAccountChanged } from "@/app/changes/markAccountChanged";
 import { readMachineAvailabilityStateInTx } from "@/app/machines/machineStateGuards";
 import { acquireAccountEncryptionTransitionFenceInTx } from "@/app/encryption/accountEncryptionTransition";
 import {
-    AutomationAccountCurrentnessWitnessV1Schema,
     AutomationV3WorkerClaimResponseSchema,
     AutomationV3WorkerClaimedAutomationSchema,
     AutomationV3WorkerClaimedRunSchema,
@@ -20,7 +19,10 @@ import {
 
 import { emitAutomationRunTransition } from "./automationChangePublisher";
 import { fetchAutomationAccountCurrentnessWitnessTx } from "./automationAccountCurrentness";
-import { automationRunWithAutomationSelect } from "./automationPersistenceSelect";
+import {
+    automationRunCauseSelect,
+    automationRunWithAutomationSelect,
+} from "./automationPersistenceSelect";
 import {
     RETAINED_AUTOMATION_RUN_EXECUTION_INPUT_V2_JSON_PREFIX,
     validateRetainedAutomationRunExecutionInputV2OuterForMode,
@@ -280,9 +282,9 @@ function hasExactDerivedAssignmentIndex(
  * Run's full shape is re-read through the canonical Run select after the CAS.
  */
 const automationClaimCandidateSelect = {
+    ...automationRunCauseSelect,
     id: true,
     automationId: true,
-    triggerId: true,
     state: true,
     revision: true,
     attempt: true,
@@ -291,19 +293,6 @@ const automationClaimCandidateSelect = {
     executionInputEnvelope: true,
     leaseExpiresAt: true,
     dueAt: true,
-    causeKind: true,
-    causeTriggerKind: true,
-    causeTriggerRevision: true,
-    causeOccurredAt: true,
-    causeEventPluginId: true,
-    causeEventLocalId: true,
-    causeScheduledFor: true,
-    causeSessionLifecycleEvent: true,
-    causeSourceSessionId: true,
-    causeSourceTurnId: true,
-    occurrenceKey: true,
-    causeSourceSelectorId: true,
-    createdAt: true,
     assignments: { select: { machineId: true } },
 } satisfies Prisma.AutomationRunSelect;
 
@@ -450,9 +439,9 @@ async function projectClaimedRunWithTriggerCurrentness(
  * transition. The replay validates the Run's canonical recipe envelope, re-read
  * from its transition-managed row, under the current Account witness, so a
  * retried request receives the same committed claim effect — same Run and
- * attempt — without resurfacing a mode-stale recipe or Account witness. A
- * receipt without its committed witness is stale and fails closed as the same
- * no-Run shape.
+ * attempt — without resurfacing a mode-stale recipe or Account witness. Any
+ * receipt whose strict result no longer re-verifies against current canonical
+ * state fails closed as the same no-Run shape.
  */
 async function resolveClaimReceiptTx(params: Readonly<{
     tx: Tx;
@@ -469,9 +458,6 @@ async function resolveClaimReceiptTx(params: Readonly<{
             accountId: true,
             machineId: true,
             machineInstallationId: true,
-            runId: true,
-            claimedAttempt: true,
-            accountCurrentnessWitnessJson: true,
             claimResultJson: true,
             expiresAt: true,
         },
@@ -485,34 +471,17 @@ async function resolveClaimReceiptTx(params: Readonly<{
     ) {
         return { run: null, accountCurrentness: null };
     }
-    const committedResult = typeof receipt.claimResultJson === "string"
-        ? parseAutomationClaimReceiptResultV2(receipt.claimResultJson)
-        : { ok: false as const };
+    const committedResult = parseAutomationClaimReceiptResultV2(receipt.claimResultJson);
     if (!committedResult.ok) return { run: null, accountCurrentness: null };
-    if (receipt.runId === null || receipt.claimedAttempt === null) {
-        return committedResult.result.run === null
-            ? { run: null, accountCurrentness: null }
-            : { run: null, accountCurrentness: null };
-    }
-    let committedWitness: AutomationAccountCurrentnessWitnessV1 | null = null;
-    if (typeof receipt.accountCurrentnessWitnessJson === "string") {
-        try {
-            committedWitness = AutomationAccountCurrentnessWitnessV1Schema.parse(
-                JSON.parse(receipt.accountCurrentnessWitnessJson),
-            );
-        } catch {
-            committedWitness = null;
-        }
-    }
-    if (!committedWitness) return { run: null, accountCurrentness: null };
 
+    // The strict committed result is the receipt's only outcome owner: it
+    // names the claimed Run and attempt, or the empty outcome, for this signed
+    // request.
     const run = committedResult.result.run;
     const automation = committedResult.result.automation;
     if (
         !run
         || !automation
-        || run.id !== receipt.runId
-        || run.attempt !== receipt.claimedAttempt
         || (params.expectedTriggerKind !== undefined && (
             run.cause.kind !== "trigger"
             || run.cause.triggerKind !== params.expectedTriggerKind
@@ -533,7 +502,7 @@ async function resolveClaimReceiptTx(params: Readonly<{
         },
         select: { attempt: true, executionInputEnvelope: true },
     });
-    if (!currentAttempt || currentAttempt.attempt !== receipt.claimedAttempt) {
+    if (!currentAttempt || currentAttempt.attempt !== run.attempt) {
         return { run: null, accountCurrentness: null };
     }
     const retainedV2OriginKind = run.cause.kind === "manual"
@@ -576,15 +545,6 @@ async function createClaimReceiptTx(params: Readonly<{
                 accountId: params.accountId,
                 machineId: params.machineId,
                 machineInstallationId: params.machineInstallationId,
-                runId: params.result.run?.id ?? null,
-                claimedAttempt: params.result.run?.attempt ?? null,
-                // The exact committed post-claim witness travels with the
-                // claimed outcome; empty outcomes carry none. A claimed result
-                // always carries one — the claim aborts its transaction
-                // otherwise.
-                accountCurrentnessWitnessJson: params.result.accountCurrentness
-                    ? JSON.stringify(params.result.accountCurrentness)
-                    : null,
                 claimResultJson: serializeAutomationClaimReceiptResultV2(params.result),
                 expiresAt: params.expiresAt,
             },

@@ -2,6 +2,8 @@ import type {
     AutomationRunCause,
     AutomationRunStateV3,
     AutomationSessionLifecycleEvent,
+    AutomationSessionLifecyclePolicy,
+    AutomationSessionLifecyclePolicySnapshot,
     AutomationSessionLifecycleTriggerStatus,
     AutomationTriggerListItem,
 } from '@happier-dev/protocol';
@@ -11,6 +13,21 @@ export function formatAutomationSessionLifecycleEventLabel(
     event: AutomationSessionLifecycleEvent,
 ): string {
     return t(`automations.pluralEditor.lifecycleEvent.${event}`);
+}
+
+function formatAutomationSessionLifecycleEventSetLabel(
+    events: ReadonlyArray<AutomationSessionLifecycleEvent>,
+): string {
+    return events.map(formatAutomationSessionLifecycleEventLabel).join(' · ');
+}
+
+function formatAutomationSessionLifecyclePolicyLabel(
+    policy: AutomationSessionLifecyclePolicy | AutomationSessionLifecyclePolicySnapshot,
+): string {
+    const label = t(`automations.pluralEditor.lifecyclePolicy.${policy.kind}`);
+    return policy.kind === 'nextMatches'
+        ? `${label} · ${policy.count}`
+        : label;
 }
 
 export function formatAutomationScheduleLabel(automation: {
@@ -44,7 +61,11 @@ export function formatAutomationTriggerLabel(trigger: AutomationTriggerListItem)
         case 'pluginEvent':
             return t('automations.list.event', { eventId: trigger.eventRef.localId });
         case 'sessionLifecycle':
-            return t('automations.list.sessionLifecycleParentTurn', { sessionId: trigger.sourceSessionId });
+            return [
+                formatAutomationSessionLifecycleEventSetLabel(trigger.events),
+                formatAutomationSessionLifecyclePolicyLabel(trigger.policy),
+                trigger.sourceSessionId,
+            ].join(' · ');
     }
 }
 
@@ -110,7 +131,10 @@ export function formatAutomationRunCauseLabel(cause: AutomationRunCause): string
         return t('automations.list.event', { eventId: cause.evidence.eventRef.localId });
     }
     if (cause.kind === 'trigger' && cause.triggerKind === 'sessionLifecycle') {
-        return formatAutomationSessionLifecycleEventLabel(cause.evidence.event);
+        return [
+            formatAutomationSessionLifecycleEventLabel(cause.evidence.event),
+            formatAutomationSessionLifecyclePolicyLabel(cause.evidence.policy),
+        ].join(' · ');
     }
     return t(getAutomationRunCauseTranslationKey(cause));
 }

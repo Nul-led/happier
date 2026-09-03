@@ -93,14 +93,29 @@ export async function loadAutomationSessionLifecycleStatusProjections(params: Re
             select: { id: true, sessionId: true, turnId: true, action: true },
             orderBy: [{ appliedAt: "asc" }, { id: "asc" }],
         }))),
-        Promise.all(automationPortableQueryChunks({ values: candidates, bindingsPerValue: 1 })
+        Promise.all(automationPortableQueryChunks({ values: candidates, bindingsPerValue: 3 })
             .map((page) => client.automationRun.findMany({
                 where: {
                     causeKind: "trigger",
                     causeTriggerKind: "sessionLifecycle",
-                    triggerId: { in: page.map(({ trigger }) => trigger.id) },
+                    OR: page.map(({ trigger, stored }) => (
+                        stored.definition.policy.kind === "currentTurn"
+                            ? {
+                                triggerId: trigger.id,
+                                causeSourceSessionId: stored.definition.sourceSessionId,
+                                causeSourceTurnId: stored.definition.policy.sourceTurnId,
+                            }
+                            : { triggerId: trigger.id }
+                    )),
                 },
-                select: { id: true, state: true, triggerId: true },
+                select: {
+                    id: true,
+                    state: true,
+                    triggerId: true,
+                    causeSessionLifecycleEvent: true,
+                    causeSourceSessionId: true,
+                    causeSourceTurnId: true,
+                },
                 orderBy: [{ createdAt: "desc" }, { id: "desc" }],
             }))),
     ]);
@@ -130,8 +145,25 @@ export async function loadAutomationSessionLifecycleStatusProjections(params: Re
         const perTrigger = result.get(automation.id)!;
         const definition = stored.definition;
         const latestRun = latestRunByTrigger.get(trigger.id);
-        if (latestRun && !isTerminalAutomationRunState(latestRun.state)) {
-            perTrigger.set(trigger.id, admittedStatus(latestRun));
+        // An exact-turn trigger has exactly one occurrence, so its status may
+        // only report a Run the current registration produced. The Run's
+        // stored trigger revision cannot decide that: every trigger write
+        // advances it, including the pause/resume and unrelated editor saves
+        // that keep the registration and its produced Run. The canonical
+        // registration facts are the ones the trigger writer itself uses — a
+        // semantic edit restarts the occurrence budget and may reselect the
+        // Event set, while every other edit preserves both.
+        const boundRun = definition.policy.kind !== "currentTurn"
+            ? latestRun
+            : latestRun
+                && stored.remainingOccurrences === 0
+                && latestRun.causeSourceSessionId === definition.sourceSessionId
+                && latestRun.causeSourceTurnId === definition.policy.sourceTurnId
+                && definition.events.some((event) => event === latestRun.causeSessionLifecycleEvent)
+                ? latestRun
+                : undefined;
+        if (boundRun && !isTerminalAutomationRunState(boundRun.state)) {
+            perTrigger.set(trigger.id, admittedStatus(boundRun));
             continue;
         }
         if (!existingSessions.has(definition.sourceSessionId)) {
@@ -140,6 +172,15 @@ export async function loadAutomationSessionLifecycleStatusProjections(params: Re
         }
         if (definition.policy.kind === "currentTurn") {
             const key = sourceKey(definition.sourceSessionId, definition.policy.sourceTurnId);
+            // An admitted Run for this exact source turn is the genuine
+            // outcome of the occurrence the trigger selected. Terminal source
+            // truth describes the turn, not the Run, so it must not replace a
+            // Run this trigger really produced from that same failure or
+            // cancellation.
+            if (boundRun) {
+                perTrigger.set(trigger.id, admittedStatus(boundRun));
+                continue;
+            }
             const receiptStatus = receiptStatusBySource.get(key);
             if (receiptStatus) {
                 perTrigger.set(trigger.id, receiptStatus);
@@ -149,7 +190,11 @@ export async function loadAutomationSessionLifecycleStatusProjections(params: Re
             if (turnStatus === "failed") perTrigger.set(trigger.id, { state: "sourceFailed", runId: null });
             else if (turnStatus === "cancelled") perTrigger.set(trigger.id, { state: "sourceCancelled", runId: null });
             else if (turnStatus === "completed") {
-                perTrigger.set(trigger.id, { state: "finished", runId: latestRun?.id ?? null });
+                // Any Run this registration produced was already reported
+                // above, so a completed turn reaching here finished without
+                // one: the trigger was inert, disabled, or its Event
+                // unselected at settlement.
+                perTrigger.set(trigger.id, { state: "finished", runId: null });
             } else if (turnStatus === "in_progress") {
                 perTrigger.set(trigger.id, !automation.enabled || !trigger.enabled
                     ? { state: "paused", runId: null }

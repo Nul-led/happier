@@ -10,6 +10,21 @@ import { invalidateAccountEncryptionModeCache } from '@/sync/api/account/apiAcco
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
+const preventRemoveState = vi.hoisted(() => ({
+    enabled: false,
+    handler: null as null | ((event: Readonly<{ data: Readonly<{ action: unknown }> }>) => void),
+}));
+
+vi.mock('@react-navigation/native', () => ({
+    usePreventRemove: (
+        enabled: boolean,
+        handler: (event: Readonly<{ data: Readonly<{ action: unknown }> }>) => void,
+    ) => {
+        preventRemoveState.enabled = enabled;
+        preventRemoveState.handler = handler;
+    },
+}));
+
 const syncSpies = vi.hoisted(() => ({
     saveAutomationEditorDraft: vi.fn(async (_input: any, _options?: any) => ({})),
     refreshAutomations: vi.fn(async () => {}),
@@ -337,6 +352,8 @@ describe('SessionAutomationCreateScreen', () => {
         routerReplaceSpy.mockReset();
         navigateWithBlurOnWebSpy.mockClear();
         modalAlertSpy.mockReset();
+        preventRemoveState.enabled = false;
+        preventRemoveState.handler = null;
         serverFetchSpy.mockClear();
     });
 
@@ -351,6 +368,18 @@ describe('SessionAutomationCreateScreen', () => {
 
         expect(findTestInstanceByTypeContainingText(screen.tree, 'Text', 'Cannot create automation for this session')).toBeUndefined();
         expect(findTestInstanceByTypeContainingText(screen.tree, 'Pressable', 'Create automation')).toBeUndefined();
+    });
+
+    it('hosts the authoring form in the shared keyboard-aware scroll owner', async () => {
+        const { KeyboardAwareScrollView } = await import('@/components/ui/keyboardAvoidance/KeyboardAwareScrollView');
+        const { SessionAutomationCreateScreen } = await import('./SessionAutomationCreateScreen');
+
+        const screen = await renderScreen(<SessionAutomationCreateScreen sessionId="s1" />);
+        await flushRender();
+
+        // A plain ScrollView would let the on-screen keyboard cover the focused
+        // prompt and trigger fields this form renders below the fold.
+        expect(screen.findAllByType(KeyboardAwareScrollView as never)).toHaveLength(1);
     });
 
     it('renders the inherited existing-session context section before the shared composer', async () => {
@@ -919,6 +948,67 @@ describe('SessionAutomationCreateScreen', () => {
         await submitComposer();
 
         expect(syncSpies.saveAutomationEditorDraft).toHaveBeenCalledTimes(1);
+    });
+
+    it('guards every route-local draft edit behind the incumbent unsaved-changes-before-remove owner', async () => {
+        const { SessionAutomationCreateScreen } = await import('./SessionAutomationCreateScreen');
+
+        const screen = await renderScreen(<SessionAutomationCreateScreen sessionId="s1" />);
+        await flushRender();
+
+        // A fresh route is clean and leaves without prompting.
+        expect(preventRemoveState.enabled).toBe(false);
+        await act(async () => preventRemoveState.handler?.({ data: { action: { type: 'GO_BACK' } } }));
+        expect(modalAlertSpy).not.toHaveBeenCalled();
+        expect(routerBackSpy).toHaveBeenCalledTimes(1);
+
+        routerBackSpy.mockReset();
+
+        // A prompt edit alone makes the route dirty through the authoring
+        // draft store.
+        await setComposerText('Do the thing');
+        expect(preventRemoveState.enabled).toBe(true);
+
+        await act(async () => preventRemoveState.handler?.({ data: { action: { type: 'GO_BACK' } } }));
+        expect(modalAlertSpy).toHaveBeenCalledTimes(1);
+        expect(syncSpies.saveAutomationEditorDraft).not.toHaveBeenCalled();
+        const keepEditingButtons = (modalAlertSpy.mock.calls[0] as unknown as [string, string, Array<{ onPress?: () => void }>])[2];
+        await act(async () => keepEditingButtons[2]?.onPress?.());
+        expect(routerBackSpy).not.toHaveBeenCalled();
+        expect(preventRemoveState.enabled).toBe(true);
+
+        // The offered save IS the create action: it commits the draft and
+        // continues to the created detail route itself.
+        syncSpies.saveAutomationEditorDraft.mockResolvedValueOnce({ id: 'automation-guard-save' });
+        await act(async () => preventRemoveState.handler?.({ data: { action: { type: 'GO_BACK' } } }));
+        const saveButtons = (modalAlertSpy.mock.calls[1] as unknown as [string, string, Array<{ onPress?: () => void }>])[2];
+        await act(async () => saveButtons[1]?.onPress?.());
+        expect(syncSpies.saveAutomationEditorDraft).toHaveBeenCalledTimes(1);
+        expect(routerReplaceSpy).toHaveBeenCalledWith('/automations/automation-guard-save');
+    });
+
+    it('keeps the guard armed for editor-only draft edits and discards on request', async () => {
+        const { SessionAutomationCreateScreen } = await import('./SessionAutomationCreateScreen');
+
+        const screen = await renderScreen(<SessionAutomationCreateScreen sessionId="s1" />);
+        await flushRender();
+
+        expect(preventRemoveState.enabled).toBe(false);
+        await act(async () => {
+            screen.findByProps({ testID: 'automation-trigger-add' }).props.onPress();
+        });
+        await act(async () => {
+            screen.findByProps({ testID: 'automation-trigger-kind-schedule' }).props.onPress();
+        });
+        // One draft schedule row exists with no prompt text: the guard covers
+        // the editor draft store too, not only the composer prompt.
+        expect(preventRemoveState.enabled).toBe(true);
+
+        await act(async () => preventRemoveState.handler?.({ data: { action: { type: 'GO_BACK' } } }));
+        const discardButtons = (modalAlertSpy.mock.calls[0] as unknown as [string, string, Array<{ onPress?: () => void }>])[2];
+        await act(async () => discardButtons[0]?.onPress?.());
+        expect(routerBackSpy).toHaveBeenCalledTimes(1);
+        expect(syncSpies.saveAutomationEditorDraft).not.toHaveBeenCalled();
     });
 
     it('retires the mounted editor draft when the active account scope changes', async () => {

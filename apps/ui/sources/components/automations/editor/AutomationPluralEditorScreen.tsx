@@ -651,6 +651,9 @@ const AutomationTriggerEditorContents = React.memo(function AutomationTriggerEdi
     const selectedLifecycle = editor.kind === 'sessionLifecycle' && editor.clientId
         ? props.value.triggers.find((trigger) => trigger.clientId === editor.clientId) ?? null
         : null;
+    const selectedLifecycleDefinition = selectedLifecycle?.definition?.kind === 'sessionLifecycle'
+        ? selectedLifecycle.definition
+        : null;
     const lifecycleOrdinalByClientId = React.useMemo(() => {
         const ordinals = new Map<string, number>();
         let ordinal = 0;
@@ -736,6 +739,56 @@ const AutomationTriggerEditorContents = React.memo(function AutomationTriggerEdi
         if (current?.definition?.kind !== 'sessionLifecycle') return;
         emitChange(replaceTrigger(props.value, editor.clientId, update(current.definition)));
     }, [editor, emitChange, props.value]);
+
+    // The lifecycle occurrence-count field owns a local draft so intermediate
+    // strings ("", "0", partial numbers) stay editable; a validated count
+    // clamps/commits through the editor draft owner on end-editing/submit,
+    // mirroring the schedule interval field. A committed change arriving from
+    // outside (a policy switch, another owner, the consumed commit) resets the
+    // draft so it can never shadow a foreign value.
+    const lifecyclePolicyKind = selectedLifecycleDefinition?.policy.kind ?? null;
+    const committedMatchCountText = String(
+        selectedLifecycleDefinition?.policy.kind === 'nextMatches'
+            ? selectedLifecycleDefinition.policy.count
+            : 1,
+    );
+    const [matchCountDraftState, setMatchCountDraftState] = React.useState<Readonly<{
+        basisClientId: string | null;
+        basisKind: AutomationSessionLifecycleTriggerInput['policy']['kind'] | null;
+        basisText: string;
+        value: string;
+    }> | null>(null);
+    const lifecycleClientId = selectedLifecycle?.clientId ?? null;
+    React.useEffect(() => {
+        setMatchCountDraftState(null);
+    }, [lifecycleClientId]);
+    const matchCountDraft = matchCountDraftState?.basisClientId === lifecycleClientId
+        && matchCountDraftState.basisKind === lifecyclePolicyKind
+        && matchCountDraftState.basisText === committedMatchCountText
+        ? matchCountDraftState.value
+        : null;
+    const commitMatchCountDraft = React.useCallback(() => {
+        if (matchCountDraft === null) return;
+        setMatchCountDraftState(null);
+        const normalized = matchCountDraft.trim();
+        if (!/^\d+$/u.test(normalized)) return;
+        const parsed = Number(normalized);
+        if (!Number.isSafeInteger(parsed) || parsed < 1) return;
+        updateLifecycleDefinition((definition) => (
+            definition.policy.kind === 'nextMatches'
+                ? {
+                    ...definition,
+                    policy: {
+                        kind: 'nextMatches',
+                        count: Math.max(1, Math.min(
+                            AUTOMATION_SESSION_LIFECYCLE_MAX_MATCH_COUNT,
+                            parsed,
+                        )),
+                    },
+                }
+                : definition
+        ));
+    }, [matchCountDraft, updateLifecycleDefinition]);
 
     const toggleLifecycleEvent = React.useCallback((event: AutomationSessionLifecycleEvent) => {
         updateLifecycleDefinition((definition) => {
@@ -1011,13 +1064,13 @@ const AutomationTriggerEditorContents = React.memo(function AutomationTriggerEdi
                         </View>
                     ) : null}
                     {editor.phase === 'configuration'
-                    && selectedLifecycle?.definition?.kind === 'sessionLifecycle' ? (
+                    && selectedLifecycleDefinition ? (
                         <>
                             <ItemGroup title={t('automations.pluralEditor.lifecycleSourceTitle')}>
                                 <Item
                                     testID="automation-lifecycle-change-source"
                                     title={(props.sessionOptions ?? []).find((option) => (
-                                        option.sessionId === selectedLifecycle.definition?.sourceSessionId
+                                        option.sessionId === selectedLifecycleDefinition.sourceSessionId
                                     ))?.label ?? t('automations.pluralEditor.selectedSession')}
                                     subtitle={t('automations.pluralEditor.changeLifecycleSource')}
                                     onPress={() => setEditor({
@@ -1040,7 +1093,7 @@ const AutomationTriggerEditorContents = React.memo(function AutomationTriggerEdi
                                         showChevron={false}
                                         rightElement={(
                                             <Switch
-                                                value={selectedLifecycle.definition!.events.includes(event)}
+                                                value={selectedLifecycleDefinition.events.includes(event)}
                                                 onValueChange={() => toggleLifecycleEvent(event)}
                                                 accessibilityLabel={t(`automations.pluralEditor.lifecycleEvent.${event}`)}
                                             />
@@ -1051,7 +1104,7 @@ const AutomationTriggerEditorContents = React.memo(function AutomationTriggerEdi
                             </ItemGroup>
                             <ItemGroup title={t('automations.pluralEditor.lifecyclePolicyTitle')}>
                                 {SESSION_LIFECYCLE_POLICIES.map((policy) => {
-                                    const selected = selectedLifecycle.definition!.policy.kind === policy;
+                                    const selected = selectedLifecycleDefinition.policy.kind === policy;
                                     return (
                                         <Item
                                             key={policy}
@@ -1067,29 +1120,23 @@ const AutomationTriggerEditorContents = React.memo(function AutomationTriggerEdi
                                         />
                                     );
                                 })}
-                                {selectedLifecycle.definition.policy.kind === 'nextMatches' ? (
+                                {selectedLifecycleDefinition.policy.kind === 'nextMatches' ? (
                                     <ItemGroupColumns paddingVertical={14} rowGap={18}>
                                         <ItemGroupColumn>
                                             <FieldItem label={t('automations.pluralEditor.lifecycleMatchCount')}>
                                                 <TextInput
                                                     testID="automation-lifecycle-match-count"
                                                     style={styles.input}
-                                                    value={String(selectedLifecycle.definition.policy.count)}
+                                                    value={matchCountDraft ?? committedMatchCountText}
                                                     keyboardType="number-pad"
-                                                    onChangeText={(value) => {
-                                                        const parsed = Number.parseInt(value, 10);
-                                                        if (!Number.isFinite(parsed)) return;
-                                                        updateLifecycleDefinition((definition) => ({
-                                                            ...definition,
-                                                            policy: {
-                                                                kind: 'nextMatches',
-                                                                count: Math.max(1, Math.min(
-                                                                    AUTOMATION_SESSION_LIFECYCLE_MAX_MATCH_COUNT,
-                                                                    parsed,
-                                                                )),
-                                                            },
-                                                        }));
-                                                    }}
+                                                    onChangeText={(value) => setMatchCountDraftState({
+                                                        basisClientId: lifecycleClientId,
+                                                        basisKind: lifecyclePolicyKind,
+                                                        basisText: committedMatchCountText,
+                                                        value,
+                                                    })}
+                                                    onEndEditing={commitMatchCountDraft}
+                                                    onSubmitEditing={commitMatchCountDraft}
                                                     accessibilityLabel={t('automations.pluralEditor.lifecycleMatchCount')}
                                                 />
                                             </FieldItem>

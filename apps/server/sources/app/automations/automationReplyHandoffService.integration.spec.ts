@@ -1,11 +1,15 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { deriveAutomationOccurrenceKeyV1 } from "@happier-dev/protocol";
+import {
+    automationReplyHandoffIdForRunV1,
+    deriveAutomationOccurrenceKeyV1,
+} from "@happier-dev/protocol";
 
 import { db } from "@/storage/db";
 import { createSignedAccountContentBinding } from "@/testkit/accountEncryption";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
 
 import {
+    authorizeAutomationReplyHandoffRedelivery,
     claimNextAutomationReplyHandoff,
     findNextAutomationReplyHandoffDueAt,
     retryBlockedAutomationReplyHandoff,
@@ -15,7 +19,8 @@ import {
 const ACCOUNT_ID = "account-reply-handoff";
 const AUTOMATION_ID = "automation-reply-handoff";
 const RUN_ID = "run-reply-handoff";
-const HANDOFF_ID = "handoff-reply-handoff";
+/** The exact identity Conversation admission freezes for this Run. */
+const HANDOFF_ID = automationReplyHandoffIdForRunV1(RUN_ID);
 const OCCURRENCE_KEY = "A".repeat(43);
 const NOW = new Date("2026-08-10T12:00:00.000Z");
 const EXPECTED_AUTOMATION_REPLY_HANDOFF_RETRY_AFTER_MS = 10_000;
@@ -97,7 +102,7 @@ describe("Automation reply handoff service", () => {
 
     async function seedReadyHandoff(params: Readonly<{
         dueAt?: Date | null;
-        state?: "ready" | "handingOff" | "blocked";
+        state?: "ready" | "handingOff" | "blocked" | "accepted" | "suppressed";
         attempt?: number;
         resultEnvelope?: string;
         receiptEnvelope?: string;
@@ -947,6 +952,116 @@ describe("Automation reply handoff service", () => {
             replyHandoffDueAt: NOW,
             replyHandoffReceiptEnvelope: null,
         });
+    });
+
+    async function readHandoffRow() {
+        return await db.automationRun.findUniqueOrThrow({
+            where: { id: RUN_ID },
+            select: {
+                replyHandoffId: true,
+                replyHandoffState: true,
+                replyHandoffAttempt: true,
+                replyHandoffDueAt: true,
+                replyHandoffReceiptEnvelope: true,
+                resultEnvelope: true,
+                replyContextEnvelope: true,
+                revision: true,
+            },
+        });
+    }
+
+    it("mints a distinct delivery identity for an explicitly authorized new delivery and preserves the previous attempt evidence", async () => {
+        await seedReadyHandoff({
+            state: "accepted",
+            attempt: 2,
+            dueAt: null,
+            receiptEnvelope: JSON.stringify(ACCEPTED_RECEIPT_ENVELOPE),
+        });
+        const accepted = await readHandoffRow();
+
+        const run = await authorizeAutomationReplyHandoffRedelivery({
+            accountId: ACCOUNT_ID,
+            runId: RUN_ID,
+            expectedRevision: accepted.revision,
+            now: NOW,
+        });
+
+        expect(run).not.toBeNull();
+        const redelivering = await readHandoffRow();
+        // A conscious new delivery is a different delivery: it must not reuse
+        // the identity whose external outcome the user is unsure about, or the
+        // custody owner would rejoin that exact obligation and send nothing.
+        expect(redelivering.replyHandoffId).toBe(`${HANDOFF_ID}#2`);
+        expect(redelivering).toMatchObject({
+            replyHandoffState: "ready",
+            // The previous attempt count is history, not a counter to reset.
+            replyHandoffAttempt: 2,
+            replyHandoffDueAt: NOW,
+            replyHandoffReceiptEnvelope: null,
+            resultEnvelope: RESULT_ENVELOPE,
+            replyContextEnvelope: REPLY_CONTEXT_ENVELOPE,
+            revision: accepted.revision + 1,
+        });
+    });
+
+    it("refuses a replayed authorization at a superseded revision so a lost response cannot mint a second delivery", async () => {
+        await seedReadyHandoff({
+            state: "accepted",
+            attempt: 1,
+            dueAt: null,
+            receiptEnvelope: JSON.stringify(ACCEPTED_RECEIPT_ENVELOPE),
+        });
+        const accepted = await readHandoffRow();
+
+        await expect(authorizeAutomationReplyHandoffRedelivery({
+            accountId: ACCOUNT_ID,
+            runId: RUN_ID,
+            expectedRevision: accepted.revision,
+            now: NOW,
+        })).resolves.not.toBeNull();
+        const minted = await readHandoffRow();
+
+        await expect(authorizeAutomationReplyHandoffRedelivery({
+            accountId: ACCOUNT_ID,
+            runId: RUN_ID,
+            expectedRevision: accepted.revision,
+            now: NOW,
+        })).resolves.toBeNull();
+        await expect(readHandoffRow()).resolves.toEqual(minted);
+    });
+
+    it.each([
+        ["a handoff that never reached accepted custody", { state: "ready" as const, dueAt: NOW }],
+        ["a handoff Channels refused outright", { state: "suppressed" as const, dueAt: null }],
+    ])("refuses an explicit new delivery for %s", async (_description, seed) => {
+        await seedReadyHandoff(seed);
+        const before = await readHandoffRow();
+
+        await expect(authorizeAutomationReplyHandoffRedelivery({
+            accountId: ACCOUNT_ID,
+            runId: RUN_ID,
+            expectedRevision: before.revision,
+            now: NOW,
+        })).resolves.toBeNull();
+        await expect(readHandoffRow()).resolves.toEqual(before);
+    });
+
+    it("refuses an explicit new delivery whose immutable stored handoff can never be dispatched", async () => {
+        await seedReadyHandoff({
+            state: "accepted",
+            attempt: 1,
+            dueAt: null,
+            resultEnvelope: JSON.stringify({ t: "encrypted", c: "opaque-ciphertext" }),
+        });
+        const before = await readHandoffRow();
+
+        await expect(authorizeAutomationReplyHandoffRedelivery({
+            accountId: ACCOUNT_ID,
+            runId: RUN_ID,
+            expectedRevision: before.revision,
+            now: NOW,
+        })).resolves.toBeNull();
+        await expect(readHandoffRow()).resolves.toEqual(before);
     });
 
     it("fails closed when stored handoff content no longer matches the Account mode", async () => {

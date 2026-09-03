@@ -128,12 +128,41 @@ function appendExactTurnPrefill(
     prefill: ExactTurnAutomationPrefill | null,
 ): AutomationEditorDraft {
     if (!prefill) return draft;
-    if (draft.triggers.some((trigger) => (
+    const existing = draft.triggers.find((trigger) => (
         trigger.definition?.kind === 'sessionLifecycle'
         && trigger.definition.sourceSessionId === prefill.sourceSessionId
         && trigger.definition.policy.kind === 'currentTurn'
         && trigger.definition.policy.sourceTurnId === prefill.sourceTurnId
-    ))) return draft;
+    ));
+    if (existing) {
+        // One current-turn trigger per (Session, exact turn): join the
+        // prefill's missing Events into the stable row instead of dropping
+        // them or appending an overlapping duplicate trigger. A changed
+        // persisted row is marked dirty so the save reconciles the merge.
+        const definition = existing.definition;
+        if (definition?.kind !== 'sessionLifecycle') return draft;
+        const events = [...definition.events];
+        let added = false;
+        for (const event of prefill.events) {
+            if (!events.includes(event)) {
+                events.push(event);
+                added = true;
+            }
+        }
+        if (!added) return draft;
+        return {
+            ...draft,
+            triggers: draft.triggers.map((trigger) => (
+                trigger === existing
+                    ? {
+                        ...trigger,
+                        isDirty: trigger.persisted !== null || trigger.isDirty === true,
+                        definition: { ...definition, events },
+                    }
+                    : trigger
+            )),
+        };
+    }
     return {
         ...draft,
         triggers: [...draft.triggers, {
@@ -143,7 +172,7 @@ function appendExactTurnPrefill(
                 kind: 'sessionLifecycle',
                 enabled: true,
                 sourceSessionId: prefill.sourceSessionId,
-                events: ['parentTurnCompleted'],
+                events: [...prefill.events],
                 policy: {
                     kind: 'currentTurn',
                     sourceTurnId: prefill.sourceTurnId,
@@ -326,9 +355,13 @@ export function AutomationEditorHostScreen(props: Readonly<{
                     ? observed
                     : null);
                 setDraftLifetimeIdentity(capturedIdentity);
-                hydratedDraftRef.current = withPrefill;
-                isDirtyRef.current = false;
-                setIsDirty(false);
+                // Only the authoritative stored definition is the clean
+                // baseline. A route prefill is visible author intent layered
+                // onto that baseline, so adding or merging its Event remains
+                // unsaved and participates in Cancel/beforeRemove guards.
+                hydratedDraftRef.current = hydrated;
+                isDirtyRef.current = withPrefill !== hydrated;
+                setIsDirty(isDirtyRef.current);
                 setDraft(withPrefill);
             }
         })().catch(() => {
@@ -556,22 +589,31 @@ export function AutomationEditorHostScreen(props: Readonly<{
             await Modal.alert(t('automations.exactTurn.staleTitle'), t('automations.exactTurn.staleBody'));
             return;
         }
+        // Recovery advances only the stale source identity. The lifecycle
+        // Events are the author's explicit selection carried by the mounted
+        // binding, so they are preserved verbatim instead of collapsing to the
+        // observation default that `readExactActiveParentTurn` reports.
+        const recovered: ExactTurnAutomationPrefill = { ...current, events: stalePrefill.events };
         const captured = latestDraftRef.current;
         if (!captured) return;
-        const appended = appendExactTurnPrefill(captured, current);
-        const replacement = replaceLifecycleRowsWithCurrentTurns(appended);
-        if (!replacement) {
+        // Retarget the stale exact-turn rows BEFORE appending the observed
+        // current-turn prefill, so the retargeted binding row rejoins the
+        // prefill through the same-turn merge instead of converging on the
+        // current turn as two overlapping triggers.
+        const retargeted = replaceLifecycleRowsWithCurrentTurns(captured);
+        if (!retargeted) {
             await Modal.alert(t('automations.exactTurn.staleTitle'), t('automations.exactTurn.staleBody'));
             return;
         }
-        setDraft(replacement);
-        isDirtyRef.current = replacement !== hydratedDraftRef.current;
+        const appended = appendExactTurnPrefill(retargeted, recovered);
+        setDraft(appended);
+        isDirtyRef.current = appended !== hydratedDraftRef.current;
         setIsDirty(isDirtyRef.current);
         setStalePrefill(null);
-        setExactTurnBinding(current);
+        setExactTurnBinding(recovered);
         // Route params remain URL truth only; the mounted draft above was the
         // mutation owner, so no hydration may re-run from this change.
-        router.setParams(buildExactTurnAutomationRouteParams(current));
+        router.setParams(buildExactTurnAutomationRouteParams(recovered));
     }, [router, stalePrefill]);
 
     if (!draft || draftLifetimeIdentity !== editorLifetimeIdentity) {
@@ -596,7 +638,10 @@ export function AutomationEditorHostScreen(props: Readonly<{
 
     return (
         <View style={stylesheet.root}>
-            <ItemList style={{ paddingTop: 0 }}>
+            {/* The plural editor is a form with focusable name, description,
+                prompt, and trigger fields, so it uses the list's shared native
+                keyboard owner instead of letting the keyboard cover them. */}
+            <ItemList style={{ paddingTop: 0 }} keyboardAware>
                 <View style={stylesheet.content}>
                     {stalePrefill ? (
                         <SurfaceStateCard

@@ -48,7 +48,7 @@ import { fetchAutomationAccountCurrentnessWitnessTx } from "./automationAccountC
 import {
     classifyPlainAutomationOccurrenceEvidence,
     encodePlainAutomationOccurrenceEvidence,
-    findAutomationTriggerOccurrencesTx,
+    findAutomationOccurrencesTx,
     rejoinAutomationOccurrenceInsertRace,
 } from "./automationOccurrencePersistence";
 import {
@@ -184,8 +184,8 @@ type DefinitionGroup<TDefinition = AutomationEventAdmitHttpInputV1["definitions"
     indexes: readonly number[];
 }>;
 
-function occurrenceLookupKey(triggerId: string, occurrenceKey: string): string {
-    return JSON.stringify([triggerId, occurrenceKey]);
+function occurrenceLookupKey(automationId: string, occurrenceKey: string): string {
+    return JSON.stringify([automationId, occurrenceKey]);
 }
 
 function blocked(reason: "capacity" | "temporarilyUnavailable" | "occurrenceConflict" | "noEnabledAssignment"):
@@ -527,24 +527,24 @@ async function admitEncryptedAutomationEventV1(params: Readonly<{
         for (const group of conflicting) {
             assignGroupResult(results, group, blocked("occurrenceConflict"));
         }
-        const existingOccurrences = await findAutomationTriggerOccurrencesTx({
+        const existingOccurrences = await findAutomationOccurrencesTx({
             tx,
             accountId: params.accountId,
             occurrences: groups.map(({ definition }) => ({
-                triggerId: definition.triggerId,
+                automationId: definition.automationId,
                 occurrenceKey: definition.occurrenceKey,
             })),
             select: existingEventOccurrenceSelect,
         });
         const existingByOccurrence = new Map(existingOccurrences.map((row) => [
-            occurrenceLookupKey(row.triggerId!, row.occurrenceKey!),
+            occurrenceLookupKey(row.automationId, row.occurrenceKey!),
             row,
         ]));
         const missing: DefinitionGroup<EncryptedDefinition>[] = [];
         for (const group of groups) {
             const definition = group.definition;
             const existing = existingByOccurrence.get(occurrenceLookupKey(
-                definition.triggerId,
+                definition.automationId,
                 definition.occurrenceKey,
             )) ?? null;
             if (existing === null) {
@@ -924,23 +924,23 @@ export async function admitAutomationEventV1(params: Readonly<{
             });
             occurrenceByGroupKey.set(group.key, { evidence, occurrenceKey });
         }
-        const existingOccurrences = await findAutomationTriggerOccurrencesTx({
+        const existingOccurrences = await findAutomationOccurrencesTx({
             tx,
             accountId: params.accountId,
             occurrences: groups.map((group) => ({
-                triggerId: group.definition.triggerId,
+                automationId: group.definition.automationId,
                 occurrenceKey: occurrenceByGroupKey.get(group.key)!.occurrenceKey,
             })),
             select: existingEventOccurrenceSelect,
         });
         const existingByOccurrence = new Map(existingOccurrences.map((row) => [
-            occurrenceLookupKey(row.triggerId!, row.occurrenceKey!),
+            occurrenceLookupKey(row.automationId, row.occurrenceKey!),
             row,
         ]));
         for (const group of groups) {
             const { evidence, occurrenceKey } = occurrenceByGroupKey.get(group.key)!;
             const existing = existingByOccurrence.get(occurrenceLookupKey(
-                group.definition.triggerId,
+                group.definition.automationId,
                 occurrenceKey,
             )) ?? null;
             if (existing === null) {

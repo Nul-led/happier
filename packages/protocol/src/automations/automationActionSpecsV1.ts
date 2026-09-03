@@ -37,8 +37,6 @@ import {
 
 /** One page of Event-source definitions cannot exceed this bounded Action contract. */
 export const MAX_AUTOMATION_EVENT_SOURCE_DEFINITIONS_PER_PAGE = 500;
-/** One complete private Event-admission call has an independently bounded cardinality. */
-export const MAX_AUTOMATION_EVENT_ADMIT_DEFINITIONS_PER_CALL = 15;
 export const MAX_AUTOMATION_EVENT_FILTER_CLAUSES = 32;
 export const MAX_AUTOMATION_EVENT_FILTER_IN_VALUES = 64;
 export const MAX_AUTOMATION_EVENT_FILTER_VALUE_CODE_POINTS = 256;
@@ -159,6 +157,43 @@ export const AutomationEventSourceCatalogScopeV1Schema = z.discriminatedUnion('k
 ]);
 export type AutomationEventSourceCatalogScopeV1 = z.infer<
   typeof AutomationEventSourceCatalogScopeV1Schema
+>;
+
+const AUTOMATION_EVENT_DURABLE_PUSH_CATALOG_SCOPE_KEY_PREFIX = 'durablePush:';
+
+/**
+ * Canonical durable key for one catalog reconciliation scope. The scope union
+ * above is the only place a scope kind is introduced, so every catalog-status
+ * reporter keys its row through this projection instead of restating the
+ * transport vocabulary.
+ */
+export function automationEventSourceCatalogScopeKeyV1(
+  scope: AutomationEventSourceCatalogScopeV1,
+): string {
+  return scope.kind === 'durablePush'
+    ? `${AUTOMATION_EVENT_DURABLE_PUSH_CATALOG_SCOPE_KEY_PREFIX}${scope.webhookEndpointId}`
+    : scope.kind;
+}
+
+/**
+ * A stored scope key is valid exactly when it names one canonical scope, so
+ * the key grammar is read back through the same union rather than restated.
+ */
+export const AutomationEventSourceCatalogScopeKeyV1Schema = z.string().superRefine((value, context) => {
+  const durablePushEndpointId = value.startsWith(AUTOMATION_EVENT_DURABLE_PUSH_CATALOG_SCOPE_KEY_PREFIX)
+    ? value.slice(AUTOMATION_EVENT_DURABLE_PUSH_CATALOG_SCOPE_KEY_PREFIX.length)
+    : null;
+  const scope = AutomationEventSourceCatalogScopeV1Schema.safeParse(
+    durablePushEndpointId === null
+      ? { kind: value }
+      : { kind: 'durablePush', webhookEndpointId: durablePushEndpointId },
+  );
+  if (!scope.success) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: 'Unknown Automation source catalog scope' });
+  }
+});
+export type AutomationEventSourceCatalogScopeKeyV1 = z.infer<
+  typeof AutomationEventSourceCatalogScopeKeyV1Schema
 >;
 
 /**
@@ -321,12 +356,13 @@ export type AutomationEventAdmitInputV1 = z.infer<typeof AutomationEventAdmitInp
 /**
  * Private E2-to-server sibling of the public Action input. One HTTP request
  * contains a complete contiguous subset, never a cursor or partial body.
+ * Every definition stays individually bounded; the request body itself is
+ * bounded by the owning server transport limit, not by a Protocol count.
  */
 export const AutomationEventAdmitHttpInputV1Schema = z.object({
   ...AutomationEventAdmitInputFieldsV1,
   definitions: z.array(AutomationEventAdmitDefinitionSelectorV1Schema)
-    .min(1)
-    .max(MAX_AUTOMATION_EVENT_ADMIT_DEFINITIONS_PER_CALL),
+    .min(1),
 }).strict();
 export type AutomationEventAdmitHttpInputV1 = z.infer<typeof AutomationEventAdmitHttpInputV1Schema>;
 
@@ -391,8 +427,7 @@ export type AutomationEventAdmitContinuationV1 = z.infer<
 
 /** Private response sibling for exactly one complete HTTP admission request. */
 export const AutomationEventAdmitHttpResultV1Schema = z.object({
-  results: z.array(AutomationEventAdmitItemResultV1Schema)
-    .max(MAX_AUTOMATION_EVENT_ADMIT_DEFINITIONS_PER_CALL),
+  results: z.array(AutomationEventAdmitItemResultV1Schema),
   continuation: AutomationEventAdmitContinuationV1Schema,
 }).strict();
 export type AutomationEventAdmitHttpResultV1 = z.infer<typeof AutomationEventAdmitHttpResultV1Schema>;

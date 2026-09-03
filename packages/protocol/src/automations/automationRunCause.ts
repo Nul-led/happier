@@ -165,6 +165,76 @@ export type AutomationRunCause = Readonly<
   }
 >;
 
+/**
+ * The single declaration-neutral projection of `AutomationRunCause`. Public SDK
+ * surfaces alias this name, so it is spelled without Protocol's identity brands
+ * and without naming any Protocol-private type: a published author declaration
+ * must close over author-visible names only.
+ *
+ * The two spellings cannot drift. `automationRunCause.contract.test-d.ts` derives the
+ * brand-free projection of the canonical union mechanically and asserts mutual
+ * assignability with this declaration, so any added, removed, or retyped field
+ * fails there.
+ */
+export type AutomationRunCauseDeclarationV1 = Readonly<
+  | {
+    kind: 'trigger';
+    triggerId: string;
+    triggerRevision: number;
+    triggerKind: 'schedule';
+    occurrenceKey: string;
+    occurredAt: number;
+    evidence: Readonly<{ scheduledFor: number }>;
+  }
+  | {
+    kind: 'trigger';
+    triggerId: string;
+    triggerRevision: number;
+    triggerKind: 'pluginEvent';
+    occurrenceKey: string;
+    occurredAt: number;
+    evidence: Readonly<{
+      eventRef: Readonly<{ pluginId: string; localId: string }>;
+      sourceSelectorId: string;
+    }>;
+  }
+  | {
+    kind: 'trigger';
+    triggerId: string;
+    triggerRevision: number;
+    triggerKind: 'sessionLifecycle';
+    occurrenceKey: string;
+    occurredAt: number;
+    evidence: Readonly<{
+      event: 'parentTurnCompleted' | 'parentTurnFailed' | 'parentTurnCancelled';
+      sourceSessionId: string;
+      sourceTurnId: string;
+      policy:
+        | Readonly<{ kind: 'currentTurn' }>
+        | Readonly<{ kind: 'firstMatch' }>
+        | Readonly<{ kind: 'nextMatches'; count: number }>
+        | Readonly<{ kind: 'everyMatch' }>;
+    }> | Readonly<{
+      event: 'userActionRequired';
+      sourceSessionId: string;
+      sourceTurnId: string;
+      requestId: string;
+      requestKind: 'permission' | 'user_action';
+      policy:
+        | Readonly<{ kind: 'currentTurn' }>
+        | Readonly<{ kind: 'firstMatch' }>
+        | Readonly<{ kind: 'nextMatches'; count: number }>
+        | Readonly<{ kind: 'everyMatch' }>;
+    }>;
+  }
+  | { kind: 'manual'; invokedAt: number }
+  | {
+    kind: 'conversation';
+    occurrenceKey: string;
+    occurredAt: number;
+  }
+>;
+
 export const AutomationRunCauseSchema = z.union([
   AutomationScheduleRunCauseSchema,
   AutomationPluginEventRunCauseSchema,

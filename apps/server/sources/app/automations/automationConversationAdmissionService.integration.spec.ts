@@ -4,6 +4,7 @@ import tweetnacl from "tweetnacl";
 import {
     MAX_NON_TERMINAL_EVENT_CONVERSATION_RUNS_PER_ACCOUNT,
     AutomationConversationAdmitInputV1Schema,
+    automationReplyHandoffIdForRunV1,
     buildAutomationConversationOccurrenceEvidenceV1,
     convertContentPublicKeyFingerprintToAccountEncryptionMigrateKeyFingerprintV1,
     createAccountScopedCryptoMaterialSnapshotV1,
@@ -29,6 +30,7 @@ import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lig
 
 import { encodePlainAutomationOccurrenceEvidence } from "./automationOccurrencePersistence";
 import {
+    authorizeAutomationReplyHandoffRedelivery,
     claimNextAutomationReplyHandoff,
     findNextAutomationReplyHandoffDueAt,
 } from "./automationReplyHandoffService";
@@ -858,6 +860,72 @@ describe("Automation Conversation admission database boundary", () => {
             reason: "occurrenceConflict",
             checkpointSafe: false,
         });
+        await expect(db.automationRun.count({ where: { accountId: ACCOUNT_ID } })).resolves.toBe(1);
+    });
+
+    it("still equality-rejoins the same occurrence after the user authorized a further delivery", async () => {
+        // The handoff identity advances when a present user consciously asks
+        // for another delivery. An equal admission replay that arrives after
+        // that decision is still the same occurrence and must rejoin its Run
+        // rather than be read as a conflicting reply target.
+        await db.automation.update({
+            where: { id: AUTOMATION_ID },
+            data: {
+                targetType: "existing_session",
+                templateCiphertext: strictConversationRunRecipe({
+                    kind: "existingSession",
+                    sessionId: "session-conversation-target",
+                }),
+            },
+        });
+        const input = conversationInput();
+        const admitted = await admitAutomationConversationV1({
+            accountId: ACCOUNT_ID,
+            caller,
+            input,
+        });
+        expect(admitted).toMatchObject({ kind: "admitted", checkpointSafe: true });
+        const runId = admitted.kind === "admitted" ? admitted.runId : "";
+        const accepted = await db.automationRun.update({
+            where: { id: runId },
+            data: {
+                state: "succeeded",
+                resultEnvelope: JSON.stringify({
+                    t: "plain",
+                    v: {
+                        v: 1,
+                        correspondence: {
+                            accountId: ACCOUNT_ID,
+                            automationId: AUTOMATION_ID,
+                            runId,
+                            handoffId: automationReplyHandoffIdForRunV1(runId),
+                        },
+                        result: { v: 1, kind: "text", text: "Finished" },
+                    },
+                }),
+                replyHandoffState: "accepted",
+                replyHandoffDueAt: null,
+            },
+            select: { revision: true },
+        });
+
+        await expect(authorizeAutomationReplyHandoffRedelivery({
+            accountId: ACCOUNT_ID,
+            runId,
+            expectedRevision: accepted.revision,
+        })).resolves.not.toBeNull();
+        await expect(db.automationRun.findUniqueOrThrow({
+            where: { id: runId },
+            select: { replyHandoffId: true },
+        })).resolves.toEqual({
+            replyHandoffId: `${automationReplyHandoffIdForRunV1(runId)}#2`,
+        });
+
+        await expect(admitAutomationConversationV1({
+            accountId: ACCOUNT_ID,
+            caller,
+            input,
+        })).resolves.toEqual({ kind: "rejoined", runId, checkpointSafe: true });
         await expect(db.automationRun.count({ where: { accountId: ACCOUNT_ID } })).resolves.toBe(1);
     });
 

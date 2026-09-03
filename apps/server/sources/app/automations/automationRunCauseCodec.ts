@@ -3,28 +3,14 @@ import {
     type AutomationRunCause,
 } from "@happier-dev/protocol";
 
+import { automationRunCauseSelect } from "./automationPersistenceSelect";
 import type { AutomationRunItem } from "./automationTypes";
 
-export type CauseRow = Pick<AutomationRunItem,
-    | "triggerId"
-    | "causeKind"
-    | "causeTriggerKind"
-    | "causeTriggerRevision"
-    | "causeOccurredAt"
-    | "causeEventPluginId"
-    | "causeEventLocalId"
-    | "causeScheduledFor"
-    | "causeSessionLifecycleEvent"
-    | "causeSourceSessionId"
-    | "causeSourceTurnId"
-    | "causeSessionLifecycleRequestId"
-    | "causeSessionLifecycleRequestKind"
-    | "causeSessionLifecyclePolicyKind"
-    | "causeSessionLifecycleConfiguredCount"
-    | "occurrenceKey"
-    | "causeSourceSelectorId"
-    | "createdAt"
->;
+/**
+ * The decoder's row contract, derived from the canonical cause column set so a
+ * read that omits one cause column cannot reach the decoder.
+ */
+export type CauseRow = Pick<AutomationRunItem, keyof typeof automationRunCauseSelect>;
 
 function required<T>(value: T | null, field: string): T {
     if (value === null) throw new Error(`Automation Run cause has no ${field}`);

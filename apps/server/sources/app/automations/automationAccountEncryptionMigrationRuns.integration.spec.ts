@@ -598,6 +598,7 @@ async function createPlainPluginEventAutomation(params: Readonly<{
     automationId: string;
     enabled: boolean;
     deletedAt?: Date | null;
+    triggerEnabled?: boolean;
 }>) {
     const triggerId = `${params.automationId}-event-trigger`;
     return await db.automation.create({
@@ -611,6 +612,7 @@ async function createPlainPluginEventAutomation(params: Readonly<{
                 create: {
                     id: triggerId,
                     kind: "pluginEvent",
+                    enabled: params.triggerEnabled ?? true,
                     eventPluginId: "com.example.github",
                     eventLocalId: "repository-event",
                     sourceSelectorId: SOURCE_SELECTOR_ID,
@@ -1131,7 +1133,7 @@ describe("Automation account-encryption Run migration (integration)", () => {
         })).resolves.toEqual({ eventSourceDefinitionsRevision: 24n });
     });
 
-    it("does not advance the Event catalog revision for invisible Event rows, schedule rows, or assert-empty", async () => {
+    it("advances clear once for live Event triggers regardless of enablement but not for soft-deleted or tombstoned rows", async () => {
         const migrationAccount = await db.account.create({
             data: { encryptionMode: "plain" },
             select: { id: true },
@@ -1212,9 +1214,29 @@ describe("Automation account-encryption Run migration (integration)", () => {
         });
         await createPlainPluginEventAutomation({
             accountId: clearAccount.id,
+            automationId: "automation-catalog-disabled-trigger-clear",
+            enabled: true,
+            triggerEnabled: false,
+        });
+        await createPlainPluginEventAutomation({
+            accountId: clearAccount.id,
             automationId: "automation-catalog-deleted-clear",
             enabled: true,
             deletedAt: new Date("2026-08-13T00:00:00.000Z"),
+        });
+        const tombstonedTriggerAutomation = await createPlainPluginEventAutomation({
+            accountId: clearAccount.id,
+            automationId: "automation-catalog-tombstoned-trigger-clear",
+            enabled: true,
+        });
+        await db.automationTrigger.update({
+            where: { id: tombstonedTriggerAutomation.triggers[0]!.id },
+            data: {
+                enabled: false,
+                deletedAt: new Date("2026-08-13T00:00:00.000Z"),
+                definitionEnvelope: null,
+                observationTransport: null,
+            },
         });
         await db.automation.create({
             data: {
@@ -1245,7 +1267,7 @@ describe("Automation account-encryption Run migration (integration)", () => {
         await expect(db.automationEventCatalogState.findUniqueOrThrow({
             where: { accountId: clearAccount.id },
             select: { eventSourceDefinitionsRevision: true },
-        })).resolves.toEqual({ eventSourceDefinitionsRevision: 37n });
+        })).resolves.toEqual({ eventSourceDefinitionsRevision: 38n });
 
         const emptyAccount = await db.account.create({
             data: { encryptionMode: "plain" },

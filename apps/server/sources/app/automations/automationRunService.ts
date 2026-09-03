@@ -500,7 +500,15 @@ async function settleSucceededAutomationRun(params: {
                 accountId: params.accountId,
                 claimedByMachineId: params.machineId,
                 ...(params.attempt === undefined ? {} : { attempt: params.attempt }),
-                state: { in: ["claimed", "running"] },
+                // A current success reports an effect the server authorized at
+                // the start CAS, so it can only settle a Run that is running.
+                // The released-V2 adapter keeps its wider predecessor
+                // acceptance: the observed predecessor worker always starts
+                // before settling, but that seam is not ours to narrow without
+                // evidence that no supported writer relies on it.
+                state: params.requireV2RunRepresentability
+                    ? { in: ["claimed", "running"] }
+                    : "running",
                 // A permitted dispatch is settled only by the execution
                 // dispatch owner; a generic success claim cannot know the
                 // external outcome it would be asserting. Retained rows that
@@ -523,11 +531,10 @@ async function settleSucceededAutomationRun(params: {
         // target the canonical Session creation it reports is itself an
         // Account write that advanced `Account.seq` past S, as does any
         // unrelated Account mutation, so that post-effect report compares
-        // Account encryption identity instead of the stale sequence. A
-        // `claimed` success is a pre-start assertion with no authorized effect
-        // and keeps the exact claim witness, mirroring the claimed failure in
-        // the fail owner. The released-V2 adapter supplies no witness and
-        // stays outside this choice.
+        // Account encryption identity instead of the stale sequence. Only the
+        // released-V2 adapter can still reach a `claimed` settlement, and it
+        // supplies no witness, so that arm keeps the exact claim comparison
+        // and stays outside this choice in practice.
         if (!await (preflight.state === "running"
             ? hasCompatibleAutomationAccountEncryptionTx({
                 tx,
@@ -957,6 +964,7 @@ function resolveStartedExecutionDispatchSettlement(
     if (
         !wait
         || wait.ok === false
+        || wait.status === "running"
         || wait.result.run.runId !== outcome.runId
     ) {
         return {
@@ -1336,10 +1344,10 @@ export async function succeedAutomationRun(params: {
     attempt: number;
     /**
      * S: the post-start witness echoed unchanged from the successful start.
-     * A `running` settlement compares Account encryption identity against it —
-     * not the exact sequence, which the reported effect itself may have
-     * advanced; a `claimed` (pre-start) success claim keeps the exact claim
-     * witness. Either way the exact Run CAS owns whose report is accepted.
+     * Success requires a running Run, so this compares Account encryption
+     * identity rather than the exact sequence, which the reported effect
+     * itself may have advanced. The exact Run CAS owns whose report is
+     * accepted.
      */
     accountCurrentness: AutomationAccountCurrentnessWitnessV1;
     producedSessionId?: string | null;

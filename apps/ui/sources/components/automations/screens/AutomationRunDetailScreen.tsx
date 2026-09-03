@@ -163,8 +163,9 @@ function AutomationRunDetailEvidenceItems(props: Readonly<{
                 <Item
                     title={t('automations.detail.runDetail.sourceInstance')}
                     subtitle={evidence.sourceInstanceId}
+                    subtitleLines={0}
+                    copy={evidence.sourceInstanceId}
                     showChevron={false}
-                    mode="info"
                 />
                 <Item
                     title={t('automations.detail.runDetail.filter')}
@@ -175,10 +176,9 @@ function AutomationRunDetailEvidenceItems(props: Readonly<{
                 <Item
                     title={t('automations.detail.runDetail.payload')}
                     subtitle={payload}
-                    subtitleLines={3}
+                    subtitleLines={0}
                     copy={payload}
                     showChevron={false}
-                    mode="info"
                 />
             </>
         );
@@ -190,16 +190,16 @@ function AutomationRunDetailEvidenceItems(props: Readonly<{
             <Item
                 title={t('automations.detail.runDetail.conversation')}
                 subtitle={evidence.bindingId}
+                subtitleLines={0}
+                copy={evidence.bindingId}
                 showChevron={false}
-                mode="info"
             />
             <Item
                 title={t('automations.detail.runDetail.input')}
                 subtitle={input}
-                subtitleLines={3}
+                subtitleLines={0}
                 copy={input}
                 showChevron={false}
-                mode="info"
             />
         </>
     );
@@ -243,16 +243,16 @@ function AutomationRunDetailRecipeItems(props: Readonly<{
                     <Item
                         title={t('automations.detail.runDetail.target')}
                         subtitle={formatRunTarget(recipe.target)}
+                        subtitleLines={0}
+                        copy={formatRunTarget(recipe.target)}
                         showChevron={false}
-                        mode="info"
                     />
                     <Item
                         title={t('automations.detail.runDetail.prompt')}
                         subtitle={targetPrompt}
-                        subtitleLines={3}
+                        subtitleLines={0}
                         copy={targetPrompt}
                         showChevron={false}
-                        mode="info"
                     />
                 </>
             );
@@ -298,10 +298,9 @@ function AutomationRunDetailResultItems(props: Readonly<{
                 <Item
                     title={t('automations.detail.runDetail.result')}
                     subtitle={result.result.text || t('common.none')}
-                    subtitleLines={3}
+                    subtitleLines={0}
                     copy={result.result.text}
                     showChevron={false}
-                    mode="info"
                 />
             );
     }
@@ -336,10 +335,9 @@ function AutomationRunDetailFailureDetailItems(props: Readonly<{
                 <Item
                     title={t('automations.detail.runDetail.failureDetail')}
                     subtitle={failureDetail.detail}
-                    subtitleLines={3}
+                    subtitleLines={0}
                     copy={failureDetail.detail}
                     showChevron={false}
-                    mode="info"
                 />
             );
     }
@@ -507,6 +505,10 @@ export function AutomationRunDetailScreen(): React.ReactElement {
         generation: routeGeneration,
         value: false,
     });
+    const [redeliveringResultState, setRedeliveringResultState] = React.useState<RouteScopedState<boolean>>({
+        generation: routeGeneration,
+        value: false,
+    });
     const directDetail = directDetailState.generation === routeGeneration
         && directDetailState.accountLifetime === accountLifetime
         && accountLifetime?.isCurrent() === true
@@ -525,6 +527,8 @@ export function AutomationRunDetailScreen(): React.ReactElement {
     const cancelling = cancellingState.generation === routeGeneration && cancellingState.value;
     const retryingReplyHandoff = retryingReplyHandoffState.generation === routeGeneration
         && retryingReplyHandoffState.value;
+    const redeliveringResult = redeliveringResultState.generation === routeGeneration
+        && redeliveringResultState.value;
 
     React.useEffect(() => {
         const retirement = accountLifetime?.onRetire(() => {
@@ -669,9 +673,60 @@ export function AutomationRunDetailScreen(): React.ReactElement {
         }
     }, [accountLifetime, automationId, isCurrentRoute, routeGeneration, runId]);
 
+    /**
+     * Sends the same result to the same conversation as a new delivery. It is
+     * offered only for custody the channel already accepted, because that is
+     * the one outcome the product cannot confirm for the user: a retry there
+     * would rejoin the delivery they are unsure about and change nothing.
+     * The revision shown on screen is what is authorized, so a second press
+     * after the Run moved is refused instead of sending twice.
+     */
+    const handleDeliverResultAgain = React.useCallback(async (expectedRevision: number) => {
+        if (!runId) return;
+        const request = { automationId, runId, generation: routeGeneration };
+        const confirmed = await Modal.confirm(
+            t('automations.detail.runMeta.replyHandoffDeliverAgainConfirmTitle'),
+            t('automations.detail.runMeta.replyHandoffDeliverAgainConfirmMessage'),
+            {
+                cancelText: t('common.cancel'),
+                confirmText: t('automations.detail.runMeta.replyHandoffDeliverAgainConfirmButton'),
+            },
+        );
+        if (!confirmed || !isCurrentRoute(request.automationId, request.runId, request.generation)) return;
+        try {
+            setRedeliveringResultState({ generation: request.generation, value: true });
+            await sync.deliverAutomationResultAgain({ runId: request.runId, expectedRevision });
+            if (!isCurrentRoute(request.automationId, request.runId, request.generation)) return;
+            directReadEpochRef.current += 1;
+            setDirectDetailState({
+                generation: request.generation,
+                accountLifetime,
+                value: null,
+            });
+        } catch (error) {
+            if (!isCurrentRoute(request.automationId, request.runId, request.generation)) return;
+            await Modal.alert(
+                t('common.error'),
+                error instanceof Error ? error.message : t('automations.detail.runFailed'),
+            );
+        } finally {
+            if (isCurrentRoute(request.automationId, request.runId, request.generation)) {
+                setRedeliveringResultState({ generation: request.generation, value: false });
+            }
+        }
+    }, [accountLifetime, automationId, isCurrentRoute, routeGeneration, runId]);
+
     const unknownDate = t('automations.detail.unknownDate');
     const title = runId ? t('runs.runLabel', { runId }) : t('runs.title');
     const canCancel = run?.state === 'queued' || run?.state === 'claimed' || run?.state === 'running';
+    // Retry exists only for a block an external change can still repair. When
+    // the server has classified this exact Run's frozen handoff facts as
+    // invalid, the recovery route refuses it, so the surface states that plainly
+    // instead of offering an action that cannot work. An older server that
+    // sends no classification keeps the previous behaviour.
+    const replyHandoffUnrecoverable = run?.replyHandoffState === 'blocked'
+        && 'replyHandoffRecoverable' in run
+        && run.replyHandoffRecoverable === false;
     const occurrenceKey = run?.cause.kind === 'trigger' || run?.cause.kind === 'conversation'
         ? run.cause.occurrenceKey
         : null;
@@ -789,7 +844,6 @@ export function AutomationRunDetailScreen(): React.ReactElement {
                                     subtitleLines={0}
                                     copy={`${triggerCause.triggerId}@${triggerCause.triggerRevision}`}
                                     showChevron={false}
-                                    mode="info"
                                 />
                             ) : null}
                             {triggerRetired ? (
@@ -807,8 +861,8 @@ export function AutomationRunDetailScreen(): React.ReactElement {
                                     title={t('automations.detail.runMeta.occurrenceTitle')}
                                     subtitle={occurrenceKey}
                                     subtitleLines={0}
+                                    copy={occurrenceKey}
                                     showChevron={false}
-                                    mode="info"
                                 />
                             ) : null}
                             {sourceSelectorId ? (
@@ -816,8 +870,8 @@ export function AutomationRunDetailScreen(): React.ReactElement {
                                     title={t('automations.detail.runMeta.sourceTitle')}
                                     subtitle={sourceSelectorId}
                                     subtitleLines={0}
+                                    copy={sourceSelectorId}
                                     showChevron={false}
-                                    mode="info"
                                 />
                             ) : null}
                             {eventRef ? (
@@ -827,7 +881,6 @@ export function AutomationRunDetailScreen(): React.ReactElement {
                                     subtitleLines={0}
                                     copy={`${eventRef.pluginId}/${eventRef.localId}`}
                                     showChevron={false}
-                                    mode="info"
                                 />
                             ) : null}
                             {triggerCause?.triggerKind === 'sessionLifecycle' ? (
@@ -841,16 +894,16 @@ export function AutomationRunDetailScreen(): React.ReactElement {
                                     <Item
                                         title={t('automations.detail.trigger.sourceSession')}
                                         subtitle={triggerCause.evidence.sourceSessionId}
+                                        subtitleLines={0}
                                         copy={triggerCause.evidence.sourceSessionId}
                                         showChevron={false}
-                                        mode="info"
                                     />
                                     <Item
                                         title={t('automations.detail.trigger.sourceTurn')}
                                         subtitle={triggerCause.evidence.sourceTurnId}
+                                        subtitleLines={0}
                                         copy={triggerCause.evidence.sourceTurnId}
                                         showChevron={false}
-                                        mode="info"
                                     />
                                 </>
                             ) : null}
@@ -968,7 +1021,6 @@ export function AutomationRunDetailScreen(): React.ReactElement {
                                     subtitleLines={0}
                                     copy={nativeExecutionRunId}
                                     showChevron={false}
-                                    mode="info"
                                 />
                             ) : null}
                             {producedSessionId ? (
@@ -1013,13 +1065,32 @@ export function AutomationRunDetailScreen(): React.ReactElement {
                                     showChevron={false}
                                 />
                             ) : null}
-                            {run.replyHandoffState === 'blocked' ? (
+                            {replyHandoffUnrecoverable ? (
+                                <Item
+                                    testID="automation-run-reply-handoff-unrecoverable"
+                                    title={t('automations.detail.runMeta.replyHandoffUnrecoverableTitle')}
+                                    subtitle={t('automations.detail.runMeta.replyHandoffUnrecoverableSubtitle')}
+                                    showChevron={false}
+                                    mode="info"
+                                />
+                            ) : null}
+                            {run.replyHandoffState === 'blocked' && !replyHandoffUnrecoverable ? (
                                 <Item
                                     testID="automation-run-retry-reply-handoff"
                                     title={t('common.retry')}
                                     subtitle={t('automations.detail.runMeta.replyHandoffTitle')}
                                     onPress={() => void handleRetryReplyHandoff()}
                                     loading={retryingReplyHandoff}
+                                    showChevron={false}
+                                />
+                            ) : null}
+                            {run.replyHandoffState === 'accepted' ? (
+                                <Item
+                                    testID="automation-run-deliver-result-again"
+                                    title={t('automations.detail.runMeta.replyHandoffDeliverAgainTitle')}
+                                    subtitle={t('automations.detail.runMeta.replyHandoffDeliverAgainSubtitle')}
+                                    onPress={() => void handleDeliverResultAgain(run.revision)}
+                                    loading={redeliveringResult}
                                     showChevron={false}
                                 />
                             ) : null}

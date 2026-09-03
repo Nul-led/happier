@@ -49,7 +49,10 @@ import {
 import { compilePluginJsonSchema } from '../plugins/actions/jsonSchemaValidation.js';
 import {
   AutomationEventAdmitItemResultV1Schema,
+  AutomationEventSourceCatalogScopeKeyV1Schema,
+  AutomationEventSourceCatalogScopeV1Schema,
   AutomationEventSourcesListResultV1Schema,
+  automationEventSourceCatalogScopeKeyV1,
 } from './automationActionSpecsV1.js';
 import {
   buildAutomationPluginEventOccurrenceEvidenceV1,
@@ -1372,5 +1375,70 @@ describe('Automation event V1 contracts', () => {
       reportedAt: 2,
       revision: 1,
     }).success).toBe(false);
+  });
+
+  it('keys catalog status rows for every canonical observation transport', () => {
+    const catalogRow = {
+      accountId: 'account-1',
+      eventPluginId: 'com.acme.github',
+      reporterMaterializationRef: {
+        machineId: 'machine-1',
+        materializationId: 'materialization-1',
+        pluginId: 'com.acme.github',
+      },
+      reporterImmutableGenerationId: 'github-immutable-generation-a',
+      observedRevision: '1',
+      adoptedRevision: '1',
+      state: 'current',
+      scanStartedAt: 1,
+      nextRetryAt: null,
+      reportedAt: 2,
+      revision: 1,
+    } as const;
+    // The exact emitted key is the durable persistence grammar every reporter
+    // and reader shares, so it is pinned here rather than merely accepted.
+    const expectedScopeKeys = new Map<string, string>([
+      ['checkpointedPull', 'checkpointedPull'],
+      ['socket', 'socket'],
+      ['durablePush', 'durablePush:wh_ep_AAECAwQFBgcICQoLDA0ODw'],
+    ]);
+    const emitted = new Set<string>();
+    for (const scope of [
+      { kind: 'checkpointedPull' },
+      { kind: 'socket' },
+      { kind: 'durablePush', webhookEndpointId: 'wh_ep_AAECAwQFBgcICQoLDA0ODw' },
+    ] as const) {
+      const scopeKey = automationEventSourceCatalogScopeKeyV1(
+        AutomationEventSourceCatalogScopeV1Schema.parse(scope),
+      );
+      expect(scopeKey).toBe(expectedScopeKeys.get(scope.kind));
+      emitted.add(scopeKey);
+      expect(AutomationEventSourceCatalogScopeKeyV1Schema.safeParse(scopeKey).success).toBe(true);
+      expect(AutomationEventSourceCatalogStatusV1Schema.safeParse({
+        ...catalogRow,
+        scopeKey,
+      }).success).toBe(true);
+    }
+    // Every canonical scope must key a distinct row; a helper that collapsed
+    // two scopes onto one key would silently merge their catalog currentness.
+    expect(emitted.size).toBe(expectedScopeKeys.size);
+    for (const key of expectedScopeKeys.values()) expect(emitted.has(key)).toBe(true);
+  });
+
+  it('refuses a hand-built catalog scope key that no canonical scope emits', () => {
+    for (const scopeKey of [
+      // A transport-shaped prefix with no endpoint identity.
+      'durablePush',
+      'durablePush:',
+      // A durable-push key whose endpoint identity is not the canonical grammar.
+      'durablePush:not-an-endpoint-id',
+      // Near-miss transports and casing drift.
+      'checkpointedpull',
+      'checkpointedPull:wh_ep_AAECAwQFBgcICQoLDA0ODw',
+      'webhook',
+      '',
+    ]) {
+      expect(AutomationEventSourceCatalogScopeKeyV1Schema.safeParse(scopeKey).success).toBe(false);
+    }
   });
 });

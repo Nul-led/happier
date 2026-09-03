@@ -64,15 +64,25 @@ export const automationDefinitionListItemSelect = {
     },
 } satisfies Prisma.AutomationSelect;
 
-export const automationRunItemSelect = {
-    id: true, automationId: true, accountId: true, state: true, triggerId: true,
+/**
+ * The one physical cause column set. Every read whose rows reach
+ * `decodeAutomationRunCause` starts from this fragment, so no caller can
+ * select a partial immutable cause; `CauseRow` is derived from these keys.
+ */
+export const automationRunCauseSelect = {
+    triggerId: true,
     causeKind: true, causeTriggerKind: true, causeTriggerRevision: true, causeOccurredAt: true,
     causeEventPluginId: true, causeEventLocalId: true, causeScheduledFor: true,
     causeSessionLifecycleEvent: true, causeSourceSessionId: true, causeSourceTurnId: true,
     causeSessionLifecycleRequestId: true, causeSessionLifecycleRequestKind: true,
     causeSessionLifecyclePolicyKind: true, causeSessionLifecycleConfiguredCount: true,
-    occurrenceKey: true, legacyManualIdempotencyKey: true,
-    occurrenceEvidenceEqualityTag: true, causeSourceSelectorId: true,
+    occurrenceKey: true, causeSourceSelectorId: true, createdAt: true,
+} satisfies Prisma.AutomationRunSelect;
+
+export const automationRunItemSelect = {
+    ...automationRunCauseSelect,
+    id: true, automationId: true, accountId: true, state: true,
+    legacyManualIdempotencyKey: true, occurrenceEvidenceEqualityTag: true,
     triggerEvidenceEnvelope: true, executionInputEnvelope: true,
     executionDispatchState: true, executionAttempt: true,
     executionDispatchCommittedAt: true, executionDispatchDueAt: true,
@@ -100,13 +110,8 @@ export const automationRunDetailSelect = {
 
 /** The current V3 Run-list read: public list facts and immutable cause only. */
 export const automationRunV3ListItemSelect = {
-    id: true, automationId: true, state: true, triggerId: true,
-    causeKind: true, causeTriggerKind: true, causeTriggerRevision: true, causeOccurredAt: true,
-    causeEventPluginId: true, causeEventLocalId: true, causeScheduledFor: true,
-    causeSessionLifecycleEvent: true, causeSourceSessionId: true, causeSourceTurnId: true,
-    causeSessionLifecycleRequestId: true, causeSessionLifecycleRequestKind: true,
-    causeSessionLifecyclePolicyKind: true, causeSessionLifecycleConfiguredCount: true,
-    occurrenceKey: true, causeSourceSelectorId: true,
+    ...automationRunCauseSelect,
+    id: true, automationId: true, state: true,
     executionDispatchState: true, executionAttempt: true,
     errorCode: true,
     replyHandoffState: true, replyHandoffAttempt: true, replyHandoffDueAt: true,

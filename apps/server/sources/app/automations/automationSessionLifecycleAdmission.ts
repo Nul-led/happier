@@ -6,14 +6,17 @@ import {
     type AutomationSessionLifecycleOccurrenceEvidenceV1,
 } from "@happier-dev/protocol";
 
-import type { Tx } from "@/storage/inTx";
+import { markAccountChanged } from "@/app/changes/markAccountChanged";
+import { afterTx, type Tx } from "@/storage/inTx";
 
+import { emitAutomationSourceStatusUpdated } from "./automationChangePublisher";
 import {
     admitAutomationRunsTx,
     type AutomationRunAdmissionRequest,
     type AutomationRunAdmissionResult,
 } from "./automationRunAdmissionService";
 import { decodeAutomationSessionLifecycleConfiguration } from "./automationSessionLifecycleConfigurationCodec";
+import { automationPortableQueryChunks } from "./automationPortableQueryChunks";
 
 export type SessionLifecycleAdmissionResult = Readonly<{
     triggerId: string;
@@ -22,8 +25,65 @@ export type SessionLifecycleAdmissionResult = Readonly<{
 
 type SessionLifecycleOccurrence = AutomationSessionLifecycleOccurrenceEvidenceV1;
 
+function buildLifecycleCause(params: Readonly<{
+    triggerId: string;
+    triggerRevision: number;
+    definition: ReturnType<typeof decodeAutomationSessionLifecycleConfiguration>["definition"];
+    occurrence: SessionLifecycleOccurrence;
+}>) {
+    const { occurrence } = params;
+    const cause = AutomationRunCauseSchema.parse({
+        kind: "trigger",
+        triggerId: params.triggerId,
+        triggerRevision: params.triggerRevision,
+        triggerKind: "sessionLifecycle",
+        occurrenceKey: deriveAutomationOccurrenceKeyV1({
+            triggerId: params.triggerId,
+            evidence: occurrence,
+        }),
+        occurredAt: occurrence.occurredAt,
+        evidence: {
+            event: occurrence.event,
+            sourceSessionId: occurrence.sourceSessionId,
+            sourceTurnId: occurrence.sourceTurnId,
+            ...(occurrence.event === "userActionRequired"
+                ? { requestId: occurrence.requestId, requestKind: occurrence.requestKind }
+                : {}),
+            policy: snapshotAutomationSessionLifecyclePolicy(params.definition.policy),
+        },
+    });
+    if (cause.kind !== "trigger" || cause.triggerKind !== "sessionLifecycle") {
+        throw new Error("Session lifecycle cause codec returned the wrong cause arm");
+    }
+    return cause;
+}
+
 function isTerminalLifecycleEvent(event: SessionLifecycleOccurrence["event"]): boolean {
     return event !== "userActionRequired";
+}
+
+/**
+ * A consumed occurrence that produced no Run still changes the trigger status
+ * every Automation reader projects, and admission's own publication cannot
+ * carry it because there is no Run. Reuse the incumbent Automation change and
+ * content-free invalidation rather than inventing a budget event: the
+ * authenticated Automation query stays the only reader of what changed.
+ */
+async function publishNoRunBudgetConsumptionTx(params: Readonly<{
+    tx: Tx;
+    accountId: string;
+    automationIds: ReadonlySet<string>;
+}>): Promise<void> {
+    for (const automationId of params.automationIds) {
+        const cursor = await markAccountChanged(params.tx, {
+            accountId: params.accountId,
+            kind: "automation",
+            entityId: automationId,
+        });
+        afterTx(params.tx, () => {
+            emitAutomationSourceStatusUpdated({ accountId: params.accountId, cursor });
+        });
+    }
 }
 
 /**
@@ -39,6 +99,11 @@ export async function admitSessionLifecycleAutomationRunsTx(params: Readonly<{
         params.occurrence,
     );
     if (occurrence.event === "userActionRequired") {
+        // A pending main-turn request can only be awaiting the user while its
+        // exact host-stamped parent turn is still the Session's live turn. A
+        // missing, already terminalized, or superseded turn is stale publisher
+        // truth arriving late, not a new occurrence: it must bind to no turn,
+        // admit no Run, and consume no trigger budget.
         const sourceTurn = await params.tx.sessionTurn.findUnique({
             where: {
                 sessionId_turnId: {
@@ -46,9 +111,14 @@ export async function admitSessionLifecycleAutomationRunsTx(params: Readonly<{
                     turnId: occurrence.sourceTurnId,
                 },
             },
-            select: { id: true },
+            select: { status: true },
         });
-        if (!sourceTurn) return [];
+        if (sourceTurn?.status !== "in_progress") return [];
+        const sourceSession = await params.tx.session.findUnique({
+            where: { id: occurrence.sourceSessionId },
+            select: { latestTurnId: true },
+        });
+        if (sourceSession?.latestTurnId !== occurrence.sourceTurnId) return [];
     }
     const rows = await params.tx.automationTrigger.findMany({
         where: {
@@ -78,25 +148,44 @@ export async function admitSessionLifecycleAutomationRunsTx(params: Readonly<{
 
     const candidates: Array<{
         row: typeof rows[number];
-        definition: ReturnType<typeof decodeAutomationSessionLifecycleConfiguration>["definition"];
+        cause: ReturnType<typeof buildLifecycleCause>;
         reserved: boolean;
     }> = [];
+    const exhausted: Array<{
+        row: typeof rows[number];
+        cause: ReturnType<typeof buildLifecycleCause>;
+    }> = [];
+    const budgetConsumedWithoutRun = new Set<string>();
     for (const row of rows) {
         const stored = decodeAutomationSessionLifecycleConfiguration(row);
         const definition = stored.definition;
         const isCurrentTurn = definition.policy.kind === "currentTurn";
-        if (isCurrentTurn && definition.policy.sourceTurnId !== occurrence.sourceTurnId) continue;
+        if (
+            definition.policy.kind === "currentTurn"
+            && definition.policy.sourceTurnId !== occurrence.sourceTurnId
+        ) continue;
 
         const selected = definition.events.includes(occurrence.event);
         const enabled = row.enabled && row.automation.enabled;
         if (isCurrentTurn && isTerminalLifecycleEvent(occurrence.event) && (!selected || !enabled)) {
-            await params.tx.automationTrigger.updateMany({
+            const consumed = await params.tx.automationTrigger.updateMany({
                 where: { id: row.id, remainingOccurrences: { gt: 0 } },
                 data: { remainingOccurrences: 0 },
             });
+            if (consumed.count === 1) budgetConsumedWithoutRun.add(row.automationId);
             continue;
         }
-        if (!selected || !enabled || stored.remainingOccurrences === 0) continue;
+        if (!selected || !enabled) continue;
+        const cause = buildLifecycleCause({
+            triggerId: row.id,
+            triggerRevision: row.revision,
+            definition,
+            occurrence,
+        });
+        if (stored.remainingOccurrences === 0) {
+            exhausted.push({ row, cause });
+            continue;
+        }
 
         const bounded = stored.remainingOccurrences !== null;
         if (bounded) {
@@ -110,31 +199,40 @@ export async function admitSessionLifecycleAutomationRunsTx(params: Readonly<{
             });
             if (reserved.count !== 1) continue;
         }
-        candidates.push({ row, definition, reserved: bounded });
+        candidates.push({ row, cause, reserved: bounded });
     }
-    if (candidates.length === 0) return [];
-
-    const admissions: AutomationRunAdmissionRequest[] = candidates.map(({ row, definition }) => {
-        const cause = AutomationRunCauseSchema.parse({
-            kind: "trigger",
-            triggerId: row.id,
-            triggerRevision: row.revision,
-            triggerKind: "sessionLifecycle",
-            occurrenceKey: deriveAutomationOccurrenceKeyV1({ triggerId: row.id, evidence: occurrence }),
-            occurredAt: occurrence.occurredAt,
-            evidence: {
-                event: occurrence.event,
-                sourceSessionId: occurrence.sourceSessionId,
-                sourceTurnId: occurrence.sourceTurnId,
-                ...(occurrence.event === "userActionRequired"
-                    ? {
-                        requestId: occurrence.requestId,
-                        requestKind: occurrence.requestKind,
-                    }
-                    : {}),
-                policy: snapshotAutomationSessionLifecyclePolicy(definition.policy),
+    if (exhausted.length > 0) {
+        const existingPages = await Promise.all(automationPortableQueryChunks({
+            values: exhausted,
+            bindingsPerValue: 2,
+        }).map((page) => params.tx.automationRun.findMany({
+            where: {
+                OR: page.map(({ row, cause }) => ({
+                    triggerId: row.id,
+                    occurrenceKey: cause.occurrenceKey,
+                })),
             },
+            select: { triggerId: true, occurrenceKey: true },
+        })));
+        const existingKeys = new Set(existingPages.flat().map((run) => (
+            JSON.stringify([run.triggerId, run.occurrenceKey])
+        )));
+        for (const candidate of exhausted) {
+            if (existingKeys.has(JSON.stringify([candidate.row.id, candidate.cause.occurrenceKey]))) {
+                candidates.push({ ...candidate, reserved: false });
+            }
+        }
+    }
+    if (candidates.length === 0) {
+        await publishNoRunBudgetConsumptionTx({
+            tx: params.tx,
+            accountId: params.accountId,
+            automationIds: budgetConsumedWithoutRun,
         });
+        return [];
+    }
+
+    const admissions: AutomationRunAdmissionRequest[] = candidates.map(({ row, cause }) => {
         return {
             automationId: row.automationId,
             now: new Date(occurrence.occurredAt),
@@ -148,12 +246,32 @@ export async function admitSessionLifecycleAutomationRunsTx(params: Readonly<{
     });
 
     for (let index = 0; index < candidates.length; index += 1) {
-        if (!candidates[index]!.reserved || results[index]!.kind === "admitted") continue;
+        const candidate = candidates[index]!;
+        const result = results[index]!;
+        if (!candidate.reserved || result.kind === "admitted") continue;
+        // An exact-turn trigger is consumed by its first selected occurrence.
+        // When an invariant leaves that occurrence without a Run, returning
+        // the reserved occurrence would restore a repeatability this policy
+        // never has, so the trigger stays inert and the settlement caller's
+        // typed ineligibility diagnostic carries the outcome. A rejoin is a
+        // replay of one occurrence and still returns its reservation.
+        if (
+            result.kind === "ineligible"
+            && candidate.cause.evidence.policy.kind === "currentTurn"
+        ) {
+            budgetConsumedWithoutRun.add(candidate.row.automationId);
+            continue;
+        }
         await params.tx.automationTrigger.update({
-            where: { id: candidates[index]!.row.id },
+            where: { id: candidate.row.id },
             data: { remainingOccurrences: { increment: 1 } },
         });
     }
+    await publishNoRunBudgetConsumptionTx({
+        tx: params.tx,
+        accountId: params.accountId,
+        automationIds: budgetConsumedWithoutRun,
+    });
     return candidates.map((candidate, index) => ({
         triggerId: candidate.row.id,
         result: results[index]!,

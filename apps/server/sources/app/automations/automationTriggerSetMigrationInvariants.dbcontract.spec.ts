@@ -25,7 +25,8 @@ import { AUTOMATION_RUN_TERMINAL_STATES, type AutomationRunState } from "./autom
  * nonterminal frozen execution-input CHECK
  * (rejected for every nonterminal state, retained as approved history for every
  * canonical terminal state), the trigger/manual/conversation cause arms,
- * trigger-scoped occurrence identity, the exact pluginEvent live arms plus the one
+ * trigger-scoped occurrence-key derivation under the one canonical
+ * `(automationId, occurrenceKey)` uniqueness owner, the exact pluginEvent live arms plus the one
  * canonical tombstone arm accepted by deleted checkpointed-pull and durable-push
  * triggers while half-scrubbed deletions are rejected, mandatory reporter
  * generation provenance, and the removal of the predecessor singular-trigger and
@@ -295,11 +296,11 @@ describe(
                 expect(runNames.has(requiredColumn), `AutomationRun.${requiredColumn} must exist`).toBe(true);
             }
             expect(runIndexNames.has("automationrun_automationid_occurrencekey_key"),
-                "the predecessor Automation-scoped occurrence index must be gone").toBe(false);
+                "the canonical Automation-scoped occurrence uniqueness owner must exist").toBe(true);
             expect(runIndexNames.has("automationrun_triggerid_occurrencekey_key"),
-                "automatic replay must be uniquely trigger-scoped").toBe(true);
+                "the retired trigger-scoped occurrence index must be gone").toBe(false);
             expect(runIndexNames.has("automationrun_automationid_causekind_occurrencekey_key"),
-                "Conversation replay keeps its distinct cause-scoped rejoin key").toBe(true);
+                "the retired cause-scoped occurrence index must be gone").toBe(false);
         });
 
         it("enforces the durable nonterminal frozen execution-input CHECK", async () => {
@@ -716,7 +717,10 @@ describe(
                         id: `trigger-invariants-event-lifecycle-${fixture.suffix}`,
                         ...liveBase,
                         observationTransport: "checkpointedPull",
-                        sessionLifecycleEvent: "parentTurnCompleted",
+                        sessionLifecycleEventsJson: JSON.stringify(["parentTurnCompleted"]),
+                        sessionLifecyclePolicyKind: "currentTurn",
+                        sessionLifecycleMatchCount: null,
+                        remainingOccurrences: 1,
                         sourceSessionId: "session",
                         sourceTurnId: "turn",
                     },
@@ -906,7 +910,10 @@ describe(
                         automationId: fixture.automationId,
                         kind: "sessionLifecycle",
                         revision: 1,
-                        sessionLifecycleEvent: "parentTurnCompleted",
+                        sessionLifecycleEventsJson: JSON.stringify(["parentTurnCompleted"]),
+                        sessionLifecyclePolicyKind: "currentTurn",
+                        sessionLifecycleMatchCount: null,
+                        remainingOccurrences: 1,
                         sourceSessionId: "session",
                     },
                     select: { id: true },
@@ -917,7 +924,10 @@ describe(
                         automationId: fixture.automationId,
                         kind: "sessionLifecycle",
                         revision: 1,
-                        sessionLifecycleEvent: "parentTurnCompleted",
+                        sessionLifecycleEventsJson: JSON.stringify(["parentTurnCompleted"]),
+                        sessionLifecyclePolicyKind: "currentTurn",
+                        sessionLifecycleMatchCount: null,
+                        remainingOccurrences: 1,
                         sourceSessionId: "session",
                         sourceTurnId: "turn",
                     },

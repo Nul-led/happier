@@ -122,13 +122,16 @@ function encryptedTemplate(ciphertext: string): string {
 function strictExecutionInput(params: Readonly<{
     templateVersion: number;
     prompt: string;
-    evidence: unknown;
+    /** `null` is the exact shape every non-Event cause freezes. */
+    evidence: unknown | null;
 }>): string {
     const serialized = serializeAutomationRunExecutionRecipeV1({
         v: 1,
         templateVersion: params.templateVersion,
         template: { t: "plain", v: { v: 1, prompt: params.prompt } },
-        triggerEvidence: { t: "plain", v: params.evidence },
+        triggerEvidence: params.evidence === null
+            ? null
+            : { t: "plain", v: params.evidence },
         target: {
             kind: "newSession",
             spawn: {
@@ -157,6 +160,7 @@ function strictExecutionInput(params: Readonly<{
 function encryptedStrictExecutionInput(params: Readonly<{
     runId: string;
     templateVersion: number;
+    retainsTriggerEvidence?: boolean;
 }>): string {
     const serialized = serializeAutomationRunExecutionRecipeV1({
         v: 1,
@@ -165,10 +169,12 @@ function encryptedStrictExecutionInput(params: Readonly<{
             t: "encrypted",
             c: "replacement-encrypted-execution-input-" + params.runId,
         },
-        triggerEvidence: {
-            t: "encrypted",
-            c: "replacement-encrypted-evidence-" + params.runId,
-        },
+        triggerEvidence: params.retainsTriggerEvidence === false
+            ? null
+            : {
+                t: "encrypted",
+                c: "replacement-encrypted-evidence-" + params.runId,
+            },
         target: {
             kind: "newSession",
             spawn: {
@@ -294,6 +300,15 @@ async function seedAllCauseRuns(onAccountCreated?: (accountId: string) => void) 
                         scheduleKind: "interval",
                         everyMs: 60_000,
                     },
+                    {
+                        id: "trigger-account-encryption-migration-lifecycle",
+                        kind: "sessionLifecycle",
+                        sessionLifecycleEventsJson: JSON.stringify(["userActionRequired"]),
+                        sessionLifecyclePolicyKind: "nextMatches",
+                        sessionLifecycleMatchCount: 2,
+                        remainingOccurrences: 1,
+                        sourceSessionId: "session-account-encryption-migration",
+                    },
                 ],
             },
             targetType: "new_session",
@@ -309,6 +324,9 @@ async function seedAllCauseRuns(onAccountCreated?: (accountId: string) => void) 
     });
     const eventTrigger = eventAutomation.triggers.find((trigger) => trigger.kind === "pluginEvent")!;
     const scheduleTrigger = eventAutomation.triggers.find((trigger) => trigger.kind === "schedule")!;
+    const lifecycleTrigger = eventAutomation.triggers.find(
+        (trigger) => trigger.kind === "sessionLifecycle",
+    )!;
     const conversationAutomationId = "automation-account-encryption-migration-conversation";
     const conversationAutomation = await db.automation.create({
         data: {
@@ -474,6 +492,54 @@ async function seedAllCauseRuns(onAccountCreated?: (accountId: string) => void) 
         },
         select: runContentSelect,
     });
+    const lifecycleOccurrence = {
+        v: 1 as const,
+        kind: "sessionLifecycle" as const,
+        event: "userActionRequired" as const,
+        sourceSessionId: "session-account-encryption-migration",
+        sourceTurnId: "turn-account-encryption-migration",
+        requestId: "request-account-encryption-migration",
+        requestKind: "permission" as const,
+        occurredAt: new Date("2026-08-10T10:06:00.000Z").getTime(),
+    };
+    const lifecycleRun = await db.automationRun.create({
+        data: {
+            id: "run-account-encryption-lifecycle",
+            automationId: eventAutomation.id,
+            accountId: account.id,
+            state: "queued",
+            ...encodeAutomationRunCause(AutomationRunCauseSchema.parse({
+                kind: "trigger",
+                triggerId: lifecycleTrigger.id,
+                triggerRevision: lifecycleTrigger.revision,
+                triggerKind: "sessionLifecycle",
+                occurrenceKey: deriveAutomationOccurrenceKeyV1({
+                    triggerId: lifecycleTrigger.id,
+                    evidence: lifecycleOccurrence,
+                }),
+                occurredAt: lifecycleOccurrence.occurredAt,
+                evidence: {
+                    event: lifecycleOccurrence.event,
+                    sourceSessionId: lifecycleOccurrence.sourceSessionId,
+                    sourceTurnId: lifecycleOccurrence.sourceTurnId,
+                    requestId: lifecycleOccurrence.requestId,
+                    requestKind: lifecycleOccurrence.requestKind,
+                    policy: { kind: "nextMatches", count: 2 },
+                },
+            })),
+            // The lifecycle occurrence is content-free, so the Run retains a
+            // strict recipe with no trigger evidence and no equality tag.
+            executionInputEnvelope: strictExecutionInput({
+                templateVersion: eventAutomation.templateVersion,
+                prompt: "migrate Session lifecycle Run",
+                evidence: null,
+            }),
+            scheduledAt: new Date(lifecycleOccurrence.occurredAt),
+            dueAt: new Date(lifecycleOccurrence.occurredAt),
+            assignments: { create: [{ machineId: replyMachine.id, priority: 0 }] },
+        },
+        select: runContentSelect,
+    });
     const manualRun = await db.automationRun.create({
         data: {
             id: "run-account-encryption-manual",
@@ -505,6 +571,7 @@ async function seedAllCauseRuns(onAccountCreated?: (accountId: string) => void) 
         eventRun,
         conversationRun,
         scheduledRun,
+        lifecycleRun,
         manualRun,
     };
 }
@@ -513,7 +580,7 @@ function migrationItem(params: Readonly<{
     runId: string;
     automationId: string;
     expectedRunRevision: number;
-    runKind: "pluginEvent" | "conversation" | "scheduled" | "manual";
+    runKind: "pluginEvent" | "conversation" | "sessionLifecycle" | "scheduled" | "manual";
     templateVersion: number;
     retainsOccurrenceEvidence: boolean;
     resultEnvelope: string | null;
@@ -532,10 +599,13 @@ function migrationItem(params: Readonly<{
             : null,
         occurrenceEvidenceEqualityTag: params.retainsOccurrenceEvidence ? e2eeTag : null,
         executionInputEnvelope:
-            params.runKind === "pluginEvent" || params.runKind === "conversation"
+            params.runKind === "pluginEvent"
+                || params.runKind === "conversation"
+                || params.runKind === "sessionLifecycle"
                 ? encryptedStrictExecutionInput({
                     runId: params.runId,
                     templateVersion: params.templateVersion,
+                    retainsTriggerEvidence: params.retainsOccurrenceEvidence,
                 })
                 : executionInput({
                     templateCiphertext: encryptedTemplate(
@@ -670,6 +740,18 @@ function buildDirective(seeded: Awaited<ReturnType<typeof seedAllCauseRuns>>) {
                 failureDetailEnvelope: seeded.scheduledRun.errorMessage,
             }),
             migrationItem({
+                runId: seeded.lifecycleRun.id,
+                automationId: seeded.eventAutomation.id,
+                expectedRunRevision: seeded.lifecycleRun.revision,
+                runKind: "sessionLifecycle",
+                templateVersion: seeded.eventAutomation.templateVersion,
+                retainsOccurrenceEvidence: false,
+                resultEnvelope: seeded.lifecycleRun.resultEnvelope,
+                replyContextEnvelope: seeded.lifecycleRun.replyContextEnvelope,
+                replyHandoffReceiptEnvelope: seeded.lifecycleRun.replyHandoffReceiptEnvelope,
+                failureDetailEnvelope: seeded.lifecycleRun.errorMessage,
+            }),
+            migrationItem({
                 runId: seeded.manualRun.id,
                 automationId: seeded.eventAutomation.id,
                 expectedRunRevision: seeded.manualRun.revision,
@@ -720,6 +802,7 @@ export async function assertAllCauseAutomationRunMigrationToE2ee(params?: Readon
     const eventTarget = targetsByRunId.get(seeded.eventRun.id)!;
     const conversationTarget = targetsByRunId.get(seeded.conversationRun.id)!;
     const scheduledTarget = targetsByRunId.get(seeded.scheduledRun.id)!;
+    const lifecycleTarget = targetsByRunId.get(seeded.lifecycleRun.id)!;
     const manualTarget = targetsByRunId.get(seeded.manualRun.id)!;
     const templatesByAutomationId = new Map(
         directive.templates.map((template) => [template.automationId, template] as const),
@@ -751,6 +834,13 @@ export async function assertAllCauseAutomationRunMigrationToE2ee(params?: Readon
         where: { id: seeded.scheduledRun.id },
         select: runContentSelect,
     })).resolves.toEqual(expectedMigratedRun(seeded.scheduledRun, scheduledTarget!));
+    // A Session lifecycle Run is a full cause participant: its immutable
+    // policy/request columns must survive the transition census, the staged
+    // source match, and the exact cause-guarded update.
+    await expect(db.automationRun.findUniqueOrThrow({
+        where: { id: seeded.lifecycleRun.id },
+        select: runContentSelect,
+    })).resolves.toEqual(expectedMigratedRun(seeded.lifecycleRun, lifecycleTarget!));
     await expect(db.automationRun.findUniqueOrThrow({
         where: { id: seeded.manualRun.id },
         select: runContentSelect,

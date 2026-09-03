@@ -2,21 +2,38 @@ import { describe, expect, it, vi } from "vitest";
 
 import { loadAutomationSessionLifecycleStatusProjections } from "./automationSessionLifecycleStatusProjection";
 
-function lifecycleTrigger(id: string, sourceTurnId: string, enabled = true) {
+function lifecycleTrigger(
+    id: string,
+    sourceTurnId: string,
+    enabled = true,
+    consumption: Readonly<{
+        remainingOccurrences?: number;
+        events?: readonly string[];
+        revision?: number;
+    }> = {},
+) {
     return {
         id,
         automationId: "automation-active",
         kind: "sessionLifecycle",
         enabled,
-        revision: 1,
+        revision: consumption.revision ?? 1,
         deletedAt: null,
-        sessionLifecycleEventsJson: JSON.stringify(["parentTurnCompleted"]),
+        sessionLifecycleEventsJson: JSON.stringify(
+            consumption.events ?? ["parentTurnCompleted"],
+        ),
         sessionLifecyclePolicyKind: "currentTurn",
         sessionLifecycleMatchCount: null,
-        remainingOccurrences: 1,
+        // An exact-turn registration keeps one occurrence until it is consumed.
+        remainingOccurrences: consumption.remainingOccurrences ?? 1,
         sourceSessionId: "source-session",
         sourceTurnId,
     } as const;
+}
+
+/** An exact-turn registration that already consumed its single occurrence. */
+function consumedLifecycleTrigger(id: string, sourceTurnId: string) {
+    return lifecycleTrigger(id, sourceTurnId, true, { remainingOccurrences: 0 });
 }
 
 describe("Automation Session lifecycle status projection", () => {
@@ -25,6 +42,7 @@ describe("Automation Session lifecycle status projection", () => {
             { sessionId: "source-session", turnId: "turn-waiting", status: "in_progress" },
             { sessionId: "source-session", turnId: "turn-paused", status: "in_progress" },
             { sessionId: "source-session", turnId: "turn-failed", status: "failed" },
+            { sessionId: "source-session", turnId: "turn-failed-with-run", status: "failed" },
             // The receipt remains terminal truth even if a later recovery path
             // leaves the mutable turn row looking in progress again.
             { sessionId: "source-session", turnId: "turn-cancelled", status: "in_progress" },
@@ -40,8 +58,24 @@ describe("Automation Session lifecycle status projection", () => {
                 turnId: "turn-cancelled",
                 action: "cancel",
             },
+            {
+                id: "receipt-failed-with-run",
+                sessionId: "source-session",
+                turnId: "turn-failed-with-run",
+                action: "fail",
+            },
         ]);
-        const automationRunFindMany = vi.fn(async () => [
+        const automationRuns = [
+            // This newer historical Run belongs to a prior registration of
+            // the same trigger. It must not project onto the current turn.
+            {
+                id: "run-finished-without-run-historical",
+                state: "running",
+                triggerId: "trigger-finished-without-run",
+                causeSessionLifecycleEvent: "parentTurnCompleted",
+                causeSourceSessionId: "source-session",
+                causeSourceTurnId: "turn-from-prior-registration",
+            },
             {
                 id: "run-triggered",
                 state: "queued",
@@ -66,17 +100,46 @@ describe("Automation Session lifecycle status projection", () => {
                 causeSourceSessionId: "source-session",
                 causeSourceTurnId: "turn-finished",
             },
-        ]);
+            // The trigger selected the failure Event and really produced this
+            // Run from it. Terminal source truth must not hide it.
+            {
+                id: "run-failed-with-run",
+                state: "succeeded",
+                triggerId: "trigger-failed-with-run",
+                causeSessionLifecycleEvent: "parentTurnFailed",
+                causeSourceSessionId: "source-session",
+                causeSourceTurnId: "turn-failed-with-run",
+            },
+        ];
+        const automationRunFindMany = vi.fn(async (query: {
+            where: {
+                OR: Array<{
+                    triggerId: string;
+                    causeSourceSessionId?: string;
+                    causeSourceTurnId?: string;
+                }>;
+            };
+        }) => automationRuns.filter((run) => query.where.OR.some((candidate) => (
+            candidate.triggerId === run.triggerId
+            && (candidate.causeSourceSessionId === undefined
+                || candidate.causeSourceSessionId === run.causeSourceSessionId)
+            && (candidate.causeSourceTurnId === undefined
+                || candidate.causeSourceTurnId === run.causeSourceTurnId)
+        ))));
         const activeTriggers = [
             lifecycleTrigger("trigger-waiting", "turn-waiting"),
             lifecycleTrigger("trigger-paused", "turn-paused", false),
             lifecycleTrigger("trigger-failed", "turn-failed"),
+            lifecycleTrigger("trigger-failed-with-run", "turn-failed-with-run", true, {
+                events: ["parentTurnCompleted", "parentTurnFailed"],
+                remainingOccurrences: 0,
+            }),
             lifecycleTrigger("trigger-cancelled", "turn-cancelled"),
             lifecycleTrigger("trigger-unavailable", "turn-unavailable"),
-            lifecycleTrigger("trigger-finished-without-run", "turn-finished-without-run"),
-            lifecycleTrigger("trigger-triggered", "turn-triggered"),
-            lifecycleTrigger("trigger-running", "turn-running"),
-            lifecycleTrigger("trigger-finished", "turn-finished"),
+            consumedLifecycleTrigger("trigger-finished-without-run", "turn-finished-without-run"),
+            consumedLifecycleTrigger("trigger-triggered", "turn-triggered"),
+            consumedLifecycleTrigger("trigger-running", "turn-running"),
+            consumedLifecycleTrigger("trigger-finished", "turn-finished"),
         ];
 
         const projection = await loadAutomationSessionLifecycleStatusProjections({
@@ -97,6 +160,7 @@ describe("Automation Session lifecycle status projection", () => {
             "trigger-waiting": { state: "waiting", runId: null },
             "trigger-paused": { state: "paused", runId: null },
             "trigger-failed": { state: "sourceFailed", runId: null },
+            "trigger-failed-with-run": { state: "finished", runId: "run-failed-with-run" },
             "trigger-cancelled": { state: "sourceCancelled", runId: null },
             "trigger-unavailable": { state: "sourceUnavailable", runId: null },
             "trigger-finished-without-run": { state: "finished", runId: null },
@@ -107,6 +171,100 @@ describe("Automation Session lifecycle status projection", () => {
         expect(sessionTurnFindMany).toHaveBeenCalledTimes(1);
         expect(receiptFindMany).toHaveBeenCalledTimes(1);
         expect(automationRunFindMany).toHaveBeenCalledTimes(1);
+        expect(automationRunFindMany).toHaveBeenCalledWith(expect.objectContaining({
+            where: expect.objectContaining({
+                OR: expect.arrayContaining([{
+                    triggerId: "trigger-finished-without-run",
+                    causeSourceSessionId: "source-session",
+                    causeSourceTurnId: "turn-finished-without-run",
+                }]),
+            }),
+        }));
+    });
+
+    it("never binds a Run from an earlier registration of the same exact turn", async () => {
+        const sourceTurnId = "turn-rearmed";
+        // The prior registration selected the attention Event and produced this
+        // Run while the same turn was still in progress. The current
+        // registration selects a different Event and has its full budget, so
+        // it is armed and has produced nothing yet. The Run's trigger revision
+        // cannot decide this: every trigger write advances it, including the
+        // pause/resume edits that legitimately keep a produced Run bound.
+        const priorRegistrationRun = {
+            id: "run-prior-registration",
+            state: "running",
+            triggerId: "trigger-rearmed",
+            causeSessionLifecycleEvent: "userActionRequired",
+            causeSourceSessionId: "source-session",
+            causeSourceTurnId: sourceTurnId,
+        };
+        const projection = await loadAutomationSessionLifecycleStatusProjections({
+            automations: [{
+                id: "automation-active",
+                enabled: true,
+                triggers: [lifecycleTrigger("trigger-rearmed", sourceTurnId, true, {
+                    events: ["parentTurnCompleted"],
+                    remainingOccurrences: 1,
+                    revision: 7,
+                })],
+            }] as any,
+            tx: {
+                session: { findMany: vi.fn(async () => [{ id: "source-session" }]) },
+                sessionTurn: { findMany: vi.fn(async () => [{
+                    sessionId: "source-session",
+                    turnId: sourceTurnId,
+                    status: "in_progress",
+                }]) },
+                sessionTurnMutationReceipt: { findMany: vi.fn(async () => []) },
+                automationRun: { findMany: vi.fn(async () => [priorRegistrationRun]) },
+            } as any,
+        });
+
+        expect(projection.get("automation-active")?.get("trigger-rearmed")).toEqual({
+            state: "waiting",
+            runId: null,
+        });
+    });
+
+    it("keeps a produced Run bound to its exact-turn trigger after a later pause", async () => {
+        const sourceTurnId = "turn-paused-after-run";
+        const projection = await loadAutomationSessionLifecycleStatusProjections({
+            automations: [{
+                id: "automation-active",
+                enabled: true,
+                triggers: [lifecycleTrigger(
+                    "trigger-paused-after-run",
+                    sourceTurnId,
+                    false,
+                    // Pause preserves the consumed budget and the selected
+                    // Events, so the Run this registration produced stays its
+                    // outcome.
+                    { remainingOccurrences: 0, revision: 9 },
+                )],
+            }] as any,
+            tx: {
+                session: { findMany: vi.fn(async () => [{ id: "source-session" }]) },
+                sessionTurn: { findMany: vi.fn(async () => [{
+                    sessionId: "source-session",
+                    turnId: sourceTurnId,
+                    status: "completed",
+                }]) },
+                sessionTurnMutationReceipt: { findMany: vi.fn(async () => []) },
+                automationRun: { findMany: vi.fn(async () => [{
+                    id: "run-paused-after-run",
+                    state: "succeeded",
+                    triggerId: "trigger-paused-after-run",
+                    causeSessionLifecycleEvent: "parentTurnCompleted",
+                    causeSourceSessionId: "source-session",
+                    causeSourceTurnId: sourceTurnId,
+                }]) },
+            } as any,
+        });
+
+        expect(projection.get("automation-active")?.get("trigger-paused-after-run")).toEqual({
+            state: "finished",
+            runId: "run-paused-after-run",
+        });
     });
 
     it("derives a globally disabled Automation as paused without changing its trigger", async () => {

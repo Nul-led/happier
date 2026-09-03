@@ -584,7 +584,10 @@ describe("automationCrudService (integration)", () => {
                 watcherPluginId: true,
                 watcherMaterializationId: true,
                 definitionEnvelope: true,
-                sessionLifecycleEvent: true,
+                sessionLifecycleEventsJson: true,
+                sessionLifecyclePolicyKind: true,
+                sessionLifecycleMatchCount: true,
+                remainingOccurrences: true,
                 sourceSessionId: true,
                 sourceTurnId: true,
             },
@@ -608,7 +611,10 @@ describe("automationCrudService (integration)", () => {
             watcherPluginId: null,
             watcherMaterializationId: null,
             definitionEnvelope: null,
-            sessionLifecycleEvent: null,
+            sessionLifecycleEventsJson: null,
+            sessionLifecyclePolicyKind: null,
+            sessionLifecycleMatchCount: null,
+            remainingOccurrences: null,
             sourceSessionId: null,
             sourceTurnId: null,
         });
@@ -756,7 +762,7 @@ describe("automationCrudService (integration)", () => {
 
     it("keeps released V2 manual retries on their predecessor key without a canonical-key dual write", async () => {
         const account = await db.account.create({
-            data: { encryptionMode: "plain" }, select: { id: true },
+            data: createSignedAccountContentBinding(), select: { id: true },
         });
         const legacy = await createAutomation({
             accountId: account.id,

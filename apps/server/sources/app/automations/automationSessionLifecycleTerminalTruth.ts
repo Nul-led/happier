@@ -6,6 +6,21 @@ export const AUTOMATION_SESSION_LIFECYCLE_TERMINAL_NO_RUN_ACTIONS = [
     "end_session",
 ] as const;
 
+/**
+ * Every canonical Session-turn mutation action whose settlement can produce a
+ * lifecycle occurrence and therefore an Automation Run insert. The occurrence
+ * uniqueness constraint is the admission concurrency owner, so each of these
+ * settlements must be able to restart and rejoin instead of failing the turn.
+ */
+const AUTOMATION_SESSION_LIFECYCLE_OCCURRENCE_ACTIONS: readonly string[] = [
+    "complete",
+    ...AUTOMATION_SESSION_LIFECYCLE_TERMINAL_NO_RUN_ACTIONS,
+];
+
+export function producesAutomationSessionLifecycleOccurrence(action: string): boolean {
+    return AUTOMATION_SESSION_LIFECYCLE_OCCURRENCE_ACTIONS.includes(action);
+}
+
 /** Reads canonical Session settlement history for the exact one-off condition. */
 export async function hasAppliedSessionLifecycleTerminalNoRunReceiptTx(params: Readonly<{
     tx: Tx;

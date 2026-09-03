@@ -11,7 +11,7 @@ import { inTx } from "@/storage/inTx";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
 
 import { removeAutomationMachineAssignmentsTx, AutomationMachineAssignmentRemovalFenceUnavailableError } from "./automationMachineAssignmentRemoval";
-import { admitCompletedParentTurnAutomationRunsTx } from "./automationSessionLifecycleAdmission";
+import { admitSessionLifecycleAutomationRunsTx } from "./automationSessionLifecycleAdmission";
 import { runAutomationNow } from "./automationCrudService";
 import { createSignedAccountContentBinding } from "@/testkit/accountEncryption";
 
@@ -154,7 +154,10 @@ describe("automation machine-assignment removal (integration)", () => {
                                 : {}),
                             ...(params.trigger.kind === "sessionLifecycle"
                                 ? {
-                                    sessionLifecycleEvent: "parentTurnCompleted" as const,
+                                    sessionLifecycleEventsJson: JSON.stringify(["parentTurnCompleted"]),
+                                    sessionLifecyclePolicyKind: "currentTurn" as const,
+                                    sessionLifecycleMatchCount: null,
+                                    remainingOccurrences: 1,
                                     sourceSessionId: params.trigger.sourceSessionId ?? null,
                                     sourceTurnId: params.trigger.sourceTurnId ?? null,
                                 }
@@ -732,12 +735,17 @@ describe("automation machine-assignment removal (integration)", () => {
         // is outside the enabled membership set, so canonical parent-turn
         // settlement admits nothing, creates no Run, and does not roll back
         // or mutate the source terminal truth.
-        const results = await inTx(async (tx) => await admitCompletedParentTurnAutomationRunsTx({
+        const results = await inTx(async (tx) => await admitSessionLifecycleAutomationRunsTx({
             tx,
             accountId,
-            sourceSessionId,
-            sourceTurnId,
-            occurredAt: Date.now(),
+            occurrence: {
+                v: 1,
+                kind: "sessionLifecycle",
+                event: "parentTurnCompleted",
+                sourceSessionId,
+                sourceTurnId,
+                occurredAt: Date.now(),
+            },
         }));
         expect(results).toEqual([]);
         await expect(db.automationRun.count({ where: { automationId } })).resolves.toBe(0);

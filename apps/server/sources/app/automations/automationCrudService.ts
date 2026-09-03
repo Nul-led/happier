@@ -40,6 +40,7 @@ import {
     validateAutomationReplyHandoffStoredEnvelopeOuterForModeV1,
     validateAutomationStoredDefinitionExecutionRecipeOuterV1,
     type AutomationRunCause,
+    type AutomationSessionLifecycleTrigger,
     type AutomationDefinitionReconcileRequest,
     type AutomationStoredDefinitionExecutionRecipeV1,
     type AutomationTriggerCreateRequest,
@@ -68,6 +69,7 @@ import {
 import {
     automationDefinitionListItemSelect,
     automationListItemSelect,
+    automationRunCauseSelect,
     automationRunDetailSelect,
     automationRunV2ListItemSelect,
     automationRunV3ListItemSelect,
@@ -1376,22 +1378,9 @@ function automationRunMigrationCandidateWhere(
 }
 
 const automationRunMigrationParticipantSelect = {
+    ...automationRunCauseSelect,
     id: true,
     automationId: true,
-    triggerId: true,
-    causeKind: true,
-    causeTriggerKind: true,
-    causeTriggerRevision: true,
-    causeOccurredAt: true,
-    causeEventPluginId: true,
-    causeEventLocalId: true,
-    causeScheduledFor: true,
-    causeSessionLifecycleEvent: true,
-    causeSourceSessionId: true,
-    causeSourceTurnId: true,
-    causeSourceSelectorId: true,
-    createdAt: true,
-    occurrenceKey: true,
     occurrenceEvidenceEqualityTag: true,
     triggerEvidenceEnvelope: true,
     executionInputEnvelope: true,
@@ -1821,33 +1810,7 @@ async function loadAutomationAccountEncryptionTransitionRunsByIdsInTx(
     if (ids.length === 0) return [];
     return await tx.automationRun.findMany({
         where: { accountId, id: { in: [...ids] } },
-        select: {
-            id: true,
-            automationId: true,
-            triggerId: true,
-            causeKind: true,
-            causeTriggerKind: true,
-            causeTriggerRevision: true,
-            causeOccurredAt: true,
-            causeEventPluginId: true,
-            causeEventLocalId: true,
-            causeScheduledFor: true,
-            causeSessionLifecycleEvent: true,
-            causeSourceSessionId: true,
-            causeSourceTurnId: true,
-            causeSourceSelectorId: true,
-            createdAt: true,
-            occurrenceKey: true,
-            occurrenceEvidenceEqualityTag: true,
-            triggerEvidenceEnvelope: true,
-            executionInputEnvelope: true,
-            resultEnvelope: true,
-            replyContextEnvelope: true,
-            replyHandoffReceiptEnvelope: true,
-            errorMessage: true,
-            summaryCiphertext: true,
-            revision: true,
-        },
+        select: automationRunMigrationParticipantSelect,
     });
 }
 
@@ -2864,11 +2827,9 @@ async function clearLoadedAutomationsForAccountInTx(params: Readonly<{
     }
 
     if (params.rows.some((automation) =>
-        automation.enabled
-        && automation.deletedAt === null
+        automation.deletedAt === null
         && automation.triggers.some((trigger) => (
             trigger.kind === "pluginEvent"
-            && trigger.enabled
             && trigger.deletedAt === null
         ))
     )) {
@@ -3583,8 +3544,16 @@ async function normalizeAutomationTriggerWriteTx(params: Readonly<{
     if (params.input.kind === "sessionLifecycle") {
         const automationExistingSessionId =
             readAutomationExistingSessionTargetId(params.automation);
+        // Enablement is not part of the registration, so the comparison and
+        // the encoder both consume the definition alone.
+        const submittedDefinition: AutomationSessionLifecycleTrigger = {
+            kind: "sessionLifecycle",
+            sourceSessionId: params.input.sourceSessionId,
+            events: params.input.events,
+            policy: params.input.policy,
+        };
         const retainsRegistration = params.existing?.kind === "sessionLifecycle"
-            && automationSessionLifecycleConfigurationsEqual(params.existing, params.input);
+            && automationSessionLifecycleConfigurationsEqual(params.existing, submittedDefinition);
         // Source/target inequality is a property of the effective recipe, not
         // of registration freshness: every normalized lifecycle write re-proves
         // it (and target-ID presence) against the current execution target, so
@@ -3597,7 +3566,8 @@ async function normalizeAutomationTriggerWriteTx(params: Readonly<{
             automationExistingSessionId,
             sourceSessionId: params.input.sourceSessionId,
         });
-        const mustRegister = !retainsRegistration;
+        const reArms = params.existing?.enabled === false && params.input.enabled;
+        const mustRegister = !retainsRegistration || reArms;
         const lifecycle = mustRegister
             ? await validateSessionLifecycleTriggerRegistrationTx({
                 tx: params.tx,
@@ -3606,7 +3576,7 @@ async function normalizeAutomationTriggerWriteTx(params: Readonly<{
                 automationExistingSessionId,
                 input: params.input,
             })
-            : params.input;
+            : submittedDefinition;
         const encoded = encodeAutomationSessionLifecycleConfiguration(lifecycle);
         return {
             isEvent: false,

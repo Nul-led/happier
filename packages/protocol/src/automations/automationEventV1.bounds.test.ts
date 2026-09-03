@@ -30,8 +30,6 @@ import {
   AutomationStoredContentEnvelopeV1Schema,
   MAX_AUTOMATION_CONVERSATION_ADMIT_TEXT_UTF8_BYTES,
   MAX_AUTOMATION_EVENT_FILTER_CLAUSES,
-  MAX_AUTOMATION_EVENT_ADMIT_DEFINITIONS_PER_CALL,
-  MAX_AUTOMATION_EVENT_ADMIT_HTTP_REQUEST_UTF8_BYTES,
   MAX_AUTOMATION_EVENT_FILTER_IN_VALUES,
   MAX_AUTOMATION_EVENT_FILTER_VALUE_CODE_POINTS,
   MAX_AUTOMATION_EVENT_PAYLOAD_UTF8_BYTES,
@@ -44,7 +42,6 @@ import {
   MAX_AUTOMATION_SOURCE_RETRY_AFTER_MS,
   MAX_AUTOMATION_STORED_ENVELOPE_UTF8_BYTES,
   PluginEventAutomationSetupResultV1Schema,
-  readAutomationEventAdmitHttpRequestCanonicalUtf8ByteLengthV1,
 } from './automationEventV1.js';
 import {
   PluginEventAutomationSetupResultV1Schema as portablePluginEventAutomationSetupResultV1Schema,
@@ -349,9 +346,10 @@ describe('Automation event V1 exact bounds', () => {
     }).success).toBe(false);
 
     // The semantic Action is the complete adopted snapshot and deliberately
-    // has no aggregate definition ceiling. E3 partitions it into the bounded
-    // private calls below; retaining the former Account-level 10,000 cap here
-    // would reject a valid snapshot before that canonical partitioner runs.
+    // has no aggregate definition ceiling; the private requests derived from
+    // it are bounded per definition and by the owning server transport limit.
+    // Retaining the former Account-level 10,000 cap here would reject a valid
+    // snapshot before admission.
     const definitionsBeyondFormerUnapprovedAggregateLimit = Array.from(
       { length: 10_001 },
       (_, index) => ({
@@ -373,17 +371,21 @@ describe('Automation event V1 exact bounds', () => {
       ],
     }).success).toBe(true);
 
-    const admitDefinitionsAtCallMax = definitionsBeyondFormerUnapprovedAggregateLimit.slice(
-      0,
-      MAX_AUTOMATION_EVENT_ADMIT_DEFINITIONS_PER_CALL,
-    );
+    // The private HTTP request transports one complete contiguous slice of
+    // the adopted snapshot. Every definition remains individually bounded, and
+    // neither a per-call count nor the 500-row source-list page cardinality is
+    // copied as an admission ceiling.
     expect(AutomationEventAdmitHttpInputV1Schema.safeParse({
       ...admitInput({}),
-      definitions: admitDefinitionsAtCallMax,
+      definitions: definitionsBeyondFormerUnapprovedAggregateLimit.slice(0, 500),
     }).success).toBe(true);
     expect(AutomationEventAdmitHttpInputV1Schema.safeParse({
       ...admitInput({}),
-      definitions: [...admitDefinitionsAtCallMax, definitionsBeyondFormerUnapprovedAggregateLimit[15]],
+      definitions: definitionsBeyondFormerUnapprovedAggregateLimit.slice(0, 501),
+    }).success).toBe(true);
+    expect(AutomationEventAdmitHttpInputV1Schema.safeParse({
+      ...admitInput({}),
+      definitions: [],
     }).success).toBe(false);
 
     const actionResultsBeyondFormerLimit = Array.from(
@@ -395,10 +397,6 @@ describe('Automation event V1 exact bounds', () => {
       results: [...actionResultsBeyondFormerLimit, actionResultsBeyondFormerLimit[0]],
     }).success).toBe(true);
 
-    const callResultsAtMax = actionResultsBeyondFormerLimit.slice(
-      0,
-      MAX_AUTOMATION_EVENT_ADMIT_DEFINITIONS_PER_CALL,
-    );
     const readyContinuation = {
       kind: 'ready' as const,
       accountCurrentness: {
@@ -408,21 +406,19 @@ describe('Automation event V1 exact bounds', () => {
       },
     };
     expect(AutomationEventAdmitHttpResultV1Schema.safeParse({
-      results: callResultsAtMax,
+      results: actionResultsBeyondFormerLimit,
       continuation: readyContinuation,
     }).success).toBe(true);
-    expect(AutomationEventAdmitHttpResultV1Schema.safeParse({ results: callResultsAtMax }).success).toBe(false);
     expect(AutomationEventAdmitHttpResultV1Schema.safeParse({
-      results: callResultsAtMax,
+      results: actionResultsBeyondFormerLimit.slice(0, 2),
+    }).success).toBe(false);
+    expect(AutomationEventAdmitHttpResultV1Schema.safeParse({
+      results: actionResultsBeyondFormerLimit.slice(0, 2),
       continuation: { kind: 'stopped', reason: 'accountCurrentnessMoved' },
     }).success).toBe(true);
     expect(AutomationEventAdmitHttpResultV1Schema.safeParse({
-      results: callResultsAtMax,
+      results: actionResultsBeyondFormerLimit.slice(0, 2),
       continuation: { kind: 'stopped', reason: 'unknown' },
-    }).success).toBe(false);
-    expect(AutomationEventAdmitHttpResultV1Schema.safeParse({
-      results: [...callResultsAtMax, actionResultsBeyondFormerLimit[15]],
-      continuation: readyContinuation,
     }).success).toBe(false);
   }, 30_000);
 
@@ -616,9 +612,8 @@ describe('Automation event V1 exact bounds', () => {
     // This is deliberately well below the per-definition 512 KiB envelope
     // ceiling. The 500 below is the source-LIST page cardinality
     // (MAX_AUTOMATION_EVENT_SOURCE_DEFINITIONS_PER_PAGE), not an Action
-    // cardinality. One private admission call remains capped at 15
-    // (MAX_AUTOMATION_EVENT_ADMIT_DEFINITIONS_PER_CALL), while E3 may
-    // partition a complete adopted Action snapshot without an aggregate cap.
+    // cardinality: page cardinality is read pagination and is never copied as
+    // an admission ceiling.
     const request = {
       v: 1 as const,
       caller,
@@ -653,13 +648,11 @@ describe('Automation event V1 exact bounds', () => {
     };
     const admit = AutomationEventActionHttpRequestSchemasV1['automation.event.admit'];
 
-    const canonicalBytes = readAutomationEventAdmitHttpRequestCanonicalUtf8ByteLengthV1(request);
-    expect(canonicalBytes)
-      .toBeGreaterThan(MAX_AUTOMATION_EVENT_ADMIT_HTTP_REQUEST_UTF8_BYTES);
-    // r0.36 keeps the 500-item source-list page as a read concern, but a
-    // private E2 admission call must reject this oversized logical request.
-    // E3 owns deterministic complete-call partitioning before transport.
-    expect(admit.safeParse(request).success).toBe(false);
+    // Every definition is individually within its stored-content bound, so the
+    // complete request is one bounded complete request. Request-body size is
+    // owned by the server transport body limit, not by a Protocol count or
+    // aggregate byte product.
+    expect(admit.safeParse(request).success).toBe(true);
   }, 30_000);
 });
 

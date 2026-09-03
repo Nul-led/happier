@@ -10,6 +10,7 @@ import {
     parseAutomationStoredDefinitionExecutionRecipeV1,
     serializeAutomationRunExecutionRecipeV1,
     toAutomationRunExecutionInputV1Origin,
+    automationReplyHandoffIdForRunV1,
     type AutomationRunCause,
 } from "@happier-dev/protocol";
 
@@ -60,10 +61,6 @@ export type AutomationRunReplyHandoffAdmission = Readonly<{
     targetMaterializationId: string;
 }>;
 
-function replyHandoffIdForRun(runId: string): string {
-    return `automation-reply-handoff:${runId}`;
-}
-
 function sameOccurrenceCause(left: AutomationRunCause, right: AutomationRunCause): boolean {
     // A manual idempotency key identifies the invocation. Retry wall-clock
     // time is not a second immutable fact and must not make that retry collide.
@@ -106,36 +103,42 @@ function targetTypeForRecipe(recipe: Readonly<{ target: Readonly<{ kind: string 
     return "execution_run" as const;
 }
 
+/**
+ * The one persisted occurrence identity for an admission request. Trigger and
+ * Conversation causes carry the key their evidence already derived; an
+ * idempotent V3 manual invocation derives the canonical manual key so a lost
+ * response rejoins the same Run. A non-idempotent V3 invocation and a retained
+ * released-V2 manual retry hold no occurrence key: V2 keeps its narrow legacy
+ * idempotency column instead.
+ */
+function admissionOccurrenceKey(params: Readonly<{
+    automationId: string;
+    cause: AutomationRunCause;
+    manualIdempotencyKey?: string;
+}>): string | null {
+    if (params.cause.kind !== "manual") return params.cause.occurrenceKey;
+    return params.manualIdempotencyKey
+        ? deriveAutomationManualOccurrenceKeyV1({
+            automationId: params.automationId,
+            idempotencyKey: params.manualIdempotencyKey,
+        })
+        : null;
+}
+
 function occurrenceDiscriminator(params: Readonly<{
     automationId: string;
     cause: AutomationRunCause;
     manualIdempotencyKey?: string;
     legacyV2ManualIdempotencyKey?: string;
 }>): Prisma.AutomationRunWhereInput | null {
-    return params.cause.kind === "trigger"
-        ? { triggerId: params.cause.triggerId, occurrenceKey: params.cause.occurrenceKey }
-        : params.cause.kind === "conversation"
-            ? {
-                automationId: params.automationId,
-                causeKind: "conversation",
-                occurrenceKey: params.cause.occurrenceKey,
-            }
-            : params.manualIdempotencyKey
-                ? {
-                    automationId: params.automationId,
-                    causeKind: "manual",
-                    occurrenceKey: deriveAutomationManualOccurrenceKeyV1({
-                        automationId: params.automationId,
-                        idempotencyKey: params.manualIdempotencyKey,
-                    }),
-                }
-                : params.legacyV2ManualIdempotencyKey
-                    ? {
-                        automationId: params.automationId,
-                        causeKind: "manual",
-                        legacyManualIdempotencyKey: params.legacyV2ManualIdempotencyKey,
-                    }
-                : null;
+    const occurrenceKey = admissionOccurrenceKey(params);
+    if (occurrenceKey !== null) return { automationId: params.automationId, occurrenceKey };
+    return params.legacyV2ManualIdempotencyKey
+        ? {
+            automationId: params.automationId,
+            legacyManualIdempotencyKey: params.legacyV2ManualIdempotencyKey,
+        }
+        : null;
 }
 
 function findExistingRun(params: Readonly<{
@@ -146,24 +149,15 @@ function findExistingRun(params: Readonly<{
     legacyV2ManualIdempotencyKey?: string;
     occurrenceEvidenceEqualityTag?: string | null;
 }>): AutomationRunItem | null {
+    // The `(automationId, occurrenceKey)` unique is the single rejoin owner,
+    // so the key alone selects the candidate row. A same-key row admitted
+    // under a different cause is a collision, not a second namespace, and the
+    // immutable-evidence check below rejects it.
+    const occurrenceKey = admissionOccurrenceKey(params);
     const existing = params.rows.find((row) => {
         if (row.automationId !== params.automationId) return false;
-        if (params.cause.kind === "trigger") {
-            return row.triggerId === params.cause.triggerId
-                && row.occurrenceKey === params.cause.occurrenceKey;
-        }
-        if (params.cause.kind === "conversation") {
-            return row.causeKind === "conversation"
-                && row.occurrenceKey === params.cause.occurrenceKey;
-        }
-        if (params.manualIdempotencyKey !== undefined) {
-            return row.causeKind === "manual"
-                && row.occurrenceKey === deriveAutomationManualOccurrenceKeyV1({
-                    automationId: params.automationId,
-                    idempotencyKey: params.manualIdempotencyKey,
-                });
-        }
-        return params.legacyV2ManualIdempotencyKey !== undefined
+        if (occurrenceKey !== null) return row.occurrenceKey === occurrenceKey;
+        return Boolean(params.legacyV2ManualIdempotencyKey)
             && row.causeKind === "manual"
             && row.legacyManualIdempotencyKey === params.legacyV2ManualIdempotencyKey;
     }) ?? null;
@@ -354,14 +348,14 @@ async function insertPreparedAutomationRunTx(params: Readonly<{
             accountId: params.accountId,
             state: "queued",
             ...causeFields,
-            ...(cause.kind === "manual" && request.manualIdempotencyKey
-                ? {
-                    occurrenceKey: deriveAutomationManualOccurrenceKeyV1({
-                        automationId: request.automationId,
-                        idempotencyKey: request.manualIdempotencyKey,
-                    }),
-                }
-                : {}),
+            // One derivation owner for the persisted identity and the rejoin
+            // probe: the cause codec cannot see a manual invocation's
+            // idempotency key, so it writes null and this overrides it.
+            occurrenceKey: admissionOccurrenceKey({
+                automationId: request.automationId,
+                cause,
+                manualIdempotencyKey: request.manualIdempotencyKey,
+            }),
             legacyManualIdempotencyKey: cause.kind === "manual"
                 ? request.legacyV2ManualIdempotencyKey ?? null
                 : null,
@@ -388,7 +382,7 @@ async function insertPreparedAutomationRunTx(params: Readonly<{
                     replyHandoffTargetMachineId: request.replyHandoff.targetMachineId,
                     replyHandoffTargetMachineInstallationId: request.replyHandoff.targetMachineInstallationId,
                     replyHandoffTargetMaterializationId: request.replyHandoff.targetMaterializationId,
-                    replyHandoffId: replyHandoffIdForRun(runId),
+                    replyHandoffId: automationReplyHandoffIdForRunV1(runId),
                     replyHandoffState: "awaitingResult" as const,
                 }
                 : {}),
@@ -454,11 +448,11 @@ export async function admitAutomationRunsTx(params: Readonly<{
         ? []
         : (await Promise.all(automationPortableQueryChunks({
             values: occurrenceDiscriminators,
-            // Trigger occurrences bind two columns, while Conversation and
-            // released manual idempotency bind three. Account ownership adds
-            // one fixed predicate. Use the worst canonical arm so a mixed
-            // batch cannot cross SQLite's provider bind boundary.
-            bindingsPerValue: 3,
+            // Every arm binds two columns: the canonical
+            // `(automationId, occurrenceKey)` identity, or the retained V2
+            // `(automationId, legacyManualIdempotencyKey)` seam. Account
+            // ownership adds one fixed predicate.
+            bindingsPerValue: 2,
             fixedBindings: 1,
         }).map((chunk) => params.tx.automationRun.findMany({
             where: { accountId: params.accountId, OR: [...chunk] },
@@ -519,7 +513,13 @@ export async function admitAutomationRunsTx(params: Readonly<{
         kind: "prepared";
         admission: PreparedAutomationRunAdmission;
     }> => result.kind === "prepared" && consumesEventConversationCapacity(result.admission.cause));
-    let remainingCapacity = MAX_NON_TERMINAL_EVENT_CONVERSATION_RUNS_PER_ACCOUNT;
+    // One bounded request is net-new-capacity atomic. Exact rejoins are already
+    // decided above and consume nothing, so only the net-new remainder is
+    // counted; if the Account cannot hold all of it, none of it is admitted.
+    // Admitting a request prefix would make a caller's checkpoint safety depend
+    // on positional ordering and leave a partially consumed request whose
+    // blocked positions have no committed row to rejoin on retry.
+    let capacityBlocksNetNewRequest = false;
     if (netNewCapacityAdmissions.length > 0) {
         const occupied = await params.tx.automationRun.count({
             where: {
@@ -531,10 +531,11 @@ export async function admitAutomationRunsTx(params: Readonly<{
                 state: { notIn: [...AUTOMATION_RUN_TERMINAL_STATES] },
             },
         });
-        remainingCapacity = Math.max(
+        const remainingCapacity = Math.max(
             0,
             MAX_NON_TERMINAL_EVENT_CONVERSATION_RUNS_PER_ACCOUNT - occupied,
         );
+        capacityBlocksNetNewRequest = netNewCapacityAdmissions.length > remainingCapacity;
     }
     const results: AutomationRunAdmissionResult[] = [];
     for (const result of prepared) {
@@ -542,20 +543,18 @@ export async function admitAutomationRunsTx(params: Readonly<{
             results.push(result);
             continue;
         }
-        const consumesCapacity = consumesEventConversationCapacity(result.admission.cause);
-        if (consumesCapacity && remainingCapacity === 0) {
+        if (
+            capacityBlocksNetNewRequest
+            && consumesEventConversationCapacity(result.admission.cause)
+        ) {
             results.push({ kind: "ineligible", reason: "capacity" });
             continue;
         }
-        const inserted = await insertPreparedAutomationRunTx({
+        results.push(await insertPreparedAutomationRunTx({
             tx: params.tx,
             accountId: params.accountId,
             admission: result.admission,
-        });
-        results.push(inserted);
-        if (consumesCapacity && inserted.kind === "admitted") {
-            remainingCapacity -= 1;
-        }
+        }));
     }
     return results;
 }

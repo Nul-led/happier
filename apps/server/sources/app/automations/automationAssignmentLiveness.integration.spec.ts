@@ -17,7 +17,7 @@ import { runAutomationNow } from "./automationCrudService";
 import { claimAutomationRun } from "./automationClaimService";
 import { admitAutomationRunTx } from "./automationRunAdmissionService";
 import { admitDueAutomationScheduleTriggerTx } from "./automationRunQueueService";
-import { admitCompletedParentTurnAutomationRunsTx } from "./automationSessionLifecycleAdmission";
+import { admitSessionLifecycleAutomationRunsTx } from "./automationSessionLifecycleAdmission";
 
 /**
  * Assignment-liveness defense in depth. The definition writers reject an
@@ -153,7 +153,10 @@ describe("automation assignment liveness (integration)", () => {
                                 : {}),
                             ...(params.trigger.kind === "sessionLifecycle"
                                 ? {
-                                    sessionLifecycleEvent: "parentTurnCompleted" as const,
+                                    sessionLifecycleEventsJson: JSON.stringify(["parentTurnCompleted"]),
+                                    sessionLifecyclePolicyKind: "currentTurn" as const,
+                                    sessionLifecycleMatchCount: null,
+                                    remainingOccurrences: 1,
                                     sourceSessionId: params.trigger.sourceSessionId ?? null,
                                     sourceTurnId: params.trigger.sourceTurnId ?? null,
                                 }
@@ -299,12 +302,17 @@ describe("automation assignment liveness (integration)", () => {
         });
         const occurredAt = Date.now();
 
-        const results = await inTx(async (tx) => await admitCompletedParentTurnAutomationRunsTx({
+        const results = await inTx(async (tx) => await admitSessionLifecycleAutomationRunsTx({
             tx,
             accountId,
-            sourceSessionId,
-            sourceTurnId,
-            occurredAt,
+            occurrence: {
+                v: 1,
+                kind: "sessionLifecycle",
+                event: "parentTurnCompleted",
+                sourceSessionId,
+                sourceTurnId,
+                occurredAt,
+            },
         }));
 
         expect(results).toHaveLength(1);
@@ -498,7 +506,10 @@ describe("automation assignment liveness (integration)", () => {
                         kind: "sessionLifecycle",
                         enabled: true,
                         revision: 0,
-                        sessionLifecycleEvent: "parentTurnCompleted",
+                        sessionLifecycleEventsJson: JSON.stringify(["parentTurnCompleted"]),
+                        sessionLifecyclePolicyKind: "currentTurn",
+                        sessionLifecycleMatchCount: null,
+                        remainingOccurrences: 1,
                         sourceSessionId,
                         sourceTurnId,
                     },
@@ -506,12 +517,17 @@ describe("automation assignment liveness (integration)", () => {
             },
         });
 
-        const [admission] = await inTx(async (tx) => await admitCompletedParentTurnAutomationRunsTx({
+        const [admission] = await inTx(async (tx) => await admitSessionLifecycleAutomationRunsTx({
             tx,
             accountId,
-            sourceSessionId,
-            sourceTurnId,
-            occurredAt: Date.now(),
+            occurrence: {
+                v: 1,
+                kind: "sessionLifecycle",
+                event: "parentTurnCompleted",
+                sourceSessionId,
+                sourceTurnId,
+                occurredAt: Date.now(),
+            },
         }));
         expect(admission?.result).toMatchObject({ kind: "admitted", run: { state: "queued" } });
         const runId = admission?.result.kind === "admitted" ? admission.result.run.id : null;

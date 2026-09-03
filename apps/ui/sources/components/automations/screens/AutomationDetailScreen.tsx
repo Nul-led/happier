@@ -5,6 +5,8 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import {
     type AutomationEventSourceStatusV1,
     type AutomationEventSourceCatalogStatus,
+    type AutomationRunExecutionTargetV1,
+    type AutomationTargetTypeV3,
     type AutomationTriggerListItem,
 } from '@happier-dev/protocol';
 
@@ -16,8 +18,9 @@ import {
     useAutomation,
     useAutomationRunNextCursor,
     useAutomationRuns,
+    useSessions,
 } from '@/sync/domains/state/storage';
-import type { Machine } from '@/sync/domains/state/storageTypes';
+import type { Machine, Session } from '@/sync/domains/state/storageTypes';
 import { sync } from '@/sync/sync';
 import { upsertAutomationAssignmentToggle } from '@/components/automations/screens/automationAssignmentsModel';
 import {
@@ -38,6 +41,7 @@ import { layout } from '@/components/ui/layout/layout';
 import { t } from '@/text';
 import { navigateWithBlurOnWeb } from '@/utils/platform/deferOnWeb';
 import { getMachineDisplayName, isMachineOnline } from '@/utils/sessions/machineUtils';
+import { getSessionName } from '@/utils/sessions/sessionUtils';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { Icon } from '@/components/ui/icons/Icon';
 import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
@@ -82,6 +86,49 @@ function formatDate(ms: number, unknownLabel: string): string {
         return new Date(ms).toLocaleString();
     } catch {
         return unknownLabel;
+    }
+}
+
+/**
+ * Compact target + execution-permission summary. The bounded list projection
+ * owns the target kind and the existing-Session association, so the row stays
+ * truthful while the private recipe is still unloaded, permanently unavailable,
+ * or a retained predecessor template. The recipe only adds the execution
+ * permission mode; a fact only it can supply is reported as unavailable rather
+ * than omitted, so an unreadable definition never reads as a complete summary.
+ */
+function formatAutomationTargetSummary(params: Readonly<{
+    targetType: AutomationTargetTypeV3;
+    recipeTarget: AutomationRunExecutionTargetV1 | null;
+    existingSessionId: string | null;
+    sessions: readonly Session[];
+}>): string {
+    switch (params.targetType) {
+        case 'newSession':
+            return t('automations.form.trigger.targetNewSession');
+        case 'existingSession': {
+            const sessionId = params.recipeTarget?.kind === 'existingSession'
+                ? params.recipeTarget.sessionId
+                : params.existingSessionId;
+            const session = sessionId === null
+                ? undefined
+                : params.sessions.find((candidate) => candidate.id === sessionId);
+            return [
+                t('automations.form.trigger.targetExistingSession'),
+                session
+                    ? getSessionName(session)
+                    : sessionId ?? t('common.unavailable'),
+            ].join(' · ');
+        }
+        case 'executionRun':
+            return [
+                t('automations.form.trigger.targetExecutionRun'),
+                params.recipeTarget?.kind === 'executionRun'
+                    ? t(params.recipeTarget.request.permissionMode === 'no_tools'
+                        ? 'automations.form.trigger.executionNoTools'
+                        : 'automations.form.trigger.executionReadOnly')
+                    : t('common.unavailable'),
+            ].join(' · ');
     }
 }
 
@@ -216,6 +263,11 @@ function AutomationTriggerOverview(props: Readonly<{
             && candidate.event.identity.localId === trigger.eventRef.localId
         )) ?? null
         : null;
+    // The daemon contribution catalog is already loaded on this surface; name
+    // the Event with its human title instead of the raw qualified reference.
+    const triggerGroupTitle = trigger.kind === 'pluginEvent' && currentEligibleEvent
+        ? currentEligibleEvent.event.title
+        : formatAutomationTriggerLabel(trigger);
     const payloadBrowser = buildPluginEventAutomationPayloadBrowser(currentEligibleEvent?.event.payloadSchema);
     const eventFilter = eventPrivateDetail?.storedDefinition.filter;
     const filterSummary = eventFilter === null
@@ -337,7 +389,7 @@ function AutomationTriggerOverview(props: Readonly<{
     const sourceStatus = canShowSourceSummary ? trigger.sourceStatus ?? null : null;
     const catalogStatus = canShowSourceSummary ? trigger.sourceCatalogStatus ?? null : null;
     return (
-        <ItemGroup title={formatAutomationTriggerLabel(trigger)}>
+        <ItemGroup title={triggerGroupTitle}>
             <Item
                 title={formatAutomationTriggerStatusLabel(trigger, props.automation.enabled)}
                 subtitle={technicalIdentity}
@@ -484,6 +536,7 @@ const AUTOMATION_RUN_HISTORY_PAGE_SIZE = 20;
 
 type AutomationDetailRunHistoryRow =
     | Readonly<{ kind: 'run'; key: string; run: AutomationDefinitionRun }>
+    | Readonly<{ kind: 'loading'; key: 'loading' }>
     | Readonly<{ kind: 'error'; key: 'error' }>
     | Readonly<{ kind: 'empty'; key: 'empty' }>
     | Readonly<{ kind: 'previous'; key: 'previous' }>
@@ -557,6 +610,10 @@ export function AutomationDetailScreen() {
         generation: routeGeneration,
         value: false,
     });
+    const [runHistoryLoadingState, setRunHistoryLoadingState] = React.useState<RouteScopedState<boolean>>({
+        generation: routeGeneration,
+        value: true,
+    });
     const [runHistoryAnchorState, setRunHistoryAnchorState] = React.useState<RouteScopedState<readonly string[]>>({
         generation: routeGeneration,
         value: [],
@@ -579,6 +636,8 @@ export function AutomationDetailScreen() {
         : [];
     const runHistoryFailed = runHistoryFailureState.generation === routeGeneration
         && runHistoryFailureState.value;
+    const runHistoryLoading = runHistoryLoadingState.generation !== routeGeneration
+        || runHistoryLoadingState.value;
     const runHistoryAnchorId = runHistoryAnchors.at(-1) ?? null;
     const anchoredRunHistoryIndex = runHistoryAnchorId === null
         ? 0
@@ -617,17 +676,25 @@ export function AutomationDetailScreen() {
             // turn a history transport delay into false definition staleness.
             setLoadingState({ generation: request.generation, value: false });
             setRunHistoryFailureState({ generation: request.generation, value: false });
+            setRunHistoryLoadingState({ generation: request.generation, value: true });
             await sync.fetchAutomationRuns(request.automationId);
         } catch {
             if (!isCurrentRoute(request.automationId, request.generation)) return;
             if (!authoritativeDefinitionSettled) {
                 setRefreshFailureState({ generation: request.generation, value: true });
+                // History was never requested. Settle its initial route state
+                // without claiming either a background read or a successful
+                // empty response; cached rows, when present, remain visible.
+                setRunHistoryLoadingState({ generation: request.generation, value: false });
             } else {
                 setRunHistoryFailureState({ generation: request.generation, value: true });
             }
         } finally {
             if (isCurrentRoute(request.automationId, request.generation)) {
                 setLoadingState({ generation: request.generation, value: false });
+                if (authoritativeDefinitionSettled) {
+                    setRunHistoryLoadingState({ generation: request.generation, value: false });
+                }
             }
         }
     }, [automationId, isCurrentRoute, routeGeneration]);
@@ -858,6 +925,7 @@ export function AutomationDetailScreen() {
     }, [automation, automationId, isCurrentRoute, mutationsEnabled, routeGeneration]);
 
     const unknownDate = t('automations.detail.unknownDate');
+    const sessions = useSessions() ?? [];
     const runHistoryRows = React.useMemo<readonly AutomationDetailRunHistoryRow[]>(() => {
         const next: AutomationDetailRunHistoryRow[] = visibleRunHistory.map((run) => ({
             kind: 'run',
@@ -865,11 +933,15 @@ export function AutomationDetailScreen() {
             run,
         }));
         if (runHistoryFailed) next.unshift({ kind: 'error', key: 'error' });
-        if (next.length === 0) next.push({ kind: 'empty', key: 'empty' });
+        if (next.length === 0 && !refreshFailed) {
+            next.push(runHistoryLoading
+                ? { kind: 'loading', key: 'loading' }
+                : { kind: 'empty', key: 'empty' });
+        }
         if (runHistoryAnchors.length > 0) next.push({ kind: 'previous', key: 'previous' });
         if (canShowOlderRunHistoryPage) next.push({ kind: 'loadMore', key: 'loadMore' });
         return next;
-    }, [canShowOlderRunHistoryPage, runHistoryAnchors.length, runHistoryFailed, visibleRunHistory]);
+    }, [canShowOlderRunHistoryPage, refreshFailed, runHistoryAnchors.length, runHistoryFailed, runHistoryLoading, visibleRunHistory]);
     const renderRunHistoryRow = React.useCallback(({
         item,
         index,
@@ -895,6 +967,14 @@ export function AutomationDetailScreen() {
                 ].join('\n')}
                 subtitleLines={0}
                 onPress={() => handleOpenRun(item.run.id)}
+            />
+        ) : item.kind === 'loading' ? (
+            <Item
+                testID="automation-detail-history-loading"
+                title={t('common.loading')}
+                loading
+                accessibilityLiveRegion="polite"
+                showChevron={false}
             />
         ) : item.kind === 'error' ? (
             <Item
@@ -986,6 +1066,14 @@ export function AutomationDetailScreen() {
     }
 
     const hasEnabledAssignments = automation.assignments.some((assignment) => assignment.enabled);
+    const targetSummary = formatAutomationTargetSummary({
+        targetType: automation.targetType,
+        recipeTarget: automation.detail.kind === 'available'
+            ? automation.detail.value.executionRecipe?.target ?? null
+            : null,
+        existingSessionId: automation.existingSessionId,
+        sessions,
+    });
 
     return (
         <VirtualizedList
@@ -1034,6 +1122,13 @@ export function AutomationDetailScreen() {
                             : String(automation.triggers.length)}
                         showChevron={false}
                     />
+                    <Item
+                        testID="automation-detail-target-summary"
+                        title={t('automations.form.trigger.target')}
+                        detail={targetSummary}
+                        showChevron={false}
+                    />
+
                 </ItemGroup>
 
                 {automation.triggers.map((trigger) => (

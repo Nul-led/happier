@@ -610,10 +610,115 @@ describe('AutomationPluralEditorScreen', () => {
         });
     });
 
+    it('lets the lifecycle occurrence count be cleared and commits the validated value on end-editing', async () => {
+        const { AutomationPluralEditorScreen } = await import('./AutomationPluralEditorScreen');
+        const onChange = vi.fn();
+        const original = createDraft();
+        const lifecycleTriggers = original.triggers.map((trigger): AutomationEditorTriggerDraft => (
+            trigger.clientId === 'turn-c'
+                ? {
+                    ...trigger,
+                    definition: {
+                        kind: 'sessionLifecycle',
+                        enabled: true,
+                        sourceSessionId: 'session-1',
+                        events: ['parentTurnCompleted'],
+                        policy: { kind: 'nextMatches', count: 2 },
+                    },
+                }
+                : trigger
+        ));
+        const draft: AutomationEditorDraft = {
+            ...original,
+            triggers: [...lifecycleTriggers, {
+                clientId: 'turn-e',
+                persisted: { id: AutomationTriggerIdSchema.parse('trigger-turn-e'), revision: 1 },
+                definition: {
+                    kind: 'sessionLifecycle',
+                    enabled: true,
+                    sourceSessionId: 'session-2',
+                    events: ['parentTurnCompleted'],
+                    policy: { kind: 'nextMatches', count: 2 },
+                },
+            }],
+        };
+        const screen = await renderScreen(
+            <AutomationPluralEditorScreen variant="edit" value={draft} onChange={onChange} />,
+        );
+
+        await act(async () => {
+            screen.findByProps({ testID: 'automation-trigger-row-turn-c' }).props.onPress();
+        });
+        const countInput = () => screen.findByProps({ testID: 'automation-lifecycle-match-count' });
+        expect(countInput().props.value).toBe('2');
+
+        // A partial draft belongs to this trigger row, not merely to any row
+        // with the same policy kind and committed count.
+        await act(async () => {
+            countInput().props.onChangeText('7');
+        });
+        await act(async () => {
+            screen.findByProps({ testID: 'automation-trigger-editor-done' }).props.onPress();
+        });
+        await act(async () => {
+            screen.findByProps({ testID: 'automation-trigger-row-turn-e' }).props.onPress();
+        });
+        expect(countInput().props.value).toBe('2');
+        await act(async () => {
+            screen.findByProps({ testID: 'automation-trigger-editor-done' }).props.onPress();
+        });
+        await act(async () => {
+            screen.findByProps({ testID: 'automation-trigger-row-turn-c' }).props.onPress();
+        });
+        expect(countInput().props.value).toBe('2');
+
+        // Clearing stays editable without committing a partial value.
+        await act(async () => {
+            countInput().props.onChangeText('');
+        });
+        expect(countInput().props.value).toBe('');
+        expect(onChange).not.toHaveBeenCalled();
+
+        // An empty or otherwise invalid draft reverts on end-editing.
+        await act(async () => {
+            countInput().props.onEndEditing();
+        });
+        expect(onChange).not.toHaveBeenCalled();
+        expect(countInput().props.value).toBe('2');
+
+        // A complete value typed after clearing commits on end-editing.
+        await act(async () => {
+            countInput().props.onChangeText('5');
+        });
+        expect(onChange).not.toHaveBeenCalled();
+        await act(async () => {
+            countInput().props.onEndEditing();
+        });
+
+        expect(onChange).toHaveBeenCalledTimes(1);
+        const next = onChange.mock.calls[0]?.[0] as AutomationEditorDraft;
+        expect(next.triggers[2]).toMatchObject({
+            clientId: 'turn-c',
+            persisted: { id: 'trigger-turn-c', revision: 1 },
+            isDirty: true,
+            definition: {
+                kind: 'sessionLifecycle',
+                policy: { kind: 'nextMatches', count: 5 },
+            },
+        });
+        expect(next.triggers[0]).toBe(draft.triggers[0]);
+        expect(next.triggers[1]).toBe(draft.triggers[1]);
+        expect(next.triggers[3]).toBe(draft.triggers[3]);
+        expect(next.triggers[4]).toBe(draft.triggers[4]);
+    });
+
     it('authors a selected Event set and one shared future occurrence policy', async () => {
         const { AutomationPluralEditorScreen } = await import('./AutomationPluralEditorScreen');
         function StatefulEditorHost(): React.ReactElement {
-            const [value, setValue] = React.useState(() => ({ ...createDraft(), triggers: [] }));
+            const [value, setValue] = React.useState<AutomationEditorDraft>(() => ({
+                ...createDraft(),
+                triggers: [],
+            }));
             return (
                 <AutomationPluralEditorScreen
                     variant="create"
@@ -649,6 +754,9 @@ describe('AutomationPluralEditorScreen', () => {
         await act(async () => {
             screen.findByProps({ testID: 'automation-lifecycle-match-count' }).props.onChangeText('3');
         });
+        await act(async () => {
+            screen.findByProps({ testID: 'automation-lifecycle-match-count' }).props.onEndEditing();
+        });
 
         const lifecycleRow = screen.findAll((instance) => (
             String(instance.type) === 'Item'
@@ -668,7 +776,10 @@ describe('AutomationPluralEditorScreen', () => {
         const intervalFocus = vi.fn();
         textInputFocusNodes.set('automation-trigger-interval-minutes', { focus: intervalFocus });
         function StatefulEditorHost(): React.ReactElement {
-            const [value, setValue] = React.useState(() => ({ ...createDraft(), triggers: [] }));
+            const [value, setValue] = React.useState<AutomationEditorDraft>(() => ({
+                ...createDraft(),
+                triggers: [],
+            }));
             return <AutomationPluralEditorScreen variant="edit" value={value} onChange={setValue} />;
         }
         const screen = await renderScreen(<StatefulEditorHost />);

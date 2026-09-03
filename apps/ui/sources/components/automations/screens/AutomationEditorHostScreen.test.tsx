@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
     AutomationStoredDefinitionExecutionRecipeV1Schema,
     AutomationTriggerDetailSchema,
+    type AutomationSessionLifecycleEvent,
 } from '@happier-dev/protocol';
 
 import { renderScreen } from '@/dev/testkit';
@@ -36,9 +37,19 @@ const automationState = vi.hoisted(() => ({
 const latestEditorProps = vi.hoisted(() => ({
     value: null as any,
 }));
+const preventRemoveState = vi.hoisted(() => ({
+    enabled: false,
+    handler: null as null | ((event: Readonly<{ data: Readonly<{ action: unknown }> }>) => void),
+}));
 
 vi.mock('@react-navigation/native', () => ({
-    usePreventRemove: () => undefined,
+    usePreventRemove: (
+        enabled: boolean,
+        handler: (event: Readonly<{ data: Readonly<{ action: unknown }> }>) => void,
+    ) => {
+        preventRemoveState.enabled = enabled;
+        preventRemoveState.handler = handler;
+    },
 }));
 
 vi.mock('@/components/automations/editor/AutomationPluralEditorScreen', () => ({
@@ -309,7 +320,12 @@ async function flushRender(): Promise<void> {
 
 async function mountHost(props: {
     automationId?: string;
-    exactTurnPrefill?: { sourceSessionId: string; sourceTurnId: string; sourceServerId: string } | null;
+    exactTurnPrefill?: {
+        sourceSessionId: string;
+        sourceTurnId: string;
+        sourceServerId: string;
+        events: readonly AutomationSessionLifecycleEvent[];
+    } | null;
 }) {
     const { AutomationEditorHostScreen } = await import('./AutomationEditorHostScreen');
     return await renderScreen(
@@ -325,6 +341,8 @@ describe('AutomationEditorHostScreen', () => {
         vi.clearAllMocks();
         authorityState.current = true;
         authorityCaptures.list.length = 0;
+        preventRemoveState.enabled = false;
+        preventRemoveState.handler = null;
         latestEditorProps.value = null;
         seedStoreDefinition();
         seedStorageSessions();
@@ -333,7 +351,7 @@ describe('AutomationEditorHostScreen', () => {
     it('seeds the exact observed prefill as one new row and saves through the one canonical writer', async () => {
         syncSpies.saveAutomationEditorDraft.mockResolvedValue({ id: 'automation-1' });
         const screen = await mountHost({
-            exactTurnPrefill: { sourceSessionId: 'source-session', sourceTurnId: 'turn-7', sourceServerId: 'server-1' },
+            exactTurnPrefill: { sourceSessionId: 'source-session', sourceTurnId: 'turn-7', sourceServerId: 'server-1', events: ['parentTurnCompleted'] },
         });
         await flushRender();
 
@@ -361,12 +379,142 @@ describe('AutomationEditorHostScreen', () => {
         const [savedDraft, saveOptions] = syncSpies.saveAutomationEditorDraft.mock.calls[0]!;
         expect(savedDraft.triggers[2]).toMatchObject({
             persisted: null,
-            definition: { scope: { sourceSessionId: 'source-session', sourceTurnId: 'turn-7' } },
+            definition: {
+                sourceSessionId: 'source-session',
+                policy: { kind: 'currentTurn', sourceTurnId: 'turn-7' },
+            },
         });
         expect(typeof saveOptions.isCurrent).toBe('function');
         expect(routerReplaceSpy).toHaveBeenCalledWith('/automations/automation-1');
         expect(modalAlertSpy).not.toHaveBeenCalled();
         expect(screen).toBeDefined();
+    });
+
+    it('treats a route-prefilled Event as visible unsaved intent for Cancel and native beforeRemove', async () => {
+        await mountHost({
+            exactTurnPrefill: {
+                sourceSessionId: 'source-session',
+                sourceTurnId: 'turn-7',
+                sourceServerId: 'server-1',
+                events: ['parentTurnFailed'],
+            },
+        });
+        await flushRender();
+
+        expect(latestEditorProps.value.value.triggers.at(-1)).toMatchObject({
+            persisted: null,
+            definition: { events: ['parentTurnFailed'] },
+        });
+        expect(preventRemoveState.enabled).toBe(true);
+
+        await act(async () => latestEditorProps.value.onCancel());
+        expect(routerBackSpy).not.toHaveBeenCalled();
+        expect(modalAlertSpy).toHaveBeenCalledTimes(1);
+        const cancelButtons = (modalAlertSpy.mock.calls[0] as unknown as [string, string, Array<{ onPress?: () => void }>])[2];
+        await act(async () => cancelButtons[2]?.onPress?.());
+
+        await act(async () => preventRemoveState.handler?.({ data: { action: { type: 'GO_BACK' } } }));
+        expect(modalAlertSpy).toHaveBeenCalledTimes(2);
+        expect(routerBackSpy).not.toHaveBeenCalled();
+    });
+
+    it('merges a second prefill Event into the existing same-turn trigger row without duplicating it', async () => {
+        // A persisted currentTurn trigger already matches the prefill Session
+        // and exact turn with one selected Event; the prefill arrives with a
+        // second Event for the same turn.
+        const value = definitionDetailValue();
+        const triggers = value.triggers.map((trigger) => (
+            trigger.kind === 'sessionLifecycle'
+                ? {
+                    ...trigger,
+                    sourceSessionId: 'source-session',
+                    policy: { kind: 'currentTurn' as const, sourceTurnId: 'turn-7' },
+                }
+                : trigger
+        ));
+        const detailValue = { ...value, triggers };
+        automationState.definition = {
+            ...detailValue,
+            triggers: triggers.map(({ triggerDefinitionEnvelope: _envelope, ...summary }) => summary),
+            detail: { kind: 'available' as const, templateVersion: 4, value: detailValue },
+            linkedExistingSessionId: 'session-target',
+        };
+        syncSpies.refreshAutomationDefinitionDetail.mockResolvedValue(automationState.definition);
+
+        await mountHost({
+            exactTurnPrefill: {
+                sourceSessionId: 'source-session',
+                sourceTurnId: 'turn-7',
+                sourceServerId: 'server-1',
+                events: ['parentTurnCompleted', 'parentTurnFailed'],
+            },
+        });
+        await flushRender();
+
+        const editor = latestEditorProps.value;
+        expect(editor).not.toBeNull();
+        const draftTriggers = editor.value.triggers;
+        // Exactly one lifecycle row for the prefill Session: the prefill
+        // Events merge into the stable persisted row instead of appending an
+        // overlapping duplicate currentTurn trigger or dropping an Event.
+        const lifecycleRows = draftTriggers.filter((trigger: any) => (
+            trigger.definition?.kind === 'sessionLifecycle'
+        ));
+        expect(lifecycleRows).toHaveLength(1);
+        expect(lifecycleRows[0]).toMatchObject({
+            persisted: { id: 'trigger-turn-1', revision: 1 },
+            definition: {
+                kind: 'sessionLifecycle',
+                sourceSessionId: 'source-session',
+                events: ['parentTurnCompleted', 'parentTurnFailed'],
+                policy: { kind: 'currentTurn', sourceTurnId: 'turn-7' },
+            },
+        });
+        // The changed persisted row is marked for reconciliation so the merge
+        // is actually saved instead of silently remaining local.
+        expect(lifecycleRows[0]!.isDirty).toBe(true);
+        expect(preventRemoveState.enabled).toBe(true);
+    });
+
+    it('keeps the draft unchanged when the prefill Events are already fully selected', async () => {
+        const value = definitionDetailValue();
+        const triggers = value.triggers.map((trigger) => (
+            trigger.kind === 'sessionLifecycle'
+                ? {
+                    ...trigger,
+                    sourceSessionId: 'source-session',
+                    events: ['parentTurnCompleted', 'parentTurnFailed'] as const,
+                    policy: { kind: 'currentTurn' as const, sourceTurnId: 'turn-7' },
+                }
+                : trigger
+        ));
+        const detailValue = { ...value, triggers };
+        automationState.definition = {
+            ...detailValue,
+            triggers: triggers.map(({ triggerDefinitionEnvelope: _envelope, ...summary }) => summary),
+            detail: { kind: 'available' as const, templateVersion: 4, value: detailValue },
+            linkedExistingSessionId: 'session-target',
+        };
+        syncSpies.refreshAutomationDefinitionDetail.mockResolvedValue(automationState.definition);
+
+        await mountHost({
+            exactTurnPrefill: {
+                sourceSessionId: 'source-session',
+                sourceTurnId: 'turn-7',
+                sourceServerId: 'server-1',
+                events: ['parentTurnCompleted', 'parentTurnFailed'],
+            },
+        });
+        await flushRender();
+
+        const lifecycleRow = latestEditorProps.value!.value.triggers.find(
+            (trigger: any) => trigger.definition?.kind === 'sessionLifecycle',
+        );
+        expect(lifecycleRow).toMatchObject({
+            definition: { events: ['parentTurnCompleted', 'parentTurnFailed'] },
+        });
+        expect(lifecycleRow?.isDirty).toBeUndefined();
+        expect(preventRemoveState.enabled).toBe(false);
     });
 
     it('keeps a hydrated editor draft until the user explicitly discards it before canceling', async () => {
@@ -383,7 +531,7 @@ describe('AutomationEditorHostScreen', () => {
         expect(routerBackSpy).not.toHaveBeenCalled();
         expect(modalAlertSpy).toHaveBeenCalledTimes(1);
 
-        const buttons = modalAlertSpy.mock.calls[0]?.[2] as Array<{ onPress?: () => void }>;
+        const buttons = (modalAlertSpy.mock.calls[0] as unknown as [string, string, Array<{ onPress?: () => void }>])[2];
         await act(async () => buttons[0]?.onPress?.());
         expect(routerBackSpy).toHaveBeenCalledTimes(1);
     });
@@ -413,7 +561,7 @@ describe('AutomationEditorHostScreen', () => {
 
     it('keeps the mounted exact-turn draft alive when the source session updates but the exact turn is unchanged', async () => {
         const screen = await mountHost({
-            exactTurnPrefill: { sourceSessionId: 'source-session', sourceTurnId: 'turn-7', sourceServerId: 'server-1' },
+            exactTurnPrefill: { sourceSessionId: 'source-session', sourceTurnId: 'turn-7', sourceServerId: 'server-1', events: ['parentTurnCompleted'] },
         });
         await flushRender();
 
@@ -445,7 +593,7 @@ describe('AutomationEditorHostScreen', () => {
         await screen.update(
             <AutomationEditorHostScreen
                 automationId="automation-1"
-                exactTurnPrefill={{ sourceSessionId: 'source-session', sourceTurnId: 'turn-7', sourceServerId: 'server-1' }}
+                exactTurnPrefill={{ sourceSessionId: 'source-session', sourceTurnId: 'turn-7', sourceServerId: 'server-1', events: ['parentTurnCompleted'] }}
             />,
         );
         await flushRender();
@@ -523,7 +671,7 @@ describe('AutomationEditorHostScreen', () => {
     it('rebinds the exact-turn authority under the new Account after a same-server Account change', async () => {
         syncSpies.saveAutomationEditorDraft.mockResolvedValue({ id: 'automation-1' });
         const screen = await mountHost({
-            exactTurnPrefill: { sourceSessionId: 'source-session', sourceTurnId: 'turn-7', sourceServerId: 'server-1' },
+            exactTurnPrefill: { sourceSessionId: 'source-session', sourceTurnId: 'turn-7', sourceServerId: 'server-1', events: ['parentTurnCompleted'] },
         });
         await flushRender();
 
@@ -531,7 +679,10 @@ describe('AutomationEditorHostScreen', () => {
         const draftUnderA = latestEditorProps.value.value;
         expect(draftUnderA.triggers.at(-1)).toMatchObject({
             persisted: null,
-            definition: { scope: { sourceSessionId: 'source-session', sourceTurnId: 'turn-7' } },
+            definition: {
+                sourceSessionId: 'source-session',
+                policy: { kind: 'currentTurn', sourceTurnId: 'turn-7' },
+            },
         });
         expect(syncSpies.refreshAutomationDefinitionDetail).toHaveBeenCalledTimes(1);
 
@@ -545,7 +696,7 @@ describe('AutomationEditorHostScreen', () => {
         await screen.update(
             <AutomationEditorHostScreen
                 automationId="automation-1"
-                exactTurnPrefill={{ sourceSessionId: 'source-session', sourceTurnId: 'turn-7', sourceServerId: 'server-1' }}
+                exactTurnPrefill={{ sourceSessionId: 'source-session', sourceTurnId: 'turn-7', sourceServerId: 'server-1', events: ['parentTurnCompleted'] }}
             />,
         );
         await flushRender();
@@ -555,7 +706,10 @@ describe('AutomationEditorHostScreen', () => {
         expect(latestEditorProps.value.value).not.toBe(draftUnderA);
         expect(latestEditorProps.value.value.triggers.at(-1)).toMatchObject({
             persisted: null,
-            definition: { scope: { sourceSessionId: 'source-session', sourceTurnId: 'turn-7' } },
+            definition: {
+                sourceSessionId: 'source-session',
+                policy: { kind: 'currentTurn', sourceTurnId: 'turn-7' },
+            },
         });
         expect(authorityCaptures.list.at(-1)).toMatchObject({ serverId: 'server-1', accountId: 'account-2' });
 
@@ -567,10 +721,28 @@ describe('AutomationEditorHostScreen', () => {
         expect(modalAlertSpy).not.toHaveBeenCalled();
     });
 
+    it('hosts the editor form in the shared keyboard-aware scroll owner', async () => {
+        const { KeyboardAwareScrollView } = await import('@/components/ui/keyboardAvoidance/KeyboardAwareScrollView');
+        const screen = await mountHost({});
+        await flushRender();
+
+        // A plain ScrollView would let the on-screen keyboard cover the focused
+        // name/description/prompt fields the editor renders below the fold.
+        expect(screen.findAllByType(KeyboardAwareScrollView as never)).toHaveLength(1);
+    });
+
     it('advances only the exact-turn row when explicitly adopting the current turn after staleness', async () => {
         syncSpies.saveAutomationEditorDraft.mockResolvedValue({ id: 'automation-1' });
         const screen = await mountHost({
-            exactTurnPrefill: { sourceSessionId: 'source-session', sourceTurnId: 'turn-7', sourceServerId: 'server-1' },
+            exactTurnPrefill: {
+                sourceSessionId: 'source-session',
+                sourceTurnId: 'turn-7',
+                sourceServerId: 'server-1',
+                // A non-default selection: adopting the current turn may only
+                // move the stale source identity, never re-decide which
+                // lifecycle Events the author selected.
+                events: ['parentTurnFailed', 'userActionRequired'],
+            },
         });
         await flushRender();
 
@@ -612,22 +784,32 @@ describe('AutomationEditorHostScreen', () => {
         await act(async () => staleCard.props.action.onPress());
         await flushRender();
 
-        // The mounted draft was NOT rehydrated: only the exact-turn row moved.
+        // The mounted draft was NOT rehydrated: only the exact-turn row moved,
+        // and adopting never leaves two overlapping current-turn rows.
         expect(syncSpies.refreshAutomationDefinitionDetail).toHaveBeenCalledTimes(1);
         const draft = latestEditorProps.value.value;
+        expect(draft.triggers).toHaveLength(3);
         expect(draft.name).toBe('Renamed before staleness');
         expect(draft.executionRecipe.template).toEqual({ t: 'plain', v: { v: 1, prompt: 'Revised prompt before staleness' } });
         expect(draft.triggers[0]).toMatchObject({ definition: { enabled: false } });
         expect(draft.triggers[1]).toMatchObject({ persisted: { id: 'trigger-turn-1', revision: 1 } });
         expect(draft.triggers.at(-1)).toMatchObject({
             persisted: null,
-            definition: { scope: { sourceSessionId: 'source-session', sourceTurnId: 'turn-8' } },
+            definition: {
+                sourceSessionId: 'source-session',
+                policy: { kind: 'currentTurn', sourceTurnId: 'turn-8' },
+            },
         });
+        // Recovery moves the stale turn identity only: the selected lifecycle
+        // Events survive untouched instead of collapsing to the default one.
+        expect(draft.triggers.at(-1)?.definition?.events)
+            .toEqual(['parentTurnFailed', 'userActionRequired']);
         // Route params stay URL truth for the adopted turn.
         expect(routerSetParamsSpy).toHaveBeenCalledWith({
             sourceSessionId: 'source-session',
             sourceTurnId: 'turn-8',
             sourceServerId: 'server-1',
+            sessionLifecycleEvents: 'parentTurnFailed,userActionRequired',
         });
         expect(screen.findAllByProps({ testID: 'automation-edit-exact-turn-stale' })).toHaveLength(0);
 
@@ -637,6 +819,6 @@ describe('AutomationEditorHostScreen', () => {
         expect(syncSpies.saveAutomationEditorDraft).toHaveBeenCalledTimes(1);
         const [savedDraft] = syncSpies.saveAutomationEditorDraft.mock.calls[0]!;
         expect(savedDraft.name).toBe('Renamed before staleness');
-        expect(savedDraft.triggers.at(-1)?.definition?.scope).toMatchObject({ sourceTurnId: 'turn-8' });
+        expect(savedDraft.triggers.at(-1)?.definition?.policy).toMatchObject({ sourceTurnId: 'turn-8' });
     });
 });

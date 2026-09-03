@@ -22,69 +22,15 @@ import type {
 } from '@happier-dev/protocol/automations/result-delivery';
 import type { PluginJsonSchema } from './identity.js';
 
-type PluginAutomationSessionLifecyclePolicy = Readonly<
-    | { kind: 'currentTurn' }
-    | { kind: 'firstMatch' }
-    | { kind: 'nextMatches'; count: number }
-    | { kind: 'everyMatch' }
->;
-
 /**
  * Declaration-neutral projection of the canonical immutable automation
- * provenance. Protocol owns parsing and persistence; the SDK owns this
- * author-facing structural name so an external author's emitted declaration
- * does not name the host-private Protocol package. Keep the union in lockstep
- * with `AutomationRunCauseSchema` through the invocation contract test.
+ * provenance. Protocol owns parsing, persistence, and the one brand-free
+ * spelling of the union; this alias only gives it the author-facing SDK name,
+ * so the two can never drift.
  */
-export type PluginAutomationRunCause =
-    | Readonly<{
-        kind: 'trigger';
-        triggerId: string;
-        triggerRevision: number;
-        triggerKind: 'schedule';
-        occurrenceKey: string;
-        occurredAt: number;
-        evidence: Readonly<{ scheduledFor: number }>;
-    }>
-    | Readonly<{
-        kind: 'trigger';
-        triggerId: string;
-        triggerRevision: number;
-        triggerKind: 'pluginEvent';
-        occurrenceKey: string;
-        occurredAt: number;
-        evidence: Readonly<{
-            eventRef: Readonly<{ pluginId: string; localId: string }>;
-            sourceSelectorId: string;
-        }>;
-    }>
-    | Readonly<{
-        kind: 'trigger';
-        triggerId: string;
-        triggerRevision: number;
-        triggerKind: 'sessionLifecycle';
-        occurrenceKey: string;
-        occurredAt: number;
-        evidence: Readonly<{
-            event: 'parentTurnCompleted' | 'parentTurnFailed' | 'parentTurnCancelled';
-            sourceSessionId: string;
-            sourceTurnId: string;
-            policy: PluginAutomationSessionLifecyclePolicy;
-        }> | Readonly<{
-            event: 'userActionRequired';
-            sourceSessionId: string;
-            sourceTurnId: string;
-            requestId: string;
-            requestKind: 'permission' | 'user_action';
-            policy: PluginAutomationSessionLifecyclePolicy;
-        }>;
-    }>
-    | Readonly<{ kind: 'manual'; invokedAt: number }>
-    | Readonly<{
-        kind: 'conversation';
-        occurrenceKey: string;
-        occurredAt: number;
-    }>;
+export type { AutomationRunCauseDeclarationV1 as PluginAutomationRunCause }
+    from '@happier-dev/protocol/automations/run-cause';
+
 export {
     AutomationIdV1Schema,
 } from '@happier-dev/protocol/automations/result-delivery';

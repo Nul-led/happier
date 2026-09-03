@@ -2,24 +2,24 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { Tx } from "@/storage/inTx";
 
-import { findAutomationTriggerOccurrencesTx } from "./automationOccurrencePersistence";
+import { findAutomationOccurrencesTx } from "./automationOccurrencePersistence";
 
-describe("findAutomationTriggerOccurrencesTx", () => {
-    it("reads a bounded Event occurrence set in one query", async () => {
+describe("findAutomationOccurrencesTx", () => {
+    it("reads a bounded occurrence set in one query through the canonical Automation identity", async () => {
         const findMany = vi.fn().mockResolvedValue([
-            { id: "run-1", triggerId: "trigger-1", occurrenceKey: "occurrence-1" },
+            { id: "run-1", automationId: "automation-1", occurrenceKey: "occurrence-1" },
         ]);
 
-        await expect(findAutomationTriggerOccurrencesTx({
+        await expect(findAutomationOccurrencesTx({
             tx: { automationRun: { findMany } } as unknown as Tx,
             accountId: "account-1",
             occurrences: [
-                { triggerId: "trigger-1", occurrenceKey: "occurrence-1" },
-                { triggerId: "trigger-2", occurrenceKey: "occurrence-2" },
+                { automationId: "automation-1", occurrenceKey: "occurrence-1" },
+                { automationId: "automation-2", occurrenceKey: "occurrence-2" },
             ],
-            select: { id: true, triggerId: true, occurrenceKey: true },
+            select: { id: true, automationId: true, occurrenceKey: true },
         })).resolves.toEqual([
-            { id: "run-1", triggerId: "trigger-1", occurrenceKey: "occurrence-1" },
+            { id: "run-1", automationId: "automation-1", occurrenceKey: "occurrence-1" },
         ]);
 
         expect(findMany).toHaveBeenCalledTimes(1);
@@ -27,11 +27,11 @@ describe("findAutomationTriggerOccurrencesTx", () => {
             where: {
                 accountId: "account-1",
                 OR: [
-                    { triggerId: "trigger-1", occurrenceKey: "occurrence-1" },
-                    { triggerId: "trigger-2", occurrenceKey: "occurrence-2" },
+                    { automationId: "automation-1", occurrenceKey: "occurrence-1" },
+                    { automationId: "automation-2", occurrenceKey: "occurrence-2" },
                 ],
             },
-            select: { id: true, triggerId: true, occurrenceKey: true },
+            select: { id: true, automationId: true, occurrenceKey: true },
         });
     });
 });

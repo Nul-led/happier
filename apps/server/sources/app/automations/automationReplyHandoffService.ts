@@ -1,10 +1,10 @@
 import {
     AutomationAccountCurrentnessWitnessV1Schema,
     AutomationReplyHandoffSettlementV1Schema,
-    AutomationReplyHandoffTargetV1Schema,
     AutomationStoredContentEnvelopeV1Schema,
     sameAutomationAccountContentIdentityV1,
     sameAutomationAccountCurrentnessWitnessV1,
+    nextAutomationReplyHandoffIdForRunV1,
     validateAutomationReplyHandoffStoredEnvelopeOuterForModeV1,
     type AutomationAccountCurrentnessWitnessV1,
     type AutomationReplyHandoffSettlementV1,
@@ -25,7 +25,11 @@ import {
     deriveAutomationAccountCurrentnessWitness,
     fetchAutomationAccountCurrentnessWitnessTx,
 } from "./automationAccountCurrentness";
-import { automationRunItemSelect } from "./automationPersistenceSelect";
+import {
+    automationRunCauseSelect,
+    automationRunItemSelect,
+} from "./automationPersistenceSelect";
+import { classifyAutomationReplyHandoffDispatchability } from "./automationReplyHandoffDispatchability";
 import { decodeAutomationRunCause } from "./automationRunCauseCodec";
 import type { AutomationRunItem } from "./automationTypes";
 
@@ -61,24 +65,11 @@ export type AutomationReplyHandoffClaim = Readonly<{
 }>;
 
 const automationReplyHandoffCandidateSelect = {
+    ...automationRunCauseSelect,
     id: true,
     accountId: true,
     automationId: true,
-    occurrenceKey: true,
     state: true,
-    triggerId: true,
-    causeKind: true,
-    causeTriggerKind: true,
-    causeTriggerRevision: true,
-    causeOccurredAt: true,
-    causeEventPluginId: true,
-    causeEventLocalId: true,
-    causeScheduledFor: true,
-    causeSessionLifecycleEvent: true,
-    causeSourceSessionId: true,
-    causeSourceTurnId: true,
-    causeSourceSelectorId: true,
-    createdAt: true,
     resultEnvelope: true,
     replyContextEnvelope: true,
     replyHandoffActionPluginId: true,
@@ -136,15 +127,6 @@ function resolveAutomationReplyHandoffRetryAfterMs(retryAfterMs: number): number
     return retryAfterMs === 0
         ? DEFAULT_AUTOMATION_REPLY_HANDOFF_RETRY_AFTER_MS
         : retryAfterMs;
-}
-
-function parseJson(raw: string | null): unknown | undefined {
-    if (typeof raw !== "string") return undefined;
-    try {
-        return JSON.parse(raw);
-    } catch {
-        return undefined;
-    }
 }
 
 function handoffCandidateWhere(candidate: AutomationReplyHandoffCandidate): Prisma.AutomationRunWhereInput {
@@ -224,33 +206,11 @@ function isClaimPostEffectSuccessorCurrent(input: Readonly<{
 
 function isDispatchableCandidate(candidate: AutomationReplyHandoffCandidate): boolean {
     const currentness = deriveAutomationAccountCurrentnessWitness(candidate.account);
-    if (!currentness || typeof candidate.occurrenceKey !== "string") return false;
-
-    const target = AutomationReplyHandoffTargetV1Schema.safeParse({
-        accountId: candidate.accountId,
-        machineId: candidate.replyHandoffTargetMachineId,
-        machineInstallationId: candidate.replyHandoffTargetMachineInstallationId,
-        materializationId: candidate.replyHandoffTargetMaterializationId,
-        actionRef: {
-            pluginId: candidate.replyHandoffActionPluginId,
-            localId: candidate.replyHandoffActionLocalId,
-        },
-    });
-    if (!target.success || typeof candidate.replyHandoffId !== "string") return false;
-
-    const result = validateAutomationReplyHandoffStoredEnvelopeOuterForModeV1({
-        content: "result",
+    if (!currentness) return false;
+    return classifyAutomationReplyHandoffDispatchability({
+        facts: candidate,
         mode: currentness.mode,
-        envelope: parseJson(candidate.resultEnvelope),
-    });
-    if (result.kind !== "available") return false;
-
-    const replyContext = validateAutomationReplyHandoffStoredEnvelopeOuterForModeV1({
-        content: "replyContext",
-        mode: currentness.mode,
-        envelope: parseJson(candidate.replyContextEnvelope),
-    });
-    return replyContext.kind === "available";
+    }) === "dispatchable";
 }
 
 function dueReplyHandoffWhere(now: Date): Prisma.AutomationRunWhereInput {
@@ -617,6 +577,12 @@ export async function findNextAutomationReplyHandoffDueAt(_params: Readonly<{
  * result, target, context, and handoff id so the ordinary claim/rejoin path
  * performs the next attempt. A response-loss replay rejoins an already-ready
  * or currently leased retry instead of creating another obligation.
+ *
+ * A Run whose frozen handoff facts are themselves invalid is refused rather
+ * than moved: the claim path uses the same classifier and would immediately
+ * re-block it, so offering that retry would only churn revisions and tell the
+ * user something untrue about their options. Nothing here repairs the frozen
+ * bytes; recovery exists only for blocks an external change can actually fix.
  */
 export async function retryBlockedAutomationReplyHandoff(params: Readonly<{
     accountId: string;
@@ -644,6 +610,14 @@ export async function retryBlockedAutomationReplyHandoff(params: Readonly<{
         if (candidate.replyHandoffState !== "blocked") {
             return await fetchAutomationRunItemTx(tx, candidate.id);
         }
+        const currentness = deriveAutomationAccountCurrentnessWitness(candidate.account);
+        if (!currentness) return null;
+        if (classifyAutomationReplyHandoffDispatchability({
+            facts: candidate,
+            mode: currentness.mode,
+        }) !== "dispatchable") {
+            return null;
+        }
 
         const retried = await tx.automationRun.updateMany({
             where: handoffCandidateWhere(candidate),
@@ -656,6 +630,79 @@ export async function retryBlockedAutomationReplyHandoff(params: Readonly<{
             },
         });
         if (retried.count !== 1) return null;
+
+        const run = await fetchAutomationRunItemTx(tx, candidate.id);
+        if (!run) return null;
+        await publishAutomationRunMutationTx(tx, run);
+        return run;
+    });
+}
+
+/**
+ * The present user's conscious decision to deliver this result again after the
+ * previous delivery's external outcome stayed ambiguous.
+ *
+ * It is deliberately not a retry. A retry reuses the frozen handoff identity so
+ * Channels rejoins the exact custody it already accepted and produces no second
+ * effect — which is what the user wants when the outcome is merely unconfirmed,
+ * and exactly what they do not want when they have decided the message never
+ * arrived. So this mints the Run's next distinct delivery identity instead, and
+ * changes nothing about the previous one: the ambiguous custody row stays with
+ * its own evidence in Channels, and the attempt count that produced it is kept
+ * rather than reset.
+ *
+ * Only `accepted` custody can reach here, because that is the one state in
+ * which an external effect may have occurred without a truthful outcome. The
+ * exact revision the user acted on is required, so a replayed authorization —
+ * a lost response, a double press — loses its compare-and-swap and mints
+ * nothing. Frozen handoff facts that can never be dispatched are refused for
+ * the same reason the blocked retry refuses them.
+ */
+export async function authorizeAutomationReplyHandoffRedelivery(params: Readonly<{
+    accountId: string;
+    runId: string;
+    expectedRevision: number;
+    now?: Date;
+}>): Promise<AutomationRunItem | null> {
+    const now = params.now ?? new Date();
+    if (!isValidDate(now)) return null;
+    if (!Number.isSafeInteger(params.expectedRevision) || params.expectedRevision < 0) return null;
+
+    return await inTx(async (tx) => {
+        const accountFence = await acquireAccountEncryptionTransitionFenceInTx(tx, params.accountId);
+        if (accountFence.status !== "ready") return null;
+        const current = await tx.automationRun.findFirst({
+            where: {
+                id: params.runId,
+                accountId: params.accountId,
+                state: "succeeded",
+                causeKind: "conversation",
+                replyHandoffState: "accepted",
+                revision: params.expectedRevision,
+            },
+            select: automationReplyHandoffCandidateSelect,
+        });
+        if (!current) return null;
+        const candidate = current as AutomationReplyHandoffCandidate;
+        if (!isDispatchableCandidate(candidate)) return null;
+        const nextHandoffId = nextAutomationReplyHandoffIdForRunV1({
+            runId: candidate.id,
+            handoffId: candidate.replyHandoffId,
+        });
+        if (nextHandoffId === null) return null;
+
+        const authorized = await tx.automationRun.updateMany({
+            where: handoffCandidateWhere(candidate),
+            data: {
+                replyHandoffId: nextHandoffId,
+                replyHandoffState: "ready",
+                replyHandoffDueAt: now,
+                replyHandoffReceiptEnvelope: null,
+                revision: { increment: 1 },
+                updatedAt: now,
+            },
+        });
+        if (authorized.count !== 1) return null;
 
         const run = await fetchAutomationRunItemTx(tx, candidate.id);
         if (!run) return null;

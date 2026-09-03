@@ -1,4 +1,7 @@
-import type { AutomationRunCause as ProtocolAutomationRunCause } from '@happier-dev/protocol';
+import type {
+    AutomationRunCause as ProtocolAutomationRunCause,
+    AutomationRunCauseDeclarationV1 as ProtocolAutomationRunCauseDeclarationV1,
+} from '@happier-dev/protocol';
 import { describe, expectTypeOf, it } from 'vitest';
 
 import type {
@@ -72,14 +75,17 @@ describe('Plugin invocation context', () => {
         >();
         expectTypeOf<PluginInvocationContext['caller']>()
             .toEqualTypeOf<PluginInvocationCaller | undefined>();
-        // The public projection is the canonical Protocol run-cause union under
-        // its SDK-stable name. Exact bidirectional equality is the contract: a
-        // restated structural copy can only drift (readonly wrappers, unbranded
-        // identity fields), so it must fail here rather than pass assignability.
+        // Protocol owns the canonical parsed cause and its single
+        // declaration-neutral projection; the SDK name is an exact alias of
+        // that projection. Bidirectional equality is the contract, so a
+        // restated structural copy (readonly wrappers, unbranded identities)
+        // fails here instead of passing assignability.
         expectTypeOf<PluginAutomationRunCause>()
-            .toEqualTypeOf<ProtocolAutomationRunCause>();
-        expectTypeOf<ProtocolAutomationRunCause>()
+            .toEqualTypeOf<ProtocolAutomationRunCauseDeclarationV1>();
+        expectTypeOf<ProtocolAutomationRunCauseDeclarationV1>()
             .toEqualTypeOf<PluginAutomationRunCause>();
+        expectTypeOf<ProtocolAutomationRunCause>()
+            .toMatchTypeOf<PluginAutomationRunCause>();
         expectTypeOf<PluginInvocationContext['ui']>()
             .toEqualTypeOf<import('./interactions.js').PresentationService | undefined>();
         expectTypeOf<MessageActionAvailableSnapshotV1>()

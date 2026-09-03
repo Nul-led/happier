@@ -23,6 +23,7 @@ import {
     startAutomationRun,
     startAutomationRunFromV2,
     succeedAutomationRun,
+    succeedAutomationRunFromV2,
 } from "./automationRunService";
 import * as automationRunServiceModule from "./automationRunService";
 import {
@@ -365,6 +366,87 @@ describe("automationRunService (integration)", () => {
             causeKind: "manual",
             state: "running",
         }));
+    });
+
+    it("refuses a current success report for a Run that never started", async () => {
+        const seeded = await createAccountMachineAutomation({
+            publicKey: "pk-current-success-requires-start",
+            machineId: "machine-current-success-requires-start",
+            automationName: "Current success requires start",
+            targetType: "execution_run",
+        });
+        const run = await db.automationRun.create({
+            data: {
+                automationId: seeded.automationId,
+                ...scheduleRunCause(seeded.triggerId),
+                accountId: seeded.accountId,
+                state: "claimed",
+                scheduledAt: new Date(Date.now() - 60_000),
+                dueAt: new Date(Date.now() - 30_000),
+                claimedAt: new Date(Date.now() - 20_000),
+                claimedByMachineId: seeded.machineId,
+                leaseExpiresAt: new Date(Date.now() + 30_000),
+                attempt: 1,
+                executionInputEnvelope: TEST_STRICT_PLAIN_EXECUTION_RECIPE,
+                executionDispatchState: "notStarted",
+            },
+            select: { id: true },
+        });
+
+        // The current protocol authorizes a target effect only after the
+        // server start CAS publishes `running` and returns S. A pre-start
+        // success claim therefore reports an effect no one authorized.
+        await expect(succeedAutomationRun({
+            accountId: seeded.accountId,
+            runId: run.id,
+            machineId: seeded.machineId,
+            attempt: 1,
+            accountCurrentness: await readAutomationAccountCurrentness(seeded.accountId),
+        })).resolves.toBeNull();
+        await expect(db.automationRun.findUniqueOrThrow({
+            where: { id: run.id },
+            select: { state: true, revision: true, finishedAt: true },
+        })).resolves.toEqual({ state: "claimed", revision: 0, finishedAt: null });
+    });
+
+    it("keeps the released-V2 adapter able to settle its claimed Run", async () => {
+        const seeded = await createAccountMachineAutomation({
+            publicKey: "pk-v2-claimed-success",
+            machineId: "machine-v2-claimed-success",
+            automationName: "V2 claimed success",
+        });
+        const invokedAt = Date.now() - 30_000;
+        const run = await db.automationRun.create({
+            data: {
+                automationId: seeded.automationId,
+                accountId: seeded.accountId,
+                triggerId: null,
+                causeKind: "manual",
+                causeOccurredAt: new Date(invokedAt),
+                state: "claimed",
+                scheduledAt: new Date(invokedAt),
+                dueAt: new Date(invokedAt),
+                claimedAt: new Date(invokedAt),
+                claimedByMachineId: seeded.machineId,
+                leaseExpiresAt: new Date(Date.now() + 60_000),
+                attempt: 1,
+                executionInputEnvelope: JSON.stringify({
+                    kind: "happier_automation_run_execution_input_v1",
+                    targetType: "new_session",
+                    templateVersion: 1,
+                    templateCiphertext: TEST_PLAIN_TEMPLATE_ENVELOPE,
+                    origin: { kind: "manual", invokedAt },
+                }),
+            },
+            select: { id: true },
+        });
+
+        await expect(succeedAutomationRunFromV2({
+            accountId: seeded.accountId,
+            runId: run.id,
+            machineId: seeded.machineId,
+            attempt: 1,
+        })).resolves.toEqual(expect.objectContaining({ id: run.id, state: "succeeded" }));
     });
 
     it.each([
@@ -1255,7 +1337,15 @@ describe("automationRunService (integration)", () => {
                 runId: "native-run-timeout",
                 callId: "native-call-timeout",
                 sidechainId: "native-sidechain-timeout",
-                wait: { ok: false, code: "timeout" },
+                wait: {
+                    ok: true,
+                    status: "running",
+                    disposition: "observation_timeout",
+                    runId: "native-run-timeout",
+                    timeoutMs: 1_000,
+                    observedAtMs: 1_000,
+                    deadlineAtMs: 1_000,
+                },
             },
         });
 
@@ -1477,7 +1567,15 @@ describe("automationRunService (integration)", () => {
                 runId: "native-run-cancel-race",
                 callId: "native-call-cancel-race",
                 sidechainId: "native-sidechain-cancel-race",
-                wait: { ok: false, code: "timeout" },
+                wait: {
+                    ok: true,
+                    status: "running",
+                    disposition: "observation_timeout",
+                    runId: "native-run-cancel-race",
+                    timeoutMs: 1_000,
+                    observedAtMs: 1_000,
+                    deadlineAtMs: 1_000,
+                },
             },
         });
         expect(settled).not.toBeNull();
@@ -1540,7 +1638,15 @@ describe("automationRunService (integration)", () => {
                 runId: "native-run-unrelated-seq",
                 callId: "native-call-unrelated-seq",
                 sidechainId: "native-sidechain-unrelated-seq",
-                wait: { ok: false, code: "timeout" },
+                wait: {
+                    ok: true,
+                    status: "running",
+                    disposition: "observation_timeout",
+                    runId: "native-run-unrelated-seq",
+                    timeoutMs: 1_000,
+                    observedAtMs: 1_000,
+                    deadlineAtMs: 1_000,
+                },
             },
         });
         expect(settled).not.toBeNull();
@@ -1632,7 +1738,15 @@ describe("automationRunService (integration)", () => {
                 runId: "native-run-mode-transition",
                 callId: "native-call-mode-transition",
                 sidechainId: "native-sidechain-mode-transition",
-                wait: { ok: false, code: "timeout" },
+                wait: {
+                    ok: true,
+                    status: "running",
+                    disposition: "observation_timeout",
+                    runId: "native-run-mode-transition",
+                    timeoutMs: 1_000,
+                    observedAtMs: 1_000,
+                    deadlineAtMs: 1_000,
+                },
             },
         })).resolves.toBeNull();
         await expect(db.automationRun.findUniqueOrThrow({

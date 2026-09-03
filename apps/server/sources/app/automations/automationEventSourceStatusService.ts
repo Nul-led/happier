@@ -1,5 +1,6 @@
 import {
     AutomationEventSourceStatusReportV1Schema,
+    automationEventSourceCatalogScopeKeyV1,
     type AutomationEventSourceStatusReportV1,
     type ParsedPluginManifestV2,
 } from "@happier-dev/protocol";
@@ -375,9 +376,10 @@ async function reportCatalogStatus(params: Readonly<{
     callerVersion: string;
     input: Extract<AutomationEventSourceStatusReportV1, { kind: "catalogReconciliation" }>;
 }>): Promise<void> {
-    let scopeKey: "checkpointedPull" | "socket" | `durablePush:${string}`;
+    // Protocol owns the durable scope-key grammar for the canonical scope
+    // union; this reporter only proves the scope is current.
+    const scopeKey = automationEventSourceCatalogScopeKeyV1(params.input.scope);
     if (params.input.scope.kind === "checkpointedPull") {
-        scopeKey = "checkpointedPull";
         await assertCurrentCheckpointedPullCatalogScope({
             tx: params.tx,
             accountId: params.accountId,
@@ -385,7 +387,6 @@ async function reportCatalogStatus(params: Readonly<{
             version: params.callerVersion,
         });
     } else if (params.input.scope.kind === "socket") {
-        scopeKey = "socket";
         await assertCurrentSocketCatalogScope({
             tx: params.tx,
             accountId: params.accountId,
@@ -393,7 +394,6 @@ async function reportCatalogStatus(params: Readonly<{
             version: params.callerVersion,
         });
     } else {
-        scopeKey = `durablePush:${params.input.scope.webhookEndpointId}`;
         await assertCurrentDurablePushCatalogScope({
             tx: params.tx,
             accountId: params.accountId,

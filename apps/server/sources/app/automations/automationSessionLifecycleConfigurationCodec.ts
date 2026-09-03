@@ -1,8 +1,10 @@
 import {
     AutomationSessionLifecycleEventsSchema,
     AutomationSessionLifecycleTriggerSchema,
+    canonicalizeAutomationSessionLifecycleEvents,
     initialAutomationSessionLifecycleRemainingOccurrences,
     type AutomationSessionLifecycleTrigger,
+    type AutomationSessionLifecycleTriggerInput,
 } from "@happier-dev/protocol";
 
 type SessionLifecycleConfigurationRow = Readonly<{
@@ -36,7 +38,7 @@ export function decodeAutomationSessionLifecycleConfiguration(
     const definition = AutomationSessionLifecycleTriggerSchema.parse({
         kind: "sessionLifecycle",
         sourceSessionId,
-        events,
+        events: canonicalizeAutomationSessionLifecycleEvents(events),
         policy,
     });
     const initial = initialAutomationSessionLifecycleRemainingOccurrences(definition.policy);
@@ -53,7 +55,9 @@ export function encodeAutomationSessionLifecycleConfiguration(
 ) {
     const definition = AutomationSessionLifecycleTriggerSchema.parse(definitionInput);
     return {
-        sessionLifecycleEventsJson: JSON.stringify(definition.events),
+        sessionLifecycleEventsJson: JSON.stringify(
+            canonicalizeAutomationSessionLifecycleEvents(definition.events),
+        ),
         sessionLifecyclePolicyKind: definition.policy.kind,
         sessionLifecycleMatchCount: definition.policy.kind === "nextMatches"
             ? definition.policy.count
@@ -66,14 +70,27 @@ export function encodeAutomationSessionLifecycleConfiguration(
     } as const;
 }
 
+/**
+ * Registration equality over the one canonical encoded projection. Enablement
+ * is not part of the registration, so a patch that pauses or resumes while
+ * resubmitting its definition compares equal. Selected Events are a set, so a
+ * reordered submission of the same membership is the same registration too.
+ * Only a changed source, Event membership, or policy is a new registration
+ * that restarts the runtime occurrence budget.
+ */
 export function automationSessionLifecycleConfigurationsEqual(
     left: SessionLifecycleConfigurationRow,
-    rightInput: AutomationSessionLifecycleTrigger,
+    rightInput: AutomationSessionLifecycleTrigger | AutomationSessionLifecycleTriggerInput,
 ): boolean {
     try {
         const leftDefinition = decodeAutomationSessionLifecycleConfiguration(left).definition;
-        const right = AutomationSessionLifecycleTriggerSchema.parse(rightInput);
-        return JSON.stringify(leftDefinition) === JSON.stringify(right);
+        return JSON.stringify(encodeAutomationSessionLifecycleConfiguration(leftDefinition))
+            === JSON.stringify(encodeAutomationSessionLifecycleConfiguration({
+                kind: "sessionLifecycle",
+                sourceSessionId: rightInput.sourceSessionId,
+                events: rightInput.events,
+                policy: rightInput.policy,
+            }));
     } catch {
         return false;
     }

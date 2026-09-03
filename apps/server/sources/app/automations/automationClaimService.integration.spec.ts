@@ -1,6 +1,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createHash, randomUUID } from "node:crypto";
 import {
+    AutomationRunCauseSchema,
     deriveSessionCreationTagV1,
     serializeAutomationRunExecutionRecipeV1,
 } from "@happier-dev/protocol";
@@ -15,6 +16,7 @@ import {
     toAutomationV3WorkerClaimResponse,
 } from "./automationClaimService";
 import { listDaemonAssignments } from "./automationAssignmentService";
+import { encodeAutomationRunCause } from "./automationRunCauseCodec";
 import {
     automationAccountCurrentnessSelect,
     deriveAutomationAccountCurrentnessWitness,
@@ -187,6 +189,34 @@ function frozenRunAssignments(machineIds: readonly string[]) {
     return {
         create: machineIds.map((machineId) => ({ machineId, priority: 0 })),
     };
+}
+
+/**
+ * A signed receipt persists exactly its ownership/proof facts, expiry, and the
+ * strict claim result. The claimed Run identity, its attempt, and the
+ * currentness projection all live inside that strict result, so a shadow
+ * column would be a second, divergable owner of the same committed fact.
+ */
+const AUTOMATION_CLAIM_RECEIPT_PERSISTED_COLUMNS = [
+    "accountId",
+    "claimResultJson",
+    "createdAt",
+    "expiresAt",
+    "id",
+    "machineId",
+    "machineInstallationId",
+] as const;
+
+async function readSignedClaimReceiptRow(params: Readonly<{
+    accountId: string;
+    machineId: string;
+}>) {
+    const row = await db.automationWorkerClaimReceipt.findFirstOrThrow({
+        where: { accountId: params.accountId, machineId: params.machineId },
+    });
+    expect(Object.keys(row).sort())
+        .toEqual([...AUTOMATION_CLAIM_RECEIPT_PERSISTED_COLUMNS]);
+    return row;
 }
 
 describe("automationClaimService (integration)", () => {
@@ -494,6 +524,58 @@ describe("automationClaimService (integration)", () => {
         expect(["machine-1", "machine-2"]).toContain(claimed?.claimedByMachineId ?? "");
     });
 
+    it("claims a Session lifecycle Run and returns its complete immutable cause", async () => {
+        const machineId = "machine-session-lifecycle-claim";
+        const { accountId } = await createAccountWithMachine(machineId);
+        const automation = await createAutomationWithAssignments({
+            accountId,
+            machineIds: [machineId],
+            name: "Session lifecycle claim",
+        });
+        const occurredAt = new Date(Date.now() - 30_000);
+        const cause = AutomationRunCauseSchema.parse({
+            kind: "trigger" as const,
+            triggerId: automation.triggerId,
+            triggerRevision: 0,
+            triggerKind: "sessionLifecycle" as const,
+            occurrenceKey: createHash("sha256")
+                .update(`test-session-lifecycle:${randomUUID()}`, "utf8")
+                .digest("base64url"),
+            occurredAt: occurredAt.getTime(),
+            evidence: {
+                event: "userActionRequired" as const,
+                sourceSessionId: "session-lifecycle-source",
+                sourceTurnId: "turn-lifecycle-source",
+                requestId: "request-lifecycle-1",
+                requestKind: "permission" as const,
+                policy: { kind: "nextMatches" as const, count: 2 },
+            },
+        });
+        await db.automationRun.create({
+            data: {
+                automationId: automation.id,
+                accountId,
+                state: "queued",
+                ...encodeAutomationRunCause(cause),
+                scheduledAt: occurredAt,
+                dueAt: occurredAt,
+                executionInputEnvelope: strictE2eeRecipeForAssignments([machineId]),
+                assignments: frozenRunAssignments([machineId]),
+            },
+            select: { id: true },
+        });
+
+        const claim = await claimAutomationRun({
+            accountId,
+            machineId,
+            leaseDurationMs: 30_000,
+        });
+
+        // The claim candidate read is a cause reader: a partial select would
+        // make every Session lifecycle Run permanently unclaimable.
+        expect(toAutomationV3WorkerClaimResponse(claim).run?.cause).toEqual(cause);
+    });
+
     it("converges concurrent and response-loss retries of one signed V3 claim onto one Run", async () => {
         const machineId = "machine-idempotent-claim";
         const machineInstallationId = "installation-idempotent-claim";
@@ -599,15 +681,18 @@ describe("automationClaimService (integration)", () => {
         await expect(db.automationWorkerClaimReceipt.count({
             where: { accountId, machineId },
         })).resolves.toBe(1);
-        const persistedReceipt = await db.automationWorkerClaimReceipt.findFirstOrThrow({
-            where: { accountId, machineId },
-            select: { claimResultJson: true },
-        });
+        const persistedReceipt = await readSignedClaimReceiptRow({ accountId, machineId });
         const persistedResult = JSON.parse(persistedReceipt.claimResultJson) as {
             run: Record<string, unknown> | null;
             automation?: Record<string, unknown> | null;
         };
         expect(persistedResult.run).not.toBeNull();
+        // The strict result is the sole persisted owner of the claimed Run
+        // identity and attempt that replay re-verifies against the live row.
+        expect(persistedResult.run).toMatchObject({
+            id: claimedRunId,
+            attempt: claimedBeforeReplay!.attempt,
+        });
         expect(persistedResult.automation).toEqual(expect.objectContaining({
             id: automation.id,
             name: "Idempotent claim",
@@ -645,6 +730,14 @@ describe("automationClaimService (integration)", () => {
             leaseDurationMs: 30_000,
             claimRequest,
         })).resolves.toEqual({ run: null, accountCurrentness: null });
+        // The empty outcome persists the same columns as a claimed one: its
+        // no-Run shape is carried entirely by the strict result.
+        const emptyReceipt = await readSignedClaimReceiptRow({ accountId, machineId });
+        expect(JSON.parse(emptyReceipt.claimResultJson)).toEqual({
+            v: 2,
+            run: null,
+            automation: null,
+        });
 
         const automation = await createAutomationWithAssignments({
             accountId,
@@ -816,10 +909,7 @@ describe("automationClaimService (integration)", () => {
         // The AutomationRun row is its canonical owner and the Account
         // encryption transition rewrites it there in place; a receipt copy sits
         // outside that transition census.
-        const persistedReceipt = await db.automationWorkerClaimReceipt.findFirstOrThrow({
-            where: { accountId, machineId },
-            select: { claimResultJson: true },
-        });
+        const persistedReceipt = await readSignedClaimReceiptRow({ accountId, machineId });
         const persistedResult = JSON.parse(persistedReceipt.claimResultJson) as {
             run: { executionInputEnvelope: string | null } | null;
         };
@@ -1043,6 +1133,81 @@ describe("automationClaimService (integration)", () => {
             machineId,
             leaseDurationMs: 30_000,
             claimRequest: originalClaimRequest,
+        })).resolves.toEqual({ run: null, accountCurrentness: null });
+    });
+
+    it("re-verifies the current canonical Run and attempt named by the receipt's strict result", async () => {
+        const machineId = "machine-claim-strict-identity";
+        const machineInstallationId = "installation-claim-strict-identity";
+        const { accountId } = await createAccountWithMachine(machineId);
+        await db.machine.update({
+            where: { id: machineId },
+            data: { installationId: machineInstallationId },
+        });
+        const automation = await createAutomationWithAssignments({
+            accountId,
+            machineIds: [machineId],
+            name: "Claim strict identity replay",
+        });
+        const queued = await db.automationRun.create({
+            data: {
+                automationId: automation.id,
+                ...scheduleRunCause(automation.triggerId),
+                accountId,
+                state: "queued",
+                scheduledAt: new Date(Date.now() - 30_000),
+                dueAt: new Date(Date.now() - 20_000),
+                executionInputEnvelope: strictE2eeRecipeForAssignments([machineId]),
+                assignments: frozenRunAssignments([machineId]),
+            },
+            select: { id: true },
+        });
+        const claimRequest = {
+            machineInstallationId,
+            nonce: "signed-claim-strict-identity-nonce-1",
+            expiresAt: new Date(Date.now() + 300_000),
+        };
+        const first = await claimAutomationRun({
+            accountId,
+            machineId,
+            leaseDurationMs: 30_000,
+            claimRequest,
+        });
+        expect(first.run).toEqual(expect.objectContaining({ id: queued.id, attempt: 1 }));
+
+        // Replay derives the claimed Run id and attempt from the strict result
+        // and then loads that Run from the live Account-scoped row. A stale
+        // attempt on the current row refuses the replay outright.
+        await db.automationRun.update({
+            where: { id: queued.id },
+            data: { attempt: 2 },
+        });
+        await expect(claimAutomationRun({
+            accountId,
+            machineId,
+            leaseDurationMs: 30_000,
+            claimRequest,
+        })).resolves.toEqual({ run: null, accountCurrentness: null });
+
+        await db.automationRun.update({
+            where: { id: queued.id },
+            data: { attempt: 1 },
+        });
+        expect(toAutomationV3WorkerClaimResponse(await claimAutomationRun({
+            accountId,
+            machineId,
+            leaseDurationMs: 30_000,
+            claimRequest,
+        })).run).toMatchObject({ id: queued.id, attempt: 1 });
+
+        // Nothing but the strict result names the Run, so a receipt whose Run
+        // row is gone can no longer be re-verified and fails closed.
+        await db.automationRun.delete({ where: { id: queued.id } });
+        await expect(claimAutomationRun({
+            accountId,
+            machineId,
+            leaseDurationMs: 30_000,
+            claimRequest,
         })).resolves.toEqual({ run: null, accountCurrentness: null });
     });
 

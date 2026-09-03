@@ -11,7 +11,12 @@ describe('exactTurnAutomationPrefill', () => {
 
     it('captures only the exact observed in-progress parent turn', () => {
         const observed = readExactActiveParentTurn(session as any);
-        expect(observed).toEqual({ sourceSessionId: 'session-1', sourceTurnId: 'turn-1', sourceServerId: 'server-1' });
+        expect(observed).toEqual({
+            sourceSessionId: 'session-1',
+            sourceTurnId: 'turn-1',
+            sourceServerId: 'server-1',
+            events: ['parentTurnCompleted'],
+        });
         expect(readExactActiveParentTurn({ ...session, latestTurnStatus: 'completed' } as any)).toBeNull();
         expect(readExactActiveParentTurn({ ...session, latestTurnId: null } as any)).toBeNull();
     });
@@ -21,9 +26,11 @@ describe('exactTurnAutomationPrefill', () => {
             sourceSessionId: ' session-1 ',
             sourceTurnId: ' turn-1 ',
             sourceServerId: ' server-1 ',
+            sessionLifecycleEvents: 'parentTurnFailed,userActionRequired',
         });
         expect(route.kind).toBe('valid');
         if (route.kind !== 'valid') return;
+        expect(route.prefill.events).toEqual(['parentTurnFailed', 'userActionRequired']);
         expect(areExactTurnAutomationPrefillsEqual(route.prefill, readExactActiveParentTurn(session as any))).toBe(true);
         expect(areExactTurnAutomationPrefillsEqual(route.prefill, { ...route.prefill, sourceTurnId: 'turn-2' })).toBe(false);
     });

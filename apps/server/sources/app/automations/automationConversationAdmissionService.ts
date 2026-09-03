@@ -8,6 +8,7 @@ import {
     createCanonicalJsonSigningInput,
     deriveAutomationOccurrenceKeyV1,
     isAutomationConversationResultDeliveryOwnedByCallerV1,
+    isAutomationReplyHandoffIdForRunV1,
     isAutomationTriggerEvidenceCiphertextV1,
     openAutomationConversationReplyContextStoredEnvelopeV1,
     type AutomationConversationAdmitEncryptedHostEvidenceV1,
@@ -293,7 +294,6 @@ function hasMatchingFinalResultHandoff(params: Readonly<{
     actionRef: FinalResultDeliveryV1["actionRef"];
     opaqueContext: FinalResultDeliveryV1["opaqueContext"];
 }>): boolean {
-    const expectedHandoffId = `automation-reply-handoff:${params.row.id}`;
     const target = AutomationReplyHandoffTargetV1Schema.safeParse({
         accountId: params.accountId,
         machineId: params.row.replyHandoffTargetMachineId,
@@ -309,7 +309,13 @@ function hasMatchingFinalResultHandoff(params: Readonly<{
         || !target.success
         || target.data.actionRef.pluginId !== params.actionRef.pluginId
         || target.data.actionRef.localId !== params.actionRef.localId
-        || params.row.replyHandoffId !== expectedHandoffId
+        // The handoff identity is Run-owned, not a single frozen string: a
+        // present user may have consciously authorized a further delivery, and
+        // that successor identity still belongs to this exact Run.
+        || !isAutomationReplyHandoffIdForRunV1({
+            runId: params.row.id,
+            handoffId: params.row.replyHandoffId,
+        })
         || params.row.replyContextEnvelope === null
     ) return false;
 
@@ -351,7 +357,6 @@ function encryptedFinalResultHandoffMatchesAdmission(params: Readonly<{
     handoff: AutomationConversationAdmitReplyHandoffV1 | undefined;
 }>): boolean | "unavailable" {
     if (params.handoff === undefined) return hasNoReplyHandoff(params.row);
-    const expectedHandoffId = `automation-reply-handoff:${params.row.id}`;
     const target = AutomationReplyHandoffTargetV1Schema.safeParse({
         accountId: params.accountId,
         machineId: params.row.replyHandoffTargetMachineId,
@@ -367,7 +372,13 @@ function encryptedFinalResultHandoffMatchesAdmission(params: Readonly<{
         || !target.success
         || target.data.actionRef.pluginId !== params.handoff.actionRef.pluginId
         || target.data.actionRef.localId !== params.handoff.actionRef.localId
-        || params.row.replyHandoffId !== expectedHandoffId
+        // The handoff identity is Run-owned, not a single frozen string: a
+        // present user may have consciously authorized a further delivery, and
+        // that successor identity still belongs to this exact Run.
+        || !isAutomationReplyHandoffIdForRunV1({
+            runId: params.row.id,
+            handoffId: params.row.replyHandoffId,
+        })
         || params.row.replyContextEnvelope === null
     ) return false;
     const outer = validateAutomationStoredContentEnvelopeOuterForMode({

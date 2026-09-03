@@ -32,9 +32,10 @@ import {
 import {
   AutomationRunCauseSchema,
   type AutomationRunCause,
+  type AutomationRunCauseDeclarationV1,
 } from './automationRunCause.js';
 import { PluginMachineMaterializationRefV1Schema } from '../plugins/availability/materializationRefV1.js';
-export { AutomationRunCauseSchema, type AutomationRunCause };
+export { AutomationRunCauseSchema, type AutomationRunCause, type AutomationRunCauseDeclarationV1 };
 import {
   AutomationEncryptedTriggerDefinitionEnvelopeV1Schema,
   AutomationScheduleTriggerSchema,
@@ -965,6 +966,16 @@ export const AutomationV3RunDetailSchema = z.object({
   executionNativeRunId: IDENTIFIER_SCHEMA.nullable(),
   executionNativeCallId: IDENTIFIER_SCHEMA.nullable(),
   executionNativeSidechainId: IDENTIFIER_SCHEMA.nullable(),
+  /**
+   * Whether a present user can still act on a `blocked` Conversation reply
+   * handoff. `false` means the handoff facts frozen at admission are themselves
+   * invalid, so no retry, machine change, or plugin update can ever dispatch
+   * it and the product must not offer one. `null` on every non-blocked state,
+   * and absent from a supported older server that does not classify it — a
+   * client must then keep its previous behaviour rather than assume either
+   * answer.
+   */
+  replyHandoffRecoverable: z.boolean().nullable().optional(),
   /** Committed lifecycle transitions in ascending time order. */
   events: z.array(AutomationV3RunEventSchema).max(AUTOMATION_V3_RUN_DETAIL_MAX_EVENTS),
   /** Exact private Run failure detail; never emitted by list or mutation projections. */
@@ -996,6 +1007,20 @@ export const AutomationV3ClearRunHistoryResponseSchema = z.object({
 }).strict();
 export type AutomationV3ClearRunHistoryResponse = z.infer<
   typeof AutomationV3ClearRunHistoryResponseSchema
+>;
+
+/**
+ * A present user's conscious authorization to deliver an accepted Conversation
+ * result again after its external outcome stayed ambiguous. The exact Run
+ * revision the user acted on is required: it is what makes a replayed
+ * authorization lose its compare-and-swap instead of creating a second
+ * delivery, so it is part of the request rather than a server-side guess.
+ */
+export const AutomationV3RunReplyHandoffRedeliverRequestSchema = z.object({
+  expectedRevision: z.number().int().nonnegative().safe(),
+}).strict();
+export type AutomationV3RunReplyHandoffRedeliverRequest = z.infer<
+  typeof AutomationV3RunReplyHandoffRedeliverRequestSchema
 >;
 
 export const AutomationV3RunMutationResponseSchema = z.object({

@@ -135,7 +135,10 @@ function scheduleAutomation() {
             watcherPluginId: null,
             watcherMaterializationId: null,
             definitionEnvelope: null,
-            sessionLifecycleEvent: null,
+            sessionLifecycleEventsJson: null,
+            sessionLifecyclePolicyKind: null,
+            sessionLifecycleMatchCount: null,
+            remainingOccurrences: null,
             sourceSessionId: null,
             sourceTurnId: null,
             createdAt: DATE,
@@ -248,6 +251,10 @@ function eventRun() {
         causeSessionLifecycleEvent: null,
         causeSourceSessionId: null,
         causeSourceTurnId: null,
+        causeSessionLifecycleRequestId: null,
+        causeSessionLifecycleRequestKind: null,
+        causeSessionLifecyclePolicyKind: null,
+        causeSessionLifecycleConfiguredCount: null,
         occurrenceKey: EVENT_OCCURRENCE_KEY,
         legacyManualIdempotencyKey: null,
         occurrenceEvidenceEqualityTag: null,
@@ -677,7 +684,10 @@ describe("Automation API projections", () => {
             scheduleKind: null,
             everyMs: null,
             nextRunAt: null,
-            sessionLifecycleEvent: "parentTurnCompleted" as const,
+            sessionLifecycleEventsJson: JSON.stringify(["parentTurnCompleted"]),
+            sessionLifecyclePolicyKind: "currentTurn" as const,
+            sessionLifecycleMatchCount: null,
+            remainingOccurrences: 1,
             sourceSessionId: "session-source",
             sourceTurnId: "turn-source",
         };
@@ -946,5 +956,43 @@ describe("Automation API projections", () => {
         const detail = toAutomationRunV3DetailApiDto(run, "plain");
         expect(detail.errorDetailEnvelope).toBe(errorDetailEnvelope);
         expect(toAutomationRunV2ApiDto(run).errorMessage).toBeNull();
+    });
+    it("classifies a blocked reply handoff by whether anything external could still repair it", () => {
+        const blockedBase = {
+            ...conversationRun(),
+            executionInputEnvelope: null,
+            replyContextEnvelope: JSON.stringify({
+                t: "plain",
+                v: {
+                    v: 1,
+                    correspondence: {
+                        automationId: "automation-event",
+                        occurrenceKey: CONVERSATION_OCCURRENCE_KEY,
+                    },
+                    opaqueContext: { conversationId: "conversation-1", messageId: "message-1" },
+                },
+            }),
+            replyHandoffActionPluginId: "happier.channels",
+            replyHandoffActionLocalId: "automation/result-deliver-v1",
+            replyHandoffTargetMachineId: "machine-1",
+            replyHandoffTargetMachineInstallationId: "installation-1",
+            replyHandoffTargetMaterializationId: "materialization-1",
+            replyHandoffId: "handoff-1",
+            replyHandoffState: "blocked" as const,
+        };
+
+        expect(toAutomationRunV3DetailApiDto(blockedBase, "plain").replyHandoffRecoverable).toBe(true);
+        expect(toAutomationRunV3DetailApiDto({
+            ...blockedBase,
+            replyContextEnvelope: JSON.stringify({ t: "plain", v: { v: 1 } }),
+        }, "plain").replyHandoffRecoverable).toBe(false);
+        expect(toAutomationRunV3DetailApiDto({
+            ...blockedBase,
+            replyHandoffTargetMaterializationId: null,
+        }, "plain").replyHandoffRecoverable).toBe(false);
+        expect(toAutomationRunV3DetailApiDto({
+            ...blockedBase,
+            replyHandoffState: "ready" as const,
+        }, "plain").replyHandoffRecoverable).toBeNull();
     });
 });
