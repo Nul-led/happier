@@ -30,6 +30,7 @@ describe('uploadBulkPayloadFromFileViaDirectImport', () => {
         const acquirePreparedCarrier = vi.fn(async () => {
             order.push('lease');
             return {
+                kind: 'native_http' as const,
                 localOrigin: 'http://127.0.0.1:48123',
                 requestHeaders: { 'X-Happier-Machine-Local-Capability': 'a'.repeat(64) },
                 release,
@@ -158,6 +159,74 @@ describe('uploadBulkPayloadFromFileViaDirectImport', () => {
                 headers: { 'x-happier-machine-local-capability': 'a'.repeat(64) },
             },
         ]);
+    });
+
+    it('carries upload requests through a browser machine stream without using native fetch', async () => {
+        prepareImportSessionMock.mockResolvedValueOnce({
+            success: true,
+            uploadId: 'browser-upload-1',
+            destDisplayPath: '/repo/browser.bin',
+            expectedSizeBytes: 1,
+            chunkSizeBytes: 1,
+            recipientPublicKeyBase64: Buffer.alloc(32, 7).toString('base64'),
+            expiresAt: 5_000,
+            endpointCandidates: [{
+                kind: 'http',
+                url: 'http://127.0.0.1:46001/machine-transfers/direct/imports/browser-upload-1?grant=kept',
+                expiresAt: 5_000,
+            }],
+        });
+        setRuntimeFetch(async () => {
+            throw new Error('native fetch must not carry a selected browser machine transfer');
+        });
+        const requests: Array<Readonly<{ url: string; method: string }>> = [];
+        const request = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+            const url = String(input);
+            requests.push({ url, method: String(init?.method ?? 'GET') });
+            if (url.includes('/finalize')) {
+                return new Response(JSON.stringify({
+                    success: true,
+                    finalized: { success: true, path: '/repo/browser.bin', sizeBytes: 1 },
+                    sha256: 'sha256:browser',
+                }), { status: 200, headers: { 'content-type': 'application/json' } });
+            }
+            return new Response(JSON.stringify({ success: true }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            });
+        });
+        const release = vi.fn(async () => undefined);
+
+        const result = await uploadBulkPayloadFromFileViaDirectImport({
+            machineId: 'machine-1',
+            serverId: 'server-1',
+            fileReader: {
+                sizeBytes: 1,
+                readBytes: async () => new Uint8Array([7]),
+                close: async () => undefined,
+            },
+            request: {
+                t: 'session_file_upload_v1',
+                workingDirectory: '/repo',
+                path: '/repo/browser.bin',
+                sizeBytes: 1,
+                overwrite: true,
+            },
+            acquirePreparedCarrier: async () => ({ kind: 'browser_stream', request, release }),
+        });
+
+        expect(result).toMatchObject({ success: true, path: '/repo/browser.bin', sizeBytes: 1 });
+        expect(requests).toEqual([
+            {
+                url: 'http://127.0.0.1:46001/machine-transfers/direct/imports/browser-upload-1/chunks/0?grant=kept',
+                method: 'PUT',
+            },
+            {
+                url: 'http://127.0.0.1:46001/machine-transfers/direct/imports/browser-upload-1/finalize?grant=kept',
+                method: 'POST',
+            },
+        ]);
+        expect(release).toHaveBeenCalledTimes(1);
     });
 
     it('uses the daemon-refreshed retained-session expiry for finalize recovery', async () => {
@@ -678,6 +747,74 @@ describe('uploadBulkPayloadFromFileViaDirectImport', () => {
             method: RPC_METHODS.DAEMON_DIRECT_TRANSFER_IMPORT_ABORT,
             payload: { uploadId: 'upload-3' },
         }));
+    });
+
+    it('reports a completed upload successful when the carrier release fails and hands custody back once', async () => {
+        const release = vi.fn(async () => {
+            throw new Error('native machine tunnel stop failed');
+        });
+        prepareImportSessionMock.mockResolvedValue({
+            success: true,
+            uploadId: 'upload-cleanup-failure',
+            destDisplayPath: '/repo/payload.bin',
+            expectedSizeBytes: 5,
+            chunkSizeBytes: 5,
+            recipientPublicKeyBase64: Buffer.alloc(32, 7).toString('base64'),
+            expiresAt: 5_000,
+            endpointCandidates: [{
+                kind: 'http',
+                url: 'http://127.0.0.1:46001/machine-transfers/direct/imports/upload-cleanup-failure',
+                expiresAt: 5_000,
+            }],
+        });
+        setRuntimeFetch(async (input, init) => {
+            const url = String(input);
+            if (url.endsWith('/chunks/0') && init?.method === 'PUT') {
+                return new Response(JSON.stringify({ success: true }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                });
+            }
+            if (url.endsWith('/finalize') && init?.method === 'POST') {
+                return new Response(JSON.stringify({
+                    success: true,
+                    finalized: { success: true, path: '/repo/payload.bin', sizeBytes: 5 },
+                    sha256: 'sha256:test',
+                }), { status: 200, headers: { 'content-type': 'application/json' } });
+            }
+            throw new Error(`unexpected request: ${String(init?.method)} ${url}`);
+        });
+
+        await expect(uploadBulkPayloadFromFileViaDirectImport({
+            machineId: 'machine-1',
+            serverId: 'server-1',
+            fileReader: {
+                sizeBytes: 5,
+                readBytes: async () => new TextEncoder().encode('hello'),
+                close: async () => {},
+            },
+            request: {
+                t: 'session_file_upload_v1',
+                workingDirectory: '/repo',
+                path: '/repo/payload.bin',
+                sizeBytes: 5,
+                overwrite: true,
+            },
+            acquirePreparedCarrier: async () => ({
+                kind: 'native_http' as const,
+                localOrigin: 'http://127.0.0.1:48123',
+                requestHeaders: { 'X-Happier-Machine-Local-Capability': 'a'.repeat(64) },
+                release,
+            }),
+        })).resolves.toEqual({
+            success: true,
+            path: '/repo/payload.bin',
+            sizeBytes: 5,
+            sha256: 'sha256:test',
+        });
+        // Custody goes back to the lease owner: this helper never retries the
+        // release itself and never downgrades a completed transfer.
+        expect(release).toHaveBeenCalledTimes(1);
     });
 
     it('aborts a prepared direct import through machine RPC exactly once after caller cancellation', async () => {

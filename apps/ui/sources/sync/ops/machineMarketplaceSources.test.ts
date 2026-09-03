@@ -48,33 +48,6 @@ describe('machineMarketplaceSources', () => {
         });
     });
 
-    it('binds, rebinds, and unbinds the host-owned registry profile on the existing source record', async () => {
-        const { upsertMachineMarketplaceSourceRegistrySource } = await import('./machineMarketplaceSources');
-        const registry: MarketplaceSourceRegistryV1 = {
-            t: 'happier_marketplace_source_registry_v1',
-            schemaVersion: 1,
-            sources: [{
-                id: 'marketplace:curated', title: 'Curated', sourceUrl: 'https://curated.example.test/catalog.json',
-                enabled: true, origin: 'curated', addedAtMs: 1, updatedAtMs: 1,
-            }],
-        };
-        const bound = upsertMachineMarketplaceSourceRegistrySource(registry, {
-            sourceUrl: registry.sources[0]!.sourceUrl,
-            registryProfileId: 'registry_one',
-        }).registry;
-        expect(bound.sources[0]).toMatchObject({ registryProfileId: 'registry_one' });
-        const rebound = upsertMachineMarketplaceSourceRegistrySource(bound, {
-            sourceUrl: registry.sources[0]!.sourceUrl,
-            registryProfileId: 'registry_two',
-        }).registry;
-        expect(rebound.sources[0]).toMatchObject({ registryProfileId: 'registry_two' });
-        const unbound = upsertMachineMarketplaceSourceRegistrySource(rebound, {
-            sourceUrl: registry.sources[0]!.sourceUrl,
-            registryProfileId: null,
-        }).registry;
-        expect(unbound.sources[0]).not.toHaveProperty('registryProfileId');
-    });
-
     it('routes registry reads through the server scoped machine rpc', async () => {
         const { machineMarketplaceSourceRegistryGet } = await import('./machineMarketplaceSources');
 
@@ -99,42 +72,101 @@ describe('machineMarketplaceSources', () => {
         }));
     });
 
-    it('routes registry writes through the server scoped machine rpc', async () => {
-        const { machineMarketplaceSourceRegistrySet } = await import('./machineMarketplaceSources');
+    it('routes source-scoped mutations through the server scoped machine rpc', async () => {
+        const { machineMarketplaceSourceRegistryMutate } = await import('./machineMarketplaceSources');
 
         const registry: MarketplaceSourceRegistryV1 = {
             t: 'happier_marketplace_source_registry_v1',
             schemaVersion: 1,
             sources: [],
         };
-        machineRpcWithServerScopeMock.mockResolvedValueOnce(registry);
+        machineRpcWithServerScopeMock.mockImplementationOnce(async (input) => {
+            input.onIssued?.();
+            return registry;
+        });
 
-        await expect(machineMarketplaceSourceRegistrySet('machine-1', registry, {
+        const mutation = { kind: 'setEnabled', sourceId: 'marketplace:user', enabled: false } as const;
+        await expect(machineMarketplaceSourceRegistryMutate('machine-1', mutation, {
             serverId: 'server-a',
             timeoutMs: 2500,
-        })).resolves.toEqual(registry);
+        })).resolves.toEqual({ status: 'success', registry });
 
         expect(machineRpcWithServerScopeMock).toHaveBeenCalledWith(expect.objectContaining({
             machineId: 'machine-1',
             serverId: 'server-a',
             timeoutMs: 2500,
-            method: RPC_METHODS.DAEMON_MARKETPLACE_SOURCE_REGISTRY_SET,
-            payload: registry,
+            method: RPC_METHODS.DAEMON_MARKETPLACE_SOURCE_REGISTRY_MUTATE,
+            payload: mutation,
+            onIssued: expect.any(Function),
         }));
     });
 
-    it('validates marketplace query responses and follows the daemon cursor to completion', async () => {
-        const { machineMarketplaceIndexQuery } = await import('./machineMarketplaceSources');
-        machineRpcWithServerScopeMock
-            .mockResolvedValueOnce({ revision: 7, items: [], nextCursor: 'cursor-2', sources: [], diagnostics: [] })
-            .mockResolvedValueOnce({ revision: 7, items: [], nextCursor: null, sources: [], diagnostics: [] });
+    it('returns outcomeUnknown only when a source mutation loses its response after issue', async () => {
+        const { machineMarketplaceSourceRegistryMutate } = await import('./machineMarketplaceSources');
+        const mutation = { kind: 'setEnabled', sourceId: 'marketplace:user', enabled: false } as const;
+        machineRpcWithServerScopeMock.mockImplementationOnce(async (input) => {
+            input.onIssued?.();
+            throw new Error('response lost');
+        });
 
-        await expect(machineMarketplaceIndexQuery('machine-1', {
-            text: '', cursor: null, limit: 100, filters: {},
-        })).resolves.toEqual({ revision: 7, items: [], nextCursor: null, sources: [], diagnostics: [] });
-        expect(machineRpcWithServerScopeMock).toHaveBeenNthCalledWith(2, expect.objectContaining({
-            payload: expect.objectContaining({ cursor: 'cursor-2' }),
-        }));
+        await expect(machineMarketplaceSourceRegistryMutate('machine-1', mutation, {
+            serverId: 'server-a',
+        })).resolves.toEqual({ status: 'outcomeUnknown' });
+
+        machineRpcWithServerScopeMock.mockRejectedValueOnce(new Error('not issued'));
+        await expect(machineMarketplaceSourceRegistryMutate('machine-1', mutation, {
+            serverId: 'server-a',
+        })).rejects.toThrow('not issued');
+    });
+
+    it('keeps an exact daemon invalid_request definite after issue and treats only malformed settlement as unknown', async () => {
+        const { machineMarketplaceSourceRegistryMutate } = await import('./machineMarketplaceSources');
+        const mutation = { kind: 'setEnabled', sourceId: 'marketplace:user', enabled: false } as const;
+        machineRpcWithServerScopeMock.mockImplementationOnce(async (input) => {
+            input.onIssued?.();
+            return { ok: false, errorCode: 'invalid_request', error: 'invalid_request' };
+        });
+
+        await expect(machineMarketplaceSourceRegistryMutate('machine-1', mutation, {
+            serverId: 'server-a',
+        })).resolves.toEqual({ status: 'unavailable' });
+
+        machineRpcWithServerScopeMock.mockImplementationOnce(async (input) => {
+            input.onIssued?.();
+            return { ok: false, errorCode: 'invalid_request' };
+        });
+        await expect(machineMarketplaceSourceRegistryMutate('machine-1', mutation, {
+            serverId: 'server-a',
+        })).resolves.toEqual({ status: 'outcomeUnknown' });
+    });
+
+    it('rejects an invalid source mutation before issuing the machine RPC', async () => {
+        const { machineMarketplaceSourceRegistryMutate } = await import('./machineMarketplaceSources');
+
+        await expect(machineMarketplaceSourceRegistryMutate('machine-1', {
+            kind: 'setEnabled',
+            sourceId: '',
+            enabled: false,
+        })).rejects.toThrow();
+        expect(machineRpcWithServerScopeMock).not.toHaveBeenCalled();
+    });
+
+    it('validates marketplace query responses and returns one page with a caller-owned cursor', async () => {
+        const { machineMarketplaceIndexQuery } = await import('./machineMarketplaceSources');
+        const page = { revision: 7, items: [], nextCursor: 'cursor-2', sources: [], diagnostics: [] };
+        machineRpcWithServerScopeMock.mockResolvedValueOnce(page);
+
+        const query = { text: 'browser', cursor: 'cursor-1', limit: 100, filters: {} };
+        await expect(machineMarketplaceIndexQuery('machine-1', query, { serverId: 'server-a' })).resolves.toEqual(page);
+
+        expect(machineRpcWithServerScopeMock).toHaveBeenCalledTimes(1);
+        expect(machineRpcWithServerScopeMock).toHaveBeenCalledWith({
+            machineId: 'machine-1',
+            serverId: 'server-a',
+            timeoutMs: undefined,
+            method: RPC_METHODS.DAEMON_MARKETPLACE_INDEX_QUERY,
+            payload: query,
+        });
 
         machineRpcWithServerScopeMock.mockReset();
         machineRpcWithServerScopeMock.mockResolvedValueOnce({ ok: false, errorCode: 'invalid_request' });

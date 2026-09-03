@@ -517,6 +517,9 @@ export function DiscoverListingsSection(props: Readonly<{
                     : entry.sourceKind === 'curated' && entry.reviewStatus === 'approved'
                         ? t('settingsPlugins.discover.reviewStatus.curated')
                         : t('settingsPlugins.discover.reviewStatus.unreviewed');
+                const leadingDescription = installed
+                    ? t('deps.ui.installedWithVersion', { version: installed.version })
+                    : entry.description;
                 return (
                     <Item
                         key={`${entry.sourceId}:${entry.id}`}
@@ -524,10 +527,7 @@ export function DiscoverListingsSection(props: Readonly<{
                         title={entry.title}
                         subtitle={(
                             <Text testID={`settings.plugins.marketplace.source.${entry.sourceId}.${entry.id}`}>
-                                {installed
-                                    ? t('deps.ui.installedWithVersion', { version: installed.version })
-                                    : entry.description ?? t('deps.ui.notInstalled')}
-                                {'\n'}
+                                {leadingDescription ? <>{leadingDescription}{'\n'}</> : null}
                                 {t('settingsPlugins.discover.publisherLabel', {
                                     displayName: entry.publisher.displayName,
                                     id: entry.publisher.id,

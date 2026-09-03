@@ -6,6 +6,8 @@ import { Pressable } from 'react-native';
 import { createStorageModuleStub, pressTestInstanceAsync, renderScreen, standardCleanup } from '@/dev/testkit';
 import { createCapturingFlatListMock } from '@/dev/testkit/mocks/virtualizedList';
 import { installSessionRouteCommonModuleMocks } from './[id]/sessionRouteTestHelpers';
+import { UniversalSearchRuntimeProvider } from '@/components/appShell/search/UniversalSearchRuntimeContext';
+import { clearSessionListHeaderFilterRetentionForTests } from '@/components/sessions/shell/search/useSessionListHeaderFilterRetention';
 
 const navigateToSessionSpy = vi.fn();
 const flatListMock = createCapturingFlatListMock({ renderItems: true });
@@ -21,6 +23,19 @@ let pinnedSessionKeysV1: string[] = [];
 let organizationPinnedSessionKeysV1: string[] = [];
 let sessionListRowStateByServerId: Record<string, Record<string, any> | null> = {};
 let allSessions: any[] = [];
+
+const universalSearchRuntime = {
+    open: vi.fn(),
+    buildCommands: vi.fn(() => []),
+};
+
+async function renderSessionRoute(element: React.ReactElement) {
+    return renderScreen(
+        <UniversalSearchRuntimeProvider value={universalSearchRuntime}>
+            {element}
+        </UniversalSearchRuntimeProvider>,
+    );
+}
 
 installSessionRouteCommonModuleMocks({
     reactNative: async () => {
@@ -139,11 +154,12 @@ describe('session history navigation', () => {
                 metadata: { name: 'Hidden inactive session' },
             },
         ];
+        clearSessionListHeaderFilterRetentionForTests();
     });
 
     it('passes the row server id when navigating from recent sessions', async () => {
         const RecentSessionsScreen = (await import('@/app/(app)/session/recent')).default;
-        const screen = await renderScreen(React.createElement(RecentSessionsScreen));
+        const screen = await renderSessionRoute(React.createElement(RecentSessionsScreen));
 
         const row = screen.tree.findAllByType(Pressable)[0];
         expect(row).toBeTruthy();
@@ -177,7 +193,7 @@ describe('session history navigation', () => {
         ];
 
         const RecentSessionsScreen = (await import('@/app/(app)/session/recent')).default;
-        const screen = await renderScreen(React.createElement(RecentSessionsScreen));
+        const screen = await renderSessionRoute(React.createElement(RecentSessionsScreen));
 
         expect(screen.getTextContent()).toContain('Ordinary recent session');
         expect(screen.getTextContent()).not.toContain('Voice History carrier');
@@ -194,7 +210,7 @@ describe('session history navigation', () => {
 
     it('passes the row server id when navigating from archived sessions', async () => {
         const ArchivedSessionsScreen = (await import('@/app/(app)/session/archived')).default;
-        const screen = await renderScreen(React.createElement(ArchivedSessionsScreen));
+        const screen = await renderSessionRoute(React.createElement(ArchivedSessionsScreen));
 
         const row = screen.findByTestId('archived-session-row:server-archived:session-archived-1');
         expect(row).toBeTruthy();
@@ -206,14 +222,14 @@ describe('session history navigation', () => {
 
     it('requests archived sessions when the archived route opens', async () => {
         const ArchivedSessionsScreen = (await import('@/app/(app)/session/archived')).default;
-        await renderScreen(React.createElement(ArchivedSessionsScreen));
+        await renderSessionRoute(React.createElement(ArchivedSessionsScreen));
 
         expect(fetchArchivedSessionsSpy).toHaveBeenCalledTimes(1);
     });
 
     it('completes the archived paging inventory once when metadata search begins', async () => {
         const ArchivedSessionsScreen = (await import('@/app/(app)/session/archived')).default;
-        const screen = await renderScreen(React.createElement(ArchivedSessionsScreen));
+        const screen = await renderSessionRoute(React.createElement(ArchivedSessionsScreen));
 
         await pressTestInstanceAsync(
             screen.findByTestId('session-list-search-trigger')!,
@@ -230,7 +246,7 @@ describe('session history navigation', () => {
         hideInactiveSessions = true;
 
         const ArchivedSessionsScreen = (await import('@/app/(app)/session/archived')).default;
-        await renderScreen(React.createElement(ArchivedSessionsScreen));
+        await renderSessionRoute(React.createElement(ArchivedSessionsScreen));
 
         expect(typeof capturedSectionListProps?.onEndReached).toBe('function');
         capturedSectionListProps?.onEndReached?.();
@@ -241,7 +257,7 @@ describe('session history navigation', () => {
 
     it('passes the row server id when unarchiving an archived session', async () => {
         const ArchivedSessionsScreen = (await import('@/app/(app)/session/archived')).default;
-        const screen = await renderScreen(React.createElement(ArchivedSessionsScreen));
+        const screen = await renderSessionRoute(React.createElement(ArchivedSessionsScreen));
 
         const unarchiveButton = screen.findByTestId(
             'archived-session-unarchive:server-archived:session-archived-1',
@@ -274,7 +290,7 @@ describe('session history navigation', () => {
         };
 
         const ArchivedSessionsScreen = (await import('@/app/(app)/session/archived')).default;
-        const screen = await renderScreen(React.createElement(ArchivedSessionsScreen));
+        const screen = await renderSessionRoute(React.createElement(ArchivedSessionsScreen));
 
         expect(screen.getTextContent()).toContain('Cached archived session');
     });
@@ -304,7 +320,7 @@ describe('session history navigation', () => {
         };
 
         const ArchivedSessionsScreen = (await import('@/app/(app)/session/archived')).default;
-        const screen = await renderScreen(React.createElement(ArchivedSessionsScreen));
+        const screen = await renderSessionRoute(React.createElement(ArchivedSessionsScreen));
 
         expect(screen.getTextContent()).toContain('Server A archived session');
         expect(screen.getTextContent()).toContain('Server B archived session');
@@ -322,7 +338,7 @@ describe('session history navigation', () => {
     it('shows inactive sessions before archived sessions on the archived screen when hide inactive sessions is enabled', async () => {
         hideInactiveSessions = true;
         const ArchivedSessionsScreen = (await import('@/app/(app)/session/archived')).default;
-        const screen = await renderScreen(React.createElement(ArchivedSessionsScreen));
+        const screen = await renderSessionRoute(React.createElement(ArchivedSessionsScreen));
         const content = screen.getTextContent();
 
         expect(content).toContain('settingsFeatures.hiddenInactiveSessionsSectionTitle');
@@ -398,7 +414,7 @@ describe('session history navigation', () => {
         };
 
         const ArchivedSessionsScreen = (await import('@/app/(app)/session/archived')).default;
-        const screen = await renderScreen(React.createElement(ArchivedSessionsScreen));
+        const screen = await renderSessionRoute(React.createElement(ArchivedSessionsScreen));
         const content = screen.getTextContent();
 
         expect(content).toContain('Ordinary inactive session');
@@ -413,7 +429,7 @@ describe('session history navigation', () => {
         organizationPinnedSessionKeysV1 = ['server-hidden:session-hidden-1'];
 
         const ArchivedSessionsScreen = (await import('@/app/(app)/session/archived')).default;
-        const screen = await renderScreen(React.createElement(ArchivedSessionsScreen));
+        const screen = await renderSessionRoute(React.createElement(ArchivedSessionsScreen));
         const content = screen.getTextContent();
 
         expect(content).not.toContain('settingsFeatures.hiddenInactiveSessionsSectionTitle');
@@ -426,7 +442,7 @@ describe('session history navigation', () => {
         organizationPinnedSessionKeysV1 = [];
 
         const ArchivedSessionsScreen = (await import('@/app/(app)/session/archived')).default;
-        const screen = await renderScreen(React.createElement(ArchivedSessionsScreen));
+        const screen = await renderSessionRoute(React.createElement(ArchivedSessionsScreen));
         const content = screen.getTextContent();
 
         expect(content).toContain('settingsFeatures.hiddenInactiveSessionsSectionTitle');
@@ -456,7 +472,7 @@ describe('session history navigation', () => {
         ];
 
         const ArchivedSessionsScreen = (await import('@/app/(app)/session/archived')).default;
-        const screen = await renderScreen(React.createElement(ArchivedSessionsScreen));
+        const screen = await renderSessionRoute(React.createElement(ArchivedSessionsScreen));
         const content = screen.getTextContent();
 
         expect(content).toContain('Server A unpinned inactive session');
@@ -466,7 +482,7 @@ describe('session history navigation', () => {
     it('does not show inactive sessions on the archived screen when hide inactive sessions is disabled', async () => {
         hideInactiveSessions = false;
         const ArchivedSessionsScreen = (await import('@/app/(app)/session/archived')).default;
-        const screen = await renderScreen(React.createElement(ArchivedSessionsScreen));
+        const screen = await renderSessionRoute(React.createElement(ArchivedSessionsScreen));
         const content = screen.getTextContent();
 
         expect(content).toContain('sessionInfo.archivedSessions');
@@ -477,7 +493,7 @@ describe('session history navigation', () => {
     it('stops wheel propagation on web so the archived sessions page can scroll inside the shell', async () => {
         hideInactiveSessions = true;
         const ArchivedSessionsScreen = (await import('@/app/(app)/session/archived')).default;
-        const screen = await renderScreen(React.createElement(ArchivedSessionsScreen));
+        const screen = await renderSessionRoute(React.createElement(ArchivedSessionsScreen));
 
         expect(screen.tree).toBeTruthy();
         expect(typeof capturedSectionListProps?.onWheel).toBe('function');

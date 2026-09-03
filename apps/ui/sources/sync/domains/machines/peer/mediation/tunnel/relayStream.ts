@@ -19,6 +19,7 @@ import {
 } from '@happier-dev/peer-transport/duplexFrames';
 
 import type { PeerTcpTunnelClientStream } from './client';
+import { assertPeerTcpTunnelStreamWritable } from './streamClosed';
 
 type SendPeerTcpTunnelRelayEnvelope = (
     event: typeof PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT,
@@ -196,7 +197,7 @@ export async function openPeerTcpTunnelRelayStream(input: Readonly<{
 
     return {
         sendFrame: (frame) => {
-            if (closed) return;
+            assertPeerTcpTunnelStreamWritable(closed);
             sendRelayFrame(frame);
         },
         onFrame: (handler) => {
@@ -207,14 +208,16 @@ export async function openPeerTcpTunnelRelayStream(input: Readonly<{
             };
         },
         sendSubstreamOpen: (substreamId) => {
-            if (closed || encoding !== PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2) return;
+            assertPeerTcpTunnelStreamWritable(closed);
+            if (encoding !== PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2) return;
             sendRelayBinaryFrame(encodePeerTcpTunnelBinarySubstreamOpen({
                 tunnelId: input.open.tunnelId,
                 substreamId,
             }));
         },
         sendSubstreamDataFrame: (substreamId, frame) => {
-            if (closed || encoding !== PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2) return;
+            assertPeerTcpTunnelStreamWritable(closed);
+            if (encoding !== PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2) return;
             sendRelayBinaryFrame(encodePeerTcpTunnelBinaryFrameForSubstream({ substreamId, frame: {
                 v: 1,
                 kind: 'data',
@@ -225,7 +228,8 @@ export async function openPeerTcpTunnelRelayStream(input: Readonly<{
             } }));
         },
         sendSubstreamFrame: (substreamId, frame) => {
-            if (closed || encoding !== PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2) return;
+            assertPeerTcpTunnelStreamWritable(closed);
+            if (encoding !== PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2) return;
             sendRelayBinaryFrame(encodePeerTcpTunnelBinaryFrameForSubstream({
                 substreamId,
                 frame,

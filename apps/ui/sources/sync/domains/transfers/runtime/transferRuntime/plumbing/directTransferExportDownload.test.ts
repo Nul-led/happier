@@ -125,6 +125,144 @@ describe('directTransferExportDownload', () => {
         });
     });
 
+    it('carries download requests through a browser machine stream and preserves integrity', async () => {
+        const payload = { browser: true };
+        const payloadBytes = new TextEncoder().encode(JSON.stringify(payload));
+        const manifestHash = await createManifestHash(payloadBytes);
+        callGuardedMachineRpcWithPolicyMock.mockResolvedValueOnce({
+            success: true,
+            transferId: 'browser-transfer-1',
+            sizeBytes: payloadBytes.byteLength,
+            expiresAt: 5_000,
+            endpointCandidates: [{
+                kind: 'http',
+                url: 'http://127.0.0.1:46001/machine-transfers/direct/browser-transfer-1?grant=kept',
+                authorizationToken: 'token-browser',
+                expiresAt: 5_000,
+            }],
+        });
+        runtimeFetchMock.mockRejectedValue(new Error('native fetch must not carry browser machine bytes'));
+        const requests: string[] = [];
+        const request = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+            const url = String(input);
+            requests.push(url);
+            if (url.includes('/open')) {
+                return new Response(JSON.stringify({
+                    transferId: 'browser-transfer-1',
+                    manifestHash,
+                    totalChunks: 1,
+                    sizeBytes: payloadBytes.byteLength,
+                }), { status: 200, headers: { 'content-type': 'application/json' } });
+            }
+            const headers = new Headers(init?.headers);
+            const envelope = await createEncryptedTransferChunkEnvelope({
+                transferId: 'browser-transfer-1',
+                sequence: 0,
+                payload: payloadBytes,
+                recipientPublicKeyBase64: headers.get('x-happier-transfer-recipient-public-key') ?? '',
+            });
+            return new Response(JSON.stringify({
+                transferId: 'browser-transfer-1',
+                kind: 'chunk',
+                sequence: 0,
+                payloadBase64: envelope.payloadBase64,
+                encryptedDataKeyEnvelopeBase64: envelope.encryptedDataKeyEnvelopeBase64,
+            }), { status: 200, headers: { 'content-type': 'application/json' } });
+        });
+        const release = vi.fn(async () => undefined);
+
+        const { downloadBulkJsonPayloadViaDirectExport } = await import('./directTransferExportDownload');
+        const result = await downloadBulkJsonPayloadViaDirectExport({
+            machineId: 'machine-1',
+            serverId: 'server-a',
+            request: {
+                t: 'prompt_asset_download_v1',
+                assetTypeId: 'agents.skill',
+                scope: 'user',
+                externalRef: { browser: true },
+            },
+            parsePayload: (value) => value as typeof payload,
+            acquirePreparedCarrier: async () => ({ kind: 'browser_stream', request, release }),
+        });
+
+        expect(result).toEqual({ ok: true, payload });
+        expect(requests).toEqual([
+            'http://127.0.0.1:46001/machine-transfers/direct/browser-transfer-1/open?grant=kept',
+            'http://127.0.0.1:46001/machine-transfers/direct/browser-transfer-1/chunks/0?grant=kept',
+        ]);
+        expect(release).toHaveBeenCalledTimes(1);
+    });
+
+    it('reports a completed JSON download successful when the carrier release fails and hands custody back once', async () => {
+        const payload = { ok: true };
+        const payloadBytes = new TextEncoder().encode(JSON.stringify(payload));
+        const manifestHash = await createManifestHash(payloadBytes);
+        const release = vi.fn(async () => {
+            throw new Error('native machine tunnel stop failed');
+        });
+
+        callGuardedMachineRpcWithPolicyMock.mockResolvedValueOnce({
+            success: true,
+            transferId: 'transfer-cleanup-failure',
+            sizeBytes: payloadBytes.byteLength,
+            expiresAt: 5_000,
+            endpointCandidates: [
+                {
+                    kind: 'http',
+                    url: 'http://127.0.0.1:46001/machine-transfers/direct/transfer-cleanup-failure',
+                    authorizationToken: 'token-1',
+                    expiresAt: 5_000,
+                },
+            ],
+        });
+
+        runtimeFetchMock.mockImplementationOnce(async (_url: string, init?: RequestInit) => {
+            const openHeaders = new Headers(init?.headers);
+            const envelope = await createEncryptedTransferChunkEnvelope({
+                transferId: 'transfer-cleanup-failure',
+                sequence: 0,
+                payload: payloadBytes,
+                recipientPublicKeyBase64: openHeaders.get('x-happier-transfer-recipient-public-key') ?? '',
+            });
+            runtimeFetchMock.mockImplementationOnce(async () => new Response(JSON.stringify({
+                transferId: 'transfer-cleanup-failure',
+                kind: 'chunk',
+                sequence: 0,
+                payloadBase64: envelope.payloadBase64,
+                encryptedDataKeyEnvelopeBase64: envelope.encryptedDataKeyEnvelopeBase64,
+            }), { status: 200, headers: { 'content-type': 'application/json' } }));
+            return new Response(JSON.stringify({
+                transferId: 'transfer-cleanup-failure',
+                manifestHash,
+                totalChunks: 1,
+            }), { status: 200, headers: { 'content-type': 'application/json' } });
+        });
+
+        const { downloadBulkJsonPayloadViaDirectExport } = await import('./directTransferExportDownload');
+        const result = await downloadBulkJsonPayloadViaDirectExport({
+            machineId: 'machine-1',
+            serverId: 'server-a',
+            request: {
+                t: 'prompt_asset_download_v1',
+                assetTypeId: 'agents.skill',
+                scope: 'user',
+                externalRef: { skillName: 'reviewer' },
+            },
+            parsePayload: (value) => value as typeof payload,
+            acquirePreparedCarrier: async () => ({
+                kind: 'native_http' as const,
+                localOrigin: 'http://127.0.0.1:48126',
+                requestHeaders: { 'X-Happier-Machine-Local-Capability': 'a'.repeat(64) },
+                release,
+            }),
+        });
+
+        // Cleanup custody returns to the lease owner; the completed download is
+        // not downgraded and this helper does not retry the release.
+        expect(result).toEqual({ ok: true, payload });
+        expect(release).toHaveBeenCalledTimes(1);
+    });
+
     it('accepts https direct-export endpoint candidates with a Serve path prefix', async () => {
         const payload = { ok: true };
         const payloadBytes = new TextEncoder().encode(JSON.stringify(payload));

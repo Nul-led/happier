@@ -9,6 +9,7 @@ import {
     RuntimeDescriptorV1Schema,
     SessionRuntimeActivityStateSchema,
     SessionRuntimeIssueV1Schema,
+    PendingActivationAuthorizationV1Schema,
 } from '@happier-dev/protocol';
 import { PluginUiTargetedContributionsV1Schema } from '@happier-dev/protocol/plugins/ui';
 import { z } from 'zod';
@@ -240,6 +241,7 @@ export const SessionListCacheEntryV1Schema = z.object({
     pendingCount: z.number().int().nonnegative().optional(),
     pendingBlockedCount: z.number().int().nonnegative().optional(),
     pendingVersion: z.number().int().nonnegative().optional(),
+    pendingActivationAuthorization: PendingActivationAuthorizationV1Schema.nullable().optional(),
     latestTurnStatus: PrimaryTurnStatusV1Schema.nullable().optional(),
     latestTurnStatusObservedAt: z.number().int().nonnegative().nullable().optional(),
     lastRuntimeIssue: SessionRuntimeIssueV1Schema.nullable().optional(),

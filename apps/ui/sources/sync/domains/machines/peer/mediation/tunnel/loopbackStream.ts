@@ -16,6 +16,7 @@ import {
 } from '@happier-dev/peer-transport/duplexFrames';
 
 import type { PeerTcpTunnelClientStream } from './client';
+import { assertPeerTcpTunnelStreamWritable } from './streamClosed';
 
 const DEFAULT_TUNNEL_WEBSOCKET_OPEN_TIMEOUT_MS = 30_000;
 
@@ -195,6 +196,7 @@ export async function openPeerTcpTunnelLoopbackStream(input: Readonly<{
 
     return {
         sendFrame: (frame) => {
+            assertPeerTcpTunnelStreamWritable(closed);
             socket.send(input.response.encoding === 'binary_frame_v2'
                 ? encodePeerTcpTunnelBinaryFrameForSession(frame)
                 : encodeLegacyJsonPeerTcpTunnelFrame(frame));
@@ -206,6 +208,7 @@ export async function openPeerTcpTunnelLoopbackStream(input: Readonly<{
             };
         },
         sendSubstreamOpen: (substreamId) => {
+            assertPeerTcpTunnelStreamWritable(closed);
             if (input.response.encoding !== 'binary_frame_v2') return;
             socket.send(encodePeerTcpTunnelBinarySubstreamOpen({
                 tunnelId: input.open.tunnelId,
@@ -213,6 +216,7 @@ export async function openPeerTcpTunnelLoopbackStream(input: Readonly<{
             }));
         },
         sendSubstreamDataFrame: (substreamId, frame) => {
+            assertPeerTcpTunnelStreamWritable(closed);
             if (input.response.encoding !== 'binary_frame_v2') return;
             socket.send(encodePeerTcpTunnelBinaryFrameForSubstream({ substreamId, frame: {
                 v: 1,
@@ -224,6 +228,7 @@ export async function openPeerTcpTunnelLoopbackStream(input: Readonly<{
             } }));
         },
         sendSubstreamFrame: (substreamId, frame) => {
+            assertPeerTcpTunnelStreamWritable(closed);
             if (input.response.encoding !== 'binary_frame_v2') return;
             socket.send(encodePeerTcpTunnelBinaryFrameForSubstream({
                 substreamId,

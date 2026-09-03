@@ -1,0 +1,173 @@
+import { describe, expect, it, vi, beforeEach } from 'vitest';
+
+const machineScmLogListSpy = vi.fn();
+
+vi.mock('@/sync/ops/scm/machineScm', () => ({
+    machineScmLogList: (...args: unknown[]) => machineScmLogListSpy(...args),
+}));
+
+import { SCM_OPERATION_ERROR_CODES } from '@happier-dev/protocol';
+import type { ScmLogEntry } from '@happier-dev/protocol';
+
+import { searchWorkspaceCommits } from './searchWorkspaceCommits';
+
+const SCOPE = { serverId: 'server-a', machineId: 'm1', rootPath: '/repo' } as const;
+
+function makeEntry(sha: string): ScmLogEntry {
+    return {
+        sha,
+        shortSha: sha.slice(0, 12),
+        authorName: 'Ada Lovelace',
+        authorEmail: 'ada@example.com',
+        timestamp: 1_767_225_600_000,
+        subject: 'feat: cache layer',
+        body: 'feat: cache layer',
+    };
+}
+
+describe('searchWorkspaceCommits', () => {
+    beforeEach(() => {
+        machineScmLogListSpy.mockReset();
+    });
+
+    it('issues the bounded query against the exact current workspace scope and reports matches', async () => {
+        const controller = new AbortController();
+        machineScmLogListSpy.mockResolvedValue({
+            success: true,
+            entries: [makeEntry('c'.repeat(40))],
+            queryApplied: true,
+        });
+
+        const outcome = await searchWorkspaceCommits({
+            scope: SCOPE,
+            query: 'cache layer',
+            limit: 20,
+            signal: controller.signal,
+        });
+
+        expect(outcome).toEqual({
+            status: 'matches',
+            entries: [makeEntry('c'.repeat(40))],
+        });
+        expect(machineScmLogListSpy).toHaveBeenCalledTimes(1);
+        expect(machineScmLogListSpy).toHaveBeenCalledWith(
+            'm1',
+            { cwd: '/repo', query: 'cache layer', limit: 20 },
+            { serverId: 'server-a', signal: controller.signal },
+        );
+    });
+
+    it('labels the bounded recent page honestly when an older daemon ignored the query', async () => {
+        // Old-daemon bytes: the query field is stripped and no `queryApplied` echo exists. The
+        // returned page is the recent log — never presented as query matches.
+        machineScmLogListSpy.mockResolvedValue({
+            success: true,
+            entries: [makeEntry('a'.repeat(40)), makeEntry('b'.repeat(40))],
+        });
+
+        const outcome = await searchWorkspaceCommits({
+            scope: SCOPE,
+            query: 'cache layer',
+            limit: 20,
+        });
+
+        expect(outcome).toEqual({
+            status: 'recentOnly',
+            entries: [makeEntry('a'.repeat(40)), makeEntry('b'.repeat(40))],
+        });
+    });
+
+    it('fails typed and locally when the machine is offline', async () => {
+        machineScmLogListSpy.mockResolvedValue({
+            success: false,
+            error: 'Machine RPC method not available',
+            errorCode: SCM_OPERATION_ERROR_CODES.BACKEND_UNAVAILABLE,
+        });
+
+        const outcome = await searchWorkspaceCommits({
+            scope: SCOPE,
+            query: 'cache layer',
+            limit: 20,
+        });
+
+        expect(outcome).toEqual({
+            status: 'unavailable',
+            reason: 'backendUnavailable',
+            message: 'Machine RPC method not available',
+        });
+    });
+
+    it('fails typed when the workspace root is not a repository', async () => {
+        machineScmLogListSpy.mockResolvedValue({
+            success: false,
+            error: 'not a repository',
+            errorCode: SCM_OPERATION_ERROR_CODES.NOT_REPOSITORY,
+        });
+
+        const outcome = await searchWorkspaceCommits({
+            scope: SCOPE,
+            query: 'cache layer',
+            limit: 20,
+        });
+
+        expect(outcome).toEqual({
+            status: 'unavailable',
+            reason: 'notRepository',
+            message: 'not a repository',
+        });
+    });
+
+    it('fails typed when the daemon does not implement the SCM method', async () => {
+        machineScmLogListSpy.mockResolvedValue({
+            success: false,
+            error: 'Method not found',
+            errorCode: SCM_OPERATION_ERROR_CODES.FEATURE_UNSUPPORTED,
+        });
+
+        const outcome = await searchWorkspaceCommits({
+            scope: SCOPE,
+            query: 'cache layer',
+            limit: 20,
+        });
+
+        expect(outcome).toEqual({
+            status: 'unavailable',
+            reason: 'unsupported',
+            message: 'Method not found',
+        });
+    });
+
+    it('propagates cancellation instead of masking it as an unavailable workspace', async () => {
+        const controller = new AbortController();
+        const abortError = Object.assign(new Error('aborted'), { name: 'AbortError' });
+        machineScmLogListSpy.mockRejectedValue(abortError);
+
+        await expect(searchWorkspaceCommits({
+            scope: SCOPE,
+            query: 'cache layer',
+            limit: 20,
+            signal: controller.signal,
+        })).rejects.toBe(abortError);
+    });
+
+    it('refuses to search without an exact workspace scope and never falls back to an arbitrary workspace', async () => {
+        for (const missing of [
+            null,
+            { serverId: '', machineId: 'm1', rootPath: '/repo' },
+            { serverId: 'server-a', machineId: '', rootPath: '/repo' },
+            { serverId: 'server-a', machineId: 'm1', rootPath: '   ' },
+        ]) {
+            const outcome = await searchWorkspaceCommits({
+                scope: missing as typeof SCOPE | null,
+                query: 'cache layer',
+                limit: 20,
+            });
+
+            expect(outcome).toEqual({
+                status: 'unavailable',
+                reason: 'noWorkspaceScope',
+            });
+        }
+        expect(machineScmLogListSpy).not.toHaveBeenCalled();
+    });
+});

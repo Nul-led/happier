@@ -1,0 +1,404 @@
+/**
+ * The tab side of the browser Iroh command boundary (Lane 06 amendment
+ * A7.2/A7.3/A7.4).
+ *
+ * A tab never owns an endpoint. It holds a lease on the one endpoint the
+ * SharedWorker owns, and releasing that lease — on logout, on navigation away,
+ * or when this tab simply closes — leaves every sibling tab untouched. Ordinary
+ * page end is covered best-effort by `pageLifecycleRelease`, so a reload does
+ * not leave a lease behind that no port answers for.
+ *
+ * Nothing here runs at startup. The SharedWorker is constructed, and the
+ * packaged wasm assets are fetched, only when an eligible caller first asks for
+ * a lease. Production consumers reach this client through exactly one owner —
+ * {@link resolvePackagedBrowserIrohEndpointClient}, the tab's lazy packaged
+ * client shared by the Home carrier runtime (which carries authenticated Home
+ * HTTP and Socket.IO over its streams, behind the
+ * `homeCarrier/browserHomeCarrier` seam) and the `happier/machine/1`
+ * finite-transfer carrier. QR and Account Service still consume nothing here.
+ */
+
+import { BROWSER_IROH_WORKER_ASSET, browserIrohAssetUrl } from './assets';
+import { resolveBrowserIrohHostDecision, type BrowserIrohHostDecision } from './hostEligibility';
+import {
+    attachBrowserIrohPageLifecycleRelease,
+    type BrowserIrohPageLifecycle,
+} from './pageLifecycleRelease';
+import {
+    parseBrowserIrohWorkerReply,
+    type BrowserIrohClientCommand,
+    type BrowserIrohEndpointStatus,
+    type BrowserIrohErrorCode,
+    type BrowserIrohObservedPath,
+    type BrowserIrohStreamKind,
+    type BrowserIrohWorkerReply,
+} from './protocol';
+import type { BrowserIrohMessagePort } from './workerConnection';
+
+export class BrowserIrohClientError extends Error {
+    constructor(readonly code: BrowserIrohErrorCode, message: string) {
+        super(message);
+        this.name = 'BrowserIrohClientError';
+    }
+}
+
+export type BrowserIrohLease = Readonly<{
+    leaseId: string;
+    endpointId: string;
+    appliedRelayUrls: readonly string[];
+    /**
+     * Opens one stream under this lease. `streamKind` names the protocol from
+     * the closed set; a tab never supplies an ALPN.
+     */
+    openStream: (input: Readonly<{
+        streamKind: BrowserIrohStreamKind;
+        endpointId: string;
+        relayUrls: readonly string[];
+    }>) => Promise<BrowserIrohStream>;
+    release: () => Promise<void>;
+}>;
+
+/** Opaque per-tab handle; the worker and Rust/WASM endpoint retain custody. */
+export type BrowserIrohStream = Readonly<{
+    streamId: string;
+    /** The EndpointId the transport cryptographically proved. */
+    remoteEndpointId: string;
+    observedPath: BrowserIrohObservedPath;
+    read: (maxBytes: number) => Promise<Readonly<{ bytes: Uint8Array; done: boolean }>>;
+    write: (bytes: Uint8Array) => Promise<void>;
+    finishWrite: () => Promise<void>;
+    cancel: () => Promise<void>;
+    close: () => Promise<void>;
+}>;
+
+export type BrowserIrohEndpointClient = Readonly<{
+    acquireLease: (relayUrls: readonly string[]) => Promise<BrowserIrohLease>;
+    configureRelays: (
+        relayUrls: readonly string[],
+    ) => Promise<Readonly<{ endpointId: string; appliedRelayUrls: readonly string[] }>>;
+    status: () => Promise<BrowserIrohEndpointStatus>;
+    /** Releases every lease this tab holds. Siblings keep theirs. */
+    releaseAll: () => Promise<void>;
+    clearApplicationData: () => Promise<void>;
+    /**
+     * Disposes this tab's client: the page-lifecycle listener is detached and
+     * never reattached. It does not release anything on its own — `releaseAll`
+     * and `clearApplicationData` remain the explicit, awaited, truthful paths.
+     */
+    close: () => void;
+}>;
+
+/**
+ * One connection to the packaged worker. `onFailure` is what makes a missing or
+ * unloadable worker script observable: an app built without the browser Iroh
+ * assets still looks eligible to the host check, and without this signal the
+ * port would simply never answer.
+ */
+export type BrowserIrohWorkerConnection = Readonly<{
+    port: BrowserIrohMessagePort;
+    onFailure: (listener: (reason: string) => void) => void;
+}>;
+
+type ConnectWorker = () => BrowserIrohWorkerConnection;
+
+function newRequestId(): string {
+    const cryptoRandomUUID = globalThis.crypto?.randomUUID;
+    if (typeof cryptoRandomUUID === 'function') {
+        return cryptoRandomUUID.call(globalThis.crypto);
+    }
+    return `request-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+/**
+ * Connects to the packaged SharedWorker. Constructed lazily by the client, so
+ * importing this module costs nothing.
+ */
+export function connectPackagedBrowserIrohWorker(base: string): BrowserIrohWorkerConnection {
+    const url = browserIrohAssetUrl(BROWSER_IROH_WORKER_ASSET, base);
+    const SharedWorkerConstructor = (globalThis as Record<string, unknown>).SharedWorker as
+        | (new (
+            scriptUrl: string,
+            options?: { type?: 'module'; name?: string },
+        ) => { port: MessagePort; onerror: ((event: unknown) => void) | null })
+        | undefined;
+    if (SharedWorkerConstructor === undefined) {
+        throw new BrowserIrohClientError(
+            'endpoint_unavailable',
+            'SharedWorker is unavailable in this browser',
+        );
+    }
+    const worker = new SharedWorkerConstructor(url, { type: 'module', name: 'happier-iroh' });
+    return {
+        port: worker.port,
+        onFailure: (listener) => {
+            worker.onerror = () => listener(`browser Iroh worker script failed to load: ${url}`);
+        },
+    };
+}
+
+/** The document base URL the packaged assets are resolved against. */
+function documentBaseUrl(): string {
+    const location = (globalThis as { location?: { href?: string } }).location;
+    return String(location?.href ?? '');
+}
+
+/** The tab's one packaged client; `null` until a caller first asks for it. */
+let packagedTabClient: BrowserIrohEndpointClient | null = null;
+
+/**
+ * The one endpoint client lifecycle owner per browser tab (Lane 06): the
+ * packaged client shared by the Home carrier owner and machine transfer
+ * operations. Resolving is lazy — importing this module or calling this
+ * accessor constructs no worker and opens no port; the SharedWorker is
+ * connected when the returned client performs its first operation, and never
+ * a second time for this tab.
+ *
+ * Carrier and transfer releases free their own leases and streams but never
+ * close this client: the page-lifecycle release attached on connect and an
+ * explicit `clearApplicationData` remain the whole-client lifecycle owners.
+ */
+export function resolvePackagedBrowserIrohEndpointClient(): BrowserIrohEndpointClient {
+    packagedTabClient ??= createBrowserIrohEndpointClient(
+        () => connectPackagedBrowserIrohWorker(documentBaseUrl()),
+    );
+    return packagedTabClient;
+}
+
+/**
+ * Test-only reset: the next resolution describes a fresh tab. Production code
+ * never calls this — the singleton is the tab's lifetime.
+ */
+export function resetPackagedBrowserIrohEndpointClientForTests(): void {
+    packagedTabClient = null;
+}
+
+/**
+ * `pageLifecycle` is injected so a test can describe a page without pretending
+ * to be one; production reads the host. `null` means this host has no page
+ * lifecycle to hook, and the client simply relies on explicit release.
+ */
+export function createBrowserIrohEndpointClient(
+    connect: ConnectWorker,
+    pageLifecycle?: BrowserIrohPageLifecycle | null,
+): BrowserIrohEndpointClient {
+    let connection: BrowserIrohWorkerConnection | null = null;
+    let failure: string | null = null;
+    let detachPageLifecycle: (() => void) | null = null;
+    let closed = false;
+    const pending = new Map<string, (reply: BrowserIrohWorkerReply) => void>();
+
+    function fail(reason: string): void {
+        failure = reason;
+        // Every waiting caller is answered. A worker that never loads must not
+        // leave a request outstanding forever.
+        for (const [requestId, resolve] of [...pending]) {
+            pending.delete(requestId);
+            resolve({
+                v: 1,
+                kind: 'error',
+                requestId,
+                code: 'endpoint_unavailable',
+                message: reason,
+            });
+        }
+    }
+
+    function ensureConnection(): BrowserIrohWorkerConnection {
+        if (connection !== null) return connection;
+        const connected = connect();
+        connected.port.addEventListener('message', (event) => {
+            const reply = parseBrowserIrohWorkerReply(event.data);
+            if (reply === null) return;
+            pending.get(reply.requestId)?.(reply);
+        });
+        connected.onFailure(fail);
+        connected.port.start?.();
+        connection = connected;
+        // The worker outlives this page, so the leases this tab is about to
+        // take have to be handed back when the page ends. Attaching here keeps
+        // the "nothing until a caller asks" rule: an unused client listens to
+        // nothing.
+        if (!closed) {
+            detachPageLifecycle = attachBrowserIrohPageLifecycleRelease({
+                postMessage: (message) => connected.port.postMessage(message),
+                newRequestId,
+                lifecycle: pageLifecycle,
+            });
+        }
+        return connected;
+    }
+
+    async function send(
+        build: (requestId: string) => BrowserIrohClientCommand,
+    ): Promise<BrowserIrohWorkerReply> {
+        // A worker script that could not load will not load on the next command
+        // either; reconnecting would only produce a second silent port.
+        if (failure !== null) {
+            throw new BrowserIrohClientError('endpoint_unavailable', failure);
+        }
+        const active = ensureConnection();
+        const requestId = newRequestId();
+        const reply = new Promise<BrowserIrohWorkerReply>((resolve) => {
+            pending.set(requestId, resolve);
+        });
+        active.port.postMessage(build(requestId));
+        try {
+            return await reply;
+        } finally {
+            pending.delete(requestId);
+        }
+    }
+
+    function requireReply<K extends BrowserIrohWorkerReply['kind']>(
+        reply: BrowserIrohWorkerReply,
+        kind: K,
+    ): Extract<BrowserIrohWorkerReply, { kind: K }> {
+        if (reply.kind === 'error') {
+            throw new BrowserIrohClientError(reply.code, reply.message);
+        }
+        if (reply.kind !== kind) {
+            throw new BrowserIrohClientError(
+                'protocol_violation',
+                `Browser Iroh worker answered ${reply.kind} for a ${kind} request`,
+            );
+        }
+        return reply as Extract<BrowserIrohWorkerReply, { kind: K }>;
+    }
+
+    const releaseLease = async (leaseId: string): Promise<void> => {
+        requireReply(
+            await send((requestId) => ({ v: 1, kind: 'releaseLease', requestId, leaseId })),
+            'released',
+        );
+    };
+
+    const streamHandle = (opened: Extract<BrowserIrohWorkerReply, { kind: 'streamOpened' }>): BrowserIrohStream => ({
+        streamId: opened.streamId,
+        remoteEndpointId: opened.remoteEndpointId,
+        observedPath: opened.observedPath,
+        read: async (maxBytes) => {
+            const read = requireReply(
+                await send((requestId) => ({ v: 1, kind: 'readStream', requestId, streamId: opened.streamId, maxBytes })),
+                'streamRead',
+            );
+            return { bytes: read.bytes, done: read.done };
+        },
+        write: async (bytes) => {
+            requireReply(
+                await send((requestId) => ({ v: 1, kind: 'writeStream', requestId, streamId: opened.streamId, bytes })),
+                'streamWritten',
+            );
+        },
+        finishWrite: async () => {
+            requireReply(
+                await send((requestId) => ({ v: 1, kind: 'finishStreamWrite', requestId, streamId: opened.streamId })),
+                'streamWriteFinished',
+            );
+        },
+        cancel: async () => {
+            requireReply(
+                await send((requestId) => ({ v: 1, kind: 'cancelStream', requestId, streamId: opened.streamId })),
+                'streamCancelled',
+            );
+        },
+        close: async () => {
+            requireReply(
+                await send((requestId) => ({ v: 1, kind: 'closeStream', requestId, streamId: opened.streamId })),
+                'streamClosed',
+            );
+        },
+    });
+
+    return {
+        acquireLease: async (relayUrls) => {
+            const acquired = requireReply(
+                await send((requestId) => ({
+                    v: 1,
+                    kind: 'acquireLease',
+                    requestId,
+                    relayUrls: [...relayUrls],
+                })),
+                'leaseAcquired',
+            );
+            return {
+                leaseId: acquired.leaseId,
+                endpointId: acquired.endpointId,
+                appliedRelayUrls: acquired.appliedRelayUrls,
+                openStream: async ({ streamKind, endpointId, relayUrls }) => streamHandle(requireReply(
+                    await send((requestId) => ({
+                        v: 1,
+                        kind: 'openStream',
+                        requestId,
+                        leaseId: acquired.leaseId,
+                        streamKind,
+                        endpointId,
+                        relayUrls: [...relayUrls],
+                    })),
+                    'streamOpened',
+                )),
+                release: async () => {
+                    await releaseLease(acquired.leaseId);
+                },
+            };
+        },
+
+        configureRelays: async (relayUrls) => {
+            const configured = requireReply(
+                await send((requestId) => ({
+                    v: 1,
+                    kind: 'configureRelays',
+                    requestId,
+                    relayUrls: [...relayUrls],
+                })),
+                'relaysConfigured',
+            );
+            return {
+                endpointId: configured.endpointId,
+                appliedRelayUrls: configured.appliedRelayUrls,
+            };
+        },
+
+        status: async () =>
+            requireReply(await send((requestId) => ({ v: 1, kind: 'status', requestId })), 'status')
+                .status,
+
+        releaseAll: async () => {
+            requireReply(
+                await send((requestId) => ({ v: 1, kind: 'releaseClient', requestId })),
+                'released',
+            );
+        },
+
+        clearApplicationData: async () => {
+            requireReply(
+                await send((requestId) => ({ v: 1, kind: 'clearApplicationData', requestId })),
+                'cleared',
+            );
+        },
+
+        close: () => {
+            closed = true;
+            detachPageLifecycle?.();
+            detachPageLifecycle = null;
+        },
+    };
+}
+
+export type BrowserIrohEndpointAvailability =
+    | Readonly<{ available: true; client: BrowserIrohEndpointClient }>
+    | Readonly<{ available: false; decision: BrowserIrohHostDecision }>;
+
+/**
+ * The one per-tab entry point. Resolving availability is a pure host-capability
+ * decision: it constructs no worker, opens no port, and fetches no asset. Only a
+ * later call on the returned client does that.
+ */
+export function resolveBrowserIrohEndpointClient(
+    connect: ConnectWorker,
+    decision: BrowserIrohHostDecision = resolveBrowserIrohHostDecision(),
+): BrowserIrohEndpointAvailability {
+    if (!decision.eligible) {
+        return { available: false, decision };
+    }
+    return { available: true, client: createBrowserIrohEndpointClient(connect) };
+}

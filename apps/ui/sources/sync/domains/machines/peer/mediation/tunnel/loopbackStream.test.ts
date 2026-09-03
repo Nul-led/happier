@@ -8,6 +8,8 @@ import {
 import type { PeerTcpTunnelFrame } from '@happier-dev/peer-transport/duplexFrames';
 import { describe, expect, it, vi } from 'vitest';
 
+import type { PeerTcpTunnelClientStream } from './client';
+
 type DynamicModule = Record<string, unknown>;
 type TestStream = Readonly<{
     sendFrame: (frame: PeerTcpTunnelFrame) => Promise<void> | void;
@@ -137,6 +139,49 @@ describe('openPeerTcpTunnelLoopbackStream', () => {
         activeAbort.abort();
         await stream.close();
         expect(activeFixture.getSocket().close).toHaveBeenCalledOnce();
+    });
+
+    it('rejects application sends after closure instead of reporting them delivered', async () => {
+        const mod = await loadModule('./loopbackStream');
+        const openLoopbackStream = mod.openPeerTcpTunnelLoopbackStream;
+        expect(openLoopbackStream).toBeTypeOf('function');
+        if (typeof openLoopbackStream !== 'function') return;
+
+        const { getSocket, WebSocketCtor } = createWebSocketFixture();
+        const streamPromise = openLoopbackStream({
+            endpointUrl: 'http://127.0.0.1:1234/base',
+            open,
+            response: binaryResponse,
+            WebSocketCtor,
+        }) as Promise<PeerTcpTunnelClientStream>;
+        getSocket().onopen?.();
+        const stream = await streamPromise;
+
+        await stream.close();
+        const sentAfterClose = getSocket().sent.length;
+
+        const dataFrame: PeerTcpTunnelFrame = {
+            v: 1,
+            kind: 'data',
+            tunnelId: 'tun_1',
+            direction: 'client_to_daemon',
+            sequence: 0,
+            payload: new Uint8Array([1]),
+        };
+        expect(() => stream.sendFrame(dataFrame))
+            .toThrow(expect.objectContaining({ code: 'peer_tunnel_stream_closed' }));
+        expect(() => stream.sendSubstreamOpen?.('application.stream-1'))
+            .toThrow(expect.objectContaining({ code: 'peer_tunnel_stream_closed' }));
+        expect(() => stream.sendSubstreamDataFrame?.('application.stream-1', {
+            tunnelId: 'tun_1',
+            direction: 'client_to_daemon',
+            sequence: 0,
+            payloadBytes: new Uint8Array([1]),
+        })).toThrow(expect.objectContaining({ code: 'peer_tunnel_stream_closed' }));
+        expect(() => stream.sendSubstreamFrame?.('application.stream-1', dataFrame))
+            .toThrow(expect.objectContaining({ code: 'peer_tunnel_stream_closed' }));
+
+        expect(getSocket().sent).toHaveLength(sentAfterClose);
     });
 
     it('does not publish a closed stream when abort wins after open settlement', async () => {

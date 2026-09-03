@@ -38,6 +38,7 @@ describe('downloadJsonPayloadViaMachineTransferCarriers', () => {
         machineRpcWithServerScopeMock.mockReset();
         const release = vi.fn(async () => undefined);
         const acquireMachineCarrierHttpLease = vi.fn(async () => ({
+            kind: 'native_http' as const,
             localOrigin: 'http://127.0.0.1:48127',
             requestHeaders: { 'X-Happier-Machine-Local-Capability': 'a'.repeat(64) },
             release,

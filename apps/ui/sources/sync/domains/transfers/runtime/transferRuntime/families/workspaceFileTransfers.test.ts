@@ -153,6 +153,7 @@ describe('workspaceFileTransfers', () => {
         const release = vi.fn(async () => undefined);
         const cleanup = vi.fn(async () => undefined);
         const acquireMachineCarrierHttpLease = vi.fn(async () => ({
+            kind: 'native_http' as const,
             localOrigin: 'http://localhost:48128',
             requestHeaders: { 'X-Happier-Machine-Local-Capability': 'a'.repeat(64) },
             release,
@@ -197,6 +198,7 @@ describe('workspaceFileTransfers', () => {
         const cleanup = vi.fn(async () => undefined);
         carrierBoundary.selected = true;
         carrierBoundary.acquire.mockResolvedValueOnce({
+            kind: 'native_http',
             localOrigin: 'http://127.0.0.1:48130',
             requestHeaders: { 'X-Happier-Machine-Local-Capability': 'b'.repeat(64) },
             release: async () => undefined,

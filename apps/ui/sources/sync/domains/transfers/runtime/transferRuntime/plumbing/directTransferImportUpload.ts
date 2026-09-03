@@ -15,6 +15,7 @@ import {
     type DirectTransferImportFinalizeResponse,
     type DirectTransferImportOpenRequest,
 } from './directTransferImportClient';
+import type { MachineCarrierHttpLease } from './machineCarrierHttpLease';
 
 export type { DirectTransferImportOpenRequest } from './directTransferImportClient';
 export type {
@@ -34,11 +35,7 @@ export async function uploadBulkPayloadFromFileViaDirectImport<TResponse>(params
     signal?: AbortSignal | null;
     onProgress?: ((progress: Readonly<{ uploadedBytes: number; totalBytes: number }>) => void) | null;
     httpOriginOverride?: string | null;
-    acquirePreparedCarrier?: ((prepared: Readonly<{ operationId: string; maxBytes: number }>) => Promise<Readonly<{
-        localOrigin: string;
-        requestHeaders: Readonly<Record<string, string>>;
-        release: () => Promise<void> | void;
-    }> | null>) | null;
+    acquirePreparedCarrier?: ((prepared: Readonly<{ operationId: string; maxBytes: number }>) => Promise<MachineCarrierHttpLease | null>) | null;
 }>): Promise<TResponse | BulkTransferFailureResponse | TransferFinalizeRecoveryFailure<TResponse>> {
     const prepared = await prepareDirectImportSession({
         machineId: params.machineId,
@@ -94,6 +91,7 @@ export async function uploadBulkPayloadFromFileViaDirectImport<TResponse>(params
                             timeoutMs: params.timeoutMs ?? null,
                             signal: params.signal ?? null,
                             requestHeaders: prepared.session.requestHeaders,
+                            request: prepared.session.request,
                         });
                         if (response.success === true) {
                             nextChunkIndex = request.index + 1;
@@ -106,6 +104,7 @@ export async function uploadBulkPayloadFromFileViaDirectImport<TResponse>(params
                             timeoutMs: params.timeoutMs ?? null,
                             signal: params.signal ?? null,
                             requestHeaders: prepared.session.requestHeaders,
+                            request: prepared.session.request,
                         });
                         if (finalizeResponse.success !== true) {
                             if (
@@ -257,6 +256,9 @@ export async function uploadBulkPayloadFromFileViaDirectImport<TResponse>(params
         error: 'Direct import upload unavailable',
     };
     } finally {
+        // Hand carrier custody back to the machine HTTP lease owner. A failed
+        // release stays retained and retryable there, so this helper neither
+        // retries it nor downgrades an already completed upload.
         await Promise.resolve(prepared.session.releaseCarrier?.()).catch(() => undefined);
     }
 }

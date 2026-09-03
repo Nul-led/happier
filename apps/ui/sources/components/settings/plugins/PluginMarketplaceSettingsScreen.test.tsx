@@ -4193,7 +4193,7 @@ describe('PluginSettingsHomeScreen', () => {
         machineMarketplaceSourceRegistryGetMock.mockResolvedValue(curatedMarketplaceRegistry);
         machineMarketplaceIndexQueryMock.mockResolvedValue(createDaemonMarketplaceIndexResult([
             createMarketplaceCatalogEntry({ pluginId: 'installed-plugin', title: 'Installed Plugin', description: 'Descriptor for the installed plugin', version: '1.1.0' }),
-            createMarketplaceCatalogEntry({ pluginId: 'new-plugin', title: 'New Plugin', description: 'Descriptor for an uninstalled plugin', version: '0.1.0' }),
+            createMarketplaceCatalogEntry({ pluginId: 'new-plugin', title: 'New Plugin', description: null, version: '0.1.0' }),
         ]));
 
         const { PluginSettingsHomeScreen } = await import('./PluginSettingsHomeScreen');
@@ -4244,6 +4244,10 @@ describe('PluginSettingsHomeScreen', () => {
         // An installed listing shows its installed state instead of lifecycle
         // actions; an uninstalled one gets the full Install & Trust review.
         expect(screen.getTextContent()).toContain('deps.ui.installedWithVersion(version=1.0.0)');
+        // Missing package copy stays missing. The pane-level explanation is
+        // shown once as its footer; it is neither repeated nor replaced with a
+        // synthetic per-plugin description.
+        expect(screen.getTextContent()).not.toContain('deps.ui.notInstalled');
         expect(findDiscoverInstallAction(screen, 'installed-plugin')).toBeUndefined();
         expect(findDiscoverInstallAction(screen, 'new-plugin')).toBeTruthy();
     });

@@ -80,7 +80,7 @@ import { getFirstPartyScmBackendLegacyLocalId } from '@/scm/registry/firstPartyS
 const SCM_UNSUPPORTED_RESPONSE_ERROR = 'SCM_UNSUPPORTED_RESPONSE_ERROR';
 const SCM_DIFF_COMMIT_TIMEOUT_MS = 120_000;
 
-export type MachineScmCallOptions = Readonly<{ serverId?: string | null }>;
+export type MachineScmCallOptions = Readonly<{ serverId?: string | null; signal?: AbortSignal }>;
 
 function resolveScmRpcTimeoutMs(method: string): number | undefined {
     if (method === RPC_METHODS.SCM_DIFF_COMMIT) {
@@ -189,6 +189,7 @@ export async function runMachineScmRpc<
         method,
         payload: payload as R,
         ...(options?.serverId ? { serverId: options.serverId } : {}),
+        ...(options?.signal ? { signal: options.signal } : {}),
         timeoutMs,
     });
     return assertScmResponse<T>(response);
@@ -206,6 +207,12 @@ async function callMachineScm<
     try {
         return await runMachineScmRpc<T, R>(machineId, method, request, options);
     } catch (error) {
+        // A caller-cancelled search must reach the caller as an abort so it can discard the
+        // request silently — not be reclassified as a backend failure, which would present
+        // offline truth for a query the user simply left. Same discipline as `machineRipgrep`.
+        if (options?.signal?.aborted) {
+            throw error;
+        }
         return scmFallbackError<T>(error);
     }
 }

@@ -24,6 +24,7 @@ vi.mock('react-native-mmkv', () => {
 const appStateAddListener = vi.hoisted(() => vi.fn(() => ({ remove: vi.fn() })));
 type FetchAndApplySessionsCall = Readonly<{
     sessionListPath?: string;
+    sessionListCursor?: string | null;
     shouldContinue?: () => boolean;
     applySessions: (sessions: unknown[]) => void;
 }>;
@@ -164,6 +165,23 @@ describe('sync archived session fetch server-scope guards', () => {
         )).toBe(true);
     });
 
+    it('retires a credential-less archived retry at the server Account reset owner', async () => {
+        const { upsertAndActivateServer } = await import('@/sync/domains/server/serverRuntime');
+        const { sync } = await import('./sync');
+
+        upsertAndActivateServer({ serverUrl: 'http://localhost:53288', scope: 'tab' });
+        await (sync as any).fetchArchivedSessions();
+
+        expect((sync as any).archivedSessionsFetchPendingUntilReady).toBe(true);
+        (sync as any).scheduleArchivedSessionsFetchPendingDrain();
+        expect((sync as any).archivedSessionsFetchPendingRetryTimer).not.toBeNull();
+
+        (sync as any).resetServerScopedRuntimeState();
+
+        expect((sync as any).archivedSessionsFetchPendingUntilReady).toBe(false);
+        expect((sync as any).archivedSessionsFetchPendingRetryTimer).toBeNull();
+    });
+
     it('replays an archived sessions fetch aborted by an active server switch', async () => {
         const { upsertAndActivateServer } = await import('@/sync/domains/server/serverRuntime');
         const { sync } = await import('./sync');
@@ -199,5 +217,35 @@ describe('sync archived session fetch server-scope guards', () => {
                 .filter((call) => call[0]?.sessionListPath === '/v2/sessions/archived')
                 .length
         )).toBeGreaterThanOrEqual(2);
+    });
+
+    it('pages the archived listing to its bounded endpoint cursor for client-side metadata search', async () => {
+        const { upsertAndActivateServer } = await import('@/sync/domains/server/serverRuntime');
+        const { sync } = await import('./sync');
+
+        upsertAndActivateServer({ serverUrl: 'http://localhost:53288', scope: 'tab' });
+        (sync as any).credentials = { token: 'hdr.eyJzdWIiOiJ0ZXN0In0.sig', secret: 'secret' };
+        (sync as any).encryption = {
+            decryptEncryptionKey: async () => null,
+            initializeSessions: async () => {},
+            getSessionEncryption: () => null,
+        };
+        (sync as any).sessionDataKeys = new Map<string, Uint8Array>();
+        // Server activation may schedule its own initial replacement fetch. This
+        // assertion owns the explicit full-inventory call below, so isolate that
+        // call's cursor sequence from unrelated activation work.
+        fetchAndApplySessionsSpy.mockReset();
+        fetchAndApplySessionsSpy
+            .mockResolvedValueOnce({ hasNext: true, nextCursor: 'page-2' })
+            .mockResolvedValueOnce({ hasNext: true, nextCursor: 'page-3' })
+            .mockResolvedValueOnce({ hasNext: false, nextCursor: null });
+
+        await (sync as any).fetchAllArchivedSessions();
+
+        expect(fetchAndApplySessionsSpy.mock.calls.map(([params]) => params.sessionListCursor ?? null))
+            .toEqual([null, 'page-2', 'page-3']);
+        expect(fetchAndApplySessionsSpy.mock.calls.every(([params]) => (
+            params.sessionListPath === '/v2/sessions/archived'
+        ))).toBe(true);
     });
 });

@@ -11,7 +11,10 @@ import {
     type MachineAdministrationTargetSelectionOptions,
     type MachineAdministrationTargetSelectionV1,
 } from './useTargetSelection';
-import { isMachineAdministrationExecutionTargetCurrent } from './operationCurrentness';
+import {
+    isMachineAdministrationExecutionTargetCurrent,
+    sameMachineAdministrationExecutionTarget,
+} from './operationCurrentness';
 
 const DAEMON_PLUGIN_SETTINGS_SCOPE = Object.freeze({ kind: 'daemon' as const });
 
@@ -92,7 +95,27 @@ export function useScopedPluginSettingsDaemonTargetBinding(
 ): ScopedPluginSettingsDaemonTargetBindingV1 {
     const selection = useMachineAdministrationTargetSelection(selectionKey, options);
     const selectedServerIdentityId = selection.selectedTarget?.serverIdentityId ?? null;
-    const executionTarget = selection.resolveExecutionTarget();
+    const resolveExecutionTarget = selection.resolveExecutionTarget;
+    // `resolveExecutionTarget()` re-reads live owner state and freezes a fresh
+    // result on every call, so its raw return value cannot serve as a render
+    // effect input: an unchanged selection would still re-run every consumer
+    // effect each presentation render. Canonicalize it with the one authority
+    // identity every administration currentness decision already uses
+    // (`sameMachineAdministrationExecutionTarget`): unchanged server, machine,
+    // daemon generation, and selection revision keep the previous reference,
+    // while any real change — a daemonStateVersion bump or A -> B -> A —
+    // yields the fresh one. This is presentation-only canonicalization; the
+    // currentness fence below still re-resolves at invocation time and remains
+    // the only dispatch authority.
+    const executionTargetRef = React.useRef<FreshMachineAdministrationExecutionTargetV1 | null>(null);
+    const freshExecutionTarget = resolveExecutionTarget();
+    const previousExecutionTarget = executionTargetRef.current;
+    const executionTarget = previousExecutionTarget !== null
+        && freshExecutionTarget !== null
+        && sameMachineAdministrationExecutionTarget(previousExecutionTarget, freshExecutionTarget)
+        ? previousExecutionTarget
+        : freshExecutionTarget;
+    executionTargetRef.current = executionTarget;
     const target = React.useMemo(
         () => resolveAdministrationScopedPluginSettingsTarget(executionTarget),
         [
@@ -101,23 +124,27 @@ export function useScopedPluginSettingsDaemonTargetBinding(
             executionTarget?.target.serverIdentityId,
         ],
     );
+    // Currentness callbacks consume only the stable resolver, never the
+    // aggregate selection object: rebuilding that aggregate for presentation
+    // reasons must not churn these identities for the consumers that depend
+    // on them.
     const resolveCurrentExecutionTarget = React.useCallback((
         expected: FreshMachineAdministrationExecutionTargetV1 | null,
     ): FreshMachineAdministrationExecutionTargetV1 | null => {
         if (!expected) return null;
-        const current = selection.resolveExecutionTarget();
+        const current = resolveExecutionTarget();
         return isMachineAdministrationExecutionTargetCurrent({
             expectedTarget: expected,
             resolveCurrentTarget: () => current,
         }) ? current : null;
-    }, [selection]);
+    }, [resolveExecutionTarget]);
     const isTargetCurrent = React.useCallback((candidate: ScopedPluginSettingsDaemonTarget): boolean => {
         return isAdministrationScopedPluginSettingsTargetCurrent({
             target: candidate,
             expectedExecutionTarget: executionTarget,
-            resolveCurrentExecutionTarget: selection.resolveExecutionTarget,
+            resolveCurrentExecutionTarget: resolveExecutionTarget,
         });
-    }, [executionTarget, selection.resolveExecutionTarget]);
+    }, [executionTarget, resolveExecutionTarget]);
     return React.useMemo(() => Object.freeze({
         selection,
         selectedServerIdentityId,

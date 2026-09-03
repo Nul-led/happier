@@ -91,6 +91,14 @@ describe('openPeerTcpTunnelRelayStream', () => {
 
         expect(detach).toHaveBeenCalledOnce();
         expect(sent.filter((envelope) => envelope.v === 1 && envelope.frame.kind === 'close')).toHaveLength(1);
+        expect(() => stream.sendFrame({
+            v: 1,
+            kind: 'ack',
+            tunnelId: 'tun_1',
+            direction: 'client_to_daemon',
+            nextSequence: 1,
+            windowBytes: 1,
+        })).toThrow(expect.objectContaining({ code: 'peer_tunnel_stream_closed' }));
 
         const preAborted = new AbortController();
         preAborted.abort();

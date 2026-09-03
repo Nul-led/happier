@@ -752,7 +752,7 @@ describe('SessionsList (native virtualization)', () => {
         expect(second.props.isLast).toBe(true);
     });
 
-    it('expands the header search input and collapses it on blur when empty', async () => {
+    it('keeps an explicitly expanded empty search input mounted across incidental blur', async () => {
         mockVisibleSessionListViewData = [
             {
                 type: 'header',
@@ -792,11 +792,7 @@ describe('SessionsList (native virtualization)', () => {
             input.props.onBlur?.();
         });
 
-        await act(async () => {
-            await new Promise((resolve) => setTimeout(resolve, 60));
-        });
-
-        expect(screen.findAllByTestId('session-list-search-input')).toHaveLength(0);
+        expect(screen.findByTestId('session-list-search-input')).toBeTruthy();
     });
 
     it.each([

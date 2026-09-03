@@ -200,6 +200,7 @@ describe('uploadComposerMediaStageFromReader', () => {
         };
         const calls: Array<Readonly<{ method: string; payload: unknown }>> = [];
         const acquire = vi.fn(async () => ({
+            kind: 'native_http' as const,
             localOrigin: 'http://127.0.0.1:48124',
             requestHeaders: { 'x-happier-machine-capability': 'capability' },
             release: vi.fn(),

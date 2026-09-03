@@ -59,6 +59,7 @@ const BASE_DRAFT: SessionAuthoringDraft = {
                 enabled: true,
                 definition: {
                     kind: 'schedule',
+                    enabled: true,
                     schedule: {
                         kind: 'interval',
                         scheduleExpr: null,
@@ -74,13 +75,10 @@ const BASE_DRAFT: SessionAuthoringDraft = {
                 enabled: false,
                 definition: {
                     kind: 'sessionLifecycle',
-                    event: 'parentTurnCompleted',
-                    scope: {
-                        kind: 'exactTurn',
-                        sourceSessionId: 'session-1',
-                        sourceTurnId: 'turn-1',
-                    },
-                    consumption: 'once',
+                    enabled: false,
+                    sourceSessionId: 'session-1',
+                    events: ['parentTurnCompleted'],
+                    policy: { kind: 'currentTurn', sourceTurnId: 'turn-1' },
                 },
             },
         ],

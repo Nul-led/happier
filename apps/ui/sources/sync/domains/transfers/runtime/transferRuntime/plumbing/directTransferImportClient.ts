@@ -15,7 +15,7 @@ import {
     createDirectTransferRequestAbortSignal,
     resolveDirectTransferRequestTimeoutMs,
 } from './directTransferRequestDeadline';
-import { rebaseMachineCarrierHttpEndpoint, type MachineCarrierHttpLease } from './machineCarrierHttpLease';
+import { rebaseMachineCarrierHttpEndpoint, type MachineCarrierHttpLease, type MachineCarrierHttpRequester } from './machineCarrierHttpLease';
 
 export type ComposerMediaStageUploadRequest = Readonly<{
     t: 'composer_media_stage_upload_v1';
@@ -135,6 +135,7 @@ export type PreparedDirectImportSession = Readonly<{
     expiresAt: number;
     baseUrls: readonly string[];
     requestHeaders?: Readonly<Record<string, string>>;
+    request?: MachineCarrierHttpRequester;
     releaseCarrier?: (() => Promise<void> | void) | null;
 }>;
 
@@ -412,7 +413,7 @@ export async function prepareDirectImportSession(params: Readonly<{
                 operationId: uploadId,
                 maxBytes: Math.max(1, Math.floor(prepare.expectedSizeBytes)),
             });
-            if (preparedCarrier) effectiveOrigin = preparedCarrier.localOrigin;
+            if (preparedCarrier?.kind === 'native_http') effectiveOrigin = preparedCarrier.localOrigin;
         } catch {
             return await failOwnedSession({
                 success: false,
@@ -438,7 +439,9 @@ export async function prepareDirectImportSession(params: Readonly<{
                 continue;
             }
             const normalizedBaseUrl = normalizeDirectPeerImportEndpointBaseUrl(endpointUrl);
-            baseUrls.push(effectiveOrigin
+            const preserveCarrierQuery = effectiveOrigin !== null
+                || preparedCarrier?.kind === 'browser_stream';
+            baseUrls.push(preserveCarrierQuery
                 ? `${normalizedBaseUrl}${new URL(endpointUrl).search}`
                 : normalizedBaseUrl);
         } catch {
@@ -448,6 +451,8 @@ export async function prepareDirectImportSession(params: Readonly<{
     }
 
     if (baseUrls.length === 0) {
+        // Hand carrier custody back to the machine HTTP lease owner; a failed
+        // release stays retained and retryable there rather than here.
         if (preparedCarrier) await Promise.resolve(preparedCarrier.release()).catch(() => undefined);
         return await failOwnedSession(hasMalformedEndpointCandidate
             ? {
@@ -468,7 +473,8 @@ export async function prepareDirectImportSession(params: Readonly<{
             recipientPublicKeyBase64,
             expiresAt: prepare.expiresAt,
             baseUrls,
-            ...(preparedCarrier ? { requestHeaders: preparedCarrier.requestHeaders } : {}),
+            ...(preparedCarrier?.kind === 'native_http' ? { requestHeaders: preparedCarrier.requestHeaders } : {}),
+            ...(preparedCarrier?.kind === 'browser_stream' ? { request: preparedCarrier.request } : {}),
             ...(preparedCarrier ? { releaseCarrier: preparedCarrier.release } : {}),
         },
     };
@@ -480,10 +486,11 @@ async function putJson(url: string, input: Readonly<{
     timeoutMs: number;
     signal?: AbortSignal | null;
     requestHeaders?: Readonly<Record<string, string>>;
+    request?: MachineCarrierHttpRequester;
 }>): Promise<unknown> {
     const requestSignal = createDirectTransferRequestAbortSignal(input);
     try {
-        const response = await runtimeFetch(url, {
+        const response = await (input.request ?? runtimeFetch)(url, {
             method: 'PUT',
             headers: {
                 ...input.requestHeaders,
@@ -507,6 +514,7 @@ export async function sendDirectImportChunk(params: Readonly<{
     timeoutMs?: number | null;
     signal?: AbortSignal | null;
     requestHeaders?: Readonly<Record<string, string>>;
+    request?: MachineCarrierHttpRequester;
 }>): Promise<DirectTransferImportChunkResponse> {
     const response = await putJson(
         buildDirectImportEndpoint(params.baseUrl, 'chunks', params.index),
@@ -519,6 +527,7 @@ export async function sendDirectImportChunk(params: Readonly<{
             timeoutMs: resolveDirectTransferRequestTimeoutMs(params.timeoutMs),
             signal: params.signal ?? null,
             requestHeaders: params.requestHeaders,
+            request: params.request,
         },
     );
     if (!isDirectTransferImportChunkResponse(response)) {
@@ -558,6 +567,7 @@ export async function finalizeDirectImportSession(params: Readonly<{
     timeoutMs?: number | null;
     signal?: AbortSignal | null;
     requestHeaders?: Readonly<Record<string, string>>;
+    request?: MachineCarrierHttpRequester;
 }>): Promise<DirectTransferImportFinalizeResponse> {
     const requestSignal = createDirectTransferRequestAbortSignal({
         timeoutMs: resolveDirectTransferRequestTimeoutMs(params.timeoutMs),
@@ -572,7 +582,7 @@ export async function finalizeDirectImportSession(params: Readonly<{
         }
         const finalizeUrl = buildDirectImportEndpoint(params.baseUrl, 'finalize');
         finalizeRequestIssued = true;
-        const response = await runtimeFetch(finalizeUrl, {
+        const response = await (params.request ?? runtimeFetch)(finalizeUrl, {
             method: 'POST',
             headers: params.requestHeaders,
             credentials: 'same-origin',

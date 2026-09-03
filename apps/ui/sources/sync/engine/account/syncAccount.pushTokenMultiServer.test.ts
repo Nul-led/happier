@@ -411,4 +411,93 @@ describe('registerPushTokenIfAvailable (multi-server)', () => {
         await registerPushTokenIfAvailable({ credentials: { token: 'a', secret: 's' }, log: { log: vi.fn() } });
         expect(runtimeFetchWithServerReachabilityMock.mock.calls.some(([request]) => String(request.url).includes('ok-home'))).toBe(true);
     });
+
+    it('compensates a registration that completes after its Home credential is removed', async () => {
+        vi.mocked(Notifications.getPermissionsAsync).mockResolvedValue({ status: PermissionStatus.GRANTED, expires: 'never', granted: true, canAskAgain: false } as never);
+        vi.mocked(Notifications.getExpoPushTokenAsync).mockResolvedValue({ type: 'expo', data: 'ExponentPushToken[stale]' } as never);
+        const home = serverProfiles.upsertServerProfile({ serverUrl: 'https://stale.example.test', name: 'Stale' });
+        serverProfiles.setActiveServerId(home.id, { scope: 'device' });
+        await TokenStorage.setCredentialsForServerUrl(home.serverUrl, { serverId: home.id }, { token: 'stale-home-token' });
+        let finishRegistration!: () => void;
+        runtimeFetchWithServerReachabilityMock.mockImplementation(async (request: { url: string; init?: RequestInit }) => {
+            if (request.url.endsWith('/v1/push-tokens') && request.init?.method === 'POST') {
+                await new Promise<void>((resolve) => { finishRegistration = resolve; });
+            }
+            return Response.json({ success: true });
+        });
+
+        const run = registerPushTokenIfAvailable({ credentials: { token: 'stale-home-token' }, log: { log: vi.fn() }, getAccountSettings: () => ({}) });
+        await vi.waitFor(() => expect(finishRegistration).toBeTypeOf('function'));
+        await TokenStorage.removeCredentialsForServerUrl(home.serverUrl, { serverId: home.id });
+        finishRegistration();
+        await run;
+
+        const mutations = runtimeFetchWithServerReachabilityMock.mock.calls
+            .map(([request]) => request as { url: string; init?: RequestInit })
+            .filter(({ url }) => url.includes('/v1/push-tokens'))
+            .map(({ init }) => init?.method);
+        expect(mutations).toEqual(['POST', 'DELETE']);
+    });
+
+    it('compensates a registration that completes after its Home profile is removed', async () => {
+        vi.mocked(Notifications.getPermissionsAsync).mockResolvedValue({ status: PermissionStatus.GRANTED, expires: 'never', granted: true, canAskAgain: false } as never);
+        vi.mocked(Notifications.getExpoPushTokenAsync).mockResolvedValue({ type: 'expo', data: 'ExponentPushToken[removed]' } as never);
+        const home = serverProfiles.upsertServerProfile({ serverUrl: 'https://removed.example.test', name: 'Removed' });
+        serverProfiles.setActiveServerId(home.id, { scope: 'device' });
+        await TokenStorage.setCredentialsForServerUrl(home.serverUrl, { serverId: home.id }, { token: 'removed-home-token' });
+        let finishRegistration!: () => void;
+        runtimeFetchWithServerReachabilityMock.mockImplementation(async (request: { url: string; init?: RequestInit }) => {
+            if (request.url.endsWith('/v1/push-tokens') && request.init?.method === 'POST') {
+                await new Promise<void>((resolve) => { finishRegistration = resolve; });
+            }
+            return Response.json({ success: true });
+        });
+
+        const run = registerPushTokenIfAvailable({ credentials: { token: 'removed-home-token' }, log: { log: vi.fn() }, getAccountSettings: () => ({}) });
+        await vi.waitFor(() => expect(finishRegistration).toBeTypeOf('function'));
+        serverProfiles.removeServerProfile(home.id);
+        finishRegistration();
+        await run;
+
+        const mutations = runtimeFetchWithServerReachabilityMock.mock.calls
+            .map(([request]) => request as { url: string; init?: RequestInit })
+            .filter(({ url }) => url.includes('/v1/push-tokens'))
+            .map(({ init }) => init?.method);
+        expect(mutations).toEqual(['POST', 'DELETE']);
+    });
+
+    it('compensates a registration that completes after focused Home push is disabled', async () => {
+        vi.mocked(Notifications.getPermissionsAsync).mockResolvedValue({ status: PermissionStatus.GRANTED, expires: 'never', granted: true, canAskAgain: false } as never);
+        vi.mocked(Notifications.getExpoPushTokenAsync).mockResolvedValue({ type: 'expo', data: 'ExponentPushToken[disabled-race]' } as never);
+        const home = serverProfiles.upsertServerProfile({ serverUrl: 'https://disabled-race.example.test', name: 'Disabled race' });
+        serverProfiles.setActiveServerId(home.id, { scope: 'device' });
+        await TokenStorage.setCredentialsForServerUrl(home.serverUrl, { serverId: home.id }, { token: 'disabled-race-token' });
+        let pushEnabled = true;
+        let finishRegistration!: () => void;
+        runtimeFetchWithServerReachabilityMock.mockImplementation(async (request: { url: string; init?: RequestInit }) => {
+            if (request.url.endsWith('/v1/push-tokens') && request.init?.method === 'POST') {
+                await new Promise<void>((resolve) => { finishRegistration = resolve; });
+            }
+            return Response.json({ success: true });
+        });
+        const readSettings = () => pushEnabled
+            ? {}
+            : { attentionDeliveryPolicyV1: { v: 1, channels: { expo_push: { enabled: false } } } };
+
+        const run = registerPushTokenIfAvailable({
+            credentials: { token: 'disabled-race-token' },
+            log: { log: vi.fn() },
+            getAccountSettings: readSettings,
+        });
+        await vi.waitFor(() => expect(finishRegistration).toBeTypeOf('function'));
+        pushEnabled = false;
+        finishRegistration();
+        await run;
+
+        const mutations = runtimeFetchWithServerReachabilityMock.mock.calls
+            .map(([request]) => request as { url: string; init?: RequestInit })
+            .filter(({ url }) => url.includes('/v1/push-tokens'))
+            .map(({ init }) => init?.method);
+        expect(mutations).toEqual(['POST', 'DELETE']);
+    });
 });

@@ -290,6 +290,7 @@ import {
     cancelAutomationRun,
     clearAutomationRunHistory,
     deleteAutomationDefinition,
+    deliverAutomationResultAgain,
     getAutomationDefinition,
     getAutomationRunDetail,
     getAutomationSettings,
@@ -326,6 +327,7 @@ import {
 import { resolveSettingsSecretsKeySet } from './encryption/resolveSettingsSecretsKeySet';
 import { didControlReturnToMobile } from './domains/session/control/controlledByUserTransitions';
 import { submitSessionUserMessage } from './domains/session/input/submitSessionUserMessage';
+import { shouldDelegatePendingActivationToDaemon } from './domains/session/input/pendingActivationWakeDecision';
 import {
     assertCanSendUserMessageToSession,
     canSendUserMessageToSession,
@@ -1149,6 +1151,8 @@ class Sync {
     private sessionListScrollSettleTimer: ReturnType<typeof setTimeout> | null = null;
     private sessionListScrollIdleResolvers: Array<() => void> = [];
     private fetchMoreArchivedSessionsInFlight: Promise<void> | null = null;
+    private fetchArchivedSessionsInFlight: Promise<void> | null = null;
+    private fetchAllArchivedSessionsInFlight: Promise<void> | null = null;
     private archivedSessionListNextCursor: string | null = null;
     private archivedSessionListHasMore = false;
     private archivedSessionsFetchPendingUntilReady = false;
@@ -2203,6 +2207,7 @@ class Sync {
             throw new Error('Session draft repository scope is unavailable');
         }
         configureSessionDraftRepository({
+            scope,
             transport: this.sessionDraftSyncEnabled
                 ? createApiSessionDraftsTransport({ credentials })
                 : undefined,
@@ -2270,6 +2275,18 @@ class Sync {
                 return true;
             },
         });
+    }
+
+    private async refreshSessionDraftRepositoryForSync(params: Readonly<{
+        forceSnapshotHydration?: boolean;
+    }> = {}): Promise<void> {
+        try {
+            await this.ensureSessionDraftRepositoryRuntimeReady(params);
+        } catch {
+            // Drafts are locally durable and the hydration gate retries after a failed run.
+            // A draft-only outage must not suppress already-loaded account projections.
+            log.log('[session-drafts] Snapshot hydration unavailable; retaining local drafts and retrying on the next sync');
+        }
     }
 
     private resetServerScopedRuntimeState = () => {
@@ -2351,8 +2368,15 @@ class Sync {
         this.sessionListHasMore = false;
         this.clearSessionListScrollActivity();
         this.fetchMoreArchivedSessionsInFlight = null;
+        this.fetchArchivedSessionsInFlight = null;
+        this.fetchAllArchivedSessionsInFlight = null;
         this.archivedSessionListNextCursor = null;
         this.archivedSessionListHasMore = false;
+        this.archivedSessionsFetchPendingUntilReady = false;
+        if (this.archivedSessionsFetchPendingRetryTimer) {
+            clearTimeout(this.archivedSessionsFetchPendingRetryTimer);
+            this.archivedSessionsFetchPendingRetryTimer = null;
+        }
         this.sessionDataKeys.clear();
         this.sessionDataKeyEnvelopes.clear();
         this.machineDataKeys.clear();
@@ -3670,6 +3694,18 @@ class Sync {
             updatePendingRequestedAction: (targetSessionId, localId, requestedAction) =>
                 this.updatePendingRequestedAction(targetSessionId, localId, requestedAction),
             ensureSessionRuntimeForPendingInput: (options) => ensureSessionRuntimeForPendingInput(options),
+            shouldDelegatePendingActivationToDaemon: (session, serverId, machineId) =>
+                shouldDelegatePendingActivationToDaemon({
+                    session,
+                    serverId,
+                    machineId,
+                    getServerFeaturesSnapshot,
+                    getMachine: (targetMachineId) => storage.getState().machines[targetMachineId],
+                }),
+            isMachineReachable: (machineId) => {
+                const machine = storage.getState().machines[machineId];
+                return Boolean(machine && isMachineOnline(machine));
+            },
             refreshSessionForSubmit: (targetSessionId, options) =>
                 this.refreshSessionForSubmit(targetSessionId, options),
             canWakeMachineId,
@@ -3719,6 +3755,7 @@ class Sync {
             metaOverrides,
             configuredMode: state.settings.sessionMessageSendMode,
             busySteerSendPolicy: state.settings.sessionBusySteerSendPolicy,
+            sessionInactiveResumePolicy: state.settings.sessionInactiveResumePolicy,
             ...(options?.forceImmediate === true ? { explicitMode: 'server_pending' as const } : {}),
             forceImmediate: options?.forceImmediate === true,
             hostAdmissionOrigin: options?.hostAdmissionOrigin,
@@ -5122,7 +5159,14 @@ class Sync {
     }
 
     public fetchArchivedSessions = async (): Promise<void> => {
-        return this.fetchArchivedSessionsPage({ mode: 'replace' });
+        if (this.fetchArchivedSessionsInFlight) return this.fetchArchivedSessionsInFlight;
+        const promise = this.fetchArchivedSessionsPage({ mode: 'replace' }).finally(() => {
+            if (this.fetchArchivedSessionsInFlight === promise) {
+                this.fetchArchivedSessionsInFlight = null;
+            }
+        });
+        this.fetchArchivedSessionsInFlight = promise;
+        return promise;
     }
 
     public fetchMoreArchivedSessions = async (): Promise<void> => {
@@ -5134,6 +5178,34 @@ class Sync {
             }
         });
         this.fetchMoreArchivedSessionsInFlight = promise;
+        return promise;
+    }
+
+    /**
+     * Completes the canonical archived listing through its bounded cursor route.
+     * Client-side metadata search needs the whole list projection because encrypted
+     * Session metadata cannot be queried by the server. This pages the list owner;
+     * it never fans out into one detail request per Session, and server/Account
+     * retirement stops the loop through the existing generation guard.
+     */
+    public fetchAllArchivedSessions = async (): Promise<void> => {
+        if (this.fetchAllArchivedSessionsInFlight) return this.fetchAllArchivedSessionsInFlight;
+        const generation = this.serverScopeGeneration;
+        const promise = (async () => {
+            await this.fetchArchivedSessions();
+            while (
+                this.serverScopeGeneration === generation
+                && this.archivedSessionListHasMore
+                && this.archivedSessionListNextCursor
+            ) {
+                await this.fetchMoreArchivedSessions();
+            }
+        })().finally(() => {
+            if (this.fetchAllArchivedSessionsInFlight === promise) {
+                this.fetchAllArchivedSessionsInFlight = null;
+            }
+        });
+        this.fetchAllArchivedSessionsInFlight = promise;
         return promise;
     }
 
@@ -5420,7 +5492,7 @@ class Sync {
                   }
 
                   if (reason !== 'changes-catch-up') {
-                      await this.ensureSessionDraftRepositoryRuntimeReady({
+                      await this.refreshSessionDraftRepositoryForSync({
                           forceSnapshotHydration: reason === 'manual' || this.sessionDraftOfflineCatchUpPending,
                       });
                       if (!shouldContinue()) return;
@@ -5525,9 +5597,6 @@ class Sync {
         };
 
       private bootstrapSync = async (): Promise<void> => {
-          if (this.pauseController.isPaused()) {
-              return;
-          }
           await this.pauseController.waitUntilResumed();
           if (!this.credentials) {
               return;
@@ -5548,20 +5617,21 @@ class Sync {
           // that must be visible before the user scrolls.
           await invalidateBounded(this.settingsSync, this.syncTuning.invalidateSyncAwaitTimeoutMs);
 
-          // Phase 2: load core UI state and first session/machine snapshots.
+          // Phase 2: load core UI state and every projection consumed immediately after readiness.
           await runTasksWithLimit(
               [
                   () => invalidateBounded(this.profileSync, this.syncTuning.invalidateSyncAwaitTimeoutMs),
                   () => invalidateBounded(this.accountPetsSync, this.syncTuning.invalidateSyncAwaitTimeoutMs),
                   () => invalidateBounded(this.sessionsSync, this.syncTuning.invalidateSyncAwaitTimeoutMs),
                   () => invalidateBounded(this.machinesSync, this.syncTuning.invalidateSyncAwaitTimeoutMs),
+                  () => invalidateBounded(this.artifactsSync, this.syncTuning.invalidateSyncAwaitTimeoutMs),
                   () => invalidateBounded(this.pluginAvailabilitySync, this.syncTuning.invalidateSyncAwaitTimeoutMs),
                   () => invalidateBounded(this.purchasesSync, this.syncTuning.invalidateSyncAwaitTimeoutMs),
               ],
               bootstrapConcurrencyLimit
           );
 
-          await this.ensureSessionDraftRepositoryRuntimeReady();
+          await this.refreshSessionDraftRepositoryForSync();
 
           await this.rearmPendingOutboxForActiveScope();
 
@@ -5574,7 +5644,6 @@ class Sync {
           // Phase 3: load non-critical lists.
           await runTasksWithLimit(
               [
-                  () => invalidateBounded(this.artifactsSync, this.syncTuning.invalidateSyncAwaitTimeoutMs),
                   () => invalidateBounded(this.automationsSync, this.syncTuning.invalidateSyncAwaitTimeoutMs),
                   () => invalidateBounded(this.todosSync, this.syncTuning.invalidateSyncAwaitTimeoutMs),
                   () => invalidateBounded(this.friendsSync, this.syncTuning.invalidateSyncAwaitTimeoutMs),
@@ -5614,7 +5683,7 @@ class Sync {
               concurrencyLimit
           );
 
-          await this.ensureSessionDraftRepositoryRuntimeReady({ forceSnapshotHydration: true });
+          await this.refreshSessionDraftRepositoryForSync({ forceSnapshotHydration: true });
 
           // Catch up transcripts only for loaded sessions that currently consume live transcript content.
           // Hidden loaded sessions keep their transcript state until they become visible or otherwise active.
@@ -6044,6 +6113,24 @@ class Sync {
         if (!credentials) throw new Error('Not authenticated');
         const shouldContinue = this.createServerScopeGuard();
         const run = await retryAutomationReplyHandoff(credentials, runId);
+        if (!shouldContinue()) throw new Error('Automation server-account scope changed');
+        storage.getState().upsertAutomationRun(run);
+        return run;
+    }
+
+    /**
+     * Authorizes one further delivery of an accepted result. The caller passes
+     * the exact Run revision it showed the user, so the server can refuse an
+     * authorization that no longer describes what they decided about.
+     */
+    public async deliverAutomationResultAgain(input: Readonly<{
+        runId: string;
+        expectedRevision: number;
+    }>): Promise<AutomationDefinitionRun> {
+        const credentials = this.credentials;
+        if (!credentials) throw new Error('Not authenticated');
+        const shouldContinue = this.createServerScopeGuard();
+        const run = await deliverAutomationResultAgain(credentials, input);
         if (!shouldContinue()) throw new Error('Automation server-account scope changed');
         storage.getState().upsertAutomationRun(run);
         return run;

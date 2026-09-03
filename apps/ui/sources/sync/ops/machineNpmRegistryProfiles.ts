@@ -14,6 +14,10 @@ import { machineRpcWithServerScope } from '@/sync/runtime/orchestration/serverSc
 
 type RpcOptions = Readonly<{ serverId?: string | null; timeoutMs?: number }>;
 
+export type MachineNpmRegistryProfileMutationResult =
+    | DaemonNpmRegistryProfileMutationResponseV1
+    | Readonly<{ status: 'outcomeUnknown' }>;
+
 export async function machineNpmRegistryProfilesGet(
     machineId: string,
     options: RpcOptions = {},
@@ -34,15 +38,27 @@ export async function machineNpmRegistryProfilesMutate(
     machineId: string,
     request: DaemonNpmRegistryProfileMutationRequestV1,
     options: RpcOptions = {},
-): Promise<DaemonNpmRegistryProfileMutationResponseV1> {
+): Promise<MachineNpmRegistryProfileMutationResult> {
     const payload = DaemonNpmRegistryProfileMutationRequestV1Schema.parse({ ...request, machineId });
-    const response = await machineRpcWithServerScope<unknown, typeof payload>({
-        machineId,
-        serverId: options.serverId,
-        timeoutMs: options.timeoutMs,
-        method: RPC_METHODS.DAEMON_NPM_REGISTRY_PROFILES_MUTATE,
-        payload,
-    });
-    if (isRpcMethodNotFoundResult(response)) return { status: 'error', code: 'unavailable', retryable: false };
-    return DaemonNpmRegistryProfileMutationResponseV1Schema.parse(response);
+    let issued = false;
+    try {
+        const response = await machineRpcWithServerScope<unknown, typeof payload>({
+            machineId,
+            serverId: options.serverId,
+            timeoutMs: options.timeoutMs,
+            method: RPC_METHODS.DAEMON_NPM_REGISTRY_PROFILES_MUTATE,
+            payload,
+            onIssued: () => { issued = true; },
+        });
+        if (isRpcMethodNotFoundResult(response)) return { status: 'error', code: 'unavailable', retryable: false };
+        const parsed = DaemonNpmRegistryProfileMutationResponseV1Schema.safeParse(response);
+        if (!parsed.success) {
+            if (issued) return { status: 'outcomeUnknown' };
+            throw new Error('Invalid npm registry profile mutation response from daemon');
+        }
+        return parsed.data;
+    } catch (error) {
+        if (issued) return { status: 'outcomeUnknown' };
+        throw error;
+    }
 }

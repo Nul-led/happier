@@ -21,6 +21,12 @@ import type { PeerLoopbackRouteAvailabilityResult } from '../loopback/resolvePee
 import { openPeerTcpTunnelLoopbackStream, type PeerTcpTunnelWebSocketCtor } from './loopbackStream';
 import { openPeerTcpTunnelRelayStream } from './relayStream';
 
+export {
+    PEER_TCP_TUNNEL_STREAM_CLOSED_CODE,
+    createPeerTcpTunnelStreamClosedError,
+    type PeerTcpTunnelStreamClosedError,
+} from './streamClosed';
+
 export type OpenPeerTcpTunnelClientResult =
     | Readonly<{
         ok: true;

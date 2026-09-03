@@ -484,6 +484,10 @@ describe('buildSessionHandoffMetadataPatch', () => {
     });
 
     it('preserves an installed Agent handoff identity and runtime descriptor without a bundled behavior patch', () => {
+        // Fields the host has never heard of, at every depth and inside the
+        // versioned Agent-owned extra block. Only the Agent's own codec knows
+        // which of them resume depends on, so generic handoff carries all of
+        // them opaquely.
         const runtimeDescriptorV1 = {
             v: 1,
             agentId: 'acme.agent',
@@ -493,7 +497,14 @@ describe('buildSessionHandoffMetadataPatch', () => {
                     cursor: 'opaque-cursor-v2',
                     nested: { revision: 7 },
                 },
+                agentExtra: {
+                    owner: 'acme',
+                    schemaId: 'acme.agent/runtime',
+                    v: 2,
+                    replayToken: 'tok-acme-1',
+                },
             },
+            externalDescriptorRevision: 'rev-77',
         } as const;
 
         const updated = buildSessionHandoffMetadataPatch({
@@ -534,6 +545,13 @@ describe('buildSessionHandoffMetadataPatch', () => {
         });
         expect(updated).not.toHaveProperty('claudeSessionId');
         expect(buildProviderPatchInputMock).not.toHaveBeenCalled();
+        // Exact equality, not the subset match above: a field the generic path
+        // added, dropped, renamed or re-shaped inside the Agent-owned payload
+        // is a resume regression the subset match cannot see.
+        expect(updated.runtimeDescriptorV1).toEqual(runtimeDescriptorV1);
+        expect(
+            (updated.externalSessionV1 as { runtimeDescriptorV1?: unknown }).runtimeDescriptorV1,
+        ).toEqual(runtimeDescriptorV1);
     });
 
     it("applies an installed Agent's declared handoff cleanup from the target machine descriptor", () => {

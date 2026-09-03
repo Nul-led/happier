@@ -23,8 +23,11 @@ describe('machine npm registry profile ops', () => {
     });
 
     it('validates and forwards mutations without retaining credentials', async () => {
-        machineRpcWithServerScopeMock.mockResolvedValueOnce({
-            status: 'success', snapshot: { protocolVersion: 1, revision: 1, profiles: [], pausedSources: [] },
+        machineRpcWithServerScopeMock.mockImplementationOnce(async (input) => {
+            input.onIssued?.();
+            return {
+                status: 'success', snapshot: { protocolVersion: 1, revision: 1, profiles: [], pausedSources: [] },
+            };
         });
         const { machineNpmRegistryProfilesMutate } = await import('./machineNpmRegistryProfiles');
         const request = {
@@ -36,7 +39,32 @@ describe('machine npm registry profile ops', () => {
         expect(machineRpcWithServerScopeMock).toHaveBeenCalledWith(expect.objectContaining({
             method: RPC_METHODS.DAEMON_NPM_REGISTRY_PROFILES_MUTATE,
             payload: request,
+            onIssued: expect.any(Function),
         }));
         expect(JSON.stringify(result)).not.toContain('boundary-secret');
+    });
+
+    it('does not invite a credential replay when the response is lost after issue', async () => {
+        machineRpcWithServerScopeMock.mockImplementationOnce(async (input) => {
+            input.onIssued?.();
+            throw new Error('response lost');
+        });
+        const { machineNpmRegistryProfilesMutate } = await import('./machineNpmRegistryProfiles');
+        const request = {
+            action: 'login' as const, machineId: 'machine-a', profileId: 'registry_acme', expectedRevision: 0,
+            mutationId: 'mutation-login-once', credential: { kind: 'bearer_token' as const, secret: 'one-shot-secret' },
+        };
+
+        const result = await machineNpmRegistryProfilesMutate('machine-a', request, { serverId: 'server-a' });
+
+        expect(result).toEqual({ status: 'outcomeUnknown' });
+        expect(machineRpcWithServerScopeMock).toHaveBeenCalledTimes(1);
+        expect(JSON.stringify(result)).not.toContain('one-shot-secret');
+
+        machineRpcWithServerScopeMock.mockRejectedValueOnce(new Error('not issued'));
+        await expect(machineNpmRegistryProfilesMutate('machine-a', {
+            ...request,
+            mutationId: 'mutation-login-not-issued',
+        }, { serverId: 'server-a' })).rejects.toThrow('not issued');
     });
 });

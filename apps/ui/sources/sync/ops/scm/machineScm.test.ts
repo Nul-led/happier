@@ -118,6 +118,48 @@ describe('machineScm', () => {
         }));
     });
 
+    it('threads a caller AbortSignal through machineScmLogList into the machine RPC', async () => {
+        getStateMock.mockReturnValue({ settings: {} });
+        machineRpcWithServerScopeMock.mockResolvedValue({ success: true, entries: [] });
+        const controller = new AbortController();
+
+        const { machineScmLogList } = await import('./machineScm');
+        const response = await machineScmLogList(
+            'machine-1',
+            { cwd: '/repo', limit: 20, query: 'fix login' },
+            { serverId: 'server-b', signal: controller.signal },
+        );
+
+        expect(response.success).toBe(true);
+        expect(machineRpcWithServerScopeMock).toHaveBeenCalledWith(expect.objectContaining({
+            machineId: 'machine-1',
+            method: RPC_METHODS.SCM_LOG_LIST,
+            serverId: 'server-b',
+            signal: controller.signal,
+            payload: expect.objectContaining({ cwd: '/repo', query: 'fix login' }),
+        }));
+    });
+
+    it('rethrows transport failure as cancellation instead of backend-unavailable when the caller aborted', async () => {
+        // A cancelled commit search must reach the search adapter as an abort so the section can
+        // discard it silently — not as BACKEND_UNAVAILABLE, which would render offline truth for
+        // a query the user simply left.
+        getStateMock.mockReturnValue({ settings: {} });
+        const controller = new AbortController();
+        const transportError = new Error('socket closed');
+        machineRpcWithServerScopeMock.mockImplementation(async () => {
+            controller.abort();
+            throw transportError;
+        });
+
+        const { machineScmLogList } = await import('./machineScm');
+        await expect(machineScmLogList(
+            'machine-1',
+            { cwd: '/repo', query: 'fix login' },
+            { serverId: 'server-b', signal: controller.signal },
+        )).rejects.toBe(transportError);
+    });
+
     it('maps unavailable machine-rpc failures to the standard backend unavailable SCM response', async () => {
         getStateMock.mockReturnValue({
             settings: {

@@ -4,6 +4,7 @@ import type { PermissionMode, ModelMode } from "@/sync/domains/permissions/permi
 import { SessionOptionOverrideRuleSchema } from "@/sync/domains/sessionControl/schema";
 import type {
     PendingDeliveryBlockedReason,
+    PendingActivationAuthorizationV1,
     PrimaryTurnStatusV1,
     ScmBackendId,
     ScmHostingProviderRef,
@@ -296,6 +297,8 @@ const MetadataObjectSchema = z.object({
         createdAtMs: z.number(),
         appliedToLocalId: z.string().optional(),
         appliedAtMs: z.number().optional(),
+        /** Pending row the seed was composed into; the daemon owns and reconciles it. */
+        dispatchedToLocalId: z.string().optional(),
     }).optional(),
     forkInitialPromptV1: z.object({
         v: z.literal(1),
@@ -505,6 +508,7 @@ export interface Session {
     pendingVersion?: number,
     pendingCount?: number,
     pendingBlockedCount?: number,
+    pendingActivationAuthorization?: PendingActivationAuthorizationV1 | null,
     lastViewedSessionSeq?: number | null,
     pendingPermissionRequestCount?: number,
     pendingUserActionRequestCount?: number,
@@ -616,6 +620,8 @@ export interface PendingMessage {
     pendingRequestedAction?: import('@happier-dev/protocol').PendingRequestedActionV1;
     /** Corrupt non-null action data is visible and never treated as ordinary enqueue. */
     pendingRequestedActionMalformed?: boolean;
+    /** Protocol-owned role for eligibility decisions; null means an older/unknown row. */
+    messageRole?: 'user' | 'non_user' | null;
     text: string;
     displayText?: string;
     pendingDecryptFailure?: { kind: 'decrypt_failed' };

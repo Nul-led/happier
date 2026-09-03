@@ -50,6 +50,59 @@ type HomeNotificationSettingsTarget = Readonly<{
     runtimeOrigin?: string;
 }>;
 
+function areCredentialsCurrent(
+    expected: AuthCredentials,
+    current: AuthCredentials | null,
+): boolean {
+    if (!current || current.token !== expected.token) return false;
+    if ('secret' in expected || 'secret' in current) {
+        return 'secret' in expected
+            && 'secret' in current
+            && expected.secret === current.secret;
+    }
+    if ('encryption' in expected || 'encryption' in current) {
+        return 'encryption' in expected
+            && 'encryption' in current
+            && expected.encryption.publicKey === current.encryption.publicKey
+            && expected.encryption.machineKey === current.encryption.machineKey;
+    }
+    return true;
+}
+
+async function isPushRegistrationStillCurrent(params: Readonly<{
+    profile: ServerProfile;
+    profileScopeId: string;
+    credentials: AuthCredentials;
+    isActiveProfile: boolean;
+    readAccountSettings: () => unknown;
+}>): Promise<boolean> {
+    const currentProfile = listServerProfiles().find((candidate) => (
+        areServerProfileIdentifiersEquivalent(resolveServerProfileScopeId(candidate), params.profileScopeId)
+        && candidate.serverUrl === params.profile.serverUrl
+    ));
+    if (!currentProfile) return false;
+    const currentCredentials = await TokenStorage.getCredentialsForServerUrl(
+        currentProfile.serverUrl,
+        { serverId: resolveServerProfileScopeId(currentProfile) },
+    ).catch(() => null);
+    if (!currentCredentials || !areCredentialsCurrent(params.credentials, currentCredentials)) return false;
+    if (params.isActiveProfile) {
+        return isExpoPushNotificationChannelEnabled(params.readAccountSettings());
+    }
+    try {
+        const scope = createAccountSettingsScope(
+            resolveServerProfileScopeId(currentProfile),
+            parseToken(currentCredentials.token),
+        );
+        if (!scope) return true;
+        const cached = loadAccountSettings(scope);
+        return cached.version === null
+            || isExpoPushNotificationChannelEnabled(cached.settings);
+    } catch {
+        return true;
+    }
+}
+
 /**
  * Resolve one Home's notification consent.
  *
@@ -470,6 +523,14 @@ export async function registerPushTokenIfAvailable(params: {
                 }
 
                 try {
+                    const registrationBasis = {
+                        profile,
+                        profileScopeId,
+                        credentials: serverCredentials,
+                        isActiveProfile,
+                        readAccountSettings,
+                    };
+                    if (!await isPushRegistrationStillCurrent(registrationBasis)) continue;
                     await registerPushTokenApi(serverCredentials, token, {
                         serverId: profileScopeId,
                         apiEndpoint: transport.canonicalServerUrl,
@@ -477,6 +538,15 @@ export async function registerPushTokenIfAvailable(params: {
                         clientServerUrl: transport.canonicalServerUrl,
                         retry: 'none',
                     });
+                    if (!await isPushRegistrationStillCurrent(registrationBasis)) {
+                        const compensated = await deletePushTokenThroughHomeTransport({
+                            credentials: serverCredentials,
+                            token,
+                            transport,
+                        });
+                        didTokenCleanupFail = didTokenCleanupFail || !compensated;
+                        continue;
+                    }
                     didRegisterAnyServer = true;
                     if (cleanupPendingToken && cleanupPendingToken !== token) {
                         const cleanedPendingToken = await deletePushTokenThroughHomeTransport({

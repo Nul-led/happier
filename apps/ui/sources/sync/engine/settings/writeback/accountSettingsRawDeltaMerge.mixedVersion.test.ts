@@ -4,6 +4,49 @@ import { mergeCurrentSecretBindingsIntoRawBindings } from '@/sync/domains/settin
 import { mergePendingSettingsIntoRawBaseline } from './accountSettingsRawDeltaMerge';
 
 describe('account settings raw delta merge mixed-version preservation', () => {
+    it('does not materialize the Happier run instructions default when the raw key is absent', () => {
+        const merged = mergePendingSettingsIntoRawBaseline({
+            rawBaseline: { schemaVersion: 7 },
+            pendingSettings: { analyticsOptOut: true },
+            normalizeForPersistedStorage: (raw) => ({ value: raw, changed: false }),
+        });
+
+        expect(merged.outgoingRaw).not.toHaveProperty('executionRunsGuidanceEnabled');
+    });
+
+    it('preserves an explicit Happier run instructions opt-out through an unrelated old-client delta', () => {
+        const merged = mergePendingSettingsIntoRawBaseline({
+            rawBaseline: { schemaVersion: 7, executionRunsGuidanceEnabled: false },
+            pendingSettings: { analyticsOptOut: true },
+            normalizeForPersistedStorage: (raw) => ({ value: raw, changed: false }),
+        });
+
+        expect(merged.outgoingRaw.executionRunsGuidanceEnabled).toBe(false);
+        expect(merged.outgoingRaw.analyticsOptOut).toBe(true);
+    });
+
+    it('preserves an absent guidance key through an unrelated new-client delta', () => {
+        const merged = mergePendingSettingsIntoRawBaseline({
+            rawBaseline: { schemaVersion: 7 },
+            pendingSettings: { scmGitRepoPreferredBackendQualifiedId: 'acme.scm/stacked' },
+            normalizeForPersistedStorage: (raw) => ({ value: raw, changed: false }),
+        });
+
+        expect(merged.outgoingRaw).not.toHaveProperty('executionRunsGuidanceEnabled');
+        expect(merged.outgoingRaw.scmGitRepoPreferredBackendQualifiedId).toBe('acme.scm/stacked');
+    });
+
+    it('preserves an explicit guidance opt-out through an unrelated new-client delta', () => {
+        const merged = mergePendingSettingsIntoRawBaseline({
+            rawBaseline: { schemaVersion: 7, executionRunsGuidanceEnabled: false },
+            pendingSettings: { scmGitRepoPreferredBackendQualifiedId: 'acme.scm/stacked' },
+            normalizeForPersistedStorage: (raw) => ({ value: raw, changed: false }),
+        });
+
+        expect(merged.outgoingRaw.executionRunsGuidanceEnabled).toBe(false);
+        expect(merged.outgoingRaw.scmGitRepoPreferredBackendQualifiedId).toBe('acme.scm/stacked');
+    });
+
     it('preserves a qualified SCM selection as an unknown root field through the released preview parser and unrelated write', () => {
         // Provenance: ui-web-v0.2.2-preview.1775585938.1
         // commit 4913c1e533c872a0712ba1c25b3104fd470aacc2.
