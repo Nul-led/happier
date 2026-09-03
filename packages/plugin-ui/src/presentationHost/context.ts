@@ -16,6 +16,18 @@ export type PluginUiPopoverContentControls = Readonly<{
   maxHeight: number;
 }>;
 
+/**
+ * One bounded request to render a QR code for a plugin-supplied payload such
+ * as a pairing deep link. Encoding, quiet zone, error correction, and the
+ * platform renderer stay with the incumbent host implementation; the payload
+ * is rendered verbatim and is never interpreted, stored, or transformed.
+ */
+export type PluginUiQRCodePresentation = Readonly<{
+  data: string;
+  size: number;
+  testID?: string;
+}>;
+
 /** One host-owned brand target; no package inventory or Resource reference escapes this seam. */
 export type PluginUiTargetBrandMarkInput = Readonly<{
   pluginId: string;
@@ -121,6 +133,13 @@ export type PluginUiPresentationHost = Readonly<{
     accessibilityLabel?: string;
     testID?: string;
   }>): ReactNode;
+  /**
+   * Render one QR code through the incumbent app QR renderer. Optional on
+   * hosts without that capability; authors must keep a non-visual twin of any
+   * QR payload (copyable token or link) because a QR never becomes the only
+   * accessible representation of the data it carries.
+   */
+  renderQRCode?(input: PluginUiQRCodePresentation): ReactNode;
 }>;
 
 const PluginUiPresentationHostContext = createContext<PluginUiPresentationHost | null>(null);

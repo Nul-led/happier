@@ -8,6 +8,8 @@ import { NpmRegistryProfileIdV1Schema } from '../rpc/npmRegistryProfiles.js';
 export const MarketplaceSourceOriginV1Schema = z.enum(['user', 'curated']);
 export type MarketplaceSourceOriginV1 = z.infer<typeof MarketplaceSourceOriginV1Schema>;
 
+const MarketplaceSourceIdV1Schema = z.string().trim().min(1).max(256).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/u);
+
 const MarketplaceSourceUrlV1Schema = z.string().trim().min(1).max(2_048).transform((value, context) => {
   try {
     const url = new URL(value);
@@ -23,23 +25,23 @@ const MarketplaceSourceUrlV1Schema = z.string().trim().min(1).max(2_048).transfo
 });
 
 export const MarketplaceSourceV1Schema = z.object({
-  id: z.string().trim().min(1).max(256).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/u),
+  id: MarketplaceSourceIdV1Schema,
   title: z.string().trim().min(1).max(512),
   sourceUrl: MarketplaceSourceUrlV1Schema,
-  enabled: z.boolean().default(true),
-  origin: MarketplaceSourceOriginV1Schema.default('user'),
+  enabled: z.boolean(),
+  origin: MarketplaceSourceOriginV1Schema,
   registryProfileId: NpmRegistryProfileIdV1Schema.optional(),
   description: z.string().trim().min(1).max(2_048).nullable().optional(),
   addedAtMs: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
   updatedAtMs: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
-});
+}).strict();
 export type MarketplaceSourceV1 = z.infer<typeof MarketplaceSourceV1Schema>;
 
 export const MarketplaceSourceRegistryV1Schema = z.object({
-  t: z.literal('happier_marketplace_source_registry_v1').default('happier_marketplace_source_registry_v1'),
-  schemaVersion: z.literal(1).default(1),
-  sources: z.array(MarketplaceSourceV1Schema).max(64).default([]),
-}).superRefine((registry, context) => {
+  t: z.literal('happier_marketplace_source_registry_v1'),
+  schemaVersion: z.literal(1),
+  sources: z.array(MarketplaceSourceV1Schema).max(64),
+}).strict().superRefine((registry, context) => {
   const ids = new Set<string>();
   const urls = new Set<string>();
   for (const [index, source] of registry.sources.entries()) {
@@ -50,6 +52,29 @@ export const MarketplaceSourceRegistryV1Schema = z.object({
   }
 });
 export type MarketplaceSourceRegistryV1 = z.infer<typeof MarketplaceSourceRegistryV1Schema>;
+
+const MarketplaceSourceMutationInputV1Schema = z.object({
+  sourceId: MarketplaceSourceIdV1Schema.nullable().optional(),
+  sourceUrl: MarketplaceSourceUrlV1Schema,
+  title: z.string().trim().min(1).max(512).nullable().optional(),
+  description: z.string().trim().max(2_048).nullable().optional(),
+  enabled: z.boolean().optional(),
+  origin: MarketplaceSourceOriginV1Schema.nullable().optional(),
+  registryProfileId: NpmRegistryProfileIdV1Schema.nullable().optional(),
+}).strict();
+
+/** One source-scoped registry change, applied against daemon-current state. */
+export const MarketplaceSourceRegistryMutationV1Schema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('upsert'), input: MarketplaceSourceMutationInputV1Schema }).strict(),
+  z.object({ kind: z.literal('remove'), sourceId: MarketplaceSourceIdV1Schema }).strict(),
+  z.object({ kind: z.literal('setEnabled'), sourceId: MarketplaceSourceIdV1Schema, enabled: z.boolean() }).strict(),
+  z.object({
+    kind: z.literal('setRegistryProfile'),
+    sourceId: MarketplaceSourceIdV1Schema,
+    registryProfileId: NpmRegistryProfileIdV1Schema.nullable(),
+  }).strict(),
+]);
+export type MarketplaceSourceRegistryMutationV1 = z.infer<typeof MarketplaceSourceRegistryMutationV1Schema>;
 
 export const DEFAULT_CURATED_MARKETPLACE_SOURCE_TITLE = 'Happier curated marketplace';
 export const DEFAULT_CURATED_MARKETPLACE_SOURCE_DESCRIPTION = 'Official curated source';

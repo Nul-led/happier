@@ -4,6 +4,7 @@ import semver from 'semver';
 
 import { PluginOptionalStringSchema } from '../_shared.js';
 import { CanonicalHttpOriginSchema } from '../canonicalHttpOrigin.js';
+import { CanonicalPluginNetworkHostSuffixSchema } from '../networkHostSuffix.js';
 import { PluginContributesV2Schema } from '../contributions/v2.js';
 import { PluginDeclaredExecutableRefSchema } from '../contributions/agentAcpTransport.js';
 import { PluginContributionLocalIdSchema } from '../contributionIdentity.js';
@@ -80,6 +81,15 @@ const PluginEnvironmentKeySchema = z.string()
   .regex(/^[A-Za-z_][A-Za-z0-9_]*$/);
 export const PluginNetworkTargetV2Schema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('fixedOrigin'), origin: CanonicalHttpOriginSchema }).strict(),
+  /**
+   * One HTTPS host family, for a provider that issues its own endpoint inside
+   * a domain it owns. The suffix owner defines the exact semantics: standard
+   * port, DNS label boundary, normalized ASCII, and no wildcard.
+   */
+  z.object({
+    kind: z.literal('httpsHostSuffix'),
+    hostSuffix: CanonicalPluginNetworkHostSuffixSchema,
+  }).strict(),
   z.object({ kind: z.literal('connectedAccountOrigin'), service: asProtocolZod(PluginContributionReferenceV2Schema) }).strict(),
   z.object({ kind: z.literal('scmProviderOrigin'), provider: asProtocolZod(PluginContributionReferenceV2Schema) }).strict(),
 ]);

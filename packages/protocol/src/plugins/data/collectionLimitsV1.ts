@@ -45,3 +45,30 @@ export const PLUGIN_COLLECTION_DEFAULT_DEPLOYMENT_LIMITS_V1 = Object.freeze({
  * failure is typed and attributable.
  */
 export const PLUGIN_COLLECTION_SCHEMA_VERSION_MAX = 2_147_483_647;
+
+/**
+ * The largest Collection row revision — and absence epoch — the persisted
+ * columns can hold.
+ *
+ * Derived from the same storage boundary as `PLUGIN_COLLECTION_SCHEMA_VERSION_MAX`,
+ * not from a chosen policy number. Every Collection currentness column is a
+ * Prisma `Int`, emitted as `INTEGER` by all three providers: signed 32-bit on
+ * PostgreSQL and MySQL, dynamic 64-bit on SQLite. The columns are
+ * `PluginCollectionRow.revision` and `PluginCollectionAbsenceEpoch.epoch` plus
+ * every derived witness — `PluginCollectionProjection.rowRevision`,
+ * `PluginCollectionIndexEntry.rowRevision`,
+ * `PluginCollectionRelation.sourceRevision`,
+ * `PluginCollectionIndexState.indexedThroughRevision`, and
+ * `PluginCollectionCandidatePreparationStage.sourceRevision`
+ * (`apps/server/prisma{,/mysql,/sqlite}/migrations/20260809170000_add_plugin_data_and_message_admission/migration.sql`
+ * and `.../20260829150000_add_plugin_collection_absence_epoch/migration.sql`).
+ * Allowing a larger value would not merely fail to store: SQLite would persist
+ * exact-CAS currentness the other two providers can never reproduce.
+ *
+ * Revisions and the absence epoch share one monotone space rather than two
+ * limits: an absent create is seeded from `absenceEpoch + 1`, and a forget
+ * advances the epoch past the retired revision. The Collection mutation owner
+ * refuses the increment that would leave this ceiling with one typed
+ * `collection_revision_exhausted` result instead of overflowing.
+ */
+export const PLUGIN_COLLECTION_REVISION_MAX = 2_147_483_647;

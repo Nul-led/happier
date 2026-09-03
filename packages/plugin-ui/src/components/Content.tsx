@@ -44,6 +44,29 @@ export type CodeBlockProps = Readonly<{
   testID?: string;
 }>;
 
+export type QRCodeProps = Readonly<{
+  /** The verbatim payload to encode, e.g. a pairing deep link. */
+  data: string;
+  /** Square edge length in pixels. */
+  size?: number;
+  testID?: string;
+}>;
+
+/**
+ * A QR code rendered through the incumbent app QR renderer.
+ *
+ * Like `DiffViewer`, the encoding and platform presentation stay host-owned:
+ * this package never grows its own QR encoder or drawing path. Hosts without
+ * the capability render nothing, so an author who shows a QR must always keep
+ * a copyable textual twin (token or link) beside it — a QR is a convenience,
+ * never the only accessible representation of its payload.
+ */
+export function QRCode({ data, size = 200, testID }: QRCodeProps): ReactElement | null {
+  const host = useOptionalPluginUiPresentationHost();
+  const content = host?.renderQRCode?.({ data, size, ...(testID === undefined ? {} : { testID }) });
+  return content === undefined || content === null ? null : <>{content}</>;
+}
+
 export type DiffViewerProps = Readonly<{
   /** A standard unified diff. Happier's mounted renderer owns parsing and presentation. */
   unifiedDiff: string;

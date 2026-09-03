@@ -19,6 +19,10 @@ import type {
 export {
     PLUGIN_COLLECTION_MUTATION_BATCH_MAX_ROWS_V1,
     PLUGIN_COLLECTION_QUERY_MAX_ROWS_V1,
+    // The persisted `Int` ceiling every Collection row revision — and every
+    // durable witness of one — shares. Authors bound their own revision
+    // witnesses from this value instead of a nearby safe-integer number.
+    PLUGIN_COLLECTION_REVISION_MAX,
 } from '@happier-dev/protocol/plugins/data/collectionLimitsV1';
 
 import type { JsonValue, PluginJsonSchema } from './identity.js';
@@ -287,8 +291,10 @@ export interface PluginAccountCollection<
     }>>;
     /**
      * Physically reclaim one exact live row or logical-delete tombstone.
-     * Callers must own the row's retention/replay proof; the host obtains and
-     * checks Collection absence currentness before issuing this CAS.
+     * Callers must own the row's retention/replay proof; the exact revision is
+     * the whole currentness witness, and the host issues one CAS that answers
+     * forgotten or conflicted. Collection absence currentness stays a server
+     * fact advanced inside that same transaction.
      */
     forget(
         rowId: string,

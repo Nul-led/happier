@@ -78,6 +78,47 @@ describe('plugin manifest v2 root contract', () => {
     ]);
   });
 
+  it('admits a declared HTTPS host-suffix family target only in its canonical normalized form', () => {
+    const withTarget = (target: unknown) => PluginManifestV2Schema.safeParse(manifest({
+      hostAccess: {
+        required: [{
+          id: 'gateway',
+          capability: 'network.client',
+          reason: 'Maintain the provider-issued gateway connection',
+          scope: { targets: [target], transports: ['websocket'] },
+        }],
+        optional: [],
+      },
+    }));
+
+    const parsed = withTarget({ kind: 'httpsHostSuffix', hostSuffix: 'discord.gg' });
+    expect(parsed.success).toBe(true);
+    expect(parsed.success && parsed.data.hostAccess.required[0]).toMatchObject({
+      scope: { targets: [{ kind: 'httpsHostSuffix', hostSuffix: 'discord.gg' }] },
+    });
+
+    // The family is a name, never a URL, a wildcard, a whole TLD or a second
+    // spelling of the same grant.
+    for (const hostSuffix of [
+      'gg',
+      '*.discord.gg',
+      '.discord.gg',
+      'discord.gg.',
+      'Discord.GG',
+      'https://discord.gg',
+      'discord.gg:443',
+      '93.184.216.34',
+    ]) {
+      expect(withTarget({ kind: 'httpsHostSuffix', hostSuffix }).success).toBe(false);
+    }
+    expect(withTarget({ kind: 'httpsHostSuffix', origin: 'https://discord.gg' }).success).toBe(false);
+    expect(withTarget({
+      kind: 'httpsHostSuffix',
+      hostSuffix: 'discord.gg',
+      origin: 'https://discord.gg',
+    }).success).toBe(false);
+  });
+
   it('parses the current entrypoint and activation vocabulary with canonical defaults', () => {
     const authoredManifest = {
       schemaVersion: 2,

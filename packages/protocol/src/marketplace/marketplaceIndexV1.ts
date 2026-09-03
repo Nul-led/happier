@@ -7,6 +7,7 @@ import type { PluginCompatibilityProjectionV1 } from '../plugins/availability/v1
 import { PluginIdSchema } from '../plugins/pluginId.js';
 import { NpmRegistryOriginV1Schema } from '../rpc/npmRegistryProfiles.js';
 import { asProtocolZod } from "../plugins/actions/internalProtocolZodAdapter.js";
+import { PluginUpdatePolicyV1Schema } from './pluginUpdatePolicyV1.js';
 
 const BoundedText = z.string().trim().min(1).max(512);
 const Identifier = z.string().trim().min(1).max(128).regex(/^[a-z0-9][a-z0-9._-]*$/);
@@ -60,7 +61,8 @@ export const MarketplaceIndexEntryV1Schema = z.object({
   }).strict(),
   categories: z.array(Identifier).max(32),
   media: z.array(HttpsUrl).max(16),
-  updatePolicy: z.enum(['curated-auto', 'manual', 'pinned']),
+  /** The listing's declared update policy; see {@link PluginUpdatePolicyV1Schema}. */
+  updatePolicy: PluginUpdatePolicyV1Schema,
   links: z.object({
     homepage: HttpsUrl.nullable().optional(),
     repository: HttpsUrl.nullable().optional(),
@@ -173,7 +175,7 @@ export const MarketplaceIndexSourceSnapshotV1Schema = z.object({
   value.entries.forEach((entry, index) => {
     const invalid = value.source.kind === 'curated'
       ? entry.review.status === 'unreviewed'
-      : entry.review.status !== 'unreviewed' || entry.updatePolicy === 'curated-auto';
+      : entry.review.status !== 'unreviewed';
     if (invalid) context.addIssue({ code: 'custom', path: ['entries', index, 'review', 'status'], message: 'Review status/update policy is not valid for this marketplace source kind' });
   });
 });
@@ -188,15 +190,23 @@ export const MarketplaceIndexQueryV1Schema = z.object({
     platforms: z.array(z.enum(['darwin', 'linux', 'windows', 'web', 'ios', 'android'])).max(6).optional(),
     sourceKinds: z.array(MarketplaceIndexSourceKindV1Schema).max(3).optional(),
     sourceIds: z.array(OpaqueId).max(32).optional(),
+    /** Exact-listing lookup: one query resolves one source's listing by plugin id. */
+    pluginIds: z.array(asProtocolZod(PluginIdSchema)).max(8).optional(),
     includeUnavailable: z.boolean().optional(),
   }).strict().default({}),
 }).strict();
 export type MarketplaceIndexQueryV1 = z.infer<typeof MarketplaceIndexQueryV1Schema>;
 
+/**
+ * The one admission projection for a listing.
+ *
+ * Curation recommends discovery; it is never hidden authorization for an
+ * exact release. Every install — curated, user, or community npm — reaches
+ * the full Install and Trust review, so `install` is the constant
+ * `full-review` rather than an allow/refuse decision.
+ */
 export const MarketplaceIndexAdmissionV1Schema = z.object({
-  curatedInstall: z.enum(['allowed', 'refused', 'full-review']),
-  curatedUpdate: z.enum(['allowed', 'refused', 'not-applicable']),
-  warning: z.boolean(),
+  install: z.literal('full-review'),
   mutatesInstalledTrust: z.literal(false),
   disablesInstalledCode: z.literal(false),
   directNpmRequiresFullReview: z.literal(true),
@@ -213,6 +223,58 @@ export const MarketplaceIndexItemV1Schema = MarketplaceIndexEntryV1Schema.extend
   }).strict(),
 }).strict();
 export type MarketplaceIndexItemV1 = z.infer<typeof MarketplaceIndexItemV1Schema>;
+
+/**
+ * Why an exact listing cannot be installed right now, decided in one order
+ * for every consumer: an unintelligible source kind first, then the durable
+ * trust/review facts, then the transient machine-reachability facts (source
+ * freshness, then artifact access). Presentation layers map each block to
+ * their own user-facing copy.
+ */
+export type MarketplaceListingInstallBlockV1 =
+  | 'unsupported-source-kind'
+  | 'curated-review-withdrawn'
+  | 'curated-review-not-approved'
+  | 'full-review-unavailable'
+  | 'source-not-fresh'
+  | 'artifact-unavailable';
+
+export type MarketplaceListingInstallDecisionV1 =
+  | Readonly<{ installable: true }>
+  | Readonly<{ installable: false; block: MarketplaceListingInstallBlockV1 }>;
+
+/**
+ * The one installability decision for a marketplace listing, shared by the
+ * CLI exact-install revalidation and the UI catalog projection. It refines
+ * {@link MarketplaceIndexAdmissionV1} with the per-kind review facts: a
+ * curated listing needs its current approved review, user and community npm
+ * listings stay unreviewed on the constant full-review path, and an exact
+ * install additionally requires fresh source facts and a reachable artifact.
+ * This decides listing admission only — exact package/version/SRI/registry
+ * verification stays with the daemon acquisition owner.
+ */
+export function decideMarketplaceListingInstallV1(item: MarketplaceIndexItemV1): MarketplaceListingInstallDecisionV1 {
+  if (item.source.kind !== 'curated' && item.source.kind !== 'user' && item.source.kind !== 'community-npm') {
+    return { installable: false, block: 'unsupported-source-kind' };
+  }
+  if (item.source.kind === 'curated') {
+    if (item.review.status === 'withdrawn') {
+      return { installable: false, block: 'curated-review-withdrawn' };
+    }
+    if (item.review.status !== 'approved' || item.review.reviewedAt === null) {
+      return { installable: false, block: 'curated-review-not-approved' };
+    }
+  } else if (item.review.status !== 'unreviewed' || item.admission.install !== 'full-review') {
+    return { installable: false, block: 'full-review-unavailable' };
+  }
+  if (item.freshness.state !== 'fresh') {
+    return { installable: false, block: 'source-not-fresh' };
+  }
+  if (item.artifactAccess.state !== 'public' && item.artifactAccess.state !== 'available') {
+    return { installable: false, block: 'artifact-unavailable' };
+  }
+  return { installable: true };
+}
 
 export const MarketplaceIndexQueryResultV1Schema = z.object({
   revision: z.number().int().nonnegative().safe(),

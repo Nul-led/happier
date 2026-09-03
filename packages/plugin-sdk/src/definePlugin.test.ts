@@ -481,6 +481,23 @@ describe('definePlugin', () => {
         expect(plugin.manifest.metadata).toEqual({ externalSessions: { label: 'captured' } });
     });
 
+    it('captures an own __proto__ metadata data property without changing the captured prototype', () => {
+        const metadata = Object.defineProperty({ ordinary: 'preserved' }, '__proto__', {
+            value: { inert: true },
+            enumerable: true,
+        }) as Record<string, JsonValue>;
+        const plugin = definePlugin({
+            id: 'acme.captured-prototype-key',
+            version: '1.0.0',
+            metadata,
+        });
+
+        expect(Object.getPrototypeOf(plugin.manifest.metadata)).toBe(Object.prototype);
+        expect(Object.hasOwn(plugin.manifest.metadata!, '__proto__')).toBe(true);
+        expect(plugin.manifest.metadata?.__proto__).toEqual({ inert: true });
+        expect((Object.getPrototypeOf(plugin.manifest.metadata) as { inert?: unknown }).inert).toBeUndefined();
+    });
+
     it('wraps author Action handlers before attaching parser carriers so repeated activation never mutates the source handler', async () => {
         const inputSchema = defineComposableProtocolObject({
             entryId: defineComposableProtocolString({ minLength: 1 }),
@@ -2089,7 +2106,7 @@ describe('definePlugin', () => {
     });
 
     it.each([
-        ['raw contributes', { contributes: {} }, /manual named ABI|raw contributes/iu],
+        ['raw contributes', { contributes: {} }, /raw contributes|host-generated projection output/iu],
         ['unknown field', { surprise: true }, /unknown.*surprise|surprise.*unknown/iu],
     ] as const)('fails closed for cast/runtime %s input', (_label, extra, expected) => {
         expect(() => definePlugin({

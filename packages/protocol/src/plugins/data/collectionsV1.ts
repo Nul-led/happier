@@ -68,6 +68,7 @@ import {
   PLUGIN_COLLECTION_LIMITS_V1,
   PLUGIN_COLLECTION_MUTATION_BATCH_MAX_ROWS_V1,
   PLUGIN_COLLECTION_QUERY_MAX_ROWS_V1,
+  PLUGIN_COLLECTION_REVISION_MAX,
 } from './collectionLimitsV1.js';
 import type {
   PluginDataCollectionsCapabilities,
@@ -131,6 +132,7 @@ export {
   PLUGIN_COLLECTION_LIMITS_V1,
   PLUGIN_COLLECTION_MUTATION_BATCH_MAX_ROWS_V1,
   PLUGIN_COLLECTION_QUERY_MAX_ROWS_V1,
+  PLUGIN_COLLECTION_REVISION_MAX,
   PLUGIN_COLLECTION_SCHEMA_VERSION_MAX,
 } from './collectionLimitsV1.js';
 
@@ -422,9 +424,18 @@ export const PluginCollectionProjectionV1Schema = z.record(
 });
 export type PluginCollectionProjectionV1 = z.infer<typeof PluginCollectionProjectionV1Schema>;
 
-const PluginCollectionRevisionV1Schema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
-/** One compact currentness floor per Account/plugin/Collection. */
-export const PluginCollectionAbsenceEpochV1Schema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
+/**
+ * One exact row currentness witness. Its ceiling is the persisted `Int` column,
+ * not a policy number: see `PLUGIN_COLLECTION_REVISION_MAX`.
+ */
+export const PluginCollectionRevisionV1Schema = z.number().int().positive()
+  .max(PLUGIN_COLLECTION_REVISION_MAX);
+/**
+ * One compact currentness floor per Account/plugin/Collection. It shares the
+ * revision's monotone space and therefore its persisted ceiling.
+ */
+export const PluginCollectionAbsenceEpochV1Schema = z.number().int().nonnegative()
+  .max(PLUGIN_COLLECTION_REVISION_MAX);
 const PluginCollectionPutMutationBaseV1Schema = {
   kind: z.literal('put'),
   rowId: PluginCollectionRowIdV1Schema,
@@ -519,7 +530,9 @@ export type PluginCollectionMutationRequestV1 = z.infer<typeof PluginCollectionM
 /**
  * Retention-only exact physical reclamation. An exact live revision first
  * receives the canonical logical-delete effects in the same transaction;
- * an exact tombstone is forgotten directly.
+ * an exact tombstone is forgotten directly. The exact row revision is the
+ * whole currentness witness: the server reads and advances the Collection
+ * absence epoch in that same transaction, so no caller carries it here.
  */
 export const PluginCollectionForgetRequestV1Schema = z.object({
   pluginId: asProtocolZod(PluginIdSchema),
@@ -527,7 +540,6 @@ export const PluginCollectionForgetRequestV1Schema = z.object({
   writerContext: PluginCollectionWriterContextV1Schema,
   rowId: PluginCollectionRowIdV1Schema,
   expectedRevision: PluginCollectionRevisionV1Schema,
-  expectedAbsenceEpoch: PluginCollectionAbsenceEpochV1Schema,
 }).strict();
 export type PluginCollectionForgetRequestV1 = z.infer<typeof PluginCollectionForgetRequestV1Schema>;
 
@@ -575,6 +587,7 @@ export const PluginCollectionMutationErrorCodeV1Schema = z.enum([
   'collection_quota_exceeded',
   'collection_quota_incompatible',
   'collection_contract_inconsistent',
+  'collection_revision_exhausted',
 ]);
 export type PluginCollectionMutationErrorCodeV1 = z.infer<typeof PluginCollectionMutationErrorCodeV1Schema>;
 
@@ -640,6 +653,7 @@ const PluginCollectionSimpleMutationErrorCodeV1Schema = z.enum([
   'collection_content_mode_mismatch',
   'collection_quota_exceeded',
   'collection_contract_inconsistent',
+  'collection_revision_exhausted',
 ]);
 
 export const PluginCollectionMutationErrorV1Schema = z.union([

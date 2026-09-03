@@ -173,3 +173,17 @@ describe('memorySettings', () => {
     expect(parsed.embeddings.blend).toEqual({ ftsWeight: 0.2, embeddingWeight: 0.8 });
   });
 });
+
+describe('memorySettings archived eligibility', () => {
+  it('defaults archived daemon indexing to off', () => {
+    expect(DEFAULT_MEMORY_SETTINGS.includeArchivedSessions).toBe(false);
+    expect(MemorySettingsV1Schema.parse({ v: 1, enabled: true }).includeArchivedSessions).toBe(false);
+  });
+
+  it('accepts an explicit archived opt-in', () => {
+    expect(
+      MemorySettingsV1Schema.parse({ v: 1, enabled: true, includeArchivedSessions: true })
+        .includeArchivedSessions,
+    ).toBe(true);
+  });
+});

@@ -132,7 +132,8 @@ the staged `.happier-plugin/plugin.json` and emits the declared
 singleton.
 
 Run its package-local lifecycle through the canonical managed source-author
-owner:
+owner (the published copy of this example names the public `happier` command
+instead):
 
 ```bash
 happier plugins dev typecheck .

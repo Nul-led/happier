@@ -103,3 +103,9 @@ export {
   type ParsedPluginManifestV2,
   type PluginManifest,
 } from './v2.js';
+export {
+  isCanonicalPluginNetworkHostSuffix,
+  matchesPluginNetworkHostSuffix,
+  pluginNetworkOriginPolicyAdmitsOrigin,
+  type PluginNetworkOriginPolicy,
+} from '../networkHostSuffix.js';

@@ -46,6 +46,15 @@ export const PluginInstallReviewPrincipalDigestSchema = LowercaseSha256DigestSch
   .brand<'PluginInstallReviewPrincipalDigest'>();
 export type PluginInstallReviewPrincipalDigest = z.infer<typeof PluginInstallReviewPrincipalDigestSchema>;
 
+/**
+ * Exact authorization principal reviewed for one plugin installation: the
+ * plugin/package identity plus the trusted distribution identity owned by the
+ * current installation channel. Unverified catalog publisher labels and npm
+ * registry signature keys stay installation-review evidence on the review
+ * record only — a signing key authenticates the registry response rather than
+ * the publisher — so neither participates in this principal, its digest, or any
+ * raw-credential permission subject identity.
+ */
 export const PluginInstallReviewPrincipalPresentationV1Schema = z.object({
   v: z.literal(1),
   packageIdentity: z.object({
@@ -63,21 +72,6 @@ export const PluginInstallReviewPrincipalPresentationV1Schema = z.object({
       packageName: z.string().trim().min(1).max(512),
       registryOrigin: z.string().url().max(2_048),
       registryProfileId: z.string().trim().min(1).max(256).optional(),
-    }).strict(),
-  ]),
-  publisherIdentity: z.union([
-    z.object({ status: z.literal('unavailable') }).strict(),
-    z.object({
-      status: z.literal('unverified'),
-      id: z.string().trim().min(1).max(512),
-      displayName: z.string().trim().min(1).max(512),
-    }).strict(),
-  ]),
-  packageSignature: z.union([
-    z.object({ status: z.literal('unavailable') }).strict(),
-    z.object({
-      status: z.literal('verified'),
-      keyId: z.string().trim().min(1).max(512),
     }).strict(),
   ]),
 }).strict();

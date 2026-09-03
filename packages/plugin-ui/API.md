@@ -140,6 +140,8 @@ Declaration: `dist/index.d.ts`
 - type `PopoverProps` from `dist/index.d.ts`
 - value `Progress` from `dist/index.d.ts`
 - type `ProgressProps` from `dist/index.d.ts`
+- value `QRCode` from `dist/index.d.ts`
+- type `QRCodeProps` from `dist/index.d.ts`
 - type `ReviewCommentProposalQueryV1` from `dist/index.d.ts`
 - type `ReviewCommentProposalReadV1` from `dist/index.d.ts`
 - type `ReviewCommentProposalWithBodyV1` from `dist/index.d.ts`
@@ -334,6 +336,8 @@ Declaration: `dist/components/index.d.ts`
 - type `PopoverProps` from `dist/components/index.d.ts`
 - value `Progress` from `dist/components/index.d.ts`
 - type `ProgressProps` from `dist/components/index.d.ts`
+- value `QRCode` from `dist/components/index.d.ts`
+- type `QRCodeProps` from `dist/components/index.d.ts`
 - value `Row` from `dist/components/index.d.ts`
 - type `RowProps` from `dist/components/index.d.ts`
 - value `Screen` from `dist/components/index.d.ts`

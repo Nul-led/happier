@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  BackendSurfaceAvailabilityV1Schema,
+  AgentSurfaceAvailabilityV1Schema,
   BackendSurfaceDeclarationV1Schema,
   BackendSurfaceKindV1Schema,
   BackendSurfaceOperationCatalogV1,
@@ -10,7 +10,7 @@ import {
 
 describe('BackendSurfaceDeclarationV1Schema', () => {
   it('preserves a bounded safe explanation for unavailable surface operations', () => {
-    expect(BackendSurfaceAvailabilityV1Schema.parse({
+    expect(AgentSurfaceAvailabilityV1Schema.parse({
       available: false,
       reasonCode: 'missing_metadata',
       safeMessage: 'Session metadata is missing a Provider session id.',
@@ -19,7 +19,7 @@ describe('BackendSurfaceDeclarationV1Schema', () => {
       reasonCode: 'missing_metadata',
       safeMessage: 'Session metadata is missing a Provider session id.',
     });
-    expect(BackendSurfaceAvailabilityV1Schema.safeParse({
+    expect(AgentSurfaceAvailabilityV1Schema.safeParse({
       available: false,
       reasonCode: 'missing_metadata',
       safeMessage: 'x'.repeat(1_001),

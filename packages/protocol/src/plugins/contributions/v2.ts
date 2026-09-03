@@ -113,6 +113,10 @@ import {
   PluginComposerReferenceProviderContributionV1Schema,
 } from './composerReferenceProviders.js';
 import {
+  PluginSearchProviderContributionV1Schema,
+  validatePluginSearchProviderContributionsV1,
+} from './searchProviders.js';
+import {
   MAX_PLUGIN_COMPOSER_ATTACHMENTS_V1,
   PluginComposerAttachmentContributionV1Schema,
 } from './composerAttachments.js';
@@ -693,6 +697,7 @@ export const PLUGIN_CORE_CONTRIBUTION_FAMILIES_V2 = [
   definePluginContributionFamilyV2({ family: 'backgroundServices', schema: BackgroundServiceContributionSchema }),
   definePluginContributionFamilyV2({ family: 'daemonDatabases', schema: PluginDaemonDatabaseContributionV1Schema }),
   definePluginContributionFamilyV2({ family: 'composerReferences', schema: PluginComposerReferenceProviderContributionV1Schema }),
+  definePluginContributionFamilyV2({ family: 'searchProviders', schema: PluginSearchProviderContributionV1Schema }),
   definePluginContributionFamilyV2({
     family: 'composerAttachments',
     schema: PluginComposerAttachmentContributionV1Schema,
@@ -839,6 +844,7 @@ const PluginContributesV2SchemaWithoutDefault = PluginContributesV2BaseSchema.ex
       });
     }
   });
+  validatePluginSearchProviderContributionsV1(value, ctx);
   validateTargetedContributionEnvelopeBoundsV1(value, ctx);
 });
 

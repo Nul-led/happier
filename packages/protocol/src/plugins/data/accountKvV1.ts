@@ -421,93 +421,34 @@ export function deletePluginAccountKvEntryV1(
   return version;
 }
 
-function pluginAccountKvEntryVersionV1(
-  entry: PluginAccountStorageEntryV1 | undefined,
-): number | 'absent' {
-  return entry?.version ?? 'absent';
-}
-
 /**
  * Commit one already-evaluated logical transaction without replaying it.
  *
- * The physical Account row can conflict because another logical key changed.
- * In that case this owner reads once, verifies every key the transaction
- * depended on still has the version observed by the callback, overlays only
- * the transaction's write set onto the fresh row, and attempts one final CAS.
- * A changed dependency or second physical conflict is author-visible conflict.
+ * The canonical transaction contract is: read one snapshot, invoke the author
+ * callback exactly once, validate the final map once, then make exactly one
+ * physical row CAS. There is no dependency comparison, no rebase overlay, and
+ * no second CAS: a physical conflict is an author-visible typed conflict and
+ * the host never re-enters the callback. Explicit author retry re-reads and
+ * rebuilds a fresh logical transaction.
  */
 export async function commitPluginAccountKvMutationV1<
   TSnapshot extends Readonly<{ row: PluginAccountStorageRowV1 }>,
 >(input: Readonly<{
-  initialSnapshot: TSnapshot;
+  snapshot: TSnapshot;
   pendingRow: PluginAccountStorageRowV1;
-  dependencyKeys: readonly string[];
-  writeKeys: readonly string[];
   assertCurrent(): void | Promise<void>;
-  readLatest(): Promise<TSnapshot>;
   write(
     snapshot: TSnapshot,
     row: PluginAccountStorageRowV1,
   ): Promise<'updated' | 'conflict'>;
 }>): Promise<void> {
-  const dependencyKeys = new Set(
-    input.dependencyKeys.map(normalizePluginAccountKvLogicalKeyV1),
-  );
-  const writeKeys = new Set(
-    input.writeKeys.map(normalizePluginAccountKvLogicalKeyV1),
-  );
-  for (const key of writeKeys) {
-    if (!dependencyKeys.has(key)) {
-      throw new PluginAccountKvRowError(
-        'plugin_account_kv_invalid',
-        'Account KV write set omitted its expected-version dependency',
-      );
-    }
-  }
-
   await input.assertCurrent();
-  const initialOutcome = await input.write(input.initialSnapshot, input.pendingRow);
+  const outcome = await input.write(input.snapshot, input.pendingRow);
   await input.assertCurrent();
-  if (initialOutcome === 'updated') return;
-
-  const latestSnapshot = await input.readLatest();
-  await input.assertCurrent();
-  for (const key of dependencyKeys) {
-    const initialEntry = readPluginAccountKvEntryV1(input.initialSnapshot.row, key);
-    const latestEntry = readPluginAccountKvEntryV1(latestSnapshot.row, key);
-    if (pluginAccountKvEntryVersionV1(initialEntry) !== pluginAccountKvEntryVersionV1(latestEntry)) {
-      throw new PluginAccountKvRowError(
-        'plugin_account_kv_conflict',
-        'Account KV dependency changed before the transaction committed',
-      );
-    }
-  }
-
-  const rebased = clonePluginAccountKvRowV1(latestSnapshot.row);
-  for (const key of writeKeys) {
-    const pendingEntry = readPluginAccountKvEntryV1(input.pendingRow, key);
-    if (!pendingEntry) {
-      throw new PluginAccountKvRowError(
-        'plugin_account_kv_invalid',
-        'Account KV pending transaction omitted a written key',
-      );
-    }
-    Object.defineProperty(rebased.values, key, {
-      value: pendingEntry,
-      enumerable: true,
-      writable: true,
-      configurable: true,
-    });
-  }
-  const retryOutcome = await input.write(
-    latestSnapshot,
-    PluginAccountStorageRowV1Schema.parse(rebased),
-  );
-  await input.assertCurrent();
-  if (retryOutcome === 'conflict') {
+  if (outcome === 'conflict') {
     throw new PluginAccountKvRowError(
       'plugin_account_kv_conflict',
-      'Account KV row changed again before the transaction committed',
+      'Account KV row changed before the transaction committed',
     );
   }
 }

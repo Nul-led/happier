@@ -423,6 +423,66 @@ describe('canonical plugin manifest ingestion', () => {
     });
   });
 
+  it('covers a voice model-pack origin through a declared HTTPS host-suffix family', () => {
+    const voiceModelPack = (host: string) => ({
+      id: 'english-small',
+      schemaVersion: 1,
+      executionHosts: ['daemon'],
+      manifest: {
+        schemaVersion: 1,
+        kind: 'stt_sherpa',
+        model: 'acme-english-small',
+        version: '1.0.0',
+        runtime: {
+          family: 'sherpa_zipformer_streaming',
+          artifacts: {
+            encoder: { type: 'file', path: 'encoder.onnx' },
+            decoder: { type: 'file', path: 'decoder.onnx' },
+            joiner: { type: 'file', path: 'joiner.onnx' },
+            tokens: { type: 'file', path: 'tokens.txt' },
+          },
+          abiVersion: 1,
+          minHostVersion: '1.2.0',
+          platforms: ['linux'],
+          architectures: ['x64'],
+        },
+        provenance: { source: `https://${host}/english-small`, publisher: 'Acme Speech' },
+        license: {
+          id: 'Apache-2.0',
+          title: 'Apache License 2.0',
+          url: `https://${host}/license`,
+          requiresAcceptance: false,
+        },
+        files: ['encoder.onnx', 'decoder.onnx', 'joiner.onnx', 'tokens.txt'].map((path, index) => ({
+          path,
+          url: `https://${host}/english-small/${path}`,
+          sha256: String(index + 1).repeat(64),
+          sizeBytes: 1024,
+        })),
+      },
+    });
+    const withPackHost = (host: string) => ingestPluginManifestV2(manifest({
+      hostAccess: {
+        required: [{
+          id: 'model-downloads',
+          capability: 'network',
+          reason: 'Download the declared voice model pack',
+          scope: { targets: [{ kind: 'httpsHostSuffix', hostSuffix: 'example.test' }] },
+        }],
+        optional: [],
+      },
+      contributes: { voiceModelPacks: [voiceModelPack(host)] },
+    }));
+
+    expect(withPackHost('models.example.test')).toMatchObject({ ok: true });
+    expect(withPackHost('models.example.test.evil.example')).toMatchObject({
+      ok: false,
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({ code: 'plugin_manifest_dangling_reference' }),
+      ]),
+    });
+  });
+
   it('admits a transcript activity only through its same-plugin bounded dynamic Resource profile', () => {
     const result = ingestPluginManifestV2(manifest({
       contributes: {
@@ -927,6 +987,22 @@ describe('canonical plugin manifest ingestion', () => {
         metadata: { nested: { ordinary: 'preserved' }, brandedList: ['first'] },
       }),
     });
+  });
+
+  it('preserves an own __proto__ metadata data property without changing its prototype', () => {
+    const metadata = Object.defineProperty({ ordinary: 'preserved' }, '__proto__', {
+      value: { inert: true },
+      enumerable: true,
+    });
+
+    const result = ingestPluginManifestV2(manifest({ metadata }));
+
+    expect(result).toEqual({ ok: true, manifest: expect.any(Object) });
+    if (!result.ok) return;
+    expect(Object.getPrototypeOf(result.manifest.metadata)).toBe(Object.prototype);
+    expect(Object.hasOwn(result.manifest.metadata!, '__proto__')).toBe(true);
+    expect(result.manifest.metadata?.__proto__).toEqual({ inert: true });
+    expect((Object.getPrototypeOf(result.manifest.metadata) as { inert?: unknown }).inert).toBeUndefined();
   });
 
   it('still rejects an enumerable symbol key on a nested manifest array', () => {

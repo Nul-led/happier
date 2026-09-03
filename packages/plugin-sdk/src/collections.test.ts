@@ -9,11 +9,13 @@ import {
 import {
     PLUGIN_COLLECTION_MUTATION_BATCH_MAX_ROWS_V1 as canonicalPluginCollectionMutationBatchMaxRowsV1,
     PLUGIN_COLLECTION_QUERY_MAX_ROWS_V1 as canonicalPluginCollectionQueryMaxRowsV1,
+    PLUGIN_COLLECTION_REVISION_MAX as canonicalPluginCollectionRevisionMax,
 } from '@happier-dev/protocol/plugins/data/collectionLimitsV1';
 
 import { PluginIdJsonSchema } from './manifest.js';
 import {
     defineAccountCollection,
+    PLUGIN_COLLECTION_REVISION_MAX,
     PluginMachineExecutionOriginV1JsonSchema,
 } from './collections.js';
 import {
@@ -48,6 +50,12 @@ describe('Account Collection declarations', () => {
             .toBe(canonicalPluginCollectionMutationBatchMaxRowsV1);
         expect(PLUGIN_COLLECTION_QUERY_MAX_ROWS_V1)
             .toBe(canonicalPluginCollectionQueryMaxRowsV1);
+        // Authors persist their own Collection-row revision witnesses. Without
+        // the ceiling they bound them from a nearby safe-integer number, which
+        // admits an exact-CAS value only SQLite can reproduce.
+        expect(PLUGIN_COLLECTION_REVISION_MAX)
+            .toBe(canonicalPluginCollectionRevisionMax);
+        expect(PLUGIN_COLLECTION_REVISION_MAX).toBeLessThan(Number.MAX_SAFE_INTEGER);
     });
 
     it('publishes the Account Collections author surface through its package subpath', async () => {

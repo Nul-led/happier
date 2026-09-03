@@ -3,6 +3,7 @@ import { PLUGIN_CONTRIBUTION_CATALOG_V2 } from '../contributions/catalog.js';
 import { isDynamicPluginResourceContributionV2 } from '../contributions/v2.js';
 import { createCanonicalJsonSigningInput } from '../../crypto/canonicalJson.js';
 import { PluginContributionLocalIdSchema } from '../contributionIdentity.js';
+import { pluginNetworkOriginPolicyAdmitsOrigin } from '../networkHostSuffix.js';
 import {
   isPluginDeclarativeDocumentContentTypeV1,
   MAX_PLUGIN_DECLARATIVE_DOCUMENT_RESOURCE_BYTES_V1,
@@ -838,10 +839,14 @@ function readBrandIconDiagnostics(
 }
 
 function readVoiceModelPackOriginDiagnostics(manifest: ParsedPluginManifestV2): PluginManifestIngestionDiagnostic[] {
-  const covered = new Set<string>();
+  const covered: string[] = [];
+  const coveredHostSuffixes: string[] = [];
   for (const request of [...manifest.hostAccess.required, ...manifest.hostAccess.optional]) {
     if (request.capability !== 'network') continue;
-    for (const target of request.scope.targets) if (target.kind === 'fixedOrigin') covered.add(target.origin);
+    for (const target of request.scope.targets) {
+      if (target.kind === 'fixedOrigin') covered.push(target.origin);
+      if (target.kind === 'httpsHostSuffix') coveredHostSuffixes.push(target.hostSuffix);
+    }
   }
   const packs = manifest.contributes.voiceModelPacks;
   const diagnostics: PluginManifestIngestionDiagnostic[] = [];
@@ -861,7 +866,10 @@ function readVoiceModelPackOriginDiagnostics(manifest: ParsedPluginManifestV2): 
       } catch {
         continue;
       }
-      if (!covered.has(origin)) diagnostics.push({
+      if (!pluginNetworkOriginPolicyAdmitsOrigin({
+        origins: covered,
+        hostSuffixes: coveredHostSuffixes,
+      }, origin)) diagnostics.push({
         code: 'plugin_manifest_dangling_reference',
         path: ['contributes', 'voiceModelPacks', packIndex, ...candidate.path],
         message: `Voice model-pack HTTPS origin '${origin}' is not covered by hostAccess.network.`,
@@ -907,25 +915,46 @@ export function ingestPluginManifestV2(input: unknown): PluginManifestIngestionR
       diagnostics,
     };
   }
+  let manifest = parsed.data;
+  const decodedMetadata = decoded.value !== null
+    && typeof decoded.value === 'object'
+    && Object.hasOwn(decoded.value, 'metadata')
+    ? Reflect.get(decoded.value, 'metadata')
+    : undefined;
+  if (
+    decodedMetadata !== null
+    && typeof decodedMetadata === 'object'
+    && Object.hasOwn(decodedMetadata, '__proto__')
+    && manifest.metadata
+  ) {
+    const metadata = { ...manifest.metadata };
+    Object.defineProperty(metadata, '__proto__', {
+      value: Reflect.get(decodedMetadata, '__proto__'),
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
+    manifest = { ...manifest, metadata };
+  }
   const semanticDiagnostics = [
-    ...readContributionIds(parsed.data.contributes as Readonly<Record<string, unknown>>),
-    ...readAgentUiSettingReferenceDiagnostics(parsed.data),
-    ...readReferenceDiagnostics(parsed.data),
-    ...readAgentInlineSurfaceDiagnostics(parsed.data),
-    ...readEventAutomationSetupActionDiagnostics(parsed.data),
-    ...readEventAutomationHistoryGapResetActionDiagnostics(parsed.data),
-    ...readDynamicResourceHostAccessDiagnostics(parsed.data),
-    ...readOpenableContentViewerDestinationDiagnostics(parsed.data),
-    ...readDeclarativeDocumentSourceDiagnostics(parsed.data),
-    ...readTranscriptActivityDiagnostics(parsed.data),
-    ...readSessionInfoSectionDiagnostics(parsed.data),
-    ...readComposerControlStateResourceDiagnostics(parsed.data),
-    ...readBrandIconDiagnostics(parsed.data),
-    ...readVoiceModelPackOriginDiagnostics(parsed.data),
+    ...readContributionIds(manifest.contributes as Readonly<Record<string, unknown>>),
+    ...readAgentUiSettingReferenceDiagnostics(manifest),
+    ...readReferenceDiagnostics(manifest),
+    ...readAgentInlineSurfaceDiagnostics(manifest),
+    ...readEventAutomationSetupActionDiagnostics(manifest),
+    ...readEventAutomationHistoryGapResetActionDiagnostics(manifest),
+    ...readDynamicResourceHostAccessDiagnostics(manifest),
+    ...readOpenableContentViewerDestinationDiagnostics(manifest),
+    ...readDeclarativeDocumentSourceDiagnostics(manifest),
+    ...readTranscriptActivityDiagnostics(manifest),
+    ...readSessionInfoSectionDiagnostics(manifest),
+    ...readComposerControlStateResourceDiagnostics(manifest),
+    ...readBrandIconDiagnostics(manifest),
+    ...readVoiceModelPackOriginDiagnostics(manifest),
   ];
   return semanticDiagnostics.length > 0
     ? { ok: false, diagnostics: semanticDiagnostics }
-    : { ok: true, manifest: parsed.data };
+    : { ok: true, manifest };
 }
 
 export function resolvePluginManifestSetReferencesV2(

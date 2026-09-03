@@ -9,6 +9,7 @@ import {
   PLUGIN_COLLECTION_SCHEMA_VERSION_MAX,
   PLUGIN_COLLECTION_MUTATION_HTTP_PATH_V1,
   PLUGIN_COLLECTION_QUERY_HTTP_PATH_V1,
+  PLUGIN_COLLECTION_REVISION_MAX,
   PluginAccountCollectionContributionV1Schema,
   PluginCollectionCandidatePreparationBindingV1Schema,
   PluginCollectionCandidatePreparationErrorV1Schema,
@@ -57,6 +58,7 @@ import {
   validatePluginCollectionUiQueryParametersV1,
   validatePluginCollectionUiQueryResultV1,
 } from './collectionsV1.js';
+import { AccountEncryptionMigrateCollectionInventoryItemSchema } from '../../account/encryptionMigrate.js';
 import { sealAccountScopedBlobCiphertext } from '../../crypto/accountScopedCipher.js';
 import {
   cloneStrictPluginJsonValue,
@@ -276,8 +278,18 @@ describe('Plugin Account Collection contracts', () => {
       writerContext: { schemaVersion: 1, contractDigest: 'a'.repeat(43) },
       rowId: 'row-1',
       expectedRevision: 4,
-      expectedAbsenceEpoch: 0,
     }).success).toBe(true);
+    // Forget's only currentness witness is the exact row revision. The server
+    // reads and advances Collection absence currentness inside the same
+    // transaction, so a caller cannot carry — or stale — that epoch here.
+    expect(PluginCollectionForgetRequestV1Schema.safeParse({
+      pluginId: 'example.tasks',
+      collectionId: 'tasks',
+      writerContext: { schemaVersion: 1, contractDigest: 'a'.repeat(43) },
+      rowId: 'row-1',
+      expectedRevision: 4,
+      expectedAbsenceEpoch: 0,
+    }).success).toBe(false);
   });
 
   it('uses one exact error schema for direct and static Collection reads', () => {
@@ -1696,5 +1708,64 @@ describe('Plugin Account Collection mode-derived identity declaration', () => {
       ...identityCollection,
       identityFields: ['id', 'status'],
     }).identityFields).toEqual(['id', 'status']);
+  });
+});
+
+describe('Plugin Account Collection currentness ceiling', () => {
+  const request = (expectedRevision: number) => ({
+    pluginId: 'example.plugin',
+    collectionId: 'tasks',
+    writerContext: { schemaVersion: 1, contractDigest: 'a'.repeat(43) },
+    operations: [{
+      kind: 'put',
+      rowId: 'task-a',
+      expectedRevision,
+      content: { t: 'plain', v: {} },
+      projection: {},
+    }],
+  });
+
+  it('admits the persisted signed 32-bit maximum and refuses the value past it', () => {
+    expect(PLUGIN_COLLECTION_REVISION_MAX).toBe(2_147_483_647);
+    expect(
+      PluginCollectionMutationRequestV1Schema.parse(request(PLUGIN_COLLECTION_REVISION_MAX))
+        .operations[0],
+    ).toMatchObject({ expectedRevision: PLUGIN_COLLECTION_REVISION_MAX });
+    expect(() => PluginCollectionMutationRequestV1Schema.parse(
+      request(PLUGIN_COLLECTION_REVISION_MAX + 1),
+    )).toThrow();
+
+    expect(PluginCollectionGetResultV1Schema.parse({
+      row: null,
+      absenceEpoch: PLUGIN_COLLECTION_REVISION_MAX,
+    }).absenceEpoch).toBe(PLUGIN_COLLECTION_REVISION_MAX);
+    expect(() => PluginCollectionGetResultV1Schema.parse({
+      row: null,
+      absenceEpoch: PLUGIN_COLLECTION_REVISION_MAX + 1,
+    })).toThrow();
+  });
+
+  it('carries one typed exhaustion refusal in the Collection mutation error vocabulary', () => {
+    expect(PluginCollectionMutationErrorV1Schema.parse({
+      error: 'collection_revision_exhausted',
+    })).toEqual({ error: 'collection_revision_exhausted' });
+  });
+
+  it('binds the Account-transition Collection revision to the same persisted ceiling', () => {
+    const item = {
+      pluginId: 'example.plugin',
+      collectionId: 'tasks',
+      rowId: 'task-a',
+      revision: PLUGIN_COLLECTION_REVISION_MAX,
+      sourceEnvelope: { t: 'plain' as const, v: {} },
+      schemaVersion: 1,
+      contractDigest: 'a'.repeat(43),
+    };
+    expect(AccountEncryptionMigrateCollectionInventoryItemSchema.parse(item).revision)
+      .toBe(PLUGIN_COLLECTION_REVISION_MAX);
+    expect(() => AccountEncryptionMigrateCollectionInventoryItemSchema.parse({
+      ...item,
+      revision: PLUGIN_COLLECTION_REVISION_MAX + 1,
+    })).toThrow();
   });
 });

@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest';
-
 import { MemoryStatusV1Schema } from './memoryStatus.js';
 
 describe('MemoryStatusV1Schema', () => {
@@ -150,6 +149,42 @@ describe('MemoryStatusV1Schema', () => {
       deepDbPath: '/tmp/deep.sqlite',
       tier1DbBytes: 1,
       deepDbBytes: 2,
+    })).toThrow();
+  });
+
+  it('treats archived-eligibility effectiveness as an optional daemon-support advertisement', () => {
+    const base = {
+      v: 1,
+      enabled: true,
+      indexMode: 'hints',
+      hintsIndexReady: true,
+      deepIndexReady: false,
+      activeIndexReady: true,
+      embeddingsEnabled: false,
+      embeddingsMode: 'disabled',
+      embeddingsPresetId: null,
+      embeddingsProviderKind: null,
+      embeddingsModelId: null,
+      embeddingsRuntimeState: 'unavailable',
+      embeddingsUsingFallback: false,
+      tier1DbPath: '/tmp/memory.sqlite',
+      deepDbPath: null,
+      tier1DbBytes: 1,
+      deepDbBytes: null,
+    } as const;
+
+    expect(MemoryStatusV1Schema.parse(base).includeArchivedSessionsEffective).toBeUndefined();
+    expect(
+      MemoryStatusV1Schema.parse({ ...base, includeArchivedSessionsEffective: true })
+        .includeArchivedSessionsEffective,
+    ).toBe(true);
+    expect(
+      MemoryStatusV1Schema.parse({ ...base, includeArchivedSessionsEffective: false })
+        .includeArchivedSessionsEffective,
+    ).toBe(false);
+    expect(() => MemoryStatusV1Schema.parse({
+      ...base,
+      includeArchivedSessionsEffective: 'yes',
     })).toThrow();
   });
 });

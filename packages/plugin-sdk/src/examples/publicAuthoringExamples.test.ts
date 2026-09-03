@@ -427,11 +427,19 @@ function createReviewContextCompanionInvocationContext(
     }) as unknown as PluginInvocationContext;
 }
 
+// Authored example files only. An author (or a repository lane) may materialize
+// dependencies or build/generated outputs inside an example package; the fences
+// below must enumerate and parse authored source only, never those materialized
+// trees. Owner-local directory exclusion: no author-source inventory is
+// reachable from this package.
+const EXCLUDED_EXAMPLE_DIRECTORY_NAMES = new Set(['node_modules', 'dist', 'generated', 'staging']);
+
 async function listTypeScriptFiles(dir: string): Promise<readonly string[]> {
     const entries = await readdir(dir, { withFileTypes: true });
     const files = await Promise.all(entries.map(async (entry) => {
         const entryPath = join(dir, entry.name);
         if (entry.isDirectory()) {
+            if (EXCLUDED_EXAMPLE_DIRECTORY_NAMES.has(entry.name)) return [];
             return listTypeScriptFiles(entryPath);
         }
         return entry.isFile() && /\.tsx?$/u.test(entry.name) ? [entryPath] : [];
@@ -985,6 +993,9 @@ describe('public SDK authoring examples', { timeout: 60_000 }, () => {
         expect(module.manifest.entrypoints).toEqual({ daemon: './dist/index.js' });
         const testkit = await createPluginTestkit({
             manifest: module.manifest,
+            // The daemon entrypoint module owns activation: it exports the
+            // generated `activate(api)` binding that registers and executes
+            // every bound operation role.
             module,
         });
 
@@ -995,8 +1006,79 @@ describe('public SDK authoring examples', { timeout: 60_000 }, () => {
                 { family: 'actions', localId: 'acme/send-message' },
                 { family: 'actions', localId: 'acme/stop-socket' },
             ]));
+
+            // Execute a public role through the daemon entrypoint binding and
+            // observe the protocol-owned setup result.
+            await expect(testkit.invokeAction('acme/connect', {}, { surface: 'plugin' })).resolves.toEqual({
+                v: 1,
+                credentialRef: null,
+                providerConnectionKey: 'acme:example-bot',
+                providerConfigVersion: 1,
+                providerConfig: {},
+                integrationPrincipal: { id: 'acme:example-bot' },
+                supportedTransports: ['socket'],
+                recommendedTransport: 'socket',
+                overlapSafety: 'safe',
+                replayContinuity: 'sessionBound',
+                outboundTextLimit: { maximum: 4_000, unit: 'unicodeCodePoints' },
+            });
+
+            // Prove caller rejection on the contributed-Action path a Channels
+            // target uses: a caller without current host-stamped provenance
+            // cannot invoke a provider role.
+            const caller = await createPluginTestkit({
+                manifest: {
+                    schemaVersion: 2,
+                    id: 'acme.conformance-caller',
+                    version: '0.1.0',
+                    displayName: 'Conformance Caller',
+                    runtime: {
+                        apiVersion: Number(PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1.toolchain.runtime) as 1,
+                    },
+                    contributes: {
+                        actions: [{
+                            id: 'relay-connect',
+                            title: 'Relay connect',
+                            scopes: ['global'],
+                            execution: { target: 'daemon' },
+                            dangerLevel: 'safe',
+                            surfaces: ['plugin'],
+                        }],
+                    },
+                } satisfies PluginManifest,
+                actionTargets: [testkit],
+                resolveCurrentPluginMaterializationRef: () => null,
+                module: {
+                    activate(api) {
+                        api.actions.register('relay-connect', async (_input, context) => context.services.actions.execute(
+                            { pluginId: 'examples.operation-only-channel-provider', localId: 'acme/connect' },
+                            {},
+                        ));
+                    },
+                },
+            });
+            try {
+                await expect(caller.invokeAction('relay-connect', {}, { surface: 'plugin' }))
+                    .rejects.toMatchObject({ code: 'plugin_action_caller_unavailable' });
+            } finally {
+                await caller.dispose();
+            }
         } finally {
             await testkit.dispose();
+        }
+
+        // Caller rejection is host-owned: the daemon dispatcher returns
+        // `plugin_action_unavailable` for any caller surface an Action does
+        // not declare. These roles are protocol-owned and never admit the
+        // autonomous caller surfaces, so the projected manifest must not
+        // widen them either.
+        const actions = module.manifest.contributes.actions;
+        expect(actions).toBeDefined();
+        if (actions === undefined) throw new Error('operation-only provider must declare Actions');
+        for (const action of actions) {
+            expect(action.surfaces).not.toContain('cli');
+            expect(action.surfaces).not.toContain('mcp');
+            expect(action.surfaces).not.toContain('agent');
         }
 
         expect(source).toContain("from '@happier-dev/channels-protocol/v1'");
@@ -1637,6 +1719,32 @@ describe('public SDK authoring examples', { timeout: 60_000 }, () => {
         expect([...voiceProviders.keys()]).toEqual(['credentialed-browser', 'raw-browser']);
     });
 
+    it('enumerates authored example files only, excluding materialized and generated directories', async () => {
+        const root = mkdtempSync(join(tmpdir(), 'happier-plugin-sdk-example-fence-'));
+        try {
+            mkdirSync(join(root, 'authored', 'nested'), { recursive: true });
+            mkdirSync(join(root, 'node_modules', 'vendored'), { recursive: true });
+            mkdirSync(join(root, 'dist'), { recursive: true });
+            mkdirSync(join(root, 'generated'), { recursive: true });
+            mkdirSync(join(root, 'staging'), { recursive: true });
+            writeFileSync(join(root, 'authored', 'index.ts'), 'export {};\n', 'utf8');
+            writeFileSync(join(root, 'authored', 'nested', 'leaf.tsx'), 'export {};\n', 'utf8');
+            writeFileSync(join(root, 'node_modules', 'vendored', 'vendored.ts'), 'export {};\n', 'utf8');
+            writeFileSync(join(root, 'generated', 'projection.ts'), 'export {};\n', 'utf8');
+            writeFileSync(join(root, 'staging', 'candidate.ts'), 'export {};\n', 'utf8');
+
+            const relativeFiles = (await listTypeScriptFiles(root))
+                .map((filePath) => relative(root, filePath));
+
+            expect(relativeFiles).toEqual([
+                join('authored', 'index.ts'),
+                join('authored', 'nested', 'leaf.tsx'),
+            ]);
+        } finally {
+            rmSync(root, { recursive: true, force: true });
+        }
+    });
+
     it('import only published SDK and plugin-ui entry points', async () => {
         const allowedSpecifiersByPackage = new Map<string, ReadonlySet<string>>([
             ['@happier-dev/plugin-sdk', readPackageExportSpecifiers(packageJsonPath)],
@@ -1644,6 +1752,14 @@ describe('public SDK authoring examples', { timeout: 60_000 }, () => {
         ]);
         const files = await listTypeScriptFiles(examplesRoot);
         expect(files.length).toBeGreaterThan(0);
+        // The live enumeration must never descend into materialized trees such
+        // as an example's installed node_modules or built dist output.
+        expect(files.every((filePath) => {
+            const relativePath = relative(examplesRoot, filePath);
+            return !relativePath.split(/[\\/]/u).some(
+                (segment) => EXCLUDED_EXAMPLE_DIRECTORY_NAMES.has(segment),
+            );
+        })).toBe(true);
 
         const violations: string[] = [];
         for (const filePath of files) {
@@ -2187,9 +2303,14 @@ describe('public SDK authoring examples', { timeout: 60_000 }, () => {
         ]) {
             expect(readme).toContain(selector);
         }
-        expect(readme).toContain("replace the scaffold's generated");
-        expect(readme).toContain('`test/index.test.mjs` with this package\'s `test/index.test.mjs`');
-        expect(readme).toContain("retired `save-note` Action");
+        // Authors reach this shape through the Session-Agent scaffold template,
+        // not by copying this package's files over a generic scaffold. The
+        // retired copy flow left the generated `test/index.test.mjs` invoking a
+        // scaffold Action this reference does not declare, so the templated
+        // create command is the fact that keeps `happier plugins test .`
+        // executable for the reader.
+        expect(readme).toContain('happier plugins create my-session-agent --template session-agent');
+        expect(readme).not.toContain("copy this package's");
     });
 
     it('declares each production reference\'s packed Action and packaged Resource contract', async () => {

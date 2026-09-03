@@ -35,4 +35,5 @@ export { defineAccountCollection } from '../collections.js';
 export {
     PLUGIN_COLLECTION_MUTATION_BATCH_MAX_ROWS_V1,
     PLUGIN_COLLECTION_QUERY_MAX_ROWS_V1,
+    PLUGIN_COLLECTION_REVISION_MAX,
 } from '../collections.js';

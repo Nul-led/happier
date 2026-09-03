@@ -599,13 +599,20 @@ export function defineProtocolNumber(
 }
 
 type AnyProtocolComposableSchema = ProtocolComposableSchema<unknown, unknown>;
-type ProtocolSchemaInput<TSchema> =
+/**
+ * The authored-input and admitted-output projections of a composable schema.
+ *
+ * They are exported because a Protocol-owned contract that publishes a
+ * composable schema must publish the same derived types rather than restating
+ * the shape by hand; the SDK facade re-exports this exact pair for authors.
+ */
+export type ProtocolSchemaInput<TSchema> =
   TSchema extends { parse: (...args: infer TArguments) => unknown }
     ? TArguments extends readonly [infer TInput, ...readonly unknown[]]
       ? TInput
       : never
     : never;
-type ProtocolSchemaOutput<TSchema> =
+export type ProtocolSchemaOutput<TSchema> =
   TSchema extends { parse: (...args: infer _TArguments) => infer TOutput }
     ? TOutput
     : never;

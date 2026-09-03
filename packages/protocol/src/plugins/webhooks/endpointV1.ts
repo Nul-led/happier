@@ -44,6 +44,16 @@ const PluginWebhookSourceInstanceIdV1Schema = z.string()
 const PluginWebhookIdempotencyKeyV1Schema = z.string()
   .regex(/^[A-Za-z0-9._:-]{16,128}$/u);
 const PluginWebhookRevisionV1Schema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
+/**
+ * The controller-owned ordering of one endpoint's target intent.
+ *
+ * It is supplied by the feature owner that already holds a monotonic authority
+ * for the source instance this endpoint is bound to — for Channels, the
+ * connection replacement authority epoch. The webhook owner never mints it; it
+ * only records the highest intent an authorized controller has converged, so a
+ * late retry of a superseded intent cannot move delivery backwards.
+ */
+const PluginWebhookTargetIntentEpochV1Schema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
 const PluginWebhookTimestampMsV1Schema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 export const PluginWebhookPublicUrlV1Schema = z.string().url().max(2_048).refine((value) => {
   const url = new URL(value);
@@ -165,6 +175,50 @@ export const PluginWebhookEndpointCheckCorrespondenceResultV1Schema = z.union([
   }).strict(),
 ]);
 
+/**
+ * The one plugin-surface endpoint-target mutation.
+ *
+ * `checkCorrespondence` answers "is this endpoint still mine?" and cannot move
+ * anything; present-user `retarget` moves an endpoint to any compatible target
+ * under revision CAS and remains the authoritative administration operation.
+ * Neither can serve a feature owner that must converge an endpoint it already
+ * owns onto the target its own committed intent names, because a daemon-side
+ * feature caller is never a present user and a read → retarget chain conflicts
+ * whenever an unrelated operation moved the endpoint revision.
+ *
+ * This operation closes exactly that gap: the caller names the endpoint
+ * correspondence facts it can already prove, the target it desires, and the
+ * ordering epoch of the intent that desires it. No expected revision is
+ * accepted, because the endpoint revision is not this caller's authority.
+ */
+export const PluginWebhookEndpointConvergeTargetInputV1Schema = z.object({
+  webhookEndpointId: PluginWebhookEndpointIdV1Schema,
+  webhookContribution: asProtocolZod(PluginContributionIdentityV1Schema),
+  sourceInstanceId: PluginWebhookSourceInstanceIdV1Schema,
+  setup: PluginWebhookEndpointSetupV1Schema,
+  desiredTargetMaterialization: PluginMachineMaterializationRefV1Schema,
+  targetIntentEpoch: PluginWebhookTargetIntentEpochV1Schema,
+}).strict();
+
+export const PluginWebhookEndpointConvergeTargetResultV1Schema = z.union([
+  z.object({
+    kind: z.literal('converged'),
+    webhookEndpointId: PluginWebhookEndpointIdV1Schema,
+    revision: PluginWebhookRevisionV1Schema,
+    targetMaterialization: PluginMachineMaterializationRefV1Schema,
+    targetIntentEpoch: PluginWebhookTargetIntentEpochV1Schema,
+  }).strict(),
+  z.object({
+    kind: z.literal('superseded'),
+    webhookEndpointId: PluginWebhookEndpointIdV1Schema,
+    currentTargetIntentEpoch: PluginWebhookTargetIntentEpochV1Schema,
+  }).strict(),
+  z.object({
+    kind: z.literal('unavailable'),
+    code: z.string().regex(/^[a-z0-9._-]{1,64}$/u),
+  }).strict(),
+]);
+
 export const PluginWebhookDeliveryMovePendingInputV1Schema = z.object({
   webhookEndpointId: PluginWebhookEndpointIdV1Schema,
   endpointRevision: PluginWebhookRevisionV1Schema,
@@ -238,6 +292,7 @@ export const PLUGIN_WEBHOOK_ACTION_IDS_V1 = Object.freeze([
   'plugin.webhook.endpoint.revoke',
   'plugin.webhook.endpoint.retarget',
   'plugin.webhook.endpoint.checkCorrespondence',
+  'plugin.webhook.endpoint.convergeTarget',
   'plugin.webhook.delivery.movePending',
   'plugin.webhook.endpoint.credential.configure',
   'plugin.webhook.endpoint.credential.rotate',
@@ -245,10 +300,37 @@ export const PLUGIN_WEBHOOK_ACTION_IDS_V1 = Object.freeze([
 ] as const);
 export const PluginWebhookActionIdV1Schema = z.enum(PLUGIN_WEBHOOK_ACTION_IDS_V1);
 export type PluginWebhookActionIdV1 = z.infer<typeof PluginWebhookActionIdV1Schema>;
+
+/**
+ * The closed set of endpoint operations a host-stamped plugin caller may run.
+ * Every other endpoint operation stays present-user, and this one list is what
+ * the Action registry, the CLI caller-surface guard, and the server plugin
+ * route family all derive from.
+ */
+export const PLUGIN_WEBHOOK_PLUGIN_SURFACE_ACTION_IDS_V1 = Object.freeze([
+  'plugin.webhook.endpoint.checkCorrespondence',
+  'plugin.webhook.endpoint.convergeTarget',
+] as const);
+export type PluginWebhookPluginSurfaceActionIdV1 =
+  (typeof PLUGIN_WEBHOOK_PLUGIN_SURFACE_ACTION_IDS_V1)[number];
+const PLUGIN_WEBHOOK_PLUGIN_SURFACE_ACTION_ID_SET_V1: ReadonlySet<string> = new Set(
+  PLUGIN_WEBHOOK_PLUGIN_SURFACE_ACTION_IDS_V1,
+);
+export function isPluginWebhookPluginSurfaceActionIdV1(
+  actionId: PluginWebhookActionIdV1,
+): actionId is PluginWebhookPluginSurfaceActionIdV1 {
+  return PLUGIN_WEBHOOK_PLUGIN_SURFACE_ACTION_ID_SET_V1.has(actionId);
+}
+
 export type PluginWebhookPresentUserActionIdV1 = Exclude<
   PluginWebhookActionIdV1,
-  'plugin.webhook.endpoint.checkCorrespondence'
+  PluginWebhookPluginSurfaceActionIdV1
 >;
+
+export const PluginWebhookPluginSurfaceActionHttpPathsV1 = Object.freeze({
+  'plugin.webhook.endpoint.checkCorrespondence': '/v1/plugins/webhooks/endpoints/check-correspondence',
+  'plugin.webhook.endpoint.convergeTarget': '/v1/plugins/webhooks/endpoints/converge-target',
+} as const satisfies Readonly<Record<PluginWebhookPluginSurfaceActionIdV1, string>>);
 
 export const PluginWebhookActionHttpPathsV1 = Object.freeze({
   'plugin.webhook.endpoint.ensure': '/v1/plugins/webhooks/endpoints/ensure',
@@ -267,6 +349,7 @@ export const PluginWebhookActionInputSchemasV1 = Object.freeze({
   'plugin.webhook.endpoint.revoke': PluginWebhookEndpointRevokeInputV1Schema,
   'plugin.webhook.endpoint.retarget': PluginWebhookEndpointRetargetInputV1Schema,
   'plugin.webhook.endpoint.checkCorrespondence': PluginWebhookEndpointCheckCorrespondenceInputV1Schema,
+  'plugin.webhook.endpoint.convergeTarget': PluginWebhookEndpointConvergeTargetInputV1Schema,
   'plugin.webhook.delivery.movePending': PluginWebhookDeliveryMovePendingInputV1Schema,
   'plugin.webhook.endpoint.credential.configure': PluginWebhookEndpointCredentialConfigureInputV1Schema,
   'plugin.webhook.endpoint.credential.rotate': PluginWebhookEndpointCredentialRotateInputV1Schema,
@@ -279,6 +362,7 @@ export const PluginWebhookActionOutputSchemasV1 = Object.freeze({
   'plugin.webhook.endpoint.revoke': PluginWebhookEndpointRevokeResultV1Schema,
   'plugin.webhook.endpoint.retarget': PluginWebhookEndpointRetargetResultV1Schema,
   'plugin.webhook.endpoint.checkCorrespondence': PluginWebhookEndpointCheckCorrespondenceResultV1Schema,
+  'plugin.webhook.endpoint.convergeTarget': PluginWebhookEndpointConvergeTargetResultV1Schema,
   'plugin.webhook.delivery.movePending': PluginWebhookDeliveryMovePendingResultV1Schema,
   'plugin.webhook.endpoint.credential.configure': PluginWebhookEndpointCredentialConfigureResultV1Schema,
   'plugin.webhook.endpoint.credential.rotate': PluginWebhookEndpointCredentialRotateResultV1Schema,
@@ -297,6 +381,8 @@ export type PluginWebhookEndpointRetargetInputV1 = z.infer<typeof PluginWebhookE
 export type PluginWebhookEndpointRetargetResultV1 = z.infer<typeof PluginWebhookEndpointRetargetResultV1Schema>;
 export type PluginWebhookEndpointCheckCorrespondenceInputV1 = z.infer<typeof PluginWebhookEndpointCheckCorrespondenceInputV1Schema>;
 export type PluginWebhookEndpointCheckCorrespondenceResultV1 = z.infer<typeof PluginWebhookEndpointCheckCorrespondenceResultV1Schema>;
+export type PluginWebhookEndpointConvergeTargetInputV1 = z.infer<typeof PluginWebhookEndpointConvergeTargetInputV1Schema>;
+export type PluginWebhookEndpointConvergeTargetResultV1 = z.infer<typeof PluginWebhookEndpointConvergeTargetResultV1Schema>;
 export type PluginWebhookDeliveryMovePendingInputV1 = z.infer<typeof PluginWebhookDeliveryMovePendingInputV1Schema>;
 export type PluginWebhookDeliveryMovePendingResultV1 = z.infer<typeof PluginWebhookDeliveryMovePendingResultV1Schema>;
 export type PluginWebhookEndpointCredentialConfigureInputV1 = z.infer<typeof PluginWebhookEndpointCredentialConfigureInputV1Schema>;

@@ -18,7 +18,7 @@ export const BackendSurfaceStaticSupportV1Schema = z.enum([
 ]);
 export type BackendSurfaceStaticSupportV1 = z.infer<typeof BackendSurfaceStaticSupportV1Schema>;
 
-export const BackendSurfaceAvailabilityV1Schema = z.discriminatedUnion('available', [
+export const AgentSurfaceAvailabilityV1Schema = z.discriminatedUnion('available', [
   z.object({
     available: z.literal(true),
   }).strict(),
@@ -38,7 +38,7 @@ export const BackendSurfaceAvailabilityV1Schema = z.discriminatedUnion('availabl
     safeMessage: z.string().trim().min(1).max(1_000).optional(),
   }).strict(),
 ]);
-export type BackendSurfaceAvailabilityV1 = z.infer<typeof BackendSurfaceAvailabilityV1Schema>;
+export type AgentSurfaceAvailabilityV1 = z.infer<typeof AgentSurfaceAvailabilityV1Schema>;
 
 export const AttachSurfaceStaticMetadataV1Schema = z.object({
   attachStrategy: z.enum(['terminal_host', 'provider_attach', 'remote_display']),

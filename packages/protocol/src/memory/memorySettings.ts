@@ -268,6 +268,16 @@ export const MemorySettingsV1Schema = z
     indexMode: z.enum(['hints', 'deep']).default('hints'),
     defaultScope: MemoryDefaultScopeV1Schema.default({ type: 'global' }),
     backfillPolicy: z.enum(['new_only', 'last_30_days', 'all_history']).default('new_only'),
+    /**
+     * Opt-in eligibility of archived Sessions for daemon-local memory
+     * indexing and search. Off by default: the archived inventory is never
+     * requested and a Session that becomes archived leaves the daemon search
+     * projection. Older daemons preserve this additive field while ignoring
+     * it, so a desired-settings readback is not proof it is applied; the
+     * daemon advertises actual support through
+     * `MemoryStatusV1.includeArchivedSessionsEffective`.
+     */
+    includeArchivedSessions: z.boolean().default(false),
     coveragePolicy: MemoryCoveragePolicyV1Schema.prefault(DEFAULT_MEMORY_COVERAGE_POLICY),
     contentPolicy: MemoryContentPolicyV1Schema.prefault(DEFAULT_MEMORY_CONTENT_POLICY),
     deleteOnDisable: z.boolean().default(false),

@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { MemorySearchErrorCodeSchema, MemorySearchQueryV1Schema, MemorySearchResultV1Schema } from './memorySearch.js';
+import {
+  MEMORY_SEARCH_QUERY_MAX_LENGTH,
+  MemorySearchErrorCodeSchema,
+  MemorySearchQueryV1Schema,
+  MemorySearchResultV1Schema,
+} from './memorySearch.js';
 
 describe('memory_search_result.v1 schema', () => {
   it('parses a success result', () => {
@@ -47,5 +52,30 @@ describe('MemorySearchQueryV1Schema', () => {
     });
     expect(parsed.query).toBe('openclaw');
   });
-});
 
+  it('parses an additive eligible Session identity filter', () => {
+    const parsed = MemorySearchQueryV1Schema.parse({
+      v: 1,
+      query: 'openclaw',
+      scope: { type: 'global' },
+      mode: 'auto',
+      eligibleSessionIds: ['archived-1', 'archived-2'],
+    });
+
+    expect(parsed.eligibleSessionIds).toEqual(['archived-1', 'archived-2']);
+  });
+
+  it('rejects a query past the shared length bound that blocks the FTS boundary', () => {
+    const atBound = {
+      v: 1,
+      query: 'x'.repeat(MEMORY_SEARCH_QUERY_MAX_LENGTH),
+      scope: { type: 'global' },
+      mode: 'auto',
+    };
+    expect(MemorySearchQueryV1Schema.safeParse(atBound).success).toBe(true);
+    expect(MemorySearchQueryV1Schema.safeParse({
+      ...atBound,
+      query: 'x'.repeat(MEMORY_SEARCH_QUERY_MAX_LENGTH + 1),
+    }).success).toBe(false);
+  });
+});

@@ -207,7 +207,13 @@ describe('Plugin Account KV v1', () => {
 });
 
 describe('Plugin Account KV logical-key row algebra', () => {
-  it('rebases one physical conflict when every logical dependency is unchanged', async () => {
+  /**
+   * The physical row is the unit of contention, so a concurrent writer that
+   * touched only a disjoint logical key still conflicts. A rebasing owner
+   * would have re-read and silently succeeded here; the canonical owner makes
+   * exactly one CAS and hands the author a typed conflict to retry.
+   */
+  it('surfaces a typed conflict from one physical CAS when a disjoint key changed concurrently', async () => {
     const initial = PluginAccountStorageRowV1Schema.parse({
       v: 1,
       values: {
@@ -222,125 +228,39 @@ describe('Plugin Account KV logical-key row algebra', () => {
       6,
       assertPluginAccountKvExpectedVersionV1(pending, 'derived', 'absent'),
     );
-    const latest = PluginAccountStorageRowV1Schema.parse({
-      v: 1,
-      values: {
-        source: { version: 2, value: 3 },
-        other: { version: 1, value: 'after' },
-      },
-    });
-    const write = vi.fn(async () => write.mock.calls.length === 1 ? 'conflict' as const : 'updated' as const);
-
-    await expect(commitPluginAccountKvMutationV1({
-      initialSnapshot: { revision: 4, row: initial },
-      pendingRow: pending,
-      dependencyKeys: ['source', 'derived'],
-      writeKeys: ['derived'],
-      assertCurrent: () => undefined,
-      readLatest: async () => ({ revision: 5, row: latest }),
-      write,
-    })).resolves.toBeUndefined();
-
-    expect(write).toHaveBeenNthCalledWith(1, { revision: 4, row: initial }, pending);
-    expect(write).toHaveBeenNthCalledWith(2, { revision: 5, row: latest }, {
-      v: 1,
-      values: {
-        source: { version: 2, value: 3 },
-        other: { version: 1, value: 'after' },
-        derived: { version: 0, value: 6 },
-      },
-    });
-  });
-
-  it('rejects a rebase when any read dependency changed', async () => {
-    const initial = PluginAccountStorageRowV1Schema.parse({
-      v: 1,
-      values: { source: { version: 2, value: 3 } },
-    });
-    const pending = clonePluginAccountKvRowV1(initial);
-    setPluginAccountKvEntryV1(pending, 'derived', 6, undefined);
     const write = vi.fn(async () => 'conflict' as const);
 
     await expect(commitPluginAccountKvMutationV1({
-      initialSnapshot: { revision: 4, row: initial },
+      snapshot: { revision: 4, row: initial },
       pendingRow: pending,
-      dependencyKeys: ['source', 'derived'],
-      writeKeys: ['derived'],
       assertCurrent: () => undefined,
-      readLatest: async () => ({
-        revision: 5,
-        row: PluginAccountStorageRowV1Schema.parse({
-          v: 1,
-          values: { source: { version: 3, value: 4 } },
-        }),
-      }),
       write,
     })).rejects.toMatchObject({ code: 'plugin_account_kv_conflict' });
 
     expect(write).toHaveBeenCalledOnce();
+    expect(write).toHaveBeenCalledWith({ revision: 4, row: initial }, pending);
   });
 
-  it('overlays only the write set and does not copy a read-only pending entry', async () => {
+  it('commits the evaluated row against its own snapshot in exactly one physical CAS', async () => {
     const initial = PluginAccountStorageRowV1Schema.parse({
       v: 1,
       values: { source: { version: 2, value: 3 } },
     });
     const pending = clonePluginAccountKvRowV1(initial);
-    Object.defineProperty(pending.values, 'source', {
-      value: { version: 2, value: 999 },
-      enumerable: true,
-      writable: true,
-      configurable: true,
-    });
     setPluginAccountKvEntryV1(pending, 'derived', 6, undefined);
-    const latest = PluginAccountStorageRowV1Schema.parse({
-      v: 1,
-      values: {
-        source: { version: 2, value: 3 },
-        other: { version: 0, value: true },
-      },
-    });
-    const write = vi.fn(async () => write.mock.calls.length === 1 ? 'conflict' as const : 'updated' as const);
-
-    await commitPluginAccountKvMutationV1({
-      initialSnapshot: { revision: 4, row: initial },
-      pendingRow: pending,
-      dependencyKeys: ['source', 'derived'],
-      writeKeys: ['derived'],
-      assertCurrent: () => undefined,
-      readLatest: async () => ({ revision: 5, row: latest }),
-      write,
-    });
-
-    expect(write).toHaveBeenLastCalledWith({ revision: 5, row: latest }, {
-      v: 1,
-      values: {
-        source: { version: 2, value: 3 },
-        other: { version: 0, value: true },
-        derived: { version: 0, value: 6 },
-      },
-    });
-  });
-
-  it('stops after one rebase attempt when the second physical CAS conflicts', async () => {
-    const initial = PluginAccountStorageRowV1Schema.parse({ v: 1, values: {} });
-    const pending = clonePluginAccountKvRowV1(initial);
-    setPluginAccountKvEntryV1(pending, 'target', 'mine', undefined);
-    const write = vi.fn(async () => 'conflict' as const);
-    const readLatest = vi.fn(async () => ({ revision: 1, row: initial }));
+    const write = vi.fn(async () => 'updated' as const);
+    const assertCurrent = vi.fn(() => undefined);
 
     await expect(commitPluginAccountKvMutationV1({
-      initialSnapshot: { revision: 0, row: initial },
+      snapshot: { revision: 4, row: initial },
       pendingRow: pending,
-      dependencyKeys: ['target'],
-      writeKeys: ['target'],
-      assertCurrent: () => undefined,
-      readLatest,
+      assertCurrent,
       write,
-    })).rejects.toMatchObject({ code: 'plugin_account_kv_conflict' });
+    })).resolves.toBeUndefined();
 
-    expect(write).toHaveBeenCalledTimes(2);
-    expect(readLatest).toHaveBeenCalledOnce();
+    expect(write).toHaveBeenCalledOnce();
+    expect(write).toHaveBeenCalledWith({ revision: 4, row: initial }, pending);
+    expect(assertCurrent).toHaveBeenCalledTimes(2);
   });
 
   it('advances one key version per write and keeps a deleted key revivable at its next version', () => {

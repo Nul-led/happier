@@ -955,6 +955,20 @@
     },
     {
       "specifier": ".",
+      "exportName": "QRCode",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "QRCode"
+    },
+    {
+      "specifier": ".",
+      "exportName": "QRCodeProps",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "QRCodeProps"
+    },
+    {
+      "specifier": ".",
       "exportName": "ReviewCommentProposalQueryV1",
       "kind": "type",
       "declarationModule": "dist/index.d.ts",
@@ -2240,6 +2254,20 @@
       "kind": "type",
       "declarationModule": "dist/components/index.d.ts",
       "declarationExport": "ProgressProps"
+    },
+    {
+      "specifier": "./components",
+      "exportName": "QRCode",
+      "kind": "value",
+      "declarationModule": "dist/components/index.d.ts",
+      "declarationExport": "QRCode"
+    },
+    {
+      "specifier": "./components",
+      "exportName": "QRCodeProps",
+      "kind": "type",
+      "declarationModule": "dist/components/index.d.ts",
+      "declarationExport": "QRCodeProps"
     },
     {
       "specifier": "./components",

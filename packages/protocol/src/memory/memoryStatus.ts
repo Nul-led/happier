@@ -85,6 +85,13 @@ export const MemoryStatusV1Schema = z
     worker: MemoryWorkerStatusV1Schema.nullable().prefault(null),
     queue: MemoryIndexQueueStatusV1Schema.nullable().prefault(null),
     lastRun: MemoryIndexLastRunStatusV1Schema.nullable().prefault(null),
+    /**
+     * Archived-eligibility actually applied by this daemon. Absence means the
+     * daemon does not advertise implementation support for
+     * `MemorySettingsV1.includeArchivedSessions`, so a client must present an
+     * update/unsupported state rather than claim the desired setting applies.
+     */
+    includeArchivedSessionsEffective: z.boolean().optional(),
   })
   .passthrough();
 

@@ -56,7 +56,8 @@ describe('plugin contribution catalog', () => {
       'executionRunProfiles', 'notifications', 'notificationChannels', 'scmHostingProviders',
       'scmBackends', 'connectedAccountDescriptors', 'managedDependencies', 'systemTools',
       'promptAssets', 'hooks', 'requestInterceptors', 'voiceModelPacks', 'voiceProviders',
-      'backgroundServices', 'daemonDatabases', 'composerReferences', 'composerAttachments', 'composerControls',
+      'backgroundServices', 'daemonDatabases', 'composerReferences', 'searchProviders',
+      'composerAttachments', 'composerControls',
       'composerRegions', 'openableContentViewers',
       'accountCollections', 'webhooks', 'pluginContributionPoints', 'targetedPluginContributions',
     ]);

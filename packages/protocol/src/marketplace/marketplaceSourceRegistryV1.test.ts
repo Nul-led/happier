@@ -8,6 +8,7 @@ import {
   createDefaultCuratedMarketplaceSourceRegistryV1,
   MarketplaceSourceOriginV1Schema,
   MarketplaceSourceRegistryV1Schema,
+  MarketplaceSourceRegistryMutationV1Schema,
   MarketplaceSourceV1Schema,
   seedCuratedMarketplaceSourceRegistryV1,
   resolvePreferredMarketplaceSource,
@@ -21,17 +22,70 @@ const MARKETPLACE_BROWSER_EXPORTS = [
   'MarketplaceIndexQueryResultV1Schema',
 ] as const;
 
+const COMPLETE_PERSISTED_SOURCE = {
+  id: 'marketplace:featured',
+  title: 'Happier curated marketplace',
+  sourceUrl: 'https://marketplace.example.test/catalog.json',
+  enabled: true,
+  origin: 'curated' as const,
+  description: 'Official curated source',
+  addedAtMs: 1,
+  updatedAtMs: 2,
+};
+
+const COMPLETE_PERSISTED_REGISTRY = {
+  t: 'happier_marketplace_source_registry_v1' as const,
+  schemaVersion: 1 as const,
+  sources: [COMPLETE_PERSISTED_SOURCE],
+};
+
+function omitKeys(value: Record<string, unknown>, ...keys: readonly string[]): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(value).filter(([key]) => !keys.includes(key)));
+}
+
 describe('marketplaceSourceRegistryV1 schemas', () => {
+  it('parses only fine-grained source mutations', () => {
+    expect(MarketplaceSourceRegistryMutationV1Schema.parse({
+      kind: 'upsert',
+      input: {
+        sourceId: 'marketplace:user',
+        sourceUrl: 'https://source.example/index.json',
+        title: 'Source',
+        origin: 'user',
+      },
+    })).toMatchObject({ kind: 'upsert', input: { sourceId: 'marketplace:user' } });
+    expect(MarketplaceSourceRegistryMutationV1Schema.safeParse({
+      kind: 'setEnabled', sourceId: 'marketplace:user', enabled: false,
+    }).success).toBe(true);
+    expect(MarketplaceSourceRegistryMutationV1Schema.safeParse({
+      kind: 'setRegistryProfile', sourceId: 'marketplace:user', registryProfileId: null,
+    }).success).toBe(true);
+    expect(MarketplaceSourceRegistryMutationV1Schema.safeParse({
+      kind: 'remove', sourceId: 'marketplace:user', registry: { sources: [] },
+    }).success).toBe(false);
+  });
   it('bounds configured sources', () => {
     expect(MarketplaceSourceRegistryV1Schema.safeParse({ sources: Array.from({ length: 65 }, (_, index) => ({ id: `source-${index}`, title: `Source ${index}`, sourceUrl: `https://source-${index}.example/index.json`, enabled: true, origin: 'user' })) }).success).toBe(false);
   });
 
-  it('defaults the registry to an empty source list', () => {
-    expect(MarketplaceSourceRegistryV1Schema.parse({})).toEqual({
-      t: 'happier_marketplace_source_registry_v1',
-      schemaVersion: 1,
-      sources: [],
-    });
+  it('requires the persisted root discriminator, schema version, and sources', () => {
+    expect(MarketplaceSourceRegistryV1Schema.safeParse({}).success).toBe(false);
+    expect(MarketplaceSourceRegistryV1Schema.safeParse(omitKeys(COMPLETE_PERSISTED_REGISTRY, 't')).success).toBe(false);
+    expect(MarketplaceSourceRegistryV1Schema.safeParse(omitKeys(COMPLETE_PERSISTED_REGISTRY, 'schemaVersion')).success).toBe(false);
+    expect(MarketplaceSourceRegistryV1Schema.safeParse(omitKeys(COMPLETE_PERSISTED_REGISTRY, 'sources')).success).toBe(false);
+  });
+
+  it('requires persisted source enabled and origin authority instead of defaulting it', () => {
+    expect(MarketplaceSourceV1Schema.safeParse(omitKeys(COMPLETE_PERSISTED_SOURCE, 'enabled')).success).toBe(false);
+    expect(MarketplaceSourceV1Schema.safeParse(omitKeys(COMPLETE_PERSISTED_SOURCE, 'origin')).success).toBe(false);
+    expect(MarketplaceSourceRegistryV1Schema.safeParse({
+      ...COMPLETE_PERSISTED_REGISTRY,
+      sources: [omitKeys(COMPLETE_PERSISTED_SOURCE, 'enabled')],
+    }).success).toBe(false);
+    expect(MarketplaceSourceRegistryV1Schema.safeParse({
+      ...COMPLETE_PERSISTED_REGISTRY,
+      sources: [omitKeys(COMPLETE_PERSISTED_SOURCE, 'origin')],
+    }).success).toBe(false);
   });
 
   it('persists an opaque host-owned registry profile binding while accepting predecessor records without one', () => {
@@ -44,59 +98,33 @@ describe('marketplaceSourceRegistryV1 schemas', () => {
     });
     expect(legacy.registryProfileId).toBeUndefined();
 
+    expect(MarketplaceSourceRegistryV1Schema.safeParse({
+      t: 'happier_marketplace_source_registry_v1',
+      schemaVersion: 1,
+      sources: [legacy],
+    }).success).toBe(true);
+
     expect(createMarketplaceSourceV1({
       sourceUrl: legacy.sourceUrl,
       registryProfileId: 'registry_private',
     }, legacy)).toMatchObject({ registryProfileId: 'registry_private' });
   });
 
-  it('parses persisted marketplace sources with curated origin metadata without retaining unknown fields', () => {
-    const source = MarketplaceSourceV1Schema.parse({
-      id: 'marketplace:featured',
-      title: 'Happier curated marketplace',
-      sourceUrl: 'https://marketplace.example.test/catalog.json',
-      enabled: true,
-      origin: 'curated',
-      description: 'Official curated source',
-      addedAtMs: 1,
-      updatedAtMs: 2,
-      futureSourceFlag: 'keep-me',
-    });
-
-    expect(source).toMatchObject({
-      id: 'marketplace:featured',
-      title: 'Happier curated marketplace',
-      sourceUrl: 'https://marketplace.example.test/catalog.json',
-      enabled: true,
-      origin: 'curated',
-      description: 'Official curated source',
-      addedAtMs: 1,
-      updatedAtMs: 2,
-    });
-    expect(source).not.toHaveProperty('futureSourceFlag');
+  it('parses the complete persisted curated source projection with all authority fields', () => {
+    expect(MarketplaceSourceV1Schema.parse({ ...COMPLETE_PERSISTED_SOURCE })).toEqual(COMPLETE_PERSISTED_SOURCE);
     expect(MarketplaceSourceOriginV1Schema.parse('user')).toBe('user');
   });
 
-  it('does not persist unknown source-registry fields that could carry secrets or authority', () => {
-    const parsed = MarketplaceSourceRegistryV1Schema.parse({
-      schemaVersion: 1,
-      t: 'happier_marketplace_source_registry_v1',
-      sources: [
-        {
-          id: 'marketplace:featured',
-          title: 'Happier curated marketplace',
-          sourceUrl: 'https://marketplace.example.test/catalog.json',
-          enabled: true,
-          origin: 'curated',
-          futureSourceFlag: 'keep-me',
-        },
-      ],
+  it('rejects unknown persisted source and registry fields that could carry secrets or authority', () => {
+    expect(MarketplaceSourceV1Schema.safeParse({ ...COMPLETE_PERSISTED_SOURCE, futureSourceFlag: 'keep-me' }).success).toBe(false);
+    expect(MarketplaceSourceRegistryV1Schema.safeParse({
+      ...COMPLETE_PERSISTED_REGISTRY,
+      sources: [{ ...COMPLETE_PERSISTED_SOURCE, futureSourceFlag: 'keep-me' }],
+    }).success).toBe(false);
+    expect(MarketplaceSourceRegistryV1Schema.safeParse({
+      ...COMPLETE_PERSISTED_REGISTRY,
       futureRegistryFlag: 'keep-me',
-    });
-
-    expect(parsed.sources).toHaveLength(1);
-    expect(parsed).not.toHaveProperty('futureRegistryFlag');
-    expect(parsed.sources[0]).not.toHaveProperty('futureSourceFlag');
+    }).success).toBe(false);
   });
 
   it.each([

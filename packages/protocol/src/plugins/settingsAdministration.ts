@@ -8,6 +8,7 @@ import {
   PluginSettingsScopeRefV1Schema,
 } from './contributions/settings.js';
 import { PluginIdSchema } from './pluginId.js';
+import { PLUGIN_ACCOUNT_SETTINGS_MAXIMUM_FIELDS_V1 } from './settings/accountSettingsFieldCountV1.js';
 import { asProtocolZod } from "./actions/internalProtocolZodAdapter.js";
 
 /**
@@ -209,6 +210,9 @@ export const PluginSettingsAdministrationActionInputSchemasV1 = {
 >>;
 
 const PluginSettingsAdministrationResultTextV1Schema = z.string().trim().min(1).max(4_096);
+// A list result carries at most one entry per field the record itself admits,
+// so this cardinality is read from the canonical Settings bounds owner rather
+// than transcribed here.
 const PluginSettingsAdministrationResultFieldsV1Schema = z.array(z.union([
   z.object({
     localId: PluginSettingFieldIdV2Schema,
@@ -223,7 +227,7 @@ const PluginSettingsAdministrationResultFieldsV1Schema = z.array(z.union([
     secret: z.literal(false),
     value: StrictJsonValueSchema,
   }).strict(),
-])).max(256);
+])).max(PLUGIN_ACCOUNT_SETTINGS_MAXIMUM_FIELDS_V1);
 const PluginSettingsAdministrationLiveApplicationV1Schema = z.object({
   kind: z.literal('live'),
 }).strict();

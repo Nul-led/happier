@@ -171,6 +171,7 @@ const REFERENCE_RULES: Readonly<Record<string, readonly PluginContributionRefere
     { field: 'eventIds', targetFamily: 'events', many: true },
     { field: 'defaultChannels', targetFamily: 'notificationChannels', many: true },
   ],
+  searchProviders: [{ field: 'action', targetFamily: 'actions' }],
   openableContentViewers: [{ field: 'destination', targetFamily: 'ui.views' }],
   webhooks: [{ field: 'handlerAction', targetFamily: 'actions' }],
 });
@@ -211,6 +212,7 @@ const FAMILY_POLICIES = {
   backgroundServices: { identityField: 'id', disposition: 'retained', activationDemand: 'registration', projectionFamily: null, allowedRuntimeRegistration: 'backgroundServices', registrationHost: 'daemon', consumer: 'background-service-runner', platforms: CLI_PLATFORMS },
   daemonDatabases: { identityField: 'id', disposition: 'reshaped', activationDemand: 'none', projectionFamily: null, allowedRuntimeRegistration: null, consumer: 'daemon-database-service', platforms: CLI_PLATFORMS },
   composerReferences: { identityField: 'id', disposition: 'reshaped', activationDemand: 'registration', projectionFamily: null, allowedRuntimeRegistration: 'composerReferences', registrationHost: 'daemon', consumer: 'composer-reference-host', platforms: ALL_PLATFORMS },
+  searchProviders: { identityField: 'id', disposition: 'reshaped', activationDemand: 'none', projectionFamily: 'pluginUi', allowedRuntimeRegistration: null, consumer: 'universal-search-host', platforms: ALL_PLATFORMS },
   composerAttachments: { identityField: 'id', disposition: 'reshaped', activationDemand: 'conditional', projectionFamily: 'composerAttachments', allowedRuntimeRegistration: 'composerAttachments', registrationHost: 'daemon', consumer: 'composer-attachment-host', platforms: ALL_PLATFORMS },
   composerControls: { identityField: 'id', disposition: 'reshaped', activationDemand: 'none', projectionFamily: 'composerControls', allowedRuntimeRegistration: null, consumer: 'composer-control-host', platforms: ALL_PLATFORMS },
   composerRegions: { identityField: 'id', disposition: 'reshaped', activationDemand: 'none', projectionFamily: 'composerRegions', allowedRuntimeRegistration: null, consumer: 'composer-region-host', platforms: ALL_PLATFORMS },

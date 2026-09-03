@@ -828,6 +828,18 @@ export type DefinePluginInput<
             PluginContributionLocalId,
             Omit<NonNullable<NonNullable<PluginManifest['contributes']>['sessionHeaderActions']>[number], 'id'>
         >>;
+        /**
+         * One declarative Universal Search provider per local id. The referenced
+         * Action is a same-plugin declared safe, global, UI-origin read that
+         * consumes `PluginSearchQueryV1Schema` and returns
+         * `PluginSearchResultV1Schema`; nothing else is declared here because
+         * every other provider fact already belongs to that Action or to the
+         * host's own section presentation.
+         */
+        searchProviders?: Readonly<Record<
+            PluginContributionLocalId,
+            Omit<NonNullable<NonNullable<PluginManifest['contributes']>['searchProviders']>[number], 'id'>
+        >>;
         browserTargets?: Readonly<Record<
             PluginContributionLocalId,
             Omit<NonNullable<NonNullable<PluginManifest['contributes']>['browserTargets']>[number], 'id'>
@@ -2256,6 +2268,7 @@ const TOOLS_ADAPTER = descriptorFamilyAdapter('tools');
 const TRANSCRIPT_ACTIVITIES_ADAPTER = descriptorFamilyAdapter('transcriptActivities');
 const SESSION_INFO_SECTIONS_ADAPTER = descriptorFamilyAdapter('sessionInfoSections');
 const SESSION_HEADER_ACTIONS_ADAPTER = descriptorFamilyAdapter('sessionHeaderActions');
+const SEARCH_PROVIDERS_ADAPTER = descriptorFamilyAdapter('searchProviders');
 const BROWSER_TARGETS_ADAPTER = descriptorFamilyAdapter('browserTargets');
 const BROWSER_ACTIONS_ADAPTER = descriptorFamilyAdapter('browserActions');
 const SETTINGS_ADAPTER = descriptorFamilyAdapter('settings');
@@ -2444,6 +2457,7 @@ export const DEFINE_PLUGIN_FAMILY_POLICY_V2 = Object.freeze({
     transcriptActivities: { classification: 'descriptor-only', authorKey: 'transcriptActivities', inputShape: 'descriptor', adapter: TRANSCRIPT_ACTIVITIES_ADAPTER },
     sessionInfoSections: { classification: 'descriptor-only', authorKey: 'sessionInfoSections', inputShape: 'descriptor', adapter: SESSION_INFO_SECTIONS_ADAPTER },
     sessionHeaderActions: { classification: 'descriptor-only', authorKey: 'sessionHeaderActions', inputShape: 'descriptor', adapter: SESSION_HEADER_ACTIONS_ADAPTER },
+    searchProviders: { classification: 'descriptor-only', authorKey: 'searchProviders', inputShape: 'descriptor', adapter: SEARCH_PROVIDERS_ADAPTER },
     browserTargets: { classification: 'descriptor-only', authorKey: 'browserTargets', inputShape: 'descriptor', adapter: BROWSER_TARGETS_ADAPTER },
     browserActions: { classification: 'descriptor-only', authorKey: 'browserActions', inputShape: 'descriptor', adapter: BROWSER_ACTIONS_ADAPTER },
     settings: { classification: 'descriptor-only', authorKey: 'settings', inputShape: 'descriptor', adapter: SETTINGS_ADAPTER },
@@ -2657,7 +2671,7 @@ const DEFINE_PLUGIN_ALLOWED_KEYS = new Set<string>([
 function assertDefinePluginOwnKeys(input: object): void {
     for (const key of Object.keys(input)) {
         if (key === 'contributes') {
-            throw new TypeError("Raw contributes belongs to the manual named ABI and is not accepted by definePlugin");
+            throw new TypeError("Raw contributes is host-generated projection output and is not accepted as definePlugin author input");
         }
         if (!DEFINE_PLUGIN_ALLOWED_KEYS.has(key)) {
             throw new TypeError(`definePlugin input contains unknown field '${key}'`);
@@ -2704,7 +2718,12 @@ function captureDefinePluginAuthorValue(
     const captured: Record<string, unknown> = Object.create(prototype);
     seen.set(value, captured);
     for (const key of Object.keys(value)) {
-        captured[key] = captureDefinePluginAuthorValue(Reflect.get(value, key), seen, [...path, key]);
+        Object.defineProperty(captured, key, {
+            value: captureDefinePluginAuthorValue(Reflect.get(value, key), seen, [...path, key]),
+            enumerable: true,
+            configurable: true,
+            writable: true,
+        });
     }
     return Object.freeze(captured);
 }

@@ -4,3 +4,25 @@ export {
   HostPrivatePluginInstallOptionalSelectionV1Schema,
   type HostPrivatePluginInstallDecisionV1,
 } from './pluginInstallDecisionV1.js';
+
+export {
+  COMMUNITY_NPM_MARKETPLACE_SOURCE_ID_V1,
+  ExpectedMarketplaceListingV1Schema,
+  type ExpectedMarketplaceListingV1,
+} from './expectedMarketplaceListingV1.js';
+
+export {
+  MAX_PLUGIN_INSTALLATION_REVIEW_STRING_LENGTH,
+  PluginChangePendingReviewResultSchema,
+  PluginDevelopmentSourceRootReviewSchema,
+  PluginInstallationReviewCompatibilityDiagnosticSchema,
+  PluginInstallationReviewRawCredentialAccessSchema,
+  PluginInstallationReviewRequestInterceptorSchema,
+  PluginInstallationReviewSchema,
+  type PluginChangePendingReviewResult,
+  type PluginDevelopmentSourceRootReview,
+  type PluginInstallationReview,
+  type PluginInstallationReviewCompatibilityDiagnostic,
+  type PluginInstallationReviewRawCredentialAccess,
+  type PluginInstallationReviewRequestInterceptor,
+} from './pluginInstallationReviewV1.js';

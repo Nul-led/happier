@@ -1557,6 +1557,28 @@ type ProgressProps = Readonly<{
 ```
 
 
+### `.` — `QRCode` (value)
+
+Declared by `dist/components/Content.d.ts` as `QRCode`.
+
+```ts
+function QRCode({ data, size, testID }: QRCodeProps): ReactElement | null;
+```
+
+
+### `.` — `QRCodeProps` (type)
+
+Declared by `dist/components/Content.d.ts` as `QRCodeProps`.
+
+```ts
+type QRCodeProps = Readonly<{
+    data: string;
+    size?: number;
+    testID?: string;
+}>;
+```
+
+
 ### `.` — `ReviewCommentProposalQueryV1` (type)
 
 Declared by `dist/hostApi/reviewCommentProposals.public.d.ts` as `ReviewCommentProposalQueryV1`.
@@ -3708,6 +3730,28 @@ type ProgressProps = Readonly<{
     value?: number;
     label: string;
     labelKey?: string;
+    testID?: string;
+}>;
+```
+
+
+### `./components` — `QRCode` (value)
+
+Declared by `dist/components/Content.d.ts` as `QRCode`.
+
+```ts
+function QRCode({ data, size, testID }: QRCodeProps): ReactElement | null;
+```
+
+
+### `./components` — `QRCodeProps` (type)
+
+Declared by `dist/components/Content.d.ts` as `QRCodeProps`.
+
+```ts
+type QRCodeProps = Readonly<{
+    data: string;
+    size?: number;
     testID?: string;
 }>;
 ```

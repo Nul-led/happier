@@ -16,19 +16,6 @@ type DocumentationEntrypointRow = Readonly<{
     importExample: string;
 }>;
 
-type CapabilityMatrix = Readonly<{
-    manifestFamilies: readonly Readonly<{
-        manifestFamily: string;
-        availabilityDisposition: string;
-        provingConsumer: string | null;
-    }>[];
-    services: readonly Readonly<{
-        serviceId: string;
-        availabilityDisposition: string;
-        provingConsumer: string | null;
-    }>[];
-}>;
-
 const sdkRoot = fileURLToPath(new URL('..', import.meta.url));
 const repoRoot = resolve(sdkRoot, '../..');
 const pluginDocumentationRoot = join(repoRoot, 'apps', 'docs', 'content', 'docs', 'plugins');
@@ -180,8 +167,10 @@ describe('Plugin SDK public authoring documentation', () => {
         expect(manifestNavigation.pages).toContain('capabilities-and-permissions');
         expect(activationGuide).toContain('Ordinary root/daemon plugin modules use `definePlugin(...)`');
         expect(activationGuide).toContain('A client-target Action is different');
-        expect(activationGuide).toContain('## Low-level daemon ABI conformance');
-        expect(activationGuide).toMatch(/not a second\s+normal daemon authoring path/u);
+        expect(activationGuide).toContain('## Activation cleanup and boundaries');
+        expect(activationGuide).toMatch(/not a second daemon\s+authoring path/u);
+        expect(activationGuide).not.toContain('Low-level daemon ABI conformance');
+        expect(activationGuide).not.toMatch(/Handwriting a root\/daemon/u);
         expect(actionsGuide).toContain('context.services.actions.execute(...)');
         expect(actionsGuide).not.toContain('Commands are available in Developer Preview');
         expect(capabilitiesGuide).toContain('host-owned Agent-session terminal');
@@ -203,9 +192,12 @@ describe('Plugin SDK public authoring documentation', () => {
         expect(manifestGuide).toMatch(/not an\s+author-availability catalog/u);
         expect(settingsGuide).toContain('context.services.settings.forScope({ kind: \'account\' })');
         expect(settingsGuide).not.toContain('settings.watch(listener)');
-        expect(sdkReadme).toContain('## Manual ABI (advanced conformance)');
-        expect(sdkReadme).toMatch(/It is not the\s+ordinary scaffold path\./u);
-        expect(sdkReadme).toMatch(/package is the broad code-defined\s+conformance/u);
+        expect(sdkReadme).not.toContain('## Manual ABI');
+        expect(sdkReadme).not.toMatch(/manual ABI/iu);
+        expect(sdkReadme).not.toContain('authoring-inference/manual');
+        expect(sdkReadme).toContain('## Invocation context and interactions');
+        expect(sdkReadme).toMatch(/host's internal\s+compiled ABI/u);
+        expect(sdkReadme).toMatch(/package is the\s+broad code-defined\s+conformance/u);
         expect(sdkReadme).not.toMatch(/package is the broad manual-ABI\s+conformance/u);
         expect(sdkReadme).toContain('Descriptor, operation, and embedded-surface roles are public authoring contracts.');
         expect(sdkReadme).not.toContain('Actions or renderer chains');
@@ -242,30 +234,18 @@ describe('Plugin SDK public authoring documentation', () => {
         expect(guide).not.toContain('defineTargetedContributionPoint');
     });
 
-    it('keeps deferred capability policy separate from actionable collection and webhook tasks', () => {
+    // Capability availability itself is adjudicated at its declaration owner
+    // (`scripts/capabilityMatrixMetadata.test.mjs`); this guide test owns only
+    // the authoring tasks those guides teach.
+    it('keeps capability policy separate from actionable collection and webhook tasks', () => {
         const navigation = JSON.parse(readFileSync(taskGuideNavigationPath, 'utf8')) as Readonly<{
             pages: readonly string[];
         }>;
-        const capabilityMatrix = JSON.parse(
-            readFileSync(join(sdkRoot, 'capability-matrix.json'), 'utf8'),
-        ) as CapabilityMatrix;
         const accountCollectionsGuide = readFileSync(accountCollectionsGuidePath, 'utf8');
         const webhooksGuide = readFileSync(webhooksGuidePath, 'utf8');
         const installTrustGuide = readFileSync(installTrustGuidePath, 'utf8');
         expect(navigation.pages).toContain('account-collections');
         expect(navigation.pages).toContain('webhooks');
-        for (const family of ['commands', 'tools']) {
-            expect(capabilityMatrix.manifestFamilies.find((row) => row.manifestFamily === family)).toMatchObject({
-                availabilityDisposition: 'deferred',
-                provingConsumer: 'no current positive consumer',
-            });
-        }
-        for (const service of ['events', 'fs', 'providers', 'resources']) {
-            expect(capabilityMatrix.services.find((row) => row.serviceId === service)).toMatchObject({
-                availabilityDisposition: 'deferred',
-                provingConsumer: 'no current positive consumer',
-            });
-        }
         expect(accountCollectionsGuide).toContain('static manifest identity');
         expect(accountCollectionsGuide).toContain('candidate-local');
         expect(accountCollectionsGuide).toContain('one ordered source-to-target chain');
@@ -281,7 +261,7 @@ describe('Plugin SDK public authoring documentation', () => {
         expect(installTrustGuide).toContain('`outcome_unknown`');
     });
 
-    it('distinguishes external notification source evidence from deferred loaded availability', () => {
+    it('distinguishes notification source availability from loaded and release evidence', () => {
         const guide = readFileSync(notificationsGuidePath, 'utf8');
         const apiGuide = readFileSync(join(documentationRoot, 'index.mdx'), 'utf8');
         const entrypointGuide = readFileSync(entrypointGuidePath, 'utf8');
@@ -294,7 +274,8 @@ describe('Plugin SDK public authoring documentation', () => {
         expect(guide).toContain('examples/action-contract-producer');
         // Markdown line wrapping must not hide the distinguishing phrase.
         expect(guide.replace(/\s+/gu, ' ')).toContain('external-author source-consumer evidence');
-        expect(guide).toContain('Loaded availability remains deferred');
+        expect(guide).toContain('available in the current source contract');
+        expect(guide).toContain('loaded-platform and release evidence separately');
         expect(guide).toContain('nonbundled action-contract pair');
         expect(guide).not.toContain('first-party Preview');
         expect(guide).not.toContain('host-internal');
