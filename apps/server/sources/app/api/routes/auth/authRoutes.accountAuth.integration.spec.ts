@@ -587,6 +587,27 @@ describe("authRoutes (account auth request) (integration)", () => {
         expect(repeatedPoll.statusCode).toBe(200);
         expect(repeatedPoll.json()).toEqual(json);
 
+        const exactBoundPoll = await app.inject({
+            method: "POST",
+            url: "/v2/auth/account/request",
+            payload: {
+                publicKey: publicKeyBase64,
+                pairId,
+                homeServerIdentityId: HOME_SERVER_IDENTITY_ID,
+            },
+        });
+        expect(exactBoundPoll.json()).toEqual(json);
+
+        for (const payload of [
+            { publicKey: publicKeyBase64, pairId: "wrong-pair", homeServerIdentityId: HOME_SERVER_IDENTITY_ID },
+            { publicKey: publicKeyBase64, pairId, homeServerIdentityId: "srv_wrong_home" },
+        ]) {
+            const wrongBoundPoll = await app.inject({ method: "POST", url: "/v2/auth/account/request", payload });
+            expect(wrongBoundPoll.statusCode).toBe(200);
+            expect(wrongBoundPoll.json()).toEqual({ state: "requested" });
+            expect(wrongBoundPoll.body).not.toContain("tokenEncrypted");
+        }
+
         const persisted = await db.accountAuthRequest.findUnique({
             where: { publicKey: privacyKit.encodeHex(publicKeyRaw) },
             select: { response: true, responseAccountId: true, tokenEncrypted: true },

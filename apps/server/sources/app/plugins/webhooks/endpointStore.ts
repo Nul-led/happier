@@ -186,6 +186,7 @@ function ensureFingerprint(params: Readonly<{
 }
 
 export async function ensurePluginWebhookEndpointV1(params: Readonly<{
+    tx?: Tx;
     accountId: string;
     input: PluginWebhookEndpointEnsureInputV1;
     contribution: ResolvedPluginWebhookContributionV1;
@@ -218,8 +219,7 @@ export async function ensurePluginWebhookEndpointV1(params: Readonly<{
     const credential = params.contribution.routingKind === "accountEndpoint"
         ? createGeneratedPluginWebhookCredentialMaterialV1({ randomBytes })
         : null;
-    try {
-        return await inTx(async (tx) => {
+    const persist = async (tx: Tx): Promise<PluginWebhookEndpointEnsureResultV1> => {
             const raced = await tx.pluginWebhookEndpoint.findFirst({
                 where: { accountId: params.accountId, ensureIdempotencyKey: params.input.idempotencyKey },
                 select: ENSURE_REJOIN_SELECT_V1,
@@ -316,7 +316,10 @@ export async function ensurePluginWebhookEndpointV1(params: Readonly<{
                 }),
                 ...(credential ? { oneTimeGeneratedSecret: credential.secret } : {}),
             });
-        });
+    };
+    if (params.tx) return await persist(params.tx);
+    try {
+        return await inTx(persist);
     } catch (error) {
         if (error instanceof PluginWebhookEndpointStoreError) throw error;
         if (!isPrismaErrorCode(error, "P2002")) throw error;
@@ -629,13 +632,14 @@ export async function revokePluginWebhookEndpointV1(params: Readonly<{
 }
 
 export async function retargetPluginWebhookEndpointV1(params: Readonly<{
+    tx?: Tx;
     accountId: string;
     webhookEndpointId: string;
     expectedRevision: number;
     idempotencyKey: string;
     target: ResolvedPluginWebhookTargetV1;
 }>): Promise<PluginWebhookEndpointRetargetResultV1> {
-    return await inTx(async (tx) => {
+    const persist = async (tx: Tx): Promise<PluginWebhookEndpointRetargetResultV1> => {
         const prior = await readOperationV1(tx, {
             accountId: params.accountId,
             endpointId: params.webhookEndpointId,
@@ -751,7 +755,8 @@ export async function retargetPluginWebhookEndpointV1(params: Readonly<{
             pluginId: endpoint.pluginId,
         });
         return result;
-    });
+    };
+    return params.tx ? await persist(params.tx) : await inTx(persist);
 }
 
 /**
@@ -761,10 +766,12 @@ export async function retargetPluginWebhookEndpointV1(params: Readonly<{
  */
 export function createPluginWebhookEndpointStoreV1(options: Readonly<{
     resolveTarget(params: Readonly<{
+        tx?: Tx;
         accountId: string;
         target: ResolvedPluginWebhookTargetV1["materialization"];
     }>): Awaitable<ResolvedPluginWebhookTargetV1 | null>;
     resolveContribution(params: Readonly<{
+        tx?: Tx;
         accountId: string;
         contribution: Readonly<{ pluginId: string; localId: string }>;
         target: ResolvedPluginWebhookTargetV1;
@@ -784,47 +791,75 @@ export function createPluginWebhookEndpointStoreV1(options: Readonly<{
         return publicBaseUrl;
     };
 
-    const resolveTarget = async (
-        accountId: string,
-        targetMaterialization: ResolvedPluginWebhookTargetV1["materialization"],
-    ): Promise<ResolvedPluginWebhookTargetV1> => {
-        const target = await options.resolveTarget({ accountId, target: targetMaterialization });
-        if (!target) throw new PluginWebhookEndpointStoreError("endpoint_unavailable");
-        return target;
-    };
-
     return {
         ensure: async (input) => {
-            const target = await resolveTarget(input.accountId, input.targetMaterialization);
-            const contribution = await options.resolveContribution({
-                accountId: input.accountId,
-                contribution: input.webhookContribution,
-                target,
-            });
-            if (!contribution) throw new PluginWebhookEndpointStoreError("endpoint_unavailable");
-            if (
-                input.setup.kind === "githubSharedInstallationV1"
-                && (
-                    !options.authorizeSharedInstallation
-                    || !await options.authorizeSharedInstallation({
-                        accountId: input.accountId,
-                        installationId: input.setup.installationId,
-                        installationAuthorizationRef: input.setup.installationAuthorizationRef,
-                        contribution,
-                    })
-                )
-            ) {
-                throw new PluginWebhookEndpointStoreError("installation_conflict");
-            }
+            const resolved: {
+                value: Readonly<{
+                    target: ResolvedPluginWebhookTargetV1;
+                    contribution: ResolvedPluginWebhookContributionV1;
+                    publicBaseUrl: string;
+                }> | null;
+            } = { value: null };
             const { accountId, ...actionInput } = input;
-            return await ensurePluginWebhookEndpointV1({
-                accountId,
-                input: actionInput,
-                contribution,
-                target,
-                publicBaseUrl: resolvePublicBaseUrl(),
-                randomBytes: options.randomBytes,
-            });
+            try {
+                return await inTx(async (tx) => {
+                    const target = await options.resolveTarget({
+                        tx,
+                        accountId,
+                        target: input.targetMaterialization,
+                    });
+                    if (!target) throw new PluginWebhookEndpointStoreError("endpoint_unavailable");
+                    const contribution = await options.resolveContribution({
+                        tx,
+                        accountId,
+                        contribution: input.webhookContribution,
+                        target,
+                    });
+                    if (!contribution) throw new PluginWebhookEndpointStoreError("endpoint_unavailable");
+                    if (
+                        input.setup.kind === "githubSharedInstallationV1"
+                        && (
+                            !options.authorizeSharedInstallation
+                            || !await options.authorizeSharedInstallation({
+                                accountId,
+                                installationId: input.setup.installationId,
+                                installationAuthorizationRef: input.setup.installationAuthorizationRef,
+                                contribution,
+                            })
+                        )
+                    ) {
+                        throw new PluginWebhookEndpointStoreError("installation_conflict");
+                    }
+                    const publicBaseUrl = resolvePublicBaseUrl();
+                    resolved.value = { target, contribution, publicBaseUrl };
+                    return await ensurePluginWebhookEndpointV1({
+                        tx,
+                        accountId,
+                        input: actionInput,
+                        contribution,
+                        target,
+                        publicBaseUrl,
+                        randomBytes: options.randomBytes,
+                    });
+                });
+            } catch (error) {
+                if (error instanceof PluginWebhookEndpointStoreError) throw error;
+                if (!isPrismaErrorCode(error, "P2002") || !resolved.value) throw error;
+                const requestFingerprint = ensureFingerprint({
+                    input: actionInput,
+                    contribution: resolved.value.contribution,
+                    target: resolved.value.target,
+                });
+                const raced = await readEnsureIdempotencyV1(accountId, input.idempotencyKey);
+                if (raced) return projectEnsureRejoin(raced, requestFingerprint, resolved.value.publicBaseUrl);
+                const deterministicConflict = await readEnsureDeterministicConflictV1({
+                    accountId,
+                    input: actionInput,
+                    contribution: resolved.value.contribution,
+                });
+                if (deterministicConflict) throw new PluginWebhookEndpointStoreError(deterministicConflict);
+                throw error;
+            }
         },
         read: async (input) => await readPluginWebhookEndpointV1({
             ...input,
@@ -832,9 +867,14 @@ export function createPluginWebhookEndpointStoreV1(options: Readonly<{
             resolveTarget: options.resolveTarget,
         }),
         revoke: revokePluginWebhookEndpointV1,
-        retarget: async (input) => {
-            const target = await resolveTarget(input.accountId, input.targetMaterialization);
-            const endpoint = await db.pluginWebhookEndpoint.findFirst({
+        retarget: async (input) => await inTx(async (tx) => {
+            const target = await options.resolveTarget({
+                tx,
+                accountId: input.accountId,
+                target: input.targetMaterialization,
+            });
+            if (!target) throw new PluginWebhookEndpointStoreError("endpoint_unavailable");
+            const endpoint = await tx.pluginWebhookEndpoint.findFirst({
                 where: { id: input.webhookEndpointId, accountId: input.accountId },
                 select: {
                     revision: true,
@@ -859,6 +899,7 @@ export function createPluginWebhookEndpointStoreV1(options: Readonly<{
                     });
                 }
                 const contribution = await options.resolveContribution({
+                    tx,
                     accountId: input.accountId,
                     contribution: {
                         pluginId: endpoint.pluginId,
@@ -881,12 +922,13 @@ export function createPluginWebhookEndpointStoreV1(options: Readonly<{
                 }
             }
             return await retargetPluginWebhookEndpointV1({
+                tx,
                 accountId: input.accountId,
                 webhookEndpointId: input.webhookEndpointId,
                 expectedRevision: input.expectedRevision,
                 idempotencyKey: input.idempotencyKey,
                 target,
             });
-        },
+        }),
     };
 }

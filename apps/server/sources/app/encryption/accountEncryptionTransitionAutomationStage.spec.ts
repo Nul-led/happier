@@ -55,7 +55,6 @@ function runSourceItem(
             executionInputEnvelope: null,
             resultEnvelope: null,
             replyContextEnvelope,
-            replyHandoffReceiptEnvelope: null,
             failureDetailEnvelope: null,
             summaryCiphertext: null,
         },
@@ -146,7 +145,6 @@ describe("accountEncryptionTransitionAutomationStage stored content bounds", () 
                 executionInputEnvelope: null,
                 resultEnvelope: null,
                 replyContextEnvelope: nearMaximumStoredEnvelope("target"),
-                replyHandoffReceiptEnvelope: null,
                 failureDetailEnvelope: null,
             },
         };

@@ -3,12 +3,16 @@ import {
     HomeConnectionEndpointV1Schema,
     type HomeConnectionDescriptorV1,
     type HomeConnectionEndpointV1,
+    type IrohEndpointDescriptorV1,
 } from "@happier-dev/protocol";
 import {
     getHomeIrohEndpointState,
     type HomeIrohEndpointState,
 } from "@/app/iroh/homeIrohEndpoint";
-import { readCachedServerIdentityIdForHotPath } from "@/app/serverIdentity/serverIdentity";
+import {
+    getOrCreateServerIdentityId,
+    readCachedServerIdentityIdForHotPath,
+} from "@/app/serverIdentity/serverIdentity";
 import {
     resolveConfiguredCanonicalServerUrl,
     resolveConfiguredPublicServerUrl,
@@ -32,11 +36,11 @@ import {
  *   exists and is HTTPS, never merely because the canonical auth origin is an
  *   HTTPS URL,
  * - the current Iroh endpoint lifecycle (`getHomeIrohEndpointState`), included
- *   only while that owner reports an active endpoint,
+ *   only while that owner reports active endpoint facts,
  * - the durable outer-descriptor continuity fact owned by this module. It
- *   covers the complete endpoint set, including HTTPS-only retirement. The
- *   Iroh endpoint revision is the producer revision while that carrier is
- *   active, but it is not a competing outer revision owner.
+ *   covers the complete endpoint set, including HTTPS-only retirement, and
+ *   retains the last published native/service EndpointId for key-loss/drift
+ *   detection. No carrier owns or supplies an outer descriptor revision.
  *
  * Public and authenticated feature projections are derived from this one
  * composition. The public projection redacts direct-address hints; an
@@ -58,6 +62,7 @@ export type HomeDescriptorPublicationFacts = Readonly<{
 type RevisionOwnerState = Readonly<{
     revision: number;
     contentKey: string;
+    irohEndpointId?: string;
 }>;
 
 let revisionOwner: RevisionOwnerState | null = null;
@@ -109,28 +114,18 @@ function contentKeyCarriesIrohEndpoint(contentKey: string | undefined): boolean 
 /**
  * Monotonic outer revision calculation. Production primes the in-process
  * state from the durable outer continuity fact before composing a descriptor.
- * A current Iroh producer revision may raise the floor, while effective
- * endpoint-set changes always publish a strictly greater revision.
+ * Effective endpoint-set changes publish a strictly greater revision. Only
+ * the explicit relocation floor may raise the canonical outer frontier.
  */
 function nextMonotonicOuterRevision(params: Readonly<{
     contentKey: string;
-    producerRevision: number | null;
     minimumOuterRevisionExclusive: number | null;
 }>): number | null {
     const lastRevision = revisionOwner?.revision ?? 0;
     const contentChanged = revisionOwner?.contentKey !== params.contentKey;
-    let revision: number;
-    if (params.producerRevision !== null) {
-      // Persistent producer fact (Iroh endpoint continuity): consumed as-is
-      // when it advances, never allowed to move backwards.
-      revision = Math.max(params.producerRevision, lastRevision);
-    } else if (revisionOwner === null || contentChanged) {
-      // Initial publication or an effective endpoint-set change increments;
-      // stable repeated reads keep the same revision.
-      revision = lastRevision + 1;
-    } else {
-      revision = lastRevision;
-    }
+    let revision = revisionOwner === null || contentChanged
+        ? lastRevision + 1
+        : lastRevision;
     const floor = params.minimumOuterRevisionExclusive ?? 0;
     if (revision <= floor) revision = floor + 1;
     if (contentChanged && revision <= lastRevision) revision = lastRevision + 1;
@@ -162,19 +157,22 @@ export function composeHomeConnectionDescriptor(
         revisionOwner = facts.persistedOuterRevisionOwner;
     }
     const iroh = facts.iroh.status === "active" && facts.iroh.snapshot ? facts.iroh.snapshot : null;
-    // A fail-closed Iroh startup says nothing about the operator's intent. If
-    // the last published set carried the Iroh endpoint, republishing the
-    // remaining endpoints at a greater revision would make every client adopt a
-    // descriptor that drops that endpoint. Publish nothing and leave the
-    // already-adopted descriptor in place instead of faking a retirement.
+    const priorEndpointId = revisionOwner?.irohEndpointId;
+    // Starting, stopping, unavailable, failure, and an initial uncomposed
+    // observation say nothing about explicit operator retirement. If the last
+    // published set carried Iroh, publish nothing and preserve client state.
+    // Only the explicit `retired` lifecycle state may remove it.
     if (!iroh
-        && facts.iroh.status === "failed"
+        && facts.iroh.status !== "retired"
         && contentKeyCarriesIrohEndpoint(revisionOwner?.contentKey)) {
         return undefined;
     }
-    const homeServerIdentityId = iroh?.homeServerIdentityId ?? facts.homeServerIdentityId;
+    if (iroh && priorEndpointId && priorEndpointId !== iroh.endpoint.endpointId) {
+        return undefined;
+    }
+    const homeServerIdentityId = facts.homeServerIdentityId;
     if (!homeServerIdentityId) return undefined;
-    const canonicalServerUrl = iroh?.canonicalServerUrl ?? facts.canonicalServerUrl;
+    const canonicalServerUrl = facts.canonicalServerUrl;
     if (!canonicalServerUrl) return undefined;
 
     const endpoints: HomeConnectionEndpointV1[] = [];
@@ -197,7 +195,6 @@ export function composeHomeConnectionDescriptor(
     });
     const revision = nextMonotonicOuterRevision({
         contentKey,
-        producerRevision: iroh ? iroh.revision : null,
         minimumOuterRevisionExclusive: facts.minimumOuterRevisionExclusive,
     });
     if (revision === null) return undefined;
@@ -209,7 +206,15 @@ export function composeHomeConnectionDescriptor(
         endpoints,
     });
     if (!parsed.success) return undefined;
-    revisionOwner = { revision, contentKey };
+    revisionOwner = {
+        revision,
+        contentKey,
+        ...(iroh
+            ? { irohEndpointId: iroh.endpoint.endpointId }
+            : priorEndpointId
+                ? { irohEndpointId: priorEndpointId }
+                : {}),
+    };
     return parsed.data;
 }
 
@@ -238,6 +243,15 @@ function projectComposedHomeConnectionDescriptor(
 }
 
 export type HomeConnectionDescriptorVisibility = "public" | "authenticated";
+
+export class HomeConnectionDescriptorPublicationUnavailableError extends Error {
+    readonly code = "home_connection_descriptor_publication_unavailable" as const;
+
+    constructor() {
+        super("Home connection descriptor publication is unavailable");
+        this.name = "HomeConnectionDescriptorPublicationUnavailableError";
+    }
+}
 
 /** Public projection of the composed descriptor: direct-address hints are redacted. */
 export function resolvePublishedHomeConnectionDescriptor(
@@ -286,7 +300,9 @@ function sameContinuity(
     a: HomeConnectionDescriptorContinuity,
     b: HomeConnectionDescriptorContinuity,
 ): boolean {
-    return a.revision === b.revision && a.contentKey === b.contentKey;
+    return a.revision === b.revision
+        && a.contentKey === b.contentKey
+        && a.irohEndpointId === b.irohEndpointId;
 }
 
 /**
@@ -304,10 +320,69 @@ export async function readHomeConnectionDescriptor(params: Readonly<{
     resolveIrohEndpointState?: () => HomeIrohEndpointState | Promise<HomeIrohEndpointState>;
 }>): Promise<HomeConnectionDescriptorV1 | undefined> {
     const turn = publicationTransactionChain.then(async () => {
-        return await readHomeConnectionDescriptorTransaction(params);
+        return await readHomeConnectionDescriptorTransaction(params, false);
     });
     publicationTransactionChain = turn.then(() => undefined, () => undefined);
     return await turn;
+}
+
+/**
+ * Required authenticated read for security-sensitive issuance/bootstrap paths.
+ * An authoritative absence still returns undefined (the runtime is not acting
+ * as a Home); continuity or publication failures throw a typed retryable error.
+ */
+export async function readRequiredAuthenticatedHomeConnectionDescriptor(params: Readonly<{
+    env?: NodeJS.ProcessEnv;
+    continuityStore: HomeConnectionDescriptorContinuityStore;
+    resolveIrohEndpointState?: () => HomeIrohEndpointState | Promise<HomeIrohEndpointState>;
+}>): Promise<HomeConnectionDescriptorV1 | undefined> {
+    const turn = publicationTransactionChain.then(async () => {
+        return await readHomeConnectionDescriptorTransaction({
+            ...params,
+            visibility: "authenticated",
+        }, true);
+    });
+    publicationTransactionChain = turn.then(() => undefined, () => undefined);
+    return await turn;
+}
+
+/**
+ * Commits a relocation destination's exact outer descriptor before the
+ * stopped destination reports materialization success. The endpoint owner
+ * supplies only facts; this publisher alone applies the source revision floor
+ * and persists the resulting descriptor generation.
+ */
+export async function reserveRelocatedHomeConnectionDescriptor(params: Readonly<{
+    env: NodeJS.ProcessEnv;
+    continuityStore: HomeConnectionDescriptorContinuityStore;
+    minimumOuterRevisionExclusive: number;
+    irohEndpoint: IrohEndpointDescriptorV1;
+}>): Promise<HomeConnectionDescriptorV1> {
+    const canonicalServerUrl = resolveConfiguredCanonicalServerUrl(params.env);
+    if (!canonicalServerUrl) throw new HomeConnectionDescriptorPublicationUnavailableError();
+    let homeServerIdentityId: string;
+    try {
+        homeServerIdentityId = await getOrCreateServerIdentityId(params.env);
+    } catch {
+        throw new HomeConnectionDescriptorPublicationUnavailableError();
+    }
+    const iroh: HomeIrohEndpointState = {
+        status: "active",
+        snapshot: { endpoint: params.irohEndpoint },
+        failureReason: null,
+    };
+    const turn = publicationTransactionChain.then(async () => await readHomeConnectionDescriptorTransaction({
+        env: params.env,
+        continuityStore: params.continuityStore,
+        visibility: "authenticated",
+        resolveIrohEndpointState: () => iroh,
+        publicationIdentity: { homeServerIdentityId, canonicalServerUrl },
+        minimumOuterRevisionExclusive: params.minimumOuterRevisionExclusive,
+    }, true));
+    publicationTransactionChain = turn.then(() => undefined, () => undefined);
+    const descriptor = await turn;
+    if (!descriptor) throw new HomeConnectionDescriptorPublicationUnavailableError();
+    return descriptor;
 }
 
 async function readHomeConnectionDescriptorTransaction(params: Readonly<{
@@ -315,26 +390,41 @@ async function readHomeConnectionDescriptorTransaction(params: Readonly<{
     continuityStore: HomeConnectionDescriptorContinuityStore;
     visibility: HomeConnectionDescriptorVisibility;
     resolveIrohEndpointState?: () => HomeIrohEndpointState | Promise<HomeIrohEndpointState>;
-}>): Promise<HomeConnectionDescriptorV1 | undefined> {
+    publicationIdentity?: Readonly<{ homeServerIdentityId: string; canonicalServerUrl: string }>;
+    minimumOuterRevisionExclusive?: number;
+}>, required: boolean): Promise<HomeConnectionDescriptorV1 | undefined> {
     const env = params.env ?? process.env;
     const [iroh, prime] = await Promise.all([
         params.resolveIrohEndpointState ? params.resolveIrohEndpointState() : getHomeIrohEndpointState(),
         primeDescriptorContinuity(params.continuityStore),
     ]);
-    if (prime.status !== "ready") return undefined;
+    if (prime.status !== "ready") {
+        if (required) throw new HomeConnectionDescriptorPublicationUnavailableError();
+        return undefined;
+    }
 
     const facts: HomeDescriptorPublicationFacts = {
-        homeServerIdentityId: readCachedServerIdentityIdForHotPath(env),
-        canonicalServerUrl: resolveConfiguredCanonicalServerUrl(env),
+        homeServerIdentityId: params.publicationIdentity?.homeServerIdentityId
+            ?? readCachedServerIdentityIdForHotPath(env),
+        canonicalServerUrl: params.publicationIdentity?.canonicalServerUrl
+            ?? resolveConfiguredCanonicalServerUrl(env),
         publicServerUrl: resolveConfiguredPublicServerUrl(env) ?? null,
-        // The Iroh producer revision reaches the composer through `iroh`; an
-        // explicit floor belongs to the relocation owner, not to this read.
-        minimumOuterRevisionExclusive: null,
+        // An explicit floor belongs only to the relocation owner, not to an
+        // ordinary publication read.
+        minimumOuterRevisionExclusive: params.minimumOuterRevisionExclusive ?? null,
         persistedOuterRevisionOwner: prime.persisted,
         iroh,
     };
     const previouslyCommittedOwner = revisionOwner;
     const composed = composeHomeConnectionDescriptor(facts);
+    if (
+        required
+        && !composed
+        && iroh.status !== "retired"
+        && contentKeyCarriesIrohEndpoint(previouslyCommittedOwner?.contentKey)
+    ) {
+        throw new HomeConnectionDescriptorPublicationUnavailableError();
+    }
     const candidateOwner = composed ? revisionOwner : previouslyCommittedOwner;
     // Composition calculates against the committed frontier, but the new
     // in-memory frontier becomes visible only after its durable write lands.
@@ -343,7 +433,10 @@ async function readHomeConnectionDescriptorTransaction(params: Readonly<{
         try {
             if (supersededLocalCandidate?.contentKey === candidateOwner.contentKey) {
                 const current = await params.continuityStore.read();
-                if (!current) return undefined;
+                if (!current) {
+                    if (required) throw new HomeConnectionDescriptorPublicationUnavailableError();
+                    return undefined;
+                }
                 continuityPrime = { status: "ready", persisted: current };
                 revisionOwner = current;
                 if (current.contentKey !== candidateOwner.contentKey) {
@@ -353,6 +446,7 @@ async function readHomeConnectionDescriptorTransaction(params: Readonly<{
                             winner: current,
                         };
                     }
+                    if (required) throw new HomeConnectionDescriptorPublicationUnavailableError();
                     return undefined;
                 }
                 supersededLocalCandidate = null;
@@ -373,6 +467,7 @@ async function readHomeConnectionDescriptorTransaction(params: Readonly<{
                     contentKey: candidateOwner.contentKey,
                     winner: result.continuity,
                 };
+                if (required) throw new HomeConnectionDescriptorPublicationUnavailableError();
                 return undefined;
             }
             revisionOwner = result.continuity;
@@ -389,6 +484,7 @@ async function readHomeConnectionDescriptorTransaction(params: Readonly<{
                 { module: "iroh", level: "warn", detail: error instanceof Error ? error.message : undefined },
                 "Home connection descriptor continuity commit failed; publishing no descriptor",
             );
+            if (required) throw new HomeConnectionDescriptorPublicationUnavailableError();
             return undefined;
         }
     }

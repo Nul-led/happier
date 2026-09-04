@@ -113,6 +113,104 @@ function createBrowserArtifactArchive() {
     return { graph, archive, moduleBytes };
 }
 
+const RETENTION_COLLECTION = {
+    id: "tasks",
+    schemaVersion: 1,
+    rowIdField: "id",
+    schema: {
+        type: "object",
+        properties: {
+            id: { type: "string", maxLength: 256 },
+            status: { type: "string", enum: ["closed", "open"] },
+        },
+        required: ["id", "status"],
+        additionalProperties: false,
+    },
+    serverReadable: ["status"],
+    indexes: [],
+    relations: [],
+} as const;
+
+function createHostedReleaseFixture(input: Readonly<{
+    version: string;
+    ordinal: number;
+    includeCollection?: boolean;
+}>) {
+    const ref = { pluginId: PLUGIN_ID, version: input.version } as const;
+    const { graph, archive: uiArchive } = createBrowserArtifactArchive();
+    const normalizedManifest = {
+        ...releaseFacts().normalizedManifest,
+        version: input.version,
+        contributes: {
+            ...(input.includeCollection
+                ? { accountCollections: [RETENTION_COLLECTION] }
+                : {}),
+            resources: [{
+                id: "brand-icon",
+                kind: "asset",
+                path: "assets/brand.png",
+                contentType: "image/png",
+            }],
+        },
+    };
+    const packageAssetArchive = createPackageAssetArchiveV1({
+        manifest: normalizedManifest,
+        files: [{
+            path: "assets/brand.png",
+            bytes: new Uint8Array([137, 80, 78, input.ordinal]),
+        }],
+    });
+    if (!packageAssetArchive) {
+        throw new Error("Expected retention package Asset archive fixture");
+    }
+    const collectionContracts = input.includeCollection
+        ? normalizePluginAccountCollectionContractsV1({
+            pluginId: PLUGIN_ID,
+            contributions: [
+                PluginAccountCollectionContributionV1Schema.parse(RETENTION_COLLECTION),
+            ],
+        }).map(({ pluginId, collectionId, schemaVersion, contractDigest }) => ({
+            pluginId,
+            collectionId,
+            schemaVersion,
+            contractDigest,
+        }))
+        : [];
+    const slot = {
+        ...releaseFacts().uiSlots[0]!,
+        artifactDigest: graph.digest,
+    };
+    return {
+        ref,
+        facts: releaseFacts({
+            ref,
+            archiveDigestSha256: `sha256:${String(input.ordinal).repeat(64)}`,
+            normalizedManifest,
+            collectionContracts,
+            uiSlots: [slot],
+            packageAssetArchive: packageAssetArchive.descriptor,
+        }),
+        collectionContracts,
+        slot,
+        uiArtifactId: `00000000-0000-4000-8000-${String(input.ordinal * 2 + 10).padStart(12, "0")}`,
+        uiArtifact: {
+            header: encodePlainArtifactStoredContent(uiArchive.header),
+            body: encodePlainArtifactStoredContent({
+                body: encodePluginUiArtifactArchiveBodyV1(uiArchive.body),
+            }),
+            dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER,
+        },
+        packageArtifactId: `00000000-0000-4000-8000-${String(input.ordinal * 2 + 11).padStart(12, "0")}`,
+        packageArtifact: {
+            header: encodePlainArtifactStoredContent(packageAssetArchive.header),
+            body: encodePlainArtifactStoredContent({
+                body: encodePackageAssetArchiveBodyV1(packageAssetArchive.body),
+            }),
+            dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER,
+        },
+    };
+}
+
 describe("plugin Availability operations", () => {
     let harness: LightSqliteHarness;
 
@@ -133,6 +231,11 @@ describe("plugin Availability operations", () => {
         harness.resetEnv();
         await harness.resetDbTables([
             () => db.accountChange.deleteMany(),
+            () => db.automationEventSourceCatalogStatus.deleteMany(),
+            () => db.automationEventSourceStatus.deleteMany(),
+            () => db.automationTrigger.deleteMany(),
+            () => db.automation.deleteMany(),
+            () => db.automationEventCatalogState.deleteMany(),
             () => db.pluginCollectionCandidatePreparationStage.deleteMany(),
             () => db.pluginCollectionIndexEntry.deleteMany(),
             () => db.pluginCollectionProjection.deleteMany(),
@@ -181,6 +284,60 @@ describe("plugin Availability operations", () => {
                 maxAccountBytes: 4 * 1024 * 1024,
             }),
             resolveServerIdentityId: async () => SERVER_IDENTITY_ID,
+        });
+    }
+
+    async function publishHostedRelease(
+        service: ReturnType<typeof operations>,
+        fixture: ReturnType<typeof createHostedReleaseFixture>,
+    ) {
+        await service.publishRelease({
+            accountId: ACCOUNT_ID,
+            input: { facts: fixture.facts, sourceClass: "registryPackage" },
+        });
+    }
+
+    async function selectHostedRelease(
+        service: ReturnType<typeof operations>,
+        fixture: ReturnType<typeof createHostedReleaseFixture>,
+        expectedRevision: string | null,
+    ) {
+        await service.setIntent({
+            accountId: ACCOUNT_ID,
+            input: {
+                pluginId: PLUGIN_ID,
+                desiredVersion: fixture.ref.version,
+                enabled: true,
+                offlineUiHosting: "enabled",
+                writableCollections: fixture.collectionContracts,
+                expectedRevision,
+            },
+        });
+    }
+
+    async function hostReleaseArchives(
+        service: ReturnType<typeof operations>,
+        fixture: ReturnType<typeof createHostedReleaseFixture>,
+    ) {
+        await service.publishUiArtifact({
+            accountId: ACCOUNT_ID,
+            supportsCurrentStoredContentProtocol: true,
+            input: {
+                release: fixture.ref,
+                slot: fixture.slot,
+                hostCompatibility: hostedArtifactLinkCompatibility(),
+                artifactId: fixture.uiArtifactId,
+                artifact: fixture.uiArtifact,
+            },
+        });
+        await service.publishPackageAsset({
+            accountId: ACCOUNT_ID,
+            supportsCurrentStoredContentProtocol: true,
+            input: {
+                release: fixture.ref,
+                artifactId: fixture.packageArtifactId,
+                artifact: fixture.packageArtifact,
+            },
         });
     }
 
@@ -928,6 +1085,137 @@ describe("plugin Availability operations", () => {
             select: { pluginMaterializationRevision: true },
         })).resolves.toEqual({ pluginMaterializationRevision: BigInt(2) });
         await expect(db.pluginMachineMaterialization.count({ where: { accountId: ACCOUNT_ID } })).resolves.toBe(0);
+    });
+
+    it("deletes source and catalog status only for a materialization removed by an accepted snapshot replacement", async () => {
+        await seedAccountAndMachine();
+        const service = operations();
+        const removedMaterializationId = "install-epoch-removed";
+        const retainedMaterializationId = "install-epoch-retained";
+        const materialization = (input: Readonly<{
+            materializationId: string;
+            pluginId: string;
+        }>) => ({
+            serverIdentityId: SERVER_IDENTITY_ID,
+            machineId: MACHINE_ID,
+            materializationId: input.materializationId,
+            pluginId: input.pluginId,
+            version: RELEASE.version,
+            sourceClass: "registryPackage" as const,
+            portableRelease: true,
+            uiArtifacts: [],
+            enabled: true,
+            trustState: "trusted" as const,
+            observedAt: 1_700_000_000_000,
+        });
+        const removed = materialization({
+            materializationId: removedMaterializationId,
+            pluginId: PLUGIN_ID,
+        });
+        const retained = materialization({
+            materializationId: retainedMaterializationId,
+            pluginId: DISABLED_PLUGIN_ID,
+        });
+        await service.reportMaterializations({
+            accountId: ACCOUNT_ID,
+            publisherMachineId: MACHINE_ID,
+            input: {
+                snapshot: {
+                    serverIdentityId: SERVER_IDENTITY_ID,
+                    machineId: MACHINE_ID,
+                    revision: 1,
+                    materializations: [removed, retained],
+                },
+            },
+        });
+
+        const triggerIds = ["removed-materialization-trigger", "retained-materialization-trigger"];
+        await db.automation.create({
+            data: {
+                id: "materialization-status-automation",
+                accountId: ACCOUNT_ID,
+                name: "Materialization status lifecycle",
+                enabled: true,
+                targetType: "new_session",
+                templateCiphertext: "{}",
+                templateVersion: 1,
+                triggers: {
+                    create: triggerIds.map((id, index) => ({
+                        id,
+                        kind: "pluginEvent" as const,
+                        enabled: true,
+                        revision: 0,
+                        eventPluginId: index === 0 ? PLUGIN_ID : DISABLED_PLUGIN_ID,
+                        eventLocalId: "fixture-event",
+                        sourceSelectorId: `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+                        sourceContractVersion: 1,
+                        observationTransport: "checkpointedPull" as const,
+                        watcherMachineId: MACHINE_ID,
+                        watcherMachineInstallationId: "machine-installation-availability",
+                        watcherPluginId: index === 0 ? PLUGIN_ID : DISABLED_PLUGIN_ID,
+                        watcherMaterializationId: index === 0
+                            ? removedMaterializationId
+                            : retainedMaterializationId,
+                        definitionEnvelope: "{}",
+                    })),
+                },
+            },
+        });
+        for (const [index, materializationId] of [
+            removedMaterializationId,
+            retainedMaterializationId,
+        ].entries()) {
+            const eventPluginId = index === 0 ? PLUGIN_ID : DISABLED_PLUGIN_ID;
+            await db.automationEventSourceStatus.create({
+                data: {
+                    triggerId: triggerIds[index]!,
+                    eventPluginId,
+                    eventLocalId: "fixture-event",
+                    sourceSelectorId: `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+                    triggerRevision: 0,
+                    reporterMachineId: MACHINE_ID,
+                    reporterMachineInstallationId: "machine-installation-availability",
+                    reporterMaterializationId: materializationId,
+                    reporterImmutableGenerationId: `generation-${index}`,
+                    state: "observing",
+                },
+            });
+            await db.automationEventSourceCatalogStatus.create({
+                data: {
+                    accountId: ACCOUNT_ID,
+                    eventPluginId,
+                    reporterMachineId: MACHINE_ID,
+                    reporterMachineInstallationId: "machine-installation-availability",
+                    reporterMaterializationId: materializationId,
+                    reporterImmutableGenerationId: `generation-${index}`,
+                    scopeKey: "checkpointedPull",
+                    observedRevision: 1n,
+                    adoptedRevision: 1n,
+                    state: "current",
+                    reportedAt: new Date(),
+                },
+            });
+        }
+
+        await expect(service.reportMaterializations({
+            accountId: ACCOUNT_ID,
+            publisherMachineId: MACHINE_ID,
+            input: {
+                snapshot: {
+                    serverIdentityId: SERVER_IDENTITY_ID,
+                    machineId: MACHINE_ID,
+                    revision: 2,
+                    materializations: [retained],
+                },
+            },
+        })).resolves.toMatchObject({ outcome: "replaced" });
+
+        await expect(db.automationEventSourceStatus.findMany({
+            select: { reporterMaterializationId: true },
+        })).resolves.toEqual([{ reporterMaterializationId: retainedMaterializationId }]);
+        await expect(db.automationEventSourceCatalogStatus.findMany({
+            select: { reporterMaterializationId: true },
+        })).resolves.toEqual([{ reporterMaterializationId: retainedMaterializationId }]);
     });
 
     it("refuses a machine inventory published by another machine or under another server identity", async () => {
@@ -1900,6 +2188,188 @@ describe("plugin Availability operations", () => {
             accountId: ACCOUNT_ID,
             input: { release: RELEASE },
         })).resolves.toMatchObject({ artifact });
+    });
+
+    it("keeps unchanged-Collection release metadata while retaining hosted archives only for selected and prior across A -> B -> C", async () => {
+        await seedAccountAndMachine();
+        const service = operations();
+        const fixtures = ["1.0.0", "2.0.0", "3.0.0"].map((version, index) => (
+            createHostedReleaseFixture({
+                version,
+                ordinal: index + 1,
+                includeCollection: true,
+            })
+        ));
+        for (const [index, fixture] of fixtures.entries()) {
+            await publishHostedRelease(service, fixture);
+            if (index === 0) {
+                const contract = await db.pluginCollectionContract.findFirstOrThrow({
+                    where: {
+                        pluginId: PLUGIN_ID,
+                        collectionId: "tasks",
+                        schemaVersion: 1,
+                        contractDigest: fixture.collectionContracts[0]!.contractDigest,
+                    },
+                    select: { id: true },
+                });
+                await db.pluginCollectionRow.create({
+                    data: {
+                        accountId: ACCOUNT_ID,
+                        pluginId: PLUGIN_ID,
+                        collectionId: "tasks",
+                        rowId: "retained-task",
+                        schemaVersion: 1,
+                        revision: 1,
+                        contractId: contract.id,
+                        contractDigest: fixture.collectionContracts[0]!.contractDigest,
+                        contentEnvelope: {
+                            t: "plain",
+                            v: { id: "retained-task", status: "open" },
+                        },
+                    },
+                });
+            }
+            await selectHostedRelease(
+                service,
+                fixture,
+                index === 0 ? null : String(index - 1),
+            );
+            await hostReleaseArchives(service, fixture);
+        }
+
+        await expect(db.accountPluginRelease.findMany({
+            where: { accountId: ACCOUNT_ID, pluginId: PLUGIN_ID },
+            select: {
+                version: true,
+                packageAssetArtifactId: true,
+                uiArtifacts: { select: { artifactId: true } },
+            },
+            orderBy: { version: "asc" },
+        })).resolves.toEqual([
+            { version: "1.0.0", packageAssetArtifactId: null, uiArtifacts: [] },
+            {
+                version: "2.0.0",
+                packageAssetArtifactId: fixtures[1]!.packageArtifactId,
+                uiArtifacts: [{ artifactId: fixtures[1]!.uiArtifactId }],
+            },
+            {
+                version: "3.0.0",
+                packageAssetArtifactId: fixtures[2]!.packageArtifactId,
+                uiArtifacts: [{ artifactId: fixtures[2]!.uiArtifactId }],
+            },
+        ]);
+        await expect(db.accountPluginUiArtifact.count()).resolves.toBe(2);
+        await expect(db.artifact.count({ where: { accountId: ACCOUNT_ID } })).resolves.toBe(4);
+    });
+
+    it("prunes hosted archives independently of nonmonotonic release creation order", async () => {
+        await seedAccountAndMachine();
+        const service = operations();
+        const fixtures = new Map(
+            ["2.0.0", "1.0.0", "3.0.0"].map((version, index) => {
+                const fixture = createHostedReleaseFixture({
+                    version,
+                    ordinal: index + 4,
+                });
+                return [version, fixture] as const;
+            }),
+        );
+        for (const fixture of fixtures.values()) {
+            await publishHostedRelease(service, fixture);
+        }
+        for (const [index, version] of ["1.0.0", "2.0.0", "3.0.0"].entries()) {
+            const fixture = fixtures.get(version);
+            if (!fixture) throw new Error(`Missing ${version} fixture`);
+            await selectHostedRelease(
+                service,
+                fixture,
+                index === 0 ? null : String(index - 1),
+            );
+            await hostReleaseArchives(service, fixture);
+        }
+
+        const first = fixtures.get("1.0.0")!;
+        const second = fixtures.get("2.0.0")!;
+        const third = fixtures.get("3.0.0")!;
+        await expect(db.accountPluginRelease.findMany({
+            where: { accountId: ACCOUNT_ID, pluginId: PLUGIN_ID },
+            select: {
+                version: true,
+                packageAssetArtifactId: true,
+                uiArtifacts: { select: { artifactId: true } },
+            },
+            orderBy: { version: "asc" },
+        })).resolves.toEqual([
+            { version: "1.0.0", packageAssetArtifactId: null, uiArtifacts: [] },
+            {
+                version: "2.0.0",
+                packageAssetArtifactId: second.packageArtifactId,
+                uiArtifacts: [{ artifactId: second.uiArtifactId }],
+            },
+            {
+                version: "3.0.0",
+                packageAssetArtifactId: third.packageArtifactId,
+                uiArtifacts: [{ artifactId: third.uiArtifactId }],
+            },
+        ]);
+        await expect(db.artifact.findMany({
+            where: { accountId: ACCOUNT_ID },
+            select: { id: true },
+            orderBy: { id: "asc" },
+        })).resolves.toEqual([
+            second.uiArtifactId,
+            second.packageArtifactId,
+            third.uiArtifactId,
+            third.packageArtifactId,
+        ].sort().map((id) => ({ id })));
+        expect(first.uiArtifactId).not.toBe(second.uiArtifactId);
+    });
+
+    it("keeps the captured prior-version archives when a later intent mutation stays on the selected version", async () => {
+        await seedAccountAndMachine();
+        const service = operations();
+        const first = createHostedReleaseFixture({ version: "1.0.0", ordinal: 7 });
+        const second = createHostedReleaseFixture({ version: "2.0.0", ordinal: 8 });
+
+        await publishHostedRelease(service, first);
+        await selectHostedRelease(service, first, null);
+        await hostReleaseArchives(service, first);
+        await publishHostedRelease(service, second);
+        await selectHostedRelease(service, second, "0");
+        await hostReleaseArchives(service, second);
+
+        await service.setIntent({
+            accountId: ACCOUNT_ID,
+            input: {
+                pluginId: PLUGIN_ID,
+                desiredVersion: second.ref.version,
+                enabled: false,
+                offlineUiHosting: "enabled",
+                writableCollections: second.collectionContracts,
+                expectedRevision: "1",
+            },
+        });
+
+        await expect(db.accountPluginRelease.findMany({
+            where: { accountId: ACCOUNT_ID, pluginId: PLUGIN_ID },
+            select: {
+                version: true,
+                packageAssetArtifactId: true,
+                uiArtifacts: { select: { artifactId: true } },
+            },
+            orderBy: { version: "asc" },
+        })).resolves.toEqual([
+            {
+                version: first.ref.version,
+                packageAssetArtifactId: first.packageArtifactId,
+                uiArtifacts: [{ artifactId: first.uiArtifactId }],
+            },
+            {
+                version: second.ref.version,
+                packageAssetArtifactId: second.packageArtifactId,
+                uiArtifacts: [{ artifactId: second.uiArtifactId }],
+            },
+        ]);
     });
 
     it("fails closed for a selected pre-feature release without an immutable package Asset descriptor", async () => {

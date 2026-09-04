@@ -42,7 +42,7 @@ const notFound = z.object({ error: z.literal("not_found") }).strict();
 const serverIdentityUnavailable = z.object({ error: z.literal("server_identity_unavailable") }).strict();
 
 export function registerPairingAuthRoutes(app: Fastify): void {
-    const gated = createServerFeatureGatedRouteApp(app, "auth.pairing.desktopQrMobileScan");
+    const gated = createServerFeatureGatedRouteApp(app, "auth.pairing.boundQrV2");
     const policy = resolvePairingAuthPolicyFromEnv(process.env);
 
     const forwardStartBody = z.object({

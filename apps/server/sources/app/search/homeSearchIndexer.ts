@@ -142,10 +142,15 @@ export function createHomeSearchIndexer(params: Readonly<{
         start() {
             if (started || stopped) return;
             started = true;
-            tail = tail.then(runReconcile).then(() => {
+            const work = tail.then(runReconcile).then(() => {
                 isReady = true;
-            }).catch(markFailed);
-            initialReconcile = tail;
+            });
+            // `whenReady()` is the caller-visible settlement boundary and must
+            // retain reconciliation failure. The serialized mutation tail absorbs
+            // it only after notifying the lifecycle, so automatic startup remains
+            // non-crashing while an explicit repair can report a truthful failure.
+            initialReconcile = work;
+            tail = work.catch(markFailed);
         },
         async stop() {
             stopped = true;

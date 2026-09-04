@@ -36,7 +36,6 @@ const runContentSelect = {
     executionInputEnvelope: true,
     resultEnvelope: true,
     replyContextEnvelope: true,
-    replyHandoffReceiptEnvelope: true,
     errorMessage: true,
     summaryCiphertext: true,
 } as const;
@@ -246,25 +245,6 @@ function plainReplyContextEnvelope(params: Readonly<{
     });
 }
 
-function plainReplyReceiptEnvelope(params: Readonly<{
-    accountId: string;
-    automationId: string;
-    runId: string;
-    handoffId: string;
-}>): string {
-    return JSON.stringify({
-        t: "plain",
-        v: {
-            v: 1,
-            correspondence: params,
-            result: {
-                kind: "accepted",
-                custodyId: "custody-account-encryption-migration",
-            },
-        },
-    });
-}
-
 async function seedAllCauseRuns(onAccountCreated?: (accountId: string) => void) {
     const account = await db.account.create({
         data: { encryptionMode: "plain" },
@@ -451,7 +431,6 @@ async function seedAllCauseRuns(onAccountCreated?: (accountId: string) => void) 
             replyHandoffTargetMaterializationId: "materialization-account-encryption-migration",
             replyHandoffId: conversationCorrespondence.handoffId,
             replyHandoffState: "accepted",
-            replyHandoffReceiptEnvelope: plainReplyReceiptEnvelope(conversationCorrespondence),
             scheduledAt: new Date("2026-08-10T10:01:00.000Z"),
             dueAt: new Date("2026-08-10T10:01:00.000Z"),
             finishedAt: new Date("2026-08-10T10:02:00.000Z"),
@@ -585,7 +564,6 @@ function migrationItem(params: Readonly<{
     retainsOccurrenceEvidence: boolean;
     resultEnvelope: string | null;
     replyContextEnvelope: string | null;
-    replyHandoffReceiptEnvelope: string | null;
     failureDetailEnvelope: string | null;
 }>) {
     return {
@@ -629,12 +607,6 @@ function migrationItem(params: Readonly<{
             : JSON.stringify({
                 t: "encrypted",
                 c: "replacement-encrypted-reply-context-" + params.runId,
-            }),
-        replyHandoffReceiptEnvelope: params.replyHandoffReceiptEnvelope === null
-            ? null
-            : JSON.stringify({
-                t: "encrypted",
-                c: "replacement-encrypted-receipt-" + params.runId,
             }),
         failureDetailEnvelope: params.failureDetailEnvelope === null
             ? null
@@ -712,7 +684,6 @@ function buildDirective(seeded: Awaited<ReturnType<typeof seedAllCauseRuns>>) {
                 retainsOccurrenceEvidence: true,
                 resultEnvelope: seeded.eventRun.resultEnvelope,
                 replyContextEnvelope: seeded.eventRun.replyContextEnvelope,
-                replyHandoffReceiptEnvelope: seeded.eventRun.replyHandoffReceiptEnvelope,
                 failureDetailEnvelope: seeded.eventRun.errorMessage,
             }),
             migrationItem({
@@ -724,7 +695,6 @@ function buildDirective(seeded: Awaited<ReturnType<typeof seedAllCauseRuns>>) {
                 retainsOccurrenceEvidence: true,
                 resultEnvelope: seeded.conversationRun.resultEnvelope,
                 replyContextEnvelope: seeded.conversationRun.replyContextEnvelope,
-                replyHandoffReceiptEnvelope: seeded.conversationRun.replyHandoffReceiptEnvelope,
                 failureDetailEnvelope: seeded.conversationRun.errorMessage,
             }),
             migrationItem({
@@ -736,7 +706,6 @@ function buildDirective(seeded: Awaited<ReturnType<typeof seedAllCauseRuns>>) {
                 retainsOccurrenceEvidence: false,
                 resultEnvelope: seeded.scheduledRun.resultEnvelope,
                 replyContextEnvelope: seeded.scheduledRun.replyContextEnvelope,
-                replyHandoffReceiptEnvelope: seeded.scheduledRun.replyHandoffReceiptEnvelope,
                 failureDetailEnvelope: seeded.scheduledRun.errorMessage,
             }),
             migrationItem({
@@ -748,7 +717,6 @@ function buildDirective(seeded: Awaited<ReturnType<typeof seedAllCauseRuns>>) {
                 retainsOccurrenceEvidence: false,
                 resultEnvelope: seeded.lifecycleRun.resultEnvelope,
                 replyContextEnvelope: seeded.lifecycleRun.replyContextEnvelope,
-                replyHandoffReceiptEnvelope: seeded.lifecycleRun.replyHandoffReceiptEnvelope,
                 failureDetailEnvelope: seeded.lifecycleRun.errorMessage,
             }),
             migrationItem({
@@ -760,7 +728,6 @@ function buildDirective(seeded: Awaited<ReturnType<typeof seedAllCauseRuns>>) {
                 retainsOccurrenceEvidence: false,
                 resultEnvelope: seeded.manualRun.resultEnvelope,
                 replyContextEnvelope: seeded.manualRun.replyContextEnvelope,
-                replyHandoffReceiptEnvelope: seeded.manualRun.replyHandoffReceiptEnvelope,
                 failureDetailEnvelope: seeded.manualRun.errorMessage,
             }),
         ],
@@ -783,7 +750,6 @@ function expectedMigratedRun(
         executionInputEnvelope: target.executionInputEnvelope,
         resultEnvelope: target.resultEnvelope,
         replyContextEnvelope: target.replyContextEnvelope,
-        replyHandoffReceiptEnvelope: target.replyHandoffReceiptEnvelope,
         errorMessage: target.failureDetailEnvelope,
         summaryCiphertext: null,
     };

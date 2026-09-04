@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import tweetnacl from "tweetnacl";
 import {
     DirectRouteGrantScopeV1Schema,
+    DirectRouteGrantScopeV2Schema,
     DirectRouteGrantPayloadV1Schema,
     DirectRouteGrantPayloadV2Schema,
     PEER_MEDIATION_RECEIPTS,
@@ -12,6 +13,7 @@ import {
     type DirectRouteGrantPayloadV1,
     type DirectRouteGrantPayloadV2,
     type DirectRouteGrantScopeV1,
+    type DirectRouteGrantScopeV2,
     type IrohPeerRouteBindingV2,
     type PeerFlowKindV1,
     type SignedDirectRouteGrantV1,
@@ -79,7 +81,8 @@ export type MintDirectRouteGrantV1Input = Readonly<{
     }>;
 }>;
 
-export type MintDirectRouteGrantV2Input = MintDirectRouteGrantV1Input & Readonly<{
+export type MintDirectRouteGrantV2Input = Omit<MintDirectRouteGrantV1Input, "scope"> & Readonly<{
+    scope: DirectRouteGrantScopeV2;
     /** Required for `iroh_peer` grants: the signed machine/1 initiator/target relationship. */
     iroh?: IrohPeerRouteBindingV2;
     ephemeralPublicKeyBase64Url: string;
@@ -183,8 +186,8 @@ function rejectMint(reasonCode: MintDirectRouteGrantFailure["reasonCode"]): Mint
     };
 }
 
-function validateDirectRouteGrantMintInput(input: MintDirectRouteGrantV1Input):
-    | Readonly<{ ok: true; scope: DirectRouteGrantScopeV1; grantExpiresAt: number }>
+function validateDirectRouteGrantMintEnvelope(input: Omit<MintDirectRouteGrantV1Input, "scope">):
+    | Readonly<{ ok: true; grantExpiresAt: number }>
     | MintDirectRouteGrantFailure {
     if (!input.serverGateEnabled) {
         return rejectMint("blocked_by_server_policy");
@@ -206,6 +209,14 @@ function validateDirectRouteGrantMintInput(input: MintDirectRouteGrantV1Input):
         ? requestedGrantExpiresAt
         : Math.min(requestedGrantExpiresAt, input.signingKey.expiresAt);
 
+    return { ok: true, grantExpiresAt };
+}
+
+function validateDirectRouteGrantMintInput(input: MintDirectRouteGrantV1Input):
+    | Readonly<{ ok: true; scope: DirectRouteGrantScopeV1; grantExpiresAt: number }>
+    | MintDirectRouteGrantFailure {
+    const envelope = validateDirectRouteGrantMintEnvelope(input);
+    if (!envelope.ok) return envelope;
     const scope = DirectRouteGrantScopeV1Schema.safeParse(input.scope);
     if (!scope.success || scope.data.kind !== input.flowKind) {
         return rejectMint("invalid_scope");
@@ -216,7 +227,25 @@ function validateDirectRouteGrantMintInput(input: MintDirectRouteGrantV1Input):
             return rejectMint(methods.reasonCode);
         }
     }
-    return { ok: true, scope: scope.data, grantExpiresAt };
+    return { ok: true, scope: scope.data, grantExpiresAt: envelope.grantExpiresAt };
+}
+
+function validateDirectRouteGrantV2MintInput(input: MintDirectRouteGrantV2Input):
+    | Readonly<{ ok: true; scope: DirectRouteGrantScopeV2; grantExpiresAt: number }>
+    | MintDirectRouteGrantFailure {
+    const envelope = validateDirectRouteGrantMintEnvelope(input);
+    if (!envelope.ok) return envelope;
+    const scope = DirectRouteGrantScopeV2Schema.safeParse(input.scope);
+    if (!scope.success || scope.data.kind !== input.flowKind) {
+        return rejectMint("invalid_scope");
+    }
+    if (scope.data.kind === "machine_rpc") {
+        const methods = validateMachineRpcGrantAllowedMethods(scope.data.allowedMethods);
+        if (!methods.ok) {
+            return rejectMint(methods.reasonCode);
+        }
+    }
+    return { ok: true, scope: scope.data, grantExpiresAt: envelope.grantExpiresAt };
 }
 
 export function mintDirectRouteGrantV1(input: MintDirectRouteGrantV1Input): MintDirectRouteGrantV1Result {
@@ -267,7 +296,7 @@ export function mintDirectRouteGrantV1(input: MintDirectRouteGrantV1Input): Mint
 }
 
 export function mintDirectRouteGrantV2(input: MintDirectRouteGrantV2Input): MintDirectRouteGrantV2Result {
-    const validated = validateDirectRouteGrantMintInput(input);
+    const validated = validateDirectRouteGrantV2MintInput(input);
     if (!validated.ok) return validated;
     if (input.routeKind === "server_relay") return rejectMint("server_relay_not_grantable");
 

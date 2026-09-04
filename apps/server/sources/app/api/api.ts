@@ -60,6 +60,10 @@ import { resolveHomeSearchDbPath } from "@/app/search/homeSearchDb";
 import { getOrCreateServerIdentityId } from "@/app/serverIdentity/serverIdentity";
 import { db } from "@/storage/db";
 import { createV2SessionListVisibilityWhere } from "./routes/session/v2SessionListRows";
+import {
+    SESSION_TRANSCRIPT_PUBLICATION_SELECT,
+    resolveSessionTranscriptPublicationConstraints,
+} from '@/app/session/sessionTranscriptPublicationPolicy';
 import type { HomeConnectionDescriptorContinuityStore } from '@/app/features/homeConnectionDescriptorContinuity';
 import { readHomeConnectionDescriptor } from '@/app/features/homeConnectionDescriptorPublication';
 
@@ -226,12 +230,12 @@ export async function startApi(params: Readonly<{
     if (homeSearch) {
         registerHomeSearchRoutes(typed, {
             service: homeSearch,
-            resolveVisibleSessionIds: async (userId) => (
+            resolveVisibleSessions: async (userId) => resolveSessionTranscriptPublicationConstraints(
                 await db.session.findMany({
                     where: createV2SessionListVisibilityWhere({ userId }),
-                    select: { id: true },
-                })
-            ).map((session) => session.id),
+                    select: { id: true, ...SESSION_TRANSCRIPT_PUBLICATION_SELECT },
+                }),
+            ),
         });
         onShutdown('home-search', async () => { await homeSearch.stop(); });
     }

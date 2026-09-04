@@ -291,7 +291,6 @@ function eventRun() {
         replyHandoffState: "none" as const,
         replyHandoffAttempt: 0,
         replyHandoffDueAt: null,
-        replyHandoffReceiptEnvelope: null,
         scheduledAt: DATE,
         dueAt: DATE,
         claimedAt: null,

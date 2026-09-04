@@ -312,7 +312,6 @@ export type AutomationRunItem = Readonly<{
     replyHandoffState: AutomationRunReplyHandoffState;
     replyHandoffAttempt: number;
     replyHandoffDueAt: Date | null;
-    replyHandoffReceiptEnvelope: string | null;
     scheduledAt: Date;
     dueAt: Date;
     claimedAt: Date | null;

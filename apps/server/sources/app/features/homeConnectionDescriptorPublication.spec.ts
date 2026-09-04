@@ -45,6 +45,7 @@ import type { HomeIrohEndpointState } from "@/app/iroh/homeIrohEndpoint";
 import {
     composeHomeConnectionDescriptor,
     readHomeConnectionDescriptor,
+    readRequiredAuthenticatedHomeConnectionDescriptor,
     resolvePublishedHomeConnectionDescriptor,
     resetHomeConnectionDescriptorRevisionOwnerForTests,
     type HomeDescriptorPublicationFacts,
@@ -58,9 +59,6 @@ import {
 } from "./homeConnectionDescriptorContinuity";
 
 const irohSnapshot = {
-    homeServerIdentityId: "srv_home",
-    canonicalServerUrl: "https://home.example.test",
-    revision: 7,
     endpoint: {
         endpointId: "a".repeat(64),
         relayUrls: ["https://relay.example.test"],
@@ -113,7 +111,7 @@ describe("home connection descriptor publication owner", () => {
         expect(composeHomeConnectionDescriptor(facts({ publicServerUrl: "not a url" }))).toBeUndefined();
     });
 
-    it("publishes an Iroh-only descriptor from the endpoint lifecycle and consumes its persistent revision", () => {
+    it("publishes an Iroh-only descriptor and allocates its outer revision locally", () => {
         const descriptor = composeHomeConnectionDescriptor(facts({
             canonicalServerUrl: "http://127.0.0.1:43123",
             iroh: activeIroh(),
@@ -121,8 +119,8 @@ describe("home connection descriptor publication owner", () => {
         expect(descriptor).toEqual({
             v: 1,
             homeServerIdentityId: "srv_home",
-            canonicalServerUrl: "https://home.example.test",
-            revision: 7,
+            canonicalServerUrl: "http://127.0.0.1:43123",
+            revision: 1,
             endpoints: [{
                 kind: "iroh",
                 endpointId: "a".repeat(64),
@@ -146,7 +144,7 @@ describe("home connection descriptor publication owner", () => {
                 directAddresses: ["192.168.1.10:4242"],
             },
         ]);
-        expect(descriptor?.revision).toBe(7);
+        expect(descriptor?.revision).toBe(1);
     });
 
     it("keeps the in-process revision monotonic across effective endpoint-set changes while the process runs", () => {
@@ -158,27 +156,34 @@ describe("home connection descriptor publication owner", () => {
         const repeat = composeHomeConnectionDescriptor(facts({ publicServerUrl: "https://ingress.example.test" }));
         expect(repeat?.revision).toBe(1);
         expect(repeat).toEqual(first);
-        // The Iroh lifecycle joins: the persistent producer revision (3,
-        // durable across restarts via endpoint continuity) beats the
-        // in-process floor and the set changed.
+        // The Iroh lifecycle joins: only the outer owner advances the set.
         expect(composeHomeConnectionDescriptor(facts({
             publicServerUrl: "https://ingress.example.test",
-            iroh: { status: "active", snapshot: { ...irohSnapshot, revision: 3 }, failureReason: null },
+            iroh: activeIroh(),
+        }))?.revision).toBe(2);
+        // Only an explicit retirement may remove Iroh and advance the set.
+        expect(composeHomeConnectionDescriptor(facts({
+            publicServerUrl: "https://ingress.example.test",
+            iroh: { status: "retired", snapshot: null, failureReason: null },
         }))?.revision).toBe(3);
-        // Iroh drops: the set changed again, so the owner increments past the
-        // last published revision instead of reusing a stale one.
-        expect(composeHomeConnectionDescriptor(facts({ publicServerUrl: "https://ingress.example.test" }))?.revision).toBe(4);
     });
 
-    it("never regresses within the process even when the producer revision goes backwards", () => {
+    it("advances the outer revision when current endpoint facts change", () => {
         expect(composeHomeConnectionDescriptor(facts({
-            iroh: { status: "active", snapshot: { ...irohSnapshot, revision: 8 }, failureReason: null },
-        }))?.revision).toBe(8);
-        // A stale producer snapshot (older continuity revision, same endpoint
-        // content) must not move the published revision backwards.
+            iroh: activeIroh(),
+        }))?.revision).toBe(1);
         expect(composeHomeConnectionDescriptor(facts({
-            iroh: { status: "active", snapshot: { ...irohSnapshot, revision: 2 }, failureReason: null },
-        }))?.revision).toBe(8);
+            iroh: {
+                status: "active",
+                snapshot: {
+                    endpoint: {
+                        ...irohSnapshot.endpoint,
+                        directAddresses: ["192.168.1.11:4242"],
+                    },
+                },
+                failureReason: null,
+            },
+        }))?.revision).toBe(2);
     });
 
     it("continues the outer descriptor revision across an Iroh-to-HTTPS restart", () => {
@@ -196,6 +201,7 @@ describe("home connection descriptor publication owner", () => {
         const httpsFacts = facts({
             publicServerUrl: "https://ingress.example.test",
             persistedOuterRevisionOwner: { revision: 7, contentKey: irohContentKey },
+            iroh: { status: "retired", snapshot: null, failureReason: null },
         });
         const retired = composeHomeConnectionDescriptor(httpsFacts);
         expect(retired?.revision).toBe(8);
@@ -253,7 +259,7 @@ describe("home connection descriptor publication owner", () => {
             publicServerUrl: "https://ingress.example.test",
             iroh: activeIroh(),
         }));
-        expect(published?.revision).toBe(7);
+        expect(published?.revision).toBe(1);
 
         // A fail-closed Iroh startup is a transient carrier failure, not the
         // operator retiring the endpoint. Publishing the remaining HTTPS-only
@@ -268,7 +274,7 @@ describe("home connection descriptor publication owner", () => {
         expect(composeHomeConnectionDescriptor(facts({
             publicServerUrl: "https://ingress.example.test",
             iroh: activeIroh(),
-        }))?.revision).toBe(7);
+        }))?.revision).toBe(1);
     });
 
     it("does not treat a fail-closed lifecycle as retirement across a restart", () => {
@@ -286,6 +292,25 @@ describe("home connection descriptor publication owner", () => {
             publicServerUrl: "https://ingress.example.test",
             persistedOuterRevisionOwner: { revision: 7, contentKey: irohContentKey },
             iroh: { status: "failed", snapshot: null, failureReason: "native_error" },
+        }))).toBeUndefined();
+    });
+
+    it("does not treat an uncomposed startup transition as an explicit Iroh retirement", () => {
+        const irohContentKey = createHomeConnectionDescriptorContentKey({
+            homeServerIdentityId: "srv_home",
+            canonicalServerUrl: "https://home.example.test",
+            endpoints: [{
+                kind: "iroh",
+                endpointId: "a".repeat(64),
+                relayUrls: ["https://relay.example.test"],
+                directAddresses: ["192.168.1.10:4242"],
+            }],
+        });
+
+        expect(composeHomeConnectionDescriptor(facts({
+            publicServerUrl: "https://ingress.example.test",
+            persistedOuterRevisionOwner: { revision: 7, contentKey: irohContentKey },
+            iroh: inactiveIroh(),
         }))).toBeUndefined();
     });
 
@@ -342,14 +367,14 @@ describe("home connection descriptor production read path", () => {
         await Promise.all(dataDirs.splice(0).map((path) => rm(path, { recursive: true, force: true })));
     });
 
-    it("publishes the exact endpoint revision and keeps it across an Iroh-to-HTTPS-only restart", async () => {
+    it("allocates the outer revision and keeps it across an explicit Iroh retirement", async () => {
         const active = await readHomeConnectionDescriptor({
             env,
             continuityStore: createFileHomeConnectionDescriptorContinuityStore(continuityPath()),
             visibility: "authenticated",
             resolveIrohEndpointState: activeIroh,
         });
-        expect(active?.revision).toBe(7);
+        expect(active?.revision).toBe(1);
         expect(active?.endpoints).toEqual([{
             kind: "iroh",
             endpointId: "a".repeat(64),
@@ -366,13 +391,13 @@ describe("home connection descriptor production read path", () => {
             env: retiredEnv,
             continuityStore: createFileHomeConnectionDescriptorContinuityStore(continuityPath()),
             visibility: "authenticated",
-            resolveIrohEndpointState: inactiveIroh,
+            resolveIrohEndpointState: () => ({ status: "retired", snapshot: null, failureReason: null }),
         });
         expect(retired).toEqual({
             v: 1,
             homeServerIdentityId: "srv_home",
             canonicalServerUrl: "https://home.example.test",
-            revision: 8,
+            revision: 2,
             endpoints: [{ kind: "https", url: "https://ingress.example.test" }],
         });
 
@@ -382,11 +407,11 @@ describe("home connection descriptor production read path", () => {
             env: retiredEnv,
             continuityStore: createFileHomeConnectionDescriptorContinuityStore(continuityPath()),
             visibility: "authenticated",
-            resolveIrohEndpointState: inactiveIroh,
-        }))?.revision).toBe(8);
+            resolveIrohEndpointState: () => ({ status: "retired", snapshot: null, failureReason: null }),
+        }))?.revision).toBe(2);
     });
 
-    it("persists only the outer revision and content key with private-directory permissions", async () => {
+    it("persists the outer revision, content key, and pinned EndpointId with private-directory permissions", async () => {
         await readHomeConnectionDescriptor({
             env,
             continuityStore: createFileHomeConnectionDescriptorContinuityStore(continuityPath()),
@@ -395,8 +420,8 @@ describe("home connection descriptor production read path", () => {
         });
 
         const persisted: unknown = JSON.parse(await readFile(continuityPath(), "utf8"));
-        expect(Object.keys(persisted as Record<string, unknown>).sort()).toEqual(["contentKey", "revision"]);
-        expect((persisted as { revision: number }).revision).toBe(7);
+        expect(Object.keys(persisted as Record<string, unknown>).sort()).toEqual(["contentKey", "irohEndpointId", "revision"]);
+        expect(persisted).toMatchObject({ revision: 1, irohEndpointId: "a".repeat(64) });
         if (process.platform !== "win32") {
             expect((await stat(continuityPath())).mode & 0o777).toBe(0o600);
             expect((await stat(dirname(continuityPath()))).mode & 0o777).toBe(0o700);
@@ -477,6 +502,59 @@ describe("home connection descriptor production read path", () => {
         expect(reads).toBe(2);
     });
 
+    it("surfaces transient continuity failure to required credential/bootstrap readers", async () => {
+        let reads = 0;
+        const store: HomeConnectionDescriptorContinuityStore = {
+            read: async () => {
+                reads += 1;
+                if (reads === 1) throw new Error("temporary database outage");
+                return null;
+            },
+            write: async (continuity) => ({ status: "committed", continuity }),
+        };
+
+        await expect(readRequiredAuthenticatedHomeConnectionDescriptor({
+            env,
+            continuityStore: store,
+            resolveIrohEndpointState: activeIroh,
+        })).rejects.toMatchObject({
+            code: "home_connection_descriptor_publication_unavailable",
+        });
+        await expect(readRequiredAuthenticatedHomeConnectionDescriptor({
+            env,
+            continuityStore: store,
+            resolveIrohEndpointState: activeIroh,
+        })).resolves.toMatchObject({ homeServerIdentityId: "srv_home" });
+    });
+
+    it("surfaces a retained Iroh publication failure to required credential/bootstrap readers", async () => {
+        let persisted: { revision: number; contentKey: string } | null = null;
+        const store: HomeConnectionDescriptorContinuityStore = {
+            read: async () => persisted,
+            write: async (continuity) => {
+                persisted = continuity;
+                return { status: "committed", continuity };
+            },
+        };
+
+        await expect(readRequiredAuthenticatedHomeConnectionDescriptor({
+            env,
+            continuityStore: store,
+            resolveIrohEndpointState: activeIroh,
+        })).resolves.toMatchObject({ homeServerIdentityId: "srv_home" });
+        await expect(readRequiredAuthenticatedHomeConnectionDescriptor({
+            env,
+            continuityStore: store,
+            resolveIrohEndpointState: async () => ({
+                status: "failed",
+                snapshot: null,
+                failureReason: "acceptor_not_running",
+            }),
+        })).rejects.toMatchObject({
+            code: "home_connection_descriptor_publication_unavailable",
+        });
+    });
+
     it("retries publication after a transient continuity write failure", async () => {
         let writes = 0;
         let persisted: { revision: number; contentKey: string } | null = null;
@@ -501,7 +579,7 @@ describe("home connection descriptor production read path", () => {
             continuityStore: store,
             visibility: "authenticated",
             resolveIrohEndpointState: activeIroh,
-        }))?.revision).toBe(7);
+        }))?.revision).toBe(1);
         expect(writes).toBe(2);
     });
 
@@ -598,8 +676,8 @@ describe("home connection descriptor production read path", () => {
 
     it("never lets an earlier in-flight continuity write rename over a newer committed revision", async () => {
         // Two reads compose in sequence while the OS rename boundary is
-        // captured: read 1 composes revision 7 (Iroh-only); read 2 composes
-        // revision 8 (Iroh + newly observed HTTPS ingress). Each persistence
+        // captured: read 1 composes revision 1 (Iroh-only); read 2 composes
+        // revision 2 (Iroh + newly observed HTTPS ingress). Each persistence
         // turn uses an independent temp+rename, so without owner-side
         // serialization the older rename can complete after the newer one and
         // regress the durable revision below what clients already adopted.
@@ -638,12 +716,12 @@ describe("home connection descriptor production read path", () => {
             for (const capture of renameGate.captures) await capture.complete();
 
             const [, newerDescriptor] = await Promise.all([read1, read2]);
-            expect(newerDescriptor?.revision).toBe(8);
+            expect(newerDescriptor?.revision).toBe(2);
 
             const durable: { revision: number; contentKey: string } = JSON.parse(
                 await readFile(continuityPath(), "utf8"),
             );
-            expect(durable.revision).toBe(8);
+            expect(durable.revision).toBe(2);
             expect(durable.contentKey).toBe(createHomeConnectionDescriptorContentKey({
                 homeServerIdentityId: "srv_home",
                 canonicalServerUrl: "https://home.example.test",
@@ -665,7 +743,7 @@ describe("home connection descriptor production read path", () => {
             renameGate.capture = false;
 
             // A restart must never republish a revision below the already
-            // adopted revision 8, even once the ingress fact is withdrawn.
+            // adopted revision 2, even once the ingress fact is withdrawn.
             restart();
             const restarted = await readHomeConnectionDescriptor({
                 env,
@@ -673,7 +751,7 @@ describe("home connection descriptor production read path", () => {
                 visibility: "authenticated",
                 resolveIrohEndpointState: activeIroh,
             });
-            expect(restarted?.revision).toBeGreaterThanOrEqual(8);
+            expect(restarted?.revision).toBeGreaterThanOrEqual(2);
         } finally {
             renameGate.capture = false;
             renameGate.captures.length = 0;
@@ -688,11 +766,9 @@ describe("home connection descriptor production read path", () => {
         const newerIroh = (): HomeIrohEndpointState => ({
             status: "active",
             snapshot: {
-                ...irohSnapshot,
-                revision: 8,
                 endpoint: {
                     ...irohSnapshot.endpoint,
-                    endpointId: "b".repeat(64),
+                    directAddresses: ["192.168.1.11:4242"],
                 },
             },
             failureReason: null,
@@ -720,10 +796,13 @@ describe("home connection descriptor production read path", () => {
         first.resolve(activeIroh());
 
         const [olderDescriptor, newerDescriptor] = await Promise.all([read1, read2]);
-        expect(olderDescriptor?.revision).toBe(7);
+        expect(olderDescriptor?.revision).toBe(1);
         expect(olderDescriptor?.endpoints[0]).toMatchObject({ endpointId: "a".repeat(64) });
-        expect(newerDescriptor?.revision).toBe(8);
-        expect(newerDescriptor?.endpoints[0]).toMatchObject({ endpointId: "b".repeat(64) });
+        expect(newerDescriptor?.revision).toBe(2);
+        expect(newerDescriptor?.endpoints[0]).toMatchObject({
+            endpointId: "a".repeat(64),
+            directAddresses: ["192.168.1.11:4242"],
+        });
 
         restart();
         const restarted = await readHomeConnectionDescriptor({
@@ -732,8 +811,11 @@ describe("home connection descriptor production read path", () => {
             visibility: "authenticated",
             resolveIrohEndpointState: newerIroh,
         });
-        expect(restarted?.revision).toBe(8);
-        expect(restarted?.endpoints[0]).toMatchObject({ endpointId: "b".repeat(64) });
+        expect(restarted?.revision).toBe(2);
+        expect(restarted?.endpoints[0]).toMatchObject({
+            endpointId: "a".repeat(64),
+            directAddresses: ["192.168.1.11:4242"],
+        });
     });
 
     it("does not poison later publication transactions when endpoint observation fails", async () => {
@@ -752,7 +834,7 @@ describe("home connection descriptor production read path", () => {
             visibility: "authenticated",
             resolveIrohEndpointState: activeIroh,
         });
-        expect(recovered?.revision).toBe(7);
+        expect(recovered?.revision).toBe(1);
         expect(recovered?.endpoints[0]).toMatchObject({ endpointId: "a".repeat(64) });
     });
 });

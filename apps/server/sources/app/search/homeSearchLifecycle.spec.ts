@@ -246,6 +246,89 @@ describe('Home search lifecycle', () => {
         await lifecycle.stop();
     });
 
+    it('reports failure when explicit repair joins an unsuccessful automatic rebuild', async () => {
+        const root = await mkdtemp(join(tmpdir(), 'happier-home-lifecycle-joined-repair-'));
+        let canonicalReads = 0;
+        let markRebuildReadStarted!: () => void;
+        const rebuildReadStarted = new Promise<void>((resolve) => { markRebuildReadStarted = resolve; });
+        let releaseRebuildRead!: () => void;
+        const rebuildReadGate = new Promise<void>((resolve) => { releaseRebuildRead = resolve; });
+        const lifecycle = startHomeSearchLifecycle({
+            dbPath: join(root, 'search.sqlite'),
+            homeServerIdentityId: 'srv_test',
+            storagePolicy: 'plaintext_only',
+            readCanonicalMessagesPage: async () => {
+                canonicalReads += 1;
+                if (canonicalReads === 1) return { messages: [] };
+                markRebuildReadStarted();
+                await rebuildReadGate;
+                throw new Error('automatic rebuild reconciliation failed');
+            },
+        });
+        lifecycle.start();
+        await lifecycle.whenReady();
+
+        const automatic = lifecycle.invalidateAndRebuild('restore');
+        await rebuildReadStarted;
+        const explicit = lifecycle.invalidateAndRebuild('explicit-repair');
+        releaseRebuildRead();
+
+        await expect(automatic).resolves.toBeUndefined();
+        await expect(explicit).rejects.toThrow('did not produce a ready index');
+        expect(lifecycle.capability()).toEqual({ enabled: false, reason: 'index_unavailable' });
+        await lifecycle.stop();
+    });
+
+    it('reports failure when an explicit repair replacement fails while draining catch-up mutations', async () => {
+        const root = await mkdtemp(join(tmpdir(), 'happier-home-lifecycle-explicit-catchup-failure-'));
+        let canonicalReads = 0;
+        let markRepairReadStarted!: () => void;
+        const repairReadStarted = new Promise<void>((resolve) => { markRepairReadStarted = resolve; });
+        let releaseRepairRead!: () => void;
+        const repairReadGate = new Promise<void>((resolve) => { releaseRepairRead = resolve; });
+        const lifecycle = startHomeSearchLifecycle({
+            dbPath: join(root, 'search.sqlite'),
+            homeServerIdentityId: 'srv_test',
+            storagePolicy: 'plaintext_only',
+            readCanonicalMessagesPage: async () => {
+                canonicalReads += 1;
+                if (canonicalReads === 1) return { messages: [] };
+                markRepairReadStarted();
+                await repairReadGate;
+                return { messages: [] };
+            },
+            openDb: async (openParams) => {
+                const real = await openHomeSearchDb(openParams);
+                return {
+                    ...real,
+                    upsert() {
+                        throw new Error('explicit repair catch-up write failed');
+                    },
+                };
+            },
+        });
+        lifecycle.start();
+        await lifecycle.whenReady();
+
+        const repair = lifecycle.invalidateAndRebuild('explicit-repair');
+        await repairReadStarted;
+        await commitMutations([{
+            kind: 'upsert',
+            message: {
+                id: 'm-catch-up',
+                sessionId: 's-catch-up',
+                seq: 1,
+                createdAtMs: 1,
+                content: plainTextContent('queued during explicit repair'),
+            },
+        }]);
+        releaseRepairRead();
+
+        await expect(repair).rejects.toThrow('did not produce a ready index');
+        expect(lifecycle.capability()).toEqual({ enabled: false, reason: 'index_unavailable' });
+        await lifecycle.stop();
+    });
+
     it('rebuilds an unsupported derived schema instead of disabling canonical search', async () => {
         const root = await mkdtemp(join(tmpdir(), 'happier-home-lifecycle-schema-upgrade-'));
         const path = join(root, 'derived', 'search.sqlite');
@@ -590,6 +673,9 @@ describe('Home search lifecycle', () => {
 
         expect(injectedDuringDrain).toBe(true);
         expect(readyResolved).toBe(false);
+        expect(lifecycle.capability()).toEqual({ enabled: false, reason: 'indexing' });
+        expect(lifecycle.search({ v: 1, query: 'while catch up drains', scope: { type: 'global' }, mode: 'auto' }))
+            .toMatchObject({ ok: false, errorCode: 'memory_index_missing' });
         await ready;
         expect(lifecycle.search({ v: 1, query: 'while catch up drains', scope: { type: 'global' }, mode: 'auto' }))
             .toMatchObject({ ok: true, hits: [expect.objectContaining({ sessionId: 's-drain' })] });
@@ -640,6 +726,22 @@ describe('Home search lifecycle', () => {
         expect(lifecycle.capability()).toEqual({ enabled: false, reason: 'index_unavailable' });
         expect(lifecycle.search({ v: 1, query: 'first queued', scope: { type: 'global' }, mode: 'auto' }))
             .toMatchObject({ ok: false, errorCode: 'memory_index_missing' });
+
+        let identityReads = 0;
+        await commitMutations([{
+            kind: 'upsert',
+            message: {
+                get id() {
+                    identityReads += 1;
+                    return 'm-after-terminal-failure';
+                },
+                sessionId: 's-failure',
+                seq: 3,
+                createdAtMs: 3,
+                content: plainTextContent('must not be retained after terminal failure'),
+            },
+        }]);
+        expect(identityReads).toBe(0);
         await lifecycle.stop();
     });
 

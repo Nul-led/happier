@@ -4,15 +4,14 @@ import { IrohError } from '@happier-dev/iroh-native';
 import { parseIrohEndpointDescriptorV1, type IrohEndpointDescriptorV1 } from '@happier-dev/protocol';
 import { resolvePersonalHomeRuntimeLayout } from '@happier-dev/cli-common/firstPartyRuntime';
 import { resolveBoundServerListener } from '@/app/runtime/startupReceipt';
-import { getOrCreateServerIdentityId } from '@/app/serverIdentity/serverIdentity';
 import { resolveConfiguredCanonicalServerUrl } from '@/app/serverUrls/effectiveServerUrls';
 import { log } from '@/utils/logging/log';
 import { readHomeIrohEndpointConfigFromEnv, type HomeIrohEndpointEnvConfig } from './homeIrohEndpointConfig';
 import {
-    readHomeIrohEndpointContinuity,
-    resolveHomeIrohEndpointContinuityPath,
-    writeHomeIrohEndpointContinuity,
-} from './homeIrohEndpointContinuity';
+    createHomeConnectionDescriptorContinuityStoreForServer,
+    homeConnectionDescriptorContentKeyCarriesIroh,
+    type HomeConnectionDescriptorContinuityStore,
+} from '@/app/features/homeConnectionDescriptorContinuity';
 import {
     loadHomeIrohNativeLifecycle,
     type HomeIrohNativeLifecycle,
@@ -43,30 +42,31 @@ import {
 
 const HOME_IROH_ACCEPTOR_TARGET_HOST = '127.0.0.1';
 
-export type HomeIrohEndpointLifecycleStatus = 'not-composed' | 'active' | 'unavailable' | 'failed';
+export type HomeIrohEndpointLifecycleStatus =
+    | 'not-composed'
+    | 'starting'
+    | 'active'
+    | 'stopping'
+    | 'unavailable'
+    | 'failed'
+    | 'retired';
 
 export type HomeIrohEndpointFailureReason =
     | 'invalid_iroh_config'
     | 'canonical_server_url_missing'
-    | 'server_identity_unavailable'
     | 'api_listen_port_unavailable'
     | 'continuity_metadata_unreadable'
     | 'endpoint_key_lost'
     | 'endpoint_key_unavailable'
     | 'endpoint_config_conflict'
-    | 'home_identity_drift'
     | 'endpoint_identity_drift'
     | 'endpoint_not_active'
     | 'acceptor_not_running'
     | 'descriptor_invalid'
-    | 'continuity_write_failed'
     | 'endpoint_cleanup_pending'
     | 'native_error';
 
 export type HomeIrohEndpointSnapshot = Readonly<{
-    homeServerIdentityId: string;
-    canonicalServerUrl: string;
-    revision: number;
     endpoint: IrohEndpointDescriptorV1;
 }>;
 
@@ -77,6 +77,9 @@ export type HomeIrohEndpointState = Readonly<{
 }>;
 
 const NOT_COMPOSED_STATE: HomeIrohEndpointState = { status: 'not-composed', snapshot: null, failureReason: null };
+const STARTING_STATE: HomeIrohEndpointState = { status: 'starting', snapshot: null, failureReason: null };
+const STOPPING_STATE: HomeIrohEndpointState = { status: 'stopping', snapshot: null, failureReason: null };
+const UNAVAILABLE_STATE: HomeIrohEndpointState = { status: 'unavailable', snapshot: null, failureReason: null };
 
 /**
  * Derives the Iroh acceptor target port from the actual bound Fastify
@@ -103,8 +106,6 @@ type ActiveHomeIrohEndpoint = Readonly<{
 type OwnedHomeIrohNativeEndpoint = {
     readonly native: HomeIrohNativeLifecycle;
     readonly endpointHandle: string;
-    acceptorAttempted: boolean;
-    acceptorStopped: boolean;
     endpointShutdown: boolean;
 };
 
@@ -149,15 +150,6 @@ function releaseOwnedEndpoint(): Promise<void> {
 
 async function runRelease(owned: OwnedHomeIrohNativeEndpoint): Promise<void> {
     let firstFailure: unknown = null;
-    if (owned.acceptorAttempted && !owned.acceptorStopped) {
-        try {
-            await owned.native.stopHomeAcceptor({ endpointHandle: owned.endpointHandle });
-            owned.acceptorStopped = true;
-        } catch (error) {
-            firstFailure ??= error;
-            log({ module: 'iroh', level: 'warn', detail: error instanceof Error ? error.message : String(error) }, 'Home Iroh acceptor stop failed; the endpoint stays owned for a later disposal');
-        }
-    }
     if (!owned.endpointShutdown) {
         try {
             await owned.native.shutdownEndpoint({ endpointHandle: owned.endpointHandle });
@@ -174,6 +166,8 @@ export type EnsureHomeIrohEndpointParams = Readonly<{
     env: NodeJS.ProcessEnv;
     /** Actual bound Fastify port (`resolveHomeIrohAcceptorPort`), or null when unavailable. */
     apiPort: number | null;
+    /** Canonical outer descriptor continuity selected by the server lifecycle. */
+    continuityStore?: HomeConnectionDescriptorContinuityStore;
     /**
      * Narrow injected native lifecycle boundary for owner-level tests.
      * Production composition resolves the exact @happier-dev/iroh-native
@@ -186,6 +180,8 @@ export type MaterializeHomeIrohEndpointDescriptorParams = Readonly<{
     env: NodeJS.ProcessEnv;
     /** Public outer descriptor revision currently owned by the source Home. */
     sourceDescriptorRevision: number;
+    /** Canonical outer descriptor continuity selected by the maintenance lifecycle. */
+    continuityStore?: HomeConnectionDescriptorContinuityStore;
     /** Test-only native lifecycle boundary; production resolves the packaged binding. */
     native?: HomeIrohNativeLifecycle | null;
 }>;
@@ -193,7 +189,7 @@ export type MaterializeHomeIrohEndpointDescriptorParams = Readonly<{
 export type HomeIrohEndpointMaterializationResult =
     | Readonly<{
         status: 'ready';
-        /** Lane 02 must assign the outer descriptor a strictly greater revision. */
+        /** The canonical outer publisher must assign a strictly greater revision. */
         minimumOuterRevisionExclusive: number;
         endpoint: IrohEndpointDescriptorV1;
     }>
@@ -220,6 +216,16 @@ export async function ensureHomeIrohEndpoint(params: EnsureHomeIrohEndpointParam
             ensureInFlight = null;
         });
     return await ensureInFlight;
+}
+
+/** Marks the pre-listen Personal Home interval as transitional, never retirement. */
+export function beginHomeIrohEndpointStartup(): void {
+    if (!activeState && !stopInFlight) lifecycleState = STARTING_STATE;
+}
+
+/** Completes a pre-listen attempt that could not satisfy the exposure proof. */
+export function markHomeIrohEndpointStartupUnavailable(): void {
+    if (!activeState && lifecycleState.status === 'starting') lifecycleState = UNAVAILABLE_STATE;
 }
 
 /**
@@ -264,7 +270,7 @@ export async function materializeHomeIrohEndpointDescriptor(
         config,
         canonicalServerUrl,
         keyPath,
-        revisionFloor: params.sourceDescriptorRevision,
+        continuityStore: params.continuityStore,
     });
     if (provisioned.kind === 'terminal') {
         return {
@@ -283,22 +289,25 @@ export async function materializeHomeIrohEndpointDescriptor(
     }
     return {
         status: 'ready',
-        minimumOuterRevisionExclusive: Math.max(
-            params.sourceDescriptorRevision,
-            provisioned.revision - 1,
-        ),
+        minimumOuterRevisionExclusive: params.sourceDescriptorRevision,
         endpoint: provisioned.endpoint,
     };
 }
 
-/** Current carrier-neutral endpoint state for descriptor consumers. */
+/**
+ * Current carrier-neutral endpoint state for descriptor consumers. A request-time
+ * read refreshes the native endpoint status through this Home endpoint owner so
+ * authenticated descriptor publication can observe current direct-address hints
+ * without adding polling, a watcher, or a second endpoint state machine.
+ */
 export async function getHomeIrohEndpointState(): Promise<HomeIrohEndpointState> {
-    return lifecycleState;
+    return await refreshActiveHomeIrohEndpointState();
 }
 
 /**
  * Stops the Home Iroh ingress: clears the published in-memory snapshot first,
- * then stops the acceptor, then shuts the endpoint down. Idempotent. New
+ * then delegates acceptor and endpoint cleanup to aggregate native shutdown.
+ * Idempotent. New
  * composition work is refused from the moment the shutdown starts; a rejected
  * cleanup keeps the native endpoint owned and rejects here so the caller (the
  * canonical shutdown owner) can retry the same disposal.
@@ -308,11 +317,11 @@ export async function stopHomeIrohEndpoint(): Promise<void> {
     lifecycleEpoch += 1;
     const admittedEnsure = ensureInFlight;
     activeState = null;
-    lifecycleState = NOT_COMPOSED_STATE;
+    lifecycleState = STOPPING_STATE;
     stopInFlight = (async () => {
         await admittedEnsure?.catch(() => undefined);
         activeState = null;
-        lifecycleState = NOT_COMPOSED_STATE;
+        lifecycleState = STOPPING_STATE;
         await releaseOwnedEndpoint();
     })().finally(() => {
         stopInFlight = null;
@@ -368,13 +377,89 @@ function sameStrings(a: readonly string[], b: readonly string[]): boolean {
     return a.length === b.length && a.every((entry, index) => entry === b[index]);
 }
 
+function normalizeDirectAddresses(entries: readonly string[]): string[] {
+    return [...new Set(entries.map((entry) => entry.trim()).filter((entry) => entry.length > 0))]
+        .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+}
+
+/**
+ * Retires the published composition after a refresh observed something the
+ * already-published descriptor contradicts.
+ */
+function failRefreshClosed(
+    failureReason: HomeIrohEndpointFailureReason,
+    error?: unknown,
+): HomeIrohEndpointState {
+    const state = failed(failureReason, error);
+    lifecycleState = state;
+    activeState = null;
+    return state;
+}
+
+/**
+ * A rejected native status read is an environment transient, not evidence
+ * against the published descriptor. Retain the current endpoint facts and let
+ * the next request
+ * retry, rather than latching this owner into a terminal failure that would
+ * stop the Home from publishing any descriptor for the rest of the process.
+ */
+function retainPublicationAfterRefreshTransient(step: string, error: unknown): HomeIrohEndpointState {
+    log(
+        { module: 'iroh', level: 'warn', detail: error instanceof Error ? error.message : String(error) },
+        `Home Iroh descriptor refresh ${step} failed; keeping the published descriptor and retrying on the next request`,
+    );
+    return lifecycleState;
+}
+
+async function refreshActiveHomeIrohEndpointState(): Promise<HomeIrohEndpointState> {
+    const active = activeState;
+    const owned = ownedEndpoint;
+    if (!active || !owned || lifecycleState.status !== 'active' || !active.state.snapshot) return lifecycleState;
+
+    let endpointStatus: Awaited<ReturnType<HomeIrohNativeLifecycle['getEndpointStatus']>>;
+    try {
+        endpointStatus = await owned.native.getEndpointStatus({ endpointHandle: owned.endpointHandle });
+    } catch (error) {
+        return retainPublicationAfterRefreshTransient('endpoint status read', error);
+    }
+    if (!endpointStatus || !endpointStatus.active || endpointStatus.endpointId !== active.state.snapshot.endpoint.endpointId) {
+        return failRefreshClosed('endpoint_not_active');
+    }
+
+    const directAddresses = normalizeDirectAddresses(endpointStatus.directAddresses);
+    const relayUrls = active.state.snapshot.endpoint.relayUrls ?? [];
+    if (sameStrings(active.state.snapshot.endpoint.directAddresses ?? [], directAddresses)) {
+        return lifecycleState;
+    }
+
+    let endpoint: IrohEndpointDescriptorV1;
+    try {
+        endpoint = parseIrohEndpointDescriptorV1({
+            endpointId: active.state.snapshot.endpoint.endpointId,
+            ...(relayUrls.length > 0 ? { relayUrls } : {}),
+            ...(directAddresses.length > 0 ? { directAddresses } : {}),
+        });
+    } catch (error) {
+        return failRefreshClosed('descriptor_invalid', error);
+    }
+
+    const state: HomeIrohEndpointState = {
+        status: 'active',
+        snapshot: {
+            endpoint,
+        },
+        failureReason: null,
+    };
+    lifecycleState = state;
+    activeState = { ...active, state };
+    return state;
+}
+
 type ProvisionedHomeIrohEndpoint = Readonly<{
     kind: 'ready';
     native: HomeIrohNativeLifecycle;
     endpointHandle: string;
-    homeServerIdentityId: string;
     endpoint: IrohEndpointDescriptorV1;
-    revision: number;
 }>;
 
 type ProvisionHomeIrohEndpointResult =
@@ -387,23 +472,18 @@ async function provisionHomeIrohEndpoint(params: Readonly<{
     config: HomeIrohEndpointEnvConfig;
     canonicalServerUrl: string;
     keyPath: string;
-    revisionFloor: number;
+    continuityStore?: HomeConnectionDescriptorContinuityStore;
 }>): Promise<ProvisionHomeIrohEndpointResult> {
-    let homeServerIdentityId: string;
-    try {
-        homeServerIdentityId = await getOrCreateServerIdentityId(params.env);
-    } catch (error) {
-        return { kind: 'terminal', state: failed('server_identity_unavailable', error) };
-    }
-
-    const continuityPath = resolveHomeIrohEndpointContinuityPath(params.keyPath);
-    const continuityResult = await readHomeIrohEndpointContinuity(continuityPath);
-    if (continuityResult.state === 'unreadable') {
+    const continuityStore = params.continuityStore
+        ?? createHomeConnectionDescriptorContinuityStoreForServer(params.env);
+    if (!continuityStore) {
         return { kind: 'terminal', state: failed('continuity_metadata_unreadable') };
     }
-    const continuity = continuityResult.state === 'present' ? continuityResult.continuity : null;
-    if (continuity && continuity.homeServerIdentityId !== homeServerIdentityId) {
-        return { kind: 'terminal', state: failed('home_identity_drift') };
+    let continuity: Awaited<ReturnType<HomeConnectionDescriptorContinuityStore['read']>>;
+    try {
+        continuity = await continuityStore.read();
+    } catch (error) {
+        return { kind: 'terminal', state: failed('continuity_metadata_unreadable', error) };
     }
 
     const keyExists = await stat(params.keyPath)
@@ -418,7 +498,9 @@ async function provisionHomeIrohEndpoint(params: Readonly<{
     if (keyExists === null) {
         return { kind: 'terminal', state: failed('endpoint_key_unavailable') };
     }
-    if (continuity && !keyExists) {
+    const previouslyPublishedIroh = continuity?.irohEndpointId !== undefined
+        || homeConnectionDescriptorContentKeyCarriesIroh(continuity?.contentKey);
+    if (previouslyPublishedIroh && !keyExists) {
         return { kind: 'terminal', state: failed('endpoint_key_lost') };
     }
 
@@ -452,8 +534,6 @@ async function provisionHomeIrohEndpoint(params: Readonly<{
     ownedEndpoint = {
         native: params.native,
         endpointHandle: created.endpointHandle,
-        acceptorAttempted: false,
-        acceptorStopped: false,
         endpointShutdown: false,
     };
 
@@ -462,13 +542,12 @@ async function provisionHomeIrohEndpoint(params: Readonly<{
         await cleanupNeverPublishedComposition();
         return { kind: 'terminal', state: failed('endpoint_not_active') };
     }
-    if (continuity && continuity.endpointId !== created.endpointId) {
+    if (continuity?.irohEndpointId && continuity.irohEndpointId !== created.endpointId) {
         await cleanupNeverPublishedComposition();
         return { kind: 'terminal', state: failed('endpoint_identity_drift') };
     }
 
-    const directAddresses = [...new Set(endpointStatus.directAddresses.map((entry) => entry.trim()).filter((entry) => entry.length > 0))]
-        .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    const directAddresses = normalizeDirectAddresses(endpointStatus.directAddresses);
     const relayUrls = [...params.config.relayUrls];
     let endpoint: IrohEndpointDescriptorV1;
     try {
@@ -482,38 +561,11 @@ async function provisionHomeIrohEndpoint(params: Readonly<{
         return { kind: 'terminal', state: failed('descriptor_invalid', error) };
     }
 
-    const unchanged = continuity !== null
-        && continuity.homeServerIdentityId === homeServerIdentityId
-        && continuity.canonicalServerUrl === params.canonicalServerUrl
-        && continuity.endpointId === created.endpointId
-        && sameStrings(continuity.relayUrls, relayUrls)
-        && sameStrings(continuity.directAddresses, directAddresses);
-    const revision = unchanged && continuity && continuity.revision > params.revisionFloor
-        ? continuity.revision
-        : Math.max(continuity?.revision ?? 0, params.revisionFloor) + 1;
-
-    try {
-        await writeHomeIrohEndpointContinuity(continuityPath, {
-            v: 1,
-            homeServerIdentityId,
-            canonicalServerUrl: params.canonicalServerUrl,
-            endpointId: created.endpointId,
-            relayUrls,
-            directAddresses,
-            revision,
-        });
-    } catch (error) {
-        await cleanupNeverPublishedComposition();
-        return { kind: 'terminal', state: failed('continuity_write_failed', error) };
-    }
-
     return {
         kind: 'ready',
         native: params.native,
         endpointHandle: created.endpointHandle,
-        homeServerIdentityId,
         endpoint,
-        revision,
     };
 }
 
@@ -560,26 +612,29 @@ async function runEnsure(params: EnsureHomeIrohEndpointParams, admittedEpoch: nu
         return failed('endpoint_cleanup_pending');
     }
 
+    lifecycleState = STARTING_STATE;
+
     const provisioned = await provisionHomeIrohEndpoint({
         env,
         native,
         config,
         canonicalServerUrl,
         keyPath,
-        revisionFloor: 0,
+        continuityStore: params.continuityStore,
     });
     if (provisioned.kind === 'terminal') return provisioned.state;
 
     // (12) One acceptor, fixed to the loopback target and the bound API port.
-    // The attempt itself is owned: an acceptor that started, or may have
-    // started, must be stopped by the disposal path.
-    if (ownedEndpoint) ownedEndpoint.acceptorAttempted = true;
     const acceptor = await provisioned.native.startHomeAcceptor({
         endpointHandle: provisioned.endpointHandle,
         targetHost: HOME_IROH_ACCEPTOR_TARGET_HOST,
         targetPort: apiPort,
     }).catch(() => null);
-    if (!acceptor || !acceptor.status.running) {
+    if (
+        !acceptor
+        || acceptor.endpointHandle !== provisioned.endpointHandle
+        || !acceptor.status.running
+    ) {
         await cleanupNeverPublishedComposition();
         return failed('acceptor_not_running');
     }
@@ -588,7 +643,7 @@ async function runEnsure(params: EnsureHomeIrohEndpointParams, admittedEpoch: nu
     // handle. Never publish it, and finish its cleanup before stop resolves.
     if (admittedEpoch !== lifecycleEpoch) {
         await cleanupNeverPublishedComposition();
-        return NOT_COMPOSED_STATE;
+        return STOPPING_STATE;
     }
 
     // (15) Publish readiness only after the endpoint is active and the fixed
@@ -596,9 +651,6 @@ async function runEnsure(params: EnsureHomeIrohEndpointParams, admittedEpoch: nu
     const state: HomeIrohEndpointState = {
         status: 'active',
         snapshot: {
-            homeServerIdentityId: provisioned.homeServerIdentityId,
-            canonicalServerUrl,
-            revision: provisioned.revision,
             endpoint: provisioned.endpoint,
         },
         failureReason: null,
@@ -608,7 +660,6 @@ async function runEnsure(params: EnsureHomeIrohEndpointParams, admittedEpoch: nu
         {
             module: 'iroh',
             endpointId: provisioned.endpoint.endpointId,
-            revision: provisioned.revision,
         },
         `Home Iroh endpoint active; acceptor targeting ${HOME_IROH_ACCEPTOR_TARGET_HOST}:${apiPort}`,
     );

@@ -4,13 +4,16 @@ import tweetnacl from "tweetnacl";
 import {
     ACCOUNT_STORED_CONTENT_PLUGIN_DATA_PROTOCOL_VERSION,
     PLUGIN_COLLECTION_REVISION_MAX,
+    PluginAccountCollectionContributionV1Schema,
     PluginCollectionContractReadResultV1Schema,
     PluginCollectionGetResultV1Schema,
+    PluginManifestV2Schema,
     PluginCollectionQueryResultV1Schema,
     PluginCollectionUiQueryResultV1Schema,
     decodeBase64,
     encodeBase64,
     encodePluginCollectionIndexSortKeyV1,
+    normalizePluginAccountCollectionContractV1,
     sealPluginCollectionPrivatePayloadV1,
 } from "@happier-dev/protocol";
 import type { Prisma } from "@prisma/client";
@@ -53,6 +56,7 @@ const COLLECTION_MANIFEST = {
         accountCollections: [{
             id: COLLECTION_ID,
             schemaVersion: 1,
+            rowIdField: "id",
             schema: {
                 type: "object",
                 properties: {
@@ -84,9 +88,27 @@ const COLLECTION_MANIFEST = {
                 pageSize: 1,
                 projectedFields: ["status", "title"],
             }],
+            relations: [],
+            migrations: [],
+            identityFields: [],
         }],
     },
 } as const;
+
+const COLLECTION_READER_CONTEXT = (() => {
+    const contract = normalizePluginAccountCollectionContractV1({
+        pluginId: COLLECTION_MANIFEST.id,
+        contribution: PluginAccountCollectionContributionV1Schema.parse(
+            COLLECTION_MANIFEST.contributes.accountCollections[0],
+        ),
+    });
+    return {
+        pluginId: contract.pluginId,
+        collectionId: contract.collectionId,
+        schemaVersion: contract.schemaVersion,
+        contractDigest: contract.contractDigest,
+    };
+})();
 
 const PREFIX_QUOTA_COLLECTION_MANIFEST = {
     ...COLLECTION_MANIFEST,
@@ -536,7 +558,9 @@ async function seedCurrentCollectionAccount(params: Readonly<{
     seq?: number;
     rows: readonly SeedRow[];
     manifest?: unknown;
+    retainRelease?: boolean;
 }>) {
+    const manifest = PluginManifestV2Schema.parse(params.manifest ?? COLLECTION_MANIFEST);
     await createAccount({
         id: params.accountId,
         mode: params.mode ?? "plain",
@@ -545,7 +569,7 @@ async function seedCurrentCollectionAccount(params: Readonly<{
     const contracts = await inTx(async (tx) => (
         await materializePluginCollectionContractsFromManifestTx({
             tx,
-            manifest: params.manifest ?? COLLECTION_MANIFEST,
+            manifest,
         })
     ));
     const ref = contracts[0];
@@ -569,6 +593,9 @@ async function seedCurrentCollectionAccount(params: Readonly<{
             revision: BigInt(1),
         },
     });
+    if (params.retainRelease !== false) {
+        await retainCollectionRelease({ accountId: params.accountId, manifest, refs: [ref] });
+    }
     const indexState = await db.pluginCollectionIndexState.create({
         data: {
             accountId: params.accountId,
@@ -637,6 +664,30 @@ async function seedCurrentCollectionAccount(params: Readonly<{
     }
 
     return { ref, contract, indexState };
+}
+
+async function retainCollectionRelease(input: Readonly<{
+    accountId: string;
+    manifest: unknown;
+    refs: readonly Readonly<{
+        pluginId: string;
+        collectionId: string;
+        schemaVersion: number;
+        contractDigest: string;
+    }>[];
+}>): Promise<void> {
+    const manifest = PluginManifestV2Schema.parse(input.manifest);
+    await db.accountPluginRelease.create({
+        data: {
+            accountId: input.accountId,
+            pluginId: manifest.id,
+            version: manifest.version,
+            archiveDigestSha256: `sha256:${"f".repeat(64)}`,
+            normalizedManifest: toPrismaJson(manifest),
+            collectionContracts: toPrismaJson(input.refs),
+            uiSlots: toPrismaJson([]),
+        },
+    });
 }
 
 /** Adds a second current Collection contract and one live row for Account-wide quota tests. */
@@ -800,6 +851,7 @@ async function seedMaximumBinaryIndexCollectionAccount(accountId: string): Promi
     secondRowId: string;
     rangedRowId: string;
     indexStateId: string;
+    ref: Awaited<ReturnType<typeof materializePluginCollectionContractsFromManifestTx>>[number];
 }>> {
     const indexedValue = "\u0000".repeat(256);
     const firstRowId = "r".repeat(256);
@@ -836,6 +888,11 @@ async function seedMaximumBinaryIndexCollectionAccount(accountId: string): Promi
             writableCollections: toPrismaJson([ref]),
             revision: BigInt(1),
         },
+    });
+    await retainCollectionRelease({
+        accountId,
+        manifest: MAXIMUM_BINARY_INDEX_COLLECTION_MANIFEST,
+        refs: [ref],
     });
     const indexState = await db.pluginCollectionIndexState.create({
         data: {
@@ -892,10 +949,10 @@ async function seedMaximumBinaryIndexCollectionAccount(accountId: string): Promi
             },
         });
     }
-    return { firstRowId, secondRowId, rangedRowId, indexStateId: indexState.id };
+    return { firstRowId, secondRowId, rangedRowId, indexStateId: indexState.id, ref };
 }
 
-async function seedReadyEmptyInstantCollectionAccount(accountId: string): Promise<void> {
+async function seedReadyEmptyInstantCollectionAccount(accountId: string) {
     await createAccount({ id: accountId, mode: "plain", seq: 0 });
     const contracts = await inTx(async (tx) => (
         await materializePluginCollectionContractsFromManifestTx({
@@ -924,6 +981,7 @@ async function seedReadyEmptyInstantCollectionAccount(accountId: string): Promis
             revision: BigInt(1),
         },
     });
+    await retainCollectionRelease({ accountId, manifest: INSTANT_COLLECTION_MANIFEST, refs: [ref] });
     await db.pluginCollectionIndexState.create({
         data: {
             accountId,
@@ -936,9 +994,12 @@ async function seedReadyEmptyInstantCollectionAccount(accountId: string): Promis
             indexedThroughRevision: 0,
         },
     });
+    return ref;
 }
 
 async function seedReadyNonIndexedInstantCollectionAccount(accountId: string): Promise<Readonly<{
+    pluginId: string;
+    collectionId: string;
     schemaVersion: number;
     contractDigest: string;
 }>> {
@@ -970,6 +1031,11 @@ async function seedReadyNonIndexedInstantCollectionAccount(accountId: string): P
             writableCollections: toPrismaJson([ref]),
             revision: BigInt(1),
         },
+    });
+    await retainCollectionRelease({
+        accountId,
+        manifest: NON_INDEXED_INSTANT_COLLECTION_MANIFEST,
+        refs: [ref],
     });
     await db.pluginCollectionIndexState.create({
         data: {
@@ -1009,6 +1075,7 @@ async function seedReadyRelationCollectionAccount(accountId: string) {
             revision: BigInt(1),
         },
     });
+    await retainCollectionRelease({ accountId, manifest: RELATION_COLLECTION_MANIFEST, refs });
     const taskContract = await db.pluginCollectionContract.findFirstOrThrow({
         where: {
             pluginId: taskRef.pluginId,
@@ -1056,6 +1123,7 @@ async function seedReadyNullifyRelationCollectionAccount(accountId: string) {
             revision: BigInt(1),
         },
     });
+    await retainCollectionRelease({ accountId, manifest: NULLIFY_RELATION_COLLECTION_MANIFEST, refs });
     const taskContract = await db.pluginCollectionContract.findFirstOrThrow({
         where: {
             pluginId: taskRef.pluginId,
@@ -1121,12 +1189,14 @@ function queryRequest(overrides: Partial<{
     uiQueryId: string;
     parameters: Record<string, string | number | boolean>;
     cursor: string;
+    readerContext: typeof COLLECTION_READER_CONTEXT;
 }> = {}) {
     return {
         pluginId: PLUGIN_ID,
         collectionId: COLLECTION_ID,
         uiQueryId: QUERY_ID,
         parameters: { status: "open" },
+        readerContext: COLLECTION_READER_CONTEXT,
         ...overrides,
     };
 }
@@ -1141,6 +1211,7 @@ const ACCOUNT_MODE_CURRENTNESS_QUERY_CASES = [{
         prefix: ["open"],
         order: "asc",
         limit: 1,
+        readerContext: COLLECTION_READER_CONTEXT,
     },
 }, {
     name: "static",
@@ -1304,6 +1375,7 @@ describe("plugin collection UI query route", () => {
         const accountId = "account-candidate-preparation-routes";
         const { ref } = await seedCurrentCollectionAccount({
             accountId,
+            retainRelease: false,
             rows: [{
                 rowId: "candidate-stage-row",
                 status: "open",
@@ -1526,7 +1598,7 @@ describe("plugin collection UI query route", () => {
     it("persists, orders, bounds, and pages the admitted maximum compound key as one raw binary value", async () => {
         const accountId = "account-maximum-binary-collection-index";
         const indexedValue = "\u0000".repeat(256);
-        const { firstRowId, secondRowId, rangedRowId, indexStateId } = await seedMaximumBinaryIndexCollectionAccount(accountId);
+        const { firstRowId, secondRowId, rangedRowId, indexStateId, ref } = await seedMaximumBinaryIndexCollectionAccount(accountId);
         const persisted = await db.pluginCollectionIndexEntry.findMany({
             where: { indexStateId },
             orderBy: { encodedSortKey: "asc" },
@@ -1561,6 +1633,7 @@ describe("plugin collection UI query route", () => {
                 payload: {
                     pluginId: MAXIMUM_BINARY_INDEX_COLLECTION_MANIFEST.id,
                     collectionId: "binary-keys",
+                    readerContext: ref,
                     indexId: "by-four-strings",
                     prefix: [indexedValue, indexedValue, indexedValue, indexedValue],
                     order: "asc",
@@ -1584,6 +1657,7 @@ describe("plugin collection UI query route", () => {
                 payload: {
                     pluginId: MAXIMUM_BINARY_INDEX_COLLECTION_MANIFEST.id,
                     collectionId: "binary-keys",
+                    readerContext: ref,
                     indexId: "by-four-strings",
                     prefix: [indexedValue, indexedValue, indexedValue, indexedValue],
                     order: "asc",
@@ -1602,6 +1676,7 @@ describe("plugin collection UI query route", () => {
                 payload: {
                     pluginId: MAXIMUM_BINARY_INDEX_COLLECTION_MANIFEST.id,
                     collectionId: "binary-keys",
+                    readerContext: ref,
                     indexId: "by-four-strings",
                     prefix: [indexedValue, indexedValue, indexedValue],
                     order: "asc",
@@ -1619,6 +1694,7 @@ describe("plugin collection UI query route", () => {
                 payload: {
                     pluginId: MAXIMUM_BINARY_INDEX_COLLECTION_MANIFEST.id,
                     collectionId: "binary-keys",
+                    readerContext: ref,
                     indexId: "by-four-strings",
                     prefix: [indexedValue, indexedValue, indexedValue],
                     range: { lower: indexedValue, upper: indexedValue },
@@ -1637,6 +1713,7 @@ describe("plugin collection UI query route", () => {
                 payload: {
                     pluginId: MAXIMUM_BINARY_INDEX_COLLECTION_MANIFEST.id,
                     collectionId: "binary-keys",
+                    readerContext: ref,
                     indexId: "by-four-strings",
                     prefix: [indexedValue, indexedValue, indexedValue, indexedValue],
                     order: "desc",
@@ -1654,6 +1731,7 @@ describe("plugin collection UI query route", () => {
                 payload: {
                     pluginId: MAXIMUM_BINARY_INDEX_COLLECTION_MANIFEST.id,
                     collectionId: "binary-keys",
+                    readerContext: ref,
                     indexId: "by-four-strings",
                     prefix: [indexedValue, indexedValue, indexedValue, indexedValue],
                     order: "desc",
@@ -1672,6 +1750,7 @@ describe("plugin collection UI query route", () => {
                 payload: {
                     pluginId: MAXIMUM_BINARY_INDEX_COLLECTION_MANIFEST.id,
                     collectionId: "binary-keys",
+                    readerContext: ref,
                     indexId: "by-four-strings",
                     prefix: [indexedValue, indexedValue, indexedValue, indexedValue],
                     order: "desc",
@@ -1692,6 +1771,7 @@ describe("plugin collection UI query route", () => {
                 payload: {
                     pluginId: MAXIMUM_BINARY_INDEX_COLLECTION_MANIFEST.id,
                     collectionId: "binary-keys",
+                    readerContext: ref,
                     indexId: "by-four-strings",
                     order: "asc",
                     limit: 1,
@@ -1708,6 +1788,7 @@ describe("plugin collection UI query route", () => {
                 payload: {
                     pluginId: MAXIMUM_BINARY_INDEX_COLLECTION_MANIFEST.id,
                     collectionId: "binary-keys",
+                    readerContext: ref,
                     indexId: "by-four-strings",
                     prefix: [indexedValue, indexedValue, indexedValue, indexedValue],
                     order: "asc",
@@ -1728,6 +1809,7 @@ describe("plugin collection UI query route", () => {
                 payload: {
                     pluginId: MAXIMUM_BINARY_INDEX_COLLECTION_MANIFEST.id,
                     collectionId: "binary-keys",
+                    readerContext: ref,
                     indexId: "by-four-strings",
                     prefix: [indexedValue, indexedValue, indexedValue, indexedValue],
                     order: "asc",
@@ -1744,6 +1826,7 @@ describe("plugin collection UI query route", () => {
         const accountId = "account-collection-contract-read";
         const { ref } = await seedCurrentCollectionAccount({
             accountId,
+            retainRelease: false,
             rows: [],
         });
         await db.accountPluginRelease.create({
@@ -1778,6 +1861,7 @@ describe("plugin collection UI query route", () => {
             expect(admitted.statusCode).toBe(200);
             expect(PluginCollectionContractReadResultV1Schema.parse(admitted.json()))
                 .toMatchObject({
+                    access: "writable",
                     contract: {
                         pluginId: ref.pluginId,
                         collectionId: ref.collectionId,
@@ -1823,6 +1907,197 @@ describe("plugin collection UI query route", () => {
         });
     });
 
+    it("serves a retained compatible Collection contract read-only while keeping mutation on the exact current writer", async () => {
+        const accountId = "account-collection-compatible-reader";
+        const retainedReaderManifest = {
+            ...COLLECTION_MANIFEST,
+            contributes: {
+                accountCollections: [{
+                    ...COLLECTION_MANIFEST.contributes.accountCollections[0],
+                    readableSchemaVersions: [2],
+                }],
+            },
+        } as const;
+        const targetManifest = {
+            ...COLLECTION_MANIFEST,
+            version: "2.0.0",
+            contributes: {
+                accountCollections: [{
+                    ...COLLECTION_MANIFEST.contributes.accountCollections[0],
+                    schemaVersion: 2,
+                    readableSchemaVersions: [1],
+                    migrations: [{
+                        id: "tasks-v1-to-v2",
+                        fromSchemaVersion: 1,
+                        toSchemaVersion: 2,
+                    }],
+                }],
+            },
+        } as const;
+        const incompatibleManifest = {
+            ...targetManifest,
+            version: "3.0.0",
+            contributes: {
+                accountCollections: [{
+                    ...targetManifest.contributes.accountCollections[0],
+                    schemaVersion: 3,
+                    readableSchemaVersions: [],
+                    migrations: [],
+                }],
+            },
+        } as const;
+        const { ref: retainedReaderRef, contract: sourceContract, indexState } = await seedCurrentCollectionAccount({
+            accountId,
+            retainRelease: false,
+            manifest: retainedReaderManifest,
+            rows: [{ rowId: "retained-task", status: "open", title: "Retained", revision: 1 }],
+        });
+        const sourceRef = retainedReaderRef;
+        const [targetRef] = await inTx(async (tx) => (
+            await materializePluginCollectionContractsFromManifestTx({ tx, manifest: targetManifest })
+        ));
+        const [incompatibleRef] = await inTx(async (tx) => (
+            await materializePluginCollectionContractsFromManifestTx({ tx, manifest: incompatibleManifest })
+        ));
+        if (!retainedReaderRef || !targetRef || !incompatibleRef) throw new Error("Fixture evolved contracts were not materialized.");
+        const targetContract = await db.pluginCollectionContract.findFirstOrThrow({
+            where: {
+                pluginId: targetRef.pluginId,
+                collectionId: targetRef.collectionId,
+                schemaVersion: targetRef.schemaVersion,
+                contractDigest: targetRef.contractDigest,
+            },
+        });
+        await db.$transaction([
+            db.accountPluginIntent.update({
+                where: { accountId_pluginId: { accountId, pluginId: PLUGIN_ID } },
+                data: {
+                    desiredVersion: "2.0.0",
+                    writableCollections: toPrismaJson([targetRef]),
+                    revision: BigInt(2),
+                },
+            }),
+            db.pluginCollectionRow.updateMany({
+                where: { accountId, contractId: sourceContract.id },
+                data: {
+                    schemaVersion: targetRef.schemaVersion,
+                    contractId: targetContract.id,
+                    contractDigest: targetRef.contractDigest,
+                },
+            }),
+            db.pluginCollectionIndexState.update({
+                where: { id: indexState.id },
+                data: {
+                    contractId: targetContract.id,
+                    contractDigest: targetRef.contractDigest,
+                },
+            }),
+            ...[
+                { version: "1.0.0", manifest: retainedReaderManifest, ref: retainedReaderRef },
+                { version: "2.0.0", manifest: targetManifest, ref: targetRef },
+                { version: "3.0.0", manifest: incompatibleManifest, ref: incompatibleRef },
+            ].map(({ version, manifest, ref }, index) => db.accountPluginRelease.create({
+                data: {
+                    accountId,
+                    pluginId: PLUGIN_ID,
+                    version,
+                    archiveDigestSha256: `sha256:${String(index + 1).repeat(64)}`,
+                    normalizedManifest: toPrismaJson(manifest),
+                    collectionContracts: toPrismaJson([ref]),
+                    uiSlots: toPrismaJson([]),
+                    packageAssetArchive: toPrismaJson({
+                        archiveDigestSha256: `sha256:${String(index + 4).repeat(64)}`,
+                        resources: [],
+                    }),
+                },
+            })),
+        ]);
+
+        await withPluginDataApp(async (app) => {
+            const headers = {
+                "content-type": "application/json",
+                "x-test-user-id": accountId,
+                ...V3_HEADERS,
+            };
+            for (const [url, payload] of [
+                ["/v1/plugins/data/get", {
+                    pluginId: PLUGIN_ID,
+                    collectionId: COLLECTION_ID,
+                    rowId: "retained-task",
+                }],
+                ["/v1/plugins/data/query", {
+                    pluginId: PLUGIN_ID,
+                    collectionId: COLLECTION_ID,
+                    indexId: "by-status",
+                    order: "asc",
+                }],
+                ["/v1/plugins/data/ui-query", {
+                    pluginId: PLUGIN_ID,
+                    collectionId: COLLECTION_ID,
+                    uiQueryId: "open",
+                    parameters: { status: "open" },
+                }],
+            ] as const) {
+                const omittedReader = await app.inject({ method: "POST", url, headers, payload });
+                expect(omittedReader.statusCode).toBe(400);
+                expect(omittedReader.json()).toEqual({ error: "collection_query_invalid" });
+            }
+            const retained = await app.inject({
+                method: "POST",
+                url: "/v1/plugins/data/contract",
+                headers,
+                payload: { ref: retainedReaderRef },
+            });
+            expect(retained.statusCode).toBe(200);
+            expect(PluginCollectionContractReadResultV1Schema.parse(retained.json())).toMatchObject({
+                access: "readOnly",
+                contract: retainedReaderRef,
+            });
+
+            const get = await app.inject({
+                method: "POST",
+                url: "/v1/plugins/data/get",
+                headers,
+                payload: {
+                    pluginId: PLUGIN_ID,
+                    collectionId: COLLECTION_ID,
+                    readerContext: retainedReaderRef,
+                    rowId: "retained-task",
+                },
+            });
+            expect(get.statusCode).toBe(200);
+            expect(PluginCollectionGetResultV1Schema.parse(get.json())).toMatchObject({
+                row: { rowId: "retained-task", projection: { status: "open", title: "Retained" } },
+            });
+
+            const staleMutation = await app.inject({
+                method: "POST",
+                url: "/v1/plugins/data/mutate",
+                headers,
+                payload: {
+                    pluginId: PLUGIN_ID,
+                    collectionId: COLLECTION_ID,
+                    writerContext: {
+                        schemaVersion: sourceRef.schemaVersion,
+                        contractDigest: sourceRef.contractDigest,
+                    },
+                    operations: [{ kind: "delete", rowId: "retained-task", expectedRevision: 1 }],
+                },
+            });
+            expect(staleMutation.statusCode).toBe(409);
+            expect(staleMutation.json()).toEqual({ error: "collection_writer_contract_unavailable" });
+
+            const incompatible = await app.inject({
+                method: "POST",
+                url: "/v1/plugins/data/contract",
+                headers,
+                payload: { ref: incompatibleRef },
+            });
+            expect(incompatible.statusCode).toBe(404);
+            expect(incompatible.json()).toEqual({ error: "collection_unavailable" });
+        });
+    });
+
     it("serves current rows through the direct get and bounded query contract", async () => {
         const accountId = "account-direct-collection-reader";
         await seedCurrentCollectionAccount({
@@ -1847,6 +2122,7 @@ describe("plugin collection UI query route", () => {
                 payload: {
                     pluginId: PLUGIN_ID,
                     collectionId: COLLECTION_ID,
+                    readerContext: COLLECTION_READER_CONTEXT,
                     rowId: "task-a",
                 },
             });
@@ -1872,6 +2148,7 @@ describe("plugin collection UI query route", () => {
                 payload: {
                     pluginId: PLUGIN_ID,
                     collectionId: COLLECTION_ID,
+                    readerContext: COLLECTION_READER_CONTEXT,
                     indexId: "by-status",
                     prefix: ["open"],
                     order: "asc",
@@ -1902,6 +2179,7 @@ describe("plugin collection UI query route", () => {
                 payload: {
                     pluginId: PLUGIN_ID,
                     collectionId: COLLECTION_ID,
+                    readerContext: COLLECTION_READER_CONTEXT,
                     indexId: "by-status",
                     prefix: ["open"],
                     order: "asc",
@@ -1931,6 +2209,7 @@ describe("plugin collection UI query route", () => {
                 payload: {
                     pluginId: PLUGIN_ID,
                     collectionId: COLLECTION_ID,
+                    readerContext: COLLECTION_READER_CONTEXT,
                     indexId: "by-status",
                     prefix: ["closed"],
                     order: "asc",
@@ -1952,6 +2231,7 @@ describe("plugin collection UI query route", () => {
                 payload: {
                     pluginId: PLUGIN_ID,
                     collectionId: COLLECTION_ID,
+                    readerContext: COLLECTION_READER_CONTEXT,
                     indexId: "not-a-contract-index",
                     order: "asc",
                 },
@@ -1986,6 +2266,7 @@ describe("plugin collection UI query route", () => {
             const request = {
                 pluginId: PLUGIN_ID,
                 collectionId: COLLECTION_ID,
+                readerContext: COLLECTION_READER_CONTEXT,
                 indexId: "by-status",
                 prefix: ["open"],
                 order: "asc" as const,
@@ -2111,6 +2392,7 @@ describe("plugin collection UI query route", () => {
                     payload: {
                         pluginId: PLUGIN_ID,
                         collectionId: COLLECTION_ID,
+                        readerContext: ref,
                         indexId: "by-status",
                         prefix: ["open"],
                         order: "asc",
@@ -2311,6 +2593,7 @@ describe("plugin collection UI query route", () => {
                 payload: {
                     pluginId: PLUGIN_ID,
                     collectionId: COLLECTION_ID,
+                    readerContext: COLLECTION_READER_CONTEXT,
                     rowId: "task-encrypted",
                 },
             });
@@ -2326,6 +2609,7 @@ describe("plugin collection UI query route", () => {
                 payload: {
                     pluginId: PLUGIN_ID,
                     collectionId: COLLECTION_ID,
+                    readerContext: COLLECTION_READER_CONTEXT,
                     indexId: "by-status",
                     prefix: ["open"],
                     order: "asc",
@@ -2362,6 +2646,7 @@ describe("plugin collection UI query route", () => {
                 payload: {
                     pluginId: PLUGIN_ID,
                     collectionId: COLLECTION_ID,
+                    readerContext: COLLECTION_READER_CONTEXT,
                     indexId: "by-status",
                     prefix: ["closed"],
                     order: "desc",
@@ -2389,6 +2674,7 @@ describe("plugin collection UI query route", () => {
                 payload: {
                     pluginId: PLUGIN_ID,
                     collectionId: COLLECTION_ID,
+                    readerContext: COLLECTION_READER_CONTEXT,
                     indexId: "by-status",
                     prefix: ["closed"],
                     order: "desc",
@@ -2765,6 +3051,7 @@ describe("plugin collection UI query route", () => {
                 payload: {
                     pluginId: PLUGIN_ID,
                     collectionId: COLLECTION_ID,
+                    readerContext: seeded.ref,
                     rowId: "task-encrypted",
                 },
             });
@@ -2784,7 +3071,7 @@ describe("plugin collection UI query route", () => {
 
     it("rejects a parseable but non-canonical instant parameter as query input", async () => {
         const accountId = "account-ui-query-instant";
-        await seedReadyEmptyInstantCollectionAccount(accountId);
+        const ref = await seedReadyEmptyInstantCollectionAccount(accountId);
 
         await withPluginDataApp(async (app) => {
             const response = await app.inject({
@@ -2798,6 +3085,7 @@ describe("plugin collection UI query route", () => {
                 payload: {
                     pluginId: "example.events",
                     collectionId: "events",
+                    readerContext: ref,
                     uiQueryId: "at",
                     parameters: { at: "2026-01-02T03:04:05Z" },
                 },
@@ -2862,6 +3150,7 @@ describe("plugin collection UI query route", () => {
                 payload: {
                     pluginId: NON_INDEXED_INSTANT_COLLECTION_MANIFEST.id,
                     collectionId: "events",
+                    readerContext: ref,
                     indexId: "by-status",
                     prefix: ["open"],
                     order: "asc",
@@ -2887,6 +3176,7 @@ describe("plugin collection UI query route", () => {
                 payload: {
                     pluginId: NON_INDEXED_INSTANT_COLLECTION_MANIFEST.id,
                     collectionId: "events",
+                    readerContext: ref,
                     uiQueryId: "open",
                     parameters: { status: "open" },
                 },
@@ -3291,6 +3581,7 @@ describe("plugin collection UI query route", () => {
                 payload: {
                     pluginId: PLUGIN_ID,
                     collectionId: COLLECTION_ID,
+                    readerContext: ref,
                     rowId: "task-forget-live",
                 },
             });
@@ -3843,6 +4134,7 @@ describe("plugin collection UI query route", () => {
                 payload: {
                     pluginId: ref.pluginId,
                     collectionId: ref.collectionId,
+                    readerContext: ref,
                     rowId: "task-forget-hidden",
                 },
             });
@@ -4035,6 +4327,7 @@ describe("plugin collection UI query route", () => {
                 payload: {
                     pluginId: NULLIFY_RELATION_COLLECTION_MANIFEST.id,
                     collectionId: "projects",
+                    readerContext: projectRef,
                     rowId: "project-a",
                 },
             });
@@ -4162,6 +4455,7 @@ describe("plugin collection UI query route", () => {
                 payload: {
                     pluginId: PLUGIN_ID,
                     collectionId: COLLECTION_ID,
+                    readerContext: ref,
                     rowId: "task-forget-aba",
                 },
             });
@@ -4251,6 +4545,7 @@ describe("plugin collection UI query route", () => {
                 payload: {
                     pluginId: PLUGIN_ID,
                     collectionId: COLLECTION_ID,
+                    readerContext: ref,
                     rowId: "task-forget-aba",
                 },
             });
@@ -4842,6 +5137,7 @@ describe("plugin collection UI query route", () => {
                 payload: {
                     pluginId: ref.pluginId,
                     collectionId: ref.collectionId,
+                    readerContext: ref,
                     indexId: "by-status",
                     prefix: ["open"],
                     order: "asc",
@@ -5194,6 +5490,7 @@ describe("plugin collection UI query route", () => {
                 payload: {
                     pluginId: RELATION_COLLECTION_MANIFEST.id,
                     collectionId: "tasks",
+                    readerContext: taskRef,
                     indexId: "by-project-id",
                     prefix: ["project-a"],
                     order: "asc",

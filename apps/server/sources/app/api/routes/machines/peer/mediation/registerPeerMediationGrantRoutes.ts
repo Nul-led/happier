@@ -16,6 +16,7 @@ import {
     DAEMON_VOICE_AUDIO_RELAY_CAP_PROFILE_ID,
     type FeatureId,
     type DirectRouteGrantScopeV1,
+    type DirectRouteGrantScopeV2,
     type IrohPeerRouteBindingV2,
     type MachineIrohEndpointAuthorityV1,
     type LiveStreamGrantScopeV1,
@@ -196,10 +197,13 @@ function createPeerMediationGrantSigningGatePreHandler(
 
 function resolveRouteGrantTtlMs(input: Readonly<{
     flowKind: PeerFlowKindV1;
-    scope: DirectRouteGrantScopeV1;
+    scope: DirectRouteGrantScopeV1 | DirectRouteGrantScopeV2;
     requestedTtlMs: number;
 }>): number {
     if (input.flowKind === "bounded_transfer") {
+        if (input.scope.kind === "bounded_transfer" && input.scope.mode === "carrier") {
+            return DIRECT_ROUTE_GRANT_TTL_MS.finiteTransferCarrier;
+        }
         if (input.scope.kind === "bounded_transfer" && input.scope.mode === "scope") {
             return clampDirectRouteGrantTtlMs(
                 input.requestedTtlMs,
@@ -562,7 +566,6 @@ export function registerPeerMediationGrantRoutes(
             machineId: parsed.data.machineId,
             flowKind: parsed.data.flowKind,
             routeKind: parsed.data.routeKind,
-            scope: parsed.data.scope,
             endpointFingerprint: parsed.data.endpointFingerprint,
             nowMs: nowMs(),
             ttlMs: resolveRouteGrantTtlMs({
@@ -577,12 +580,17 @@ export function registerPeerMediationGrantRoutes(
                 expiresAt: signing.capability.expiresAt,
             },
         };
-        return "v" in parsed.data && parsed.data.v === 2
-            ? mintDirectRouteGrantV2({
+        if ("v" in parsed.data && parsed.data.v === 2) {
+            return mintDirectRouteGrantV2({
                 ...directGrantInput,
+                scope: parsed.data.scope,
                 ...(irohBinding ? { iroh: irohBinding } : {}),
                 ephemeralPublicKeyBase64Url: parsed.data.ephemeralPublicKeyBase64Url,
-            })
-            : mintDirectRouteGrantV1(directGrantInput);
+            });
+        }
+        return mintDirectRouteGrantV1({
+            ...directGrantInput,
+            scope: DirectRouteGrantScopeV1Schema.parse(parsed.data.scope),
+        });
     });
 }

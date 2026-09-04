@@ -87,6 +87,8 @@ export async function cleanupPluginWebhooksForAccountDeletionTxV1(
                 revokedAt: null,
                 releasedAt: now,
                 tombstoneExpiresAt: new Date(now.getTime() + SHARED_ROUTE_TOMBSTONE_RETENTION_MS_V1),
+                providerConfirmedAt: null,
+                targetIntentEpoch: null,
                 targetMachineId: null,
                 targetMachineInstallationId: null,
                 targetMaterializationId: null,

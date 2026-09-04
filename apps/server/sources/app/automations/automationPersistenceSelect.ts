@@ -92,7 +92,7 @@ export const automationRunItemSelect = {
     replyHandoffTargetMachineId: true, replyHandoffTargetMachineInstallationId: true,
     replyHandoffTargetMaterializationId: true, replyHandoffId: true,
     replyHandoffState: true, replyHandoffAttempt: true, replyHandoffDueAt: true,
-    replyHandoffReceiptEnvelope: true, scheduledAt: true, dueAt: true,
+    scheduledAt: true, dueAt: true,
     claimedAt: true, startedAt: true, finishedAt: true, claimedByMachineId: true,
     leaseExpiresAt: true, attempt: true, revision: true, summaryCiphertext: true,
     errorCode: true, errorMessage: true,

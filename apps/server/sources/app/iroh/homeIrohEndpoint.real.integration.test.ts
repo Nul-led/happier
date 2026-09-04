@@ -32,6 +32,10 @@ import { resolveApiRateLimitPluginOptions } from "@/app/api/utils/apiRateLimitPo
 import { auth } from "@/app/auth/auth";
 import { initializeServerIdentityCache } from "@/app/serverIdentity/serverIdentity";
 import { createHomeConnectionDescriptorContinuityStoreForServer } from "@/app/features/homeConnectionDescriptorContinuity";
+import {
+    readHomeConnectionDescriptor,
+    resetHomeConnectionDescriptorRevisionOwnerForTests,
+} from "@/app/features/homeConnectionDescriptorPublication";
 import { db } from "@/storage/db";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
 
@@ -100,6 +104,11 @@ async function loadTestDaemonHomeTransportOwner(): Promise<(input: Readonly<{
     runtime: TestDaemonIrohRuntime;
     profile: TestServerProfile;
     token?: string;
+    probe?: (input: Readonly<{
+        serverUrl: string;
+        token: string;
+        expectedServerIdentityId: string;
+    }>) => Promise<Readonly<{ status: "ready" }>>;
 }>) => Promise<TestDaemonHomeTransport>> {
     // Same cross-process composition fixture rule as the daemon Iroh runtime
     // factory above: resolve the CLI-owned standard/Iroh Home transport
@@ -111,6 +120,11 @@ async function loadTestDaemonHomeTransportOwner(): Promise<(input: Readonly<{
             runtime: TestDaemonIrohRuntime;
             profile: TestServerProfile;
             token?: string;
+            probe?: (input: Readonly<{
+                serverUrl: string;
+                token: string;
+                expectedServerIdentityId: string;
+            }>) => Promise<Readonly<{ status: "ready" }>>;
         }>) => Promise<TestDaemonHomeTransport>;
     }>>(modulePath);
     return module.prepareDaemonHomeIrohTransport;
@@ -355,8 +369,6 @@ describe("composed Home Iroh application bytes", () => {
                 status: "active",
                 failureReason: null,
                 snapshot: {
-                    canonicalServerUrl: CANONICAL_HOME_URL,
-                    revision: expect.any(Number),
                     endpoint: {
                         endpointId: expect.any(String),
                         ...(topology === "relay"
@@ -366,6 +378,15 @@ describe("composed Home Iroh application bytes", () => {
                 },
             });
             if (!homeState.snapshot) throw new Error("Home Iroh endpoint did not publish its descriptor");
+            const homeConnectionDescriptor = await readHomeConnectionDescriptor({
+                env: process.env,
+                continuityStore: createHomeConnectionDescriptorContinuityStoreForServer(process.env)!,
+                visibility: "authenticated",
+                resolveIrohEndpointState: () => homeState,
+            });
+            if (!homeConnectionDescriptor) {
+                throw new Error("Home descriptor publisher did not compose the active Iroh endpoint");
+            }
 
             const createDaemonMachineIrohRuntime = await loadTestDaemonIrohRuntimeFactory();
             daemonIrohRuntime = await createDaemonMachineIrohRuntime({
@@ -380,16 +401,7 @@ describe("composed Home Iroh application bytes", () => {
                 throw new Error("Required daemon Iroh runtime is unavailable");
             }
             const tunnel = await daemonIrohRuntime.ensureHomeTunnel({
-                descriptor: {
-                    v: 1,
-                    homeServerIdentityId: homeState.snapshot.homeServerIdentityId,
-                    canonicalServerUrl: homeState.snapshot.canonicalServerUrl,
-                    revision: homeState.snapshot.revision,
-                    endpoints: [{
-                        kind: "iroh",
-                        ...homeState.snapshot.endpoint,
-                    }],
-                },
+                descriptor: homeConnectionDescriptor,
             });
             releaseDaemonHomeTunnel = tunnel.release;
             runtimeOrigin = tunnel.runtimeOrigin;
@@ -416,7 +428,7 @@ describe("composed Home Iroh application bytes", () => {
             const featuresPayload = FeaturesResponseSchema.parse(await featuresResponse.json());
             const publishedDescriptor = featuresPayload.homeConnectionDescriptor;
             expect(publishedDescriptor).toMatchObject({
-                homeServerIdentityId: homeState.snapshot.homeServerIdentityId,
+                homeServerIdentityId: homeConnectionDescriptor.homeServerIdentityId,
                 endpoints: [{ kind: "iroh", endpointId: homeState.snapshot.endpoint.endpointId }],
             });
             if (!publishedDescriptor) throw new Error("Home feature response omitted its public descriptor");
@@ -467,8 +479,8 @@ describe("composed Home Iroh application bytes", () => {
             const authenticatedFeatures = FeaturesResponseSchema.parse(await authenticatedFeaturesResponse.json());
             expect(authenticatedFeatures.homeConnectionDescriptor).toEqual({
                 v: 1,
-                homeServerIdentityId: homeState.snapshot.homeServerIdentityId,
-                canonicalServerUrl: homeState.snapshot.canonicalServerUrl,
+                homeServerIdentityId: homeConnectionDescriptor.homeServerIdentityId,
+                canonicalServerUrl: homeConnectionDescriptor.canonicalServerUrl,
                 revision: publishedDescriptor.revision,
                 endpoints: [{ kind: "iroh", ...homeState.snapshot.endpoint }],
             });
@@ -528,7 +540,7 @@ describe("composed Home Iroh application bytes", () => {
                 await daemonIrohRuntime?.shutdown();
                 await stopHomeIrohEndpoint();
                 await expect(getHomeIrohEndpointState()).resolves.toEqual({
-                    status: "not-composed",
+                    status: "stopping",
                     snapshot: null,
                     failureReason: null,
                 });
@@ -556,8 +568,15 @@ describe("composed Home Iroh application bytes", () => {
         }
         const rawAddon = loadIrohNodeNativeAddon(explicitAddonPath);
         const native = createIrohNodeNativeModule(rawAddon);
-        // Keep the CLI composition singletons imported below inside the harness.
+        // This is a distinct standard-only Home, not a later lifecycle state of
+        // the Iroh Home exercised above. Give its SQLite server-light descriptor
+        // continuity owner a separate data root so the prior Home's non-retired
+        // Iroh endpoint cannot be silently dropped merely to make this control
+        // publish HTTPS. The CLI composition singletons imported below remain
+        // inside the same outer disposable harness.
+        process.env.HAPPIER_SERVER_LIGHT_DATA_DIR = join(harness.baseDir, "standard-home-data");
         process.env.HAPPIER_HOME_DIR = join(harness.baseDir, "cli-home");
+        resetHomeConnectionDescriptorRevisionOwnerForTests();
 
         // A real TLS ingress, not a declared one: the standard carrier only
         // proves anything if the advertised `https` endpoint is the origin that
@@ -728,6 +747,32 @@ describe("composed Home Iroh application bytes", () => {
             }
             const ensureHomeTunnelProbe = vi.fn(daemonIrohRuntime.ensureHomeTunnel);
             const prepareDaemonHomeIrohTransport = await loadTestDaemonHomeTransportOwner();
+            // The production daemon probe uses the host trust store. This test's
+            // ephemeral CA is deliberately scoped to `ingress.agent`, so adapt
+            // only that genuine TLS boundary while still performing both real
+            // readiness requests and the exact Home-identity check.
+            const trustedTlsProbe = async (input: Readonly<{
+                serverUrl: string;
+                token: string;
+                expectedServerIdentityId: string;
+            }>) => {
+                expect(input.serverUrl).toBe(advertisedHttpsEndpoint.url);
+                const identityResponse = await requestOverTls({
+                    ingress,
+                    url: `${input.serverUrl}/v1/features`,
+                });
+                expect(identityResponse.status).toBe(200);
+                const identityFeatures = FeaturesResponseSchema.parse(identityResponse.body);
+                expect(identityFeatures.capabilities.serverIdentity.serverIdentityId)
+                    .toBe(input.expectedServerIdentityId);
+                const authResponse = await requestOverTls({
+                    ingress,
+                    url: `${input.serverUrl}/v1/auth/ping`,
+                    headers: { authorization: `Bearer ${input.token}` },
+                });
+                expect(authResponse.status).toBe(200);
+                return { status: "ready" as const };
+            };
             const transport = await prepareDaemonHomeIrohTransport({
                 runtime: { ...daemonIrohRuntime, ensureHomeTunnel: ensureHomeTunnelProbe },
                 profile: {
@@ -743,6 +788,7 @@ describe("composed Home Iroh application bytes", () => {
                     homeConnectionDescriptor: authenticatedDescriptor,
                 },
                 token,
+                probe: trustedTlsProbe,
             });
 
             // The production transport decision keeps the ordinary carrier, and

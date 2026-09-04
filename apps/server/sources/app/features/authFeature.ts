@@ -245,6 +245,9 @@ export function resolveAuthFeature(env: NodeJS.ProcessEnv): FeaturesPayloadDelta
                     desktopQrMobileScan: {
                         enabled: featureEnv.pairingDesktopQrMobileScanEnabled,
                     },
+                    boundQrV2: {
+                        enabled: featureEnv.pairingDesktopQrMobileScanEnabled,
+                    },
                 },
                 ui: {
                     recoveryKeyReminder: {

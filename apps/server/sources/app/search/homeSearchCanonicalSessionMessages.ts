@@ -1,3 +1,7 @@
+import {
+    SessionStoredMessageContentSchema,
+    isStoredJsonContentEnvelopeModeCompatible,
+} from '@happier-dev/protocol';
 import { db } from '@/storage/db';
 import type { HomeSearchCanonicalPageReader } from './homeSearchIndexer';
 
@@ -16,19 +20,31 @@ export const readCanonicalSessionMessagesPage: HomeSearchCanonicalPageReader = a
             content: true,
             createdAt: true,
             updatedAt: true,
+            session: { select: { encryptionMode: true } },
         },
         orderBy: { id: 'asc' },
         take: Math.max(1, Math.min(500, Math.trunc(limit))),
     });
-    const messages = rows.map((row) => ({
-        id: row.id,
-        sessionId: row.sessionId,
-        seq: row.seq,
-        createdAtMs: row.createdAt.getTime(),
-        updatedAtMs: row.updatedAt.getTime(),
-        role: row.messageRole,
-        content: row.content,
-    }));
+    const messages = rows.flatMap((row) => {
+        const content = SessionStoredMessageContentSchema.safeParse(row.content);
+        const sessionMode = row.session.encryptionMode;
+        if (
+            !content.success
+            || (sessionMode !== 'plain' && sessionMode !== 'e2ee')
+            || !isStoredJsonContentEnvelopeModeCompatible(sessionMode, content.data)
+        ) {
+            return [];
+        }
+        return [{
+            id: row.id,
+            sessionId: row.sessionId,
+            seq: row.seq,
+            createdAtMs: row.createdAt.getTime(),
+            updatedAtMs: row.updatedAt.getTime(),
+            role: row.messageRole,
+            content: content.data,
+        }];
+    });
     const nextAfterId = rows.length === limit ? rows.at(-1)?.id : undefined;
     return { messages, ...(nextAfterId ? { nextAfterId } : {}) };
 };

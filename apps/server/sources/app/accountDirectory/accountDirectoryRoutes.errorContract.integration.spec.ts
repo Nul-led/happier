@@ -5,6 +5,7 @@ import { serializerCompiler, validatorCompiler, ZodTypeProvider } from "fastify-
 import { z } from "zod";
 
 import { enableErrorHandlers } from "@/app/api/utils/enableErrorHandlers";
+import { enableAuthentication } from "@/app/api/utils/enableAuthentication";
 import { resolveApiRateLimitPluginOptions } from "@/app/api/utils/apiRateLimitPolicy";
 import type { Fastify as AppFastify } from "@/app/api/types";
 import { applyEnvValues, restoreEnv, snapshotEnv } from "@/app/api/testkit/env";
@@ -41,14 +42,15 @@ const ASSERTION = {
 
 async function createTestApp(
     registerRoutes: (app: AppFastify) => void,
-    authenticate: () => Promise<void> = async () => {},
+    authenticate: (() => Promise<void>) | null = async () => {},
 ): Promise<AppFastify> {
     const app = Fastify({ logger: false });
     await app.register(fastifyRateLimit, resolveApiRateLimitPluginOptions(process.env));
     app.setValidatorCompiler(validatorCompiler);
     app.setSerializerCompiler(serializerCompiler);
     const typed = app.withTypeProvider<ZodTypeProvider>() as unknown as AppFastify;
-    typed.decorate("authenticate", authenticate);
+    if (authenticate) typed.decorate("authenticate", authenticate);
+    else enableAuthentication(typed);
     enableErrorHandlers(typed);
     registerRoutes(typed);
     return typed;
@@ -59,6 +61,20 @@ afterEach(() => {
 });
 
 describe("Account Directory route error contract", () => {
+    it("returns the strict Directory error schema for missing connection authentication", async () => {
+        applyEnvValues({ HAPPIER_API_RATE_LIMITS_ENABLED: "0" });
+        const app = await createTestApp(registerAccountDirectoryRoutes, null);
+        try {
+            const response = await app.inject({ method: "GET", url: "/v1/account-directory/me" });
+            expect(response.statusCode).toBe(401);
+            expect(AccountDirectoryRouteErrorResponseV1Schema.parse(response.json())).toEqual({
+                error: "invalid_token",
+            });
+        } finally {
+            await app.close();
+        }
+    });
+
     it.each([
         ["unsupported version", { v: 2, assertion: ASSERTION }],
         ["unknown field", { v: 1, assertion: ASSERTION, unexpected: true }],

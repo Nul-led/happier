@@ -140,14 +140,6 @@ describe("Automation reply handoff worker", () => {
                     kind: "settled",
                     settlement: { kind: "accepted" },
                     accountCurrentness,
-                    receiptEnvelope: {
-                        t: "plain",
-                        v: {
-                            v: 1,
-                            correspondence: RESULT_ENVELOPE.v.correspondence,
-                            result: { kind: "accepted", custodyId: "custody-1" },
-                        },
-                    },
                 };
             },
         });
@@ -183,17 +175,9 @@ describe("Automation reply handoff worker", () => {
         });
         await expect(db.automationRun.findUniqueOrThrow({
             where: { id: RUN_ID },
-            select: { replyHandoffState: true, replyHandoffReceiptEnvelope: true },
+            select: { replyHandoffState: true },
         })).resolves.toEqual({
             replyHandoffState: "accepted",
-            replyHandoffReceiptEnvelope: JSON.stringify({
-                t: "plain",
-                v: {
-                    v: 1,
-                    correspondence: RESULT_ENVELOPE.v.correspondence,
-                    result: { kind: "accepted", custodyId: "custody-1" },
-                },
-            }),
         });
     });
 
@@ -211,13 +195,11 @@ describe("Automation reply handoff worker", () => {
                 replyHandoffState: true,
                 replyHandoffAttempt: true,
                 replyHandoffDueAt: true,
-                replyHandoffReceiptEnvelope: true,
             },
         })).resolves.toEqual({
             replyHandoffState: "ready",
             replyHandoffAttempt: 1,
             replyHandoffDueAt: new Date(NOW.getTime() + DEFAULT_AUTOMATION_REPLY_HANDOFF_RETRY_AFTER_MS),
-            replyHandoffReceiptEnvelope: null,
         });
     });
 
@@ -357,13 +339,11 @@ describe("Automation reply handoff worker", () => {
                 replyHandoffState: true,
                 replyHandoffAttempt: true,
                 replyHandoffDueAt: true,
-                replyHandoffReceiptEnvelope: true,
             },
         })).resolves.toEqual({
             replyHandoffState: "ready",
             replyHandoffAttempt: 1,
             replyHandoffDueAt: retryAt,
-            replyHandoffReceiptEnvelope: null,
         });
 
         // Second absolute attempt: an invalid result cannot become valid
@@ -376,13 +356,11 @@ describe("Automation reply handoff worker", () => {
                 replyHandoffState: true,
                 replyHandoffAttempt: true,
                 replyHandoffDueAt: true,
-                replyHandoffReceiptEnvelope: true,
             },
         })).resolves.toEqual({
             replyHandoffState: "blocked",
             replyHandoffAttempt: 2,
             replyHandoffDueAt: null,
-            replyHandoffReceiptEnvelope: null,
         });
 
         // Present-user recovery reopens the same custody in place: identical
@@ -426,19 +404,6 @@ describe("Automation reply handoff worker", () => {
                     kind: "settled" as const,
                     settlement: { kind: "accepted" as const },
                     accountCurrentness,
-                    receiptEnvelope: {
-                        t: "plain" as const,
-                        v: {
-                            v: 1 as const,
-                            correspondence: {
-                                accountId: ACCOUNT_ID,
-                                automationId: AUTOMATION_ID,
-                                runId: RUN_ID,
-                                handoffId: HANDOFF_ID,
-                            },
-                            result: { kind: "accepted" as const, custodyId: "custody-reopened" },
-                        },
-                    },
                 };
             },
         });
@@ -447,7 +412,6 @@ describe("Automation reply handoff worker", () => {
             select: {
                 replyHandoffState: true,
                 replyHandoffDueAt: true,
-                replyHandoffReceiptEnvelope: true,
             },
         })).resolves.toMatchObject({
             replyHandoffState: "accepted",
@@ -525,19 +489,6 @@ describe("Automation reply handoff worker", () => {
                     kind: "settled" as const,
                     settlement: { kind: "accepted" as const },
                     accountCurrentness,
-                    receiptEnvelope: {
-                        t: "plain" as const,
-                        v: {
-                            v: 1 as const,
-                            correspondence: {
-                                accountId: ACCOUNT_ID,
-                                automationId: AUTOMATION_ID,
-                                runId: RUN_ID,
-                                handoffId: HANDOFF_ID,
-                            },
-                            result: { kind: "accepted" as const, custodyId: "custody-rejoined" },
-                        },
-                    },
                 };
             },
         });
@@ -546,7 +497,6 @@ describe("Automation reply handoff worker", () => {
             select: {
                 replyHandoffState: true,
                 replyHandoffDueAt: true,
-                replyHandoffReceiptEnvelope: true,
             },
         })).resolves.toMatchObject({
             replyHandoffState: "accepted",

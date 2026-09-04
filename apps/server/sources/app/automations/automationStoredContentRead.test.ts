@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+    readRetainedAutomationRunExecutionTargetV2,
     validateAutomationStoredContentEnvelopeOuterForMode,
 } from "./automationStoredContentRead";
 
@@ -20,5 +21,50 @@ describe("Automation stored-content outer read", () => {
             raw: "not-json",
             mode: "plain",
         })).toEqual({ kind: "contentInvalid" });
+    });
+
+    it("projects only exact mode-correct released-V2 targets", () => {
+        const retainedInput = (targetType: "new_session" | "existing_session") => JSON.stringify({
+            kind: "happier_automation_run_execution_input_v1",
+            targetType,
+            templateVersion: 1,
+            templateCiphertext: JSON.stringify({
+                kind: "happier_automation_template_plain_v1",
+                payload: {
+                    prompt: "Run the retained Automation",
+                    ...(targetType === "existing_session" ? { existingSessionId: "session-retained" } : {}),
+                },
+            }),
+            origin: { kind: "scheduled", scheduledFor: 1 },
+        });
+
+        expect(readRetainedAutomationRunExecutionTargetV2({
+            raw: retainedInput("new_session"),
+            mode: "plain",
+            retainedV2OriginKind: "scheduled",
+        })).toEqual({ kind: "newSession" });
+        expect(readRetainedAutomationRunExecutionTargetV2({
+            raw: retainedInput("existing_session"),
+            mode: "plain",
+            retainedV2OriginKind: "scheduled",
+        })).toEqual({ kind: "existingSession", sessionId: "session-retained" });
+        expect(readRetainedAutomationRunExecutionTargetV2({
+            raw: retainedInput("new_session"),
+            mode: "e2ee",
+            retainedV2OriginKind: "scheduled",
+        })).toBeNull();
+        expect(readRetainedAutomationRunExecutionTargetV2({
+            raw: retainedInput("new_session"),
+            mode: "plain",
+            retainedV2OriginKind: "manual",
+        })).toBeNull();
+        expect(readRetainedAutomationRunExecutionTargetV2({
+            raw: retainedInput("new_session").replace(
+                '"targetType":"new_session"',
+                '"targetType":"new_session","unreleased":true',
+            ),
+            mode: "plain",
+            retainedV2OriginKind: "scheduled",
+        })).toBeNull();
     });
 });

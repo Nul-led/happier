@@ -3,8 +3,8 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
-import { describe, expect, it } from 'vitest';
+import { DatabaseSync, StatementSync } from 'node:sqlite';
+import { describe, expect, it, vi } from 'vitest';
 import { openHomeSearchDb } from './homeSearchDb';
 
 const bunAvailable = spawnSync('bun', ['--version'], { encoding: 'utf8' }).status === 0;
@@ -77,6 +77,14 @@ describe('Home search FTS5 owner', () => {
         expect(db.search({ query: 'new' })).toHaveLength(1);
         db.remove('m-1');
         expect(db.search({ query: 'new' })).toEqual([]);
+
+        db.upsertMany([
+            { id: 'm-bulk-edit', sessionId: 's-1', seq: 2, createdAtMs: 2, text: 'obsolete bulk wording' },
+            { id: 'm-bulk-edit', sessionId: 's-1', seq: 2, createdAtMs: 2, text: 'current bulk wording' },
+        ]);
+        expect(db.count()).toBe(1);
+        expect(db.search({ query: 'obsolete' })).toEqual([]);
+        expect(db.search({ query: 'current' }).map((hit) => hit.id)).toEqual(['m-bulk-edit']);
         db.close();
     });
 
@@ -101,6 +109,30 @@ describe('Home search FTS5 owner', () => {
         ])).toThrow('injected bulk-upsert failure');
         expect(db.count()).toBe(0);
         expect(db.search({ query: 'must' })).toEqual([]);
+        db.close();
+    });
+
+    it('projects large pages through bounded multi-row statements instead of per-message native calls', async () => {
+        const root = await mkdtemp(join(tmpdir(), 'happier-home-search-bulk-statements-'));
+        const db = await openHomeSearchDb({ dbPath: join(root, 'search.sqlite') });
+        const messages = Array.from({ length: 1_000 }, (_, index) => ({
+            id: `m-${index}`,
+            sessionId: `s-${index % 10}`,
+            seq: index + 1,
+            createdAtMs: index + 1,
+            text: `bounded statement projection ${index}`,
+        }));
+        const run = vi.spyOn(StatementSync.prototype, 'run');
+
+        db.upsertMany(messages);
+        const nativeStatementRuns = run.mock.calls.length;
+        run.mockRestore();
+
+        expect(db.count()).toBe(messages.length);
+        expect(db.search({ query: 'projection 999' }).map((hit) => hit.id)).toEqual(['m-999']);
+        // Bulk projection must cross the native boundary fewer than once per row;
+        // the owner derives its exact chunk size from SQLite's bind-variable ceiling.
+        expect(nativeStatementRuns).toBeLessThan(messages.length);
         db.close();
     });
 
@@ -217,9 +249,30 @@ describe('Home search FTS5 owner', () => {
         db.upsert({ id: 'weak', sessionId: 's-0', seq: 1, createdAtMs: 1, text: 'visibility amid unrelated filler words' });
         db.upsert({ id: 'strong', sessionId: 's-32999', seq: 1, createdAtMs: 2, text: 'visibility visibility visibility' });
 
-        const visibleSessionIds = Array.from({ length: 33_000 }, (_, index) => `s-${index}`);
-        expect(db.search({ query: 'visibility', sessionIds: visibleSessionIds, maxResults: 1 }))
+        const visibleSessions = Array.from({ length: 33_000 }, (_, index) => ({
+            sessionId: `s-${index}`,
+            maximumSeq: null,
+        }));
+        expect(db.search({ query: 'visibility', sessionConstraints: visibleSessions, maxResults: 1 }))
             .toEqual([expect.objectContaining({ id: 'strong', sessionId: 's-32999' })]);
+        db.close();
+    });
+
+    it('applies each Session publication ceiling before the result limit', async () => {
+        const root = await mkdtemp(join(tmpdir(), 'happier-home-search-publication-'));
+        const db = await openHomeSearchDb({ dbPath: join(root, 'search.sqlite') });
+        db.upsert({ id: 'published', sessionId: 'shared', seq: 4, createdAtMs: 1, text: 'needle among ordinary words' });
+        db.upsert({ id: 'private', sessionId: 'shared', seq: 5, createdAtMs: 2, text: 'needle needle needle' });
+        db.upsert({ id: 'hosted', sessionId: 'owned', seq: 99, createdAtMs: 3, text: 'needle hosted' });
+
+        expect(db.search({
+            query: 'needle',
+            sessionConstraints: [
+                { sessionId: 'shared', maximumSeq: 4 },
+                { sessionId: 'owned', maximumSeq: null },
+            ],
+            maxResults: 2,
+        }).map((hit) => hit.id)).toEqual(['hosted', 'published']);
         db.close();
     });
 });

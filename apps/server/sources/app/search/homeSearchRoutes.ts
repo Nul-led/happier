@@ -1,17 +1,26 @@
 import { MemorySearchQueryV1Schema, MemorySearchResultV1Schema, type MemorySearchQueryV1, type MemorySearchResultV1 } from '@happier-dev/protocol';
+import { z } from 'zod';
 import type { Fastify } from '@/app/api/types';
 import { resolveApiHotEndpointRateLimit } from '@/app/api/utils/apiRateLimitCatalog';
 import { requirePresentUser } from '@/app/api/utils/requirePresentUser';
 import { createServerFeatureGatedRouteApp } from '@/app/features/catalog/serverFeatureGate';
 import type { HomeSearchCapability } from './homeSearchCapability';
+import type { HomeSearchRequestContext } from './homeSearchService';
 
-/** Registers the single authenticated Personal Home search operation. */
+const HomeSearchRebuildResponseSchema = z.object({ ok: z.literal(true) }).strict();
+
+/** Registers authenticated Personal Home search and local repair operations. */
 export function registerHomeSearchRoutes(app: Fastify, params: Readonly<{
-    service: Readonly<{ capability(): HomeSearchCapability; search(query: MemorySearchQueryV1, context?: Readonly<{ visibleSessionIds?: readonly string[] }>): MemorySearchResultV1 }>;
-    resolveVisibleSessionIds: (userId: string) => Promise<readonly string[]>;
+    service: Readonly<{
+        capability(): HomeSearchCapability;
+        search(query: MemorySearchQueryV1, context?: HomeSearchRequestContext): MemorySearchResultV1;
+        invalidateAndRebuild(reason: 'explicit-repair'): Promise<void>;
+    }>;
+    resolveVisibleSessions: (userId: string) => Promise<NonNullable<HomeSearchRequestContext['visibleSessions']>>;
     env?: NodeJS.ProcessEnv;
 }>): void {
-    const gated = createServerFeatureGatedRouteApp(app, 'search', params.env ?? process.env);
+    const env = params.env ?? process.env;
+    const gated = createServerFeatureGatedRouteApp(app, 'search', env);
     gated.post('/v1/home/search', {
         schema: {
             body: MemorySearchQueryV1Schema,
@@ -20,6 +29,17 @@ export function registerHomeSearchRoutes(app: Fastify, params: Readonly<{
         preHandler: [app.authenticate, requirePresentUser],
         config: { rateLimit: resolveApiHotEndpointRateLimit(process.env, 'session.messages') },
     }, async (request, reply) => reply.send(params.service.search(request.body, {
-        visibleSessionIds: await params.resolveVisibleSessionIds(request.userId),
+        visibleSessions: await params.resolveVisibleSessions(request.userId),
     })));
+    // This is a local Personal Home maintenance operation. Hosted deployments
+    // have no present-user authority to rebuild the shared derived index.
+    if (env.HAPPIER_MANAGED_RELAY_PURPOSE !== 'personal-home') return;
+    gated.post('/v1/home/search/rebuild', {
+        schema: { response: { 200: HomeSearchRebuildResponseSchema } },
+        preHandler: [app.authenticate, requirePresentUser],
+        config: { rateLimit: resolveApiHotEndpointRateLimit(process.env, 'account.settings') },
+    }, async (_request, reply) => {
+        await params.service.invalidateAndRebuild('explicit-repair');
+        return reply.send({ ok: true as const });
+    });
 }

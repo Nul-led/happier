@@ -553,6 +553,108 @@ describe("automation assignment liveness (integration)", () => {
         })).resolves.toMatchObject({ run: { id: runId, state: "claimed" } });
     });
 
+    it.each([
+        { policyKind: "firstMatch" as const, matchCount: null, remainingOccurrences: 1 },
+        { policyKind: "nextMatches" as const, matchCount: 2, remainingOccurrences: 2 },
+        { policyKind: "everyMatch" as const, matchCount: null, remainingOccurrences: null },
+    ])("does not admit a replayable $policyKind occurrence with only a replaced assignment", async ({
+        policyKind,
+        matchCount,
+        remainingOccurrences,
+    }) => {
+        const accountId = await createAccount();
+        const suffix = randomUUID();
+        const replacedMachineId = `execution-replaced-${suffix}`;
+        const replacementMachineId = `execution-replacement-${suffix}`;
+        const sourceSessionId = `session-${suffix}`;
+        const sourceTurnId = `turn-${suffix}`;
+        await db.machine.createMany({
+            data: [{
+                id: replacedMachineId,
+                accountId,
+                metadata: "{}",
+                replacedByMachineId: replacementMachineId,
+                replacedAt: new Date(),
+            }, {
+                id: replacementMachineId,
+                accountId,
+                metadata: "{}",
+            }],
+        });
+        await db.session.create({
+            data: {
+                id: sourceSessionId,
+                tag: `replacement-replayable-${suffix}`,
+                accountId,
+                encryptionMode: "plain",
+                metadata: "{}",
+                latestTurnId: sourceTurnId,
+                latestTurnStatus: "completed",
+            },
+        });
+        await db.sessionTurn.create({
+            data: {
+                sessionId: sourceSessionId,
+                turnId: sourceTurnId,
+                status: "completed",
+                startedAt: 1n,
+                updatedAt: 1n,
+            },
+        });
+        const automationId = `automation-${suffix}`;
+        const triggerId = AutomationTriggerIdSchema.parse(randomUUID());
+        await db.automation.create({
+            data: {
+                id: automationId,
+                accountId,
+                name: `Replayable ${policyKind} replacement filter`,
+                enabled: true,
+                targetType: "new_session",
+                templateCiphertext: storedRecipe(1),
+                templateVersion: 1,
+                assignments: { create: { machineId: replacedMachineId, enabled: true } },
+                triggers: {
+                    create: {
+                        id: triggerId,
+                        kind: "sessionLifecycle",
+                        enabled: true,
+                        revision: 0,
+                        sessionLifecycleEventsJson: JSON.stringify(["parentTurnCompleted"]),
+                        sessionLifecyclePolicyKind: policyKind,
+                        sessionLifecycleMatchCount: matchCount,
+                        remainingOccurrences,
+                        sourceSessionId,
+                        sourceTurnId: null,
+                    },
+                },
+            },
+        });
+        const occurrence = {
+            v: 1 as const,
+            kind: "sessionLifecycle" as const,
+            event: "parentTurnCompleted" as const,
+            sourceSessionId,
+            sourceTurnId,
+            occurredAt: Date.now(),
+        };
+
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+            await expect(inTx(async (tx) => await admitSessionLifecycleAutomationRunsTx({
+                tx,
+                accountId,
+                occurrence,
+            }))).resolves.toEqual([{
+                triggerId,
+                result: { kind: "ineligible", reason: "noEnabledAssignment" },
+            }]);
+        }
+        await expect(db.automationRun.count({ where: { automationId } })).resolves.toBe(0);
+        await expect(db.automationTrigger.findUniqueOrThrow({
+            where: { id: triggerId },
+            select: { remainingOccurrences: true },
+        })).resolves.toEqual({ remainingOccurrences });
+    });
+
     it("does not admit a Run when every configured assignment is currently unavailable", async () => {
         const accountId = await createAccount();
         const replacedMachineId = `execution-replaced-${randomUUID()}`;

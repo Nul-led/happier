@@ -77,7 +77,6 @@ type ExistingConversationOccurrenceRow = Readonly<{
     replyHandoffState: string;
     replyHandoffAttempt: number;
     replyHandoffDueAt: Date | null;
-    replyHandoffReceiptEnvelope: string | null;
 }>;
 
 const existingConversationOccurrenceSelect = {
@@ -100,7 +99,6 @@ const existingConversationOccurrenceSelect = {
     replyHandoffState: true,
     replyHandoffAttempt: true,
     replyHandoffDueAt: true,
-    replyHandoffReceiptEnvelope: true,
 } satisfies Prisma.AutomationRunSelect;
 
 async function findConversationOccurrenceTx(params: Readonly<{
@@ -217,8 +215,7 @@ function hasNoReplyHandoff(row: ExistingConversationOccurrenceRow): boolean {
         && row.replyHandoffId === null
         && row.replyHandoffState === "none"
         && row.replyHandoffAttempt === 0
-        && row.replyHandoffDueAt === null
-        && row.replyHandoffReceiptEnvelope === null;
+        && row.replyHandoffDueAt === null;
 }
 
 type ReplyHandoffAdmissionPlanV1 = Readonly<{

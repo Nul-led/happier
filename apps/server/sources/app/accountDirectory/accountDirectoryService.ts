@@ -5,8 +5,11 @@ import { db } from "@/storage/db";
 import { inTx, type Tx } from "@/storage/inTx";
 import { getOrCreateServerIdentityId, initializeServerIdentityCache, readCachedServerIdentityIdForHotPath } from "@/app/serverIdentity/serverIdentity";
 import { getPublicUrl } from "@/storage/blob/files";
-import { readHomeConnectionDescriptor } from "@/app/features/homeConnectionDescriptorPublication";
+import {
+    readRequiredAuthenticatedHomeConnectionDescriptor,
+} from "@/app/features/homeConnectionDescriptorPublication";
 import { createHomeConnectionDescriptorContinuityStoreForServer } from "@/app/features/homeConnectionDescriptorContinuity";
+import type { HomeApprovalGate } from "@/app/auth/homeApprovalGateContract";
 import { AccountDirectoryError } from "./accountDirectoryErrors";
 import {
     AccountDirectoryLinkPutRequestSchema,
@@ -467,6 +470,7 @@ export type SameServiceHomeBootstrapPreparation = Readonly<
         signingKeyId: string;
         signingPublicKey: Uint8Array<ArrayBuffer>;
         homeConnectionDescriptor: HomeConnectionDescriptorV1;
+        resolveHomeConnectionDescriptorAtWriteBoundary: HomeConnectionDescriptorResolver;
     }
 >;
 
@@ -537,6 +541,7 @@ export async function prepareSameServiceHomeBootstrapForNewAccount(params: Reado
             issuerSigningPublicKeyBase64Url: signing.publicKeyBase64Url,
         }),
         homeConnectionDescriptor: authoritativeDescriptor,
+        resolveHomeConnectionDescriptorAtWriteBoundary: resolveHomeConnectionDescriptor,
     };
 }
 
@@ -549,6 +554,13 @@ export async function ensureSameServiceHomeBootstrapForNewAccountInTx(
 ): Promise<SameServiceHomeBootstrapOutcome> {
     if (params.preparation.status !== "ready") return params.preparation;
     const preparation = params.preparation;
+    const currentDescriptor = await preparation.resolveHomeConnectionDescriptorAtWriteBoundary();
+    if (!currentDescriptor) {
+        throw new Error("Same-service Home descriptor became unavailable before persistence");
+    }
+    if (currentDescriptor.homeServerIdentityId !== preparation.serverIdentityId) {
+        throw new Error("Same-service Home descriptor identity changed before persistence");
+    }
     await upsertAccountDirectoryLinkInTx(tx, {
         accountId: params.accountId,
         issuerServerIdentityId: preparation.serverIdentityId,
@@ -562,7 +574,7 @@ export async function ensureSameServiceHomeBootstrapForNewAccountInTx(
         label: sameServiceHomeEntryLabel(
             preparation.homeConnectionDescriptor.canonicalServerUrl,
         ),
-        connectionDescriptor: preparation.homeConnectionDescriptor,
+        connectionDescriptor: currentDescriptor,
     });
     return {
         status: "ensured",
@@ -664,10 +676,9 @@ function createCurrentHomeConnectionDescriptorResolver(
         await initializeServerIdentityCache(env);
         const continuityStore = createHomeConnectionDescriptorContinuityStoreForServer(env);
         if (!continuityStore) return undefined;
-        return readHomeConnectionDescriptor({
+        return readRequiredAuthenticatedHomeConnectionDescriptor({
             env,
             continuityStore,
-            visibility: "authenticated",
         });
     };
 }
@@ -710,19 +721,7 @@ export async function redeemHomeLoginAssertion(params: Readonly<{
     /** Narrow canonical-owner seam for owner tests; production resolves the live Home descriptor. */
     resolveHomeConnectionDescriptor?: HomeConnectionDescriptorResolver;
     /** Home/Lane-05 owns approval and final Home-local token issuance. */
-    homeApprovalGate?: { evaluate: (facts: Readonly<{
-        accountId: string;
-        issuerServerIdentityId: string;
-        issuerSubjectId: string;
-        requesterBoxPublicKeyBase64: string;
-        approvalBindingProof: string;
-        deviceLabel: string | null;
-        approvalId?: string;
-    }>) => Promise<
-        | { kind: "allowed"; approvedRequest?: { approvalId: string; bindingProof: string } }
-        | { kind: "approval_required"; request: { approvalId: string; deviceLabel: string | null; expiresAtMs: number } }
-        | { kind: "rejected" | "expired" | "invalid" }
-    > };
+    homeApprovalGate?: HomeApprovalGate;
     issueHomeToken?: (tx: Tx, accountId: string) => Promise<string>;
 }>): Promise<HomeLoginRedemptionResultV1> {
     const parsed = HomeLoginAssertionV1Schema.safeParse(params.assertion);
@@ -764,6 +763,7 @@ export async function redeemHomeLoginAssertion(params: Readonly<{
         issuerSubjectId: assertion.issuerSubjectId,
         requesterBoxPublicKeyBase64: assertion.clientBoxPublicKeyBase64,
         approvalBindingProof: createHomeLoginApprovalBindingProof(assertion, link),
+        assertionExpiresAtMs: assertion.expiresAtMs,
         deviceLabel: null,
         ...(params.approvalId ? { approvalId: params.approvalId } : {}),
     });
@@ -816,6 +816,7 @@ export async function redeemHomeLoginAssertion(params: Readonly<{
             }
             throw error;
         }
+        let currentApprovalExpiresAtMs: number | null = null;
         if (decision.approvedRequest) {
             const currentBindingProof = createHomeLoginApprovalBindingProof(assertion, currentLink);
             if (currentBindingProof !== decision.approvedRequest.bindingProof) {
@@ -830,17 +831,31 @@ export async function redeemHomeLoginAssertion(params: Readonly<{
                     expiresAt: { gt: new Date() },
                     requestedBindingProof: currentBindingProof,
                 },
-                select: { id: true },
+                select: { id: true, expiresAt: true },
             });
             if (!currentApproval) {
                 throw new AccountDirectoryError("approval_invalid", "Home approval is no longer current");
             }
+            currentApprovalExpiresAtMs = currentApproval.expiresAt.getTime();
         }
         // Approval binds the assertion signing bytes, including the destination
         // digest. Re-read the canonical Home owner after every transactional
         // trust check and immediately before issuance, so a destination change
         // while approval was pending cannot produce a usable Home credential.
         await validateCredentialDestination(assertion, resolveHomeConnectionDescriptor);
+        if (params.nowMs === undefined) {
+            const issuanceBoundaryNowMs = Date.now();
+            if (assertion.expiresAtMs <= issuanceBoundaryNowMs) {
+                throw new AccountDirectoryError("assertion_expired");
+            }
+            if (
+                decision.approvedRequest
+                && currentApprovalExpiresAtMs !== null
+                && currentApprovalExpiresAtMs <= issuanceBoundaryNowMs
+            ) {
+                throw new AccountDirectoryError("approval_expired");
+            }
+        }
         return issueHomeToken(tx, currentLink.accountId);
     });
     const credentialPayload = HomeLoginCredentialPayloadV1Schema.safeParse({ token });

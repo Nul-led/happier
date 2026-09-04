@@ -435,7 +435,10 @@ describe("plugin webhook durable delivery admission", () => {
         const before = await db.pluginWebhookDelivery.findUniqueOrThrow({ where: { deliveryIdentityDigest: "a".repeat(64) } });
         const admittedChange = await readWebhookChange();
 
-        await expect(admitPluginWebhookDeliveryV1({ ...admissionParams(999), onCommittedWake: wake }))
+        // The ingress transaction rechecks the endpoint binding revision before
+        // it resolves the unique dedupe conflict, and ingest always presents the
+        // revision it just read, so a duplicate arrives at the current revision.
+        await expect(admitPluginWebhookDeliveryV1({ ...admissionParams(), onCommittedWake: wake }))
             .resolves.toEqual({ kind: "duplicate", deliveryId: before.id });
         const after = await db.pluginWebhookDelivery.findUniqueOrThrow({ where: { id: before.id } });
         expect(after).toEqual(before);

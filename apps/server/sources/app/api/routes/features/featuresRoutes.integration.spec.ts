@@ -188,9 +188,6 @@ describe("featuresRoutes", () => {
 
     describe("home iroh endpoint publication", () => {
         const activeSnapshot = {
-            homeServerIdentityId: "srv_routeIrohHome",
-            canonicalServerUrl: "http://127.0.0.1:3005",
-            revision: 7,
             endpoint: {
                 endpointId: "a".repeat(64),
                 relayUrls: ["https://relay.example.test"],
@@ -258,7 +255,7 @@ describe("featuresRoutes", () => {
                 v: 1,
                 homeServerIdentityId: "srv_routeIrohHome",
                 canonicalServerUrl: "http://127.0.0.1:3005",
-                revision: 7,
+                revision: 1,
                 endpoints: [{
                     kind: "iroh",
                     endpointId: "a".repeat(64),
@@ -307,7 +304,7 @@ describe("featuresRoutes", () => {
                 homeConnectionDescriptor: {
                     v: 1,
                     homeServerIdentityId: "srv_routeIrohHome",
-                    revision: 7,
+                    revision: 1,
                     endpoints: [{
                         kind: "iroh",
                         endpointId: "a".repeat(64),
@@ -319,7 +316,7 @@ describe("featuresRoutes", () => {
             expect(reply.headers["Cache-Control"]).toBe("no-store");
         });
 
-        it("omits an authenticated descriptor whose Home identity differs from the server identity", async () => {
+        it("binds an authenticated descriptor to the current server identity", async () => {
             resetEnv({ HAPPIER_SERVER_IDENTITY_ID: "srv_differentHome" });
             const { featuresRoutes } = await import("./featuresRoutes");
             const route = createRouteTestBuilder({
@@ -343,7 +340,7 @@ describe("featuresRoutes", () => {
             });
 
             expect((response as any).capabilities.serverIdentity.serverIdentityId).toBe("srv_differentHome");
-            expect(response).not.toHaveProperty("homeConnectionDescriptor");
+            expect((response as any).homeConnectionDescriptor?.homeServerIdentityId).toBe("srv_differentHome");
         });
 
         it("omits the descriptor for not-composed, unavailable, and failed states", async () => {
@@ -399,20 +396,22 @@ describe("featuresRoutes", () => {
             });
 
             const first = await route.invoke();
-            expect((first.response as any).homeConnectionDescriptor?.revision).toBe(7);
+            expect((first.response as any).homeConnectionDescriptor?.revision).toBe(1);
 
             state = {
                 status: "active",
                 snapshot: {
-                    ...activeSnapshot,
-                    revision: 8,
-                    endpoint: { endpointId: "b".repeat(64) },
+                    endpoint: {
+                        ...activeSnapshot.endpoint,
+                        relayUrls: ["https://new-relay.example.test"],
+                    },
                 },
                 failureReason: null,
             };
             const second = await route.invoke();
-            expect((second.response as any).homeConnectionDescriptor?.revision).toBe(8);
-            expect((second.response as any).homeConnectionDescriptor?.endpoints?.[0]?.endpointId).toBe("b".repeat(64));
+            expect((second.response as any).homeConnectionDescriptor?.revision).toBe(2);
+            expect((second.response as any).homeConnectionDescriptor?.endpoints?.[0]?.relayUrls)
+                .toEqual(["https://new-relay.example.test"]);
 
             state = { status: "failed", snapshot: null, failureReason: "endpoint_key_lost" };
             const third = await route.invoke();

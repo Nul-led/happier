@@ -220,6 +220,12 @@ function consumesEventConversationCapacity(cause: AutomationRunCause): boolean {
         || (cause.kind === "trigger" && cause.triggerKind === "pluginEvent");
 }
 
+function isExactTurnSessionLifecycleCause(cause: AutomationRunCause): boolean {
+    return cause.kind === "trigger"
+        && cause.triggerKind === "sessionLifecycle"
+        && cause.evidence.policy.kind === "currentTurn";
+}
+
 function prepareAutomationRunAdmission(params: Readonly<{
     request: AutomationRunAdmissionRequest;
     cause: AutomationRunCause;
@@ -241,9 +247,7 @@ function prepareAutomationRunAdmission(params: Readonly<{
     const assignmentMayBeFrozen = (assignment: AutomationAdmissionDefinition["assignments"][number]): boolean => {
         const availability = classifyMachineAvailabilityState(assignment.machine);
         return availability === "available"
-            || (cause.kind === "trigger"
-                && cause.triggerKind === "sessionLifecycle"
-                && availability === "replaced");
+            || (availability === "replaced" && isExactTurnSessionLifecycleCause(cause));
     };
     const admissionAutomation: AutomationAdmissionDefinition = {
         ...automation,

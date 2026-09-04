@@ -15,22 +15,9 @@ import { resolvePairingAuthPolicyFromEnv } from "./pairingAuthPolicy";
 import { resolveApiHotEndpointRateLimit } from "@/app/api/utils/apiRateLimitCatalog";
 import { recordAuthEnrollmentOutcome } from "@/app/monitoring/metrics/authMetrics";
 import { cleanupExpiredAuthPairingSessions } from "@/app/retention/rules/authPairingSessionRetentionRule";
+import type { HomeApprovalGate } from "@/app/auth/homeApprovalGateContract";
 
-export type HomeApprovalGate = {
-    evaluate(input: {
-        accountId: string;
-        issuerServerIdentityId: string;
-        issuerSubjectId: string;
-        requesterBoxPublicKeyBase64: string;
-        approvalBindingProof: string;
-        deviceLabel: string | null;
-        approvalId?: string;
-    }): Promise<
-        | { kind: "allowed"; approvedRequest?: { approvalId: string; bindingProof: string } }
-        | { kind: "approval_required"; request: { approvalId: string; deviceLabel: string | null; expiresAtMs: number } }
-        | { kind: "rejected" | "expired" | "invalid" }
-    >;
-};
+export type { HomeApprovalGate } from "@/app/auth/homeApprovalGateContract";
 
 function approvalEnabled(env: NodeJS.ProcessEnv): boolean {
     return env.HAPPIER_HOME_DEVICE_APPROVAL_REQUIRED === "1";
@@ -43,6 +30,10 @@ export function createHomeApprovalGate(env: NodeJS.ProcessEnv = process.env): Ho
         async evaluate(input) {
             if (!approvalEnabled(env)) return { kind: "allowed" };
             const now = new Date();
+            const assertionExpiresAtMs = input.assertionExpiresAtMs ?? Number.MAX_SAFE_INTEGER;
+            if (!Number.isSafeInteger(assertionExpiresAtMs) || assertionExpiresAtMs <= now.getTime()) {
+                return { kind: "expired" };
+            }
             if (input.approvalId) {
                 const row = await db.authPairingSession.findUnique({ where: { id: input.approvalId } });
                 if (!row) {
@@ -66,7 +57,7 @@ export function createHomeApprovalGate(env: NodeJS.ProcessEnv = process.env): Ho
                     recordAuthEnrollmentOutcome({ flow: "home_approval", outcome: "wrong_binding" });
                     return { kind: "invalid" };
                 }
-                if (row.expiresAt <= now) {
+                if (row.expiresAt <= now || assertionExpiresAtMs <= now.getTime()) {
                     recordAuthEnrollmentOutcome({ flow: "home_approval", outcome: "expired" });
                     return { kind: "expired" };
                 }
@@ -117,17 +108,27 @@ export function createHomeApprovalGate(env: NodeJS.ProcessEnv = process.env): Ho
                     orderBy: { createdAt: "desc" },
                 });
                 if (existing) {
+                    const effectiveExpiresAtMs = Math.min(existing.expiresAt.getTime(), assertionExpiresAtMs);
+                    if (effectiveExpiresAtMs < existing.expiresAt.getTime()) {
+                        await tx.authPairingSession.updateMany({
+                            where: { id: existing.id, approvalStatus: "pending", expiresAt: existing.expiresAt },
+                            data: { expiresAt: new Date(effectiveExpiresAtMs) },
+                        });
+                    }
                     return {
                         kind: "approval_required" as const,
                         request: {
                             approvalId: existing.id,
                             deviceLabel: existing.requestedDeviceLabel ?? null,
-                            expiresAtMs: existing.expiresAt.getTime(),
+                            expiresAtMs: effectiveExpiresAtMs,
                         },
                     };
                 }
 
-                const expiresAt = new Date(now.getTime() + policy.ttlMs);
+                const expiresAt = new Date(Math.min(
+                    now.getTime() + policy.ttlMs,
+                    assertionExpiresAtMs,
+                ));
                 const row = await tx.authPairingSession.create({
                     data: {
                         accountId: input.accountId,

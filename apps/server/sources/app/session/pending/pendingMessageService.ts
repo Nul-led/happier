@@ -10,7 +10,7 @@ import {
 } from "@/app/session/pending/resolveSessionPendingAccess";
 import type { PendingMessageRow } from "@/app/session/pending/mapPendingMessageRow";
 import { db } from "@/storage/db";
-import { inTx, isTransactionAcquisitionUnavailableError, type Tx } from "@/storage/inTx";
+import { afterTx, inTx, isTransactionAcquisitionUnavailableError, type Tx } from "@/storage/inTx";
 import { isPrismaErrorCode } from "@/storage/prisma";
 import { readEncryptionFeatureEnv } from "@/app/features/catalog/readFeatureEnv";
 import {
@@ -31,9 +31,12 @@ import {
     SessionInputAdmissionReceiptV1Schema,
     SessionInputAdmissionRejectionCodeV1Schema,
     SessionInputRequestEqualityEvidenceV1Schema,
+    SESSION_MESSAGE_PROVENANCE_META_KEY,
     supportsMachineOperationProtocolCapabilityV1,
     readSessionInputAuthorityV1,
     readSessionInputRequestV1,
+    settleSessionInputRequestV1,
+    settleSessionMessageProvenanceV1,
     withSessionInputAuthorityV1,
     parseSessionMessageDeliveryResolutionV1,
     pendingDeliveryStatusV1ToPersistedFields,
@@ -76,6 +79,7 @@ import {
     reconcilePendingActivationAuthorizationForRemovedRequestInTx,
     type PendingActivationTarget,
 } from "@/app/session/pending/pendingActivationAuthorization";
+import { emitPendingChanged } from "@/app/session/pending/publishPendingMutation";
 
 type ParticipantCursor = SessionParticipantCursor;
 
@@ -923,6 +927,7 @@ function readPlainMessageMeta(content: SessionStoredMessageContent): Record<stri
 function isExactPlainRequestToAuthorityReplacement(params: Readonly<{
     requestContent: SessionStoredMessageContent;
     finalContent: SessionStoredMessageContent;
+    inputAdmissionReceipt: SessionInputAdmissionReceiptV1;
 }>): boolean {
     if (params.requestContent.t !== "plain" || params.finalContent.t !== "plain") return false;
     if (
@@ -938,15 +943,28 @@ function isExactPlainRequestToAuthorityReplacement(params: Readonly<{
     const request = readSessionInputRequestV1(requestMeta);
     const authority = readSessionInputAuthorityV1(finalMeta);
     if (!request || !authority) return false;
-    const { permission: requestPermission, ...requestCommon } = request;
-    const { permission: authorityPermission, ...authorityCommon } = authority;
-    if (
-        !isDeepStrictEqual(requestCommon, authorityCommon)
-        || requestPermission.requestedPermissionCeiling !== authorityPermission.requestedPermissionCeiling
-    ) return false;
+    let expectedMeta: Record<string, unknown>;
+    try {
+        const expectedAuthority = settleSessionInputRequestV1({
+            request,
+            currentSessionPermissionCeiling: authority.permission.admittedPermissionCeiling,
+            inputAdmissionReceipt: params.inputAdmissionReceipt,
+        });
+        const expectedProvenance = settleSessionMessageProvenanceV1({
+            request,
+            requestedProvenance: requestMeta?.[SESSION_MESSAGE_PROVENANCE_META_KEY],
+            inputAdmissionReceipt: params.inputAdmissionReceipt,
+        });
+        expectedMeta = {
+            ...withSessionInputAuthorityV1(requestMeta ?? {}, expectedAuthority),
+            [SESSION_MESSAGE_PROVENANCE_META_KEY]: expectedProvenance,
+        };
+    } catch {
+        return false;
+    }
     const expected = {
         ...(params.requestContent.v as Record<string, unknown>),
-        meta: withSessionInputAuthorityV1(requestMeta ?? {}, authority),
+        meta: expectedMeta,
     };
     return isDeepStrictEqual(params.finalContent.v, expected);
 }
@@ -988,6 +1006,123 @@ async function validateInputSettlementDomainFactsInTx(params: Readonly<{
         }
     }
     return { ok: true };
+}
+
+type QueuedPendingInputForRejection = Readonly<{
+    status: string;
+    deliveryState: string | null;
+    content: unknown;
+    requestedAction: unknown;
+    requestEqualityEvidenceV1: unknown;
+}>;
+
+async function rejectQueuedPendingInputInTx(params: Readonly<{
+    tx: Tx;
+    sessionId: string;
+    localId: string;
+    existing: QueuedPendingInputForRejection;
+    code: SessionInputAdmissionRejectionCodeV1;
+}>) {
+    if (params.existing.status !== "queued") return null;
+    const requestContent = params.existing.content as PrismaJson.SessionPendingMessageContent;
+    const requestedAction = PendingRequestedActionV1Schema.safeParse(params.existing.requestedAction);
+    if (!requestedAction.success) return null;
+
+    let requestEqualityEvidenceV1: SessionInputRequestEqualityEvidenceV1;
+    if (requestContent.t === "plain") {
+        const derived = derivePlainRequestEqualityEvidence({
+            content: requestContent,
+            requestedAction: requestedAction.data,
+        });
+        if (!derived) return null;
+        requestEqualityEvidenceV1 = derived;
+    } else {
+        const parsed = SessionInputRequestEqualityEvidenceV1Schema.safeParse(
+            params.existing.requestEqualityEvidenceV1,
+        );
+        if (!parsed.success || parsed.data.kind !== "e2eeTag") return null;
+        requestEqualityEvidenceV1 = parsed.data;
+    }
+
+    const discardedFields = pendingDeliveryStatusV1ToPersistedFields({
+        status: "discarded",
+        reason: params.code,
+    });
+    await params.tx.sessionPendingMessage.update({
+        where: {
+            sessionId_localId: {
+                sessionId: params.sessionId,
+                localId: params.localId,
+            },
+        },
+        data: {
+            ...discardedFields,
+            discardedAt: new Date(),
+            requestEqualityEvidenceV1,
+        },
+    });
+    await reconcilePendingActivationAuthorizationForRemovedRequestInTx({
+        tx: params.tx,
+        sessionId: params.sessionId,
+        requestId: params.localId,
+    });
+    return applyPendingSessionStateChange({
+        tx: params.tx,
+        sessionId: params.sessionId,
+        pendingCountDelta: -1,
+        pendingBlockedCountDelta: params.existing.deliveryState === "blocked" ? -1 : 0,
+    });
+}
+
+/** Retires the exact deterministic queued Session input owned by one Automation Run. */
+export async function retireAutomationPendingInputInTx(params: Readonly<{
+    tx: Tx;
+    accountId: string;
+    sessionId: string;
+    runId: string;
+}>): Promise<boolean> {
+    const localId = `automation:run:${params.runId}`;
+    const existing = await params.tx.sessionPendingMessage.findUnique({
+        where: { sessionId_localId: { sessionId: params.sessionId, localId } },
+        select: {
+            status: true,
+            deliveryState: true,
+            content: true,
+            requestedAction: true,
+            requestEqualityEvidenceV1: true,
+        },
+    });
+    if (!existing || existing.status !== "queued") return false;
+    const state = await rejectQueuedPendingInputInTx({
+        tx: params.tx,
+        sessionId: params.sessionId,
+        localId,
+        existing,
+        code: "session_input_cancelled",
+    });
+    if (!state) throw new Error("Automation pending input could not be retired");
+    afterTx(params.tx, () => {
+        void emitPendingChanged({
+            sessionId: params.sessionId,
+            changedByAccountId: params.accountId,
+            pendingCount: state.pendingCount,
+            pendingBlockedCount: state.pendingBlockedCount,
+            pendingVersion: state.pendingVersion,
+            participantCursors: state.participantCursors,
+        }).catch((error) => {
+            warn(
+                {
+                    module: "session-pending-service",
+                    operation: "automation-input-cancellation",
+                    sessionId: params.sessionId,
+                    localId,
+                    err: error,
+                },
+                "failed to publish Automation pending input cancellation",
+            );
+        });
+    });
+    return true;
 }
 
 /** Target-only protected request settlement, before any Agent/provider effect. */
@@ -1119,41 +1254,14 @@ export async function settlePendingInputAdmission(params: Readonly<{
             if (!requestedAction.success) return { ok: false, error: "conflict" } as const;
 
             if (decision.kind === "reject") {
-                let requestEqualityEvidenceV1: SessionInputRequestEqualityEvidenceV1;
-                if (requestContent.t === "plain") {
-                    const derived = derivePlainRequestEqualityEvidence({
-                        content: requestContent,
-                        requestedAction: requestedAction.data,
-                    });
-                    if (!derived) return { ok: false, error: "conflict" } as const;
-                    requestEqualityEvidenceV1 = derived;
-                } else {
-                    const parsed = SessionInputRequestEqualityEvidenceV1Schema.safeParse(
-                        existing.requestEqualityEvidenceV1,
-                    );
-                    if (!parsed.success || parsed.data.kind !== "e2eeTag") {
-                        return { ok: false, error: "conflict" } as const;
-                    }
-                    requestEqualityEvidenceV1 = parsed.data;
-                }
-                const discardedFields = pendingDeliveryStatusV1ToPersistedFields({
-                    status: "discarded",
-                    reason: decision.code,
-                });
-                await tx.sessionPendingMessage.update({
-                    where: { sessionId_localId: { sessionId, localId } },
-                    data: {
-                        ...discardedFields,
-                        discardedAt: new Date(),
-                        requestEqualityEvidenceV1,
-                    },
-                });
-                await reconcilePendingActivationAuthorizationForRemovedRequestInTx({ tx, sessionId, requestId: localId });
-                const state = await applyPendingSessionStateChange({
+                const state = await rejectQueuedPendingInputInTx({
                     tx,
                     sessionId,
-                    pendingCountDelta: -1,
+                    localId,
+                    existing,
+                    code: decision.code,
                 });
+                if (!state) return { ok: false, error: "conflict" } as const;
                 return {
                     ok: true,
                     result: { status: "rejected", code: decision.code },
@@ -1167,7 +1275,11 @@ export async function settlePendingInputAdmission(params: Readonly<{
             if (
                 requestContent.t !== finalContent.t
                 || requestContent.t === "plain"
-                    && !isExactPlainRequestToAuthorityReplacement({ requestContent, finalContent })
+                    && !isExactPlainRequestToAuthorityReplacement({
+                        requestContent,
+                        finalContent,
+                        inputAdmissionReceipt: receipt.data,
+                    })
             ) return { ok: false, error: "conflict" } as const;
             const policy = readEncryptionFeatureEnv(process.env);
             const sessionEncryptionMode = session.encryptionMode === "plain" ? "plain" : "e2ee";

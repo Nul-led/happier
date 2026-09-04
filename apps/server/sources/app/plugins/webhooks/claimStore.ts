@@ -61,9 +61,9 @@ function targetWhere(target: ClaimTargetV1) {
 }
 
 /**
- * Custody of an attempt that has already run: the exact frozen delivery target,
- * the exact claimant machine installation, the exact lease identity and row
- * revision, and a lease that has not expired.
+ * Custody of an exact claimed attempt: the frozen delivery target, claimant
+ * machine installation, lease identity and row revision, plus an unexpired
+ * lease and the required execution-start state.
  *
  * Plugin, materialization and endpoint currentness are deliberately absent.
  * They are proven strictly *before* the effect — at claim, at every renewal
@@ -74,12 +74,13 @@ function targetWhere(target: ClaimTargetV1) {
  * then re-executing the same delivery — the one duplicate the at-least-once
  * contract asks the queue not to manufacture on its own.
  */
-function startedAttemptCustodyWhereV1(params: Readonly<{
+function attemptCustodyWhereV1(params: Readonly<{
     accountId: string;
     deliveryId: string;
     target: ClaimTargetV1;
     lease: LeaseIdentityV1;
     now: Date;
+    execution: "started" | "notStarted";
 }>) {
     return {
         id: params.deliveryId,
@@ -90,7 +91,7 @@ function startedAttemptCustodyWhereV1(params: Readonly<{
         revision: params.lease.revision,
         claimedByMachineId: params.target.materialization.machineId,
         claimedByMachineInstallationId: params.target.machineInstallationId,
-        executionStartedAt: { not: null },
+        executionStartedAt: params.execution === "started" ? { not: null } : null,
         leaseExpiresAt: { gt: params.now },
     } as const;
 }
@@ -692,17 +693,14 @@ export async function completePluginWebhookDeliveryV1(params: Readonly<{
 }>): Promise<PluginWebhookSettleResultV1> {
     const now = params.now ?? new Date();
     return await inTx(async (tx) => {
-        const fence = await acquireAccountEncryptionTransitionFenceInTx(tx, params.accountId);
-        if (fence.status !== "ready") {
-            return PluginWebhookSettleResultV1Schema.parse({ kind: "unavailable", code: "account_transition" });
-        }
         const updated = await tx.pluginWebhookDelivery.updateMany({
-            where: startedAttemptCustodyWhereV1({
+            where: attemptCustodyWhereV1({
                 accountId: params.accountId,
                 deliveryId: params.deliveryId,
                 target: params.target,
                 lease: params.lease,
                 now,
+                execution: "started",
             }),
             data: {
                 state: "succeeded",
@@ -754,16 +752,15 @@ export async function failPluginWebhookDeliveryV1(params: Readonly<{
         ? null
         : PluginWebhookAutomationAdmissionUnresolvedV1Schema.parse(params.automationAdmissionUnresolved);
     return await inTx(async (tx) => {
-        const fence = await acquireAccountEncryptionTransitionFenceInTx(tx, params.accountId);
-        if (fence.status !== "ready") {
-            return PluginWebhookSettleResultV1Schema.parse({ kind: "unavailable", code: "account_transition" });
-        }
-        const custodyWhere = startedAttemptCustodyWhereV1({
+        const permitsPreExecutionContentUnavailable = params.result.kind === "deadLetter"
+            && params.result.code === "content_unavailable";
+        const custodyWhere = attemptCustodyWhereV1({
             accountId: params.accountId,
             deliveryId: params.deliveryId,
             target: params.target,
             lease: params.lease,
             now,
+            execution: permitsPreExecutionContentUnavailable ? "notStarted" : "started",
         });
         const current = await tx.pluginWebhookDelivery.findFirst({
             where: custodyWhere,

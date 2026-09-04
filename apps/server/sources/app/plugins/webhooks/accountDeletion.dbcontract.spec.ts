@@ -88,6 +88,8 @@ describe("plugin webhook Account-deletion native database contract", () => {
                         targetMachineInstallationId: `installation-${marker}`,
                         targetMaterializationId: `materialization-${marker}`,
                         targetPluginVersion: "1.0.0",
+                        providerConfirmedAt: new Date("2026-08-10T09:30:00.000Z"),
+                        targetIntentEpoch: 7,
                     },
                 });
                 const currentCredential = await db.pluginWebhookCredential.create({
@@ -159,6 +161,8 @@ describe("plugin webhook Account-deletion native database contract", () => {
                     revokedAt: null,
                     releasedAt: now,
                     tombstoneExpiresAt: new Date("2026-08-17T10:00:00.000Z"),
+                    providerConfirmedAt: null,
+                    targetIntentEpoch: null,
                     targetMachineId: null,
                     targetMachineInstallationId: null,
                     targetMaterializationId: null,

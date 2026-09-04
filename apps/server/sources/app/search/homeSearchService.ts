@@ -3,12 +3,17 @@ import {
     type MemorySearchQueryV1,
     type MemorySearchResultV1,
 } from '@happier-dev/protocol';
+import type { SessionTranscriptPublicationConstraint } from '@/app/session/sessionTranscriptPublicationPolicy';
 import { isPlainHomeStoragePolicy, resolveHomeSearchCapability } from './homeSearchCapability';
 import type { HomeSearchDb } from './homeSearchDb';
 
+export type HomeSearchRequestContext = Readonly<{
+    visibleSessions?: readonly SessionTranscriptPublicationConstraint[];
+}>;
+
 export type HomeSearchService = Readonly<{
     capability(): ReturnType<typeof resolveHomeSearchCapability>;
-    search(query: MemorySearchQueryV1, context?: Readonly<{ visibleSessionIds?: readonly string[] }>): MemorySearchResultV1;
+    search(query: MemorySearchQueryV1, context?: HomeSearchRequestContext): MemorySearchResultV1;
 }>;
 
 /**
@@ -58,38 +63,39 @@ export function createHomeSearchService(params: Readonly<{
             }
             const db = params.db;
             try {
-                const eligibleSessionIds = parsed.data.eligibleSessionIds === undefined
+                const eligibleSessionIdSet = parsed.data.eligibleSessionIds === undefined
                     ? undefined
-                    : [...new Set(parsed.data.eligibleSessionIds)];
-                if (
-                    context?.visibleSessionIds
-                    && parsed.data.scope.type === 'session'
-                    && !context.visibleSessionIds.includes(parsed.data.scope.sessionId)
-                ) {
+                    : new Set(parsed.data.eligibleSessionIds);
+                if (context?.visibleSessions && parsed.data.scope.type === 'session'
+                    && !context.visibleSessions.some((constraint) => constraint.sessionId === parsed.data.scope.sessionId)) {
                     return { v: 1, ok: true, hits: [] };
                 }
                 if (
-                    eligibleSessionIds
+                    eligibleSessionIdSet
                     && parsed.data.scope.type === 'session'
-                    && !eligibleSessionIds.includes(parsed.data.scope.sessionId)
+                    && !eligibleSessionIdSet.has(parsed.data.scope.sessionId)
                 ) {
                     return { v: 1, ok: true, hits: [] };
                 }
-                const visibleSessionIds = parsed.data.scope.type === 'global'
-                    ? context?.visibleSessionIds
-                    : undefined;
-                const visibleSessionIdSet = visibleSessionIds === undefined
+                const scopedConstraints = parsed.data.scope.type === 'session'
+                    ? context?.visibleSessions
+                        ? context.visibleSessions.filter((constraint) => constraint.sessionId === parsed.data.scope.sessionId)
+                        : undefined
+                    : context?.visibleSessions
+                        ?? (eligibleSessionIdSet
+                            ? [...eligibleSessionIdSet].map((sessionId) => ({ sessionId, maximumSeq: null }))
+                            : undefined);
+                const searchableConstraints = scopedConstraints === undefined
                     ? undefined
-                    : new Set(visibleSessionIds);
-                const searchableSessionIds = eligibleSessionIds === undefined
-                    ? visibleSessionIds
-                    : visibleSessionIdSet === undefined
-                        ? eligibleSessionIds
-                        : eligibleSessionIds.filter((sessionId) => visibleSessionIdSet.has(sessionId));
+                    : eligibleSessionIdSet === undefined
+                        ? scopedConstraints
+                        : scopedConstraints.filter((constraint) => eligibleSessionIdSet.has(constraint.sessionId));
                 const hits = db.search({
                     query: parsed.data.query,
-                    sessionId: parsed.data.scope.type === 'session' ? parsed.data.scope.sessionId : undefined,
-                    sessionIds: searchableSessionIds,
+                    sessionId: searchableConstraints === undefined && parsed.data.scope.type === 'session'
+                        ? parsed.data.scope.sessionId
+                        : undefined,
+                    sessionConstraints: searchableConstraints,
                     maxResults: parsed.data.maxResults,
                 });
                 const minScore = parsed.data.minScore ?? 0;

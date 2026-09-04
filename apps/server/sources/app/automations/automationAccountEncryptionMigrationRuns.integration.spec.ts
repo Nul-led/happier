@@ -227,25 +227,6 @@ function buildPlainReplyContextEnvelope(params: Readonly<{
     });
 }
 
-function buildPlainReplyReceiptEnvelope(params: Readonly<{
-    accountId: string;
-    automationId: string;
-    runId: string;
-    handoffId: string;
-}>): string {
-    return JSON.stringify({
-        t: "plain",
-        v: {
-            v: 1,
-            correspondence: params,
-            result: {
-                kind: "accepted",
-                custodyId: "custody-account-encryption-migration",
-            },
-        },
-    });
-}
-
 const migrationRunContentSelect = {
     id: true,
     revision: true,
@@ -254,7 +235,6 @@ const migrationRunContentSelect = {
     executionInputEnvelope: true,
     resultEnvelope: true,
     replyContextEnvelope: true,
-    replyHandoffReceiptEnvelope: true,
     summaryCiphertext: true,
 } as const;
 
@@ -429,9 +409,6 @@ async function seedAutomationRuns() {
                 "materialization-account-encryption-migration",
             replyHandoffId: conversationCorrespondence.handoffId,
             replyHandoffState: "accepted",
-            replyHandoffReceiptEnvelope: buildPlainReplyReceiptEnvelope(
-                conversationCorrespondence,
-            ),
             scheduledAt: new Date("2026-08-10T10:01:00.000Z"),
             dueAt: new Date("2026-08-10T10:01:00.000Z"),
             finishedAt: new Date("2026-08-10T10:02:00.000Z"),
@@ -520,7 +497,6 @@ function buildEncryptedRunMigrationItem(params: Readonly<{
     retainsOccurrenceEvidence: boolean;
     resultEnvelope: string | null;
     replyContextEnvelope: string | null;
-    replyHandoffReceiptEnvelope: string | null;
 }>) {
     return {
         runId: params.runId,
@@ -550,12 +526,6 @@ function buildEncryptedRunMigrationItem(params: Readonly<{
             : JSON.stringify({
                 t: "encrypted",
                 c: "replacement-encrypted-reply-context-" + params.runId,
-            }),
-        replyHandoffReceiptEnvelope: params.replyHandoffReceiptEnvelope === null
-            ? null
-            : JSON.stringify({
-                t: "encrypted",
-                c: "replacement-encrypted-receipt-" + params.runId,
             }),
         failureDetailEnvelope: null,
     };
@@ -700,8 +670,6 @@ function buildMigrationDirectiveForSeed(
                 retainsOccurrenceEvidence: true,
                 resultEnvelope: seeded.eventRun.resultEnvelope,
                 replyContextEnvelope: seeded.eventRun.replyContextEnvelope,
-                replyHandoffReceiptEnvelope:
-                    seeded.eventRun.replyHandoffReceiptEnvelope,
             }),
             buildEncryptedRunMigrationItem({
                 runId: seeded.conversationRun.id,
@@ -711,8 +679,6 @@ function buildMigrationDirectiveForSeed(
                 retainsOccurrenceEvidence: true,
                 resultEnvelope: seeded.conversationRun.resultEnvelope,
                 replyContextEnvelope: seeded.conversationRun.replyContextEnvelope,
-                replyHandoffReceiptEnvelope:
-                    seeded.conversationRun.replyHandoffReceiptEnvelope,
             }),
             buildEncryptedRunMigrationItem({
                 runId: seeded.scheduledRun.id,
@@ -722,8 +688,6 @@ function buildMigrationDirectiveForSeed(
                 retainsOccurrenceEvidence: false,
                 resultEnvelope: seeded.scheduledRun.resultEnvelope,
                 replyContextEnvelope: seeded.scheduledRun.replyContextEnvelope,
-                replyHandoffReceiptEnvelope:
-                    seeded.scheduledRun.replyHandoffReceiptEnvelope,
             }),
             buildEncryptedRunMigrationItem({
                 runId: seeded.manualRun.id,
@@ -733,8 +697,6 @@ function buildMigrationDirectiveForSeed(
                 retainsOccurrenceEvidence: false,
                 resultEnvelope: seeded.manualRun.resultEnvelope,
                 replyContextEnvelope: seeded.manualRun.replyContextEnvelope,
-                replyHandoffReceiptEnvelope:
-                    seeded.manualRun.replyHandoffReceiptEnvelope,
             }),
         ],
     });
@@ -752,7 +714,6 @@ describe("Automation account-encryption Run migration directive", () => {
             executionInputEnvelope: null,
             resultEnvelope: null,
             replyContextEnvelope: null,
-            replyHandoffReceiptEnvelope: null,
             failureDetailEnvelope: null,
         };
 
@@ -940,7 +901,6 @@ describe("Automation account-encryption Run migration (integration)", () => {
                 executionInputEnvelope: rekeyedExecutionInput,
                 resultEnvelope: null,
                 replyContextEnvelope: null,
-                replyHandoffReceiptEnvelope: null,
                 failureDetailEnvelope: rekeyedFailureDetail,
             }],
         });
@@ -996,7 +956,6 @@ describe("Automation account-encryption Run migration (integration)", () => {
                 executionInputEnvelope: plainExecutionInput,
                 resultEnvelope: null,
                 replyContextEnvelope: null,
-                replyHandoffReceiptEnvelope: null,
                 failureDetailEnvelope: plainFailureDetail,
             }],
         });
@@ -1693,56 +1652,6 @@ describe("Automation account-encryption Run migration (integration)", () => {
         )).resolves.toEqual({ status: "mismatch" });
     });
 
-    it("rejects one invalid retained reply receipt before any Run envelope or template changes", async () => {
-        const seeded = await seedAutomationRuns();
-        const directive = buildMigrationDirectiveForSeed(seeded);
-        const invalidDirective = AccountEncryptionMigrateAutomationsDirectiveSchema.parse({
-            ...directive,
-            runs: directive.runs!.map((run, index) => index === 1
-                ? {
-                    ...run,
-                    replyHandoffReceiptEnvelope: JSON.stringify({
-                        t: "plain",
-                        v: { invalid: "wrong target Account mode" },
-                    }),
-                }
-                : run),
-        });
-
-        await expect(inTx(async (tx) =>
-            await migrateAutomationAccountEncryptionInTx({
-                tx,
-                accountId: seeded.account.id,
-                toMode: "e2ee",
-                directive: invalidDirective,
-            }),
-        )).resolves.toEqual({ status: "invalid_content" });
-
-        await expect(db.automation.findUniqueOrThrow({
-            where: { id: seeded.eventAutomation.id },
-            select: { templateCiphertext: true, templateVersion: true },
-        })).resolves.toEqual({
-            templateCiphertext: seeded.eventAutomation.templateCiphertext,
-            templateVersion: seeded.eventAutomation.templateVersion,
-        });
-        await expect(db.automationRun.findUniqueOrThrow({
-            where: { id: seeded.eventRun.id },
-            select: migrationRunContentSelect,
-        })).resolves.toEqual(seeded.eventRun);
-        await expect(db.automationRun.findUniqueOrThrow({
-            where: { id: seeded.conversationRun.id },
-            select: migrationRunContentSelect,
-        })).resolves.toEqual(seeded.conversationRun);
-        await expect(db.automationRun.findUniqueOrThrow({
-            where: { id: seeded.scheduledRun.id },
-            select: migrationRunContentSelect,
-        })).resolves.toEqual(seeded.scheduledRun);
-        await expect(db.automationRun.findUniqueOrThrow({
-            where: { id: seeded.manualRun.id },
-            select: migrationRunContentSelect,
-        })).resolves.toEqual(seeded.manualRun);
-    });
-
     it("rejects a schedule Run candidate that carries trigger evidence instead of the required null pair", async () => {
         const seeded = await seedAutomationRuns();
         const directive = buildMigrationDirectiveForSeed(seeded);
@@ -2266,8 +2175,6 @@ describe("Automation account-encryption Run migration (integration)", () => {
                 executionInputEnvelope: item.source.executionInputEnvelope,
                 resultEnvelope: item.source.resultEnvelope,
                 replyContextEnvelope: item.source.replyContextEnvelope,
-                replyHandoffReceiptEnvelope:
-                    item.source.replyHandoffReceiptEnvelope,
                 failureDetailEnvelope:
                     item.runId === eventWitness.runId
                         ? rekeyedEventFailureDetail
@@ -2363,7 +2270,6 @@ describe("Automation account-encryption Run migration (integration)", () => {
                 executionInputEnvelope: plainEventExecutionInput,
                 resultEnvelope: null,
                 replyContextEnvelope: null,
-                replyHandoffReceiptEnvelope: null,
                 failureDetailEnvelope: plainEventFailureDetail,
             },
         };

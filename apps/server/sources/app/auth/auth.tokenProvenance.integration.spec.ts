@@ -158,6 +158,7 @@ describe("auth token provenance (integration)", () => {
         });
         const candidates: readonly Record<string, unknown>[] = [
             { tokenEpoch: 0 },
+            { provenance: { v: 1, kind: "account", authority: "present_user" } },
             { tokenEpoch: 0, provenance: { v: 2, kind: "account", authority: "present_user" } },
             { tokenEpoch: 0, provenance: { v: 1, kind: "unknown", authority: "present_user" } },
             { tokenEpoch: 0, provenance: { v: 1, kind: "account" } },
@@ -231,6 +232,11 @@ describe("auth token provenance (integration)", () => {
             extras: { tokenEpoch: 0, provenance: { v: 1, kind: "terminal", authority: "present_user" } },
         });
         await expect(auth.verifyLegacyHomeToken(nonCanonicalPairingToken)).resolves.toBeNull();
+        const syntheticHistoricalMarker = await generator.new({
+            user: account.id,
+            extras: { tokenEpoch: 0, provenance: "privacy-kit-0.0.25-node" },
+        });
+        await expect(auth.verifyLegacyHomeToken(syntheticHistoricalMarker)).resolves.toBeNull();
 
         const directoryToken = await auth.createToken(account.id, undefined, {
             kind: "account_directory",

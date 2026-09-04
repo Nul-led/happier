@@ -11,6 +11,7 @@ import {
     projectSessionTranscriptPublicationChangeHint,
     projectSessionTranscriptPublicationPendingProjection,
     projectSessionTranscriptPublicationRealtimeProjection,
+    resolveSessionTranscriptPublicationConstraints,
     resolveSessionTranscriptPublicationCeiling,
     resolveExternalShareableTranscriptBlockedFromSeq,
 } from "./sessionTranscriptPublicationPolicy";
@@ -229,7 +230,7 @@ describe("session transcript publication policy", () => {
     });
 
     it("builds one grouped predicate for counts spanning hosted and fenced sessions", () => {
-        expect(buildSessionMessagesPublicationWhere([
+        const publications = [
             {
                 id: "hosted",
                 currentStorageState: "hosted",
@@ -254,12 +255,19 @@ describe("session transcript publication policy", () => {
                 acceptedThroughServerSeq: null,
                 publishedThroughServerSeq: null,
             },
-        ])).toEqual({
+        ] as const;
+        expect(buildSessionMessagesPublicationWhere(publications)).toEqual({
             OR: [
                 { sessionId: { in: ["hosted"] } },
                 { sessionId: { in: ["partial-a", "partial-b"] }, seq: { lte: 7 } },
             ],
         });
+        expect(resolveSessionTranscriptPublicationConstraints(publications)).toEqual([
+            { sessionId: "hosted", maximumSeq: null },
+            { sessionId: "partial-a", maximumSeq: 7 },
+            { sessionId: "partial-b", maximumSeq: 7 },
+            { sessionId: "unknown", maximumSeq: 0 },
+        ]);
     });
 
     it("clamps exposed session sequence projections and suppresses unpublished ready events", () => {

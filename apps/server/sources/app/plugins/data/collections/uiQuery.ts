@@ -16,6 +16,7 @@ import {
     getPluginCollectionScalarKindV1,
     isCanonicalPluginCollectionIndexedInstantV1,
     nextPluginCollectionIndexPrefixV1,
+    resolvePluginCollectionContractAccessV1,
     validatePluginCollectionUiQueryParametersV1,
     validatePluginCollectionUiQueryResultV1,
     type NormalizedPluginAccountCollectionContractV1,
@@ -61,8 +62,10 @@ type AccountQueryCurrentness = Readonly<{
 
 type CurrentCollectionQuery = Readonly<{
     account: AccountQueryCurrentness;
-    contractId: string;
+    storageContractId: string;
+    storageContract: NormalizedPluginAccountCollectionContractV1;
     contract: NormalizedPluginAccountCollectionContractV1;
+    access: "readOnly" | "writable";
 }>;
 
 type CollectionPageRow = Readonly<{
@@ -96,9 +99,11 @@ type CollectionQueryReadClient = Pick<Tx,
     "$queryRaw"
     | "account"
     | "accountPluginIntent"
+    | "accountPluginRelease"
     | "pluginCollectionContract"
     | "pluginCollectionIndexState"
     | "pluginCollectionIndexEntry"
+    | "pluginCollectionAbsenceEpoch"
     | "pluginCollectionRow"
 >;
 
@@ -144,7 +149,8 @@ function scalarKindForContractField(
 ): PluginCollectionScalarKindV1 {
     try {
         return getPluginCollectionScalarKindV1({ schema: contract.schema, field });
-    } catch {
+    } catch (error) {
+        if (error instanceof PluginCollectionReadOperationError) throw error;
         throw new PluginCollectionUiQueryOperationError("collection_contract_inconsistent");
     }
 }
@@ -175,7 +181,8 @@ function encodeQueryPrefix(input: Readonly<{
     if (input.values.length === 0) return undefined;
     try {
         return encodePluginCollectionIndexTuplePrefixV1({ fields: input.values });
-    } catch {
+    } catch (error) {
+        if (error instanceof PluginCollectionReadOperationError) throw error;
         throw new PluginCollectionUiQueryOperationError("collection_contract_inconsistent");
     }
 }
@@ -395,16 +402,16 @@ async function readCollectionIndexPageInTx(input: Readonly<{
     const indexState = await input.tx.pluginCollectionIndexState.findFirst({
         where: {
             accountId: input.accountId,
-            pluginId: input.current.contract.pluginId,
-            collectionId: input.current.contract.collectionId,
+            pluginId: input.current.storageContract.pluginId,
+            collectionId: input.current.storageContract.collectionId,
             indexId: input.indexId,
-            contractDigest: input.current.contract.contractDigest,
+            contractDigest: input.current.storageContract.contractDigest,
             buildState: "ready",
             indexedThroughRevision: { not: null },
         },
         select: { id: true, contractId: true },
     });
-    if (!indexState || indexState.contractId !== input.current.contractId) {
+    if (!indexState || indexState.contractId !== input.current.storageContractId) {
         throw input.error("collection_index_not_ready");
     }
 
@@ -431,10 +438,10 @@ async function readCollectionIndexPageInTx(input: Readonly<{
     const pageEntries = entries.slice(0, input.limit);
     const rowWhere = {
         accountId: input.accountId,
-        pluginId: input.current.contract.pluginId,
-        collectionId: input.current.contract.collectionId,
-        schemaVersion: input.current.contract.schemaVersion,
-        contractDigest: input.current.contract.contractDigest,
+        pluginId: input.current.storageContract.pluginId,
+        collectionId: input.current.storageContract.collectionId,
+        schemaVersion: input.current.storageContract.schemaVersion,
+        contractDigest: input.current.storageContract.contractDigest,
         deletedAt: null,
         rowId: { in: pageEntries.map((entry) => entry.rowId) },
     };
@@ -510,7 +517,11 @@ function projectionValue(input: Readonly<{
 
 async function resolveCurrentContract(input: Readonly<{
     accountId: string;
-    request: Readonly<{ pluginId: string; collectionId: string }>;
+    request: Readonly<{
+        pluginId: string;
+        collectionId: string;
+        readerContext: PluginCollectionContractRefV1;
+    }>;
 }>, database: CollectionQueryReadClient = db): Promise<CurrentCollectionQuery> {
     const account = await database.account.findUnique({
         where: { id: input.accountId },
@@ -579,12 +590,60 @@ async function resolveCurrentContract(input: Readonly<{
     });
     if (!persisted) throw new PluginCollectionUiQueryOperationError("collection_unavailable");
     try {
+        const currentWriter = readMaterializedPluginCollectionContract(persisted);
+        const requestedRef = input.request.readerContext;
+        if (
+            requestedRef.pluginId !== input.request.pluginId
+            || requestedRef.collectionId !== input.request.collectionId
+        ) {
+            throw new PluginCollectionReadOperationError("collection_unavailable");
+        }
+        const retainedReleases = await database.accountPluginRelease.findMany({
+            where: {
+                accountId: input.accountId,
+                pluginId: input.request.pluginId,
+            },
+            select: { collectionContracts: true },
+        });
+        const retained = retainedReleases.some((release) => {
+            const refs = z.array(PluginCollectionContractRefV1Schema).safeParse(release.collectionContracts);
+            return refs.success && refs.data.some((candidate) => refsMatch(candidate, requestedRef));
+        });
+        if (!retained) throw new PluginCollectionReadOperationError("collection_unavailable");
+        const requestedRow = refsMatch(currentWriter, requestedRef)
+            ? persisted
+            : await database.pluginCollectionContract.findFirst({
+                where: {
+                    pluginId: requestedRef.pluginId,
+                    collectionId: requestedRef.collectionId,
+                    schemaVersion: requestedRef.schemaVersion,
+                    contractDigest: requestedRef.contractDigest,
+                },
+                select: {
+                    id: true,
+                    pluginId: true,
+                    collectionId: true,
+                    schemaVersion: true,
+                    contractDigest: true,
+                    normalizedSchema: true,
+                    indexes: true,
+                    relations: true,
+                    privacyProjection: true,
+                },
+            });
+        if (!requestedRow) throw new PluginCollectionReadOperationError("collection_unavailable");
+        const requested = readMaterializedPluginCollectionContract(requestedRow);
+        const access = resolvePluginCollectionContractAccessV1({ currentWriter, requested });
+        if (!access) throw new PluginCollectionReadOperationError("collection_unavailable");
         return {
             account: currentAccount,
-            contractId: persisted.id,
-            contract: readMaterializedPluginCollectionContract(persisted),
+            storageContractId: persisted.id,
+            storageContract: currentWriter,
+            contract: requested,
+            access,
         };
-    } catch {
+    } catch (error) {
+        if (error instanceof PluginCollectionReadOperationError) throw error;
         throw new PluginCollectionUiQueryOperationError("collection_contract_inconsistent");
     }
 }
@@ -610,120 +669,18 @@ export async function readCurrentPluginCollectionContract(input: Readonly<{
     request: PluginCollectionContractReadRequestV1;
 }>): Promise<PluginCollectionContractReadResultV1> {
     const ref = PluginCollectionContractRefV1Schema.parse(input.request.ref);
-    const account = await db.account.findUnique({
-        where: { id: input.accountId },
-        select: {
-            publicKey: true,
-            encryptionMode: true,
-            contentPublicKey: true,
-            contentPublicKeySig: true,
-            seq: true,
-        },
-    });
-    if (!account) throw new PluginCollectionReadOperationError("collection_unavailable");
-    const currentAccount = parseCurrentAccount(account);
-
-    const intent = await db.accountPluginIntent.findUnique({
-        where: {
-            accountId_pluginId: {
-                accountId: input.accountId,
-                pluginId: ref.pluginId,
-            },
-        },
-        select: {
-            pluginId: true,
-            desiredVersion: true,
-            enabled: true,
-            offlineUiHosting: true,
-            writableCollections: true,
-            revision: true,
-        },
-    });
-    if (!intent) throw new PluginCollectionReadOperationError("collection_unavailable");
-    const parsedIntent = PluginAccountPluginIntentV1Schema.safeParse({
-        pluginId: intent.pluginId,
-        desiredVersion: intent.desiredVersion,
-        enabled: intent.enabled,
-        offlineUiHosting: intent.offlineUiHosting,
-        writableCollections: intent.writableCollections,
-        revision: intent.revision.toString(),
-    });
-    if (!parsedIntent.success || !parsedIntent.data.enabled || parsedIntent.data.desiredVersion === null) {
-        throw new PluginCollectionReadOperationError("collection_unavailable");
-    }
-    const writableRef = parsedIntent.data.writableCollections.find((candidate) => (
-        candidate.collectionId === ref.collectionId
-    ));
-    if (!writableRef || !refsMatch(writableRef, ref)) {
-        throw new PluginCollectionReadOperationError("collection_unavailable");
-    }
-
-    const release = await db.accountPluginRelease.findUnique({
-        where: {
-            accountId_pluginId_version: {
-                accountId: input.accountId,
-                pluginId: ref.pluginId,
-                version: parsedIntent.data.desiredVersion,
-            },
-        },
-        select: {
-            pluginId: true,
-            version: true,
-            collectionContracts: true,
-        },
-    });
-    if (
-        !release
-        || release.pluginId !== ref.pluginId
-        || release.version !== parsedIntent.data.desiredVersion
-    ) {
-        throw new PluginCollectionReadOperationError("collection_unavailable");
-    }
-    const releaseContracts = z.array(PluginCollectionContractRefV1Schema)
-        .safeParse(release.collectionContracts);
-    if (!releaseContracts.success) {
-        throw new PluginCollectionReadOperationError("collection_contract_inconsistent");
-    }
-    const releaseRef = releaseContracts.data.filter((candidate) => (
-        candidate.collectionId === ref.collectionId
-    ));
-    if (releaseRef.length !== 1 || !refsMatch(releaseRef[0]!, ref)) {
-        throw new PluginCollectionReadOperationError("collection_unavailable");
-    }
-
-    const persisted = await db.pluginCollectionContract.findFirst({
-        where: {
-            pluginId: ref.pluginId,
-            collectionId: ref.collectionId,
-            schemaVersion: ref.schemaVersion,
-            contractDigest: ref.contractDigest,
-        },
-        select: {
-            pluginId: true,
-            collectionId: true,
-            schemaVersion: true,
-            contractDigest: true,
-            normalizedSchema: true,
-            indexes: true,
-            relations: true,
-            privacyProjection: true,
-        },
-    });
-    if (!persisted) throw new PluginCollectionReadOperationError("collection_unavailable");
-    let contract: NormalizedPluginAccountCollectionContractV1;
-    try {
-        contract = readMaterializedPluginCollectionContract(persisted);
-    } catch {
-        throw new PluginCollectionReadOperationError("collection_contract_inconsistent");
-    }
-    if (!refsMatch(contract, ref)) {
-        throw new PluginCollectionReadOperationError("collection_contract_inconsistent");
-    }
+    const snapshot = await inTx(async (tx) => await resolveCurrentContract({
+        accountId: input.accountId,
+        request: { pluginId: ref.pluginId, collectionId: ref.collectionId, readerContext: ref },
+    }, tx));
     await readCurrentAccountChangeCursor({
         accountId: input.accountId,
-        expectedMode: currentAccount.encryptionMode,
+        expectedMode: snapshot.account.encryptionMode,
     });
-    return PluginCollectionContractReadResultV1Schema.parse({ contract });
+    return PluginCollectionContractReadResultV1Schema.parse({
+        access: snapshot.access,
+        contract: snapshot.contract,
+    });
 }
 
 async function readCurrentAccountChangeCursor(input: Readonly<{
@@ -945,49 +902,55 @@ export async function getPluginCollection(input: Readonly<{
     accountId: string;
     request: PluginCollectionGetRequestV1;
 }>): Promise<PluginCollectionGetResultV1> {
-    const current = await resolveCurrentContract(input);
-    const row = await db.pluginCollectionRow.findFirst({
-        where: {
-            accountId: input.accountId,
-            pluginId: current.contract.pluginId,
-            collectionId: current.contract.collectionId,
-            schemaVersion: current.contract.schemaVersion,
-            contractDigest: current.contract.contractDigest,
-            rowId: input.request.rowId,
-            deletedAt: null,
-        },
-        select: {
-            rowId: true,
-            revision: true,
-            contentEnvelope: true,
-            projections: {
-                select: {
-                    fieldId: true,
-                    typedEncodedValue: true,
-                    rowRevision: true,
+    const snapshot = await inTx(async (tx) => {
+        const current = await resolveCurrentContract(input, tx);
+        const row = await tx.pluginCollectionRow.findFirst({
+            where: {
+                accountId: input.accountId,
+                pluginId: current.storageContract.pluginId,
+                collectionId: current.storageContract.collectionId,
+                schemaVersion: current.storageContract.schemaVersion,
+                contractDigest: current.storageContract.contractDigest,
+                rowId: input.request.rowId,
+                deletedAt: null,
+            },
+            select: {
+                rowId: true,
+                revision: true,
+                contentEnvelope: true,
+                projections: {
+                    where: { fieldId: { in: [...current.contract.serverReadable] } },
+                    select: {
+                        fieldId: true,
+                        typedEncodedValue: true,
+                        rowRevision: true,
+                    },
                 },
             },
-        },
-    });
-    const absenceEpoch = await db.pluginCollectionAbsenceEpoch.findUnique({
-        where: { accountId_pluginId_collectionId: {
-            accountId: input.accountId,
-            pluginId: current.contract.pluginId,
-            collectionId: current.contract.collectionId,
-        } },
-        select: { epoch: true },
-    });
-    const result = PluginCollectionGetResultV1Schema.parse({
-        row: row
-            ? materializeDirectCollectionRow({ current, row })
-            : null,
-        absenceEpoch: absenceEpoch?.epoch ?? 0,
+        });
+        const absenceEpoch = await tx.pluginCollectionAbsenceEpoch.findUnique({
+            where: { accountId_pluginId_collectionId: {
+                accountId: input.accountId,
+                pluginId: current.storageContract.pluginId,
+                collectionId: current.storageContract.collectionId,
+            } },
+            select: { epoch: true },
+        });
+        return {
+            result: PluginCollectionGetResultV1Schema.parse({
+                row: row
+                    ? materializeDirectCollectionRow({ current, row })
+                    : null,
+                absenceEpoch: absenceEpoch?.epoch ?? 0,
+            }),
+            expectedMode: current.account.encryptionMode,
+        };
     });
     await readCurrentAccountChangeCursor({
         accountId: input.accountId,
-        expectedMode: current.account.encryptionMode,
+        expectedMode: snapshot.expectedMode,
     });
-    return result;
+    return snapshot.result;
 }
 
 /**
@@ -1015,6 +978,7 @@ export async function queryPluginCollection(input: Readonly<{
             cursor: input.request.cursor,
             order: input.request.order,
             limit: input.request.limit,
+            projectedFields: current.contract.serverReadable,
             error: (code) => new PluginCollectionReadOperationError(code),
         });
         const resultRows = page.pageEntries.map((entry) => {

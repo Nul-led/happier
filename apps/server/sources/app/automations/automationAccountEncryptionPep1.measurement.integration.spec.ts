@@ -8,7 +8,6 @@ import {
     deriveAutomationOccurrenceKeyV1,
     sealAutomationConversationReplyContextStoredEnvelopeV1,
     sealAutomationOccurrenceTriggerEvidenceEnvelopeV1,
-    sealAutomationReplyHandoffReceiptStoredEnvelopeV1,
     sealAutomationRunResultStoredEnvelopeV1,
     sealAutomationTriggerDefinitionStoredEnvelopeV1,
     serializeAutomationRunExecutionRecipeV1,
@@ -135,7 +134,6 @@ type MeasurementRunContent = Readonly<{
     replyHandoffTargetMaterializationId: string | null;
     replyHandoffId: string | null;
     replyHandoffState: "none" | "accepted";
-    replyHandoffReceiptEnvelope: string | null;
     summaryCiphertext: string | null;
 }>;
 
@@ -318,27 +316,6 @@ function sealReplyContextEnvelope(mode: "plain" | "e2ee"): string {
     }));
 }
 
-function sealReplyReceiptEnvelope(mode: "plain" | "e2ee"): string {
-    const result = {
-        kind: "accepted" as const,
-        custodyId: "pep1-measurement-custody",
-    };
-    if (mode === "plain") {
-        return JSON.stringify(sealAutomationReplyHandoffReceiptStoredEnvelopeV1({
-            mode,
-            correspondence: MEASUREMENT_CORRESPONDENCE,
-            result,
-        }));
-    }
-    return JSON.stringify(sealAutomationReplyHandoffReceiptStoredEnvelopeV1({
-        mode,
-        material: ACCOUNT_MATERIAL,
-        randomBytes: deterministicRandomBytes,
-        correspondence: MEASUREMENT_CORRESPONDENCE,
-        result,
-    }));
-}
-
 function sealCanonicalTargetEnvelope(textBytes: number): string {
     return JSON.stringify(
         AutomationStoredContentEnvelopeV1Schema.parse(
@@ -368,9 +345,7 @@ const SOURCE_EXECUTION_INPUT_ENVELOPE = buildExecutionInputEnvelope("plain");
 const TARGET_EXECUTION_INPUT_ENVELOPE = buildExecutionInputEnvelope("e2ee");
 const SOURCE_RESULT_ENVELOPE = sealResultEnvelope("plain", 256);
 const SOURCE_REPLY_CONTEXT_ENVELOPE = sealReplyContextEnvelope("plain");
-const SOURCE_REPLY_RECEIPT_ENVELOPE = sealReplyReceiptEnvelope("plain");
 const TARGET_REPLY_CONTEXT_ENVELOPE = sealReplyContextEnvelope("e2ee");
-const TARGET_REPLY_RECEIPT_ENVELOPE = sealReplyReceiptEnvelope("e2ee");
 const LEGACY_RESULT_ENVELOPE = JSON.stringify({
     t: "legacySummaryCiphertext",
     c: LEGACY_SUMMARY_CIPHERTEXT,
@@ -460,9 +435,6 @@ function buildSourceRunContent(index: number): MeasurementRunContent {
             ? MEASUREMENT_CORRESPONDENCE.handoffId
             : null,
         replyHandoffState: hasReplyHandoff ? "accepted" : "none",
-        replyHandoffReceiptEnvelope: hasReplyHandoff
-            ? SOURCE_REPLY_RECEIPT_ENVELOPE
-            : null,
         summaryCiphertext: isLegacySummarySource
             ? LEGACY_SUMMARY_CIPHERTEXT
             : null,
@@ -513,9 +485,6 @@ function buildRunItem(params: Readonly<{
             replyContextEnvelope: source.replyContextEnvelope === null
                 ? null
                 : TARGET_REPLY_CONTEXT_ENVELOPE,
-            replyHandoffReceiptEnvelope: source.replyHandoffReceiptEnvelope === null
-                ? null
-                : TARGET_REPLY_RECEIPT_ENVELOPE,
             failureDetailEnvelope: null,
         }],
     });
@@ -641,7 +610,6 @@ async function seedOneAccount(params: Readonly<{
                 content.replyHandoffTargetMaterializationId,
             replyHandoffId: content.replyHandoffId,
             replyHandoffState: content.replyHandoffState,
-            replyHandoffReceiptEnvelope: content.replyHandoffReceiptEnvelope,
             summaryCiphertext: content.summaryCiphertext,
             scheduledAt: new Date("2026-08-10T10:00:00.000Z"),
             dueAt: new Date("2026-08-10T10:00:00.000Z"),
@@ -695,7 +663,6 @@ async function seedOneAccount(params: Readonly<{
             + utf8Bytes(content.executionInputEnvelope)
             + utf8Bytes(content.resultEnvelope)
             + utf8Bytes(content.replyContextEnvelope)
-            + utf8Bytes(content.replyHandoffReceiptEnvelope)
             + utf8Bytes(content.summaryCiphertext),
         0,
     );
@@ -800,7 +767,6 @@ describe.skipIf(!ENABLED)("PEP1 Automation Run measurement (integration)", () =>
             executionInputRows,
             resultRows,
             replyContextRows,
-            replyReceiptRows,
             legacySummaryRows,
             scheduledOrManualEvidenceRows,
         ] = await Promise.all([
@@ -813,7 +779,6 @@ describe.skipIf(!ENABLED)("PEP1 Automation Run measurement (integration)", () =>
                         { executionInputEnvelope: { not: null } },
                         { resultEnvelope: { not: null } },
                         { replyContextEnvelope: { not: null } },
-                        { replyHandoffReceiptEnvelope: { not: null } },
                         { summaryCiphertext: { not: null } },
                     ],
                 },
@@ -845,7 +810,6 @@ describe.skipIf(!ENABLED)("PEP1 Automation Run measurement (integration)", () =>
             db.automationRun.count({
                 where: {
                     accountId: seeded.result.accountId,
-                    replyHandoffReceiptEnvelope: { not: null },
                 },
             }),
             db.automationRun.count({
@@ -904,7 +868,6 @@ describe.skipIf(!ENABLED)("PEP1 Automation Run measurement (integration)", () =>
             executionInputRows,
             resultRows,
             replyContextRows,
-            replyReceiptRows,
             legacySummaryRows,
             scheduledOrManualEvidenceRows,
         }).toEqual({
@@ -913,7 +876,6 @@ describe.skipIf(!ENABLED)("PEP1 Automation Run measurement (integration)", () =>
             executionInputRows: TOTAL_RUNS,
             resultRows: TOTAL_RUNS,
             replyContextRows: RUNS_PER_SCENARIO,
-            replyReceiptRows: RUNS_PER_SCENARIO,
             legacySummaryRows: 1,
             scheduledOrManualEvidenceRows: 0,
         });
@@ -976,7 +938,6 @@ describe.skipIf(!ENABLED)("PEP1 Automation Run measurement (integration)", () =>
                 nearMaximum: new TextEncoder().encode(nearMaximumEnvelope).byteLength,
                 executionInput: utf8Bytes(TARGET_EXECUTION_INPUT_ENVELOPE),
                 replyContext: utf8Bytes(TARGET_REPLY_CONTEXT_ENVELOPE),
-                replyReceipt: utf8Bytes(TARGET_REPLY_RECEIPT_ENVELOPE),
             },
             oneAccountSeed: seeded.measurement,
             legacyDirectSegment: {

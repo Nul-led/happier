@@ -269,7 +269,7 @@ describe("auth (API tokens)", () => {
         });
     });
 
-    it("fails PATs minted before sign-out-everywhere once the token epoch advances", async () => {
+    it("invalidates signed sessions at sign-out-everywhere while preserving PATs", async () => {
         const account = await db.account.create({
             data: { publicKey: "api-token-sign-out-everywhere" },
             select: { id: true },
@@ -286,14 +286,20 @@ describe("auth (API tokens)", () => {
 
         await apiTokenAuth.signOutEverywhere(account.id);
 
-        await expect(auth.verifyToken(preEpochToken.token)).resolves.toBeNull();
-        await expect(apiTokenAuth.verifyPat(preEpochToken.token)).resolves.toEqual({
-            ok: false,
-            reason: "invalid_token",
+        await expect(auth.verifyToken(preEpochToken.token)).resolves.toMatchObject({
+            userId: account.id,
+            authTokenKind: "api_token",
+            authority: "account_automation",
         });
-        // Revocation is deletion, so the dead credential disappears from the
-        // owner's own summaries instead of lingering as unusable state.
-        await expect(apiTokenAuth.listApiTokens(account.id)).resolves.toEqual([]);
+        await expect(apiTokenAuth.verifyPat(preEpochToken.token)).resolves.toMatchObject({
+            ok: true,
+            accountId: account.id,
+            credentialId: preEpochToken.tokenId,
+            authority: "account_automation",
+        });
+        await expect(apiTokenAuth.listApiTokens(account.id)).resolves.toEqual([
+            expect.objectContaining({ tokenId: preEpochToken.tokenId, label: "Pre-epoch automation" }),
+        ]);
 
         // Credentials minted after the epoch change remain valid.
         const postEpochToken = await apiTokenAuth.createApiToken({

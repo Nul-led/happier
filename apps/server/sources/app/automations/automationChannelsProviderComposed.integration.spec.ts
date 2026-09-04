@@ -2054,26 +2054,14 @@ describe("Channels first-party provider Automation Event composition", () => {
         });
         expect(worker).toMatchObject({ claimed: true, settled: true });
 
-        // 4. Custody truth: the Run carries an accepted receipt and Channels owns
-        //    exactly one ready outward custody obligation for this handoff.
+        // 4. Custody truth: the Run reaches accepted from the typed settlement
+        //    alone, while Channels owns the one ready outward custody
+        //    obligation and every custody detail for this handoff.
         const custodySettled = await db.automationRun.findUniqueOrThrow({
             where: { id: conversationRunIdResolved },
-            select: { replyHandoffState: true, replyHandoffReceiptEnvelope: true },
+            select: { replyHandoffState: true },
         });
         expect(custodySettled.replyHandoffState).toBe("accepted");
-        expect(JSON.parse(custodySettled.replyHandoffReceiptEnvelope ?? "null")).toEqual({
-            t: "plain",
-            v: {
-                v: 1,
-                correspondence: {
-                    accountId: ACCOUNT_ID,
-                    automationId: AUTOMATION_ID,
-                    runId: conversationRunIdResolved,
-                    handoffId,
-                },
-                result: { kind: "accepted", custodyId: expect.any(String) },
-            },
-        });
         const deliveryRows = [...deliveries.rows.values()].filter((row) => row.deleted !== true);
         expect(deliveryRows).toHaveLength(1);
         const deliveryPayload = deliveryRows[0]!.value.payload as JsonRecord;
@@ -2686,18 +2674,22 @@ describe("Channels first-party provider Automation Event composition", () => {
         expect([...deliveries.rows.values()].filter((row) => row.deleted !== true)).toHaveLength(1);
         const settledRun = await db.automationRun.findUniqueOrThrow({
             where: { id: conversationRunIdResolved },
-            select: { replyHandoffState: true, replyHandoffAttempt: true, replyHandoffReceiptEnvelope: true },
+            select: { replyHandoffState: true, replyHandoffAttempt: true },
         });
         expect(settledRun.replyHandoffState).toBe("accepted");
         expect(settledRun.replyHandoffAttempt).toBe(2);
-        const receipt = JSON.parse(settledRun.replyHandoffReceiptEnvelope ?? "null") as JsonRecord;
-        expect(receipt).toMatchObject({ t: "plain" });
-        const receiptValue = receipt.v as JsonRecord;
-        expect(receiptValue).toMatchObject({
-            correspondence: { runId: conversationRunIdResolved, handoffId },
-            result: {
-                kind: "accepted",
-                custodyId: custodyAfterLoss[0]!.rowId,
+        // Rejoin is exact at the Channels custody owner: the retry settles the
+        // same durable row the lost first attempt created, keyed by the same
+        // handoff id. No server-side proof blob records that fact.
+        const rejoinedCustody = [...deliveries.rows.values()].filter((row) => row.deleted !== true);
+        expect(rejoinedCustody).toHaveLength(1);
+        expect(rejoinedCustody[0]!.rowId).toBe(custodyAfterLoss[0]!.rowId);
+        expect((rejoinedCustody[0]!.value.payload as JsonRecord)).toMatchObject({
+            deliveryKey: `automation:${handoffId}`,
+            source: {
+                kind: "automationResult",
+                automationRunId: conversationRunIdResolved,
+                resultId: handoffId,
             },
         });
     }, 120_000);

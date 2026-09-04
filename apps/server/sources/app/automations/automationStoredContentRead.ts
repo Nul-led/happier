@@ -218,6 +218,10 @@ export type RetainedAutomationRunExecutionInputV2 = Readonly<{
         | Readonly<{ kind: "manual"; invokedAt: number }>;
 }>;
 
+export type RetainedAutomationRunExecutionTargetV2 =
+    | Readonly<{ kind: "newSession" }>
+    | Readonly<{ kind: "existingSession"; sessionId: string }>;
+
 /**
  * Queryable persisted-bytes discriminator for retained V2 frozen input. The
  * sole producer serializes the parsed schema with `JSON.stringify`, whose
@@ -302,6 +306,55 @@ export function readRetainedAutomationRunExecutionInputV2(params: {
 }
 
 /**
+ * Projects the exact released-V2 target from the predecessor reader's
+ * Protocol-normalized template. Current recipes remain owned by the strict V3
+ * parser, and encrypted existing-Session input without its released outer
+ * target identity stays opaque rather than being guessed from mutable state.
+ */
+export function readRetainedAutomationRunExecutionTargetV2(params: {
+    raw: string;
+    mode: "plain" | "e2ee";
+    retainedV2OriginKind?: "scheduled" | "manual";
+}): RetainedAutomationRunExecutionTargetV2 | null {
+    const retained = parseRetainedAutomationRunExecutionInputV2(params);
+    if (!retained || !isRetainedAutomationRunExecutionInputV2AvailableForMode({
+        retained,
+        mode: params.mode,
+    })) return null;
+    if (retained.recipe.targetType === "new_session") {
+        return { kind: "newSession" };
+    }
+    if (retained.template.envelope.kind === "happier_automation_template_plain_v1") {
+        const payload = retained.template.envelope.payload;
+        const candidate = payload && typeof payload === "object" && !Array.isArray(payload)
+            ? (payload as Record<string, unknown>).existingSessionId
+            : null;
+        const sessionId = typeof candidate === "string" ? candidate.trim() : "";
+        return sessionId ? { kind: "existingSession", sessionId } : null;
+    }
+    return retained.template.legacyExistingSessionId
+        ? { kind: "existingSession", sessionId: retained.template.legacyExistingSessionId }
+        : null;
+}
+
+function isRetainedAutomationRunExecutionInputV2AvailableForMode(params: {
+    retained: NonNullable<ReturnType<typeof parseRetainedAutomationRunExecutionInputV2>>;
+    mode: "plain" | "e2ee";
+}): boolean {
+    return !(
+        (
+            params.mode === "e2ee"
+            && params.retained.template.envelope.kind !== "happier_automation_template_encrypted_v1"
+        )
+        || (
+            params.mode === "plain"
+            && params.retained.template.envelope.kind === "happier_automation_template_encrypted_v1"
+            && params.retained.recipe.targetType !== "existing_session"
+        )
+    );
+}
+
+/**
  * The narrow persisted-V2 read adapter. It delegates shape and durable-origin
  * admission to the canonical frozen-Run predicate, then checks Account mode.
  */
@@ -312,17 +365,10 @@ export function validateRetainedAutomationRunExecutionInputV2OuterForMode(params
 }): AutomationExecutionInputOuterValidation | null {
     const retained = parseRetainedAutomationRunExecutionInputV2(params);
     if (!retained) return null;
-    if (
-        (
-            params.mode === "e2ee"
-            && retained.template.envelope.kind !== "happier_automation_template_encrypted_v1"
-        )
-        || (
-            params.mode === "plain"
-            && retained.template.envelope.kind === "happier_automation_template_encrypted_v1"
-            && retained.recipe.targetType !== "existing_session"
-        )
-    ) {
+    if (!isRetainedAutomationRunExecutionInputV2AvailableForMode({
+        retained,
+        mode: params.mode,
+    })) {
         return { kind: "modeMismatch" };
     }
     return { kind: "available", input: retained.recipe };

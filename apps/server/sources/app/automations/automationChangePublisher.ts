@@ -99,6 +99,42 @@ export function emitAutomationRunTransition(params: {
      */
     transitionCause?: AutomationRunStateChangedHostEventV1["transitionCause"];
 }): void {
+    let lifecycleFailed = false;
+    let lifecycleError: unknown;
+    // Some post-settlement updates retain canonical Run metadata without
+    // changing its lifecycle state. Keep their incumbent invalidation, but do
+    // not manufacture a public lifecycle edge from identical states.
+    const publishesLifecycle = params.previousState !== params.run.state
+        && (params.previousState !== null || params.run.state === "queued");
+    if (publishesLifecycle) {
+        try {
+            eventRouter.emitUpdate({
+                userId: params.accountId,
+                payload: {
+                    id: randomKeyNaked(12),
+                    seq: params.cursor,
+                    body: {
+                        t: "automation-run-state-changed",
+                        runId: params.run.id,
+                        automationId: params.run.automationId,
+                        runCause: decodeAutomationRunCause(params.run),
+                        previousState: params.previousState,
+                        currentState: params.run.state,
+                        transitionedAt: params.run.updatedAt.getTime(),
+                        claimedByMachineId: params.run.claimedByMachineId,
+                        ...(params.transitionCause === undefined
+                            ? {}
+                            : { transitionCause: params.transitionCause }),
+                    },
+                    createdAt: Date.now(),
+                },
+                recipientFilter: { type: "user-machine-scoped-only" },
+            });
+        } catch (error) {
+            lifecycleFailed = true;
+            lifecycleError = error;
+        }
+    }
     let legacyFailed = false;
     let legacyError: unknown;
     try {
@@ -107,46 +143,12 @@ export function emitAutomationRunTransition(params: {
         legacyFailed = true;
         legacyError = error;
     }
-    // Some post-settlement updates retain canonical Run metadata without
-    // changing its lifecycle state. Keep their incumbent invalidation, but do
-    // not manufacture a public lifecycle edge from identical states.
-    if (params.previousState === params.run.state) {
-        if (legacyFailed) throw legacyError;
-        return;
-    }
-    // New Runs are born queued. A null predecessor is never a valid later
-    // transition, and this lossy observer must not manufacture that history.
-    if (params.previousState === null && params.run.state !== "queued") {
-        if (legacyFailed) throw legacyError;
-        return;
-    }
-    try {
-        eventRouter.emitUpdate({
-            userId: params.accountId,
-            payload: {
-                id: randomKeyNaked(12),
-                seq: params.cursor,
-                body: {
-                    t: "automation-run-state-changed",
-                    runId: params.run.id,
-                    automationId: params.run.automationId,
-                    runCause: decodeAutomationRunCause(params.run),
-                    previousState: params.previousState,
-                    currentState: params.run.state,
-                    transitionedAt: params.run.updatedAt.getTime(),
-                    claimedByMachineId: params.run.claimedByMachineId,
-                    ...(params.transitionCause === undefined
-                        ? {}
-                        : { transitionCause: params.transitionCause }),
-                },
-                createdAt: Date.now(),
-            },
-            recipientFilter: { type: "user-machine-scoped-only" },
-        });
-    } catch (error) {
-        if (!legacyFailed) throw error;
-    }
+    // Both carriers are best-effort post-commit projections. Preserve the
+    // incumbent error precedence while still attempting both carriers despite
+    // the ordering change; a lifecycle failure is surfaced when legacy emit
+    // succeeds.
     if (legacyFailed) throw legacyError;
+    if (lifecycleFailed) throw lifecycleError;
 }
 
 export function emitAutomationRunUpdatedToMachineOnly(params: {

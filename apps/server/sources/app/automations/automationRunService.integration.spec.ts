@@ -16,6 +16,7 @@ import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lig
 
 import { inTx } from "@/storage/inTx";
 import { markAccountChanged } from "@/app/changes/markAccountChanged";
+import { createSessionMessageFromPending } from "@/app/session/pending/pendingMessageTranscriptCommit";
 
 import {
     cancelAutomationRun,
@@ -673,6 +674,82 @@ describe("automationRunService (integration)", () => {
             select: { id: true },
         });
         return { account, machine, automation, run };
+    }
+
+    async function seedAutomationPendingInput(params: Readonly<{
+        seeded: Awaited<ReturnType<typeof seedOrdinaryCancelRun>>;
+        targetKind: "newSession" | "existingSession";
+    }>) {
+        const { account, automation, run } = params.seeded;
+        const sessionId = params.targetKind === "existingSession"
+            ? `session-${run.id}`
+            : `session-produced-${run.id}`;
+        if (params.targetKind === "newSession") {
+            await db.session.create({
+                data: {
+                    id: sessionId,
+                    accountId: account.id,
+                    tag: deriveSessionCreationTagV1({
+                        callerCreationNamespace: `automation:${automation.id}`,
+                        creationKey: `automation-run:${run.id}`,
+                    }),
+                    metadata: "{}",
+                },
+            });
+        }
+        const localId = `automation:run:${run.id}`;
+        const content = {
+            t: "plain" as const,
+            v: {
+                role: "user" as const,
+                content: { type: "text" as const, text: "Automation pending input" },
+            },
+        };
+        await db.sessionPendingMessage.create({
+            data: {
+                sessionId,
+                localId,
+                messageRole: "user",
+                content,
+                requestedAction: { v: 1, kind: "enqueue" },
+                status: "queued",
+                deliveryState: "delivering",
+                position: 1,
+            },
+        });
+        await db.session.update({
+            where: { id: sessionId },
+            data: { pendingCount: 1 },
+        });
+        return { sessionId, localId, content };
+    }
+
+    async function settleSeededAutomationPendingInput(params: Awaited<ReturnType<typeof seedAutomationPendingInput>>) {
+        await inTx(async (tx) => {
+            const committed = await createSessionMessageFromPending(tx, {
+                sessionId: params.sessionId,
+                sessionEncryptionMode: "plain",
+                storagePolicy: "optional",
+                localId: params.localId,
+                requestContentForEquality: params.content,
+                content: params.content,
+                messageRole: "user",
+                pendingRequestedAction: { v: 1, kind: "enqueue" },
+            });
+            expect(committed.ok).toBe(true);
+            await tx.sessionPendingMessage.delete({
+                where: {
+                    sessionId_localId: {
+                        sessionId: params.sessionId,
+                        localId: params.localId,
+                    },
+                },
+            });
+            await tx.session.update({
+                where: { id: params.sessionId },
+                data: { pendingCount: 0, pendingVersion: { increment: 1 } },
+            });
+        });
     }
 
     function readExecutionDispatchSettlementOwner() {
@@ -1873,6 +1950,96 @@ describe("automationRunService (integration)", () => {
             : { type: "run_outcome_uncertain", payload: { reason: "cancelled_while_running" } });
     });
 
+    it.each(["newSession", "existingSession"] as const)(
+        "atomically retires a queued %s Automation input when cancellation wins before Session settlement",
+        async (targetKind) => {
+            const seeded = await seedOrdinaryCancelRun({
+                id: `run-cancel-before-input-settlement-${targetKind}`,
+                targetKind,
+                state: "running",
+            });
+            const pending = await seedAutomationPendingInput({ seeded, targetKind });
+
+            await expect(cancelAutomationRun({
+                accountId: seeded.account.id,
+                runId: seeded.run.id,
+            })).resolves.toEqual(expect.objectContaining({
+                id: seeded.run.id,
+                state: "outcome_uncertain",
+            }));
+
+            await expect(db.sessionPendingMessage.findUniqueOrThrow({
+                where: {
+                    sessionId_localId: {
+                        sessionId: pending.sessionId,
+                        localId: pending.localId,
+                    },
+                },
+                select: {
+                    status: true,
+                    deliveryState: true,
+                    discardedReason: true,
+                    requestEqualityEvidenceV1: true,
+                },
+            })).resolves.toEqual({
+                status: "discarded",
+                deliveryState: null,
+                discardedReason: "session_input_cancelled",
+                requestEqualityEvidenceV1: {
+                    kind: "plainDigest",
+                    digest: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/u),
+                },
+            });
+            await expect(db.sessionMessage.findUnique({
+                where: {
+                    sessionId_localId: {
+                        sessionId: pending.sessionId,
+                        localId: pending.localId,
+                    },
+                },
+            })).resolves.toBeNull();
+        },
+    );
+
+    it.each(["newSession", "existingSession"] as const)(
+        "preserves a settled %s Automation input when Session settlement wins before cancellation",
+        async (targetKind) => {
+            const seeded = await seedOrdinaryCancelRun({
+                id: `run-input-settlement-before-cancel-${targetKind}`,
+                targetKind,
+                state: "running",
+            });
+            const pending = await seedAutomationPendingInput({ seeded, targetKind });
+            await settleSeededAutomationPendingInput(pending);
+
+            await expect(cancelAutomationRun({
+                accountId: seeded.account.id,
+                runId: seeded.run.id,
+            })).resolves.toEqual(expect.objectContaining({
+                id: seeded.run.id,
+                state: "outcome_uncertain",
+            }));
+
+            await expect(db.sessionPendingMessage.findUnique({
+                where: {
+                    sessionId_localId: {
+                        sessionId: pending.sessionId,
+                        localId: pending.localId,
+                    },
+                },
+            })).resolves.toBeNull();
+            await expect(db.sessionMessage.findUniqueOrThrow({
+                where: {
+                    sessionId_localId: {
+                        sessionId: pending.sessionId,
+                        localId: pending.localId,
+                    },
+                },
+                select: { localId: true },
+            })).resolves.toEqual({ localId: pending.localId });
+        },
+    );
+
     it("publishes the authoritative cancellation cause when a retained dispatchPermitted Run is cancelled without ever starting", async () => {
         const seeded = await seedExecutionDispatchRun({
             id: "run-retained-dispatch-permitted-queued",
@@ -1907,6 +2074,10 @@ describe("automationRunService (integration)", () => {
         const before = await db.automationRun.findUniqueOrThrow({
             where: { id: seeded.run.id },
         });
+        const pending = await seedAutomationPendingInput({
+            seeded,
+            targetKind: "newSession",
+        });
         const updates: UpdatePayload[] = [];
         const observer = createMachineConnection({
             accountId: seeded.account.id,
@@ -1933,6 +2104,19 @@ describe("automationRunService (integration)", () => {
         await expect(db.automationRunEvent.count({
             where: { runId: seeded.run.id },
         })).resolves.toBe(0);
+        await expect(db.sessionPendingMessage.findUniqueOrThrow({
+            where: {
+                sessionId_localId: {
+                    sessionId: pending.sessionId,
+                    localId: pending.localId,
+                },
+            },
+            select: { status: true, deliveryState: true, discardedReason: true },
+        })).resolves.toEqual({
+            status: "queued",
+            deliveryState: "delivering",
+            discardedReason: null,
+        });
         expect(updates).toEqual([]);
     });
 
@@ -1966,6 +2150,10 @@ describe("automationRunService (integration)", () => {
             state: "running",
             retainedV2: true,
         });
+        const pending = await seedAutomationPendingInput({
+            seeded,
+            targetKind: "newSession",
+        });
         await expect(cancelAutomationRun({
             accountId: seeded.account.id,
             runId: seeded.run.id,
@@ -1973,6 +2161,28 @@ describe("automationRunService (integration)", () => {
             id: seeded.run.id,
             state: "outcome_uncertain",
         }));
+        await expect(db.sessionPendingMessage.findUniqueOrThrow({
+            where: {
+                sessionId_localId: {
+                    sessionId: pending.sessionId,
+                    localId: pending.localId,
+                },
+            },
+            select: {
+                status: true,
+                deliveryState: true,
+                discardedReason: true,
+                requestEqualityEvidenceV1: true,
+            },
+        })).resolves.toEqual({
+            status: "discarded",
+            deliveryState: null,
+            discardedReason: "session_input_cancelled",
+            requestEqualityEvidenceV1: {
+                kind: "plainDigest",
+                digest: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/u),
+            },
+        });
     });
 
     it("leaves an already-terminal Run unchanged by ordinary cancellation", async () => {
@@ -2272,7 +2482,6 @@ describe("automationRunService (integration)", () => {
             resultEnvelope,
             replyHandoffState: "ready",
             replyHandoffAttempt: 0,
-            replyHandoffReceiptEnvelope: null,
         }));
         expect(succeeded?.replyHandoffDueAt).not.toBeNull();
 
@@ -2414,7 +2623,6 @@ describe("automationRunService (integration)", () => {
                 replyHandoffState: "none",
                 replyHandoffAttempt: 0,
                 replyHandoffDueAt: null,
-                replyHandoffReceiptEnvelope: null,
                 scheduledAt: new Date(Date.now() - 60_000),
                 dueAt: new Date(Date.now() - 30_000),
                 startedAt: new Date(Date.now() - 20_000),
@@ -2494,7 +2702,6 @@ describe("automationRunService (integration)", () => {
             replyHandoffState: "none",
             replyHandoffAttempt: 0,
             replyHandoffDueAt: null,
-            replyHandoffReceiptEnvelope: null,
         }));
         await expect(db.automationRun.findUniqueOrThrow({
             where: { id: run.id },
@@ -2511,7 +2718,6 @@ describe("automationRunService (integration)", () => {
                 replyHandoffState: true,
                 replyHandoffAttempt: true,
                 replyHandoffDueAt: true,
-                replyHandoffReceiptEnvelope: true,
             },
         })).resolves.toEqual({
             state: "succeeded",
@@ -2526,7 +2732,6 @@ describe("automationRunService (integration)", () => {
             replyHandoffState: "none",
             replyHandoffAttempt: 0,
             replyHandoffDueAt: null,
-            replyHandoffReceiptEnvelope: null,
         });
         const now = new Date();
         await expect(findNextAutomationReplyHandoffDueAt({ now })).resolves.toBeNull();
@@ -2614,7 +2819,6 @@ describe("automationRunService (integration)", () => {
                 state: terminalState === "cancelled" ? "outcome_uncertain" : terminalState,
                 replyHandoffState: "blocked",
                 replyHandoffDueAt: null,
-                replyHandoffReceiptEnvelope: null,
                 revision: before.revision + 2,
             }));
             await expect(findNextAutomationReplyHandoffDueAt({ now: new Date() })).resolves.toBeNull();

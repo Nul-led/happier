@@ -6,6 +6,8 @@ import {
     comparePluginCollectionIndexSortKeysV1,
     decodeBase64,
     encodePluginCollectionIndexSortKeyV1,
+    type PluginCollectionContractRefV1,
+    type PluginCollectionQueryRequestV1,
 } from "@happier-dev/protocol";
 import type { Prisma } from "@prisma/client";
 
@@ -27,6 +29,7 @@ const BINARY_INDEX_COLLECTION_MANIFEST = {
         accountCollections: [{
             id: "binary-keys",
             schemaVersion: 1,
+            rowIdField: "id",
             schema: {
                 type: "object",
                 properties: {
@@ -49,6 +52,9 @@ const BINARY_INDEX_COLLECTION_MANIFEST = {
                     { field: "fourth", direction: "asc" },
                 ],
             }],
+            relations: [],
+            migrations: [],
+            identityFields: [],
         }],
     },
 } as const;
@@ -72,6 +78,21 @@ function copyBytes(bytes: Uint8Array): Uint8Array<ArrayBuffer> {
     const copy = new Uint8Array(bytes.byteLength);
     copy.set(bytes);
     return copy;
+}
+
+function binaryIndexQueryRequest(
+    readerContext: PluginCollectionContractRefV1,
+    request: Omit<
+        PluginCollectionQueryRequestV1,
+        "pluginId" | "collectionId" | "readerContext"
+    >,
+): PluginCollectionQueryRequestV1 {
+    return {
+        pluginId: BINARY_INDEX_COLLECTION_MANIFEST.id,
+        collectionId: BINARY_INDEX_COLLECTION_MANIFEST.contributes.accountCollections[0].id,
+        readerContext,
+        ...request,
+    };
 }
 
 async function assertPhysicalColumnContract(provider: ContractProvider): Promise<void> {
@@ -122,6 +143,7 @@ async function seedBinaryIndexCollectionAccount(accountId: string): Promise<Read
     firstKey: Uint8Array;
     secondKey: Uint8Array;
     rangedKey: Uint8Array;
+    readerContext: PluginCollectionContractRefV1;
 }>> {
     const allNul = "\u0000".repeat(256);
     const rangedFourth = `${"\u0000".repeat(255)}\u0001`;
@@ -183,6 +205,17 @@ async function seedBinaryIndexCollectionAccount(accountId: string): Promise<Read
             revision: BigInt(1),
         },
     });
+    await db.accountPluginRelease.create({
+        data: {
+            accountId,
+            pluginId: ref.pluginId,
+            version: BINARY_INDEX_COLLECTION_MANIFEST.version,
+            archiveDigestSha256: `sha256:${"f".repeat(64)}`,
+            normalizedManifest: toPrismaJson(BINARY_INDEX_COLLECTION_MANIFEST),
+            collectionContracts: toPrismaJson([ref]),
+            uiSlots: toPrismaJson([]),
+        },
+    });
     const indexState = await db.pluginCollectionIndexState.create({
         data: {
             accountId,
@@ -239,7 +272,7 @@ async function seedBinaryIndexCollectionAccount(accountId: string): Promise<Read
             },
         });
     }
-    return { firstRowId, secondRowId, rangedRowId, firstKey, secondKey, rangedKey };
+    return { firstRowId, secondRowId, rangedRowId, firstKey, secondKey, rangedKey, readerContext: ref };
 }
 
 describe("PluginCollectionIndexEntry binary compound-key DB contract", () => {
@@ -276,6 +309,7 @@ describe("PluginCollectionIndexEntry binary compound-key DB contract", () => {
                 firstKey,
                 secondKey,
                 rangedKey,
+                readerContext,
             } = await seedBinaryIndexCollectionAccount(accountId);
             expect(firstKey.byteLength).toBe(2_318);
             expect(secondKey.byteLength).toBe(2_318);
@@ -308,14 +342,12 @@ describe("PluginCollectionIndexEntry binary compound-key DB contract", () => {
 
             const firstPage = await queryPluginCollection({
                 accountId,
-                request: {
-                    pluginId: BINARY_INDEX_COLLECTION_MANIFEST.id,
-                    collectionId: "binary-keys",
+                request: binaryIndexQueryRequest(readerContext, {
                     indexId: "by-four-strings",
                     prefix: fullPrefix,
                     order: "asc",
                     limit: 1,
-                },
+                }),
             });
             expect(firstPage.rows.map((row) => row.rowId)).toEqual([firstRowId]);
             expect(firstPage.nextCursor).toEqual(expect.any(String));
@@ -327,69 +359,59 @@ describe("PluginCollectionIndexEntry binary compound-key DB contract", () => {
 
             const resumed = await queryPluginCollection({
                 accountId,
-                request: {
-                    pluginId: BINARY_INDEX_COLLECTION_MANIFEST.id,
-                    collectionId: "binary-keys",
+                request: binaryIndexQueryRequest(readerContext, {
                     indexId: "by-four-strings",
                     prefix: fullPrefix,
                     order: "asc",
                     limit: 1,
                     cursor: firstPage.nextCursor,
-                },
+                }),
             });
             expect(resumed.rows.map((row) => row.rowId)).toEqual([secondRowId]);
 
             const prefix = await queryPluginCollection({
                 accountId,
-                request: {
-                    pluginId: BINARY_INDEX_COLLECTION_MANIFEST.id,
-                    collectionId: "binary-keys",
+                request: binaryIndexQueryRequest(readerContext, {
                     indexId: "by-four-strings",
                     prefix: shorterPrefix,
                     order: "asc",
                     limit: 200,
-                },
+                }),
             });
             expect(prefix.rows.map((row) => row.rowId)).toEqual([firstRowId, secondRowId, rangedRowId]);
 
             const range = await queryPluginCollection({
                 accountId,
-                request: {
-                    pluginId: BINARY_INDEX_COLLECTION_MANIFEST.id,
-                    collectionId: "binary-keys",
+                request: binaryIndexQueryRequest(readerContext, {
                     indexId: "by-four-strings",
                     prefix: shorterPrefix,
                     range: { lower: allNul, upper: allNul },
                     order: "asc",
                     limit: 200,
-                },
+                }),
             });
             expect(range.rows.map((row) => row.rowId)).toEqual([firstRowId, secondRowId]);
 
             const descending = await queryPluginCollection({
                 accountId,
-                request: {
-                    pluginId: BINARY_INDEX_COLLECTION_MANIFEST.id,
-                    collectionId: "binary-keys",
+                request: binaryIndexQueryRequest(readerContext, {
                     indexId: "by-four-strings",
                     prefix: fullPrefix,
                     order: "desc",
                     limit: 1,
-                },
+                }),
             });
             expect(descending.rows.map((row) => row.rowId)).toEqual([secondRowId]);
             if (!descending.nextCursor) throw new Error("Expected a descending maximum-key cursor.");
             const descendingResumed = await queryPluginCollection({
                 accountId,
-                request: {
-                    pluginId: BINARY_INDEX_COLLECTION_MANIFEST.id,
-                    collectionId: "binary-keys",
+                request: binaryIndexQueryRequest(readerContext, {
                     indexId: "by-four-strings",
                     prefix: fullPrefix,
                     order: "desc",
                     limit: 1,
                     cursor: descending.nextCursor,
-                },
+                }),
             });
             expect(descendingResumed.rows.map((row) => row.rowId)).toEqual([firstRowId]);
         } finally {

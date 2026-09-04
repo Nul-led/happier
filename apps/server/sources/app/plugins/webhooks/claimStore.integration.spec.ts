@@ -878,6 +878,105 @@ describe("plugin webhook claim/lease settlement", () => {
         expect((await readWebhookChange()).cursor).toBeGreaterThan(beforeFail.cursor);
     });
 
+    it("dead-letters content that cannot be opened before execution without charging an attempt", async () => {
+        await seedDelivery();
+        const claimed = await claimPluginWebhookDeliveryV1({
+            accountId: "account-claim",
+            machine: MACHINE_CLAIM,
+            now: NOW,
+            randomBytes: () => new Uint8Array(16).fill(9),
+        });
+        if (claimed.kind !== "delivery") throw new Error("expected claimed delivery");
+
+        await expect(failPluginWebhookDeliveryV1({
+            accountId: "account-claim",
+            deliveryId: claimed.deliveryId,
+            target: TARGET,
+            lease: claimed.lease,
+            result: { kind: "deadLetter", code: "content_unavailable" },
+            now: new Date(NOW.getTime() + 1_000),
+        })).resolves.toEqual({ kind: "settled", state: "dead_letter" });
+
+        await expect(db.pluginWebhookDelivery.findUniqueOrThrow({ where: { id: claimed.deliveryId } }))
+            .resolves.toMatchObject({
+                state: "dead_letter",
+                attemptCount: 0,
+                executionStartedAt: null,
+                lastErrorCode: "content_unavailable",
+            });
+    });
+
+    it("keeps completion, retry, and plugin-produced dead letters started-only", async () => {
+        await seedDelivery();
+        const claimed = await claimPluginWebhookDeliveryV1({
+            accountId: "account-claim",
+            machine: MACHINE_CLAIM,
+            now: NOW,
+            randomBytes: () => new Uint8Array(16).fill(10),
+        });
+        if (claimed.kind !== "delivery") throw new Error("expected claimed delivery");
+        const now = new Date(NOW.getTime() + 1_000);
+
+        await expect(completePluginWebhookDeliveryV1({
+            accountId: "account-claim",
+            deliveryId: claimed.deliveryId,
+            target: TARGET,
+            lease: claimed.lease,
+            disposition: "accepted",
+            now,
+        })).resolves.toEqual({ kind: "leaseLost" });
+        await expect(failPluginWebhookDeliveryV1({
+            accountId: "account-claim",
+            deliveryId: claimed.deliveryId,
+            target: TARGET,
+            lease: claimed.lease,
+            result: { kind: "retry", code: "content_unavailable" },
+            retryDelayMs: 5_000,
+            now,
+        })).resolves.toEqual({ kind: "leaseLost" });
+        await expect(failPluginWebhookDeliveryV1({
+            accountId: "account-claim",
+            deliveryId: claimed.deliveryId,
+            target: TARGET,
+            lease: claimed.lease,
+            result: { kind: "deadLetter", code: "payload_invalid" },
+            now,
+        })).resolves.toEqual({ kind: "leaseLost" });
+        await expect(failPluginWebhookDeliveryV1({
+            accountId: "account-claim",
+            deliveryId: claimed.deliveryId,
+            target: TARGET,
+            lease: { ...claimed.lease, revision: claimed.lease.revision + 1 },
+            result: { kind: "deadLetter", code: "content_unavailable" },
+            now,
+        })).resolves.toEqual({ kind: "leaseLost" });
+        await expect(failPluginWebhookDeliveryV1({
+            accountId: "account-claim",
+            deliveryId: claimed.deliveryId,
+            target: { ...TARGET, machineInstallationId: "installation-other" },
+            lease: claimed.lease,
+            result: { kind: "deadLetter", code: "content_unavailable" },
+            now,
+        })).resolves.toEqual({ kind: "leaseLost" });
+        await expect(failPluginWebhookDeliveryV1({
+            accountId: "account-claim",
+            deliveryId: claimed.deliveryId,
+            target: TARGET,
+            lease: claimed.lease,
+            result: { kind: "deadLetter", code: "content_unavailable" },
+            now: new Date(claimed.lease.expiresAtMs),
+        })).resolves.toEqual({ kind: "leaseLost" });
+
+        await expect(db.pluginWebhookDelivery.findUniqueOrThrow({ where: { id: claimed.deliveryId } }))
+            .resolves.toMatchObject({
+                state: "claimed",
+                attemptCount: 0,
+                executionStartedAt: null,
+                leaseId: claimed.lease.leaseId,
+                revision: claimed.lease.revision,
+            });
+    });
+
     it("persists the host-private unresolved Automation summary only when a retry exhausts the claimed delivery", async () => {
         await seedDelivery({
             attemptCount: 11,

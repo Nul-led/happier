@@ -101,7 +101,7 @@ describe("auth (token epoch)", () => {
         await expect(auth.verifyToken(token)).resolves.toBeNull();
     });
 
-    it("treats the predecessor's no-epoch token as epoch zero before and after a zero-to-one bump", async () => {
+    it("rejects the synthetic predecessor marker even for an epoch-zero account", async () => {
         const account = await db.account.create({
             data: {
                 id: "legacy-node-user",
@@ -110,13 +110,7 @@ describe("auth (token epoch)", () => {
             select: { id: true },
         });
 
-        await expect(auth.verifyLegacyHomeToken(LEGACY_NO_EPOCH_TOKEN)).resolves.toEqual({
-            userId: account.id,
-            extras: { provenance: "privacy-kit-0.0.25-node" },
-            authTokenKind: "account",
-            authority: "present_user",
-            legacy: true,
-        });
+        await expect(auth.verifyLegacyHomeToken(LEGACY_NO_EPOCH_TOKEN)).resolves.toBeNull();
 
         await db.account.update({
             where: { id: account.id },

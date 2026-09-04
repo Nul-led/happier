@@ -1,13 +1,14 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
 import {
     resolveManagedServerLightPathEnvValue,
     resolvePersonalHomeRuntimeLayout,
+    replacePersonalHomeFileDurably,
 } from '@happier-dev/cli-common/firstPartyRuntime';
 import {
-    HomeConnectionDescriptorV1Schema,
+    IrohEndpointIdV1Schema,
     type HomeConnectionEndpointV1,
 } from '@happier-dev/protocol';
 import { compareAndSetSimpleCache, readFromSimpleCache } from '@/storage/cache/simpleCache';
@@ -15,6 +16,8 @@ import { compareAndSetSimpleCache, readFromSimpleCache } from '@/storage/cache/s
 export type HomeConnectionDescriptorContinuity = Readonly<{
     revision: number;
     contentKey: string;
+    /** Last durably published native/service EndpointId, retained across explicit retirement. */
+    irohEndpointId?: string;
 }>;
 
 export type HomeConnectionDescriptorContinuityStore = Readonly<{
@@ -110,41 +113,28 @@ export function homeConnectionDescriptorContentKeyCarriesIroh(contentKey: string
     return contentKey?.startsWith('v1:i:') === true && CONTENT_KEY_PATTERN.test(contentKey);
 }
 
-function parseLegacyContentKey(contentKey: string): string | null {
-    try {
-        const parsed: unknown = JSON.parse(contentKey);
-        if (!Array.isArray(parsed) || parsed.length !== 3) return null;
-        const [homeServerIdentityId, canonicalServerUrl, endpoints] = parsed;
-        const descriptor = HomeConnectionDescriptorV1Schema.safeParse({
-            v: 1,
-            homeServerIdentityId,
-            canonicalServerUrl,
-            revision: 1,
-            endpoints,
-        });
-        return descriptor.success
-            ? createHomeConnectionDescriptorContentKey(descriptor.data)
-            : null;
-    } catch {
-        return null;
-    }
-}
-
-function normalizeContentKey(contentKey: string): string | null {
-    return CONTENT_KEY_PATTERN.test(contentKey) ? contentKey : parseLegacyContentKey(contentKey);
-}
-
 function parseHomeConnectionDescriptorContinuity(value: unknown): HomeConnectionDescriptorContinuity {
     if (!value || typeof value !== 'object') {
         throw new HomeConnectionDescriptorContinuityMalformedError();
     }
     const record = value as Record<string, unknown>;
-    const contentKey = typeof record.contentKey === 'string'
-        ? normalizeContentKey(record.contentKey)
+    // Strict persisted shape: the only writer is this module's serializer and
+    // it always emits `v1:[in]:[64 hex]` (compatibility confirmation for
+    // Lane 06 A9 found no released or predecessor JSON-array producer).
+    const contentKey = typeof record.contentKey === 'string' && CONTENT_KEY_PATTERN.test(record.contentKey)
+        ? record.contentKey
         : null;
+    const irohEndpointId = record.irohEndpointId === undefined
+        ? undefined
+        : IrohEndpointIdV1Schema.safeParse(record.irohEndpointId);
     const continuity = Number.isSafeInteger(record.revision) && Number(record.revision) > 0
         && contentKey !== null
-        ? { revision: Number(record.revision), contentKey }
+        && (irohEndpointId === undefined || irohEndpointId.success)
+        ? {
+            revision: Number(record.revision),
+            contentKey,
+            ...(irohEndpointId === undefined ? {} : { irohEndpointId: irohEndpointId.data }),
+        }
         : null;
     if (!continuity) throw new HomeConnectionDescriptorContinuityMalformedError();
     return continuity;
@@ -175,7 +165,34 @@ function sameContinuity(
     a: HomeConnectionDescriptorContinuity,
     b: HomeConnectionDescriptorContinuity,
 ): boolean {
+    return a.revision === b.revision
+        && a.contentKey === b.contentKey
+        && a.irohEndpointId === b.irohEndpointId;
+}
+
+function sameDescriptorGeneration(
+    a: HomeConnectionDescriptorContinuity,
+    b: HomeConnectionDescriptorContinuity,
+): boolean {
     return a.revision === b.revision && a.contentKey === b.contentKey;
+}
+
+function resolveSameGenerationResult(
+    current: HomeConnectionDescriptorContinuity,
+    candidate: HomeConnectionDescriptorContinuity,
+): HomeConnectionDescriptorContinuityWriteResult | null {
+    if (!sameDescriptorGeneration(current, candidate)) return null;
+    if (sameContinuity(current, candidate)) {
+        return { status: 'unchanged', continuity: current };
+    }
+    // An A10 continuity record may predate the A12 EndpointId field. Enriching
+    // that same descriptor generation is the only allowed equal-revision write.
+    if (current.irohEndpointId === undefined && candidate.irohEndpointId !== undefined) {
+        return null;
+    }
+    // Never erase or replace an already-pinned EndpointId at the same
+    // generation. The publication owner will fail a live mismatch closed.
+    return { status: current.irohEndpointId === candidate.irohEndpointId ? 'unchanged' : 'superseded', continuity: current };
 }
 
 export function createFileHomeConnectionDescriptorContinuityStore(
@@ -184,15 +201,18 @@ export function createFileHomeConnectionDescriptorContinuityStore(
     return {
         read: async () => await readHomeConnectionDescriptorContinuity(path),
         write: async (continuity) => {
+            const normalized = parseHomeConnectionDescriptorContinuity(continuity);
             const current = await readHomeConnectionDescriptorContinuity(path);
-            if (current && sameContinuity(current, continuity)) {
-                return { status: 'unchanged', continuity: current };
+            if (current) {
+                const sameGenerationResult = resolveSameGenerationResult(current, normalized);
+                if (sameGenerationResult) return sameGenerationResult;
             }
-            if (current && current.revision >= continuity.revision) {
+            if (current && current.revision >= normalized.revision
+                && !sameDescriptorGeneration(current, normalized)) {
                 return { status: 'superseded', continuity: current };
             }
-            await writeHomeConnectionDescriptorContinuity(path, continuity);
-            return { status: 'committed', continuity };
+            await writeHomeConnectionDescriptorContinuity(path, normalized);
+            return { status: 'committed', continuity: normalized };
         },
     };
 }
@@ -206,22 +226,28 @@ export function createSimpleCacheHomeConnectionDescriptorContinuityStore(
             return raw === null ? null : parseSerializedContinuity(raw);
         },
         write: async (continuity) => {
-            const nextValue = serializeContinuity(continuity);
+            const normalized = parseHomeConnectionDescriptorContinuity(continuity);
+            const nextValue = serializeContinuity(normalized);
             while (true) {
                 const observedRaw = await dependencies.readSimpleCache(HOME_CONNECTION_DESCRIPTOR_CONTINUITY_CACHE_KEY);
                 const observed = observedRaw === null ? null : parseSerializedContinuity(observedRaw);
-                if (observed && sameContinuity(observed, continuity)) {
-                    if (observedRaw === nextValue) return { status: 'unchanged', continuity: observed };
-                    if (await dependencies.compareAndSetSimpleCache(
-                        HOME_CONNECTION_DESCRIPTOR_CONTINUITY_CACHE_KEY,
-                        observedRaw,
-                        nextValue,
-                    )) {
-                        return { status: 'committed', continuity: observed };
+                if (observed) {
+                    const sameGenerationResult = resolveSameGenerationResult(observed, normalized);
+                    if (sameGenerationResult?.status === 'unchanged') {
+                        if (observedRaw === nextValue) return sameGenerationResult;
+                        if (await dependencies.compareAndSetSimpleCache(
+                            HOME_CONNECTION_DESCRIPTOR_CONTINUITY_CACHE_KEY,
+                            observedRaw,
+                            serializeContinuity(sameGenerationResult.continuity),
+                        )) {
+                            return sameGenerationResult;
+                        }
+                        continue;
                     }
-                    continue;
+                    if (sameGenerationResult?.status === 'superseded') return sameGenerationResult;
                 }
-                if (observed && observed.revision >= continuity.revision) {
+                if (observed && observed.revision >= normalized.revision
+                    && !sameDescriptorGeneration(observed, normalized)) {
                     return { status: 'superseded', continuity: observed };
                 }
                 if (await dependencies.compareAndSetSimpleCache(
@@ -229,7 +255,7 @@ export function createSimpleCacheHomeConnectionDescriptorContinuityStore(
                     observedRaw,
                     nextValue,
                 )) {
-                    return { status: 'committed', continuity };
+                    return { status: 'committed', continuity: normalized };
                 }
             }
         },
@@ -263,7 +289,7 @@ export async function writeHomeConnectionDescriptorContinuity(
     const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
     try {
         await writeFile(temporaryPath, `${serialized}\n`, { encoding: 'utf8', mode: 0o600 });
-        await rename(temporaryPath, path);
+        await replacePersonalHomeFileDurably(temporaryPath, path);
     } catch (error) {
         await rm(temporaryPath, { force: true }).catch(() => undefined);
         throw error;

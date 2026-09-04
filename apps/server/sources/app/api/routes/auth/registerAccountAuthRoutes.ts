@@ -195,6 +195,27 @@ export function registerAccountAuthRoutes(app: Fastify): void {
         if (version === 'v1') {
             return reply.code(426).send({ error: "account_provisioning_update_required" });
         }
+        const pairId = request.body.pairId;
+        const homeServerIdentityId = request.body.homeServerIdentityId;
+        if (pairId && homeServerIdentityId) {
+            const localHomeServerIdentityId = readCachedServerIdentityIdForHotPath(process.env);
+            if (homeServerIdentityId !== localHomeServerIdentityId) {
+                return reply.send({ state: 'requested' });
+            }
+            const completedPairing = await db.authPairingSession.findFirst({
+                where: {
+                    id: pairId,
+                    flow: "direct_qr",
+                    accountId: answer.responseAccountId,
+                    requestedPublicKey: request.body.publicKey,
+                    approvalStatus: "approved",
+                    decidedAt: { not: null },
+                    expiresAt: { gt: new Date() },
+                },
+                select: { id: true },
+            });
+            if (!completedPairing) return reply.send({ state: 'requested' });
+        }
         return reply.send({
             state: 'authorized',
             tokenEncrypted: answer.tokenEncrypted,
@@ -398,6 +419,13 @@ export function registerAccountAuthRoutes(app: Fastify): void {
                 return { status: "expired" } as const;
             }
 
+            // Policy/material checks above may await long enough for the
+            // approval window to close. Re-read the clock at the irreversible
+            // credential-mint boundary rather than relying on transaction
+            // entry time.
+            if (pairing.expiresAt.getTime() <= Date.now()) {
+                return { status: "expired" } as const;
+            }
             const token = await auth.createTokenInTx(
                 tx,
                 request.userId,

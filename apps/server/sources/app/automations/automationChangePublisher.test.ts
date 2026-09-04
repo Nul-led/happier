@@ -70,7 +70,6 @@ function createRun(state: AutomationRunItem["state"]): AutomationRunItem {
         replyHandoffState: "none",
         replyHandoffAttempt: 0,
         replyHandoffDueAt: null,
-        replyHandoffReceiptEnvelope: null,
         scheduledAt: now,
         dueAt: now,
         claimedAt: null,
@@ -126,10 +125,6 @@ describe("Automation Run transition publisher", () => {
         expect(emitUpdate).toHaveBeenCalledTimes(2);
         expect(emitUpdate.mock.calls.map(([update]) => update.payload.body)).toEqual([
             expect.objectContaining({
-                t: "automation-run-updated",
-                state: "outcome_uncertain",
-            }),
-            expect.objectContaining({
                 t: "automation-run-state-changed",
                 runCause: expect.objectContaining({
                     kind: "trigger",
@@ -138,6 +133,10 @@ describe("Automation Run transition publisher", () => {
                 }),
                 previousState: "running",
                 currentState: "outcome_uncertain",
+            }),
+            expect.objectContaining({
+                t: "automation-run-updated",
+                state: "outcome_uncertain",
             }),
         ]);
     });
@@ -165,10 +164,10 @@ describe("Automation Run transition publisher", () => {
 
     it("attempts the machine transition even when the legacy update publisher fails", () => {
         const emitUpdate = vi.spyOn(eventRouter, "emitUpdate")
+            .mockImplementationOnce(() => undefined)
             .mockImplementationOnce(() => {
                 throw new Error("legacy publisher failed");
-            })
-            .mockImplementationOnce(() => undefined);
+            });
 
         expect(() => emitAutomationRunTransition({
             accountId: "account-1",
@@ -177,8 +176,34 @@ describe("Automation Run transition publisher", () => {
             cursor: 1,
         })).toThrow("legacy publisher failed");
         expect(emitUpdate).toHaveBeenCalledTimes(2);
-        expect(emitUpdate.mock.calls[1]?.[0]).toEqual(expect.objectContaining({
+        expect(emitUpdate.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
             recipientFilter: { type: "user-machine-scoped-only" },
         }));
+    });
+
+    it("distinguishes user cancellation from lease-expiry uncertainty on the lifecycle carrier", () => {
+        const emitUpdate = vi.spyOn(eventRouter, "emitUpdate");
+
+        emitAutomationRunTransition({
+            accountId: "account-1",
+            run: createRun("outcome_uncertain"),
+            previousState: "running",
+            cursor: 1,
+            transitionCause: "cancelledWhileRunning",
+        });
+        emitAutomationRunTransition({
+            accountId: "account-1",
+            run: createRun("outcome_uncertain"),
+            previousState: "claimed",
+            cursor: 2,
+        });
+
+        const lifecycleBodies = emitUpdate.mock.calls
+            .map(([update]) => update.payload.body)
+            .filter((body) => body.t === "automation-run-state-changed");
+        expect(lifecycleBodies[0]).toEqual(expect.objectContaining({
+            transitionCause: "cancelledWhileRunning",
+        }));
+        expect(lifecycleBodies[1]).not.toHaveProperty("transitionCause");
     });
 });

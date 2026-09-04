@@ -1120,6 +1120,55 @@ describe("accountRoutes (encryption mode integration)", () => {
         });
     });
 
+    it("PATCH /v1/account/encryption preserves an empty Settings history row without treating it as content", async () => {
+        harness.resetEnv({
+            HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "optional",
+            HAPPIER_FEATURE_ENCRYPTION__ALLOW_ACCOUNT_OPTOUT: "1",
+        });
+        const account = await db.account.create({
+            data: {
+                ...createSignedAccountContentBinding(),
+                encryptionMode: "e2ee",
+                settings: null,
+                settingsVersion: 0,
+            },
+            select: { id: true },
+        });
+        const history = await db.accountSettingsSnapshot.create({
+            data: {
+                accountId: account.id,
+                version: 0,
+                settingsDbValue: null,
+                encryptionMode: "e2ee",
+                contentKind: "empty",
+            },
+        });
+
+        await withAuthenticatedTestApp(
+            (app) => accountRoutes(app as any),
+            async (app) => {
+                const response = await app.inject({
+                    method: "PATCH",
+                    url: "/v1/account/encryption",
+                    headers: {
+                        "content-type": "application/json",
+                        "x-test-user-id": account.id,
+                    },
+                    payload: { mode: "plain" },
+                });
+
+                expect(response.statusCode, response.body).toBe(200);
+                expect(response.json()).toMatchObject({
+                    mode: "plain",
+                });
+            },
+        );
+
+        await expect(db.accountSettingsSnapshot.findUniqueOrThrow({
+            where: { id: history.id },
+        })).resolves.toEqual(history);
+    });
+
     it("PATCH /v1/account/encryption preserves an unexpected Review Comment storage failure", async () => {
         harness.resetEnv({
             HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "optional",

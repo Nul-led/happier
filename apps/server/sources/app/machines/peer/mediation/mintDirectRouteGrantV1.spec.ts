@@ -103,9 +103,7 @@ describe("mintDirectRouteGrantV1", () => {
             routeKind: "iroh_peer",
             scope: {
                 kind: "bounded_transfer",
-                mode: "single",
-                transferId: "transfer_1",
-                maxBytes: 1024,
+                mode: "carrier",
             },
             endpointFingerprint: "b".repeat(64),
             iroh: {
@@ -117,7 +115,7 @@ describe("mintDirectRouteGrantV1", () => {
                     machineId: "machine_target",
                     endpointId: "b".repeat(64),
                 },
-                operationKind: "file_transfer",
+                operationKind: "finite_transfer",
             },
             ephemeralPublicKeyBase64Url: toBase64Url(ephemeralKeyPair.publicKey),
             nowMs: 1_000,
@@ -137,7 +135,7 @@ describe("mintDirectRouteGrantV1", () => {
                 machineId: "machine_target",
                 endpointId: "b".repeat(64),
             },
-            operationKind: "file_transfer",
+            operationKind: "finite_transfer",
         });
         expect(tweetnacl.sign.detached.verify(
             Buffer.from(createDirectRouteGrantSigningInputV2(minted.grant.payload), "utf8"),
@@ -237,6 +235,10 @@ describe("mintDirectRouteGrantV1", () => {
         const cappedV2 = mintDirectRouteGrantV2({
             ...base,
             routeKind: "iroh_peer",
+            scope: {
+                kind: "bounded_transfer",
+                mode: "carrier",
+            },
             endpointFingerprint: "b".repeat(64),
             iroh: {
                 initiator: {
@@ -248,7 +250,7 @@ describe("mintDirectRouteGrantV1", () => {
                     machineId: "machine_1",
                     endpointId: "b".repeat(64),
                 },
-                operationKind: "file_transfer",
+                operationKind: "finite_transfer",
             },
             ephemeralPublicKeyBase64Url: toBase64Url(
                 tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(8)).publicKey,

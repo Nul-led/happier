@@ -89,4 +89,105 @@ describe("plugin webhook endpoint target convergence", () => {
         expect(mocks.endpointUpdateMany).not.toHaveBeenCalled();
         expect(mocks.markAccountChanged).not.toHaveBeenCalled();
     });
+
+    it("observationally rejoins an equal intent already committed at its desired target", async () => {
+        mocks.endpointFindFirst.mockResolvedValue({
+            id: endpointId,
+            revision: 8,
+            enabled: true,
+            revokedAt: null,
+            releasedAt: null,
+            targetIntentEpoch: 4,
+            targetMachineId: desiredTarget.machineId,
+            targetMachineInstallationId: "install-new",
+            targetMaterializationId: desiredTarget.materializationId,
+            targetPluginVersion: "2.0.0",
+            route: { enabled: true, revokedAt: null },
+        });
+
+        await expect(convergeCurrentPluginWebhookEndpointTargetTxV1({
+            tx: tx(),
+            serverIdentityId: "server-1",
+            accountId: "account-1",
+            input,
+        })).resolves.toEqual({
+            kind: "converged",
+            webhookEndpointId: endpointId,
+            revision: 8,
+            targetMaterialization: desiredTarget,
+            targetIntentEpoch: 4,
+        });
+
+        expect(mocks.endpointUpdateMany).not.toHaveBeenCalled();
+        expect(mocks.markAccountChanged).not.toHaveBeenCalled();
+    });
+
+    it("refuses a lower intent after a newer target intent commits", async () => {
+        mocks.endpointFindFirst.mockResolvedValue({
+            id: endpointId,
+            revision: 8,
+            enabled: true,
+            revokedAt: null,
+            releasedAt: null,
+            targetIntentEpoch: 5,
+            targetMachineId: "machine-newer",
+            targetMachineInstallationId: "install-newer",
+            targetMaterializationId: "materialization-newer",
+            targetPluginVersion: "3.0.0",
+            route: { enabled: true, revokedAt: null },
+        });
+
+        await expect(convergeCurrentPluginWebhookEndpointTargetTxV1({
+            tx: tx(),
+            serverIdentityId: "server-1",
+            accountId: "account-1",
+            input,
+        })).resolves.toEqual({
+            kind: "superseded",
+            webhookEndpointId: endpointId,
+            currentTargetIntentEpoch: 5,
+        });
+
+        expect(mocks.endpointUpdateMany).not.toHaveBeenCalled();
+        expect(mocks.markAccountChanged).not.toHaveBeenCalled();
+    });
+
+    it("lets a strictly newer intent converge the endpoint in one owner transaction", async () => {
+        mocks.endpointFindFirst.mockResolvedValue({
+            id: endpointId,
+            revision: 7,
+            enabled: true,
+            revokedAt: null,
+            releasedAt: null,
+            targetIntentEpoch: 3,
+            targetMachineId: "machine-old",
+            targetMachineInstallationId: "install-old",
+            targetMaterializationId: "materialization-old",
+            targetPluginVersion: "1.0.0",
+            route: { enabled: true, revokedAt: null },
+        });
+
+        await expect(convergeCurrentPluginWebhookEndpointTargetTxV1({
+            tx: tx(),
+            serverIdentityId: "server-1",
+            accountId: "account-1",
+            input,
+        })).resolves.toEqual({
+            kind: "converged",
+            webhookEndpointId: endpointId,
+            revision: 8,
+            targetMaterialization: desiredTarget,
+            targetIntentEpoch: 4,
+        });
+
+        expect(mocks.endpointUpdateMany).toHaveBeenCalledWith(expect.objectContaining({
+            where: { id: endpointId, accountId: "account-1", revision: 7 },
+            data: expect.objectContaining({
+                targetMachineId: desiredTarget.machineId,
+                targetMaterializationId: desiredTarget.materializationId,
+                targetIntentEpoch: 4,
+            }),
+        }));
+        expect(mocks.markAccountChanged).toHaveBeenCalledTimes(1);
+    });
 });

@@ -162,6 +162,30 @@ describe("Home login approval (gate + routes) (integration)", () => {
             expect(ttlMs).toBeLessThanOrEqual(52_000);
         });
 
+        it("never lets a pending approval outlive the assertion that authorized it", async () => {
+            const account = await ensurePrimaryAccount();
+            const assertionExpiresAtMs = Date.now() + 12_000;
+            const gate = createHomeApprovalGate({ ...APPROVAL_ENV, AUTH_PAIRING_TTL_SECONDS: "45" });
+            const decision = await gate.evaluate({
+                accountId: account.id,
+                ...baseRowFacts,
+                assertionExpiresAtMs,
+            });
+            expect(decision.kind).toBe("approval_required");
+            if (decision.kind !== "approval_required") return;
+            expect(decision.request.expiresAtMs).toBeLessThanOrEqual(assertionExpiresAtMs);
+
+            const reused = await gate.evaluate({
+                accountId: account.id,
+                ...baseRowFacts,
+                assertionExpiresAtMs: assertionExpiresAtMs - 2_000,
+            });
+            expect(reused.kind).toBe("approval_required");
+            if (reused.kind !== "approval_required") return;
+            expect(reused.request.approvalId).toBe(decision.request.approvalId);
+            expect(reused.request.expiresAtMs).toBeLessThanOrEqual(assertionExpiresAtMs - 2_000);
+        });
+
         it("resolves the same pending request for identical requester facts instead of stacking rows", async () => {
             const account = await ensurePrimaryAccount();
             const gate = createHomeApprovalGate(APPROVAL_ENV);

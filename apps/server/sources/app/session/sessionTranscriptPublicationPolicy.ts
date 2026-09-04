@@ -76,6 +76,12 @@ type SessionTranscriptPublicationRow = SessionTranscriptPublicationFields & Read
     id: string;
 }>;
 
+export type SessionTranscriptPublicationConstraint = Readonly<{
+    sessionId: string;
+    /** `null` is the canonical hosted/unbounded publication state. */
+    maximumSeq: number | null;
+}>;
+
 export type SessionTranscriptPublicationRecipientDecision<T> =
     | Readonly<{ kind: "publish"; value: T }>
     | Readonly<{ kind: "suppress" }>;
@@ -950,6 +956,20 @@ export function buildSessionMessagesPublicationWhere(
     }
 
     return OR.length > 0 ? { OR } : { sessionId: { in: [] } };
+}
+
+/**
+ * Projects the canonical transcript ceiling into storage-neutral constraints for
+ * derived readers such as Home FTS. Authorization remains query-time state; the
+ * derived index never persists participant or publication-policy facts.
+ */
+export function resolveSessionTranscriptPublicationConstraints(
+    rows: readonly SessionTranscriptPublicationRow[],
+): SessionTranscriptPublicationConstraint[] {
+    return rows.map((row) => ({
+        sessionId: row.id,
+        maximumSeq: resolveSessionTranscriptPublicationCeiling(row),
+    }));
 }
 
 export function applySessionTranscriptPublicationCeilingToProjection<

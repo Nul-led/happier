@@ -1,19 +1,16 @@
-import { z } from "zod";
 import {
     ACCOUNT_API_TOKEN_INTROSPECTION_HTTP_PATH_V1,
     ACCOUNT_API_TOKEN_INTROSPECTION_MAX_BODY_BYTES_V1,
     AccountApiTokenIntrospectionRequestV1Schema,
+    AccountApiTokenIntrospectionConnectionFailureV1Schema,
     AccountApiTokenIntrospectionSubjectFailureV1Schema,
     AccountApiTokenIntrospectionSuccessV1Schema,
 } from "@happier-dev/protocol";
+import { z } from "zod";
 
 import { auth } from "@/app/auth/auth";
 
 import { type Fastify } from "../../types";
-
-const connectionAuthenticationFailureResponseSchema = z.object({
-    error: z.enum(["Missing authorization header", "authentication_failed", "Authentication failed"]),
-}).strict();
 
 /**
  * Gives a daemon the minimal server-verified PAT principal for its own Account.
@@ -34,7 +31,7 @@ export function registerApiTokenIntrospectionRoute(app: Fastify): void {
                     200: AccountApiTokenIntrospectionSuccessV1Schema,
                     401: z.union([
                         AccountApiTokenIntrospectionSubjectFailureV1Schema,
-                        connectionAuthenticationFailureResponseSchema,
+                        AccountApiTokenIntrospectionConnectionFailureV1Schema,
                     ]),
                 },
             },

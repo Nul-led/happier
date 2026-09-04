@@ -181,9 +181,7 @@ describe("registerPeerMediationGrantRoutes", () => {
         ttlMs: 600_000,
         scope: {
             kind: "bounded_transfer",
-            mode: "single",
-            transferId: "transfer_1",
-            maxBytes: 1024,
+            mode: "carrier",
         },
         iroh: {
             initiator: {
@@ -194,7 +192,7 @@ describe("registerPeerMediationGrantRoutes", () => {
                 machineId: "machine_1",
                 endpointId: "b".repeat(64),
             },
-            operationKind: "file_transfer",
+            operationKind: "finite_transfer",
         },
     } as const;
     const irohEphemeralKeyPair = tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(11));
@@ -421,7 +419,7 @@ describe("registerPeerMediationGrantRoutes", () => {
                     maxCalls: 1,
                     maxIdleMs: 1_000,
                 },
-                iroh: { ...irohBody.iroh, operationKind: "file_transfer" },
+                iroh: { ...irohBody.iroh, operationKind: "finite_transfer" },
             },
         });
 

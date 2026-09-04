@@ -70,6 +70,7 @@ function accountDirectoryRouteErrorHandler(
 
 const ACCOUNT_DIRECTORY_BOUNDARY_ERROR_RESPONSES = {
     400: AccountDirectoryRouteErrorResponseV1Schema,
+    401: AccountDirectoryRouteErrorResponseV1Schema,
     429: AccountDirectoryRouteErrorResponseV1Schema,
 } as const;
 
@@ -77,21 +78,21 @@ export function registerAccountDirectoryRoutes(app: Fastify): void {
     app.get(ACCOUNT_DIRECTORY_ME_HTTP_PATH_V1, {
         errorHandler: accountDirectoryRouteErrorHandler,
         preHandler: [app.authenticate],
-        config: { allowAccountDirectoryToken: true, rateLimit: resolveApiHotEndpointRateLimit(process.env, "accountDirectory.read") },
+        config: { allowAccountDirectoryToken: true, connectionAuthFailureError: "invalid_token", rateLimit: resolveApiHotEndpointRateLimit(process.env, "accountDirectory.read") },
         schema: { response: { ...ACCOUNT_DIRECTORY_BOUNDARY_ERROR_RESPONSES, 200: AccountDirectoryMeResponseSchema, 403: AccountDirectoryRouteErrorResponseV1Schema, 404: AccountDirectoryRouteErrorResponseV1Schema } },
     }, async (request, reply) => reply.send(await readAccountDirectoryMe(request.userId)));
 
     app.get(ACCOUNT_DIRECTORY_HOMES_HTTP_PATH_V1, {
         errorHandler: accountDirectoryRouteErrorHandler,
         preHandler: [app.authenticate],
-        config: { allowAccountDirectoryToken: true, rateLimit: resolveApiHotEndpointRateLimit(process.env, "accountDirectory.read") },
+        config: { allowAccountDirectoryToken: true, connectionAuthFailureError: "invalid_token", rateLimit: resolveApiHotEndpointRateLimit(process.env, "accountDirectory.read") },
         schema: { response: { ...ACCOUNT_DIRECTORY_BOUNDARY_ERROR_RESPONSES, 200: AccountDirectoryHomesResponseV1Schema, 403: AccountDirectoryRouteErrorResponseV1Schema, 404: AccountDirectoryRouteErrorResponseV1Schema } },
     }, async (request, reply) => reply.send(await listAccountHomeDirectory(request.userId)));
 
     app.put(ACCOUNT_DIRECTORY_HOME_HTTP_PATH_V1, {
         errorHandler: accountDirectoryRouteErrorHandler,
         preHandler: [app.authenticate],
-        config: { allowAccountDirectoryToken: true, rateLimit: resolveApiHotEndpointRateLimit(process.env, "accountDirectory.mutate") },
+        config: { allowAccountDirectoryToken: true, connectionAuthFailureError: "invalid_token", rateLimit: resolveApiHotEndpointRateLimit(process.env, "accountDirectory.mutate") },
         schema: { params: AccountDirectoryHomeDeleteParamsV1Schema, body: AccountDirectoryHomeWriteRequestSchema, response: { ...ACCOUNT_DIRECTORY_BOUNDARY_ERROR_RESPONSES, 200: AccountDirectoryHomePutResponseV1Schema, 403: AccountDirectoryRouteErrorResponseV1Schema, 409: AccountDirectoryRouteErrorResponseV1Schema } },
     }, async (request, reply) => reply.send(request.body.v === 2
         ? await publishAccountHomeDirectoryDescriptor({
@@ -112,7 +113,7 @@ export function registerAccountDirectoryRoutes(app: Fastify): void {
     app.delete(ACCOUNT_DIRECTORY_HOME_HTTP_PATH_V1, {
         errorHandler: accountDirectoryRouteErrorHandler,
         preHandler: [app.authenticate],
-        config: { allowAccountDirectoryToken: true, rateLimit: resolveApiHotEndpointRateLimit(process.env, "accountDirectory.mutate") },
+        config: { allowAccountDirectoryToken: true, connectionAuthFailureError: "invalid_token", rateLimit: resolveApiHotEndpointRateLimit(process.env, "accountDirectory.mutate") },
         schema: { params: AccountDirectoryHomeDeleteParamsV1Schema, body: AccountDirectoryHomeDeleteRequestV1Schema, response: { ...ACCOUNT_DIRECTORY_BOUNDARY_ERROR_RESPONSES, 200: AccountDirectoryHomeDeleteResponseV1Schema, 403: AccountDirectoryRouteErrorResponseV1Schema } },
     }, async (request, reply) => {
         await deleteAccountHomeDirectoryEntry({ accountId: request.userId, homeServerIdentityId: request.params.homeServerIdentityId });
@@ -128,14 +129,14 @@ export function registerAccountDirectoryRoutes(app: Fastify): void {
     app.patch(ACCOUNT_DIRECTORY_PREFERRED_HOME_HTTP_PATH_V1, {
         errorHandler: accountDirectoryRouteErrorHandler,
         preHandler: [app.authenticate],
-        config: { allowAccountDirectoryToken: true, rateLimit: resolveApiHotEndpointRateLimit(process.env, "accountDirectory.mutate") },
+        config: { allowAccountDirectoryToken: true, connectionAuthFailureError: "invalid_token", rateLimit: resolveApiHotEndpointRateLimit(process.env, "accountDirectory.mutate") },
         schema: { body: AccountDirectoryPreferredRequestSchema, response: { ...ACCOUNT_DIRECTORY_BOUNDARY_ERROR_RESPONSES, 200: AccountDirectoryPreferredHomePatchResponseV1Schema, 403: AccountDirectoryRouteErrorResponseV1Schema, 404: AccountDirectoryRouteErrorResponseV1Schema } },
     }, async (request, reply) => reply.send(await setPreferredAccountHome({ accountId: request.userId, homeServerIdentityId: request.body.homeServerIdentityId })));
 
     app.post(ACCOUNT_DIRECTORY_HOME_LOGIN_ASSERTION_HTTP_PATH_V1, {
         errorHandler: accountDirectoryRouteErrorHandler,
         preHandler: [app.authenticate],
-        config: { allowAccountDirectoryToken: true, rateLimit: resolveApiHotEndpointRateLimit(process.env, "accountDirectory.assertionMint") },
+        config: { allowAccountDirectoryToken: true, connectionAuthFailureError: "invalid_token", rateLimit: resolveApiHotEndpointRateLimit(process.env, "accountDirectory.assertionMint") },
         schema: { params: AccountDirectoryHomeDeleteParamsV1Schema, body: HomeLoginAssertionRequestSchema, response: { ...ACCOUNT_DIRECTORY_BOUNDARY_ERROR_RESPONSES, 200: HomeLoginAssertionV1Schema, 403: AccountDirectoryRouteErrorResponseV1Schema, 404: AccountDirectoryRouteErrorResponseV1Schema } },
     }, async (request, reply) => {
         if (request.body.homeServerIdentityId !== request.params.homeServerIdentityId) {
@@ -153,7 +154,7 @@ export function registerAccountDirectoryLinkRoutes(app: Fastify): void {
     app.put(ACCOUNT_DIRECTORY_LINKS_HTTP_PATH_V1, {
         errorHandler: accountDirectoryRouteErrorHandler,
         preHandler: [app.authenticate, requirePresentUser],
-        config: { rateLimit: resolveApiHotEndpointRateLimit(process.env, "accountDirectory.mutate") },
+        config: { connectionAuthFailureError: "invalid_token", rateLimit: resolveApiHotEndpointRateLimit(process.env, "accountDirectory.mutate") },
         schema: { params: AccountDirectoryLinkDeleteParamsV1Schema, body: AccountDirectoryLinkPutRequestSchema, response: { ...ACCOUNT_DIRECTORY_BOUNDARY_ERROR_RESPONSES, 200: AccountDirectoryLinkPutResponseV1Schema, 403: PresentUserRequiredResponseSchema, 409: AccountDirectoryRouteErrorResponseV1Schema } },
     }, async (request, reply) => {
         if (request.body.issuerServerIdentityId !== request.params.issuerServerIdentityId) {
@@ -177,7 +178,7 @@ export function registerAccountDirectoryLinkRoutes(app: Fastify): void {
     app.delete(ACCOUNT_DIRECTORY_LINKS_HTTP_PATH_V1, {
         errorHandler: accountDirectoryRouteErrorHandler,
         preHandler: [app.authenticate, requirePresentUser],
-        config: { rateLimit: resolveApiHotEndpointRateLimit(process.env, "accountDirectory.mutate") },
+        config: { connectionAuthFailureError: "invalid_token", rateLimit: resolveApiHotEndpointRateLimit(process.env, "accountDirectory.mutate") },
         schema: { params: AccountDirectoryLinkDeleteParamsV1Schema, body: AccountDirectoryLinkDeleteRequestV1Schema, response: { ...ACCOUNT_DIRECTORY_BOUNDARY_ERROR_RESPONSES, 200: AccountDirectoryLinkDeleteResponseV1Schema, 403: PresentUserRequiredResponseSchema } },
     }, async (request, reply) => {
         await deleteAccountDirectoryLink({ accountId: request.userId, issuerServerIdentityId: request.params.issuerServerIdentityId });

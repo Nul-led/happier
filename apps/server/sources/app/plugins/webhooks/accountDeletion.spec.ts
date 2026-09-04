@@ -106,6 +106,8 @@ describe("cleanupPluginWebhooksForAccountDeletionTxV1", () => {
                 revokedAt: null,
                 releasedAt: now,
                 tombstoneExpiresAt: new Date("2026-08-17T09:00:00.000Z"),
+                providerConfirmedAt: null,
+                targetIntentEpoch: null,
                 targetMachineId: null,
                 targetMachineInstallationId: null,
                 targetMaterializationId: null,

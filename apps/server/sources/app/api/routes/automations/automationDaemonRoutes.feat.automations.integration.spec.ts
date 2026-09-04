@@ -564,6 +564,107 @@ describe("automation daemon routes (integration)", () => {
         );
     });
 
+    it("projects an exact released-V2 frozen input through the real V3 worker claim route", async () => {
+        const account = await db.account.create({
+            data: { encryptionMode: "plain" },
+            select: { id: true },
+        });
+        const machineId = "machine-v2-frozen-via-v3";
+        const installationId = "installation-v2-frozen-via-v3";
+        const keyPair = tweetnacl.sign.keyPair();
+        await createTrustedMachineInstallation({
+            accountId: account.id,
+            machineId,
+            installationId,
+            keyPair,
+        });
+        const scheduledFor = new Date(Date.now() - 10_000);
+        const triggerId = "trigger-v2-frozen-via-v3";
+        const frozenTemplateCiphertext = buildPlainTemplateEnvelope();
+        const frozenInput = buildFrozenV2RunInput({
+            templateCiphertext: frozenTemplateCiphertext,
+            origin: { kind: "scheduled", scheduledFor: scheduledFor.getTime() },
+        });
+        const automation = await db.automation.create({
+            data: {
+                accountId: account.id,
+                name: "Released V2 frozen input",
+                enabled: true,
+                targetType: "new_session",
+                templateCiphertext: frozenTemplateCiphertext,
+                templateVersion: 1,
+                triggers: { create: scheduleTriggerCreate(triggerId) },
+                assignments: { create: { machineId, enabled: true, priority: 0 } },
+            },
+            select: { id: true },
+        });
+        const run = await db.automationRun.create({
+            data: {
+                automationId: automation.id,
+                accountId: account.id,
+                state: "queued",
+                ...scheduleRunCause({ triggerId, scheduledFor }),
+                scheduledAt: scheduledFor,
+                dueAt: scheduledFor,
+                executionInputEnvelope: frozenInput,
+                assignments: { create: { machineId, priority: 0 } },
+            },
+            select: { id: true },
+        });
+        await db.automation.update({
+            where: { id: automation.id },
+            data: {
+                templateCiphertext: buildStrictV3Recipe(2),
+                templateVersion: 2,
+            },
+        });
+        const body = { machineId, leaseDurationMs: 30_000 };
+
+        await withAuthenticatedTestApp(
+            (app) => automationRoutes(app as any),
+            async (app) => {
+                const response = await app.inject({
+                    method: "POST",
+                    url: "/v3/automations/runs/claim",
+                    headers: {
+                        "content-type": "application/json",
+                        "x-test-user-id": account.id,
+                        [PLUGIN_INSTALLATION_MANIFEST_PUBLISHER_HEADER_V1]:
+                            createSignedPluginInstallationPublisherHeader({
+                                keyPair,
+                                machineId,
+                                installationId,
+                                path: "/v3/automations/runs/claim",
+                                body,
+                            }),
+                    },
+                    payload: body,
+                });
+
+                expect(response.statusCode, response.body).toBe(200);
+                expect(response.json()).toEqual(expect.objectContaining({
+                    run: expect.objectContaining({
+                        id: run.id,
+                        automationId: automation.id,
+                        triggerRetired: false,
+                        cause: expect.objectContaining({
+                            kind: "trigger",
+                            triggerKind: "schedule",
+                            evidence: { scheduledFor: scheduledFor.getTime() },
+                        }),
+                        executionInputEnvelope: frozenInput,
+                    }),
+                    automation: {
+                        id: automation.id,
+                        name: "Released V2 frozen input",
+                        enabled: true,
+                    },
+                    accountCurrentness: expect.objectContaining({ mode: "plain" }),
+                }));
+            },
+        );
+    });
+
     it("claims only a retained V2 Run snapshot and projects that frozen input instead of strict V3 Definition bytes", async () => {
         const account = await db.account.create({
             data: { encryptionMode: "plain" },
@@ -1089,7 +1190,7 @@ describe("automation daemon routes (integration)", () => {
         );
     });
 
-    it("retains the committed predecessor V2 Session through input failure and cancellation settlement", async () => {
+    it("retains the committed predecessor V2 Session through input failure and refuses uncertain running cancellation", async () => {
         const account = await db.account.create({
             data: { encryptionMode: "plain" },
             select: { id: true },
@@ -1242,7 +1343,7 @@ describe("automation daemon routes (integration)", () => {
                     url: `/v2/automations/runs/${cancelledRun.id}/cancel`,
                     headers: { "x-test-user-id": account.id },
                 });
-                expect(cancelResponse.statusCode).toBe(200);
+                expect(cancelResponse.statusCode).toBe(404);
 
                 const cancelledFailureResponse = await app.inject({
                     method: "POST",
@@ -1269,9 +1370,9 @@ describe("automation daemon routes (integration)", () => {
                         errorCode: true,
                     },
                 })).toEqual({
-                    state: "cancelled",
+                    state: "failed",
                     producedSessionId: cancelledSession.id,
-                    errorCode: null,
+                    errorCode: "session_start_cancelled_after_create",
                 });
             },
         );

@@ -1,12 +1,10 @@
 import {
     AutomationAccountCurrentnessWitnessV1Schema,
     AutomationReplyHandoffSettlementV1Schema,
-    AutomationStoredContentEnvelopeV1Schema,
     MAX_AUTOMATION_SOURCE_RETRY_AFTER_MS,
     sameAutomationAccountContentIdentityV1,
     sameAutomationAccountCurrentnessWitnessV1,
     nextAutomationReplyHandoffIdForRunV1,
-    validateAutomationReplyHandoffStoredEnvelopeOuterForModeV1,
     type AutomationAccountCurrentnessWitnessV1,
     type AutomationReplyHandoffSettlementV1,
     type AutomationRunCause,
@@ -418,7 +416,6 @@ export async function settleAutomationReplyHandoffsForRevokedMachineTx(params: R
             data: {
                 replyHandoffState: "suppressed",
                 replyHandoffDueAt: null,
-                replyHandoffReceiptEnvelope: null,
                 revision: { increment: 1 },
                 updatedAt: now,
             },
@@ -440,7 +437,6 @@ export async function settleAutomationReplyHandoffsForRevokedMachineTx(params: R
             data: {
                 replyHandoffState: "blocked",
                 replyHandoffDueAt: null,
-                replyHandoffReceiptEnvelope: null,
                 revision: { increment: 1 },
                 updatedAt: now,
             },
@@ -468,7 +464,6 @@ async function blockInvalidCandidateTx(
         data: {
             replyHandoffState: "blocked",
             replyHandoffDueAt: null,
-            replyHandoffReceiptEnvelope: null,
             revision: { increment: 1 },
             updatedAt: now,
         },
@@ -644,7 +639,6 @@ export async function retryBlockedAutomationReplyHandoff(params: Readonly<{
             data: {
                 replyHandoffState: "ready",
                 replyHandoffDueAt: now,
-                replyHandoffReceiptEnvelope: null,
                 revision: { increment: 1 },
                 updatedAt: now,
             },
@@ -717,7 +711,6 @@ export async function authorizeAutomationReplyHandoffRedelivery(params: Readonly
                 replyHandoffId: nextHandoffId,
                 replyHandoffState: "ready",
                 replyHandoffDueAt: now,
-                replyHandoffReceiptEnvelope: null,
                 revision: { increment: 1 },
                 updatedAt: now,
             },
@@ -763,7 +756,6 @@ async function returnStaleClaimToReadyTx(params: Readonly<{
         data: {
             replyHandoffState: "ready",
             replyHandoffDueAt: params.now,
-            replyHandoffReceiptEnvelope: null,
             revision: { increment: 1 },
             updatedAt: params.now,
         },
@@ -823,7 +815,6 @@ export async function settleAutomationReplyHandoff(params: Readonly<{
     now: Date;
     outcome: unknown;
     accountCurrentness?: unknown;
-    receiptEnvelope?: unknown;
 }>): Promise<Readonly<{ applied: boolean }>> {
     if (!isValidDate(params.now)) return { applied: false };
     const outcome = AutomationReplyHandoffSettlementV1Schema.safeParse(
@@ -834,17 +825,14 @@ export async function settleAutomationReplyHandoff(params: Readonly<{
         ? undefined
         : AutomationAccountCurrentnessWitnessV1Schema.safeParse(params.accountCurrentness);
     if (suppliedCurrentness && !suppliedCurrentness.success) return { applied: false };
-    const receipt = params.receiptEnvelope === undefined
-        ? undefined
-        : AutomationStoredContentEnvelopeV1Schema.safeParse(params.receiptEnvelope);
-    if (receipt && !receipt.success) return { applied: false };
-    if (
-        (outcome.data.kind === "accepted" || outcome.data.kind === "suppressed")
-        && (suppliedCurrentness === undefined || receipt === undefined)
-    ) {
+    // `accepted`/`suppressed` are the only outcomes Channels can return after
+    // it has taken or refused custody, so they are also the only ones that may
+    // consume the post-effect content-identity fence below.
+    const settledExternalCustody = outcome.data.kind === "accepted"
+        || outcome.data.kind === "suppressed";
+    if (settledExternalCustody && suppliedCurrentness === undefined) {
         return { applied: false };
     }
-    if (receipt !== undefined && suppliedCurrentness === undefined) return { applied: false };
 
     return await inTx(async (tx) => {
         const accountFence = await acquireAccountEncryptionTransitionFenceInTx(tx, params.claim.accountId);
@@ -899,24 +887,15 @@ export async function settleAutomationReplyHandoff(params: Readonly<{
                 || !currentness
                 || (
                     !sameAutomationAccountCurrentnessWitnessV1(suppliedCurrentness.data, currentness)
-                    // A custody receipt was produced before a later unrelated
-                    // Account write. Its sequence may be older, but the same
-                    // mode/key plus unchanged frozen handoff still proves the
-                    // exact content authority under which the effect settled.
-                    && !(receipt?.success && postEffectSuccessorCurrent)
+                    // Custody settled before a later unrelated Account write.
+                    // The daemon's sequence may be older, but the same mode/key
+                    // plus the unchanged frozen handoff still proves the exact
+                    // content authority under which the effect settled.
+                    && !(settledExternalCustody && postEffectSuccessorCurrent)
                 )
             )
         ) {
             return { applied: false };
-        }
-        if (receipt?.success) {
-            if (!currentness || !suppliedCurrentness?.success) return { applied: false };
-            const outer = validateAutomationReplyHandoffStoredEnvelopeOuterForModeV1({
-                content: "receipt",
-                mode: currentness.mode,
-                envelope: receipt.data,
-            });
-            if (outer.kind !== "available") return { applied: false };
         }
 
         let data: Prisma.AutomationRunUpdateManyMutationInput;
@@ -924,9 +903,6 @@ export async function settleAutomationReplyHandoff(params: Readonly<{
             data = {
                 replyHandoffState: outcome.data.kind,
                 replyHandoffDueAt: null,
-                replyHandoffReceiptEnvelope: receipt?.success
-                    ? JSON.stringify(receipt.data)
-                    : null,
                 updatedAt: params.now,
             };
         } else {
@@ -938,7 +914,6 @@ export async function settleAutomationReplyHandoff(params: Readonly<{
                         retryAfterMs: outcome.data.retryAfterMs,
                     }),
                 ),
-                replyHandoffReceiptEnvelope: null,
                 updatedAt: params.now,
             };
         }

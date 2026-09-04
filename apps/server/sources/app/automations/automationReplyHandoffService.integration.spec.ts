@@ -53,32 +53,6 @@ const REPLY_CONTEXT_ENVELOPE = JSON.stringify({
         },
     },
 });
-const ACCEPTED_RECEIPT_ENVELOPE = {
-    t: "plain" as const,
-    v: {
-        v: 1 as const,
-        correspondence: {
-            accountId: ACCOUNT_ID,
-            automationId: AUTOMATION_ID,
-            runId: RUN_ID,
-            handoffId: HANDOFF_ID,
-        },
-        result: { kind: "accepted" as const, custodyId: "custody-1" },
-    },
-};
-const SUPPRESSED_RECEIPT_ENVELOPE = {
-    t: "plain" as const,
-    v: {
-        v: 1 as const,
-        correspondence: {
-            accountId: ACCOUNT_ID,
-            automationId: AUTOMATION_ID,
-            runId: RUN_ID,
-            handoffId: HANDOFF_ID,
-        },
-        result: { kind: "suppressed" as const, reason: "bindingDisabled" },
-    },
-};
 
 describe("Automation reply handoff service", () => {
     let harness: LightSqliteHarness | undefined;
@@ -106,7 +80,6 @@ describe("Automation reply handoff service", () => {
         state?: "ready" | "handingOff" | "blocked" | "accepted" | "suppressed";
         attempt?: number;
         resultEnvelope?: string;
-        receiptEnvelope?: string;
     }> = {}): Promise<void> {
         const dueAt = params.dueAt === undefined ? NOW : params.dueAt;
         await db.account.create({
@@ -147,7 +120,6 @@ describe("Automation reply handoff service", () => {
                 replyHandoffState: params.state ?? "ready",
                 replyHandoffAttempt: params.attempt ?? 0,
                 replyHandoffDueAt: dueAt,
-                replyHandoffReceiptEnvelope: params.receiptEnvelope ?? null,
                 scheduledAt: NOW,
                 dueAt: NOW,
                 finishedAt: NOW,
@@ -273,19 +245,16 @@ describe("Automation reply handoff service", () => {
             now: positiveHintRetryAt,
             outcome: { kind: "accepted" },
             accountCurrentness: await readCurrentness(),
-            receiptEnvelope: ACCEPTED_RECEIPT_ENVELOPE,
         })).resolves.toEqual({ applied: true });
         await expect(db.automationRun.findUniqueOrThrow({
             where: { id: RUN_ID },
             select: {
                 replyHandoffState: true,
                 replyHandoffDueAt: true,
-                replyHandoffReceiptEnvelope: true,
             },
         })).resolves.toEqual({
             replyHandoffState: "accepted",
             replyHandoffDueAt: null,
-            replyHandoffReceiptEnvelope: JSON.stringify(ACCEPTED_RECEIPT_ENVELOPE),
         });
     });
 
@@ -722,19 +691,16 @@ describe("Automation reply handoff service", () => {
             now: new Date(NOW.getTime() + 5_000),
             outcome: { kind: "accepted" },
             accountCurrentness: await readCurrentness(),
-            receiptEnvelope: ACCEPTED_RECEIPT_ENVELOPE,
         })).resolves.toEqual({ applied: true });
         await expect(db.automationRun.findUniqueOrThrow({
             where: { id: RUN_ID },
             select: {
                 replyHandoffState: true,
                 replyHandoffDueAt: true,
-                replyHandoffReceiptEnvelope: true,
             },
         })).resolves.toEqual({
             replyHandoffState: "accepted",
             replyHandoffDueAt: null,
-            replyHandoffReceiptEnvelope: JSON.stringify(ACCEPTED_RECEIPT_ENVELOPE),
         });
     });
 
@@ -761,7 +727,7 @@ describe("Automation reply handoff service", () => {
         });
     });
 
-    it("settles suppression terminally with its opaque receipt instead of retrying", async () => {
+    it("settles suppression terminally from its typed result instead of retrying", async () => {
         await seedReadyHandoff();
         const claim = await claimNextAutomationReplyHandoff({ now: NOW });
         expect(claim).not.toBeNull();
@@ -772,30 +738,27 @@ describe("Automation reply handoff service", () => {
             now: NOW,
             outcome: { kind: "suppressed" },
             accountCurrentness: await readCurrentness(),
-            receiptEnvelope: SUPPRESSED_RECEIPT_ENVELOPE,
         })).resolves.toEqual({ applied: true });
         await expect(db.automationRun.findUniqueOrThrow({
             where: { id: RUN_ID },
             select: {
                 replyHandoffState: true,
                 replyHandoffDueAt: true,
-                replyHandoffReceiptEnvelope: true,
             },
         })).resolves.toEqual({
             replyHandoffState: "suppressed",
             replyHandoffDueAt: null,
-            replyHandoffReceiptEnvelope: JSON.stringify(SUPPRESSED_RECEIPT_ENVELOPE),
         });
     });
 
-    it("accepts a custody receipt across later unrelated Account sequence movement", async () => {
+    it("accepts terminal custody across later unrelated Account sequence movement", async () => {
         await seedReadyHandoff();
         const claim = await claimNextAutomationReplyHandoff({ now: NOW });
         expect(claim).not.toBeNull();
         if (!claim) return;
 
         // The custody Action advanced Account.seq, then another unrelated
-        // Account mutation won before the daemon's receipt reached the server.
+        // Account mutation won before the settlement reached the server.
         // Neither write changed the content mode/key or the frozen handoff.
         await db.account.update({
             where: { id: ACCOUNT_ID },
@@ -812,15 +775,13 @@ describe("Automation reply handoff service", () => {
             now: NOW,
             outcome: { kind: "accepted" },
             accountCurrentness: postCustodyCurrentness,
-            receiptEnvelope: ACCEPTED_RECEIPT_ENVELOPE,
         })).resolves.toEqual({ applied: true });
         await expect(db.automationRun.findUniqueOrThrow({
             where: { id: RUN_ID },
-            select: { replyHandoffState: true, replyHandoffDueAt: true, replyHandoffReceiptEnvelope: true },
+            select: { replyHandoffState: true, replyHandoffDueAt: true },
         })).resolves.toEqual({
             replyHandoffState: "accepted",
             replyHandoffDueAt: null,
-            replyHandoffReceiptEnvelope: JSON.stringify(ACCEPTED_RECEIPT_ENVELOPE),
         });
     });
 
@@ -841,7 +802,6 @@ describe("Automation reply handoff service", () => {
             now: NOW,
             outcome: { kind: "accepted" },
             accountCurrentness: postCustodyCurrentness,
-            receiptEnvelope: ACCEPTED_RECEIPT_ENVELOPE,
         })).resolves.toEqual({ applied: true });
         await expect(db.automationRun.findUniqueOrThrow({
             where: { id: RUN_ID },
@@ -967,14 +927,12 @@ describe("Automation reply handoff service", () => {
                 replyContextEnvelope: true,
                 replyHandoffState: true,
                 replyHandoffDueAt: true,
-                replyHandoffReceiptEnvelope: true,
             },
         })).resolves.toEqual({
             resultEnvelope: transformedResultEnvelope,
             replyContextEnvelope: transformedReplyContextEnvelope,
             replyHandoffState: "ready",
             replyHandoffDueAt: NOW,
-            replyHandoffReceiptEnvelope: null,
         });
     });
 
@@ -986,7 +944,6 @@ describe("Automation reply handoff service", () => {
                 replyHandoffState: true,
                 replyHandoffAttempt: true,
                 replyHandoffDueAt: true,
-                replyHandoffReceiptEnvelope: true,
                 resultEnvelope: true,
                 replyContextEnvelope: true,
                 revision: true,
@@ -999,7 +956,6 @@ describe("Automation reply handoff service", () => {
             state: "accepted",
             attempt: 2,
             dueAt: null,
-            receiptEnvelope: JSON.stringify(ACCEPTED_RECEIPT_ENVELOPE),
         });
         const accepted = await readHandoffRow();
 
@@ -1021,7 +977,6 @@ describe("Automation reply handoff service", () => {
             // The previous attempt count is history, not a counter to reset.
             replyHandoffAttempt: 2,
             replyHandoffDueAt: NOW,
-            replyHandoffReceiptEnvelope: null,
             resultEnvelope: RESULT_ENVELOPE,
             replyContextEnvelope: REPLY_CONTEXT_ENVELOPE,
             revision: accepted.revision + 1,
@@ -1033,7 +988,6 @@ describe("Automation reply handoff service", () => {
             state: "accepted",
             attempt: 1,
             dueAt: null,
-            receiptEnvelope: JSON.stringify(ACCEPTED_RECEIPT_ENVELOPE),
         });
         const accepted = await readHandoffRow();
 
@@ -1088,10 +1042,57 @@ describe("Automation reply handoff service", () => {
         await expect(readHandoffRow()).resolves.toEqual(before);
     });
 
+    it("refuses terminal settlement without the exact post-effect Account content authority", async () => {
+        await seedReadyHandoff();
+        const claim = await claimNextAutomationReplyHandoff({ now: NOW });
+        expect(claim).not.toBeNull();
+        if (!claim) return;
+        const currentness = await readCurrentness();
+
+        // Terminal custody now settles from the typed Channels result alone,
+        // so the Account fences are the whole proof: a missing witness and a
+        // witness naming another content authority must both refuse.
+        await expect(settleAutomationReplyHandoff({
+            claim,
+            now: NOW,
+            outcome: { kind: "accepted" },
+        })).resolves.toEqual({ applied: false });
+        await expect(settleAutomationReplyHandoff({
+            claim,
+            now: NOW,
+            outcome: { kind: "suppressed" },
+            accountCurrentness: {
+                ...currentness,
+                contentKeyFingerprint: "aemk1_other-content",
+            },
+        })).resolves.toEqual({ applied: false });
+        await expect(db.automationRun.findUniqueOrThrow({
+            where: { id: RUN_ID },
+            select: {
+                replyHandoffState: true,
+                replyHandoffAttempt: true,
+                revision: true,
+            },
+        })).resolves.toEqual({
+            replyHandoffState: "handingOff",
+            replyHandoffAttempt: 1,
+            revision: 1,
+        });
+    });
+
+    it("retains no private reply-handoff receipt column on the deployed Run table", async () => {
+        const columns = await db.$queryRawUnsafe<ReadonlyArray<{ name: string }>>(
+            "SELECT name FROM pragma_table_info('AutomationRun')",
+        );
+        const names = columns.map((column) => column.name);
+
+        expect(names).toContain("replyHandoffState");
+        expect(names).not.toContain("replyHandoffReceiptEnvelope");
+    });
+
     it("fails closed when stored handoff content no longer matches the Account mode", async () => {
         await seedReadyHandoff({
             resultEnvelope: JSON.stringify({ t: "encrypted", c: "opaque-ciphertext" }),
-            receiptEnvelope: JSON.stringify(ACCEPTED_RECEIPT_ENVELOPE),
         });
 
         await expect(claimNextAutomationReplyHandoff({ now: NOW })).resolves.toBeNull();
@@ -1100,12 +1101,10 @@ describe("Automation reply handoff service", () => {
             select: {
                 replyHandoffState: true,
                 replyHandoffDueAt: true,
-                replyHandoffReceiptEnvelope: true,
             },
         })).resolves.toEqual({
             replyHandoffState: "blocked",
             replyHandoffDueAt: null,
-            replyHandoffReceiptEnvelope: null,
         });
     });
 });

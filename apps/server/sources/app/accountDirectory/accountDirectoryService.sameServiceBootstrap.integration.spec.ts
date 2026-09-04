@@ -182,6 +182,28 @@ describe("Account Directory same-service Home bootstrap (integration)", () => {
         expect(await db.accountDirectoryLink.count({ where: { accountId: account.id } })).toBe(0);
     });
 
+    it("revalidates the authoritative descriptor at the write boundary", async () => {
+        const account = await db.account.create({
+            data: { publicKey: "same-service-bootstrap-write-boundary" },
+            select: { id: true },
+        });
+        const initial = await readCurrentHomeDescriptor();
+        expect(initial).toBeDefined();
+        let reads = 0;
+
+        await expect(ensureSameServiceHomeBootstrapForNewAccount({
+            accountId: account.id,
+            resolveHomeConnectionDescriptor: async () => {
+                reads += 1;
+                return reads === 1 ? initial : undefined;
+            },
+        })).rejects.toThrow("became unavailable before persistence");
+
+        expect(reads).toBe(2);
+        expect(await db.accountHomeDirectoryEntry.count({ where: { accountId: account.id } })).toBe(0);
+        expect(await db.accountDirectoryLink.count({ where: { accountId: account.id } })).toBe(0);
+    });
+
     it("creates no trust rows when the Account Service signing metadata is unavailable", async () => {
         const account = await db.account.create({
             data: { publicKey: "same-service-bootstrap-no-signing-account" },

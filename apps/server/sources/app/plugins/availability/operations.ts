@@ -24,6 +24,7 @@ import {
     isPluginUiReleaseSlotCompatibleWithArtifactLinkV1,
     PluginMachineMaterializationSnapshotV1Schema,
     PluginMachineMaterializationV1Schema,
+    PluginCollectionContractRefV1Schema,
     PluginUiArtifactHostingCapabilityV1Schema,
     PluginUiReleaseSlotV1Schema,
     buildPluginDomainAccountChangeEntityId,
@@ -322,6 +323,94 @@ function collectionContractsEqual(
     );
     return createCanonicalJsonSigningInput(normalize(left))
         === createCanonicalJsonSigningInput(normalize(right));
+}
+
+async function retainSelectedPluginReleaseArchivesTx(input: Readonly<{
+    tx: Tx;
+    accountId: string;
+    pluginId: string;
+    selectedVersion: string | null;
+    priorSelectedVersion: string | null;
+}>): Promise<void> {
+    const [releases, liveRows] = await Promise.all([
+        input.tx.accountPluginRelease.findMany({
+            where: { accountId: input.accountId, pluginId: input.pluginId },
+            orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+            select: {
+                id: true,
+                version: true,
+                collectionContracts: true,
+                packageAssetArtifactId: true,
+                uiArtifacts: { select: { artifactId: true } },
+            },
+        }),
+        input.tx.pluginCollectionRow.findMany({
+            where: {
+                accountId: input.accountId,
+                pluginId: input.pluginId,
+                deletedAt: null,
+            },
+            select: {
+                collectionId: true,
+                schemaVersion: true,
+                contractDigest: true,
+            },
+        }),
+    ]);
+    const archiveVersions = new Set(
+        [input.selectedVersion, input.priorSelectedVersion].filter(
+            (version): version is string => version !== null,
+        ),
+    );
+    const metadataVersions = new Set(archiveVersions);
+    for (const release of releases) {
+        const refs = PluginCollectionContractRefV1Schema.array().safeParse(release.collectionContracts);
+        if (
+            refs.success
+            && refs.data.some((ref) => liveRows.some((row) => (
+                row.collectionId === ref.collectionId
+                && row.schemaVersion === ref.schemaVersion
+                && row.contractDigest === ref.contractDigest
+            )))
+        ) {
+            metadataVersions.add(release.version);
+        }
+    }
+    const priorIndex = input.priorSelectedVersion === null
+        ? -1
+        : releases.findIndex((release) => (
+            release.version === input.priorSelectedVersion
+        ));
+    for (const [index, release] of releases.entries()) {
+        if (!archiveVersions.has(release.version)) {
+            const artifactIds = [
+                release.packageAssetArtifactId,
+                ...release.uiArtifacts.map((link) => link.artifactId),
+            ].filter((artifactId): artifactId is string => artifactId !== null);
+            await input.tx.accountPluginUiArtifact.deleteMany({ where: { releaseId: release.id } });
+            if (release.packageAssetArtifactId !== null) {
+                await input.tx.accountPluginRelease.update({
+                    where: { id: release.id },
+                    data: { packageAssetArtifactId: null },
+                });
+            }
+            if (artifactIds.length > 0) {
+                await input.tx.artifact.deleteMany({
+                    where: { accountId: input.accountId, id: { in: artifactIds } },
+                });
+            }
+        }
+        // Creation order is only a conservative metadata-compaction boundary.
+        // Archive eligibility is exact selected/prior state above and must not
+        // inherit either this cutoff or Data's metadata dependencies.
+        if (
+            priorIndex >= 0
+            && index < priorIndex
+            && !metadataVersions.has(release.version)
+        ) {
+            await input.tx.accountPluginRelease.delete({ where: { id: release.id } });
+        }
+    }
 }
 
 function parseExpectedIntentRevision(value: string | null): bigint | null {
@@ -1348,6 +1437,27 @@ export function createPluginAvailabilityOperations(options: Readonly<{
                 ...currentRows.map((row) => row.pluginId),
                 ...reconciliation.snapshot.materializations.map((row) => row.pluginId),
             ]);
+            const retainedMaterializationIds = new Set(
+                reconciliation.snapshot.materializations.map((row) => row.materializationId),
+            );
+            const replacedMaterializationIds = currentRows
+                .map((row) => row.materializationId)
+                .filter((materializationId) => !retainedMaterializationIds.has(materializationId));
+            if (replacedMaterializationIds.length > 0) {
+                await tx.automationEventSourceStatus.deleteMany({
+                    where: {
+                        reporterMachineId: params.publisherMachineId,
+                        reporterMaterializationId: { in: replacedMaterializationIds },
+                    },
+                });
+                await tx.automationEventSourceCatalogStatus.deleteMany({
+                    where: {
+                        accountId: params.accountId,
+                        reporterMachineId: params.publisherMachineId,
+                        reporterMaterializationId: { in: replacedMaterializationIds },
+                    },
+                });
+            }
             await tx.pluginMachineMaterialization.deleteMany({
                 where: {
                     accountId: params.accountId,
@@ -1701,6 +1811,13 @@ export function createPluginAvailabilityOperations(options: Readonly<{
                             revision: true,
                         },
                     });
+                    await retainSelectedPluginReleaseArchivesTx({
+                        tx,
+                        accountId: params.accountId,
+                        pluginId: input.pluginId,
+                        selectedVersion: input.desiredVersion,
+                        priorSelectedVersion: null,
+                    });
                     await markAvailabilityChangedTx(
                         tx,
                         params.accountId,
@@ -1747,6 +1864,15 @@ export function createPluginAvailabilityOperations(options: Readonly<{
                     throw new PluginAvailabilityOperationError(
                         "plugin_intent_revision_conflict",
                     );
+                }
+                if (input.desiredVersion !== current.desiredVersion) {
+                    await retainSelectedPluginReleaseArchivesTx({
+                        tx,
+                        accountId: params.accountId,
+                        pluginId: input.pluginId,
+                        selectedVersion: input.desiredVersion,
+                        priorSelectedVersion: current.desiredVersion,
+                    });
                 }
                 await markAvailabilityChangedTx(
                     tx,

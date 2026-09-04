@@ -202,6 +202,8 @@ describe("plugin webhook Account-deletion cleanup", () => {
             revokedAt: null,
             releasedAt: NOW,
             tombstoneExpiresAt: TOMBSTONE_EXPIRES_AT,
+            providerConfirmedAt: null,
+            targetIntentEpoch: null,
             targetMachineId: null,
             targetMachineInstallationId: null,
             targetMaterializationId: null,

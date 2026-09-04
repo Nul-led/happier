@@ -124,14 +124,6 @@ describe("createAutomationReplyHandoffDaemonDispatcher", () => {
                     kind: "settled",
                     settlement: { kind: "accepted" },
                     accountCurrentness: { mode: "plain", version: 7, contentKeyFingerprint: null },
-                    receiptEnvelope: {
-                        t: "plain",
-                        v: {
-                            v: 1,
-                            correspondence,
-                            result: { kind: "accepted", custodyId: "custody-1" },
-                        },
-                    },
                 },
             };
         }) as AutomationReplyHandoffForwardRpcCall;
@@ -144,14 +136,6 @@ describe("createAutomationReplyHandoffDaemonDispatcher", () => {
             kind: "settled",
             settlement: { kind: "accepted" },
             accountCurrentness: { mode: "plain", version: 7, contentKeyFingerprint: null },
-            receiptEnvelope: {
-                t: "plain",
-                v: {
-                    v: 1,
-                    correspondence,
-                    result: { kind: "accepted", custodyId: "custody-1" },
-                },
-            },
         });
     });
 

@@ -112,6 +112,56 @@ describe("plugin webhook settlement target currentness", () => {
         expect(mocks.updateMany).toHaveBeenCalledTimes(2);
     });
 
+    it("permits only content-unavailable dead-letter settlement before execution starts", async () => {
+        mocks.findFirst.mockResolvedValue({ attemptCount: 0 });
+
+        await expect(failPluginWebhookDeliveryV1({
+            accountId: "account-1",
+            deliveryId: "delivery-1",
+            target: TARGET,
+            lease: LEASE,
+            result: { kind: "deadLetter", code: "content_unavailable" },
+            now: NOW,
+        })).resolves.toEqual({ kind: "settled", state: "dead_letter" });
+
+        expect(mocks.findFirst).toHaveBeenCalledWith({
+            where: expect.objectContaining({
+                executionStartedAt: null,
+                leaseExpiresAt: { gt: NOW },
+            }),
+            select: { attemptCount: true },
+        });
+        expect(mocks.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+            where: expect.objectContaining({ executionStartedAt: null }),
+        }));
+    });
+
+    it("settles an already-started attempt while an Account encryption transition fence is unavailable", async () => {
+        mocks.acquireFence.mockResolvedValue({ status: "unavailable" });
+        mocks.findFirst.mockResolvedValue({ attemptCount: 1 });
+
+        await expect(completePluginWebhookDeliveryV1({
+            accountId: "account-1",
+            deliveryId: "delivery-1",
+            target: TARGET,
+            lease: LEASE,
+            disposition: "accepted",
+            now: NOW,
+        })).resolves.toEqual({ kind: "settled", state: "succeeded" });
+        await expect(failPluginWebhookDeliveryV1({
+            accountId: "account-1",
+            deliveryId: "delivery-1",
+            target: TARGET,
+            lease: LEASE,
+            result: { kind: "retry", code: "provider_busy" },
+            retryDelayMs: 5_000,
+            now: NOW,
+        })).resolves.toEqual({ kind: "settled", state: "queued" });
+
+        expect(mocks.acquireFence).not.toHaveBeenCalled();
+        expect(mocks.updateMany).toHaveBeenCalledTimes(2);
+    });
+
     it("settles an already-started attempt after its endpoint was revoked", async () => {
         mocks.findFirst.mockResolvedValue({ attemptCount: 1 });
 

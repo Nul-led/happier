@@ -22,7 +22,7 @@ import {
 import { getOrCreateServerIdentityId } from "@/app/serverIdentity/serverIdentity";
 import { resolveConfiguredPublicServerUrl } from "@/app/serverUrls/effectiveServerUrls";
 import { db } from "@/storage/db";
-import { inTx } from "@/storage/inTx";
+import { inTx, type Tx } from "@/storage/inTx";
 
 import { movePendingPluginWebhookDeliveriesV1 } from "./deliveryStore";
 import {
@@ -38,6 +38,7 @@ import { convergeCurrentPluginWebhookEndpointTargetTxV1 } from "./endpointTarget
 import {
     createPluginWebhookEndpointStoreV1,
     PluginWebhookEndpointStoreError,
+    revokePluginWebhookEndpointV1,
     type ResolvedPluginWebhookContributionV1,
     type ResolvedPluginWebhookTargetV1,
 } from "./endpointStore";
@@ -235,11 +236,19 @@ export async function finishPluginWebhookEndpointCredentialRotationV1(params: Re
     });
 }
 
-async function resolveCurrentWebhookTargetV1(params: Readonly<{
+async function resolveCurrentWebhookTargetV1(serverIdentityId: string, params: Readonly<{
+    tx?: Tx;
     accountId: string;
     target: ResolvedPluginWebhookTargetV1["materialization"];
 }>): Promise<ResolvedPluginWebhookTargetV1 | null> {
-    const serverIdentityId = await getOrCreateServerIdentityId(process.env);
+    if (params.tx) {
+        return await resolveCurrentPluginWebhookTargetTxV1({
+            tx: params.tx,
+            serverIdentityId,
+            accountId: params.accountId,
+            target: params.target,
+        });
+    }
     return await inTx(async (tx) => await resolveCurrentPluginWebhookTargetTxV1({
         tx,
         serverIdentityId,
@@ -249,13 +258,24 @@ async function resolveCurrentWebhookTargetV1(params: Readonly<{
 }
 
 async function resolveCurrentWebhookContributionV1(params: Readonly<{
+    tx?: Tx;
     accountId: string;
     contribution: Readonly<{ pluginId: string; localId: string }>;
     target: ResolvedPluginWebhookTargetV1;
 }>): Promise<ResolvedPluginWebhookContributionV1 | null> {
+    if (params.tx) {
+        return await resolveCurrentPluginWebhookContributionTxV1({
+            tx: params.tx,
+            accountId: params.accountId,
+            contribution: params.contribution,
+            target: params.target,
+        });
+    }
     return await inTx(async (tx) => await resolveCurrentPluginWebhookContributionTxV1({
         tx,
-        ...params,
+        accountId: params.accountId,
+        contribution: params.contribution,
+        target: params.target,
     }));
 }
 
@@ -275,8 +295,8 @@ async function isCurrentCallerPluginEnabledV1(accountId: string, pluginId: strin
 export function createPluginWebhookEndpointActionsV1(options: Readonly<{
     authorizeSharedInstallation?: Parameters<typeof createPluginWebhookEndpointStoreV1>[0]["authorizeSharedInstallation"];
 }> = {}) {
-    const store = createPluginWebhookEndpointStoreV1({
-        resolveTarget: resolveCurrentWebhookTargetV1,
+    const createStore = (serverIdentityId: string) => createPluginWebhookEndpointStoreV1({
+        resolveTarget: async (params) => await resolveCurrentWebhookTargetV1(serverIdentityId, params),
         resolveContribution: resolveCurrentWebhookContributionV1,
         resolvePublicBaseUrl: () => resolveConfiguredPublicServerUrl(process.env) ?? null,
         ...(options.authorizeSharedInstallation
@@ -285,18 +305,21 @@ export function createPluginWebhookEndpointActionsV1(options: Readonly<{
     });
 
     return {
-        ensure: async (params: Readonly<{ accountId: string; input: PluginWebhookEndpointEnsureInputV1 }>) => (
-            await store.ensure({ accountId: params.accountId, ...params.input })
-        ),
-        read: async (params: Readonly<{ accountId: string; input: PluginWebhookEndpointReadInputV1 }>) => (
-            await store.read({ accountId: params.accountId, ...params.input })
-        ),
+        ensure: async (params: Readonly<{ accountId: string; input: PluginWebhookEndpointEnsureInputV1 }>) => {
+            const store = createStore(await getOrCreateServerIdentityId(process.env));
+            return await store.ensure({ accountId: params.accountId, ...params.input });
+        },
+        read: async (params: Readonly<{ accountId: string; input: PluginWebhookEndpointReadInputV1 }>) => {
+            const store = createStore(await getOrCreateServerIdentityId(process.env));
+            return await store.read({ accountId: params.accountId, ...params.input });
+        },
         revoke: async (params: Readonly<{ accountId: string; input: PluginWebhookEndpointRevokeInputV1 }>) => (
-            await store.revoke({ accountId: params.accountId, ...params.input })
+            await revokePluginWebhookEndpointV1({ accountId: params.accountId, ...params.input })
         ),
-        retarget: async (params: Readonly<{ accountId: string; input: PluginWebhookEndpointRetargetInputV1 }>) => (
-            await store.retarget({ accountId: params.accountId, ...params.input })
-        ),
+        retarget: async (params: Readonly<{ accountId: string; input: PluginWebhookEndpointRetargetInputV1 }>) => {
+            const store = createStore(await getOrCreateServerIdentityId(process.env));
+            return await store.retarget({ accountId: params.accountId, ...params.input });
+        },
         movePending: async (params: Readonly<{
             accountId: string;
             input: PluginWebhookDeliveryMovePendingInputV1;

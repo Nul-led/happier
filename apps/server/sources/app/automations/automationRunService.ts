@@ -16,6 +16,7 @@ import {
 } from "@happier-dev/protocol";
 import { acquireAccountEncryptionTransitionFenceInTx } from "@/app/encryption/accountEncryptionTransition";
 import { readMachineAvailabilityStateInTx } from "@/app/machines/machineStateGuards";
+import { retireAutomationPendingInputInTx } from "@/app/session/pending/pendingMessageService";
 
 import { emitAutomationRunTransition } from "./automationChangePublisher";
 import { fetchAutomationAccountCurrentnessWitnessTx } from "./automationAccountCurrentness";
@@ -28,6 +29,7 @@ import { advanceAutomationScheduleCursorAfterTerminalRunTx } from "./automationR
 import { sanitizeAutomationErrorMessage } from "./automationSummaryService";
 import {
     assertAutomationRunFailureDetailEnvelopeOuterForMode,
+    readRetainedAutomationRunExecutionTargetV2,
     validateRetainedAutomationRunExecutionInputV2OuterForMode,
 } from "./automationStoredContentRead";
 import {
@@ -200,6 +202,19 @@ async function findStrictNewSessionByRunCreationTagTx(params: {
 }): Promise<{ id: string } | null> {
     const sessionCreationTag = deriveStrictNewSessionCreationTag(params);
     if (!sessionCreationTag) return null;
+    return await findNewSessionByRunCreationTagTx(params);
+}
+
+async function findNewSessionByRunCreationTagTx(params: {
+    tx: Tx;
+    accountId: string;
+    automationId: string;
+    runId: string;
+}): Promise<{ id: string } | null> {
+    const sessionCreationTag = deriveSessionCreationTagV1({
+        callerCreationNamespace: `automation:${params.automationId}`,
+        creationKey: `automation-run:${params.runId}`,
+    });
     return await params.tx.session.findUnique({
         where: {
             accountId_tag: {
@@ -237,6 +252,52 @@ async function resolveProducedSessionIdForRunTx(params: {
     return recipe.kind === "available" && recipe.recipe.target.kind === "newSession"
         ? await resolveStrictNewSessionProducedSessionIdTx(params)
         : await resolveProducedSessionIdTx(params);
+}
+
+async function resolveAutomationPendingInputSessionIdTx(params: Readonly<{
+    tx: Tx;
+    accountId: string;
+    automationId: string;
+    runId: string;
+    executionInputEnvelope: string | null;
+    accountEncryptionMode: "plain" | "e2ee";
+    retainedV2OriginKind: "scheduled" | "manual" | undefined;
+}>): Promise<string | null> {
+    const recipe = parseAutomationRunExecutionRecipeV1(params.executionInputEnvelope);
+    if (recipe.kind === "available" && recipe.recipe.target.kind === "existingSession") {
+        const session = await params.tx.session.findFirst({
+            where: {
+                id: recipe.recipe.target.sessionId,
+                accountId: params.accountId,
+            },
+            select: { id: true },
+        });
+        return session?.id ?? null;
+    }
+    if (recipe.kind === "available" && recipe.recipe.target.kind === "newSession") {
+        const session = await findStrictNewSessionByRunCreationTagTx(params);
+        return session?.id ?? null;
+    }
+    if (recipe.kind === "available") return null;
+
+    const retainedTarget = params.executionInputEnvelope === null
+        || params.retainedV2OriginKind === undefined
+        ? null
+        : readRetainedAutomationRunExecutionTargetV2({
+            raw: params.executionInputEnvelope,
+            mode: params.accountEncryptionMode,
+            retainedV2OriginKind: params.retainedV2OriginKind,
+        });
+    if (retainedTarget?.kind === "existingSession") {
+        const session = await params.tx.session.findFirst({
+            where: { id: retainedTarget.sessionId, accountId: params.accountId },
+            select: { id: true },
+        });
+        return session?.id ?? null;
+    }
+    if (retainedTarget?.kind !== "newSession") return null;
+    const session = await findNewSessionByRunCreationTagTx(params);
+    return session?.id ?? null;
 }
 
 /**
@@ -353,7 +414,6 @@ async function blockAwaitingReplyHandoffForTerminalRunTx(params: {
         data: {
             replyHandoffState: "blocked",
             replyHandoffDueAt: null,
-            replyHandoffReceiptEnvelope: null,
             revision: { increment: 1 },
             updatedAt: params.now,
         },
@@ -1815,6 +1875,26 @@ export async function cancelAutomationRunRowTx(params: Readonly<{
         },
     });
     if (updated.count !== 1) return null;
+
+    if (params.presentUserCancellation === true && outcomeUncertain) {
+        const sessionId = await resolveAutomationPendingInputSessionIdTx({
+            tx: params.tx,
+            accountId: params.accountId,
+            automationId: previousRun.automationId,
+            runId: previousRun.id,
+            executionInputEnvelope: previousRun.executionInputEnvelope,
+            accountEncryptionMode: params.accountEncryptionMode,
+            retainedV2OriginKind: retainedV2OriginKindForRun(previousRun),
+        });
+        if (sessionId !== null) {
+            await retireAutomationPendingInputInTx({
+                tx: params.tx,
+                accountId: params.accountId,
+                sessionId,
+                runId: previousRun.id,
+            });
+        }
+    }
 
     await blockAwaitingReplyHandoffForTerminalRunTx({
         tx: params.tx,

@@ -930,6 +930,41 @@ describe("Account Directory service", () => {
             expect(issueHomeToken).toHaveBeenCalledTimes(1);
         });
 
+        it("does not issue a Home token when an approved request expires during final destination validation", async () => {
+            const { redeemHomeLoginAssertion } = await import("./accountDirectoryService");
+            mocks.dbLinkFindUnique.mockResolvedValue(linkRowFor(signingKeyPair(4)));
+            const approvalExpiresAtMs = nowMs + 10_000;
+            mocks.txPairingSessionFindFirst.mockResolvedValue({
+                id: "approval-1",
+                expiresAt: new Date(approvalExpiresAtMs),
+            });
+            let descriptorReads = 0;
+            const resolveHomeConnectionDescriptor = vi.fn(async () => {
+                descriptorReads += 1;
+                if (descriptorReads === 2) vi.setSystemTime(approvalExpiresAtMs + 1);
+                return homeDescriptor;
+            });
+            const issueHomeToken = vi.fn(async () => "must-never-issue");
+            vi.useFakeTimers();
+            vi.setSystemTime(nowMs);
+            try {
+                await expect(redeemHomeLoginAssertion({
+                    assertion: signedAssertion(),
+                    resolveHomeConnectionDescriptor,
+                    homeApprovalGate: {
+                        evaluate: async (facts) => ({
+                            kind: "allowed" as const,
+                            approvedRequest: { approvalId: "approval-1", bindingProof: facts.approvalBindingProof },
+                        }),
+                    },
+                    issueHomeToken,
+                })).rejects.toMatchObject({ code: "approval_expired" });
+                expect(issueHomeToken).not.toHaveBeenCalled();
+            } finally {
+                vi.useRealTimers();
+            }
+        });
+
         it("verifies the assertion against the pinned link and returns typed failures", async () => {
             const { redeemHomeLoginAssertion } = await import("./accountDirectoryService");
             const assertion = signedAssertion();

@@ -143,4 +143,34 @@ describe('Home search canonical SQLite composition', () => {
         await eventually(() => expect(lifecycle.search({ v: 1, query: '東京', scope: { type: 'global' }, mode: 'auto' })).toMatchObject({ ok: true, hits: [] }));
         await lifecycle.stop();
     }, 120_000);
+
+    it('excludes a plaintext envelope whose canonical Session mode is E2EE', async () => {
+        const account = await db.account.create({
+            data: { publicKey: `home-search-mode-${randomUUID()}`, encryptionMode: 'e2ee' },
+            select: { id: true },
+        });
+        const session = await db.session.create({
+            data: {
+                tag: `home-search-mode-${randomUUID()}`,
+                accountId: account.id,
+                metadata: 'metadata',
+                encryptionMode: 'e2ee',
+                currentStorageState: 'hosted',
+            },
+            select: { id: true },
+        });
+        await db.sessionMessage.create({
+            data: {
+                sessionId: session.id,
+                seq: 1,
+                localId: 'inconsistent-plain-envelope',
+                content: { t: 'plain', v: { role: 'user', content: { type: 'text', text: 'must remain private' } } },
+            },
+        });
+
+        const page = await readCanonicalSessionMessagesPage({ limit: 250 });
+        expect(page.messages).not.toEqual(expect.arrayContaining([
+            expect.objectContaining({ sessionId: session.id }),
+        ]));
+    });
 });

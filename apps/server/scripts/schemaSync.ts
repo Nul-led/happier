@@ -385,7 +385,7 @@ function annotateMySqlEventAutomationFields(schemaBody: string): string {
             (model) => model
                 .replace(/^(\s*occurrenceKey\s+String\?)(?![^\n]*@db\.)/m, "$1 @db.Char(43)")
                 .replace(
-                    /^(\s*(?:triggerEvidenceEnvelope|executionInputEnvelope|resultEnvelope|replyContextEnvelope|replyHandoffReceiptEnvelope)\s+String\?)(?![^\n]*@db\.)/gm,
+                    /^(\s*(?:triggerEvidenceEnvelope|executionInputEnvelope|resultEnvelope|replyContextEnvelope)\s+String\?)(?![^\n]*@db\.)/gm,
                     "$1 @db.LongText",
                 ),
         )

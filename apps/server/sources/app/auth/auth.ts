@@ -33,10 +33,6 @@ interface TokenVerifierLike {
 // Persistent tokens have no expiry. Retain this read-only compatibility window until an
 // explicit token epoch or forced re-auth retires tokens issued by privacy-kit 0.0.25 on Bun.
 const LEGACY_BUN_SEED_CANDIDATE_COUNT = 64;
-const HISTORICAL_LEGACY_TOKEN_MARKERS = new Set([
-    "privacy-kit-0.0.25-node",
-    "privacy-kit-0.0.25-bun-1.3.5",
-]);
 
 interface AuthTokens {
     generator: TokenGeneratorLike;
@@ -693,19 +689,15 @@ class AuthModule {
     }
 
     async signOutEverywhere(userId: string): Promise<number> {
-        // The epoch bump and PAT revocation are one sign-out decision. PAT rows
-        // carry no per-credential epoch, so they are revoked through this
-        // owner's existing deletion model at the same instant the epoch
-        // invalidates signed tokens and cached verifications.
-        return await inTx(async (tx) => {
-            const account = await tx.account.update({
-                where: { id: userId },
-                data: { tokenEpoch: { increment: 1 } },
-                select: { tokenEpoch: true },
-            });
-            await tx.accountApiToken.deleteMany({ where: { accountId: userId } });
-            return account.tokenEpoch;
+        // This owner invalidates signed sessions only. API tokens are explicit
+        // long-lived automation credentials and retain their separate
+        // revoke-one/revoke-all lifecycle.
+        const account = await db.account.update({
+            where: { id: userId },
+            data: { tokenEpoch: { increment: 1 } },
+            select: { tokenEpoch: true },
         });
+        return account.tokenEpoch;
     }
 
     private async verifyParsedApiToken(
@@ -814,13 +806,6 @@ class AuthModule {
             if (!options.allowLegacyHome) return null;
             provenance = this.legacyAuthTokenProvenance(tokenExtras);
             legacy = true;
-        } else if (this.isHistoricalLegacyTokenMarker(rawProvenance)) {
-            if (!options.allowLegacyHome) return null;
-            // privacy-kit 0.0.25 placed its implementation identifier in a
-            // `provenance` string. It is a compatibility marker, not trusted
-            // authority; the resulting token is always ordinary Home/terminal.
-            provenance = this.legacyAuthTokenProvenance(tokenExtras);
-            legacy = true;
         } else {
             const parsedProvenance = AuthTokenProvenanceSchema.safeParse(rawProvenance);
             if (!parsedProvenance.success) {
@@ -836,6 +821,9 @@ class AuthModule {
         }
 
         const rawTokenEpoch = payload.tokenEpoch ?? tokenExtras.tokenEpoch;
+        if (rawTokenEpoch === undefined && !legacy) {
+            return null;
+        }
         const tokenEpoch = rawTokenEpoch === undefined ? 0 : rawTokenEpoch;
         if (
             typeof tokenEpoch !== "number"
@@ -870,10 +858,6 @@ class AuthModule {
             kind,
             authority: kind === "terminal" ? "account_automation" : "present_user",
         };
-    }
-
-    private isHistoricalLegacyTokenMarker(value: unknown): boolean {
-        return typeof value === "string" && HISTORICAL_LEGACY_TOKEN_MARKERS.has(value);
     }
 
     private asTokenExtras(value: unknown): Readonly<Record<string, unknown>> | null {

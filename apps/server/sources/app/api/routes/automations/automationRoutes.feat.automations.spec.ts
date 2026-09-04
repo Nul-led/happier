@@ -139,7 +139,6 @@ const claimAutomationRun = vi.fn(async () => ({
         replyHandoffState: "none",
         replyHandoffAttempt: 0,
         replyHandoffDueAt: null,
-        replyHandoffReceiptEnvelope: null,
         scheduledAt: new Date("2026-02-12T10:00:00.000Z"),
         dueAt: new Date("2026-02-12T10:00:00.000Z"),
         claimedAt: new Date("2026-02-12T10:00:00.000Z"),

@@ -1246,7 +1246,6 @@ export type AutomationAccountEncryptionTransitionRunSourceContent = Readonly<{
     executionInputEnvelope: string | null;
     resultEnvelope: string | null;
     replyContextEnvelope: string | null;
-    replyHandoffReceiptEnvelope: string | null;
     failureDetailEnvelope: string | null;
     summaryCiphertext: string | null;
 }>;
@@ -1350,7 +1349,6 @@ function automationRunHasMigrationPrivateContent(
         || row.executionInputEnvelope !== null
         || row.resultEnvelope !== null
         || row.replyContextEnvelope !== null
-        || row.replyHandoffReceiptEnvelope !== null
         || currentAutomationRunFailureDetailEnvelope(row) !== null
         || row.summaryCiphertext !== null;
 }
@@ -1368,7 +1366,6 @@ function automationRunMigrationCandidateWhere(
             { executionInputEnvelope: { not: null } },
             { resultEnvelope: { not: null } },
             { replyContextEnvelope: { not: null } },
-            { replyHandoffReceiptEnvelope: { not: null } },
             // Released V2 public error text shares this column. The strict
             // parser above remains the final private-content discriminator.
             { errorMessage: { not: null } },
@@ -1386,7 +1383,6 @@ const automationRunMigrationParticipantSelect = {
     executionInputEnvelope: true,
     resultEnvelope: true,
     replyContextEnvelope: true,
-    replyHandoffReceiptEnvelope: true,
     errorMessage: true,
     summaryCiphertext: true,
     revision: true,
@@ -1411,7 +1407,6 @@ function transitionInventoryRun(
             executionInputEnvelope: row.executionInputEnvelope,
             resultEnvelope: row.resultEnvelope,
             replyContextEnvelope: row.replyContextEnvelope,
-            replyHandoffReceiptEnvelope: row.replyHandoffReceiptEnvelope,
             failureDetailEnvelope: currentAutomationRunFailureDetailEnvelope(row),
             summaryCiphertext: row.summaryCiphertext,
         },
@@ -1713,7 +1708,6 @@ function stageRunSourceMatches(
         && row.executionInputEnvelope === item.source.executionInputEnvelope
         && row.resultEnvelope === item.source.resultEnvelope
         && row.replyContextEnvelope === item.source.replyContextEnvelope
-        && row.replyHandoffReceiptEnvelope === item.source.replyHandoffReceiptEnvelope
         && currentAutomationRunFailureDetailEnvelope(row)
             === item.source.failureDetailEnvelope
         && row.summaryCiphertext === item.source.summaryCiphertext;
@@ -2078,8 +2072,6 @@ export async function applyAutomationAccountEncryptionTransitionStageInTx(
                 executionInputEnvelope: candidate.item.target.executionInputEnvelope,
                 resultEnvelope: candidate.item.target.resultEnvelope,
                 replyContextEnvelope: candidate.item.target.replyContextEnvelope,
-                replyHandoffReceiptEnvelope:
-                    candidate.item.target.replyHandoffReceiptEnvelope,
                 errorMessage: candidate.item.target.failureDetailEnvelope
                     ?? (currentAutomationRunFailureDetailEnvelope(candidate.row) === null
                         ? candidate.row.errorMessage
@@ -2330,8 +2322,6 @@ function automationMigrationRunItemsMatchInventory(
                 || item.executionInputEnvelope !== row.executionInputEnvelope
                 || item.resultEnvelope !== row.resultEnvelope
                 || item.replyContextEnvelope !== row.replyContextEnvelope
-                || item.replyHandoffReceiptEnvelope
-                    !== row.replyHandoffReceiptEnvelope
                 || item.failureDetailEnvelope
                     !== currentAutomationRunFailureDetailEnvelope(row)
             )
@@ -2349,7 +2339,6 @@ type AutomationAccountEncryptionMigrationRunStoredContent = Pick<
     | "executionInputEnvelope"
     | "resultEnvelope"
     | "replyContextEnvelope"
-    | "replyHandoffReceiptEnvelope"
 > & Readonly<{ failureDetailEnvelope: string | null }>;
 
 function automationRunMigrationStoredContent(
@@ -2361,7 +2350,6 @@ function automationRunMigrationStoredContent(
         executionInputEnvelope: row.executionInputEnvelope,
         resultEnvelope: row.resultEnvelope,
         replyContextEnvelope: row.replyContextEnvelope,
-        replyHandoffReceiptEnvelope: row.replyHandoffReceiptEnvelope,
         failureDetailEnvelope: currentAutomationRunFailureDetailEnvelope(row),
     };
 }
@@ -2374,7 +2362,6 @@ function assertAutomationRunOptionalContentNullnessPreserved(params: Readonly<{
         "executionInputEnvelope",
         "resultEnvelope",
         "replyContextEnvelope",
-        "replyHandoffReceiptEnvelope",
         "failureDetailEnvelope",
     ] as const) {
         if ((params.source[field] === null) !== (params.target[field] === null)) {
@@ -2386,7 +2373,7 @@ function assertAutomationRunOptionalContentNullnessPreserved(params: Readonly<{
 }
 
 function assertAutomationReplyHandoffStoredEnvelopeForAccountMode(params: Readonly<{
-    content: "result" | "replyContext" | "receipt";
+    content: "result" | "replyContext";
     raw: string | null;
     mode: "plain" | "e2ee";
     allowLegacyResultSource?: boolean;
@@ -2571,11 +2558,6 @@ function assertAutomationRunStoredContentForAccountMode(params: Readonly<{
     assertAutomationReplyHandoffStoredEnvelopeForAccountMode({
         content: "replyContext",
         raw: params.content.replyContextEnvelope,
-        mode: params.mode,
-    });
-    assertAutomationReplyHandoffStoredEnvelopeForAccountMode({
-        content: "receipt",
-        raw: params.content.replyHandoffReceiptEnvelope,
         mode: params.mode,
     });
     try {
@@ -3119,8 +3101,6 @@ export async function migrateAutomationAccountEncryptionInTx(params: Readonly<{
                 executionInputEnvelope: item.executionInputEnvelope,
                 resultEnvelope: item.resultEnvelope,
                 replyContextEnvelope: item.replyContextEnvelope,
-                replyHandoffReceiptEnvelope:
-                    item.replyHandoffReceiptEnvelope,
                 errorMessage: item.failureDetailEnvelope
                     ?? (currentAutomationRunFailureDetailEnvelope(row) === null
                         ? row.errorMessage
@@ -3288,8 +3268,6 @@ export async function matchAutomationAccountEncryptionMigrationPostStateInTx(
                 || item.executionInputEnvelope !== row.executionInputEnvelope
                 || item.resultEnvelope !== row.resultEnvelope
                 || item.replyContextEnvelope !== row.replyContextEnvelope
-                || item.replyHandoffReceiptEnvelope
-                    !== row.replyHandoffReceiptEnvelope
                 || item.failureDetailEnvelope
                     !== currentAutomationRunFailureDetailEnvelope(row)
                 || row.summaryCiphertext !== null

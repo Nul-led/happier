@@ -311,6 +311,13 @@ describe("sessionPendingRoutes (enqueue)", () => {
 
     it("publishes one exact machine activation after an inactive send-now row is durably committed", async () => {
         const createdAt = new Date("2026-07-23T12:00:00.000Z");
+        sessionFindUnique.mockResolvedValue({
+            ...HOSTED_RECIPIENT_PROJECTION,
+            pendingActivationRequestId: "pending-after-ui-death",
+            pendingActivationRequestedAt: createdAt,
+            pendingActivationStatus: "waiting",
+            pendingActivationFailureCode: null,
+        });
         enqueuePendingMessage.mockResolvedValueOnce({
             ok: true,
             didWrite: true,

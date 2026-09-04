@@ -150,7 +150,10 @@ export async function convergeCurrentPluginWebhookEndpointTargetTxV1(params: Rea
         data: {
             // Retained rows keep their frozen target; the bounded
             // `delivery.movePending` operation is still the only way to move
-            // an already-admitted row, and it reads these predecessor facts.
+            // an already-admitted row. It selects by difference from the
+            // endpoint's current target rather than from these facts, which
+            // remain the bounded prior-placement record this operation owes
+            // its audit trail.
             ...(alreadyAtDesiredTarget ? {} : {
                 previousTargetMachineId: endpoint.targetMachineId,
                 previousTargetMachineInstallationId: endpoint.targetMachineInstallationId,

@@ -187,6 +187,78 @@ describe("plugin webhook endpoint store", () => {
         expect(randomBytes.mock.calls).toEqual([[16], [16], [16], [32]]);
     });
 
+    it("revalidates ensure contribution currentness after entering the persistence transaction", async () => {
+        const tx = transaction(null);
+        let contributionIsCurrent = true;
+        mocks.endpointFindFirst.mockResolvedValue(null);
+        mocks.readContribution.mockImplementation(async () => (
+            contributionIsCurrent
+                ? {
+                    pluginId: contribution.pluginId,
+                    localId: contribution.localId,
+                    handlerActionLocalId: "receive",
+                    verifierKind: "github_hmac_sha256_v1" as const,
+                    routingKind: "accountEndpoint" as const,
+                }
+                : null
+        ));
+        mocks.inTx.mockImplementation(async (callback: (value: typeof tx) => unknown) => {
+            contributionIsCurrent = false;
+            return await callback(tx);
+        });
+        const store = createPluginWebhookEndpointStoreV1({
+            resolveTarget: mocks.readTarget,
+            resolveContribution: mocks.readContribution,
+            resolvePublicBaseUrl: () => "https://server.example.test",
+        });
+
+        await expect(store.ensure({
+            accountId: "account-1",
+            webhookContribution: contribution,
+            targetMaterialization: target,
+            sourceInstanceId: "source-1",
+            setup: { kind: "accountEndpointV1", credential: "serverGenerated" },
+            idempotencyKey: "ensure-currentness-race-1",
+        })).rejects.toMatchObject({ code: "endpoint_unavailable" });
+
+        expect(tx.pluginWebhookEndpoint.create).not.toHaveBeenCalled();
+    });
+
+    it("revalidates ensure target currentness after entering the persistence transaction", async () => {
+        const tx = transaction(null);
+        let targetIsCurrent = true;
+        mocks.endpointFindFirst.mockResolvedValue(null);
+        mocks.readTarget.mockImplementation(async ({ target: requestedTarget }) => (
+            targetIsCurrent
+                ? {
+                    materialization: requestedTarget,
+                    machineInstallationId: "install-2",
+                    pluginVersion: "1.0.0",
+                }
+                : null
+        ));
+        mocks.inTx.mockImplementation(async (callback: (value: typeof tx) => unknown) => {
+            targetIsCurrent = false;
+            return await callback(tx);
+        });
+        const store = createPluginWebhookEndpointStoreV1({
+            resolveTarget: mocks.readTarget,
+            resolveContribution: mocks.readContribution,
+            resolvePublicBaseUrl: () => "https://server.example.test",
+        });
+
+        await expect(store.ensure({
+            accountId: "account-1",
+            webhookContribution: contribution,
+            targetMaterialization: target,
+            sourceInstanceId: "source-1",
+            setup: { kind: "accountEndpointV1", credential: "serverGenerated" },
+            idempotencyKey: "ensure-target-currentness-race-1",
+        })).rejects.toMatchObject({ code: "endpoint_unavailable" });
+
+        expect(tx.pluginWebhookEndpoint.create).not.toHaveBeenCalled();
+    });
+
     it("does not retry an unexplained unique conflict as a generated identity collision", async () => {
         const first = transaction(null);
         first.pluginWebhookRoute.create.mockRejectedValue({ code: "P2002" });
@@ -247,7 +319,7 @@ describe("plugin webhook endpoint store", () => {
         })).rejects.toMatchObject({ code: "installation_conflict" });
 
         expect(mocks.endpointFindFirst).not.toHaveBeenCalled();
-        expect(mocks.inTx).not.toHaveBeenCalled();
+        expect(mocks.inTx).toHaveBeenCalledTimes(1);
     });
 
     it("derives one readiness ordering for every endpoint projection", async () => {
@@ -473,6 +545,7 @@ describe("plugin webhook endpoint store", () => {
         })).resolves.toEqual({ kind: "incompatible", currentRevision: 2 });
 
         expect(mocks.readContribution).toHaveBeenCalledWith({
+            tx,
             accountId: "account-1",
             contribution,
             target: {
@@ -481,6 +554,43 @@ describe("plugin webhook endpoint store", () => {
                 pluginVersion: "1.0.0",
             },
         });
+        expect(tx.pluginWebhookEndpoint.updateMany).not.toHaveBeenCalled();
+    });
+
+    it("revalidates retarget target currentness after entering the persistence transaction", async () => {
+        const tx = transaction();
+        let targetIsCurrent = true;
+        mocks.readTarget.mockImplementation(async ({ target: requestedTarget }) => (
+            targetIsCurrent
+                ? {
+                    materialization: requestedTarget,
+                    machineInstallationId: "install-2",
+                    pluginVersion: "1.0.0",
+                }
+                : null
+        ));
+        mocks.inTx.mockImplementation(async (callback: (value: typeof tx) => unknown) => {
+            targetIsCurrent = false;
+            return await callback(tx);
+        });
+        const store = createPluginWebhookEndpointStoreV1({
+            resolveTarget: mocks.readTarget,
+            resolveContribution: mocks.readContribution,
+            resolvePublicBaseUrl: () => "https://server.example.test",
+        });
+
+        await expect(store.retarget({
+            accountId: "account-1",
+            webhookEndpointId: endpointId,
+            expectedRevision: 2,
+            targetMaterialization: {
+                ...target,
+                machineId: "machine-2",
+                materializationId: "materialization-2",
+            },
+            idempotencyKey: "retarget-currentness-race-1",
+        })).rejects.toMatchObject({ code: "endpoint_unavailable" });
+
         expect(tx.pluginWebhookEndpoint.updateMany).not.toHaveBeenCalled();
     });
 });

@@ -1,10 +1,11 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, open, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
     HOME_CONNECTION_DESCRIPTOR_CONTINUITY_CACHE_KEY,
+    createFileHomeConnectionDescriptorContinuityStore,
     createHomeConnectionDescriptorContentKey,
     createSimpleCacheHomeConnectionDescriptorContinuityStore,
     createHomeConnectionDescriptorContinuityStoreForServer,
@@ -15,6 +16,7 @@ import {
 const fixtures: string[] = [];
 
 afterEach(async () => {
+    vi.restoreAllMocks();
     await Promise.all(fixtures.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 });
 
@@ -40,12 +42,51 @@ describe('Home connection descriptor continuity', () => {
             }],
         });
 
-        await store.write({ revision: 8, contentKey });
+        await store.write({
+            revision: 8,
+            contentKey,
+            irohEndpointId: 'a'.repeat(64),
+        });
 
         const serialized = values.get(HOME_CONNECTION_DESCRIPTOR_CONTINUITY_CACHE_KEY);
         expect(serialized?.length).toBeLessThanOrEqual(191);
-        expect(serialized).toMatch(/^\{"revision":8,"contentKey":"v1:i:[0-9a-f]{64}"\}$/);
-        await expect(store.read()).resolves.toEqual({ revision: 8, contentKey });
+        expect(serialized).toMatch(/^\{"revision":8,"contentKey":"v1:i:[0-9a-f]{64}","irohEndpointId":"a{64}"\}$/);
+        await expect(store.read()).resolves.toEqual({
+            revision: 8,
+            contentKey,
+            irohEndpointId: 'a'.repeat(64),
+        });
+    });
+
+    it('enriches an outer continuity record with the published EndpointId without advancing its revision', async () => {
+        const values = new Map<string, string>();
+        const store = createSimpleCacheHomeConnectionDescriptorContinuityStore({
+            readSimpleCache: async (key) => values.get(key) ?? null,
+            compareAndSetSimpleCache: async (key, expectedValue, nextValue) => {
+                if ((values.get(key) ?? null) !== expectedValue) return false;
+                values.set(key, nextValue);
+                return true;
+            },
+        });
+        const contentKey = `v1:i:${'a'.repeat(64)}`;
+
+        await store.write({ revision: 4, contentKey });
+        await expect(store.write({
+            revision: 4,
+            contentKey,
+            irohEndpointId: 'b'.repeat(64),
+        })).resolves.toEqual({
+            status: 'committed',
+            continuity: { revision: 4, contentKey, irohEndpointId: 'b'.repeat(64) },
+        });
+        await expect(store.write({
+            revision: 4,
+            contentKey,
+            irohEndpointId: 'c'.repeat(64),
+        })).resolves.toEqual({
+            status: 'superseded',
+            continuity: { revision: 4, contentKey, irohEndpointId: 'b'.repeat(64) },
+        });
     });
 
     it('rejects arbitrary nonempty continuity keys instead of treating them as endpoint history', async () => {
@@ -204,4 +245,28 @@ describe('Home connection descriptor continuity', () => {
             'Home connection descriptor continuity is malformed',
         );
     });
+
+    it('does not commit when replacement bytes cannot be synchronized and remains retryable', async () => {
+        const root = await mkdtemp(join(tmpdir(), 'home-descriptor-durable-'));
+        fixtures.push(root);
+        const continuityPath = join(root, 'runtime', 'home.descriptor.json');
+        const probe = await open(join(root, 'probe'), 'w');
+        const fileHandlePrototype = Object.getPrototypeOf(probe) as { sync(): Promise<void> };
+        await probe.close();
+        let syncCalls = 0;
+        const sync = vi.spyOn(fileHandlePrototype, 'sync').mockImplementation(async () => {
+            syncCalls += 1;
+            if (syncCalls === 1) throw Object.assign(new Error('file sync failed'), { code: 'EIO' });
+        });
+        const continuity = { revision: 1, contentKey: `v1:n:${'a'.repeat(64)}` };
+        const store = createFileHomeConnectionDescriptorContinuityStore(continuityPath);
+
+        await expect(store.write(continuity)).rejects.toMatchObject({ code: 'EIO' });
+        await expect(readFile(continuityPath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+
+        await expect(store.write(continuity)).resolves.toEqual({ status: 'committed', continuity });
+        expect(sync).toHaveBeenCalledTimes(3);
+        expect(JSON.parse(await readFile(continuityPath, 'utf8'))).toEqual(continuity);
+    });
+
 });

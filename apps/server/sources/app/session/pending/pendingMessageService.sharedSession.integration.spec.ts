@@ -1,7 +1,16 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
 import type { Prisma } from "@prisma/client";
-import type { SessionMessageDeliveryResolutionV1 } from "@happier-dev/protocol";
+import {
+    buildTrustedHostSessionInputAdmissionV1,
+    SESSION_MESSAGE_PROVENANCE_META_KEY,
+    settleSessionInputRequestV1,
+    settleSessionMessageProvenanceV1,
+    withSessionInputAuthorityV1,
+    type SessionInputAdmissionReceiptV1,
+    type SessionMessageDeliveryResolutionV1,
+    type SessionMessageProvenanceV1,
+} from "@happier-dev/protocol";
 
 import { db } from "@/storage/db";
 import { auth } from "@/app/auth/auth";
@@ -429,6 +438,11 @@ describe("pendingMessageService (shared sessions)", () => {
         } as const;
         const finalMeta = {
             sentFrom: "cli",
+            [SESSION_MESSAGE_PROVENANCE_META_KEY]: {
+                v: 1,
+                kind: "host",
+                producer: "pluginSession",
+            },
             happierInputAuthorityV1: {
                 v: 1,
                 producer: "pluginSession",
@@ -579,6 +593,11 @@ describe("pendingMessageService (shared sessions)", () => {
         } as const;
         const automationFinalMeta = {
             sentFrom: "cli",
+            [SESSION_MESSAGE_PROVENANCE_META_KEY]: {
+                v: 1,
+                kind: "host",
+                producer: "automation",
+            },
             happierInputAuthorityV1: {
                 v: 1,
                 producer: "automation",
@@ -662,6 +681,11 @@ describe("pendingMessageService (shared sessions)", () => {
         } as const;
         const uncertainFinalMeta = {
             sentFrom: "cli",
+            [SESSION_MESSAGE_PROVENANCE_META_KEY]: {
+                v: 1,
+                kind: "host",
+                producer: "automation",
+            },
             happierInputAuthorityV1: {
                 v: 1,
                 producer: "automation",
@@ -709,6 +733,144 @@ describe("pendingMessageService (shared sessions)", () => {
         await expect(db.sessionPendingMessage.findUnique({
             where: { sessionId_localId: { sessionId: session.id, localId: uncertainLocalId } },
         })).resolves.toBeNull();
+    });
+
+    it.each([
+        {
+            label: "owner",
+            authorKind: "ui-owner",
+            sessionRelationship: "owner",
+            expectedActorKind: "owner",
+        },
+        {
+            label: "shared collaborator",
+            authorKind: "ui-collaborator",
+            sessionRelationship: "sharedEditor",
+            expectedActorKind: "sharedCollaborator",
+        },
+    ] as const)("accepts exact CLI settlement of $label UI provenance and rejects forged provenance", async ({
+        authorKind,
+        sessionRelationship,
+        expectedActorKind,
+    }) => {
+        harness.resetEnv({ HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "optional" });
+        const owner = await createAccount(`${authorKind}-session-owner`);
+        const author = sessionRelationship === "owner" ? owner : await createAccount(authorKind);
+        const session = await createSession(owner.id);
+        await db.session.update({
+            where: { id: session.id },
+            data: { encryptionMode: "plain" },
+        });
+        if (sessionRelationship !== "owner") {
+            await shareSession({
+                sessionId: session.id,
+                ownerId: owner.id,
+                participantId: author.id,
+                accessLevel: "edit",
+            });
+        }
+        const publisher = await createCurrentPendingPublisher({
+            accountId: owner.id,
+            sessionId: session.id,
+        });
+        await db.machine.update({
+            where: { id: publisher.machineId },
+            data: {
+                operationProtocolCapabilities: {
+                    sessionInputAdmission: { protocolVersions: [1] },
+                },
+                operationProtocolCapabilitiesRevision: 1,
+            },
+        });
+        const publisherAuthority = {
+            accountId: publisher.accountId,
+            machineId: publisher.machineId,
+            sessionId: publisher.sessionId,
+            committedFence: publisher.committedFence,
+        };
+        const admission = buildTrustedHostSessionInputAdmissionV1("ui");
+        const receipt: Extract<SessionInputAdmissionReceiptV1, { issuer: "authenticatedAccount" }> = {
+            v: 1,
+            issuer: "authenticatedAccount",
+            actorAccountId: author.id,
+            sessionRelationship,
+        };
+        const authority = settleSessionInputRequestV1({
+            request: admission.request,
+            currentSessionPermissionCeiling: "default",
+            inputAdmissionReceipt: receipt,
+        });
+        const expectedProvenance = settleSessionMessageProvenanceV1({
+            request: admission.request,
+            requestedProvenance: admission.provenance,
+            inputAdmissionReceipt: receipt,
+        });
+
+        const settle = async (provenance: SessionMessageProvenanceV1) => {
+            const localId = `ui-provenance-settlement-${randomUUID()}`;
+            const requestMeta = {
+                sentFrom: "ui",
+                [SESSION_MESSAGE_PROVENANCE_META_KEY]: admission.provenance,
+                happierInputRequestV1: admission.request,
+            };
+            await expect(enqueuePendingMessage({
+                actorUserId: author.id,
+                sessionId: session.id,
+                localId,
+                content: {
+                    t: "plain",
+                    v: { role: "user", content: { type: "text", text: "settle provenance" }, meta: requestMeta },
+                },
+            })).resolves.toMatchObject({ ok: true, didWrite: true });
+            await markPendingProviderDeliveryClaimed({ sessionId: session.id, localId });
+            return settlePendingInputAdmission({
+                actorUserId: owner.id,
+                sessionId: session.id,
+                localId,
+                publisherAuthority,
+                decision: {
+                    kind: "admit",
+                    finalContent: {
+                        t: "plain",
+                        v: {
+                            role: "user",
+                            content: { type: "text", text: "settle provenance" },
+                            meta: {
+                                ...withSessionInputAuthorityV1(requestMeta, authority),
+                                [SESSION_MESSAGE_PROVENANCE_META_KEY]: provenance,
+                            },
+                        },
+                    },
+                },
+            });
+        };
+
+        await expect(settle(expectedProvenance)).resolves.toMatchObject({
+            ok: true,
+            result: { status: "accepted" },
+            message: {
+                content: {
+                    t: "plain",
+                    v: {
+                        meta: {
+                            [SESSION_MESSAGE_PROVENANCE_META_KEY]: {
+                                v: 1,
+                                kind: "happierApp",
+                                actor: { kind: expectedActorKind },
+                            },
+                        },
+                    },
+                },
+            },
+        });
+
+        const forgedProvenance: SessionMessageProvenanceV1 = {
+            v: 1,
+            kind: "happierApp",
+            actor: { kind: expectedActorKind === "owner" ? "sharedCollaborator" : "owner" },
+        };
+        await expect(settle(forgedProvenance)).resolves.toEqual({ ok: false, error: "conflict" });
+        await expect(settle({ v: 1, kind: "cli" })).resolves.toEqual({ ok: false, error: "conflict" });
     });
 
     it("rejects a whitespace-only localId at every Pending service boundary without mutation", async () => {

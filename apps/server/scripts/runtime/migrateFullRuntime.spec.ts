@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -41,6 +41,56 @@ async function createArtifact(): Promise<{ root: string; executablePath: string 
 afterEach(async () => Promise.all(tempRoots.splice(0).map((path) => rm(path, { recursive: true, force: true }))));
 
 describe('runFullRuntimeMigration', () => {
+    it('refuses the irreversible V4 boundary before spawn without updater handoff', async () => {
+        const artifact = await createArtifact();
+        const boundaryMigration = '20260725100000_activate_qualified_connected_accounts_v4';
+        const migrationDir = join(artifact.root, 'prisma', 'migrations', boundaryMigration);
+        await mkdir(migrationDir);
+        // Candidate bytes come from the current checked-in migration. The predecessor
+        // installer is the immutable cli-v0.2.11 tag at 98ea8fb76733b1dd785d38c31360179cafa84824;
+        // its migration runner has no forward-recovery capability handoff.
+        await writeFile(
+            join(migrationDir, 'migration.sql'),
+            await readFile(join(process.cwd(), 'prisma', 'migrations', boundaryMigration, 'migration.sql')),
+        );
+        let spawned = false;
+
+        await expect(runFullRuntimeMigration({
+            executablePath: artifact.executablePath,
+            env: { HAPPIER_DB_PROVIDER: 'postgres', DATABASE_URL: 'postgres://artifact/database' },
+            processBoundary: { spawn() { spawned = true; return { status: 0, signal: null }; } },
+        })).rejects.toThrow(/forward-recovery-capable updater/u);
+        expect(spawned).toBe(false);
+    });
+
+    it('admits the current updater capability for the real V4 migration candidate', async () => {
+        const artifact = await createArtifact();
+        const boundaryMigration = '20260725100000_activate_qualified_connected_accounts_v4';
+        const migrationDir = join(artifact.root, 'prisma', 'migrations', boundaryMigration);
+        await mkdir(migrationDir);
+        await writeFile(
+            join(migrationDir, 'migration.sql'),
+            await readFile(join(process.cwd(), 'prisma', 'migrations', boundaryMigration, 'migration.sql')),
+        );
+        const calls: Array<{ env: NodeJS.ProcessEnv }> = [];
+
+        await expect(runFullRuntimeMigration({
+            executablePath: artifact.executablePath,
+            env: {
+                HAPPIER_DB_PROVIDER: 'postgres',
+                DATABASE_URL: 'postgres://artifact/database',
+                HAPPIER_UPDATER_FORWARD_RECOVERY_CAPABILITY: 'personal-home-update-record-v1',
+            },
+            processBoundary: { spawn(_command, _args, options) {
+                calls.push({ env: options.env });
+                return { status: 0, signal: null };
+            } },
+        })).resolves.toBe(0);
+        expect(calls).toHaveLength(1);
+        expect(calls[0]?.env.HAPPIER_UPDATER_FORWARD_RECOVERY_CAPABILITY)
+            .toBe('personal-home-update-record-v1');
+    });
+
     it.each([
         ['postgresql', join('prisma', 'schema.prisma')],
         ['mysql', join('prisma', 'mysql', 'schema.prisma')],

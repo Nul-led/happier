@@ -735,6 +735,7 @@ function createTestApp(options: Readonly<{
         // authority; that negative boundary is covered by the dedicated
         // accountRoutes.authAuthority integration suite.
         request.authAuthority = "present_user";
+        request.authTokenKind = "account";
         if (options.accountStoredContentCaller !== "legacy") {
             Object.assign(
                 request.headers,
@@ -1203,20 +1204,7 @@ describe("registerAccountEncryptionMigrateRoutes (integration)", () => {
                 encryptionMode: true,
                 contentKind: true,
             },
-        })).resolves.toEqual([
-            {
-                version: 0,
-                settingsDbValue: "ciphertext",
-                encryptionMode: "e2ee",
-                contentKind: "encrypted",
-            },
-            {
-                version: 1,
-                settingsDbValue: storedAccount!.settings,
-                encryptionMode: "plain",
-                contentKind: "plain",
-            },
-        ]);
+        })).resolves.toEqual([]);
         expect(emitUpdate).toHaveBeenCalledTimes(3);
         expect(emitUpdate).toHaveBeenCalledWith(expect.objectContaining({
             userId: account.id,
@@ -1643,7 +1631,7 @@ describe("registerAccountEncryptionMigrateRoutes (integration)", () => {
         }
     });
 
-    it("rejects a retained Conversation reply receipt with the target Account mode before mode activation", async () => {
+    it("rejects a retained Conversation reply context mismatching the target Account mode before mode activation", async () => {
         harness.resetEnv({
             HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "optional",
             HAPPIER_FEATURE_ENCRYPTION__ALLOW_ACCOUNT_OPTOUT: "1",
@@ -1676,7 +1664,7 @@ describe("registerAccountEncryptionMigrateRoutes (integration)", () => {
             data: {
                 id: automationId,
                 accountId: account.id,
-                name: "Conversation Run receipt migration",
+                name: "Conversation Run reply-context migration",
                 enabled: false,
                 // Conversation remains a Run origin; this definition is scheduled.
                 triggers: {
@@ -1761,10 +1749,6 @@ describe("registerAccountEncryptionMigrateRoutes (integration)", () => {
                     "route-account-encryption-target-materialization",
                 replyHandoffId: handoffId,
                 replyHandoffState: "accepted",
-                replyHandoffReceiptEnvelope: JSON.stringify({
-                    t: "encrypted",
-                    c: "source-receipt",
-                }),
                 scheduledAt: new Date("2026-08-10T10:00:00.000Z"),
                 dueAt: new Date("2026-08-10T10:00:00.000Z"),
                 finishedAt: new Date("2026-08-10T10:01:00.000Z"),
@@ -1776,7 +1760,6 @@ describe("registerAccountEncryptionMigrateRoutes (integration)", () => {
                 executionInputEnvelope: true,
                 resultEnvelope: true,
                 replyContextEnvelope: true,
-                replyHandoffReceiptEnvelope: true,
             },
         });
         const targetRun = {
@@ -1804,28 +1787,9 @@ describe("registerAccountEncryptionMigrateRoutes (integration)", () => {
                     },
                 },
             }),
-            replyContextEnvelope: JSON.stringify({
-                t: "plain",
-                v: {
-                    v: 1,
-                    correspondence,
-                    source: {
-                        kind: "automationResult",
-                        automationRunId: runId,
-                        resultId: handoffId,
-                        automationId: automation.id,
-                        templateVersion: 3,
-                        resultDelivery: "finalResult",
-                    },
-                    opaqueContext: {
-                        conversationId:
-                            "conversation-account-encryption-route",
-                    },
-                },
-            }),
             // The transport schema intentionally accepts opaque JSON here;
             // the Automation migration owner must reject this target mode.
-            replyHandoffReceiptEnvelope: JSON.stringify({
+            replyContextEnvelope: JSON.stringify({
                 t: "encrypted",
                 c: "wrong-target-account-mode",
             }),
@@ -1910,7 +1874,6 @@ describe("registerAccountEncryptionMigrateRoutes (integration)", () => {
                     executionInputEnvelope: true,
                     resultEnvelope: true,
                     replyContextEnvelope: true,
-                    replyHandoffReceiptEnvelope: true,
                 },
             })).resolves.toEqual(sourceRun);
         } finally {

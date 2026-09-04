@@ -1,8 +1,10 @@
 import { mkdir } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
+import type { SessionTranscriptPublicationConstraint } from '@/app/session/sessionTranscriptPublicationPolicy';
 import {
     openHomeSearchSqliteBinding,
     type HomeSearchSqliteDatabase,
+    type HomeSearchSqliteStatement,
     type HomeSearchSqliteValue,
 } from './homeSearchSqliteBinding';
 
@@ -39,7 +41,12 @@ export type HomeSearchDb = Readonly<{
     removeSession(sessionId: string): void;
     clear(): void;
     count(): number;
-    search(input: Readonly<{ query: string; sessionId?: string; sessionIds?: readonly string[]; maxResults?: number }>): HomeSearchHit[];
+    search(input: Readonly<{
+        query: string;
+        sessionId?: string;
+        sessionConstraints?: readonly SessionTranscriptPublicationConstraint[];
+        maxResults?: number;
+    }>): HomeSearchHit[];
     close(): void;
 }>;
 
@@ -82,8 +89,12 @@ function buildFtsQuery(value: string): Readonly<{ match: string; snippetTerms: s
 }
 
 const SNIPPET_WINDOW_CHARS = 160;
-// SQLite guarantees at least 999 host parameters. Reserve bindings for MATCH and LIMIT.
-const HOME_SEARCH_SESSION_ID_BATCH_SIZE = 900;
+// A constrained Session consumes two bindings in the authorization CTE. Keep the same
+// portable 999-variable boundary while reserving MATCH and LIMIT bindings.
+const HOME_SEARCH_SESSION_CONSTRAINT_BATCH_SIZE = 450;
+// SQLite guarantees at least 999 host parameters. The canonical message table
+// consumes seven bindings per row, so 140 rows keep every bulk statement portable.
+const HOME_SEARCH_WRITE_BATCH_SIZE = 140;
 
 type HomeSearchSegmenter = Readonly<{
     segment(value: string): Iterable<Readonly<{ segment: string; index: number }>>;
@@ -269,17 +280,39 @@ export async function openHomeSearchDb(params: Readonly<{ dbPath?: string; dataD
     const deleteSessionFts = db.prepare('DELETE FROM home_search_fts WHERE session_id = ?');
     const countMessages = db.prepare('SELECT count(*) AS count FROM home_search_messages');
 
-    const writeUpsert = (message: HomeSearchMessage) => {
+    type PreparedHomeSearchMessage = Readonly<{
+        id: string;
+        sessionId: string;
+        seq: number;
+        createdAtMs: number;
+        updatedAtMs: number | null;
+        role: string | null;
+        text: string;
+        ftsText: string;
+    }>;
+    const prepareMessage = (message: HomeSearchMessage): PreparedHomeSearchMessage | null => {
         const text = sanitizeStoredText(message.text);
-        if (!message.id || !message.sessionId || !text) return;
+        if (!message.id || !message.sessionId || !text) return null;
+        return {
+            id: message.id,
+            sessionId: message.sessionId,
+            seq: message.seq,
+            createdAtMs: message.createdAtMs,
+            updatedAtMs: message.updatedAtMs ?? null,
+            role: message.role ?? null,
+            text,
+            ftsText: segmentCjkRuns(normalizeFtsText(text)),
+        };
+    };
+    const writePreparedUpsert = (message: PreparedHomeSearchMessage) => {
         upsert.run(
             message.id,
             message.sessionId,
             message.seq,
             message.createdAtMs,
-            message.updatedAtMs ?? null,
-            message.role ?? null,
-            text,
+            message.updatedAtMs,
+            message.role,
+            message.text,
         );
         deleteFts.run(message.id);
         insertFts.run(
@@ -287,9 +320,38 @@ export async function openHomeSearchDb(params: Readonly<{ dbPath?: string; dataD
             message.sessionId,
             message.seq,
             message.createdAtMs,
-            message.role ?? null,
-            segmentCjkRuns(normalizeFtsText(text)),
+            message.role,
+            message.ftsText,
         );
+    };
+    const bulkStatements = new Map<number, Readonly<{
+        upsert: HomeSearchSqliteStatement;
+        deleteFts: HomeSearchSqliteStatement;
+        insertFts: HomeSearchSqliteStatement;
+    }>>();
+    const statementsForBatchSize = (size: number) => {
+        const existing = bulkStatements.get(size);
+        if (existing) return existing;
+        const statements = {
+            upsert: db.prepare(`
+                INSERT INTO home_search_messages(id, session_id, seq, created_at_ms, updated_at_ms, role, text)
+                VALUES ${Array.from({ length: size }, () => '(?, ?, ?, ?, ?, ?, ?)').join(',')}
+                ON CONFLICT(id) DO UPDATE SET
+                    session_id = excluded.session_id,
+                    seq = excluded.seq,
+                    created_at_ms = excluded.created_at_ms,
+                    updated_at_ms = excluded.updated_at_ms,
+                    role = excluded.role,
+                    text = excluded.text
+            `),
+            deleteFts: db.prepare(`DELETE FROM home_search_fts WHERE id IN (${Array.from({ length: size }, () => '?').join(',')})`),
+            insertFts: db.prepare(`
+                INSERT INTO home_search_fts(id, session_id, seq, created_at_ms, role, text)
+                VALUES ${Array.from({ length: size }, () => '(?, ?, ?, ?, ?, ?)').join(',')}
+            `),
+        };
+        bulkStatements.set(size, statements);
+        return statements;
     };
     const inWriteTransaction = (write: () => void) => {
         db.exec('BEGIN IMMEDIATE');
@@ -305,12 +367,45 @@ export async function openHomeSearchDb(params: Readonly<{ dbPath?: string; dataD
     const result: HomeSearchDb = {
         path,
         upsert(message) {
-            inWriteTransaction(() => writeUpsert(message));
+            const prepared = prepareMessage(message);
+            if (prepared) inWriteTransaction(() => writePreparedUpsert(prepared));
         },
         upsertMany(messages) {
             if (messages.length === 0) return;
+            const preparedById = new Map<string, PreparedHomeSearchMessage>();
+            for (const message of messages) {
+                const prepared = prepareMessage(message);
+                if (!prepared) continue;
+                // Preserve singular-upsert semantics when one page contains repeated edits:
+                // only the last value for an id survives in both the canonical text table and FTS.
+                preparedById.delete(prepared.id);
+                preparedById.set(prepared.id, prepared);
+            }
+            const preparedMessages = [...preparedById.values()];
+            if (preparedMessages.length === 0) return;
             inWriteTransaction(() => {
-                for (const message of messages) writeUpsert(message);
+                for (let offset = 0; offset < preparedMessages.length; offset += HOME_SEARCH_WRITE_BATCH_SIZE) {
+                    const batch = preparedMessages.slice(offset, offset + HOME_SEARCH_WRITE_BATCH_SIZE);
+                    const statements = statementsForBatchSize(batch.length);
+                    statements.upsert.run(...batch.flatMap((message) => [
+                        message.id,
+                        message.sessionId,
+                        message.seq,
+                        message.createdAtMs,
+                        message.updatedAtMs,
+                        message.role,
+                        message.text,
+                    ]));
+                    statements.deleteFts.run(...batch.map((message) => message.id));
+                    statements.insertFts.run(...batch.flatMap((message) => [
+                        message.id,
+                        message.sessionId,
+                        message.seq,
+                        message.createdAtMs,
+                        message.role,
+                        message.ftsText,
+                    ]));
+                }
             });
         },
         remove(messageId) {
@@ -353,23 +448,33 @@ export async function openHomeSearchDb(params: Readonly<{ dbPath?: string; dataD
             const parsedQuery = buildFtsQuery(input.query);
             if (!parsedQuery.match) return [];
             const limit = boundedLimit(input.maxResults);
-            const queryBatch = (sessionIds?: readonly string[]): Array<Record<string, unknown>> => {
+            const queryBatch = (sessionConstraints?: readonly SessionTranscriptPublicationConstraint[]): Array<Record<string, unknown>> => {
                 const whereParts: string[] = [];
-                const args: HomeSearchSqliteValue[] = [parsedQuery.match];
+                const args: HomeSearchSqliteValue[] = [];
+                let authorizationCte = '';
+                let authorizationJoin = '';
+                if (sessionConstraints) {
+                    authorizationCte = `WITH authorized_sessions(session_id, maximum_seq) AS (VALUES ${sessionConstraints.map(() => '(?, ?)').join(',')})`;
+                    authorizationJoin = 'JOIN authorized_sessions a ON a.session_id = f.session_id';
+                    for (const constraint of sessionConstraints) {
+                        args.push(constraint.sessionId, constraint.maximumSeq);
+                    }
+                    whereParts.push('(a.maximum_seq IS NULL OR f.seq <= a.maximum_seq)');
+                }
+                args.push(parsedQuery.match);
                 if (input.sessionId) {
                     whereParts.push('f.session_id = ?');
                     args.push(input.sessionId);
-                } else if (sessionIds) {
-                    whereParts.push(`f.session_id IN (${sessionIds.map(() => '?').join(',')})`);
-                    args.push(...sessionIds);
                 }
                 const where = whereParts.length > 0 ? ` AND ${whereParts.join(' AND ')}` : '';
                 args.push(limit);
                 return db.prepare(`
+                    ${authorizationCte}
                     SELECT f.id, f.session_id AS sessionId, f.seq, f.created_at_ms AS createdAtMs,
                         f.role, m.text, bm25(home_search_fts) AS rank
                     FROM home_search_fts f
                     JOIN home_search_messages m ON m.id = f.id
+                    ${authorizationJoin}
                     WHERE home_search_fts MATCH ?${where}
                     ORDER BY rank ASC, f.created_at_ms DESC, f.seq DESC, f.id ASC
                     LIMIT ?
@@ -377,12 +482,27 @@ export async function openHomeSearchDb(params: Readonly<{ dbPath?: string; dataD
             };
 
             let rows: Array<Record<string, unknown>>;
-            if (input.sessionIds && !input.sessionId) {
-                const sessionIds = [...new Set(input.sessionIds)];
-                if (sessionIds.length === 0) return [];
+            if (input.sessionConstraints) {
+                const constraintBySessionId = new Map<string, SessionTranscriptPublicationConstraint>();
+                for (const constraint of input.sessionConstraints) {
+                    if (!constraint.sessionId) continue;
+                    const existing = constraintBySessionId.get(constraint.sessionId);
+                    if (!existing) {
+                        constraintBySessionId.set(constraint.sessionId, constraint);
+                    } else if (existing.maximumSeq === null && constraint.maximumSeq !== null) {
+                        constraintBySessionId.set(constraint.sessionId, constraint);
+                    } else if (existing.maximumSeq !== null && constraint.maximumSeq !== null) {
+                        constraintBySessionId.set(constraint.sessionId, {
+                            sessionId: constraint.sessionId,
+                            maximumSeq: Math.min(existing.maximumSeq, constraint.maximumSeq),
+                        });
+                    }
+                }
+                const constraints = [...constraintBySessionId.values()];
+                if (constraints.length === 0) return [];
                 rows = [];
-                for (let offset = 0; offset < sessionIds.length; offset += HOME_SEARCH_SESSION_ID_BATCH_SIZE) {
-                    rows.push(...queryBatch(sessionIds.slice(offset, offset + HOME_SEARCH_SESSION_ID_BATCH_SIZE)));
+                for (let offset = 0; offset < constraints.length; offset += HOME_SEARCH_SESSION_CONSTRAINT_BATCH_SIZE) {
+                    rows.push(...queryBatch(constraints.slice(offset, offset + HOME_SEARCH_SESSION_CONSTRAINT_BATCH_SIZE)));
                 }
                 rows.sort((left, right) => Number(left.rank) - Number(right.rank)
                     || Number(right.createdAtMs) - Number(left.createdAtMs)

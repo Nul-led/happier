@@ -589,7 +589,6 @@ describe("Automation Conversation admission database boundary", () => {
                 replyHandoffState: true,
                 replyHandoffAttempt: true,
                 replyHandoffDueAt: true,
-                replyHandoffReceiptEnvelope: true,
             },
         });
 
@@ -610,7 +609,6 @@ describe("Automation Conversation admission database boundary", () => {
             replyHandoffState: "none",
             replyHandoffAttempt: 0,
             replyHandoffDueAt: null,
-            replyHandoffReceiptEnvelope: null,
         });
         await expect(findNextAutomationReplyHandoffDueAt({ now: new Date() })).resolves.toBeNull();
         await expect(claimNextAutomationReplyHandoff({ now: new Date() })).resolves.toBeNull();
@@ -1408,7 +1406,6 @@ describe("Automation Conversation admission database boundary", () => {
                 replyHandoffState: true,
                 replyHandoffAttempt: true,
                 replyHandoffDueAt: true,
-                replyHandoffReceiptEnvelope: true,
             },
         });
 
@@ -1423,7 +1420,6 @@ describe("Automation Conversation admission database boundary", () => {
             replyHandoffState: "awaitingResult",
             replyHandoffAttempt: 0,
             replyHandoffDueAt: null,
-            replyHandoffReceiptEnvelope: null,
         });
         expect(JSON.parse(run.replyContextEnvelope!)).toEqual({
             t: "plain",

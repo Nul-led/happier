@@ -164,9 +164,6 @@ export async function runAutomationReplyHandoffWorkerPass(params: Readonly<{
             now: params.now,
             outcome: result.data.settlement,
             accountCurrentness: result.data.accountCurrentness,
-            ...(result.data.receiptEnvelope === undefined
-                ? {}
-                : { receiptEnvelope: result.data.receiptEnvelope }),
         });
     return { claimed: true, settled: settlement.applied, nextDueAt: await readNextDueAt(params.now) };
 }

@@ -298,12 +298,32 @@ describe('startApi Home search production composition', () => {
                     accessLevel: 'view',
                 },
             });
-            await expect(createSessionMessage({
+            const published = await createSessionMessage({
                 actorUserId: owner.id,
                 sessionId: session.id,
-                localId: 'home-search-shared-message',
+                localId: 'home-search-shared-published',
                 content: { t: 'plain', v: { role: 'user', content: { type: 'text', text: 'shared marmot field notes' } } },
-            })).resolves.toMatchObject({ ok: true, didWrite: true });
+            });
+            expect(published).toMatchObject({ ok: true, didWrite: true });
+            if (!published.ok) throw new Error('expected published shared message');
+            const privateRow = await createSessionMessage({
+                actorUserId: owner.id,
+                sessionId: session.id,
+                localId: 'home-search-shared-private',
+                content: { t: 'plain', v: { role: 'user', content: { type: 'text', text: 'marmot marmot marmot private draft' } } },
+            });
+            expect(privateRow).toMatchObject({ ok: true, didWrite: true });
+            if (!privateRow.ok) throw new Error('expected private shared message');
+            await db.session.update({
+                where: { id: session.id },
+                data: {
+                    currentStorageState: 'snapshot_complete',
+                    acceptedThroughServerSeq: null,
+                    materializationPublicationId: `publication-${randomUUID()}`,
+                    materializedThroughSourceAt: BigInt(Date.now()),
+                    publishedThroughServerSeq: published.message.seq,
+                },
+            });
 
             const [viewerToken, outsiderToken] = await Promise.all([
                 auth.createToken(viewer.id, undefined, { kind: 'account', authority: 'present_user' }),
@@ -313,13 +333,17 @@ describe('startApi Home search production composition', () => {
                 method: 'POST',
                 url: '/v1/home/search',
                 headers: { authorization: `Bearer ${token}` },
-                payload: { v: 1, query: 'marmot', scope: { type: 'global' }, mode: 'auto' },
+                payload: { v: 1, query: 'marmot', scope: { type: 'global' }, mode: 'auto', maxResults: 1 },
             });
 
             await eventually(async () => {
                 expect((await searchAs(viewerToken)).json()).toMatchObject({
                     ok: true,
-                    hits: [expect.objectContaining({ sessionId: session.id })],
+                    hits: [expect.objectContaining({
+                        sessionId: session.id,
+                        seqFrom: published.message.seq,
+                        seqTo: published.message.seq,
+                    })],
                 });
             });
             expect((await searchAs(outsiderToken)).json()).toMatchObject({ ok: true, hits: [] });

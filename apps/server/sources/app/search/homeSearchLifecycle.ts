@@ -18,6 +18,7 @@ import {
     type HomeSearchIndexer,
 } from './homeSearchIndexer';
 import { createHomeSearchService } from './homeSearchService';
+import type { HomeSearchRequestContext } from './homeSearchService';
 
 type HomeSearchInvalidationReason = 'restore' | 'erase' | 'corruption' | 'explicit-repair';
 
@@ -38,7 +39,7 @@ type HomeSearchDirtyOp =
 
 export type HomeSearchLifecycle = Readonly<{
     capability(): HomeSearchCapability;
-    search(query: MemorySearchQueryV1, context?: Readonly<{ visibleSessionIds?: readonly string[] }>): MemorySearchResultV1;
+    search(query: MemorySearchQueryV1, context?: HomeSearchRequestContext): MemorySearchResultV1;
     start(): void;
     whenReady(): Promise<void>;
     invalidateAndRebuild(reason: HomeSearchInvalidationReason): Promise<void>;
@@ -88,6 +89,12 @@ export function startHomeSearchLifecycle(params: Readonly<{
     let failed = false;
     let readyPromise: Promise<void> = Promise.resolve();
     let rebuildPromise: Promise<void> | null = null;
+
+    const assertReadyCurrentIndexer = () => {
+        if (failed || indexer === null || indexer !== settledIndexer || !indexer.ready()) {
+            throw new Error('Personal Home search rebuild did not produce a ready index');
+        }
+    };
 
     const deliverMutation = (target: HomeSearchIndexer, mutation: SessionTranscriptMutation) => {
         if (mutation.kind === 'upsert') target.notify(mutation.message);
@@ -153,6 +160,7 @@ export function startHomeSearchLifecycle(params: Readonly<{
     };
     const applyMutation = (mutation: SessionTranscriptMutation) => {
         if (stopped || !plainHome) return;
+        if (failed && !rebuildPromise) return;
         if (!indexer) {
             // Retain catch-up only while startup or a rebuild is actively able to produce a
             // replacement indexer. Once that finite transition fails, canonical reconciliation
@@ -173,7 +181,10 @@ export function startHomeSearchLifecycle(params: Readonly<{
 
     const beginRebuild = (reason: HomeSearchInvalidationReason): Promise<void> => {
         if (stopped || !plainHome) return Promise.resolve();
-        if (rebuildPromise) return rebuildPromise;
+        if (rebuildPromise) {
+            if (reason !== 'explicit-repair') return rebuildPromise;
+            return rebuildPromise.then(assertReadyCurrentIndexer);
+        }
         failed = true;
         // Recovery starts from canonical transcript rows. Dirty events retained before this
         // boundary may belong to the failed projection and must not be replayed over the new
@@ -188,16 +199,20 @@ export function startHomeSearchLifecycle(params: Readonly<{
             db?.close();
             db = null;
             await removeDerivedIndexFiles(params.dbPath);
-            if (!stopped) await openAndStart(false);
-        }).catch(() => {
+            if (!stopped) await openAndStart(false, reason === 'explicit-repair');
+            if (reason === 'explicit-repair') assertReadyCurrentIndexer();
+        }).catch((error: unknown) => {
             failed = true;
             if (!indexer) discardDirtyCatchUp();
+            // Automatic startup/corruption recovery is reflected through capability/readiness
+            // so it cannot crash server startup. An authenticated explicit repair is different:
+            // its caller needs a truthful operation result rather than a false success response.
+            if (reason === 'explicit-repair') throw error;
         }).finally(() => {
             if (rebuildPromise === work) rebuildPromise = null;
         });
         rebuildPromise = work;
         readyPromise = work;
-        void reason;
         return work;
     };
 
@@ -237,7 +252,7 @@ export function startHomeSearchLifecycle(params: Readonly<{
         }
     }
 
-    async function openAndStart(repairCorruption: boolean): Promise<void> {
+    async function openAndStart(repairCorruption: boolean, propagateFailure = false): Promise<void> {
         try {
             if (typeof params.homeServerIdentityId === 'function') {
                 homeServerIdentityId = await params.homeServerIdentityId();
@@ -258,6 +273,7 @@ export function startHomeSearchLifecycle(params: Readonly<{
         } catch (error) {
             handleFailure(error);
             if (!indexer) discardDirtyCatchUp();
+            if (propagateFailure) throw error;
         }
     }
 
@@ -265,7 +281,7 @@ export function startHomeSearchLifecycle(params: Readonly<{
         db,
         homeServerIdentityId,
         storagePolicy: params.storagePolicy,
-        isReady: () => !failed && Boolean(indexer?.ready()),
+        isReady: () => !failed && indexer !== null && indexer === settledIndexer,
         onFailure: handleQueryFailure,
     });
 
@@ -277,7 +293,7 @@ export function startHomeSearchLifecycle(params: Readonly<{
             }
             return resolveHomeSearchCapability({
                 indexReady: db !== null,
-                indexing: !indexer?.ready(),
+                indexing: indexer === null || indexer !== settledIndexer,
             });
         },
         search(query, context) {

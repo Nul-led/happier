@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { stat } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { openPgliteMigrationSession } from '../pgliteMigrationSession';
+import { assertForwardRecoveryCapableUpdater } from '../../sources/app/runtime/updaterMigrationAdmission';
 
 import {
     hasSessionSystemRecordContractMigration,
@@ -191,6 +192,11 @@ export async function runFullRuntimeMigration({
         requirePath(schemaWasmPath, 'file'),
         requirePath(queryEnginePath, 'file'),
     ]);
+    const includesIrreversibleV4 = await stat(join(
+        migrationRoot,
+        '20260725100000_activate_qualified_connected_accounts_v4',
+    )).then((value) => value.isDirectory()).catch(() => false);
+    if (includesIrreversibleV4) assertForwardRecoveryCapableUpdater(env);
 
     const pgliteSession = provider === 'pglite' ? await pgliteBoundary.open(env) : null;
     const databaseUrl = pgliteSession?.databaseUrl ?? configuredDatabaseUrl;

@@ -18,6 +18,11 @@ const TOOL_OUTPUT_EVERY = 10;
 const SEED_BATCH_SIZE = 250;
 const TOOL_OUTPUT_MARKER = 'canonical_tool_output_marker';
 const TRANSCRIPT_MARKER = 'representative_transcript_marker';
+// The opt-in measurement performs two complete 25,000-row projections. Each
+// phase has been observed near three minutes on a contended remote executor,
+// so the test timeout must cover both phases rather than terminating between
+// them and discarding the measurement.
+const MEASUREMENT_TIMEOUT_MS = 10 * 60_000;
 
 const transcriptBody = TranscriptRawRecordV1Schema.parse({
     role: 'user',
@@ -46,6 +51,9 @@ const toolOutputBody = TranscriptRawRecordV1Schema.parse({
 
 type ProjectionMeasurement = Readonly<{
     durationMs: number;
+    canonicalReadDurationMs: number;
+    /** Total lifecycle reconciliation time outside the awaited canonical page reads. */
+    reconciliationRemainderDurationMs: number;
     canonicalPageReads: number;
     canonicalRowsRead: number;
     messagesPerSecond: number;
@@ -58,9 +66,12 @@ function createMeasuredCanonicalReader(): Readonly<{
 }> {
     let canonicalPageReads = 0;
     let canonicalRowsRead = 0;
+    let canonicalReadDurationMs = 0;
     return {
         async read(input) {
+            const startedAt = performance.now();
             const page = await readCanonicalSessionMessagesPage(input);
+            canonicalReadDurationMs += performance.now() - startedAt;
             canonicalPageReads += 1;
             canonicalRowsRead += page.messages.length;
             return page;
@@ -68,10 +79,13 @@ function createMeasuredCanonicalReader(): Readonly<{
         reset() {
             canonicalPageReads = 0;
             canonicalRowsRead = 0;
+            canonicalReadDurationMs = 0;
         },
         snapshot(durationMs) {
             return {
                 durationMs,
+                canonicalReadDurationMs,
+                reconciliationRemainderDurationMs: Math.max(0, durationMs - canonicalReadDurationMs),
                 canonicalPageReads,
                 canonicalRowsRead,
                 messagesPerSecond: durationMs > 0 ? canonicalRowsRead / (durationMs / 1_000) : 0,
@@ -106,6 +120,7 @@ describe.skipIf(!ENABLED)('Home search startup measurement (integration)', () =>
     });
 
     it('measures canonical paged startup reconciliation and a lifecycle-owned full rebuild', async () => {
+        const fixtureStartedAt = performance.now();
         const account = await db.account.create({
             data: { publicKey: 'home-search-measurement-account', encryptionMode: 'plain' },
             select: { id: true },
@@ -142,6 +157,12 @@ describe.skipIf(!ENABLED)('Home search startup measurement (integration)', () =>
 
         expect(await db.session.count({ where: { accountId: account.id } })).toBe(SESSION_COUNT);
         expect(await db.sessionMessage.count()).toBe(MESSAGE_COUNT);
+        const fixtureDurationMs = performance.now() - fixtureStartedAt;
+        console.log('HOME_SEARCH_STARTUP_MEASUREMENT_STAGE', JSON.stringify({
+            stage: 'fixture',
+            durationMs: fixtureDurationMs,
+            messages: MESSAGE_COUNT,
+        }));
 
         const measuredReader = createMeasuredCanonicalReader();
         if (!harness) throw new Error('Home search measurement harness did not initialize.');
@@ -163,6 +184,7 @@ describe.skipIf(!ENABLED)('Home search startup measurement (integration)', () =>
             .toMatchObject({ ok: true, hits: expect.arrayContaining([expect.anything()]) });
         expect(lifecycle.search({ v: 1, query: TOOL_OUTPUT_MARKER, scope: { type: 'global' }, mode: 'auto' }))
             .toMatchObject({ ok: true, hits: expect.arrayContaining([expect.anything()]) });
+        console.log('HOME_SEARCH_STARTUP_MEASUREMENT_STAGE', JSON.stringify({ stage: 'startup', ...startup }));
 
         const rebuild = await measureProjection(measuredReader, async () => {
             await lifecycle.invalidateAndRebuild('explicit-repair');
@@ -171,6 +193,7 @@ describe.skipIf(!ENABLED)('Home search startup measurement (integration)', () =>
         expect(rebuild.canonicalPageReads).toBe(startup.canonicalPageReads);
         expect(lifecycle.search({ v: 1, query: TOOL_OUTPUT_MARKER, scope: { type: 'global' }, mode: 'auto' }))
             .toMatchObject({ ok: true, hits: expect.arrayContaining([expect.anything()]) });
+        console.log('HOME_SEARCH_STARTUP_MEASUREMENT_STAGE', JSON.stringify({ stage: 'rebuild', ...rebuild }));
 
         const metrics = {
             corpus: {
@@ -179,6 +202,7 @@ describe.skipIf(!ENABLED)('Home search startup measurement (integration)', () =>
                 ordinaryTranscriptMessages: MESSAGE_COUNT - (MESSAGE_COUNT / TOOL_OUTPUT_EVERY),
                 canonicalAcpToolOutputMessages: MESSAGE_COUNT / TOOL_OUTPUT_EVERY,
                 seedBatchSize: SEED_BATCH_SIZE,
+                fixtureDurationMs,
             },
             startup,
             rebuild,
@@ -188,5 +212,5 @@ describe.skipIf(!ENABLED)('Home search startup measurement (integration)', () =>
         console.log('HOME_SEARCH_STARTUP_MEASUREMENT', JSON.stringify(metrics));
 
         await lifecycle.stop();
-    }, 300_000);
+    }, MEASUREMENT_TIMEOUT_MS);
 });
