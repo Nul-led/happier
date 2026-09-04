@@ -58,6 +58,16 @@ UI-internal `UniversalSearchResult` shape exists to keep target identity and
 activation separate from presentation; it is not a wire protocol, a row
 database, or an SDK type.
 
+Immediate Session matching is metadata-only: canonical Session id/title,
+project or workspace display label, path, tags, host, and machine metadata.
+Arbitrary hydrated transcript and tool content is excluded from this local
+haystack and belongs to the selected transcript provider. The existing bounded
+first-user-message title fallback remains searchable because it has already
+been promoted to the Session's visible canonical title; this does not admit any
+other transcript body into immediate matching. Exact title/session/project
+matches precede other metadata, then transcript-provider order, with outside
+matches kept in the contextual `Other matches` group.
+
 ## Target scoping
 
 Scope is Search-local, contextual, and exclusive, never a fanout. Opening the

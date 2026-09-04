@@ -180,6 +180,11 @@ Device-local sealing is deliberately separate from account encryption:
   purpose. Current CLI writes seal with that derived device key; reads also accept
   supported legacy credential-derived keys for compatibility. The derived key is
   neither Account material nor portable cross-device custody;
+- daemon Memory indexes contain plaintext derived summaries, transcript chunks, and
+  embeddings. Their root directory and SQLite main/WAL/SHM files use the same
+  protected-local-state owner before sensitive rows are written; SQLite sidecars
+  created later inherit from that protected root. An unsafe or symbolic-link root
+  is rejected rather than used;
 - corrupt or missing ciphertext fails closed. A corrupt existing key file is never
   silently replaced, because doing so would make all prior local ciphertext
   permanently unreadable without explaining the loss.

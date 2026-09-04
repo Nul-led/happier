@@ -4,7 +4,7 @@
  * Two reasons this is generated rather than written. Bindings drift with every
  * platform tweak, and a shortcut list that is wrong is worse than none — you
  * press the key, nothing happens, and you stop trusting the page. And the
- * August 2026 release notes state the command palette opens with `/`, which is
+ * August 2026 release notes state the old command palette opens with `/`, which is
  * not what the registry says on any platform; a generated page cannot repeat
  * that mistake.
  *
@@ -153,11 +153,11 @@ export async function renderKeyboardReferenceMarkdown({
 
   const gateNotice = !shortcutsOn
     ? paletteOn
-      ? 'The general shortcut registry is **off by default**, so other commands remain off. Open Search has its own switch, and its enabled binding still works.'
-      : 'Two independent controls are **off by default**: Open Search has its own switch, while the general shortcut registry controls other commands. Turn on the control for the shortcuts you want to use.'
+      ? 'The general shortcut registry is **off by default**, so other commands remain off. The Open Search shortcut has its own switch, and its enabled binding still works.'
+      : 'Two independent controls are **off by default**: the Open Search shortcut has its own switch, while the general shortcut registry controls other commands. Search remains available from its other entry points.'
     : paletteOn
       ? 'Shortcuts are on by default.'
-      : 'Open Search is **off by default** through its own switch. Other enabled commands still follow the general shortcut registry.';
+      : 'The Open Search shortcut is **off by default** through its own switch. Search remains available from its other entry points, and other enabled commands still follow the general shortcut registry.';
 
   const covered = new Set(GROUPS.flatMap((g) => Object.keys(g.commands)));
   const uncovered = [...commands.keys()].filter((id) => !covered.has(id));

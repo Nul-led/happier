@@ -48,8 +48,11 @@ or `Secure relay`, while an unproven path stays `unknown`.
 
 Browser Iroh carries **Home HTTP, Socket.IO, and finite Machine transfers in the current development
 source**. Finite transfers use `happier/machine/1`, the canonical signed route grant, and no ordinary
-user-socket fallback; browser Mutagen/workspace sync remains excluded. A browser cannot bind the
-native loopback listener, so its carrier is *semantic* rather than URL-addressed: no
+user-socket fallback; the production direct-import/direct-export path passed in loaded Chromium
+against the stock local relay and real Machine acceptor on 2026-09-03. That current-source result is
+not stable/preview availability, multi-browser evidence, target certification, or Lane 09
+certification. Browser Mutagen/workspace sync remains excluded. A browser cannot bind the native
+loopback listener, so its carrier is *semantic* rather than URL-addressed: no
 `runtimeOrigin` exists or is invented for it, and the canonical Home URL keeps describing identity,
 auth audience, reachability scope, and logging. The resolved transport therefore names either a
 runtime origin (independent HTTPS, or the loopback origin a native lease binds) or a Home carrier
@@ -97,7 +100,7 @@ The five moving parts and their canonical owners:
 | --- | --- |
 | Route decision (pure fold of feature bits, account preferences, daemon policy, grant state → a route or a typed refusal) | `packages/peer-mediation/src/route/**`, `.../flows/**` |
 | Route grants (Ed25519, bound to account + machine + flow + route + destination + expiry) | `packages/protocol/src/machines/peer/mediation/**`; minted at `apps/server/sources/app/machines/peer/mediation/**` |
-| `iroh_peer` machine/1 grant binding (a machine or authenticated Account client initiator EndpointId, one target Machine + EndpointId, operation flow and bounded scope) | `IrohPeerInitiatorV2Schema`, `IrohPeerTargetV2Schema`, and `SignedDirectRouteGrantV2Schema` in `packages/protocol/src/machines/peer/mediation/directRouteGrantV2.ts`; minted by `mintDirectRouteGrantV2` and verified by `verifyDirectRouteGrantV2`. The authenticated Iroh transport EndpointId and ephemeral proof are checked before fixed-target ingress. The older V1 grant remains only for the separate negotiated legacy peer-mediation routes; it cannot authorize `happier/machine/1` |
+| `iroh_peer` machine/1 grant binding | `IrohPeerInitiatorV2Schema`, `IrohPeerTargetV2Schema`, and `SignedDirectRouteGrantV2Schema` in `packages/protocol/src/machines/peer/mediation/directRouteGrantV2.ts`; minted by `mintDirectRouteGrantV2` and verified by `verifyDirectRouteGrantV2`. Finite-transfer grants bind an authenticated Account/client or Machine initiator EndpointId to one target Machine + EndpointId and the `finite_transfer` carrier purpose for a bounded lifetime; the prepared-transfer capability remains the exact operation and byte authority. Workspace-sync grants retain the signed operation identity consumed by rooted workspace ingress. The authenticated Iroh transport EndpointId and ephemeral proof are checked before fixed-target ingress. The older V1 grant remains only for the separate negotiated legacy peer-mediation routes; it cannot authorize `happier/machine/1` |
 | Direct transport (daemon loopback HTTP server, grant + nonce on every operation) | `apps/cli/src/daemon/peer/mediation/**` |
 | Relay transport (framed envelopes over the existing Socket.IO connection) | `apps/server/sources/app/api/socket/peer/mediation/**` |
 | Observability (sequenced ring buffer of flow lifecycle events, with metadata redaction) | **One** engine: `createPeerMediationObservabilityFlowStore` in `packages/protocol/src/machines/peer/mediation/observability/`. The daemon and server modules named `observability/store.ts` are ~50-line bindings that only adapt their own call signature to it (DEC-8) — they are not second owners. The UI keeps its own read-side store for subscriptions and selectors. |

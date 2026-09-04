@@ -188,6 +188,41 @@ records the release source SHA before it publishes or promotes release outputs;
 operators must review that SHA and the selected profile evidence, not infer
 identity from a moving branch name.
 
+### Iroh transport release admission
+
+Every release that ships an Iroh carrier admits its build prerequisites before
+producing it, rather than depending on what a build image happens to contain.
+
+- **Browser (WASM) carrier.** `build-ui-web-bundle.mjs` compiles the Rust
+  endpoint for `wasm32-unknown-unknown` and generates the `wasm-bindgen`
+  boundary while producing the web output. The UI-web publisher installs the
+  pinned Rust toolchain, that target, and the `wasm-bindgen` CLI matching the
+  locked crate before the bundle build runs. These are the same pins the
+  Chromium real-transport lane proves the carrier with.
+- **Mobile carriers.** Gradle's `preBuild` task and the CocoaPods
+  `prepare_command` call `cargo` directly, so no pipeline step wraps them. The
+  channel is pinned by `packages/iroh-native/rust-toolchain.toml`, and the EAS
+  `eas-build-pre-install` hook
+  (`packages/iroh-native/scripts/ensure-rust-toolchain.mjs`) installs rustup when
+  the image has none and adds the platform's cross-compilation targets. Cloud
+  and local EAS builds run the same lifecycle, so one hook serves the EAS images
+  and the GitHub-hosted runners the local mode builds on. A build whose
+  `HAPPIER_INSTALL_SCOPE` excludes `iroh-native` compiles no Rust and is skipped.
+- **Version parity.** `packages/iroh-native/scripts/verify-iroh-lock-parity.mjs`
+  proves the pinned Iroh version, source, and checksum describe one release
+  across the native lockfile, the Tauri lockfile, and the stock relay image. The
+  release plan runs it whenever the `iroh_transport` or `iroh_relay` component
+  changes. It is a property of the source being released and never implies
+  republishing the relay image; relay publication remains its own decision.
+- **Licence evidence.** `packages/iroh-native/scripts/generate-native-release-evidence.mjs`
+  is the one evidence owner for the workspace's locked Cargo graph. It emits a
+  CycloneDX SBOM plus `THIRD-PARTY-NOTICES.txt` carrying the licence and NOTICE
+  texts each package actually distributes — not only names and SPDX expressions
+  — and states how many packages distribute no text at all. The native CLI and
+  server carriers stage it into their packaged Iroh root; the browser carrier
+  stages the same bytes into `vendor/iroh/`, where the asset manifest records
+  and verifies it, so a web output cannot be published without it.
+
 ### Local execution and phase recovery
 
 GitHub Actions supplies hosted runner matrices, protected environments,

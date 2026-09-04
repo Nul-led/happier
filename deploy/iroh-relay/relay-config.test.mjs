@@ -159,8 +159,45 @@ test('documents the pinned admission header an external private callback must re
   assert.match(publishedDocs, /Happier Server does not provide\s+a default callback route/);
 });
 
-test('documents current development browser Home support without activating browser Machine transfers', () => {
+test('documents current development browser Home and finite Machine source wiring without claiming release availability', () => {
   const readme = read('README.md');
+  const publishedDocs = read('../../apps/docs/content/docs/self-hosting/iroh-relay.mdx');
   assert.match(readme, /browser carries Home HTTP and Socket\.IO over Iroh/i);
-  assert.match(readme, /Browser Machine\s+transfers are not activated/i);
+  assert.match(readme, /canonical finite import\/export owners/i);
+  assert.match(readme, /complete A7\.4 path passed in[\s\S]*loaded Chromium/i);
+  assert.match(readme, /does not claim stable or preview availability/i);
+  assert.match(readme, /Lane 09 certification/i);
+  assert.match(publishedDocs, /browser carries Home\s+HTTP and Socket\.IO over Iroh/i);
+  assert.match(publishedDocs, /canonical finite file and attachment transfer owners/i);
+  assert.match(publishedDocs, /does not claim stable or preview availability/i);
+  assert.match(publishedDocs, /Lane 09 certification/i);
+});
+
+test('documents the exact upstream private admission allow response', () => {
+  const surfaces = [
+    ['deploy README', read('README.md')],
+    ['published operator docs', read('../../apps/docs/content/docs/self-hosting/iroh-relay.mdx')],
+  ];
+  // The stock relay admits an endpoint only when its callback answers HTTP 200
+  // with a body of exactly `true`; the operator's external service owns that
+  // response, and this deployment only points the relay at it.
+  for (const [name, text] of surfaces) {
+    assert.match(text, /HTTP 200/, `${name} must state the allow status`);
+    assert.match(text, /exactly `true`/, `${name} must state the allow body`);
+  }
+});
+
+test('documents only effective pinned relay capacity controls and keeps QAD-only test scoped', () => {
+  const surfaces = [
+    ['deploy README', read('README.md')],
+    ['published operator docs', read('../../apps/docs/content/docs/self-hosting/iroh-relay.mdx')],
+  ];
+  for (const [name, text] of surfaces) {
+    assert.match(text, /accept_conn_limit/);
+    assert.match(text, /accept_conn_burst/);
+    assert.match(text, /unimplemented/);
+    assert.match(text, /no-effect/);
+    assert.match(text, /QAD-only[\s\S]{0,180}(tests|test)[\s\S]{0,180}(diagnostics|diagnostic)/i);
+    assert.match(text, /not a\s+(supported )?production/i, `${name} must not present QAD-only as production`);
+  }
 });

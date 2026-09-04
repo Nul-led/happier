@@ -28,7 +28,7 @@ test('documents Search independent gating and account-synced shortcut preference
 
     const markdown = await renderKeyboardReferenceMarkdown({ commandsPath, settingsPath });
 
-    assert.match(markdown, /Open Search has its own switch/u);
+    assert.match(markdown, /Open Search shortcut has its own switch/u);
     assert.match(markdown, /other commands remain off/u);
     assert.match(markdown, /sync with your account/u);
     assert.doesNotMatch(markdown, /before any binding below does anything/u);

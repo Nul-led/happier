@@ -2,9 +2,9 @@
 
 This directory builds the stock `iroh-relay` 1.1.0 process and configures the
 first supported managed profile: open forwarding plus QUIC address
-discovery (QAD). A QAD-only (forwarding-disabled) profile also runs on pinned
-1.1.0 and remains a valid operator/test profile; it is not the managed
-product path.
+discovery (QAD). Happier uses the pinned upstream QAD-only
+(forwarding-disabled) topology only for tests and diagnostics; it is not a
+supported production deployment or managed-product profile.
 
 The relay remains a separate stateless process. It does not receive Happier
 database access, application secrets, payload inspection, or operation-level
@@ -17,13 +17,17 @@ forwarding when Iroh does not select a direct path. They still authenticate the
 remote peer as the exact descriptor EndpointId; relay URLs and direct-address
 hints are reachability inputs, not identity. In the current 0.3 development
 source, a browser carries Home HTTP and Socket.IO over Iroh when the Home
-publishes an exact endpoint and at least one configured relay. Finite browser
-Machine transfers use the same relay-only endpoint and `happier/machine/1`, with
-the canonical signed route grant and no ordinary user-socket fallback. Browser
-Mutagen/workspace sync remains excluded. This does not claim stable or preview availability.
-The browser form is relay-only and reports `Secure relay`, never `Direct`; it
-adds no gateway, loopback emulation, JavaScript relay, or browser Mutagen
-runtime.
+publishes an exact endpoint and at least one configured relay. Browser Machine
+transport over Iroh is wired through the canonical finite import/export owners
+in this development source: signed grants, encrypted chunks, destination
+finalization, cancellation, and the terminal no-fallback result remain owned by
+the same transfer lifecycle as native clients. The complete A7.4 path passed in
+loaded Chromium against the stock local relay and real Machine acceptor in the
+current development source. This does not claim stable or preview availability,
+multi-browser support, target certification, or Lane 09 certification. Browser
+Mutagen/workspace sync remains excluded. The browser form is relay-only and
+reports `Secure relay`, never `Direct`; it adds no gateway, loopback emulation,
+JavaScript relay, or browser Mutagen runtime.
 
 ## Build and run
 
@@ -50,6 +54,12 @@ operator-managed TLS material mounted read-only. Configure:
   `HAPPIER_IROH_RELAY_RX_MAX_BURST_BYTES`: positive upstream token-bucket
   values derived from the deployed link and instance capacity.
 
+Pinned `iroh-relay` 1.1.0 also declares `accept_conn_limit` and
+`accept_conn_burst`, but upstream documents both as unimplemented and
+no-effect. This deployment does not advertise them as capacity controls or add
+a Happier endpoint registry/custom limiter to imitate them. Use measured
+provider and process capacity plus the effective receive token bucket above.
+
 The managed profile does not use the stock HTTP admission callback, and the
 Happier server ships no admission callback route. A private deployment may
 enable the stock callback only against its own external admission service, and
@@ -71,7 +81,9 @@ together:
 The upstream relay sends the authenticated identity in `X-Iroh-NodeId`
 (pinned 1.1.0 names the constant `X_IROH_ENDPOINT_ID`; its own doc comment
 still says `X-Iroh-Endpoint-Id`, so re-check this header on upgrades), and an
-external admission service must read exactly that header. Do not enable this
+external admission service must read exactly that header. The relay admits an
+endpoint only when the callback answers HTTP 200 with a body of exactly `true`;
+any other status or body denies it. Do not enable this
 private mode from a partial Happier Home or Machine registry: the callback
 cannot infer application roles and a partial list would deny legitimate
 clients. These relay environment values point the stock relay at an
