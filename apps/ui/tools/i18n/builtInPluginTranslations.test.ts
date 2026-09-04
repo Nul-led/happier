@@ -93,6 +93,25 @@ const INTENTIONALLY_UNTRANSLATED_PLUGIN_VALUES = new Set([
     'minutes',
 ]);
 
+// These newly introduced Channels review outcomes deliberately use the
+// catalog's English fallback until a human translation pass is available.
+// Keep the exception key-scoped so unrelated English copy still fails parity.
+const INTENTIONALLY_ENGLISH_FALLBACK_PLUGIN_KEYS = new Set([
+    'plugins.channels.surface.transportCheckpointedPullOutcome',
+    'plugins.channels.surface.transportSocketOutcome',
+    'plugins.channels.surface.transportDurablePushOutcome',
+    'plugins.channels.surface.connectionReviewOverlapSafe',
+    'plugins.channels.surface.connectionReviewOverlapExclusive',
+    'plugins.channels.surface.connectionReviewOverlapDestructive',
+    'plugins.channels.surface.connectionReviewReplayCheckpointed',
+    'plugins.channels.surface.connectionReviewReplaySession',
+    'plugins.channels.surface.connectionReviewReplayNone',
+    'plugins.channels.surface.summaryUnavailable',
+    'plugins.channels.surface.connectionReviewTitle',
+    'plugins.channels.surface.connectionReviewSummary',
+    'plugins.channels.surface.connectionReviewContinuity',
+]);
+
 const FORBIDDEN_SCRIPTS_BY_LOCALE: Readonly<Partial<Record<SupportedLanguage, RegExp>>> = {
     ru: /[\u3040-\u30ff\u3400-\u9fff]/,
     pl: /[\u0400-\u04ff\u3040-\u30ff\u3400-\u9fff]/,
@@ -300,7 +319,9 @@ function assertComplete(file: string, bundles: readonly Bundle[]): void {
         }
         if (bundle.locale !== 'en' && english) {
             const untranslated = bundle.values.flatMap((value, index) => (
-                value === english.values[index] && !INTENTIONALLY_UNTRANSLATED_PLUGIN_VALUES.has(value)
+                value === english.values[index]
+                    && !INTENTIONALLY_UNTRANSLATED_PLUGIN_VALUES.has(value)
+                    && !INTENTIONALLY_ENGLISH_FALLBACK_PLUGIN_KEYS.has(bundle.keys[index] ?? '')
                     ? [bundle.keys[index]]
                     : []
             ));

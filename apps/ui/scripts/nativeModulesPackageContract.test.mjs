@@ -371,6 +371,8 @@ test('ssh-native iOS Rust build script exports every Swift bridge FFI symbol', a
     ));
 
     assert.match(script, /happier_ssh_native_exec_json/);
+    assert.match(script, /happier_ssh_native_stdout_callback/);
+    assert.match(script, /happier_ssh_native_exec_json_streaming/);
     assert.match(script, /happier_ssh_native_start_loopback_tunnel_json/);
     assert.match(script, /happier_ssh_native_stop_loopback_tunnel_json/);
     assert.match(script, /happier_ssh_native_cancel_request_json/);

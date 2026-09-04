@@ -471,6 +471,9 @@ export function resolveTauriMcpQaRunMode({ argv = [], env = process.env } = {}) 
 
 export function resolveTauriQaScenarioEnvOverrides({ requestedScenario, env = process.env } = {}) {
   const resolvedEnv = env && typeof env === 'object' ? env : process.env;
+  if (requestedScenario === 'personal-home') {
+    return { HAPPIER_TAURI_PERSONAL_HOME_QA_OBSERVE_NO_WELCOME: '1' };
+  }
   if (requestedScenario !== 'activity-surfaces' && requestedScenario !== 'desktop-sidebar-chrome') {
     return {};
   }
@@ -533,6 +536,20 @@ export function assertPersonalHomeQaLaunchIsolation({ plan, env = process.env } 
   }
 }
 
+export function assertPersonalHomeQaPrelaunchFactsEmpty({ plan, env = process.env } = {}) {
+  if (String(plan?.qaScenario?.id ?? '').trim().toLowerCase() !== 'personal-home') return;
+  const disposableHome = String(env.HAPPIER_TAURI_PERSONAL_HOME_QA_HOME ?? '').trim();
+  const retainedRuntimePaths = [
+    join(disposableHome, '.happier', 'self-host', 'self-host-state.json'),
+    join(disposableHome, '.happier', 'self-host', 'config', 'server.env'),
+    join(disposableHome, '.happier', 'self-host', 'data', 'happier-server-light.sqlite'),
+  ];
+  const retained = retainedRuntimePaths.find((path) => existsSync(path));
+  if (retained) {
+    throw new Error(`[tauri-qa] Personal Home loaded QA requires empty prelaunch runtime facts; retained state exists at ${retained}.`);
+  }
+}
+
 function resolvePersonalHomeQaUserHomeResolver(env = process.env) {
   const disposableHome = String(env?.HAPPIER_TAURI_PERSONAL_HOME_QA_HOME ?? '').trim();
   return disposableHome ? () => disposableHome : undefined;
@@ -573,11 +590,11 @@ export function createTauriMcpQaExitTracker() {
     onChildExit(kind, code, signal) {
       const key = kind === 'mcp' ? 'mcp' : 'tauri';
       const resolvedSignalExit = resolveSignalExitCode(signal);
-      record(key, code ?? 0, signal ?? null);
+      record(key, code, signal ?? null);
       if (resolvedSignalExit != null) {
         return resolvedSignalExit;
       }
-      const resolvedCode = Number.isFinite(Number(code)) ? Number(code) : 0;
+      const resolvedCode = code !== null && Number.isFinite(Number(code)) ? Number(code) : 1;
       if (resolvedCode !== 0) {
         return resolvedCode;
       }
@@ -870,7 +887,7 @@ async function runWizardQaCapture({ cwd, env, scriptPath, args = [] }) {
         resolve(1);
         return;
       }
-      resolve(Number.isFinite(Number(code)) ? Number(code) : 0);
+      resolve(code !== null && Number.isFinite(Number(code)) ? Number(code) : 1);
     });
     child.once('error', () => resolve(1));
   });
@@ -878,7 +895,12 @@ async function runWizardQaCapture({ cwd, env, scriptPath, args = [] }) {
   return exitCode;
 }
 
-export function buildTauriMcpQaScenarioEnv({ plan, effectiveEnv = process.env, attachableApp } = {}) {
+export function buildTauriMcpQaScenarioEnv({
+  plan,
+  effectiveEnv = process.env,
+  attachableApp,
+  freshPrelaunchFactsVerified = false,
+} = {}) {
   const personalHomeScenario = String(plan?.qaScenario?.id ?? '').trim().toLowerCase() === 'personal-home';
   const launchedEnv = personalHomeScenario ? (plan?.tauriDev?.env ?? {}) : {};
   return {
@@ -886,7 +908,89 @@ export function buildTauriMcpQaScenarioEnv({ plan, effectiveEnv = process.env, a
     ...launchedEnv,
     HAPPIER_TAURI_MCP_PORT: String(attachableApp?.driverSessionPort ?? ''),
     HAPPIER_TAURI_MCP_APP_IDENTIFIER: String(attachableApp?.resolvedAppIdentifier ?? ''),
+    ...(personalHomeScenario && freshPrelaunchFactsVerified
+      ? { HAPPIER_TAURI_PERSONAL_HOME_QA_FRESH_PRELAUNCH_VERIFIED: '1' }
+      : {}),
   };
+}
+
+async function waitForOwnedProcessExit(child, timeoutMs = 30_000) {
+  if (!child || child.exitCode != null || child.signalCode != null) return;
+  await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      cleanupListeners();
+      reject(new Error('[tauri-qa] Timed out waiting for the owned Tauri process to terminate before relaunch.'));
+    }, timeoutMs);
+    const onExit = () => {
+      cleanupListeners();
+      resolve();
+    };
+    const onError = (error) => {
+      cleanupListeners();
+      reject(error);
+    };
+    const cleanupListeners = () => {
+      clearTimeout(timeout);
+      child.off?.('exit', onExit);
+      child.off?.('error', onError);
+    };
+    child.once('exit', onExit);
+    child.once('error', onError);
+  });
+}
+
+export async function relaunchPersonalHomeTauriApp({
+  plan,
+  effectiveEnv = process.env,
+  currentTauriDev,
+  children = [],
+  terminateProcess = killProcessTree,
+  waitForExit = waitForOwnedProcessExit,
+  spawnProcess = spawnLoggedProcess,
+  waitForAttachable = waitForAttachableTauriApp,
+} = {}) {
+  if (String(plan?.qaScenario?.id ?? '').trim().toLowerCase() !== 'personal-home') {
+    throw new Error('[tauri-qa] Tauri app relaunch is reserved for the Personal Home loaded journey.');
+  }
+  const expectedHome = String(plan?.tauriDev?.env?.HOME ?? '').trim();
+  if (!expectedHome || String(plan?.tauriDev?.env?.USERPROFILE ?? '').trim() !== expectedHome) {
+    throw new Error('[tauri-qa] Personal Home relaunch requires one exact disposable OS home.');
+  }
+
+  terminateProcess(currentTauriDev, 'SIGTERM');
+  await waitForExit(currentTauriDev);
+  const terminatedChildIndex = children.indexOf(currentTauriDev);
+  if (terminatedChildIndex >= 0) children.splice(terminatedChildIndex, 1);
+  const tauriDev = spawnProcess({
+    label: 'tauri',
+    command: plan.tauriDev.command,
+    args: plan.tauriDev.args,
+    cwd: plan.tauriDev.cwd ?? plan.cwd,
+    env: plan.tauriDev.env ?? effectiveEnv,
+    logFilePath: join(plan.logDir, 'tauri.log'),
+    tee: plan.teeLogs,
+  });
+  children.push(tauriDev);
+  const attachableApp = await waitForAttachable({
+    env: effectiveEnv,
+    ...resolveTauriMcpQaAttachWaitOptions({ plan }),
+  });
+  const expectedIdentifier = String(effectiveEnv.HAPPIER_STACK_TAURI_IDENTIFIER ?? '').trim();
+  if (!expectedIdentifier
+      || String(attachableApp?.resolvedAppIdentifier ?? '').trim() !== expectedIdentifier) {
+    throw new Error('[tauri-qa] Relaunched Personal Home app did not retain the exact stack-owned Tauri identifier.');
+  }
+  const qaEnv = buildTauriMcpQaScenarioEnv({
+    plan,
+    effectiveEnv,
+    attachableApp,
+    freshPrelaunchFactsVerified: true,
+  });
+  if (String(qaEnv.HOME ?? '').trim() !== expectedHome
+      || String(qaEnv.USERPROFILE ?? '').trim() !== expectedHome) {
+    throw new Error('[tauri-qa] Relaunched Personal Home app did not retain the disposable OS home.');
+  }
+  return { attachableApp, qaEnv, tauriDev };
 }
 
 async function main(argv = process.argv.slice(2)) {
@@ -926,6 +1030,8 @@ async function main(argv = process.argv.slice(2)) {
   }
 
   assertPersonalHomeQaLaunchIsolation({ plan, env: effectiveEnv });
+  assertPersonalHomeQaPrelaunchFactsEmpty({ plan, env: effectiveEnv });
+  const freshPrelaunchFactsVerified = String(plan?.qaScenario?.id ?? '').trim().toLowerCase() === 'personal-home';
 
   const children = [];
   await ensureTauriMcpQaLaunchArtifacts({ plan });
@@ -1022,19 +1128,50 @@ async function main(argv = process.argv.slice(2)) {
     }
   }
 
-  const qaEnv = buildTauriMcpQaScenarioEnv({ plan, effectiveEnv, attachableApp });
+  const qaEnv = buildTauriMcpQaScenarioEnv({
+    plan,
+    effectiveEnv,
+    attachableApp,
+    freshPrelaunchFactsVerified,
+  });
 
   if (plan.runSelectedScenario) {
-    const wizardExitCode = await runWizardQaCapture({
-      cwd: plan.cwd,
-      env: qaEnv,
-      scriptPath: join(plan.cwd, plan.qaScenario.script),
-      args: plan.qaScenario.args ?? [],
-    });
+    let scenarioExitCode;
+    if (String(plan.qaScenario?.id ?? '').trim().toLowerCase() === 'personal-home') {
+      try {
+        const personalHomeQa = await import(pathToFileURL(join(plan.cwd, plan.qaScenario.script)).href);
+        await personalHomeQa.runTauriPersonalHomeQa({
+          argv: plan.qaScenario.args ?? [],
+          env: qaEnv,
+          relaunchApp: async () => {
+            const relaunched = await relaunchPersonalHomeTauriApp({
+              plan,
+              effectiveEnv,
+              currentTauriDev: tauriDev,
+              children,
+            });
+            tauriDev = relaunched.tauriDev;
+            attachableApp = relaunched.attachableApp;
+            return { env: relaunched.qaEnv };
+          },
+        });
+        scenarioExitCode = 0;
+      } catch (error) {
+        process.stderr.write(`[tauri-personal-home-qa] ${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
+        scenarioExitCode = 1;
+      }
+    } else {
+      scenarioExitCode = await runWizardQaCapture({
+        cwd: plan.cwd,
+        env: qaEnv,
+        scriptPath: join(plan.cwd, plan.qaScenario.script),
+        args: plan.qaScenario.args ?? [],
+      });
+    }
 
     cleanup();
     stopChildren('SIGTERM');
-    process.exit(wizardExitCode);
+    process.exit(scenarioExitCode);
   }
 
   const tracker = createTauriMcpQaExitTracker();
@@ -1063,11 +1200,11 @@ async function main(argv = process.argv.slice(2)) {
     });
 
     tauriDev.once('exit', (code, signal) => {
-      const out = tracker.onChildExit('tauri', code ?? 0, signal ?? null);
+      const out = tracker.onChildExit('tauri', code, signal ?? null);
       if (out != null) settle(out, signal ?? null);
     });
     mcpServer.once('exit', (code, signal) => {
-      const out = tracker.onChildExit('mcp', code ?? 0, signal ?? null);
+      const out = tracker.onChildExit('mcp', code, signal ?? null);
       if (out != null) settle(out, signal ?? null);
     });
   });

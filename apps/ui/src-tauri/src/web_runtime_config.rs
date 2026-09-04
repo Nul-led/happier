@@ -125,10 +125,34 @@ pub(crate) fn build_desktop_web_runtime_config_init_script_from_env() -> Option<
     build_desktop_web_runtime_config_init_script(&config)
 }
 
+#[cfg(desktop)]
+const PERSONAL_HOME_QA_OBSERVER_ENV: &str = "HAPPIER_TAURI_PERSONAL_HOME_QA_OBSERVE_NO_WELCOME";
+
+#[cfg(desktop)]
+fn build_personal_home_qa_observer_init_script_with<F>(read_env: F) -> Option<String>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    if read_non_empty_env_with(&read_env, PERSONAL_HOME_QA_OBSERVER_ENV).as_deref() != Some("1") {
+        return None;
+    }
+
+    Some(
+        r#";(function(){try{const key="__happierPersonalHomeQaForbiddenSurface";const storageKey="__happierPersonalHomeQaForbiddenSurfaceSeen";const selector='[data-testid="onboarding-wizard-welcome-auth"]';const previous=window[key];if(previous&&previous.observer){previous.observer.disconnect();}let retained=false;try{retained=sessionStorage.getItem(storageKey)==="1";}catch(_storageReadError){}const state={seen:retained,observations:1,documentStart:true};const mark=function(){if(document.querySelector(selector)){state.seen=true;try{sessionStorage.setItem(storageKey,"1");}catch(_storageWriteError){}}};mark();const observer=new MutationObserver(function(){state.observations+=1;mark();});observer.observe(document,{childList:true,subtree:true,attributes:true});window[key]={observer:observer,state:state};}catch(_error){}})();"#
+            .to_string(),
+    )
+}
+
+#[cfg(desktop)]
+pub(crate) fn build_personal_home_qa_observer_init_script_from_env() -> Option<String> {
+    build_personal_home_qa_observer_init_script_with(|key| std::env::var(key).ok())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        build_desktop_web_runtime_config_init_script, resolve_desktop_web_runtime_config_with,
+        build_desktop_web_runtime_config_init_script,
+        build_personal_home_qa_observer_init_script_with, resolve_desktop_web_runtime_config_with,
         DesktopWebRuntimeConfig,
     };
     use std::collections::HashMap;
@@ -200,5 +224,27 @@ mod tests {
         assert!(script.contains("history.replaceState"));
         assert!(script.contains("searchParams.set("));
         assert!(script.contains("\"server\""));
+    }
+
+    #[test]
+    fn personal_home_qa_observer_is_document_start_only_and_fail_closed() {
+        let disabled = HashMap::<&str, &str>::new();
+        assert_eq!(
+            build_personal_home_qa_observer_init_script_with(|key| {
+                disabled.get(key).map(|value| (*value).to_string())
+            }),
+            None
+        );
+
+        let enabled = HashMap::from([("HAPPIER_TAURI_PERSONAL_HOME_QA_OBSERVE_NO_WELCOME", "1")]);
+        let script = build_personal_home_qa_observer_init_script_with(|key| {
+            enabled.get(key).map(|value| (*value).to_string())
+        })
+        .expect("expected the dedicated QA observer");
+        assert!(script.contains("__happierPersonalHomeQaForbiddenSurface"));
+        assert!(script.contains("onboarding-wizard-welcome-auth"));
+        assert!(script.contains("documentStart:true"));
+        assert!(script.contains("observer.observe(document"));
+        assert!(script.contains("sessionStorage"));
     }
 }

@@ -9,6 +9,7 @@ The intent is to enable **native desktop QA automation** without affecting produ
 Use the existing **yarn scripts** (no new dev dependency required):
 - `yarn test:e2e:desktop:native` → canonical repo-level native desktop E2E lane; delegates to the package-owned activity-surfaces capture owner in `apps/ui`
 - `yarn --cwd apps/ui tauri:qa` → **canonical one-shot**: starts the desktop app + MCP server, runs the deterministic onboarding wizard QA capture, then exits.
+- `yarn --cwd apps/ui test:native-e2e:personal-home` → canonical loaded Personal Home journey on a dedicated desktop QA user/VM.
 - `yarn --cwd apps/ui tauri:mcp:server` → runs only the MCP server (useful if your MCP client spawns it).
 
 Avoid adding the MCP server as a dev dependency unless we need offline installs or want to pin a version for CI.
@@ -44,6 +45,32 @@ yarn --cwd apps/ui tauri:qa --serve
 `tauri:qa` writes the child process logs under `.project/logs/bootstrap-qa/tauri-qa-*` by default. Add `--tee-logs` if you also want to stream logs to your terminal.
 
 If Metro previously crashed with a "Cannot find module .../dist/..." error, restart the Metro dev server after running `tauri:qa` (the build step fixes the missing files, but a crashed Metro process won't recover by itself).
+
+## Loaded Personal Home QA
+
+The Personal Home journey uses the same Tauri launcher and MCP process owner. It must run on a
+dedicated OS user or VM because the production `happier-server` service name is user-global. Create
+a genuinely new disposable OS home and provide a unique Lane 03 stack identity:
+
+```bash
+qa_home="$(mktemp -d)"
+HAPPIER_TAURI_PERSONAL_HOME_QA_DEDICATED_RUNTIME=1 \
+HAPPIER_TAURI_PERSONAL_HOME_QA_HOME="$qa_home" \
+HAPPIER_STACK_STACK=lane03-personal-home-qa \
+HAPPIER_STACK_TAURI_IDENTIFIER=com.happier.stack.lane03-personal-home-qa \
+yarn --cwd apps/ui test:native-e2e:personal-home
+```
+
+The runner verifies empty prelaunch runtime facts, observes from document start that the retired
+Welcome surface never appears, reaches the production shell, creates a real marked session, then
+terminates and relaunches the owned Tauri app with the same disposable OS home. After relaunch it
+requires the canonical Personal Home profile, authenticated Home access, and the same persisted
+session marker before continuing with runtime restart/update, daemon recovery, safe uninstall, and
+reinstall checks.
+
+Complete verification also requires the checked-in scoped daemon-failure and between-bootstrap-
+mutations probes named by the runner plan. Keep their executable source in the environment only;
+the retained summary records normalized outcomes and never probe source or credential material.
 
 ## Avoid TUI for QA
 

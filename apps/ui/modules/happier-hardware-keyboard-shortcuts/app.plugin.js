@@ -4,6 +4,8 @@ const KEY_EVENT_IMPORT_KOTLIN = 'import android.view.KeyEvent';
 const BRIDGE_IMPORT_KOTLIN = 'import dev.happier.hardwarekeyboardshortcuts.HappierHardwareKeyboardShortcutsBridge';
 const KEY_EVENT_IMPORT_JAVA = 'import android.view.KeyEvent;';
 const BRIDGE_IMPORT_JAVA = 'import dev.happier.hardwarekeyboardshortcuts.HappierHardwareKeyboardShortcutsBridge;';
+const KOTLIN_BRIDGE_CALL = 'HappierHardwareKeyboardShortcutsBridge.dispatchKeyEvent(event, currentFocus)';
+const JAVA_BRIDGE_CALL = 'HappierHardwareKeyboardShortcutsBridge.dispatchKeyEvent(event, getCurrentFocus())';
 
 function insertKotlinImport(contents, importLine) {
   if (contents.includes(importLine)) return contents;
@@ -22,25 +24,40 @@ function insertJavaImport(contents, importLine) {
 }
 
 function hasKotlinBridgeGuardInsideDispatchKeyEvent(contents) {
-  return /override\s+fun\s+dispatchKeyEvent\s*\(\s*event\s*:\s*KeyEvent\s*\)\s*:\s*Boolean\s*\{[\s\S]*?HappierHardwareKeyboardShortcutsBridge\.dispatchKeyEvent\(event\)[\s\S]*?\n\s{2}\}/m
+  return /override\s+fun\s+dispatchKeyEvent\s*\(\s*event\s*:\s*KeyEvent\s*\)\s*:\s*Boolean\s*\{[\s\S]*?HappierHardwareKeyboardShortcutsBridge\.dispatchKeyEvent\(event,\s*currentFocus\)[\s\S]*?\n\s{2}\}/m
     .test(contents);
 }
 
 function hasJavaBridgeGuardInsideDispatchKeyEvent(contents) {
-  return /public\s+boolean\s+dispatchKeyEvent\s*\(\s*KeyEvent\s+event\s*\)\s*\{[\s\S]*?HappierHardwareKeyboardShortcutsBridge\.dispatchKeyEvent\(event\)[\s\S]*?\n\s{2}\}/m
+  return /public\s+boolean\s+dispatchKeyEvent\s*\(\s*KeyEvent\s+event\s*\)\s*\{[\s\S]*?HappierHardwareKeyboardShortcutsBridge\.dispatchKeyEvent\(event,\s*getCurrentFocus\(\)\)[\s\S]*?\n\s{2}\}/m
     .test(contents);
 }
 
+function upgradeKotlinLegacyBridgeGuard(contents) {
+  return contents.replace(
+    /(override\s+fun\s+dispatchKeyEvent\s*\(\s*event\s*:\s*KeyEvent\s*\)\s*:\s*Boolean\s*\{[\s\S]*?)HappierHardwareKeyboardShortcutsBridge\.dispatchKeyEvent\(event\)([\s\S]*?\n\s{2}\})/m,
+    (_match, beforeCall, afterCall) => `${beforeCall}${KOTLIN_BRIDGE_CALL}${afterCall}`,
+  );
+}
+
+function upgradeJavaLegacyBridgeGuard(contents) {
+  return contents.replace(
+    /(public\s+boolean\s+dispatchKeyEvent\s*\(\s*KeyEvent\s+event\s*\)\s*\{[\s\S]*?)HappierHardwareKeyboardShortcutsBridge\.dispatchKeyEvent\(event\)([\s\S]*?\n\s{2}\})/m,
+    (_match, beforeCall, afterCall) => `${beforeCall}${JAVA_BRIDGE_CALL}${afterCall}`,
+  );
+}
+
 function addKotlinDispatchKeyEvent(contents) {
-  if (hasKotlinBridgeGuardInsideDispatchKeyEvent(contents)) return contents;
-  let next = insertKotlinImport(contents, KEY_EVENT_IMPORT_KOTLIN);
+  let next = upgradeKotlinLegacyBridgeGuard(contents);
+  if (hasKotlinBridgeGuardInsideDispatchKeyEvent(next)) return next;
+  next = insertKotlinImport(next, KEY_EVENT_IMPORT_KOTLIN);
   next = insertKotlinImport(next, BRIDGE_IMPORT_KOTLIN);
 
   const existingOverride = next.match(/override\s+fun\s+dispatchKeyEvent\s*\(\s*event\s*:\s*KeyEvent\s*\)\s*:\s*Boolean\s*\{/m);
   if (existingOverride?.index !== undefined) {
     const insertAt = existingOverride.index + existingOverride[0].length;
     return `${next.slice(0, insertAt)}
-    if (HappierHardwareKeyboardShortcutsBridge.dispatchKeyEvent(event)) {
+    if (HappierHardwareKeyboardShortcutsBridge.dispatchKeyEvent(event, currentFocus)) {
       return true
     }${next.slice(insertAt)}`;
   }
@@ -51,7 +68,7 @@ function addKotlinDispatchKeyEvent(contents) {
   const method = [
     '',
     '  override fun dispatchKeyEvent(event: KeyEvent): Boolean {',
-    '    if (HappierHardwareKeyboardShortcutsBridge.dispatchKeyEvent(event)) {',
+    `    if (${KOTLIN_BRIDGE_CALL}) {`,
     '      return true',
     '    }',
     '    return super.dispatchKeyEvent(event)',
@@ -68,15 +85,16 @@ function addKotlinDispatchKeyEvent(contents) {
 }
 
 function addJavaDispatchKeyEvent(contents) {
-  if (hasJavaBridgeGuardInsideDispatchKeyEvent(contents)) return contents;
-  let next = insertJavaImport(contents, KEY_EVENT_IMPORT_JAVA);
+  let next = upgradeJavaLegacyBridgeGuard(contents);
+  if (hasJavaBridgeGuardInsideDispatchKeyEvent(next)) return next;
+  next = insertJavaImport(next, KEY_EVENT_IMPORT_JAVA);
   next = insertJavaImport(next, BRIDGE_IMPORT_JAVA);
 
   const existingOverride = next.match(/public\s+boolean\s+dispatchKeyEvent\s*\(\s*KeyEvent\s+event\s*\)\s*\{/m);
   if (existingOverride?.index !== undefined) {
     const insertAt = existingOverride.index + existingOverride[0].length;
     return `${next.slice(0, insertAt)}
-    if (HappierHardwareKeyboardShortcutsBridge.dispatchKeyEvent(event)) {
+    if (HappierHardwareKeyboardShortcutsBridge.dispatchKeyEvent(event, getCurrentFocus())) {
       return true;
     }${next.slice(insertAt)}`;
   }
@@ -88,7 +106,7 @@ function addJavaDispatchKeyEvent(contents) {
     '',
     '  @Override',
     '  public boolean dispatchKeyEvent(KeyEvent event) {',
-    '    if (HappierHardwareKeyboardShortcutsBridge.dispatchKeyEvent(event)) {',
+    `    if (${JAVA_BRIDGE_CALL}) {`,
     '      return true;',
     '    }',
     '    return super.dispatchKeyEvent(event);',

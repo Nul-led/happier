@@ -143,6 +143,9 @@ private final class HardwareKeyboardTextViewInterceptor {
         "modifiers": modifiers,
         "repeat": false,
         "target": "reactNativeTextInput",
+        // This interceptor is installed on the first-responder RCT text view itself,
+        // so native owns an exact editable-focus fact instead of asking JS to guess.
+        "isEditableTarget": true,
       ]
     }
 
@@ -156,11 +159,13 @@ private final class HardwareKeyboardTextViewInterceptor {
       return "Enter"
     case UIKeyboardHIDUsage.keyboardEscape:
       return "Escape"
+    case UIKeyboardHIDUsage.keyboardK:
+      return "k"
     default:
       if key.characters == "\n" || key.characters == "\r" {
         return "Enter"
       }
-      return nil
+      return normalizedPrintableKey(key.charactersIgnoringModifiers)
     }
   }
 
@@ -173,8 +178,41 @@ private final class HardwareKeyboardTextViewInterceptor {
       return "NumpadEnter"
     case UIKeyboardHIDUsage.keyboardEscape:
       return "Escape"
+    case UIKeyboardHIDUsage.keyboardK:
+      return "KeyK"
     default:
+      return codeNameForPrintableKey(normalizedPrintableKey(key.charactersIgnoringModifiers))
+    }
+  }
+
+  private func normalizedPrintableKey(_ characters: String) -> String? {
+    let normalized = characters.lowercased()
+    guard normalized.count == 1,
+          normalized.unicodeScalars.allSatisfy({
+            $0.isASCII && !CharacterSet.controlCharacters.contains($0)
+          })
+    else {
+      return nil
+    }
+    return normalized
+  }
+
+  private func codeNameForPrintableKey(_ key: String?) -> String {
+    guard let key else {
       return "Unidentified"
+    }
+    if key.range(of: "^[a-z]$", options: .regularExpression) != nil {
+      return "Key\(key.uppercased())"
+    }
+    if key.range(of: "^[0-9]$", options: .regularExpression) != nil {
+      return "Digit\(key)"
+    }
+    switch key {
+    case ".": return "Period"
+    case "[": return "BracketLeft"
+    case "]": return "BracketRight"
+    case "/": return "Slash"
+    default: return "Unidentified"
     }
   }
 

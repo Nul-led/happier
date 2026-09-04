@@ -321,7 +321,7 @@ test('tauri onboarding wizard QA marks a proof run with no captured steps as inc
   assert.deepEqual(module.summarizeTauriOnboardingWizardQaProof({ stepArtifacts: {} }), {
     ok: false,
     blocker: 'no_step_artifacts_captured',
-    steps: [],
+    steps: ['welcome', 'auth_skip', 'relay', 'welcome_back', 'auth', 'restore', 'lost_access'],
   });
 });
 
@@ -339,7 +339,7 @@ test('tauri onboarding wizard QA marks partially captured proof artifacts as inc
   }), {
     ok: false,
     blocker: 'missing_required_step_artifacts',
-    steps: ['welcome'],
+    steps: ['welcome', 'auth_skip', 'relay', 'welcome_back', 'auth', 'restore', 'lost_access'],
   });
 });
 

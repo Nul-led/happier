@@ -51,8 +51,6 @@ pub struct EnsureHomeTunnelRequest {
     direct_addresses: Vec<String>,
     #[serde(default)]
     relay_urls: Vec<String>,
-    #[serde(default)]
-    descriptor_revision: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -207,7 +205,6 @@ fn serialized_ensure_request(request: &EnsureHomeTunnelRequest, endpoint_handle:
         "endpointId": request.endpoint_id,
         "directAddresses": request.direct_addresses,
         "relayUrls": request.relay_urls,
-        "descriptorRevision": request.descriptor_revision,
     })
     .to_string()
 }
@@ -340,13 +337,14 @@ pub async fn iroh_ensure_home_tunnel(
     app: AppHandle,
     request: EnsureHomeTunnelRequest,
 ) -> Result<Value, String> {
-    let endpoint = create_application_endpoint(&app, Some(&request.policy), &request.relay_urls)?;
-    let endpoint_handle = response_string(&endpoint, "endpointHandle")?;
-    let payload = serialized_ensure_request(&request, &endpoint_handle);
     // The native lifecycle block_on's its own process runtime; keep that off
     // the async-runtime workers like every other blocking host seam.
     let envelope = tauri::async_runtime::spawn_blocking(move || {
-        happier_iroh_native::ensure_home_tunnel_json(&payload)
+        let endpoint =
+            create_application_endpoint(&app, Some(&request.policy), &request.relay_urls)?;
+        let endpoint_handle = response_string(&endpoint, "endpointHandle")?;
+        let payload = serialized_ensure_request(&request, &endpoint_handle);
+        Ok::<_, String>(happier_iroh_native::ensure_home_tunnel_json(&payload))
     })
     .await
     .map_err(|error| {
@@ -354,7 +352,7 @@ pub async fn iroh_ensure_home_tunnel(
             "transport-unavailable",
             format!("iroh native lifecycle call failed: {error}"),
         )
-    })?;
+    })??;
     let mut started = envelope_result(&envelope)?;
     if let Some(tunnel_id) = started.get("tunnelId").cloned() {
         started["leaseId"] = tunnel_id;
@@ -525,7 +523,6 @@ mod tests {
                 "carrier": "iroh",
                 "observedPath": "direct",
                 "startedAtMs": 42u64,
-                "descriptorRevision": 4u64,
                 "endpointHandle": "/app-data/iroh/endpoint.key",
             }
         });

@@ -54,6 +54,13 @@ pub fn run() {
         builder = builder.append_invoke_initialization_script(init_script);
     }
 
+    #[cfg(desktop)]
+    if let Some(init_script) =
+        web_runtime_config::build_personal_home_qa_observer_init_script_from_env()
+    {
+        builder = builder.append_invoke_initialization_script(init_script);
+    }
+
     #[cfg(debug_assertions)]
     {
         builder = builder.plugin(mcp_bridge::build_debug_mcp_bridge_plugin());

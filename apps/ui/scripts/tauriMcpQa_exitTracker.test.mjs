@@ -23,3 +23,8 @@ test('exit tracker settles when any child exits due to a signal', () => {
   assert.equal(res, 143);
 });
 
+test('exit tracker treats a null exit code without a signal as failure', () => {
+  const tracker = createTauriMcpQaExitTracker();
+
+  assert.equal(tracker.onChildExit('tauri', null, null), 1);
+});

@@ -319,11 +319,70 @@ function isRecord(value) {
     return value != null && typeof value === 'object' && !Array.isArray(value);
 }
 
-export function assertPersonalHomeQaCertificationStatus({ requireComplete = false, verificationStatus } = {}) {
+export function derivePersonalHomeVerificationStatus({
+    appRelaunchEvidence,
+    bootstrapMutationInterruptionEvidence,
+    freshBootstrapEvidence,
+    noOnboardingObservation,
+    scopedDaemonFailureEvidence,
+} = {}) {
+    return appRelaunchEvidence?.status === 'verified'
+        && freshBootstrapEvidence?.prelaunchFactsEmpty === true
+        && noOnboardingObservation?.documentStart === true
+        && noOnboardingObservation?.installed === true
+        && noOnboardingObservation?.seen === false
+        && Number.isSafeInteger(noOnboardingObservation?.observations)
+        && noOnboardingObservation.observations >= 1
+        && scopedDaemonFailureEvidence?.status === 'verified'
+        && bootstrapMutationInterruptionEvidence?.status === 'verified'
+        ? 'complete'
+        : 'partial';
+}
+
+export async function verifyPersonalHomeAppRelaunch({
+    env = process.env,
+    relaunchApp,
+    verifyAfterRelaunch,
+} = {}) {
+    if (typeof relaunchApp !== 'function') {
+        throw new Error('Personal Home loaded QA requires its canonical launcher to terminate and relaunch the Tauri app.');
+    }
+    if (typeof verifyAfterRelaunch !== 'function') {
+        throw new Error('Personal Home loaded QA requires post-relaunch persistence verification.');
+    }
+    const expectedHome = readString(env.HAPPIER_TAURI_PERSONAL_HOME_QA_HOME ?? env.HOME ?? env.USERPROFILE);
+    const relaunched = await relaunchApp({ env });
+    const relaunchedEnv = isRecord(relaunched?.env) ? relaunched.env : null;
+    const relaunchedHome = readString(
+        relaunchedEnv?.HAPPIER_TAURI_PERSONAL_HOME_QA_HOME
+        ?? relaunchedEnv?.HOME
+        ?? relaunchedEnv?.USERPROFILE,
+    );
+    if (!expectedHome || relaunchedHome !== expectedHome
+        || readString(relaunchedEnv?.HOME) !== expectedHome
+        || readString(relaunchedEnv?.USERPROFILE) !== expectedHome) {
+        throw new Error('Personal Home Tauri relaunch did not preserve the same disposable OS home.');
+    }
+    const persisted = await verifyAfterRelaunch({ env: relaunchedEnv });
+    if (persisted?.profileAvailable !== true
+        || persisted?.credentialAuthenticated !== true
+        || persisted?.sessionMarkerPersisted !== true) {
+        throw new Error('Personal Home Tauri relaunch did not preserve the profile, credential, and session marker.');
+    }
+    return {
+        credentialAuthenticated: true,
+        profileAvailable: true,
+        sameDisposableHome: true,
+        sessionMarkerPersisted: true,
+        status: 'verified',
+    };
+}
+
+export function assertPersonalHomeQaCompleteVerification({ requireComplete = false, verificationStatus } = {}) {
     if (!requireComplete || verificationStatus === 'complete') {
         return;
     }
-    throw new Error(`Personal Home certification requires complete verification; got ${String(verificationStatus ?? 'missing')}.`);
+    throw new Error(`Personal Home QA requires complete verification; got ${String(verificationStatus ?? 'missing')}.`);
 }
 
 export function validateTauriPersonalHomeQaProbeResult(value, scenario) {
@@ -365,6 +424,47 @@ async function selectorPresent(selector, { appIdentifier, env, timeoutMs = 1_000
     } catch {
         return false;
     }
+}
+
+async function startForbiddenSurfaceObservation(plan, { env } = {}) {
+    const script = `(() => {
+        const selector = ${JSON.stringify(plan.forbiddenOnboardingSelector)};
+        const key = '__happierPersonalHomeQaForbiddenSurface';
+        const previous = window[key];
+        if (previous?.observer && previous?.state?.documentStart === true) return previous.state;
+        if (previous?.observer) previous.observer.disconnect();
+        const state = { seen: Boolean(document.querySelector(selector)), observations: 1, documentStart: false };
+        const observer = new MutationObserver(() => {
+            state.observations += 1;
+            if (document.querySelector(selector)) state.seen = true;
+        });
+        observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true });
+        window[key] = { observer, state };
+        return state;
+    })()`;
+    await runCli([
+        'webview-execute-js', '--script', script, '--app-identifier', plan.appIdentifier, '--json',
+    ], { appIdentifier: plan.appIdentifier, env });
+}
+
+async function finishForbiddenSurfaceObservation(plan, { env } = {}) {
+    const script = `(() => {
+        const value = window.__happierPersonalHomeQaForbiddenSurface;
+        if (!value) return { documentStart: false, installed: false, seen: false, observations: 0 };
+        value.observer?.disconnect();
+        return { documentStart: value.state.documentStart === true, installed: true, seen: value.state.seen === true, observations: value.state.observations };
+    })()`;
+    const result = await runCli([
+        'webview-execute-js', '--script', script, '--app-identifier', plan.appIdentifier, '--json',
+    ], { appIdentifier: plan.appIdentifier, env });
+    const payload = findJsonPayload(result.stdout);
+    const facts = isRecord(payload?.data) ? payload.data : payload;
+    if (facts?.installed !== true || facts?.seen === true || !Number.isSafeInteger(facts?.observations) || facts.observations < 1) {
+        throw new Error(facts?.seen === true
+            ? 'Retired pre-auth onboarding appeared during Personal Home bootstrap.'
+            : 'Continuous Personal Home onboarding observation was not active through shell readiness.');
+    }
+    return facts;
 }
 
 async function waitForAnyShell(plan, { env } = {}) {
@@ -576,8 +676,13 @@ async function readBuildIdentity() {
     };
 }
 
-async function main(argv = process.argv.slice(2)) {
-    const plan = buildTauriPersonalHomeQaPlan({ env: process.env });
+export async function runTauriPersonalHomeQa({
+    argv = process.argv.slice(2),
+    env = process.env,
+    relaunchApp,
+} = {}) {
+    let scenarioEnv = env;
+    const plan = buildTauriPersonalHomeQaPlan({ env: scenarioEnv });
     const requireComplete = argv.includes('--require-complete');
     if (argv.includes('--help') || argv.includes('-h')) {
         process.stdout.write('Usage: node ./apps/ui/scripts/qa/tauriPersonalHomeMcpQa.mjs [--json] [--require-complete]\n');
@@ -590,87 +695,119 @@ async function main(argv = process.argv.slice(2)) {
     if (!plan.appIdentifier) {
         throw new Error('Personal Home loaded QA requires an exact Tauri app identifier.');
     }
+    const freshBootstrapEvidence = {
+        prelaunchFactsEmpty: readString(scenarioEnv.HAPPIER_TAURI_PERSONAL_HOME_QA_FRESH_PRELAUNCH_VERIFIED) === '1',
+    };
 
     await ensureDir(plan.artifactRoot);
+    await startForbiddenSurfaceObservation(plan, { env: scenarioEnv });
     const setupSurfaceObserved = await selectorPresent(plan.setupSelector, {
         appIdentifier: plan.appIdentifier,
-        env: process.env,
+        env: scenarioEnv,
         timeoutMs: 2_000,
     });
-    const matchedShellSelector = await waitForAnyShell(plan, { env: process.env });
-    if (await selectorPresent(plan.forbiddenOnboardingSelector, {
-        appIdentifier: plan.appIdentifier,
-        env: process.env,
-        timeoutMs: 750,
-    })) {
-        throw new Error('Retired pre-auth onboarding replaced the loaded Personal Home shell.');
-    }
+    const matchedShellSelector = await waitForAnyShell(plan, { env: scenarioEnv });
+    const noOnboardingObservation = await finishForbiddenSurfaceObservation(plan, { env: scenarioEnv });
 
-    await navigate('/settings/server', { appIdentifier: plan.appIdentifier, env: process.env });
+    await navigate('/settings/server', { appIdentifier: plan.appIdentifier, env: scenarioEnv });
     if (!(await selectorPresent(plan.personalHomeSettingsSelector, {
         appIdentifier: plan.appIdentifier,
-        env: process.env,
+        env: scenarioEnv,
         timeoutMs: 30_000,
     }))) {
         throw new Error('Canonical Personal Home settings projection did not load after bootstrap.');
     }
 
-    const runtimeEvidenceBeforeRestart = await inspectPersonalHomeRuntimeEvidence({ env: process.env });
+    const runtimeEvidenceBeforeRestart = await inspectPersonalHomeRuntimeEvidence({ env: scenarioEnv });
     const signupRefusalBeforeRestart = await verifyAnonymousSignupRefused({
         canonicalServerUrl: runtimeEvidenceBeforeRestart.canonicalServerUrl,
     });
     const marker = `lane03-loaded-${nowStamp()}`;
     const sessionEvidenceBeforeRestart = await verifyPersonalHomeSessionEvidence({
-        agentId: readString(process.env.HAPPIER_TAURI_PERSONAL_HOME_QA_AGENT, 'codex'),
+        agentId: readString(scenarioEnv.HAPPIER_TAURI_PERSONAL_HOME_QA_AGENT, 'codex'),
         marker,
-        sessionPath: readString(process.env.HAPPIER_TAURI_PERSONAL_HOME_QA_SESSION_PATH, repoRoot),
+        runCliJson: async (args) => await runPersonalHomeCliJson(args, { env: scenarioEnv }),
+        sessionPath: readString(scenarioEnv.HAPPIER_TAURI_PERSONAL_HOME_QA_SESSION_PATH, repoRoot),
     });
-    await ensureSessionVisible(sessionEvidenceBeforeRestart.sessionId, plan, { env: process.env });
-    await navigate('/settings/server', { appIdentifier: plan.appIdentifier, env: process.env });
+    await ensureSessionVisible(sessionEvidenceBeforeRestart.sessionId, plan, { env: scenarioEnv });
+
+    const appRelaunchEvidence = await verifyPersonalHomeAppRelaunch({
+        env: scenarioEnv,
+        relaunchApp: async ({ env: currentEnv }) => {
+            const relaunched = await relaunchApp?.({ env: currentEnv });
+            if (isRecord(relaunched?.env)) scenarioEnv = relaunched.env;
+            return relaunched;
+        },
+        verifyAfterRelaunch: async () => {
+            await waitForAnyShell(plan, { env: scenarioEnv });
+            await navigate('/settings/server', { appIdentifier: plan.appIdentifier, env: scenarioEnv });
+            const profileAvailable = await selectorPresent(plan.personalHomeSettingsSelector, {
+                appIdentifier: plan.appIdentifier,
+                env: scenarioEnv,
+                timeoutMs: 30_000,
+            });
+            await inspectPersonalHomeRuntimeEvidence({ env: scenarioEnv });
+            await verifyAnonymousSignupRefused({ canonicalServerUrl: runtimeEvidenceBeforeRestart.canonicalServerUrl });
+            const persistedSession = await verifyPersonalHomeSessionEvidence({
+                marker,
+                runCliJson: async (args) => await runPersonalHomeCliJson(args, { env: scenarioEnv }),
+                sessionId: sessionEvidenceBeforeRestart.sessionId,
+            });
+            await ensureSessionVisible(sessionEvidenceBeforeRestart.sessionId, plan, { env: scenarioEnv });
+            return {
+                credentialAuthenticated: persistedSession.transcriptPersisted === true,
+                profileAvailable,
+                sessionMarkerPersisted: persistedSession.transcriptPersisted === true,
+            };
+        },
+    });
+
+    await navigate('/settings/server', { appIdentifier: plan.appIdentifier, env: scenarioEnv });
     await clickSelector('[data-testid="settings.personalHomeRuntime.restart"]', {
         appIdentifier: plan.appIdentifier,
-        env: process.env,
+        env: scenarioEnv,
     });
     const runtimeEvidenceAfterRestart = await waitForRestartedPersonalHomeEvidence({
         initialPid: runtimeEvidenceBeforeRestart.listener.pid,
-        readEvidence: async () => await inspectPersonalHomeRuntimeEvidence({ env: process.env }),
+        readEvidence: async () => await inspectPersonalHomeRuntimeEvidence({ env: scenarioEnv }),
     });
     const signupRefusalAfterRestart = await verifyAnonymousSignupRefused({
         canonicalServerUrl: runtimeEvidenceAfterRestart.canonicalServerUrl,
     });
     const sessionEvidenceAfterRestart = await verifyPersonalHomeSessionEvidence({
         marker,
+        runCliJson: async (args) => await runPersonalHomeCliJson(args, { env: scenarioEnv }),
         sessionId: sessionEvidenceBeforeRestart.sessionId,
     });
-    await ensureSessionVisible(sessionEvidenceBeforeRestart.sessionId, plan, { env: process.env });
-    const daemonStatusBeforeFailure = await runLoadedSystemTask('daemon.service.status.v1', plan, { env: process.env });
+    await ensureSessionVisible(sessionEvidenceBeforeRestart.sessionId, plan, { env: scenarioEnv });
+    const daemonStatusBeforeFailure = await runLoadedSystemTask('daemon.service.status.v1', plan, { env: scenarioEnv });
     const pairedMachineId = readString(daemonStatusBeforeFailure?.machineId);
     if (!pairedMachineId) throw new Error('Loaded Personal Home daemon did not expose its paired machine identity.');
-    await runLoadedSystemTask('daemon.service.stop.v1', plan, { env: process.env });
+    await runLoadedSystemTask('daemon.service.stop.v1', plan, { env: scenarioEnv });
     if (!(await selectorPresent('[data-testid="transcript-chat-list"]', {
         appIdentifier: plan.appIdentifier,
-        env: process.env,
+        env: scenarioEnv,
         timeoutMs: 5_000,
-    })) || !(await waitForAnyShell(plan, { env: process.env }))) {
+    })) || !(await waitForAnyShell(plan, { env: scenarioEnv }))) {
         throw new Error('Normal daemon stop removed the usable Personal Home shell or session transcript.');
     }
-    const daemonStatusAfterAutomaticRecovery = await waitForDaemonRecovered(pairedMachineId, plan, { env: process.env });
-    const scopedDaemonFailureEvidence = await verifyConfiguredScopedDaemonFailure(plan, pairedMachineId, { env: process.env });
+    const daemonStatusAfterAutomaticRecovery = await waitForDaemonRecovered(pairedMachineId, plan, { env: scenarioEnv });
+    const scopedDaemonFailureEvidence = await verifyConfiguredScopedDaemonFailure(plan, pairedMachineId, { env: scenarioEnv });
 
-    await navigate('/settings/server', { appIdentifier: plan.appIdentifier, env: process.env });
-    await clickSelector(plan.updateSelector, { appIdentifier: plan.appIdentifier, env: process.env });
+    await navigate('/settings/server', { appIdentifier: plan.appIdentifier, env: scenarioEnv });
+    await clickSelector(plan.updateSelector, { appIdentifier: plan.appIdentifier, env: scenarioEnv });
     const runtimeEvidenceAfterUpdate = await waitForRestartedPersonalHomeEvidence({
         initialPid: runtimeEvidenceAfterRestart.listener.pid,
-        readEvidence: async () => await inspectPersonalHomeRuntimeEvidence({ env: process.env }),
+        readEvidence: async () => await inspectPersonalHomeRuntimeEvidence({ env: scenarioEnv }),
     });
     const signupRefusalAfterUpdate = await verifyAnonymousSignupRefused({
         canonicalServerUrl: runtimeEvidenceAfterUpdate.canonicalServerUrl,
     });
-    const preservationEvidenceBeforeUninstall = await inspectPersonalHomePreservationEvidence({ env: process.env });
+    const preservationEvidenceBeforeUninstall = await inspectPersonalHomePreservationEvidence({ env: scenarioEnv });
 
-    await clickSelector(plan.uninstallSelector, { appIdentifier: plan.appIdentifier, env: process.env });
+    await clickSelector(plan.uninstallSelector, { appIdentifier: plan.appIdentifier, env: scenarioEnv });
     await waitForPersonalHomeUnavailable(runtimeEvidenceAfterUpdate.canonicalServerUrl);
-    const preservationEvidenceAfterUninstall = await inspectPersonalHomePreservationEvidence({ env: process.env });
+    const preservationEvidenceAfterUninstall = await inspectPersonalHomePreservationEvidence({ env: scenarioEnv });
     if (preservationEvidenceAfterUninstall.configSha256 !== preservationEvidenceBeforeUninstall.configSha256
         || preservationEvidenceAfterUninstall.masterSecretSha256 !== preservationEvidenceBeforeUninstall.masterSecretSha256
         || preservationEvidenceAfterUninstall.purpose !== 'personal-home') {
@@ -678,34 +815,39 @@ async function main(argv = process.argv.slice(2)) {
     }
     if (!(await selectorPresent(plan.personalHomeSettingsSelector, {
         appIdentifier: plan.appIdentifier,
-        env: process.env,
+        env: scenarioEnv,
         timeoutMs: 30_000,
     }))) {
         throw new Error('Safe uninstall removed the canonical Personal Home profile projection.');
     }
-    await clickSelector(plan.updateSelector, { appIdentifier: plan.appIdentifier, env: process.env });
+    await clickSelector(plan.updateSelector, { appIdentifier: plan.appIdentifier, env: scenarioEnv });
     const runtimeEvidenceAfterReinstall = await waitForRestartedPersonalHomeEvidence({
         initialPid: runtimeEvidenceAfterUpdate.listener.pid,
-        readEvidence: async () => await inspectPersonalHomeRuntimeEvidence({ env: process.env }),
+        readEvidence: async () => await inspectPersonalHomeRuntimeEvidence({ env: scenarioEnv }),
     });
     const signupRefusalAfterReinstall = await verifyAnonymousSignupRefused({
         canonicalServerUrl: runtimeEvidenceAfterReinstall.canonicalServerUrl,
     });
     const sessionEvidenceAfterReinstall = await verifyPersonalHomeSessionEvidence({
         marker,
+        runCliJson: async (args) => await runPersonalHomeCliJson(args, { env: scenarioEnv }),
         sessionId: sessionEvidenceBeforeRestart.sessionId,
     });
-    await ensureSessionVisible(sessionEvidenceBeforeRestart.sessionId, plan, { env: process.env });
-    await navigate('/settings/server', { appIdentifier: plan.appIdentifier, env: process.env });
-    const screenshotPath = await captureLoadedSurface(plan, { env: process.env });
-    const bootstrapMutationInterruptionEvidence = await verifyConfiguredBootstrapMutationInterruption(plan, { env: process.env });
-    const verificationStatus = scopedDaemonFailureEvidence.status === 'verified'
-        && bootstrapMutationInterruptionEvidence.status === 'verified'
-        ? 'complete'
-        : 'partial';
+    await ensureSessionVisible(sessionEvidenceBeforeRestart.sessionId, plan, { env: scenarioEnv });
+    await navigate('/settings/server', { appIdentifier: plan.appIdentifier, env: scenarioEnv });
+    const screenshotPath = await captureLoadedSurface(plan, { env: scenarioEnv });
+    const bootstrapMutationInterruptionEvidence = await verifyConfiguredBootstrapMutationInterruption(plan, { env: scenarioEnv });
+    const verificationStatus = derivePersonalHomeVerificationStatus({
+        appRelaunchEvidence,
+        bootstrapMutationInterruptionEvidence,
+        freshBootstrapEvidence,
+        noOnboardingObservation,
+        scopedDaemonFailureEvidence,
+    });
     const summary = {
         ok: true,
         appIdentifier: plan.appIdentifier,
+        appRelaunchEvidence,
         bootstrapMutationInterruptionEvidence,
         build: await readBuildIdentity(),
         daemonAutomaticRecoveryEvidence: {
@@ -713,6 +855,8 @@ async function main(argv = process.argv.slice(2)) {
             sameMachineId: readString(daemonStatusAfterAutomaticRecovery.machineId) === pairedMachineId,
         },
         matchedShellSelector,
+        freshBootstrapEvidence,
+        noOnboardingObservation,
         preservationEvidenceAfterUninstall,
         preservationEvidenceBeforeUninstall,
         runtimeEvidenceAfterRestart,
@@ -732,12 +876,13 @@ async function main(argv = process.argv.slice(2)) {
         verificationStatus,
     };
     await writeTextArtifact(join(plan.artifactRoot, '99-summary.json'), `${JSON.stringify(summary, null, 2)}\n`);
-    assertPersonalHomeQaCertificationStatus({ requireComplete, verificationStatus });
+    assertPersonalHomeQaCompleteVerification({ requireComplete, verificationStatus });
     process.stdout.write(`${JSON.stringify({ ok: true, artifactRoot: plan.artifactRoot, verificationStatus }, null, 2)}\n`);
+    return summary;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-    main().catch((error) => {
+    runTauriPersonalHomeQa().catch((error) => {
         process.stderr.write(`[tauri-personal-home-qa] ${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
         process.exit(1);
     });

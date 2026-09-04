@@ -39,6 +39,10 @@
     "active": true,
     "createUpdaterArtifacts": false,
     "targets": "all",
+    "resources": {
+      "../../../packages/iroh-native/release-evidence/THIRD-PARTY-NOTICES.txt": "licenses/iroh-native/THIRD-PARTY-NOTICES.txt",
+      "../../../packages/iroh-native/release-evidence/sbom.cdx.json": "licenses/iroh-native/sbom.cdx.json"
+    },
     "externalBin": [
       "binaries/hsetup"
     ],

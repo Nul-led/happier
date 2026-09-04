@@ -6,10 +6,12 @@ import { join } from 'node:path';
 
 import {
     buildTauriPersonalHomeQaPlan,
+    derivePersonalHomeVerificationStatus,
     inspectPersonalHomePreservationEvidence,
     inspectPersonalHomeRuntimeEvidence,
-    assertPersonalHomeQaCertificationStatus,
+    assertPersonalHomeQaCompleteVerification,
     validateTauriPersonalHomeQaProbeResult,
+    verifyPersonalHomeAppRelaunch,
     verifyAnonymousSignupRefused,
     verifyPersonalHomeSessionEvidence,
     waitForRestartedPersonalHomeEvidence,
@@ -60,21 +62,101 @@ test('personal-home loaded QA records externally supplied failure probes without
     assert.equal(JSON.stringify(plan).includes('existingBootstrapMutationProbe'), false);
 });
 
-test('personal-home loaded QA certification mode rejects partial verification without changing diagnostic partial reporting', () => {
-    assert.doesNotThrow(() => assertPersonalHomeQaCertificationStatus({
+test('personal-home loaded QA complete mode rejects partial verification without changing diagnostic partial reporting', () => {
+    assert.doesNotThrow(() => assertPersonalHomeQaCompleteVerification({
         requireComplete: false,
         verificationStatus: 'partial',
     }));
-    assert.doesNotThrow(() => assertPersonalHomeQaCertificationStatus({
+    assert.doesNotThrow(() => assertPersonalHomeQaCompleteVerification({
         requireComplete: true,
         verificationStatus: 'complete',
     }));
     assert.throws(
-        () => assertPersonalHomeQaCertificationStatus({
+        () => assertPersonalHomeQaCompleteVerification({
             requireComplete: true,
             verificationStatus: 'partial',
         }),
         /requires complete verification/u,
+    );
+});
+
+test('personal-home completion requires fresh launch and temporal bootstrap observation', () => {
+    const completeEvidence = {
+        appRelaunchEvidence: { status: 'verified' },
+        bootstrapMutationInterruptionEvidence: { status: 'verified' },
+        freshBootstrapEvidence: { prelaunchFactsEmpty: true },
+        noOnboardingObservation: { documentStart: true, installed: true, seen: false, observations: 2 },
+        scopedDaemonFailureEvidence: { status: 'verified' },
+    };
+    assert.equal(derivePersonalHomeVerificationStatus(completeEvidence), 'complete');
+    assert.equal(derivePersonalHomeVerificationStatus({
+        ...completeEvidence,
+        appRelaunchEvidence: { status: 'unavailable' },
+    }), 'partial');
+    assert.equal(derivePersonalHomeVerificationStatus({
+        ...completeEvidence,
+        freshBootstrapEvidence: { prelaunchFactsEmpty: false },
+    }), 'partial');
+    assert.equal(derivePersonalHomeVerificationStatus({
+        ...completeEvidence,
+        noOnboardingObservation: { documentStart: false, installed: true, seen: false, observations: 2 },
+    }), 'partial');
+    assert.equal(derivePersonalHomeVerificationStatus({
+        ...completeEvidence,
+        noOnboardingObservation: { documentStart: true, installed: true, seen: true, observations: 2 },
+    }), 'partial');
+});
+
+test('personal-home app relaunch requires the same disposable OS home and persisted profile, credential, and session marker', async () => {
+    const initialEnv = {
+        HOME: '/tmp/happier-personal-home-fresh',
+        USERPROFILE: '/tmp/happier-personal-home-fresh',
+    };
+    let relaunchCalls = 0;
+    const evidence = await verifyPersonalHomeAppRelaunch({
+        env: initialEnv,
+        relaunchApp: async () => {
+            relaunchCalls += 1;
+            return { env: { ...initialEnv, HAPPIER_TAURI_MCP_PORT: '9444' } };
+        },
+        verifyAfterRelaunch: async () => ({
+            credentialAuthenticated: true,
+            profileAvailable: true,
+            sessionMarkerPersisted: true,
+        }),
+    });
+    assert.equal(relaunchCalls, 1);
+    assert.deepEqual(evidence, {
+        credentialAuthenticated: true,
+        profileAvailable: true,
+        sameDisposableHome: true,
+        sessionMarkerPersisted: true,
+        status: 'verified',
+    });
+
+    await assert.rejects(
+        () => verifyPersonalHomeAppRelaunch({
+            env: initialEnv,
+            relaunchApp: async () => ({ env: { ...initialEnv, HOME: '/tmp/other-home' } }),
+            verifyAfterRelaunch: async () => ({
+                credentialAuthenticated: true,
+                profileAvailable: true,
+                sessionMarkerPersisted: true,
+            }),
+        }),
+        /same disposable OS home/u,
+    );
+    await assert.rejects(
+        () => verifyPersonalHomeAppRelaunch({
+            env: initialEnv,
+            relaunchApp: async () => ({ env: initialEnv }),
+            verifyAfterRelaunch: async () => ({
+                credentialAuthenticated: true,
+                profileAvailable: true,
+                sessionMarkerPersisted: false,
+            }),
+        }),
+        /profile, credential, and session marker/u,
     );
 });
 

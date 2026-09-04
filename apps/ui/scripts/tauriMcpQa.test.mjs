@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir, userInfo } from 'node:os';
 import { promisify } from 'node:util';
 import { dirname, join } from 'node:path';
@@ -104,7 +104,7 @@ test('tauri MCP QA can switch the one-shot loaded scenario to personal-home with
     assert.equal(payload.plan.qaScenario?.envOverrides?.HAPPIER_STACK_TAURI_IDENTIFIER, undefined);
 });
 
-test('tauri MCP QA personal-home diagnostics can still report partial evidence without certification mode', async () => {
+test('tauri MCP QA personal-home diagnostics can still report partial evidence without complete-verification mode', async () => {
     const scriptsDir = dirname(fileURLToPath(import.meta.url));
     const scriptPath = join(scriptsDir, 'tauriMcpQa.mjs');
 
@@ -151,10 +151,18 @@ test('tauri MCP QA personal-home execution propagates a disposable OS home while
     const plan = await module.resolveTauriMcpQaPlan({ argv: ['--personal-home'], env });
 
     assert.doesNotThrow(() => module.assertPersonalHomeQaLaunchIsolation({ plan, env }));
+    assert.doesNotThrow(() => module.assertPersonalHomeQaPrelaunchFactsEmpty({ plan, env }));
     assert.equal(plan.tauriDev.env?.HOME, disposableHome);
     assert.equal(plan.tauriDev.env?.USERPROFILE, disposableHome);
     assert.equal(plan.tauriDev.env?.CARGO_HOME, cargoHome);
     assert.equal(plan.tauriDev.env?.RUSTUP_HOME, rustupHome);
+
+    await mkdir(join(disposableHome, '.happier', 'self-host', 'config'), { recursive: true });
+    await writeFile(join(disposableHome, '.happier', 'self-host', 'config', 'server.env'), 'PORT=43123\n');
+    assert.throws(
+        () => module.assertPersonalHomeQaPrelaunchFactsEmpty({ plan, env }),
+        /empty prelaunch runtime facts/u,
+    );
 });
 
 test('tauri MCP QA personal-home launch never reuses another attachable app and never injects a stack server', async () => {
@@ -176,6 +184,81 @@ test('tauri MCP QA personal-home launch never reuses another attachable app and 
     assert.equal(module.shouldReuseAttachableTauriApp({ plan }), false);
     assert.doesNotMatch(plan.devUrl, /[?&]server=/u);
     assert.equal(plan.tauriDev.env?.HAPPIER_TAURI_WEB_RUNTIME_SERVER_URL, undefined);
+    assert.equal(plan.tauriDev.env?.HAPPIER_TAURI_PERSONAL_HOME_QA_OBSERVE_NO_WELCOME, '1');
+});
+
+test('personal-home scenario env carries fresh-prelaunch evidence only after the launch owner verified it', async () => {
+    const module = await import('./tauriMcpQa.mjs');
+    const plan = { qaScenario: { id: 'personal-home' }, tauriDev: { env: { HOME: '/disposable' } } };
+    const attachableApp = { driverSessionPort: 43123, resolvedAppIdentifier: 'com.happier.stack.personal-home' };
+
+    const unverified = module.buildTauriMcpQaScenarioEnv({ plan, effectiveEnv: {}, attachableApp });
+    assert.equal(unverified.HAPPIER_TAURI_PERSONAL_HOME_QA_FRESH_PRELAUNCH_VERIFIED, undefined);
+
+    const verified = module.buildTauriMcpQaScenarioEnv({
+        plan,
+        effectiveEnv: {},
+        attachableApp,
+        freshPrelaunchFactsVerified: true,
+    });
+    assert.equal(verified.HAPPIER_TAURI_PERSONAL_HOME_QA_FRESH_PRELAUNCH_VERIFIED, '1');
+});
+
+test('personal-home relaunch terminates the owned Tauri process and starts the same app against the same disposable OS home', async () => {
+    const module = await import('./tauriMcpQa.mjs');
+    const disposableHome = '/tmp/happier-personal-home-relaunch';
+    const initialTauri = { exitCode: null, pid: 101 };
+    const relaunchedTauri = { exitCode: null, pid: 202 };
+    const children = [initialTauri];
+    const calls = [];
+    const plan = {
+        cwd: '/repo/apps/ui',
+        logDir: '/repo/.project/logs/tauri',
+        qaScenario: { id: 'personal-home' },
+        tauriDev: {
+            args: ['tauri.js', 'dev'],
+            command: '/usr/bin/node',
+            cwd: '/repo/apps/ui/src-tauri',
+            env: {
+                HOME: disposableHome,
+                USERPROFILE: disposableHome,
+                HAPPIER_TAURI_PERSONAL_HOME_QA_HOME: disposableHome,
+            },
+        },
+    };
+    const result = await module.relaunchPersonalHomeTauriApp({
+        children,
+        currentTauriDev: initialTauri,
+        effectiveEnv: { HAPPIER_STACK_TAURI_IDENTIFIER: 'com.happier.stack.lane03-personal-home' },
+        plan,
+        spawnProcess: (invocation) => {
+            calls.push(['spawn', invocation]);
+            return relaunchedTauri;
+        },
+        terminateProcess: (child, signal) => {
+            calls.push(['terminate', child, signal]);
+            child.exitCode = 0;
+        },
+        waitForAttachable: async () => ({
+            driverSessionPort: 9444,
+            resolvedAppIdentifier: 'com.happier.stack.lane03-personal-home',
+        }),
+        waitForExit: async (child) => calls.push(['wait', child]),
+    });
+
+    assert.deepEqual(calls[0], ['terminate', initialTauri, 'SIGTERM']);
+    assert.deepEqual(calls[1], ['wait', initialTauri]);
+    assert.equal(calls[2][0], 'spawn');
+    assert.equal(calls[2][1].command, plan.tauriDev.command);
+    assert.deepEqual(calls[2][1].args, plan.tauriDev.args);
+    assert.equal(calls[2][1].env.HOME, disposableHome);
+    assert.equal(calls[2][1].env.USERPROFILE, disposableHome);
+    assert.equal(result.qaEnv.HOME, disposableHome);
+    assert.equal(result.qaEnv.USERPROFILE, disposableHome);
+    assert.equal(result.qaEnv.HAPPIER_TAURI_MCP_PORT, '9444');
+    assert.equal(result.tauriDev, relaunchedTauri);
+    assert.equal(children.includes(initialTauri), false);
+    assert.equal(children.at(-1), relaunchedTauri);
 });
 
 test('tauri MCP QA passes the exact loaded Personal Home OS home to the evidence scenario', async () => {
