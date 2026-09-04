@@ -51,21 +51,34 @@ export async function ensureExecutionRun(args: Readonly<{
   onPublicStateUpdated?: (runId: string) => void;
   profileCatalog?: ExecutionRunProfileContributionCatalog;
 }>): Promise<{ ok: boolean; errorCode?: string; error?: string }> {
-  const run = args.runs.get(args.runId);
+  let run = args.runs.get(args.runId);
   if (!run) return { ok: false, errorCode: 'execution_run_not_found', error: 'Not found' };
 
   const wantsResume = args.params.resume === true;
-  const ctrl = args.controllers.get(args.runId) ?? null;
+  let ctrl = args.controllers.get(args.runId) ?? null;
+  if (run.status !== 'running' && ctrl?.cancelled) {
+    const retiringVoiceAgentId = ctrl.kind === 'voice_agent' ? ctrl.voiceAgentId : null;
+    await ctrl.terminalPromise;
+    if (retiringVoiceAgentId) {
+      await args.voiceAgentManager.waitForRetirement(retiringVoiceAgentId);
+    }
+    run = args.runs.get(args.runId);
+    if (!run) return { ok: false, errorCode: 'execution_run_not_found', error: 'Not found' };
+    ctrl = args.controllers.get(args.runId) ?? null;
+  }
   if (run.status === 'running' && ctrl) return { ok: true };
   if (ctrl) return { ok: false, errorCode: 'execution_run_not_allowed', error: 'Resume already in progress' };
 
   if (!wantsResume) return { ok: false, errorCode: 'execution_run_not_allowed', error: 'Not running' };
   if (run.retentionPolicy !== 'resumable') return { ok: false, errorCode: 'execution_run_not_allowed', error: 'Not resumable' };
-  if (ctrl && ctrl.kind === 'voice_agent' && run.intent !== 'voice_agent') {
-    return { ok: false, errorCode: 'execution_run_not_allowed', error: 'Not supported' };
-  }
 
   if (run.intent === 'voice_agent') {
+    await args.voiceAgentManager.waitForRetirement(args.runId);
+    run = args.runs.get(args.runId);
+    if (!run) return { ok: false, errorCode: 'execution_run_not_found', error: 'Not found' };
+    ctrl = args.controllers.get(args.runId) ?? null;
+    if (run.status === 'running' && ctrl) return { ok: true };
+    if (ctrl) return { ok: false, errorCode: 'execution_run_not_allowed', error: 'Resume already in progress' };
     if (run.ioMode !== 'streaming') return { ok: false, errorCode: 'execution_run_not_allowed', error: 'Not supported' };
     const config = run.voiceAgentConfig ?? null;
     if (!config) return { ok: false, errorCode: 'execution_run_not_allowed', error: 'Missing voice agent config' };
@@ -184,16 +197,27 @@ export async function ensureExecutionRun(args: Readonly<{
       }
 
       const nextResumeHandle = args.voiceAgentManager.getResumeHandle(startedVoice.voiceAgentId) ?? resumeHandle;
-      args.runs.set(args.runId, {
+      const resumedRun: ExecutionRunState = {
         ...run,
         status: 'running',
         finishedAtMs: undefined,
         error: undefined,
         resumeHandle: nextResumeHandle,
         voiceAgentConfig: config,
-      });
+      };
+      args.runs.set(args.runId, resumedRun);
 
       await args.writeActivityMarker(args.runId, args.getNowMs(), { force: true });
+      if (
+        args.runs.get(args.runId) !== resumedRun
+        || !isExecutionRunControllerCurrent({
+          runId: args.runId,
+          controller: voiceCtrl,
+          controllers: args.controllers,
+        })
+      ) {
+        return { ok: false, errorCode: 'execution_run_not_allowed', error: 'Resume was superseded' };
+      }
       args.onPublicStateUpdated?.(args.runId);
       return { ok: true };
     } catch (error: unknown) {
@@ -235,6 +259,20 @@ export async function ensureExecutionRun(args: Readonly<{
     },
   });
   if (!resumed.ok) return resumed;
+  const resumedController = args.controllers.get(args.runId) ?? null;
+  const resumedRun = args.runs.get(args.runId) ?? null;
   await args.writeActivityMarker(args.runId, args.getNowMs(), { force: true });
+  if (
+    !resumedController
+    || !resumedRun
+    || args.runs.get(args.runId) !== resumedRun
+    || !isExecutionRunControllerCurrent({
+      runId: args.runId,
+      controller: resumedController,
+      controllers: args.controllers,
+    })
+  ) {
+    return { ok: false, errorCode: 'execution_run_not_allowed', error: 'Resume was superseded' };
+  }
   return { ok: true };
 }

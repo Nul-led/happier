@@ -88,6 +88,43 @@ class DeferredUpdateSession extends FakeSession {
   }
 }
 
+class PostClaimCompletionDeferredSession extends FakeSession {
+  readonly completionUpdateStarted = createDeferred<void>();
+  private readonly releaseCompletion = createDeferred<void>();
+  private deferAfterNextClaimObservation = false;
+  private deferFollowingUpdate = false;
+  private deferredUpdater: ((state: any) => any) | null = null;
+
+  armAfterNextClaimObservation(): void {
+    this.deferAfterNextClaimObservation = true;
+  }
+
+  releaseCompletionUpdate(): void {
+    this.releaseCompletion.resolve();
+  }
+
+  override updateAgentState(updater: any) {
+    if (this.deferFollowingUpdate && !this.deferredUpdater) {
+      this.deferredUpdater = updater;
+      this.completionUpdateStarted.resolve();
+      return this.releaseCompletion.promise.then(() => super.updateAgentState(updater));
+    }
+    const result = super.updateAgentState(updater);
+    if (
+      this.deferAfterNextClaimObservation
+      && Object.values(this.agentState.requests ?? {}).some((request: any) => (
+        request
+        && typeof request === 'object'
+        && Object.hasOwn(request, 'permissionResponseClaimV1')
+      ))
+    ) {
+      this.deferAfterNextClaimObservation = false;
+      this.deferFollowingUpdate = true;
+    }
+    return result;
+  }
+}
+
 class TestPermissionHandler extends BasePermissionHandler {
   private remoteMediationAllowEligible = true;
 
@@ -153,16 +190,28 @@ function startBlockedRemoteSettlement(params: Readonly<{
   scope?: 'request' | 'session';
   respectAbort?: boolean;
   pauseAfterCreate?: boolean;
+  pauseAfterInitialRead?: boolean;
+  pauseBeforeCompletion?: boolean;
 }>) {
-  const session = new FakeSession();
+  const completionSession = params.pauseBeforeCompletion ? new PostClaimCompletionDeferredSession() : null;
+  const session = completionSession ?? new FakeSession();
   const turnId = `turn-${params.requestId}`;
   const rowCreateStarted = createDeferred<void>();
   const releaseRowCreate = createDeferred<void>();
+  const preCasReached = createDeferred<void>();
+  const releasePreCas = createDeferred<void>();
+  let readCount = 0;
   let stored: PermissionMediationStoredRecord | null = null;
   const recordStore: PermissionMediationRecordStore = {
-    read: vi.fn(async () => (
-      stored ? { status: 'found' as const, stored } : { status: 'absent' as const }
-    )),
+    read: vi.fn(async () => {
+      const result = stored ? { status: 'found' as const, stored } : { status: 'absent' as const };
+      readCount += 1;
+      if (params.pauseAfterInitialRead && readCount === 1) {
+        preCasReached.resolve();
+        await releasePreCas.promise;
+      }
+      return result;
+    }),
     createExpectedAbsent: vi.fn(async (input) => {
       if (params.pauseAfterCreate) {
         if (stored) return { status: 'conflict' as const };
@@ -170,6 +219,7 @@ function startBlockedRemoteSettlement(params: Readonly<{
         stored = created;
         rowCreateStarted.resolve();
         await releaseRowCreate.promise;
+        completionSession?.armAfterNextClaimObservation();
         return { status: 'created' as const, stored: created };
       }
       rowCreateStarted.resolve();
@@ -177,6 +227,7 @@ function startBlockedRemoteSettlement(params: Readonly<{
       if (params.respectAbort && input.signal?.aborted) return { status: 'unavailable' as const };
       if (stored) return { status: 'conflict' as const };
       stored = { identity: input.identity, kind: input.kind, record: input.record, revision: `ssr1.${params.requestId}` };
+      completionSession?.armAfterNextClaimObservation();
       return { status: 'created' as const, stored };
     }),
     list: vi.fn(async () => ({
@@ -240,8 +291,12 @@ function startBlockedRemoteSettlement(params: Readonly<{
     remote,
     rowCreateStarted,
     releaseRowCreate,
+    preCasReached,
+    releasePreCas,
     response,
     sourceAuthority,
+    completionUpdateStarted: completionSession?.completionUpdateStarted.promise ?? Promise.resolve(),
+    releaseCompletionUpdate: () => completionSession?.releaseCompletionUpdate(),
     readStored: () => stored,
   };
 }
@@ -1701,30 +1756,82 @@ describe('BasePermissionHandler allowlist', () => {
     }
   });
 
-  it('keeps a claimed remote settlement current when cancelAll runs during its blocked row CAS', async () => {
+  it('rejects a claimed remote settlement when turn cancellation wins before its row CAS', async () => {
+    const race = startBlockedRemoteSettlement({
+      requestId: 'remote-cancel-all-before-cas',
+      pauseAfterInitialRead: true,
+    });
+
+    try {
+      await race.preCasReached.promise;
+      await expect(race.handler.reset()).resolves.toBeUndefined();
+      await expect(race.pending).rejects.toThrow('Session reset');
+
+      race.releasePreCas.resolve();
+      await expect(race.remote).resolves.toEqual({ status: 'rejected', code: 'requestNotPending' });
+      expect(race.recordStore.createExpectedAbsent).not.toHaveBeenCalled();
+      expect(race.readStored()).toBeNull();
+      expect(race.session.agentState.completedRequests['remote-cancel-all-before-cas']).toEqual(expect.objectContaining({
+        status: 'canceled',
+        decision: 'abort',
+      }));
+    } finally {
+      race.releasePreCas.resolve();
+      race.releaseRowCreate.resolve();
+      await Promise.allSettled([race.remote, race.pending]);
+      await race.handler.reset();
+    }
+  });
+
+  it('rejects a claimed remote settlement when plugin cancellation wins before its row CAS', async () => {
+    const race = startBlockedRemoteSettlement({
+      requestId: 'remote-cancel-plugin-before-cas',
+      owner: { kind: 'plugin', pluginId: 'happier.channels', runtimeId: 'channels-runtime' },
+      pauseAfterInitialRead: true,
+    });
+
+    try {
+      await race.preCasReached.promise;
+      await expect(race.handler.cancelByPlugin('happier.channels', 'plugin_deactivated')).resolves.toBeUndefined();
+      await expect(race.pending).rejects.toThrow('plugin_deactivated');
+
+      race.releasePreCas.resolve();
+      await expect(race.remote).resolves.toEqual({ status: 'rejected', code: 'requestNotPending' });
+      expect(race.recordStore.createExpectedAbsent).not.toHaveBeenCalled();
+      expect(race.readStored()).toBeNull();
+      expect(race.session.agentState.completedRequests['remote-cancel-plugin-before-cas']).toEqual(expect.objectContaining({
+        status: 'canceled',
+        decision: 'abort',
+        reason: 'plugin_deactivated',
+      }));
+    } finally {
+      race.releasePreCas.resolve();
+      race.releaseRowCreate.resolve();
+      await Promise.allSettled([race.remote, race.pending]);
+      await race.handler.reset();
+    }
+  });
+
+  it('neutralizes a claimed remote settlement when turn cancellation races its row CAS', async () => {
     const race = startBlockedRemoteSettlement({ requestId: 'remote-cancel-all-race' });
 
     try {
       await race.rowCreateStarted.promise;
       await expect(race.handler.reset()).resolves.toBeUndefined();
 
-      expect(await settledState(race.pending)).toBe('pending');
-      expect(race.session.agentState.requests['remote-cancel-all-race']).toBeDefined();
-      expect(race.session.agentState.completedRequests['remote-cancel-all-race']).toBeUndefined();
+      await expect(race.pending).rejects.toThrow('Session reset');
+      expect(race.session.agentState.requests['remote-cancel-all-race']).toBeUndefined();
+      expect(race.session.agentState.completedRequests['remote-cancel-all-race']).toEqual(expect.objectContaining({
+        status: 'canceled',
+        decision: 'abort',
+      }));
 
       race.releaseRowCreate.resolve();
-      await expect(race.remote).resolves.toEqual(expect.objectContaining({
-        status: 'applied',
-        requestId: 'remote-cancel-all-race',
-        decision: 'allow',
-        effect: { kind: 'allowOnce' },
-      }));
-      await expect(race.pending).resolves.toEqual({ decision: 'approved' });
-      expect(race.readStored()).toEqual(expect.objectContaining({ kind: 'remote_settlement.v1' }));
+      await expect(race.remote).resolves.toEqual({ status: 'rejected', code: 'requestNotPending' });
+      expect(race.readStored()).toBeNull();
       expect(race.session.agentState.completedRequests['remote-cancel-all-race']).toEqual(expect.objectContaining({
-        status: 'approved',
-        decision: 'approved',
-        remoteMediationSettlementId: expect.any(String),
+        status: 'canceled',
+        decision: 'abort',
       }));
     } finally {
       race.releaseRowCreate.resolve();
@@ -1733,7 +1840,7 @@ describe('BasePermissionHandler allowlist', () => {
     }
   });
 
-  it('keeps a claimed remote settlement current when cancelByPlugin runs during its blocked row CAS', async () => {
+  it('neutralizes a claimed remote settlement when plugin cancellation races its row CAS', async () => {
     const race = startBlockedRemoteSettlement({
       requestId: 'remote-cancel-plugin-race',
       owner: { kind: 'plugin', pluginId: 'happier.channels', runtimeId: 'channels-runtime' },
@@ -1743,26 +1850,62 @@ describe('BasePermissionHandler allowlist', () => {
       await race.rowCreateStarted.promise;
       await expect(race.handler.cancelByPlugin('happier.channels', 'plugin_deactivated')).resolves.toBeUndefined();
 
-      expect(await settledState(race.pending)).toBe('pending');
-      expect(race.session.agentState.requests['remote-cancel-plugin-race']).toBeDefined();
-      expect(race.session.agentState.completedRequests['remote-cancel-plugin-race']).toBeUndefined();
+      await expect(race.pending).rejects.toThrow('plugin_deactivated');
+      expect(race.session.agentState.requests['remote-cancel-plugin-race']).toBeUndefined();
+      expect(race.session.agentState.completedRequests['remote-cancel-plugin-race']).toEqual(expect.objectContaining({
+        status: 'canceled',
+        decision: 'abort',
+        reason: 'plugin_deactivated',
+      }));
 
       race.releaseRowCreate.resolve();
-      await expect(race.remote).resolves.toEqual(expect.objectContaining({
-        status: 'applied',
-        requestId: 'remote-cancel-plugin-race',
-        decision: 'allow',
-        effect: { kind: 'allowOnce' },
-      }));
-      await expect(race.pending).resolves.toEqual({ decision: 'approved' });
-      expect(race.readStored()).toEqual(expect.objectContaining({ kind: 'remote_settlement.v1' }));
+      await expect(race.remote).resolves.toEqual({ status: 'rejected', code: 'requestNotPending' });
+      expect(race.readStored()).toBeNull();
       expect(race.session.agentState.completedRequests['remote-cancel-plugin-race']).toEqual(expect.objectContaining({
-        status: 'approved',
-        decision: 'approved',
-        remoteMediationSettlementId: expect.any(String),
+        status: 'canceled',
+        decision: 'abort',
+        reason: 'plugin_deactivated',
       }));
     } finally {
       race.releaseRowCreate.resolve();
+      await Promise.allSettled([race.remote, race.pending]);
+      await race.handler.reset();
+    }
+  });
+
+  it('neutralizes a claimed remote settlement when plugin cancellation wins after its row CAS', async () => {
+    const race = startBlockedRemoteSettlement({
+      requestId: 'remote-cancel-plugin-after-cas',
+      owner: { kind: 'plugin', pluginId: 'happier.channels', runtimeId: 'channels-runtime' },
+      pauseBeforeCompletion: true,
+    });
+    const pendingRejected = expect(race.pending).rejects.toThrow('plugin_deactivated');
+
+    try {
+      await race.rowCreateStarted.promise;
+      race.releaseRowCreate.resolve();
+      await race.completionUpdateStarted;
+      expect(race.readStored()).toEqual(expect.objectContaining({ kind: 'remote_settlement.v1' }));
+
+      const canceled = race.handler.cancelByPlugin('happier.channels', 'plugin_deactivated');
+      race.releaseCompletionUpdate();
+
+      await expect(canceled).resolves.toBeUndefined();
+      await pendingRejected;
+      await expect(race.remote).resolves.toEqual({ status: 'rejected', code: 'requestNotPending' });
+      expect(race.readStored()).toBeNull();
+      expect(race.session.agentState.completedRequests['remote-cancel-plugin-after-cas']).toEqual(expect.objectContaining({
+        status: 'canceled',
+        decision: 'abort',
+        reason: 'plugin_deactivated',
+      }));
+
+      await expect(race.handler.respondToMediatedPendingPermission(race.response)).resolves.toEqual({
+        status: 'rejected',
+        code: 'requestNotPending',
+      });
+    } finally {
+      race.releaseCompletionUpdate();
       await Promise.allSettled([race.remote, race.pending]);
       await race.handler.reset();
     }

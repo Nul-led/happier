@@ -19,6 +19,7 @@ import {
   createAutomationClaimClient,
   isMissingAutomationWorkerEndpointError,
 } from './automationClaimClient';
+import { executeClaimedRun } from './automationRunExecutor';
 
 const CLAIM_CURRENTNESS = {
   mode: 'plain' as const,
@@ -50,6 +51,8 @@ const START_RESPONSE = {
     claimedByMachineId: 'm1',
     leaseExpiresAt: 1_723_247_231_000,
     attempt: 2,
+    revision: 1,
+    triggerRetired: false,
     errorCode: null,
     producedSessionId: null,
     executionDispatchState: null,
@@ -158,7 +161,7 @@ describe('createAutomationClaimClient', () => {
     });
   });
 
-  it('claims current V3 runs with machine and lease parameters after current assignment negotiation', async () => {
+  it('claims and executes an exact released-V2 frozen input through the current V3 lifecycle', async () => {
     axiosGet.mockResolvedValue({ data: { assignments: [], settings: DEFAULT_WORKER_SETTINGS } });
     const frozenExecutionInput = JSON.stringify({
       kind: 'happier_automation_run_execution_input_v1',
@@ -168,26 +171,46 @@ describe('createAutomationClaimClient', () => {
         kind: 'happier_automation_template_plain_v1',
         payload: { directory: '/tmp/frozen-claim' },
       }),
-      cause: { kind: 'manual', invokedAt: 1_723_247_201_000 },
+      origin: { kind: 'manual', invokedAt: 1_723_247_201_000 },
     });
-    axiosPost.mockResolvedValue({
-      data: {
-        run: {
-          id: 'run-1',
-          automationId: 'automation-1',
-          attempt: 1,
-          triggerId: null,
-          cause: { kind: 'manual', invokedAt: 1_723_247_201_000 },
-          executionInputEnvelope: frozenExecutionInput,
-        },
-        automation: { id: 'automation-1', name: 'Frozen', enabled: true },
-        accountCurrentness: CLAIM_CURRENTNESS,
+    const claimResponse = {
+      run: {
+        id: 'run-1',
+        automationId: 'automation-1',
+        attempt: 1,
+        triggerId: null,
+        triggerRetired: false,
+        cause: { kind: 'manual' as const, invokedAt: 1_723_247_201_000 },
+        executionInputEnvelope: frozenExecutionInput,
       },
+      automation: { id: 'automation-1', name: 'Frozen', enabled: true },
+      accountCurrentness: CLAIM_CURRENTNESS,
+    };
+    axiosPost.mockImplementation(async (url: string) => {
+      if (url.endsWith('/v3/automations/runs/claim')) return { data: claimResponse };
+      if (url.endsWith('/v3/automations/runs/run-1/start')) {
+        return {
+          data: {
+            ...START_RESPONSE,
+            run: {
+              ...START_RESPONSE.run,
+              id: 'run-1',
+              automationId: 'automation-1',
+              attempt: 1,
+              revision: 1,
+              triggerRetired: false,
+            },
+          },
+        };
+      }
+      if (url.endsWith('/v3/automations/runs/run-1/succeed')) return { data: { ok: true } };
+      throw new Error(`Unexpected POST ${url}`);
     });
 
     const client = createAutomationClaimClient({ token: 'token-abc' });
     await client.fetchAssignments('machine-2');
-    await expect(client.claimRun({ machineId: 'machine-2', leaseDurationMs: 45_000 })).resolves.toEqual({
+    const claimed = await client.claimRun({ machineId: 'machine-2', leaseDurationMs: 45_000 });
+    expect(claimed).toEqual({
       protocol: 'v3',
       run: {
         id: 'run-1',
@@ -201,6 +224,42 @@ describe('createAutomationClaimClient', () => {
       automation: { id: 'automation-1', name: 'Frozen', enabled: true },
       accountCurrentness: CLAIM_CURRENTNESS,
     });
+
+    if (claimed.run === null) throw new Error('Expected an exact claimed Run');
+    const spawnSession = vi.fn(async () => ({
+      type: 'success' as const,
+      sessionId: 'session-frozen-v2',
+    }));
+    await executeClaimedRun({
+      token: 'token-abc',
+      machineId: 'machine-2',
+      claimClient: client,
+      spawnSession,
+      heartbeatMs: 60_000,
+      leaseDurationMs: 45_000,
+      resolveAutomationAccountEncryption: vi.fn()
+        .mockResolvedValueOnce({ kind: 'available', witness: CLAIM_CURRENTNESS })
+        .mockResolvedValueOnce({ kind: 'available', witness: START_CURRENTNESS })
+        .mockResolvedValueOnce({ kind: 'available', witness: START_CURRENTNESS }),
+      claimed,
+    });
+
+    expect(spawnSession).toHaveBeenCalledWith(expect.objectContaining({
+      directory: '/tmp/frozen-claim',
+    }));
+    expect(axiosPost).toHaveBeenCalledWith(
+      expect.stringMatching(/\/v3\/automations\/runs\/run-1\/start$/),
+      expect.objectContaining({ accountCurrentness: CLAIM_CURRENTNESS }),
+      expect.anything(),
+    );
+    expect(axiosPost).toHaveBeenCalledWith(
+      expect.stringMatching(/\/v3\/automations\/runs\/run-1\/succeed$/),
+      expect.objectContaining({
+        accountCurrentness: START_CURRENTNESS,
+        producedSessionId: 'session-frozen-v2',
+      }),
+      expect.anything(),
+    );
 
     expect(axiosPost).toHaveBeenCalledWith(
       expect.stringMatching(/\/v3\/automations\/runs\/claim$/),
@@ -272,12 +331,13 @@ describe('createAutomationClaimClient', () => {
       triggerId: 'trigger-parent-turn',
       triggerRevision: 7,
       triggerKind: 'sessionLifecycle' as const,
-      occurrenceKey: 'parent-turn-completed:session-1:turn-1',
+      occurrenceKey: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
       occurredAt: 1_723_247_201_000,
       evidence: {
         event: 'parentTurnCompleted' as const,
         sourceSessionId: 'session-1',
         sourceTurnId: 'turn-1',
+        policy: { kind: 'currentTurn' as const, sourceTurnId: 'turn-1' },
       },
     };
     axiosPost.mockResolvedValue({
@@ -287,6 +347,7 @@ describe('createAutomationClaimClient', () => {
           automationId: 'automation-parent-turn',
           attempt: 1,
           triggerId: 'trigger-parent-turn',
+          triggerRetired: false,
           cause,
           executionInputEnvelope: JSON.stringify({ v: 1 }),
         },
@@ -347,6 +408,7 @@ describe('createAutomationClaimClient', () => {
           automationId: 'automation-final',
           attempt: 1,
           triggerId: null,
+          triggerRetired: false,
           cause: {
             kind: 'conversation',
             occurrenceKey: 'A'.repeat(43),
@@ -746,6 +808,7 @@ describe('createAutomationClaimClient', () => {
             automationId: 'automation-event',
             attempt: 1,
             triggerId: 'trigger-event',
+            triggerRetired: false,
             cause: {
               kind: 'trigger',
               triggerId: 'trigger-event',

@@ -354,6 +354,13 @@ describe('projectRuntimeTranscriptEvent', () => {
 
     expect(session.enqueueUserTextMessageCommitted).toHaveBeenCalledWith('terminal-origin prompt', {
       localId: 'runtime-user-1',
+      meta: {
+        happierProvenanceV1: {
+          v: 1,
+          kind: 'host',
+          producer: 'runtimeTranscript',
+        },
+      },
       createdAt: 1,
       updatedAt: 1,
       provenance: { kind: 'non_dependent', source: 'external' },

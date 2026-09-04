@@ -1,4 +1,8 @@
-import { AgentSessionRuntimeEventSchema, type SessionTranscriptObservationProvenanceV1 } from '@happier-dev/protocol';
+import {
+  AgentSessionRuntimeEventSchema,
+  buildSessionTranscriptMessageProvenanceV1,
+  type SessionTranscriptObservationProvenanceV1,
+} from '@happier-dev/protocol';
 
 import { createAcpToolIdentity } from '@/agent/acp/toolCalls';
 import {
@@ -517,6 +521,9 @@ export async function projectRuntimeTranscriptEvent(params: Readonly<{
       session: params.session,
       text: event.text,
       localId: event.messageId,
+      meta: {
+        happierProvenanceV1: buildSessionTranscriptMessageProvenanceV1('runtimeTranscript'),
+      },
       ...observation,
       eventKind: event.kind,
       ...(params.admission === undefined ? {} : { admission: params.admission }),

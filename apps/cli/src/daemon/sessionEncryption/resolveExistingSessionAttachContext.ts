@@ -5,6 +5,7 @@ import {
   SessionSharedMetadataV1Schema,
   projectSessionOwnerCompatibilityViewV1,
   readAcpConfiguredBackendV1FromMetadata,
+  readLegacyConfiguredAcpBackendId,
   resolveLinkedExternalSessionMetadataV1,
   type BackendTargetRefV1,
   type SessionOwnerMetadataEnvelopeV1,
@@ -190,18 +191,11 @@ function buildAttachSnapshot(params: Readonly<{
   };
 }
 
-function readConfiguredAcpBackendIdFromFlavor(metadata: Record<string, unknown>): string | null {
-  const flavor = typeof metadata.flavor === 'string' ? metadata.flavor.trim() : '';
-  if (!flavor.startsWith('acp:')) return null;
-  const backendId = flavor.slice(4).trim();
-  return backendId || null;
-}
-
 function resolveExistingSessionBackendTarget(metadataRecord: Record<string, unknown> | null): BackendTargetRefV1 | null {
   if (!metadataRecord) return null;
 
   const configuredBackendId = readAcpConfiguredBackendV1FromMetadata(metadataRecord)?.backendId
-    ?? readConfiguredAcpBackendIdFromFlavor(metadataRecord);
+    ?? readLegacyConfiguredAcpBackendId(metadataRecord.flavor);
   if (configuredBackendId) {
     return {
       kind: 'configuredAcpBackend',

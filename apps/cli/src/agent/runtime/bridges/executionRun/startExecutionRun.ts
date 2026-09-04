@@ -440,6 +440,26 @@ export async function startExecutionRun(args: Readonly<{
         ? args.params.disabledActionIds.map((value) => String(value ?? '').trim()).filter(Boolean)
         : [];
 
+      // Register the accepted Voice run before entering provider provisioning.
+      // VoiceAgentManager claims the same stable id synchronously, so stop can
+      // reach that exact start occurrence while provision/READY awaits are live.
+      const ctrl: ExecutionRunVoiceAgentController = {
+        kind: 'voice_agent',
+        voiceAgentId: runId,
+        cancelled: false,
+        lastMarkerWriteAtMs: 0,
+        terminalPromise,
+        resolveTerminal,
+        transcript: { persistenceMode, epoch },
+        externalStreamIdByInternal: new Map(),
+        internalStreamIdByExternal: new Map(),
+        pendingTranscriptTurnByExternalStreamId: new Map(),
+        terminalReadByExternalStreamId: new Map(),
+        readInFlightByExternalStreamId: new Map(),
+      };
+      args.controllers.set(runId, ctrl);
+      registeredController = ctrl;
+
       const startedVoice = await args.voiceAgentManager.start({
         voiceAgentId: runId,
         backendTarget: args.params.backendTarget,
@@ -499,7 +519,10 @@ export async function startExecutionRun(args: Readonly<{
           }
         },
       });
-      if (args.runs.get(runId)?.status !== 'running') {
+      if (
+        args.runs.get(runId)?.status !== 'running'
+        || !isExecutionRunControllerCurrent({ runId, controller: ctrl, controllers: args.controllers })
+      ) {
         try {
           await args.voiceAgentManager.stop({ voiceAgentId: startedVoice.voiceAgentId });
         } catch {
@@ -534,22 +557,6 @@ export async function startExecutionRun(args: Readonly<{
         args.onPublicStateUpdated?.(runId);
       }
 
-      const ctrl: ExecutionRunVoiceAgentController = {
-        kind: 'voice_agent',
-        voiceAgentId: startedVoice.voiceAgentId,
-        cancelled: false,
-        lastMarkerWriteAtMs: 0,
-        terminalPromise,
-        resolveTerminal,
-        transcript: { persistenceMode, epoch },
-        externalStreamIdByInternal: new Map(),
-        internalStreamIdByExternal: new Map(),
-        pendingTranscriptTurnByExternalStreamId: new Map(),
-        terminalReadByExternalStreamId: new Map(),
-        readInFlightByExternalStreamId: new Map(),
-      };
-      args.controllers.set(runId, ctrl);
-      registeredController = ctrl;
       await args.writeActivityMarker(runId, args.getNowMs(), { force: true }).catch(() => {});
       return { runId, callId, sidechainId };
     }

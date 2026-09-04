@@ -93,6 +93,13 @@ function wrapRuntimeTurnOperationsWithPublication(params: Readonly<{
     async cancelTurn() {
       await params.runtime.cancelTurn();
     },
+    ...(typeof params.runtime.readActiveTurnInputId === 'function'
+      ? {
+          readActiveTurnInputId() {
+            return params.runtime.readActiveTurnInputId?.() ?? null;
+          },
+        }
+      : {}),
     readSessionIdentity() {
       return params.runtime.readSessionIdentity();
     },

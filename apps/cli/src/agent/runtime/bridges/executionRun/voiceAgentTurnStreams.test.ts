@@ -58,7 +58,16 @@ describe('voiceAgentTurnStreams', () => {
     expect(result).toEqual({ ok: true });
     expect(appendUserTextCommitted).toHaveBeenCalledWith(
       'User-visible text',
-      expect.objectContaining({ localId: 'local-display' }),
+      expect.objectContaining({
+        localId: 'local-display',
+        meta: expect.objectContaining({
+          happierProvenanceV1: {
+            v: 1,
+            kind: 'host',
+            producer: 'executionRunVoice',
+          },
+        }),
+      }),
     );
 
     await expect(commitVoiceAgentUserTranscript({
@@ -240,6 +249,11 @@ describe('voiceAgentTurnStreams', () => {
     expect(userTextCommitted).toHaveBeenCalledTimes(1);
     expect(commitVoiceAgentTranscriptTurn).toHaveBeenCalledTimes(1);
     expect(userTextCommitted.mock.calls[0]?.[1]).toMatchObject({
+      happierProvenanceV1: {
+        v: 1,
+        kind: 'host',
+        producer: 'executionRunVoice',
+      },
       happier: {
         kind: 'voice_agent_turn.v1',
         payload: {

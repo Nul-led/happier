@@ -144,12 +144,16 @@ describe('engineRegistry account-configured ACP ingestion', () => {
       },
     });
 
-    expect(() => resolution?.engineAdapter.runtimeCore.createExecutionRunBackend({
+    const executionRuntime = resolution?.engineAdapter.runtimeCore.createExecutionRunBackend({
       cwd: '/workspace',
+      runId: 'configured-acp-run',
       backendId: 'account-configured-acp',
       permissionMode: 'read_only',
       accountSettings: accountSettingsParse({}),
-    })).toThrow('Session-derived execution run requires parent Session host custody');
+      start: { intent: 'review' },
+    });
+    await expect(executionRuntime?.readResumeSupport()).resolves.toBe(true);
+    await executionRuntime?.dispose();
   });
 
   it('resolves account-configured ACP backends through resolveBackendEngineAdapterResolution', async () => {

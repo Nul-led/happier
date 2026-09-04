@@ -101,6 +101,7 @@ async function startAutomationServer(params: {
   claimRunOnce: { run: Record<string, unknown>; automation: Record<string, unknown> } | null;
   assignments?: AutomationDaemonAssignmentsResponse['assignments'];
   missingAutomationRoutes?: boolean;
+  workerProtocol?: 'v2' | 'v3';
 }): Promise<{ baseUrl: string; close: () => Promise<void>; state: RecordedState }> {
   const state: RecordedState = {
     requests: [],
@@ -114,49 +115,108 @@ async function startAutomationServer(params: {
   };
 
   let claimConsumed = false;
+  const workerProtocol = params.workerProtocol ?? 'v2';
+  let accountCurrentnessVersion = 1;
 
   const server = createServer(async (request, response) => {
     const url = new URL(request.url ?? '/', 'http://127.0.0.1');
     state.requests.push(`${String(request.method ?? 'GET').toUpperCase()} ${url.pathname}`);
 
-    if (!params.missingAutomationRoutes && request.method === 'GET' && url.pathname === '/v2/automations/daemon/assignments') {
+    if (!params.missingAutomationRoutes && request.method === 'GET' && url.pathname === `/${workerProtocol}/automations/${workerProtocol === 'v3' ? 'worker' : 'daemon'}/assignments`) {
       const machineId = url.searchParams.get('machineId') ?? 'machine-unknown';
       const assignments =
         params.assignments ??
         (params.claimRunOnce ? buildDefaultAssignments({ machineId, claimRunOnce: params.claimRunOnce }) : []);
-      writeJson(response, 200, { assignments });
+      writeJson(response, 200, workerProtocol === 'v3'
+        ? {
+          assignments: assignments.map((assignment) => ({
+            machineId: assignment.machineId,
+            automationId: assignment.automation.id,
+            nextClaimAt: assignment.automation.nextRunAt,
+          })),
+          settings: { maxActiveRunsPerMachine: 4 },
+        }
+        : { assignments });
       return;
     }
 
-    if (!params.missingAutomationRoutes && request.method === 'POST' && url.pathname === '/v2/automations/runs/claim') {
+    if (!params.missingAutomationRoutes && request.method === 'POST' && url.pathname === `/${workerProtocol}/automations/runs/claim`) {
       if (!claimConsumed && params.claimRunOnce) {
         claimConsumed = true;
-        writeJson(response, 200, params.claimRunOnce);
+        writeJson(response, 200, workerProtocol === 'v3'
+          ? {
+            ...params.claimRunOnce,
+            accountCurrentness: {
+              mode: 'plain',
+              version: 1,
+              contentKeyFingerprint: null,
+            },
+          }
+          : params.claimRunOnce);
         return;
       }
-      writeJson(response, 200, { run: null, automation: null });
+      writeJson(response, 200, workerProtocol === 'v3'
+        ? { run: null, automation: null, accountCurrentness: null }
+        : { run: null, automation: null });
       return;
     }
 
-    if (request.method === 'POST' && /\/v2\/automations\/runs\/.+\/start$/.test(url.pathname)) {
-      state.started.push(await readJsonBody(request));
-      writeJson(response, 200, { ok: true });
+    if (request.method === 'POST' && /\/v[23]\/automations\/runs\/.+\/start$/.test(url.pathname)) {
+      const body = await readJsonBody(request);
+      state.started.push(body);
+      const claimedRun = params.claimRunOnce?.run;
+      const now = Date.now();
+      if (workerProtocol === 'v3') accountCurrentnessVersion = 2;
+      writeJson(response, 200, workerProtocol === 'v3'
+        ? {
+          run: {
+            id: String(claimedRun?.id),
+            automationId: String(claimedRun?.automationId),
+            state: 'running',
+            triggerId: claimedRun?.triggerId ?? null,
+            triggerRetired: false,
+            cause: claimedRun?.cause,
+            dueAt: now,
+            claimedAt: now,
+            startedAt: now,
+            finishedAt: null,
+            claimedByMachineId: (body as { machineId?: unknown } | null)?.machineId ?? null,
+            leaseExpiresAt: now + 30_000,
+            attempt: claimedRun?.attempt ?? 1,
+            revision: 1,
+            errorCode: null,
+            producedSessionId: null,
+            executionDispatchState: null,
+            executionAttempt: 0,
+            replyHandoffState: 'none',
+            replyHandoffAttempt: 0,
+            replyHandoffDueAt: null,
+            createdAt: now,
+            updatedAt: now,
+          },
+          accountCurrentness: {
+            mode: 'plain',
+            version: accountCurrentnessVersion,
+            contentKeyFingerprint: null,
+          },
+        }
+        : { ok: true });
       return;
     }
 
-    if (request.method === 'POST' && /\/v2\/automations\/runs\/.+\/heartbeat$/.test(url.pathname)) {
+    if (request.method === 'POST' && /\/v[23]\/automations\/runs\/.+\/heartbeat$/.test(url.pathname)) {
       state.heartbeats.push(await readJsonBody(request));
       writeJson(response, 200, { ok: true });
       return;
     }
 
-    if (request.method === 'POST' && /\/v2\/automations\/runs\/.+\/succeed$/.test(url.pathname)) {
+    if (request.method === 'POST' && /\/v[23]\/automations\/runs\/.+\/succeed$/.test(url.pathname)) {
       state.succeeded.push(await readJsonBody(request));
       writeJson(response, 200, { ok: true });
       return;
     }
 
-    if (request.method === 'POST' && /\/v2\/automations\/runs\/.+\/fail$/.test(url.pathname)) {
+    if (request.method === 'POST' && /\/v[23]\/automations\/runs\/.+\/fail$/.test(url.pathname)) {
       state.failed.push(await readJsonBody(request));
       writeJson(response, 200, { ok: true });
       return;
@@ -165,7 +225,7 @@ async function startAutomationServer(params: {
     if (request.method === 'GET' && url.pathname === '/v1/account/encryption/currentness') {
       writeJson(response, 200, {
         mode: 'plain',
-        version: 1,
+        version: accountCurrentnessVersion,
         signingKeyFingerprint: null,
         contentKeyFingerprint: null,
         updatedAt: 1,
@@ -350,6 +410,94 @@ describe('automationWorker integration', () => {
           producedSessionId: 'session-1',
         }),
       );
+    } finally {
+      worker.stop();
+      await server.close();
+      await rm(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  it('executes a released-V2 frozen input through the V3 HTTP client and executor lifecycle', async () => {
+    const invokedAt = Date.now();
+    const frozenInput = JSON.stringify({
+      kind: 'happier_automation_run_execution_input_v1',
+      targetType: 'new_session',
+      templateVersion: 1,
+      templateCiphertext: JSON.stringify({
+        kind: 'happier_automation_template_plain_v1',
+        payload: { directory: '/tmp/released-v2-frozen' },
+      }),
+      origin: { kind: 'manual', invokedAt },
+    });
+    const server = await startAutomationServer({
+      workerProtocol: 'v3',
+      claimRunOnce: {
+        run: {
+          id: 'run-v2-frozen-through-v3',
+          automationId: 'automation-v2-frozen-through-v3',
+          attempt: 1,
+          triggerId: null,
+          triggerRetired: false,
+          cause: { kind: 'manual', invokedAt },
+          executionInputEnvelope: frozenInput,
+        },
+        automation: {
+          id: 'automation-v2-frozen-through-v3',
+          name: 'Mutable definition ignored',
+          enabled: true,
+          targetType: 'new_session',
+          templateCiphertext: JSON.stringify({
+            kind: 'happier_automation_template_plain_v1',
+            payload: { directory: '/tmp/mutated-definition' },
+          }),
+        },
+      },
+    });
+    const homeDir = await mkdtemp(join(tmpdir(), 'happier-automation-v2-via-v3-'));
+    process.env.HAPPIER_HOME_DIR = homeDir;
+    process.env.HAPPIER_SERVER_URL = server.baseUrl;
+    process.env.HAPPIER_WEBAPP_URL = server.baseUrl;
+
+    vi.resetModules();
+    const { startAutomationWorker } = await import('./automationWorker');
+    const spawnSession = vi.fn(async () => ({
+      type: 'success' as const,
+      sessionId: 'session-v2-frozen-through-v3',
+    }));
+    const worker = startAutomationWorker({
+      token: 'token-v2-frozen-through-v3',
+      machineId: 'machine-v2-frozen-through-v3',
+      spawnSession,
+      env: {
+        HAPPIER_FEATURE_AUTOMATIONS__ENABLED: '1',
+        HAPPIER_AUTOMATION_CLAIM_POLL_MS: '20',
+        HAPPIER_AUTOMATION_ASSIGNMENT_REFRESH_MS: '20',
+        HAPPIER_AUTOMATION_LEASE_MS: '2000',
+        HAPPIER_AUTOMATION_HEARTBEAT_MS: '500',
+      } as NodeJS.ProcessEnv,
+    });
+
+    try {
+      await waitForCondition(() => server.state.succeeded.length === 1 || server.state.failed.length === 1);
+      expect(server.state.failed).toHaveLength(0);
+      expect(spawnSession).toHaveBeenCalledWith(expect.objectContaining({
+        directory: '/tmp/released-v2-frozen',
+      }));
+      expect(server.state.requests).toEqual(expect.arrayContaining([
+        'GET /v3/automations/worker/assignments',
+        'POST /v3/automations/runs/claim',
+        'POST /v3/automations/runs/run-v2-frozen-through-v3/start',
+        'POST /v3/automations/runs/run-v2-frozen-through-v3/succeed',
+      ]));
+      expect(server.state.succeeded[0]).toEqual(expect.objectContaining({
+        machineId: 'machine-v2-frozen-through-v3',
+        producedSessionId: 'session-v2-frozen-through-v3',
+        accountCurrentness: {
+          mode: 'plain',
+          version: 2,
+          contentKeyFingerprint: null,
+        },
+      }));
     } finally {
       worker.stop();
       await server.close();

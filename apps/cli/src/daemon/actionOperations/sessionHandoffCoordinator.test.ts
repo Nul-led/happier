@@ -8,7 +8,6 @@ const allFilesPolicyInput = {
   selection: 'all_files' as const,
   extraIgnorePatterns: [],
   extraIncludePatterns: [],
-  includeGitDirectory: false,
 };
 const allFilesContentPolicy = {
   ...allFilesPolicyInput,
@@ -727,6 +726,53 @@ describe('tracked session handoff coordinator', () => {
     });
   });
 
+  it.each([
+    ['throws', () => { throw new Error('cleanup transport failed'); }],
+    ['is cancelled', () => { throw Object.assign(new Error('cancelled during cleanup'), { name: 'AbortError', code: 'cancelled' }); }],
+  ])('keeps target-commit success when source cleanup %s', async (_label, cleanup) => {
+    const abort = vi.fn(async () => undefined);
+    const { deps } = createDeps({
+      cleanupSource: vi.fn(async () => cleanup()),
+      abort,
+    });
+    const result = await coordinateTrackedSessionHandoff({
+      input: { sessionId: 'session-1', targetMachineId: 'target-machine' },
+      signal: new AbortController().signal,
+      ...deps,
+    });
+    expect(result).toMatchObject({
+      ok: true,
+      result: {
+        handoffId: 'handoff-1',
+        warning: { code: 'source_cleanup_failed' },
+      },
+    });
+    expect(abort).not.toHaveBeenCalled();
+  });
+
+  it('keeps target-commit success when a later progress publication throws', async () => {
+    const abort = vi.fn(async () => undefined);
+    const publishOwnerUpdate = vi.fn((update: { progress?: { phase?: string } }) => {
+      if (update.progress?.phase === 'cleaning_source') {
+        throw new Error('progress consumer unavailable');
+      }
+    });
+    const { deps } = createDeps({ abort, publishOwnerUpdate });
+
+    await expect(coordinateTrackedSessionHandoff({
+      input: { sessionId: 'session-1', targetMachineId: 'target-machine' },
+      signal: new AbortController().signal,
+      ...deps,
+    })).resolves.toMatchObject({
+      ok: true,
+      result: {
+        handoffId: 'handoff-1',
+        warning: { code: 'source_cleanup_failed', message: 'progress consumer unavailable' },
+      },
+    });
+    expect(abort).not.toHaveBeenCalled();
+  });
+
   it('keeps target-commit success when post-publication workspace fence cleanup fails', async () => {
     const workspaceSyncAdapter = {
       prepare: vi.fn(async (input: { operationId: string; action: { kind: 'create_relationship' } }) => ({
@@ -766,18 +812,22 @@ describe('tracked session handoff coordinator', () => {
       ...deps,
     });
 
-    expect(result).toMatchObject({
+    // The workspace outcome is the strict terminal result: a newly created
+    // relationship, with its own post-commit cleanup debt rather than a
+    // source-cleanup warning that never happened.
+    expect(result).toEqual({
       ok: true,
       result: {
         handoffId: 'handoff-1',
+        status: expect.anything(),
         workspace: {
-          kind: 'create_relationship',
-          operationId: 'action-request-1',
+          kind: 'relationship',
           relationshipId: 'relationship-created',
-        },
-        warning: {
-          code: 'source_cleanup_failed',
-          message: 'target workspace authority release failed',
+          created: true,
+          cleanupWarning: {
+            code: 'peer_unavailable',
+            message: 'target workspace authority release failed',
+          },
         },
       },
     });

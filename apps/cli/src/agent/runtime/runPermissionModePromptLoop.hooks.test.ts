@@ -200,6 +200,62 @@ describe('runPermissionModePromptLoop hook dispatch', () => {
     expect(transformAgentContextBeforeDispatch).toHaveBeenCalledTimes(1);
   });
 
+  it('uses the attributed dispatch path for a provider-native command with provenance', async () => {
+    const session = createMutableApiSessionClientFixture<Metadata>({
+      overrides: { sessionId: 'session-attributed-provider-command' } as Partial<Parameters<typeof runPermissionModePromptLoop>[0]['session']>,
+    });
+    session.__setMetadata(createTestMetadata({
+      permissionMode: 'default',
+      permissionModeUpdatedAt: 0,
+      slashCommands: ['goal'],
+    }));
+    const inputContextBlock = '<happier_input_context v="1">\nsource_kind="voice"\n</happier_input_context>';
+    const queue = createModeQueue();
+    queue.push({
+      text: '/goal fix authentication',
+      localId: 'local-attributed-goal',
+      inputContextBlock,
+    }, { permissionMode: 'default', inputContextBlock });
+    const runtime = createRuntime();
+    runtime.isProviderNativeCommand.mockImplementation((prompt: string) => prompt.startsWith('/goal'));
+    const transformAgentContextBeforeDispatch = vi.fn(async (payload: Record<string, unknown>) => ({
+      ...payload,
+      messages: [{ role: 'user', content: '/goal fix authentication [context]' }],
+    }));
+    let shouldExit = false;
+
+    await runPermissionModePromptLoop({
+      providerName: 'Test Provider',
+      agentMessageType: 'pi',
+      explicitPermissionMode: undefined,
+      session,
+      messageQueue: queue,
+      permissionHandler: { setPermissionMode: vi.fn(), reset: vi.fn() },
+      runtime: runtime as unknown as Parameters<typeof runPermissionModePromptLoop>[0]['runtime'],
+      createOverrideSynchronizer: () => ({
+        syncFromMetadata: () => undefined,
+        flushPendingAfterStart: async () => undefined,
+      }),
+      messageBuffer: new MessageBuffer(),
+      shouldExit: () => shouldExit,
+      getAbortSignal: () => new AbortController().signal,
+      keepAlive: () => undefined,
+      setThinking: () => undefined,
+      sendReady: () => { shouldExit = true; },
+      currentPermissionModeUpdatedAt: 0,
+      setCurrentPermissionMode: () => undefined,
+      setCurrentPermissionModeUpdatedAt: () => undefined,
+      transformAgentContextBeforeDispatch,
+      formatPromptErrorMessage: (error) => `Error: ${String(error)}`,
+    } as Parameters<typeof runPermissionModePromptLoop>[0]);
+
+    expect(transformAgentContextBeforeDispatch).toHaveBeenCalledTimes(1);
+    expect(runtime.sendTurnPrompt).toHaveBeenCalledWith(
+      `${inputContextBlock}\n\n/goal fix authentication [context]`,
+      { localId: 'local-attributed-goal', localIds: ['local-attributed-goal'] },
+    );
+  });
+
   it('settles a successful local clear command as accepted with its exact opaque local id', async () => {
     const localId = '  local-clear-opaque  ';
 

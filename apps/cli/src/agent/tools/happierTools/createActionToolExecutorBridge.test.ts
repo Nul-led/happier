@@ -221,7 +221,10 @@ describe('createActionToolExecutorBridge', () => {
     const bridge = createActionToolExecutorBridge({
       surface: 'agent',
       resolveCallerPermissionMode: () => 'yolo',
-      resolveCausalPermissionAuthority: () => causalPermissionAuthority,
+      resolveActiveTurnPermissionWitness: () => ({
+        turnId: 'turn-active',
+        causalPermissionAuthority,
+      }),
       executor: {
         execute: async (actionId, input, ctx) => {
           calls.push({ actionId, input, ctx });
@@ -252,6 +255,60 @@ describe('createActionToolExecutorBridge', () => {
           callerPermissionMode: 'yolo',
           causalPermissionAuthority,
         }),
+      }),
+    ]);
+  });
+
+  it('never combines causal authority from one active turn with the next active turn id', async () => {
+    const calls: unknown[] = [];
+    const turnAWitness = Object.freeze({
+      turnId: 'turn-a',
+      causalPermissionAuthority: Object.freeze({
+        kind: 'admittedSessionInputV1' as const,
+        admittedPermissionCeiling: 'yolo' as const,
+      }),
+    });
+    let activeTurn: Readonly<{
+      turnId: string;
+      causalPermissionAuthority: Readonly<{
+        kind: 'admittedSessionInputV1';
+        admittedPermissionCeiling: string;
+      }>;
+    }> = turnAWitness;
+    const bridge = createActionToolExecutorBridge({
+      surface: 'agent',
+      resolveActiveTurnPermissionWitness: async () => {
+        const witness = activeTurn;
+        activeTurn = {
+          turnId: 'turn-b',
+          causalPermissionAuthority: {
+            kind: 'admittedSessionInputV1',
+            admittedPermissionCeiling: 'read_only',
+          },
+        } as const;
+        return witness;
+      },
+      executor: {
+        execute: async (_actionId, _input, ctx) => {
+          calls.push(ctx);
+          return { ok: true, result: { ok: true } };
+        },
+      },
+    });
+
+    await bridge.executeActionByToolName('action_execute', {
+      actionId: 'execution.run.start',
+      input: {
+        intent: 'delegate',
+        backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+        instructions: 'Inspect the change.',
+      },
+    }, 'sess-1');
+
+    expect(calls).toEqual([
+      expect.objectContaining({
+        causalPermissionAuthority: expect.objectContaining({ admittedPermissionCeiling: 'yolo' }),
+        sessionInputSource: expect.objectContaining({ sourceTurnId: 'turn-a' }),
       }),
     ]);
   });

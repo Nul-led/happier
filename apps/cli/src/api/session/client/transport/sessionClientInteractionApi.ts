@@ -46,8 +46,10 @@ import type { SessionCatchUpRequest } from '../../sessionChangesSyncOnConnect';
 import {
     coerceSessionUserPromptV1,
     assertSessionInputAdmissionReceiptForRequestV1,
+    SESSION_MESSAGE_PROVENANCE_META_KEY,
     readSessionInputRequestV1,
     settleSessionInputRequestV1,
+    settleSessionMessageProvenanceV1,
     withSessionInputAuthorityV1,
     type SessionInputSettlementValidationV1,
 } from '@happier-dev/protocol';
@@ -254,7 +256,14 @@ async function reconcileProtectedPendingInput(params: Readonly<{
     }
     const finalPayload = {
         ...payload,
-        meta: withSessionInputAuthorityV1(meta, authority),
+        meta: {
+            ...withSessionInputAuthorityV1(meta, authority),
+            [SESSION_MESSAGE_PROVENANCE_META_KEY]: settleSessionMessageProvenanceV1({
+                request,
+                requestedProvenance: meta[SESSION_MESSAGE_PROVENANCE_META_KEY],
+                inputAdmissionReceipt,
+            }),
+        },
     };
     const finalContent = params.message.content.t === 'plain'
         ? { t: 'plain' as const, v: finalPayload }

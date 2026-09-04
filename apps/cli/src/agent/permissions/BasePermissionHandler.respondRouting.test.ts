@@ -76,7 +76,67 @@ describe('BasePermissionHandler permission-response routing (gap 28/29)', () => 
     expect(session.permissionResponseClaimWriteCount).toBe(1);
   });
 
-  it('rejoins a claimed present-user answer after handler replacement while refusing a stale answer', async () => {
+  it('does not let a delayed answer from turn A settle a reused request id in turn B', async () => {
+    const session = new FakeSession();
+    const handler = new CodexLikePermissionHandler({ session: session as any, logPrefix: '[Test]' });
+    handler.setPermissionMode('safe-yolo');
+    const rpc = session.rpcHandlerManager.handlers.get('session.permission.respond');
+    const causalContext = (turnId: string) => ({
+      turnId,
+      causalPermissionAuthority: {
+        kind: 'admittedSessionInputV1' as const,
+        admittedPermissionCeiling: 'default' as const,
+      },
+    });
+
+    const turnA = handler.handleToolCall(
+      'reused-request',
+      'Write',
+      { path: '/tmp/a', content: 'a' },
+      causalContext('turn-a'),
+    );
+    await expect(rpc!({
+      id: 'reused-request',
+      turnId: 'turn-a',
+      approved: false,
+      decision: 'denied',
+    })).resolves.toBeUndefined();
+    await expect(turnA).resolves.toEqual(expect.objectContaining({ decision: 'denied' }));
+    await expect(rpc!({
+      id: 'reused-request',
+      turnId: 'turn-a',
+      approved: false,
+      decision: 'denied',
+    })).resolves.toBeUndefined();
+
+    const turnB = handler.handleToolCall(
+      'reused-request',
+      'Write',
+      { path: '/tmp/b', content: 'b' },
+      causalContext('turn-b'),
+    );
+    await expect(rpc!({
+      id: 'reused-request',
+      turnId: 'turn-a',
+      approved: true,
+      decision: 'approved',
+    })).resolves.toEqual({
+      ok: false,
+      errorCode: 'permission_request_not_found',
+      requestId: 'reused-request',
+    });
+    expect(session.agentState.requests['reused-request']).toEqual(expect.objectContaining({ turnId: 'turn-b' }));
+
+    await expect(rpc!({
+      id: 'reused-request',
+      turnId: 'turn-b',
+      approved: true,
+      decision: 'approved',
+    })).resolves.toBeUndefined();
+    await expect(turnB).resolves.toEqual(expect.objectContaining({ decision: 'approved' }));
+  });
+
+  it('keeps a claimed present-user answer nonauthorizing after handler reset', async () => {
     const session = new FakeSession();
     const original = new CodexLikePermissionHandler({ session: session as any, logPrefix: '[Original]' });
     original.setPermissionMode('safe-yolo');
@@ -85,6 +145,10 @@ describe('BasePermissionHandler permission-response routing (gap 28/29)', () => 
       'generation-transition-request',
       'Write',
       { path: '/tmp/x', content: 'hi' },
+    );
+    const originalOutcome = originalWaiter.then(
+      () => ({ status: 'resolved' as const }),
+      (error: unknown) => ({ status: 'rejected' as const, error }),
     );
     await Promise.resolve();
     const claimedPresentUserAnswer = {
@@ -100,8 +164,8 @@ describe('BasePermissionHandler permission-response routing (gap 28/29)', () => 
     } satisfies PermissionResponseClaim;
     session.agentState.requests['generation-transition-request'].permissionResponseClaimV1 = claimedPresentUserAnswer;
 
-    // Replacing the handler models the runtime/plugin-generation transition:
-    // only the persisted claim, not the old in-memory waiter, survives.
+    // Reset is a lifecycle cancellation boundary. Its Agent-state terminal
+    // cancellation, not the in-flight answer claim, survives replacement.
     await original.reset();
     const replacement = new CodexLikePermissionHandler({ session: session as any, logPrefix: '[Replacement]' });
     replacement.setPermissionMode('safe-yolo');
@@ -117,29 +181,33 @@ describe('BasePermissionHandler permission-response routing (gap 28/29)', () => 
       errorCode: 'permission_request_not_found',
       requestId: 'generation-transition-request',
     });
-    expect(session.agentState.requests['generation-transition-request']).toEqual(expect.objectContaining({
-      permissionResponseClaimV1: expect.objectContaining({
-        origin: 'presentUser',
-        decision: 'approved',
-      }),
+    expect(session.agentState.requests['generation-transition-request']).toBeUndefined();
+    expect(session.agentState.completedRequests['generation-transition-request']).toEqual(expect.objectContaining({
+      status: 'canceled',
+      decision: 'abort',
+      reason: 'Session reset',
     }));
 
     await expect(rpc!({
       id: 'generation-transition-request',
       approved: true,
       decision: 'approved',
-    })).resolves.toBeUndefined();
+    })).resolves.toEqual({
+      ok: false,
+      errorCode: 'permission_request_not_found',
+      requestId: 'generation-transition-request',
+    });
     expect(session.agentState.completedRequests['generation-transition-request']).toEqual(expect.objectContaining({
-      decision: 'approved',
-      permissionDecisionActorV1: {
-        kind: 'accountUser',
-        accountId: 'account-owner',
-        relationship: 'owner',
-      },
+      status: 'canceled',
+      decision: 'abort',
     }));
 
+    const settledOriginal = await originalOutcome;
+    expect(settledOriginal.status).toBe('rejected');
+    expect(settledOriginal.status === 'rejected' ? settledOriginal.error : null).toEqual(
+      expect.objectContaining({ message: 'Session reset' }),
+    );
     await original.reset();
-    await expect(originalWaiter).rejects.toThrow('Session reset');
     await replacement.reset();
   });
 

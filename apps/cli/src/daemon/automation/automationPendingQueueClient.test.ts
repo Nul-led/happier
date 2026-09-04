@@ -6,11 +6,19 @@ import type {
   SessionInputAdmissionResultV1,
   SessionPendingEnqueueByMachineRequestV1,
 } from '@happier-dev/protocol';
+import { SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
+
+import { callSessionRpc } from '@/session/transport/rpc/sessionRpc';
+
+vi.mock('@/session/transport/rpc/sessionRpc', () => ({
+  callSessionRpc: vi.fn(async () => ({ ok: false, status: 'notRunning' })),
+}));
 
 type SessionTransportServer = Readonly<{
   baseUrl: string;
   state: {
     machineAdmissionRequests: SessionPendingEnqueueByMachineRequestV1[];
+    pendingReads: string[];
     discarded: Array<Readonly<{
       sessionId: string;
       localId: string;
@@ -37,11 +45,16 @@ function writeJson(response: ServerResponse, statusCode: number, body: unknown):
 async function startSessionTransportServer(params: Readonly<{
   mode?: 'plain' | 'e2ee';
   targetMachineId?: string;
+  pendingLocalIds?: readonly string[];
+  materializedLocalId?: string;
+  /** When set, the discard endpoint always answers 404 with this body (proxy/legacy-route simulation). */
+  discard404Body?: unknown;
 }> = {}): Promise<SessionTransportServer> {
   const mode = params.mode ?? 'plain';
   const targetMachineId = params.targetMachineId ?? 'machine-hosting-session';
   const state: SessionTransportServer['state'] = {
     machineAdmissionRequests: [],
+    pendingReads: [],
     discarded: [],
   };
   const server = createServer(async (request, response) => {
@@ -54,6 +67,21 @@ async function startSessionTransportServer(params: Readonly<{
         signingKeyFingerprint: null,
         contentKeyFingerprint: null,
         updatedAt: 1,
+      });
+      return;
+    }
+
+    const pendingListMatch = request.method === 'GET'
+      ? /^\/v2\/sessions\/([^/]+)\/pending$/.exec(url.pathname)
+      : null;
+    if (pendingListMatch) {
+      state.pendingReads.push(decodeURIComponent(pendingListMatch[1]!));
+      writeJson(response, 200, {
+        pending: (params.pendingLocalIds ?? []).map((localId) => ({
+          localId,
+          status: 'queued',
+          deliveryState: 'delivering',
+        })),
       });
       return;
     }
@@ -84,11 +112,20 @@ async function startSessionTransportServer(params: Readonly<{
       ? /^\/v2\/sessions\/([^/]+)\/pending\/([^/]+)\/discard$/.exec(url.pathname)
       : null;
     if (discardMatch) {
+      const localId = decodeURIComponent(discardMatch[2]!);
       state.discarded.push({
         sessionId: decodeURIComponent(discardMatch[1]!),
-        localId: decodeURIComponent(discardMatch[2]!),
+        localId,
         body: await readJsonBody(request),
       });
+      if (params.discard404Body !== undefined) {
+        writeJson(response, 404, params.discard404Body);
+        return;
+      }
+      if (localId === params.materializedLocalId) {
+        writeJson(response, 404, { error: 'not-found' });
+        return;
+      }
       writeJson(response, 200, { ok: true });
       return;
     }
@@ -111,12 +148,17 @@ async function startSessionTransportServer(params: Readonly<{
   };
 }
 
+/** Canonical session id shape so exact-session transport resolution never scans a list. */
+const CANONICAL_SESSION_ID = 'cautomationrun42000000000';
+
 describe('automation Session input composition', () => {
   const previousServerUrl = process.env.HAPPIER_SERVER_URL;
   const previousWebappUrl = process.env.HAPPIER_WEBAPP_URL;
   const activeServers: SessionTransportServer[] = [];
 
   afterEach(async () => {
+    vi.mocked(callSessionRpc).mockReset();
+    vi.mocked(callSessionRpc).mockResolvedValue({ ok: false, status: 'notRunning' });
     while (activeServers.length > 0) {
       await activeServers.pop()!.close();
     }
@@ -130,6 +172,9 @@ describe('automation Session input composition', () => {
   async function loadClient(params: Readonly<{
     mode?: 'plain' | 'e2ee';
     targetMachineId?: string;
+    pendingLocalIds?: readonly string[];
+    materializedLocalId?: string;
+    discard404Body?: unknown;
   }> = {}) {
     const server = await startSessionTransportServer(params);
     activeServers.push(server);
@@ -143,10 +188,11 @@ describe('automation Session input composition', () => {
   }
 
   it('uses the canonical Session sender for accepted, already-accepted, rejected, and unknown machine outcomes', async () => {
+    const localId = 'automation:run:run-42';
     const { enqueueAutomationPrompt, server } = await loadClient({
       targetMachineId: 'machine-on-another-daemon',
+      pendingLocalIds: [localId],
     });
-    const localId = 'automation:run:run-42';
     const outcomes: readonly SessionInputAdmissionResultV1[] = [
       { status: 'accepted', localId },
       { status: 'alreadyAccepted', localId },
@@ -199,6 +245,8 @@ describe('automation Session input composition', () => {
         },
       }));
     }
+
+    expect(server.state.pendingReads).toEqual(['session-automation-plain']);
   });
 
   it('carries the picked composer references through the canonical structured-input envelope', async () => {
@@ -335,16 +383,130 @@ describe('automation Session input composition', () => {
     const { discardAutomationPromptAfterRunCancellation, server } = await loadClient();
 
     await expect(discardAutomationPromptAfterRunCancellation({
-      token: 'token',
-      sessionId: 'session-automation-discard',
+      credentials: { token: 'token', encryption: null },
+      sessionId: CANONICAL_SESSION_ID,
       automationId: 'automation-7',
       runId: 'run-42',
     })).resolves.toBeUndefined();
 
     expect(server.state.discarded).toEqual([{
-      sessionId: 'session-automation-discard',
+      sessionId: CANONICAL_SESSION_ID,
       localId: 'automation:run:run-42',
       body: { reason: 'session_input_cancelled' },
     }]);
+
+    // The input was retired while still queued, so it never materialized and
+    // the loaded runtime holds no turn carrying this localId to cancel.
+    expect(callSessionRpc).not.toHaveBeenCalled();
+  });
+
+  it('treats a session-not-found discard 404 as a terminal no-op instead of exact runtime cancellation', async () => {
+    const { discardAutomationPromptAfterRunCancellation, server } = await loadClient({
+      discard404Body: { error: 'session-not-found' },
+    });
+
+    await expect(discardAutomationPromptAfterRunCancellation({
+      credentials: { token: 'token', encryption: null },
+      sessionId: CANONICAL_SESSION_ID,
+      automationId: 'automation-7',
+      runId: 'run-42',
+    })).resolves.toBeUndefined();
+
+    expect(server.state.discarded).toHaveLength(1);
+    expect(callSessionRpc).not.toHaveBeenCalled();
+  });
+
+  it('keeps an untyped proxy 404 discard failure visible instead of masquerading as materialization', async () => {
+    const { discardAutomationPromptAfterRunCancellation, server } = await loadClient({
+      discard404Body: 'Not Found',
+    });
+
+    await expect(discardAutomationPromptAfterRunCancellation({
+      credentials: { token: 'token', encryption: null },
+      sessionId: CANONICAL_SESSION_ID,
+      automationId: 'automation-7',
+      runId: 'run-42',
+    })).rejects.toMatchObject({ response: { status: 404 } });
+
+    expect(server.state.discarded).toHaveLength(1);
+    expect(callSessionRpc).not.toHaveBeenCalled();
+  });
+
+  it('requests exact-turn cancellation for the same materialized Automation input after the discard', async () => {
+    const { discardAutomationPromptAfterRunCancellation, server } = await loadClient({
+      materializedLocalId: 'automation:run:run-42',
+    });
+    vi.mocked(callSessionRpc).mockResolvedValue({
+      ok: true,
+      status: 'cancelled',
+      sessionId: CANONICAL_SESSION_ID,
+      localId: 'automation:run:run-42',
+    });
+
+    await discardAutomationPromptAfterRunCancellation({
+      credentials: { token: 'token', encryption: null },
+      sessionId: CANONICAL_SESSION_ID,
+      automationId: 'automation-7',
+      runId: 'run-42',
+    });
+
+    expect(server.state.discarded).toHaveLength(1);
+    expect(callSessionRpc).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(callSessionRpc).mock.calls[0]![0]).toEqual(expect.objectContaining({
+      token: 'token',
+      sessionId: CANONICAL_SESSION_ID,
+      method: `${CANONICAL_SESSION_ID}:${SESSION_RPC_METHODS.SESSION_INPUT_CANCEL_EXACT_TURN_V1}`,
+      request: {
+        sessionId: CANONICAL_SESSION_ID,
+        localId: 'automation:run:run-42',
+      },
+    }));
+  });
+
+  it('treats every non-cancelling exact-turn outcome as a no-op instead of broadening cancellation', async () => {
+    const { discardAutomationPromptAfterRunCancellation, server } = await loadClient({
+      materializedLocalId: 'automation:run:run-42',
+    });
+
+    for (const outcome of [
+      { ok: false, status: 'notCurrent', sessionId: CANONICAL_SESSION_ID, localId: 'automation:run:run-42' },
+      { ok: false, status: 'notRunning', sessionId: CANONICAL_SESSION_ID, localId: 'automation:run:run-42' },
+      {
+        ok: false,
+        status: 'unsupported',
+        sessionId: CANONICAL_SESSION_ID,
+        localId: 'automation:run:run-42',
+        errorCode: 'unsupported_session_runtime_method',
+      },
+    ]) {
+      vi.mocked(callSessionRpc).mockResolvedValueOnce(outcome);
+      await expect(discardAutomationPromptAfterRunCancellation({
+        credentials: { token: 'token', encryption: null },
+        sessionId: CANONICAL_SESSION_ID,
+        automationId: 'automation-7',
+        runId: 'run-42',
+      })).resolves.toBeUndefined();
+    }
+
+    expect(server.state.discarded).toHaveLength(3);
+    expect(vi.mocked(callSessionRpc).mock.calls.every(
+      ([call]) => (call as { method: string }).method.endsWith(SESSION_RPC_METHODS.SESSION_INPUT_CANCEL_EXACT_TURN_V1),
+    )).toBe(true);
+  });
+
+  it('keeps an unreachable session runtime from failing the authoritative input retirement', async () => {
+    const { discardAutomationPromptAfterRunCancellation, server } = await loadClient({
+      materializedLocalId: 'automation:run:run-42',
+    });
+    vi.mocked(callSessionRpc).mockRejectedValueOnce(new Error('rpc method not available'));
+
+    await expect(discardAutomationPromptAfterRunCancellation({
+      credentials: { token: 'token', encryption: null },
+      sessionId: CANONICAL_SESSION_ID,
+      automationId: 'automation-7',
+      runId: 'run-42',
+    })).resolves.toBeUndefined();
+
+    expect(server.state.discarded).toHaveLength(1);
   });
 });

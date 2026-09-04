@@ -30,6 +30,12 @@ export type RuntimeTurnSessionIdentity = Readonly<{
   sessionId: string | null;
 }>;
 
+/** One immutable read of the active turn facts that must remain causally paired. */
+export type RuntimeActiveTurnPermissionWitness = Readonly<{
+  turnId: string;
+  causalPermissionAuthority?: SessionInputCausalPermissionAuthorityV1;
+}>;
+
 export type RuntimeTurnConfigUpdate = Readonly<{
   modeId?: string | null;
   modelId?: string | null;
@@ -157,8 +163,9 @@ export type RuntimeTurnOperations = Readonly<{
    * host-internal consumers such as the per-Session MCP bridge. `null` means
    * no current admitted turn and must not authorize a fallback.
    */
-  readActiveTurnCausalPermissionAuthority?: () => SessionInputCausalPermissionAuthorityV1 | null;
-  readActiveTurnId?: () => string | null;
+  readActiveTurnPermissionWitness?: () => RuntimeActiveTurnPermissionWitness | null;
+  /** Exact local input identity that admitted the currently active parent turn. */
+  readActiveTurnInputId?: () => string | null;
   readSessionIdentity: () => RuntimeTurnSessionIdentity;
   updateSessionRuntimeConfig: (update: RuntimeTurnConfigUpdate) => Promise<RuntimeConfigUpdateOutcomeV1 | void>;
   resetOrDisposeRuntime: (

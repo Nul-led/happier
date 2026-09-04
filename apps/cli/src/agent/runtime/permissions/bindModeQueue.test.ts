@@ -863,6 +863,10 @@ describe('registerPermissionModeMessageQueueBinding', () => {
       },
       readDurableProviderInputAcceptanceV1: async () => 'not_accepted' as const,
     };
+    const emitUserMessage = (message: UserMessage) => {
+      if (!userMessageHandler) throw new Error('missing onUserMessage handler');
+      return userMessageHandler(message);
+    };
     const queueCalls: PermissionModeQueuedPrompt[] = [];
     const steerText = vi.fn(async () => undefined);
     let steerabilityReadCount = 0;
@@ -887,7 +891,7 @@ describe('registerPermissionModeMessageQueueBinding', () => {
       },
     });
 
-    userMessageHandler?.({
+    emitUserMessage({
       role: 'user',
       content: { type: 'text', text: 'nudge active turn' },
       localId: 'local-steer-seed',

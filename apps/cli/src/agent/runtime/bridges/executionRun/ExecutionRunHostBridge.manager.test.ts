@@ -9,6 +9,7 @@ import type { ACPMessageData } from '@/api/session/sessionMessageTypes';
 import type { Credentials, StoredCredentials } from '@/persistence';
 import type { AgentStateResponseTargetDispatch } from '@/agent/permissions/agentStateRequestStore';
 import type { ExecutionRunHostRuntime } from '@/agent/runtime/bridges/executionRun/executionRunHostRuntime';
+import type { ExecutionRunState } from '@/agent/runtime/bridges/executionRun/executionRunTypes';
 import {
   createTestExecutionRunHostRuntime,
   type TestExecutionRunHostRuntime,
@@ -1965,6 +1966,84 @@ describe('ExecutionRunManager (long-lived runs)', () => {
       status: 'running',
       transcript: { persistenceMode: 'persistent', epoch: 11 },
     });
+  });
+
+  it('waits for exact Voice retirement before provisioning a same-id resume occurrence', async () => {
+    let disposalStarted!: () => void;
+    let releaseDisposal!: () => void;
+    let resumeProvisionStarted!: () => void;
+    let releaseResumeProvision!: () => void;
+    const disposalStartedPromise = new Promise<void>((resolve) => {
+      disposalStarted = resolve;
+    });
+    const disposalGate = new Promise<void>((resolve) => {
+      releaseDisposal = resolve;
+    });
+    const resumeProvisionStartedPromise = new Promise<void>((resolve) => {
+      resumeProvisionStarted = resolve;
+    });
+    const resumeProvisionGate = new Promise<void>((resolve) => {
+      releaseResumeProvision = resolve;
+    });
+    let runtimeCount = 0;
+    const manager = createExecutionRunManager({
+      parentProvider: TEST_PRIMARY_BACKEND_ID,
+      cwd: process.cwd(),
+      createRuntime: () => {
+        runtimeCount += 1;
+        const occurrence = runtimeCount;
+        return createPromptRuntime(() => {}, {
+          resumeSupported: true,
+          async onProvisionSession(opts) {
+            if (occurrence === 2 && opts?.resumeSessionId) {
+              resumeProvisionStarted();
+              await resumeProvisionGate;
+            }
+          },
+          async onDispose() {
+            if (occurrence === 1) {
+              disposalStarted();
+              await disposalGate;
+            }
+          },
+        });
+      },
+      sendAcp: async () => {},
+      getNowMs: () => 1_700_000_000_000,
+    });
+
+    try {
+      const started = await manager.start({
+        sessionId: 'parent_session_1',
+        intent: 'voice_agent',
+        backendTarget: { kind: 'builtInAgent', agentId: TEST_PRIMARY_BACKEND_ID },
+        permissionMode: 'read_only',
+        retentionPolicy: 'resumable',
+        runClass: 'long_lived',
+        ioMode: 'streaming',
+      });
+
+      await expect(manager.stop(started.runId)).resolves.toEqual({ ok: true });
+      await disposalStartedPromise;
+      const resume = manager.ensure(started.runId, { resume: true });
+
+      const beforeRetirement = await Promise.race([
+        resumeProvisionStartedPromise.then(() => 'provisioning' as const),
+        new Promise<'retiring'>((resolve) => setImmediate(() => resolve('retiring'))),
+      ]);
+      expect(beforeRetirement).toBe('retiring');
+      expect(runtimeCount).toBe(1);
+
+      releaseDisposal();
+      await resumeProvisionStartedPromise;
+      releaseResumeProvision();
+      await expect(resume).resolves.toEqual({ ok: true });
+      expect(runtimeCount).toBe(2);
+    } finally {
+      releaseDisposal();
+      releaseResumeProvision();
+      await manager.dispose();
+    }
   });
 
   it('admits only one concurrent voice_agent resume occurrence', async () => {

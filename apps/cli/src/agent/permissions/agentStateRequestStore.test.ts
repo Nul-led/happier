@@ -789,7 +789,7 @@ describe('AgentStateRequestStore', () => {
         );
     });
 
-    it('keeps an opaque first-answer claim outstanding through lifecycle cancellation paths', async () => {
+    it('makes lifecycle cancellation durably nonauthorizing even for an opaque first-answer claim', async () => {
         const session = new FakeSession();
         const store = new AgentStateRequestStore({
             session,
@@ -838,9 +838,13 @@ describe('AgentStateRequestStore', () => {
             owner,
         })).resolves.toBe(false);
 
-        expect(session.agentState.requests!['opaque-claim']).toEqual(expect.objectContaining({
-            permissionResponseClaimV1: opaqueClaim,
+        expect(session.agentState.requests!['opaque-claim']).toBeUndefined();
+        expect(session.agentState.completedRequests!['opaque-claim']).toEqual(expect.objectContaining({
+            status: 'canceled',
+            decision: 'abort',
+            reason: 'Session ended',
+            owner,
         }));
-        expect(session.agentState.completedRequests!['opaque-claim']).toBeUndefined();
+        expect(session.agentState.completedRequests!['opaque-claim']).not.toHaveProperty('permissionResponseClaimV1');
     });
 });

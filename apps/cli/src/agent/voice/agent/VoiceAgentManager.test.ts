@@ -339,7 +339,7 @@ function createResponseTimeoutCaptureBackend(responseText = 'ok'): VoiceTestRunt
 }
 
 describe('VoiceAgentManager', () => {
-  it('does not let a late start overwrite a newer instance with the same id', async () => {
+  it('claims a voice-agent id before provisioning so concurrent starts cannot double-provision it', async () => {
     let releaseFirstProvision!: () => void;
     let firstProvisionStarted!: () => void;
     const firstProvisionGate = new Promise<void>((resolve) => {
@@ -378,16 +378,15 @@ describe('VoiceAgentManager', () => {
     try {
       const lateFirst = manager.start(params);
       await firstProvisionStartedPromise;
-      await expect(manager.start(params)).resolves.toMatchObject({
-        voiceAgentId: 'shared-voice-agent',
-      });
+      await expect(manager.start(params)).rejects.toMatchObject({ code: 'VOICE_AGENT_START_FAILED' });
+      expect(runtimeCount).toBe(1);
       releaseFirstProvision();
 
-      await expect(lateFirst).rejects.toMatchObject({ code: 'VOICE_AGENT_START_FAILED' });
-      expect(firstDispose).toHaveBeenCalledTimes(1);
+      await expect(lateFirst).resolves.toMatchObject({ voiceAgentId: 'shared-voice-agent' });
+      expect(firstDispose).not.toHaveBeenCalled();
       expect(manager.getResumeHandle('shared-voice-agent')).toMatchObject({
         kind: 'provider_session.v1',
-        providerSessionId: 'voice-session-2',
+        providerSessionId: 'voice-session-1',
       });
     } finally {
       releaseFirstProvision();
@@ -432,6 +431,141 @@ describe('VoiceAgentManager', () => {
     await expect(start).rejects.toMatchObject({ code: 'VOICE_AGENT_START_FAILED' });
     expect(disposeRuntime).toHaveBeenCalledTimes(1);
     expect(manager.getResumeHandle('late-voice-agent')).toBeNull();
+  });
+
+  it('disposes resumed chat and provisional commit runtimes exactly once when stopped during commit provisioning', async () => {
+    let commitProvisionStarted!: () => void;
+    let releaseCommitProvision!: () => void;
+    const commitProvisionStartedPromise = new Promise<void>((resolve) => {
+      commitProvisionStarted = resolve;
+    });
+    const commitProvisionGate = new Promise<void>((resolve) => {
+      releaseCommitProvision = resolve;
+    });
+    const chatDispose = vi.fn(async () => undefined);
+    const commitDispose = vi.fn(async () => undefined);
+    const chatBackend = createTestExecutionRunHostRuntime({
+      sessionId: 'resumed-chat-session',
+      resumeSupported: true,
+      onDispose: chatDispose,
+    });
+    const commitBackend = createTestExecutionRunHostRuntime({
+      sessionId: 'resumed-commit-session',
+      resumeSupported: true,
+      async onProvisionSession() {
+        commitProvisionStarted();
+        await commitProvisionGate;
+      },
+      onDispose: commitDispose,
+    });
+    const createBackend = vi.fn<BackendFactory>()
+      .mockReturnValueOnce(chatBackend)
+      .mockReturnValueOnce(commitBackend);
+    const manager = new VoiceAgentManager({ createBackend });
+    const start = manager.start({
+      voiceAgentId: 'resumed-stop-during-commit-provision',
+      backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
+      chatModelId: 'chat-model',
+      commitModelId: 'commit-model',
+      permissionIntent: 'read-only',
+      idleTtlSeconds: 60,
+      initialContext: 'CTX',
+      resumeHandle: {
+        kind: 'voice_agent_sessions.v1',
+        backendTarget: { kind: 'backend', backendId: 'claude' },
+        chatProviderSessionId: 'resumed-chat-session',
+        commitProviderSessionId: 'resumed-commit-session',
+      },
+    });
+
+    try {
+      await commitProvisionStartedPromise;
+      await expect(manager.stop({
+        voiceAgentId: 'resumed-stop-during-commit-provision',
+      })).resolves.toEqual({ ok: true });
+      let retirementSettled = false;
+      const retirement = manager.waitForRetirement('resumed-stop-during-commit-provision').then(() => {
+        retirementSettled = true;
+      });
+      await vi.waitFor(() => {
+        expect(chatDispose).toHaveBeenCalledTimes(1);
+        expect(commitDispose).toHaveBeenCalledTimes(1);
+      });
+      await Promise.resolve();
+      expect(retirementSettled).toBe(false);
+
+      releaseCommitProvision();
+      await expect(start).rejects.toMatchObject({ code: 'VOICE_AGENT_START_FAILED' });
+      await retirement;
+      expect(retirementSettled).toBe(true);
+      expect(chatDispose).toHaveBeenCalledTimes(1);
+      expect(commitDispose).toHaveBeenCalledTimes(1);
+    } finally {
+      releaseCommitProvision();
+      await start.catch(() => {});
+      await manager.dispose();
+    }
+  });
+
+  it('keeps an established id retired until its exact runtime cleanup settles', async () => {
+    let disposalStarted!: () => void;
+    let releaseDisposal!: () => void;
+    const disposalStartedPromise = new Promise<void>((resolve) => {
+      disposalStarted = resolve;
+    });
+    const disposalGate = new Promise<void>((resolve) => {
+      releaseDisposal = resolve;
+    });
+    let runtimeCount = 0;
+    const manager = new VoiceAgentManager({
+      createBackend: () => {
+        runtimeCount += 1;
+        const occurrence = runtimeCount;
+        return createTestExecutionRunHostRuntime({
+          sessionId: `retiring-established-session-${occurrence}`,
+          async onDispose() {
+            if (occurrence !== 1) return;
+            disposalStarted();
+            await disposalGate;
+            throw new Error('provider disposal failed after retirement');
+          },
+        });
+      },
+    });
+    const params = {
+      voiceAgentId: 'retiring-established-agent',
+      backendTarget: { kind: 'builtInAgent', agentId: 'claude' } as const,
+      chatModelId: 'chat-model',
+      commitModelId: 'commit-model',
+      permissionIntent: 'read-only' as const,
+      idleTtlSeconds: 60,
+      initialContext: 'CTX',
+    };
+
+    let stop: Promise<{ ok: true }> | null = null;
+    try {
+      await manager.start(params);
+      stop = manager.stop({ voiceAgentId: params.voiceAgentId });
+      await disposalStartedPromise;
+
+      let retirementSettled = false;
+      const retirement = manager.waitForRetirement(params.voiceAgentId).then(() => {
+        retirementSettled = true;
+      });
+      await Promise.resolve();
+      expect(retirementSettled).toBe(false);
+      await expect(manager.start(params)).rejects.toMatchObject({ code: 'VOICE_AGENT_START_FAILED' });
+
+      releaseDisposal();
+      await expect(stop).resolves.toEqual({ ok: true });
+      await retirement;
+      await expect(manager.start(params)).resolves.toMatchObject({ voiceAgentId: params.voiceAgentId });
+      expect(runtimeCount).toBe(2);
+    } finally {
+      releaseDisposal();
+      await stop?.catch(() => {});
+      await manager.dispose();
+    }
   });
 
   it('clears the reaper interval when disposed', async () => {

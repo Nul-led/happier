@@ -32,6 +32,7 @@ import { createNativeAgentSessionWorkStateService } from './nativeAgentSessionWo
 import { createNativeAgentCurrentSessionUiServices } from './nativeAgentSessionInteractions';
 import {
     createNativeAgentExecutionRunHostRuntime,
+    createNativeAgentRunScopedSessionContextLeaseFactory,
     createNativeAgentSessionExecutionRunHostRuntime,
     createNativeAgentSessionInteractionHostRuntime,
     type NativeAgentRuntimeLeaseIdentity,
@@ -439,8 +440,23 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
                             ?? readAgentSessionCapabilities(params.agent.richDefinition?.definition);
                         const sessionOpenCapabilities = effectiveSessionCapabilities?.open;
                         const host = options.sessionInteractionHost;
-                        // Voice and Session-derived finite Runs are non-durable projections over
-                        // the parent Session's custody. They share this complete context lease;
+                        const transformNativeAgentRequest = async (
+                            payload: Readonly<Record<string, unknown>>,
+                            transformOptions: Readonly<{ signal: AbortSignal }>,
+                        ): Promise<Readonly<Record<string, unknown>>> => (
+                            params.daemonTurnContributionsBridge
+                                ? await params.daemonTurnContributionsBridge.transformAgentRequest({
+                                    sessionId: host?.session.sessionId ?? options.runId ?? '',
+                                    payload,
+                                    signal: transformOptions.signal,
+                                })
+                                : await transformAgentRequestThroughPluginHooks(
+                                    payload,
+                                    transformOptions.signal ? { signal: transformOptions.signal } : undefined,
+                                )
+                        );
+                        // Voice and Session-scoped finite Runs reuse the parent Session's complete
+                        // custody context. Detached finite Runs select the run-scoped context below;
                         // the interactive Session loop retains its richer terminal/media/resume
                         // owners while reusing the same facet builders and exhaustive composer.
                         const createSessionContext: NativeAgentSessionContextLeaseFactory | null = host
@@ -530,18 +546,7 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
                                             services: invocationServices,
                                             interactions: currentSession.interactions,
                                             models: publications.services.models,
-                                            transformAgentRequest: async (payload, options) => (
-                                                params.daemonTurnContributionsBridge
-                                                    ? await params.daemonTurnContributionsBridge.transformAgentRequest({
-                                                        sessionId,
-                                                        payload,
-                                                        signal: options.signal,
-                                                    })
-                                                    : await transformAgentRequestThroughPluginHooks(
-                                                        payload,
-                                                        options.signal ? { signal: options.signal } : undefined,
-                                                    )
-                                            ),
+                                            transformAgentRequest: transformNativeAgentRequest,
                                             ...(params.resolveNativeAgentAcpHostLaunch
                                                 ? { resolveHostLaunch: params.resolveNativeAgentAcpHostLaunch }
                                                 : {}),
@@ -604,11 +609,15 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
                             });
                         }
                         if (nativeAgentRuntime.sessions) {
-                            if (!createSessionContext) {
-                                throw new Error(
-                                    'Session-derived execution run requires parent Session host custody',
-                                );
-                            }
+                            const runSessionContext = createSessionContext
+                                ?? createNativeAgentRunScopedSessionContextLeaseFactory({
+                                    lease: runtimeLease,
+                                    runId: options.runId ?? '',
+                                    transformAgentRequest: transformNativeAgentRequest,
+                                    ...(params.resolveNativeAgentAcpHostLaunch
+                                        ? { resolveAcpHostLaunch: params.resolveNativeAgentAcpHostLaunch }
+                                        : {}),
+                                });
                             return createNativeAgentSessionExecutionRunHostRuntime({
                                 runtime: nativeAgentRuntime,
                                 lease: runtimeLease,
@@ -616,7 +625,7 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
                                 supportsResume: sessionOpenCapabilities?.includes('resume') === true,
                                 ...(agentRetirementSignal ? { generationSignal: agentRetirementSignal } : {}),
                                 ...(services ? { services } : {}),
-                                createSessionContext,
+                                createSessionContext: runSessionContext,
                             });
                         }
                         return createNativeAgentExecutionRunHostRuntime({

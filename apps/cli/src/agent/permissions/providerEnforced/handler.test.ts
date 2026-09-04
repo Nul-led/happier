@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -489,6 +489,58 @@ describe('ProviderEnforcedPermissionHandler always-auto-approve matching', () =>
       answers: { language: ['TypeScript'] },
     });
     expect(session.agentState.requests['ask-1']).toBeFalsy();
+  });
+
+  it('does not acknowledge a user-action RPC until the requester applies the decision', async () => {
+    const session = new FakeSession();
+    const handler = new ProviderEnforcedPermissionHandler(session as any, { logPrefix: '[Test]' });
+    let finishApplication!: () => void;
+    const applicationFinished = new Promise<void>((resolve) => { finishApplication = resolve; });
+    const acknowledgeDecisionApplication = vi.fn(async () => applicationFinished);
+    const pending = handler.handleToolCall('dialog-ack-1', 'AskUserQuestion', {
+      questions: [{ id: 'choice', question: 'Continue?' }],
+    }, {
+      source: CLAUDE_UNIFIED_TERMINAL_DIALOG_CHOICE_REQUEST_SOURCE,
+      acknowledgeDecisionApplication,
+    });
+
+    let rpcSettled = false;
+    const rpc = Promise.resolve(session.rpcHandlerManager.handlers.get('session.user_action.answer')?.({
+      id: 'dialog-ack-1',
+      approved: true,
+      answers: { choice: 'Yes' },
+    })).then((result) => {
+      rpcSettled = true;
+      return result;
+    });
+    await vi.waitFor(() => expect(acknowledgeDecisionApplication).toHaveBeenCalledTimes(1));
+    expect(rpcSettled).toBe(false);
+    expect(await settledState(pending)).toBe('pending');
+
+    finishApplication();
+    await expect(rpc).resolves.toBeUndefined();
+    await expect(pending).resolves.toEqual({ decision: 'approved', answers: { choice: ['Yes'] } });
+  });
+
+  it('keeps the user action pending when provider application fails', async () => {
+    const session = new FakeSession();
+    const handler = new ProviderEnforcedPermissionHandler(session as any, { logPrefix: '[Test]' });
+    const pending = handler.handleToolCall('dialog-ack-failed', 'AskUserQuestion', {
+      questions: [{ id: 'choice', question: 'Continue?' }],
+    }, {
+      source: CLAUDE_UNIFIED_TERMINAL_DIALOG_CHOICE_REQUEST_SOURCE,
+      acknowledgeDecisionApplication: async () => {
+        throw new Error('terminal answer failed');
+      },
+    });
+
+    await expect(session.rpcHandlerManager.handlers.get('session.user_action.answer')?.({
+      id: 'dialog-ack-failed',
+      approved: true,
+      answers: { choice: 'Yes' },
+    })).rejects.toThrow('terminal answer failed');
+    expect(await settledState(pending)).toBe('pending');
+    expect(session.agentState.requests['dialog-ack-failed']).toBeTruthy();
   });
 
   it('does not locally settle a pending provider-native request when switching to Read Only or Plan', async () => {

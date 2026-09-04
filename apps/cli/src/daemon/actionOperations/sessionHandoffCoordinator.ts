@@ -5,7 +5,10 @@ import {
   SessionHandoffCommitResponseSchema,
   SessionHandoffStartResponseSchema,
   SessionHandoffStatusSchema,
+  HandoffWorkspaceOutcomeV1Schema,
   type ActionExecuteResult,
+  type HandoffWorkspaceOutcomeV1,
+  type WorkspaceSyncCleanupWarningV1,
   type SessionHandoffPrepareTargetResponse,
   type SessionHandoffStatus,
   type SessionHandoffStorageMode,
@@ -240,6 +243,38 @@ function defaultWait(signal: AbortSignal): Promise<void> {
   });
 }
 
+/**
+ * Projects the adapter's committed result onto the one strict terminal outcome
+ * the Action result carries to the UI. Copy materialization, relationship
+ * creation versus reuse, the engine status observed at commit, and post-commit
+ * cleanup debt are all preserved here rather than being flattened into an
+ * untyped bag or a second workspace store.
+ */
+function buildWorkspaceOutcome(
+  committed: WorkspaceSyncHandoffCommitted | undefined,
+  cleanupWarning: WorkspaceSyncCleanupWarningV1 | null,
+): HandoffWorkspaceOutcomeV1 | null {
+  if (!committed || committed.kind === 'none') return null;
+  const shared = {
+    ...(committed.status === undefined ? {} : { status: committed.status }),
+    ...(cleanupWarning ? { cleanupWarning } : {}),
+  };
+  if (committed.kind === 'copy_once') {
+    return HandoffWorkspaceOutcomeV1Schema.parse({
+      kind: 'copied',
+      operationId: committed.operationId,
+      ...shared,
+    });
+  }
+  if (!committed.relationshipId) return null;
+  return HandoffWorkspaceOutcomeV1Schema.parse({
+    kind: 'relationship',
+    relationshipId: committed.relationshipId,
+    created: committed.relationshipCreated ?? committed.kind === 'create_relationship',
+    ...shared,
+  });
+}
+
 export async function coordinateTrackedSessionHandoff(
   input: CoordinatorInput,
 ): Promise<ActionExecuteResult> {
@@ -247,6 +282,8 @@ export async function coordinateTrackedSessionHandoff(
   let cancellationHandoffId: string | null = null;
   let preparedWorkspace: WorkspaceSyncHandoffPrepared | undefined;
   let finalizedWorkspace: WorkspaceSyncHandoffCommitted | undefined;
+  let committedTarget: Readonly<{ handoffId: string; status: SessionHandoffStatus }> | null = null;
+  let committedWorkspaceOutcome: HandoffWorkspaceOutcomeV1 | null = null;
   let workspaceAbortFailure: unknown;
   const workspaceOperationId = input.input.operationId?.trim() ?? '';
   const abortWorkspace = async (): Promise<void> => {
@@ -512,6 +549,7 @@ export async function coordinateTrackedSessionHandoff(
     await abortBoth(input, source.sourceMachineId, handoffId, failure.errorCode);
     return withWorkspaceAbortFailure(failure);
   }
+  committedTarget = committedResponse.data;
 
   let workspaceCommitted: WorkspaceSyncHandoffCommitted | undefined;
   let workspaceCleanupFailure: Failure | null = null;
@@ -534,41 +572,72 @@ export async function coordinateTrackedSessionHandoff(
   }
 
   publishPhase(input.publishOwnerUpdate, 'cleaning_source', 'Cleaning up source');
-  const cleanup = await input.cleanupSource({
-    machineId: source.sourceMachineId,
-    handoffId,
-    mode: 'source_cleanup',
-  }, input.signal);
-  const cleanupFailure = readFailure(cleanup, 'session_handoff_source_cleanup_failed');
-  const cleanupResponse = SessionHandoffCommitResponseSchema.safeParse(cleanup);
-  const cleanupWarning = cleanupFailure ?? (!cleanupResponse.success
-    ? {
-        ok: false as const,
-        errorCode: 'session_handoff_source_cleanup_invalid',
-        error: 'session_handoff_source_cleanup_invalid',
-      }
-    : null);
-  const cleanupWarningMessage = [workspaceCleanupFailure?.error, cleanupWarning?.error]
-    .filter((message): message is string => Boolean(message))
-    .join('; ');
+  let cleanupWarning: Failure | null = null;
+  try {
+    const cleanup = await input.cleanupSource({
+      machineId: source.sourceMachineId,
+      handoffId,
+      mode: 'source_cleanup',
+    }, input.signal);
+    const cleanupFailure = readFailure(cleanup, 'session_handoff_source_cleanup_failed');
+    const cleanupResponse = SessionHandoffCommitResponseSchema.safeParse(cleanup);
+    cleanupWarning = cleanupFailure ?? (!cleanupResponse.success
+      ? {
+          ok: false as const,
+          errorCode: 'session_handoff_source_cleanup_invalid',
+          error: 'session_handoff_source_cleanup_invalid',
+        }
+      : null);
+  } catch (error) {
+    // Target custody is already committed. Source cleanup is an idempotent
+    // source-side commit mode, so a throw or cancellation is explicit cleanup
+    // debt for a later retry, never authority to abort the committed target.
+    cleanupWarning = readThrownFailure(error, 'session_handoff_source_cleanup_failed');
+  }
+  // Workspace cleanup debt belongs to the workspace outcome; the top-level
+  // warning stays the source-cleanup owner so neither is reported as the other.
+  committedWorkspaceOutcome = buildWorkspaceOutcome(
+    workspaceCommitted,
+    workspaceCleanupFailure
+      ? { code: workspaceCleanupFailure.errorCode, message: workspaceCleanupFailure.error }
+      : null,
+  );
 
   return {
     ok: true,
     result: {
       handoffId,
       status: committedResponse.data.status,
-      ...(workspaceCommitted ? { workspace: workspaceCommitted } : {}),
-      ...(cleanupWarningMessage
+      ...(committedWorkspaceOutcome ? { workspace: committedWorkspaceOutcome } : {}),
+      ...(cleanupWarning
         ? {
             warning: {
               code: 'source_cleanup_failed',
-              message: cleanupWarningMessage,
+              message: cleanupWarning.error,
             },
           }
         : {}),
     },
   };
   } catch (error) {
+    if (committedTarget) {
+      // Target custody is irreversible at this point. Any later failure leaves
+      // only idempotent source/fence cleanup debt; it must never re-enter the
+      // pre-commit abort path and terminate the now-authoritative target.
+      const cleanupFailure = readThrownFailure(error, 'session_handoff_source_cleanup_failed');
+      return {
+        ok: true,
+        result: {
+          handoffId: committedTarget.handoffId,
+          status: committedTarget.status,
+          ...(committedWorkspaceOutcome ? { workspace: committedWorkspaceOutcome } : {}),
+          warning: {
+            code: 'source_cleanup_failed',
+            message: cleanupFailure.error,
+          },
+        },
+      };
+    }
     if (!input.signal.aborted) {
       await abortWorkspace();
       if (workspaceAbortFailure !== undefined) {

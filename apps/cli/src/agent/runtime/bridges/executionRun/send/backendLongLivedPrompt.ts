@@ -223,6 +223,16 @@ export async function sendBackendLongLivedRun(args: Readonly<{
       }
 
       if (isAbortLikeError(e)) {
+        if (
+          ctrl2.turnCancelReason === 'outcome_unknown'
+          && ctrl2.turnCancelEpoch === thisEpoch
+        ) {
+          // The effectful send and its completion observer both ended ambiguously.
+          // Keep this exact turn's custody for the existing terminal, liveness, or
+          // explicit stop owner; accepting another input could duplicate the effect.
+          await ctrl2.streamWriter?.flushAll({ reason: 'abort', interruptedReason: 'abort' });
+          return;
+        }
         // Long-lived runs are interactive: if a turn is cancelled/aborted, keep the run alive so
         // callers can retry or continue steering without losing the entire execution run.
         await ctrl2.streamWriter?.flushAll({ reason: 'abort', interruptedReason: 'abort' });

@@ -1960,13 +1960,15 @@ describe('resolveCliEngineRegistry runtimeCore', () => {
                     policyAgentId: 'claude',
                 },
             });
-        expect(() => resolution?.engineAdapter.runtimeCore.createExecutionRunBackend({
+        const executionRuntime = resolution?.engineAdapter.runtimeCore.createExecutionRunBackend({
             cwd: '/repo',
             runId: 'run-plugin-owner',
             backendId,
             permissionMode: 'read_only',
             start: { intent: 'review' },
-        })).toThrow('Session-derived execution run requires parent Session host custody');
+        });
+        await expect(executionRuntime?.readResumeSupport()).resolves.toBe(false);
+        await executionRuntime?.dispose();
         expect(createPluginRuntime).toHaveBeenCalledTimes(1);
     });
 
@@ -2802,7 +2804,7 @@ describe('resolveCliEngineRegistry runtimeCore', () => {
             supportsResume: false,
             resumeSessionId: null,
         },
-    ])('derives a finite Run from an external $label Agent with complete parent Session custody', async ({
+    ])('derives a finite Run from an external $label Agent with detached or parent Session custody', async ({
         sessionOpen,
         supportsResume,
         resumeSessionId,
@@ -2969,6 +2971,82 @@ describe('resolveCliEngineRegistry runtimeCore', () => {
         const daemonResolution = await daemonRegistry.resolveForBackendId(
             backendId,
         );
+        const detachedExecutionRuntime = daemonResolution?.engineAdapter.runtimeCore
+            .createExecutionRunBackend({
+                cwd: '/repo',
+                runId: 'session-derived-detached-run',
+                backendId,
+                permissionMode: 'read_only',
+                start: { intent: 'review' },
+            });
+        const detachedMessages: unknown[] = [];
+        detachedExecutionRuntime?.subscribeMessages((message) => detachedMessages.push(message));
+
+        await expect(detachedExecutionRuntime?.readResumeSupport()).resolves.toBe(supportsResume);
+        await expect(detachedExecutionRuntime?.provisionSession(
+            resumeSessionId ? { resumeSessionId } : undefined,
+        )).resolves.toEqual({
+            sessionId: 'session-derived-detached-run',
+        });
+        await detachedExecutionRuntime?.sendPrompt(
+            'session-derived-detached-run',
+            'Review these detached changes',
+        );
+        await detachedExecutionRuntime?.waitForTurnCompletion?.();
+
+        expect(daemonSessionOpen).toHaveBeenCalledOnce();
+        expect(daemonSessionOpen.mock.calls[0]?.[0]).toMatchObject({
+            kind: resumeSessionId ? 'resume' : 'create',
+            sessionId: 'session-derived-detached-run',
+            cwd: '/repo',
+            ...(resumeSessionId ? { providerSessionId: resumeSessionId } : {}),
+        });
+        expect(openedSessionContext).toMatchObject({
+            plugin: { id: pluginId, version: '0.0.0' },
+            contribution: {
+                id: agentId,
+                qualifiedId: `${pluginId}/agents/${agentId}`,
+            },
+            surface: 'agent',
+            agent: { id: agentId },
+            session: {
+                id: 'session-derived-detached-run',
+                services: {
+                    features: { isEnabled: expect.any(Function) },
+                    models: { bind: expect.any(Function) },
+                    activeInput: {
+                        bind: expect.any(Function),
+                        publishStatus: expect.any(Function),
+                    },
+                    sessionHooks: { startServer: expect.any(Function) },
+                    transcripts: {
+                        publishSessionEvent: expect.any(Function),
+                        fileFollow: { follow: expect.any(Function) },
+                    },
+                    accountUsage: {
+                        resolveSourceContext: expect.any(Function),
+                        recordSnapshot: expect.any(Function),
+                        adoptProvisionalRecord: expect.any(Function),
+                    },
+                    mcp: { resolveServers: expect.any(Function) },
+                    workflowActivity: expect.any(Object),
+                    toolExecution: { before: expect.any(Function) },
+                },
+            },
+            workState: { publisher: expect.any(Function) },
+            protocols: { acp: { open: expect.any(Function) } },
+        });
+        expect(detachedMessages).toEqual([
+            { type: 'status', status: 'running' },
+            { type: 'model-output', textDelta: 'Session-derived result' },
+            { type: 'status', status: 'stopped' },
+        ]);
+        await expect(openedSessionContext!.session.services.transcripts.publishSessionEvent({} as never))
+            .rejects
+            .toMatchObject({ code: 'agent_run_session_projection_unavailable' });
+        await detachedExecutionRuntime?.dispose();
+        await detachedExecutionRuntime?.dispose();
+
         const parentSession = {
             ...createRuntimePlacementSessionClient('parent-session'),
             enqueueAgentMessageCommitted: vi.fn(async () => ({ persisted: true, delivered: false })),
@@ -3004,8 +3082,8 @@ describe('resolveCliEngineRegistry runtimeCore', () => {
         );
         await executionRuntime?.waitForTurnCompletion?.();
 
-        expect(daemonSessionOpen).toHaveBeenCalledOnce();
-        expect(daemonSessionOpen.mock.calls[0]?.[0]).toMatchObject({
+        expect(daemonSessionOpen).toHaveBeenCalledTimes(2);
+        expect(daemonSessionOpen.mock.calls[1]?.[0]).toMatchObject({
             kind: resumeSessionId ? 'resume' : 'create',
             sessionId: 'parent-session',
             cwd: '/repo',
@@ -3056,7 +3134,7 @@ describe('resolveCliEngineRegistry runtimeCore', () => {
         await executionRuntime?.dispose();
         await executionRuntime?.dispose();
         await createdSessionRuntime.operations.resetOrDisposeRuntime();
-        expect(sessionRuntimeDispose).toHaveBeenCalledOnce();
+        expect(sessionRuntimeDispose).toHaveBeenCalledTimes(2);
         expect(modelSourceDispose).toHaveBeenCalledOnce();
         expect(runnerSessionDispose).toHaveBeenCalledOnce();
     });

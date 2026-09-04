@@ -98,4 +98,49 @@ describe('action operation canonical execution observer', () => {
       execute: async () => ({ ok: true, result: 'historical' }),
     })).resolves.toEqual({ ok: true, result: 'historical' });
   });
+
+  it('preserves the strict handoff terminal result and keeps a later handoff failure visible', async () => {
+    const store = createActionOperationStore();
+    let operation = 0;
+    const runner = createActionOperationRunner({
+      store,
+      resolveAction: (actionId) => ({
+        actionId,
+        title: 'Handoff session',
+        operation: {
+          version: 1,
+          visibility: 'activity',
+          progress: 'reported',
+          presentation: { onStart: 'current' },
+        },
+      }),
+      generateOperationId: () => `operation-${++operation}`,
+    });
+    const terminal = {
+      ok: true as const,
+      result: {
+        handoffId: 'handoff-1',
+        status: { handoffId: 'handoff-1', status: 'completed' as const, phase: 'finalizing' as const, recoveryActions: [] },
+        workspace: { kind: 'relationship' as const, relationshipId: 'relationship-1', created: true },
+        warning: { code: 'source_cleanup_failed', message: 'Source cleanup is still pending.' },
+      },
+    };
+
+    await expect(runner.observe({
+      actionId: 'session.handoff', requestId: 'handoff-request-1', scope,
+      execute: async () => terminal,
+    })).resolves.toEqual(terminal);
+    await expect(runner.observe({
+      actionId: 'session.handoff', requestId: 'handoff-request-2', scope,
+      execute: async () => ({ ok: false, errorCode: 'target_unavailable', error: 'target_unavailable' }),
+    })).resolves.toEqual({ ok: false, errorCode: 'target_unavailable', error: 'target_unavailable' });
+
+    expect(store.get(scope, 'operation-1')).toMatchObject({
+      requestId: 'handoff-request-1', state: 'succeeded', result: terminal.result,
+    });
+    expect(store.get(scope, 'operation-2')).toMatchObject({
+      requestId: 'handoff-request-2', state: 'failed',
+      error: { errorCode: 'target_unavailable', error: 'target_unavailable' },
+    });
+  });
 });

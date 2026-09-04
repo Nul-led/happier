@@ -17,16 +17,20 @@ export type SessionHandoffWorkspaceContext = Readonly<{
   contentSelection: 'git_worktree' | 'all_files';
 }>;
 
+/**
+ * Resolves an existing relationship's handoff endpoints. `copy_once` and
+ * `create_relationship` materialize their `WorkspaceRef` values inside the
+ * daemon relationship owner instead, so no caller-supplied endpoint identity is
+ * representable here.
+ */
 export type ResolveSessionHandoffWorkspaceContextInput = Readonly<{
-  action: Exclude<HandoffWorkspaceActionV1, Readonly<{ kind: 'none' }>>;
+  action: Extract<HandoffWorkspaceActionV1, Readonly<{ kind: 'relationship' }>>;
   workspaceRefs: readonly WorkspaceRefV1[];
   relationships: readonly WorkspaceSyncRelationshipV1[];
   sourceMachineId: string;
   sourceRootPath?: string;
   targetMachineId: string;
   targetRootPath?: string;
-  requestedSourceWorkspaceRefId?: string;
-  requestedTargetWorkspaceRefId?: string;
 }>;
 
 function contextError(code: string, message: string): Error {
@@ -62,31 +66,6 @@ export function resolveSessionHandoffWorkspaceContext(
   const sourceRootPath = normalizedRoot(input.sourceRootPath);
   if (!sourceMachineId || !targetMachineId) {
     throw contextError('workspace_ref_not_ready', 'Workspace sync machine identity is unavailable');
-  }
-
-  if (action.kind === 'copy_once') {
-    const targetRootPath = normalizedRoot(input.targetRootPath);
-    const requestedSource = exactRefById(input.workspaceRefs, input.requestedSourceWorkspaceRefId ?? '');
-    const requestedTarget = exactRefById(input.workspaceRefs, input.requestedTargetWorkspaceRefId ?? '');
-    const sourceByScope = exactRefByScope(input.workspaceRefs, sourceMachineId, sourceRootPath);
-    const targetByScope = exactRefByScope(input.workspaceRefs, targetMachineId, targetRootPath);
-    if (!requestedSource || !requestedTarget || !sourceByScope || !targetByScope
-      || requestedSource.id !== sourceByScope.id || requestedTarget.id !== targetByScope.id
-      || requestedSource.id === requestedTarget.id) {
-      throw contextError('workspace_ref_not_ready', 'Workspace sync endpoints are not exact persisted WorkspaceRefs');
-    }
-    return {
-      sourceWorkspaceRefId: requestedSource.id,
-      targetWorkspaceRefId: requestedTarget.id,
-      sourceRootPath: sourceByScope.rootPath,
-      targetRootPath: targetByScope.rootPath,
-      controllerMachineId: sourceMachineId,
-      contentSelection: action.contentPolicy.selection,
-    };
-  }
-
-  if (action.kind === 'create_relationship') {
-    throw contextError('workspace_ref_not_ready', 'Workspace relationship creation materializes endpoints in the daemon owner');
   }
 
   const relationshipMatches = input.relationships.filter((candidate) => (

@@ -60,6 +60,8 @@ export type PermissionResponseClaim =
         version: 1;
         origin: 'presentUser';
         actor: SessionPermissionAccountUserDecisionActorV1;
+        /** Exact host turn for current stamped requests; absent only for released legacy rows. */
+        turnId?: string;
         decision: 'approved' | 'approved_for_session' | 'approved_execpolicy_amendment' | 'denied' | 'abort';
         scope: 'request' | 'session';
     }>
@@ -375,11 +377,13 @@ export class AgentStateRequestStore {
         if (!hasActor) return { status: 'not_settled' };
         const actor = SessionPermissionAccountUserDecisionActorV1Schema.safeParse(entry.permissionDecisionActorV1);
         if (!actor.success) return { status: 'conflict' };
+        const turnId = TurnIdSchema.safeParse(entry.turnId);
 
         const completedClaim = readPermissionResponseClaim({
             version: 1,
             origin: 'presentUser',
             actor: actor.data,
+            ...(turnId.success ? { turnId: turnId.data } : {}),
             decision: entry.decision,
             scope: entry.decision === 'approved_for_session' ? 'session' : 'request',
         });
@@ -671,6 +675,12 @@ export class AgentStateRequestStore {
                 const requests = cloneStringKeyedRecordToNullProto(currentState.requests);
                 const completedRequests = cloneStringKeyedRecordToNullProto<AgentStateCompletedEntry>(currentState.completedRequests);
                 const existingRequest = clonePlainObjectToNullProto(requests[params.requestId]);
+                if (!existingRequest && completedRequests[params.requestId]) {
+                    // Terminal Agent State is the one durable request owner.
+                    // A delayed automatic path cannot overwrite a cancellation
+                    // (or any other already-settled response) for this request.
+                    return { state: currentState };
+                }
                 if (existingRequest && hasOpaquePermissionResponseClaim(existingRequest)) {
                     // An outstanding first-answer claim has already admitted a
                     // terminal owner. Automatic policy must not overwrite it
@@ -742,64 +752,7 @@ export class AgentStateRequestStore {
         decision?: string;
         requestIds: readonly string[];
     }>): Promise<void> {
-        const completedRequestIds = new Set<string>();
-        await this.updateAgentStateAndWait(
-            (currentState) => {
-                const pendingRequests = cloneStringKeyedRecordToNullProto(currentState.requests);
-                const completedRequests = cloneStringKeyedRecordToNullProto(currentState.completedRequests);
-                const now = Date.now();
-
-                for (const [id, request] of Object.entries(pendingRequests)) {
-                    const entry = clonePlainObjectToNullProto(request) ?? Object.create(null);
-                    if (hasOpaquePermissionResponseClaim(entry)) {
-                        // Preserve opaque own-property claims too. A supported
-                        // predecessor can have written the claim even if this
-                        // build cannot parse its exact payload yet.
-                        continue;
-                    }
-                    delete pendingRequests[id];
-                    entry.completedAt = now;
-                    entry.status = 'canceled';
-                    entry.reason = params.reason;
-                    if (typeof params.decision === 'string') {
-                        entry.decision = params.decision;
-                    }
-                    removePermissionResponseClaim(entry);
-                    completedRequests[id] = entry as AgentStateCompletedEntry;
-                    completedRequestIds.add(id);
-                }
-
-                // A caller includes an id here only when it had already
-                // admitted cancellation before an unclaimed in-flight terminal
-                // projection settled. Do not rewrite unrelated completed
-                // responses, including a durable claim that won elsewhere.
-                for (const id of params.requestIds) {
-                    const completed = completedRequests[id];
-                    if (!completed) continue;
-                    const entry = clonePlainObjectToNullProto(completed) ?? Object.create(null);
-                    entry.completedAt = now;
-                    entry.status = 'canceled';
-                    entry.reason = params.reason;
-                    if (typeof params.decision === 'string') {
-                        entry.decision = params.decision;
-                    } else {
-                        delete entry.decision;
-                    }
-                    removePermissionResponseClaim(entry);
-                    completedRequests[id] = entry as AgentStateCompletedEntry;
-                    completedRequestIds.add(id);
-                }
-
-                return {
-                    ...currentState,
-                    requests: pendingRequests,
-                    completedRequests,
-                };
-            },
-        );
-        for (const requestId of completedRequestIds) {
-            this.markPermissionRequestCompletedBestEffort(requestId);
-        }
+        await this.cancelRequests(params);
     }
 
     async cancelRequestsByOwner(params: Readonly<{
@@ -807,6 +760,18 @@ export class AgentStateRequestStore {
         reason: string;
         decision?: string;
         requestIds: readonly string[];
+    }>): Promise<void> {
+        await this.cancelRequests({
+            ...params,
+            pluginId: params.owner.pluginId,
+        });
+    }
+
+    private async cancelRequests(params: Readonly<{
+        reason: string;
+        decision?: string;
+        requestIds: readonly string[];
+        pluginId?: string;
     }>): Promise<void> {
         const completedRequestIds = new Set<string>();
         await this.updateAgentStateAndWait(
@@ -817,14 +782,13 @@ export class AgentStateRequestStore {
 
                 for (const [id, request] of Object.entries(pendingRequests)) {
                     const entry = clonePlainObjectToNullProto(request) ?? Object.create(null);
-                    const owner = normalizePermissionRequestOwner(entry.owner);
-                    if (!isPermissionRequestOwnedByPlugin(owner, params.owner.pluginId)) {
-                        continue;
-                    }
-                    if (hasOpaquePermissionResponseClaim(entry)) {
-                        // See cancelAllRequests: an opaque durable first-answer
-                        // claim cannot be canceled into a conflicting terminal
-                        // projection by this lifecycle path.
+                    if (
+                        params.pluginId
+                        && !isPermissionRequestOwnedByPlugin(
+                            normalizePermissionRequestOwner(entry.owner),
+                            params.pluginId,
+                        )
+                    ) {
                         continue;
                     }
                     delete pendingRequests[id];
@@ -839,14 +803,23 @@ export class AgentStateRequestStore {
                     completedRequestIds.add(id);
                 }
 
-                // See cancelAllRequests: only caller-admitted, unclaimed
-                // in-flight completions may be rewritten into cancellation.
+                // A caller includes an id here only when it admitted lifecycle
+                // cancellation before an in-flight ordinary completion
+                // persisted. A cancellation already written above (or by an
+                // earlier repeat) is the sole durable terminal result.
                 for (const id of params.requestIds) {
+                    if (completedRequestIds.has(id)) continue;
                     const completed = completedRequests[id];
                     if (!completed) continue;
                     const entry = clonePlainObjectToNullProto(completed) ?? Object.create(null);
-                    const owner = normalizePermissionRequestOwner(entry.owner);
-                    if (!isPermissionRequestOwnedByPlugin(owner, params.owner.pluginId)) {
+                    if (entry.status === 'canceled') continue;
+                    if (
+                        params.pluginId
+                        && !isPermissionRequestOwnedByPlugin(
+                            normalizePermissionRequestOwner(entry.owner),
+                            params.pluginId,
+                        )
+                    ) {
                         continue;
                     }
                     entry.completedAt = now;
@@ -1196,9 +1169,17 @@ function readPermissionResponseClaim(value: unknown): PermissionResponseClaim | 
     }
 
     if (record.origin === 'presentUser') {
-        if (!hasExactlyKeys(record, ['version', 'origin', 'actor', 'decision', 'scope'])) return null;
+        const hasTurnId = Object.prototype.hasOwnProperty.call(record, 'turnId');
+        if (!hasExactlyKeys(
+            record,
+            hasTurnId
+                ? ['version', 'origin', 'actor', 'turnId', 'decision', 'scope']
+                : ['version', 'origin', 'actor', 'decision', 'scope'],
+        )) return null;
         const actor = SessionPermissionAccountUserDecisionActorV1Schema.safeParse(record.actor);
+        const turnId = hasTurnId ? TurnIdSchema.safeParse(record.turnId) : null;
         if (!actor.success) return null;
+        if (turnId && !turnId.success) return null;
         if (
             record.decision !== 'approved'
             && record.decision !== 'approved_for_session'
@@ -1215,6 +1196,7 @@ function readPermissionResponseClaim(value: unknown): PermissionResponseClaim | 
             version: 1,
             origin: 'presentUser',
             actor: actor.data,
+            ...(turnId?.success ? { turnId: turnId.data } : {}),
             decision: record.decision,
             scope: record.scope,
         };
@@ -1278,7 +1260,9 @@ function permissionResponseClaimsEqual(
     if (left.origin === 'automaticPolicy' || right.origin === 'automaticPolicy') return false;
     if (left.decision !== right.decision || left.scope !== right.scope) return false;
     if (left.origin === 'presentUser' && right.origin === 'presentUser') {
-        return left.actor.accountId === right.actor.accountId && left.actor.relationship === right.actor.relationship;
+        return left.actor.accountId === right.actor.accountId
+            && left.actor.relationship === right.actor.relationship
+            && left.turnId === right.turnId;
     }
     if (left.origin !== 'remoteMediation' || right.origin !== 'remoteMediation') return false;
     return (

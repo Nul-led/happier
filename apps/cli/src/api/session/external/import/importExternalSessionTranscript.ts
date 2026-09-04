@@ -1,4 +1,5 @@
 import {
+  buildSessionTranscriptMessageProvenanceV1,
   isMessageStructuredPresentationV1Candidate,
   makeExternalSessionHistoricalImportLocalId,
   SESSION_MESSAGE_PROVENANCE_META_KEY,
@@ -69,11 +70,9 @@ function sanitizeHistoricalImportRaw(params: Readonly<{
   const meta = stripSessionInputProtectedMeta(isRecord(rawMeta) ? rawMeta : undefined);
   delete meta[SESSION_MESSAGE_PROVENANCE_META_KEY];
   if (sourceFact) {
-    meta[SESSION_MESSAGE_PROVENANCE_META_KEY] = {
-      v: 1,
-      kind: 'host',
-      producer: 'externalSessionHistory',
-    };
+    meta[SESSION_MESSAGE_PROVENANCE_META_KEY] = buildSessionTranscriptMessageProvenanceV1(
+      'externalSessionHistory',
+    );
   }
   return { ...params.raw, meta };
 }

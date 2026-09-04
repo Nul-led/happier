@@ -12,6 +12,7 @@ import type {
 } from '@happier-dev/protocol';
 import {
   AutomationAccountCurrentnessWitnessV1Schema,
+  AutomationRunExecutionInputV1Schema,
   ExecutionRunStartResponseSchema,
   ExecutionRunStopResponseSchema,
   materializeAutomationRunExecutionRecipeV1,
@@ -22,9 +23,11 @@ import {
   parseAutomationRunExecutionRecipeV1,
   readExecutionRunStartRunCreation,
   sameAutomationAccountCurrentnessWitnessV1,
+  toAutomationRunExecutionInputV1Origin,
   validateAutomationRunExecutionRecipeOuterV1,
   type AutomationAccountCurrentnessWitnessV1,
   type AutomationRunCause,
+  type AutomationRunExecutionInputV1,
   type AutomationRunExecutionRecipeV1,
   type AutomationV3WorkerExecutionDispatchOutcome,
   type AutomationV3WorkerResultDelivery,
@@ -473,6 +476,35 @@ function openStrictRecipeContent(params: Readonly<{
   } catch {
     return { kind: 'contentInvalid' };
   }
+}
+
+function parseRetainedV2ExecutionInputForClaim(params: Readonly<{
+  raw: string | null;
+  cause: AutomationRunCause;
+}>): AutomationRunExecutionInputV1 | null {
+  if (params.raw === null) return null;
+  let raw: unknown;
+  try {
+    raw = JSON.parse(params.raw);
+  } catch {
+    return null;
+  }
+  const parsed = AutomationRunExecutionInputV1Schema.safeParse(raw);
+  if (!parsed.success) return null;
+
+  const expectedOrigin = toAutomationRunExecutionInputV1Origin(params.cause);
+  if (!expectedOrigin || expectedOrigin.kind !== parsed.data.origin.kind) return null;
+  if (
+    expectedOrigin.kind === 'manual'
+    && parsed.data.origin.kind === 'manual'
+    && expectedOrigin.invokedAt !== parsed.data.origin.invokedAt
+  ) return null;
+  if (
+    expectedOrigin.kind === 'scheduled'
+    && parsed.data.origin.kind === 'scheduled'
+    && expectedOrigin.scheduledFor !== parsed.data.origin.scheduledFor
+  ) return null;
+  return parsed.data;
 }
 
 async function executeParsedAutomationTemplate(params: Readonly<{
@@ -1140,6 +1172,121 @@ async function executeStrictV3Run(params: Readonly<{
   }
 }
 
+async function executeRetainedV2InputOnV3Lifecycle(params: Readonly<{
+  machineId: string;
+  claimed: Extract<ClaimableRunPayload, { protocol: 'v3' }>;
+  claimClient: AutomationRunClaimClient;
+  credentials?: StoredCredentials;
+  spawnSession: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>;
+  machineAdmissionTransport?: (
+    request: SessionPendingEnqueueByMachineRequestV1,
+    options?: Readonly<{ signal?: AbortSignal }>,
+  ) => Promise<SessionInputAdmissionResultV1>;
+  signal: AbortSignal;
+  isCurrent: () => boolean;
+  resolveAutomationAccountEncryption?: ResolveAutomationAccountEncryption;
+  input: AutomationRunExecutionInputV1;
+  encryptionAtOpen: AvailableAutomationAccountEncryptionV1;
+  onPromptSessionId: (sessionId: string) => void;
+  onProducedNewSession: (
+    sessionId: string,
+    accountEncryption: AvailableAutomationAccountEncryptionV1,
+  ) => void;
+}>): Promise<void> {
+  const template = parseAutomationTemplateExecution({
+    run: {
+      id: params.claimed.run.id,
+      automationId: params.claimed.run.automationId,
+    },
+    automation: {
+      id: params.claimed.automation.id,
+      name: params.claimed.automation.name,
+      enabled: params.claimed.automation.enabled,
+      targetType: params.input.targetType,
+      templateCiphertext: params.input.templateCiphertext,
+    },
+  }, isAvailableE2eeAutomationAccountEncryptionV1(params.encryptionAtOpen)
+    ? params.encryptionAtOpen.material.material
+    : undefined);
+  if (!template.ok) {
+    await failV3ClaimedRunBeforeStart({
+      machineId: params.machineId,
+      claimed: params.claimed,
+      claimClient: params.claimClient,
+      signal: params.signal,
+      isCurrent: params.isCurrent,
+      resolveAutomationAccountEncryption: params.resolveAutomationAccountEncryption,
+      errorCode: template.code,
+      errorMessage: template.error,
+    });
+    return;
+  }
+  if (!params.isCurrent()) return;
+
+  let rawStartCurrentness: AutomationAccountCurrentnessWitnessV1 | null | void;
+  try {
+    rawStartCurrentness = await params.claimClient.startRun({
+      protocol: 'v3',
+      runId: params.claimed.run.id,
+      machineId: params.machineId,
+      attempt: params.claimed.run.attempt,
+      accountCurrentness: params.claimed.accountCurrentness,
+    });
+  } catch {
+    return;
+  }
+  if (!params.isCurrent()) return;
+  const startCurrentness = AutomationAccountCurrentnessWitnessV1Schema.safeParse(rawStartCurrentness);
+  if (!startCurrentness.success) return;
+  const currentnessBeforeEffect = await resolveMatchingAutomationCurrentness({
+    signal: params.signal,
+    expected: startCurrentness.data,
+    resolveAutomationAccountEncryption: params.resolveAutomationAccountEncryption,
+  });
+  if (!currentnessBeforeEffect || !params.isCurrent()) return;
+
+  await executeParsedAutomationTemplate({
+    credentials: params.credentials,
+    machineId: params.machineId,
+    claimed: params.claimed,
+    spawnSession: params.spawnSession,
+    machineAdmissionTransport: params.machineAdmissionTransport,
+    signal: params.signal,
+    isCurrent: params.isCurrent,
+    template: template.value,
+    beforeTargetEffect: async () => {
+      const currentness = await resolveMatchingAutomationCurrentness({
+        signal: params.signal,
+        expected: startCurrentness.data,
+        resolveAutomationAccountEncryption: params.resolveAutomationAccountEncryption,
+      });
+      return currentness !== null && params.isCurrent();
+    },
+    onPromptSessionId: params.onPromptSessionId,
+    onProducedNewSessionId: (sessionId) => {
+      params.onProducedNewSession(sessionId, currentnessBeforeEffect);
+    },
+    fail: async (errorCode, errorMessage, producedSessionId) => await params.claimClient.failRun(
+      createV3RunFailureSettlement({
+        machineId: params.machineId,
+        claimed: params.claimed,
+        accountEncryption: currentnessBeforeEffect,
+        errorCode,
+        errorMessage,
+        ...(producedSessionId === undefined ? {} : { producedSessionId }),
+      }),
+    ),
+    succeed: async (producedSessionId) => await params.claimClient.succeedRun({
+      protocol: 'v3',
+      runId: params.claimed.run.id,
+      machineId: params.machineId,
+      attempt: params.claimed.run.attempt,
+      accountCurrentness: startCurrentness.data,
+      producedSessionId,
+    }),
+  });
+}
+
 export async function executeClaimedRun(params: {
   token: string;
   /** The daemon's authenticated Session owner; required for existing-session input admission. */
@@ -1258,9 +1405,43 @@ export async function executeClaimedRun(params: {
           return;
         }
 
-        // Current V3 has one cause-bound recipe model. Its unreleased
-        // predecessor is not a compatibility reader; released V2 remains
-        // isolated on the distinct V2 claim branch below.
+        const retainedV2Input = parseRetainedV2ExecutionInputForClaim({
+          raw: claimed.run.executionInputEnvelope,
+          cause: claimed.run.cause,
+        });
+        if (retainedV2Input) {
+          const encryptionAtOpen = await resolveMatchingAutomationCurrentness({
+            signal: executionController.signal,
+            expected: claimed.accountCurrentness,
+            resolveAutomationAccountEncryption: params.resolveAutomationAccountEncryption,
+          });
+          if (!encryptionAtOpen || !isCurrent()) return;
+          await executeRetainedV2InputOnV3Lifecycle({
+            machineId,
+            claimed,
+            claimClient,
+            credentials: params.credentials,
+            spawnSession,
+            machineAdmissionTransport: params.machineAdmissionTransport,
+            signal: executionController.signal,
+            isCurrent,
+            resolveAutomationAccountEncryption: params.resolveAutomationAccountEncryption,
+            input: retainedV2Input,
+            encryptionAtOpen,
+            onPromptSessionId: (sessionId) => {
+              cancellationPromptSessionId = sessionId;
+            },
+            onProducedNewSession: (sessionId, accountEncryption) => {
+              knownProducedNewSessionId = sessionId;
+              knownProducedNewSessionEncryption = accountEncryption;
+            },
+          });
+          return;
+        }
+
+        // Current V3 has one cause-bound recipe model. Only the exact released
+        // V2 frozen input is admitted as a fallback; malformed and unreleased
+        // predecessor shapes fail before start.
         await failV3ClaimedRunBeforeStart({
           machineId,
           claimed,
@@ -1405,7 +1586,7 @@ export async function executeClaimedRun(params: {
       && isAuthoritativeAutomationRunCancellation(params.signal)
     ) {
       await discardAutomationPromptAfterRunCancellation({
-        token: params.token,
+        credentials: params.credentials,
         sessionId: cancellationPromptSessionId,
         automationId: claimed.automation.id,
         runId: claimed.run.id,

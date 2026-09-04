@@ -89,6 +89,13 @@ export class VoiceAgentManager {
   private readonly onIdleReaped: ((voiceAgentId: string) => Promise<void>) | null;
   private readonly onTerminalFailure: ((voiceAgentId: string, reason: 'backend_replacement_failed') => Promise<void>) | null;
   private readonly voiceAgents = new Map<string, VoiceAgentInstance>();
+  private readonly startingVoiceAgents = new Map<string, {
+    cancelled: boolean;
+    provisionalCleanup: (() => Promise<void>) | null;
+    settled: Promise<void>;
+    resolveSettled: () => void;
+  }>();
+  private readonly retiringVoiceAgents = new Map<string, Promise<void>>();
   private readonly runtimeDisposals = new WeakMap<ExecutionRunHostRuntime, Promise<void>>();
   private readonly reaper: NodeJS.Timeout;
   private disposed = false;
@@ -110,6 +117,22 @@ export class VoiceAgentManager {
       .then(() => undefined, () => undefined);
     this.runtimeDisposals.set(runtime, disposal);
     return disposal;
+  }
+
+  private beginRetirement(voiceAgentId: string, cleanup: () => Promise<void>): Promise<void> {
+    const existing = this.retiringVoiceAgents.get(voiceAgentId);
+    if (existing) return existing;
+
+    let retirement!: Promise<void>;
+    retirement = Promise.resolve()
+      .then(cleanup)
+      .finally(() => {
+        if (this.retiringVoiceAgents.get(voiceAgentId) === retirement) {
+          this.retiringVoiceAgents.delete(voiceAgentId);
+        }
+      });
+    this.retiringVoiceAgents.set(voiceAgentId, retirement);
+    return retirement;
   }
 
   private normalizeAssistantTextForActions(
@@ -272,6 +295,14 @@ export class VoiceAgentManager {
     };
   }
 
+  async waitForRetirement(voiceAgentId: string): Promise<void> {
+    const retirement = this.retiringVoiceAgents.get(voiceAgentId)
+      ?? this.voiceAgents.get(voiceAgentId)?.lifecycleInFlight
+      ?? null;
+    if (!retirement) return;
+    await retirement.catch(() => {});
+  }
+
   private async ensureCommitBackendSession(voiceAgent: VoiceAgentInstance): Promise<void> {
     if (voiceAgent.commitBackend && voiceAgent.commitSessionId) {
       return;
@@ -291,6 +322,10 @@ export class VoiceAgentManager {
         start: { intent: 'voice_agent' },
         ...(voiceAgent.connectedServices !== undefined ? { connectedServices: voiceAgent.connectedServices } : {}),
       });
+      // Publish the provisional runtime to the unpublished instance before the
+      // first await. A concurrent stop then reaches the same instance disposer,
+      // and both that path and this failure path converge on disposeRuntimeOnce.
+      voiceAgent.commitBackend = commitBackend;
       commitBackend.subscribeMessages((msg: AgentMessage) => {
         if (msg.type !== 'model-output') return;
         if (typeof msg.textDelta === 'string') voiceAgent.commitBuffer += msg.textDelta;
@@ -306,12 +341,14 @@ export class VoiceAgentManager {
           )
         ).sessionId;
       })();
-
-      voiceAgent.commitBackend = commitBackend;
       voiceAgent.commitSessionId = sessionId;
       voiceAgent.commitResumeSessionId = null;
     } catch (e: unknown) {
-      if (commitBackend) await commitBackend.dispose().catch(() => {});
+      if (voiceAgent.commitBackend === commitBackend) {
+        voiceAgent.commitBackend = null;
+        voiceAgent.commitSessionId = null;
+      }
+      if (commitBackend) await this.disposeRuntimeOnce(commitBackend).catch(() => {});
       throw new VoiceAgentError('VOICE_AGENT_START_FAILED', e instanceof Error ? e.message : 'commit backend unavailable');
     }
   }
@@ -346,19 +383,48 @@ export class VoiceAgentManager {
     const disabledActionIds = Array.isArray(params.disabledActionIds)
       ? params.disabledActionIds.map((value) => String(value ?? '').trim()).filter(Boolean)
       : [];
-    const memoryRecallGuidanceEnabled = await resolveCliMemoryRecallGuidanceEnabled({
-      surfaces: ['voice'],
+    if (
+      this.voiceAgents.has(voiceAgentId)
+      || this.startingVoiceAgents.has(voiceAgentId)
+      || this.retiringVoiceAgents.has(voiceAgentId)
+    ) {
+      throw new VoiceAgentError('VOICE_AGENT_START_FAILED', 'Voice agent is already active');
+    }
+    let resolveStartSettled!: () => void;
+    const startSettled = new Promise<void>((resolve) => {
+      resolveStartSettled = resolve;
     });
-    const systemAppendBlocks = await this.resolveSystemAppendBlocks({
-      profileId: params.profileId ?? null,
-      sessionId: params.contextSessionId ?? null,
-    });
+    const startOccurrence = {
+      cancelled: false,
+      provisionalCleanup: null as (() => Promise<void>) | null,
+      settled: startSettled,
+      resolveSettled: resolveStartSettled,
+    };
+    this.startingVoiceAgents.set(voiceAgentId, startOccurrence);
+    const ensureCurrentStart = (): void => {
+      if (
+        this.disposed
+        || startOccurrence.cancelled
+        || this.startingVoiceAgents.get(voiceAgentId) !== startOccurrence
+      ) {
+        throw new VoiceAgentError('VOICE_AGENT_START_FAILED', 'Voice agent start was cancelled');
+      }
+    };
     const createRuntime = options?.createRuntime ?? this.createRuntime;
     const backendId = resolveExecutionRunRuntimeBackendId(params.backendTarget);
 
     let chatBackendForCleanup: ExecutionRunHostRuntime | undefined;
     let instanceForCleanup: VoiceAgentInstance | null = null;
     try {
+      const memoryRecallGuidanceEnabled = await resolveCliMemoryRecallGuidanceEnabled({
+        surfaces: ['voice'],
+      });
+      ensureCurrentStart();
+      const systemAppendBlocks = await this.resolveSystemAppendBlocks({
+        profileId: params.profileId ?? null,
+        sessionId: params.contextSessionId ?? null,
+      });
+      ensureCurrentStart();
       const resume = (() => {
         const handle = params.resumeHandle ?? null;
         if (!handle) return { chatSessionId: null as string | null, commitSessionId: null as string | null };
@@ -383,6 +449,13 @@ export class VoiceAgentManager {
         start: { intent: 'voice_agent' },
         ...(params.connectedServices !== undefined ? { connectedServices: params.connectedServices } : {}),
       }));
+      // The start occurrence owns one cleanup handle as soon as a runtime exists.
+      // Stop may invoke it while provisioning or READY is still pending; the
+      // runtime WeakMap and the instance disposer make the eventual start catch
+      // converge on the same disposal rather than retiring it twice.
+      startOccurrence.provisionalCleanup = () => instanceForCleanup
+        ? instanceForCleanup.dispose()
+        : this.disposeRuntimeOnce(chatBackend);
 
       const clearChatBuffer = () => {
         if (instanceForCleanup) instanceForCleanup.chatBuffer = '';
@@ -399,6 +472,7 @@ export class VoiceAgentManager {
           )
         ).sessionId;
       })();
+      ensureCurrentStart();
 
       const instance: VoiceAgentInstance = {
         id: voiceAgentId,
@@ -458,16 +532,9 @@ export class VoiceAgentManager {
       instanceForCleanup = instance;
       instance.unsubscribeChatMessages = this.subscribeToChatBackend(instance, chatBackend, instance.chatGeneration);
 
-      if (this.disposed || this.voiceAgents.has(voiceAgentId)) {
-        throw new VoiceAgentError(
-          'VOICE_AGENT_START_FAILED',
-          this.disposed ? 'Manager is disposed' : 'Voice agent is already active',
-        );
-      }
-      this.voiceAgents.set(voiceAgentId, instance);
-
       if (resume.commitSessionId) {
         await this.ensureCommitBackendSession(instance);
+        ensureCurrentStart();
       }
 
       const bootstrapMode = params.bootstrapMode ?? 'none';
@@ -483,8 +550,10 @@ export class VoiceAgentManager {
           systemAppendBlocks: instance.systemAppendBlocks,
         });
         await instance.chatBackend.sendPrompt(instance.chatSessionId, prompt);
+        ensureCurrentStart();
         if (instance.chatBackend.waitForTurnCompletion) {
           await instance.chatBackend.waitForTurnCompletion(this.resolveResponseTimeoutMs(params.bootstrapTimeoutMs));
+          ensureCurrentStart();
         }
         const response = instance.chatBuffer.trim();
         if (response.toUpperCase() !== 'READY') {
@@ -494,6 +563,10 @@ export class VoiceAgentManager {
         instance.chatSessionSeeded = !shouldDeferInitialContextUntilFirstTurn;
         instance.welcomed = !shouldDeferInitialContextUntilFirstTurn;
       }
+
+      ensureCurrentStart();
+      this.startingVoiceAgents.delete(voiceAgentId);
+      this.voiceAgents.set(voiceAgentId, instance);
 
       return {
         voiceAgentId,
@@ -519,6 +592,11 @@ export class VoiceAgentManager {
         throw e;
       }
       throw new VoiceAgentError('VOICE_AGENT_START_FAILED', e instanceof Error ? e.message : 'start failed');
+    } finally {
+      if (this.startingVoiceAgents.get(voiceAgentId) === startOccurrence) {
+        this.startingVoiceAgents.delete(voiceAgentId);
+      }
+      startOccurrence.resolveSettled();
     }
   }
 
@@ -526,6 +604,12 @@ export class VoiceAgentManager {
     if (this.disposed) return;
     this.disposed = true;
     clearInterval(this.reaper);
+
+    for (const occurrence of this.startingVoiceAgents.values()) {
+      occurrence.cancelled = true;
+      void occurrence.provisionalCleanup?.().catch(() => {});
+    }
+    this.startingVoiceAgents.clear();
 
     const toStop = [...this.voiceAgents.values()];
     this.voiceAgents.clear();
@@ -919,28 +1003,50 @@ export class VoiceAgentManager {
 
   async stop(params: Readonly<{ voiceAgentId: string }>): Promise<{ ok: true }> {
     const voiceAgent = this.voiceAgents.get(params.voiceAgentId);
-    if (!voiceAgent) throw new VoiceAgentError('VOICE_AGENT_NOT_FOUND', 'Voice agent not found');
-    // Remove from registry first to prevent new operations from starting while we await in-flight work.
-    this.voiceAgents.delete(params.voiceAgentId);
-    if (voiceAgent.lifecycleInFlight) {
-      await voiceAgent.lifecycleInFlight.catch(() => {});
-    } else if (voiceAgent.activeTurnStream) {
-      if (voiceAgent.activeTurnStream.done || voiceAgent.activeTurnStream.completedHistory) {
-        // Stop retires the whole voice-agent instance; it is not a claim that
-        // an already committed turn was cancelled. Public turn cancellation
-        // rejects this state so the bridge can preserve its durable pair.
-        voiceAgent.activeTurnStream = null;
-      } else {
-        await this.cancelActiveTurnStream(voiceAgent, voiceAgent.activeTurnStream, {
-          awaitCompletion: false,
-          replaceBackend: false,
-        });
+    if (!voiceAgent) {
+      const starting = this.startingVoiceAgents.get(params.voiceAgentId);
+      if (!starting) throw new VoiceAgentError('VOICE_AGENT_NOT_FOUND', 'Voice agent not found');
+      starting.cancelled = true;
+      this.beginRetirement(params.voiceAgentId, async () => {
+        await starting.settled;
+      });
+      this.startingVoiceAgents.delete(params.voiceAgentId);
+      // Cleanup is initiated but deliberately not awaited: the execution-run
+      // lifecycle owner must be able to publish terminal cancellation even if
+      // a provider disposal never settles.
+      void starting.provisionalCleanup?.().catch(() => {});
+      return { ok: true };
+    }
+    const retirement = this.beginRetirement(params.voiceAgentId, async () => {
+      try {
+        if (voiceAgent.lifecycleInFlight) {
+          await voiceAgent.lifecycleInFlight.catch(() => {});
+        } else if (voiceAgent.activeTurnStream) {
+          if (voiceAgent.activeTurnStream.done || voiceAgent.activeTurnStream.completedHistory) {
+            // Stop retires the whole voice-agent instance; it is not a claim that
+            // an already committed turn was cancelled. Public turn cancellation
+            // rejects this state so the bridge can preserve its durable pair.
+            voiceAgent.activeTurnStream = null;
+          } else {
+            await this.cancelActiveTurnStream(voiceAgent, voiceAgent.activeTurnStream, {
+              awaitCompletion: false,
+              replaceBackend: false,
+            });
+          }
+        }
+        if (voiceAgent.inFlight && !voiceAgent.activeTurnStream) {
+          await voiceAgent.inFlight.catch(() => {});
+        }
+      } finally {
+        await voiceAgent.dispose();
       }
-    }
-    if (voiceAgent.inFlight && !voiceAgent.activeTurnStream) {
-      await voiceAgent.inFlight.catch(() => {});
-    }
-    await voiceAgent.dispose();
+    });
+    // Publish retirement before removing the live occurrence. ExecutionRun
+    // terminal truth may settle immediately, while same-id resume must still
+    // wait for this exact Voice cleanup to finish.
+    this.voiceAgents.delete(params.voiceAgentId);
+
+    await retirement;
 		    return { ok: true };
 		  }
 
@@ -951,7 +1057,7 @@ export class VoiceAgentManager {
       if (voiceAgent.lifecycleInFlight || voiceAgent.inFlight) continue;
       if (now - voiceAgent.lastUsedAt <= voiceAgent.idleTtlMs) continue;
 
-      const lifecycle = (async () => {
+      const lifecycle = this.beginRetirement(voiceAgent.id, async () => {
         try {
           await this.onIdleReaped?.(voiceAgent.id);
         } finally {
@@ -960,7 +1066,7 @@ export class VoiceAgentManager {
           }
           await voiceAgent.dispose();
         }
-      })();
+      });
       voiceAgent.lifecycleInFlight = lifecycle;
       reaping.push(lifecycle);
       void lifecycle.then(

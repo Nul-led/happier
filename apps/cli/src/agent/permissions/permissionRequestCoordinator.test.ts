@@ -6,6 +6,7 @@ import { createPermissionRequestCoordinator } from './permissionRequestCoordinat
 
 class FakeSession {
     sessionId = 'session-test';
+    canceledCompletionWriteCount = 0;
     agentState: AgentState = {
         requests: Object.create(null),
         completedRequests: Object.create(null),
@@ -16,7 +17,14 @@ class FakeSession {
     }
 
     updateAgentState(updater: (state: AgentState) => AgentState): void | Promise<void> {
-        this.agentState = updater(this.agentState);
+        const previousCompleted = this.agentState.completedRequests ?? {};
+        const nextState = updater(this.agentState);
+        for (const [requestId, completed] of Object.entries(nextState.completedRequests ?? {})) {
+            if (completed?.status === 'canceled' && previousCompleted[requestId]?.status !== 'canceled') {
+                this.canceledCompletionWriteCount += 1;
+            }
+        }
+        this.agentState = nextState;
     }
 }
 
@@ -357,7 +365,7 @@ describe('PermissionRequestCoordinator', () => {
         expect(session.agentState.completedRequests?.[bashRequest.requestId]).not.toHaveProperty('permissionResponseClaimV1');
     });
 
-    it('keeps a durable responder claim outstanding when lifecycle cancellation races its terminal projection', async () => {
+    it('durably cancels an already-claimed response before it can authorize', async () => {
         const { coordinator, session } = createHarness();
         const pending = coordinator.requestDecision(bashRequest);
         const claim = {
@@ -377,20 +385,64 @@ describe('PermissionRequestCoordinator', () => {
         });
         await coordinator.cancelAll('test lifecycle cancellation');
 
-        expect(await settledState(pending)).toBe('pending');
-        expect(session.agentState.requests?.[bashRequest.requestId]).toEqual(expect.objectContaining({
-            permissionResponseClaimV1: claim,
+        await expect(pending).rejects.toThrow('test lifecycle cancellation');
+        expect(session.agentState.requests?.[bashRequest.requestId]).toBeUndefined();
+        expect(session.agentState.completedRequests?.[bashRequest.requestId]).toEqual(expect.objectContaining({
+            status: 'canceled',
+            decision: 'abort',
+            reason: 'test lifecycle cancellation',
         }));
-        expect(session.agentState.completedRequests?.[bashRequest.requestId]).toBeUndefined();
+        expect(session.canceledCompletionWriteCount).toBe(1);
         await expect(coordinator.handleResponse({
             requestId: bashRequest.requestId,
             buildCompletion: (context) => ({
                 result: approve(context.requestId),
                 completedRequest: { status: 'approved', decision: 'approved' },
             }),
-        })).resolves.toBe(true);
-        await expect(pending).resolves.toEqual(approve(bashRequest.requestId));
-        expect(session.agentState.completedRequests?.[bashRequest.requestId]).not.toHaveProperty('permissionResponseClaimV1');
+        })).resolves.toBe(false);
+        await coordinator.cancelAll('test lifecycle cancellation');
+        await coordinator.releaseResponseClaim({ requestId: bashRequest.requestId, claim });
+        expect(session.canceledCompletionWriteCount).toBe(1);
+    });
+
+    it('durably cancels an already-claimed plugin response through the same lifecycle path', async () => {
+        const { coordinator, session } = createHarness();
+        const request = {
+            ...bashRequest,
+            requestId: 'claimed-plugin-response',
+            owner: { kind: 'plugin', pluginId: 'plugin-a', runtimeId: 'runtime-a' },
+        } as const;
+        const pending = coordinator.requestDecision(request);
+        const claim = {
+            version: 1,
+            origin: 'presentUser',
+            actor: {
+                kind: 'accountUser',
+                accountId: 'account-owner',
+                relationship: 'owner',
+            },
+            decision: 'approved',
+            scope: 'request',
+        } satisfies PermissionResponseClaim;
+
+        await expect(coordinator.acquireResponseClaim({ requestId: request.requestId, claim })).resolves.toEqual({
+            status: 'acquired',
+        });
+        await coordinator.cancelByPlugin('plugin-a', 'plugin_deactivated');
+
+        expect(session.agentState.requests?.[request.requestId]).toBeUndefined();
+        expect(session.agentState.completedRequests?.[request.requestId]).toEqual(expect.objectContaining({
+            status: 'canceled',
+            decision: 'abort',
+            reason: 'plugin_deactivated',
+            owner: request.owner,
+        }));
+        expect(session.canceledCompletionWriteCount).toBe(1);
+        await expect(pending).rejects.toThrow('plugin_deactivated');
+
+        await coordinator.cancelByPlugin('plugin-a', 'plugin_deactivated');
+        await coordinator.releaseResponseClaim({ requestId: request.requestId, claim });
+        expect(session.canceledCompletionWriteCount).toBe(1);
     });
 
     it('does not resolve an approved waiter before its exact AgentState completion update settles', async () => {

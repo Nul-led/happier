@@ -561,7 +561,7 @@ describe('registerPermissionModeMessageQueueBinding (in-flight steer)', () => {
     } as any);
 
     emitUserMessage({
-      content: { text: 'steer me' },
+      content: { text: '/goal steer me' },
       localId: 'local-1',
       meta: {
         happierProvenanceV1: {
@@ -584,7 +584,7 @@ describe('registerPermissionModeMessageQueueBinding (in-flight steer)', () => {
       '',
       'SEED',
       '',
-      'steer me',
+      '/goal steer me',
     ].join('\n'), {
       localId: 'local-1',
       localIds: ['local-1'],

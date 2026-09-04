@@ -2262,7 +2262,7 @@ describe('executeClaimedRun (mcpSelection)', () => {
     }));
   });
 
-  it('rejects the unreleased origin-era V3 frozen-input shape instead of executing it', async () => {
+  it('executes an exact released-V2 frozen input claimed through V3 under the V3 lifecycle', async () => {
     const spawnSession = vi.fn(async (): Promise<SpawnSessionResult> => ({ type: 'success', sessionId: 'sess_frozen' }));
     const claimClient = {
       startRun: vi.fn(async () => START_CURRENTNESS),
@@ -2287,7 +2287,7 @@ describe('executeClaimedRun (mcpSelection)', () => {
             kind: 'happier_automation_template_plain_v1',
             payload: { directory: '/tmp/frozen-definition' },
           }),
-          cause: { kind: 'manual', invokedAt: 1_723_247_201_000 },
+          origin: { kind: 'manual', invokedAt: 1_723_247_201_000 },
         }),
       },
       automation: {
@@ -2307,17 +2307,26 @@ describe('executeClaimedRun (mcpSelection)', () => {
       leaseDurationMs: 120_000,
       resolveAutomationAccountEncryption: vi.fn()
         .mockResolvedValueOnce(availableCurrentness(CLAIM_CURRENTNESS))
+        .mockResolvedValueOnce(availableCurrentness(START_CURRENTNESS))
         .mockResolvedValueOnce(availableCurrentness(START_CURRENTNESS)),
       claimed: claimedWithFrozenRecipe,
     });
 
-    expect(spawnSession).not.toHaveBeenCalled();
-    expect(claimClient.startRun).not.toHaveBeenCalled();
-    expect(claimClient.succeedRun).not.toHaveBeenCalled();
-    expect(claimClient.failRun).toHaveBeenCalledWith(expect.objectContaining({
-      runId: 'run-frozen',
-      errorCode: 'invalid_template',
+    expect(spawnSession).toHaveBeenCalledWith(expect.objectContaining({
+      directory: '/tmp/frozen-definition',
     }));
+    expect(claimClient.startRun).toHaveBeenCalledWith(expect.objectContaining({
+      protocol: 'v3',
+      runId: 'run-frozen',
+      accountCurrentness: CLAIM_CURRENTNESS,
+    }));
+    expect(claimClient.succeedRun).toHaveBeenCalledWith(expect.objectContaining({
+      protocol: 'v3',
+      runId: 'run-frozen',
+      accountCurrentness: START_CURRENTNESS,
+      producedSessionId: 'sess_frozen',
+    }));
+    expect(claimClient.failRun).not.toHaveBeenCalled();
   });
 
   it('does not enter predecessor settlement recovery for an origin-era V3 frozen input', async () => {
@@ -2830,7 +2839,7 @@ describe('executeClaimedRun (mcpSelection)', () => {
       errorCode: 'unexpected_error',
     }));
     expect(discardAutomationPromptAfterRunCancellation).toHaveBeenCalledWith({
-      token: 'token',
+      credentials: { token: 'token', encryption: null },
       sessionId,
       automationId: 'automation-1',
       runId: 'run-cancelled-settlement-fallback',

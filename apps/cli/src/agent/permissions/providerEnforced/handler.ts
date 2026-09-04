@@ -279,6 +279,7 @@ export class ProviderEnforcedPermissionHandler extends BasePermissionHandler {
       owner?: PermissionRequestOwner | null;
       source?: string | null;
       signal?: AbortSignal;
+      acknowledgeDecisionApplication?: (decision: PermissionResult) => Promise<void>;
     }>,
   ): Promise<PermissionResult> {
     if (options?.signal?.aborted) {
@@ -330,6 +331,9 @@ export class ProviderEnforcedPermissionHandler extends BasePermissionHandler {
         ...(options?.signal ? { signal: options.signal } : {}),
         ...(options ? { causalPermissionContext: options } : {}),
         resolveCurrentPermissionDecision,
+        ...(options?.acknowledgeDecisionApplication
+          ? { acknowledgeDecisionApplication: options.acknowledgeDecisionApplication }
+          : {}),
       });
     }
 
@@ -339,6 +343,9 @@ export class ProviderEnforcedPermissionHandler extends BasePermissionHandler {
       ...(options?.signal ? { signal: options.signal } : {}),
       ...(options ? { causalPermissionContext: options } : {}),
       resolveCurrentPermissionDecision,
+      ...(options?.acknowledgeDecisionApplication
+        ? { acknowledgeDecisionApplication: options.acknowledgeDecisionApplication }
+        : {}),
     });
     logger.debug(`${this.getLogPrefix()} Permission request sent for tool: ${toolName} (${toolCallId})`);
     return await pending;

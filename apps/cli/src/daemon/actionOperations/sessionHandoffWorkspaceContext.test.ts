@@ -8,7 +8,6 @@ const policyInput = {
   selection: 'all_files' as const,
   extraIgnorePatterns: [],
   extraIncludePatterns: [],
-  includeGitDirectory: false,
 };
 const contentPolicy = {
   ...policyInput,
@@ -32,39 +31,6 @@ const relationship = {
 };
 
 describe('resolveSessionHandoffWorkspaceContext', () => {
-  it('resolves copy_once only from the exact persisted WorkspaceRef identities and scopes', () => {
-    expect(resolveSessionHandoffWorkspaceContext({
-      action: { kind: 'copy_once', contentPolicy },
-      workspaceRefs: refs,
-      relationships: [],
-      sourceMachineId: 'source-machine',
-      sourceRootPath: '/source',
-      targetMachineId: 'target-machine',
-      targetRootPath: '/target',
-      requestedSourceWorkspaceRefId: 'source-ref',
-      requestedTargetWorkspaceRefId: 'target-ref',
-    })).toEqual({
-      sourceWorkspaceRefId: 'source-ref',
-      targetWorkspaceRefId: 'target-ref',
-      sourceRootPath: '/source',
-      targetRootPath: '/target',
-      controllerMachineId: 'source-machine',
-      contentSelection: 'all_files',
-    });
-  });
-
-  it('rejects copy_once when a caller omits exact persisted ref identities', () => {
-    expect(() => resolveSessionHandoffWorkspaceContext({
-      action: { kind: 'copy_once', contentPolicy },
-      workspaceRefs: refs,
-      relationships: [],
-      sourceMachineId: 'source-machine',
-      sourceRootPath: '/source',
-      targetMachineId: 'target-machine',
-      targetRootPath: '/target',
-    })).toThrowError(expect.objectContaining({ code: 'workspace_ref_not_ready' }));
-  });
-
   it('derives relationship endpoints from its canonical settings record and rejects a mismatched picker target', () => {
     expect(resolveSessionHandoffWorkspaceContext({
       action: { kind: 'relationship', relationshipId: 'relationship-1', flushBeforeCommit: true },
@@ -73,11 +39,13 @@ describe('resolveSessionHandoffWorkspaceContext', () => {
       sourceMachineId: 'source-machine',
       sourceRootPath: '/source',
       targetMachineId: 'target-machine',
-    })).toMatchObject({
+    })).toEqual({
       sourceWorkspaceRefId: 'source-ref',
       targetWorkspaceRefId: 'target-ref',
+      sourceRootPath: '/source',
       targetRootPath: '/target',
       controllerMachineId: 'source-machine',
+      contentSelection: 'all_files',
     });
 
     expect(() => resolveSessionHandoffWorkspaceContext({
@@ -91,17 +59,14 @@ describe('resolveSessionHandoffWorkspaceContext', () => {
     })).toThrowError(expect.objectContaining({ code: 'relationship_target_mismatch' }));
   });
 
-  it('fails closed when a machine/root scope is ambiguous', () => {
+  it('fails closed when the source machine/root scope is ambiguous', () => {
     expect(() => resolveSessionHandoffWorkspaceContext({
-      action: { kind: 'copy_once', contentPolicy },
+      action: { kind: 'relationship', relationshipId: 'relationship-1', flushBeforeCommit: true },
       workspaceRefs: [...refs, { ...refs[0]!, id: 'duplicate-source' }],
-      relationships: [],
+      relationships: [relationship],
       sourceMachineId: 'source-machine',
       sourceRootPath: '/source',
       targetMachineId: 'target-machine',
-      targetRootPath: '/target',
-      requestedSourceWorkspaceRefId: 'source-ref',
-      requestedTargetWorkspaceRefId: 'target-ref',
-    })).toThrowError(expect.objectContaining({ code: 'workspace_ref_not_ready' }));
+    })).toThrowError(expect.objectContaining({ code: 'relationship_source_mismatch' }));
   });
 });

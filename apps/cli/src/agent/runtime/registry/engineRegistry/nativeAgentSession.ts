@@ -3227,11 +3227,19 @@ export function createNativeAgentSessionOperations(
         beginTurnLifecycle() {
             ensureTurnCompletion();
         },
-        readActiveTurnCausalPermissionAuthority() {
-            return readActiveTurnAdmissionWitness()?.causalPermissionAuthority ?? null;
+        readActiveTurnPermissionWitness() {
+            const witness = readActiveTurnAdmissionWitness();
+            return witness
+                ? Object.freeze({
+                    turnId: witness.turnId,
+                    ...(witness.causalPermissionAuthority
+                        ? { causalPermissionAuthority: witness.causalPermissionAuthority }
+                        : {}),
+                })
+                : null;
         },
-        readActiveTurnId() {
-            return readActiveTurnAdmissionWitness()?.turnId ?? null;
+        readActiveTurnInputId() {
+            return readActiveTurnAdmissionWitness()?.inputId ?? null;
         },
         subscribeRuntimeEvents(handler) {
             listeners.add(handler);

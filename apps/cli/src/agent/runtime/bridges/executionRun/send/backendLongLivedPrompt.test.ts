@@ -251,6 +251,73 @@ describe('sendBackendLongLivedRun (resume)', () => {
     expect(providerEffects).toEqual(['first', 'after completion']);
   });
 
+  it('does not release ambiguous send custody when the completion observer also aborts', async () => {
+    const sendPrompt = vi.fn(async () => {
+      throw Object.assign(new Error('send outcome is ambiguous'), { name: 'AbortError' });
+    });
+    const { runtime } = createTestExecutionRunHostRuntime({
+      sendPrompt,
+      waitForTurnCompletion: async () => {
+        throw Object.assign(new Error('completion observation was cancelled'), { name: 'AbortError' });
+      },
+    });
+    const run = createLongLivedResumableRun({ status: 'running' });
+    const runs = new Map([[run.runId, run]]);
+    const controller: ExecutionRunBackendController = {
+      kind: 'backend',
+      backend: runtime,
+      backendSupportsResume: true,
+      childSessionId: 'child_session_active',
+      buffer: '',
+      sidechainStreamBuffer: '',
+      sidechainStreamKey: '',
+      streamWriter: null,
+      cancelled: false,
+      turnCount: 0,
+      turnEpoch: 0,
+      turnInFlight: false,
+      turnCancelReason: null,
+      turnCancelEpoch: null,
+      pendingExternalMessages: [],
+      pendingExternalMessagesSignal: null,
+      lastMarkerWriteAtMs: 0,
+      failureSignal: failureSignal(),
+      pendingHostBarrier: Promise.resolve(),
+      terminalPromise: new Promise<void>(() => {}),
+      resolveTerminal: () => undefined,
+    };
+    const controllers = new Map([[run.runId, controller]]);
+    const sendArgs = {
+      runId: run.runId,
+      runs,
+      controllers,
+      budgetRegistry: null,
+      createRuntime: () => runtime,
+      maxTurns: null,
+      getNowMs: () => 123,
+      finishRun: async () => undefined,
+      sendAcp: async () => {},
+      parentProvider: 'acme.runtime.provider' as any,
+      streamedTranscriptSession: null,
+      writeActivityMarker: async () => undefined,
+    } as const;
+
+    await expect(sendBackendLongLivedRun({
+      ...sendArgs,
+      params: { message: 'first' },
+    })).resolves.toMatchObject({ ok: false, errorCode: 'execution_run_send_outcome_unknown' });
+
+    await vi.waitFor(() => {
+      expect(controller.turnCancelReason).toBe('outcome_unknown');
+    });
+    expect(controller.turnInFlight).toBe(true);
+    await expect(sendBackendLongLivedRun({
+      ...sendArgs,
+      params: { message: 'must remain blocked' },
+    })).resolves.toMatchObject({ ok: false, errorCode: 'execution_run_busy' });
+    expect(sendPrompt).toHaveBeenCalledOnce();
+  });
+
   it('keeps an owner-proven pre-effect rejection retryable without acquiring turn custody', async () => {
     const sendPrompt = vi.fn(async () => undefined);
     const { runtime } = createTestExecutionRunHostRuntime({ sendPrompt });

@@ -1151,6 +1151,169 @@ describe('startExecutionRun', () => {
     }
   });
 
+  it('registers Voice control before provisioning so stop retires the provisional runtime immediately', async () => {
+    let releaseProvision!: () => void;
+    let provisionStarted!: () => void;
+    const provisionGate = new Promise<void>((resolve) => {
+      releaseProvision = resolve;
+    });
+    const provisionStartedPromise = new Promise<void>((resolve) => {
+      provisionStarted = resolve;
+    });
+    const dispose = vi.fn(async () => {});
+    const runtime = createTestExecutionRunHostRuntime({
+      sessionId: 'voice-provisioning',
+      onProvisionSession: async () => {
+        provisionStarted();
+        await provisionGate;
+      },
+      onDispose: dispose,
+    });
+    const controllers = new Map<string, ExecutionRunController>();
+    const runs = new Map<string, ExecutionRunState>();
+    const finishRun = vi.fn(async (runId: string, next) => {
+      const current = runs.get(runId);
+      if (current) runs.set(runId, { ...current, ...next });
+    });
+    const voiceAgentManager = new VoiceAgentManager({ createRuntime: () => runtime });
+
+    try {
+      const startPromise = startExecutionRun({
+        params: {
+          sessionId: 'session_1',
+          intent: 'voice_agent',
+          backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
+          permissionMode: 'read_only',
+          retentionPolicy: 'resumable',
+          runClass: 'long_lived',
+          ioMode: 'streaming',
+        },
+        parentProvider: TEST_BACKEND_ID,
+        sendAcp: async () => {},
+        streamedTranscriptSession: null,
+        createRuntime: () => runtime,
+        getNowMs: () => 1_700_000_000_000,
+        budgetRegistry: null,
+        runs,
+        controllers,
+        enqueueMarkerWrite: async () => {},
+        writeActivityMarker: async () => {},
+        finishRun,
+        executeBoundedRun: async () => {},
+        send: async () => ({ ok: true }),
+        voiceAgentManager,
+        getDepthByCallId: () => null,
+      });
+
+      await provisionStartedPromise;
+      const runId = [...runs.keys()][0]!;
+      expect(controllers.get(runId)).toMatchObject({ kind: 'voice_agent', voiceAgentId: runId });
+
+      await expect(stopExecutionRun({
+        runId,
+        runs,
+        controllers,
+        voiceAgentManager,
+        getNowMs: () => 1_700_000_000_001,
+        finishRun,
+      })).resolves.toEqual({ ok: true });
+      await vi.waitFor(() => expect(dispose).toHaveBeenCalledTimes(1));
+      expect(runs.get(runId)?.status).toBe('cancelled');
+
+      releaseProvision();
+      await expect(startPromise).resolves.toMatchObject({ runId });
+      expect(dispose).toHaveBeenCalledTimes(1);
+      expect(finishRun).toHaveBeenCalledTimes(1);
+    } finally {
+      releaseProvision();
+      await voiceAgentManager.dispose();
+    }
+  });
+
+  it('registers Voice control before READY so stop retires the provisional runtime without waiting for READY', async () => {
+    let releaseReady!: () => void;
+    let readyWaitStarted!: () => void;
+    const readyGate = new Promise<void>((resolve) => {
+      releaseReady = resolve;
+    });
+    const readyWaitStartedPromise = new Promise<void>((resolve) => {
+      readyWaitStarted = resolve;
+    });
+    const dispose = vi.fn(async () => {});
+    let runtime: TestExecutionRunHostRuntime;
+    runtime = createTestExecutionRunHostRuntime({
+      sessionId: 'voice-ready',
+      onSendPrompt: async () => {
+        runtime.emitMessage({ type: 'model-output', fullText: 'READY' });
+      },
+      onWaitForTurnCompletion: async () => {
+        readyWaitStarted();
+        await readyGate;
+      },
+      onDispose: dispose,
+    });
+    const controllers = new Map<string, ExecutionRunController>();
+    const runs = new Map<string, ExecutionRunState>();
+    const finishRun = vi.fn(async (runId: string, next) => {
+      const current = runs.get(runId);
+      if (current) runs.set(runId, { ...current, ...next });
+    });
+    const voiceAgentManager = new VoiceAgentManager({ createRuntime: () => runtime });
+
+    try {
+      const startPromise = startExecutionRun({
+        params: {
+          sessionId: 'session_1',
+          intent: 'voice_agent',
+          backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
+          permissionMode: 'read_only',
+          retentionPolicy: 'resumable',
+          runClass: 'long_lived',
+          ioMode: 'streaming',
+          bootstrapMode: 'ready_handshake',
+        },
+        parentProvider: TEST_BACKEND_ID,
+        sendAcp: async () => {},
+        streamedTranscriptSession: null,
+        createRuntime: () => runtime,
+        getNowMs: () => 1_700_000_000_000,
+        budgetRegistry: null,
+        runs,
+        controllers,
+        enqueueMarkerWrite: async () => {},
+        writeActivityMarker: async () => {},
+        finishRun,
+        executeBoundedRun: async () => {},
+        send: async () => ({ ok: true }),
+        voiceAgentManager,
+        getDepthByCallId: () => null,
+      });
+
+      await readyWaitStartedPromise;
+      const runId = [...runs.keys()][0]!;
+      expect(controllers.get(runId)).toMatchObject({ kind: 'voice_agent', voiceAgentId: runId });
+
+      await expect(stopExecutionRun({
+        runId,
+        runs,
+        controllers,
+        voiceAgentManager,
+        getNowMs: () => 1_700_000_000_001,
+        finishRun,
+      })).resolves.toEqual({ ok: true });
+      await vi.waitFor(() => expect(dispose).toHaveBeenCalledTimes(1));
+      expect(runs.get(runId)?.status).toBe('cancelled');
+
+      releaseReady();
+      await expect(startPromise).resolves.toMatchObject({ runId });
+      expect(dispose).toHaveBeenCalledTimes(1);
+      expect(finishRun).toHaveBeenCalledTimes(1);
+    } finally {
+      releaseReady();
+      await voiceAgentManager.dispose();
+    }
+  });
+
   it('cancels a long-lived child that finishes provisioning after the run was stopped', async () => {
     let resolveProvision!: () => void;
     const provisioning = new Promise<void>((resolve) => {

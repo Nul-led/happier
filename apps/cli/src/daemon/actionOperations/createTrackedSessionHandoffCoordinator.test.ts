@@ -6,8 +6,12 @@ import {
   buildTrackedSessionHandoffSpawnOptions,
   createTrackedSessionHandoffCoordinator,
 } from './createTrackedSessionHandoffCoordinator';
-import { computeWorkspaceSyncPolicyDigest } from '@/workspaces/sync/workspaceSyncTypes';
-import type { WorkspaceSyncHandoffAdapter } from '@/workspaces/sync/workspaceSyncHandoffAdapter';
+import {
+  computeWorkspaceSyncPolicyDigest,
+  type ManagedWorkspaceSync,
+  type WorkspaceSyncStatusV1,
+} from '@/workspaces/sync/workspaceSyncTypes';
+import { createWorkspaceSyncHandoffAdapter } from '@/workspaces/sync/workspaceSyncHandoffAdapter';
 
 describe('createTrackedSessionHandoffCoordinator', () => {
   it('fails closed when a current V3 prepare response omits its qualified Agent target', () => {
@@ -36,7 +40,10 @@ describe('createTrackedSessionHandoffCoordinator', () => {
         runtimeDescriptorV1: {
           v: 1,
           agentId: 'acme.agent',
-          agent: { runtime: 'native' },
+          agent: {
+            runtime: 'native',
+            futureResumeCritical: { opaque: 'preserve-me' },
+          },
         },
         resume: {
           directory: '/target/workspace',
@@ -56,7 +63,14 @@ describe('createTrackedSessionHandoffCoordinator', () => {
       kind: 'agent',
       identity: { pluginId: 'acme.plugin', localId: 'agent' },
     });
-    expect(options.runtimeDescriptorV1).toMatchObject({ agentId: 'acme.agent' });
+    expect(options.runtimeDescriptorV1).toEqual({
+      v: 1,
+      agentId: 'acme.agent',
+      agent: {
+        runtime: 'native',
+        futureResumeCritical: { opaque: 'preserve-me' },
+      },
+    });
     expect(options).not.toHaveProperty('backendTarget');
   });
 
@@ -102,6 +116,9 @@ describe('createTrackedSessionHandoffCoordinator', () => {
         return { type: 'success', spawnNonce: 'handoff:handoff-1', sessionIdStatus: 'pending' };
       }
       if (input.method === RPC_METHODS.DAEMON_SESSION_HANDOFF_COMMIT_V3) {
+        if (input.machineId === 'source-1') {
+          return { ok: false, errorCode: 'source_cleanup_busy', error: 'Source cleanup is still pending.' };
+        }
         return {
           handoffId: 'handoff-1',
           status: {
@@ -118,28 +135,76 @@ describe('createTrackedSessionHandoffCoordinator', () => {
       selection: 'git_worktree' as const,
       extraIgnorePatterns: [],
       extraIncludePatterns: [],
-      includeGitDirectory: false,
     };
     const contentPolicy = {
       ...policyInput,
       policyDigest: computeWorkspaceSyncPolicyDigest(policyInput),
     };
-    const workspaceSyncAdapter: WorkspaceSyncHandoffAdapter = {
-      prepare: vi.fn(async (input) => ({
-        kind: input.action.kind,
-        operationId: input.operationId,
-        action: input.action,
-      })),
-      finalize: vi.fn(async (input) => ({
-        kind: input.prepared.kind,
-        operationId: input.operationId,
-      })),
-      commit: vi.fn(async (input) => ({
-        kind: input.prepared.kind,
-        operationId: input.operationId,
-      })),
-      abort: vi.fn(async () => undefined),
+    const approval = {
+      v: 1 as const,
+      consequences: [
+        'replace_nonempty_workspace_target',
+        'delete_target_only_files_during_exact_mirror',
+      ] as const,
+      serverId: 'server-1',
+      machineId: 'target-1',
+      canonicalRoot: '/target/workspace',
+      rootFingerprint: 'a'.repeat(64),
+      operationId: 'action-request-1',
     };
+    const relationshipStatus: WorkspaceSyncStatusV1 = {
+      relationshipId: 'relationship-1',
+      controllerMachineId: 'source-1',
+      state: 'watching',
+      alphaPath: '/source/workspace',
+      betaPath: '/target/workspace',
+      mode: 'mirror_exactly',
+      changedFiles: 0,
+      conflictCount: 0,
+      lastSuccessfulSyncAtMs: 1,
+    };
+    const sync = {
+      get: vi.fn(async () => null),
+      list: vi.fn(async () => []),
+      subscribe: vi.fn(() => ({ async *[Symbol.asyncIterator]() {} })),
+      ensure: vi.fn(async () => relationshipStatus),
+      copyOnce: vi.fn(async () => relationshipStatus),
+      flush: vi.fn(async () => relationshipStatus),
+      pause: vi.fn(async () => ({ ...relationshipStatus, state: 'paused' as const })),
+      resume: vi.fn(async () => relationshipStatus),
+      terminate: vi.fn(async () => undefined),
+      listConflicts: vi.fn(async () => ({
+        relationshipId: 'relationship-1', totalCount: 0, shownCount: 0, truncatedCount: 0, conflicts: [],
+      })),
+      deleteConflictLoser: vi.fn(async () => relationshipStatus),
+      readFile: vi.fn(async () => ({ status: 'missing' as const })),
+      withAuthorizedSourceSeedExport: vi.fn(async (_request, exportSource) => await exportSource('/source/workspace')),
+      withSourceSeedAuthorization: vi.fn(async (_operation, _handles, action) => await action()),
+    } satisfies ManagedWorkspaceSync;
+    const relationship = {
+      v: 1 as const,
+      relationshipId: 'relationship-1',
+      controllerMachineId: 'source-1',
+      alphaWorkspaceRefId: 'source-ref',
+      betaWorkspaceRefId: 'target-ref',
+      mode: 'mirror_exactly' as const,
+      contentPolicy,
+      enabled: true,
+      createdAtMs: 1,
+      updatedAtMs: 1,
+    };
+    const prepareCreate = vi.fn(async () => ({
+      relationship,
+      status: relationshipStatus,
+      reused: false as const,
+      commit: vi.fn(async () => relationship),
+      abort: vi.fn(async () => undefined),
+    }));
+    const workspaceSyncAdapter = createWorkspaceSyncHandoffAdapter({
+      sync,
+      relationshipOwner: { materializeEndpoints: vi.fn(), prepareCreate },
+      bootstrap: vi.fn(async () => ({ release: vi.fn(async () => undefined) })),
+    });
     const refreshWorkspaceSettings = vi.fn(async () => ({
       settingsVersion: 8,
       settings: {
@@ -177,7 +242,14 @@ describe('createTrackedSessionHandoffCoordinator', () => {
         targetMachineId: 'target-1',
         targetPath: '/target/workspace',
         accountServerId: 'server-1',
-        workspaceAction: { kind: 'copy_once', contentPolicy },
+        actionRequestId: 'action-request-1',
+        handoffTargetReplacementApproval: approval,
+        workspaceAction: {
+          kind: 'create_relationship',
+          mode: 'mirror_exactly',
+          contentPolicy,
+          flushBeforeCommit: true,
+        },
       },
       start: async () => ({
         ok: true,
@@ -195,6 +267,18 @@ describe('createTrackedSessionHandoffCoordinator', () => {
     });
 
     if (!result.ok) throw new Error(JSON.stringify(result));
+    expect(result.result).toMatchObject({
+      handoffId: 'handoff-1',
+      workspace: {
+        kind: 'relationship',
+        relationshipId: 'relationship-1',
+        created: true,
+      },
+      warning: {
+        code: 'source_cleanup_failed',
+        message: 'Source cleanup is still pending.',
+      },
+    });
     expect(calls.map(({ machineId, method }) => [machineId, method])).toEqual([
       ['target-1', RPC_METHODS.DAEMON_SESSION_HANDOFF_PREPARE_TARGET_V3],
       ['target-1', RPC_METHODS.DAEMON_SESSION_HANDOFF_PREPARE_TARGET_RESULT_GET_V3],
@@ -212,14 +296,13 @@ describe('createTrackedSessionHandoffCoordinator', () => {
     }));
     expect(calls[4]!.timeoutMs).toBe(5 * 60_000);
     expect(refreshWorkspaceSettings).not.toHaveBeenCalled();
-    expect(workspaceSyncAdapter.prepare).toHaveBeenCalledWith(expect.objectContaining({
+    expect(prepareCreate).toHaveBeenCalledTimes(1);
+    expect(prepareCreate).toHaveBeenCalledWith(expect.objectContaining({
       operationId: 'action-request-1',
-      accountServerId: 'server-1',
+      serverId: 'server-1',
       sourceRootPath: '/source/workspace',
       targetRootPath: '/target/workspace',
-    }));
-    expect(workspaceSyncAdapter.prepare).not.toHaveBeenCalledWith(expect.objectContaining({
-      sourceWorkspaceRefId: expect.anything(),
+      targetReplacementApproval: approval,
     }));
   });
 });

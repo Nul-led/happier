@@ -16,6 +16,8 @@ const runtimeControlKeys = [
   'consumeUsageLimitResetCredit',
   'clearTerminalComposer',
   'interruptPendingInputAndRun',
+  'readActiveTurnInputId',
+  'cancelActiveTurn',
   'handleUserMessage',
   'preparePendingMessageComposerAdmission',
   'acceptPendingMessageComposerAdmission',

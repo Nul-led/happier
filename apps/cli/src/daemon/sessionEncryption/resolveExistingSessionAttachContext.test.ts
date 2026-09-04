@@ -106,6 +106,28 @@ describe('resolveExistingSessionAttachContext', () => {
     });
   });
 
+  it('does not project a nested customAcp flavor placeholder as a configured backend target', async () => {
+    vi.mocked(fetchSessionByIdCompat).mockResolvedValueOnce(
+      createSessionRecordFixture({
+        id: 'sess_nested_custom_acp',
+        encryptionMode: 'plain',
+        metadata: JSON.stringify({ flavor: 'acp:customAcp', path: '/tmp' }),
+        dataEncryptionKey: null,
+      }),
+    );
+
+    const out = await resolveExistingSessionAttachContext({
+      token: 't',
+      sessionId: 'sess_nested_custom_acp',
+      credentials: null,
+    });
+
+    expect(out).toMatchObject({
+      ok: true,
+      backendTarget: null,
+    });
+  });
+
   it('uses token-only credentials for a plaintext session attach without requiring account encryption material', async () => {
     const ownerMetadata: SessionOwnerMetadataV1 = {
       v: 1,

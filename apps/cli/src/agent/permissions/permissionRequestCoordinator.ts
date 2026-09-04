@@ -511,58 +511,16 @@ export class PermissionRequestCoordinator<TResult> {
 
     async cancelAll(reason: string): Promise<void> {
         const entries = [...this.pendingRequests.values()];
-        const markedEntries = entries.filter(
-            (entry) => entry.completionPersistence !== null
-                && !entry.cancelReason
-                && this.store.hasPermissionResponseClaim?.(entry.requestId) !== true,
-        );
-        for (const entry of markedEntries) {
-            entry.cancelReason = reason;
-        }
-        const inFlightPersistence = entries
-            .map((entry) => entry.completionPersistence)
-            .filter((persistence): persistence is Promise<boolean> => persistence !== null);
-        if (inFlightPersistence.length > 0) {
-            const outcomes = await Promise.allSettled(inFlightPersistence);
-            const failure = outcomes.find((outcome) => outcome.status === 'rejected');
-            if (failure && failure.status === 'rejected') {
-                for (const entry of markedEntries) {
-                    if (this.pendingRequests.get(entry.requestId) === entry && entry.cancelReason === reason) {
-                        entry.cancelReason = null;
-                    }
-                }
-                throw failure.reason;
-            }
-        }
-        try {
-            await this.store.cancelAllRequests?.({
+        await this.cancelEntries({
+            entries,
+            reason,
+            persist: async (requestIds) => await this.store.cancelAllRequests?.({
                 reason,
                 decision: 'abort',
-                requestIds: markedEntries.map((entry) => entry.requestId),
-            });
-        } catch (error) {
-            for (const entry of markedEntries) {
-                if (this.pendingRequests.get(entry.requestId) === entry && entry.cancelReason === reason) {
-                    entry.cancelReason = null;
-                }
-            }
-            throw error;
-        }
-
+                requestIds,
+            }),
+        });
         this.cachedDecisions.clear();
-        for (const entry of entries) {
-            if (this.pendingRequests.get(entry.requestId) !== entry) continue;
-            if (this.store.hasOutstandingRequest(entry.requestId)) {
-                if (entry.cancelReason === reason) entry.cancelReason = null;
-                entry.status = entry.waiters.size > 0 ? 'live' : 'detached';
-                continue;
-            }
-            for (const waiter of entry.waiters.values()) {
-                rejectWaiter(waiter, createPermissionRequestAbortError(reason));
-            }
-            entry.waiters.clear();
-            this.pendingRequests.delete(entry.requestId);
-        }
     }
 
     async cancelByPlugin(pluginId: string, reason: string): Promise<void> {
@@ -571,59 +529,68 @@ export class PermissionRequestCoordinator<TResult> {
         const ownedEntries = [...this.pendingRequests.values()].filter(
             (entry) => isPermissionRequestOwnedByPlugin(entry.owner, normalizedPluginId),
         );
-        const markedEntries = ownedEntries.filter(
-            (entry) => entry.completionPersistence !== null
-                && !entry.cancelReason
-                && this.store.hasPermissionResponseClaim?.(entry.requestId) !== true,
-        );
-        for (const entry of markedEntries) {
-            entry.cancelReason = reason;
-        }
-        const inFlightPersistence = ownedEntries
-            .map((entry) => entry.completionPersistence)
-            .filter((persistence): persistence is Promise<boolean> => persistence !== null);
-        if (inFlightPersistence.length > 0) {
-            const outcomes = await Promise.allSettled(inFlightPersistence);
-            const failure = outcomes.find((outcome) => outcome.status === 'rejected');
-            if (failure && failure.status === 'rejected') {
-                for (const entry of markedEntries) {
-                    if (this.pendingRequests.get(entry.requestId) === entry && entry.cancelReason === reason) {
-                        entry.cancelReason = null;
-                    }
-                }
-                throw failure.reason;
-            }
-        }
-        try {
-            await this.store.cancelRequestsByOwner?.({
+        await this.cancelEntries({
+            entries: ownedEntries,
+            reason,
+            persist: async (requestIds) => await this.store.cancelRequestsByOwner?.({
                 owner: { kind: 'plugin', pluginId: normalizedPluginId },
                 reason,
                 decision: 'abort',
-                requestIds: markedEntries.map((entry) => entry.requestId),
-            });
-        } catch (error) {
-            for (const entry of markedEntries) {
-                if (this.pendingRequests.get(entry.requestId) === entry && entry.cancelReason === reason) {
-                    entry.cancelReason = null;
-                }
-            }
-            throw error;
-        }
+                requestIds,
+            }),
+        });
 
         for (const [requestId, cached] of [...this.cachedDecisions.entries()]) {
             if (isPermissionRequestOwnedByPlugin(cached.owner, normalizedPluginId)) {
                 this.cachedDecisions.delete(requestId);
             }
         }
-        for (const entry of ownedEntries) {
+    }
+
+    private async cancelEntries(params: Readonly<{
+        entries: readonly PendingPermissionRequest<TResult>[];
+        reason: string;
+        persist: (requestIds: readonly string[]) => Promise<void> | void;
+    }>): Promise<void> {
+        const markedEntries = params.entries.filter(
+            (entry) => entry.completionPersistence !== null
+                && !entry.cancelReason,
+        );
+        for (const entry of markedEntries) {
+            entry.cancelReason = params.reason;
+        }
+
+        try {
+            const inFlightPersistence = params.entries
+                .map((entry) => entry.completionPersistence)
+                .filter((persistence): persistence is Promise<boolean> => persistence !== null);
+            if (inFlightPersistence.length > 0) {
+                const outcomes = await Promise.allSettled(inFlightPersistence);
+                const failure = outcomes.find((outcome) => outcome.status === 'rejected');
+                if (failure && failure.status === 'rejected') throw failure.reason;
+            }
+            await params.persist(markedEntries.map((entry) => entry.requestId));
+        } catch (error) {
+            for (const entry of markedEntries) {
+                if (
+                    this.pendingRequests.get(entry.requestId) === entry
+                    && entry.cancelReason === params.reason
+                ) {
+                    entry.cancelReason = null;
+                }
+            }
+            throw error;
+        }
+
+        for (const entry of params.entries) {
             if (this.pendingRequests.get(entry.requestId) !== entry) continue;
             if (this.store.hasOutstandingRequest(entry.requestId)) {
-                if (entry.cancelReason === reason) entry.cancelReason = null;
+                if (entry.cancelReason === params.reason) entry.cancelReason = null;
                 entry.status = entry.waiters.size > 0 ? 'live' : 'detached';
                 continue;
             }
             for (const waiter of entry.waiters.values()) {
-                rejectWaiter(waiter, createPermissionRequestAbortError(reason));
+                rejectWaiter(waiter, createPermissionRequestAbortError(params.reason));
             }
             entry.waiters.clear();
             this.pendingRequests.delete(entry.requestId);

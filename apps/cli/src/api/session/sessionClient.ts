@@ -182,6 +182,7 @@ import {
     fetchSessionTurnsProjection,
 } from '@/session/transport/http/sessionsHttp';
 import {
+    buildTrustedHostSessionInputAdmissionV1,
     isPendingDeliveryArchivedUncertaintyReasonV1,
     isPendingDeliveryProviderEffectPossibleV1,
     type SessionTurnsProjectionV1,
@@ -209,7 +210,6 @@ import {
     resolveAcceptedPendingQueueV2Delivery,
 } from './pendingQueueV2Transport';
 import { sendSessionMessage } from '@/session/services/sendSessionMessage';
-import { buildHostSessionInputAdmissionV1 } from '@/session/services/sessionInputAdmissionIdentity';
 import { delayUnrefAbortable } from '@/utils/time';
 import {
     isReversibleSessionProviderInputBlockReason,
@@ -1070,7 +1070,7 @@ export class ApiSessionClient extends EventEmitter {
                     messageMeta: meta,
                     localId,
                     requestedAction: { v: 1, kind: 'enqueue' },
-                    inputAdmission: inputAdmission ?? buildHostSessionInputAdmissionV1('ui'),
+                    inputAdmission: inputAdmission ?? buildTrustedHostSessionInputAdmissionV1('ui'),
                     wait: false,
                     timeoutMs: 30_000,
                     ...(options.machineAdmissionTransport

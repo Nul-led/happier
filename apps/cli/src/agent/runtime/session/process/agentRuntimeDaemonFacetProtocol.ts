@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import {
   AgentExternalSessionTranscriptRawRecordSchema,
+  AgentIdV1Schema,
   ExternalSessionTranscriptItemIdV1Schema,
   ExternalSessionTranscriptSourceTimestampV1Schema,
   ExternalSessionUserProjectionSchema,
@@ -40,8 +41,6 @@ const BoundedIdSchema = z.string().trim().min(1).max(512);
 const HostPluginContributionIdentityV1Schema = asHostProtocolZod(
   PluginContributionIdentityV1Schema,
 );
-const ExternalSessionIdSchema =
-  z.string().trim().min(1).max(256);
 const ExternalSessionRemoteIdSchema =
   z.string().trim().min(1).max(2_000);
 const ExternalSessionJsonObjectSchema = z.record(
@@ -51,7 +50,7 @@ const ExternalSessionJsonObjectSchema = z.record(
 export const RunnerAgentDaemonExternalSessionCursorV1Schema =
   z.string().max(32_768);
 export const RunnerAgentDaemonExternalSessionRefV1Schema = z.object({
-  agentId: ExternalSessionIdSchema,
+  agentId: AgentIdV1Schema,
   remoteSessionId: z.string().trim().min(1).max(2_000),
   sourceId: z.string().trim().min(1).max(2_000),
 }).strict();
@@ -159,7 +158,7 @@ const FollowTargetSchema = z.discriminatedUnion('kind', [
   }).strict(),
   z.object({
     kind: z.literal('providerSession'),
-    agentId: BoundedIdSchema,
+    agentId: AgentIdV1Schema,
     providerSessionId: z.string().trim().min(1).max(2_000),
   }).strict(),
 ]);

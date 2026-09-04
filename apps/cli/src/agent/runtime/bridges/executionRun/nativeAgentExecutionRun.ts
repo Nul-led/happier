@@ -12,13 +12,15 @@ import type {
     AgentLaunchEnvironment,
     AgentRuntime,
     AgentRuntimeContext,
+    AgentSessionHostServices,
     AgentSessionInput,
     AgentSessionOpenRequest,
     AgentSessionRuntime,
     AgentSessionRuntimeContext,
     AgentSessionRuntimeEvent,
 } from '@happier-dev/plugin-sdk/agents/runtime';
-import { type PluginServices } from '@happier-dev/plugin-sdk';
+import { PluginError, type PluginServices } from '@happier-dev/plugin-sdk';
+import type { WorkStateService } from '@happier-dev/plugin-sdk/sessions/work-state';
 import { createExecutionRunHostBackendFromSessionRuntime } from '@happier-dev/plugin-sdk/host/registration';
 
 import type { AgentMessage } from '@/agent/core/AgentMessage';
@@ -51,6 +53,130 @@ export type NativeAgentRuntimeLeaseIdentity = Readonly<{
     localAgentId: string;
     isCurrent(): boolean;
 }>;
+
+const RUN_SESSION_PROJECTION_UNAVAILABLE_CODE = 'agent_run_session_projection_unavailable';
+
+function runSessionProjectionUnavailable(): never {
+    throw new PluginError({
+        code: RUN_SESSION_PROJECTION_UNAVAILABLE_CODE,
+        message: 'Detached Agent Runs do not have Happier Session projection custody',
+    });
+}
+
+function createRunScopedSessionHostServices(signal: AbortSignal): AgentSessionHostServices {
+    const disposable = Object.freeze({ dispose() {} });
+    const assertActive = (): void => signal.throwIfAborted();
+    return Object.freeze({
+        features: Object.freeze({ isEnabled: () => false }),
+        // These two publications remain provider-local. There is deliberately
+        // no Session projection target for a detached finite Run.
+        models: Object.freeze({ bind: () => disposable }),
+        activeInput: Object.freeze({
+            bind: () => disposable,
+            publishStatus: () => undefined,
+        }),
+        sessionHooks: Object.freeze({
+            async startServer() { assertActive(); return runSessionProjectionUnavailable(); },
+            async resolveForwarderAssets() { assertActive(); return runSessionProjectionUnavailable(); },
+            async createPluginDir() { assertActive(); return runSessionProjectionUnavailable(); },
+            async disposePluginDir() { return runSessionProjectionUnavailable(); },
+            async publishProviderTranscript() { assertActive(); return runSessionProjectionUnavailable(); },
+        }),
+        transcripts: Object.freeze({
+            fileFollow: Object.freeze({
+                async follow() { assertActive(); return runSessionProjectionUnavailable(); },
+            }),
+            async publishSessionEvent() { assertActive(); return runSessionProjectionUnavailable(); },
+            async markSourceFactConsumed() { assertActive(); return runSessionProjectionUnavailable(); },
+        }),
+        accountUsage: Object.freeze({
+            async resolveSourceContext() { assertActive(); return null; },
+            async recordSnapshot() {
+                assertActive();
+                return { status: 'unavailable' as const, reason: 'session_scope_unavailable' as const };
+            },
+            async adoptProvisionalRecord() {
+                assertActive();
+                return { status: 'unavailable' as const, reason: 'session_scope_unavailable' as const };
+            },
+        }),
+        mcp: Object.freeze({
+            async resolveServers() { assertActive(); return Object.freeze([]); },
+        }),
+        workflowActivity: Object.freeze({
+            async publishHeadlines() { assertActive(); return runSessionProjectionUnavailable(); },
+        }),
+        toolExecution: Object.freeze({
+            async before() {
+                assertActive();
+                return { status: 'failed' as const, code: RUN_SESSION_PROJECTION_UNAVAILABLE_CODE };
+            },
+        }),
+        subagents: Object.freeze({
+            async observe() { assertActive(); return runSessionProjectionUnavailable(); },
+        }),
+    });
+}
+
+function createRunScopedWorkStateService(signal: AbortSignal): WorkStateService {
+    return Object.freeze({
+        publisher: () => Object.freeze({
+            async publish() {
+                signal.throwIfAborted();
+                return {
+                    status: 'unavailable' as const,
+                    diagnostic: {
+                        code: RUN_SESSION_PROJECTION_UNAVAILABLE_CODE,
+                        severity: 'error' as const,
+                    },
+                };
+            },
+        }),
+    });
+}
+
+/**
+ * Supplies only the transient Session-shaped provider context needed to derive
+ * a finite Run. It has no ApiSessionClient and therefore cannot create a
+ * Happier Session, Pending row, transcript, or Session projection.
+ */
+export function createNativeAgentRunScopedSessionContextLeaseFactory(params: Readonly<{
+    lease: NativeAgentRuntimeLeaseIdentity;
+    runId: string;
+    resolveAcpHostLaunch?: Parameters<typeof createPublicAcpRuntimeProtocols>[0]['resolveHostLaunch'];
+    transformAgentRequest?: Parameters<typeof createPublicAcpRuntimeProtocols>[0]['transformAgentRequest'];
+}>): NativeAgentSessionContextLeaseFactory {
+    const runId = readRequiredString(params.runId, 'a run id');
+    return ({ services, signal }) => {
+        const base = createNativeAgentInvocationContext({
+            lease: params.lease,
+            runId,
+            signal,
+            services,
+            invokedAtMs: Date.now(),
+            ...(params.resolveAcpHostLaunch || params.transformAgentRequest
+                ? {
+                    protocolOptions: {
+                        ...(params.resolveAcpHostLaunch ? { resolveHostLaunch: params.resolveAcpHostLaunch } : {}),
+                        ...(params.transformAgentRequest ? { transformAgentRequest: params.transformAgentRequest } : {}),
+                    },
+                }
+                : {}),
+        });
+        const context: AgentSessionRuntimeContext = Object.freeze({
+            ...base,
+            session: Object.freeze({
+                id: runId,
+                services: createRunScopedSessionHostServices(signal),
+            }),
+            workState: createRunScopedWorkStateService(signal),
+        });
+        return Object.freeze({
+            context,
+            async dispose() {},
+        });
+    };
+}
 
 function diagnosticMessage(
     diagnostic: Readonly<{ code: string; message?: string }> | undefined,
@@ -198,6 +324,10 @@ function createNativeAgentInvocationContext(params: Readonly<{
     signal: AbortSignal;
     services: PluginServices;
     invokedAtMs: number;
+    protocolOptions?: Pick<
+        Parameters<typeof createPublicAcpRuntimeProtocols>[0],
+        'resolveHostLaunch' | 'transformAgentRequest'
+    >;
 }>): AgentRuntimeContext {
     return Object.freeze({
         plugin: Object.freeze({ id: params.lease.pluginId, version: params.lease.pluginVersion }),
@@ -227,6 +357,7 @@ function createNativeAgentInvocationContext(params: Readonly<{
             signal: params.signal,
             isCurrent: params.lease.isCurrent,
             services: params.services,
+            ...(params.protocolOptions ?? {}),
         }),
     });
 }
@@ -528,8 +659,8 @@ export function createNativeAgentExecutionRunHostRuntime(params: Readonly<{
 
 /**
  * Host-owned finite Run projection for an Agent whose provider-native owner is
- * a Session runtime. The Session receives the same complete host context as an
- * interactive Session; only the bounded Run projection is adapted here.
+ * a Session runtime. A parent Session supplies its complete host context;
+ * detached Runs supply only the run-scoped context required by the runtime.
  */
 export function createNativeAgentSessionExecutionRunHostRuntime(params: Readonly<{
     runtime: AgentRuntime;

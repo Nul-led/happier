@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import {
+  AgentIdV1Schema,
   BackendTargetRefV2Schema,
   ConnectedServiceBindingsV1Schema,
   ProviderErrorV1Schema,
@@ -59,7 +60,7 @@ export const ForegroundAgentRuntimeAdmissionRequestV1Schema = z.object({
   existingSessionId: BoundedIdSchema.optional(),
   foregroundPid: z.number().int().positive(),
   directory: z.string().min(1).max(32_768),
-  agentId: BoundedIdSchema,
+  agentId: AgentIdV1Schema,
   backendTarget: BackendTargetRefV2Schema,
   profileId: BoundedIdSchema.optional(),
   accountSettingsScopeKey: z.string().min(1).max(1_024).optional(),
@@ -126,7 +127,7 @@ export const ForegroundAgentRuntimeClaimRequestV1Schema = z.object({
   canonicalSessionId: BoundedIdSchema,
   foregroundPid: z.number().int().positive(),
   pluginId: BoundedIdSchema,
-  agentId: BoundedIdSchema,
+  agentId: AgentIdV1Schema,
   generation: BoundedIdSchema,
   capability: z.string().min(1).max(4_096),
   foregroundSatisfiedProfileSecretRequirementNames:

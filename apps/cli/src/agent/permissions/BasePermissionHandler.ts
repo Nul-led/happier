@@ -103,6 +103,8 @@ export type PermissionRequestPushSender = PermissionRequestPushSenderFromSetting
  */
 export interface PermissionResponse {
     id: string;
+    /** Exact host-projected turn custody; absent only for released legacy requests. */
+    turnId?: string;
     approved: boolean;
     decision?: 'approved' | 'approved_for_session' | 'approved_execpolicy_amendment' | 'denied' | 'abort';
     // When the user chooses "don't ask again (session)", the UI may send a tool allowlist.
@@ -141,6 +143,7 @@ export interface PendingRequest {
      * result using the handler's current causal mode/ceiling.
      */
     resolveCurrentPermissionDecision?: () => PermissionResult;
+    acknowledgeDecisionApplication?: (decision: PermissionResult) => Promise<void>;
     coordinatorManaged?: boolean;
 }
 
@@ -2519,7 +2522,12 @@ export abstract class BasePermissionHandler {
             || resolveAgentRequestKind(context.toolName) !== 'permission'
             || !matchesMediatedPermissionTurnId(context.turnId, input)
         ) {
-            return { status: 'rejected', code: 'requestNotFound' };
+            return this.isCompletedMediatedPermissionRequestVisible({
+                input,
+                mediatorPluginId: mediator.pluginId,
+            })
+                ? { status: 'rejected', code: 'requestNotPending' }
+                : { status: 'rejected', code: 'requestNotFound' };
         }
         const sourceAuthority = context.owner?.sourceAuthority;
         if (!sourceAuthority || !matchesRemoteMediationSourceAuthority(sourceAuthority, input, mediator.pluginId)) {
@@ -2676,7 +2684,7 @@ export abstract class BasePermissionHandler {
             ) {
                 return { policyNarrowed: true } as const;
             }
-            const reaffirmedClaim = await this.requestCoordinator.acquireResponseClaim({
+            const reaffirmedClaim = await this.requestCoordinator.rejoinResponseClaim({
                 requestId: input.requestId,
                 claim: prepared.claim,
             });
@@ -2691,6 +2699,22 @@ export abstract class BasePermissionHandler {
                 ...recordWrite,
                 ...(recordSignal ? { signal: recordSignal } : {}),
             });
+            const claimAfterRecordCas = await this.requestCoordinator.rejoinResponseClaim({
+                requestId: input.requestId,
+                claim: prepared.claim,
+            });
+            if (claimAfterRecordCas.status !== 'rejoined') {
+                if (created.status === 'created') {
+                    onSettlementPersisted();
+                    return {
+                        staleCreated: created.stored,
+                        staleRejection: claimAfterRecordCas.status === 'conflict'
+                            ? { status: 'rejected' as const, code: 'decisionConflict' as const }
+                            : { status: 'rejected' as const, code: 'requestNotPending' as const },
+                    } as const;
+                }
+                return { claimLost: claimAfterRecordCas } as const;
+            }
             if (created.status === 'created') {
                 // The System Record is now the first-answer evidence even if
                 // the policy changed while an abort-ignoring transport was in
@@ -3055,6 +3079,21 @@ export abstract class BasePermissionHandler {
             remoteMediationSettlementId: params.outcome.settlementId,
             isCurrent: completionIsCurrent,
         });
+        if (!completed && params.mustComplete) {
+            // Lifecycle cancellation may win after the System Record CAS but
+            // while the ordinary AgentState terminal write is in flight. The
+            // coordinator's durable canceled result is then authoritative;
+            // remove this newly-created nonauthorizing row through the same
+            // ledger owner so an exact retry cannot report it as applied.
+            const neutralized = await this.neutralizeStaleMediatedPermissionRecord({
+                ...ledger,
+                stored: completionStored,
+            });
+            if (neutralized) params.onGrantNeutralized();
+            return neutralized
+                ? { status: 'rejected', code: 'requestNotPending' }
+                : { status: 'rejected', code: 'mediationStateUnavailable' };
+        }
         if (!completionIsCurrent()) {
             return { status: 'rejected', code: 'mediationStateUnavailable' };
         }
@@ -3066,9 +3105,7 @@ export abstract class BasePermissionHandler {
         ) {
             return { status: 'rejected', code: 'mediationStateUnavailable' };
         }
-        return !completed && params.mustComplete
-            ? { status: 'rejected', code: 'requestNotPending' }
-            : null;
+        return null;
     }
 
     private async settleMediatedPermissionNonAuthorizing(params: Readonly<{
@@ -3201,16 +3238,28 @@ export abstract class BasePermissionHandler {
         return await this.requestCoordinator.withResponseClaim(response.id, async () => {
             const actor = options?.permissionDecisionActorV1;
             const result = actor ? this.buildPermissionResult(response) : null;
+            const context = actor ? this.requestCoordinator.getResponseContext(response.id) : null;
+            const responseTurnId = TurnIdSchema.safeParse(response.turnId);
+            const contextTurnId = context?.turnId;
+            const hasMatchingTurnCustody = context
+                ? contextTurnId
+                    ? responseTurnId.success && responseTurnId.data === contextTurnId
+                    : typeof response.turnId === 'undefined'
+                : true;
             const claim: PermissionResponseClaim | null = actor && result && options?.expectedRequestKind !== 'user_action'
                 ? {
                     version: 1,
                     origin: 'presentUser',
                     actor,
+                    ...(contextTurnId
+                        ? { turnId: contextTurnId }
+                        : responseTurnId.success
+                            ? { turnId: responseTurnId.data }
+                            : {}),
                     decision: result.decision,
                     scope: result.decision === 'approved_for_session' ? 'session' : 'request',
                 }
                 : null;
-            const context = actor ? this.requestCoordinator.getResponseContext(response.id) : null;
             if (!context && claim) {
                 const settled = this.requestCoordinator.readCompletedResponseClaim({
                     requestId: response.id,
@@ -3222,10 +3271,14 @@ export abstract class BasePermissionHandler {
             const isPresentPermissionResponse = Boolean(
                 actor
                 && context
+                && hasMatchingTurnCustody
                 && options?.expectedRequestKind !== 'user_action'
                 && resolveAgentRequestKind(context.toolName) === 'permission'
                 && isPermissionResponseAuthorityValid({ response, context }),
             );
+            if (actor && context && options?.expectedRequestKind !== 'user_action' && !hasMatchingTurnCustody) {
+                return { status: 'not_found' };
+            }
             if (!isPresentPermissionResponse || !actor || !claim) {
                 return await this.handleIncomingPermissionResponseUnclaimed(response, options);
             }
@@ -3569,6 +3622,7 @@ export abstract class BasePermissionHandler {
             signal?: AbortSignal;
             causalPermissionContext?: AcpPermissionCallContext;
             resolveCurrentPermissionDecision?: () => PermissionResult;
+            acknowledgeDecisionApplication?: (decision: PermissionResult) => Promise<void>;
         }>,
     ): Promise<PermissionResult> {
         const source = typeof options?.source === 'string' ? options.source.trim() : '';
@@ -3592,6 +3646,9 @@ export abstract class BasePermissionHandler {
                 ...(options?.causalPermissionContext ? { causalPermissionContext: options.causalPermissionContext } : {}),
                 ...(options?.resolveCurrentPermissionDecision
                     ? { resolveCurrentPermissionDecision: options.resolveCurrentPermissionDecision }
+                    : {}),
+                ...(options?.acknowledgeDecisionApplication
+                    ? { acknowledgeDecisionApplication: options.acknowledgeDecisionApplication }
                     : {}),
                 coordinatorManaged: true,
                 resolve: (value) => {
@@ -3736,6 +3793,7 @@ export abstract class BasePermissionHandler {
         completedRequest: PermissionRequestCoordinatorCompletedRequest,
     ): Promise<boolean> {
         const pending = this.pendingRequests.get(requestId);
+        await pending?.acknowledgeDecisionApplication?.(result);
         const completed = await this.requestCoordinator.completeResponse({
             context,
             completion: {

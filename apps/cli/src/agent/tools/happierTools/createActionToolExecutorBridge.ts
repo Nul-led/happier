@@ -101,8 +101,7 @@ async function buildActionExecutorContext(params: Readonly<{
   surface: 'mcp' | 'cli' | 'agent';
   options?: ActionToolExecutionOptions;
   resolveCallerPermissionMode?: (() => Promise<string | null> | string | null) | null;
-  resolveCausalPermissionAuthority?: (() => Promise<unknown> | unknown) | null;
-  resolveActiveTurnId?: (() => Promise<string | null> | string | null) | null;
+  resolveActiveTurnPermissionWitness?: (() => Promise<unknown> | unknown) | null;
   sessionInputVia?: 'action' | 'mcp';
   sessionAgentSpawnPolicyV1?: unknown;
   getSessionAgentSpawnPolicyV1?: (() => unknown) | null;
@@ -124,17 +123,18 @@ async function buildActionExecutorContext(params: Readonly<{
   const callerPermissionMode = params.surface === 'agent' && params.resolveCallerPermissionMode
     ? await params.resolveCallerPermissionMode()
     : null;
-  const hasCausalPermissionAuthorityResolver =
+  const hasActiveTurnPermissionWitnessResolver =
     params.surface === 'agent'
-    && typeof params.resolveCausalPermissionAuthority === 'function';
+    && typeof params.resolveActiveTurnPermissionWitness === 'function';
   let causalPermissionAuthority: unknown = null;
   let activeTurnId: string | null = null;
-  if (hasCausalPermissionAuthorityResolver) {
+  if (hasActiveTurnPermissionWitnessResolver) {
     try {
-      causalPermissionAuthority = await params.resolveCausalPermissionAuthority!();
-      const rawTurnId = await params.resolveActiveTurnId?.();
-      activeTurnId = typeof rawTurnId === 'string' && rawTurnId.trim().length > 0
-        ? rawTurnId.trim()
+      const rawWitness = await params.resolveActiveTurnPermissionWitness!();
+      const witness = isInputRecord(rawWitness) ? rawWitness : null;
+      causalPermissionAuthority = witness?.causalPermissionAuthority ?? null;
+      activeTurnId = typeof witness?.turnId === 'string' && witness.turnId.trim().length > 0
+        ? witness.turnId.trim()
         : null;
     } catch {
       // An active-turn reader failure is non-authorizing; do not fall back to
@@ -159,10 +159,10 @@ async function buildActionExecutorContext(params: Readonly<{
     ...(params.options?.approvalOrigin ? { approvalOrigin: params.options.approvalOrigin } : {}),
     ...(actionRequestId ? { actionRequestId } : {}),
     ...(callerPermissionMode ? { callerPermissionMode } : {}),
-    ...(hasCausalPermissionAuthorityResolver
+    ...(hasActiveTurnPermissionWitnessResolver
       ? { causalPermissionAuthority: causalPermissionAuthority ?? null }
       : {}),
-    ...(hasCausalPermissionAuthorityResolver && activeTurnId
+    ...(hasActiveTurnPermissionWitnessResolver && activeTurnId
       ? {
           sessionInputSource: {
             sourceSessionId: params.defaultSessionId,
@@ -246,8 +246,7 @@ export function createActionToolExecutorBridge(params: Readonly<{
   actionsSettings?: ActionsSettingsV1 | null;
   getActionsSettings?: (() => ActionsSettingsV1 | null) | null;
   resolveCallerPermissionMode?: (() => Promise<string | null> | string | null) | null;
-  resolveCausalPermissionAuthority?: (() => Promise<unknown> | unknown) | null;
-  resolveActiveTurnId?: (() => Promise<string | null> | string | null) | null;
+  resolveActiveTurnPermissionWitness?: (() => Promise<unknown> | unknown) | null;
   sessionInputVia?: 'action' | 'mcp';
   sessionAgentSpawnPolicyV1?: unknown;
   getSessionAgentSpawnPolicyV1?: (() => unknown) | null;
@@ -301,8 +300,7 @@ export function createActionToolExecutorBridge(params: Readonly<{
             surface,
             options,
             resolveCallerPermissionMode: params.resolveCallerPermissionMode,
-            resolveCausalPermissionAuthority: params.resolveCausalPermissionAuthority,
-            resolveActiveTurnId: params.resolveActiveTurnId,
+            resolveActiveTurnPermissionWitness: params.resolveActiveTurnPermissionWitness,
             sessionInputVia: params.sessionInputVia,
             sessionAgentSpawnPolicyV1: params.sessionAgentSpawnPolicyV1,
             getSessionAgentSpawnPolicyV1: params.getSessionAgentSpawnPolicyV1 ?? null,
@@ -337,8 +335,7 @@ export function createActionToolExecutorBridge(params: Readonly<{
           surface,
           options,
           resolveCallerPermissionMode: params.resolveCallerPermissionMode,
-          resolveCausalPermissionAuthority: params.resolveCausalPermissionAuthority,
-          resolveActiveTurnId: params.resolveActiveTurnId,
+          resolveActiveTurnPermissionWitness: params.resolveActiveTurnPermissionWitness,
           sessionInputVia: params.sessionInputVia,
           sessionAgentSpawnPolicyV1: params.sessionAgentSpawnPolicyV1,
           getSessionAgentSpawnPolicyV1: params.getSessionAgentSpawnPolicyV1 ?? null,

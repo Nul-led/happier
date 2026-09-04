@@ -444,6 +444,7 @@ export type HostSessionRuntimeHookRuntime = Readonly<{
   consumeUsageLimitResetCredit?: SessionRuntimeControls['consumeUsageLimitResetCredit'];
   clearTerminalComposer?: SessionRuntimeControls['clearTerminalComposer'];
   interruptPendingInputAndRun?: SessionRuntimeControls['interruptPendingInputAndRun'];
+  readActiveTurnInputId?: SessionRuntimeControls['readActiveTurnInputId'];
   handleUserMessage?: SessionRuntimeControls['handleUserMessage'];
 }> & RuntimeTurnOperations;
 
@@ -1829,9 +1830,8 @@ export async function runHostSessionRuntime(
     // The Session tool bridge is registered before the native runtime. This closure is
     // intentionally read at tool-call time: it is null before construction and
     // after the canonical active-turn witness is cleared.
-    getActiveTurnCausalPermissionAuthority: () =>
-      runtimeForInFlightSteer?.readActiveTurnCausalPermissionAuthority?.() ?? null,
-    getActiveTurnId: () => runtimeForInFlightSteer?.readActiveTurnId?.() ?? null,
+    getActiveTurnPermissionWitness: () =>
+      runtimeForInFlightSteer?.readActiveTurnPermissionWitness?.() ?? null,
     getBackendTarget: () => runtimeOpts.backendTarget ? readBackendTargetRefV2(runtimeOpts.backendTarget) : null,
     getCurrentSessionLocation: () => ({
       path: runtimeDirectory,
@@ -2571,6 +2571,10 @@ export async function runHostSessionRuntime(
       ...(typeof nativeRuntime.interruptPendingInputAndRun === 'function'
         ? { interruptPendingInputAndRun: nativeRuntime.interruptPendingInputAndRun.bind(nativeRuntime) }
         : {}),
+      ...(typeof nativeRuntime.readActiveTurnInputId === 'function'
+        ? { readActiveTurnInputId: nativeRuntime.readActiveTurnInputId.bind(nativeRuntime) }
+        : {}),
+      cancelActiveTurn: nativeRuntime.cancelTurn.bind(nativeRuntime),
       ...(typeof nativeRuntime.handleUserMessage === 'function' ? { handleUserMessage: nativeRuntime.handleUserMessage.bind(nativeRuntime) } : {}),
       ...(acceptPendingMessageComposerAdmission ? { acceptPendingMessageComposerAdmission } : {}),
       ...(abandonPendingMessageComposerAdmission ? { abandonPendingMessageComposerAdmission } : {}),

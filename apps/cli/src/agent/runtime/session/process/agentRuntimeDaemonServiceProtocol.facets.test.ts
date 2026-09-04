@@ -190,6 +190,59 @@ describe('Agent runtime daemon-owned session facets protocol', () => {
     ).toBe(false);
   });
 
+  it('carries the full canonical qualified Agent routing identity for External Session follow targets', () => {
+    const agentId = `${'p'.repeat(256)}/${'a'.repeat(256)}`;
+    const tooLongAgentId = `${agentId}x`;
+    const externalSessionOperation = {
+      kind: 'external_session.follow.open',
+      requestId: 'follow-open-1',
+      followId: 'follow-1',
+      target: {
+        kind: 'externalSession',
+        ref: {
+          agentId,
+          sourceId: 'default',
+          remoteSessionId: 'remote-session-1',
+        },
+        source: { kind: 'codexHome', home: 'user' },
+      },
+    } as const;
+    const providerSessionOperation = {
+      kind: 'external_session.follow.open',
+      requestId: 'provider-follow-open-1',
+      followId: 'provider-follow-1',
+      target: {
+        kind: 'providerSession',
+        agentId,
+        providerSessionId: 'remote-session-1',
+      },
+    } as const;
+
+    expect(AgentRuntimeDaemonServiceRequestV1Schema.safeParse(
+      request(externalSessionOperation),
+    ).success).toBe(true);
+    expect(AgentRuntimeDaemonServiceRequestV1Schema.safeParse(
+      request(providerSessionOperation),
+    ).success).toBe(true);
+    expect(AgentRuntimeDaemonServiceRequestV1Schema.safeParse(request({
+      ...externalSessionOperation,
+      target: {
+        ...externalSessionOperation.target,
+        ref: {
+          ...externalSessionOperation.target.ref,
+          agentId: tooLongAgentId,
+        },
+      },
+    })).success).toBe(false);
+    expect(AgentRuntimeDaemonServiceRequestV1Schema.safeParse(request({
+      ...providerSessionOperation,
+      target: {
+        ...providerSessionOperation.target,
+        agentId: tooLongAgentId,
+      },
+    })).success).toBe(false);
+  });
+
   it('admits only snapshot and retirement wait Voice authority operations', () => {
     expect(
       AgentRuntimeDaemonServiceRequestV1Schema.safeParse(

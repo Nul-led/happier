@@ -587,7 +587,7 @@ describe('createSessionClientInteractionApi diagnostics', () => {
     expect(axiosPostMock).not.toHaveBeenCalled();
   });
 
-  it('settles protected input authority before projection or provider delivery', async () => {
+  it('settles collaborator provenance and protected authority before projection or provider delivery', async () => {
     const socket = createSocketStub();
     const contractResult = {
       mode: 'session_sync_v2_pending_input_v1' as const,
@@ -599,8 +599,8 @@ describe('createSessionClientInteractionApi diagnostics', () => {
     };
     const request = {
       v: 1 as const,
-      producer: 'pluginSession' as const,
-      caller: { kind: 'plugin' as const, pluginId: 'example.plugin', contributionLocalId: 'send' },
+      producer: 'happierApp' as const,
+      caller: { kind: 'host' as const },
       permission: { requestedPermissionCeiling: 'read-only' as const },
     };
     const requestContent = {
@@ -609,7 +609,10 @@ describe('createSessionClientInteractionApi diagnostics', () => {
         role: 'user',
         content: { type: 'text', text: 'protected prompt' },
         localId: 'protected-local',
-        meta: { happierInputRequestV1: request },
+        meta: {
+          happierProvenanceV1: { v: 1, kind: 'host', producer: 'happierApp' },
+          happierInputRequestV1: request,
+        },
       },
     };
     socketAckMock
@@ -626,7 +629,12 @@ describe('createSessionClientInteractionApi diagnostics', () => {
           localId: 'protected-local',
           messageRole: 'user',
           content: requestContent,
-          inputAdmissionReceipt: { v: 1, issuer: 'authenticatedMachine' },
+          inputAdmissionReceipt: {
+            v: 1,
+            issuer: 'authenticatedAccount',
+            actorAccountId: 'collaborator-account',
+            sessionRelationship: 'sharedEditor',
+          },
           createdAt: 1_000,
           updatedAt: 1_000,
           providerAction: 'send',
@@ -680,6 +688,11 @@ describe('createSessionClientInteractionApi diagnostics', () => {
                   admittedPermissionCeiling: 'read-only',
                 },
               }),
+              happierProvenanceV1: {
+                v: 1,
+                kind: 'happierApp',
+                actor: { kind: 'sharedCollaborator' },
+              },
             }),
           }),
         }),
@@ -699,11 +712,16 @@ describe('createSessionClientInteractionApi diagnostics', () => {
     }));
     expect(deliver).toHaveBeenCalledWith(expect.objectContaining({
       meta: expect.objectContaining({
+        happierProvenanceV1: {
+          v: 1,
+          kind: 'happierApp',
+          actor: { kind: 'sharedCollaborator' },
+        },
         happierInputAuthorityV1: expect.objectContaining({
           permission: expect.objectContaining({ admittedPermissionCeiling: 'read-only' }),
         }),
       }),
-    }), 'send');
+    }), 'send', { v: 1, kind: 'enqueue' });
     expect(markPendingQueueMaterializedLocalId).toHaveBeenCalledWith('protected-local');
   });
 

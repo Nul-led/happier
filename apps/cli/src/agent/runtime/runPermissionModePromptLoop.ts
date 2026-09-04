@@ -1164,7 +1164,9 @@ export async function runPermissionModePromptLoop(opts: {
       }
       const providerNativeCommand = special.type === null
         && opts.runtime.isProviderNativeCommand?.(message.message.text) === true;
-      if (providerNativeCommand) {
+      const dispatchProviderNativeCommandVerbatim = providerNativeCommand
+        && !(message.message.inputContextBlock?.trim());
+      if (dispatchProviderNativeCommandVerbatim) {
         pendingFreshSessionSystemPrompt ||= shouldApplyFreshSessionSystemPrompt;
         shouldApplyFreshSessionSystemPrompt = false;
       }
@@ -1266,7 +1268,7 @@ export async function runPermissionModePromptLoop(opts: {
         activeCheckpointFinalStatus = 'unknown';
         const nowMs = Date.now();
         const dispatchAbortSignal = opts.getAbortSignal();
-        const resolvedReplaySeed = providerPromptAlreadyResolved || providerNativeCommand
+        const resolvedReplaySeed = providerPromptAlreadyResolved || dispatchProviderNativeCommandVerbatim
           ? null
           : await resolveProviderPromptWithReplaySeed({
               session: opts.session,
@@ -1335,7 +1337,7 @@ export async function runPermissionModePromptLoop(opts: {
         if (replaySeedWasOmitted) {
           await releaseReplaySeedBeforeProviderDispatch();
         }
-        const agentComposition = providerNativeCommand
+        const agentComposition = dispatchProviderNativeCommandVerbatim
           ? undefined
           : await opts.resolveAgentCompositionBeforeDispatch?.({
               signal: dispatchAbortSignal,
@@ -1366,7 +1368,7 @@ export async function runPermissionModePromptLoop(opts: {
           effectiveAgentCompositionPrompt,
           seedResolution.providerPrompt,
         ].filter((part) => part.length > 0).join('\n\n');
-        const transformedDispatchPrompt = providerNativeCommand
+        const transformedDispatchPrompt = dispatchProviderNativeCommandVerbatim
           ? message.message.text
           : await transformAgentContextPromptBeforeDispatch({
               transformAgentContextBeforeDispatch: opts.transformAgentContextBeforeDispatch,
@@ -1440,9 +1442,9 @@ export async function runPermissionModePromptLoop(opts: {
           },
         });
         // The provider parses its own command grammar from the first characters of
-        // this text, so a native command is dispatched verbatim; its structured
-        // input travels through the Agent input contract in `promptDeliveryMeta`.
-        const dispatchPrompt = providerNativeCommand
+        // this text, so only an unattributed native command is dispatched verbatim.
+        // Attributed input takes the canonical composed path so provenance cannot vanish.
+        const dispatchPrompt = dispatchProviderNativeCommandVerbatim
           ? message.message.text
           : renderSessionInputContextPromptV1({
               provenanceBlock: message.message.inputContextBlock ?? '',

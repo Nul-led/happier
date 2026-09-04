@@ -72,7 +72,6 @@ type CoordinatorDeps = Readonly<{
   resolveWorkspaceTransferRoot?: typeof resolveWorkspaceTransferRootWithScmWorkspace;
   refreshWorkspaceSettings?: (input: Readonly<{
     credentials: StoredCredentials;
-    minSettingsVersion?: number;
   }>) => Promise<Readonly<{
     settingsVersion: number;
     settings: Readonly<{
@@ -250,17 +249,12 @@ export function createTrackedSessionHandoffCoordinator(deps: CoordinatorDeps) {
     let sessionRelativeCwd = '';
     let sourceWorkspaceRootPath = source.sourceRootPath;
     let relationshipContentSelection: 'git_worktree' | 'all_files' | undefined;
-    if (workspaceAction && workspaceAction.kind !== 'none' && !daemonMaterializesEndpoints) {
-      const minSettingsVersion = typeof rawInput.workspaceSyncSettingsVersion === 'number'
-        && Number.isSafeInteger(rawInput.workspaceSyncSettingsVersion)
-        && rawInput.workspaceSyncSettingsVersion >= 0
-        ? rawInput.workspaceSyncSettingsVersion
-        : undefined;
+    if (workspaceAction?.kind === 'relationship') {
       try {
-        const settings = await refreshWorkspaceSettings({
-          credentials,
-          ...(minSettingsVersion === undefined ? {} : { minSettingsVersion }),
-        });
+        // Endpoint identity and the settings version that proves it are
+        // daemon-owned: read the canonical Account settings owner rather than
+        // trusting a caller-supplied ref id or version floor.
+        const settings = await refreshWorkspaceSettings({ credentials });
         relationshipContentSelection = settings.settings.workspaceSyncRelationshipsV1.find(
           (relationship) => relationship.relationshipId === workspaceAction.relationshipId,
         )?.contentPolicy.selection;
@@ -278,12 +272,6 @@ export function createTrackedSessionHandoffCoordinator(deps: CoordinatorDeps) {
           sourceRootPath: sourceWorkspaceRootPath,
           targetMachineId,
           ...(targetPath ? { targetRootPath: targetPath } : {}),
-          ...(readNonEmptyString(rawInput.workspaceSyncSourceWorkspaceRefId)
-            ? { requestedSourceWorkspaceRefId: readNonEmptyString(rawInput.workspaceSyncSourceWorkspaceRefId)! }
-            : {}),
-          ...(readNonEmptyString(rawInput.workspaceSyncTargetWorkspaceRefId)
-            ? { requestedTargetWorkspaceRefId: readNonEmptyString(rawInput.workspaceSyncTargetWorkspaceRefId)! }
-            : {}),
         });
       } catch (error) {
         return readWorkspaceFailure(error, 'workspace_ref_not_ready');
