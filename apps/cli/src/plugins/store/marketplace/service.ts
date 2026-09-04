@@ -218,7 +218,7 @@ export function createMarketplaceIndexService(params?: Readonly<{
         }
       }));
       for (const outcome of batch) {
-        if ('snapshot' in outcome) snapshots.push(outcome.snapshot);
+        if (outcome.snapshot !== undefined) snapshots.push(outcome.snapshot);
         else diagnostics.push(outcome.diagnostic);
       }
     }

@@ -25,6 +25,7 @@ import {
   PluginRegistryCandidateConflictError,
   type PluginRegistryRuntimeLifecycle,
 } from '@/plugins/store/registry/currentState';
+import type { PluginGenerationCustodyRetirementRemoteDependencies } from '@/plugins/store/registry/generationCustodyRetirement';
 import type { PluginRegistryCommitRecord } from '@/plugins/store/registry/commitRecord';
 import {
   prepareOwnedImmutablePluginGeneration,
@@ -169,8 +170,19 @@ export function createDaemonArchivePluginChangePreparer(params: Readonly<{
   runtimeLifecycle: PluginRegistryRuntimeLifecycle;
   onRegistryApplied?: (record: PluginRegistryCommitRecord) => void;
   nowMs?: () => number;
+  generationCustodyRetirement?: PluginGenerationCustodyRetirementRemoteDependencies;
 }>): (request: PluginChangeRequest) => Promise<PreparedDaemonPluginChangeCandidate> {
   const nowMs = params.nowMs ?? Date.now;
+  const createMutationStore = (
+    onApplied?: (record: PluginRegistryCommitRecord) => void,
+  ) => createPluginRegistryStateStore({
+    happyHomeDir: params.happyHomeDir,
+    runtimeLifecycle: params.runtimeLifecycle,
+    ...(params.generationCustodyRetirement
+      ? { generationCustodyRetirement: params.generationCustodyRetirement }
+      : {}),
+    ...(onApplied ? { onApplied } : {}),
+  });
 
   return async (request) => {
     if (request.kind !== 'installArchive') {
@@ -305,13 +317,9 @@ export function createDaemonArchivePluginChangePreparer(params: Readonly<{
               },
               state: { enabled: true, lastLoadedAtMs: nowMs(), lastError: null },
             };
-            const store = createPluginRegistryStateStore({
-              happyHomeDir: params.happyHomeDir,
-              runtimeLifecycle: params.runtimeLifecycle,
-              onApplied: (record) => {
-                control?.onApplied();
-                params.onRegistryApplied?.(record);
-              },
+            const store = createMutationStore((record) => {
+              control?.onApplied();
+              params.onRegistryApplied?.(record);
             });
             const transaction = await store.install({
               pluginId: staged.candidate.manifest.id,

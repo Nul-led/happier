@@ -3,7 +3,7 @@ import { dirname, relative, resolve, sep } from 'node:path';
 
 import { resolvePortablePluginRelativePath } from '../manifest/portableRelativePath';
 import { isCanonicalAbsolutePathInsideRoot } from '@/utils/path/expandHomeDirPath';
-import { realpathNearestExistingAncestor } from './physicalAncestorPath';
+import { realpathNearestExistingAncestor } from '@/utils/path/physicalAncestorPath';
 
 type ActionContractManifest = Readonly<{
   id: string;

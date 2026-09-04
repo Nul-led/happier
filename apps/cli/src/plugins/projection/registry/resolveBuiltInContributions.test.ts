@@ -1,6 +1,3 @@
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { readFileSync } from 'node:fs';
 
 import { describe, expect, it, vi } from 'vitest';
@@ -90,18 +87,13 @@ describe('resolveBuiltInContributions', () => {
     expect(generatedSource).toMatch(/manifest:\s*\{\s*"contributes":/u);
   });
 
-  it('keeps the cold bundled registry trace off Protocol and Agent root barrels', () => {
+  it('keeps generated and resolver-owned cold bundled data off Protocol and Agent root barrels', () => {
     const generatedSource = readGeneratedBundledPluginsSource();
     const resolverSource = readResolverSource();
-    const catalogEntryHooksSource = readFileSync(
-      new URL('./agentCatalogEntryHooks.ts', import.meta.url),
-      'utf8',
-    );
 
     for (const source of [
       generatedSource,
       resolverSource,
-      catalogEntryHooksSource,
     ]) {
       expect(source).not.toMatch(/from ['"]@happier-dev\/protocol['"]/u);
       expect(source).not.toMatch(/from ['"]@happier-dev\/agents['"]/u);
@@ -392,7 +384,6 @@ describe('resolveBuiltInContributions', () => {
         }),
       );
       expect(agent.catalogEntry?.id).toBe(agent.id);
-      expect(agent.catalogEntry?.cliSubcommand).toBe(agent.id);
       expect(agent.catalogEntry).not.toHaveProperty('getRuntimeCore');
     }
 
@@ -443,79 +434,27 @@ describe('resolveBuiltInContributions', () => {
         expect(codexAgent?.catalogEntry).not.toHaveProperty('getVendorResumeSupport');
     });
 
-    it('projects Codex CLI auth through the plugin runtime contribution', async () => {
-        const root = await mkdtemp(join(tmpdir(), 'happier-codex-cli-auth-contribution-'));
-        const originalEnv = {
-            CAPTURE_PATH: process.env.CAPTURE_PATH,
-            CODEX_HOME: process.env.CODEX_HOME,
-            HAPPIER_CODEX_CLI_AUTH_PROBE_TIMEOUT_MS: process.env.HAPPIER_CODEX_CLI_AUTH_PROBE_TIMEOUT_MS,
-            HOME: process.env.HOME,
-            OPENAI_API_KEY: process.env.OPENAI_API_KEY,
-            USERPROFILE: process.env.USERPROFILE,
-        };
+    it('projects Codex host-owned static auth facts from public manifest metadata', async () => {
+        const originalOpenAiApiKey = process.env.OPENAI_API_KEY;
         try {
-            const capturePath = join(root, 'capture.json');
-            const scriptPath = join(root, 'fake-codex.cjs');
-            await writeFile(
-                scriptPath,
-                [
-                    '#!/usr/bin/env node',
-                    'const fs = require("node:fs");',
-                    'const args = process.argv.slice(2);',
-                    'fs.writeFileSync(process.env.CAPTURE_PATH, JSON.stringify({ args }), "utf8");',
-                    'if (args[0] === "login" && args[1] === "status") {',
-                    '  process.exit(0);',
-                    '}',
-                    'process.exit(2);',
-                ].join('\n'),
-                'utf8',
-            );
-            await chmod(scriptPath, 0o755);
-
-            const codexHome = join(root, '.codex');
-            await mkdir(codexHome, { recursive: true });
-            await writeFile(
-                join(codexHome, 'auth.json'),
-                JSON.stringify({
-                    tokens: {
-                        id_token: [
-                            Buffer.from(JSON.stringify({ alg: 'none', typ: 'JWT' })).toString('base64url'),
-                            Buffer.from(JSON.stringify({ email: 'projected-codex@example.test' })).toString('base64url'),
-                            'signature',
-                        ].join('.'),
-                    },
-                }),
-                'utf8',
-            );
-
-            process.env.CAPTURE_PATH = capturePath;
-            process.env.CODEX_HOME = codexHome;
-            process.env.HAPPIER_CODEX_CLI_AUTH_PROBE_TIMEOUT_MS = '3000';
-            process.env.HOME = root;
-            process.env.USERPROFILE = root;
-            delete process.env.OPENAI_API_KEY;
+            process.env.OPENAI_API_KEY = 'present-for-static-probe';
 
             const contributes = resolveBuiltInContributions();
             const codexAgent = contributes.agents.find((agent) => agent.id === 'codex');
             const spec = await codexAgent?.catalogEntry?.getCliAuthSpec?.();
 
             expect(spec?.binaryNames).toEqual(['codex']);
-            await expect(spec?.detectAuthStatus?.({ resolvedPath: scriptPath })).resolves.toMatchObject({
+            await expect(spec?.detectAuthStatus?.({ resolvedPath: '/unused' })).resolves.toMatchObject({
                 state: 'logged_in',
-                method: 'oauth_cli',
-                source: 'command',
-                accountLabel: 'projected-codex@example.test',
+                method: 'api_key_env',
+                source: 'env',
             });
-            await expect(readFile(capturePath, 'utf8')).resolves.toBe(JSON.stringify({ args: ['login', 'status'] }));
         } finally {
-            for (const [key, value] of Object.entries(originalEnv)) {
-                if (value === undefined) {
-                    delete process.env[key];
-                } else {
-                    process.env[key] = value;
-                }
+            if (originalOpenAiApiKey === undefined) {
+                delete process.env.OPENAI_API_KEY;
+            } else {
+                process.env.OPENAI_API_KEY = originalOpenAiApiKey;
             }
-            await rm(root, { recursive: true, force: true });
         }
     });
 
@@ -742,19 +681,8 @@ describe('resolveBuiltInContributions', () => {
     }));
   });
 
-  it('projects Kiro through bundled plugin metadata and routes its command through the common backend session launcher', async () => {
+  it('projects Kiro through public bundled metadata while leaving executable auth to activation', async () => {
     runBackendSessionCliCommandMock.mockClear();
-    const dir = await mkdtemp(join(tmpdir(), 'happier-kiro-plugin-auth-'));
-    const scriptPath = join(dir, process.platform === 'win32' ? 'kiro-cli.cmd' : 'kiro-cli');
-    await writeFile(
-      scriptPath,
-      process.platform === 'win32'
-        ? '@echo off\r\nif "%1"=="whoami" if "%2"=="--format" if "%3"=="json" echo {"email":"plugin-kiro@example.com"}\r\n'
-        : '#!/bin/sh\nif [ "$1" = "whoami" ] && [ "$2" = "--format" ] && [ "$3" = "json" ]; then printf \'{"email":"plugin-kiro@example.com"}\'; fi\n',
-      'utf8',
-    );
-    await chmod(scriptPath, 0o755);
-
     const contributes = resolveBuiltInContributions();
     const kiroAgent = contributes.agents.find((agent) => agent.id === 'kiro');
     const kiroActivationTarget = contributes.activationTargets?.find((target) => target.pluginId === 'happier.agent.kiro');
@@ -801,13 +729,8 @@ describe('resolveBuiltInContributions', () => {
       },
     });
     expect(handler).toBeTypeOf('function');
-    expect(authSpec?.detectAuthStatus).toBeTypeOf('function');
-    await expect(authSpec?.detectAuthStatus?.({ resolvedPath: scriptPath })).resolves.toMatchObject({
-      state: 'logged_in',
-      method: 'oauth_cli',
-      source: 'command',
-      accountLabel: 'plugin-kiro@example.com',
-    });
+    expect(authSpec?.binaryNames).toEqual(['kiro-cli']);
+    expect(authSpec?.detectAuthStatus).toBeUndefined();
 
     await handler?.({
       args: ['kiro', '--model', 'default'],
@@ -818,12 +741,11 @@ describe('resolveBuiltInContributions', () => {
     expect(runBackendSessionCliCommandMock).toHaveBeenCalledWith(expect.objectContaining({
       backendIdForSessionRuntime: 'kiro',
       agentIdForAccountSettings: 'kiro',
+      runtimeAuthorityAgentId: 'kiro',
     }));
-
-    await rm(dir, { recursive: true, force: true });
   });
 
-  it('projects Codex CLI session command descriptors from the plugin runtime contribution', async () => {
+  it('keeps Codex activation-owned CLI session options out of cold manifest projection', async () => {
     runBackendSessionCliCommandMock.mockClear();
     const contributes = resolveBuiltInContributions();
     const codexAgent = contributes.agents.find((agent) => agent.id === 'codex');
@@ -839,33 +761,18 @@ describe('resolveBuiltInContributions', () => {
     expect(runBackendSessionCliCommandMock).toHaveBeenCalledWith(expect.objectContaining({
       backendIdForSessionRuntime: 'codex',
       agentIdForAccountSettings: 'codex',
-      directoryFlags: ['-C', '--cd'],
-      forwardModelFlag: true,
-      versionFlags: ['-V', '--version'],
+      runtimeAuthorityAgentId: 'codex',
       isExplicitCliSubcommand: true,
     }));
     const call = runBackendSessionCliCommandMock.mock.calls.at(-1)?.[0] as Record<string, unknown> | undefined;
+    expect(call).not.toHaveProperty('directoryFlags');
+    expect(call).not.toHaveProperty('forwardModelFlag');
+    expect(call).not.toHaveProperty('versionFlags');
     expect(call).not.toHaveProperty('resolveExtraOptions');
-    expect(codexAgent?.catalogEntry?.resolveSessionRuntimePreferences?.({
-      isExplicitCliSubcommand: true,
-      parsed: {
-        startingMode: 'remote',
-        directory: '/workspace',
-        agentArgs: ['exec', '--model', 'gpt-5.1-codex-max'],
-      },
-      settings: { codexBackendMode: 'appServer' },
-      pluginSettings: {},
-      environment: {},
-      startOrigin: 'terminal',
-    })).toEqual({
-      startingMode: 'remote',
-      directory: '/workspace',
-      codexArgs: ['exec', '--model', 'gpt-5.1-codex-max'],
-      codexBackendMode: 'appServer',
-    });
+    expect(codexAgent?.catalogEntry).not.toHaveProperty('resolveSessionRuntimePreferences');
   });
 
-  it('projects Claude CLI session command descriptors from the canonical Agent registration', async () => {
+  it('keeps Claude activation-owned CLI session options out of cold manifest projection', async () => {
     runBackendSessionCliCommandMock.mockClear();
     const contributes = resolveBuiltInContributions();
     const claudeAgent = contributes.agents.find((agent) => agent.id === 'claude');
@@ -881,52 +788,19 @@ describe('resolveBuiltInContributions', () => {
     expect(runBackendSessionCliCommandMock).toHaveBeenCalledWith(expect.objectContaining({
       backendIdForSessionRuntime: 'claude',
       agentIdForAccountSettings: 'claude',
-      directoryFlags: ['-C', '--cd'],
-      forwardModelFlag: true,
-      yoloProviderArgs: ['--dangerously-skip-permissions'],
-      versionFlags: ['-v', '--version'],
+      runtimeAuthorityAgentId: 'claude',
       isExplicitCliSubcommand: true,
     }));
     const call = runBackendSessionCliCommandMock.mock.calls.at(-1)?.[0] as Record<string, unknown> | undefined;
+    expect(call).not.toHaveProperty('directoryFlags');
+    expect(call).not.toHaveProperty('forwardModelFlag');
+    expect(call).not.toHaveProperty('yoloProviderArgs');
+    expect(call).not.toHaveProperty('versionFlags');
     expect(call).not.toHaveProperty('resolveExtraOptions');
-    expect(claudeAgent?.catalogEntry?.resolveSessionRuntimePreferences?.({
-      isExplicitCliSubcommand: true,
-      parsed: {
-        startingMode: 'terminal',
-        directory: '/workspace',
-        resume: 'vendor-session-1',
-        agentArgs: ['--model', 'claude-opus-4-6', '--js-runtime', 'bun'],
-      },
-      settings: { claudeUnifiedTerminalResumeChoice: 'ask_every_time' },
-      pluginSettings: {},
-      environment: {},
-      startOrigin: 'terminal',
-    })).toEqual({
-      startingMode: 'terminal',
-      directory: '/workspace',
-      jsRuntime: 'bun',
-      resume: undefined,
-      claudeArgs: ['--model', 'claude-opus-4-6', '--resume', 'vendor-session-1'],
-      claudeUnifiedTerminalResumeChoice: 'ask_every_time',
-    });
-
-    expect(claudeAgent?.catalogEntry?.resolveSessionRuntimePreferences?.({
-      isExplicitCliSubcommand: false,
-      parsed: {
-        resume: 'session_happy_123',
-        agentArgs: ['--model', 'claude-opus-4-6'],
-      },
-      settings: {},
-      pluginSettings: {},
-      environment: {},
-      startOrigin: 'terminal',
-    })).toEqual({
-      claudeArgs: ['--model', 'claude-opus-4-6'],
-      claudeUnifiedTerminalResumeChoice: 'ask_every_time',
-    });
+    expect(claudeAgent?.catalogEntry).not.toHaveProperty('resolveSessionRuntimePreferences');
   });
 
-  it('projects OpenCode Agent-native info command prefixes from the plugin runtime contribution', async () => {
+  it('keeps OpenCode activation-owned info command prefixes out of cold manifest projection', async () => {
     runBackendSessionCliCommandMock.mockClear();
     const contributes = resolveBuiltInContributions();
     const opencodeAgent = contributes.agents.find((agent) => agent.id === 'opencode');
@@ -942,11 +816,12 @@ describe('resolveBuiltInContributions', () => {
     expect(runBackendSessionCliCommandMock).toHaveBeenCalledWith(expect.objectContaining({
       backendIdForSessionRuntime: 'opencode',
       agentIdForAccountSettings: 'opencode',
-      providerInfoCommandPrefixes: [['providers', 'list']],
+      runtimeAuthorityAgentId: 'opencode',
     }));
+    expect(runBackendSessionCliCommandMock.mock.calls.at(-1)?.[0]).not.toHaveProperty('providerInfoCommandPrefixes');
   });
 
-  it('projects Antigravity Agent-native model info command prefix from the plugin runtime contribution', async () => {
+  it('keeps Antigravity activation-owned model command prefixes out of cold manifest projection', async () => {
     runBackendSessionCliCommandMock.mockClear();
     const contributes = resolveBuiltInContributions();
     const antigravityAgent = contributes.agents.find((agent) => agent.id === 'antigravity');
@@ -962,8 +837,9 @@ describe('resolveBuiltInContributions', () => {
     expect(runBackendSessionCliCommandMock).toHaveBeenCalledWith(expect.objectContaining({
       backendIdForSessionRuntime: 'antigravity',
       agentIdForAccountSettings: 'antigravity',
-      providerInfoCommandPrefixes: [['models']],
+      runtimeAuthorityAgentId: 'antigravity',
     }));
+    expect(runBackendSessionCliCommandMock.mock.calls.at(-1)?.[0]).not.toHaveProperty('providerInfoCommandPrefixes');
   });
 
   it.each([
@@ -1124,7 +1000,7 @@ describe('resolveBuiltInContributions', () => {
     expect(piAgent).not.toHaveProperty('getRuntimeCore');
     expect(piAgent).not.toHaveProperty('acpDefinition');
     expect(piAgent).not.toHaveProperty('mcpDefinition');
-    expect(piAgent?.catalogEntry?.getPreflightSessionControlsProbeAdapter).toBeTypeOf('function');
+    expect(piAgent?.catalogEntry).not.toHaveProperty('getPreflightSessionControlsProbeAdapter');
     expect(piActivationTarget).toMatchObject({
       pluginId: 'happier.agent.pi',
       manifestPath: 'bundled:happier.agent.pi',
@@ -1219,35 +1095,35 @@ describe('resolveBuiltInContributions', () => {
       };
     }
 
-    // Every Session Agent — bundled or installed — reaches the same declared-CLI
-    // projection. `coderabbit`/`deepsec` are execution-run Agents with no Session
-    // CLI surface, so they carry no CLI detect/auth hooks at all.
+    // Cold discovery projects only host-owned manifest CLI facts. Executable
+    // status parsers remain activation-time contributions for bundled and
+    // installed Agents alike.
     expect(projected).toEqual({
       antigravity: { loginStatusArgs: null, binaryNames: ['agy'], hasProbe: false },
-      auggie: { loginStatusArgs: null, binaryNames: ['auggie'], hasProbe: true },
+      auggie: { loginStatusArgs: null, binaryNames: ['auggie'], hasProbe: false },
       claude: { loginStatusArgs: null, binaryNames: ['claude'], hasProbe: true },
-      codex: { loginStatusArgs: ['login', 'status'], binaryNames: ['codex'], hasProbe: true },
-      coderabbit: null,
+      codex: { loginStatusArgs: null, binaryNames: ['codex'], hasProbe: true },
+      coderabbit: { loginStatusArgs: null, binaryNames: ['coderabbit'], hasProbe: true },
       copilot: { loginStatusArgs: null, binaryNames: ['copilot'], hasProbe: true },
       cursor: {
-        loginStatusArgs: ['about', '--format', 'json'],
+        loginStatusArgs: null,
         binaryNames: ['cursor-agent', 'agent'],
         hasProbe: true,
       },
-      deepsec: null,
+      deepsec: { loginStatusArgs: null, binaryNames: ['deepsec'], hasProbe: true },
       gemini: { loginStatusArgs: null, binaryNames: ['gemini'], hasProbe: true },
       grok: { loginStatusArgs: null, binaryNames: ['grok'], hasProbe: true },
-      kilo: { loginStatusArgs: null, binaryNames: ['kilo'], hasProbe: true },
-      kimi: { loginStatusArgs: null, binaryNames: ['kimi'], hasProbe: true },
+      kilo: { loginStatusArgs: null, binaryNames: ['kilo'], hasProbe: false },
+      kimi: { loginStatusArgs: null, binaryNames: ['kimi'], hasProbe: false },
       kiro: {
-        loginStatusArgs: ['whoami', '--format', 'json'],
+        loginStatusArgs: null,
         binaryNames: ['kiro-cli'],
-        hasProbe: true,
+        hasProbe: false,
       },
       ohMyPi: { loginStatusArgs: null, binaryNames: ['omp'], hasProbe: true },
-      opencode: { loginStatusArgs: ['auth', 'list'], binaryNames: ['opencode'], hasProbe: true },
+      opencode: { loginStatusArgs: null, binaryNames: ['opencode'], hasProbe: false },
       pi: { loginStatusArgs: null, binaryNames: ['pi'], hasProbe: true },
-      qwen: { loginStatusArgs: null, binaryNames: ['qwen'], hasProbe: true },
+      qwen: { loginStatusArgs: null, binaryNames: ['qwen'], hasProbe: false },
     });
   });
 });

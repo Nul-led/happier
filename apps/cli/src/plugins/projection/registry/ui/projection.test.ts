@@ -813,6 +813,7 @@ describe('plugin UI projection family', () => {
             pluginId: 'acme.triage',
             contributionKind: 'searchProvider',
             descriptorId: 'entries',
+            identity: { pluginId: 'acme.triage', localId: 'entries' },
             action: { pluginId: 'acme.triage', localId: 'entries/search-v1' },
         });
     });
@@ -1123,7 +1124,8 @@ describe('plugin UI projection family', () => {
         });
         const entries = projection.familiesById.pluginUi?.entriesById ?? {};
 
-        expect(entries['reactNativeBundle:acme.generated-rnw:panel-renderer']).toMatchObject({
+        const reactNativeEntry = entries['reactNativeBundle:acme.generated-rnw:panel-renderer'];
+        expect(reactNativeEntry).toMatchObject({
             pluginId: 'acme.generated-rnw',
             contributionKind: 'reactNativeBundle',
             contributionId: 'panel-renderer',
@@ -1142,8 +1144,10 @@ describe('plugin UI projection family', () => {
                 loadPolicy: { source: 'installedArtifact' },
             },
         });
-        expect(entries['reactNativeBundle:acme.generated-rnw:panel-renderer']?.artifactGraph)
-            .toEqual(generatedArtifact);
+        if (!reactNativeEntry || !('artifactGraph' in reactNativeEntry)) {
+            throw new Error('React Native projection omitted its artifact graph');
+        }
+        expect(reactNativeEntry?.artifactGraph).toEqual(generatedArtifact);
         expect(entries['surfacePlacement:acme.generated-rnw:panel']).toMatchObject({
             pluginId: 'acme.generated-rnw',
             contributionKind: 'surfacePlacement',
@@ -1201,7 +1205,8 @@ describe('plugin UI projection family', () => {
         });
         expect(entries['surfacePlacement:acme.generated-rnw:hosted-view'])
             .not.toHaveProperty('fallbackRenderers');
-        expect(entries['hostedWeb:acme.generated-rnw:hosted-renderer']).toMatchObject({
+        const hostedWebEntry = entries['hostedWeb:acme.generated-rnw:hosted-renderer'];
+        expect(hostedWebEntry).toMatchObject({
             pluginId: 'acme.generated-rnw',
             contributionKind: 'hostedWeb',
             contributionId: 'hosted-renderer',
@@ -1225,10 +1230,11 @@ describe('plugin UI projection family', () => {
                 },
             },
         });
-        expect(entries['hostedWeb:acme.generated-rnw:hosted-renderer'])
-            .not.toHaveProperty('runtimeMode');
-        expect(entries['hostedWeb:acme.generated-rnw:hosted-renderer']?.artifactGraph)
-            .toEqual(generatedHostedArtifact);
+        expect(hostedWebEntry).not.toHaveProperty('runtimeMode');
+        if (!hostedWebEntry || !('artifactGraph' in hostedWebEntry)) {
+            throw new Error('Hosted-Web projection omitted its artifact graph');
+        }
+        expect(hostedWebEntry?.artifactGraph).toEqual(generatedHostedArtifact);
 
         // A missing physical frame fact does not leave a renderer-local
         // unavailable terminal. The canonical surface-placement selector
@@ -1344,12 +1350,22 @@ describe('plugin UI projection family', () => {
             },
         });
         const entries = projection.familiesById.pluginUi?.entriesById ?? {};
+        const visibleEntry = entries['surfacePlacement:acme.declarative:visible-view'];
+        const hiddenEntry = entries['surfacePlacement:acme.declarative:hidden-view'];
+        const modellessEntry = entries['surfacePlacement:acme.declarative:modelless-view'];
+        if (
+            !visibleEntry || !('availability' in visibleEntry)
+            || !hiddenEntry || !('availability' in hiddenEntry)
+            || !modellessEntry || !('availability' in modellessEntry)
+        ) {
+            throw new Error('Surface-placement projection omitted availability');
+        }
 
-        expect(entries['surfacePlacement:acme.declarative:visible-view']?.availability)
+        expect(visibleEntry?.availability)
             .toMatchObject({ state: 'available', reason: 'available' });
-        expect(entries['surfacePlacement:acme.declarative:hidden-view']?.availability)
+        expect(hiddenEntry?.availability)
             .toMatchObject({ state: 'fallback', reason: 'declarative_model_hidden' });
-        expect(entries['surfacePlacement:acme.declarative:modelless-view']?.availability)
+        expect(modellessEntry?.availability)
             .toMatchObject({ state: 'fallback', reason: 'declarative_model_unavailable' });
 
         // The generic renderer-availability projector must not carry a second declarative

@@ -38,6 +38,46 @@ describe('plugin webhook claimed delivery worker', () => {
     vi.useRealTimers();
   });
 
+  it('dead-letters content that cannot be opened without marking execution started', async () => {
+    const renew = vi.fn();
+    const complete = vi.fn();
+    const fail = vi.fn(async () => ({ kind: 'settled' as const, state: 'dead_letter' as const }));
+    const execute = vi.fn();
+
+    await expect(processClaimedPluginWebhookDeliveryV1({
+      claim: {
+        kind: 'delivery',
+        deliveryId: 'delivery-content-unavailable',
+        endpoint: {
+          webhookEndpointId: 'wh_ep_AAECAwQFBgcICQoLDA0ODw',
+          revision: 3,
+          webhookContribution: { pluginId: 'acme.github', localId: 'github-events' },
+          handlerActionLocalId: 'handle-webhook',
+          sourceInstanceId: 'source-1',
+        },
+        attempt: 1,
+        replay: 0,
+        receivedAtMs: 1,
+        envelope: { t: 'encrypted', c: 'AA==' },
+        lease: { leaseId: 'lease-content-unavailable', revision: 7, firstClaimAtMs: 1, expiresAtMs: 120_000, maxClaimUntilMs: 600_000 },
+        pluginVersion: '1.0.0',
+        target,
+      },
+      credentials: { token: 'token', encryption: null },
+      transport: { renew, complete, fail },
+      execute,
+    })).resolves.toEqual({ kind: 'settled', state: 'dead_letter' });
+
+    expect(fail).toHaveBeenCalledWith(expect.objectContaining({
+      deliveryId: 'delivery-content-unavailable',
+      lease: { leaseId: 'lease-content-unavailable', revision: 7 },
+      result: { kind: 'deadLetter', code: 'content_unavailable' },
+    }));
+    expect(renew).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+    expect(complete).not.toHaveBeenCalled();
+  });
+
   it('marks execution started, dispatches the same-plugin Action, and settles only with the renewed lease revision', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);

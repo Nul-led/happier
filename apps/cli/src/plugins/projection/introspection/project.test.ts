@@ -40,6 +40,22 @@ describe('plugin contribution lifecycle introspection', () => {
       code: 'target_absent',
       severity: 'error',
     }, context))).toBe('target_absent');
+
+    expect(readPluginDiagnosticDisplayMessage(enrichPluginDiagnosticRecord({
+      code: 'point_absent',
+      severity: 'error',
+      message: 'Targeted contribution admission rejected.',
+      details: {
+        target: { pluginId: 'happier.channels', pointId: 'providers' },
+        contributor: { pluginId: 'acme.discord', contributionId: 'discord' },
+        protocol: { id: 'happier.channels/providers', version: 1 },
+        reason: 'point_absent',
+      },
+    }, context))).toBe(
+      'Targeted contribution admission rejected. '
+      + '[contributor acme.discord/discord; target happier.channels/providers; '
+      + 'protocol happier.channels/providers@1; reason point_absent]',
+    );
   });
 
   it('preserves an author source location while re-redacting a published diagnostic record', () => {

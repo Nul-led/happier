@@ -325,6 +325,10 @@ function projectSearchProviders(
             pluginId,
             contributionKind: 'searchProvider',
             descriptorId: definition.id,
+            identity: Object.freeze({
+                pluginId: contribution.identity.pluginId,
+                localId: contribution.identity.localId,
+            }),
             // The descriptor spells a same-plugin local id; the qualified
             // identity is resolved here, once, so no consumer re-qualifies it.
             action: Object.freeze({ pluginId, localId: definition.action }),

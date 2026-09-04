@@ -131,7 +131,25 @@ export function enrichPluginDiagnosticRecord(
 export function readPluginDiagnosticDisplayMessage(
   diagnostic: PluginDiagnosticRecordV1,
 ): string {
-  return diagnostic.data.message ?? diagnostic.data.code;
+  const message = diagnostic.data.message ?? diagnostic.data.code;
+  const details = diagnostic.data.details;
+  if (!details || typeof details !== 'object' || Array.isArray(details)) return message;
+  const target = details.target;
+  const contributor = details.contributor;
+  const protocol = details.protocol;
+  if (
+    !target || typeof target !== 'object' || Array.isArray(target)
+    || !contributor || typeof contributor !== 'object' || Array.isArray(contributor)
+    || !protocol || typeof protocol !== 'object' || Array.isArray(protocol)
+    || typeof target.pluginId !== 'string'
+    || typeof target.pointId !== 'string'
+    || typeof contributor.pluginId !== 'string'
+    || typeof contributor.contributionId !== 'string'
+    || typeof protocol.id !== 'string'
+    || typeof protocol.version !== 'number'
+    || typeof details.reason !== 'string'
+  ) return message;
+  return `${message} [contributor ${contributor.pluginId}/${contributor.contributionId}; target ${target.pluginId}/${target.pointId}; protocol ${protocol.id}@${protocol.version}; reason ${details.reason}]`;
 }
 
 /**

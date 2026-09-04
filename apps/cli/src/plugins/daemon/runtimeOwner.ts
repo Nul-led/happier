@@ -57,6 +57,7 @@ import type { CliServerFeaturesSnapshot } from '@/features/featureDecisionServic
 import type { CurrentMachineExecutionOriginContext } from '@/api/machine/resolveCurrentMachineExecutionOriginContext';
 import type { RpcHandlerInvoker } from '@/api/rpc/types';
 import type { ResolveSessionResourceAccess } from '@/plugins/runtime/invocation/services/resources';
+import type { PluginGenerationCustodyRetirementRemoteDependencies } from '@/plugins/store/registry/generationCustodyRetirement';
 
 /** One author-readable reason per cold-start readiness step a plugin can fail. */
 const COLD_START_READINESS_STAGE_REASONS = Object.freeze({
@@ -150,6 +151,8 @@ export function createDaemonPluginRuntimeOwner(params: Readonly<{
   availabilityReporter?: DaemonPluginAvailabilityReporter;
   /** Explicit operator recovery: external installed plugin code is not executed. */
   startupMode?: 'normal' | 'pluginRecovery';
+  /** Authenticated server boundary used by registry generation retirement. */
+  generationCustodyRetirement?: PluginGenerationCustodyRetirementRemoteDependencies;
 }>): DaemonPluginRuntimeOwner {
   // The controller owns this stable target-local observer across cold startup
   // and prepared registry replacement. Runtime construction only consumes it.
@@ -283,16 +286,25 @@ export function createDaemonPluginRuntimeOwner(params: Readonly<{
     happyHomeDir: params.happyHomeDir,
     runtimeLifecycle,
     onRegistryApplied,
+    ...(params.generationCustodyRetirement
+      ? { generationCustodyRetirement: params.generationCustodyRetirement }
+      : {}),
   });
   const prepareNpm = createDaemonNpmPluginChangePreparer({
     happyHomeDir: params.happyHomeDir,
     runtimeLifecycle,
     onRegistryApplied,
+    ...(params.generationCustodyRetirement
+      ? { generationCustodyRetirement: params.generationCustodyRetirement }
+      : {}),
   });
   const prepareArchive = createDaemonArchivePluginChangePreparer({
     happyHomeDir: params.happyHomeDir,
     runtimeLifecycle,
     onRegistryApplied,
+    ...(params.generationCustodyRetirement
+      ? { generationCustodyRetirement: params.generationCustodyRetirement }
+      : {}),
   });
   const changeService = createDaemonPluginChangeService({
     prepare: async (request) => {

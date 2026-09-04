@@ -15,7 +15,7 @@ import { resolvePortablePluginRelativePath } from '@/plugins/manifest/portableRe
 import type { ValidatedAgentSessionRunnerFactoryFactV1 } from '@/plugins/runtime/activationSources';
 import { isCanonicalAbsolutePathInsideRoot as isPathInsideRoot } from '@/utils/path/expandHomeDirPath';
 import { writePluginDaemonOutputManifest } from './daemonOutputManifest';
-import { realpathNearestExistingAncestor } from './physicalAncestorPath';
+import { realpathNearestExistingAncestor } from '@/utils/path/physicalAncestorPath';
 import { resolveSameInstallNodeModulesRoot } from './packageInstallationRoot';
 import {
   assertPluginDaemonEntryOutsideTypeScriptEmit,

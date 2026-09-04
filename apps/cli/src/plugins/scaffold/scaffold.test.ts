@@ -738,9 +738,9 @@ describe('scaffoldLocalPlugin',
     // acknowledged subscription and its Action request, otherwise a retired
     // frame can leave an establishment or mutation running against an obsolete
     // generation.
-    expect(uiSource).toContain(
-      'await context.hostApi.watchContext((surface) => { render(root, surface); }, { signal: context.signal });',
-    );
+    expect(uiSource).toContain('currentSurface = surface;');
+    expect(uiSource).toContain('renderStatus(root, currentStatus, currentSurface);');
+    expect(uiSource).toContain('}, { signal: context.signal });');
     expect(uiSource).toContain(
       "await context.hostApi.executeAction('save-note', { note: 'hello' }, { signal: context.signal });",
     );

@@ -131,6 +131,14 @@ describe('CLI scaffold development flow', () => {
             adopt: async () => reportAdoptedCandidateGenerations(candidate),
           }),
         },
+        generationCustodyRetirement: {
+          readCredentials: async () => ({
+            token: 'scaffold-canary-token',
+            encryption: { type: 'legacy', secret: new Uint8Array(32).fill(7) },
+          }),
+          retireGeneration: async () => undefined,
+          readRunnerRetainedGenerationIds: async () => new Set(),
+        },
         runManagedPluginPnpm,
       }),
       createPendingChangeId: () => `pending-${packageManagerCalls.length}`,
@@ -610,6 +618,7 @@ describe('CLI scaffold development flow', () => {
       };
       expect(packageJson.dependencies?.['@happier-dev/plugin-sdk']).toBe('0.0.0');
       await expect(lstat(join(targetDir, 'pnpm-workspace.yaml'))).rejects.toMatchObject({ code: 'ENOENT' });
+      const canonicalTargetDir = await realpath(targetDir);
 
       const devController = new AbortController();
       const devOutput = captureConsoleText();
@@ -658,7 +667,7 @@ describe('CLI scaffold development flow', () => {
       // Cold development prepares the author root once. The daemon separately
       // prepares its isolated candidate copy; focused typecheck/build/test and
       // doctor must not reinstall the root the author is editing.
-      expect(managedPnpmCalls.filter((call) => call.cwd === targetDir)).toHaveLength(1);
+      expect(managedPnpmCalls.filter((call) => call.cwd === canonicalTargetDir)).toHaveLength(1);
       await expect(lstat(join(targetDir, 'pnpm-workspace.yaml'))).rejects.toMatchObject({ code: 'ENOENT' });
       for (const materializedSdkRoot of materializedSdkRoots) {
         await expect(lstat(materializedSdkRoot)).rejects.toMatchObject({ code: 'ENOENT' });

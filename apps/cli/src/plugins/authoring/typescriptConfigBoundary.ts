@@ -4,7 +4,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { TsconfigRaw } from 'esbuild';
 import ts from 'typescript';
 import { isCanonicalAbsolutePathInsideRoot } from '@/utils/path/expandHomeDirPath';
-import { realpathNearestExistingAncestor } from './physicalAncestorPath';
+import { realpathNearestExistingAncestor } from '@/utils/path/physicalAncestorPath';
 
 function formatConfigDiagnostics(diagnostics: readonly ts.Diagnostic[]): string {
   return diagnostics.map((diagnostic) => ts.flattenDiagnosticMessageText(diagnostic.messageText, ' ')).join('; ');

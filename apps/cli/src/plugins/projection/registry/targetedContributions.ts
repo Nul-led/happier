@@ -181,9 +181,16 @@ function toPluginDiagnostic(
                 : { pluginId: diagnostic.contributorPluginId, localId: diagnostic.contributionId },
         ),
         details: Object.freeze({
-            targetPluginId: diagnostic.targetPluginId,
-            pointId: diagnostic.pointId,
+            target: Object.freeze({
+                pluginId: diagnostic.targetPluginId,
+                pointId: diagnostic.pointId,
+            }),
+            contributor: Object.freeze({
+                pluginId: diagnostic.contributorPluginId,
+                contributionId: diagnostic.contributionId,
+            }),
             protocol: diagnostic.protocol,
+            reason: diagnostic.code,
         }),
     });
 }
@@ -530,9 +537,24 @@ export function resolveAdmittedTargetedContributions(params: Readonly<{
                 continue;
             }
         }
+        let normalizedDescriptor: JsonValue | undefined;
         if (definition.descriptor !== undefined) {
             if (pointProtocol.descriptor === undefined) {
                 oneDiagnostic(diagnostics, candidate.declaration, 'descriptor_unsupported');
+                continue;
+            }
+            // The target's executable parser owns descriptor semantics and
+            // normalization. The emitted schema then confirms projection parity
+            // over that normalized output; it is not a pre-parser gate, which
+            // would mask the parser-owned diagnostic and admit a value the
+            // exact generation never validated.
+            const parsed = semanticSchemas?.descriptor?.safeParse(definition.descriptor);
+            if (!parsed?.success) {
+                oneSemanticDiagnostic(
+                    diagnostics,
+                    candidate.declaration,
+                    'descriptor_semantic_invalid',
+                );
                 continue;
             }
             const descriptorValidation = prepareDescriptorValidation(
@@ -540,10 +562,11 @@ export function resolveAdmittedTargetedContributions(params: Readonly<{
                 pointProtocol,
             );
             if (!descriptorValidation
-                || !isValidPluginJsonSchemaValue(descriptorValidation.validate, definition.descriptor)) {
+                || !isValidPluginJsonSchemaValue(descriptorValidation.validate, parsed.data)) {
                 oneDiagnostic(diagnostics, candidate.declaration, 'descriptor_invalid');
                 continue;
             }
+            normalizedDescriptor = parsed.data;
         } else if (pointProtocol.descriptor !== undefined) {
             // Declaring a descriptor schema IS the requirement: the protocol
             // carries no optionality flag, so an omitted descriptor is as
@@ -650,19 +673,6 @@ export function resolveAdmittedTargetedContributions(params: Readonly<{
         }
         let semanticProjection: TargetSemanticProjection | undefined;
         if (needsTargetSemanticProjection) {
-            let descriptor: JsonValue | undefined;
-            if (definition.descriptor !== undefined) {
-                const parsed = semanticSchemas?.descriptor?.safeParse(definition.descriptor);
-                if (!parsed?.success) {
-                    oneSemanticDiagnostic(
-                        diagnostics,
-                        candidate.declaration,
-                        'descriptor_semantic_invalid',
-                    );
-                    continue;
-                }
-                descriptor = parsed.data;
-            }
             const surfaceRoles = new Set(surfaces.map((surface) => surface.role));
             const declaredSurfaceRoles = new Map(
                 semanticSchemas?.surfaces.map((surface) => [surface.role, surface]) ?? [],
@@ -678,7 +688,7 @@ export function resolveAdmittedTargetedContributions(params: Readonly<{
                 continue;
             }
             semanticProjection = Object.freeze({
-                ...(descriptor === undefined ? {} : { descriptor }),
+                ...(normalizedDescriptor === undefined ? {} : { descriptor: normalizedDescriptor }),
                 operations: semanticSchemas?.operations ?? [],
                 surfaces: (semanticSchemas?.surfaces ?? []).filter((surface) => surfaceRoles.has(surface.role)),
             });

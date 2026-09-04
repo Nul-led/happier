@@ -197,11 +197,6 @@ async function writeExternalSessionsPlugin(input: Readonly<{
                                             name: 'connectedServiceGroupId',
                                             optional: true,
                                         },
-                                        {
-                                            kind: 'string',
-                                            name: 'homePath',
-                                            optional: true,
-                                        },
                                     ],
                                 },
                                 key: {
@@ -230,10 +225,6 @@ async function writeExternalSessionsPlugin(input: Readonly<{
                                                 field: 'home',
                                                 equals: 'connectedService',
                                             },
-                                        },
-                                        {
-                                            kind: 'field',
-                                            field: 'homePath',
                                         },
                                     ],
                                 },
@@ -402,10 +393,16 @@ ${input.backgroundProbeOutputPath ? `    api.backgroundServices.register(
                 JSON.stringify(result),
                 'utf8',
             );
+            await new Promise((resolve) => {
+                if (context.signal.aborted) {
+                    resolve();
+                    return;
+                }
+                context.signal.addEventListener('abort', resolve, { once: true });
+            });
         },
     );
 ` : ''}}
-}
 `,
         'utf8',
     );
@@ -898,7 +895,6 @@ describe('current global External Sessions publication', () => {
                         remoteSessionId: 'current-H',
                     }));
             });
-
             // The same generic binding still preserves the retained Agent
             // caller route; its contribution identity remains Agent-qualified.
             const createCurrent = registry
@@ -984,7 +980,7 @@ describe('current global External Sessions publication', () => {
                 await expect(readFile(backgroundProbeOutputPath, 'utf8')).resolves
                     .toBe(JSON.stringify({
                         status: 'unavailable',
-                        code: 'plugin_services_current_global_unavailable',
+                        code: 'plugin_service_unavailable',
                     }));
             });
         } finally {

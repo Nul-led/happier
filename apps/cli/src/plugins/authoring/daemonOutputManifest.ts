@@ -16,7 +16,7 @@ import {
 } from 'node:path';
 
 import { isCanonicalAbsolutePathInsideRoot } from '@/utils/path/expandHomeDirPath';
-import { realpathNearestExistingAncestor } from './physicalAncestorPath';
+import { realpathNearestExistingAncestor } from '@/utils/path/physicalAncestorPath';
 
 /**
  * The authoring bundler is the owner of this small transition record. It is

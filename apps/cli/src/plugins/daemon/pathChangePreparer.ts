@@ -11,6 +11,7 @@ import {
   type PluginRegistryRuntimeLifecycle,
 } from '@/plugins/store/registry/currentState';
 import type { PluginRegistryCommitRecord } from '@/plugins/store/registry/commitRecord';
+import type { PluginGenerationCustodyRetirementRemoteDependencies } from '@/plugins/store/registry/generationCustodyRetirement';
 import {
   prepareOwnedImmutablePluginGeneration,
   prepareOwnedPluginDevelopmentGeneration,
@@ -217,7 +218,19 @@ export function createDaemonPathPluginChangePreparer(params: Readonly<{
   runManagedPluginPnpm?: RunManagedPluginPnpmBoundary;
   runPluginUiArtifactBuild?: RunPluginUiArtifactBuildBoundary;
   removePluginDataDirectory?: (directoryPath: string) => Promise<void>;
+  generationCustodyRetirement?: PluginGenerationCustodyRetirementRemoteDependencies;
 }>): (request: PluginChangeRequest) => Promise<PreparedDaemonPluginChange> {
+  const createMutationStore = (
+    onApplied?: (record: PluginRegistryCommitRecord) => void,
+  ) => createPluginRegistryStateStore({
+    happyHomeDir: params.happyHomeDir,
+    runtimeLifecycle: params.runtimeLifecycle,
+    ...(params.generationCustodyRetirement
+      ? { generationCustodyRetirement: params.generationCustodyRetirement }
+      : {}),
+    ...(onApplied ? { onApplied } : {}),
+  });
+
   const prepare = async (
     request: InternalPluginChangeRequest,
   ): Promise<PreparedDaemonPluginChange> => {
@@ -335,10 +348,7 @@ export function createDaemonPathPluginChangePreparer(params: Readonly<{
       || request.kind === 'setUpdatePolicy'
     ) {
       const stateRequest = request;
-      const store = createPluginRegistryStateStore({
-        happyHomeDir: params.happyHomeDir,
-        runtimeLifecycle: params.runtimeLifecycle,
-      });
+      const store = createMutationStore();
       const existing = (await store.read()).plugins[stateRequest.pluginId];
       const allowsAlreadyAbsent = stateRequest.kind === 'uninstallAndDeleteData' && !existing;
       if (!existing && !allowsAlreadyAbsent) throw new Error(`Unknown plugin id: ${stateRequest.pluginId}`);
@@ -397,15 +407,11 @@ export function createDaemonPathPluginChangePreparer(params: Readonly<{
         pluginId: stateRequest.pluginId,
         requiresReview: false,
         async apply(_decision, control) {
-          const store = createPluginRegistryStateStore({
-            happyHomeDir: params.happyHomeDir,
-            runtimeLifecycle: params.runtimeLifecycle,
-            onApplied: (record) => {
-              // Ordinary registry changes may release after the serving swap.
-              // Destructive uninstall keeps exclusion through both owned-directory steps.
-              if (stateRequest.kind !== 'uninstallAndDeleteData') control?.onApplied();
-              params.onRegistryApplied?.(record);
-            },
+          const store = createMutationStore((record) => {
+            // Ordinary registry changes may release after the serving swap.
+            // Destructive uninstall keeps exclusion through both owned-directory steps.
+            if (stateRequest.kind !== 'uninstallAndDeleteData') control?.onApplied();
+            params.onRegistryApplied?.(record);
           });
           const generationBeforeMutation = (
             await readCurrentCommittedPluginGenerations(resolvePluginStorePaths({
@@ -898,13 +904,9 @@ export function createDaemonPathPluginChangePreparer(params: Readonly<{
             },
             state: { enabled: true, lastLoadedAtMs: Date.now(), lastError: null },
           };
-          const store = createPluginRegistryStateStore({
-            happyHomeDir: params.happyHomeDir,
-            runtimeLifecycle: params.runtimeLifecycle,
-            onApplied: (record) => {
-              control?.onApplied();
-              params.onRegistryApplied?.(record);
-            },
+          const store = createMutationStore((record) => {
+            control?.onApplied();
+            params.onRegistryApplied?.(record);
           });
           const transaction = await store.install({
             pluginId: manifest.id,

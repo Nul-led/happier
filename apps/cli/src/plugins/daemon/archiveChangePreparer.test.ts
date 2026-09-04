@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createTestNpmTarball } from '@/plugins/distribution/testkit/npmTarball';
 import { createPluginRegistryStateStore } from '@/plugins/store/registry/currentState';
+import type { PluginGenerationCustodyRetirementRemoteDependencies } from '@/plugins/store/registry/generationCustodyRetirement';
 import { readPluginRegistryCommitRecord } from '@/plugins/store/registry/commitRecord';
 import { resolvePluginStorePaths } from '@/plugins/store/paths';
 import { createPluginReloadController } from '@/plugins/runtime/reload/controller';
@@ -257,6 +258,34 @@ async function startArchiveServer(bytes: Buffer): Promise<Readonly<{
 }
 
 describe('createDaemonArchivePluginChangePreparer', () => {
+  it('uses supplied generation-custody retirement dependencies for the archive registry mutation', async () => {
+    const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-archive-retirement-dependencies-home-'));
+    roots.push(happyHomeDir);
+    const fixture = await createArchiveFixture();
+    const readRunnerRetainedGenerationIds = vi.fn(async () => new Set<string>());
+    const generationCustodyRetirement: PluginGenerationCustodyRetirementRemoteDependencies = {
+      readRunnerRetainedGenerationIds,
+    };
+    const service = createDaemonPluginChangeService({
+      prepare: createDaemonArchivePluginChangePreparer({
+        happyHomeDir,
+        runtimeLifecycle: {
+          prepare: async () => ({ abort: async () => undefined, adopt: async () => undefined }),
+        },
+        generationCustodyRetirement,
+      }),
+    });
+
+    const begun = await service.requestPluginChange({ kind: 'installArchive', locator: fixture.archivePath });
+    if (begun.kind !== 'reviewRequired') throw new Error('Expected archive installation review');
+    await expect(service.decidePluginChange({
+      pendingChangeId: begun.pendingChangeId,
+      decision: 'installAndTrust',
+    })).resolves.toMatchObject({ kind: 'committed', pluginId: 'acme.archive-candidate' });
+
+    expect(readRunnerRetainedGenerationIds).toHaveBeenCalled();
+  });
+
   it('adopts packed SCM backend and hosting runtimes through canonical owners and removes them when disabled', async () => {
     const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-archive-scm-runtime-home-'));
     roots.push(happyHomeDir);

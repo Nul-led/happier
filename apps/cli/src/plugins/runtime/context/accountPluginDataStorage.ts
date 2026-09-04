@@ -1635,6 +1635,12 @@ export function createAccountPluginDataStorageHost(params: Readonly<{
                             body: PluginCollectionGetRequestV1Schema.parse({
                                 pluginId: lifecycle.pluginId,
                                 collectionId: collection.contract.collectionId,
+                                readerContext: {
+                                    pluginId: collection.contract.pluginId,
+                                    collectionId: collection.contract.collectionId,
+                                    schemaVersion: collection.contract.schemaVersion,
+                                    contractDigest: collection.contract.contractDigest,
+                                },
                                 rowId: splitLogicalPut({
                                     collection,
                                     value: operation.value,
@@ -1830,6 +1836,12 @@ export function createAccountPluginDataStorageHost(params: Readonly<{
                             requestBody = PluginCollectionGetRequestV1Schema.parse({
                                 pluginId: lifecycle.pluginId,
                                 collectionId: collection.contract.collectionId,
+                                readerContext: {
+                                    pluginId: collection.contract.pluginId,
+                                    collectionId: collection.contract.collectionId,
+                                    schemaVersion: collection.contract.schemaVersion,
+                                    contractDigest: collection.contract.contractDigest,
+                                },
                                 rowId,
                             });
                         } catch {
@@ -1917,6 +1929,12 @@ export function createAccountPluginDataStorageHost(params: Readonly<{
                             requestBody = PluginCollectionQueryRequestV1Schema.parse({
                                 pluginId: lifecycle.pluginId,
                                 collectionId: collection.contract.collectionId,
+                                readerContext: {
+                                    pluginId: collection.contract.pluginId,
+                                    collectionId: collection.contract.collectionId,
+                                    schemaVersion: collection.contract.schemaVersion,
+                                    contractDigest: collection.contract.contractDigest,
+                                },
                                 indexId: requestInput.index,
                                 prefix: requestInput.prefix ?? [],
                                 ...(requestInput.range ? { range: requestInput.range } : {}),

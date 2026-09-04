@@ -4,7 +4,7 @@ import {
   type PluginCompatibilityProjectionV1,
 } from '@happier-dev/protocol';
 
-import { validatePluginManifest } from '@/plugins/manifest/validate';
+import { ingestCanonicalPluginManifest } from '@/plugins/manifest/ingest';
 import { generatedUiArtifactDefaultHostCompatibilityFailure } from '@/plugins/projection/registry/ui/artifactCompatibility';
 import type { PluginCompatibilityDiagnostic } from '@/plugins/validation/diagnostics/types';
 
@@ -47,7 +47,7 @@ export function evaluatePluginCompatibilityProjection(
 
   // A compatibility projection only ever describes an acquirable published
   // artifact; nothing local reaches this evaluation.
-  const manifestValidation = validatePluginManifest(parsed.data.manifest, {
+  const manifestValidation = ingestCanonicalPluginManifest(parsed.data.manifest, {
     sourceProvenance: 'registryCustodied',
   });
   const projection = createPluginCompatibilityProjectionV1({

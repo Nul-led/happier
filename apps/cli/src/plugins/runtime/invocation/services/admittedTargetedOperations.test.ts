@@ -143,6 +143,10 @@ describe('admitted targeted-operation execution', () => {
                     fieldPath: 'credentialRef',
                     ref: account,
                 },
+                presentation: {
+                    connectedAccountLabel: 'Work account',
+                    machineDisplayName: 'Development Mac',
+                },
             },
         };
         const invokeContributedAction = vi.fn<InvokeContributedAction>(async () => ({
@@ -280,6 +284,10 @@ describe('admitted targeted-operation execution', () => {
                     kind: 'selected' as const,
                     fieldPath: 'credentialRef',
                     ref: account,
+                },
+                presentation: {
+                    connectedAccountLabel: 'Work account',
+                    machineDisplayName: 'Development Mac',
                 },
             },
         };

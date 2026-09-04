@@ -5,6 +5,7 @@ import {
   derivePluginDaemonContributionRegistrationRights,
   isReservedHappierPluginId,
   PluginManifestV2Schema,
+  validatePublicPluginManifestPolicy,
   type ParsedPluginManifestV2,
 } from '@happier-dev/protocol';
 
@@ -53,6 +54,16 @@ export function validatePluginManifest(input: unknown, options: PluginManifestVa
   const manifest = normalizeParsedPluginManifestV2(parsed.data);
   const diagnostics: PluginCompatibilityDiagnostic[] = [];
   const manifestAuthority = options.manifestAuthority ?? 'external';
+  // Bundled first-party manifests are internal Protocol consumers and retain
+  // the broad HostAccess union. Public authoring and installed/packed plugin
+  // paths use the shared policy; source-module authoring also invokes it
+  // explicitly because it intentionally bypasses this host validator.
+  if (manifestAuthority !== 'bundled_first_party') {
+    diagnostics.push(...validatePublicPluginManifestPolicy(parsed.data).map((diagnostic) => ({
+      code: 'plugin_manifest_semantic_invalid' as const,
+      message: diagnostic.message,
+    })));
+  }
   // The reserved namespace and the declared engine range are registry-lifecycle
   // rules: they exist because a published artifact's own metadata is an
   // unverifiable third-party claim. Neither describes a working tree on this

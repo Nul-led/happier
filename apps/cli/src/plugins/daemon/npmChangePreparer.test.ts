@@ -13,6 +13,7 @@ import {
   createPluginRegistryStateStore,
   type PluginRegistryRuntimeCandidate,
 } from '@/plugins/store/registry/currentState';
+import type { PluginGenerationCustodyRetirementRemoteDependencies } from '@/plugins/store/registry/generationCustodyRetirement';
 import { resolvePluginStorePaths } from '@/plugins/store/paths';
 import { createNpmRegistryProfileService } from '@/plugins/distribution/npm/profiles/service';
 import { createMarketplaceSourceRegistryStore } from '@/plugins/store/marketplace/sources/store';
@@ -455,6 +456,39 @@ async function requestCuratedUpdate(params: Readonly<{
 }
 
 describe('createDaemonNpmPluginChangePreparer', () => {
+  it('uses supplied generation-custody retirement dependencies for the npm registry mutation', async () => {
+    const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-npm-retirement-dependencies-home-'));
+    roots.push(happyHomeDir);
+    const fixture = await createNpmPackageFixture({ markerPath: join(happyHomeDir, 'never') });
+    const readRunnerRetainedGenerationIds = vi.fn(async () => new Set<string>());
+    const generationCustodyRetirement: PluginGenerationCustodyRetirementRemoteDependencies = {
+      readRunnerRetainedGenerationIds,
+    };
+    const service = createDaemonPluginChangeService({
+      prepare: createDaemonNpmPluginChangePreparer({
+        happyHomeDir,
+        runtimeLifecycle: {
+          prepare: async () => ({ abort: async () => undefined, adopt: async () => undefined }),
+        },
+        createClient: () => fixture.client,
+        generationCustodyRetirement,
+      }),
+    });
+
+    const begun = await service.requestPluginChange({
+      kind: 'installNpm',
+      packageName: fixture.packageName,
+      registryOrigin: 'https://registry.example.test',
+    });
+    if (begun.kind !== 'reviewRequired') throw new Error('Expected npm installation review');
+    await expect(service.decidePluginChange({
+      pendingChangeId: begun.pendingChangeId,
+      decision: 'installAndTrust',
+    })).resolves.toMatchObject({ kind: 'committed', pluginId: 'acme.npm-candidate' });
+
+    expect(readRunnerRetainedGenerationIds).toHaveBeenCalled();
+  });
+
   it('keeps credential-bearing npm tarball query data out of the serializable installation review', async () => {
     const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-npm-review-redaction-home-'));
     roots.push(happyHomeDir);

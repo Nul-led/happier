@@ -4,6 +4,7 @@ import { basename, dirname, extname, join, relative, resolve, sep } from 'node:p
 import {
   formatPluginManifestIngestionDiagnostics,
   ingestPluginManifestV2,
+  validatePublicPluginManifestPolicy,
   type ParsedPluginManifestV2,
 } from '@happier-dev/protocol';
 import {
@@ -235,6 +236,13 @@ export function projectPluginAuthorModule(
     throw new PluginAuthorSourceError(
       'plugin_author_manifest_invalid',
       `Plugin author manifest is invalid: ${invalidManifestMessage(manifestResult)}`,
+    );
+  }
+  const publicPolicyDiagnostics = validatePublicPluginManifestPolicy(manifestResult.manifest);
+  if (publicPolicyDiagnostics.length > 0) {
+    throw new PluginAuthorSourceError(
+      'plugin_author_manifest_invalid',
+      `Plugin author manifest is invalid: ${formatPluginManifestIngestionDiagnostics(publicPolicyDiagnostics)}`,
     );
   }
   let daemonDatabases: PluginDaemonDatabaseRuntimeProjection;
