@@ -453,6 +453,8 @@ test('the plugin-sdk prepared-source profile validates emitted declarations with
 test('the plugin-ui profile detects a reachable emitted declaration drift even when source is unchanged', async () => {
   const root = await createEntrypointFixture();
   try {
+    const sourcePath = join(root, 'src/runtime.ts');
+    const sourceBeforeDeclarationDrift = await readFile(sourcePath, 'utf8');
     const written = await runApiGovernance({
       profileId: 'plugin-ui',
       packageRoot: root,
@@ -493,7 +495,7 @@ test('the plugin-ui profile detects a reachable emitted declaration drift even w
       declaration.replace('value?: string;', 'value: string;'),
       'utf8',
     );
-    assert.match(await readFile(join(root, 'src/index.ts'), 'utf8'), /value\?: string;/u);
+    assert.equal(await readFile(sourcePath, 'utf8'), sourceBeforeDeclarationDrift);
 
     const drift = spawnSync(
       process.execPath,
@@ -624,6 +626,10 @@ test('the shared governance owner resolves complete qualified same-package refer
     ].join('\n'));
     await writeFixtureFile(root, 'dist/reexport.d.ts', [
       "export * as Types from './types.js';",
+      '',
+    ].join('\n'));
+    await writeFixtureFile(root, 'src/index.public.ts', [
+      "export { runQuery, runReexport, runRef } from './runtime.js';",
       '',
     ].join('\n'));
     await writeFixtureFile(root, 'dist/index.d.ts', [
@@ -1006,6 +1012,10 @@ test('generic profiles stamp provenance only from the supplied published baselin
 
     const declarationPath = join(root, 'dist/index.d.ts');
     const declaration = await readFile(declarationPath, 'utf8');
+    await writeFixtureFile(root, 'src/index.public.ts', [
+      "export { added, run } from './runtime.js';",
+      '',
+    ].join('\n'));
     await writeFile(declarationPath, `${declaration}\nexport declare const added: 1;\n`, 'utf8');
 
     const second = await runApiGovernance({
@@ -1046,6 +1056,10 @@ test('generic profiles stamp provenance only from the supplied published baselin
       `${await readFile(declarationPath, 'utf8')}\nexport declare const unpublished: 1;\n`,
       'utf8',
     );
+    await writeFixtureFile(root, 'src/index.public.ts', [
+      "export { added, run, unpublished } from './runtime.js';",
+      '',
+    ].join('\n'));
     const ordinaryWrite = await runApiGovernance({
       profileId: 'plugin-ui',
       packageRoot: root,

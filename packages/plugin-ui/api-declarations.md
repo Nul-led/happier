@@ -8104,6 +8104,7 @@ Reached from a published signature; not itself a published export.
 ```ts
 type NonSelectableVirtualizedListProps<Item> = VirtualizedListSharedProps<Item> & Readonly<{
     selection?: undefined;
+    endContent?: ReactNode;
 }>;
 ```
 
@@ -8126,6 +8127,7 @@ Reached from a published signature; not itself a published export.
 
 ```ts
 type SelectableVirtualizedListProps<Item> = VirtualizedListSharedProps<Item> & ListAccessibleNameProps & Readonly<{
+    endContent?: never;
     selection: ListSelectionProps<Item>;
     accessibilityPattern?: ListAccessibilityPattern;
 }>;
@@ -8147,6 +8149,7 @@ type StaticListProps = Readonly<{
     selection?: never;
     empty?: never;
     footer?: never;
+    endContent?: never;
     contentContainerStyle?: never;
     children?: ReactNode;
 }>;
