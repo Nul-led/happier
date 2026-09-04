@@ -7,7 +7,13 @@ test('resolveLinuxHsetupResourcesOverrideConfig moves hsetup out of externalBin 
   assert.deepEqual(resolveLinuxHsetupResourcesOverrideConfig(), {
     bundle: {
       externalBin: [],
-      resources: ['binaries/hsetup-*.gz'],
+      resources: {
+        'binaries/hsetup-*.gz': 'binaries/',
+        '../../../packages/iroh-native/release-evidence/THIRD-PARTY-NOTICES.txt':
+          'licenses/iroh-native/THIRD-PARTY-NOTICES.txt',
+        '../../../packages/iroh-native/release-evidence/sbom.cdx.json':
+          'licenses/iroh-native/sbom.cdx.json',
+      },
     },
   });
 });

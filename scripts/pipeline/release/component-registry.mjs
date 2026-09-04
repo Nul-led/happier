@@ -18,7 +18,15 @@ export const components = Object.freeze({
   },
   server: {
     id: 'server',
-    changedPrefixes: ['apps/server/', 'deploy/iroh-relay/', 'packages/relay-server/', 'packages/privacy-kit/'],
+    changedPrefixes: ['apps/server/', 'packages/relay-server/', 'packages/privacy-kit/'],
+  },
+  iroh_relay: {
+    id: 'iroh_relay',
+    // The stock relay deployment artifact is digest-published through the
+    // existing Docker publisher. Keep it out of versionedComponents and
+    // releaseTargets: a relay-only edit must neither imply an ordinary server
+    // release nor force relay publication for unrelated Docker releases.
+    changedPrefixes: ['deploy/iroh-relay/'],
   },
   stack: {
     id: 'stack',

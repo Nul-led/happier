@@ -76,6 +76,7 @@ async function main() {
       entrypoint,
       externals,
       buildDbProviders,
+      includeIrohNativeReleaseEvidence: true,
     });
     const artifact = await packagePreparedTargetBinary({
       product: 'happier-server',

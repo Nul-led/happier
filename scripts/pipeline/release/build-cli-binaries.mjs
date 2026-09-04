@@ -267,6 +267,7 @@ export async function buildCliBinaryArtifacts(
           payloadDir: stageDir,
           target,
           externals,
+          includeIrohNativeReleaseEvidence: true,
           cliProxyApiManagedRuntimeExecutablePath,
           requiredCliDistInputFingerprint,
         });

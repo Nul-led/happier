@@ -64,6 +64,11 @@ function main() {
     changed_ui: String(Boolean(versioned.app)),
     changed_cli: String(Boolean(classified.cli)),
     changed_server: String(Boolean(classified.server)),
+    changed_iroh_relay: String(Boolean(classified.iroh_relay)),
+    // The transport sources are versioned through the app, CLI and server
+    // components; this decision exists so the release plan can prove the pinned
+    // Iroh version parity when they move, without implying a relay publication.
+    changed_iroh_transport: String(Boolean(classified.iroh_transport)),
     changed_website: String(Boolean(classified.website)),
     changed_docs: String(Boolean(classified.docs)),
     changed_cli_stack_shared: String(Boolean(classified.cli_stack_shared)),

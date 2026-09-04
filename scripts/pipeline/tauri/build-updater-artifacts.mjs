@@ -130,15 +130,22 @@ export function resolveLinuxTauriBundlerEnvOverrides(env = process.env) {
  *
  * Bundling it as a resource avoids linuxdeploy attempting to patch/scan the binary during AppImage creation.
  *
- * @returns {{ bundle: { externalBin: string[]; resources: string[] } }}
+ * @returns {{ bundle: { externalBin: string[]; resources: Record<string, string> } }}
  */
 export function resolveLinuxHsetupResourcesOverrideConfig() {
   return {
     bundle: {
       // Remove externalBin so Tauri does not place hsetup into AppDir/usr/bin.
       externalBin: [],
-      // Include the gzip sidecar produced by `build.rs` as a normal bundle resource instead.
-      resources: ['binaries/hsetup-*.gz'],
+      // This override replaces the base resource collection. Preserve the
+      // shared Iroh evidence while moving hsetup into the resource directory.
+      resources: {
+        'binaries/hsetup-*.gz': 'binaries/',
+        '../../../packages/iroh-native/release-evidence/THIRD-PARTY-NOTICES.txt':
+          'licenses/iroh-native/THIRD-PARTY-NOTICES.txt',
+        '../../../packages/iroh-native/release-evidence/sbom.cdx.json':
+          'licenses/iroh-native/sbom.cdx.json',
+      },
     },
   };
 }
@@ -538,6 +545,26 @@ function main() {
     ...(signingKeyPath ? { TAURI_SIGNING_PRIVATE_KEY: signingKeyPath } : {}),
     ...(signingKeyPassword ? { TAURI_SIGNING_PRIVATE_KEY_PASSWORD: signingKeyPassword } : {}),
   };
+
+  // The candidate builder reaches this through `tauri:prepare:build`, but the
+  // trusted finalizer deliberately uses `--bundle-only` on a fresh checkout.
+  // Regenerate the same locked-Cargo evidence there before Tauri resolves its
+  // bundle resources; do not rely on bytes from the earlier candidate job.
+  if (bundleOnly) {
+    const irohPackageRoot = path.join(repoRoot, 'packages', 'iroh-native');
+    run(
+      opts,
+      process.execPath,
+      [
+        path.join(irohPackageRoot, 'scripts', 'generate-native-release-evidence.mjs'),
+        '--package-root',
+        irohPackageRoot,
+        '--output-dir',
+        path.join(irohPackageRoot, 'release-evidence'),
+      ],
+      { cwd: repoRoot, env: baseTauriEnv, timeoutMs: 10 * 60_000 },
+    );
+  }
 
   // Build the frontend assets once, outside of Tauri's internal beforeBuild hook.
   if (!bundleOnly && platform === 'win32') {

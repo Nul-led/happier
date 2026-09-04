@@ -100,9 +100,22 @@ test('Iroh transport owners select every shipped consumer through the canonical 
     assert.equal(versioned.cli, true, changedPath);
     assert.equal(versioned.server, true, changedPath);
   }
+});
 
-  const relay = deriveVersionedComponentChanges(classifyChangedPaths([
-    'deploy/iroh-relay/Dockerfile',
-  ]));
-  assert.equal(relay.server, true);
+test('relay deployment changes produce the exact Iroh relay decision without an ordinary server release', () => {
+  // The stock relay deployment is digest-published by the existing Docker
+  // publisher. A relay-only edit is exactly an iroh_relay change: it must not
+  // imply an ordinary server release or bump any versioned component.
+  const classified = classifyChangedPaths(['deploy/iroh-relay/Dockerfile']);
+  assert.equal(classified.iroh_relay, true);
+  assert.equal(classified.server, false, 'a relay-only edit must not imply an ordinary server release');
+  const versioned = deriveVersionedComponentChanges(classified);
+  for (const [component, changed] of Object.entries(versioned)) {
+    assert.equal(changed, false, `a relay-only edit must not bump versioned component ${component}`);
+  }
+
+  // Ordinary server inputs keep their existing classification.
+  const serverSource = classifyChangedPaths(['packages/relay-server/bin/happier-server.mjs']);
+  assert.equal(serverSource.server, true);
+  assert.equal(serverSource.iroh_relay, false);
 });
