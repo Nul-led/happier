@@ -24,7 +24,7 @@ describe('resolveAgentExecutionTargetForBackendTarget', () => {
         });
     });
 
-    it('fails closed for a configured backend even when its daemon projection resolves an Agent identity', () => {
+    it('uses the daemon-qualified Agent identity behind a configured backend', () => {
         expect(resolveAgentExecutionTargetForBackendTarget({
             backendTarget: {
                 kind: 'backend',
@@ -42,7 +42,10 @@ describe('resolveAgentExecutionTargetForBackendTarget', () => {
                     },
                 },
             },
-        })).toBeNull();
+        })).toEqual({
+            kind: 'agent',
+            identity: { pluginId: 'example.review', localId: 'review-agent' },
+        });
     });
 
     it('uses a daemon projection identity for a non-configured plugin backend', () => {

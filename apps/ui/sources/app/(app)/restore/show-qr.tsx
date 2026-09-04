@@ -1,10 +1,11 @@
 import * as React from 'react';
 
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
 import { RestoreQrView } from '@/components/account/restore/RestoreQrView';
+import { HOME_QR_ENTRY_INTENT_ROUTE_PARAM, parseHomeQrEntryIntentRouteParam } from '@/auth/pairing/homeQrEntryIntent';
 import { UnauthenticatedSplitShell } from '@/components/onboarding/unauthShell';
 import { safeRouterBack } from '@/utils/navigation/safeRouterBack';
 
@@ -12,6 +13,10 @@ const ignoreBrandHeroGetStarted = () => undefined;
 
 export default function RestoreShowQrRoute() {
     const router = useRouter();
+    const params = useLocalSearchParams<{ serverId?: string | string[]; entryIntent?: string | string[] }>();
+    const rawServerId = Array.isArray(params.serverId) ? params.serverId[0] : params.serverId;
+    const targetProfileId = typeof rawServerId === 'string' ? rawServerId.trim() : '';
+    const entryIntent = parseHomeQrEntryIntentRouteParam(params[HOME_QR_ENTRY_INTENT_ROUTE_PARAM]) ?? 'enter_home';
     const handleBack = React.useCallback(() => {
         safeRouterBack({ router, fallbackHref: '/restore' });
     }, [router]);
@@ -30,7 +35,14 @@ export default function RestoreShowQrRoute() {
             testID="unauth-shell-route-restore-show-qr"
         >
             <View testID="restore-route-content" style={styles.content}>
-                <RestoreQrView entryIntent="enter_home" embedded onBack={handleBack} />
+                {targetProfileId ? (
+                    <RestoreQrView
+                        entryIntent={entryIntent}
+                        targetProfileId={targetProfileId}
+                        embedded
+                        onBack={handleBack}
+                    />
+                ) : null}
             </View>
         </UnauthenticatedSplitShell>
     );

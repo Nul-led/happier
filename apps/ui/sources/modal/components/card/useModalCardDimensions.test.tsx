@@ -1,7 +1,8 @@
 import * as React from 'react';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { installModalComponentCommonModuleMocks } from '../modalComponentTestHelpers';
+import { standardCleanup } from '@/dev/testkit/cleanup/standardCleanup';
 
 const windowState = vi.hoisted(() => ({
     width: 1024,
@@ -25,6 +26,10 @@ installModalComponentCommonModuleMocks({
 });
 
 describe('useModalCardDimensions', () => {
+    afterEach(() => {
+        standardCleanup();
+    });
+
     it('clamps the modal card dimensions to the current window', async () => {
         const { renderHook } = await import('@/dev/testkit');
         const { useModalCardDimensions } = await import('./useModalCardDimensions');
@@ -42,76 +47,4 @@ describe('useModalCardDimensions', () => {
         });
     });
 
-    it('shrinks on smaller windows without dropping below the minimum card size', async () => {
-        const { renderHook } = await import('@/dev/testkit');
-        const { useModalCardDimensions } = await import('./useModalCardDimensions');
-
-        windowState.width = 360;
-        windowState.height = 420;
-
-        const hook = await renderHook(() => useModalCardDimensions({
-            size: 'lg',
-        }));
-
-        expect(hook.getCurrent()).toEqual({
-            width: 320,
-            maxHeight: 324,
-        });
-    });
-
-    it('still fits within narrow windows when an explicit width is requested', async () => {
-        const { renderHook } = await import('@/dev/testkit');
-        const { useModalCardDimensions } = await import('./useModalCardDimensions');
-
-        windowState.width = 360;
-        windowState.height = 680;
-
-        const hook = await renderHook(() => useModalCardDimensions({
-            size: 'lg',
-            width: 560,
-        }));
-
-        expect(hook.getCurrent()).toEqual({
-            width: 280,
-            maxHeight: 578,
-        });
-    });
-
-    it('preserves a minimum vertical viewport margin for near-full-height cards', async () => {
-        const { renderHook } = await import('@/dev/testkit');
-        const { useModalCardDimensions } = await import('./useModalCardDimensions');
-
-        windowState.width = 393;
-        windowState.height = 736;
-
-        const hook = await renderHook(() => useModalCardDimensions({
-            size: 'lg',
-            width: 720,
-            maxHeightRatio: 0.96,
-            viewportMargin: { horizontal: 12, vertical: 12 },
-        }));
-
-        expect(hook.getCurrent()).toEqual({
-            width: 369,
-            maxHeight: 640,
-        });
-    });
-
-    it('does not hard-cap dialog max height to 320 when maxHeightRatio allows larger cards', async () => {
-        const { renderHook } = await import('@/dev/testkit');
-        const { useModalCardDimensions } = await import('./useModalCardDimensions');
-
-        windowState.width = 1200;
-        windowState.height = 1000;
-
-        const hook = await renderHook(() => useModalCardDimensions({
-            size: 'dialog',
-            maxHeightRatio: 0.85,
-        }));
-
-        expect(hook.getCurrent()).toEqual({
-            width: 360,
-            maxHeight: 850,
-        });
-    });
 });

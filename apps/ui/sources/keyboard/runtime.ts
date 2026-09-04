@@ -45,6 +45,8 @@ export type NativeHardwareKeyboardEventLike = Readonly<{
         alt: boolean;
     }>;
     repeat: boolean;
+    /** Native responder/activity-owned fact; absent legacy payloads must fail closed. */
+    isEditableTarget?: boolean;
 }>;
 
 function isSingleKeyRule(rule: KeybindingRule): boolean {
@@ -65,11 +67,17 @@ function getCommandBindings(
     if (override && override.length > 0) {
         const defaultAllowInEditable = command?.defaultBindings?.find((rule) => rule.allowInEditable != null)?.allowInEditable
             ?? command?.defaultBinding?.allowInEditable;
-        return override.map((rule) => (
-            rule.allowInEditable == null && defaultAllowInEditable != null
-                ? { ...rule, allowInEditable: defaultAllowInEditable }
-                : rule
-        ));
+        const defaultNativeConsumable = command?.defaultBindings?.find((rule) => rule.nativeConsumable != null)?.nativeConsumable
+            ?? command?.defaultBinding?.nativeConsumable;
+        return override.map((rule) => ({
+            ...rule,
+            ...(rule.allowInEditable == null && defaultAllowInEditable != null
+                ? { allowInEditable: defaultAllowInEditable }
+                : {}),
+            ...(rule.nativeConsumable == null && defaultNativeConsumable != null
+                ? { nativeConsumable: defaultNativeConsumable }
+                : {}),
+        }));
     }
     if (command?.defaultBindings && command.defaultBindings.length > 0) return command.defaultBindings;
     return command?.defaultBinding ? [command.defaultBinding] : [];
@@ -107,11 +115,18 @@ function commandCanRunWhenDisabled(
 function resolveNativeConsumableKey(
     rule: KeybindingRule,
     nativeConsumable: boolean,
-): 'Enter' | 'Escape' | null {
+): string | null {
     if (!nativeConsumable) return null;
     const parsed = parseKeybindingRule(rule);
     if (parsed.code === 'Enter' || parsed.key === 'Enter') return 'Enter';
     if (parsed.code === 'Escape' || parsed.key === 'Escape') return 'Escape';
+    if (parsed.code?.startsWith('Key') && parsed.code.length === 4) return parsed.code.slice(3).toLowerCase();
+    if (parsed.code?.startsWith('Digit') && parsed.code.length === 6) return parsed.code.slice(5);
+    if (parsed.code === 'Period') return '.';
+    if (parsed.code === 'BracketLeft') return '[';
+    if (parsed.code === 'BracketRight') return ']';
+    if (parsed.code === 'Slash') return '/';
+    if (parsed.key?.length === 1) return parsed.key.toLowerCase();
     return null;
 }
 

@@ -229,6 +229,11 @@ describe('apps/ui runVitestShards', () => {
         // exists to contain; it is this shard's failure, not a reason to skip the rest.
         expect(classifyVitestShardTermination({ code: null, signal: 'SIGSEGV' }).outcome).toBe('failed');
         expect(classifyVitestShardTermination({ code: null, signal: 'SIGKILL' }).outcome).toBe('failed');
+        expect(classifyVitestShardTermination({ code: null, signal: null })).toEqual({
+            outcome: 'failed',
+            exitCode: 1,
+            signal: null,
+        });
         expect(classifyVitestShardTermination({ code: null, signal: 'SIGINT' })).toEqual({
             outcome: 'aborted',
             exitCode: 130,

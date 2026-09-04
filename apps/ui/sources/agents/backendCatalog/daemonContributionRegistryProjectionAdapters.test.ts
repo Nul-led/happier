@@ -513,9 +513,10 @@ describe('daemon contribution registry projection adapters', () => {
                     code: 'target_semantics_unavailable',
                     message: 'Targeted contribution semantics rejected (target_semantics_unavailable).',
                     details: {
-                        targetPluginId: 'happier.channels',
-                        pointId: 'providers',
+                        target: { pluginId: 'happier.channels', pointId: 'providers' },
+                        contributor: { pluginId: 'happier.channel.telegram', contributionId: 'telegram' },
                         protocol: { id: 'happier.channels/providers', version: 1 },
+                        reason: 'target_semantics_unavailable',
                     },
                 },
                 plugin: { id: 'happier.channels', version: '0.0.0', source: 'bundled' },
@@ -535,6 +536,13 @@ describe('daemon contribution registry projection adapters', () => {
             code: 'target_semantics_unavailable',
             message: 'Targeted contribution semantics rejected (target_semantics_unavailable).',
             severity: 'error',
+            details: {
+                target: { pluginId: 'happier.channels', pointId: 'providers' },
+                contributor: { pluginId: 'happier.channel.telegram', contributionId: 'telegram' },
+                protocol: { id: 'happier.channels/providers', version: 1 },
+                reason: 'target_semantics_unavailable',
+            },
+            contribution: { pluginId: 'happier.channels', localId: 'providers' },
         }]);
         expect(adapted.pluginProjectionById['happier.channel.telegram']?.diagnostics).toEqual([]);
         expect(adapted.pluginProjectionById['happier.scm.forge.github']?.diagnostics).toEqual([]);

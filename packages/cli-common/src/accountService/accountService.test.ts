@@ -1,0 +1,557 @@
+import { describe, expect, it, vi } from 'vitest';
+import {
+  createHomeCredentialDestinationDigestV1,
+  type AccountDirectoryHomeEntryV1,
+  type HomeLoginAssertionV1,
+  type HomeLoginRedemptionResultV1,
+} from '@happier-dev/protocol';
+
+import {
+  continueAccountServiceHomeEnrollment,
+  observeAccountServiceHomeApproval,
+  publishAccountServiceHomeLink,
+  runAccountServiceDirectoryJourney,
+  selectAccountServiceAuthenticationMethod,
+  type AccountServiceHomeEnrollmentAdapters,
+} from './index.js';
+
+const HOME_A = createHome('srv_home_a', false);
+const HOME_B = createHome('srv_home_b', true);
+const HOME_C = createHome('srv_home_c', false);
+
+function createHome(
+  homeServerIdentityId: string,
+  preferred: boolean,
+): AccountDirectoryHomeEntryV1 {
+  const canonicalServerUrl = `https://${homeServerIdentityId}.example.test`;
+  return {
+    v: 1,
+    homeServerIdentityId,
+    canonicalServerUrl,
+    label: homeServerIdentityId,
+    preferred,
+    connectionDescriptor: {
+      v: 1,
+      homeServerIdentityId,
+      canonicalServerUrl,
+      revision: 1,
+      endpoints: [{ kind: 'https', url: canonicalServerUrl }],
+    },
+    createdAtMs: 1_700_000_000_000,
+    updatedAtMs: 1_700_000_000_001,
+  };
+}
+
+function createAssertion(
+  home = HOME_B,
+  overrides: Partial<HomeLoginAssertionV1> = {},
+): HomeLoginAssertionV1 {
+  return {
+    v: 1,
+    purpose: 'happier.home-login',
+    issuerServerIdentityId: 'srv_directory',
+    issuerSubjectId: 'account-1',
+    audienceHomeServerIdentityId: home.homeServerIdentityId,
+    credentialDestinationDigestBase64Url: createHomeCredentialDestinationDigestV1(
+      home.connectionDescriptor,
+    ),
+    clientBoxPublicKeyBase64: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+    issuedAtMs: 1_700_000_000_000,
+    expiresAtMs: 1_700_000_120_000,
+    keyId: 'a'.repeat(64),
+    signatureBase64Url: 'A'.repeat(86),
+    ...overrides,
+  };
+}
+
+function createEnrollmentHarness(options: Readonly<{
+  assertion?: HomeLoginAssertionV1;
+  redemption?: HomeLoginRedemptionResultV1;
+}> = {}) {
+  const adoptionOrder: string[] = [];
+  const transport = { id: 'transport-b' };
+  const successfulRedemption: HomeLoginRedemptionResultV1 = {
+    v: 1,
+    homeServerIdentityId: HOME_B.homeServerIdentityId,
+    sealedHomeTokenBase64Url: 'A'.repeat(43),
+    issuedAtMs: 1_700_000_001_000,
+    expiresAtMs: 1_700_000_121_000,
+  };
+  const adapters: AccountServiceHomeEnrollmentAdapters<string, typeof transport, string, string> = {
+    createRequesterKeyPair: vi.fn(async () => ({
+      publicKeyBase64: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+      secretKey: 'requester-secret',
+    })),
+    requestAssertion: vi.fn(async () => options.assertion ?? createAssertion()),
+    openHomeTransport: vi.fn(async () => ({
+      transport,
+      authenticatedCredentialDestination: {
+        kind: 'https' as const,
+        applicationUrl: HOME_B.canonicalServerUrl,
+      },
+    })),
+    observeHomeBeforeRedemption: vi.fn(async ({ home }) => ({
+      homeServerIdentityId: home.homeServerIdentityId,
+      connectionDescriptor: home.connectionDescriptor,
+    })),
+    redeemAssertion: vi.fn(async () => options.redemption ?? successfulRedemption),
+    decodeHomeCredential: vi.fn(async () => 'home-credential'),
+    observeAuthenticatedHome: vi.fn(async () => ({
+      homeServerIdentityId: HOME_B.homeServerIdentityId,
+      connectionDescriptor: HOME_B.connectionDescriptor,
+    })),
+    commitHomeCredential: vi.fn(async () => 'committed-profile-b'),
+    reconcileAuthenticatedHome: vi.fn(async () => {}),
+    closeHomeTransport: vi.fn(async () => {}),
+  };
+  const adoptHome = vi.fn(async (home: AccountDirectoryHomeEntryV1) => {
+    adoptionOrder.push(home.homeServerIdentityId);
+  });
+  return { adapters, adoptHome, adoptionOrder };
+}
+
+describe('Account Service deterministic domain operations', () => {
+  it('rejects an advertised requested method that is unavailable without selecting a fallback', () => {
+    expect(selectAccountServiceAuthenticationMethod({
+      advertised: { keyLoginAvailable: true, oauthProviderIds: ['github'] },
+      requested: { kind: 'oauth', providerId: 'google' },
+    })).toEqual({
+      kind: 'requested_method_unavailable',
+      requestedMethod: { kind: 'oauth', providerId: 'google' },
+    });
+  });
+
+  it('adopts all three Homes without focus but asserts, redeems, and enrolls only the preferred Home', async () => {
+    const { adapters, adoptHome, adoptionOrder } = createEnrollmentHarness();
+
+    const result = await runAccountServiceDirectoryJourney({
+      directory: {
+        homes: [HOME_A, HOME_B, HOME_C],
+        preferredHomeServerIdentityId: HOME_B.homeServerIdentityId,
+      },
+      issuerServerIdentityId: 'srv_directory',
+      adoptHome,
+      enrollmentAdapters: adapters,
+      nowMs: 1_700_000_002_000,
+    });
+
+    expect(adoptionOrder).toEqual([
+      HOME_A.homeServerIdentityId,
+      HOME_B.homeServerIdentityId,
+      HOME_C.homeServerIdentityId,
+    ]);
+    expect(adapters.requestAssertion).toHaveBeenCalledOnce();
+    expect(adapters.requestAssertion).toHaveBeenCalledWith({
+      homeServerIdentityId: HOME_B.homeServerIdentityId,
+      clientBoxPublicKeyBase64: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+    });
+    expect(adapters.openHomeTransport).toHaveBeenCalledOnce();
+    expect(adapters.redeemAssertion).toHaveBeenCalledOnce();
+    expect(adapters.commitHomeCredential).toHaveBeenCalledOnce();
+    expect(adapters.commitHomeCredential).toHaveBeenCalledWith(expect.objectContaining({
+      transport: expect.anything(),
+    }));
+    expect(result).toMatchObject({
+      kind: 'preferred_home_enrolled',
+      homeServerIdentityId: HOME_B.homeServerIdentityId,
+      enrollment: { kind: 'enrolled', commit: 'committed-profile-b' },
+    });
+  });
+
+  it('commits only after verified authenticated observation and exact route reconciliation', async () => {
+    const harness = createEnrollmentHarness();
+    const order: string[] = [];
+    vi.mocked(harness.adapters.commitHomeCredential).mockImplementationOnce(async () => {
+      order.push('commit');
+      return 'committed-profile-b';
+    });
+    vi.mocked(harness.adapters.observeAuthenticatedHome).mockImplementationOnce(async () => {
+      order.push('observe_authenticated');
+      return {
+        homeServerIdentityId: HOME_B.homeServerIdentityId,
+        connectionDescriptor: HOME_B.connectionDescriptor,
+      };
+    });
+    vi.mocked(harness.adapters.reconcileAuthenticatedHome).mockImplementationOnce(async () => {
+      order.push('reconcile');
+    });
+
+    const result = await continueAccountServiceHomeEnrollment({
+      home: HOME_B,
+      assertion: createAssertion(),
+      requesterSecretKey: 'requester-secret',
+      adapters: harness.adapters,
+      nowMs: 1_700_000_002_000,
+    });
+
+    expect(result).toEqual({ kind: 'enrolled', commit: 'committed-profile-b' });
+    expect(order).toEqual(['observe_authenticated', 'reconcile', 'commit']);
+  });
+
+  it('does not commit when exact route reconciliation fails', async () => {
+    const harness = createEnrollmentHarness();
+    vi.mocked(harness.adapters.reconcileAuthenticatedHome).mockRejectedValueOnce(
+      new Error('projection refresh unavailable'),
+    );
+
+    await expect(continueAccountServiceHomeEnrollment({
+      home: HOME_B,
+      assertion: createAssertion(),
+      requesterSecretKey: 'requester-secret',
+      adapters: harness.adapters,
+      nowMs: 1_700_000_002_000,
+    })).resolves.toMatchObject({ kind: 'unavailable' });
+    expect(harness.adapters.commitHomeCredential).not.toHaveBeenCalled();
+  });
+
+  it('does not commit when authenticated Home observation is unavailable', async () => {
+    const harness = createEnrollmentHarness();
+    vi.mocked(harness.adapters.observeAuthenticatedHome).mockRejectedValueOnce(
+      new Error('authenticated feature observation unavailable'),
+    );
+
+    const result = await continueAccountServiceHomeEnrollment({
+      home: HOME_B,
+      assertion: createAssertion(),
+      requesterSecretKey: 'requester-secret',
+      adapters: harness.adapters,
+      nowMs: 1_700_000_002_000,
+    });
+
+    expect(result).toMatchObject({ kind: 'unavailable' });
+    expect(harness.adapters.reconcileAuthenticatedHome).not.toHaveBeenCalled();
+    expect(harness.adapters.commitHomeCredential).not.toHaveBeenCalled();
+  });
+
+  it('adopts every Home but makes no assertion when the Directory has no preferred Home', async () => {
+    const { adapters, adoptHome, adoptionOrder } = createEnrollmentHarness();
+    const homes = [
+      { ...HOME_A, preferred: false },
+      { ...HOME_B, preferred: false },
+      { ...HOME_C, preferred: false },
+    ];
+
+    const result = await runAccountServiceDirectoryJourney({
+      directory: { homes, preferredHomeServerIdentityId: null },
+      issuerServerIdentityId: 'srv_directory',
+      adoptHome,
+      enrollmentAdapters: adapters,
+      nowMs: 1_700_000_002_000,
+    });
+
+    expect(adoptionOrder).toHaveLength(3);
+    expect(adapters.createRequesterKeyPair).not.toHaveBeenCalled();
+    expect(adapters.requestAssertion).not.toHaveBeenCalled();
+    expect(adapters.openHomeTransport).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ kind: 'no_preferred_home' });
+  });
+
+  it('distinguishes an empty Directory from linked Homes with no preferred Home', async () => {
+    const { adapters, adoptHome } = createEnrollmentHarness();
+
+    const result = await runAccountServiceDirectoryJourney({
+      directory: { homes: [], preferredHomeServerIdentityId: null },
+      issuerServerIdentityId: 'srv_directory',
+      adoptHome,
+      enrollmentAdapters: adapters,
+      nowMs: 1_700_000_002_000,
+    });
+
+    expect(result).toMatchObject({ kind: 'no_linked_homes' });
+    expect(adoptHome).not.toHaveBeenCalled();
+    expect(adapters.createRequesterKeyPair).not.toHaveBeenCalled();
+  });
+
+  it('does not request or redeem a preferred-Home assertion after Directory adoption is cancelled', async () => {
+    const { adapters, adoptHome } = createEnrollmentHarness();
+    let cancelled = false;
+    vi.mocked(adoptHome).mockImplementationOnce(async () => {
+      cancelled = true;
+    });
+
+    const result = await runAccountServiceDirectoryJourney({
+      directory: {
+        homes: [HOME_A, HOME_B],
+        preferredHomeServerIdentityId: HOME_B.homeServerIdentityId,
+      },
+      issuerServerIdentityId: 'srv_directory',
+      adoptHome,
+      enrollmentAdapters: adapters,
+      nowMs: 1_700_000_002_000,
+      shouldCancel: () => cancelled,
+    });
+
+    expect(result).toMatchObject({ kind: 'cancelled' });
+    expect(adoptHome).toHaveBeenCalledOnce();
+    expect(adapters.createRequesterKeyPair).not.toHaveBeenCalled();
+    expect(adapters.requestAssertion).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      'assertion audience',
+      HOME_B,
+      createAssertion(HOME_B, { audienceHomeServerIdentityId: HOME_A.homeServerIdentityId }),
+      'assertion_audience_mismatch',
+    ],
+    [
+      'destination digest',
+      HOME_B,
+      createAssertion(HOME_B, {
+        credentialDestinationDigestBase64Url: createHomeCredentialDestinationDigestV1(
+          HOME_A.connectionDescriptor,
+        ),
+      }),
+      'credential_destination_mismatch',
+    ],
+    [
+      'Home identity',
+      { ...HOME_B, homeServerIdentityId: HOME_A.homeServerIdentityId },
+      createAssertion(HOME_B),
+      'home_identity_mismatch',
+    ],
+    [
+      'descriptor',
+      { ...HOME_B, canonicalServerUrl: HOME_A.canonicalServerUrl },
+      createAssertion(HOME_B),
+      'descriptor_mismatch',
+    ],
+  ])('fails a %s mismatch before transport, redemption, or credential commit', async (
+    _label,
+    home,
+    assertion,
+    reason,
+  ) => {
+    const harness = createEnrollmentHarness({ assertion });
+
+    const result = await runAccountServiceDirectoryJourney({
+      directory: {
+        homes: [home as AccountDirectoryHomeEntryV1],
+        preferredHomeServerIdentityId: home.homeServerIdentityId,
+      },
+      issuerServerIdentityId: 'srv_directory',
+      adoptHome: harness.adoptHome,
+      enrollmentAdapters: harness.adapters,
+      nowMs: 1_700_000_002_000,
+    });
+
+    expect(result).toMatchObject({
+      kind: 'preferred_home_failed',
+      enrollment: { kind: 'verification_failed', reason },
+    });
+    expect(harness.adapters.openHomeTransport).not.toHaveBeenCalled();
+    expect(harness.adapters.redeemAssertion).not.toHaveBeenCalled();
+    expect(harness.adapters.commitHomeCredential).not.toHaveBeenCalled();
+  });
+
+  it('returns a typed durable approval and a later observation can enroll with the same assertion', async () => {
+    const approvalRequired: HomeLoginRedemptionResultV1 = {
+      v: 1,
+      outcome: 'approval_required',
+      homeServerIdentityId: HOME_B.homeServerIdentityId,
+      approvalId: 'approval-b',
+      deviceLabel: null,
+      expiresAtMs: 1_700_000_120_000,
+    };
+    const harness = createEnrollmentHarness({ redemption: approvalRequired });
+    const first = await runAccountServiceDirectoryJourney({
+      directory: {
+        homes: [HOME_B],
+        preferredHomeServerIdentityId: HOME_B.homeServerIdentityId,
+      },
+      issuerServerIdentityId: 'srv_directory',
+      adoptHome: harness.adoptHome,
+      enrollmentAdapters: harness.adapters,
+      nowMs: 1_700_000_002_000,
+    });
+
+    expect(first).toMatchObject({
+      kind: 'preferred_home_awaiting_approval',
+      enrollment: {
+        kind: 'approval_required',
+        approval: { approvalId: 'approval-b', homeServerIdentityId: HOME_B.homeServerIdentityId },
+      },
+    });
+    if (first.kind !== 'preferred_home_awaiting_approval') throw new Error('approval expected');
+
+    const successfulRedemption: HomeLoginRedemptionResultV1 = {
+      v: 1,
+      homeServerIdentityId: HOME_B.homeServerIdentityId,
+      sealedHomeTokenBase64Url: 'A'.repeat(43),
+      issuedAtMs: 1_700_000_003_000,
+      expiresAtMs: 1_700_000_123_000,
+    };
+    vi.mocked(harness.adapters.redeemAssertion).mockResolvedValueOnce(successfulRedemption);
+    const resumed = await observeAccountServiceHomeApproval({
+      approval: first.enrollment.approval,
+      adapters: harness.adapters,
+      nowMs: 1_700_000_004_000,
+    });
+
+    expect(resumed).toEqual({ kind: 'enrolled', commit: 'committed-profile-b' });
+    expect(harness.adapters.redeemAssertion).toHaveBeenLastCalledWith({
+      transport: { id: 'transport-b' },
+      assertion: createAssertion(),
+      approvalId: 'approval-b',
+    });
+    expect(harness.adapters.commitHomeCredential).toHaveBeenCalledOnce();
+  });
+
+  it('publishes an optional link with distinct Home and Account Service credential adapters', async () => {
+    const homeCredential = { kind: 'home' as const, token: 'home-token' };
+    const accountServiceCredential = { kind: 'account_service' as const, token: 'directory-token' };
+    const readHomeCredential = vi.fn(async () => homeCredential);
+    const readAccountServiceCredential = vi.fn(async () => accountServiceCredential);
+    const readAccountSubject = vi.fn(async () => 'account-1');
+    const publishLinkToHome = vi.fn(async () => {});
+    const publishHomeToAccountService = vi.fn(async () => {});
+
+    const result = await publishAccountServiceHomeLink({
+      home: HOME_B,
+      issuerServerIdentityId: 'srv_directory',
+      issuerSigningKeyId: 'a'.repeat(64),
+      issuerSigningPublicKeyBase64Url: 'A'.repeat(43),
+      adapters: {
+        readHomeCredential,
+        readAccountServiceCredential,
+        readAccountSubject,
+        publishLinkToHome,
+        publishHomeToAccountService,
+      },
+    });
+
+    expect(result).toEqual({ kind: 'linked', homeServerIdentityId: HOME_B.homeServerIdentityId });
+    expect(readAccountSubject).toHaveBeenCalledWith(accountServiceCredential);
+    expect(publishLinkToHome).toHaveBeenCalledWith(expect.objectContaining({ credential: homeCredential }));
+    expect(publishHomeToAccountService).toHaveBeenCalledWith(expect.objectContaining({
+      credential: accountServiceCredential,
+      home: HOME_B,
+    }));
+    expect(publishLinkToHome).not.toHaveBeenCalledWith(expect.objectContaining({ credential: accountServiceCredential }));
+    expect(publishHomeToAccountService).not.toHaveBeenCalledWith(expect.objectContaining({ credential: homeCredential }));
+  });
+
+  it('reports the committed link when cancellation is observed only after both publications', async () => {
+    let cancelled = false;
+    const shouldCancel = vi.fn(() => cancelled);
+
+    const result = await publishAccountServiceHomeLink({
+      home: HOME_B,
+      issuerServerIdentityId: 'srv_directory',
+      issuerSigningKeyId: 'a'.repeat(64),
+      issuerSigningPublicKeyBase64Url: 'A'.repeat(43),
+      shouldCancel,
+      adapters: {
+        readHomeCredential: vi.fn(async () => ({ token: 'home-token' })),
+        readAccountServiceCredential: vi.fn(async () => ({ token: 'directory-token' })),
+        readAccountSubject: vi.fn(async () => 'account-1'),
+        publishLinkToHome: vi.fn(async () => {}),
+        publishHomeToAccountService: vi.fn(async () => {
+          cancelled = true;
+        }),
+      },
+    });
+
+    expect(result).toEqual({ kind: 'linked', homeServerIdentityId: HOME_B.homeServerIdentityId });
+  });
+
+  it('finishes Account Service publication when cancellation flips during the successful Home publication', async () => {
+    let cancelled = false;
+    const publishLinkToHome = vi.fn(async () => {
+      cancelled = true;
+    });
+    const publishHomeToAccountService = vi.fn(async () => {});
+
+    const result = await publishAccountServiceHomeLink({
+      home: HOME_B,
+      issuerServerIdentityId: 'srv_directory',
+      issuerSigningKeyId: 'a'.repeat(64),
+      issuerSigningPublicKeyBase64Url: 'A'.repeat(43),
+      shouldCancel: () => cancelled,
+      adapters: {
+        readHomeCredential: vi.fn(async () => ({ token: 'home-token' })),
+        readAccountServiceCredential: vi.fn(async () => ({ token: 'directory-token' })),
+        readAccountSubject: vi.fn(async () => 'account-1'),
+        publishLinkToHome,
+        publishHomeToAccountService,
+      },
+    });
+
+    expect(result).toEqual({ kind: 'linked', homeServerIdentityId: HOME_B.homeServerIdentityId });
+    expect(publishLinkToHome).toHaveBeenCalledOnce();
+    expect(publishHomeToAccountService).toHaveBeenCalledOnce();
+  });
+
+  it('cancels before either irreversible publication when already cancelled', async () => {
+    const publishLinkToHome = vi.fn(async () => {});
+    const publishHomeToAccountService = vi.fn(async () => {});
+
+    const result = await publishAccountServiceHomeLink({
+      home: HOME_B,
+      issuerServerIdentityId: 'srv_directory',
+      issuerSigningKeyId: 'a'.repeat(64),
+      issuerSigningPublicKeyBase64Url: 'A'.repeat(43),
+      shouldCancel: () => true,
+      adapters: {
+        readHomeCredential: vi.fn(async () => ({ token: 'home-token' })),
+        readAccountServiceCredential: vi.fn(async () => ({ token: 'directory-token' })),
+        readAccountSubject: vi.fn(async () => 'account-1'),
+        publishLinkToHome,
+        publishHomeToAccountService,
+      },
+    });
+
+    expect(result).toEqual({ kind: 'cancelled' });
+    expect(publishLinkToHome).not.toHaveBeenCalled();
+    expect(publishHomeToAccountService).not.toHaveBeenCalled();
+  });
+
+  it('reports a retryable failure when Account Service publication fails after the Home publication', async () => {
+    const publicationError = new Error('account service unavailable');
+    const publishLinkToHome = vi.fn(async () => {});
+    const publishHomeToAccountService = vi.fn(async () => {
+      throw publicationError;
+    });
+
+    const result = await publishAccountServiceHomeLink({
+      home: HOME_B,
+      issuerServerIdentityId: 'srv_directory',
+      issuerSigningKeyId: 'a'.repeat(64),
+      issuerSigningPublicKeyBase64Url: 'A'.repeat(43),
+      adapters: {
+        readHomeCredential: vi.fn(async () => ({ token: 'home-token' })),
+        readAccountServiceCredential: vi.fn(async () => ({ token: 'directory-token' })),
+        readAccountSubject: vi.fn(async () => 'account-1'),
+        publishLinkToHome,
+        publishHomeToAccountService,
+      },
+    });
+
+    expect(result).toEqual({ kind: 'failed', error: publicationError });
+    expect(publishLinkToHome).toHaveBeenCalledOnce();
+    expect(publishHomeToAccountService).toHaveBeenCalledOnce();
+  });
+
+  it('rejects a blank Account Service subject before either publication', async () => {
+    const publishLinkToHome = vi.fn(async () => {});
+    const publishHomeToAccountService = vi.fn(async () => {});
+
+    const result = await publishAccountServiceHomeLink({
+      home: HOME_B,
+      issuerServerIdentityId: 'srv_directory',
+      issuerSigningKeyId: 'a'.repeat(64),
+      issuerSigningPublicKeyBase64Url: 'A'.repeat(43),
+      adapters: {
+        readHomeCredential: vi.fn(async () => ({ token: 'home-token' })),
+        readAccountServiceCredential: vi.fn(async () => ({ token: 'directory-token' })),
+        readAccountSubject: vi.fn(async () => '   '),
+        publishLinkToHome,
+        publishHomeToAccountService,
+      },
+    });
+
+    expect(result).toMatchObject({ kind: 'failed' });
+    expect(publishLinkToHome).not.toHaveBeenCalled();
+    expect(publishHomeToAccountService).not.toHaveBeenCalled();
+  });
+});

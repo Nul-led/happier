@@ -12,7 +12,6 @@ import { HappyError } from '@/utils/errors/errors';
 import { fireAndForget } from '@/utils/system/fireAndForget';
 import { t } from '@/text';
 import {
-    AccountDirectoryStorageReadError,
     TokenStorage,
     normalizeAccountDirectoryEndpoint,
     type PendingAccountDirectoryAuth,
@@ -46,14 +45,10 @@ import {
     createAccountDirectorySession,
     parseAccountDirectoryCapability,
 } from '@/sync/domains/accountDirectory/accountDirectorySession';
-import { refreshAccountHomeDirectory } from '@/sync/ops/accountDirectory/refreshAccountHomeDirectory';
 import {
     cancelPendingPreferredHomeEnrollment,
-    enrollPreferredDirectoryHome,
-    finalizePreferredHomeEnrollmentEntryIntent,
 } from '@/sync/ops/accountDirectory/enrollPreferredDirectoryHome';
-import { provisionAuthenticatedHomeLink } from '@/sync/ops/accountDirectory/provisionAuthenticatedHomeLink';
-import { probeServerFeaturesAtUrl } from '@/sync/api/capabilities/serverFeaturesClient';
+import { completeAccountServicePostAuth } from '@/auth/accountDirectory/accountDirectoryKeyAuth';
 import {
     getAccountServiceEndpointSnapshot,
     resolveServerProfileScopeId,
@@ -188,7 +183,7 @@ async function finalizeAccountDirectoryOAuthReturn(
         )
         || !isSelectedService()
     ) {
-        return { ok: false, returnTo, error: 'invalid-pending' };
+        return { ok: false, returnTo, error: 'invalid-pending', preservePending: true };
     }
     if (Date.now() >= pending.expiresAt) {
         return { ok: false, returnTo, error: 'request-expired' };
@@ -201,25 +196,20 @@ async function finalizeAccountDirectoryOAuthReturn(
     let observedCapability: ReturnType<typeof parseAccountDirectoryCapability> = null;
     input.onStage?.('verifying_service');
     try {
-        const observed = await probeServerFeaturesAtUrl({ endpointUrl: endpoint, force: true });
-        const observedIdentity = observed.status === 'ready'
-            ? normalizeAccountDirectoryIdentityParam(observed.serverIdentityId ?? null)
-            : null;
-        if (observed.status !== 'ready') {
-            return { ok: false, returnTo, error: 'service-unavailable', preservePending: true };
-        }
-        const observedCanonicalServerUrl = normalizeAccountDirectoryEndpoint(
-            observed.features.capabilities.server.canonicalServerUrl ?? '',
-        );
-        if (observedIdentity !== callbackIdentity) {
+        const observed = await accountDirectoryAuthClient.verifyEndpoint({
+            endpointUrl: endpoint,
+            expectedServerIdentityId: callbackIdentity,
+        });
+        if (observed.kind === 'identity_mismatch') {
             return { ok: false, returnTo, error: 'identity-changed', preservePending: true };
         }
-        if (observedCanonicalServerUrl !== callbackCanonicalServerUrl) {
+        if (observed.kind !== 'verified_endpoint') {
+            return { ok: false, returnTo, error: 'service-unavailable', preservePending: true };
+        }
+        if (observed.canonicalServerUrl !== callbackCanonicalServerUrl) {
             return { ok: false, returnTo, error: 'canonical-url-changed', preservePending: true };
         }
-        observedCapability = parseAccountDirectoryCapability(
-            observed.features.capabilities.accountDirectory,
-        );
+        observedCapability = observed.capability;
     } catch {
         return { ok: false, returnTo, error: 'service-unavailable', preservePending: true };
     }
@@ -321,40 +311,48 @@ async function finalizeAccountDirectoryOAuthReturn(
     input.onStage?.('signed_in');
     if (isCancelled()) return { ...cancelled(), signedIn: true };
 
-    // This callback is the production composition root for Account Service
-    // discovery. A captured Home must be linked before the continuation is
-    // accepted; later refresh/enrollment remains retryable from settings and
-    // never invalidates the stored Directory credential or an existing Home.
+    // The callback is only the transitional Account Service UI coordinator;
+    // the shared post-auth owner performs discovery, linking, enrollment and
+    // approval continuation without giving this route a second domain owner.
     if (observedCapability?.homeDirectory !== true) {
         input.onStage?.('account_service_connected');
         return { ok: true, returnTo, signedIn: true };
     }
     const session = createAccountDirectorySession(target, { capability: observedCapability });
-    if (pending.homeServerIdentityId) {
-        input.onStage?.('connecting_home');
-        try {
-            const provisioned = await provisionAuthenticatedHomeLink({
-                session,
-                homeServerIdentityId: pending.homeServerIdentityId,
-                issuerServerIdentityId: callbackIdentity,
-                capability: observedCapability,
-                shouldCancel: isCancelled,
-            });
-            if (isCancelled()) return { ...cancelled(), signedIn: true };
-            if (provisioned.kind !== 'linked') {
-                return { ok: false, returnTo, error: 'home-link-provisioning-failed', signedIn: true };
+    input.onStage?.('finding_homes');
+    let postAuth: Awaited<ReturnType<typeof completeAccountServicePostAuth>>;
+    try {
+        postAuth = await completeAccountServicePostAuth(session, {
+            entryIntent: pending.entryIntent,
+            shouldCancel: isCancelled,
+            shouldInvalidateContinuation: () => !isSelectedService(),
+            ...(pending.homeServerIdentityId
+                ? {
+                    homeServerIdentityId: pending.homeServerIdentityId,
+                    issuerServerIdentityId: callbackIdentity,
+                    capability: observedCapability,
+                }
+                : {}),
+        });
+        if (isCancelled()) {
+            if (
+                postAuth.enrollment?.kind === 'approval_required'
+                && !isSelectedService()
+            ) {
+                await cancelPendingPreferredHomeEnrollment(postAuth.enrollment);
             }
-        } catch {
-            if (isCancelled()) return { ...cancelled(), signedIn: true };
+            return { ...cancelled(), signedIn: true };
+        }
+        if (postAuth.failure === 'home_link_failed') {
             return { ok: false, returnTo, error: 'home-link-provisioning-failed', signedIn: true };
         }
-    }
-
-    input.onStage?.('finding_homes');
-    try {
-        const refreshed = await refreshAccountHomeDirectory(session, { shouldCancel: isCancelled });
-        if (isCancelled()) return { ...cancelled(), signedIn: true };
-        if (refreshed.status !== 'ready') {
+        if (postAuth.failure === 'directory_refresh_failed') {
+            return { ok: false, returnTo, error: 'directory-refresh-failed', signedIn: true };
+        }
+        if (postAuth.failure === 'home_enrollment_failed') {
+            return { ok: false, returnTo, error: 'home-enrollment-failed', signedIn: true };
+        }
+        if (postAuth.snapshot.status !== 'ready') {
             return { ok: false, returnTo, error: 'directory-refresh-failed', signedIn: true };
         }
     } catch {
@@ -368,17 +366,8 @@ async function finalizeAccountDirectoryOAuthReturn(
     }
 
     input.onStage?.('connecting_home');
-    let enrollment: Awaited<ReturnType<typeof enrollPreferredDirectoryHome>>;
-    try {
-        enrollment = await enrollPreferredDirectoryHome(session, {
-            entryIntent: pending.entryIntent,
-            shouldCancel: isCancelled,
-            // Normal callback unmount/abort must preserve a Home-owned pending
-            // approval. Replacing the selected Account Service must not.
-            shouldInvalidateContinuation: () => !isSelectedService(),
-        });
-    } catch {
-        if (isCancelled()) return { ...cancelled(), signedIn: true };
+    const enrollment = postAuth.enrollment;
+    if (!enrollment) {
         return { ok: false, returnTo, error: 'home-enrollment-failed', signedIn: true };
     }
     if (enrollment.kind === 'approval_required') {
@@ -409,11 +398,7 @@ async function finalizeAccountDirectoryOAuthReturn(
         // approval-resume path too); this attempt still stops reporting/navigating for a service
         // it no longer represents.
         if (!isSelectedService()) return { ...cancelled(), signedIn: true };
-        const applied = await finalizePreferredHomeEnrollmentEntryIntent(
-            enrollment.homeServerIdentityId,
-            pending.entryIntent,
-            callbackServiceKey ?? '',
-        );
+        const applied = postAuth.entryIntentOutcome ?? 'blocked';
         if (applied === 'superseded') return { ...cancelled(), signedIn: true };
         if (applied === 'blocked') {
             return { ok: false, returnTo, error: 'home-enrollment-failed', signedIn: true };
@@ -493,6 +478,20 @@ function mapFinalizeErrorToMessage(code: string): string {
             return t('errors.operationFailed');
         default:
             return t('errors.tokenExchangeFailed');
+    }
+}
+
+export function sanitizeExternalOAuthCallbackError(
+    code: string,
+    providerName: string,
+): string {
+    switch (code) {
+        case 'oauth_not_configured':
+            return t('friends.providerGate.notConfigured', { provider: providerName });
+        case 'invalid_state':
+            return t('errors.oauthStateMismatch');
+        default:
+            return t('errors.operationFailed');
     }
 }
 
@@ -960,11 +959,17 @@ export default function OAuthProviderReturn() {
         };
 
         fireAndForget((async () => {
+            const directoryCustody = providerId
+                ? await TokenStorage.resolvePendingAccountDirectoryAuthCustody(providerId)
+                : { kind: 'absent' as const };
+            const custodyPending = directoryCustody.kind === 'matched'
+                ? directoryCustody.pending
+                : null;
             const directoryEndpoint = normalizeAccountDirectoryEndpoint(
-                resolvedEndpointUrl ?? '',
+                resolvedEndpointUrl ?? custodyPending?.endpoint ?? '',
             );
             const directoryIdentity = normalizeAccountDirectoryIdentityParam(
-                resolvedEndpointIdentity,
+                resolvedEndpointIdentity ?? custodyPending?.serverIdentityId ?? null,
             );
             const directoryTarget = directoryEndpoint && directoryIdentity
                 ? {
@@ -976,26 +981,14 @@ export default function OAuthProviderReturn() {
             // markers help cold-start rendering, but a redirect/intermediary
             // may omit them; the captured endpoint identity still correlates
             // the return to its dedicated Directory continuation namespace.
-            let pendingDirectoryAuth: PendingAccountDirectoryAuth | null = null;
-            let directoryCustodyFailure: 'corrupt' | 'unavailable' | null = null;
-            const canCorrelateDirectoryCustody = resolvedCredentialTarget === null
-                || resolvedCredentialTarget === ACCOUNT_DIRECTORY_PURPOSE;
-            if (directoryTarget && canCorrelateDirectoryCustody) {
-                try {
-                    pendingDirectoryAuth = await TokenStorage
-                        .getPendingAccountDirectoryAuth(directoryTarget, {
-                            includeExpired: true,
-                        });
-                } catch (storageError) {
-                    if (storageError instanceof AccountDirectoryStorageReadError) {
-                        directoryCustodyFailure = storageError.reason;
-                    } else {
-                        throw storageError;
-                    }
-                }
-            }
-            const isDirectoryReturn = resolvedDirectoryReturn
-                || pendingDirectoryAuth !== null
+            let pendingDirectoryAuth: PendingAccountDirectoryAuth | null = custodyPending;
+            let directoryCustodyFailure: 'ambiguous' | 'corrupt' | 'unavailable' | null =
+                directoryCustody.kind === 'ambiguous'
+                || directoryCustody.kind === 'corrupt'
+                || directoryCustody.kind === 'unavailable'
+                    ? directoryCustody.kind
+                    : null;
+            const isDirectoryReturn = pendingDirectoryAuth !== null
                 || directoryCustodyFailure !== null;
             if (!disposed && !controller.signal.aborted) {
                 setPersistedAccountDirectoryReturn(isDirectoryReturn && !resolvedDirectoryReturn);
@@ -1061,8 +1054,7 @@ export default function OAuthProviderReturn() {
                     }
 
                     if (
-                        flow !== 'auth'
-                        || !providerId
+                        !providerId
                         || !directoryProvider
                     ) {
                         if (directoryTarget) {
@@ -1086,9 +1078,13 @@ export default function OAuthProviderReturn() {
                         credentialTarget: resolvedCredentialTarget
                             ?? pendingDirectoryAuth?.credentialTarget
                             ?? null,
-                        endpointUrl: resolvedEndpointUrl,
-                        serverIdentityId: resolvedEndpointIdentity,
-                        canonicalServerUrl: resolvedCanonicalServerUrl,
+                        endpointUrl: resolvedEndpointUrl ?? pendingDirectoryAuth?.endpoint ?? null,
+                        serverIdentityId: resolvedEndpointIdentity
+                            ?? pendingDirectoryAuth?.serverIdentityId
+                            ?? null,
+                        canonicalServerUrl: resolvedCanonicalServerUrl
+                            ?? pendingDirectoryAuth?.canonicalServerUrl
+                            ?? null,
                         pendingKey: resolvedPending,
                         mode: resolvedMode,
                         pending: pendingDirectoryAuth,
@@ -1208,12 +1204,7 @@ export default function OAuthProviderReturn() {
 
             if (error) {
                 const providerName = provider.displayName ?? providerId;
-                const message =
-                    error === 'oauth_not_configured'
-                        ? t('friends.providerGate.notConfigured', { provider: providerName })
-                        : error === 'invalid_state'
-                            ? t('errors.oauthStateMismatch')
-                            : error;
+                const message = sanitizeExternalOAuthCallbackError(error, providerName);
                 await Modal.alert(t('common.error'), message);
                 if (flow !== 'auth') {
                     await TokenStorage.clearPendingExternalConnect();

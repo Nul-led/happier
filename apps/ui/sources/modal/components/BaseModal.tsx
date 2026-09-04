@@ -332,6 +332,7 @@ export function BaseModal({
             overflow: 'visible',
         };
 
+        const topPlacementGap = theme.margins.xxl * 2;
         const autoPlacementContainerStyle = {
             // Auto-placement:
             // - content <= viewport ⇒ container height is 100% ⇒ centered
@@ -341,10 +342,11 @@ export function BaseModal({
             flexDirection: 'column',
             justifyContent: webPlacement === 'top' ? 'flex-start' : 'center',
             alignItems: 'center',
-            paddingTop: insets.top,
-            paddingBottom: insets.bottom,
+            paddingTop: webPlacement === 'top' ? Math.max(insets.top, topPlacementGap) : insets.top,
+            paddingBottom: webPlacement === 'top' ? Math.max(insets.bottom, topPlacementGap) : insets.bottom,
             paddingLeft: insets.left,
             paddingRight: insets.right,
+            boxSizing: 'border-box',
         } as unknown as ViewStyle;
 
         const webModalCardBoundaryStyle = {

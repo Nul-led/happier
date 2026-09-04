@@ -178,6 +178,19 @@ describe('apps/ui/metro.config.js (Expo resolution fallbacks)', () => {
             ),
         });
 
+        const relayRuntimeStatusResult = config.resolver.resolveRequest(
+            {},
+            '@happier-dev/cli-common/relayHost/runtimeStatus',
+            'web',
+        );
+        expect(relayRuntimeStatusResult).toEqual({
+            type: 'sourceFile',
+            filePath: path.resolve(
+                __dirname,
+                '../../../../packages/cli-common/src/relayHost/relayRuntimeStatus.ts',
+            ),
+        });
+
         const opencodePluginResult = config.resolver.resolveRequest({}, '@happier-dev/plugins-opencode', 'web');
         expect(opencodePluginResult).toEqual({
             type: 'sourceFile',

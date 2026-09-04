@@ -294,7 +294,10 @@ export function KeyboardShortcutProvider(props: React.PropsWithChildren<Readonly
             const dispatcher = createKeyboardShortcutDispatcher({
                 ...currentOptions,
                 getContext: () => ({
-                    isEditableTarget: false,
+                    // Only an explicit native "not editable" fact may enable bindings
+                    // that are unsafe in editors. Missing values from an older bridge
+                    // fail closed until native focus ownership is known.
+                    isEditableTarget: nativeEvent.isEditableTarget !== false,
                     isComposing: event.isComposing,
                 }),
             });

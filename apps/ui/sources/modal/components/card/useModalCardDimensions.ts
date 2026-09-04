@@ -98,11 +98,12 @@ export function resolveModalCardDimensions(
         )
         : (preset.maxHeight ?? preset.minHeight);
 
-    const maxHeight = clamp(
-        availableHeight,
-        preset.minHeight,
-        preset.maxHeight ?? availableHeight,
-    );
+    // A preset minimum is only a preference when the viewport is unknown. Once
+    // the host reports a real height, the card must fit inside it; enforcing the
+    // preset minimum here makes short browser/Tauri windows overflow their shell.
+    const maxHeight = hasWindowHeight
+        ? Math.min(availableHeight, preset.maxHeight ?? availableHeight)
+        : clamp(availableHeight, preset.minHeight, preset.maxHeight ?? availableHeight);
 
     return {
         width,

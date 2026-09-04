@@ -238,6 +238,7 @@ const BASE_ROOT_LAYOUT_FEATURES: RootLayoutFeatures = {
             },
             pairing: {
                 desktopQrMobileScan: { enabled: true },
+                boundQrV2: { enabled: true },
             },
             ui: {
                 recoveryKeyReminder: { enabled: true },

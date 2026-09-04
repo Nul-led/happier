@@ -16,10 +16,9 @@ import type { DaemonMergedProjectionInputs } from './loadDaemonMergedProjectionI
 
 /**
  * Converts the UI's backend-selection vocabulary into the strict Action
- * target vocabulary. The daemon projection is authoritative for non-configured
- * plugin Agents; configured backend instances fail closed until the Action
- * contract can represent their exact identity. Bundled Agent identities are
- * the only local fallback.
+ * target vocabulary. The daemon projection is authoritative for plugin Agents,
+ * including the qualified Agent contribution behind a configured selection.
+ * Bundled Agent identities are the only local fallback.
  */
 export function resolveAgentExecutionTargetForBackendTarget(params: Readonly<{
     backendTarget: BackendTargetRefV2Input;
@@ -40,13 +39,6 @@ export function resolveAgentExecutionTargetForBackendTarget(params: Readonly<{
         return null;
     }
 
-    // `AgentExecutionTargetV1` identifies an Agent contribution, not a configured
-    // backend instance. Collapsing this target would select an arbitrary instance,
-    // so that transition remains unavailable until the Action contract owns it.
-    if (backendTarget.configuredBackendId) {
-        return null;
-    }
-
     const projectedAgentId = params.daemonMergedProjectionInputs
         ?.mergedBackendProjectionById?.[backendTarget.backendId]?.agentId;
     const agentId = typeof projectedAgentId === 'string' && projectedAgentId.trim()
@@ -60,6 +52,13 @@ export function resolveAgentExecutionTargetForBackendTarget(params: Readonly<{
             kind: 'agent',
             identity: parsedProjectedIdentity.data,
         };
+    }
+
+    // A configured backend has no local qualified-identity fallback. Only its
+    // machine projection can prove which executable Agent contribution owns it;
+    // never reinterpret the configured id itself as an Agent identity.
+    if (backendTarget.configuredBackendId) {
+        return null;
     }
 
     if (!isBundledAgentId(agentId)) {

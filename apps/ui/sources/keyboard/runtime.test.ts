@@ -339,6 +339,48 @@ describe('createKeyboardShortcutDispatcher', () => {
         ]);
     });
 
+    it('derives the native Mod+K signature for the canonical Search command', () => {
+        const signatures = resolveNativeHardwareKeyboardConsumableEventSignatures({
+            enabled: true,
+            platform: 'ios',
+            surface: 'native',
+            singleKeyShortcutsEnabled: true,
+            disabledCommandIds: [],
+            overrides: {},
+            handlers: { 'commandPalette.open': vi.fn() },
+            getContext: () => ({
+                isEditableTarget: false,
+                isComposing: false,
+            }),
+        });
+
+        expect(signatures).toEqual([
+            'k|shift=false|ctrl=false|meta=true|alt=false',
+        ]);
+    });
+
+    it('preserves native Search consumption for a user-configured printable-key override', () => {
+        const signatures = resolveNativeHardwareKeyboardConsumableEventSignatures({
+            enabled: true,
+            platform: 'android',
+            surface: 'native',
+            singleKeyShortcutsEnabled: true,
+            disabledCommandIds: [],
+            overrides: {
+                'commandPalette.open': [{ binding: 'Mod+P' }],
+            },
+            handlers: { 'commandPalette.open': vi.fn() },
+            getContext: () => ({
+                isEditableTarget: false,
+                isComposing: false,
+            }),
+        });
+
+        expect(signatures).toEqual([
+            'p|shift=false|ctrl=true|meta=false|alt=false',
+        ]);
+    });
+
     it('does not derive native consumable signatures when the command cannot run', () => {
         const signatures = resolveNativeHardwareKeyboardConsumableEventSignatures({
             enabled: false,

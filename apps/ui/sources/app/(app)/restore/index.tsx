@@ -61,6 +61,10 @@ export default function RestoreIndex() {
         })();
     }, [handleBack, router, shouldPromptLegacyPairingUpdateRequired]);
 
+    if (shouldPromptLegacyPairingUpdateRequired) {
+        return <View testID="legacy-pairing-update-required-route" style={{ flex: 1 }} />;
+    }
+
     return (
         <View
             testID="unauth-shell-route-restore"

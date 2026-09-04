@@ -4,8 +4,24 @@ import { describe, expect, it, vi } from 'vitest';
 import * as registryUiBehavior from '@/agents/registry/registryUiBehavior';
 import { createSessionFixture } from '../fixtures/sessionFixtures';
 import { createRegistryUiBehaviorModuleMock } from './registryUiBehavior';
+import { createTokenStorageModuleMock } from './tokenStorage';
 
 describe('UI testkit mock factories', () => {
+    it('preserves token-storage exports and supplies a removable credential-mutation boundary', async () => {
+        const moduleMock = await createTokenStorageModuleMock({
+            importOriginal: async () => await import('@/auth/storage/tokenStorage'),
+            tokenStorage: {
+                getCredentialsForServerUrl: vi.fn(async () => ({ token: 'test-token' })),
+            },
+        });
+        const listener = vi.fn();
+
+        expect(await moduleMock.TokenStorage.getCredentialsForServerUrl('https://home.example.test'))
+            .toEqual({ token: 'test-token' });
+        expect(moduleMock.TokenStorage.getCredentials).toBeTypeOf('function');
+        expect(moduleMock.subscribeHomeCredentialMutations(listener)).toBeTypeOf('function');
+    });
+
     it('creates a complete registry UI behavior module mock with caller overrides', () => {
         const supportsEditableSessionGoals = vi.fn(() => true);
 

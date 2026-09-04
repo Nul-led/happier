@@ -106,6 +106,9 @@ describe('BaseModal (web)', () => {
         const style = flattenStyleProp(container?.props?.style);
         expect(style.minHeight).toBe('100%');
         expect(style.justifyContent).toBe('flex-start');
+        expect(style.paddingTop).toBe(24 * 2);
+        expect(style.paddingBottom).toBe(24 * 2);
+        expect(style.boxSizing).toBe('border-box');
 
         const child = screen.findByType('Child' as any);
         const contentWrapper = (child as any)?.parent?.parent;

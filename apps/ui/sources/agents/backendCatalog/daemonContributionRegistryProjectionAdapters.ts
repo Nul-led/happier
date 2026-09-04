@@ -7,6 +7,8 @@ import type {
     PluginProjectedSettingsFieldV2,
     PluginProjectedSettingsV2,
     PluginProjectionV2,
+    PluginContributionIdentityV1,
+    PluginDiagnosticDataV1,
 } from '@happier-dev/protocol';
 import { AGENT_IDS, type AgentId } from '@happier-dev/agents';
 
@@ -25,6 +27,8 @@ export type PluginProjectionDiagnostic = Readonly<{
     code: string;
     message: string;
     severity?: string | null;
+    details?: PluginDiagnosticDataV1['details'];
+    contribution?: PluginContributionIdentityV1;
 }>;
 
 export type PluginProjectionEditableSettingControl =
@@ -529,6 +533,8 @@ function buildV2PluginProjectionById(
             code: diagnostic.data.code,
             message: diagnostic.data.message ?? diagnostic.data.code,
             severity: diagnostic.data.severity,
+            ...(diagnostic.data.details === undefined ? {} : { details: diagnostic.data.details }),
+            ...(diagnostic.contribution === undefined ? {} : { contribution: diagnostic.contribution }),
         });
         diagnosticsByPluginId.set(pluginId, diagnostics);
     }

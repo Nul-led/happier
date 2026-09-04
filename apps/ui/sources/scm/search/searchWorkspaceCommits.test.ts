@@ -40,6 +40,7 @@ describe('searchWorkspaceCommits', () => {
 
         const outcome = await searchWorkspaceCommits({
             scope: SCOPE,
+            accountId: 'account-a',
             query: 'cache layer',
             limit: 20,
             signal: controller.signal,
@@ -53,7 +54,7 @@ describe('searchWorkspaceCommits', () => {
         expect(machineScmLogListSpy).toHaveBeenCalledWith(
             'm1',
             { cwd: '/repo', query: 'cache layer', limit: 20 },
-            { serverId: 'server-a', signal: controller.signal },
+            { serverId: 'server-a', accountId: 'account-a', signal: controller.signal },
         );
     });
 
@@ -148,6 +149,26 @@ describe('searchWorkspaceCommits', () => {
             limit: 20,
             signal: controller.signal,
         })).rejects.toBe(abortError);
+    });
+
+    it('suppresses a response after the captured Account lifetime retires', async () => {
+        let resolveResponse!: (value: unknown) => void;
+        machineScmLogListSpy.mockImplementationOnce(() => new Promise((resolve) => {
+            resolveResponse = resolve;
+        }));
+        let current = true;
+        const pending = searchWorkspaceCommits({
+            scope: SCOPE,
+            accountId: 'account-a',
+            accountIsCurrent: () => current,
+            query: 'private',
+        });
+        await vi.waitFor(() => expect(machineScmLogListSpy).toHaveBeenCalledTimes(1));
+
+        current = false;
+        resolveResponse({ success: true, entries: [makeEntry('d'.repeat(40))], queryApplied: true });
+
+        await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
     });
 
     it('refuses to search without an exact workspace scope and never falls back to an arbitrary workspace', async () => {

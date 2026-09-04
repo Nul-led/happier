@@ -61,6 +61,8 @@ function mapFailureToOutcome(response: ScmLogListResponse): WorkspaceCommitSearc
 
 export async function searchWorkspaceCommits(input: Readonly<{
     scope: WorkspaceScopeBase | null;
+    accountId?: string | null;
+    accountIsCurrent?: () => boolean;
     query: string;
     limit?: number;
     signal?: AbortSignal;
@@ -84,8 +86,15 @@ export async function searchWorkspaceCommits(input: Readonly<{
     };
     const response = await machineScmLogList(scope.machineId, request, {
         serverId: scope.serverId,
+        ...(input.accountId ? { accountId: input.accountId } : {}),
         ...(input.signal ? { signal: input.signal } : {}),
     });
+
+    if (input.signal?.aborted || input.accountIsCurrent?.() === false) {
+        const error = new Error('Workspace commit search was superseded');
+        error.name = 'AbortError';
+        throw error;
+    }
 
     if (!response.success) {
         return mapFailureToOutcome(response);

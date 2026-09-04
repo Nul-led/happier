@@ -1,8 +1,12 @@
 import * as React from 'react';
 import { act } from 'react-test-renderer';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Settings } from '@/sync/domains/settings/settings';
+import { Modal } from '@/modal';
+import { standardCleanup } from '@/dev/testkit/cleanup/standardCleanup';
+import { renderScreen } from '@/dev/testkit/render/renderScreen';
+import { KeyboardShortcutProvider, useKeyboardShortcutHandlers } from './KeyboardShortcutProvider';
 
 const testState = vi.hoisted(() => ({
     platformOS: 'web',
@@ -74,7 +78,6 @@ vi.mock('@/components/sessions/agentInput/subscribeToIosHardwareShiftEnter', () 
 
 describe('KeyboardShortcutProvider', () => {
     beforeEach(() => {
-        vi.resetModules();
         vi.clearAllMocks();
         testState.platformOS = 'web';
         testState.settings = {
@@ -89,11 +92,11 @@ describe('KeyboardShortcutProvider', () => {
         installKeyboardWindowMock();
     });
 
-    it('omits inactive handler labels from shortcut help', async () => {
-        const { renderScreen } = await import('@/dev/testkit');
-        const { Modal } = await import('@/modal');
-        const { KeyboardShortcutProvider } = await import('./KeyboardShortcutProvider');
+    afterEach(() => {
+        standardCleanup();
+    });
 
+    it('omits inactive handler labels from shortcut help', async () => {
         await renderScreen(
             <KeyboardShortcutProvider handlers={{}}>
                 <Child />
@@ -117,8 +120,6 @@ describe('KeyboardShortcutProvider', () => {
     it('routes native hardware keyboard events through the central registry when the native hook is present', async () => {
         testState.platformOS = 'ios';
         const openCommandPalette = vi.fn();
-        const { renderScreen } = await import('@/dev/testkit');
-        const { KeyboardShortcutProvider } = await import('./KeyboardShortcutProvider');
 
         await renderScreen(
             <KeyboardShortcutProvider handlers={{ 'commandPalette.open': openCommandPalette }}>
@@ -132,6 +133,38 @@ describe('KeyboardShortcutProvider', () => {
             code?: string;
             modifiers: { shift: boolean; ctrl: boolean; meta: boolean; alt: boolean };
             repeat: boolean;
+            isEditableTarget?: boolean;
+        }) => void;
+
+        await act(async () => {
+            listener({
+                key: 'k',
+                code: 'KeyK',
+                modifiers: { shift: false, ctrl: false, meta: true, alt: false },
+                repeat: false,
+                isEditableTarget: false,
+            });
+        });
+
+        expect(openCommandPalette).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not dispatch a native shortcut that is disallowed in the focused editable target', async () => {
+        testState.platformOS = 'ios';
+        const openCommandPalette = vi.fn();
+
+        await renderScreen(
+            <KeyboardShortcutProvider handlers={{ 'commandPalette.open': openCommandPalette }}>
+                <Child />
+            </KeyboardShortcutProvider>,
+        );
+
+        const listener = nativeKeyboardState.subscribe.mock.calls.at(-1)?.[0] as (event: {
+            key: string;
+            code?: string;
+            modifiers: { shift: boolean; ctrl: boolean; meta: boolean; alt: boolean };
+            repeat: boolean;
+            isEditableTarget?: boolean;
         }) => void;
 
         await act(async () => {
@@ -141,15 +174,20 @@ describe('KeyboardShortcutProvider', () => {
                 modifiers: { shift: false, ctrl: false, meta: true, alt: false },
                 repeat: false,
             });
+            listener({
+                key: 'k',
+                code: 'KeyK',
+                modifiers: { shift: false, ctrl: false, meta: true, alt: false },
+                repeat: false,
+                isEditableTarget: true,
+            });
         });
 
-        expect(openCommandPalette).toHaveBeenCalledTimes(1);
+        expect(openCommandPalette).not.toHaveBeenCalled();
     });
 
-    it('configures native consumable signatures from active Enter and Escape registry bindings before subscribing', async () => {
+    it('configures native consumable signatures from active registry bindings before subscribing', async () => {
         testState.platformOS = 'ios';
-        const { renderScreen } = await import('@/dev/testkit');
-        const { KeyboardShortcutProvider } = await import('./KeyboardShortcutProvider');
 
         await renderScreen(
             <KeyboardShortcutProvider
@@ -166,6 +204,7 @@ describe('KeyboardShortcutProvider', () => {
         expect(nativeKeyboardState.configureConsumableSignatures).toHaveBeenCalledWith([
             'Escape|shift=true|ctrl=false|meta=false|alt=false',
             'Enter|shift=false|ctrl=false|meta=true|alt=false',
+            'k|shift=false|ctrl=false|meta=true|alt=false',
         ]);
         expect(nativeKeyboardState.configureConsumableSignatures.mock.invocationCallOrder[0])
             .toBeLessThan(nativeKeyboardState.subscribe.mock.invocationCallOrder[0]);
@@ -175,8 +214,6 @@ describe('KeyboardShortcutProvider', () => {
         testState.platformOS = 'ios';
         const remove = vi.fn();
         nativeKeyboardState.subscribe.mockReturnValue({ remove });
-        const { renderScreen } = await import('@/dev/testkit');
-        const { KeyboardShortcutProvider } = await import('./KeyboardShortcutProvider');
 
         const screen = await renderScreen(
             <KeyboardShortcutProvider handlers={{ 'composer.sendImmediate': vi.fn() }}>
@@ -196,8 +233,6 @@ describe('KeyboardShortcutProvider', () => {
             ...testState.settings,
             keyboardShortcutsV2Enabled: false,
         };
-        const { renderScreen } = await import('@/dev/testkit');
-        const { KeyboardShortcutProvider } = await import('./KeyboardShortcutProvider');
 
         await renderScreen(
             <KeyboardShortcutProvider handlers={{ 'session.new': vi.fn() }}>
@@ -216,8 +251,6 @@ describe('KeyboardShortcutProvider', () => {
             keyboardSingleKeyShortcutsEnabled: false,
             keyboardShortcutDisabledCommandIdsV1: ['commandPalette.open'],
         };
-        const { renderScreen } = await import('@/dev/testkit');
-        const { KeyboardShortcutProvider } = await import('./KeyboardShortcutProvider');
 
         await renderScreen(
             <KeyboardShortcutProvider handlers={{ 'commandPalette.open': vi.fn() }}>
@@ -231,6 +264,7 @@ describe('KeyboardShortcutProvider', () => {
 
     it('dispatches descendant scoped handlers through the provider registry', async () => {
         testState.platformOS = 'web';
+        vi.stubGlobal('navigator', { platform: 'MacIntel' });
         testState.settings = {
             ...testState.settings,
             keyboardShortcutOverridesV1: {
@@ -238,8 +272,6 @@ describe('KeyboardShortcutProvider', () => {
             },
         };
         const newSession = vi.fn();
-        const { renderScreen } = await import('@/dev/testkit');
-        const { KeyboardShortcutProvider, useKeyboardShortcutHandlers } = await import('./KeyboardShortcutProvider');
 
         function RegisteredChild() {
             useKeyboardShortcutHandlers(React.useMemo(() => ({
@@ -269,8 +301,6 @@ describe('KeyboardShortcutProvider', () => {
         testState.platformOS = 'ios';
         const calls: number[] = [];
         let rerenderRegisteredChild: (() => void) | null = null;
-        const { renderScreen } = await import('@/dev/testkit');
-        const { KeyboardShortcutProvider, useKeyboardShortcutHandlers } = await import('./KeyboardShortcutProvider');
 
         function RegisteredChild() {
             const [version, setVersion] = React.useState(0);
@@ -318,8 +348,6 @@ describe('KeyboardShortcutProvider', () => {
         testState.platformOS = 'ios';
         const firstSendImmediate = vi.fn();
         const secondSendImmediate = vi.fn();
-        const { renderScreen } = await import('@/dev/testkit');
-        const { KeyboardShortcutProvider } = await import('./KeyboardShortcutProvider');
 
         const screen = await renderScreen(
             <KeyboardShortcutProvider handlers={{ 'composer.sendImmediate': firstSendImmediate }}>
@@ -371,8 +399,6 @@ describe('KeyboardShortcutProvider', () => {
             latestNativeListener = listener as typeof latestNativeListener;
             return { remove: vi.fn() };
         });
-        const { renderScreen } = await import('@/dev/testkit');
-        const { KeyboardShortcutProvider } = await import('./KeyboardShortcutProvider');
 
         function NativeDispatchOnLayout(props: Readonly<{ enabled: boolean }>) {
             React.useLayoutEffect(() => {

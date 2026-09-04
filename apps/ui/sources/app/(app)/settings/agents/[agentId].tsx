@@ -86,7 +86,6 @@ import {
 } from '@/sync/domains/machines/administration/useTargetSelection';
 import { isMachineAdministrationExecutionTargetCurrent } from '@/sync/domains/machines/administration/operationCurrentness';
 import { isAdministrationScopedPluginSettingsTargetCurrent } from '@/sync/domains/machines/administration/scopedPluginSettingsTarget';
-import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
 import { publishMachineContributionRegistryProjectionInvalidation } from '@/sync/ops/machineContributionRegistryProjection';
 
 function resolveQualifiedAgentProjectionId(params: Readonly<{
@@ -235,6 +234,7 @@ export const AgentContributedSettingsSection = React.memo(function AgentContribu
             accountServerIdentityId={accountServerIdentityId}
             daemonServerIdentityId={executionTarget?.target.serverIdentityId ?? null}
             perActiveServerIdentityId={targetSelection.selectedTarget?.serverIdentityId ?? null}
+            accountOperationsAvailable={targetSelection.selectedTargetServerMatchesActiveAccount}
             daemonOperationsAvailable={daemonOperationsAvailable}
             isDaemonTargetCurrent={isDaemonSettingsTargetCurrent}
         />
@@ -242,7 +242,10 @@ export const AgentContributedSettingsSection = React.memo(function AgentContribu
 });
 
 const AgentConnectedAccountPurposeSettingsSection = React.memo(function AgentConnectedAccountPurposeSettingsSection(
-    props: Readonly<{ projection: ResolvedAgentCatalogEntry }>,
+    props: Readonly<{
+        projection: ResolvedAgentCatalogEntry;
+        accountSettingsAvailable: boolean;
+    }>,
 ) {
     const settings = useSettings();
     const applySettings = useApplySettings();
@@ -258,7 +261,7 @@ const AgentConnectedAccountPurposeSettingsSection = React.memo(function AgentCon
         declaration: PluginProjectedAgentConnectedAccountPurposeV2,
         target: QualifiedConnectedAccountPurposeBindingTargetV1 | null,
     ) => {
-        if (!identity) return;
+        if (!identity || !props.accountSettingsAvailable) return;
         const purpose = { consumer: identity, purpose: declaration.purpose };
         const key = qualifiedPurposeKey(purpose);
         const retained = settings.connectedAccountPurposeBindingsV1.bindings.filter(
@@ -270,7 +273,7 @@ const AgentConnectedAccountPurposeSettingsSection = React.memo(function AgentCon
                 bindings: target ? [...retained, { purpose, target }] : retained,
             }),
         });
-    }, [applySettings, identity, settings.connectedAccountPurposeBindingsV1]);
+    }, [applySettings, identity, props.accountSettingsAvailable, settings.connectedAccountPurposeBindingsV1]);
 
     if (!identity || declarations.length === 0) return null;
     return (
@@ -288,6 +291,10 @@ const AgentConnectedAccountPurposeSettingsSection = React.memo(function AgentCon
                         localizedTextPluginId={identity.pluginId}
                         declaration={declaration}
                         value={targets.get(purposeKey) ?? null}
+                        disabled={!props.accountSettingsAvailable}
+                        disabledReason={!props.accountSettingsAvailable
+                            ? t('connectedServices.accountScopeMismatchDescription')
+                            : undefined}
                         onChange={(target) => setTarget(declaration, target)}
                     />
                 );
@@ -300,6 +307,7 @@ const AgentSettingsFallbackScreenInner = React.memo(function AgentSettingsFallba
     projection: ResolvedAgentCatalogEntry;
     pluginSettingsProjection: PluginProjectionEntry | null;
     targetSelection: MachineAdministrationTargetSelectionV1;
+    accountSettingsAvailable: boolean;
     executionTarget: FreshMachineAdministrationExecutionTargetV1 | null;
     daemonOperationsAvailable: boolean;
     externalSessionsProjectionPhase: 'idle' | 'loading' | 'ready' | 'unsupported' | 'error';
@@ -314,14 +322,14 @@ const AgentSettingsFallbackScreenInner = React.memo(function AgentSettingsFallba
     const backendEnabledByTargetKey = settings.backendEnabledByTargetKey;
     const backendEnabled = props.projection.enabled;
     const setBackendEnabled = React.useCallback((next: boolean) => {
-        if (!providerTargetKey) return;
+        if (!providerTargetKey || !props.accountSettingsAvailable) return;
         applySettings({
             backendEnabledByTargetKey: {
                 ...(backendEnabledByTargetKey ?? {}),
                 [providerTargetKey]: next,
             },
         });
-    }, [applySettings, backendEnabledByTargetKey, providerTargetKey]);
+    }, [applySettings, backendEnabledByTargetKey, props.accountSettingsAvailable, providerTargetKey]);
     const title = props.projection.title;
     const subtitle = props.projection.subtitle ?? props.projection.agentId;
 
@@ -354,8 +362,13 @@ const AgentSettingsFallbackScreenInner = React.memo(function AgentSettingsFallba
                 browseAvailable={props.externalSessionsBrowseAvailable}
                 refreshKey={props.externalSessionsRefreshKey}
                 projectionPhase={props.externalSessionsProjectionPhase}
+                administrationTarget={props.targetSelection.selectedTarget}
+                accountSettingsAvailable={props.accountSettingsAvailable}
             />
-            <AgentConnectedAccountPurposeSettingsSection projection={props.projection} />
+            <AgentConnectedAccountPurposeSettingsSection
+                projection={props.projection}
+                accountSettingsAvailable={props.accountSettingsAvailable}
+            />
             <ItemGroup title={title} footer={t('settingsAgents.footer')}>
                 <Item
                     title={title}
@@ -371,17 +384,28 @@ const AgentSettingsFallbackScreenInner = React.memo(function AgentSettingsFallba
                     )}
                     mode="info"
                 />
-                <Item
-                    title={t('settingsAgents.enabledTitle')}
-                    subtitle={t('settingsAgents.enabledSubtitle')}
-                    icon={<Icon name="toggle-right" size={29} color={theme.colors.text.secondary} />}
-                    rightElement={backendEnabled === null ? undefined : <Switch value={backendEnabled} onValueChange={setBackendEnabled} />}
-                    showChevron={false}
-                    onPress={() => {
-                        if (backendEnabled === null) return;
-                        setBackendEnabled(!backendEnabled);
-                    }}
-                />
+                {providerTargetKey ? (
+                    <Item
+                        title={t('settingsAgents.enabledTitle')}
+                        subtitle={props.accountSettingsAvailable
+                            ? t('settingsAgents.enabledSubtitle')
+                            : t('connectedServices.accountScopeMismatchDescription')}
+                        icon={<Icon name="toggle-right" size={29} color={theme.colors.text.secondary} />}
+                        disabled={!props.accountSettingsAvailable}
+                        rightElement={backendEnabled === null ? undefined : (
+                            <Switch
+                                value={backendEnabled}
+                                disabled={!props.accountSettingsAvailable}
+                                onValueChange={setBackendEnabled}
+                            />
+                        )}
+                        showChevron={false}
+                        onPress={props.accountSettingsAvailable ? () => {
+                            if (backendEnabled === null) return;
+                            setBackendEnabled(!backendEnabled);
+                        } : undefined}
+                    />
+                ) : null}
             </ItemGroup>
             <ItemGroup title={t('settingsAgents.configuration')} footer={t('settingsAgents.notFoundSubtitle')}>
                 <Item
@@ -402,6 +426,7 @@ const AgentSettingsScreenInner = React.memo(function AgentSettingsScreenInner(pr
     currentAgentCapabilities: CurrentProjectedAgentCapabilities | null;
     authPlugin: ResolvedAgentCatalogEntry['authPlugin'];
     targetSelection: MachineAdministrationTargetSelectionV1;
+    accountSettingsAvailable: boolean;
     executionTarget: FreshMachineAdministrationExecutionTargetV1 | null;
     compatibilityTargetKeys: readonly string[];
     pluginSettingsProjection: PluginProjectionEntry | null;
@@ -422,6 +447,7 @@ const AgentSettingsScreenInner = React.memo(function AgentSettingsScreenInner(pr
         currentAgentCapabilities,
         authPlugin,
         targetSelection,
+        accountSettingsAvailable,
         executionTarget,
         compatibilityTargetKeys,
         pluginSettingsProjection,
@@ -448,7 +474,7 @@ const AgentSettingsScreenInner = React.memo(function AgentSettingsScreenInner(pr
     const backendEnabledByTargetKey = settings.backendEnabledByTargetKey;
     const backendEnabled = projection.enabled;
     const setBackendEnabled = (next: boolean) => {
-        if (!providerTargetKey) return;
+        if (!providerTargetKey || !accountSettingsAvailable) return;
         applySettings({
             backendEnabledByTargetKey: {
                 ...(backendEnabledByTargetKey ?? {}),
@@ -469,7 +495,7 @@ const AgentSettingsScreenInner = React.memo(function AgentSettingsScreenInner(pr
         )
         : 'default';
     const setPermissionMode = (next: PermissionMode) => {
-        if (!providerTargetKey) return;
+        if (!providerTargetKey || !accountSettingsAvailable) return;
         applySettings({
             sessionDefaultPermissionModeByTargetKey: {
                 ...(defaultPermissionByTargetKey ?? {}),
@@ -490,7 +516,7 @@ const AgentSettingsScreenInner = React.memo(function AgentSettingsScreenInner(pr
             )
             : 'system-first';
     const setProviderCliSourcePreference = (next: 'system-first' | 'managed-first') => {
-        if (!providerTargetKey) return;
+        if (!providerTargetKey || !accountSettingsAvailable) return;
         applySettings({
             backendCliSourcePreferenceByTargetKey: {
                 ...(backendCliSourcePreferenceByTargetKey ?? {}),
@@ -654,14 +680,23 @@ const AgentSettingsScreenInner = React.memo(function AgentSettingsScreenInner(pr
                     {providerTargetKey ? (
                         <Item
                             title={t('settingsAgents.enabledTitle')}
-                            subtitle={t('settingsAgents.enabledSubtitle')}
+                            subtitle={accountSettingsAvailable
+                                ? t('settingsAgents.enabledSubtitle')
+                                : t('connectedServices.accountScopeMismatchDescription')}
                             icon={<Icon name="toggle-right" size={29} color={theme.colors.text.secondary} />}
-                            rightElement={<Switch value={backendEnabled ?? undefined} onValueChange={setBackendEnabled} />}
+                            disabled={!accountSettingsAvailable}
+                            rightElement={(
+                                <Switch
+                                    value={backendEnabled ?? undefined}
+                                    disabled={!accountSettingsAvailable}
+                                    onValueChange={setBackendEnabled}
+                                />
+                            )}
                             showChevron={false}
-                            onPress={() => {
+                            onPress={accountSettingsAvailable ? () => {
                                 if (backendEnabled === null) return;
                                 setBackendEnabled(!backendEnabled);
-                            }}
+                            } : undefined}
                         />
                     ) : null}
                 </ItemGroup>
@@ -685,8 +720,11 @@ const AgentSettingsScreenInner = React.memo(function AgentSettingsScreenInner(pr
                         popoverPortalWebTarget="body"
                         itemTrigger={{
                             title: t('settingsSession.permissions.defaultPermissionModeTitle'),
-                            subtitle: getPermissionModeLabelForAgentType(projection.agentId, permissionMode),
+                            subtitle: accountSettingsAvailable
+                                ? getPermissionModeLabelForAgentType(projection.agentId, permissionMode)
+                                : t('connectedServices.accountScopeMismatchDescription'),
                             icon: <Icon name="shield-check" size={29} color={theme.colors.state.success.foreground} />,
+                            itemProps: { disabled: !accountSettingsAvailable },
                         }}
                         items={permissionModeOptions.map((opt) => ({
                             id: opt.value,
@@ -707,7 +745,10 @@ const AgentSettingsScreenInner = React.memo(function AgentSettingsScreenInner(pr
                     </ItemGroup>
                 ) : null}
 
-                <AgentConnectedAccountPurposeSettingsSection projection={projection} />
+                <AgentConnectedAccountPurposeSettingsSection
+                    projection={projection}
+                    accountSettingsAvailable={accountSettingsAvailable}
+                />
 
                     {authPlugin ? <AgentAuthenticationCard
                         agentId={agentId}
@@ -787,11 +828,14 @@ const AgentSettingsScreenInner = React.memo(function AgentSettingsScreenInner(pr
                             popoverPortalWebTarget="body"
                             itemTrigger={{
                                 title: t('settingsAgents.cliSourcePreference.title'),
-                                subtitle: t('settingsAgents.cliSourcePreference.subtitle'),
+                                subtitle: accountSettingsAvailable
+                                    ? t('settingsAgents.cliSourcePreference.subtitle')
+                                    : t('connectedServices.accountScopeMismatchDescription'),
                                 showSelectedSubtitle: false,
                                 icon: <Icon name="arrows-left-right" size={29} color={theme.colors.text.secondary} />,
                                 itemProps: {
                                     testID: 'settings-provider-cli-source-preference',
+                                    disabled: !accountSettingsAvailable,
                                 },
                             }}
                             items={[
@@ -844,6 +888,8 @@ const AgentSettingsScreenInner = React.memo(function AgentSettingsScreenInner(pr
                     browseAvailable={externalSessionsBrowseAvailable}
                     refreshKey={externalSessionsRefreshKey}
                     projectionPhase={externalSessionsProjectionPhase}
+                    administrationTarget={targetSelection.selectedTarget}
+                    accountSettingsAvailable={accountSettingsAvailable}
                 />
 
                 {currentAgentCapabilities ? (
@@ -937,33 +983,29 @@ export default React.memo(function AgentSettingsScreen() {
 
     const recoveryInstallRequest = React.useMemo(() => {
         const machineId = typeof params.machineId === 'string' ? params.machineId.trim() : '';
-        const serverId = typeof params.serverId === 'string' ? params.serverId.trim() : '';
+        const serverIdentityId = typeof params.serverIdentityId === 'string'
+            ? params.serverIdentityId.trim()
+            : '';
         const installIntent =
             params.installIntent === 'update'
                 ? 'update'
                 : params.installIntent === 'install'
                     ? 'install'
                     : null;
-        if (!machineId || !serverId || !installIntent) {
+        if (!machineId || !serverIdentityId || !installIntent) {
             return null;
         }
-        return { machineId, serverId, installIntent } as const;
+        return { machineId, serverIdentityId, installIntent } as const;
     }, [
         params.installIntent,
         params.machineId,
-        params.serverId,
+        params.serverIdentityId,
     ]);
     const recoveryInstallTarget = React.useMemo(() => {
         if (!recoveryInstallRequest) return null;
         const candidate = administrationTargetSelection.candidates.find((entry) => (
             entry.target.machineId === recoveryInstallRequest.machineId
-            && (
-                entry.target.serverIdentityId === recoveryInstallRequest.serverId
-                || areServerProfileIdentifiersEquivalent(
-                    entry.target.serverIdentityId,
-                    recoveryInstallRequest.serverId,
-                )
-            )
+            && entry.target.serverIdentityId === recoveryInstallRequest.serverIdentityId
         ));
         return candidate
             ? { target: candidate.target, installIntent: recoveryInstallRequest.installIntent }
@@ -1149,6 +1191,7 @@ export default React.memo(function AgentSettingsScreen() {
     const externalSessionsRefreshKey = externalSessionsBinding
         ? `${externalSessionsBinding.generation}:${executionTarget?.serverId ?? ''}:${executionTarget?.machine.id ?? ''}`
         : null;
+    const accountSettingsAvailable = administrationTargetSelection.selectedTargetServerMatchesActiveAccount;
     if (!normalizedAgentId) {
         return <AgentSettingsNotFound theme={theme} targetSelection={administrationTargetSelection} />;
     }
@@ -1171,6 +1214,7 @@ export default React.memo(function AgentSettingsScreen() {
                 projection={projection}
                 pluginSettingsProjection={pluginSettingsProjection}
                 targetSelection={administrationTargetSelection}
+                accountSettingsAvailable={accountSettingsAvailable}
                 executionTarget={executionTarget}
                 daemonOperationsAvailable={executionTarget !== null && daemonMergedProjection.phase === 'ready'}
                 externalSessionsProjectionPhase={daemonMergedProjection.phase}
@@ -1189,6 +1233,7 @@ export default React.memo(function AgentSettingsScreen() {
             currentAgentCapabilities={currentAgentCapabilities}
             authPlugin={projection.authPlugin}
             targetSelection={administrationTargetSelection}
+            accountSettingsAvailable={accountSettingsAvailable}
             executionTarget={executionTarget}
             compatibilityTargetKeys={compatibilityTargetKeys}
             pluginSettingsProjection={pluginSettingsProjection}

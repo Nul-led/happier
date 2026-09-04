@@ -75,7 +75,7 @@ export const defaultKeyboardCommands: readonly KeyboardCommand[] = [
         settingsTitleKey: 'settingsKeyboard.commands.commandPaletteOpen',
         defaultBindings: [
             { binding: 'Alt+K', platforms: ['web'] },
-            { binding: 'Mod+K', blockedSurfaces: ['web'] },
+            { binding: 'Mod+K', nativeConsumable: true, blockedSurfaces: ['web'] },
         ],
         when: (context) => !context.isEditableTarget,
     },

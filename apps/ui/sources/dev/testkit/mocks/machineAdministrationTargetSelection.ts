@@ -20,6 +20,7 @@ import type {
 export type MachineAdministrationTargetSelectionMockMachine = Readonly<{
     machineId: string;
     displayName?: string;
+    homeDir?: string;
     availability?: MachineAdministrationCandidateAvailabilityV1;
     observation?: 'live' | 'stale';
     /**
@@ -99,7 +100,13 @@ function buildInventoryRows(input: Readonly<{
             candidate,
             serverId: rowServerId,
             serverName: rowServerLabel,
-            machine: { id: machine.machineId },
+            machine: {
+                id: machine.machineId,
+                metadata: {
+                    ...(machine.displayName ? { displayName: machine.displayName } : {}),
+                    ...(machine.homeDir ? { homeDir: machine.homeDir } : {}),
+                },
+            },
         } as unknown as MockInventoryRow;
     });
 }
@@ -120,7 +127,7 @@ function resolveExecutionTargetFrom(input: Readonly<{
         target: candidate.target,
         serverId: row.serverId,
         profile: { id: row.serverId, serverIdentityId: candidate.target.serverIdentityId },
-        machine: { id: candidate.target.machineId },
+        machine: row.machine,
     } as unknown as NonNullable<ResolvedExecutionTarget>;
 }
 

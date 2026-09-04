@@ -29,4 +29,55 @@ describe('resolveModalCardDimensions', () => {
             maxHeight: 860,
         });
     });
+
+    it('never lets the card minimum height exceed the actual short viewport', () => {
+        const dimensions = resolveModalCardDimensions(
+            { width: 900, height: 280 },
+            { size: 'lg', width: 800, maxHeightRatio: 0.7 },
+        );
+
+        expect(dimensions.maxHeight).toBe(184);
+    });
+
+    it('shrinks on smaller windows while retaining the minimum preferred width', () => {
+        expect(resolveModalCardDimensions({ width: 360, height: 420 }, { size: 'lg' })).toEqual({
+            width: 320,
+            maxHeight: 324,
+        });
+    });
+
+    it('still fits within narrow windows when an explicit width is requested', () => {
+        expect(resolveModalCardDimensions(
+            { width: 360, height: 680 },
+            { size: 'lg', width: 560 },
+        )).toEqual({
+            width: 280,
+            maxHeight: 578,
+        });
+    });
+
+    it('preserves a minimum vertical viewport margin for near-full-height cards', () => {
+        expect(resolveModalCardDimensions(
+            { width: 393, height: 736 },
+            {
+                size: 'lg',
+                width: 720,
+                maxHeightRatio: 0.96,
+                viewportMargin: { horizontal: 12, vertical: 12 },
+            },
+        )).toEqual({
+            width: 369,
+            maxHeight: 640,
+        });
+    });
+
+    it('does not hard-cap dialog height when its requested ratio allows a larger card', () => {
+        expect(resolveModalCardDimensions(
+            { width: 1200, height: 1000 },
+            { size: 'dialog', maxHeightRatio: 0.85 },
+        )).toEqual({
+            width: 360,
+            maxHeight: 850,
+        });
+    });
 });
