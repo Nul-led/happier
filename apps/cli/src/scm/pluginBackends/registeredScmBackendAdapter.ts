@@ -228,6 +228,15 @@ function createWorkspaceIntegrationAdapter(
                 ),
             ),
         } : {}),
+        ...(handlers.resolveWorkspaceTransfer ? {
+            resolveWorkspaceTransfer: async (input) => await runWithScmBackendRuntimeServices(
+                services,
+                async () => await runWithScmHostingProviderRuntimeServices(
+                    hostingServices,
+                    async () => await handlers.resolveWorkspaceTransfer!(input),
+                ),
+            ),
+        } : {}),
         ...(handlers.resolveWorkspaceTransferEntries ? {
             resolveWorkspaceTransferEntries: async (input) => await runWithScmBackendRuntimeServices(
                 services,

@@ -2,7 +2,6 @@ import { decodeBase64, encodeBase64, encodeBase64Url } from "@/api/encryption";
 import { configuration, reloadConfiguration } from "@/configuration";
 import { createHash, randomBytes } from "node:crypto";
 import tweetnacl from 'tweetnacl';
-import axios from 'axios';
 import { displayQRCode } from "./qrcode";
 import { delay } from "@/utils/time";
 import {
@@ -33,31 +32,44 @@ import {
     type TerminalPairingAuthentication,
 } from '@/auth/terminalProvisioningResponse';
 import { fetchServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
-import { setActiveServerProfileHomeConnectionDescriptor } from '@/server/serverProfiles';
-import { resolveServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
+import { adoptServerProfileHomeConnectionDescriptor } from '@/server/serverProfiles';
+import { resolveCliHomeTarget, resolveCurrentCliHomeTarget } from '@/server/homeTarget';
+import { assertResolvedHomeTargetIdentity } from '@happier-dev/cli-common/homeTarget';
+import { ApiClient } from '@/api/api';
+import { resolveServerHttpBaseUrl, runWithServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
+import { ensureMachineRegistered } from '@/api/machine/ensureMachineRegistered';
+import { initialMachineMetadata } from '@/daemon/machine/metadata';
+import {
+    claimTerminalAuthRequest,
+    createTerminalAuthRequest,
+    readTerminalAuthRequestStatus,
+    verifyTerminalAuthEnrollmentRuntime,
+    type TerminalAuthEnrollmentRuntime,
+} from '@/auth/terminalAuthEnrollmentClient';
+import { acquireTerminalAuthEnrollmentRuntime } from '@/auth/terminalAuthEnrollmentRuntime';
+import type { ResolvedHomeTarget } from '@happier-dev/cli-common/homeTarget';
+import type { CliServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
 
 type InteractiveTerminalAuthContext = Readonly<{
+    callerIntent: AuthCallerIntent;
     keypair: tweetnacl.BoxKeyPair;
     claimSecret: string;
     pairing: TerminalPairingAuthentication;
     serverIdentityId: string;
+    target: ResolvedHomeTarget;
+    runtime: TerminalAuthEnrollmentRuntime;
+    verifyClaimDestination(token: string): Promise<CliServerFeaturesSnapshot>;
 }>;
 
-export type PostTerminalAuthRequestCompatibleResponse =
-    | { state: 'requested' }
-    | { state: 'authorized' }
-    | { state: 'authorized'; token: string; response: string; serverIdentityId?: string };
+export type AuthCallerIntent = 'standalone' | 'setup-managed';
 
-function isAuthorizedWithTokenAndResponse(
-    value: PostTerminalAuthRequestCompatibleResponse,
-): value is Extract<PostTerminalAuthRequestCompatibleResponse, { state: 'authorized'; token: string; response: string }> {
-    if (value.state !== 'authorized') return false;
-    return (
-        'token' in value &&
-        typeof (value as any).token === 'string' &&
-        'response' in value &&
-        typeof (value as any).response === 'string'
-    );
+export class AuthenticationCancelledError extends Error {
+    readonly code = 'authentication_cancelled';
+
+    constructor() {
+        super('Authentication cancelled');
+        this.name = 'AuthenticationCancelledError';
+    }
 }
 
 function shouldAutoInferPublicServerUrl(): boolean {
@@ -184,7 +196,13 @@ function rehydrateRelayScopeEnvFromConfiguration(): void {
     }
 }
 
-export async function doAuth(): Promise<StoredCredentials | null> {
+export async function doAuth(options: Readonly<{
+    callerIntent?: AuthCallerIntent;
+    onAuthenticated?: (input: Readonly<{
+        credentials: StoredCredentials;
+        runtime: TerminalAuthEnrollmentRuntime;
+    }>) => Promise<void>;
+}> = {}): Promise<StoredCredentials | null> {
     // Ink requires raw mode support; in daemon/non-tty contexts we must never render Ink
     // (it will crash with "Raw mode is not supported on the current process.stdin").
     const hasRawMode = Boolean(process.stdin.isTTY && typeof (process.stdin as any).setRawMode === 'function');
@@ -200,13 +218,64 @@ export async function doAuth(): Promise<StoredCredentials | null> {
     const authMethod: AuthMethod | 'both' | null = envMethod ?? (isInteractive ? await selectAuthenticationMethod() : 'both');
     if (!authMethod) {
         console.log('\nAuthentication cancelled.\n');
-        process.exit(0);
+        if (options.callerIntent !== 'setup-managed') {
+            process.exit(0);
+        }
+        throw new AuthenticationCancelledError();
     }
 
-    await applyAutoPublicServerUrlFromTailscaleServeBestEffort();
-
-    const authRuntimeOrigin = resolveServerHttpBaseUrl();
+    let target: ResolvedHomeTarget;
+    try {
+        const selectedTarget = await resolveCurrentCliHomeTarget();
+        target = selectedTarget.descriptor
+            ? selectedTarget
+            : await resolveCliHomeTarget({ kind: 'https_url', url: configuration.apiServerUrl });
+    } catch {
+        console.log('The selected Home address is not eligible for terminal authentication. Use HTTPS or loopback HTTP.');
+        return null;
+    }
+    // Tailscale inference is a released URL-only compatibility adapter for
+    // legacy QR/deep links. A descriptor is already the route authority; adding
+    // and persisting another inferred route here would compete with descriptor
+    // publication/reconciliation and is unnecessary for Iroh first contact.
+    if (!target.descriptor) {
+        await applyAutoPublicServerUrlFromTailscaleServeBestEffort();
+    }
+    const acquiredRuntime = target.descriptor
+        ? await acquireTerminalAuthEnrollmentRuntime(target.descriptor, target.preferredTransport)
+        : {
+            ok: true as const,
+            runtime: {
+                runtimeOrigin: target.applicationUrl,
+                carrier: 'https' as const,
+                authenticatedCredentialDestination: {
+                    kind: 'https' as const,
+                    applicationUrl: target.applicationUrl,
+                },
+            },
+            close: async () => {},
+        };
+    if (!acquiredRuntime.ok) {
+        console.log('Unable to reach the selected Home through an authenticated enrollment carrier.');
+        return null;
+    }
+    const authRuntimeOrigin = acquiredRuntime.runtime.runtimeOrigin;
+    try {
     const featuresSnapshot = await fetchServerFeaturesSnapshot({ serverUrl: authRuntimeOrigin });
+    let verifiedRuntime;
+    try {
+        verifiedRuntime = verifyTerminalAuthEnrollmentRuntime({
+            target,
+            runtime: acquiredRuntime.runtime,
+            snapshot: featuresSnapshot,
+        });
+    } catch {
+        console.log(
+            `Unable to verify the selected Home identity at ${configuration.apiServerUrl}; `
+            + 'the authentication request was not created.',
+        );
+        return null;
+    }
     const serverIdentityId = featuresSnapshot.status === 'ready'
         ? featuresSnapshot.features.capabilities.serverIdentity.serverIdentityId?.trim() ?? ''
         : '';
@@ -236,10 +305,12 @@ export async function doAuth(): Promise<StoredCredentials | null> {
             console.log(`[AUTH DEBUG] Sending auth request to: ${authRuntimeOrigin}/v1/auth/request`);
             console.log(`[AUTH DEBUG] Public key: ${publicKey.substring(0, 20)}...`);
         }
-        await postTerminalAuthRequestCompatible({
+        await createTerminalAuthRequest({
+            runtime: acquiredRuntime.runtime,
             publicKey,
             supportsV2: true,
             claimSecretHash,
+            headers: buildCurrentAccountStoredContentCompatibilityHttpHeaders(),
         });
         if (debugEnabled) {
             console.log(`[AUTH DEBUG] Auth request sent successfully`);
@@ -253,33 +324,60 @@ export async function doAuth(): Promise<StoredCredentials | null> {
     }
 
     // Handle authentication based on selected method
-    const authContext = { keypair, claimSecret: claimSecretB64Url, pairing, serverIdentityId };
+    const authenticatedFeaturesSnapshot: { current: CliServerFeaturesSnapshot | null } = { current: null };
+    const authContext: InteractiveTerminalAuthContext = {
+        callerIntent: options.callerIntent ?? 'standalone',
+        keypair,
+        claimSecret: claimSecretB64Url,
+        pairing,
+        serverIdentityId: verifiedRuntime.homeServerIdentityId,
+        target,
+        runtime: acquiredRuntime.runtime,
+        verifyClaimDestination: async (token) => {
+            const snapshot = await fetchServerFeaturesSnapshot({ serverUrl: authRuntimeOrigin, token });
+            verifyTerminalAuthEnrollmentRuntime({ target, runtime: acquiredRuntime.runtime, snapshot });
+            authenticatedFeaturesSnapshot.current = snapshot;
+            return snapshot;
+        },
+    };
     const credentials = authMethod === 'mobile'
         ? await doMobileAuth(authContext)
         : authMethod === 'web'
             ? await doWebAuth(authContext)
             : await doBothAuth(authContext);
-    const authenticatedFeaturesSnapshot = credentials
-        ? await fetchServerFeaturesSnapshot({
-            serverUrl: authRuntimeOrigin,
-            token: credentials.token,
-        })
-        : null;
-    const descriptor = authenticatedFeaturesSnapshot?.status === 'ready'
-        && authenticatedFeaturesSnapshot.features.capabilities.serverIdentity.serverIdentityId === serverIdentityId
-        ? authenticatedFeaturesSnapshot.features.homeConnectionDescriptor
+    const authenticatedSnapshot = authenticatedFeaturesSnapshot.current;
+    const descriptor = authenticatedSnapshot?.status === 'ready'
+        ? authenticatedSnapshot.features.homeConnectionDescriptor
         : undefined;
     if (descriptor) {
-        // The descriptor is persisted only after the same Home identity has
-        // authorized this credential. A non-persisted env-only server remains
-        // usable; its future profile adoption will write the descriptor there.
-        await setActiveServerProfileHomeConnectionDescriptor(descriptor).catch((error) => {
-            logger.debug('[AUTH] Authenticated Home descriptor was not persisted', {
-                message: error instanceof Error ? error.message : String(error),
+        const observedIdentity = authenticatedSnapshot?.status === 'ready'
+            ? authenticatedSnapshot.features.capabilities.serverIdentity.serverIdentityId
+            : undefined;
+        if (!observedIdentity || observedIdentity !== serverIdentityId || descriptor.homeServerIdentityId !== observedIdentity) {
+            throw new Error('Authenticated Home descriptor identity does not match the selected Home');
+        }
+        const target = await resolveCurrentCliHomeTarget();
+        assertResolvedHomeTargetIdentity(target, observedIdentity);
+        // Env-only manual targets remain usable without manufacturing a profile.
+        // Persisted targets adopt at their immutable profile/credential owner.
+        if (target.profileId) {
+            await adoptServerProfileHomeConnectionDescriptor({
+                descriptor,
+                expectedProfileId: target.profileId,
+                observation: 'exact',
             });
+        }
+    }
+    if (credentials && options.onAuthenticated) {
+        await options.onAuthenticated({
+            credentials,
+            runtime: acquiredRuntime.runtime,
         });
     }
     return credentials;
+    } finally {
+        await acquiredRuntime.close();
+    }
 }
 
 function toTerminalConnectPairingContext(pairing: TerminalPairingAuthentication): Readonly<{
@@ -294,20 +392,31 @@ function toTerminalConnectPairingContext(pairing: TerminalPairingAuthentication)
     };
 }
 
+function buildInteractiveTerminalConnectLinks(params: InteractiveTerminalAuthContext) {
+    const common = {
+        webappUrl: configuration.webappUrl,
+        publicKeyB64Url: encodeBase64Url(params.keypair.publicKey),
+        pairing: toTerminalConnectPairingContext(params.pairing),
+        supportsTokenOnly: true,
+    } as const;
+    return params.target.descriptor
+        ? buildTerminalConnectLinks({
+            ...common,
+            homeConnectionDescriptor: params.target.descriptor,
+        })
+        : buildTerminalConnectLinks({
+            ...common,
+            serverUrl: configuration.serverUrl,
+            serverIdentityId: params.serverIdentityId,
+        });
+}
+
 async function doBothAuth(params: InteractiveTerminalAuthContext): Promise<StoredCredentials | null> {
     if (process.stdout.isTTY) {
         console.clear();
     }
 
-    const publicKeyB64Url = encodeBase64Url(params.keypair.publicKey);
-    const terminalLinks = buildTerminalConnectLinks({
-        webappUrl: configuration.webappUrl,
-        serverUrl: configuration.serverUrl,
-        publicKeyB64Url,
-        serverIdentityId: params.serverIdentityId,
-        pairing: toTerminalConnectPairingContext(params.pairing),
-        supportsTokenOnly: true,
-    });
+    const terminalLinks = buildInteractiveTerminalConnectLinks(params);
     const terminalMobileEmbedsServerUrl = terminalLinks.mobileUrl.includes('server=');
 
     console.log('\nAuthenticate this machine\n');
@@ -380,39 +489,6 @@ async function doBothAuth(params: InteractiveTerminalAuthContext): Promise<Store
     return await waitForAuthentication(params);
 }
 
-async function postTerminalAuthRequestCompatible(params: Readonly<{
-    publicKey: string;
-    supportsV2?: boolean;
-    claimSecretHash?: string;
-    timeoutMs?: number;
-}>): Promise<PostTerminalAuthRequestCompatibleResponse> {
-    try {
-        const res = await axios.post<PostTerminalAuthRequestCompatibleResponse>(`${resolveServerHttpBaseUrl()}/v1/auth/request`, {
-            publicKey: params.publicKey,
-            ...(typeof params.supportsV2 === 'boolean' ? { supportsV2: params.supportsV2 } : {}),
-            ...(typeof params.claimSecretHash === 'string' ? { claimSecretHash: params.claimSecretHash } : {}),
-        }, {
-            headers: buildCurrentAccountStoredContentCompatibilityHttpHeaders(),
-            ...(params.timeoutMs ? { timeout: params.timeoutMs } : {}),
-        });
-        return res.data;
-    } catch (error: any) {
-        const code = error?.response?.status;
-        if (code === 400 || code === 422) {
-            // Some legacy servers validate request bodies strictly and reject unknown keys.
-            // Retry with the minimal legacy payload.
-            const res = await axios.post<PostTerminalAuthRequestCompatibleResponse>(`${resolveServerHttpBaseUrl()}/v1/auth/request`, {
-                publicKey: params.publicKey,
-            }, {
-                headers: buildCurrentAccountStoredContentCompatibilityHttpHeaders(),
-                ...(params.timeoutMs ? { timeout: params.timeoutMs } : {}),
-            });
-            return res.data;
-        }
-        throw error;
-    }
-}
-
 /**
  * Display authentication method selector and return user choice
  */
@@ -461,15 +537,7 @@ async function doMobileAuth(params: InteractiveTerminalAuthContext): Promise<Sto
     console.log('Authenticated pairing v3 is required. For protection from an untrusted relay, approve with the native mobile app; web pairing trusts the web app origin.');
     console.log('If you already have a Happier account on another device, sign in with that same account.\n');
 
-    const publicKeyB64Url = encodeBase64Url(params.keypair.publicKey);
-    const terminalLinks = buildTerminalConnectLinks({
-        webappUrl: configuration.webappUrl,
-        serverUrl: configuration.serverUrl,
-        publicKeyB64Url,
-        serverIdentityId: params.serverIdentityId,
-        pairing: toTerminalConnectPairingContext(params.pairing),
-        supportsTokenOnly: true,
-    });
+    const terminalLinks = buildInteractiveTerminalConnectLinks(params);
     const terminalMobileEmbedsServerUrl = terminalLinks.mobileUrl.includes('server=');
 
     const printConfigureLinksRaw = String(process.env.HAPPIER_AUTH_PRINT_CONFIGURE_LINKS ?? '').trim().toLowerCase();
@@ -525,15 +593,7 @@ async function doWebAuth(params: InteractiveTerminalAuthContext): Promise<Stored
     console.log('Authenticated pairing v3 is required, but web pairing still trusts the web app origin. Use the native mobile app for protection from an untrusted relay.\n');
     console.log('If you already have a Happier account on another device, sign in with that same account.\n');
 
-    const publicKeyB64Url = encodeBase64Url(params.keypair.publicKey);
-    const terminalLinks = buildTerminalConnectLinks({
-        webappUrl: configuration.webappUrl,
-        serverUrl: configuration.serverUrl,
-        publicKeyB64Url,
-        serverIdentityId: params.serverIdentityId,
-        pairing: toTerminalConnectPairingContext(params.pairing),
-        supportsTokenOnly: true,
-    });
+    const terminalLinks = buildInteractiveTerminalConnectLinks(params);
     const webUrl = terminalLinks.webUrl;
     const noOpenRaw = (process.env.HAPPIER_NO_BROWSER_OPEN ?? '').toString().trim();
     const noOpen = Boolean(noOpenRaw) && noOpenRaw !== '0' && noOpenRaw.toLowerCase() !== 'false';
@@ -582,7 +642,9 @@ async function waitForAuthentication(params: InteractiveTerminalAuthContext): Pr
     const handleInterrupt = () => {
         cancelled = true;
         console.log('\n\nAuthentication cancelled.');
-        process.exit(0);
+        if (params.callerIntent === 'standalone') {
+            process.exit(0);
+        }
     };
 
     process.on('SIGINT', handleInterrupt);
@@ -603,8 +665,9 @@ async function waitForAuthentication(params: InteractiveTerminalAuthContext): Pr
             console.log('\n\nStopped waiting for the sign-in to be approved.');
             console.log('Run `happier auth login` again to create a new sign-in request.');
         };
-
-        let mode: 'status-claim' | 'legacy-post' = 'status-claim';
+        const throwIfCancelled = (): void => {
+            if (cancelled) throw new AuthenticationCancelledError();
+        };
 
         while (!cancelled) {
             if (waitExpired()) {
@@ -620,6 +683,15 @@ async function waitForAuthentication(params: InteractiveTerminalAuthContext): Pr
                     if (String(observedServerIdentityId ?? '').trim() !== params.serverIdentityId) {
                         console.log(
                             '\n\nThe authentication response came from a different Home identity. '
+                            + 'Credentials were not changed; run `happier auth login` again for the intended Home.',
+                        );
+                        return null;
+                    }
+                    try {
+                        await params.verifyClaimDestination(token);
+                    } catch {
+                        console.log(
+                            '\n\nThe authentication response did not match the selected Home destination. '
                             + 'Credentials were not changed; run `happier auth login` again for the intended Home.',
                         );
                         return null;
@@ -650,52 +722,21 @@ async function waitForAuthentication(params: InteractiveTerminalAuthContext): Pr
                     return { encryption: { type: 'dataKey', publicKey: publicKeyBytes, machineKey: opened.key }, token };
                 };
 
-                const legacyPollOnce = async (): Promise<
-                    PostTerminalAuthRequestCompatibleResponse
-                > => {
-                    const data = await postTerminalAuthRequestCompatible({
-                        publicKey,
-                        supportsV2: true,
-                        timeoutMs: remainingRequestTimeoutMs(),
-                    });
-                    return data;
-                };
-
-                if (mode === 'legacy-post') {
-                    const legacy = await legacyPollOnce();
-                    if (isAuthorizedWithTokenAndResponse(legacy)) {
-                        const finalized = await tryFinalizeWithTokenAndEncryptedResponse(
-                            legacy.token,
-                            legacy.response,
-                            legacy.serverIdentityId,
-                        );
-                        if (finalized) return finalized;
-                        return null;
-                    }
-                } else {
+                {
                     let statusRes: any;
                     try {
-                        statusRes = await axios.get(`${resolveServerHttpBaseUrl()}/v1/auth/request/status`, {
-                            params: { publicKey },
+                        statusRes = { data: await readTerminalAuthRequestStatus({
+                            runtime: params.runtime,
+                            publicKey,
                             headers: buildCurrentAccountStoredContentCompatibilityHttpHeaders(),
-                            timeout: remainingRequestTimeoutMs(),
-                        });
+                            timeoutMs: remainingRequestTimeoutMs(),
+                        }) };
+                        throwIfCancelled();
                     } catch (e: any) {
                         const code = e?.response?.status;
                         if (code === 404) {
-                            mode = 'legacy-post';
-                            const legacy = await legacyPollOnce();
-                            if (isAuthorizedWithTokenAndResponse(legacy)) {
-                                const finalized = await tryFinalizeWithTokenAndEncryptedResponse(
-                                    legacy.token,
-                                    legacy.response,
-                                    legacy.serverIdentityId,
-                                );
-                                if (finalized) return finalized;
-                                return null;
-                            }
-                            await delay(pollIntervalMs);
-                            continue;
+                            console.log('\n\nAuthenticated terminal pairing v3 is required. Update Happier on the selected Home and try again.');
+                            return null;
                         }
                         throw e;
                     }
@@ -708,31 +749,37 @@ async function waitForAuthentication(params: InteractiveTerminalAuthContext): Pr
 
                     if (status === 'authorized') {
                         try {
-                            const claimRes = await axios.post(`${resolveServerHttpBaseUrl()}/v1/auth/request/claim`, {
+                            const claimRes = { data: await claimTerminalAuthRequest({
+                                runtime: params.runtime,
                                 publicKey,
                                 claimSecret: params.claimSecret,
-                            }, {
                                 headers: buildCurrentAccountStoredContentCompatibilityHttpHeaders(),
-                                timeout: remainingRequestTimeoutMs(),
-                            });
+                                timeoutMs: remainingRequestTimeoutMs(),
+                            }) };
+                            throwIfCancelled();
 
                             const claimData = claimRes?.data;
-                            if (claimData?.state !== 'authorized') {
+                            if (!claimData || typeof claimData !== 'object' || Array.isArray(claimData)) {
+                                console.log('\n\nUnexpected response from server. Please try again.');
+                                return null;
+                            }
+                            const claim = claimData as Record<string, unknown>;
+                            if (claim.state !== 'authorized') {
                                 await delay(pollIntervalMs);
                                 continue;
                             }
 
-                            if (typeof claimData.token !== 'string' || typeof claimData.response !== 'string') {
+                            if (typeof claim.token !== 'string' || typeof claim.response !== 'string') {
                                 console.log('\n\nUnexpected response from server. Please try again.');
                                 return null;
                             }
 
-                            const token = claimData.token;
-                            const responseB64 = claimData.response;
+                            const token = claim.token;
+                            const responseB64 = claim.response;
                             const finalized = await tryFinalizeWithTokenAndEncryptedResponse(
                                 token,
                                 responseB64,
-                                claimData.serverIdentityId,
+                                claim.serverIdentityId,
                             );
                             if (finalized) return finalized;
                             return null;
@@ -748,25 +795,15 @@ async function waitForAuthentication(params: InteractiveTerminalAuthContext): Pr
                                 return null;
                             }
                             if (code === 404 || (code === 400 && err === 'claim_not_supported') || (code === 409 && err === 'claim_not_supported')) {
-                                mode = 'legacy-post';
-                                const legacy = await legacyPollOnce();
-                                if (isAuthorizedWithTokenAndResponse(legacy)) {
-                                    const finalized = await tryFinalizeWithTokenAndEncryptedResponse(
-                                        legacy.token,
-                                        legacy.response,
-                                        legacy.serverIdentityId,
-                                    );
-                                    if (finalized) return finalized;
-                                    return null;
-                                }
-                                await delay(pollIntervalMs);
-                                continue;
+                                console.log('\n\nAuthenticated terminal pairing v3 is required. Update Happier on the selected Home and try again.');
+                                return null;
                             }
                             throw e;
                         }
                     }
                 }
             } catch (error) {
+                if (error instanceof AuthenticationCancelledError) throw error;
                 if (waitExpired()) {
                     printWaitExpired();
                     return null;
@@ -790,6 +827,9 @@ async function waitForAuthentication(params: InteractiveTerminalAuthContext): Pr
         process.off('SIGINT', handleInterrupt);
     }
 
+    if (cancelled) {
+        throw new AuthenticationCancelledError();
+    }
     return null;
 }
 
@@ -965,7 +1005,9 @@ export async function ensureMachineIdForCredentials(
  * Ensure authentication and machine setup
  * This replaces the onboarding flow and ensures everything is ready
  */
-export async function authAndSetupMachineIfNeeded(): Promise<{
+export async function authAndSetupMachineIfNeeded(opts: Readonly<{
+    callerIntent?: AuthCallerIntent;
+}> = {}): Promise<{
     credentials: StoredCredentials;
     machineId: string;
 }> {
@@ -973,32 +1015,71 @@ export async function authAndSetupMachineIfNeeded(): Promise<{
 
     // Step 1: Handle authentication
     let credentials: StoredCredentials | null = await readStoredCredentials();
-    let newAuth = false;
+    let registration: Awaited<ReturnType<typeof registerMachineWithAuthenticatedHomeRuntime>> | null = null;
 
     if (!credentials) {
         logger.debug('[AUTH] No credentials found, starting authentication flow...');
-        const authResult = await doAuth();
+        const authResult = await doAuth({
+            callerIntent: opts.callerIntent,
+            onAuthenticated: async ({ credentials: issuedCredentials, runtime }) => {
+                registration = await registerMachineWithAuthenticatedHomeRuntime({
+                    credentials: issuedCredentials,
+                    forceNew: true,
+                    runtimeOrigin: runtime.runtimeOrigin,
+                });
+            },
+        });
         if (!authResult) {
             throw new Error('Authentication failed or was cancelled');
         }
         credentials = authResult;
-        newAuth = true;
     } else {
         logger.debug('[AUTH] Using existing credentials');
+        const authenticatedCredentials = credentials;
+        const target = await resolveCurrentCliHomeTarget().catch(() => null);
+        if (target?.descriptor) {
+            const acquired = await acquireTerminalAuthEnrollmentRuntime(
+                target.descriptor,
+                target.preferredTransport,
+            );
+            if (!acquired.ok) {
+                throw new Error('Unable to reach the selected Home through an authenticated enrollment carrier');
+            }
+            try {
+                const snapshot = await fetchServerFeaturesSnapshot({
+                    serverUrl: acquired.runtime.runtimeOrigin,
+                    token: authenticatedCredentials.token,
+                });
+                verifyTerminalAuthEnrollmentRuntime({
+                    target,
+                    runtime: acquired.runtime,
+                    snapshot,
+                });
+                registration = await registerMachineWithAuthenticatedHomeRuntime({
+                    credentials: authenticatedCredentials,
+                    runtimeOrigin: acquired.runtime.runtimeOrigin,
+                });
+            } finally {
+                await acquired.close();
+            }
+        } else {
+            registration = await registerMachineWithAuthenticatedHomeRuntime({
+                credentials: authenticatedCredentials,
+                runtimeOrigin: resolveServerHttpBaseUrl(),
+            });
+        }
     }
 
-    // Make sure we have a machine ID.
-    // Server machine entity will be created either by the daemon or by the CLI.
-    const { machineId } = await ensureMachineIdForCredentials(credentials, { forceNew: newAuth });
-
-    logger.debug(`[AUTH] Machine ID: ${machineId}`);
-    rehydrateRelayScopeEnvFromConfiguration();
+    if (!registration) {
+        throw new Error('Machine registration did not complete');
+    }
 
     if (
       shouldAutoStartDaemonAfterAuth({
         env: process.env,
         isDaemonProcess: configuration.isDaemonProcess,
         startedBy: 'terminal',
+        callerIntent: opts.callerIntent,
       })
     ) {
       try {
@@ -1009,6 +1090,28 @@ export async function authAndSetupMachineIfNeeded(): Promise<{
       }
     }
 
-    return { credentials, machineId };
+    return { credentials, machineId: registration.machineId };
+}
+
+export async function registerMachineWithAuthenticatedHomeRuntime(input: Readonly<{
+    credentials: StoredCredentials;
+    forceNew?: boolean;
+    runtimeOrigin: string;
+}>): Promise<Readonly<{ machineId: string }>> {
+    return await runWithServerHttpBaseUrl(input.runtimeOrigin, async () => {
+        const { machineId } = await ensureMachineIdForCredentials(input.credentials, {
+            forceNew: input.forceNew,
+        });
+        logger.debug(`[AUTH] Machine ID: ${machineId}`);
+        rehydrateRelayScopeEnvFromConfiguration();
+        const api = await ApiClient.create(input.credentials);
+        const registration = await ensureMachineRegistered({
+            api,
+            machineId,
+            metadata: initialMachineMetadata,
+            caller: 'auth.login',
+        });
+        return { machineId: registration.machineId };
+    });
 }
 import { buildCurrentAccountStoredContentCompatibilityHttpHeaders } from '@/api/clientCompatibility/cliClientCompatibility';

@@ -9,17 +9,23 @@ import {
 describe('workspaceTransfer', () => {
     it('clones transfer request arrays without sharing ignored-glob state', () => {
         const ignoredIncludeGlobs = ['dist/**'];
+        const extraIgnorePatterns = ['coverage/**'];
         const request = createScmWorkspaceIntegrationWorkspaceTransferRequest({
             strategy: 'transfer_snapshot',
             includeIgnoredMode: 'include_selected',
             ignoredIncludeGlobs,
+            includeAllIgnored: true,
+            extraIgnorePatterns,
         });
 
         ignoredIncludeGlobs.push('coverage/**');
+        extraIgnorePatterns.push('tmp/**');
 
         expect(request.strategy).toBe('transfer_snapshot');
         expect(request.includeIgnoredMode).toBe('include_selected');
         expect(request.ignoredIncludeGlobs).toEqual(['dist/**']);
+        expect(request.includeAllIgnored).toBe(true);
+        expect(request.extraIgnorePatterns).toEqual(['coverage/**']);
     });
 
     it('creates transfer entries without rewriting their paths', () => {

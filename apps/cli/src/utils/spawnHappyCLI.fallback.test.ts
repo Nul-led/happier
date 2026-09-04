@@ -107,6 +107,10 @@ function writeTinyRuntimeAssets(
     includeManagedProviderRuntime?: boolean;
   }> = {},
 ): void {
+  const packageJsonPath = join(root, 'package.json');
+  if (!existsSync(packageJsonPath)) {
+    writeFileSync(packageJsonPath, '{"name":"@happier-dev/cli"}\n', 'utf8');
+  }
   const scriptsDir = join(root, 'scripts');
   const toolsDir = join(root, 'tools', 'unpacked');
   mkdirSync(scriptsDir, { recursive: true });
@@ -137,6 +141,11 @@ function writeTinyRuntimeAssets(
 }
 
 function writeCanonicalRunnerClosureFixture(root: string): string {
+  mkdirSync(root, { recursive: true });
+  writeFileSync(join(root, 'package.json'), JSON.stringify({
+    name: '@happier-dev/cli',
+    happier: { managedRuntimePublication: { v: 1, mode: 'complete', unavailableProviderRefs: [] } },
+  }), 'utf8');
   const entrypoint = writeTinyDist(root);
   const packagedVoiceRuntimePath = join(
     dirname(entrypoint),
@@ -327,9 +336,13 @@ describe('spawnHappyCLI fallback invocation', () => {
       const pinnedEntrypoint = inv.argv.find((arg) => arg.endsWith('index.mjs'));
 
       expect(pinnedEntrypoint).toMatch(
-        /[\\/]\.runner-snapshots[\\/][a-f0-9]{16}-[a-f0-9]{64}-[a-f0-9]{64}-package-dist-v5[\\/]package-dist[\\/]index\.mjs$/,
+        /[\\/]\.runner-snapshots[\\/][a-f0-9]{16}-[a-f0-9]{64}-[a-f0-9]{64}-package-dist-v6[\\/]package-dist[\\/]index\.mjs$/,
       );
       const snapshotRoot = dirname(dirname(pinnedEntrypoint!));
+      expect(JSON.parse(readFileSync(join(snapshotRoot, 'package.json'), 'utf8'))).toMatchObject({
+        name: '@happier-dev/cli',
+        happier: { managedRuntimePublication: { mode: 'complete' } },
+      });
       expect(readdirSync(join(snapshotRoot, 'scripts')).sort()).toEqual(
         CLI_RUNTIME_SIDECAR_ENTRIES.map(([topLevelEntry]) => topLevelEntry).sort(),
       );
@@ -574,7 +587,7 @@ describe('spawnHappyCLI fallback invocation', () => {
           '--no-warnings',
           '--no-deprecation',
           expect.stringMatching(
-            /[\\/]\.runner-snapshots[\\/][a-f0-9]{16}-[a-f0-9]{64}-[a-f0-9]{64}-package-dist-v5[\\/]package-dist[\\/]index\.mjs$/,
+            /[\\/]\.runner-snapshots[\\/][a-f0-9]{16}-[a-f0-9]{64}-[a-f0-9]{64}-package-dist-v6[\\/]package-dist[\\/]index\.mjs$/,
           ),
           'claude',
           '--started-by',
@@ -621,7 +634,7 @@ describe('spawnHappyCLI fallback invocation', () => {
       expect(startup.runtime).toBe('node');
       expect(startup.argv).toEqual(expect.arrayContaining([
         expect.stringMatching(
-          /[\\/]\.runner-snapshots[\\/][a-f0-9]{16}-[a-f0-9]{64}-[a-f0-9]{64}-package-dist-v5[\\/]package-dist[\\/]index\.mjs$/,
+          /[\\/]\.runner-snapshots[\\/][a-f0-9]{16}-[a-f0-9]{64}-[a-f0-9]{64}-package-dist-v6[\\/]package-dist[\\/]index\.mjs$/,
         ),
         'daemon',
         'start-sync',
@@ -660,7 +673,7 @@ describe('spawnHappyCLI fallback invocation', () => {
       expect(startup.runtime).toBe('node');
       expect(startup.argv).toEqual(expect.arrayContaining([
         expect.stringMatching(
-          /[\\/]\.runner-snapshots[\\/][a-f0-9]{16}-[a-f0-9]{64}-[a-f0-9]{64}-package-dist-v5[\\/]package-dist[\\/]index\.mjs$/,
+          /[\\/]\.runner-snapshots[\\/][a-f0-9]{16}-[a-f0-9]{64}-[a-f0-9]{64}-package-dist-v6[\\/]package-dist[\\/]index\.mjs$/,
         ),
         'daemon',
         'start-sync',
@@ -1092,7 +1105,7 @@ describe('spawnHappyCLI fallback invocation', () => {
       expect(inv.runtime).toBe('node');
       expect(inv.argv).toEqual(expect.arrayContaining([
         expect.stringMatching(
-          /[\\/]\.runner-snapshots[\\/][a-f0-9]{16}-[a-f0-9]{64}-[a-f0-9]{64}-package-dist-v5[\\/]package-dist[\\/]index\.mjs$/,
+          /[\\/]\.runner-snapshots[\\/][a-f0-9]{16}-[a-f0-9]{64}-[a-f0-9]{64}-package-dist-v6[\\/]package-dist[\\/]index\.mjs$/,
         ),
         'claude',
         '--started-by',
@@ -1122,7 +1135,7 @@ describe('spawnHappyCLI fallback invocation', () => {
       expect(runtimeDecision?.runtime).toBe('node');
       const pinnedEntrypoint = runtimeDecision?.argvPrefix.find((arg) => arg.endsWith('index.mjs'));
       expect(pinnedEntrypoint).toMatch(
-        /[\\/]\.runner-snapshots[\\/][a-f0-9]{16}-[a-f0-9]{64}-[a-f0-9]{64}-package-dist-v5[\\/]package-dist[\\/]index\.mjs$/,
+        /[\\/]\.runner-snapshots[\\/][a-f0-9]{16}-[a-f0-9]{64}-[a-f0-9]{64}-package-dist-v6[\\/]package-dist[\\/]index\.mjs$/,
       );
       expect(runtimeDecision?.env).toEqual({
         HAPPIER_CLI_SUBPROCESS_DIST_ENTRYPOINT: pinnedEntrypoint,
@@ -1248,7 +1261,7 @@ describe('spawnHappyCLI fallback invocation', () => {
 
         const pinnedEntrypoint = inv.argv.find((arg) => arg.endsWith('index.mjs'));
         expect(pinnedEntrypoint).toMatch(
-          /[\\/]\.runner-snapshots[\\/][a-f0-9]{16}-[a-f0-9]{64}-[a-f0-9]{64}-package-dist-v5[\\/]package-dist[\\/]index\.mjs$/,
+          /[\\/]\.runner-snapshots[\\/][a-f0-9]{16}-[a-f0-9]{64}-[a-f0-9]{64}-package-dist-v6[\\/]package-dist[\\/]index\.mjs$/,
         );
         expect(pinnedEntrypoint).not.toContain(`${join('dist', '.runner-snapshots')}`);
         expect(inv.argv).toEqual([
@@ -1289,7 +1302,7 @@ describe('spawnHappyCLI fallback invocation', () => {
       const pinnedEntrypoint = invocation.argv.find((arg) => arg.endsWith('index.mjs'));
       expect(pinnedEntrypoint).toBeDefined();
       const snapshotIdentity = basename(dirname(dirname(pinnedEntrypoint!)));
-      const liveIdentity = `1111111111111111-${'1'.repeat(64)}-${'2'.repeat(64)}-package-dist-v5`;
+      const liveIdentity = `1111111111111111-${'1'.repeat(64)}-${'2'.repeat(64)}-package-dist-v6`;
       const snapshotsDir = join(root, '.runner-snapshots');
       for (const [index, name] of [
         snapshotIdentity,

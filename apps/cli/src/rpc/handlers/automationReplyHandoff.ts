@@ -1,5 +1,3 @@
-import { randomBytes as nodeRandomBytes } from 'node:crypto';
-
 import {
     AUTOMATION_REPLY_HANDOFF_DAEMON_RPC_METHOD_V1,
     AutomationReplyHandoffDispatchRequestV1Schema,
@@ -11,7 +9,6 @@ import {
     openAutomationRunResultStoredEnvelopeV1,
     sameAutomationAccountContentIdentityV1,
     sameAutomationAccountCurrentnessWitnessV1,
-    sealAutomationReplyHandoffReceiptStoredEnvelopeV1,
     type AccountEncryptionCurrentnessResponse,
     type AccountScopedCryptoMaterialSnapshotV1,
     type AutomationAccountCurrentnessWitnessV1,
@@ -31,7 +28,6 @@ import { configuration } from '@/configuration';
 import { acquireAuthoritativePluginRuntimeRegistryLease } from '@/plugins/runtime/reload/runtimeLease';
 import type { PluginRuntimeRegistryLease } from '@/plugins/runtime/reload/controller';
 import {
-    isAvailableE2eeAutomationAccountEncryptionV1,
     resolveValidatedAutomationAccountEncryptionV1,
 } from '@/plugins/runtime/automations/automationAccountCurrentness';
 
@@ -154,15 +150,12 @@ function projectSettlement(
 function settled(params: Readonly<{
     settlement: AutomationReplyHandoffSettlementV1;
     accountCurrentness: AutomationAccountCurrentnessWitnessV1;
-    receiptEnvelope?: unknown;
 }>): AutomationReplyHandoffDispatchResultV1 {
-    const candidate = {
+    return AutomationReplyHandoffDispatchResultV1Schema.parse({
         kind: 'settled' as const,
         settlement: params.settlement,
         accountCurrentness: params.accountCurrentness,
-        ...(params.receiptEnvelope === undefined ? {} : { receiptEnvelope: params.receiptEnvelope }),
-    };
-    return AutomationReplyHandoffDispatchResultV1Schema.parse(candidate);
+    });
 }
 
 /**
@@ -340,7 +333,7 @@ export function registerAutomationReplyHandoffRpcHandler(
 
             // Currentness is re-read after content open and immediately before
             // effect. Rekey/mode movement discards the opened plaintext and
-            // lets the server rejoin the same handoff without a stale receipt.
+            // lets the server rejoin the same handoff on its current bytes.
             const encryptionBeforeInvoke = await resolveValidatedAutomationAccountEncryptionV1({
                 signal,
                 resolveAccountEncryptionCurrentness: options.resolveAccountEncryptionCurrentness,
@@ -415,25 +408,12 @@ export function registerAutomationReplyHandoffRpcHandler(
                 });
             }
 
-            const receiptEnvelope = isAvailableE2eeAutomationAccountEncryptionV1(encryptionAfterInvoke)
-                ? sealAutomationReplyHandoffReceiptStoredEnvelopeV1({
-                    mode: 'e2ee',
-                    correspondence: expectedCorrespondence,
-                    result: actionResult.data,
-                    // E2EE availability is returned only after the local
-                    // material snapshot matched the canonical witness.
-                    material: encryptionAfterInvoke.material.material,
-                    randomBytes: (length) => new Uint8Array(nodeRandomBytes(length)),
-                })
-                : sealAutomationReplyHandoffReceiptStoredEnvelopeV1({
-                    mode: 'plain',
-                    correspondence: expectedCorrespondence,
-                    result: actionResult.data,
-                });
+            // Custody ids, suppression reasons and provider detail stay with
+            // the Channels Action that produced them. The server only needs
+            // the coarse settlement plus the post-effect Account witness.
             return settled({
                 settlement: projectSettlement(actionResult.data),
                 accountCurrentness: encryptionAfterInvoke.witness,
-                receiptEnvelope,
             });
         } catch {
             return signal.aborted ? unavailable('cancelled') : unavailable('actionExecutionFailed');

@@ -11,5 +11,6 @@ const materialization = await beginWorkspaceTargetMaterialization({
 });
 await mkdir(targetPath);
 await writeFile(`${targetPath}/new.txt`, 'new', 'utf8');
+await materialization.custody.bindPromotedTarget();
 await writeFile(receiptPath, JSON.stringify(materialization.custody.receipt), 'utf8');
 await new Promise<void>(() => { setInterval(() => undefined, 1_000); });

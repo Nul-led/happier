@@ -16,7 +16,7 @@ import {
 vi.mock('./capabilities', () => ({ registerCapabilitiesHandlers: vi.fn() }));
 vi.mock('./previewEnv', () => ({ registerPreviewEnvHandler: vi.fn() }));
 vi.mock('./bash', () => ({ registerBashHandler: vi.fn() }));
-vi.mock('./ripgrep', () => ({ registerRipgrepHandler: vi.fn() }));
+vi.mock('./workspaceFileList', () => ({ registerWorkspaceFileListHandler: vi.fn() }));
 vi.mock('./difftastic', () => ({ registerDifftasticHandler: vi.fn() }));
 vi.mock('./daemonContributionRegistryProjection', () => ({ registerDaemonContributionRegistryProjectionHandler: vi.fn() }));
 vi.mock('./spawnRuntimeSelection', () => ({
@@ -1338,5 +1338,144 @@ describe('registerSessionHandlers session controls', () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  describe('exact admitted-input turn cancellation', () => {
+    const method = SESSION_RPC_METHODS.SESSION_INPUT_CANCEL_EXACT_TURN_V1;
+
+    it('cancels the active turn only when it was admitted from the exact requested input', async () => {
+      const registerSessionHandlers = await loadRegisterSessionHandlers();
+      const { handlers, registrar } = createRegistrar();
+      const cancelActiveTurn = vi.fn(async () => undefined);
+
+      registerSessionHandlers(registrar, process.cwd(), {
+        sessionRuntimeControls: {
+          readActiveTurnInputId: () => 'automation:run:run-42',
+          cancelActiveTurn,
+        } as any,
+      });
+
+      await expect(handlers.get(method)?.({
+        sessionId: 'sess_1',
+        localId: 'automation:run:run-42',
+      })).resolves.toEqual({
+        ok: true,
+        status: 'cancelled',
+        sessionId: 'sess_1',
+        localId: 'automation:run:run-42',
+      });
+
+      expect(cancelActiveTurn).toHaveBeenCalledTimes(1);
+    });
+
+    it('never cancels a different active turn', async () => {
+      const registerSessionHandlers = await loadRegisterSessionHandlers();
+      const { handlers, registrar } = createRegistrar();
+      const cancelActiveTurn = vi.fn(async () => undefined);
+
+      registerSessionHandlers(registrar, process.cwd(), {
+        sessionRuntimeControls: {
+          readActiveTurnInputId: () => 'user:composer:other-input',
+          cancelActiveTurn,
+        } as any,
+      });
+
+      await expect(handlers.get(method)?.({
+        sessionId: 'sess_1',
+        localId: 'automation:run:run-42',
+      })).resolves.toEqual({
+        ok: false,
+        status: 'notCurrent',
+        sessionId: 'sess_1',
+        localId: 'automation:run:run-42',
+      });
+
+      expect(cancelActiveTurn).not.toHaveBeenCalled();
+    });
+
+    it('is a typed no-op when the exact input is terminal or was never the current turn', async () => {
+      const registerSessionHandlers = await loadRegisterSessionHandlers();
+      const { handlers, registrar } = createRegistrar();
+      const cancelActiveTurn = vi.fn(async () => undefined);
+
+      registerSessionHandlers(registrar, process.cwd(), {
+        sessionRuntimeControls: {
+          readActiveTurnInputId: () => null,
+          cancelActiveTurn,
+        } as any,
+      });
+
+      await expect(handlers.get(method)?.({
+        sessionId: 'sess_1',
+        localId: 'automation:run:run-42',
+      })).resolves.toEqual({
+        ok: false,
+        status: 'notRunning',
+        sessionId: 'sess_1',
+        localId: 'automation:run:run-42',
+      });
+
+      expect(cancelActiveTurn).not.toHaveBeenCalled();
+    });
+
+    it('reports unsupported for a runtime without the exact-turn cancellation facts and rejects malformed input', async () => {
+      const registerSessionHandlers = await loadRegisterSessionHandlers();
+      {
+        const { handlers, registrar } = createRegistrar();
+        registerSessionHandlers(registrar, process.cwd(), {
+          sessionRuntimeControls: {} as any,
+        });
+        await expect(handlers.get(method)?.({
+          sessionId: 'sess_1',
+          localId: 'automation:run:run-42',
+        })).resolves.toEqual(expect.objectContaining({
+          ok: false,
+          status: 'unsupported',
+          sessionId: 'sess_1',
+          localId: 'automation:run:run-42',
+          errorCode: 'unsupported_session_runtime_method',
+        }));
+      }
+      {
+        const { handlers, registrar } = createRegistrar();
+        const cancelActiveTurn = vi.fn(async () => undefined);
+        registerSessionHandlers(registrar, process.cwd(), {
+          sessionRuntimeControls: {
+            readActiveTurnInputId: () => 'automation:run:run-42',
+            cancelActiveTurn,
+          } as any,
+        });
+        await expect(handlers.get(method)?.({ sessionId: 'sess_1' })).resolves.toEqual({
+          ok: false,
+          errorCode: 'invalid_parameters',
+          error: 'invalid_parameters',
+        });
+        expect(cancelActiveTurn).not.toHaveBeenCalled();
+      }
+    });
+
+    it('reports a typed failure when the incumbent turn cancel throws', async () => {
+      const registerSessionHandlers = await loadRegisterSessionHandlers();
+      const { handlers, registrar } = createRegistrar();
+
+      registerSessionHandlers(registrar, process.cwd(), {
+        sessionRuntimeControls: {
+          readActiveTurnInputId: () => 'automation:run:run-42',
+          cancelActiveTurn: async () => {
+            throw new Error('runtime_cancel_failed');
+          },
+        } as any,
+      });
+
+      await expect(handlers.get(method)?.({
+        sessionId: 'sess_1',
+        localId: 'automation:run:run-42',
+      })).resolves.toEqual(expect.objectContaining({
+        ok: false,
+        status: 'cancel_failed',
+        sessionId: 'sess_1',
+        localId: 'automation:run:run-42',
+      }));
+    });
   });
 });

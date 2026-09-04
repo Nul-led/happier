@@ -37,6 +37,9 @@ import {
   type SessionPendingMessageComposerAdmissionAcceptedRequestV1,
   type SessionPendingMessageComposerAdmissionAbandonedRequestV1,
   SessionMediaMessageMetaV1Schema,
+  SessionInputCancelExactTurnRequestV1Schema,
+  SessionInputCancelExactTurnResultV1Schema,
+  buildUnsupportedSessionInputCancelExactTurnResultV1,
 } from '@happier-dev/protocol';
 import { readAdmittedHappierStructuredInputV1FromMeta } from '@happier-dev/protocol/runtime';
 import { SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
@@ -106,6 +109,10 @@ export type SessionRuntimeControls = {
     localId: string;
     expectedStateAtMs?: number;
   }>) => Promise<unknown> | unknown;
+  /** Exact active-turn input correlation projected by the incumbent Session runtime. */
+  readActiveTurnInputId?: () => string | null;
+  /** Cancels the incumbent active turn; callers must prove exact currentness first. */
+  cancelActiveTurn?: () => Promise<void> | void;
   handleUserMessage?: (
     request: Readonly<{
       text: string;
@@ -491,6 +498,57 @@ export function registerSessionControlHandlers(
       sessionId: parsed.data.sessionId,
       localId: parsed.data.localId,
     };
+  });
+
+  rpc.registerHandler(SESSION_RPC_METHODS.SESSION_INPUT_CANCEL_EXACT_TURN_V1, async (raw: unknown) => {
+    const parsed = SessionInputCancelExactTurnRequestV1Schema.safeParse(raw);
+    if (!parsed.success) return invalidInput();
+    const readActiveTurnInputId = opts.sessionRuntimeControls?.readActiveTurnInputId;
+    const cancelActiveTurn = opts.sessionRuntimeControls?.cancelActiveTurn;
+    if (typeof readActiveTurnInputId !== 'function' || typeof cancelActiveTurn !== 'function') {
+      return buildUnsupportedSessionInputCancelExactTurnResultV1(
+        parsed.data.sessionId,
+        parsed.data.localId,
+        SESSION_RPC_METHODS.SESSION_INPUT_CANCEL_EXACT_TURN_V1,
+      );
+    }
+
+    const activeInputId = readActiveTurnInputId();
+    if (activeInputId === null) {
+      return {
+        ok: false,
+        status: 'notRunning',
+        sessionId: parsed.data.sessionId,
+        localId: parsed.data.localId,
+      };
+    }
+    if (activeInputId !== parsed.data.localId) {
+      return {
+        ok: false,
+        status: 'notCurrent',
+        sessionId: parsed.data.sessionId,
+        localId: parsed.data.localId,
+      };
+    }
+
+    try {
+      await cancelActiveTurn();
+      return SessionInputCancelExactTurnResultV1Schema.parse({
+        ok: true,
+        status: 'cancelled',
+        sessionId: parsed.data.sessionId,
+        localId: parsed.data.localId,
+      });
+    } catch (error) {
+      return {
+        ok: false,
+        status: 'cancel_failed',
+        sessionId: parsed.data.sessionId,
+        localId: parsed.data.localId,
+        errorCode: 'session_turn_cancel_failed',
+        error: error instanceof Error ? error.message : 'session_turn_cancel_failed',
+      };
+    }
   });
 
   rpc.registerHandler(SESSION_RPC_METHODS.SESSION_USAGE_LIMIT_WAIT_RESUME_ENABLE, async (raw: unknown) => {

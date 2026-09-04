@@ -129,9 +129,16 @@ const EXECUTABLE_SUPPORTED_LEAVES: readonly SupportedLeaf[] = [
     },
     {
         key: 'workspaceIntegration.workspaceTransfer',
+        // The combined resolver returns entries and metadata from one source
+        // observation and is the preferred leaf. The separate entries/metadata
+        // pair remains accepted as the compatibility fallback for backends that
+        // predate it, so either shape satisfies the advertised leaf.
         hasHandler: (registration) => (
-            typeof registration.handlers.workspaceIntegration?.resolveWorkspaceTransferEntries === 'function'
-            && typeof registration.handlers.workspaceIntegration?.resolveWorkspaceTransferMetadata === 'function'
+            typeof registration.handlers.workspaceIntegration?.resolveWorkspaceTransfer === 'function'
+            || (
+                typeof registration.handlers.workspaceIntegration?.resolveWorkspaceTransferEntries === 'function'
+                && typeof registration.handlers.workspaceIntegration?.resolveWorkspaceTransferMetadata === 'function'
+            )
         ),
     },
     { key: 'workspaceIntegration.exportPortability', hasHandler: (registration) => typeof registration.handlers.workspaceIntegration?.assertPortableWorkspaceEntries === 'function' },

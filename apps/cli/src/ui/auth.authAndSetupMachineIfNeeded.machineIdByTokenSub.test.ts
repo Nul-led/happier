@@ -3,6 +3,35 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+const machineRegistrationMocks = vi.hoisted(() => ({
+  apiCreate: vi.fn(async () => ({})),
+  ensureMachineRegistered: vi.fn(async ({ machineId }: { machineId: string }) => ({
+    machine: { id: machineId },
+    machineId,
+    didRotateMachineId: false,
+  })),
+}));
+const descriptorRuntimeMocks = vi.hoisted(() => ({
+  acquire: vi.fn(),
+  fetchFeatures: vi.fn(),
+}));
+
+vi.mock('@/api/api', () => ({
+  ApiClient: { create: machineRegistrationMocks.apiCreate },
+}));
+
+vi.mock('@/api/machine/ensureMachineRegistered', () => ({
+  ensureMachineRegistered: machineRegistrationMocks.ensureMachineRegistered,
+}));
+
+vi.mock('@/auth/terminalAuthEnrollmentRuntime', () => ({
+  acquireTerminalAuthEnrollmentRuntime: descriptorRuntimeMocks.acquire,
+}));
+
+vi.mock('@/features/serverFeaturesClient', () => ({
+  fetchServerFeaturesSnapshot: descriptorRuntimeMocks.fetchFeatures,
+}));
+
 vi.mock('./logger', () => ({
   logger: {
     debug: vi.fn(),
@@ -37,7 +66,93 @@ describe('authAndSetupMachineIfNeeded (machine id binding)', () => {
     if (previousAutostart === undefined) delete process.env.HAPPIER_SESSION_AUTOSTART_DAEMON;
     else process.env.HAPPIER_SESSION_AUTOSTART_DAEMON = previousAutostart;
     vi.clearAllMocks();
+    machineRegistrationMocks.apiCreate.mockResolvedValue({});
+    machineRegistrationMocks.ensureMachineRegistered.mockImplementation(async ({ machineId }: { machineId: string }) => ({
+      machine: { id: machineId },
+      machineId,
+      didRotateMachineId: false,
+    }));
+    descriptorRuntimeMocks.acquire.mockReset();
+    descriptorRuntimeMocks.fetchFeatures.mockReset();
     vi.resetModules();
+  });
+
+  it('keeps a descriptor carrier open through machine registration and closes it afterward', async () => {
+    const homeDir = mkdtempSync(join(tmpdir(), 'happier-cli-auth-machine-iroh-'));
+    process.env.HAPPIER_HOME_DIR = homeDir;
+    process.env.HAPPIER_ACTIVE_SERVER_ID = 'iroh-home';
+    process.env.HAPPIER_SERVER_URL = 'http://localhost:3010';
+    process.env.HAPPIER_WEBAPP_URL = 'https://app.happier.dev';
+    delete process.env.HAPPIER_SESSION_AUTOSTART_DAEMON;
+    const events: string[] = [];
+    const descriptor = {
+      v: 1 as const,
+      homeServerIdentityId: 'srv_iroh_machine_home',
+      canonicalServerUrl: 'http://localhost:3010',
+      revision: 1,
+      endpoints: [{ kind: 'iroh' as const, endpointId: 'd'.repeat(64) }],
+    };
+    const close = vi.fn(async () => { events.push('close'); });
+    descriptorRuntimeMocks.acquire.mockResolvedValue({
+      ok: true,
+      runtime: {
+        runtimeOrigin: 'http://127.0.0.1:48123',
+        carrier: 'iroh',
+        authenticatedCredentialDestination: { kind: 'iroh', endpointId: 'd'.repeat(64) },
+      },
+      close,
+    });
+    descriptorRuntimeMocks.fetchFeatures.mockResolvedValue({
+      status: 'ready',
+      features: {
+        capabilities: { serverIdentity: { serverIdentityId: descriptor.homeServerIdentityId } },
+        homeConnectionDescriptor: descriptor,
+      },
+    });
+    machineRegistrationMocks.apiCreate.mockImplementation(async () => {
+      events.push('api');
+      return {};
+    });
+    machineRegistrationMocks.ensureMachineRegistered.mockImplementation(async ({ machineId }: { machineId: string }) => {
+      events.push('register');
+      return { machine: { id: machineId }, machineId, didRotateMachineId: false };
+    });
+
+    try {
+      writeFileSync(join(homeDir, 'settings.json'), JSON.stringify({
+        schemaVersion: 6,
+        activeServerId: 'iroh-home',
+        servers: {
+          'iroh-home': {
+            id: 'iroh-home',
+            name: 'Iroh Home',
+            serverUrl: descriptor.canonicalServerUrl,
+            webappUrl: 'https://app.happier.dev',
+            homeConnectionDescriptor: descriptor,
+            homeConnectionDescriptorAuthority: 'exact',
+            createdAt: 0,
+            updatedAt: 0,
+            lastUsedAt: 0,
+          },
+        },
+      }), 'utf8');
+      const serverDir = join(homeDir, 'servers', 'iroh-home');
+      mkdirSync(serverDir, { recursive: true });
+      writeFileSync(join(serverDir, 'access.key'), JSON.stringify({ token: makeJwtWithSub('acct-iroh') }), 'utf8');
+
+      vi.resetModules();
+      const { authAndSetupMachineIfNeeded } = await import('./auth');
+      await expect(authAndSetupMachineIfNeeded({ callerIntent: 'setup-managed' })).resolves.toMatchObject({
+        credentials: { token: expect.any(String) },
+        machineId: expect.any(String),
+      });
+
+      expect(descriptorRuntimeMocks.acquire).toHaveBeenCalledWith(descriptor, 'iroh');
+      expect(events).toEqual(['api', 'register', 'close']);
+      expect(close).toHaveBeenCalledOnce();
+    } finally {
+      rmSync(homeDir, { recursive: true, force: true });
+    }
   });
 
   it('selects machine id based on decoded token sub', async () => {
@@ -95,6 +210,10 @@ describe('authAndSetupMachineIfNeeded (machine id binding)', () => {
 
       expect(result.machineId).toBe('machine-acct-b');
       expect(result.credentials.token).toContain('.');
+      expect(machineRegistrationMocks.ensureMachineRegistered).toHaveBeenCalledWith(expect.objectContaining({
+        machineId: 'machine-acct-b',
+        caller: 'auth.login',
+      }));
 
       const raw = JSON.parse(readFileSync(settingsPath, 'utf8'));
       expect(raw.machineIdByServerId.cloud).toBe('machine-acct-b');
@@ -149,6 +268,7 @@ describe('authAndSetupMachineIfNeeded (machine id binding)', () => {
       expect(result.credentials).toEqual({
         token: makeJwtWithSub('acct-plain'),
         encryption: null,
+        credentialProvenance: 'stored_session',
       });
       expect(result.machineId).toBe('machine-token-only');
     } finally {

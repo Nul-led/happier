@@ -8,7 +8,6 @@ import {
   convertContentPublicKeyFingerprintToAccountEncryptionMigrateKeyFingerprintV1,
   createAccountScopedCryptoMaterialSnapshotV1,
   nextAutomationReplyHandoffIdForRunV1,
-  openAutomationReplyHandoffReceiptStoredEnvelopeV1,
   sealAutomationConversationReplyContextStoredEnvelopeV1,
   sealAutomationRunResultStoredEnvelopeV1,
   type AccountEncryptionCurrentnessResponse,
@@ -299,14 +298,6 @@ describe('registerAutomationReplyHandoffRpcHandler', () => {
       kind: 'settled',
       settlement: { kind: 'accepted' },
       accountCurrentness: { mode: 'plain', version: 7, contentKeyFingerprint: null },
-      receiptEnvelope: {
-        t: 'plain',
-        v: {
-          v: 1,
-          correspondence,
-          result: { kind: 'accepted', custodyId: 'custody-1' },
-        },
-      },
     });
 
     expect(executeContributedAction).toHaveBeenCalledWith({
@@ -722,7 +713,7 @@ describe('registerAutomationReplyHandoffRpcHandler', () => {
     expect(executeContributedAction).not.toHaveBeenCalled();
   });
 
-  it('reports a stale claim for missing or rekeyed E2EE material before a plugin effect or receipt', async () => {
+  it('reports a stale claim for missing or rekeyed E2EE material before a plugin effect', async () => {
     const sealedWithOldKey = e2eeSnapshot(7);
     const currentKey = e2eeSnapshot(9);
     const encryptedRequest = createEncryptedRequest(sealedWithOldKey);
@@ -761,7 +752,7 @@ describe('registerAutomationReplyHandoffRpcHandler', () => {
     expect(resolveAccountEncryptionMaterial).not.toHaveBeenCalled();
   });
 
-  it('seals an E2EE receipt in its receipt-only domain before returning coarse settlement', async () => {
+  it('returns only coarse E2EE settlement, retaining no custody detail on the wire', async () => {
     const snapshot = e2eeSnapshot(7);
     const currentness = e2eeCurrentness(snapshot, 8);
     const { handler, executeContributedAction } = createRegistration({
@@ -780,24 +771,18 @@ describe('registerAutomationReplyHandoffRpcHandler', () => {
         version: 8,
         contentKeyFingerprint: currentness.contentKeyFingerprint,
       },
-      receiptEnvelope: { t: 'encrypted' },
     });
-    if (response.kind !== 'settled' || !response.receiptEnvelope) {
-      throw new Error('expected settled encrypted receipt');
-    }
-    expect(openAutomationReplyHandoffReceiptStoredEnvelopeV1({
-      mode: 'e2ee',
-      material: snapshot.material,
-      envelope: response.receiptEnvelope,
-    })).toEqual({
-      kind: 'available',
-      correspondence,
-      result: { kind: 'accepted', custodyId: 'custody-1' },
-    });
+    // The custody id the Action returned stays with Channels: the strict
+    // settled result carries no member that could smuggle it back.
+    expect(Object.keys(response).sort()).toEqual([
+      'accountCurrentness',
+      'kind',
+      'settlement',
+    ]);
     expect(executeContributedAction).toHaveBeenCalledOnce();
   });
 
-  it('returns retry without a receipt if Account currentness changes after the Action effect', async () => {
+  it('returns retry if Account currentness changes after the Action effect', async () => {
     const oldSnapshot = e2eeSnapshot(7);
     const newSnapshot = e2eeSnapshot(9);
     const oldCurrentness = e2eeCurrentness(oldSnapshot, 8);
@@ -833,7 +818,6 @@ describe('registerAutomationReplyHandoffRpcHandler', () => {
         version: afterCustody.version,
         contentKeyFingerprint: null,
       },
-      receiptEnvelope: { t: 'plain' },
     });
     expect(executeContributedAction).toHaveBeenCalledOnce();
   });
@@ -925,14 +909,6 @@ describe('registerAutomationReplyHandoffRpcHandler', () => {
       kind: 'settled',
       settlement: { kind: 'accepted' },
       accountCurrentness: { mode: 'plain', version: 7, contentKeyFingerprint: null },
-      receiptEnvelope: {
-        t: 'plain',
-        v: {
-          v: 1,
-          correspondence,
-          result: { kind: 'accepted', custodyId: 'custody-a' },
-        },
-      },
     });
     expect(executeContributedAction).toHaveBeenCalledOnce();
   });
@@ -963,13 +939,5 @@ describe('registerAutomationReplyHandoffRpcHandler', () => {
       kind: 'settled',
       settlement: { kind: 'accepted' },
       accountCurrentness: { mode: 'plain', version: 7, contentKeyFingerprint: null },
-      receiptEnvelope: {
-        t: 'plain',
-        v: {
-          v: 1,
-          correspondence,
-          result: { kind: 'retired' },
-        },
-      },
     });
   });

@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { FEATURES_RESPONSE_MAX_UTF8_BYTES_V1 } from '@happier-dev/protocol';
+
 import { fetchServerFeaturesSnapshot } from './serverFeaturesClient';
 
 describe('fetchServerFeaturesSnapshot', () => {
@@ -53,5 +55,19 @@ describe('fetchServerFeaturesSnapshot', () => {
         headers: { Authorization: 'Bearer home-token' },
       }),
     );
+  });
+
+  it('rejects an over-budget feature body without calling the unbounded JSON reader', async () => {
+    const response = new Response('x'.repeat(FEATURES_RESPONSE_MAX_UTF8_BYTES_V1 + 1), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+    const json = vi.spyOn(response, 'json');
+    vi.stubGlobal('fetch', vi.fn(async () => response));
+
+    await expect(fetchServerFeaturesSnapshot({
+      serverUrl: 'https://server.example.test',
+    })).resolves.toEqual({ status: 'unsupported', reason: 'invalid_payload' });
+    expect(json).not.toHaveBeenCalled();
   });
 });

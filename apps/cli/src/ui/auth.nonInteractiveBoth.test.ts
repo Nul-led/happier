@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  parseTerminalConnectLinkV4Parameters,
   sealTerminalProvisioningV3TokenOnlyPayload,
   type HomeConnectionDescriptorV1,
 } from '@happier-dev/protocol';
@@ -14,7 +15,15 @@ const runTailscaleServeStatusMock = vi.fn<
 >();
 
 const displayQRCodeMock = vi.fn<(url: string) => void>();
-const fixedNowMs = 1_800_000_000_000;
+const acquireTerminalAuthEnrollmentRuntimeMock = vi.fn();
+const machineRegistrationMocks = vi.hoisted(() => ({
+  apiCreate: vi.fn(async () => ({})),
+  ensure: vi.fn(async ({ machineId }: { machineId: string }) => ({
+    machine: { id: machineId },
+    machineId,
+    didRotateMachineId: false,
+  })),
+}));
 const deterministicRandomByte = 7;
 type ServerFeaturesSnapshotMock =
   | Readonly<{
@@ -37,8 +46,6 @@ const fetchServerFeaturesSnapshotMock = vi.fn<
     },
   },
 }));
-const setActiveServerProfileHomeConnectionDescriptorMock = vi.fn(async () => ({}));
-
 vi.mock('@/integrations/tailscale/tailscaleCommand', () => ({
   runTailscaleServeStatus: (params: Readonly<{ timeoutMs: number; env: NodeJS.ProcessEnv; tailscaleBin: string }>) =>
     runTailscaleServeStatusMock(params),
@@ -52,9 +59,18 @@ vi.mock('@/features/serverFeaturesClient', () => ({
   fetchServerFeaturesSnapshot: fetchServerFeaturesSnapshotMock,
 }));
 
-vi.mock('@/server/serverProfiles', () => ({
-  setActiveServerProfileHomeConnectionDescriptor: setActiveServerProfileHomeConnectionDescriptorMock,
+vi.mock('@/auth/terminalAuthEnrollmentRuntime', () => ({
+  acquireTerminalAuthEnrollmentRuntime: acquireTerminalAuthEnrollmentRuntimeMock,
 }));
+vi.mock('@/api/api', () => ({
+  ApiClient: { create: machineRegistrationMocks.apiCreate },
+}));
+vi.mock('@/api/machine/ensureMachineRegistered', () => ({
+  ensureMachineRegistered: machineRegistrationMocks.ensure,
+}));
+
+// This suite exercises the real profile/target/adoption owner.
+vi.unmock('@/server/serverProfiles');
 
 vi.mock('node:crypto', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:crypto')>();
@@ -76,13 +92,39 @@ type AxiosLike = {
 
 let capturedPublicKeyBase64: string | null = null;
 let claimServerIdentityId = 'srv_interactive_auth_home';
+let beforeStatusResponse: (() => Promise<void>) | null = null;
 
 function sealCurrentTerminalResponse(recipientPublicKeyBase64: string): string {
+  const renderedPairingLink = vi.mocked(console.log).mock.calls
+    .flat()
+    .map((value) => String(value))
+    .reverse()
+    .find((value) => value.includes('pairingSecret=') && value.includes('createdAt=') && value.includes('expiresAt='));
+  const opaqueLink = vi.mocked(console.log).mock.calls
+    .flat()
+    .map((value) => String(value))
+    .reverse()
+    .find((value) => value.includes('v4='));
+  const opaqueParameters = opaqueLink
+    ? new URL(opaqueLink).hash.replace(/^#/u, '') || new URL(opaqueLink).search.replace(/^\?/u, '')
+    : '';
+  const opaquePairing = opaqueParameters
+    ? parseTerminalConnectLinkV4Parameters(opaqueParameters)?.pairing
+    : undefined;
+  const createdAtMs = opaquePairing?.createdAtMs
+    ?? Number(renderedPairingLink?.match(/[?&#]createdAt=(\d+)/u)?.[1]);
+  const expiresAtMs = opaquePairing?.expiresAtMs
+    ?? Number(renderedPairingLink?.match(/[?&#]expiresAt=(\d+)/u)?.[1]);
+  const pairingSecretB64Url = opaquePairing?.secretB64Url
+    ?? renderedPairingLink?.match(/[?&#]pairingSecret=([^&#]+)/u)?.[1];
+  if (!Number.isSafeInteger(createdAtMs) || !Number.isSafeInteger(expiresAtMs) || !pairingSecretB64Url) {
+    throw new Error('Expected authentication to render its pairing context before the claim');
+  }
   return Buffer.from(sealTerminalProvisioningV3TokenOnlyPayload({
     terminalEphemeralPublicKey: new Uint8Array(Buffer.from(recipientPublicKeyBase64, 'base64')),
-    pairingSecret: new Uint8Array(32).fill(deterministicRandomByte),
-    createdAtMs: fixedNowMs,
-    expiresAtMs: fixedNowMs + 60 * 60 * 1_000,
+    pairingSecret: new Uint8Array(Buffer.from(decodeURIComponent(pairingSecretB64Url), 'base64url')),
+    createdAtMs,
+    expiresAtMs,
     randomBytes: (length) => new Uint8Array(length).fill(9),
   })).toString('base64');
 }
@@ -111,6 +153,7 @@ vi.mock('axios', async () => {
     }),
     get: vi.fn(async (url: string) => {
       if (url.endsWith('/v1/auth/request/status')) {
+        await beforeStatusResponse?.();
         return { data: { status: 'authorized' } };
       }
       throw new Error(`Unexpected axios.get URL: ${url}`);
@@ -125,6 +168,7 @@ describe.sequential('doAuth (non-interactive)', () => {
     'HAPPIER_SERVER_URL',
     'HAPPIER_WEBAPP_URL',
     'HAPPIER_PUBLIC_SERVER_URL',
+    'HAPPIER_ACTIVE_SERVER_ID',
     'HAPPIER_NO_BROWSER_OPEN',
     'HAPPIER_AUTH_POLL_INTERVAL_MS',
     'HAPPIER_AUTH_METHOD',
@@ -134,11 +178,134 @@ describe.sequential('doAuth (non-interactive)', () => {
   beforeEach(() => {
     claimServerIdentityId = 'srv_interactive_auth_home';
     capturedPublicKeyBase64 = null;
+    beforeStatusResponse = null;
     displayQRCodeMock.mockClear();
     fetchServerFeaturesSnapshotMock.mockClear();
-    setActiveServerProfileHomeConnectionDescriptorMock.mockClear();
-    vi.spyOn(Date, 'now').mockReturnValue(fixedNowMs);
+    acquireTerminalAuthEnrollmentRuntimeMock.mockReset();
+    machineRegistrationMocks.apiCreate.mockClear();
+    machineRegistrationMocks.ensure.mockClear();
+    runTailscaleServeStatusMock.mockReset();
   });
+
+  it('turns Ctrl-C during setup-managed auth wait into typed cancellation without exiting zero', async () => {
+    const home = await createTempDir('happier-cli-auth-setup-cancel-');
+    const envScope = createEnvKeyScope(envKeys);
+    const restoreTty = setStdioTtyForTest({ stdin: false, stdout: false });
+    const output = captureConsoleLogAndMuteStdout();
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: string | number | null) => {
+      throw new Error(`process.exit:${String(code ?? '')}`);
+    }) as typeof process.exit);
+    beforeStatusResponse = async () => {
+      beforeStatusResponse = null;
+      process.emit('SIGINT');
+    };
+
+    try {
+      envScope.patch({
+        HAPPIER_HOME_DIR: home,
+        HAPPIER_SERVER_URL: 'https://server.example.test',
+        HAPPIER_WEBAPP_URL: 'https://webapp.example.test',
+        HAPPIER_NO_BROWSER_OPEN: '1',
+        HAPPIER_AUTH_POLL_INTERVAL_MS: '1',
+        HAPPIER_AUTH_METHOD: undefined,
+      });
+      vi.resetModules();
+      const { doAuth } = await import('./auth');
+
+      await expect(doAuth({ callerIntent: 'setup-managed' })).rejects.toMatchObject({
+        code: 'authentication_cancelled',
+      });
+      expect(exitSpy).not.toHaveBeenCalled();
+      expect(output.logs.join('\n')).toContain('Authentication cancelled.');
+    } finally {
+      exitSpy.mockRestore();
+      output.restore();
+      restoreTty();
+      envScope.restore();
+      await removeTempDir(home);
+    }
+  }, 15_000);
+
+  it('keeps descriptor-first Iroh through credential issuance and machine registration, then emits only V4 links', async () => {
+    const home = await createTempDir('happier-cli-auth-descriptor-iroh-');
+    const envScope = createEnvKeyScope(envKeys);
+    const restoreTty = setStdioTtyForTest({ stdin: false, stdout: false });
+    const output = captureConsoleLogAndMuteStdout();
+    const events: string[] = [];
+    const close = vi.fn(async () => { events.push('close'); });
+    machineRegistrationMocks.ensure.mockImplementationOnce(async ({ machineId }: { machineId: string }) => {
+      events.push('register');
+      return { machine: { id: machineId }, machineId, didRotateMachineId: false };
+    });
+    const descriptor: HomeConnectionDescriptorV1 = {
+      v: 1,
+      homeServerIdentityId: 'srv_interactive_auth_home',
+      canonicalServerUrl: 'http://localhost:3010',
+      revision: 7,
+      endpoints: [{ kind: 'iroh', endpointId: 'd'.repeat(64) }],
+    };
+    acquireTerminalAuthEnrollmentRuntimeMock.mockResolvedValue({
+      ok: true,
+      runtime: {
+        runtimeOrigin: 'http://127.0.0.1:48123',
+        carrier: 'iroh',
+        authenticatedCredentialDestination: { kind: 'iroh', endpointId: 'd'.repeat(64) },
+      },
+      close,
+    });
+    fetchServerFeaturesSnapshotMock.mockResolvedValue({
+      status: 'ready',
+      features: {
+        capabilities: { serverIdentity: { serverIdentityId: descriptor.homeServerIdentityId } },
+        homeConnectionDescriptor: descriptor,
+      },
+    });
+
+    try {
+      envScope.patch({
+        HAPPIER_HOME_DIR: home,
+        HAPPIER_SERVER_URL: undefined,
+        HAPPIER_WEBAPP_URL: 'https://webapp.example.test',
+        HAPPIER_ACTIVE_SERVER_ID: undefined,
+        HAPPIER_NO_BROWSER_OPEN: '1',
+        HAPPIER_AUTH_POLL_INTERVAL_MS: '1',
+      });
+      vi.resetModules();
+      const { addServerProfile, adoptServerProfileHomeConnectionDescriptor } = await import('@/server/serverProfiles');
+      const profile = await addServerProfile({
+        name: 'iroh-home',
+        serverUrl: descriptor.canonicalServerUrl,
+        webappUrl: 'https://webapp.example.test',
+        use: true,
+      });
+      await adoptServerProfileHomeConnectionDescriptor({
+        descriptor,
+        expectedProfileId: profile.id,
+        observation: 'exact',
+      });
+      const { reloadConfiguration } = await import('@/configuration');
+      reloadConfiguration();
+
+      const { authAndSetupMachineIfNeeded } = await import('./auth');
+      await expect(authAndSetupMachineIfNeeded({ callerIntent: 'setup-managed' })).resolves.toMatchObject({
+        credentials: { token: 'tok' },
+        machineId: expect.any(String),
+      });
+
+      expect(acquireTerminalAuthEnrollmentRuntimeMock).toHaveBeenCalledWith(descriptor, 'iroh');
+      expect(runTailscaleServeStatusMock).not.toHaveBeenCalled();
+      expect(fetchServerFeaturesSnapshotMock).toHaveBeenCalledWith({ serverUrl: 'http://127.0.0.1:48123' });
+      expect(output.logs.join('\n')).toContain('v4=');
+      expect(output.logs.join('\n')).not.toContain('pairingSecret=');
+      expect(events).toEqual(['register', 'close']);
+      expect(close).toHaveBeenCalledOnce();
+    } finally {
+      output.restore();
+      restoreTty();
+      envScope.restore();
+      await removeTempDir(home);
+    }
+  }, 30_000);
 
   afterEach(() => {
     vi.restoreAllMocks();
@@ -224,26 +391,41 @@ describe.sequential('doAuth (non-interactive)', () => {
     try {
       envScope.patch({
         HAPPIER_HOME_DIR: home,
-        HAPPIER_SERVER_URL: 'https://server.example.test',
+        HAPPIER_SERVER_URL: undefined,
         HAPPIER_WEBAPP_URL: 'https://webapp.example.test',
+        HAPPIER_ACTIVE_SERVER_ID: undefined,
         HAPPIER_NO_BROWSER_OPEN: '1',
         HAPPIER_AUTH_POLL_INTERVAL_MS: '1',
       });
       vi.resetModules();
+      const { addServerProfile, listServerProfiles } = await import('@/server/serverProfiles');
+      await addServerProfile({
+        name: 'auth-home',
+        serverUrl: 'https://server.example.test',
+        webappUrl: 'https://webapp.example.test',
+        use: true,
+      });
+      const configurationModule = await import('@/configuration');
+      const { reloadConfiguration } = configurationModule;
+      reloadConfiguration();
+      expect(configurationModule.configuration.activeServerId).toBe('auth-home');
       const { doAuth } = await import('./auth');
       expect((await doAuth())?.token).toBe('tok');
       expect(fetchServerFeaturesSnapshotMock).toHaveBeenLastCalledWith({
         serverUrl: 'https://server.example.test',
         token: 'tok',
       });
-      expect(setActiveServerProfileHomeConnectionDescriptorMock).toHaveBeenCalledWith(descriptor);
+      expect((await listServerProfiles()).map((profile) => ({
+        id: profile.id,
+        descriptor: profile.homeConnectionDescriptor,
+      }))).toContainEqual({ id: 'auth-home', descriptor });
     } finally {
       output.restore();
       restoreTty();
       envScope.restore();
       await removeTempDir(home);
     }
-  }, 15_000);
+  }, 30_000);
 
   it('rejects a claimed credential from a different stable Home before persistence', async () => {
     const home = await createTempDir('happier-cli-auth-wrong-home-');
@@ -361,7 +543,7 @@ describe.sequential('doAuth (non-interactive)', () => {
     }
   }, 15_000);
 
-  it('prints a LAN-only hint when canonical serverUrl is local HTTP', async () => {
+  it('refuses legacy LAN HTTP terminal authentication before creating a request', async () => {
     const home = await createTempDir('happier-cli-auth-noninteractive-lan-');
     const envScope = createEnvKeyScope(envKeys);
     const restoreTty = setStdioTtyForTest({ stdin: false, stdout: false });
@@ -382,11 +564,11 @@ describe.sequential('doAuth (non-interactive)', () => {
       const { doAuth } = await import('./auth');
 
       const creds = await doAuth();
-      expect(creds?.token).toBe('tok');
+      expect(creds).toBeNull();
 
       const out = output.logs.join('\n').toLowerCase();
-      expect(out).toContain('same lan');
-      expect(displayQRCodeMock).toHaveBeenCalledTimes(1);
+      expect(out).toContain('use https or loopback http');
+      expect(displayQRCodeMock).not.toHaveBeenCalled();
     } finally {
       output.restore();
       restoreTty();
@@ -517,7 +699,7 @@ describe.sequential('doAuth (non-interactive)', () => {
     }
   }, 15_000);
 
-  it('routes fresh authentication through a published runtime origin while keeping canonical links', async () => {
+  it('does not let a daemon-published runtime origin control first-contact enrollment', async () => {
     const home = await createTempDir('happier-cli-auth-runtime-origin-');
     const envScope = createEnvKeyScope(envKeys);
     const restoreTty = setStdioTtyForTest({ stdin: false, stdout: false });
@@ -546,12 +728,15 @@ describe.sequential('doAuth (non-interactive)', () => {
       const { doAuth } = await import('./auth');
       expect((await doAuth())?.token).toBe('tok');
 
-      expect(fetchServerFeaturesSnapshotMock).toHaveBeenCalledWith({ serverUrl: runtimeOrigin });
+      expect(fetchServerFeaturesSnapshotMock).toHaveBeenCalledWith({
+        serverUrl: 'https://canonical-home.example.test',
+      });
       const postUrls = (axiosDefault.post as unknown as { mock: { calls: unknown[][] } }).mock.calls
         .map((call) => String(call[0]));
       const getUrls = (axiosDefault.get as unknown as { mock: { calls: unknown[][] } }).mock.calls
         .map((call) => String(call[0]));
-      expect([...postUrls, ...getUrls].every((url) => url.startsWith(runtimeOrigin))).toBe(true);
+      expect([...postUrls, ...getUrls].every((url) => url.startsWith('https://canonical-home.example.test'))).toBe(true);
+      expect([...postUrls, ...getUrls].some((url) => url.startsWith(runtimeOrigin))).toBe(false);
       expect(output.logs.join('\n')).toContain('https://canonical-home.example.test');
     } finally {
       releaseRuntimeOrigin?.();

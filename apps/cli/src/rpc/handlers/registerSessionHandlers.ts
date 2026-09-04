@@ -7,7 +7,7 @@ import { registerCapabilitiesHandlers } from './capabilities';
 import type { AgentProviderCatalogObservationService } from '@/providers/probe/agentCatalogObservation';
 import { registerPreviewEnvHandler } from './previewEnv';
 import { registerBashHandler } from './bash';
-import { registerRipgrepHandler } from './ripgrep';
+import { registerWorkspaceFileListHandler } from './workspaceFileList';
 import { registerDifftasticHandler } from './difftastic';
 import { registerSessionUserMessageSendHandler } from './sessionUserMessageSend';
 import { registerSessionControlHandlers, type SessionRuntimeControls } from './sessionControls';
@@ -175,7 +175,7 @@ export function registerSessionHandlers(
         simulatorPreview: opts?.simulatorPreview ?? null,
     });
     registerPreviewEnvHandler(rpcHandlerManager);
-    registerRipgrepHandler(rpcHandlerManager, workingDirectory, { accessPolicy });
+    registerWorkspaceFileListHandler(rpcHandlerManager, workingDirectory, { accessPolicy });
     registerDifftasticHandler(rpcHandlerManager, workingDirectory, { accessPolicy });
     registerSessionUserMessageSendHandler(rpcHandlerManager, {
         workingDirectory,

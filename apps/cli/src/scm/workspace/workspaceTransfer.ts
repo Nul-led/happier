@@ -10,12 +10,16 @@ export type ScmWorkspaceIntegrationWorkspaceTransferRequest = Readonly<{
     strategy: ScmWorkspaceIntegrationWorkspaceTransferStrategy;
     includeIgnoredMode: ScmWorkspaceIntegrationWorkspaceTransferIncludeIgnoredMode;
     ignoredIncludeGlobs: readonly string[];
+    includeAllIgnored?: boolean;
+    extraIgnorePatterns?: readonly string[];
 }>;
 
 export type ScmWorkspaceIntegrationWorkspaceTransferRequestInput = Readonly<{
     strategy?: ScmWorkspaceIntegrationWorkspaceTransferStrategy;
     includeIgnoredMode: ScmWorkspaceIntegrationWorkspaceTransferIncludeIgnoredMode;
     ignoredIncludeGlobs: readonly string[];
+    includeAllIgnored?: boolean;
+    extraIgnorePatterns?: readonly string[];
 }>;
 
 export type ScmWorkspaceIntegrationWorkspaceTransferEntry = Readonly<{
@@ -38,6 +42,8 @@ export function createScmWorkspaceIntegrationWorkspaceTransferRequest(
         strategy: input.strategy ?? DEFAULT_SCM_WORKSPACE_INTEGRATION_WORKSPACE_TRANSFER_STRATEGY,
         includeIgnoredMode: input.includeIgnoredMode,
         ignoredIncludeGlobs: [...input.ignoredIncludeGlobs],
+        ...(input.includeAllIgnored === true ? { includeAllIgnored: true } : {}),
+        ...(input.extraIgnorePatterns ? { extraIgnorePatterns: [...input.extraIgnorePatterns] } : {}),
     };
 }
 

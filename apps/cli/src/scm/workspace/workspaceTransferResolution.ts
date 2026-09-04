@@ -155,6 +155,14 @@ async function resolveWorkspaceTransferStateWithScmWorkspace(
         };
     }
 
+    if (workspaceTransfer.includeAllIgnored === true
+        || (workspaceTransfer.extraIgnorePatterns?.length ?? 0) > 0) {
+        throw Object.assign(
+            new Error('The selected SCM backend cannot apply the workspace seed content policy atomically'),
+            { code: 'git_selection_unavailable' },
+        );
+    }
+
     const [entries, metadata] = await Promise.all([
         workspaceIntegration?.resolveWorkspaceTransferEntries?.(workspaceIntegrationInput) ?? Promise.resolve(null),
         workspaceIntegration?.resolveWorkspaceTransferMetadata?.(workspaceIntegrationInput) ?? Promise.resolve(null),

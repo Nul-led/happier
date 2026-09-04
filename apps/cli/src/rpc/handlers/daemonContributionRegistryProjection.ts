@@ -2007,6 +2007,9 @@ function readProjectedReactNativeExecutableIdentity(params: Readonly<{
     const entry = projection.familiesById.pluginUi?.entriesById[
         `reactNativeBundle:${params.identity.pluginId}:${params.identity.contributionId}`
     ];
+    if (!entry || !('runtime' in entry)) {
+        return null;
+    }
     const runtime = readRecord(entry?.runtime);
     const decision = readRecord(runtime?.decision);
     if (decision?.state !== 'load') {
@@ -2115,6 +2118,9 @@ function readProjectedHostedWebArtifactIdentity(params: Readonly<{
     const entry = projection.familiesById.pluginUi?.entriesById[
         `hostedWeb:${params.identity.pluginId}:${params.identity.contributionId}`
     ];
+    if (!entry || !('runtime' in entry)) {
+        return null;
+    }
     const runtime = readRecord(entry?.runtime);
     const parsed = DaemonPluginHostedWebArtifactCacheIdentityV1Schema.safeParse(
         runtime?.artifactReadIdentity,

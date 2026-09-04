@@ -1,7 +1,7 @@
 import type { FeaturesResponse as ServerFeatures } from '@happier-dev/protocol';
 
 import { normalizeBaseUrl, withAbortTimeout } from '../diagnostics/httpClient';
-import { parseServerFeatures } from './serverFeaturesParse';
+import { decodeServerFeaturesResponseBody } from './serverFeaturesParse';
 
 export type CliServerFeaturesSnapshot =
   | Readonly<{ status: 'ready'; features: ServerFeatures }>
@@ -40,8 +40,10 @@ export async function fetchServerFeaturesSnapshot(params: {
         : { status: 'error', reason: 'response_status' };
     }
 
-    const payload: unknown = await response.json();
-    const parsed = parseServerFeatures(payload);
+    const parsed = await decodeServerFeaturesResponseBody(
+      response.body,
+      response.headers.get('content-length'),
+    );
     if (!parsed) {
       return { status: 'unsupported', reason: 'invalid_payload' };
     }

@@ -603,7 +603,9 @@ export function createExecutionRunRpcActionDeps(params: ExecutionRunRpcActionDep
           {
             defaultSessionId: sessionId,
             ...(opts?.serverId ? { serverId: opts.serverId } : {}),
-            callerPermissionMode: opts?.effectiveCallerPermissionMode ?? runState.permissionMode,
+            ...(opts?.effectiveCallerPermissionMode
+              ? { callerPermissionMode: opts.effectiveCallerPermissionMode }
+              : {}),
             ...(opts?.causalPermissionAuthority
               ? { causalPermissionAuthority: opts.causalPermissionAuthority }
               : {}),

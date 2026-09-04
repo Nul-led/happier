@@ -1,8 +1,11 @@
 import {
+  chmodSync,
   closeSync,
   constants,
   fstatSync,
+  fsyncSync,
   lstatSync,
+  mkdirSync,
   openSync,
   readFileSync,
   type Stats,
@@ -143,6 +146,16 @@ async function fsyncDirectory(path: string, platform: NodeJS.Platform): Promise<
   }
 }
 
+function fsyncDirectorySync(path: string, platform: NodeJS.Platform): void {
+  if (platform === 'win32') return;
+  const descriptor = openSync(path, 'r');
+  try {
+    fsyncSync(descriptor);
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
 async function assertProtectedPath(
   path: string,
   kind: ProtectedLocalStateKind,
@@ -184,6 +197,38 @@ async function assertProtectedIdentity(
   });
 }
 
+function assertProtectedIdentitySync(
+  path: string,
+  kind: ProtectedLocalStateKind,
+  options: ProtectedLocalStateOptions,
+): void {
+  const platform = resolvePlatform(options);
+  validateStats({
+    stats: lstatSync(path),
+    kind,
+    platform,
+    expectedUid: platform === 'win32' ? undefined : resolveExpectedUid(options),
+    verifyPermissions: false,
+  });
+}
+
+function assertProtectedPathSync(
+  path: string,
+  kind: ProtectedLocalStateKind,
+  options: ProtectedLocalStateOptions,
+): void {
+  const platform = resolvePlatform(options);
+  validateStats({
+    stats: lstatSync(path),
+    kind,
+    platform,
+    expectedUid: platform === 'win32' ? undefined : resolveExpectedUid(options),
+  });
+  if (platform === 'win32') {
+    resolveWindowsAclBoundarySync(options).verify({ path, kind });
+  }
+}
+
 /**
  * Applies the restrictive shape this module guarantees: mode `0700`/`0600` on
  * POSIX, and an owner-plus-LOCAL SYSTEM protected DACL on Windows. Windows is
@@ -200,6 +245,18 @@ async function applyProtection(
     return;
   }
   await chmod(path, kind === 'directory' ? 0o700 : 0o600);
+}
+
+function applyProtectionSync(
+  path: string,
+  kind: ProtectedLocalStateKind,
+  options: ProtectedLocalStateOptions,
+): void {
+  if (resolvePlatform(options) === 'win32') {
+    resolveWindowsAclBoundarySync(options).applyAndVerify({ path, kind });
+    return;
+  }
+  chmodSync(path, kind === 'directory' ? 0o700 : 0o600);
 }
 
 /**
@@ -224,6 +281,16 @@ async function pathExists(path: string): Promise<boolean> {
   }
 }
 
+function pathExistsSync(path: string): boolean {
+  try {
+    lstatSync(path);
+    return true;
+  } catch (error) {
+    if (isErrno(error, 'ENOENT')) return false;
+    throw error;
+  }
+}
+
 export async function ensureProtectedLocalStateDirectory(
   path: string,
   options: ProtectedLocalStateOptions = {},
@@ -240,6 +307,36 @@ export async function ensureProtectedLocalStateDirectory(
   if (!existed) {
     await fsyncDirectory(dirname(path), resolvePlatform(options));
   }
+}
+
+/** Synchronous owner used by synchronous persistence engines before opening state. */
+export function ensureProtectedLocalStateDirectorySync(
+  path: string,
+  options: ProtectedLocalStateOptions = {},
+): void {
+  const existed = pathExistsSync(path);
+  if (!existed) {
+    mkdirSync(path, { recursive: true, mode: 0o700 });
+    applyProtectionSync(path, 'directory', options);
+  } else if (resolveAuthority(options) === 'owned') {
+    assertProtectedIdentitySync(path, 'directory', options);
+    applyProtectionSync(path, 'directory', options);
+  }
+  assertProtectedPathSync(path, 'directory', options);
+  if (!existed) fsyncDirectorySync(dirname(path), resolvePlatform(options));
+}
+
+/** Re-applies and verifies protection for an owner-managed file when it exists. */
+export function ensureProtectedLocalStateFileSync(
+  path: string,
+  options: ProtectedLocalStateOptions = {},
+): void {
+  if (!pathExistsSync(path)) return;
+  if (resolveAuthority(options) === 'owned') {
+    assertProtectedIdentitySync(path, 'file', options);
+    applyProtectionSync(path, 'file', options);
+  }
+  assertProtectedPathSync(path, 'file', options);
 }
 
 export async function createProtectedLocalStateDirectory(

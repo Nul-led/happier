@@ -24,6 +24,7 @@ describe('registerScmHandlers scm.log.list ingress', () => {
   it.each([
     ['malformed', { cwd: '.', query: 42 }],
     ['over-bound', { cwd: '.', query: 'q'.repeat(513) }],
+    ['unknown-field', { cwd: '.', query: 'fix login', routeToAnotherWorkspace: true }],
   ])('rejects %s requests before SCM route/backend execution', async (_label, request) => {
     const handlers = new Map<string, RpcHandler>();
     const registrar: RpcHandlerRegistrar = {

@@ -531,6 +531,36 @@ describe('scm workspace integration', () => {
         expect(resolveWorkspaceTransferMetadata).not.toHaveBeenCalled();
     });
 
+    it('fails closed when a bounded policy overlay would be ignored by legacy split transfer hooks', async () => {
+        const resolveWorkspaceTransferEntries = vi.fn(async () => [{
+            relativePath: 'coverage/result.json',
+            sourcePath: '/repo/coverage/result.json',
+        }]);
+        const registry = createScmBackendRegistry([
+            createTestBackend({
+                id: 'git',
+                detectionRootPath: '/repo',
+                workspaceIntegration: {
+                    inspectWorkspaceLocation: async () => null,
+                    resolveWorkspaceTransferEntries,
+                    resolveWorkspaceTransferMetadata: async () => null,
+                },
+            }),
+        ]);
+
+        await expect(resolveWorkspaceTransferWithScmWorkspace({
+            sourcePath: '/repo',
+            workspaceTransfer: {
+                strategy: 'transfer_snapshot',
+                includeIgnoredMode: 'exclude',
+                ignoredIncludeGlobs: [],
+                extraIgnorePatterns: ['coverage/**'],
+            },
+            registry,
+        })).rejects.toMatchObject({ code: 'git_selection_unavailable' });
+        expect(resolveWorkspaceTransferEntries).not.toHaveBeenCalled();
+    });
+
     it('surfaces a combined workspace transfer result through the shared workspace-integration seam', async () => {
         const resolveWorkspaceTransfer = vi.fn(async () => ({
             entries: [{

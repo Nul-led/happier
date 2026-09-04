@@ -312,19 +312,13 @@ describe('Conversation Automation participation for a non-Channels plugin', () =
     const handler = handlers.get(AUTOMATION_REPLY_HANDOFF_DAEMON_RPC_METHOD_V1);
     if (!handler) throw new Error('expected Automation reply-handoff RPC handler');
 
-    await expect(handler(dispatch)).resolves.toEqual({
+    const response = await handler(dispatch);
+    expect(response).toEqual({
       kind: 'settled',
       settlement: { kind: 'accepted' },
       accountCurrentness: { mode: 'plain', version: 7, contentKeyFingerprint: null },
-      receiptEnvelope: {
-        t: 'plain',
-        v: {
-          v: 1,
-          correspondence,
-          result: { kind: 'accepted', custodyId: 'slack-custody-1' },
-        },
-      },
     });
+    expect(response).not.toHaveProperty('receiptEnvelope');
     expect(delivered).toEqual([AutomationResultDeliveryInputV1Schema.parse({
       v: 1,
       handoffId: correspondence.handoffId,

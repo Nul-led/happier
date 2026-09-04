@@ -5,6 +5,8 @@ import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+  ensureProtectedLocalStateDirectorySync,
+  ensureProtectedLocalStateFileSync,
   publishProtectedLocalStateFileIfAbsent,
   readProtectedLocalStateFile,
   readProtectedLocalStateFileSync,
@@ -20,6 +22,34 @@ afterEach(async () => {
 });
 
 describe('protected local state', () => {
+  it('uses the synchronous Windows ACL boundary for owner-managed database paths', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'happier-protected-local-state-sync-'));
+    roots.push(root);
+    const directory = join(root, 'memory');
+    const path = join(directory, 'memory.sqlite');
+    await mkdir(directory);
+    await writeFile(path, '');
+    const events: string[] = [];
+    const options: ProtectedLocalStateOptions = {
+      authority: 'owned',
+      platform: 'win32',
+      windowsAclBoundarySync: {
+        applyAndVerify: ({ kind }) => events.push(`apply:${kind}`),
+        verify: ({ kind }) => events.push(`verify:${kind}`),
+      },
+    };
+
+    ensureProtectedLocalStateDirectorySync(directory, options);
+    ensureProtectedLocalStateFileSync(path, options);
+
+    expect(events).toEqual([
+      'apply:directory',
+      'verify:directory',
+      'apply:file',
+      'verify:file',
+    ]);
+  });
+
   it('protects the directory and empty temporary file before atomically publishing secret bytes on Windows', async () => {
     const root = await mkdtemp(join(tmpdir(), 'happier-protected-local-state-'));
     roots.push(root);

@@ -9,7 +9,7 @@ import type { RpcHandler } from '@/api/rpc/types';
 vi.mock('./capabilities', () => ({ registerCapabilitiesHandlers: vi.fn() }));
 vi.mock('./previewEnv', () => ({ registerPreviewEnvHandler: vi.fn() }));
 vi.mock('./bash', () => ({ registerBashHandler: vi.fn() }));
-vi.mock('./ripgrep', () => ({ registerRipgrepHandler: vi.fn() }));
+vi.mock('./workspaceFileList', () => ({ registerWorkspaceFileListHandler: vi.fn() }));
 vi.mock('./difftastic', () => ({ registerDifftasticHandler: vi.fn() }));
 vi.mock('./sessionUserMessageSend', () => ({ registerSessionUserMessageSendHandler: vi.fn() }));
 vi.mock('./daemonContributionRegistryProjection', () => ({ registerDaemonContributionRegistryProjectionHandler: vi.fn() }));

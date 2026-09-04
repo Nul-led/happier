@@ -483,6 +483,10 @@ function copyRuntimeAsset(sourcePath: string, targetPath: string): void {
 }
 
 function copyCliRuntimeAssetsToPinnedSnapshot(runtimeRoot: string, snapshotRoot: string): void {
+  copyRuntimeAsset(
+    join(runtimeRoot, 'package.json'),
+    join(snapshotRoot, 'package.json'),
+  );
   for (const relativePath of CLI_RUNTIME_SIDECAR_ENTRIES) {
     copyRuntimeAsset(
       join(runtimeRoot, 'scripts', ...relativePath),

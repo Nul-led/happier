@@ -30,6 +30,7 @@ function createCapabilities(input?: Readonly<{
     diffCommit?: 'supported' | 'unsupported';
     log?: 'supported' | 'unsupported';
     workspaceCheckoutMaterialization?: 'supported' | 'unsupported';
+    workspaceTransfer?: 'supported' | 'unsupported';
     lifecycleClone?: 'supported' | 'unsupported';
     pullRequestRead?: 'supported' | 'unsupported';
 }>): ScmBackendCapabilities {
@@ -122,7 +123,7 @@ function createCapabilities(input?: Readonly<{
         workspaceIntegration: {
             inspectLocation: unsupported,
             checkoutMaterialization: input?.workspaceCheckoutMaterialization === 'supported' ? supported : unsupported,
-            workspaceTransfer: unsupported,
+            workspaceTransfer: input?.workspaceTransfer === 'supported' ? supported : unsupported,
             exportPortability: unsupported,
             portablePathClassification: unsupported,
         },
@@ -161,6 +162,41 @@ function createDefinition(input?: Readonly<{
 }
 
 describe('registered SCM backend registry', () => {
+    it('activates a workspace-transfer backend that registers only the combined resolver', () => {
+        const registration: ScmBackendRuntimeRegistration = {
+            id: 'acme-vcs',
+            handlers: {
+                detection: {
+                    detectRepo: async () => ({ isRepo: true, rootPath: '/repo', mode: '.git' }),
+                },
+                read: {
+                    statusSnapshot: async () => ({ success: true }),
+                    diffFile: async () => ({ success: true, diff: '' }),
+                },
+                workspaceIntegration: {
+                    // The separate entries/metadata leaves are the compatibility
+                    // fallback; a backend that only implements the atomic result
+                    // still satisfies the advertised workspace-transfer leaf.
+                    resolveWorkspaceTransfer: async () => ({ entries: [], metadata: { head: 'abc123' } }),
+                },
+            },
+        };
+
+        const resolved = createRegisteredScmBackendRegistry({
+            definitions: [{
+                pluginId: 'acme.scm.backend',
+                contributionId: 'acme-vcs',
+                definition: createDefinition({
+                    capabilities: createCapabilities({ workspaceTransfer: 'supported' }),
+                }),
+            }],
+            registrations: [{ pluginId: 'acme.scm.backend', registration }],
+        });
+
+        expect(resolved.diagnostics).toEqual([]);
+        expect(resolved.backends.map((backend) => backend.id)).toEqual(['acme.scm.backend/acme-vcs']);
+    });
+
     it('keeps same-local-id backends from distinct plugins independently selectable', () => {
         const registration: ScmBackendRuntimeRegistration = {
             id: 'acme-vcs',

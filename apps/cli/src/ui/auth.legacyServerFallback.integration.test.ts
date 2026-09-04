@@ -60,7 +60,7 @@ function installLegacyAuthRequestRoute(params: Readonly<{
   });
 }
 
-describe('authAndSetupMachineIfNeeded (legacy server fallback) (integration)', () => {
+describe('authAndSetupMachineIfNeeded (claimless legacy refusal) (integration)', () => {
   const envKeys = [
     'HAPPIER_HOME_DIR',
     'HAPPIER_NO_BROWSER_OPEN',
@@ -100,7 +100,7 @@ describe('authAndSetupMachineIfNeeded (legacy server fallback) (integration)', (
     await removeTempDir(homeDir);
   });
 
-  it('falls back to legacy /v1/auth/request polling when /v1/auth/request/claim is missing', async () => {
+  it('does not downgrade to claimless polling when /v1/auth/request/claim is missing', async () => {
     const requests = new Map<string, LegacyRequestRow>();
     const statusChecks = new Map<string, number>();
     const app = fastify({ logger: false });
@@ -136,12 +136,8 @@ describe('authAndSetupMachineIfNeeded (legacy server fallback) (integration)', (
     const { authAndSetupMachineIfNeeded } = await import('./auth');
     const output = captureConsoleLogAndMuteStdout();
     try {
-      const result = await authAndSetupMachineIfNeeded();
-      expect(result.credentials.token).toBe('token-legacy');
-      if (!result.credentials.encryption) {
-        throw new Error('Expected legacy encryption credentials');
-      }
-      expect(result.credentials.encryption.type).toBe('legacy');
+      await expect(authAndSetupMachineIfNeeded()).rejects.toThrow('Authentication failed or was cancelled');
+      expect([...requests.values()].every((row) => row.pollCount === 1)).toBe(true);
     } finally {
       output.restore();
       restoreAxios();
@@ -149,7 +145,7 @@ describe('authAndSetupMachineIfNeeded (legacy server fallback) (integration)', (
     }
   }, 30_000);
 
-  it('falls back to legacy /v1/auth/request polling when /v1/auth/request/status is missing', async () => {
+  it('does not downgrade to claimless POST polling when status is missing', async () => {
     const requests = new Map<string, LegacyRequestRow>();
     const app = fastify({ logger: false });
 
@@ -168,12 +164,8 @@ describe('authAndSetupMachineIfNeeded (legacy server fallback) (integration)', (
     const { authAndSetupMachineIfNeeded } = await import('./auth');
     const output = captureConsoleLogAndMuteStdout();
     try {
-      const result = await authAndSetupMachineIfNeeded();
-      expect(result.credentials.token).toBe('token-legacy-2');
-      if (!result.credentials.encryption) {
-        throw new Error('Expected legacy encryption credentials');
-      }
-      expect(result.credentials.encryption.type).toBe('legacy');
+      await expect(authAndSetupMachineIfNeeded()).rejects.toThrow('Authentication failed or was cancelled');
+      expect([...requests.values()].every((row) => row.pollCount === 1)).toBe(true);
     } finally {
       output.restore();
       restoreAxios();
@@ -181,7 +173,7 @@ describe('authAndSetupMachineIfNeeded (legacy server fallback) (integration)', (
     }
   }, 30_000);
 
-  it('retries /v1/auth/request without extra fields when a legacy server rejects unknown keys', async () => {
+  it('does not drop claim provenance when a server rejects the current request fields', async () => {
     const requests = new Map<string, LegacyRequestRow>();
     const app = fastify({ logger: false });
 
@@ -201,12 +193,8 @@ describe('authAndSetupMachineIfNeeded (legacy server fallback) (integration)', (
     const { authAndSetupMachineIfNeeded } = await import('./auth');
     const output = captureConsoleLogAndMuteStdout();
     try {
-      const result = await authAndSetupMachineIfNeeded();
-      expect(result.credentials.token).toBe('token-legacy-strict');
-      if (!result.credentials.encryption) {
-        throw new Error('Expected legacy encryption credentials');
-      }
-      expect(result.credentials.encryption.type).toBe('legacy');
+      await expect(authAndSetupMachineIfNeeded()).rejects.toBeTruthy();
+      expect(requests.size).toBe(0);
     } finally {
       output.restore();
       restoreAxios();
