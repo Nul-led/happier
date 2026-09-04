@@ -1240,6 +1240,9 @@ export function useLegendHeldIntent<TItem>(params: Readonly<{
         tryAcknowledgeInitialPresentationSettlement,
     ]);
 
+    // Every native held-end acquisition, including a quiet at-end observation, enters the same
+    // hold-plus-settle transaction as explicit commands. A flag-only path would leave Legend
+    // maintenance without bounded confirmation after a late row/footer geometry change.
     const latchHeldEndIntent = React.useCallback(() => {
         setHeldScrollIntent({ kind: 'end' });
         heldIntentSettleUntilRef.current = Date.now() + LEGEND_HELD_INTENT_SETTLE_MS;
