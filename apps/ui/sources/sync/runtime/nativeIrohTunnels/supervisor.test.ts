@@ -74,7 +74,7 @@ describe('Iroh Home transport diagnostics retention', () => {
         expect(diagnostics.every((entry) => entry.state === 'connected')).toBe(true);
     });
 
-    it('bounds inactive Home history while keeping the most recent inactive entries', async () => {
+    it('retains inactive Home history without an arbitrary eviction bound', async () => {
         const supervisor = createSupervisorUnderTest();
         const scope = 'inactive';
         const releasedHomes = 80;
@@ -84,11 +84,13 @@ describe('Iroh Home transport diagnostics retention', () => {
         }
 
         const diagnostics = readScopeDiagnostics(scope);
-        expect(diagnostics.length).toBeLessThanOrEqual(64);
-        expect(diagnostics.length).toBeGreaterThan(0);
+        // Diagnostics are a technical projection, not a product quota. Keep
+        // every released Home until its owner is replaced, rather than silently
+        // evicting valid support data at an invented count.
+        expect(diagnostics.length).toBe(releasedHomes);
         const retained = diagnostics.map((entry) => entry.homeServerIdentityId);
         expect(retained).toContain(homeIdentity(scope, releasedHomes - 1));
-        expect(retained).not.toContain(homeIdentity(scope, 0));
+        expect(retained).toContain(homeIdentity(scope, 0));
     });
 
     it('ages a Home fact through the existing release lifecycle and keeps its proven last-known path', async () => {

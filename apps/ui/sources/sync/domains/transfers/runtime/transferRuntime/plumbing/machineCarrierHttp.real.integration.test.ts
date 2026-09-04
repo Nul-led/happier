@@ -570,16 +570,23 @@ describeReal('production transfer caller over native MachineHttpTunnel into the 
                 (invocation) => invocation.method === RPC_METHODS.DAEMON_DIRECT_TRANSFER_IMPORT_PREPARE,
             );
             expect(prepareInvocation).toBeDefined();
-            const preparedUploadId = (prepareInvocation?.response as { uploadId?: unknown } | undefined)?.uploadId;
+            const preparedImport = prepareInvocation?.response as {
+                uploadId?: unknown;
+                expectedSizeBytes?: unknown;
+            } | undefined;
+            const preparedUploadId = preparedImport?.uploadId;
             expect(typeof preparedUploadId).toBe('string');
+            // The carrier grant only admits a finite transfer. Prepared-transfer identity and
+            // byte commitment remain owned by the existing import lifecycle below the carrier.
             expect(grantRequests[0]).toMatchObject({
-                scope: { transferId: preparedUploadId },
+                scope: { kind: 'bounded_transfer', mode: 'carrier' },
             });
+            expect((grantRequests[0] as { scope?: Record<string, unknown> }).scope).not.toHaveProperty('transferId');
+            expect(preparedImport?.expectedSizeBytes).toBe(declaredSizeBytes);
             expect(verifiedHandshakes.length).toBeGreaterThan(0);
             expect(verifiedHandshakes).toEqual(verifiedHandshakes.map((handshake) => expect.objectContaining({
                 accountId,
-                flow: `${input.transferKind}_transfer`,
-                operationId: preparedUploadId,
+                flow: 'finite_transfer',
             })));
             expect(acceptorStatus?.lastPath?.observedPath).toBe(input.topology);
 

@@ -186,6 +186,45 @@ describe('serverScopedRpcSocketPool', () => {
         pool.resetForTests();
     });
 
+    it('passes the selected browser carrier to reachability before probing an ingress-less canonical URL', async () => {
+        const { socket } = createFakeSocket();
+        const homeCarrier = createFakeHomeCarrier('browser-endpoint');
+        let observedReachability: Readonly<{ serverUrl: string; token: string; timeoutMs: number; homeCarrier?: HomeCarrier | null }> | null = null;
+        const pool = createServerScopedRpcSocketPool({
+            createSocket: () => socket,
+            reachability: {
+                waitForReachable: async (params) => {
+                    observedReachability = params;
+                },
+                startReachability: async () => {},
+                reportUnreachable: () => {},
+                subscribeNetworkAllowed: () => () => {},
+            },
+            readIdleDisconnectMs: () => 0,
+        });
+
+        const client = await pool.acquire({
+            // `.invalid` is syntactically valid but intentionally has no ingress;
+            // the selected browser carrier is the only viable readiness path.
+            serverUrl: 'https://home.invalid',
+            reachabilityServerUrl: 'https://home.invalid',
+            carrier: 'iroh',
+            homeCarrier,
+            token: 'token-browser',
+            timeoutMs: 1_000,
+        });
+
+        expect(observedReachability).toMatchObject({
+            serverUrl: 'https://home.invalid',
+            token: 'token-browser',
+            timeoutMs: 1_000,
+            homeCarrier,
+        });
+        client.disconnect();
+        await pool.stopAll();
+        pool.resetForTests();
+    });
+
     it('keeps one live socket entry for the same private credential regardless of unrelated tokens', async () => {
         const createdTokens: string[] = [];
         const pool = createServerScopedRpcSocketPool({

@@ -519,7 +519,7 @@ describe('memoryWorker archived eligibility and derived-index removal', () => {
       fetchSessionsPage,
       fetchSessionById,
     }));
-    const worker = await startWorker({ indexMode: 'deep' });
+    const worker = await startWorker({ indexMode: 'deep', includeArchivedSessions: true });
     const { openDeepIndexDb } = await import('./deepIndex/deepIndexDb');
     const deepDb = openDeepIndexDb({ dbPath: worker.getDeepDbPath()! });
     for (const sessionId of ['deep-kept', 'deep-archived', 'deep-revoked']) {
@@ -539,6 +539,33 @@ describe('memoryWorker archived eligibility and derived-index removal', () => {
     expect([...worker.listIndexedSessionIds()].sort()).toEqual(['deep-archived', 'deep-kept']);
     expect(fetchSessionById).not.toHaveBeenCalled();
     expect(fetchSessionsPage).toHaveBeenCalledTimes(4);
+    worker.stop();
+  });
+
+  it('removes archived retained Sessions during access reconciliation when archive indexing is disabled', async () => {
+    const { fetchSessionsPage } = mockSessionsHttp(({ archivedOnly }) => ({
+      sessions: archivedOnly ? [sessionRow('missed-archive', { archivedAt: 9_000 })] : [],
+      nextCursor: null,
+      hasNext: false,
+    }));
+    const worker = await startWorker({ indexMode: 'deep', includeArchivedSessions: false });
+    const { openDeepIndexDb } = await import('./deepIndex/deepIndexDb');
+    const deepDb = openDeepIndexDb({ dbPath: worker.getDeepDbPath()! });
+    deepDb.insertChunk({
+      sessionId: 'missed-archive',
+      seqFrom: 1,
+      seqTo: 1,
+      createdAtFromMs: 1,
+      createdAtToMs: 1,
+      text: 'stale archived transcript',
+    });
+    deepDb.close();
+
+    await worker.reconcileRetainedSessionAccess();
+
+    expect(worker.listIndexedSessionIds()).not.toContain('missed-archive');
+    expect(fetchSessionsPage).toHaveBeenCalledTimes(1);
+    expect(fetchSessionsPage).toHaveBeenCalledWith(expect.objectContaining({ activeOnly: false }));
     worker.stop();
   });
 

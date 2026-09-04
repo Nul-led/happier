@@ -190,6 +190,35 @@ describe('createWorkspaceMachineCarrierTunnelOpen', () => {
     await vi.waitFor(() => expect(close).toHaveBeenCalledTimes(1));
   });
 
+  it('settles promptly when target-machine control-plane read is hung and never admits a native tunnel', async () => {
+    const openTunnel = vi.fn();
+    const readTargetMachine = vi.fn(() => new Promise<never>(() => undefined));
+    const mintGrant = vi.fn();
+    const open = createWorkspaceMachineCarrierTunnelOpen({
+      accountId: 'account-1', localMachineId: 'machine-source',
+      runtime: { available: true, endpoint: { endpointId: 'a'.repeat(64) }, openTunnel } as never,
+      resolveTrustRoots: () => [], readTargetMachine, mintGrant,
+    });
+    const controller = new AbortController();
+    const reason = new Error('broker closed');
+    const opening = open({
+      operationId: 'operation-hung-read', sourceMachineId: 'machine-source',
+      targetMachineId: 'machine-target', flow: 'workspace_sync', signal: controller.signal,
+    });
+
+    await vi.waitFor(() => expect(readTargetMachine).toHaveBeenCalledTimes(1));
+    controller.abort(reason);
+    const settled = await Promise.race([
+      opening.then(() => 'resolved', () => 'rejected'),
+      new Promise<'timed_out'>((resolve) => setTimeout(() => resolve('timed_out'), 100)),
+    ]);
+    expect(settled).toBe('rejected');
+    await expect(opening).rejects.toBe(reason);
+    expect(readTargetMachine).toHaveBeenCalledWith('machine-target', expect.any(AbortSignal));
+    expect(mintGrant).not.toHaveBeenCalled();
+    expect(openTunnel).not.toHaveBeenCalled();
+  });
+
   it('fails closed without a stable exact descriptor revision and never opens a native tunnel', async () => {
     const openTunnel = vi.fn();
     const open = createWorkspaceMachineCarrierTunnelOpen({

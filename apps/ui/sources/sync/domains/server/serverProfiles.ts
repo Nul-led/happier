@@ -688,15 +688,22 @@ function pickPreferredEquivalentProfile(
 ): ServerProfile {
     if (profiles.length === 1) return profiles[0]!;
 
+    // Directory projections are advisory metadata only. When persisted state
+    // contains both an established Home profile and an advisory placeholder for
+    // the same identity/URL, choose the established authority before applying
+    // origin, focus, source, or recency tie-breakers.
+    const establishedProfiles = profiles.filter((profile) => profile.descriptorProvenance !== 'advisory-only');
+    const candidates = establishedProfiles.length > 0 ? establishedProfiles : profiles;
+
     const sameOrigin = opts.sameOriginServerUrl ? normalizeUrl(opts.sameOriginServerUrl) : '';
     if (sameOrigin) {
-        const sameOriginMatch = profiles.find((p) => normalizeUrl(p.serverUrl) === sameOrigin);
+        const sameOriginMatch = candidates.find((p) => normalizeUrl(p.serverUrl) === sameOrigin);
         if (sameOriginMatch) return sameOriginMatch;
     }
 
     const preferredId = normalizeServerId(opts.preferredServerId);
     if (preferredId) {
-        const preferredMatch = profiles.find((p) => normalizeServerId(p.id) === preferredId);
+        const preferredMatch = candidates.find((p) => normalizeServerId(p.id) === preferredId);
         if (preferredMatch) return preferredMatch;
     }
 
@@ -712,7 +719,11 @@ function pickPreferredEquivalentProfile(
         legacy: 10,
     };
 
-    return [...profiles].sort((a, b) => {
+    return [...candidates].sort((a, b) => {
+        const aRevision = Number(a.connectionDescriptorRevision ?? -1);
+        const bRevision = Number(b.connectionDescriptorRevision ?? -1);
+        if (aRevision !== bRevision) return bRevision - aRevision;
+
         const aRank = a.source ? (sourceRank[a.source] ?? 10) : 10;
         const bRank = b.source ? (sourceRank[b.source] ?? 10) : 10;
         if (aRank !== bRank) return aRank - bRank;
@@ -795,8 +806,10 @@ function coalesceIrohTransportFacts(
     group: readonly ServerProfile[],
     preferred: ServerProfile,
 ): Pick<ServerProfile, 'irohEndpoint' | 'connectionDescriptorRevision' | 'homeConnectionDescriptor'> {
-    let source = preferred;
-    for (const profile of group) {
+    const establishedProfiles = group.filter((profile) => profile.descriptorProvenance !== 'advisory-only');
+    const candidates = establishedProfiles.length > 0 ? establishedProfiles : group;
+    let source = candidates.includes(preferred) ? preferred : candidates[0]!;
+    for (const profile of candidates) {
         if (
             profile.connectionDescriptorRevision !== undefined
             && (source.connectionDescriptorRevision === undefined

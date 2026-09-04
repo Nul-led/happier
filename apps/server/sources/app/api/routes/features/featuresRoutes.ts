@@ -16,7 +16,10 @@ import { readCachedServerIdentityIdForHotPath } from "@/app/serverIdentity/serve
 import { readRetentionPolicyFromEnv } from '@/app/retention/config/readRetentionPolicyFromEnv';
 import { retentionPolicyToPublicPolicy } from '@/app/retention/config/retentionPolicyToPublicPolicy';
 import type { HomeIrohEndpointState } from '@/app/iroh/homeIrohEndpoint';
-import { readHomeConnectionDescriptor } from '@/app/features/homeConnectionDescriptorPublication';
+import {
+    readCommittedHomeConnectionDescriptor,
+    readHomeConnectionDescriptor,
+} from '@/app/features/homeConnectionDescriptorPublication';
 import type { HomeConnectionDescriptorContinuityStore } from '@/app/features/homeConnectionDescriptorContinuity';
 
 export function featuresRoutes(app: Fastify, params: Readonly<{
@@ -39,14 +42,22 @@ export function featuresRoutes(app: Fastify, params: Readonly<{
         // endpoint lifecycle and is never cached beyond this response.
         const resolvedHomeConnectionDescriptor: HomeConnectionDescriptorV1 | undefined =
             params.homeConnectionDescriptorContinuityStore
-                ? await readHomeConnectionDescriptor({
-                    env: process.env,
-                    continuityStore: params.homeConnectionDescriptorContinuityStore,
-                    visibility: descriptorVisibility,
-                    ...(params.resolveHomeIrohEndpointState
-                        ? { resolveIrohEndpointState: params.resolveHomeIrohEndpointState }
-                        : {}),
-                })
+                ? descriptorVisibility === 'public'
+                    ? await readCommittedHomeConnectionDescriptor({
+                        env: process.env,
+                        continuityStore: params.homeConnectionDescriptorContinuityStore,
+                        ...(params.resolveHomeIrohEndpointState
+                            ? { resolveIrohEndpointState: params.resolveHomeIrohEndpointState }
+                            : {}),
+                    })
+                    : await readHomeConnectionDescriptor({
+                        env: process.env,
+                        continuityStore: params.homeConnectionDescriptorContinuityStore,
+                        visibility: descriptorVisibility,
+                        ...(params.resolveHomeIrohEndpointState
+                            ? { resolveIrohEndpointState: params.resolveHomeIrohEndpointState }
+                            : {}),
+                    })
                 : undefined;
         reply.header("Cache-Control", "no-store");
         return reply.send(applyPublicSignupProvisioningRestrictionsToFeaturesPayload({

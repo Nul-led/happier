@@ -8,6 +8,7 @@ import {
   encodeBrokerControlFrame,
   isBrokerTerminalErrorCode,
   parseBrokerControlV1,
+  WORKSPACE_SYNC_BROKER_MAX_REQUEST_FRAME_BYTES,
 } from './workspaceSyncBrokerProtocol';
 const validPolicy = { selection: 'all_files' as const, extraIgnorePatterns: [], extraIncludePatterns: [] };
 
@@ -113,6 +114,29 @@ describe('workspace sync broker protocol', () => {
     const frame = encodeBrokerCommandFrame(command);
     expect(frame.readUInt32BE(0)).toBeGreaterThan(65_536);
     expect(frame.readUInt32BE(0)).toBeLessThanOrEqual(2 * 1024 * 1024);
+    expect(() => new BrokerControlFrameDecoder().push(frame)).toThrow(/invalid broker frame length/);
+    const requestDecoder = new BrokerControlFrameDecoder({ maxFrameBytes: WORKSPACE_SYNC_BROKER_MAX_REQUEST_FRAME_BYTES });
+    expect(requestDecoder.push(frame)).toHaveLength(1);
+    const oversizedResponsePayload = Buffer.from(JSON.stringify({ t: 'result', requestId: 'r1', result: 'x'.repeat(70_000) }), 'utf8');
+    const oversizedResponse = Buffer.allocUnsafe(4 + oversizedResponsePayload.byteLength);
+    oversizedResponse.writeUInt32BE(oversizedResponsePayload.byteLength, 0);
+    oversizedResponsePayload.copy(oversizedResponse, 4);
+    expect(() => requestDecoder.push(oversizedResponse)).toThrow(/not a manager command/);
+  });
+
+  it('bounds incomplete frames after the declared length and preserves fragmented request frames', () => {
+    const frame = encodeBrokerCommandFrame({
+      t: 'list', requestId: 'fragmented', limit: 100,
+    });
+    const decoder = new BrokerControlFrameDecoder({ maxFrameBytes: WORKSPACE_SYNC_BROKER_MAX_REQUEST_FRAME_BYTES });
+    expect(decoder.push(frame.subarray(0, 1))).toEqual([]);
+    expect(decoder.push(frame.subarray(1, 4))).toEqual([]);
+    expect(decoder.bufferedBytes).toBe(4);
+    expect(decoder.push(frame.subarray(4))).toHaveLength(1);
+
+    const oversized = Buffer.alloc(4);
+    oversized.writeUInt32BE(WORKSPACE_SYNC_BROKER_MAX_REQUEST_FRAME_BYTES + 1, 0);
+    expect(() => decoder.push(oversized)).toThrow(/invalid broker frame length/);
   });
 
   it('requires cursors on paged conflict and policy reads to be bounded identifiers', () => {

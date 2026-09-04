@@ -131,4 +131,42 @@ describe('downloadBulkPayloadViaMachineRpcToDestination', () => {
         expect(cleanup).toHaveBeenCalledTimes(1);
         expect(close).not.toHaveBeenCalled();
     });
+
+    it('cleans up without publishing when canceled after the final chunk', async () => {
+        const cleanup = vi.fn(async () => {});
+        const close = vi.fn(async () => {});
+        const finalize = vi.fn(async () => ({ success: true as const }));
+        const abort = vi.fn(async () => ({ success: true as const }));
+        const controller = new AbortController();
+
+        const result = await downloadBulkPayloadViaMachineRpcToDestination({
+            destination: {
+                writeBytes: async () => {},
+                close,
+                cleanup,
+            },
+            init: async () => ({
+                success: true as const,
+                downloadId: 'one-chunk-download',
+                chunkSizeBytes: 1,
+                sizeBytes: 1,
+                name: 'payload.bin',
+            }),
+            readChunk: async () => ({
+                success: true as const,
+                contentBase64: 'eA==',
+                isLast: true,
+            }),
+            finalize,
+            abort,
+            signal: controller.signal,
+            onProgress: () => controller.abort(),
+        });
+
+        expect(result).toEqual({ ok: false, error: 'Download canceled' });
+        expect(finalize).not.toHaveBeenCalled();
+        expect(abort).toHaveBeenCalledWith({ downloadId: 'one-chunk-download' });
+        expect(cleanup).toHaveBeenCalledTimes(1);
+        expect(close).not.toHaveBeenCalled();
+    });
 });

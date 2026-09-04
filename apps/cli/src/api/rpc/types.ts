@@ -21,7 +21,7 @@ import type {
  */
 export type RpcLocalActionContext = Readonly<Pick<
     ActionExecutorContext,
-    'surface' | 'authority' | 'callerPermissionMode' | 'causalPermissionAuthority'
+    'surface' | 'authority' | 'callerPermissionMode' | 'causalPermissionAuthority' | 'actionRequestId'
 > & {
     operationProgress?: Readonly<{
         update(progress: Readonly<{

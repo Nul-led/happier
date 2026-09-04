@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { chmod, lstat, open, readFile, readdir, realpath, rename, stat, unlink } from 'node:fs/promises';
+import { chmod, lstat, open, readFile, readdir, realpath, rename, stat } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 
 import {
@@ -496,7 +496,7 @@ async function validateRetiredQuarantine(
   quarantinePath: string,
   name: string,
   boundary: LegacyStatePrivacyBoundary,
-): Promise<Readonly<{ valid: true; inventoryHash: string }> | Readonly<{ valid: false }>> {
+): Promise<Readonly<{ valid: true; inventoryHash: string; markerPresent: boolean }> | Readonly<{ valid: false }>> {
   const match = RETIRED_QUARANTINE_NAME_PATTERN.exec(name);
   if (!match) return { valid: false };
   const namedAtMs = Number(match[1]);
@@ -504,7 +504,12 @@ async function validateRetiredQuarantine(
   if (!statEntry || !statEntry.isDirectory() || statEntry.isSymbolicLink()) return { valid: false };
   if (!(await isPathOwnedAndPrivate(quarantinePath, statEntry, boundary))) return { valid: false };
   const rawMarker = await readFile(join(quarantinePath, RETIREMENT_MARKER_NAME), 'utf8').catch(() => null);
-  if (rawMarker === null || rawMarker.length > MAX_RECORD_BYTES) return { valid: false };
+  if (rawMarker === null) {
+    const layout = await inspectReleasedStateLayout(quarantinePath).catch(() => null);
+    if (!layout?.recognized) return { valid: false };
+    return { valid: true, inventoryHash: layout.inventoryHash, markerPresent: false };
+  }
+  if (rawMarker.length > MAX_RECORD_BYTES) return { valid: false };
   let marker: unknown;
   try {
     marker = JSON.parse(rawMarker);
@@ -529,7 +534,7 @@ async function validateRetiredQuarantine(
   // (excluding the marker itself); drift makes the directory ambiguous.
   const inventory = await readInventory(quarantinePath, { remaining: MAX_SCAN_ENTRIES }, { ignoreRetirementMarker: true }).catch(() => null);
   if (!inventory || inventory.hash !== record.inventoryHash) return { valid: false };
-  return { valid: true, inventoryHash: inventory.hash };
+  return { valid: true, inventoryHash: inventory.hash, markerPresent: true };
 }
 
 /**
@@ -542,6 +547,7 @@ async function classifyRetiredQuarantine(
   activeServerDir: string,
   statePath: string,
   boundary: LegacyStatePrivacyBoundary,
+  metadata: Readonly<{ installationId: string; nowMs: number }>,
 ): Promise<WorkspaceSyncLegacyStateInspection> {
   const entries = await readdir(activeServerDir, { withFileTypes: true }).catch((error: unknown) => (
     (error as NodeJS.ErrnoException)?.code === 'ENOENT' ? [] : null
@@ -565,14 +571,26 @@ async function classifyRetiredQuarantine(
   if (!(await isPathOwnedAndPrivate(canonicalActiveServerDir, activeServerDirStat, boundary))) {
     return unknown(quarantinePath, 'parent_ownership_or_permissions');
   }
-  const validated: Array<Readonly<{ path: string; inventoryHash: string }>> = [];
+  const validated: Array<Readonly<{ path: string; inventoryHash: string; markerPresent: boolean }>> = [];
   for (const name of candidates) {
     const candidatePath = join(activeServerDir, name);
     const outcome = await validateRetiredQuarantine(candidatePath, name, boundary);
     if (!outcome.valid) return unknown(candidatePath, 'malformed_retired_quarantine');
-    validated.push({ path: candidatePath, inventoryHash: outcome.inventoryHash });
+    validated.push({ path: candidatePath, inventoryHash: outcome.inventoryHash, markerPresent: outcome.markerPresent });
   }
   const recognized = validated[0]!;
+  if (!recognized.markerPresent) {
+    try {
+      await writeJsonAtomic(join(recognized.path, RETIREMENT_MARKER_NAME), {
+        detectedSchemaVersion: WORKSPACE_REPLICATION_SCHEMA_VERSION,
+        detectedAtMs: Number(RETIRED_QUARANTINE_NAME_PATTERN.exec(basename(recognized.path))?.[1] ?? metadata.nowMs),
+        installationId: metadata.installationId,
+        inventoryHash: recognized.inventoryHash,
+      });
+    } catch {
+      return unknown(recognized.path, 'quarantine_marker_failed');
+    }
+  }
   return {
     status: 'legacy_workspace_sync_state_unsupported',
     classification: 'retired_v1',
@@ -616,7 +634,13 @@ export async function inspectRetiredWorkspaceReplicationState(
   const initialStat = await lstat(statePath).catch((error: unknown) => {
     return (error as NodeJS.ErrnoException)?.code === 'ENOENT' ? null : undefined;
   });
-  if (initialStat === null) return await classifyRetiredQuarantine(activeServerDir, statePath, boundary);
+  const installationId = typeof input.installationId === 'string'
+    && input.installationId.length > 0
+    && input.installationId.length <= MAX_INSTALLATION_ID_LENGTH
+    ? input.installationId
+    : 'unknown';
+  const nowMs = input.nowMs ?? Date.now();
+  if (initialStat === null) return await classifyRetiredQuarantine(activeServerDir, statePath, boundary, { installationId, nowMs });
   if (!initialStat || !initialStat.isDirectory() || initialStat.isSymbolicLink()) {
     return unknown(statePath, 'not_a_real_directory');
   }
@@ -648,17 +672,10 @@ export async function inspectRetiredWorkspaceReplicationState(
   if (!layout) return unknown(statePath, 'unrecognized_child');
   if (!layout.recognized) return unknown(statePath, 'recognized_v1_record_missing');
 
-  const nowMs = input.nowMs ?? Date.now();
   const suffix = input.randomSuffix && input.randomSuffix.length <= 64 && /^[A-Za-z0-9_-]+$/u.test(input.randomSuffix)
     ? input.randomSuffix
     : randomUUID().replaceAll('-', '');
   const quarantinePath = join(activeServerDir, `${RETIRED_DIRECTORY_PREFIX}${String(nowMs)}-${suffix}`);
-  const markerPath = join(canonicalStatePath, RETIREMENT_MARKER_NAME);
-  const installationId = typeof input.installationId === 'string'
-    && input.installationId.length > 0
-    && input.installationId.length <= MAX_INSTALLATION_ID_LENGTH
-    ? input.installationId
-    : 'unknown';
   // Establish private permissions on the state root BEFORE it becomes visible
   // under the quarantine name: a failed hardening step must never leave a
   // publicly readable quarantine behind, and every failure below this point
@@ -685,15 +702,8 @@ export async function inspectRetiredWorkspaceReplicationState(
   }
 
   try {
-    await writeJsonAtomic(markerPath, {
-      detectedSchemaVersion: WORKSPACE_REPLICATION_SCHEMA_VERSION,
-      detectedAtMs: nowMs,
-      installationId,
-      inventoryHash: layout.inventoryHash,
-    });
     await rename(canonicalStatePath, quarantinePath);
   } catch {
-    await unlink(markerPath).catch(() => undefined);
     return unknown(statePath, 'quarantine_failed');
   }
 
@@ -713,6 +723,16 @@ export async function inspectRetiredWorkspaceReplicationState(
   if (!quarantineStat || !quarantineStat.isDirectory() || quarantineStat.isSymbolicLink()
     || !(await isPathOwnedAndPrivate(quarantinePath, quarantineStat, boundary))) {
     return unknown(quarantinePath, 'quarantine_permissions_failed');
+  }
+  try {
+    await writeJsonAtomic(join(quarantinePath, RETIREMENT_MARKER_NAME), {
+      detectedSchemaVersion: WORKSPACE_REPLICATION_SCHEMA_VERSION,
+      detectedAtMs: nowMs,
+      installationId,
+      inventoryHash: layout.inventoryHash,
+    });
+  } catch {
+    return unknown(quarantinePath, 'quarantine_marker_failed');
   }
   return {
     status: 'legacy_workspace_sync_state_unsupported',

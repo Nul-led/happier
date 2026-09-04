@@ -282,6 +282,11 @@ export async function publishAccountHomeDirectoryDescriptor(params: Readonly<{
     canonicalServerUrl: string;
     endpoints: unknown;
 }>): Promise<ReturnType<typeof mapHomeRow>> {
+    // This V2 entrypoint is intentionally a relocation-only exception. The
+    // Home publication owner remains authoritative for ordinary descriptor
+    // composition/revision allocation; Account Directory merely materializes
+    // the already-approved destination facts at sourceRevision + 1. Ordinary
+    // directory writes must use the V1 exact-descriptor path above.
     const body = AccountDirectoryHomePublishRequestV2Schema.parse({
         v: 2,
         label: params.label,

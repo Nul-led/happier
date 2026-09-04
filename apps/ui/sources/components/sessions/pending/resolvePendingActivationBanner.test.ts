@@ -44,4 +44,8 @@ describe('resolvePendingActivationBanner', () => {
         expect(resolvePendingActivationBanner({ authorization: null, activeAt: 100, active: false, machineReachable: false, canWrite: true, pendingMessages: [{ ...rows[0], messageRole: 'assistant' as any }] })).toBeNull();
         expect(resolvePendingActivationBanner({ authorization: waiting, activeAt: 100, active: false, machineReachable: false, canWrite: false, pendingMessages: rows })).toBeNull();
     });
+
+    it('hides the activation banner while the session is already resuming', () => {
+        expect(resolvePendingActivationBanner({ authorization: null, activeAt: 100, active: false, machineReachable: true, canWrite: true, resumingAt: 300, pendingMessages: rows })).toBeNull();
+    });
 });

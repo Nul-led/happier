@@ -30,8 +30,8 @@ export async function uploadInChunks<
         index: number;
         payloadBase64: string;
         encryptedDataKeyEnvelopeBase64: string;
-    }>) => Promise<TChunk>;
-    finalize: (request: Readonly<{ uploadId: string }>) => Promise<TFinalize>;
+    }>, signal?: AbortSignal | null) => Promise<TChunk>;
+    finalize: (request: Readonly<{ uploadId: string }>, signal?: AbortSignal | null) => Promise<TFinalize>;
     abort?: ((request: Readonly<{ uploadId: string }>) => Promise<unknown>) | null;
     onProgress?: ((progress: ChunkUploadProgress) => void) | null;
     signal?: AbortSignal | null;
@@ -100,12 +100,15 @@ export async function uploadInChunks<
                 return { success: false, error: 'Upload chunk encryption failed' };
             }
 
-            const chunk = await params.sendChunk({
+            const chunkRequest = {
                 uploadId,
                 index,
                 payloadBase64: encryptedChunk.payloadBase64,
                 encryptedDataKeyEnvelopeBase64: encryptedChunk.encryptedDataKeyEnvelopeBase64,
-            });
+            } as const;
+            const chunk = params.signal
+                ? await params.sendChunk(chunkRequest, params.signal)
+                : await params.sendChunk(chunkRequest);
             if (!chunk || typeof chunk !== 'object' || (chunk as any).success !== true) {
                 const error = typeof (chunk as any)?.error === 'string' ? (chunk as any).error : 'Upload chunk failed';
                 const errorCode = typeof (chunk as any)?.errorCode === 'string' ? (chunk as any).errorCode : undefined;
@@ -117,7 +120,13 @@ export async function uploadInChunks<
             index += 1;
         }
 
-        const finalized = await params.finalize({ uploadId });
+        if (params.signal?.aborted) {
+            return { success: false, error: 'Upload canceled' };
+        }
+
+        const finalized = params.signal
+            ? await params.finalize({ uploadId }, params.signal)
+            : await params.finalize({ uploadId });
         if (!finalized || typeof finalized !== 'object' || (finalized as any).success !== true) {
             const error = typeof (finalized as any)?.error === 'string' ? (finalized as any).error : 'Upload finalize failed';
             const errorCode = typeof (finalized as any)?.errorCode === 'string' ? (finalized as any).errorCode : undefined;
@@ -156,8 +165,8 @@ export async function downloadInChunks<
     TFinalize extends { success: boolean; error?: string; errorCode?: string },
 >(params: Readonly<{
     init: () => Promise<TInit>;
-    readChunk: (request: Readonly<{ downloadId: string; index: number }>) => Promise<TChunk>;
-    finalize: (request: Readonly<{ downloadId: string }>) => Promise<TFinalize>;
+    readChunk: (request: Readonly<{ downloadId: string; index: number }>, signal?: AbortSignal | null) => Promise<TChunk>;
+    finalize: (request: Readonly<{ downloadId: string }>, signal?: AbortSignal | null) => Promise<TFinalize>;
     abort?: ((request: Readonly<{ downloadId: string }>) => Promise<unknown>) | null;
     recipientSecretKeySeed?: Uint8Array | null;
     writeBytes: (bytes: Uint8Array) => Promise<void>;
@@ -200,7 +209,9 @@ export async function downloadInChunks<
                 return { ok: false, error: 'Download canceled' };
             }
 
-            const chunk = await params.readChunk({ downloadId, index });
+            const chunk = params.signal
+                ? await params.readChunk({ downloadId, index }, params.signal)
+                : await params.readChunk({ downloadId, index });
             if (!chunk || typeof chunk !== 'object' || (chunk as any).success !== true) {
                 const error = typeof (chunk as any)?.error === 'string' ? (chunk as any).error : 'Download chunk failed';
                 const errorCode = typeof (chunk as any)?.errorCode === 'string' ? (chunk as any).errorCode : undefined;
@@ -257,7 +268,13 @@ export async function downloadInChunks<
             return { ok: false, error: 'Downloaded size did not match expected size' };
         }
 
-        const finalized = await params.finalize({ downloadId });
+        if (params.signal?.aborted) {
+            return { ok: false, error: 'Download canceled' };
+        }
+
+        const finalized = params.signal
+            ? await params.finalize({ downloadId }, params.signal)
+            : await params.finalize({ downloadId });
         if (!finalized || typeof finalized !== 'object' || (finalized as any).success !== true) {
             const error = typeof (finalized as any)?.error === 'string' ? (finalized as any).error : 'Download finalize failed';
             const errorCode = typeof (finalized as any)?.errorCode === 'string' ? (finalized as any).errorCode : undefined;

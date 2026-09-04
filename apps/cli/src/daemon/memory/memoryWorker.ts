@@ -460,7 +460,15 @@ export async function startMemoryWorker(params: Readonly<{
     const retained = new Set(listIndexedSessionIds());
     if (retained.size === 0) return;
     const visible = new Set<string>();
-    for (const scope of ['active', 'archived'] as const) {
+    // Archived sessions are only eligible when the setting is enabled.  The
+    // retained-access reconciliation is also the recovery path for archive
+    // transitions missed while the worker was offline, so querying archived
+    // inventory while the policy is disabled would incorrectly preserve stale
+    // derived content.
+    const scopes = settings.includeArchivedSessions
+      ? (['active', 'archived'] as const)
+      : (['active'] as const);
+    for (const scope of scopes) {
       let cursor: string | undefined;
       const seenCursors = new Set<string>();
       for (;;) {

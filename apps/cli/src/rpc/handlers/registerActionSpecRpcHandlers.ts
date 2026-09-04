@@ -58,6 +58,7 @@ export type RegisterActionSpecRpcHandlersParams = Readonly<{
     observeExecution?: (request: Readonly<{
         actionId: string;
         input: unknown;
+        actionRequestId?: string;
         sessionId?: string;
         execute: (context: Readonly<{
             signal: AbortSignal;
@@ -297,6 +298,9 @@ export function registerActionSpecRpcHandlers(params: RegisterActionSpecRpcHandl
                 ? await params.observeExecution({
                     actionId,
                     input: semanticInput,
+                    ...(context?.localActionContext?.actionRequestId
+                        ? { actionRequestId: context.localActionContext.actionRequestId }
+                        : {}),
                     ...(sessionId ? { sessionId } : {}),
                     execute: async ({ signal, operationProgress, operationOwnerUpdate }) => await execute({
                         signal,

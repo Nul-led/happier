@@ -68,6 +68,41 @@ async function awaitNativeTunnelOpen<T extends Readonly<{ close: () => Promise<v
   });
 }
 
+async function awaitControlPlane<T>(opening: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (!signal) return await opening;
+  if (signal.aborted) {
+    // Attach a rejection handler even when the caller is already cancelled so a
+    // late control-plane failure cannot become an unhandled rejection.
+    void opening.catch(() => undefined);
+    throw abortReason(signal);
+  }
+
+  return await new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener('abort', onAbort);
+      reject(abortReason(signal));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    opening.then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
 /**
  * Creates the Lane 08 source-side opener over Lane 06's native tunnel
  * lifecycle. Authentication and descriptor pinning complete before the
@@ -79,15 +114,19 @@ export function createWorkspaceMachineCarrierTunnelOpen(input: Readonly<{
   localMachineId: string;
   runtime: DaemonMachineIrohRuntime;
   resolveTrustRoots: () => readonly DirectRouteGrantTrustRoot[];
-  readTargetMachine: (machineId: string) => Promise<TargetMachineCarrierSnapshot | null>;
-  mintGrant: (request: ReturnType<typeof DirectRouteGrantRequestV2Schema.parse>) => Promise<unknown>;
+  readTargetMachine: (machineId: string, signal?: AbortSignal) => Promise<TargetMachineCarrierSnapshot | null>;
+  mintGrant: (request: ReturnType<typeof DirectRouteGrantRequestV2Schema.parse>, signal?: AbortSignal) => Promise<unknown>;
   nowMs?: () => number;
 }>): WorkspaceSyncMachineTunnelOpen {
   return async (request) => {
     if (request.sourceMachineId !== input.localMachineId) {
       throw machineCarrierUnavailableError();
     }
-    const target = await input.readTargetMachine(request.targetMachineId);
+    request.signal?.throwIfAborted();
+    const targetRead = request.signal
+      ? input.readTargetMachine(request.targetMachineId, request.signal)
+      : input.readTargetMachine(request.targetMachineId);
+    const target = await awaitControlPlane(targetRead, request.signal);
     const daemonState = target?.daemonState as { peerMediation?: { iroh?: { endpoint?: unknown } } } | null;
     const parsedEndpoint = IrohEndpointDescriptorV1Schema.safeParse(daemonState?.peerMediation?.iroh?.endpoint);
     if (!target || target.id !== request.targetMachineId || !parsedEndpoint.success) {
@@ -132,9 +171,20 @@ export function createWorkspaceMachineCarrierTunnelOpen(input: Readonly<{
           operationKind: request.flow === 'file_transfer' ? 'finite_transfer' : 'workspace_sync',
         },
       });
-      const grant = SignedDirectRouteGrantV2Schema.parse(await input.mintGrant(grantRequest));
+      request.signal?.throwIfAborted();
+      const grantRequestResult = request.signal
+        ? input.mintGrant(grantRequest, request.signal)
+        : input.mintGrant(grantRequest);
+      const grant = SignedDirectRouteGrantV2Schema.parse(await awaitControlPlane(
+        grantRequestResult,
+        request.signal,
+      ));
       const proof = proofHandle.sign(grant);
-      const current = await input.readTargetMachine(request.targetMachineId);
+      request.signal?.throwIfAborted();
+      const currentRead = request.signal
+        ? input.readTargetMachine(request.targetMachineId, request.signal)
+        : input.readTargetMachine(request.targetMachineId);
+      const current = await awaitControlPlane(currentRead, request.signal);
       const currentEndpoint = IrohEndpointDescriptorV1Schema.safeParse(
         (current?.daemonState as { peerMediation?: { iroh?: { endpoint?: unknown } } } | null)
           ?.peerMediation?.iroh?.endpoint,

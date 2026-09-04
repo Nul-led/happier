@@ -40,7 +40,7 @@ type SocketLike = Readonly<{
 type ReachabilityDeps = Readonly<{
     acquireReachability?: (params: Readonly<{ serverUrl: string; runtimeOrigin: string; token: string; homeCarrier?: HomeCarrier | null }>) => Promise<Readonly<{ release: () => Promise<void> }>>;
     startReachability: (params: Readonly<{ serverUrl: string; token: string }>) => Promise<void>;
-    waitForReachable: (params: Readonly<{ serverUrl: string; token: string; timeoutMs: number }>) => Promise<void>;
+    waitForReachable: (params: Readonly<{ serverUrl: string; token: string; timeoutMs: number; homeCarrier?: HomeCarrier | null }>) => Promise<void>;
     reportUnreachable: (serverUrl: string, error: unknown, token: string) => void;
     subscribeNetworkAllowed: (listener: (allowed: boolean) => void) => () => void;
 }>;
@@ -181,6 +181,7 @@ export function createServerScopedRpcSocketPool(overrides?: Partial<Deps>): Read
                     serverUrl: params.serverUrl,
                     token: params.token,
                     timeoutMs: params.timeoutMs,
+                    homeCarrier: params.homeCarrier ?? null,
                 });
             },
             reportUnreachable: (serverUrl, error, token) => reportServerUnreachable(serverUrl, error, token),
@@ -347,7 +348,12 @@ export function createServerScopedRpcSocketPool(overrides?: Partial<Deps>): Read
             } else if (!entry.reachabilityRelease) {
                 await deps.reachability.startReachability({ serverUrl: entry.reachabilityServerUrl, token: entry.token });
             }
-            await deps.reachability.waitForReachable({ serverUrl: entry.reachabilityServerUrl, token: entry.token, timeoutMs });
+            await deps.reachability.waitForReachable({
+                serverUrl: entry.reachabilityServerUrl,
+                token: entry.token,
+                timeoutMs,
+                homeCarrier: entry.homeCarrier,
+            });
             await connectSocketWithTimeout(entry.socket, timeoutMs);
         })();
         entry.connectInFlight = run;

@@ -2853,8 +2853,9 @@ function SessionViewLoaded({
         active: session.active,
         machineReachable: Boolean(sessionMachineRecord && isMachineOnline(sessionMachineRecord)),
         canWrite: hasWriteAccess,
+        resumingAt: sessionRuntimeStatusSource.resumingAt,
         pendingMessages,
-    }), [hasWriteAccess, pendingMessages, session.active, session.activeAt, session.pendingActivationAuthorization, sessionMachineRecord]);
+    }), [hasWriteAccess, pendingMessages, session.active, session.activeAt, session.pendingActivationAuthorization, sessionMachineRecord, sessionRuntimeStatusSource.resumingAt]);
     const [pendingActivationActionBusy, setPendingActivationActionBusy] = React.useState(false);
     const goalControlMachineId = controlMachineTarget?.machineId ?? machineId;
     const goalControlMachineRecord = useMachine(typeof goalControlMachineId === 'string' ? goalControlMachineId : '');

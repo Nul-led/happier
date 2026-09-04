@@ -48,7 +48,7 @@ export async function uploadSessionAttachmentFromReaderWithCarrierFallbacks(para
         fileReader: params.fileReader,
         directImportRequest: params.request,
         relay: {
-            init: async () => await transferClient.call<SessionUploadInitResponse, SessionAttachmentsUploadInitRequest & Readonly<{
+            init: async (signal) => await transferClient.call<SessionUploadInitResponse, SessionAttachmentsUploadInitRequest & Readonly<{
                 t: 'session_attachment_upload_v1';
             }>>({
                 machineMethod: RPC_METHODS.DAEMON_TRANSFER_UPLOAD_INIT,
@@ -63,14 +63,17 @@ export async function uploadSessionAttachmentFromReaderWithCarrierFallbacks(para
                     vcsIgnoreStrategy: params.request.vcsIgnoreStrategy,
                     vcsIgnoreWritesEnabled: params.request.vcsIgnoreWritesEnabled,
                 },
+                ...(signal ? { signal } : {}),
             }),
-            sendChunk: async (request) => await transferClient.call<SessionUploadChunkResponse, typeof request>({
+            sendChunk: async (request, signal) => await transferClient.call<SessionUploadChunkResponse, typeof request>({
                 machineMethod: RPC_METHODS.DAEMON_TRANSFER_UPLOAD_CHUNK,
                 request,
+                ...(signal ? { signal } : {}),
             }),
-            finalize: async (request) => await transferClient.call<SessionAttachmentsUploadFinalizeResponse, typeof request>({
+            finalize: async (request, signal) => await transferClient.call<SessionAttachmentsUploadFinalizeResponse, typeof request>({
                 machineMethod: RPC_METHODS.DAEMON_TRANSFER_UPLOAD_FINALIZE,
                 request,
+                ...(signal ? { signal } : {}),
             }),
             abort: async (request) => await transferClient.call<SessionUploadAbortResponse, typeof request>({
                 machineMethod: RPC_METHODS.DAEMON_TRANSFER_UPLOAD_ABORT,

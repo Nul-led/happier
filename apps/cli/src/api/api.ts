@@ -707,8 +707,9 @@ export class ApiClient {
    * Register or update machine with the server
    * Returns the current machine state from the server with decrypted metadata and daemonState
    */
-  async getMachine(machineId: string): Promise<Machine | null> {
-    const accountMode = await this.getAccountEncryptionMode();
+  async getMachine(machineId: string, options?: Readonly<{ signal?: AbortSignal }>): Promise<Machine | null> {
+    options?.signal?.throwIfAborted();
+    const accountMode = await this.getAccountEncryptionMode({ signal: options?.signal });
     const machineStorageMode = accountMode === 'plain' ? 'plain' : 'e2ee';
     const encryptionContext = machineStorageMode === 'e2ee'
       ? resolveMachineEncryptionContext(this.credential)
@@ -721,7 +722,10 @@ export class ApiClient {
     try {
       const response = await axios.get(
         `${resolveServerHttpBaseUrl()}/v1/machines/${encodeURIComponent(machineId)}`,
-        { headers: { ...buildCurrentAccountStoredContentCompatibilityHttpHeaders(), Authorization: `Bearer ${this.credential.token}` } },
+        {
+          headers: { ...buildCurrentAccountStoredContentCompatibilityHttpHeaders(), Authorization: `Bearer ${this.credential.token}` },
+          ...(options?.signal ? { signal: options.signal } : {}),
+        },
       );
       const raw = response.data.machine;
       const common = {
@@ -747,11 +751,15 @@ export class ApiClient {
     }
   }
 
-  async mintPeerMediationRouteGrant(request: unknown): Promise<unknown> {
+  async mintPeerMediationRouteGrant(request: unknown, options?: Readonly<{ signal?: AbortSignal }>): Promise<unknown> {
+    options?.signal?.throwIfAborted();
     const response = await axios.post(
       `${resolveServerHttpBaseUrl()}/v1/machines/peer/mediation/route-grants`,
       request,
-      { headers: { Authorization: `Bearer ${this.credential.token}`, 'Content-Type': 'application/json' } },
+      {
+        headers: { Authorization: `Bearer ${this.credential.token}`, 'Content-Type': 'application/json' },
+        ...(options?.signal ? { signal: options.signal } : {}),
+      },
     );
     if (response.data?.ok !== true || response.data.grant === undefined) {
       throw new Error('Peer mediation route grant is unavailable');

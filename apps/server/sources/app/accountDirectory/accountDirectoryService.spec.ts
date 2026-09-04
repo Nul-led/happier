@@ -323,7 +323,7 @@ describe("Account Directory service", () => {
             expect(mocks.txEntryUpdate).not.toHaveBeenCalled();
         });
 
-        it("composes and publishes the next outer descriptor revision for relocation", async () => {
+        it("uses the V2 revision exception only for relocation publication", async () => {
             const { publishAccountHomeDirectoryDescriptor } = await import("./accountDirectoryService");
             const current = entryRow("srv_home_a", {
                 connectionDescriptor: descriptorAtRevision("srv_home_a", 7),

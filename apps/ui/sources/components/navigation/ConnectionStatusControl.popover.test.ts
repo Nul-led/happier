@@ -1423,6 +1423,7 @@ describe('ConnectionStatusControl (native popover config)', () => {
         expect(joined).toContain('iroh-endpoint-123');
         expect(joined).toContain('connectionStatus.labels.currentPath');
         expect(joined).toContain('connectionStatus.values.pathDirect');
+        expect(joined).toContain('connectionStatus.labels.lastKnownPath');
         expect(joined).toContain('connectionStatus.labels.relayConfiguration');
         expect(joined).toContain('relay.example.test');
         expect(joined).toContain('connectionStatus.labels.transportError');
@@ -1439,6 +1440,8 @@ describe('ConnectionStatusControl (native popover config)', () => {
         expect(copied).toContain('iroh-endpoint-123');
         expect(copied).toContain('relay.example.test');
         expect(screen.getTextContent()).toContain('connectionStatus.diagnosticsCopied');
+        expect(screen.findByTestId('connection-copy-diagnostics-feedback')?.props.accessibilityLiveRegion)
+            .toBe('polite');
         const copiedButton = screen.findByTestId('connection-copy-diagnostics');
         if (!copiedButton) throw new Error('expected diagnostics copied action');
         expect(copiedButton.props.accessibilityLabel)

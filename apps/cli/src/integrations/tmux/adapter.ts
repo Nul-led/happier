@@ -26,6 +26,14 @@ import {
   normalizeCapturedScreen,
 } from '../terminalHost/controlCapture';
 
+function logTmuxDebug(message: string, ...args: unknown[]): void {
+  void import('@/ui/logger').then(({ logger }) => logger.debug(message, ...args)).catch(() => undefined);
+}
+
+function logTmuxWarn(message: string, ...args: unknown[]): void {
+  void import('@/ui/logger').then(({ logger }) => logger.warn(message, ...args)).catch(() => undefined);
+}
+
 export type TmuxTerminalHostUtility = Readonly<{
   executeTmuxCommand(
     cmd: readonly string[],
@@ -135,16 +143,26 @@ export function createTmuxTerminalHostAdapter(params?: Readonly<{
 
   async function evaluateLiveness(handle: TerminalHostHandle) {
     const handleTmux = tmuxForHandle(handle);
-    return evaluateTmuxPaneLiveness({
-      target: targetFromHandle(handle),
+    const target = targetFromHandle(handle);
+    logTmuxDebug('[TMUX] Liveness probe starting', { target });
+    const result = await evaluateTmuxPaneLiveness({
+      target,
       executor: (args) => handleTmux.executeTmuxCommand([...args]),
       observedAt: now(),
     });
+    logTmuxDebug('[TMUX] Liveness probe completed', {
+      target,
+      paneAlive: result.paneAlive,
+      paneDead: result.paneDead ?? null,
+      probeInconclusive: result.probeInconclusive ?? false,
+    });
+    return result;
   }
 
   async function captureInputState(handle: TerminalHostHandle): Promise<TerminalInputState> {
     const target = targetFromHandle(handle);
     const handleTmux = tmuxForHandle(handle);
+    logTmuxDebug('[TMUX] Input capture starting', { target });
     // Two full-pane captures with a short stability delay, mirroring the zellij adapter:
     // `stable` means the screen did not change between samples. Returns the FULL pane so the
     // multi-line steer-veto parser sees dialogs/prompts above the bottom composer. Replaces
@@ -156,13 +174,21 @@ export function createTmuxTerminalHostAdapter(params?: Readonly<{
       await wait(DEFAULT_INPUT_STABILITY_DELAY_MS);
       const after = await handleTmux.captureCurrentInput(target);
       const cursor = await handleTmux.captureCursorPosition(target);
-      return {
+      const result = {
         stable: before === after && cursorPositionsEqual(beforeCursor, cursor),
         currentInput: after,
         ...(cursor !== null ? { cursor } : {}),
         observedAt: now(),
       };
+      logTmuxDebug('[TMUX] Input capture completed', {
+        target,
+        stable: result.stable,
+        textLength: result.currentInput.length,
+        hasCursor: cursor !== null,
+      });
+      return result;
     } catch {
+      logTmuxWarn('[TMUX] Input capture failed', { target });
       return {
         stable: false,
         currentInput: '',

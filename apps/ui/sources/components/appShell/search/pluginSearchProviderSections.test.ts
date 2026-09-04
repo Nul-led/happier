@@ -153,6 +153,39 @@ describe('buildPluginSearchProviderSections', () => {
         expect(sections({ projection: providerWithOrigin, scopedLaunchFacts: scopedProvider })).toHaveLength(0);
     });
 
+    it('treats null scope coordinates as unconstrained while preserving exact constraints', () => {
+        const providerWithOrigin = projection({
+            searchProvidersById: Object.freeze({
+                'searchProvider:happier.triage:entries': Object.freeze({
+                    ...projection().searchProvidersById['searchProvider:happier.triage:entries'],
+                    hostOrigin: hostOrigin('happier.triage', 'machine-1', 7),
+                }),
+            }),
+            actionsById: Object.freeze({
+                'happier.triage/search': Object.freeze({
+                    ...projection().actionsById['happier.triage/search'],
+                    hostOrigin: hostOrigin('happier.triage', 'machine-1', 7),
+                }),
+            }),
+        });
+
+        // An exact Home with a coarse machine union still admits the provider.
+        expect(sections({
+            projection: providerWithOrigin,
+            scopedLaunchFacts: { ...SCOPED, serverId: 'server-machine-1', machineId: null },
+        })).toHaveLength(1);
+
+        // A coarse Home union with an exact machine constrains only that machine.
+        expect(sections({
+            projection: providerWithOrigin,
+            scopedLaunchFacts: { ...SCOPED, serverId: null, machineId: 'machine-1' },
+        })).toHaveLength(1);
+        expect(sections({
+            projection: providerWithOrigin,
+            scopedLaunchFacts: { ...SCOPED, serverId: null, machineId: 'machine-2' },
+        })).toHaveLength(0);
+    });
+
     it('queries the declared Action through the one dispatcher and renders its rows', async () => {
         dispatchSemanticCommand.mockResolvedValue({
             ok: true,

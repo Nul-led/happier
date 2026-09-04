@@ -70,6 +70,57 @@ describe('serverProfiles adoption authority', () => {
         expect(profiles.getServerProfileById(original.id)?.irohEndpoint?.endpointId).toBe('a'.repeat(64));
     });
 
+    it('prefers established Home facts over advisory Directory facts before revision comparison during persisted dedupe', async () => {
+        const scope = randomScope();
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = scope;
+        const storage = new MMKV({ id: scopedStorageId('server-profiles', scope) });
+        storage.set('server-state-v1', JSON.stringify({
+            activeServerId: 'directory-placeholder',
+            servers: {
+                'established-home': {
+                    id: 'established-home',
+                    name: 'Established Home',
+                    serverUrl: 'https://home-authored.example.test',
+                    serverIdentityId: 'srv_persisted_authority_1',
+                    source: 'qr',
+                    connectionDescriptorRevision: 2,
+                    irohEndpoint: { endpointId: 'a'.repeat(64) },
+                    createdAt: 1,
+                    updatedAt: 2,
+                    lastUsedAt: 2,
+                },
+                'directory-placeholder': {
+                    id: 'directory-placeholder',
+                    name: 'Directory Placeholder',
+                    serverUrl: 'https://directory.example.test',
+                    serverIdentityId: 'srv_persisted_authority_1',
+                    source: 'account-directory',
+                    descriptorProvenance: 'advisory-only',
+                    connectionDescriptorRevision: 99,
+                    irohEndpoint: { endpointId: 'b'.repeat(64) },
+                    createdAt: 3,
+                    updatedAt: 99,
+                    lastUsedAt: 99,
+                },
+            },
+        }));
+
+        const profiles = await importFresh();
+        const [profile] = profiles.listServerProfiles();
+
+        expect(profile).toMatchObject({
+            id: 'established-home',
+            serverIdentityId: 'srv_persisted_authority_1',
+            connectionDescriptorRevision: 2,
+            irohEndpoint: { endpointId: 'a'.repeat(64) },
+        });
+        expect(profile?.descriptorProvenance).toBeUndefined();
+        expect(profiles.listServerProfiles()).toHaveLength(1);
+        // The retired id remains a lookup alias for continuity, but does not
+        // survive as a second persisted profile.
+        expect(profiles.getServerProfileById('directory-placeholder')?.id).toBe('established-home');
+    });
+
     it('does not let a newer advisory Directory descriptor retarget an existing Home or focus', async () => {
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
         const profiles = await importFresh();

@@ -6,6 +6,7 @@ describe('transcriptSearchUnavailableHint', () => {
     it.each([
         ['home_indexing', 'memorySearchSettings.status.indexing'],
         ['daemon_no_target', 'errors.daemonUnavailableBody'],
+        ['daemon_unavailable', 'errors.daemonUnavailableBody'],
         ['home_unavailable', 'memorySearchSettings.status.unavailableLight'],
         ['home_unknown', 'memorySearchSettings.status.unavailableLight'],
         ['memory_disabled', 'memorySearchSettings.disabled.footer'],

@@ -525,6 +525,7 @@ async function requestAtEndpoint(
                             signal: requestController.signal,
                             timeoutMs: readServerReachabilityWaitTimeoutMs(),
                             acceptAuthFailed: true,
+                            homeCarrier,
                         });
                     } catch (error) {
                         const aborted =

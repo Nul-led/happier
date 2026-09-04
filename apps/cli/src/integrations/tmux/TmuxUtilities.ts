@@ -96,6 +96,10 @@ export class TmuxUtilities {
   private readonly tmuxCommandEnv?: Record<string, string>;
   private readonly tmuxSocketPath?: string;
 
+  private static operationName(args: readonly string[]): string {
+    return args[1] === '-S' ? (args[3] ?? 'unknown') : (args[1] ?? 'unknown');
+  }
+
   constructor(sessionName?: string, tmuxCommandEnv?: Record<string, string>, tmuxSocketPath?: string) {
     this.sessionName = sessionName || TmuxUtilities.DEFAULT_SESSION_NAME;
     this.tmuxCommandEnv = tmuxCommandEnv;
@@ -248,6 +252,11 @@ export class TmuxUtilities {
       }
 
       const commandTimeoutMs = timeoutMs ?? resolveTmuxCommandTimeoutMs();
+      logTmuxDebug('[TMUX] Command starting', {
+        operation: TmuxUtilities.operationName(args),
+        timeoutMs: commandTimeoutMs,
+        hasSocketPath: args[1] === '-S',
+      });
       const child = spawn(args[0], args.slice(1), {
         stdio: stdin !== undefined ? ['pipe', 'pipe', 'pipe'] : ['ignore', 'pipe', 'pipe'],
         shell: false,
@@ -262,12 +271,42 @@ export class TmuxUtilities {
       let stdout = '';
       let stderr = '';
       let timedOut = false;
-      const timeoutHandle = commandTimeoutMs > 0
-        ? setTimeout(() => {
-            timedOut = true;
-            child.kill();
-          }, commandTimeoutMs)
-        : undefined;
+      let settled = false;
+      let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+      const settle = (code: number | null): void => {
+        if (settled) return;
+        settled = true;
+        if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+        resolve({
+          exitCode: normalizeExitCode(code),
+          stdout,
+          stderr,
+          ...(timedOut ? { timedOut: true } : {}),
+        });
+      };
+      if (commandTimeoutMs > 0) {
+        timeoutHandle = setTimeout(() => {
+          timedOut = true;
+          // Do not wait for `close` after killing the child. Some tmux/client
+          // processes can remain stuck in the OS even after kill(), which
+          // would otherwise block readiness and recovery indefinitely.
+          let killRequested = false;
+          try {
+            killRequested = child.kill();
+          } catch {
+            killRequested = false;
+          } finally {
+            const operationIndex = args[1] === '-S' ? 3 : 1;
+            logTmuxWarn('[TMUX] Command timed out', {
+              operation: args[operationIndex] ?? 'unknown',
+              timeoutMs: commandTimeoutMs,
+              pid: child.pid ?? null,
+              killRequested,
+            });
+            settle(null);
+          }
+        }, commandTimeoutMs);
+      }
 
       child.stdout?.on('data', (data) => {
         stdout += data.toString();
@@ -278,17 +317,20 @@ export class TmuxUtilities {
       });
 
       child.on('close', (code) => {
-        if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
-        resolve({
-          exitCode: normalizeExitCode(code),
-          stdout,
-          stderr,
-          ...(timedOut ? { timedOut: true } : {}),
+        logTmuxDebug('[TMUX] Command closed', {
+          operation: TmuxUtilities.operationName(args),
+          returncode: normalizeExitCode(code),
+          timedOut,
+          stdoutLength: stdout.length,
+          stderrLength: stderr.length,
         });
+        settle(code);
       });
 
       child.on('error', (error) => {
+        if (settled) return;
         if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+        settled = true;
         reject(error);
       });
     });

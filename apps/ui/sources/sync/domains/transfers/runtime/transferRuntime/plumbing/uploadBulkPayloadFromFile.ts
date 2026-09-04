@@ -21,21 +21,23 @@ type BulkTransferUploadInitSuccess = Readonly<{
 
 export async function uploadBulkPayloadFromFile<TFinalize extends { success: boolean; error?: string }>(params: Readonly<{
     fileReader: BulkTransferFileReader;
-    init: () => Promise<BulkTransferUploadInitSuccess | BulkTransferFailureResponse>;
+    init: (signal?: AbortSignal | null) => Promise<BulkTransferUploadInitSuccess | BulkTransferFailureResponse>;
     sendChunk: (request: Readonly<{
         uploadId: string;
         index: number;
         payloadBase64: string;
         encryptedDataKeyEnvelopeBase64: string;
-    }>) => Promise<{ success: boolean; error?: string }>;
-    finalize: (request: Readonly<{ uploadId: string }>) => Promise<TFinalize>;
+    }>, signal?: AbortSignal | null) => Promise<{ success: boolean; error?: string }>;
+    finalize: (request: Readonly<{ uploadId: string }>, signal?: AbortSignal | null) => Promise<TFinalize>;
     abort?: ((request: Readonly<{ uploadId: string }>) => Promise<unknown>) | null;
     closeFileReader?: boolean;
     onProgress?: ((progress: ChunkUploadProgress) => void) | null;
     signal?: AbortSignal | null;
 }>): Promise<TFinalize | BulkTransferFailureResponse> {
     try {
-        const init = await params.init();
+        const init = params.signal
+            ? await params.init(params.signal)
+            : await params.init();
         if (init.success !== true) {
             return init;
         }
@@ -44,8 +46,12 @@ export async function uploadBulkPayloadFromFile<TFinalize extends { success: boo
             totalBytes: params.fileReader.sizeBytes,
             readBytes: async (offset, length) => await params.fileReader.readBytes(offset, length),
             init: async () => init,
-            sendChunk: async (request) => await params.sendChunk(request),
-            finalize: async (request) => await params.finalize(request),
+            sendChunk: async (request, signal) => signal
+                ? await params.sendChunk(request, signal)
+                : await params.sendChunk(request),
+            finalize: async (request, signal) => signal
+                ? await params.finalize(request, signal)
+                : await params.finalize(request),
             abort: params.abort ?? null,
             onProgress: params.onProgress ?? null,
             signal: params.signal ?? null,

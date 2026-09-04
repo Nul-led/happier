@@ -488,11 +488,19 @@ export async function waitForServerReachable(params: Readonly<{
     signal?: AbortSignal;
     timeoutMs: number;
     acceptAuthFailed?: boolean;
+    /** Semantic carrier for Homes whose canonical URL has no reachable ingress. */
+    homeCarrier?: HomeCarrier | null;
 }>): Promise<void> {
     await waitForNetworkAllowed({ signal: params.signal, timeoutMs: params.timeoutMs });
     const entry = getOrCreateEntry(params.serverUrl, params.token);
     const tokenChanged = entry.token !== params.token;
     entry.token = params.token;
+    // Keep the probe on the selected carrier when the canonical URL is only a
+    // stable identity (for example an ingress-less browser Home). Optional
+    // preserves existing direct callers that have no carrier context.
+    if ('homeCarrier' in params) {
+        entry.homeCarrier = params.homeCarrier ?? null;
+    }
 
     // IMPORTANT: `createManagedConnectionSupervisor.start()` will immediately create/connect a transport when the
     // supervisor is already started but currently offline/auth_failed. For reachability supervision we must not

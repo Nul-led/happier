@@ -66,6 +66,8 @@ type RevisionOwnerState = Readonly<{
 }>;
 
 let revisionOwner: RevisionOwnerState | null = null;
+/** Last full descriptor committed by this process; public reads may only project this fact. */
+let committedDescriptor: HomeConnectionDescriptorV1 | null = null;
 
 /**
  * Durable continuity, read once per process. `unreadable` is a fail-closed
@@ -96,6 +98,7 @@ let publicationTransactionChain: Promise<void> = Promise.resolve();
 /** Test-only reset of the in-process monotonic revision owner. */
 export function resetHomeConnectionDescriptorRevisionOwnerForTests(): void {
     revisionOwner = null;
+    committedDescriptor = null;
     continuityPrime = null;
     continuityPrimeInFlight = null;
     supersededLocalCandidate = null;
@@ -323,7 +326,80 @@ export async function readHomeConnectionDescriptor(params: Readonly<{
         return await readHomeConnectionDescriptorTransaction(params, false);
     });
     publicationTransactionChain = turn.then(() => undefined, () => undefined);
-    return await turn;
+    const descriptor = await turn;
+    if (descriptor && params.visibility === "authenticated") committedDescriptor = descriptor;
+    return descriptor;
+}
+
+/**
+ * Read-only public projection. A public feature probe must never allocate a
+ * revision or write continuity. It can project the last descriptor committed
+ * in this process; after restart it reconstructs only when the current facts
+ * exactly match the durable generation, otherwise it fails closed.
+ */
+export async function readCommittedHomeConnectionDescriptor(params: Readonly<{
+    env?: NodeJS.ProcessEnv;
+    continuityStore: HomeConnectionDescriptorContinuityStore;
+    resolveIrohEndpointState?: () => HomeIrohEndpointState | Promise<HomeIrohEndpointState>;
+}>): Promise<HomeConnectionDescriptorV1 | undefined> {
+    let continuity: HomeConnectionDescriptorContinuity | null;
+    try {
+        continuity = await params.continuityStore.read();
+    } catch {
+        return undefined;
+    }
+    if (!continuity) return undefined;
+    const env = params.env ?? process.env;
+    const identity = readCachedServerIdentityIdForHotPath(env);
+    const canonicalServerUrl = resolveConfiguredCanonicalServerUrl(env);
+    if (!identity || !canonicalServerUrl) return undefined;
+    if (committedDescriptor
+        && committedDescriptor.revision === continuity.revision
+        && createHomeConnectionDescriptorContentKey({
+            homeServerIdentityId: committedDescriptor.homeServerIdentityId,
+            canonicalServerUrl: committedDescriptor.canonicalServerUrl,
+            endpoints: committedDescriptor.endpoints,
+        }) === continuity.contentKey
+        && committedDescriptor.homeServerIdentityId === identity) {
+        return projectComposedHomeConnectionDescriptor(committedDescriptor, {
+            homeServerIdentityId: identity,
+            canonicalServerUrl,
+            publicServerUrl: null,
+            minimumOuterRevisionExclusive: null,
+            persistedOuterRevisionOwner: continuity,
+            iroh: { status: "unavailable", snapshot: null, failureReason: null },
+        }, "public");
+    }
+    const iroh = await (params.resolveIrohEndpointState ? params.resolveIrohEndpointState() : getHomeIrohEndpointState());
+    const activeIroh = iroh.status === "active" && iroh.snapshot ? iroh.snapshot : null;
+    const endpoints: HomeConnectionEndpointV1[] = [];
+    const https = httpsEndpointFromIngress(resolveConfiguredPublicServerUrl(env) ?? null);
+    if (https) endpoints.push(https);
+    if (activeIroh) endpoints.push({ kind: "iroh", ...activeIroh.endpoint });
+    if (endpoints.length === 0) return undefined;
+    const contentKey = createHomeConnectionDescriptorContentKey({
+        homeServerIdentityId: identity,
+        canonicalServerUrl,
+        endpoints,
+    });
+    if (contentKey !== continuity.contentKey) return undefined;
+    const parsed = HomeConnectionDescriptorV1Schema.safeParse({
+        v: 1,
+        homeServerIdentityId: identity,
+        canonicalServerUrl,
+        revision: continuity.revision,
+        endpoints,
+    });
+    return parsed.success
+        ? projectComposedHomeConnectionDescriptor(parsed.data, {
+            homeServerIdentityId: identity,
+            canonicalServerUrl,
+            publicServerUrl: null,
+            minimumOuterRevisionExclusive: null,
+            persistedOuterRevisionOwner: continuity,
+            iroh,
+        }, "public")
+        : undefined;
 }
 
 /**

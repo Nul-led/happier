@@ -1182,6 +1182,7 @@ describe('SessionView (sendMessage resumeInactive pendingQueue)', () => {
         expect(findAgentInput(screen).props.isSending).toBe(false);
         expect(findAgentInput(screen).props.connectionStatus?.text).toBe('session.resuming');
         expect(findAgentInput(screen).props.connectionStatus?.isPulsing).toBe(true);
+        expect(screen.findAllByTestId('session-pendingActivation')).toHaveLength(0);
 
         await act(async () => {
             sessionOptimisticThinkingAt.current = Date.now();

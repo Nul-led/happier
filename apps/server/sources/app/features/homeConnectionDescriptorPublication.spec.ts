@@ -44,6 +44,7 @@ import type { HomeIrohEndpointState } from "@/app/iroh/homeIrohEndpoint";
 
 import {
     composeHomeConnectionDescriptor,
+    readCommittedHomeConnectionDescriptor,
     readHomeConnectionDescriptor,
     readRequiredAuthenticatedHomeConnectionDescriptor,
     resolvePublishedHomeConnectionDescriptor,
@@ -104,6 +105,34 @@ describe("home connection descriptor publication owner", () => {
             revision: 1,
             endpoints: [{ kind: "https", url: "https://ingress.example.test" }],
         });
+    });
+
+    it("projects only a committed generation without invoking the continuity writer", async () => {
+        let stored: { revision: number; contentKey: string } | null = null;
+        const write = vi.fn(async (continuity: { revision: number; contentKey: string }) => {
+            stored = continuity;
+            return { status: "committed" as const, continuity };
+        });
+        const continuityStore = {
+            read: async () => stored,
+            write,
+        } satisfies HomeConnectionDescriptorContinuityStore;
+        const committed = await readHomeConnectionDescriptor({
+            env: { HAPPIER_SERVER_IDENTITY_ID: "srv_home", HAPPIER_CANONICAL_SERVER_URL: "https://home.example.test" },
+            continuityStore,
+            visibility: "authenticated",
+            resolveIrohEndpointState: activeIroh,
+        });
+        expect(committed).toBeDefined();
+        write.mockClear();
+        const projected = await readCommittedHomeConnectionDescriptor({
+            env: { HAPPIER_SERVER_IDENTITY_ID: "srv_home", HAPPIER_CANONICAL_SERVER_URL: "https://home.example.test" },
+            continuityStore,
+            resolveIrohEndpointState: activeIroh,
+        });
+        expect(projected?.revision).toBe(committed?.revision);
+        expect(projected?.endpoints[0]).not.toHaveProperty("directAddresses");
+        expect(write).not.toHaveBeenCalled();
     });
 
     it("rejects non-HTTPS ingress facts and invalid ingress URLs instead of publishing them", () => {

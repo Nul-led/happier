@@ -154,6 +154,33 @@ describe('chunkTransferClient', () => {
         expect(abortSpy).toHaveBeenCalledWith({ uploadId: 'u1' });
     });
 
+    it('does not finalize when cancellation happens after the final upload chunk', async () => {
+        const bytes = new TextEncoder().encode('x');
+        const controller = new AbortController();
+        const finalizeSpy = vi.fn(async (_req: { uploadId: string }) => ({ success: true as const }));
+        const abortSpy = vi.fn(async (_req: { uploadId: string }) => ({ success: true as const }));
+
+        const result = await uploadInChunks({
+            totalBytes: bytes.byteLength,
+            readBytes: async (offset, length) => bytes.slice(offset, offset + length),
+            init: async () => ({
+                success: true as const,
+                uploadId: 'one-chunk-upload',
+                chunkSizeBytes: bytes.byteLength,
+                recipientPublicKeyBase64: Buffer.alloc(32, 9).toString('base64'),
+            }),
+            sendChunk: async () => ({ success: true as const }),
+            finalize: finalizeSpy,
+            abort: abortSpy,
+            signal: controller.signal,
+            onProgress: () => controller.abort(),
+        });
+
+        expect(result).toEqual({ success: false, error: 'Upload canceled' });
+        expect(finalizeSpy).not.toHaveBeenCalled();
+        expect(abortSpy).toHaveBeenCalledWith({ uploadId: 'one-chunk-upload' });
+    });
+
     it('returns an upload error shape when chunk encryption throws', async () => {
         const bytes = new TextEncoder().encode('hello');
         const initSpy = vi.fn(async () => ({
@@ -380,6 +407,36 @@ describe('chunkTransferClient', () => {
         expect(res).toEqual({ ok: false, error: 'Download canceled' });
         expect(finalizeSpy).not.toHaveBeenCalled();
         expect(abortSpy).toHaveBeenCalledWith({ downloadId: 'd1' });
+    });
+
+    it('does not finalize when cancellation happens after the final download chunk', async () => {
+        const controller = new AbortController();
+        const finalizeSpy = vi.fn(async (_req: { downloadId: string }) => ({ success: true as const }));
+        const abortSpy = vi.fn(async (_req: { downloadId: string }) => ({ success: true as const }));
+
+        const result = await downloadInChunks({
+            init: async () => ({
+                success: true as const,
+                downloadId: 'one-chunk-download',
+                chunkSizeBytes: 1,
+                sizeBytes: 1,
+                name: 'file.txt',
+            }),
+            readChunk: async () => ({
+                success: true as const,
+                contentBase64: Buffer.from('x').toString('base64'),
+                isLast: true,
+            }),
+            finalize: finalizeSpy,
+            abort: abortSpy,
+            signal: controller.signal,
+            onProgress: () => controller.abort(),
+            writeBytes: async () => {},
+        });
+
+        expect(result).toEqual({ ok: false, error: 'Download canceled' });
+        expect(finalizeSpy).not.toHaveBeenCalled();
+        expect(abortSpy).toHaveBeenCalledWith({ downloadId: 'one-chunk-download' });
     });
 
     it('fails closed when a non-final chunk has no content', async () => {

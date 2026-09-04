@@ -1,6 +1,6 @@
 import * as React from 'react';
 
-import type { MemorySearchHitV1 } from '@happier-dev/protocol';
+import { readRpcErrorCode, type MemorySearchHitV1 } from '@happier-dev/protocol';
 
 import {
     captureMemorySearchSessionReadAuthority,
@@ -10,6 +10,7 @@ import {
 } from '@/sync/domains/memory/hydrateMemorySearchSessionTargets';
 import { normalizeMemorySearchSessionId } from '@/sync/domains/memory/applyMemorySearchSessionEligibility';
 import { searchDaemonMemory } from '@/sync/domains/memory/searchDaemonMemory';
+import { SESSION_MACHINE_TARGET_UNAVAILABLE_ERROR_CODE } from '@/sync/runtime/sessionMachineRpcErrorCodes';
 import { searchHomeMemory } from '@/sync/domains/memory/searchHomeMemory';
 import {
     useMemorySearchProvider,
@@ -138,6 +139,18 @@ export function useSessionListMemorySearchContext(
 
 function isAbortSupersession(error: unknown, signal: AbortSignal): boolean {
     return signal.aborted || (error instanceof Error && error.name === 'AbortError');
+}
+
+function resolveMemorySearchFailureReason(error: unknown): string {
+    // Keep the transport's canonical target-unavailable code intact at the
+    // boundary, while projecting it into the contextual Search UI's local
+    // availability vocabulary. Disabled search and an unreachable daemon are
+    // materially different states and must not share the disabled copy.
+    const code = typeof error === 'string' ? error : readRpcErrorCode(error);
+    if (code === SESSION_MACHINE_TARGET_UNAVAILABLE_ERROR_CODE) {
+        return 'daemon_unavailable';
+    }
+    return 'rpc_error';
 }
 
 function resolveIdleMemorySearchState(
@@ -380,7 +393,11 @@ export function useSessionListMemorySearchAugmentationForContext(
                         });
                         if (!isCurrentRequest()) return;
                         if (!homeResult.ok) {
-                            setState((current) => resolveIdleMemorySearchState(current, activeScopeKey, homeResult.errorCode));
+                            setState((current) => resolveIdleMemorySearchState(
+                                current,
+                                activeScopeKey,
+                                resolveMemorySearchFailureReason(homeResult.errorCode),
+                            ));
                             return;
                         }
                         await applySearchHits(homeResult.hits, authority);
@@ -403,7 +420,11 @@ export function useSessionListMemorySearchAugmentationForContext(
                     if (!isCurrentRequest()) return;
 
                     if (!result.ok) {
-                        setState((current) => resolveIdleMemorySearchState(current, activeScopeKey, result.errorCode));
+                        setState((current) => resolveIdleMemorySearchState(
+                            current,
+                            activeScopeKey,
+                            resolveMemorySearchFailureReason(result.errorCode),
+                        ));
                         return;
                     }
 
@@ -411,7 +432,11 @@ export function useSessionListMemorySearchAugmentationForContext(
                 } catch (error) {
                     // A superseded query owns no state: the query that replaced it does.
                     if (isAbortSupersession(error, signal) || !isCurrentRequest()) return;
-                    setState((current) => resolveIdleMemorySearchState(current, activeScopeKey, 'rpc_error'));
+                    setState((current) => resolveIdleMemorySearchState(
+                        current,
+                        activeScopeKey,
+                        resolveMemorySearchFailureReason(error),
+                    ));
                 } finally {
                     await authority?.release();
                 }

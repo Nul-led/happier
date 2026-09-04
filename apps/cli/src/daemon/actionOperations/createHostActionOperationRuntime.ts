@@ -74,6 +74,7 @@ export function createHostActionOperationRuntime(deps: Readonly<{
   const observeExecution = async (request: Readonly<{
     actionId: string;
     input: unknown;
+    actionRequestId?: string;
     sessionId?: string;
     execute: (context: Readonly<{
       signal: AbortSignal;
@@ -96,7 +97,8 @@ export function createHostActionOperationRuntime(deps: Readonly<{
       || request.actionId === 'session.handoff'
       ? request.actionId
       : null;
-    const requestId = readRequestId(request.actionId, request.input);
+    const requestId = request.actionRequestId?.trim()
+      || readRequestId(request.actionId, request.input);
     const domainRef = readInitialDomainRef(request.actionId, request.input, requestId);
     return await runner.observe({
       actionId: request.actionId,

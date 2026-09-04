@@ -462,6 +462,32 @@ describe('inspectRetiredWorkspaceReplicationState', () => {
     await rm(activeServerDir, { recursive: true, force: true });
   });
 
+  it('completes a private quarantine after a crash between rename and retirement marker publication', async () => {
+    const activeServerDir = await makeServerDir();
+    const quarantinePath = join(activeServerDir, 'workspace-replication.retired-v1-1700000000000-after-rename');
+    await mkdir(join(quarantinePath, 'jobs'), { recursive: true });
+    await writeFile(join(quarantinePath, 'jobs', 'job-1.json'), JSON.stringify({ schemaVersion: 1, jobId: 'job-1' }));
+    await chmod(quarantinePath, 0o700);
+
+    await expect(inspectRetiredWorkspaceReplicationState({
+      activeServerDir,
+      installationId: 'installation-after-rename',
+      nowMs: 1_700_000_000_001,
+    })).resolves.toMatchObject({
+      status: 'legacy_workspace_sync_state_unsupported',
+      quarantinePath,
+      inventoryHash: expect.any(String),
+    });
+    const marker = JSON.parse(await readFile(join(quarantinePath, 'retirement.json'), 'utf8')) as Record<string, unknown>;
+    expect(marker).toMatchObject({
+      detectedSchemaVersion: 1,
+      detectedAtMs: 1_700_000_000_000,
+      installationId: 'installation-after-rename',
+    });
+
+    await rm(activeServerDir, { recursive: true, force: true });
+  });
+
   it('fails unknown when the retirement marker inventory hash no longer matches the directory', async () => {
     const activeServerDir = await makeServerDir();
     const drifted = join(activeServerDir, 'workspace-replication.retired-v1-1700000000000-drift');

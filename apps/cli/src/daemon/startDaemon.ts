@@ -1556,8 +1556,8 @@ export async function startDaemon(
                         .map((key) => ({ keyId: key.keyId, publicKey: key.publicKey, expiresAt: key.expiresAt }))
                     : [];
                 },
-                readTargetMachine: async (targetMachineId) => await api.getMachine(targetMachineId),
-                mintGrant: async (request) => await api.mintPeerMediationRouteGrant(request),
+                readTargetMachine: async (targetMachineId, signal) => await api.getMachine(targetMachineId, { signal }),
+                mintGrant: async (request, signal) => await api.mintPeerMediationRouteGrant(request, { signal }),
               })
             : undefined;
           const created = await createProductionDaemonWorkspaceSyncRuntime({

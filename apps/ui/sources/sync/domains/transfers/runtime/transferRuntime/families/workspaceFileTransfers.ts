@@ -197,7 +197,7 @@ export async function uploadDaemonWorkspaceFileFromReader(params: Readonly<{
             ...(typeof params.request.sha256 === 'string' ? { sha256: params.request.sha256 } : {}),
         },
         relay: {
-            init: async () => await transferClient.call<
+            init: async (signal) => await transferClient.call<
                 WorkspaceFileUploadInitResponse,
                 WorkspaceFileUploadInitRequest & Readonly<{ t: 'session_file_upload_v1' }>
             >({
@@ -207,14 +207,17 @@ export async function uploadDaemonWorkspaceFileFromReader(params: Readonly<{
                     path: absolutePath,
                 },
                 machineMethod: RPC_METHODS.DAEMON_TRANSFER_UPLOAD_INIT,
+                ...(signal ? { signal } : {}),
             }),
-            sendChunk: async (request) => await transferClient.call<WorkspaceFileUploadChunkResponse, typeof request>({
+            sendChunk: async (request, signal) => await transferClient.call<WorkspaceFileUploadChunkResponse, typeof request>({
                 request,
                 machineMethod: RPC_METHODS.DAEMON_TRANSFER_UPLOAD_CHUNK,
+                ...(signal ? { signal } : {}),
             }),
-            finalize: async (request) => await transferClient.call<WorkspaceFileUploadFinalizeResponse, typeof request>({
+            finalize: async (request, signal) => await transferClient.call<WorkspaceFileUploadFinalizeResponse, typeof request>({
                 request,
                 machineMethod: RPC_METHODS.DAEMON_TRANSFER_UPLOAD_FINALIZE,
+                ...(signal ? { signal } : {}),
             }),
             abort: async (request) => await transferClient.call<WorkspaceFileUploadAbortResponse, typeof request>({
                 request,
@@ -297,7 +300,7 @@ export async function downloadDaemonWorkspaceFileToDestination(params: Readonly<
         ...(typeof params.serverId === 'string' ? { serverId: params.serverId } : {}),
         destination: params.destination,
         cleanupOnFailure: false,
-        init: async (request) => {
+        init: async (request, signal) => {
             return await initTransferClient.call<
                 WorkspaceFileDownloadInitResponse,
                 Readonly<{ t: 'session_file_download_v1'; path: string; asZip: boolean; recipientPublicKeyBase64: string }>
@@ -309,12 +312,14 @@ export async function downloadDaemonWorkspaceFileToDestination(params: Readonly<
                     recipientPublicKeyBase64: request.recipientPublicKeyBase64,
                 },
                 machineMethod: WORKSPACE_FILE_DOWNLOAD_RPC_METHODS.init,
+                ...(signal ? { signal } : {}),
             });
         },
-        finalize: async (request) =>
+        finalize: async (request, signal) =>
             await initTransferClient.call<WorkspaceFileDownloadFinalizeResponse, typeof request>({
                 request,
                 machineMethod: WORKSPACE_FILE_DOWNLOAD_RPC_METHODS.finalize,
+                ...(signal ? { signal } : {}),
             }),
         abort: async (request) =>
             await initTransferClient.call<WorkspaceFileDownloadFinalizeResponse, typeof request>({
@@ -341,7 +346,7 @@ export async function downloadDaemonWorkspaceFileToDestination(params: Readonly<
     await params.destination.cleanup();
     return await downloadBulkPayloadViaMachineRpcToDestination({
         destination: params.destination,
-        init: async (request) => {
+        init: async (request, signal) => {
             return await initTransferClient.call<
                 WorkspaceFileDownloadInitResponse,
                 Readonly<{ t: 'session_file_download_v1'; path: string; asZip: boolean; recipientPublicKeyBase64: string }>
@@ -353,9 +358,10 @@ export async function downloadDaemonWorkspaceFileToDestination(params: Readonly<
                     recipientPublicKeyBase64: request.recipientPublicKeyBase64,
                 },
                 machineMethod: WORKSPACE_FILE_DOWNLOAD_RPC_METHODS.init,
+                ...(signal ? { signal } : {}),
             });
         },
-        readChunk: async (request) =>
+        readChunk: async (request, signal) =>
             await initTransferClient.call<
                 Readonly<{
                     success: true;
@@ -368,11 +374,13 @@ export async function downloadDaemonWorkspaceFileToDestination(params: Readonly<
             >({
                 request,
                 machineMethod: WORKSPACE_FILE_DOWNLOAD_RPC_METHODS.chunk,
+                ...(signal ? { signal } : {}),
             }),
-        finalize: async (request) =>
+        finalize: async (request, signal) =>
             await initTransferClient.call<WorkspaceFileDownloadFinalizeResponse, typeof request>({
                 request,
                 machineMethod: WORKSPACE_FILE_DOWNLOAD_RPC_METHODS.finalize,
+                ...(signal ? { signal } : {}),
             }),
         abort: async (request) =>
             await initTransferClient.call<WorkspaceFileDownloadFinalizeResponse, typeof request>({

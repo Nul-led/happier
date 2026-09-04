@@ -1,6 +1,7 @@
 import { act } from 'react-test-renderer';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { RPC_METHODS } from '@happier-dev/protocol';
+import { SESSION_MACHINE_TARGET_UNAVAILABLE_ERROR_CODE } from '@/sync/runtime/sessionMachineRpcErrorCodes';
 
 import { createDeferred, flushHookEffects, renderHook, standardCleanup } from '@/dev/testkit';
 import type { MachineAdministrationTargetSelectionMockController } from '@/dev/testkit/mocks/machineAdministrationTargetSelection';
@@ -787,6 +788,28 @@ describe('useSessionListMemorySearchAugmentation', () => {
 
         expect(machineRpcWithServerScopeMock).not.toHaveBeenCalled();
         expect(hook.getCurrent().memorySearchUnavailableReason).toBe('daemon_no_target');
+        expect(hook.getCurrent().isSearchingMemory).toBe(false);
+    });
+
+    it('reports an unreachable daemon separately from disabled memory search', async () => {
+        vi.useFakeTimers();
+        featureEnabledState.search = false;
+        featureRuntimeState.homeSearch = undefined;
+        machineRpcWithServerScopeMock.mockImplementation(async (params: { method?: string }) => {
+            if (params.method === RPC_METHODS.DAEMON_MEMORY_STATUS) return createMemoryStatusResponse(true);
+            if (params.method === RPC_METHODS.DAEMON_MEMORY_SEARCH) {
+                const error = new Error('machine is offline') as Error & { rpcErrorCode: string };
+                error.rpcErrorCode = SESSION_MACHINE_TARGET_UNAVAILABLE_ERROR_CODE;
+                throw error;
+            }
+            throw new Error('unexpected rpc');
+        });
+
+        const hook = await renderMemoryAugmentationHook({ searchQuery: 'offline' });
+        await flushHookEffects({ advanceTimersMs: 300, cycles: 5 });
+
+        expect(hook.getCurrent().memorySearchUnavailableReason).toBe('daemon_unavailable');
+        expect(hook.getCurrent().memorySearchUnavailableReason).not.toBe('rpc_error');
         expect(hook.getCurrent().isSearchingMemory).toBe(false);
     });
 

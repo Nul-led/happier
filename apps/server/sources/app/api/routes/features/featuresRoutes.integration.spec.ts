@@ -201,7 +201,7 @@ describe("featuresRoutes", () => {
             failureReason: null,
         });
 
-        it("uses DB-backed continuity for generic PostgreSQL feature discovery without resolving Personal Home layout", async () => {
+        it("does not publish an uncommitted descriptor during public feature discovery", async () => {
             let persisted: string | null = null;
             resetEnv({
                 DATABASE_URL: "postgresql://relay.example.test/happier",
@@ -230,17 +230,11 @@ describe("featuresRoutes", () => {
             expect(payload.capabilities.serverIdentity).toEqual({
                 serverIdentityId: "srv_accountService",
             });
-            expect(payload.homeConnectionDescriptor).toEqual({
-                v: 1,
-                homeServerIdentityId: "srv_accountService",
-                canonicalServerUrl: "https://relay.example.test",
-                revision: 1,
-                endpoints: [{ kind: "https", url: "https://relay.example.test" }],
-            });
-            expect(JSON.parse(persisted!)).toMatchObject({ revision: 1 });
+            expect(payload).not.toHaveProperty("homeConnectionDescriptor");
+            expect(persisted).toBeNull();
         });
 
-        it("publishes a public-safe canonical descriptor without private direct-address hints", async () => {
+        it("does not derive a public descriptor from live endpoint facts", async () => {
             resetEnv({ HAPPIER_SERVER_IDENTITY_ID: "srv_routeIrohHome" });
             const { payload, reply } = await getFeaturesPayload(
                 { headers: { authorization: "Bearer ignored-on-public-projection" } },
@@ -249,29 +243,40 @@ describe("featuresRoutes", () => {
                 activeState,
             );
 
-            // Exact shape: only the canonical wire fields, no runtime handles,
-            // acceptor ports, keys, or failure detail.
-            expect(payload.homeConnectionDescriptor).toEqual({
-                v: 1,
-                homeServerIdentityId: "srv_routeIrohHome",
-                canonicalServerUrl: "http://127.0.0.1:3005",
-                revision: 1,
-                endpoints: [{
-                    kind: "iroh",
-                    endpointId: "a".repeat(64),
-                    relayUrls: ["https://relay.example.test"],
-                }],
-            });
-            expect(payload.homeConnectionDescriptor.endpoints[0]).not.toHaveProperty("directAddresses");
+            expect(payload).not.toHaveProperty("homeConnectionDescriptor");
             expect(activeSnapshot.endpoint.directAddresses).toEqual(["192.168.1.10:4242"]);
-            expect(Object.keys(payload.homeConnectionDescriptor).sort()).toEqual([
-                "canonicalServerUrl",
-                "endpoints",
-                "homeServerIdentityId",
-                "revision",
-                "v",
-            ]);
             expect(reply.headers["Cache-Control"]).toBe("no-store");
+        });
+
+        it("keeps public feature discovery read-only until an authoritative descriptor is committed", async () => {
+            resetEnv({ HAPPIER_SERVER_IDENTITY_ID: "srv_publicReadOnly" });
+            let persisted: string | null = null;
+            const write = vi.fn(async () => {
+                persisted = '{"revision":1}';
+                return {
+                    status: "committed" as const,
+                    continuity: {
+                        revision: 1,
+                        contentKey: "v1:i:" + "a".repeat(64),
+                    },
+                };
+            });
+            const store = {
+                read: async () => null,
+                write,
+            } satisfies HomeConnectionDescriptorContinuityStore;
+
+            const { payload } = await getFeaturesPayload(
+                {},
+                undefined,
+                undefined,
+                activeState,
+                store,
+            );
+
+            expect(payload).not.toHaveProperty("homeConnectionDescriptor");
+            expect(write).not.toHaveBeenCalled();
+            expect(persisted).toBeNull();
         });
 
         it("publishes the full identity-bound descriptor only from the authenticated features route", async () => {
@@ -354,7 +359,7 @@ describe("featuresRoutes", () => {
             }
         });
 
-        it("publishes canonical identity with only the configured HTTPS public ingress endpoint", async () => {
+        it("does not allocate a descriptor for an uncommitted HTTPS ingress on public discovery", async () => {
             resetEnv({
                 HAPPIER_CANONICAL_SERVER_URL: "http://127.0.0.1:43123",
                 HAPPIER_PUBLIC_SERVER_URL: "https://home.example.test/",
@@ -371,13 +376,7 @@ describe("featuresRoutes", () => {
                 () => ({ status: "not-composed", snapshot: null, failureReason: null }),
             );
 
-            expect(payload.homeConnectionDescriptor).toEqual({
-                v: 1,
-                homeServerIdentityId: "srv_publicHttpsHome",
-                canonicalServerUrl: "http://127.0.0.1:43123",
-                revision: 1,
-                endpoints: [{ kind: "https", url: "https://home.example.test" }],
-            });
+            expect(payload).not.toHaveProperty("homeConnectionDescriptor");
         });
 
         it("reads endpoint state at request time and never serves a stale descriptor", async () => {
@@ -385,8 +384,12 @@ describe("featuresRoutes", () => {
             const { featuresRoutes } = await import("./featuresRoutes");
             const route = createRouteTestBuilder({
                 method: "GET",
-                path: "/v1/features",
+                path: "/v1/features/authenticated",
                 registerRoutes(app) {
+                    app.authenticate.mockImplementation(async (request: any) => {
+                        request.userId = "account_1";
+                        request.authTokenKind = "account";
+                    });
                     featuresRoutes(app as any, {
                         resolveHomeIrohEndpointState: () => state,
                         homeConnectionDescriptorContinuityStore:
@@ -395,7 +398,7 @@ describe("featuresRoutes", () => {
                 },
             });
 
-            const first = await route.invoke();
+            const first = await route.invoke({ headers: { authorization: "Bearer trusted-home-token" } });
             expect((first.response as any).homeConnectionDescriptor?.revision).toBe(1);
 
             state = {
@@ -408,13 +411,13 @@ describe("featuresRoutes", () => {
                 },
                 failureReason: null,
             };
-            const second = await route.invoke();
+            const second = await route.invoke({ headers: { authorization: "Bearer trusted-home-token" } });
             expect((second.response as any).homeConnectionDescriptor?.revision).toBe(2);
             expect((second.response as any).homeConnectionDescriptor?.endpoints?.[0]?.relayUrls)
                 .toEqual(["https://new-relay.example.test"]);
 
             state = { status: "failed", snapshot: null, failureReason: "endpoint_key_lost" };
-            const third = await route.invoke();
+            const third = await route.invoke({ headers: { authorization: "Bearer trusted-home-token" } });
             expect((third.response as any)).not.toHaveProperty("homeConnectionDescriptor");
         });
     });

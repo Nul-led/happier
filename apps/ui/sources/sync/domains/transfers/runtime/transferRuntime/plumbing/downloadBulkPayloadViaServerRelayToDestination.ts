@@ -58,8 +58,8 @@ export async function downloadBulkPayloadViaServerRelayToDestination(params: Rea
     timeoutMs?: number | null;
     destination: BulkTransferFileDestination;
     cleanupOnFailure?: boolean;
-    init: (request: Readonly<{ recipientPublicKeyBase64: string }>) => Promise<BulkTransferDownloadInitResponse>;
-    finalize: (request: Readonly<{ downloadId: string }>) => Promise<BulkTransferDownloadFinalizeResponse>;
+    init: (request: Readonly<{ recipientPublicKeyBase64: string }>, signal?: AbortSignal | null) => Promise<BulkTransferDownloadInitResponse>;
+    finalize: (request: Readonly<{ downloadId: string }>, signal?: AbortSignal | null) => Promise<BulkTransferDownloadFinalizeResponse>;
     abort?: ((request: Readonly<{ downloadId: string }>) => Promise<unknown>) | null;
     onInit?: ((init: Readonly<{ name: string; sizeBytes: number }>) => Promise<void | BulkTransferFailureResponse>) | null;
     onProgress?: ((progress: ChunkDownloadProgress) => void) | null;
@@ -76,7 +76,7 @@ export async function downloadBulkPayloadViaServerRelayToDestination(params: Rea
     const transferTimeoutMs = resolveServerRelayTransferInactivityTimeoutMs(params.timeoutMs);
     const init = await params.init({
         recipientPublicKeyBase64: recipientKeyPair.recipientPublicKeyBase64,
-    });
+    }, params.signal ?? null);
     if (init.success !== true) {
         await cleanupFailedDestination();
         return {
@@ -295,7 +295,7 @@ export async function downloadBulkPayloadViaServerRelayToDestination(params: Rea
                     return;
                 }
 
-                const finalize = await params.finalize({ downloadId: init.downloadId });
+                const finalize = await params.finalize({ downloadId: init.downloadId }, params.signal ?? null);
                 if (finalize.success !== true) {
                     await resolveError(finalize.error ?? 'Download finalize failed', true);
                     return;

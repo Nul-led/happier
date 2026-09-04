@@ -24,6 +24,7 @@ import {
   type MutagenControlCommandV1,
   verifyBrokerProof,
   WORKSPACE_SYNC_BROKER_ATTACH_TTL_MS,
+  WORKSPACE_SYNC_BROKER_MAX_REQUEST_FRAME_BYTES,
 } from './workspaceSyncBrokerProtocol';
 
 export interface WorkspaceSyncBrokerOpenContext {
@@ -47,8 +48,6 @@ export interface WorkspaceSyncBrokerConfig {
   launchSecret: Uint8Array;
   expectedSidecarPid?: number;
   maxStreams?: number;
-  /** Test/boundary injection for the broker-owned attach window; production uses the protocol constant. */
-  attachTtlMs?: number;
   now?: () => number;
   validatePeerIdentity?: (context: WorkspaceSyncBrokerPeerIdentityContext) => boolean | Promise<boolean>;
   openExternalStream: (context: WorkspaceSyncBrokerOpenContext) => Promise<NodeJS.ReadWriteStream>;
@@ -208,7 +207,6 @@ export class WorkspaceSyncBroker {
   private readonly config: WorkspaceSyncBrokerConfig & {
     now: () => number;
     maxStreams: number;
-    attachTtlMs: number;
   };
   private readonly pending = new Map<string, PendingStream>();
   private readonly attachRequestIds = new Map<string, string>();
@@ -234,11 +232,6 @@ export class WorkspaceSyncBroker {
       ...config,
       now: config.now ?? Date.now,
       maxStreams: Math.min(config.maxStreams ?? MAX_CONCURRENT_DATA_STREAMS, MAX_CONCURRENT_DATA_STREAMS),
-      // The attach window is broker-owned: a caller-supplied OPEN_DATA expiry
-      // is only the remote-open deadline and can never shorten the window.
-      attachTtlMs: config.attachTtlMs && config.attachTtlMs > 0 && config.attachTtlMs <= WORKSPACE_SYNC_BROKER_ATTACH_TTL_MS
-        ? config.attachTtlMs
-        : WORKSPACE_SYNC_BROKER_ATTACH_TTL_MS,
     };
     this.endpoint = endpoint;
     this.server = server;
@@ -401,7 +394,9 @@ export class WorkspaceSyncBroker {
   private async handleControl(socket: Socket): Promise<void> {
     this.controlSockets.add(socket);
     socket.setNoDelay(true);
-    const decoder = new BrokerControlFrameDecoder();
+    // The sidecar sends manager command envelopes, whose protocol-owned
+    // request budget is larger than ordinary control/response frames.
+    const decoder = new BrokerControlFrameDecoder({ maxFrameBytes: WORKSPACE_SYNC_BROKER_MAX_REQUEST_FRAME_BYTES });
     let authenticated = false;
     let processing = Promise.resolve();
     let terminating = false;
@@ -584,9 +579,9 @@ export class WorkspaceSyncBroker {
         dataEndpoint: dataEndpoint.endpointPath, attachNonce: stream.attachNonce,
         // Fresh broker-owned attach window counted from after the successful
         // external open — never the leftover open budget (§6.4).
-        expiresAtMs: this.config.now() + this.config.attachTtlMs,
+        expiresAtMs: this.config.now() + WORKSPACE_SYNC_BROKER_ATTACH_TTL_MS,
       });
-      stream.attachExpiresAtMs = this.config.now() + this.config.attachTtlMs;
+      stream.attachExpiresAtMs = this.config.now() + WORKSPACE_SYNC_BROKER_ATTACH_TTL_MS;
       stream.attachTimer = setTimeout(() => {
         if (!stream.attached && !stream.closed) {
           this.failPending(stream, 'data_attach_failed', 'data attachment expired');

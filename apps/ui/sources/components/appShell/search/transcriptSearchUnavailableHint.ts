@@ -6,7 +6,7 @@ import { t } from '@/text';
  */
 export function transcriptSearchUnavailableHint(reason: string | null | undefined): string {
     if (reason === 'home_indexing') return t('memorySearchSettings.status.indexing');
-    if (reason === 'daemon_no_target') return t('errors.daemonUnavailableBody');
+    if (reason === 'daemon_no_target' || reason === 'daemon_unavailable') return t('errors.daemonUnavailableBody');
     if (reason === 'home_unavailable' || reason === 'home_unknown') {
         return t('memorySearchSettings.status.unavailableLight');
     }

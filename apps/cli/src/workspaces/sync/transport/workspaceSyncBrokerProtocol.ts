@@ -6,6 +6,8 @@ import {
 
 export const WORKSPACE_SYNC_BROKER_PROTOCOL = 1 as const;
 export const WORKSPACE_SYNC_BROKER_MAX_FRAME_BYTES = 64 * 1024;
+/** Maximum size for ordinary control and response envelopes. */
+export const WORKSPACE_SYNC_BROKER_MAX_CONTROL_FRAME_BYTES = WORKSPACE_SYNC_BROKER_MAX_FRAME_BYTES;
 export const WORKSPACE_SYNC_BROKER_MAX_ID_BYTES = 256;
 export const WORKSPACE_SYNC_BROKER_MAX_MESSAGE_BYTES = 4096;
 // Two 128×1024-byte Protocol policy arrays, worst-case JSON escaping, and envelope metadata.
@@ -386,17 +388,31 @@ export const parseBrokerControlEnvelope = parseBrokerControlV1;
 /** Incremental decoder for u32be + UTF-8 JSON control frames. */
 export class BrokerControlFrameDecoder {
   private pending = Buffer.alloc(0);
+  private readonly maxFrameBytes: number;
+
+  constructor(options: Readonly<{ maxFrameBytes?: typeof WORKSPACE_SYNC_BROKER_MAX_FRAME_BYTES | typeof WORKSPACE_SYNC_BROKER_MAX_REQUEST_FRAME_BYTES }> = {}) {
+    this.maxFrameBytes = options.maxFrameBytes ?? WORKSPACE_SYNC_BROKER_MAX_CONTROL_FRAME_BYTES;
+    if (this.maxFrameBytes !== WORKSPACE_SYNC_BROKER_MAX_CONTROL_FRAME_BYTES
+      && this.maxFrameBytes !== WORKSPACE_SYNC_BROKER_MAX_REQUEST_FRAME_BYTES) {
+      throw new Error('invalid broker frame budget');
+    }
+  }
+
   push(chunk: Uint8Array): BrokerControlV1[] {
     this.pending = Buffer.concat([this.pending, Buffer.from(chunk)]);
     const out: BrokerControlV1[] = [];
     while (this.pending.byteLength >= 4) {
       const length = this.pending.readUInt32BE(0);
-      if (length === 0 || length > WORKSPACE_SYNC_BROKER_MAX_FRAME_BYTES) throw new Error('invalid broker frame length');
+      if (length === 0 || length > this.maxFrameBytes) throw new Error('invalid broker frame length');
       if (this.pending.byteLength < length + 4) break;
       const payload = this.pending.subarray(4, length + 4);
       this.pending = this.pending.subarray(length + 4);
       let value: unknown;
       try { value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(payload)); } catch { throw new Error('malformed broker control JSON'); }
+      if (length > WORKSPACE_SYNC_BROKER_MAX_CONTROL_FRAME_BYTES
+        && (!isRecord(value) || value.t !== 'command')) {
+        throw new Error('oversized broker frame is not a manager command');
+      }
       out.push(parseBrokerControlV1(value));
     }
     return out;

@@ -98,15 +98,15 @@ function wouldJsonStringifyExceedMaxBytes(value: unknown, maxBytes: number): boo
 
 export async function uploadBulkJsonPayload<TFinalize extends { success: boolean; error?: string }, TResponse>(params: Readonly<{
     payload: unknown;
-    init: (request: Readonly<{ sizeBytes: number }>) =>
+    init: (request: Readonly<{ sizeBytes: number }>, signal?: AbortSignal | null) =>
         Promise<BulkTransferUploadInitSuccess | BulkTransferFailureResponse>;
     sendChunk: (request: Readonly<{
         uploadId: string;
         index: number;
         payloadBase64: string;
         encryptedDataKeyEnvelopeBase64: string;
-    }>) => Promise<{ success: boolean; error?: string }>;
-    finalize: (request: Readonly<{ uploadId: string }>) => Promise<TFinalize>;
+    }>, signal?: AbortSignal | null) => Promise<{ success: boolean; error?: string }>;
+    finalize: (request: Readonly<{ uploadId: string }>, signal?: AbortSignal | null) => Promise<TFinalize>;
     parseResponse: (value: TFinalize) => TResponse | null;
     abort?: ((request: Readonly<{ uploadId: string }>) => Promise<unknown>) | null;
     onProgress?: ((progress: ChunkUploadProgress) => void) | null;
@@ -127,9 +127,15 @@ export async function uploadBulkJsonPayload<TFinalize extends { success: boolean
             readBytes: async (offset, length) => encodedPayload.subarray(offset, offset + length),
             close: async () => {},
         },
-        init: async () => await params.init({ sizeBytes: encodedPayload.byteLength }),
-        sendChunk: async (request) => await params.sendChunk(request),
-        finalize: async (request) => await params.finalize(request),
+        init: async (signal) => signal
+            ? await params.init({ sizeBytes: encodedPayload.byteLength }, signal)
+            : await params.init({ sizeBytes: encodedPayload.byteLength }),
+        sendChunk: async (request, signal) => signal
+            ? await params.sendChunk(request, signal)
+            : await params.sendChunk(request),
+        finalize: async (request, signal) => signal
+            ? await params.finalize(request, signal)
+            : await params.finalize(request),
         abort: params.abort ?? null,
         onProgress: params.onProgress ?? null,
         signal: params.signal ?? null,

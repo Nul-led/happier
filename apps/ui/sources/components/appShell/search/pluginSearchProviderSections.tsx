@@ -141,9 +141,15 @@ function resolveCurrentProviderScope(
         ) return null;
         // Explicit Search scope is authoritative; never reuse a provider
         // projected for another Home or machine.
-        if (scopedLaunchFacts?.serverId !== undefined
+        // `null` denotes a coarse/union scope with no single server
+        // constraint. Only non-null identifiers are exact constraints;
+        // undefined means no scope facts were supplied at all.
+        if (scopedLaunchFacts?.serverId !== null
+            && scopedLaunchFacts?.serverId !== undefined
             && resolveServerProfileScopeIdForIdentifier(origin.serverId) !== resolveServerProfileScopeIdForIdentifier(scopedLaunchFacts.serverId)) return null;
-        if (scopedLaunchFacts?.machineId !== undefined && origin.machineId !== scopedLaunchFacts.machineId) return null;
+        if (scopedLaunchFacts?.machineId !== null
+            && scopedLaunchFacts?.machineId !== undefined
+            && origin.machineId !== scopedLaunchFacts.machineId) return null;
         return Object.freeze({
             serverId: origin.serverId,
             machineId: origin.machineId,

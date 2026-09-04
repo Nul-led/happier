@@ -23,7 +23,7 @@ import { resolveMachineCarrierTransferFlow } from '../routing/machineCarrierTran
 type UploadResponse = Readonly<{ success: boolean; error?: string }>;
 
 type RelayUpload<TResponse extends UploadResponse> = Readonly<{
-    init: () => Promise<
+    init: (signal?: AbortSignal | null) => Promise<
         | Readonly<{
             success: true;
             uploadId: string;
@@ -37,8 +37,8 @@ type RelayUpload<TResponse extends UploadResponse> = Readonly<{
         index: number;
         payloadBase64: string;
         encryptedDataKeyEnvelopeBase64: string;
-    }>) => Promise<UploadResponse>;
-    finalize: (request: Readonly<{ uploadId: string }>) => Promise<TResponse | BulkTransferFailureResponse>;
+    }>, signal?: AbortSignal | null) => Promise<UploadResponse>;
+    finalize: (request: Readonly<{ uploadId: string }>, signal?: AbortSignal | null) => Promise<TResponse | BulkTransferFailureResponse>;
     abort?: ((request: Readonly<{ uploadId: string }>) => Promise<unknown>) | null;
 }>;
 

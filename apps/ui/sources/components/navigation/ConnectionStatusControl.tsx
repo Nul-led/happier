@@ -57,6 +57,7 @@ import {
 import { resolveHomeConnectionSummary } from '@/components/navigation/connectionStatus/resolveHomeConnectionSummary';
 import { setClipboardStringSafe } from '@/utils/ui/clipboard';
 import type { DoctorSnapshotHomeTransportDiagnostics } from '@happier-dev/protocol';
+import { CopiedPill } from '@/components/ui/copy/CopiedPill';
 
 type Variant = 'sidebar' | 'header';
 const RELAY_SETTINGS_ROUTE = '/settings/server';
@@ -322,17 +323,35 @@ type TransportDetailRow = Readonly<{ key: string; label: string; value: string }
  * exact same rows compose the copyable report; there is no second formatter.
  */
 function buildTransportDetailRows(params: Readonly<{
+    homeServerIdentityId: string | null;
     canonicalServerUrl: string;
+    publicServerUrl: string | null | undefined;
     runtimeOrigin: string | null;
     diagnostics: DoctorSnapshotHomeTransportDiagnostics | null;
     carrier: 'https' | 'iroh' | undefined;
 }>): readonly TransportDetailRow[] {
     const rows: TransportDetailRow[] = [];
+    if (params.homeServerIdentityId) {
+        rows.push({
+            key: 'homeIdentity',
+            label: t('connectionStatus.labels.homeIdentity'),
+            value: params.homeServerIdentityId,
+        });
+    }
     if (params.canonicalServerUrl) {
         rows.push({
             key: 'canonicalAddress',
             label: t('connectionStatus.labels.canonicalAddress'),
             value: params.canonicalServerUrl,
+        });
+    }
+    if (params.publicServerUrl !== undefined) {
+        rows.push({
+            key: 'publicIngress',
+            label: t('connectionStatus.labels.publicIngress'),
+            value: params.publicServerUrl === null
+                ? t('connectionStatus.values.publicIngressAbsent')
+                : params.publicServerUrl,
         });
     }
     if (params.runtimeOrigin && params.runtimeOrigin !== params.canonicalServerUrl) {
@@ -357,24 +376,27 @@ function buildTransportDetailRows(params: Readonly<{
             value: params.carrier === 'iroh' ? 'Iroh' : 'HTTPS',
         });
     }
-    const currentPath = diagnostics?.current ?? null;
-    const lastKnownPath = currentPath ? null : diagnostics?.lastKnown ?? null;
-    const observedPath = currentPath?.observedPath ?? lastKnownPath?.observedPath ?? null;
-    const carrier = currentPath?.carrier ?? lastKnownPath?.carrier ?? null;
-    if (currentPath || lastKnownPath) {
-        const pathLabel = observedPath === 'direct'
+    const appendPathRow = (
+        key: 'currentPath' | 'lastKnownPath',
+        observation: NonNullable<DoctorSnapshotHomeTransportDiagnostics['current']>,
+    ) => {
+        const pathLabel = observation.observedPath === 'direct'
             ? t('connectionStatus.values.pathDirect')
-            : observedPath === 'relay'
+            : observation.observedPath === 'relay'
                 ? t('connectionStatus.values.pathRelay')
                 : t('status.unknown');
         rows.push({
-            key: 'connectionPath',
-            label: currentPath
+            key,
+            label: key === 'currentPath'
                 ? t('connectionStatus.labels.currentPath')
                 : t('connectionStatus.labels.lastKnownPath'),
-            value: carrier ? `${carrier === 'iroh' ? 'Iroh' : 'HTTPS'} · ${pathLabel}` : pathLabel,
+            value: observation.carrier
+                ? `${observation.carrier === 'iroh' ? 'Iroh' : 'HTTPS'} · ${pathLabel}`
+                : pathLabel,
         });
-    }
+    };
+    if (diagnostics?.current) appendPathRow('currentPath', diagnostics.current);
+    if (diagnostics?.lastKnown) appendPathRow('lastKnownPath', diagnostics.lastKnown);
     const configuration = diagnostics?.effectiveConfiguration;
     if (configuration) {
         rows.push({
@@ -890,7 +912,9 @@ export const ConnectionStatusControl = React.memo(function ConnectionStatusContr
 
     const canonicalServerUrl = displayServerProfile?.canonicalServerUrl ?? displayServerUrl;
     const transportDetailRows = React.useMemo(() => buildTransportDetailRows({
+        homeServerIdentityId: displayServerProfile?.serverIdentityId ?? (displayUsesActiveSnapshot ? activeServerSnapshot.serverId : null),
         canonicalServerUrl,
+        publicServerUrl: displayServerProfile?.publicServerUrl,
         runtimeOrigin: displayUsesActiveSnapshot ? activeServerSnapshot.runtimeOrigin ?? null : null,
         diagnostics: transportDiagnostics,
         carrier: displayUsesActiveSnapshot ? activeServerSnapshot.carrier : undefined,
@@ -899,6 +923,9 @@ export const ConnectionStatusControl = React.memo(function ConnectionStatusContr
         activeServerSnapshot.runtimeOrigin,
         canonicalServerUrl,
         displayUsesActiveSnapshot,
+        displayServerProfile?.publicServerUrl,
+        displayServerProfile?.serverIdentityId,
+        activeServerSnapshot.serverId,
         transportDiagnostics,
     ]);
 
@@ -1073,6 +1100,10 @@ export const ConnectionStatusControl = React.memo(function ConnectionStatusContr
                                                     : t('common.retry')}
                                             </Text>
                                         </Pressable>
+                                        <CopiedPill
+                                            visible={diagnosticsCopied}
+                                            testID="connection-copy-diagnostics-feedback"
+                                        />
                                     </View>
                                 ) : null}
 

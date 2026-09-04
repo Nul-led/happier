@@ -43,9 +43,9 @@ async function cleanupFailedDestination(destination: BulkTransferFileDestination
 
 export async function downloadBulkPayloadViaMachineRpcToDestination(params: Readonly<{
     destination: BulkTransferFileDestination;
-    init: (request: Readonly<{ recipientPublicKeyBase64: string }>) => Promise<BulkTransferDownloadInitResponse>;
-    readChunk: (request: Readonly<{ downloadId: string; index: number }>) => Promise<BulkTransferDownloadChunkResponse>;
-    finalize: (request: Readonly<{ downloadId: string }>) => Promise<BulkTransferDownloadFinalizeResponse>;
+    init: (request: Readonly<{ recipientPublicKeyBase64: string }>, signal?: AbortSignal | null) => Promise<BulkTransferDownloadInitResponse>;
+    readChunk: (request: Readonly<{ downloadId: string; index: number }>, signal?: AbortSignal | null) => Promise<BulkTransferDownloadChunkResponse>;
+    finalize: (request: Readonly<{ downloadId: string }>, signal?: AbortSignal | null) => Promise<BulkTransferDownloadFinalizeResponse>;
     abort?: ((request: Readonly<{ downloadId: string }>) => Promise<unknown>) | null;
     onInit?: ((init: Readonly<{ name: string; sizeBytes: number }>) => Promise<void | BulkTransferFailureResponse>) | null;
     onProgress?: ((progress: ChunkDownloadProgress) => void) | null;
@@ -59,7 +59,7 @@ export async function downloadBulkPayloadViaMachineRpcToDestination(params: Read
     try {
         init = await params.init({
             recipientPublicKeyBase64: recipientKeyPair.recipientPublicKeyBase64,
-        });
+        }, params.signal ?? null);
     } catch (error) {
         await cleanupFailedDestination(params.destination);
         return {
@@ -113,8 +113,12 @@ export async function downloadBulkPayloadViaMachineRpcToDestination(params: Read
         BulkTransferDownloadFinalizeResponse
     >({
         init: async () => init,
-        readChunk: async (request) => await params.readChunk(request),
-        finalize: async (request) => await params.finalize(request),
+        readChunk: async (request, signal) => signal
+            ? await params.readChunk(request, signal)
+            : await params.readChunk(request),
+        finalize: async (request, signal) => signal
+            ? await params.finalize(request, signal)
+            : await params.finalize(request),
         abort: params.abort ?? null,
         recipientSecretKeySeed: recipientKeyPair.recipientSecretKeySeed,
         writeBytes: async (bytes) => await params.destination.writeBytes(bytes),
