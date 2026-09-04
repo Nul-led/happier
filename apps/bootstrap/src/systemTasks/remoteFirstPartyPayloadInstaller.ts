@@ -7,8 +7,9 @@ import {
   type RemoteFirstPartyInstallDeps,
   type SystemTaskSshConnectionConfig,
 } from '@happier-dev/cli-common/systemTasks';
+import { runOpenSshRemoteCommand, safeBashSingleQuote } from '@happier-dev/cli-common/ssh';
 
-import { buildScpCommand, buildSshCommand, redactSshText } from '../ssh/index.js';
+import { buildScpCommand, redactSshText } from '../ssh/index.js';
 import { parseFirstJsonObject, resolveDefaultKnownHostsPath, runCommandCapture } from './taskRuntime.js';
 type SshConnectionConfig = SystemTaskSshConnectionConfig;
 type SshConnectionWithPasswordConfig = SshConnectionConfig & Readonly<{ password?: string }>;
@@ -33,21 +34,21 @@ async function runRemoteTextDefault(params: Readonly<{
   knownHostsMode?: 'app' | 'system';
 }>): Promise<RemoteFirstPartyCommandResult> {
   const ssh = params.ssh as SshConnectionWithPasswordConfig;
-  const invocation = buildSshCommand({
+  const knownHosts = resolveKnownHostsConfig(ssh, params.knownHostsMode);
+  const result = await runOpenSshRemoteCommand({
     target: ssh.target,
     port: ssh.port,
-    auth: {
-      kind: ssh.auth,
-      identityFile: ssh.identityFile,
-      ...(ssh.auth === 'password' ? { password: ssh.password } : {}),
-    },
-    knownHosts: resolveKnownHostsConfig(ssh, params.knownHostsMode),
-    remoteCommand: params.remoteCommand,
-  });
-  const result = await runCommandCapture({
-    command: invocation.command,
-    args: invocation.args,
-    ...(invocation.env ? { env: invocation.env } : {}),
+    sshConfigFile: ssh.sshConfigFile,
+    auth: ssh.auth === 'keyfile'
+      ? { mode: 'keyFile', privateKeyPath: String(ssh.identityFile ?? '') }
+      : ssh.auth === 'password'
+        ? { mode: 'password', password: String(ssh.password ?? '') }
+        : { mode: 'agent' },
+    knownHostsMode: knownHosts.mode,
+    knownHostsPath: knownHosts.mode === 'app' ? knownHosts.path : undefined,
+    remoteCommand: ['bash', '-lc', safeBashSingleQuote(params.remoteCommand)],
+    rejectOnNonZero: false,
+    errorPrefix: `SSH command failed for ${params.ssh.target}`,
   });
   if (result.status !== 0) {
     throw new Error(redactSshText(result.stderr || result.stdout || `SSH command failed for ${params.ssh.target}.`));

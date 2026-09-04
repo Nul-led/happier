@@ -17,6 +17,7 @@ import {
   installRemoteCliDefault,
   resolveRemoteSshHostTrustDefault,
   runRemoteBootstrapCommandDefault,
+  createRemoteEnrollmentExecutorDefault,
 } from '../systemTasks/remoteSshBootstrapTasks.js';
 import { createSetupThisComputerInteractiveTaskKind } from '../systemTasks/kinds/setupThisComputerInteractiveKind.js';
 
@@ -176,6 +177,7 @@ function createDefaultInteractiveKinds(): InteractiveSystemTaskKindMap {
       resolveHostTrust: resolveRemoteSshHostTrustDefault,
       installRemoteCli: installRemoteCliDefault,
       approveLocalAuthRequest: approveLocalRemoteAuthRequestDefault,
+      createRemoteEnrollmentExecutor: createRemoteEnrollmentExecutorDefault,
       runRemoteCommand: runRemoteBootstrapCommandDefault,
     }),
   };

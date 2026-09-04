@@ -291,7 +291,7 @@ export const RC_SECTION = {
             when: 'You are under Zero Data Retention or similar rules.',
             rc: 'Anthropic’s docs say organizations with compliance requirements such as Zero Data Retention can’t enable Remote Control, and that while it is connected the session transcript is stored on Anthropic servers.',
             happier:
-                'Happier accounts are end-to-end encrypted by default — the sync server holds ciphertext it cannot read. Run `happier relay host install` and the transcript never leaves hardware you control.',
+                'Happier accounts are end-to-end encrypted by default — the sync server holds ciphertext it cannot read. In the 0.3 development preview, `happier home create` keeps the transcript on hardware you control; stable 0.2 retains the released self-hosted Relay workflow.',
         },
         {
             id: 'otherAgents',

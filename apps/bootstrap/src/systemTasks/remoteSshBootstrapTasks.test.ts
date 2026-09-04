@@ -8,6 +8,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
     installRemoteCliDefault,
     approveLocalRemoteAuthRequestDefault,
+    createRemoteEnrollmentExecutorDefault,
     resolveRemoteSshHostTrustDefault,
     runRemoteBootstrapCommandDefault,
 } from './remoteSshBootstrapTasks.js';
@@ -258,7 +259,7 @@ describe('installRemoteCliDefault', () => {
 
 describe('approveLocalRemoteAuthRequestDefault', () => {
     it('uses the selected release-ring local happier runner instead of depending on PATH resolution', async () => {
-        const runLocalHappierJsonCommand = vi.fn(async (params: Readonly<{ args: readonly string[]; releaseRing?: string }>) => {
+        const runLocalHappierJsonCommand = vi.fn(async (params: Readonly<{ args: readonly string[]; releaseRing?: string; stdinText?: string }>) => {
             expect(params.releaseRing).toBe('preview');
             expect(params.args).toEqual([
                 'auth',
@@ -266,15 +267,25 @@ describe('approveLocalRemoteAuthRequestDefault', () => {
                 '--public-key',
                 'public-key-123',
                 '--json',
-                '--persist',
-                '--server-url=https://relay.example.test',
-                '--webapp-url=https://relay.example.test',
+                '--request-json-stdin',
+                '--home-target-from-request-json',
             ]);
+            expect(JSON.parse(String(params.stdinText))).toEqual({
+                publicKey: 'public-key-123',
+                pairing: { secretB64Url: 'pairing-secret', createdAtMs: 1, expiresAtMs: 2 },
+                supportsTokenOnly: true,
+                homeTarget: {
+                    kind: 'https_url',
+                    url: 'https://relay.example.test',
+                },
+            });
             return { success: true };
         });
 
         await approveLocalRemoteAuthRequestDefault({
             publicKey: 'public-key-123',
+            pairing: { secretB64Url: 'pairing-secret', createdAtMs: 1, expiresAtMs: 2 },
+            supportsTokenOnly: true,
             parsed: createParsedRemoteBootstrapParams('preview'),
         }, {
             runLocalHappierJsonCommand,
@@ -292,11 +303,18 @@ describe('approveLocalRemoteAuthRequestDefault', () => {
                 '--public-key',
                 'public-key-123',
                 '--json',
-                '--persist',
-                '--server-url=https://public-relay.example.test',
-                '--local-server-url=https://relay.example.test',
-                '--webapp-url=https://relay.example.test',
+                '--request-json-stdin',
+                '--home-target-from-request-json',
             ]);
+            expect(JSON.parse(String((params as { stdinText?: string }).stdinText))).toEqual({
+                publicKey: 'public-key-123',
+                homeTarget: {
+                    kind: 'https_url',
+                    url: 'https://public-relay.example.test',
+                    localUrl: 'https://relay.example.test',
+                    webappUrl: 'https://relay.example.test',
+                },
+            });
             return { success: true };
         });
 
@@ -390,8 +408,10 @@ describe('runRemoteBootstrapCommandDefault', () => {
 
             const remoteCommand = fakeSsh.readInvocations().at(-1)?.at(-1) ?? '';
             expect(remoteCommand).toContain(' server set ');
-            expect(remoteCommand).toContain('--server-url=https://public-relay.example.test');
-            expect(remoteCommand).toContain('--local-server-url=https://relay.example.test');
+            expect(remoteCommand).toContain('--server-url');
+            expect(remoteCommand).toContain('https://public-relay.example.test');
+            expect(remoteCommand).toContain('--local-server-url');
+            expect(remoteCommand).toContain('https://relay.example.test');
             expect(remoteCommand).not.toContain('--public-server-url=');
         } finally {
             fakeSsh.cleanup();
@@ -430,14 +450,16 @@ describe('runRemoteBootstrapCommandDefault', () => {
             });
 
             const remoteCommand = fakeSsh.readInvocations().at(-1)?.at(-1) ?? '';
-            expect(remoteCommand).toContain('--server-url=https://relay.example.test');
-            expect(remoteCommand).toContain('--local-server-url=http://127.0.0.1:3005');
+            expect(remoteCommand).toContain('--server-url');
+            expect(remoteCommand).toContain('https://relay.example.test');
+            expect(remoteCommand).toContain('--local-server-url');
+            expect(remoteCommand).toContain('http://127.0.0.1:3005');
         } finally {
             fakeSsh.cleanup();
         }
     });
 
-    it('does not override auth pairing to data.localServerUrl when a relay runtime is installed', async () => {
+    it('runs remote enrollment through the hidden single-process command', async () => {
         const fakeSsh = createFakeSsh({
             outputs: [
                 {
@@ -450,28 +472,29 @@ describe('runRemoteBootstrapCommandDefault', () => {
                 },
                 {
                     status: 0,
-                    stdout: `${JSON.stringify({ ok: true, data: { publicKey: 'pub-key-123' } })}\n`,
+                    stdout: `${JSON.stringify({ kind: 'remote_home_enrollment_result' })}\n`,
                 },
             ],
         });
 
         try {
             await withPatchedPath(fakeSsh.binDir, async () => {
-                await runRemoteBootstrapCommandDefault({
-                    label: 'auth.request',
+                const executor = createRemoteEnrollmentExecutorDefault({
                     parsed: createParsedRemoteBootstrapParams(),
                     auth: { mode: 'agent' },
                     knownHostsMode: 'system',
-                    data: {
-                        localServerUrl: 'http://127.0.0.1:3005',
-                    },
                 });
+                await executor.runHappierText(
+                    ['auth', 'enroll-remote', '--json-lines', '--home-target-stdin'],
+                    { input: JSON.stringify({ kind: 'https_url', url: 'https://relay.example.test' }) },
+                );
             });
 
             const remoteCommand = fakeSsh.readInvocations().at(-1)?.at(-1) ?? '';
-            expect(remoteCommand).toContain('--server-url=https://relay.example.test');
-            expect(remoteCommand).not.toContain('--server-url=http://127.0.0.1:3005');
-            expect(remoteCommand).not.toContain('--local-server-url=http://127.0.0.1:3005');
+            expect(remoteCommand).toContain('auth');
+            expect(remoteCommand).toContain('enroll-remote');
+            expect(remoteCommand).toContain('--home-target-stdin');
+            expect(remoteCommand).not.toMatch(/auth (?:request|wait)|--persist/u);
         } finally {
             fakeSsh.cleanup();
         }

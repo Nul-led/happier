@@ -172,6 +172,7 @@ as_root apt-get install -y --no-install-recommends \
   xz-utils \
   bubblewrap \
   build-essential \
+  golang-go \
   python3
 
 say "provisioning user systemd resource slices"

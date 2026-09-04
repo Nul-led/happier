@@ -19,8 +19,9 @@ import {
   checkLocalRelayRuntimeReachability,
   createLocalPersonalHomeHost,
 } from '@happier-dev/cli-common/relayHost';
+import { runOpenSshRemoteCommand, safeBashSingleQuote } from '@happier-dev/cli-common/ssh';
 
-import { buildScpCommand, buildSshCommand, redactSshText } from '../ssh/index.js';
+import { buildScpCommand, redactSshText } from '../ssh/index.js';
 import {
   ensureLocalFirstPartyComponentCommand,
 } from '@happier-dev/cli-common/systemTasks';
@@ -169,23 +170,22 @@ function resolveKnownHostsConfig(ssh: SshConnectionConfig, knownHostsMode?: 'app
 
 async function runRemoteTextCapture(ssh: SshConnectionConfig, remoteCommand: string, knownHostsMode?: 'app' | 'system'): Promise<CommandExecutionResult> {
   const sshWithPassword = ssh as SshConnectionWithPasswordConfig;
-  const invocation = buildSshCommand({
+  const knownHosts = resolveKnownHostsConfig(sshWithPassword, knownHostsMode);
+  return await runOpenSshRemoteCommand({
     target: sshWithPassword.target,
     port: sshWithPassword.port,
-    auth: {
-      kind: sshWithPassword.auth,
-      identityFile: sshWithPassword.identityFile,
-      ...(sshWithPassword.auth === 'password' ? { password: sshWithPassword.password } : {}),
-    },
-    knownHosts: resolveKnownHostsConfig(sshWithPassword, knownHostsMode),
-    remoteCommand,
+    sshConfigFile: sshWithPassword.sshConfigFile,
+    auth: sshWithPassword.auth === 'keyfile'
+      ? { mode: 'keyFile', privateKeyPath: String(sshWithPassword.identityFile ?? '') }
+      : sshWithPassword.auth === 'password'
+        ? { mode: 'password', password: String(sshWithPassword.password ?? '') }
+        : { mode: 'agent' },
+    knownHostsMode: knownHosts.mode,
+    knownHostsPath: knownHosts.mode === 'app' ? knownHosts.path : undefined,
+    remoteCommand: ['bash', '-lc', safeBashSingleQuote(remoteCommand)],
+    rejectOnNonZero: false,
+    errorPrefix: `SSH command failed for ${sshWithPassword.target}`,
   });
-  const result = await runCommandCapture({
-    command: invocation.command,
-    args: invocation.args,
-    ...(invocation.env ? { env: invocation.env } : {}),
-  });
-  return result;
 }
 
 async function copyLocalDirectoryToRemoteCapture(params: Readonly<{

@@ -1717,7 +1717,11 @@ Dev channel:
   curl -fsSL https://happier.dev/install | HAPPIER_CHANNEL=dev bash
   curl -fsSL https://happier.dev/install-dev | bash
 
-Relay setup (install CLI if needed, then host a relay locally):
+Personal Home (0.3 preview; install the CLI, then create your Home interactively):
+  curl -fsSL https://happier.dev/install | bash -s -- --channel preview
+  hprev home create
+
+Advanced/operator generic server runtime deployment (released compatibility):
   curl -fsSL https://happier.dev/install | bash -s -- --setup-relay
   curl -fsSL https://happier.dev/install | bash -s -- --channel dev --setup-relay
 
@@ -1731,7 +1735,7 @@ Options:
   --preview
   --dev
   --run <setup-relay|setup|auth-login|service-install|providers-setup>
-  --setup-relay
+  --setup-relay                 Advanced/operator generic server runtime deployment
   --with-daemon
   --without-daemon
   --check

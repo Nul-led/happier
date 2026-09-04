@@ -53,7 +53,7 @@ describe('website public surface links', () => {
     });
 
     it('describes the managed Relay runtime without implying local daemon setup', () => {
-        expect(SELF_HOST_TERMINAL_LINES.map((line) => line.text)).toContain('✓ Relay service started');
+        expect(SELF_HOST_TERMINAL_LINES.map((line) => line.text)).toContain('✓ Personal Home created');
         expect(SELF_HOST_TERMINAL_LINES.map((line) => line.text)).not.toContain('✓ Daemon started');
 
         // The static service list became the self-host stack diagram, so the

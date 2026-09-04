@@ -154,7 +154,7 @@ export const CODEX_SECTION = {
             when: 'You are inside a managed ChatGPT workspace.',
             codex: 'Per OpenAI’s docs: “If you use Codex through a ChatGPT workspace, your admin may need to enable Remote Control access before you can connect from your phone.”',
             happier:
-                'The equivalent switch is one your organisation holds rather than one it asks for: `happier relay host install` puts the relay on hardware you own, gated by your GitHub org or OIDC groups, and the transcript is end-to-end encrypted before it reaches it.',
+                'The equivalent switch is one your organisation holds rather than one it asks for: the 0.3 development preview can create a Personal Home on hardware you own with `happier home create`, gated by your GitHub org or OIDC groups, and the transcript is end-to-end encrypted before it reaches it.',
         },
         {
             id: 'cloudHandoff',

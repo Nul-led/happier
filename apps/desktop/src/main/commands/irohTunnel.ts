@@ -33,7 +33,6 @@ export type IrohNodeLifecycleBoundary = Readonly<{
         endpointId: string;
         directAddresses?: readonly string[];
         relayUrls?: readonly string[];
-        descriptorRevision?: number;
     }) => Promise<{
         tunnelId: string;
         homeServerIdentityId: string;
@@ -160,7 +159,6 @@ function readStartRequestFacts(request: unknown): {
     relayPolicy: 'automatic' | 'disabled';
     directAddresses?: readonly string[];
     relayUrls?: readonly string[];
-    descriptorRevision?: number;
 } {
     if (typeof request !== 'object' || request === null) {
         throw nativeError('invalid-request', 'request is required');
@@ -185,17 +183,12 @@ function readStartRequestFacts(request: unknown): {
         }
         return value as readonly string[];
     };
-    const descriptorRevision = record.descriptorRevision;
-    if (descriptorRevision !== undefined && (typeof descriptorRevision !== 'number' || !Number.isInteger(descriptorRevision) || descriptorRevision <= 0)) {
-        throw nativeError('invalid-request', 'descriptorRevision must be a positive integer');
-    }
     return {
         homeServerIdentityId,
         endpointId,
         relayPolicy: policy,
         ...(record.relayUrls === undefined ? {} : { relayUrls: stringArray(record.relayUrls) }),
         ...(record.directAddresses === undefined ? {} : { directAddresses: stringArray(record.directAddresses) }),
-        ...(descriptorRevision === undefined ? {} : { descriptorRevision }),
     };
 }
 
@@ -282,7 +275,6 @@ export class ElectronIrohTunnelService {
                 endpointId: facts.endpointId,
                 ...(facts.directAddresses ? { directAddresses: facts.directAddresses } : {}),
                 ...(facts.relayUrls ? { relayUrls: facts.relayUrls } : {}),
-                ...(facts.descriptorRevision ? { descriptorRevision: facts.descriptorRevision } : {}),
             });
             return projectLeaseForRenderer({ ...started, leaseId: started.tunnelId });
         } catch (error) {

@@ -81,7 +81,6 @@ test('start injects the host-owned persistent key path and returns only renderer
         policy: 'automatic',
         relayUrls: ['https://relay.example.test'],
         directAddresses: ['192.168.1.10:4242'],
-        descriptorRevision: 4,
         // Renderer-supplied identity material must never reach the native request.
         endpointKeyPath: '/tmp/renderer.key',
         endpointSeedBase64: 'AAAA',
@@ -99,7 +98,6 @@ test('start injects the host-owned persistent key path and returns only renderer
             endpointId: ENDPOINT_ID,
             relayUrls: ['https://relay.example.test'],
             directAddresses: ['192.168.1.10:4242'],
-            descriptorRevision: 4,
         },
     ]);
     assert.deepEqual(lease, {

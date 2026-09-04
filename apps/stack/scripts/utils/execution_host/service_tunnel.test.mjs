@@ -696,7 +696,7 @@ test('service tunnel supervision retries after one replacement transport fails t
     profile: profile(fixture.path('lima')),
     workspaceId: '0.3',
     stackName: 'repo-dev-1234567890',
-    executor: runtimeExecutor(runtimeProjection()),
+    executor: runtimeExecutor(runtimeProjection({ startedAt: '2026-09-04T05:13:21.224Z' })),
     env,
     boundary,
     signal: controller.signal,
@@ -719,7 +719,10 @@ test('service tunnel supervision does not poll a stable initial remote Expo proj
   let activePid = null;
   let nextPid = 731;
   let delays = 0;
-  const executor = runtimeExecutor(runtimeProjection({ expoPort: 19364 }));
+  const executor = runtimeExecutor(runtimeProjection({
+    expoPort: 19364,
+    startedAt: '2026-09-04T05:13:21.224Z',
+  }));
   const boundary = tunnelBoundary({
     listenerPids: (_port, _spawned, { candidatePids } = {}) => (
       activePid != null && candidatePids?.includes(activePid) ? [activePid] : []
@@ -844,6 +847,77 @@ test('service tunnel supervision replaces a pre-dispatch plan after the guest pu
 
   assert.equal(result.status, 'cancelled');
   assert.equal(executor.calls.length, 3, 'the bounded startup wait should require a valid successor declaration');
+  assert.deepEqual(boundary.spawned.map(({ child }) => child.pid), [731, 732]);
+  assert.deepEqual(boundary.terminated.map(({ pid }) => pid), [731]);
+  const state = JSON.parse(await readFile(`${fixture.path('home')}/execution-host-tunnels/primary-0.3.json`, 'utf8'));
+  assert.deepEqual(state.forwards, [
+    { service: 'server', listenHost: '0.0.0.0', listenPort: 52753, targetHost: '127.0.0.1', targetPort: 52754 },
+    { service: 'expo-web', listenHost: '0.0.0.0', listenPort: 18829, targetHost: '127.0.0.1', targetPort: 18829 },
+  ]);
+});
+
+test('service tunnel supervision treats an untimestamped pre-start declaration as provisional', async (t) => {
+  const fixture = await createTempFixture(t, { prefix: 'execution-host-service-tunnel-supervision-untimestamped-runtime-' });
+  const env = { HAPPIER_STACK_HOME_DIR: fixture.path('home') };
+  const controller = new AbortController();
+  let projection = runtimeProjection({ expoEnabled: false });
+  const executor = {
+    calls: 0,
+    async capture() {
+      this.calls += 1;
+      return { exitCode: 0, out: projection, err: '' };
+    },
+  };
+  let activePid = null;
+  let nextPid = 731;
+  let delays = 0;
+  const boundary = tunnelBoundary({
+    listenerPids: (_port, _spawned, { candidatePids } = {}) => (
+      activePid != null && candidatePids?.includes(activePid) ? [activePid] : []
+    ),
+  });
+  boundary.spawn = (command, args, options) => {
+    const child = { pid: nextPid, unref() {} };
+    nextPid += 1;
+    activePid = child.pid;
+    boundary.spawned.push({ command, args, options, child });
+    return child;
+  };
+  boundary.readFingerprint = (pid) => `darwin-ps:${pid}`;
+  boundary.observeProcess = async (pid) => (
+    pid === activePid
+      ? {
+          status: 'ok',
+          line: `${pid} ssh HAPPIER_STACK_PROCESS_KIND=execution-host-service-tunnel HAPPIER_STACK_EXECUTION_HOST_TUNNEL=primary:0.3:repo-dev-1234567890`,
+        }
+      : { status: 'not_found' }
+  );
+  boundary.terminate = async (pid, options) => {
+    boundary.terminated.push({ pid, options });
+    if (pid === activePid) activePid = null;
+    return { ok: true, signal: 'SIGTERM' };
+  };
+  boundary.delay = async () => {
+    delays += 1;
+    if (delays === 1) {
+      projection = runtimeProjection({ startedAt: '2026-09-04T05:13:21.224Z' });
+      return;
+    }
+    controller.abort();
+  };
+
+  const result = await superviseExecutionHostServiceTunnel({
+    profile: profile(fixture.path('lima')),
+    workspaceId: '0.3',
+    stackName: 'repo-dev-1234567890',
+    executor,
+    env,
+    boundary,
+    signal: controller.signal,
+  });
+
+  assert.equal(result.status, 'cancelled');
+  assert.equal(executor.calls, 2, 'startup must wait for the first timestamped declaration');
   assert.deepEqual(boundary.spawned.map(({ child }) => child.pid), [731, 732]);
   assert.deepEqual(boundary.terminated.map(({ pid }) => pid), [731]);
   const state = JSON.parse(await readFile(`${fixture.path('home')}/execution-host-tunnels/primary-0.3.json`, 'utf8'));
@@ -992,7 +1066,7 @@ test('service tunnel supervision treats an explicit stop as terminal for its cur
     profile: profile(fixture.path('lima')),
     workspaceId: '0.3',
     stackName: 'repo-dev-1234567890',
-    executor: runtimeExecutor(runtimeProjection()),
+    executor: runtimeExecutor(runtimeProjection({ startedAt: '2026-09-04T05:13:21.224Z' })),
     env,
     boundary,
   };

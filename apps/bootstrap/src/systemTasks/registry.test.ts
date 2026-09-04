@@ -2321,18 +2321,46 @@ describe('createHsetupSystemTaskRegistry', () => {
           },
           async installRemoteCli() {},
           async approveLocalAuthRequest() {},
+          createRemoteEnrollmentExecutor() {
+            return {
+              async runHappierJson() {
+                throw new Error('Remote enrollment must use the streaming command.');
+              },
+              async runHappierText(_args, options) {
+                const request = JSON.stringify({
+                  kind: 'remote_home_enrollment_pairing_request',
+                  protocolVersion: 1,
+                  publicKey: 'pub-key',
+                  homeServerIdentityId: 'srv_home',
+                  pairing: {
+                    secretB64Url: 'cGFpcmluZy1zZWNyZXQ',
+                    createdAtMs: 1,
+                    expiresAtMs: 2,
+                  },
+                  supportsTokenOnly: true,
+                  pairingRequirement: 'v3',
+                });
+                const enrollmentResult = JSON.stringify({
+                  kind: 'remote_home_enrollment_result',
+                  protocolVersion: 1,
+                  success: true,
+                  homeServerIdentityId: 'srv_home',
+                  machineId: 'machine-remote-1',
+                  encryptionType: 'tokenOnly',
+                  pairingAuthentication: 'v3',
+                  remoteProfileId: 'remote-home-profile',
+                });
+                options?.onStdoutChunk?.(`${request}\n${enrollmentResult}\n`);
+                return { status: 0, stdout: `${request}\n${enrollmentResult}\n`, stderr: '' };
+              },
+            };
+          },
           async runRemoteCommand({ label }) {
             if (label === 'auth.status') {
               return { ok: true, data: { authenticated: false } };
             }
             if (label === 'server.configure') {
               return { ok: true, data: { configured: true } };
-            }
-            if (label === 'auth.request') {
-              return { ok: true, data: { publicKey: 'pub-key' } };
-            }
-            if (label === 'auth.wait') {
-              return { ok: true, data: { machineId: 'machine-remote-1' } };
             }
             if (label === 'daemon.service.install') {
               return { ok: true, data: { installed: true } };

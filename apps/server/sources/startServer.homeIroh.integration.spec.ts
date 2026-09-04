@@ -15,12 +15,16 @@ const ensureHomeIrohEndpoint = vi.fn<(
     failureReason: null,
 }));
 const stopHomeIrohEndpoint = vi.fn(async () => {});
+const beginHomeIrohEndpointStartup = vi.fn();
+const markHomeIrohEndpointStartupUnavailable = vi.fn();
 vi.mock("@/app/iroh/homeIrohEndpoint", async () => {
     const actual = await vi.importActual<typeof import("@/app/iroh/homeIrohEndpoint")>("@/app/iroh/homeIrohEndpoint");
     return {
         ...actual,
         ensureHomeIrohEndpoint,
         stopHomeIrohEndpoint,
+        beginHomeIrohEndpointStartup,
+        markHomeIrohEndpointStartupUnavailable,
     };
 });
 
@@ -66,6 +70,8 @@ describe("startServer managed Home Iroh composition", () => {
         startServerDbMocks.reset();
         ensureHomeIrohEndpoint.mockClear();
         stopHomeIrohEndpoint.mockClear();
+        beginHomeIrohEndpointStartup.mockClear();
+        markHomeIrohEndpointStartupUnavailable.mockClear();
         ensureHomeIrohEndpoint.mockImplementation(async () => ({
             status: "unavailable",
             snapshot: null,
@@ -95,6 +101,11 @@ describe("startServer managed Home Iroh composition", () => {
 
         expect(ensureHomeIrohEndpoint).toHaveBeenCalledTimes(1);
         expect(ensureHomeIrohEndpoint.mock.calls[0]?.[0]).toMatchObject({ apiPort: 3005 });
+        const { startApi } = await import("@/app/api/api");
+        expect(beginHomeIrohEndpointStartup).toHaveBeenCalledOnce();
+        expect(beginHomeIrohEndpointStartup.mock.invocationCallOrder[0]).toBeLessThan(
+            vi.mocked(startApi).mock.invocationCallOrder[0] ?? Number.MAX_SAFE_INTEGER,
+        );
 
         const { initiateShutdown } = await import("@/utils/process/shutdown");
         await initiateShutdown("test");
@@ -112,6 +123,8 @@ describe("startServer managed Home Iroh composition", () => {
 
         const { startApi } = await import("@/app/api/api");
         expect(startApi).toHaveBeenCalledTimes(1);
+        expect(beginHomeIrohEndpointStartup).toHaveBeenCalledOnce();
+        expect(markHomeIrohEndpointStartupUnavailable).toHaveBeenCalledOnce();
         expect(ensureHomeIrohEndpoint).not.toHaveBeenCalled();
     });
 

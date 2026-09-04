@@ -174,12 +174,14 @@ test('managed Lima guest toolchain health requires the managed runtime, sandbox,
   assert.match(calls[0].args.at(-1), /command -v corepack/);
   assert.match(calls[0].args.at(-1), /command -v rg/);
   assert.match(calls[0].args.at(-1), /command -v gh/);
+  assert.match(calls[0].args.at(-1), /command -v go/);
   assert.match(calls[0].args.at(-1), /command -v mutagen/);
   assert.match(calls[0].args.at(-1), /command -v bwrap/);
   assert.match(calls[0].args.at(-1), /command -v agent-browser/);
   assert.match(calls[0].args.at(-1), /command -v bun/);
   assert.match(calls[0].args.at(-1), /rg --version/);
   assert.match(calls[0].args.at(-1), /gh --version/);
+  assert.match(calls[0].args.at(-1), /go version/);
   assert.match(calls[0].args.at(-1), /bun --version \| grep -Fx '1\.3\.5'/);
   assert.match(calls[0].args.at(-1), /happier-bwrap AppArmor profile/);
   assert.match(calls[0].args.at(-1), /userns/);

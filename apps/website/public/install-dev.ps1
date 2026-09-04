@@ -1,3 +1,18 @@
+<#
+.SYNOPSIS
+Installs the Happier CLI.
+
+.DESCRIPTION
+For routine local hosting, create a Personal Home through the 0.3 preview CLI's interactive managed setup.
+
+.EXAMPLE
+& ([ScriptBlock]::Create((irm https://happier.dev/install.ps1))) -Channel preview
+hprev home create
+
+.PARAMETER SetupRelay
+Advanced/operator generic server runtime deployment. This released compatibility switch installs a generic Relay runtime; it is not the routine Personal Home journey.
+#>
+
 # PositionalBinding=$false: without it the [string] parameters below bind
 # positionally and silently swallow -Run arguments (e.g. `-Run setup-relay
 # --flag` set $Channel to '--flag'), so $RunArgs never received them.

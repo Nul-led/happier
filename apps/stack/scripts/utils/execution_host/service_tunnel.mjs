@@ -826,6 +826,7 @@ export async function waitForExecutionHostServiceTunnel({
   boundary,
   signal,
   previousRuntimeStartedAt = '',
+  requireRuntimeStartedAt = false,
 } = {}) {
   const processBoundary = boundary ?? defaultBoundary();
   const predecessorRuntimeStartedAt = normalizeRuntimeStartedAt(previousRuntimeStartedAt);
@@ -847,11 +848,14 @@ export async function waitForExecutionHostServiceTunnel({
         !result.runtimeStartedAt
         || result.runtimeStartedAt === predecessorRuntimeStartedAt
       );
+    const awaitingInitialRuntime = requireRuntimeStartedAt
+      && result.status === 'running'
+      && !result.runtimeStartedAt;
     const awaitingPendingServices = result.status === 'running'
       && Array.isArray(result.pendingServices)
       && result.pendingServices.length > 0;
-    if (result.status === 'running' && !awaitingSuccessorRuntime && !awaitingPendingServices) return result;
-    if (!awaitingSuccessorRuntime && !awaitingPendingServices && ![
+    if (result.status === 'running' && !awaitingSuccessorRuntime && !awaitingInitialRuntime && !awaitingPendingServices) return result;
+    if (!awaitingSuccessorRuntime && !awaitingInitialRuntime && !awaitingPendingServices && ![
       'missing',
       'no_services',
       TUNNEL_TRANSITION_REPLACING,
@@ -897,6 +901,7 @@ export async function superviseExecutionHostServiceTunnel({
     boundary: processBoundary,
     signal,
     previousRuntimeStartedAt,
+    requireRuntimeStartedAt: true,
   });
   if (result.status !== 'running') return result;
   let recoveryErrorMessage = '';

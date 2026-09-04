@@ -18,7 +18,8 @@ import {
 import type { OpenSshAuth } from '@happier-dev/cli-common/ssh';
 import {
   copyLocalDirectoryToRemoteSync,
-  runRemoteTextSync,
+  runOpenSshRemoteCommand,
+  safeBashSingleQuote,
 } from '@happier-dev/cli-common/ssh';
 
 import { redactSshText } from '../ssh/index.js';
@@ -78,6 +79,28 @@ function resolveOpenSshAuth(ssh: SshConnectionWithPasswordConfig): OpenSshAuth {
       : { mode: 'agent' };
 }
 
+async function runRemoteText(params: Readonly<{
+  ssh: SshConnectionWithPasswordConfig;
+  knownHosts: Readonly<{ mode: 'app'; path: string } | { mode: 'system' }>;
+  auth: OpenSshAuth;
+  remoteCommand: string;
+  signal?: AbortSignal;
+  errorPrefix: string;
+}>) {
+  return await runOpenSshRemoteCommand({
+    target: params.ssh.target,
+    port: params.ssh.port,
+    sshConfigFile: params.ssh.sshConfigFile,
+    knownHostsMode: params.knownHosts.mode,
+    knownHostsPath: params.knownHosts.mode === 'app' ? params.knownHosts.path : undefined,
+    auth: params.auth,
+    remoteCommand: ['bash', '-lc', safeBashSingleQuote(params.remoteCommand)],
+    connectTimeoutSec: 10,
+    signal: params.signal,
+    errorPrefix: params.errorPrefix,
+  });
+}
+
 function assertRelocationOperationId(operationId: string): void {
   if (!PERSONAL_HOME_RELOCATION_OPERATION_ID.test(operationId)) {
     throw new Error('Invalid Personal Home relocation operation id.');
@@ -104,6 +127,7 @@ function parseRelocationDestinationFacts(
     'sessionCount',
     'failureCode',
     'transferCleanupNeedsAttention',
+    'cleanupNeedsAttention',
   ]);
   if (Object.keys(value).some((key) => !allowedKeys.has(key))
     || value.operationId !== expectedOperationId
@@ -139,7 +163,8 @@ function parseRelocationDestinationFacts(
     || (value.sessionCount !== undefined
       && (typeof value.sessionCount !== 'number' || !Number.isSafeInteger(value.sessionCount) || value.sessionCount < 0))
     || (value.failureCode !== undefined && (typeof value.failureCode !== 'string' || !value.failureCode.trim()))
-    || (value.transferCleanupNeedsAttention !== undefined && value.transferCleanupNeedsAttention !== true)) {
+    || (value.transferCleanupNeedsAttention !== undefined && value.transferCleanupNeedsAttention !== true)
+    || (value.cleanupNeedsAttention !== undefined && value.cleanupNeedsAttention !== true)) {
     throw new Error('Remote Personal Home relocation destination returned invalid operation facts.');
   }
   if ((value.status === 'quarantined' || value.status === 'activating' || value.status === 'active')
@@ -168,6 +193,7 @@ function parseRelocationDestinationFacts(
     ...(typeof value.sessionCount === 'number' ? { sessionCount: value.sessionCount } : {}),
     ...(typeof value.failureCode === 'string' ? { failureCode: value.failureCode } : {}),
     ...(value.transferCleanupNeedsAttention === true ? { transferCleanupNeedsAttention: true as const } : {}),
+    ...(value.cleanupNeedsAttention === true ? { cleanupNeedsAttention: true as const } : {}),
   };
 }
 
@@ -210,15 +236,11 @@ export async function testRemoteSshConnectionDefault(params: Readonly<{
       ? { mode: 'password', password: String(ssh.password ?? '') }
       : { mode: 'agent' };
 
-  runRemoteTextSync({
-    target: ssh.target,
-    port: ssh.port,
-    sshConfigFile: ssh.sshConfigFile,
-    knownHostsMode: knownHosts.mode === 'app' ? 'app' : 'system',
-    knownHostsPath: knownHosts.mode === 'app' ? knownHosts.path : undefined,
+  await runRemoteText({
+    ssh,
+    knownHosts,
     auth,
     remoteCommand: 'true',
-    connectTimeoutSec: 10,
     errorPrefix: `SSH connection failed for ${ssh.target}`,
   });
 }
@@ -262,15 +284,11 @@ export async function runRemoteDaemonServiceCommandDefault(params: Readonly<{
       ? { mode: 'password', password: String(ssh.password ?? '') }
       : { mode: 'agent' };
 
-  runRemoteTextSync({
-    target: ssh.target,
-    port: ssh.port,
-    sshConfigFile: ssh.sshConfigFile,
-    knownHostsMode: knownHosts.mode === 'app' ? 'app' : 'system',
-    knownHostsPath: knownHosts.mode === 'app' ? knownHosts.path : undefined,
+  await runRemoteText({
+    ssh,
+    knownHosts,
     auth,
     remoteCommand: `${happier} service ${action} --mode=${mode} --json`,
-    connectTimeoutSec: 10,
     errorPrefix: `Remote background service command failed for ${ssh.target}`,
   });
 }
@@ -336,6 +354,7 @@ export async function runRemotePersonalHomeCommandDefault(params: Readonly<{
   channel: 'stable' | 'preview' | 'dev';
   mode: 'user' | 'system';
   args: readonly string[];
+  signal?: AbortSignal;
 }>): Promise<SystemTaskJsonObject> {
   const ssh = buildRemoteSshConnection(params.ssh, params.auth);
   const knownHosts = resolveKnownHostsConfig(ssh, params.knownHostsMode);
@@ -349,22 +368,19 @@ export async function runRemotePersonalHomeCommandDefault(params: Readonly<{
     auth,
     knownHostsMode: params.knownHostsMode,
     channel: params.channel === 'dev' ? 'publicdev' : params.channel,
-    runRemoteText: async ({ remoteCommand }) => {
-      const result = runRemoteTextSync({
-        target: ssh.target,
-        port: ssh.port,
-        sshConfigFile: ssh.sshConfigFile,
-        knownHostsMode: knownHosts.mode,
-        knownHostsPath: knownHosts.mode === 'app' ? knownHosts.path : undefined,
+    runRemoteText: async ({ remoteCommand, signal }) => {
+      signal?.throwIfAborted();
+      return await runRemoteText({
+        ssh,
+        knownHosts,
         auth,
         remoteCommand,
-        connectTimeoutSec: 10,
+        signal,
         errorPrefix: `Remote Personal Home command failed for ${ssh.target}`,
       });
-      return { status: result.status, stdout: result.stdout, stderr: result.stderr };
     },
   });
-  const output = await executor.runHappierText(params.args);
+  const output = await executor.runHappierText(params.args, { signal: params.signal });
   if (output.status !== 0) {
     throw new Error(redactSshText(output.stderr || output.stdout || `Remote Personal Home command failed for ${ssh.target}.`));
   }

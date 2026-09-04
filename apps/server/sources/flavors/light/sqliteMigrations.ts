@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { parseBooleanEnv } from '@/config/env';
+import { assertForwardRecoveryCapableUpdater } from '@/app/runtime/updaterMigrationAdmission';
 import { expandHomeDirPath } from '@happier-dev/cli-common/path';
 import {
   readSqliteMigrationCatalog,
@@ -405,6 +406,9 @@ export async function applySqliteMigrationsFromEnvironment(params: Readonly<{
   const migrationsDir = resolveSqliteMigrationsDir(params.env, params.dataDir);
   if (!migrationsDir || !existsSync(migrationsDir)) {
     throw new Error(`SQLite migrations directory is missing: ${migrationsDir || '<empty>'}`);
+  }
+  if (existsSync(join(migrationsDir, '20260725100000_activate_qualified_connected_accounts_v4'))) {
+    assertForwardRecoveryCapableUpdater(params.env);
   }
   const databaseUrl = String(params.env.DATABASE_URL ?? '').trim();
   const dbPath = resolveSqliteDatabaseFilePath(databaseUrl);

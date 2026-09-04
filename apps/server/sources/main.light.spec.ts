@@ -15,6 +15,15 @@ const mocks = vi.hoisted(() => ({
     minimumOuterRevisionExclusive: 7,
     endpoint: { endpointId: 'a'.repeat(64) },
   })),
+  continuityStore: { read: vi.fn(), write: vi.fn() },
+  createHomeConnectionDescriptorContinuityStoreForServer: vi.fn(),
+  reserveRelocatedHomeConnectionDescriptor: vi.fn(async () => ({
+    v: 1 as const,
+    homeServerIdentityId: 'srv_home_1',
+    canonicalServerUrl: 'http://127.0.0.1:3005',
+    revision: 8,
+    endpoints: [{ kind: 'iroh' as const, endpointId: 'a'.repeat(64) }],
+  })),
   authInit: vi.fn(async () => {}),
   createPersonalHomeAuthenticatedReadiness: vi.fn(async () => ({
     authenticated: true as const,
@@ -46,6 +55,12 @@ vi.mock('@/startServer', () => ({
 vi.mock('@/app/iroh/homeIrohEndpoint', () => ({
   materializeHomeIrohEndpointDescriptor: mocks.materializeHomeIrohEndpointDescriptor,
 }));
+vi.mock('@/app/features/homeConnectionDescriptorContinuity', () => ({
+  createHomeConnectionDescriptorContinuityStoreForServer: mocks.createHomeConnectionDescriptorContinuityStoreForServer,
+}));
+vi.mock('@/app/features/homeConnectionDescriptorPublication', () => ({
+  reserveRelocatedHomeConnectionDescriptor: mocks.reserveRelocatedHomeConnectionDescriptor,
+}));
 vi.mock('@/app/auth/auth', () => ({
   auth: { init: mocks.authInit },
 }));
@@ -62,6 +77,7 @@ import { runLightServerMain } from './flavors/light/main';
 describe('runLightServerMain', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.createHomeConnectionDescriptorContinuityStoreForServer.mockReturnValue(mocks.continuityStore);
     delete process.env.HAPPY_SERVER_FLAVOR;
     delete process.env.HAPPIER_SERVER_FLAVOR;
   });
@@ -70,6 +86,35 @@ describe('runLightServerMain', () => {
     vi.restoreAllMocks();
     delete process.env.HAPPY_SERVER_FLAVOR;
     delete process.env.HAPPIER_SERVER_FLAVOR;
+  });
+
+  it('reports the bounded managed Personal Home capability without initializing the light runtime', async () => {
+    const output = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    process.env.HAPPY_SERVER_FLAVOR = 'unchanged-before-capability-probe';
+    process.env.HAPPIER_SERVER_FLAVOR = 'unchanged-before-capability-probe';
+
+    await runLightServerMain(['--probe-runtime-capabilities']);
+
+    expect(output).toHaveBeenCalledOnce();
+    expect(output).toHaveBeenCalledWith(`${JSON.stringify({
+      schemaVersion: 1,
+      component: 'happier-server-light',
+      capabilities: ['managed-personal-home-create.v1'],
+    })}\n`);
+    expect(process.env.HAPPY_SERVER_FLAVOR).toBe('unchanged-before-capability-probe');
+    expect(process.env.HAPPIER_SERVER_FLAVOR).toBe('unchanged-before-capability-probe');
+    expect(mocks.applyLightDefaultEnv).not.toHaveBeenCalled();
+    expect(mocks.applyPackagedLightRuntimeSqliteDefaults).not.toHaveBeenCalled();
+    expect(mocks.resolveLightDataDir).not.toHaveBeenCalled();
+    expect(mocks.applySqliteMigrationsFromEnvironment).not.toHaveBeenCalled();
+    expect(mocks.loadExistingHandyMasterSecret).not.toHaveBeenCalled();
+    expect(mocks.initDbSqlite).not.toHaveBeenCalled();
+    expect(mocks.authInit).not.toHaveBeenCalled();
+    expect(mocks.materializeHomeIrohEndpointDescriptor).not.toHaveBeenCalled();
+    expect(mocks.reserveRelocatedHomeConnectionDescriptor).not.toHaveBeenCalled();
+    expect(mocks.initializeServerSentry).not.toHaveBeenCalled();
+    expect(mocks.registerProcessHandlers).not.toHaveBeenCalled();
+    expect(mocks.startServer).not.toHaveBeenCalled();
   });
 
   it('runs canonical SQLite migration only and returns for --migrate-only', async () => {
@@ -99,6 +144,13 @@ describe('runLightServerMain', () => {
     expect(mocks.materializeHomeIrohEndpointDescriptor).toHaveBeenCalledWith({
       env: process.env,
       sourceDescriptorRevision: 7,
+      continuityStore: mocks.continuityStore,
+    });
+    expect(mocks.reserveRelocatedHomeConnectionDescriptor).toHaveBeenCalledWith({
+      env: process.env,
+      continuityStore: mocks.continuityStore,
+      minimumOuterRevisionExclusive: 7,
+      irohEndpoint: { endpointId: 'a'.repeat(64) },
     });
     expect(mocks.initDbSqlite).toHaveBeenCalledOnce();
     expect(mocks.shutdownDbClient).toHaveBeenCalledOnce();

@@ -1,15 +1,9 @@
-import 'reflect-metadata';
-import 'dotenv/config';
-
-import { initializeServerSentry } from '@/app/monitoring/sentry';
-import {
-    applyLightDefaultEnv,
-    applyPackagedLightRuntimeSqliteDefaults,
-    loadExistingHandyMasterSecret,
-    resolveLightDataDir,
-} from '@/flavors/light/env';
-import { applySqliteMigrationsFromEnvironment } from '@/flavors/light/sqliteMigrations';
-import { registerProcessHandlers } from '@/utils/process/processHandlers';
+const LIGHT_RUNTIME_CAPABILITY_PROBE_ARGUMENT = '--probe-runtime-capabilities';
+const LIGHT_RUNTIME_CAPABILITY_PROBE_RESULT = {
+    schemaVersion: 1,
+    component: 'happier-server-light',
+    capabilities: ['managed-personal-home-create.v1'],
+} as const;
 
 function readPositiveSafeIntegerArgument(argv: readonly string[], name: string): number | null {
     const prefix = `${name}=`;
@@ -26,12 +20,57 @@ function readPositiveSafeIntegerArgument(argv: readonly string[], name: string):
 }
 
 export async function runLightServerMain(argv: readonly string[] = process.argv.slice(2)): Promise<void> {
+    if (argv.includes(LIGHT_RUNTIME_CAPABILITY_PROBE_ARGUMENT)) {
+        process.stdout.write(`${JSON.stringify(LIGHT_RUNTIME_CAPABILITY_PROBE_RESULT)}\n`);
+        return;
+    }
+
+    await import('reflect-metadata');
+    await import('dotenv/config');
+    const [
+        {
+            applyLightDefaultEnv,
+            applyPackagedLightRuntimeSqliteDefaults,
+            loadExistingHandyMasterSecret,
+            resolveLightDataDir,
+        },
+        { applySqliteMigrationsFromEnvironment },
+        { initializeServerSentry },
+        { registerProcessHandlers },
+    ] = await Promise.all([
+        import('@/flavors/light/env'),
+        import('@/flavors/light/sqliteMigrations'),
+        import('@/app/monitoring/sentry'),
+        import('@/utils/process/processHandlers'),
+    ]);
+
     process.env.HAPPY_SERVER_FLAVOR = 'light';
     process.env.HAPPIER_SERVER_FLAVOR = 'light';
 
-    if (argv.includes('--attest-personal-home-readiness')) {
+    const admitPersonalHomeMaintenance = async (
+        action: 'ordinary' | 'attest' | 'materialize_endpoint',
+    ): Promise<void> => {
         applyLightDefaultEnv(process.env);
         applyPackagedLightRuntimeSqliteDefaults(process.env);
+        if (process.env.HAPPIER_MANAGED_RELAY_PURPOSE !== 'personal-home') return;
+        const { assertPersonalHomeBootAdmission, resolvePersonalHomeRuntimeLayout } = await import('@happier-dev/cli-common/firstPartyRuntime');
+        const layout = resolvePersonalHomeRuntimeLayout({ env: process.env });
+        if (action === 'ordinary') {
+            await assertPersonalHomeBootAdmission(layout, {
+                kind: 'ordinary',
+                startupNonce: process.env.HAPPIER_SERVER_STARTUP_RECEIPT_NONCE,
+            });
+            return;
+        }
+        await assertPersonalHomeBootAdmission(layout, {
+            kind: 'relocation-maintenance',
+            operationId: String(process.env.HAPPIER_PERSONAL_HOME_RELOCATION_OPERATION_ID ?? '').trim(),
+            action,
+        });
+    };
+
+    if (argv.includes('--attest-personal-home-readiness')) {
+        await admitPersonalHomeMaintenance('attest');
         await loadExistingHandyMasterSecret(process.env);
         const [
             { auth },
@@ -64,17 +103,39 @@ export async function runLightServerMain(argv: readonly string[] = process.argv.
         if (sourceDescriptorRevision === null) {
             throw new Error('--materialize-iroh-endpoint-descriptor requires a positive --source-descriptor-revision');
         }
-        applyLightDefaultEnv(process.env);
-        applyPackagedLightRuntimeSqliteDefaults(process.env);
-        const [{ materializeHomeIrohEndpointDescriptor }, { initDbSqlite, shutdownDbClient }] = await Promise.all([
+        await admitPersonalHomeMaintenance('materialize_endpoint');
+        const [
+            { materializeHomeIrohEndpointDescriptor },
+            { createHomeConnectionDescriptorContinuityStoreForServer },
+            { reserveRelocatedHomeConnectionDescriptor },
+            { initDbSqlite, shutdownDbClient },
+        ] = await Promise.all([
             import('@/app/iroh/homeIrohEndpoint'),
+            import('@/app/features/homeConnectionDescriptorContinuity'),
+            import('@/app/features/homeConnectionDescriptorPublication'),
             import('@/storage/db'),
         ]);
         await initDbSqlite();
-        const result = await materializeHomeIrohEndpointDescriptor({
-            env: process.env,
-            sourceDescriptorRevision,
-        }).finally(async () => {
+        const result = await (async () => {
+            const continuityStore = createHomeConnectionDescriptorContinuityStoreForServer(process.env);
+            if (!continuityStore) {
+                throw new Error('Personal Home descriptor continuity is unavailable');
+            }
+            const materialized = await materializeHomeIrohEndpointDescriptor({
+                env: process.env,
+                sourceDescriptorRevision,
+                continuityStore,
+            });
+            if (materialized.status === 'ready') {
+                await reserveRelocatedHomeConnectionDescriptor({
+                    env: process.env,
+                    continuityStore,
+                    minimumOuterRevisionExclusive: sourceDescriptorRevision,
+                    irohEndpoint: materialized.endpoint,
+                });
+            }
+            return materialized;
+        })().finally(async () => {
             await shutdownDbClient();
         });
         process.stdout.write(`${JSON.stringify(result)}\n`);
@@ -82,8 +143,7 @@ export async function runLightServerMain(argv: readonly string[] = process.argv.
     }
 
     if (argv.includes('--migrate-only')) {
-        applyLightDefaultEnv(process.env);
-        applyPackagedLightRuntimeSqliteDefaults(process.env);
+        await admitPersonalHomeMaintenance('ordinary');
         await applySqliteMigrationsFromEnvironment({
             env: process.env,
             dataDir: resolveLightDataDir(process.env),

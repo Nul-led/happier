@@ -270,6 +270,7 @@ test('linux provision (happier profile) runs corepack enable as root', async () 
   assert.match(aptOut, /apt-get install/, 'expected apt-get install to run');
   assert.match(aptOut, /ripgrep/, 'expected the worker source-search tool to be installed');
   assert.match(aptOut, /(?:^|\s)gh(?:\s|$)/, 'expected the GitHub CLI to be installed');
+  assert.match(aptOut, /(?:^|\s)golang-go(?:\s|$)/, 'expected the daemon support build toolchain to be installed');
   assert.match(aptOut, /apt-get install[^\n]*[\s\S]*bubblewrap/, 'expected the agent sandbox runtime to be installed');
   const mutagenOut = await readIfExists(mutagenLog);
   assert.match(

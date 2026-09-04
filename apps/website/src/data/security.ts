@@ -223,13 +223,13 @@ export const SECURITY_INVISIBLE: ReadonlyArray<SecurityLedgerEntry> = [
  * The one section where a false reassurance would be worst, so it states the
  * unrecoverable case rather than leaving the reader to find it: if every
  * signed-in device is gone and the secret key is gone, the encrypted sessions
- * are gone. A relay that could give them back is a relay that could read them,
+ * are gone. A Home that could give them back is a Home that could read them,
  * and that is the trade the whole page describes.
  */
 export const SECURITY_KEYS: ReadonlyArray<string> = [
     'There is one secret at the root of your account, and it is created on a device — not issued by a server. Everything else is derived from it by a key tree: an HMAC-SHA-512 root, then one HMAC step per labelled path element. The keypair that opens sealed session keys comes out of that tree under the label "content", and so does a separate key for each other kind of stored blob, so no key is doing two jobs.',
-    'This is why a brand-new browser can sign in to your account and still show you nothing from last week. Signing in proves who you are to the relay. Reading an old session needs the key, and the key is not on the relay to send. Restoring the device is the step that moves it — from a device that already has it, or from the secret key you kept.',
-    'It also means the loss case is real and worth stating once: if every signed-in device is gone and the secret key is gone with them, the encrypted sessions cannot be recovered by us or by anyone. A relay that could hand them back would be a relay that could read them.',
+    'This is why a brand-new browser can sign in to your account and still show you nothing from last week. Signing in proves who you are to the Home. Reading an old session needs the key, and the key is not on the Home to send. Restoring the device is the step that moves it — from a device that already has it, or from the secret key you kept.',
+    'It also means the loss case is real and worth stating once: if every signed-in device is gone and the secret key is gone with them, the encrypted sessions cannot be recovered by us or by anyone. A Home that could hand them back would be a Home that could read them.',
 ];
 
 /** Pairing: direct QR possession and optional Home-owned approval are distinct. */

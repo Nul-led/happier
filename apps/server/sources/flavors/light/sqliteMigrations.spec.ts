@@ -1,5 +1,5 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -267,6 +267,30 @@ describe('light sqlite migrations (unit)', () => {
       applied: ['20260101000000_first'],
     });
     expect(getSqliteState(dbPath).applied.has('20260101000000_first')).toBe(true);
+  });
+
+  it('refuses the real Qualified Connected Accounts V4 migration before opening SQLite without updater handoff', async () => {
+    vi.stubGlobal('Bun', {});
+    const dir = await mkdtemp(join(tmpdir(), 'happier-sqlite-migrations-v4-admission-'));
+    const boundaryMigration = '20260725100000_activate_qualified_connected_accounts_v4';
+    const migrationDir = join(dir, boundaryMigration);
+    await mkdir(migrationDir, { recursive: true });
+    // Candidate bytes are the current migration; the immutable cli-v0.2.11
+    // updater (98ea8fb76733b1dd785d38c31360179cafa84824) supplied no capability.
+    await writeFile(
+      join(migrationDir, 'migration.sql'),
+      await readFile(join(process.cwd(), 'prisma', 'migrations', boundaryMigration, 'migration.sql')),
+    );
+    const dbPath = join(dir, 'happier.sqlite');
+
+    await expect(applySqliteMigrationsFromEnvironment({
+      env: {
+        HAPPIER_SQLITE_MIGRATIONS_DIR: dir,
+        DATABASE_URL: `file:${dbPath}`,
+      },
+      dataDir: dir,
+    })).rejects.toThrow(/forward-recovery-capable updater/u);
+    expect(sqliteStore.has(dbPath)).toBe(false);
   });
 
   it('applySqliteMigrationsIfNeeded rejects checksum drift for already-applied migrations', async () => {

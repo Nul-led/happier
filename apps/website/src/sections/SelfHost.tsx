@@ -15,23 +15,21 @@ import { NodeJourney } from '../components/NodeJourney';
  *                                auto-update in the background."
  *   hstack/remote-server.mdx:86 "Auto-update is opt-in."
  * /enterprise already had this right (src/data/enterprise.ts). What the managed
- * relay runtime genuinely gives you is a service with a lifecycle —
- * `happier relay host status | start | stop | restart` — and an install command
- * that is also the update command
+ * generic relay runtime genuinely gives you is a service with a lifecycle and
+ * an install command that is also the update command
  * (deployment/self-host-runtime.mdx:36-49, advanced/updates.mdx:185-199).
  * "Set it and forget it" was an unverifiable flourish besides, which the
  * anti-polish rule rules out on its own.
  */
-const INSTALL_CMD = 'happier relay host install';
-const STATUS_CMD = 'happier relay host status';
+const INSTALL_CMD = 'happier home create';
 
 export const SELF_HOST_TERMINAL_LINES = [
     { prompt: true, text: INSTALL_CMD },
     { prompt: false, text: '✓ Server installed' },
-    { prompt: false, text: '✓ Web UI configured' },
-    { prompt: false, text: '✓ Relay service started' },
+    { prompt: false, text: '✓ Personal Home created' },
+    { prompt: false, text: '✓ Iroh reachability published' },
     { prompt: false, text: '' },
-    { prompt: true, text: STATUS_CMD },
+    { prompt: false, text: 'Next: happier home pair-device' },
 ] as const;
 
 /*

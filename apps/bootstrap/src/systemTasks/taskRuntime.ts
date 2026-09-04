@@ -29,12 +29,16 @@ export async function runCommandCapture(params: Readonly<{
   args: readonly string[];
   env?: NodeJS.ProcessEnv;
   timeoutMs?: number;
+  stdinText?: string;
 }>): Promise<CommandExecutionResult> {
   return await new Promise((resolve, reject) => {
     const child = spawn(params.command, [...params.args], {
       env: params.env,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: [params.stdinText === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
     });
+    if (params.stdinText !== undefined) {
+      child.stdin?.end(params.stdinText);
+    }
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];
     let settled = false;
@@ -45,10 +49,10 @@ export async function runCommandCapture(params: Readonly<{
       reject(new Error(`Command timed out: ${params.command}`));
     }, Number.isFinite(params.timeoutMs) ? Math.max(1, Math.floor(params.timeoutMs as number)) : 60_000);
 
-    child.stdout.on('data', (chunk: Buffer | string) => {
+    child.stdout?.on('data', (chunk: Buffer | string) => {
       stdoutChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
     });
-    child.stderr.on('data', (chunk: Buffer | string) => {
+    child.stderr?.on('data', (chunk: Buffer | string) => {
       stderrChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
     });
     child.on('error', (error) => {

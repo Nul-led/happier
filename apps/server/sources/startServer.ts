@@ -63,7 +63,9 @@ import { stat } from 'node:fs/promises';
 import { resolveBoundServerListener, writeStartupReceiptFromEnvironment } from '@/app/runtime/startupReceipt';
 import { readPluginsFeatureEnv } from '@/app/features/catalog/readFeatureEnv';
 import {
+    beginHomeIrohEndpointStartup,
     ensureHomeIrohEndpoint,
+    markHomeIrohEndpointStartupUnavailable,
     stopHomeIrohEndpoint,
 } from '@/app/iroh/homeIrohEndpoint';
 import { verifyPersonalHomeExposureProof } from '@/app/iroh/personalHomeExposureProof';
@@ -159,13 +161,19 @@ export async function startServer(flavor: ServerFlavor): Promise<void> {
     process.env.HAPPY_SOCKET_ADAPTER = socketAdapter;
     process.env.HAPPIER_SOCKET_ADAPTER = socketAdapter;
 
+    if (flavor === 'light' && process.env.HAPPIER_MANAGED_RELAY_PURPOSE === 'personal-home') {
+        // Admission is independent of database/files backends. A retained operation marker must
+        // block PostgreSQL/S3 configurations before any backend, listener, or Iroh owner opens.
+        await assertPersonalHomeBootAdmission(
+            resolvePersonalHomeRuntimeLayout({ env: process.env }),
+            { kind: 'ordinary', startupNonce: process.env.HAPPIER_SERVER_STARTUP_RECEIPT_NONCE },
+        );
+    }
+
     const shouldApplyLocalDefaults = filesBackend === 'local' || dbProvider === 'pglite' || dbProvider === 'sqlite';
     if (shouldApplyLocalDefaults) {
         applyLightDefaultEnv(process.env);
         applyPackagedLightRuntimeSqliteDefaults(process.env);
-        if (flavor === 'light' && process.env.HAPPIER_MANAGED_RELAY_PURPOSE === 'personal-home') {
-            await assertPersonalHomeBootAdmission(resolvePersonalHomeRuntimeLayout({ env: process.env }));
-        }
         await ensureHandyMasterSecret(process.env);
     }
 
@@ -394,9 +402,17 @@ export async function startServer(flavor: ServerFlavor): Promise<void> {
             // Best-effort: infer a canonical public URL so capabilities.server can advertise it.
             // This is cached and single-flight so startup does not spawn redundant inference processes.
             void resolveCachedPublicServerUrl(process.env).catch(() => null);
+            const shouldPreparePersonalHomeIroh = flavor === 'light'
+                && process.env.HAPPIER_MANAGED_RELAY_PURPOSE === 'personal-home';
+            if (shouldPreparePersonalHomeIroh) {
+                // Close the descriptor-publication retirement window before
+                // HTTP can answer its first features request.
+                beginHomeIrohEndpointStartup();
+            }
+            const homeConnectionDescriptorContinuityStore =
+                createHomeConnectionDescriptorContinuityStoreForServer(process.env);
             const api = await startApi({
-                homeConnectionDescriptorContinuityStore:
-                    createHomeConnectionDescriptorContinuityStoreForServer(process.env),
+                homeConnectionDescriptorContinuityStore,
             });
             apiListenerOwner = api;
             const listener = resolveBoundServerListener(api);
@@ -412,15 +428,18 @@ export async function startServer(flavor: ServerFlavor): Promise<void> {
             // the ordinary HTTPS Home running; Iroh ingress shutdown is
             // registered with a priority ahead of api:socket/api:http.
             if (
-                flavor === 'light'
-                && process.env.HAPPIER_MANAGED_RELAY_PURPOSE === 'personal-home'
+                shouldPreparePersonalHomeIroh
                 && verifyPersonalHomeExposureProof({ env: process.env, listener })
+                && homeConnectionDescriptorContinuityStore
             ) {
                 onShutdown('iroh', () => stopHomeIrohEndpoint());
                 await ensureHomeIrohEndpoint({
                     env: process.env,
                     apiPort: listener?.port ?? null,
+                    continuityStore: homeConnectionDescriptorContinuityStore,
                 });
+            } else if (shouldPreparePersonalHomeIroh) {
+                markHomeIrohEndpointStartupUnavailable();
             }
         }
 

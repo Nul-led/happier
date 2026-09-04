@@ -81,7 +81,7 @@ export const PAGE_PROSE = {
         p2: "This is filed on its own rather than as a sixth entry in the list above, because it is a different kind of statement. The five conditions are requirements: meet them and the thing works. This one is the shape of the product, and no amount of meeting requirements changes it.",
         p3: "The eight facts that decide whether either thing works where you work. Three of them go to OpenAI. Those three are why the other five are worth reading.",
         p4: "None of these are a vendor remote doing its job badly. They are the things that only become possible once the client is not tied to one vendor’s agent.",
-        p5: "The other difference is where the conversation lives. A Happier account is end-to-end encrypted by default — the sync server holds ciphertext it cannot read — and <1>happier relay host install</1> puts the relay itself on hardware you own.",
+        p5: "The other difference is where the conversation lives. A Happier account is end-to-end encrypted by default — the sync server holds ciphertext it cannot read — and the 0.3 development preview can put your Personal Home on hardware you own with <1>happier home create</1>.",
         p6: "Codex has its own page here, with the install path, the auth model and the quirks — <1>Codex in Happier</1>. The same question, asked about Anthropic’s remote, is answered on <2>the Claude Code Remote Control page</2>.",
         p7: "Install on the computer that holds your code. Nothing on your phone matters until that computer is set up, which is why this is the first step rather than an app store badge.",
         p8: "Then <1>happier codex</1> in a repository. The session is on your phone from the moment it starts, and it is still in your terminal — <2>happier attach</2> puts you back in Codex’s own TUI without starting a second one.",
@@ -211,8 +211,8 @@ export const PAGE_PROSE = {
         p15: "It does not hold",
     },
     selfHost: {
-        p0: "Run the Happier relay server on your own infrastructure. Your data never leaves your network.",
-        p1: "Self-host",
+        p0: "In the 0.3 development preview, create a Personal Home on this computer or a trusted SSH host. Stable 0.2 keeps its released self-hosted Relay workflow.",
+        p1: "Self-host · 0.3 preview",
         p2: "Copy commands",
         p3: "Own the stack.\nStay independent.",
     },
@@ -276,7 +276,7 @@ export const PAGE_PROSE = {
         p2: "This is filed on its own rather than as a sixth entry in the list above, because it is a different kind of statement. The five conditions are switches: satisfy one and a feature you had stops working. This is the shape of the product.",
         p3: "The eight facts that decide whether either thing works where you work. Two of them Anthropic wins outright. Those two are why the other six are worth reading.",
         p4: "None of these are Remote Control doing its job badly. They are the things that only become possible once the client is not tied to one vendor’s agent.",
-        p5: "The other difference is where your conversation lives. Remote Control stores the session transcript on Anthropic servers while it is connected, per its documentation, and organisations under Zero Data Retention rules cannot enable it at all. Happier encrypts the transcript end to end by default, and <1>happier relay host install</1> puts the relay on hardware you own.",
+        p5: "The other difference is where your conversation lives. Remote Control stores the session transcript on Anthropic servers while it is connected, per its documentation, and organisations under Zero Data Retention rules cannot enable it at all. Happier encrypts the transcript end to end by default, and the 0.3 development preview can put your Personal Home on hardware you own with <1>happier home create</1>.",
         p6: "Each of the {length} agents has its own page — <1>start here</1>.",
         p7: "Install on the computer that holds your code. Nothing on your phone matters until that computer is set up, which is why this is the first step rather than an app store badge.",
         p8: "Claude Code Remote Control",
@@ -321,13 +321,13 @@ export const GET_STARTED_STEPS = [
         id: 'setup',
         title: 'Run setup',
         description:
-            'Signs you in and installs the background service that keeps this machine reachable while you are away from it.',
+            'Connects this computer to your Home, asks you to approve sign-in when needed, and installs the background service.',
     },
     {
         id: 'pair',
         title: 'Pair a device',
         description:
-            'happier auth login prints a QR code. Scan it with the app, or open the URL it prints in any browser.',
+            'Follow the interactive setup handoff. A 0.3 Personal Home can also start a fresh invite with happier home pair-device.',
     },
     {
         id: 'session',
@@ -341,19 +341,19 @@ export const GET_STARTED_STEPS = [
 export const SELF_HOST_HIGHLIGHTS = [
     {
         id: 'install',
-        title: 'One-command install',
-        description: 'Install the relay server with a single command. Docker or bare metal.',
+        title: 'Explicit Home creation',
+        description: 'Create a Personal Home locally or on a trusted SSH host through the same managed runtime and bootstrap.',
     },
     {
         id: 'operation',
-        title: 'Daily operation',
+        title: 'Stable Home identity',
         description:
-            'A managed service you start, stop and check with happier relay host status. Nothing on the host updates itself — you update by rerunning the install command, when you decide to.',
+            'Pair devices directly or link the Home to an Account Service for discovery. The Home remains the authority either way.',
     },
     {
         id: 'access',
-        title: 'Remote access',
-        description: 'Access your sessions from anywhere. SSH tunnels, Tailscale, or direct HTTPS.',
+        title: 'Iroh-first reachability',
+        description: 'A Personal Home can stay loopback-only and publish Iroh reachability. Public HTTPS ingress remains optional.',
     },
 ] as const;
 

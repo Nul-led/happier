@@ -188,7 +188,7 @@ export const FAQ_ITEMS: ReadonlyArray<FaqItem> = [
         a: [
             'Your code stays on your computer. The agent reads and writes files locally; what syncs is the conversation and the session state needed to show you the same session on another device.',
             'That sync is end-to-end encrypted by default: content is encrypted on your device and the server stores ciphertext it cannot read. Message ids, timestamps, device ids and session ids are metadata and are not encrypted. There is also an explicit plaintext mode for people who want server-readable content — it is opt-in, it is labelled, and it is not the default.',
-            'If you want none of it on someone else’s hardware, `happier relay host install` puts the relay on a computer you own, and the whole path becomes your device → your relay → your computer.',
+            'In the 0.3 development preview, `happier home create` creates a Personal Home on your computer (or `--ssh user@host` on a trusted remote computer), so the whole path stays on infrastructure you control. Stable 0.2 keeps the released self-hosted Relay workflow.',
         ],
     },
     {
@@ -210,8 +210,8 @@ export const FAQ_ITEMS: ReadonlyArray<FaqItem> = [
         id: 'server',
         q: 'Do I need a server?',
         a: [
-            'No. Install the CLI on the computer that runs your code, pair a device by QR, and you are done — Happier’s hosted relay does the rest at no cost.',
-            'Running your own relay is an option, not a requirement. `happier relay host install` sets it up as a managed service; there is also a Docker image and a runner. Bind it to localhost, your LAN, or the open internet, and reach it over Tailscale, an SSH tunnel or direct HTTPS.',
+            'You need a Home, but you do not need to operate one yourself. `happier setup` connects this computer to a Home discovered through your selected Account Service by default, then asks you to approve sign-in interactively.',
+            'In the 0.3 development preview, `happier home create` creates a Personal Home locally or over SSH. It can be reachable through Iroh without a public address. Stable 0.2 keeps the released Relay-oriented setup; `happier relay host install`, Docker, public ingress and direct HTTPS remain advanced operator options.',
         ],
     },
     {
@@ -346,7 +346,7 @@ export const FAQ_ITEMS: ReadonlyArray<FaqItem> = [
         id: 'workComputer',
         q: 'Can I use it on a work computer?',
         a: [
-            'Technically, easily: it is MIT-licensed source you can read before you run it, session content is end-to-end encrypted by default, and `happier relay host install` puts the relay inside your own network so no session content transits infrastructure you do not control. That covers most of what a security review asks.',
+            'Technically, easily: it is MIT-licensed source you can read before you run it, session content is end-to-end encrypted by default, and the 0.3 development preview can create a Personal Home inside your own network with `happier home create`. Stable 0.2 retains the released self-hosted Relay workflow. That covers much of what a security review asks.',
             'Organisationally, ask first. Your employer may have rules about what runs on the endpoint, and your provider agreement may have rules about connecting a work account to third-party tooling. Neither of those is a question a marketing page can answer for you — check them before you connect a work account, not after.',
         ],
     },

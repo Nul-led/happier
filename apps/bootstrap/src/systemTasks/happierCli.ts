@@ -28,6 +28,7 @@ export async function runLocalHappierJsonCommand(params: Readonly<{
   processEnv?: NodeJS.ProcessEnv;
   allowJsonFailure?: boolean;
   releaseRing?: PublicReleaseRingId;
+  stdinText?: string;
 }>): Promise<unknown> {
   const processEnv = params.processEnv ?? process.env;
   const command = await ensureLocalFirstPartyComponentCommand({
@@ -41,6 +42,7 @@ export async function runLocalHappierJsonCommand(params: Readonly<{
     command,
     args: params.args,
     env: processEnv,
+    stdinText: params.stdinText,
   }).catch((error: unknown) => {
     const message = error instanceof Error && error.message.trim()
       ? error.message.trim()

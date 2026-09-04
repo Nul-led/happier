@@ -87,6 +87,7 @@ const MANAGED_LIMA_GUEST_COMMANDS = Object.freeze([
   Object.freeze({ command: 'agent-browser', label: 'agent-browser' }),
   Object.freeze({ command: 'bun', label: 'Bun' }),
   Object.freeze({ command: 'gh', label: 'GitHub CLI (gh)' }),
+  Object.freeze({ command: 'go', label: 'Go' }),
   Object.freeze({ command: 'jq', label: 'jq' }),
 ]);
 
@@ -97,8 +98,9 @@ function guestToolchainHealthCommand({ nodeMajor, yarnVersion, mutagenVersion, a
       `command -v ${command} >/dev/null 2>&1 || { echo "${label} is required in the managed Lima guest" >&2; exit 127; }`
     )),
     ...MANAGED_LIMA_GUEST_COMMANDS
-      .filter(({ command }) => command !== 'yarn' && command !== 'mutagen' && command !== 'agent-browser' && command !== 'bun')
+      .filter(({ command }) => command !== 'yarn' && command !== 'mutagen' && command !== 'agent-browser' && command !== 'bun' && command !== 'go')
       .map(({ command }) => `${command} --version >/dev/null`),
+    'go version >/dev/null',
     `node --version | grep -Eq '^v?${nodeMajor}(\\.|$)' || { echo "Node.js ${nodeMajor} is required in the managed Lima guest" >&2; exit 1; }`,
     `yarn --version | grep -Fx '${yarnVersion}' >/dev/null || { echo "Yarn ${yarnVersion} is required in the managed Lima guest" >&2; exit 1; }`,
     `mutagen version | grep -Fx '${mutagenVersion}' >/dev/null || { echo "Mutagen ${mutagenVersion} is required in the managed Lima guest" >&2; exit 1; }`,

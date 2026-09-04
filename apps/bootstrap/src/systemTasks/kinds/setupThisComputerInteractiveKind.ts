@@ -107,6 +107,14 @@ function createInstrumentedRecipeExecutor(
 ): SetupMachineRecipeExecutor {
   const takeoverArgs = params.takeOverManualRelayRuntime === true ? ['--takeover'] : [];
   const commandInvoker = resolveCliInvokerNameForPublicRing(params.releaseRing ?? 'stable');
+  const requestAuthPairing = recipeExecutor.requestAuthPairing;
+  const waitForAuthPairing = recipeExecutor.waitForAuthPairing;
+  if (!requestAuthPairing || !waitForAuthPairing) {
+    throw new SystemTaskExecutionError(
+      'invalid_setup_executor',
+      'Local setup requires the canonical pairing request and wait operations.',
+    );
+  }
   return {
     ...recipeExecutor,
     async configureRelay(profile) {
@@ -149,7 +157,7 @@ function createInstrumentedRecipeExecutor(
           args: ['auth', 'request', '--json'],
         },
       });
-      return await recipeExecutor.requestAuthPairing();
+      return await requestAuthPairing();
     },
     async waitForAuthPairing(publicKey) {
       emitCommandDiagnostics(ctx, {
@@ -161,7 +169,7 @@ function createInstrumentedRecipeExecutor(
           details: publicKey ? 'Waiting for the local pairing request to be approved.' : undefined,
         },
       });
-      return await recipeExecutor.waitForAuthPairing(publicKey);
+      return await waitForAuthPairing(publicKey);
     },
     async approveAuthPairing(publicKey) {
       if (!recipeExecutor.approveAuthPairing) {

@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 
+function decodeBashSingleQuotedArgument(value: unknown): string {
+  const raw = String(value ?? '');
+  if (!raw.startsWith("'") || !raw.endsWith("'")) return raw;
+  return raw.slice(1, -1).replaceAll("'\"'\"'", "'");
+}
+
 const { copyLocalDirectoryToRemoteSyncMock, runRemoteTextSyncMock } = vi.hoisted(() => ({
   copyLocalDirectoryToRemoteSyncMock: vi.fn(),
   runRemoteTextSyncMock: vi.fn(),
@@ -10,7 +16,12 @@ vi.mock('@happier-dev/cli-common/ssh', async (importOriginal) => {
   return {
     ...actual,
     copyLocalDirectoryToRemoteSync: copyLocalDirectoryToRemoteSyncMock,
-    runRemoteTextSync: runRemoteTextSyncMock,
+    runOpenSshRemoteCommand: async (params: Parameters<typeof actual.runOpenSshRemoteCommand>[0]) => (
+      await runRemoteTextSyncMock({
+        ...params,
+        remoteCommand: decodeBashSingleQuotedArgument(params.remoteCommand[2]),
+      })
+    ),
   };
 });
 

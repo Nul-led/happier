@@ -7,9 +7,10 @@ import { parseSetupRepairThisComputerParams } from '@happier-dev/cli-common/syst
 import { TailscaleCommandError } from '@happier-dev/cli-common/tailscale';
 import { resolveHappyHomeDirFromEnvironment } from '@happier-dev/cli-common/agents';
 import type { RelayAccessExecutionContext } from '@happier-dev/cli-common/relayAccess';
+import { runOpenSshRemoteCommand, safeBashSingleQuote } from '@happier-dev/cli-common/ssh';
 import { SystemTaskJsonValueSchema, type SystemTaskJsonObject, type SystemTaskJsonValue } from '@happier-dev/protocol';
 
-import { buildScpCommand, buildSshCommand, redactSshText } from '../ssh/index.js';
+import { buildScpCommand, redactSshText } from '../ssh/index.js';
 
 import { runLocalHappierJsonCommand } from './happierCli.js';
 import { createSecureAccessTailscaleHandler } from './kinds/secureAccessTailscale.js';
@@ -37,7 +38,7 @@ import {
   waitForAuthPairing,
   waitForReadyDaemon,
 } from './localDaemonCli.js';
-import { approveLocalRemoteAuthRequestDefault, installRemoteCliDefault, resolveRemoteSshHostTrustDefault, runRemoteBootstrapCommandDefault } from './remoteSshBootstrapTasks.js';
+import { approveLocalRemoteAuthRequestDefault, createRemoteEnrollmentExecutorDefault, installRemoteCliDefault, resolveRemoteSshHostTrustDefault, runRemoteBootstrapCommandDefault } from './remoteSshBootstrapTasks.js';
 import {
   createRemoteSshPersonalHomeRelocationDestinationDefault,
   installRemoteCliForManageHostDefault,
@@ -663,6 +664,7 @@ function createRemoteSshBootstrapDeps(overrides: HsetupRegistryDeps['remoteSshBo
     resolveHostTrust: overrides?.resolveHostTrust ?? resolveRemoteSshHostTrustDefault,
     installRemoteCli: overrides?.installRemoteCli ?? installRemoteCliDefault,
     approveLocalAuthRequest: overrides?.approveLocalAuthRequest ?? approveLocalRemoteAuthRequestDefault,
+    createRemoteEnrollmentExecutor: overrides?.createRemoteEnrollmentExecutor ?? createRemoteEnrollmentExecutorDefault,
     runRemoteCommand: overrides?.runRemoteCommand ?? runRemoteBootstrapCommandDefault,
   };
 }
@@ -726,23 +728,21 @@ function createRelayAccessDeps(overrides?: Partial<RelayAccessDeps>): RelayAcces
     resolveHappyHomeDir: () => resolveHappyHomeDirFromEnvironment(process.env),
     ssh: {
       runRemoteText: async ({ ssh, remoteCommand }) => {
-        const invocation = buildSshCommand({
+        return await runOpenSshRemoteCommand({
           target: ssh.target,
           port: ssh.port,
-          auth: {
-            kind: ssh.auth,
-            identityFile: ssh.identityFile,
-            ...(ssh.auth === 'password' ? { password: ssh.password } : {}),
-          },
-          knownHosts: ssh.knownHostsPath ? { mode: 'app', path: ssh.knownHostsPath } : { mode: 'system' },
-          remoteCommand,
+          sshConfigFile: ssh.sshConfigFile,
+          auth: ssh.auth === 'keyfile'
+            ? { mode: 'keyFile', privateKeyPath: String(ssh.identityFile ?? '') }
+            : ssh.auth === 'password'
+              ? { mode: 'password', password: String(ssh.password ?? '') }
+              : { mode: 'agent' },
+          knownHostsMode: ssh.knownHostsPath ? 'app' : 'system',
+          knownHostsPath: ssh.knownHostsPath,
+          remoteCommand: ['bash', '-lc', safeBashSingleQuote(remoteCommand)],
+          rejectOnNonZero: false,
+          errorPrefix: `Relay access SSH command failed for ${ssh.target}`,
         });
-        const result = await runCommandCapture({
-          command: invocation.command,
-          args: invocation.args,
-          ...(invocation.env ? { env: invocation.env } : {}),
-        });
-        return result;
       },
       copyLocalFileToRemote: async ({ ssh, localPath, remotePath }) => {
         const invocation = buildScpCommand({
@@ -790,24 +790,21 @@ function createRelayAccessDeps(overrides?: Partial<RelayAccessDeps>): RelayAcces
         resolveCommandOnPath: (command: string) => command,
         runCommand: async ({ command, args, env, timeoutMs }: RunCommandParams): Promise<RunCommandResult> => {
           const remoteCommand = [command, ...args].map(shellQuote).join(' ');
-            const invocation = buildSshCommand({
+          const result = await runOpenSshRemoteCommand({
               target: ssh.target,
               port: ssh.port,
-              auth: {
-                kind: ssh.auth,
-                identityFile: ssh.identityFile,
-                ...(ssh.auth === 'password' ? { password: ssh.password } : {}),
-              },
-              knownHosts: ssh.knownHostsPath
-                ? { mode: 'app', path: ssh.knownHostsPath }
-                : { mode: 'system' },
-            remoteCommand,
-          });
-          const result = await runCommandCapture({
-            command: invocation.command,
-            args: invocation.args,
-            ...(invocation.env ? { env: invocation.env } : {}),
-            ...(timeoutMs ? { timeoutMs } : {}),
+              sshConfigFile: ssh.sshConfigFile,
+              auth: ssh.auth === 'keyfile'
+                ? { mode: 'keyFile', privateKeyPath: String(ssh.identityFile ?? '') }
+                : ssh.auth === 'password'
+                  ? { mode: 'password', password: String(ssh.password ?? '') }
+                  : { mode: 'agent' },
+              knownHostsMode: ssh.knownHostsPath ? 'app' : 'system',
+              knownHostsPath: ssh.knownHostsPath,
+              remoteCommand: ['bash', '-lc', safeBashSingleQuote(remoteCommand)],
+              timeoutMs,
+              rejectOnNonZero: false,
+              errorPrefix: `Relay access SSH command failed for ${ssh.target}`,
           });
           const structured = {
             command,
