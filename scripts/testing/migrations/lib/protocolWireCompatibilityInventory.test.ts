@@ -198,7 +198,8 @@ test('the authoritative protocol wire compatibility inventory pins canonical run
   assert.ok(entry.boundaryModules.includes('apps/cli/src/api/machine/rpcHandlers.sessions.ts'));
   assert.ok(entry.boundaryModules.includes('apps/cli/src/api/session/external/linking/ensureExternalSessionLink.ts'));
   assert.ok(entry.boundaryModules.includes('apps/cli/src/daemon/processSupervision/sessionRunnerRespawnDescriptor.ts'));
-  assert.ok(entry.boundaryModules.includes('apps/ui/sources/sync/ops/buildSessionHandoffMetadataPatch.ts'));
+  assert.ok(entry.boundaryModules.includes('apps/cli/src/daemon/actionOperations/createTrackedSessionHandoffCoordinator.ts'));
+  assert.ok(!entry.boundaryModules.includes('apps/ui/sources/sync/ops/buildSessionHandoffMetadataPatch.ts'));
   assert.ok(!entry.boundaryModules.includes('apps/ui/sources/sync/ops/sessionHandoffs.ts'));
   assert.ok(entry.boundaryModules.includes('apps/ui/sources/sync/domains/state/storageTypes.ts'));
   assert.ok(entry.proofTests.includes('packages/protocol/src/sessions/metadata/runtimeDescriptorV1.test.ts'));
@@ -209,7 +210,8 @@ test('the authoritative protocol wire compatibility inventory pins canonical run
   assert.ok(entry.proofTests.includes('apps/cli/src/rpc/handlers/spawnRuntimeSelection.test.ts'));
   assert.ok(entry.proofTests.includes('apps/cli/src/rpc/handlers/spawnSessionOptionsContract.test.ts'));
   assert.ok(entry.proofTests.includes('apps/cli/src/daemon/processSupervision/sessionRunnerRespawnDescriptor.test.ts'));
-  assert.ok(entry.proofTests.includes('apps/ui/sources/sync/ops/buildSessionHandoffMetadataPatch.test.ts'));
+  assert.ok(entry.proofTests.includes('apps/cli/src/daemon/actionOperations/createTrackedSessionHandoffCoordinator.test.ts'));
+  assert.ok(!entry.proofTests.includes('apps/ui/sources/sync/ops/buildSessionHandoffMetadataPatch.test.ts'));
   assert.ok(!entry.proofTests.includes('apps/ui/sources/sync/ops/sessionHandoffs.test.ts'));
   assert.ok(entry.proofTests.includes('apps/ui/sources/sync/domains/state/storageTypes.terminal.test.ts'));
 });

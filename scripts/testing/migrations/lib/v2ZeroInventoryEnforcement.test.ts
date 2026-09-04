@@ -9,7 +9,7 @@ import {
   enforceAcpSharedSessionCompatibilityAllowlist,
   enforceRetiredRuntimeAdapterAliasAbsence,
   enforceExecutionRunIntentProfileOwnerFence,
-  enforceExecutionRunBackendRegistryImportAllowlist,
+  enforceRetiredExecutionRunDescriptorRegistryAbsence,
   enforceTrackedV2ZeroReportFreshness,
   enforceSharedSessionCanonicalPlanBoundary,
   enforceSharedSessionRetirementSurfaceAllowlist,
@@ -26,6 +26,7 @@ import {
   formatV2ZeroInventoryMarkdown,
   type V2ZeroInventoryReport,
 } from './v2ZeroInventory.ts';
+import { enforceV2ZeroInventoryReport } from '../validateV2ZeroInventory.ts';
 
 const legacyRuntimeLoopAliasName = ['Runtime', 'For', 'Loop'].join('');
 const legacyBackendAliasName = ['Agent', 'Backend'].join('');
@@ -73,6 +74,49 @@ test('enforceV2ZeroInventoryBaseline fails when a category exceeds maxAllowedCou
   const result = enforceV2ZeroInventoryBaseline(report, { maxAllowedCounts: { 'shared-core-provider-branching': 1 } });
   assert.equal(result.ok, false);
   assert.ok(result.errors.join('\n').includes('shared-core-provider-branching: 2 > maxAllowed 1'));
+});
+
+test('the hard V2-zero gate uses the checked-in baseline without requiring ignored report snapshots', () => {
+  const rootDir = mkdtempSync(join(tmpdir(), 'happier-v2-zero-hard-gate-'));
+  const currentFiles = collectV2ZeroSourceFiles();
+  mkdirSync(join(rootDir, 'scripts/testing/migrations/baselines'), { recursive: true });
+  writeFileSync(
+    join(rootDir, 'scripts/testing/migrations/baselines/v2ZeroInventoryBaseline.json'),
+    `${JSON.stringify({ maxAllowedCounts: { 'static-ui-registry-consumers': 0 } }, null, 2)}\n`,
+    'utf8',
+  );
+  const cleanReport: V2ZeroInventoryReport = {
+    filesScanned: 0,
+    filesMatched: 0,
+    totalMatches: 0,
+    categories: [{
+      id: 'static-ui-registry-consumers',
+      title: 'Static UI registry consumers',
+      description: 'n/a',
+      migrationScaffold: 'n/a',
+      count: 0,
+      files: [],
+    }],
+  };
+
+  assert.deepEqual(enforceV2ZeroInventoryReport({
+    report: cleanReport,
+    files: currentFiles,
+    rootDir,
+  }), { ok: true, errors: [] });
+
+  const overBaseline = enforceV2ZeroInventoryReport({
+    report: {
+      ...cleanReport,
+      filesMatched: 1,
+      totalMatches: 1,
+      categories: [{ ...cleanReport.categories[0]!, count: 1, files: ['apps/ui/sources/plugins/staticRegistry.ts'] }],
+    },
+    files: currentFiles,
+    rootDir,
+  });
+  assert.equal(overBaseline.ok, false);
+  assert.match(overBaseline.errors.join('\n'), /static-ui-registry-consumers: 1 > maxAllowed 0/);
 });
 
 test('enforceV2ZeroInventoryBaseline keeps Voice V3-F contraction at hard zero and accepts a clean fixture', () => {
@@ -123,62 +167,59 @@ test('live V2-zero baseline matches the accepted bounded inventory ceilings that
   assert.equal(baseline.maxAllowedCounts['voice-v3-f-v2-media-residue'], 0);
 });
 
-test('enforceExecutionRunBackendRegistryImportAllowlist fails when a non-allowlisted production file imports it', () => {
-  const result = enforceExecutionRunBackendRegistryImportAllowlist([
+test('enforceRetiredExecutionRunDescriptorRegistryAbsence rejects every retired registry, factory, and descriptor type concept', () => {
+  const result = enforceRetiredExecutionRunDescriptorRegistryAbsence([
     {
       filePath: 'apps/cli/src/agent/runtime/registry/createCliBindings.ts',
       content: "import { getExecutionRunBackendDescriptor } from '@/agent/executionRuns/registry/executionRunBackendRegistry';",
     },
     {
-      filePath: 'apps/cli/src/agent/runtime/registry/sneaky.ts',
-      content: "import { getExecutionRunBackendDescriptor } from '@/agent/executionRuns/registry/executionRunBackendRegistry';",
+      filePath: 'apps/cli/src/agent/runtime/registry/createDescriptorBackend.ts',
+      content: 'export function createDescriptorBackend() {}',
     },
-  ]);
-
-  assert.equal(result.ok, false);
-  assert.ok(result.errors.join('\n').includes('apps/cli/src/agent/runtime/registry/sneaky.ts'));
-});
-
-test('enforceExecutionRunBackendRegistryImportAllowlist accepts createCliBindings as the compatibility owner', () => {
-  const result = enforceExecutionRunBackendRegistryImportAllowlist([
     {
-      filePath: 'apps/cli/src/agent/runtime/registry/createCliBindings.ts',
-      content: "import { getExecutionRunBackendDescriptor } from '@/agent/executionRuns/registry/executionRunBackendRegistry';",
-    },
-  ]);
-
-  assert.equal(result.ok, true);
-  assert.deepEqual(result.errors, []);
-});
-
-test('enforceExecutionRunBackendRegistryImportAllowlist rejects descriptor helper registry imports', () => {
-  const result = enforceExecutionRunBackendRegistryImportAllowlist([
-    {
-      filePath: 'apps/cli/src/agent/runtime/registry/createDescriptorExecutionRunBackend.ts',
-      content: "import { getExecutionRunBackendDescriptor } from '@/agent/executionRuns/registry/executionRunBackendRegistry';",
-    },
-  ]);
-
-  assert.equal(result.ok, false);
-  assert.ok(result.errors.join('\n').includes('createDescriptorExecutionRunBackend.ts'));
-});
-
-test('enforceExecutionRunBackendRegistryImportAllowlist fails when executionRunBackendRegistry regains inline non-review descriptors', () => {
-  const result = enforceExecutionRunBackendRegistryImportAllowlist([
-    {
-      filePath: 'apps/cli/src/agent/executionRuns/registry/executionRunBackendRegistry.ts',
+      filePath: 'apps/cli/src/agent/executionRuns/registry/executionRunBackendTypes.ts',
       content: `
-import type { ExecutionRunBackendDescriptor } from './executionRunBackendTypes';
+export interface ExecutionRunBackendDescriptor {}
+export type ExecutionRunBackendFactory = () => void;
+export type ExecutionRunBackendFactoryOptions = {};
+export type ExecutionRunBackendStartPreflight = () => void;
+`,
+    },
+    {
+      filePath: 'apps/cli/src/agent/runtime/bridges/executionRun/hostRuntime/descriptor.ts',
+      content: 'export function createDescriptorExecutionRunHostRuntime() {}',
+    },
+    {
+      filePath: 'apps/cli/src/agent/executionRuns/registry/resolve.ts',
+      content: 'export function getExecutionRunBackendFactory() {}',
+    },
+  ]);
 
-const REGISTRY: Record<string, ExecutionRunBackendDescriptor> = {
-  codex: { factory: () => null as any },
-};
+  assert.equal(result.ok, false);
+  assert.match(result.errors.join('\n'), /createCliBindings\.ts/);
+  assert.match(result.errors.join('\n'), /createDescriptorBackend\.ts/);
+  assert.match(result.errors.join('\n'), /executionRunBackendTypes\.ts/);
+  assert.match(result.errors.join('\n'), /hostRuntime\/descriptor\.ts/);
+  assert.match(result.errors.join('\n'), /registry\/resolve\.ts/);
+});
+
+test('enforceRetiredExecutionRunDescriptorRegistryAbsence ignores tests, comments, and the retained execution-run context types', () => {
+  const result = enforceRetiredExecutionRunDescriptorRegistryAbsence([
+    {
+      filePath: 'apps/cli/src/agent/executionRuns/registry/executionRunBackendRegistry.removal.test.ts',
+      content: "expect(existsSync('executionRunBackendRegistry.ts')).toBe(false);",
+    },
+    {
+      filePath: 'apps/cli/src/agent/executionRuns/registry/executionRunBackendTypes.ts',
+      content: `
+// ExecutionRunBackendDescriptor and createDescriptorBackend are retired.
+export type ExecutionRunBackendStartContext = Readonly<{ cwd: string }>;
 `,
     },
   ]);
 
-  assert.equal(result.ok, false);
-  assert.ok(result.errors.join('\n').includes('executionRunBackendRegistry'));
+  assert.deepEqual(result, { ok: true, errors: [] });
 });
 
 test('enforceRuntimeCoreSessionCommandRoutingNoLoadRun fails if a runtimeCore-backed backend session command uses loadRun', async () => {

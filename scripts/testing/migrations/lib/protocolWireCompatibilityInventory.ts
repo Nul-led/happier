@@ -353,8 +353,8 @@ export const PROTOCOL_WIRE_COMPATIBILITY_INVENTORY: readonly ProtocolWireCompati
       'apps/cli/src/rpc/handlers/spawnSessionOptionsContract.ts',
       'apps/cli/src/rpc/handlers/spawnRuntimeSelection.ts',
       'apps/cli/src/daemon/processSupervision/sessionRunnerRespawnDescriptor.ts',
+      'apps/cli/src/daemon/actionOperations/createTrackedSessionHandoffCoordinator.ts',
       'apps/ui/sources/sync/domains/state/storageTypes.ts',
-      'apps/ui/sources/sync/ops/buildSessionHandoffMetadataPatch.ts',
     ],
     proofTests: [
       'packages/protocol/src/backends/targets/backendTargetRefV2.test.ts',
@@ -367,8 +367,8 @@ export const PROTOCOL_WIRE_COMPATIBILITY_INVENTORY: readonly ProtocolWireCompati
       'apps/cli/src/rpc/handlers/spawnRuntimeSelection.test.ts',
       'apps/cli/src/rpc/handlers/spawnSessionOptionsContract.test.ts',
       'apps/cli/src/daemon/processSupervision/sessionRunnerRespawnDescriptor.test.ts',
+      'apps/cli/src/daemon/actionOperations/createTrackedSessionHandoffCoordinator.test.ts',
       'apps/ui/sources/sync/domains/state/storageTypes.terminal.test.ts',
-      'apps/ui/sources/sync/ops/buildSessionHandoffMetadataPatch.test.ts',
     ],
   },
   {

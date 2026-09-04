@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 
 import {
   AccountDirectoryHomesResponseV1Schema,
@@ -12,14 +13,28 @@ import {
 } from '@happier-dev/protocol';
 import * as privacyKit from 'privacy-kit';
 import tweetnacl from 'tweetnacl';
+import {
+  Agent as UndiciAgent,
+  getGlobalDispatcher,
+  setGlobalDispatcher,
+  type Dispatcher,
+} from 'undici';
 import { afterAll, describe, expect, it } from 'vitest';
 
 import { createTestAuth } from '../../src/testkit/auth';
 import { fetchJson } from '../../src/testkit/http';
+import {
+  startHttpRequestRecordingProxy,
+  type HttpRequestRecordingProxy,
+} from '../../src/testkit/httpRequestRecordingProxy';
 import { reserveAvailablePort } from '../../src/testkit/network/reserveAvailablePort';
 import { startFakeGitHubOAuthServer, type StopFn } from '../../src/testkit/oauth/fakeGithubOAuthServer';
 import { startServerLight, type StartedServer } from '../../src/testkit/process/serverLight';
 import { createRunDirs } from '../../src/testkit/runDir';
+import {
+  createEphemeralTlsServerFixture,
+  type EphemeralTlsServerFixture,
+} from '../../src/testkit/tls/ephemeralTlsServerFixture.mjs';
 
 const run = createRunDirs({ runLabel: 'core' });
 
@@ -99,12 +114,20 @@ async function acquireGitHubOAuthToken(params: Readonly<{
 describe('core e2e: Account Directory enrollment survives Account Service outage', () => {
   let accountService: StartedServer | null = null;
   let home: StartedServer | null = null;
+  let homeIngress: HttpRequestRecordingProxy | null = null;
   let stopOAuth: StopFn | null = null;
+  let tlsFixture: EphemeralTlsServerFixture | null = null;
+  let exactCaDispatcher: UndiciAgent | null = null;
+  let previousDispatcher: Dispatcher | null = null;
 
   afterAll(async () => {
     await accountService?.stop().catch(() => {});
     await home?.stop().catch(() => {});
+    await homeIngress?.stop().catch(() => {});
     await stopOAuth?.().catch(() => {});
+    if (previousDispatcher) setGlobalDispatcher(previousDispatcher);
+    await exactCaDispatcher?.close().catch(() => {});
+    await tlsFixture?.cleanup().catch(() => {});
   });
 
   it('redeems a restricted Directory session into an independent Home credential', async () => {
@@ -138,14 +161,36 @@ describe('core e2e: Account Directory enrollment survives Account Service outage
         GITHUB_API_USER_URL: `${oauth.baseUrl}/user`,
       },
     });
+    const homePort = await reserveAvailablePort();
+    const homeInternalBaseUrl = `http://127.0.0.1:${homePort}`;
+    tlsFixture = await createEphemeralTlsServerFixture();
+    const [tlsKey, tlsCert, tlsCa] = await Promise.all([
+      readFile(tlsFixture.privateKeyPath),
+      readFile(tlsFixture.leafCertificatePath),
+      readFile(tlsFixture.caCertificatePath),
+    ]);
+    homeIngress = await startHttpRequestRecordingProxy({
+      targetBaseUrl: homeInternalBaseUrl,
+      tls: { key: tlsKey, cert: tlsCert },
+    });
+    const homeBaseUrl = homeIngress.baseUrl;
     home = await startServerLight({
       testDir: `${testDir}/home`,
       dbProvider: 'sqlite',
+      __portAllocator: async () => homePort,
       extraEnv: {
         HAPPIER_SERVER_IDENTITY_ID: 'srv_accountDirectoryHomeE2eA1',
+        HAPPIER_PUBLIC_SERVER_URL: homeBaseUrl,
+        HAPPIER_CANONICAL_SERVER_URL: homeBaseUrl,
         HAPPIER_HOME_DEVICE_APPROVAL_REQUIRED: '0',
       },
     });
+
+    // Keep startServerLight's readiness probe on the internal HTTP listener, then scope every
+    // client-facing Home request to the fixture CA and published HTTPS ingress.
+    previousDispatcher = getGlobalDispatcher();
+    exactCaDispatcher = new UndiciAgent({ connect: { ca: tlsCa } });
+    setGlobalDispatcher(exactCaDispatcher);
 
     const accountServiceFeaturesResponse = await fetchJson<unknown>(`${accountService.baseUrl}/v1/features`);
     expect(accountServiceFeaturesResponse.status).toBe(200);
@@ -157,7 +202,7 @@ describe('core e2e: Account Directory enrollment survives Account Service outage
     expect(directoryCapability?.homeDirectory).toBe(true);
     expect(directoryCapability?.homeEnrollment).toBe(true);
 
-    const homeFeaturesResponse = await fetchJson<unknown>(`${home.baseUrl}/v1/features`);
+    const homeFeaturesResponse = await fetchJson<unknown>(`${homeBaseUrl}/v1/features`);
     expect(homeFeaturesResponse.status).toBe(200);
     const homeFeatures = FeaturesResponseSchema.parse(homeFeaturesResponse.data);
     const homeIdentity = homeFeatures.capabilities.serverIdentity?.serverIdentityId;
@@ -175,9 +220,9 @@ describe('core e2e: Account Directory enrollment survives Account Service outage
 
     const accountB = await createTestAuth(accountService.baseUrl);
 
-    const homeAccount = await createTestAuth(home.baseUrl);
+    const homeAccount = await createTestAuth(homeBaseUrl);
     const linkResponse = await fetchJson<unknown>(
-      `${home.baseUrl}/v1/account/directory-links/${accountServiceIdentity}`,
+      `${homeBaseUrl}/v1/account/directory-links/${accountServiceIdentity}`,
       {
         method: 'PUT',
         headers: { ...bearer(homeAccount.token), 'Content-Type': 'application/json' },
@@ -195,9 +240,9 @@ describe('core e2e: Account Directory enrollment survives Account Service outage
     const descriptor = HomeConnectionDescriptorV1Schema.parse({
       v: 1,
       homeServerIdentityId: homeIdentity,
-      canonicalServerUrl: home.baseUrl,
+      canonicalServerUrl: homeBaseUrl,
       revision: 1,
-      endpoints: [{ kind: 'https', url: home.baseUrl }],
+      endpoints: [{ kind: 'https', url: homeBaseUrl }],
     });
     const directoryPutResponse = await fetchJson<unknown>(
       `${accountService.baseUrl}/v1/account-directory/homes/${homeIdentity}`,
@@ -272,7 +317,7 @@ describe('core e2e: Account Directory enrollment survives Account Service outage
     expect(assertion.audienceHomeServerIdentityId).toBe(homeIdentity);
     expect(assertion.clientBoxPublicKeyBase64).toBe(clientBoxPublicKeyBase64);
 
-    const redemptionResponse = await fetchJson<unknown>(`${home.baseUrl}/v1/auth/home-login`, {
+    const redemptionResponse = await fetchJson<unknown>(`${homeBaseUrl}/v1/auth/home-login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ v: 1, assertion }),
@@ -294,7 +339,7 @@ describe('core e2e: Account Directory enrollment survives Account Service outage
     const homeToken = credentialRecord.token;
     expect(typeof homeToken).toBe('string');
 
-    const homeBeforeOutage = await fetchJson<unknown>(`${home.baseUrl}/v1/account/profile`, {
+    const homeBeforeOutage = await fetchJson<unknown>(`${homeBaseUrl}/v1/account/profile`, {
       headers: bearer(homeToken as string),
     });
     expect(homeBeforeOutage.status).toBe(200);
@@ -302,7 +347,7 @@ describe('core e2e: Account Directory enrollment survives Account Service outage
     await accountService.stop();
     accountService = null;
 
-    const homeAfterOutage = await fetchJson<unknown>(`${home.baseUrl}/v1/account/profile`, {
+    const homeAfterOutage = await fetchJson<unknown>(`${homeBaseUrl}/v1/account/profile`, {
       headers: bearer(homeToken as string),
     });
     expect(homeAfterOutage.status).toBe(200);

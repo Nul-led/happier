@@ -744,8 +744,8 @@ test.describe('ui e2e: session handoff from header action menu via direct peer',
       await selectMachineForHandoff(page, targetMachineId);
       await enableWorkspaceTransferForHandoff(page);
       await page.getByTestId('session-handoff-workspace-transfer-strategy-trigger').click();
-      await expect(page.getByTestId('dropdown-option-sync_changes')).toHaveCount(1, { timeout: 60_000 });
-      await page.getByTestId('dropdown-option-sync_changes').click();
+      await expect(page.getByTestId('dropdown-option-keep_synced')).toHaveCount(1, { timeout: 60_000 });
+      await page.getByTestId('dropdown-option-keep_synced').click();
       await page.getByTestId('session-handoff-start').click();
       await expect(page.getByTestId('web-modal-confirm')).toHaveCount(1, { timeout: 60_000 });
       await page.getByTestId('web-modal-confirm').click();
@@ -963,8 +963,8 @@ test.describe('ui e2e: session handoff from header action menu via forced server
     await selectMachineForHandoff(page, targetMachineId);
     await enableWorkspaceTransferForHandoff(page);
     await page.getByTestId('session-handoff-workspace-transfer-strategy-trigger').click();
-    await expect(page.getByTestId('dropdown-option-sync_changes')).toHaveCount(1, { timeout: 60_000 });
-    await page.getByTestId('dropdown-option-sync_changes').click();
+    await expect(page.getByTestId('dropdown-option-keep_synced')).toHaveCount(1, { timeout: 60_000 });
+    await page.getByTestId('dropdown-option-keep_synced').click();
     await page.getByTestId('session-handoff-start').click();
     await expect(page.getByTestId('web-modal-confirm')).toHaveCount(1, { timeout: 60_000 });
     await page.getByTestId('web-modal-confirm').click();

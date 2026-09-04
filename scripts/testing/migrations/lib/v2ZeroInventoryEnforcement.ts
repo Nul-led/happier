@@ -141,54 +141,22 @@ export function enforceV2ZeroInventoryBaseline(report: V2ZeroInventoryReport, ba
   return { ok: errors.length === 0, errors };
 }
 
-export function enforceExecutionRunBackendRegistryImportAllowlist(files: readonly InventoryFile[]): V2ZeroInventoryEnforcementResult {
-  const importPattern = /\bfrom\s+['"][^'"]*executionRunBackendRegistry[^'"]*['"]/;
-  const allowed = new Set<string>([
-    'apps/cli/src/agent/runtime/registry/createCliBindings.ts',
-    'apps/cli/src/agent/executionRuns/registry/executionRunBackendRegistry.ts',
-  ]);
-
+export function enforceRetiredExecutionRunDescriptorRegistryAbsence(files: readonly InventoryFile[]): V2ZeroInventoryEnforcementResult {
+  const retiredConceptPattern = /\b(?:executionRunBackendRegistry|ExecutionRunBackendDescriptor|ExecutionRunBackendFactoryOptions|ExecutionRunBackendFactory|ExecutionRunBackendStartPreflight|resolveExecutionRunBackendDescriptor|resolveExecutionRunBackendFactory|getExecutionRunBackendDescriptor|getExecutionRunBackendFactory|createDescriptorBackend|createDescriptorExecutionRunHostRuntime)\b/;
   const offenders = files
-    .filter((file) => importPattern.test(file.content))
+    .filter((file) => isProductionTypeScriptFile(file.filePath))
+    .filter((file) => retiredConceptPattern.test(stripCommentsOnly(file.content)))
     .map((file) => file.filePath)
-    .filter((filePath) => !allowed.has(filePath))
     .sort((left, right) => left.localeCompare(right));
 
-  const errors: string[] = [];
-  if (offenders.length > 0) {
-    errors.push(
-      '- executionRunBackendRegistry import must remain compatibility-only and stay within the allowlist:',
+  if (offenders.length === 0) return { ok: true, errors: [] };
+  return {
+    ok: false,
+    errors: [
+      '- retired execution-run descriptor registry, factory, and descriptor type concepts must remain absent from production source:',
       ...offenders.map((filePath) => `  - ${filePath}`),
-    );
-  }
-
-  // Stop-the-line: the legacy execution-run backend registry must remain review-engine-only.
-  //
-  // Concrete enforcement: the REGISTRY object literal must remain empty; review engines are added
-  // via the listNativeReviewEngineDescriptors() loop in the module.
-  const registryFile = files.find((file) =>
-    file.filePath === 'apps/cli/src/agent/executionRuns/registry/executionRunBackendRegistry.ts'
-  );
-  if (registryFile) {
-    const match = /const\s+REGISTRY\s*:[^=]*=\s*\{([\s\S]*?)\n\};/m.exec(registryFile.content);
-    if (match) {
-      const raw = match[1] ?? '';
-      const withoutBlockComments = raw.replace(/\/\*[\s\S]*?\*\//g, '');
-      const withoutLineComments = withoutBlockComments.replace(/^\s*\/\/.*$/gm, '');
-      if (withoutLineComments.trim().length > 0) {
-        errors.push(
-          '- executionRunBackendRegistry must not define inline descriptors (review engines are the only allowed entries):',
-          '  - apps/cli/src/agent/executionRuns/registry/executionRunBackendRegistry.ts',
-        );
-      }
-    }
-  }
-
-  if (errors.length === 0) {
-    return { ok: true, errors: [] };
-  }
-
-  return { ok: false, errors };
+    ],
+  };
 }
 
 export function enforceRuntimeCoreSessionCommandRoutingNoLoadRun(files: readonly InventoryFile[]): V2ZeroInventoryEnforcementResult {

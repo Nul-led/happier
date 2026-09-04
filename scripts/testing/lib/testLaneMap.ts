@@ -371,6 +371,9 @@ export function classifyTestFile(context: TestLaneContext, relativePath: string)
 
   if (relativePath.startsWith('apps/ui/')) {
     if (/^apps\/ui\/scripts\/qa\/.+\.native-e2e\.test\.[cm]?[jt]s$/.test(relativePath)) return 'test:e2e:desktop:native';
+    if (relativePath === 'apps/ui/tools/iroh/browserMachineTransferJourney.test.mjs') {
+      return 'test:home-iroh:real';
+    }
     if (!UI_VITEST_COVERED_RE.test(relativePath)) {
       // The UI vitest configs include only `sources/**` and `tools/**` TypeScript. A `.mjs` file, or
       // anything under `scripts/**` / `plugins/**`, runs only where the package `test` chain names

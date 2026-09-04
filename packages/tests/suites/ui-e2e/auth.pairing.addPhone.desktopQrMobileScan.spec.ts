@@ -13,6 +13,7 @@ import { installAuthBootstrapStorageSnapshot, type AuthBootstrapStorageSnapshot 
 import { secretBearingBrowserCapturePolicy } from '../../src/testkit/uiE2e/secretBearingBrowserCapture';
 import { gotoDomContentLoadedWithRetries, normalizeLoopbackBaseUrl } from '../../src/testkit/uiE2e/pageNavigation';
 import { resolveCanonicalServerIdForUi } from '../../src/testkit/uiE2e/sessionFoldersDrag';
+import { canonicalizeServerUrlForUiWeb, scopedUiStorageId } from '../../src/testkit/uiE2e/uiWebStorageContract';
 import { waitForInitialAppUi } from '../../src/testkit/uiE2e/waitForInitialAppUi';
 
 const run = createRunDirs({ runLabel: 'ui-e2e' });
@@ -36,6 +37,11 @@ type BrowserHomeState = Readonly<{
 type StoredCredentials = Readonly<{
   storageKey: string;
   value: Readonly<Record<string, unknown>>;
+}>;
+type ServerProfileDiagnostic = Readonly<{
+  id: string | null;
+  serverIdentityId: string | null;
+  source: string | null;
 }>;
 
 /**
@@ -184,29 +190,24 @@ async function openAuthenticatedPage(params: Readonly<{
 }
 
 async function readHomeState(page: Page): Promise<BrowserHomeState> {
-  return await page.evaluate(() => {
-    const states: Array<Record<string, unknown>> = [];
+  const serverStateStorageKey = `${scopedUiStorageId('server-profiles', storageScope)}:server-state-v1`;
+  return await page.evaluate((storageKey) => {
     const credentialsByKey: Record<string, string> = {};
     for (let index = 0; index < window.localStorage.length; index += 1) {
       const key = window.localStorage.key(index);
       if (!key) continue;
       const raw = window.localStorage.getItem(key);
       if (!raw) continue;
-      if (key.includes('server-state-v1')) {
-        try {
-          states.push(JSON.parse(raw) as Record<string, unknown>);
-        } catch {
-          // Ignore unrelated malformed compatibility state.
-        }
-      }
       if (key === 'auth_credentials' || key.includes('auth_credentials__srv_')) {
         credentialsByKey[key] = raw;
       }
     }
+    const rawState = window.localStorage.getItem(storageKey);
+    const state = rawState ? JSON.parse(rawState) as Record<string, unknown> : null;
     const sessionActiveServerId = window.sessionStorage.getItem('activeServerId');
-    const state = states.find((candidate) => candidate.activeServerId === sessionActiveServerId) ?? states[0] ?? null;
     const servers = state?.servers && typeof state.servers === 'object' ? state.servers as Record<string, unknown> : {};
-    const activeServerId = typeof state?.activeServerId === 'string' ? state.activeServerId : sessionActiveServerId;
+    const activeServerId = sessionActiveServerId?.trim()
+      || (typeof state?.activeServerId === 'string' ? state.activeServerId : null);
     return {
       activeServerId,
       homeViewState: state?.homeViewState ?? null,
@@ -214,6 +215,23 @@ async function readHomeState(page: Page): Promise<BrowserHomeState> {
       profiles: servers,
       credentialsByKey,
     };
+  }, serverStateStorageKey);
+}
+
+async function readUnscopedServerProfileDiagnostics(page: Page): Promise<readonly ServerProfileDiagnostic[]> {
+  return await page.evaluate(() => {
+    const rawState = window.localStorage.getItem('server-profiles:server-state-v1');
+    if (!rawState) return [];
+    const state = JSON.parse(rawState) as { servers?: unknown };
+    if (!state.servers || typeof state.servers !== 'object') return [];
+    return Object.values(state.servers as Record<string, unknown>).map((candidate) => {
+      const profile = candidate && typeof candidate === 'object' ? candidate as Record<string, unknown> : {};
+      return {
+        id: typeof profile.id === 'string' ? profile.id : null,
+        serverIdentityId: typeof profile.serverIdentityId === 'string' ? profile.serverIdentityId : null,
+        source: typeof profile.source === 'string' ? profile.source : null,
+      };
+    });
   });
 }
 
@@ -293,12 +311,13 @@ async function produceTrustedHomeQrInviteLink(params: Readonly<{
   expect(pairingUrl.searchParams.has('pairId')).toBe(false);
   expect(pairingUrl.searchParams.has('secret')).toBe(false);
   const invite = parseHomeQrInviteV2Payload(pairingUrl.searchParams.get('payload') ?? '', { nowMs: Date.now() });
+  const canonicalServerUrl = canonicalizeServerUrlForUiWeb(params.home.server.baseUrl);
   expect(invite).toMatchObject({
     v: 2,
     intent: 'home_device',
-    home: { homeServerIdentityId: params.home.serverIdentityId, canonicalServerUrl: params.home.server.baseUrl },
+    home: { homeServerIdentityId: params.home.serverIdentityId, canonicalServerUrl },
   });
-  expect(invite?.home.endpoints).toContainEqual({ kind: 'https', url: params.home.server.baseUrl });
+  expect(invite?.home.endpoints).toContainEqual({ kind: 'https', url: canonicalServerUrl });
   expect(Buffer.from(invite?.qrSecretBase64Url ?? '', 'base64url')).toHaveLength(32);
   return pairingLinkRaw;
 }
@@ -389,10 +408,26 @@ async function runEnrollmentScenario(params: Readonly<{
     expect([401, 403]).toContain(sameTokenAtHomeA.status);
 
     const homeAAfter = await readHomeState(joiningPage);
-    expect(Object.values(homeAAfter.profiles)).toContainEqual(expect.objectContaining({
-      serverIdentityId: params.homeB.serverIdentityId,
-      source: 'qr',
-    }));
+    try {
+      expect(Object.values(homeAAfter.profiles)).toContainEqual(expect.objectContaining({
+        serverIdentityId: params.homeB.serverIdentityId,
+        source: 'qr',
+      }));
+    } catch (error) {
+      const summarize = (profiles: Readonly<Record<string, unknown>>): readonly ServerProfileDiagnostic[] => Object.values(profiles).map((candidate) => {
+        const profile = candidate && typeof candidate === 'object' ? candidate as Record<string, unknown> : {};
+        return {
+          id: typeof profile.id === 'string' ? profile.id : null,
+          serverIdentityId: typeof profile.serverIdentityId === 'string' ? profile.serverIdentityId : null,
+          source: typeof profile.source === 'string' ? profile.source : null,
+        };
+      });
+      throw new Error([
+        'Home B was not observed in the canonical scoped server-profile state.',
+        `Scoped profiles: ${JSON.stringify(summarize(homeAAfter.profiles))}`,
+        `Unscoped profiles: ${JSON.stringify(await readUnscopedServerProfileDiagnostics(joiningPage))}`,
+      ].join('\n'), { cause: error });
+    }
     expect(homeAAfter.activeServerId).toBe(homeABefore.activeServerId);
     expect(homeAAfter.homeViewState).toEqual(homeABefore.homeViewState);
     expect(homeAAfter.activeProfile).toEqual(homeABefore.activeProfile);
@@ -403,7 +438,8 @@ async function runEnrollmentScenario(params: Readonly<{
     await expect.poll(() => enrollmentRequests.map((url) => url.pathname), { timeout: 30_000 })
       .toEqual(expect.arrayContaining([...REQUIRED_ENROLLMENT_PATHS]));
     expect(enrollmentRequests.map((url) => url.pathname)).not.toContain('/v1/auth/pairing/consume');
-    for (const requestUrl of enrollmentRequests) expect(requestUrl.origin).toBe(params.homeB.server.baseUrl);
+    const canonicalHomeBUrl = canonicalizeServerUrlForUiWeb(params.homeB.server.baseUrl);
+    for (const requestUrl of enrollmentRequests) expect(requestUrl.origin).toBe(canonicalHomeBUrl);
   } finally {
     await homeBContext?.close().catch(() => {});
     await homeAContext?.close().catch(() => {});
@@ -487,8 +523,16 @@ async function runWelcomeEntryScenario(params: Readonly<{
       });
       expect([401, 403]).toContain(sameTokenAtForeignHome.status);
 
-      // Persisted identity truth, not router navigation: server-state-v1 must hold the
-      // scanned Home B as the focused Home and as the active profile.
+      // Canonical browser selection truth, not router navigation: the tab-local
+      // selection must resolve the persisted scanned Home B as the active profile.
+      await expect.poll(
+        async () => {
+          const state = await readHomeState(joiningPage);
+          const activeProfile = state.activeProfile as { serverIdentityId?: unknown } | null;
+          return activeProfile?.serverIdentityId ?? null;
+        },
+        { timeout: 120_000 },
+      ).toBe(params.homeB.serverIdentityId);
       const homeState = await readHomeState(joiningPage);
       const adoptedEntries = Object.entries(homeState.profiles).filter(([, profile]) => {
         const candidate = profile as { serverIdentityId?: unknown } | null;
@@ -500,8 +544,19 @@ async function runWelcomeEntryScenario(params: Readonly<{
       expect(homeState.activeServerId).toBe(bLocalId);
       expect(homeState.activeProfile).toMatchObject({ serverIdentityId: params.homeB.serverIdentityId });
 
-      // The authenticated shell opened focused on Home B (stable shell test id).
-      await expect(joiningPage.getByTestId('nav-new-session')).toBeVisible({ timeout: 120_000 });
+      // The authenticated shell opened focused on Home B. The joining page is
+      // phone-sized, so accept the responsive header action as well as the
+      // desktop sidebar action.
+      await expect.poll(async () => {
+        for (const testId of [
+          'main-header-start-new-session',
+          'home-header-start-new-session',
+          'nav-new-session',
+        ] as const) {
+          if (await joiningPage.getByTestId(testId).first().isVisible().catch(() => false)) return true;
+        }
+        return false;
+      }, { timeout: 120_000 }).toBe(true);
 
       // Destination binding: every enrollment request — including the trusted completer's —
       // targeted Home B. The build's configured default endpoint received no enrollment
@@ -509,8 +564,9 @@ async function runWelcomeEntryScenario(params: Readonly<{
       await expect.poll(() => enrollmentRequests.map((url) => url.pathname), { timeout: 30_000 })
         .toEqual(expect.arrayContaining([...REQUIRED_ENROLLMENT_PATHS]));
       expect(enrollmentRequests.map((url) => url.pathname)).not.toContain('/v1/auth/pairing/consume');
+      const canonicalHomeBUrl = canonicalizeServerUrlForUiWeb(params.homeB.server.baseUrl);
       for (const requestUrl of enrollmentRequests) {
-        expect(requestUrl.origin).toBe(params.homeB.server.baseUrl);
+        expect(requestUrl.origin).toBe(canonicalHomeBUrl);
       }
       const foreignScopeFragment = credentialStorageScopeFragment(params.foreignHome.serverIdentityId);
       for (const key of Object.keys(homeState.credentialsByKey)) {

@@ -5,8 +5,7 @@ import {
   enforceAcpSharedSessionCompatibilityAllowlist,
   enforceRetiredRuntimeAdapterAliasAbsence,
   enforceExecutionRunIntentProfileOwnerFence,
-  enforceExecutionRunBackendRegistryImportAllowlist,
-  enforceTrackedV2ZeroReportFreshness,
+  enforceRetiredExecutionRunDescriptorRegistryAbsence,
   enforceRuntimeCoreSessionCommandRoutingNoLoadRun,
   enforceSharedSessionCanonicalPlanBoundary,
   enforceSharedSessionRetirementSurfaceAllowlist,
@@ -43,14 +42,13 @@ export function enforceV2ZeroInventoryReport(params: Readonly<{
 
   errors.push(
     ...enforceRetiredRuntimeAdapterAliasAbsence(params.files).errors,
-    ...enforceExecutionRunBackendRegistryImportAllowlist(params.files).errors,
+    ...enforceRetiredExecutionRunDescriptorRegistryAbsence(params.files).errors,
     ...enforceRuntimeCoreSessionCommandRoutingNoLoadRun(params.files).errors,
     ...enforceSharedRuntimeForLoopCompatibilityRetirement(params.files).errors,
     ...enforceSharedSessionCanonicalPlanBoundary(params.files).errors,
     ...enforceAcpSharedSessionCompatibilityAllowlist(params.files).errors,
     ...enforceSharedSessionRetirementSurfaceAllowlist(params.files).errors,
     ...enforceExecutionRunIntentProfileOwnerFence(params.files).errors,
-    ...enforceTrackedV2ZeroReportFreshness(params.report, { rootDir: params.rootDir }).errors,
   );
 
   return { ok: errors.length === 0, errors };

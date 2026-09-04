@@ -2,6 +2,7 @@ import { afterAll, afterEach, describe, expect, it } from 'vitest';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 
+import { computeWorkspaceSyncPolicyDigest } from '@happier-dev/protocol';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 
 import { createTestAuth } from '../../src/testkit/auth';
@@ -27,6 +28,23 @@ import { resolveClaudeProjectId } from '../../src/testkit/claudeProjectId.cjs';
 import { waitForDaemonSessionWebhookMarker } from '../../src/testkit/daemon/waitForDaemonSessionWebhookMarker';
 
 const run = createRunDirs({ runLabel: 'core' });
+const workspaceContentPolicyBase = {
+    v: 1,
+    selection: 'git_worktree',
+    extraIgnorePatterns: [],
+    extraIncludePatterns: [],
+} as const;
+const workspaceContentPolicy = {
+    ...workspaceContentPolicyBase,
+    policyDigest: computeWorkspaceSyncPolicyDigest(workspaceContentPolicyBase),
+};
+const copyOnceWorkspaceAction = { kind: 'copy_once', contentPolicy: workspaceContentPolicy } as const;
+const keepSyncedWorkspaceAction = {
+    kind: 'create_relationship',
+    mode: 'keep_synced',
+    contentPolicy: workspaceContentPolicy,
+    flushBeforeCommit: true,
+} as const;
 
 type HandoffStartResult = Readonly<{
     handoffId: string;
@@ -545,13 +563,7 @@ describe('core e2e: session handoff via server-routed transfer', () => {
                 sessionStorageMode: 'direct',
                 preferredTransportStrategies: ['server_routed_stream'],
                 negotiatedTransportStrategy: 'server_routed_stream',
-                workspaceTransfer: {
-                    enabled: true,
-                    strategy: 'transfer_snapshot',
-                    conflictPolicy: 'replace_existing',
-                    includeIgnoredMode: 'exclude',
-                    ignoredIncludeGlobs: [],
-                },
+                workspaceAction: copyOnceWorkspaceAction,
             }),
             'source server-routed handoff start',
         ) as HandoffStartResult;
@@ -589,13 +601,7 @@ describe('core e2e: session handoff via server-routed transfer', () => {
                     sourceSessionStorageMode: 'direct',
                     targetPath: targetWorkspaceDir,
                     handoffMetadataV2,
-                    workspaceTransfer: {
-                        enabled: true,
-                        strategy: 'transfer_snapshot',
-                        conflictPolicy: 'replace_existing',
-                        includeIgnoredMode: 'exclude',
-                        ignoredIncludeGlobs: [],
-                    },
+                    workspaceAction: copyOnceWorkspaceAction,
                 },
             }),
             context: 'target server-routed handoff prepare',
@@ -734,8 +740,8 @@ describe('core e2e: session handoff via server-routed transfer', () => {
         expect(
             (patchedMetadata.directSessionV1 as Readonly<{ remoteSessionId?: unknown }> | undefined)?.remoteSessionId,
         ).toBe(patchedMetadata.claudeSessionId);
-        // Persist the reverse-direction workspace baseline on the source machine so a subsequent
-        // “handoff back” can use `sync_changes` without forcing a full snapshot transfer.
+        // Persist the reverse-direction workspace baseline before creating the durable
+        // handoff-back relationship.
         unwrapDataKeyRpcResult(
             await sourceMachineRpc.call(`${sourceSeed.machineId}:${RPC_METHODS.DAEMON_SESSION_HANDOFF_COMMIT}`, {
                 handoffId: started.handoffId,
@@ -763,13 +769,7 @@ describe('core e2e: session handoff via server-routed transfer', () => {
                 sessionStorageMode: 'direct',
                 preferredTransportStrategies: ['server_routed_stream'],
                 negotiatedTransportStrategy: 'server_routed_stream',
-                workspaceTransfer: {
-                    enabled: true,
-                    strategy: 'sync_changes',
-                    conflictPolicy: 'replace_existing',
-                    includeIgnoredMode: 'exclude',
-                    ignoredIncludeGlobs: [],
-                },
+                workspaceAction: keepSyncedWorkspaceAction,
             }),
             'target server-routed handoff-back start',
         ) as HandoffStartResult;
@@ -803,13 +803,7 @@ describe('core e2e: session handoff via server-routed transfer', () => {
                     sourceSessionStorageMode: 'direct',
                     targetPath: secondHandoffBackTargetRootPath,
                     handoffMetadataV2: secondHandoffMetadataV2,
-                    workspaceTransfer: {
-                        enabled: true,
-                        strategy: 'sync_changes',
-                        conflictPolicy: 'replace_existing',
-                        includeIgnoredMode: 'exclude',
-                        ignoredIncludeGlobs: [],
-                    },
+                    workspaceAction: keepSyncedWorkspaceAction,
                 },
             }),
             context: 'source server-routed handoff-back prepare',
@@ -1060,13 +1054,7 @@ describe('core e2e: session handoff via server-routed transfer', () => {
                 sessionStorageMode: 'direct',
                 preferredTransportStrategies: ['server_routed_stream'],
                 negotiatedTransportStrategy: 'server_routed_stream',
-                workspaceTransfer: {
-                    enabled: true,
-                    strategy: 'sync_changes',
-                    conflictPolicy: 'replace_existing',
-                    includeIgnoredMode: 'exclude',
-                    ignoredIncludeGlobs: [],
-                },
+                workspaceAction: keepSyncedWorkspaceAction,
             }),
             'source server-routed abort handoff start',
         ) as HandoffStartResult;
@@ -1088,13 +1076,7 @@ describe('core e2e: session handoff via server-routed transfer', () => {
                 sourceSessionStorageMode: 'direct',
                 targetPath: targetWorkspaceDir,
                 handoffMetadataV2: abortHandoffMetadataV2,
-                workspaceTransfer: {
-                    enabled: true,
-                    strategy: 'sync_changes',
-                    conflictPolicy: 'replace_existing',
-                    includeIgnoredMode: 'exclude',
-                    ignoredIncludeGlobs: [],
-                },
+                workspaceAction: keepSyncedWorkspaceAction,
             },
         });
 

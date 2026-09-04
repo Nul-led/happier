@@ -1,6 +1,6 @@
 import { expect, type Page } from '@playwright/test';
 
-export type CreateAccountAndReachConnectMachineStatePage = Pick<Page, 'getByTestId'> & Partial<Pick<Page, 'evaluate'>>;
+export type CreateAccountAndReachConnectMachineStatePage = Pick<Page, 'getByTestId'> & Partial<Pick<Page, 'evaluate' | 'getByRole'>>;
 type TestIdLocator = ReturnType<Page['getByTestId']>;
 
 const PRE_AUTH_PROGRESS_CTA_TEST_IDS = [
@@ -18,6 +18,27 @@ async function isVisible(locator: TestIdLocator): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+async function dismissFirstLaunchOnboardingIfVisible(
+  page: CreateAccountAndReachConnectMachineStatePage,
+): Promise<boolean> {
+  const skip = page.getByTestId('onboarding-wizard-skip');
+  if (await isVisible(skip)) {
+    await skip.click();
+    return true;
+  }
+  // The desktop tour uses an accessible Skip button without the wizard test id.
+  // It is a presentation-only first-launch overlay and must not block the
+  // account/home state this helper is trying to reach.
+  if (page.getByRole) {
+    const roleSkip = page.getByRole('button', { name: /^Skip$/ });
+    if (await isVisible(roleSkip)) {
+      await roleSkip.click();
+      return true;
+    }
+  }
+  return false;
 }
 
 async function clickCreateAccountButton(createButton: TestIdLocator | null): Promise<void> {
@@ -229,6 +250,10 @@ export async function createAccountAndReachConnectMachineState(params: Readonly<
   let initialState: 'create-account' | 'authenticated-home' | 'setup-wizard' | null = null;
   await expect
     .poll(async () => {
+      if (await dismissFirstLaunchOnboardingIfVisible(params.page)) {
+        initialState = null;
+        return false;
+      }
       if (await clickPreAuthProgressButtonIfPresent(params.page)) {
         initialState = null;
         return false;

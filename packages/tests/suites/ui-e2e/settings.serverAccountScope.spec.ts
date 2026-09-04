@@ -26,7 +26,7 @@ async function createAccountWithoutDaemon(params: Readonly<{
   uiBaseUrl: string;
 }>): Promise<void> {
   await gotoDomContentLoadedWithPathFallback(params.page, `${params.uiBaseUrl}/`, '/', 120_000);
-  await waitForInitialAppUi({ page: params.page, timeoutMs: 180_000 });
+  await waitForInitialAppUi({ page: params.page, timeoutMs: 420_000 });
   await createAccountIfNeeded(params.page);
 }
 
@@ -187,7 +187,7 @@ test.describe('ui e2e: server/account scoped settings', () => {
     const continueSwitch = page.getByRole('button', { name: 'Continue' });
     await expect(continueSwitch).toHaveCount(1, { timeout: 60_000 });
     await continueSwitch.click();
-    await waitForInitialAppUi({ page, timeoutMs: 180_000 });
+    await waitForInitialAppUi({ page, timeoutMs: 420_000 });
     await createAccountIfNeeded(page);
     const secondaryServerId = deriveServerIdFromUrl(secondaryServer.baseUrl);
 

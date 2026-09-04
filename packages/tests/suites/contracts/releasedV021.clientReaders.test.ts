@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 // @ts-expect-error -- this compatibility suite's Vitest config maps @/ to UI source; the package-wide TS program maps it to CLI source.
 import { scopedStorageId } from '@/utils/system/storageScope';
 
-const RELEASED_CLIENT_V0_2_1_COMMIT = '98ea8fb76733b1dd785d38c31360179cafa84824';
+const RELEASED_CLIENT_V0_2_1_COMMIT = 'b1d15a8a9c241737d1ca9b167459901e6259173a';
 
 function installWebStorage(initial: Readonly<Record<string, string>>): void {
   const values = new Map(Object.entries(initial));
@@ -39,18 +39,29 @@ describe(`released client v0.2.1 reader compatibility (${RELEASED_CLIENT_V0_2_1_
   it('reads the exact historical server-state-v1 profile shape with newer additive fields absent', async () => {
     const scope = `released-v0-2-1-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = scope;
+    // Exact payload asserted in the immutable cli-v0.2.1 writer/reader test at
+    // apps/ui/sources/sync/domains/server/serverProfiles.test.ts.
     const historicalState = {
       activeServerIdIsExplicit: true,
-      activeServerId: 'stack.example.test',
+      activeServerId: 'manual-id',
       servers: {
-        'stack.example.test': {
-          id: 'stack.example.test',
-          name: 'Released Home',
-          serverUrl: 'https://stack.example.test',
-          createdAt: 1_713_123_456_000,
-          updatedAt: 1_713_123_456_000,
-          lastUsedAt: 1_713_123_456_000,
+        'manual-id': {
+          id: 'manual-id',
+          name: 'Manual Active',
+          serverUrl: 'https://api.example.test',
+          createdAt: 100,
+          updatedAt: 200,
+          lastUsedAt: 999,
           source: 'manual',
+        },
+        'stack-id': {
+          id: 'stack-id',
+          name: 'Stack Seeded',
+          serverUrl: 'https://api.example.test',
+          createdAt: 150,
+          updatedAt: 250,
+          lastUsedAt: 0,
+          source: 'stack-env',
         },
       },
     } as const;
@@ -62,12 +73,14 @@ describe(`released client v0.2.1 reader compatibility (${RELEASED_CLIENT_V0_2_1_
     // @ts-expect-error -- runtime Vitest alias resolves the current UI reader; see the package alias note above.
     const profiles = await import('@/sync/domains/server/serverProfiles');
     expect(profiles.getActiveServerSnapshot()).toMatchObject({
-      serverId: 'stack.example.test',
-      serverUrl: 'https://stack.example.test',
+      serverId: 'manual-id',
+      serverUrl: 'https://api.example.test',
     });
-    expect(profiles.getServerProfileById('stack.example.test')).toEqual({
-      ...historicalState.servers['stack.example.test'],
+    expect(profiles.getServerProfileById('manual-id')).toEqual({
+      ...historicalState.servers['manual-id'],
       source: 'manual',
+      updatedAt: 250,
+      legacyServerIds: ['stack-id'],
     });
   });
 

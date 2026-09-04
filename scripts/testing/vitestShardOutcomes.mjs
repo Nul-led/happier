@@ -19,6 +19,9 @@ export function classifyVitestShardTermination({ code, signal, timedOut = false 
   if (typeof code === 'number' && code !== 0) {
     return { outcome: 'failed', exitCode: code, signal: null };
   }
+  if (code !== 0) {
+    return { outcome: 'failed', exitCode: 1, signal: null };
+  }
   return { outcome: 'passed', exitCode: 0, signal: null };
 }
 

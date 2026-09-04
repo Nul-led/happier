@@ -33,7 +33,7 @@ const REPOSITORY_WORKSPACE_DIRECTORIES = [
     directory: 'apps/ui',
     name: '@happier-dev/app',
     scripts: {
-      test: 'node --test ./tools/iroh/browserIrohAssetPackaging.test.mjs ./tools/iroh/productionCarrierPageSeam.test.mjs ./tools/iroh/realHomeVerticalJourney.test.mjs ./tools/iroh/browserMachineTransferJourney.test.mjs',
+      test: 'node --test ./tools/iroh/browserIrohAssetPackaging.test.mjs ./tools/iroh/productionCarrierPageSeam.test.mjs ./tools/iroh/realHomeVerticalJourney.test.mjs',
     },
   },
   { directory: 'apps/website', name: '@happier-dev/website' },
@@ -123,10 +123,13 @@ test('classifies representative lane paths', () => {
     'apps/ui/tools/iroh/browserIrohAssetPackaging.test.mjs',
     'apps/ui/tools/iroh/productionCarrierPageSeam.test.mjs',
     'apps/ui/tools/iroh/realHomeVerticalJourney.test.mjs',
-    'apps/ui/tools/iroh/browserMachineTransferJourney.test.mjs',
   ]) {
     assert.equal(classifyTestFile(LANE_CONTEXT, testPath), 'test');
   }
+  assert.equal(
+    classifyTestFile(LANE_CONTEXT, 'apps/ui/tools/iroh/browserMachineTransferJourney.test.mjs'),
+    'test:home-iroh:real',
+  );
   assert.equal(
     classifyTestFile(
       LANE_CONTEXT,

@@ -1,18 +1,33 @@
 import { createHash, randomBytes } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 
 import {
     AccountDirectoryMeResponseV1Schema,
     HomeConnectionDescriptorV1Schema,
 } from '@happier-dev/protocol';
 import * as privacyKit from 'privacy-kit';
+import {
+    Agent as UndiciAgent,
+    getGlobalDispatcher,
+    setGlobalDispatcher,
+    type Dispatcher,
+} from 'undici';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { createTestAuth } from '../../src/testkit/auth';
 import { fetchJson } from '../../src/testkit/http';
+import {
+    startHttpRequestRecordingProxy,
+    type HttpRequestRecordingProxy,
+} from '../../src/testkit/httpRequestRecordingProxy';
 import { reserveAvailablePort } from '../../src/testkit/network/reserveAvailablePort';
 import { startFakeGitHubOAuthServer, type StopFn } from '../../src/testkit/oauth/fakeGithubOAuthServer';
 import { startServerLight, type StartedServer } from '../../src/testkit/process/serverLight';
 import { createRunDirs } from '../../src/testkit/runDir';
+import {
+    createEphemeralTlsServerFixture,
+    type EphemeralTlsServerFixture,
+} from '../../src/testkit/tls/ephemeralTlsServerFixture.mjs';
 
 /**
  * Lane 02 composed caller proof: the real production Account Directory enrollment
@@ -34,9 +49,7 @@ import { createRunDirs } from '../../src/testkit/runDir';
  *   → sealed-token open → adoptHomeProfileWithCredentials (explicit target
  *     credential write + Lane 04 non-focusing adoption)
  *   → finalizePreferredHomeEnrollmentEntryIntent: `connect_service` (the
- *     Settings caller) never changes focus, while `enter_preferred_home` (the
- *     unauthenticated Welcome entry) opens the exact enrolled Home through
- *     Lane 04's setActiveServerAndSwitch
+ *     Settings caller) never changes focus
  *
  * Requester and approver load separate production module graphs and use distinct
  * storage scopes, matching two client processes without reproducing any client
@@ -46,6 +59,9 @@ import { createRunDirs } from '../../src/testkit/runDir';
  *     in-memory backing. Credential assertions compare shape/values in memory
  *     and never log token bytes.
  *   - react-native/expo host modules stubbed by that same canonical setup.
+ * The Welcome-only `enter_preferred_home` branch is exercised by the loaded
+ * browser E2E because its canonical switch owner lazy-loads the React Native/
+ * Expo application graph, which this Node module-isolation harness cannot load.
  * Everything else is real: Account Service, Home A, Home B processes, the fake
  * GitHub OAuth boundary, and all assertion/redemption/approval wire traffic.
  * No DTO or protocol logic is reproduced in this file.
@@ -167,7 +183,12 @@ describe('core e2e: Account Directory Home enrollment through the production cal
     let accountService: StartedServer | null = null;
     let homeA: StartedServer | null = null;
     let homeB: StartedServer | null = null;
+    let homeAIngress: HttpRequestRecordingProxy | null = null;
+    let homeBIngress: HttpRequestRecordingProxy | null = null;
     let stopOAuth: StopFn | null = null;
+    let tlsFixture: EphemeralTlsServerFixture | null = null;
+    let exactCaDispatcher: UndiciAgent | null = null;
+    let previousDispatcher: Dispatcher | null = null;
 
     let requesterClient!: ProductionClient;
     let approverClient!: ProductionClient;
@@ -232,25 +253,58 @@ describe('core e2e: Account Directory Home enrollment through the production cal
                 GITHUB_API_USER_URL: `${oauth.baseUrl}/user`,
             },
         });
+        const homeAPort = await reserveAvailablePort();
+        const homeAInternalBaseUrl = `http://127.0.0.1:${homeAPort}`;
+        const homeBPort = await reserveAvailablePort();
+        const homeBInternalBaseUrl = `http://127.0.0.1:${homeBPort}`;
+        tlsFixture = await createEphemeralTlsServerFixture();
+        const [tlsKey, tlsCert, tlsCa] = await Promise.all([
+            readFile(tlsFixture.privateKeyPath),
+            readFile(tlsFixture.leafCertificatePath),
+            readFile(tlsFixture.caCertificatePath),
+        ]);
+        const ingressTls = { key: tlsKey, cert: tlsCert };
+        homeAIngress = await startHttpRequestRecordingProxy({
+            targetBaseUrl: homeAInternalBaseUrl,
+            tls: ingressTls,
+        });
+        homeABaseUrl = homeAIngress.baseUrl;
+        homeBIngress = await startHttpRequestRecordingProxy({
+            targetBaseUrl: homeBInternalBaseUrl,
+            tls: ingressTls,
+        });
+        homeBBaseUrl = homeBIngress.baseUrl;
+
         homeA = await startServerLight({
             testDir: `${testDir}/home-a`,
             dbProvider: 'sqlite',
+            __portAllocator: async () => homeAPort,
             extraEnv: {
                 HAPPIER_SERVER_IDENTITY_ID: 'srv_accountDirectoryComposedHomeAA1',
+                HAPPIER_PUBLIC_SERVER_URL: homeABaseUrl,
+                HAPPIER_CANONICAL_SERVER_URL: homeABaseUrl,
                 HAPPIER_HOME_DEVICE_APPROVAL_REQUIRED: '0',
             },
         });
-        homeABaseUrl = homeA.baseUrl;
         homeB = await startServerLight({
             testDir: `${testDir}/home-b`,
             dbProvider: 'sqlite',
+            __portAllocator: async () => homeBPort,
             extraEnv: {
                 HAPPIER_SERVER_IDENTITY_ID: 'srv_accountDirectoryComposedHomeBA1',
+                HAPPIER_PUBLIC_SERVER_URL: homeBBaseUrl,
+                HAPPIER_CANONICAL_SERVER_URL: homeBBaseUrl,
                 // Home-owned approval policy: the v1 source of truth.
                 HAPPIER_HOME_DEVICE_APPROVAL_REQUIRED: '1',
             },
         });
-        homeBBaseUrl = homeB.baseUrl;
+
+        // Install the fixture CA only after startServerLight has completed both internal HTTP
+        // readiness probes. All subsequent production and direct Home requests use the published
+        // HTTPS ingresses with normal certificate validation still enabled.
+        previousDispatcher = getGlobalDispatcher();
+        exactCaDispatcher = new UndiciAgent({ connect: { ca: tlsCa } });
+        setGlobalDispatcher(exactCaDispatcher);
 
         // Real production feature probe (the same caller the Account Service
         // settings surface uses) establishes identities and capabilities.
@@ -292,7 +346,7 @@ describe('core e2e: Account Directory Home enrollment through the production cal
         approverHomeBToken = approver.token;
     }, 300_000);
 
-    it('enrolls without focus on Settings intent, opens the preferred Home on Welcome intent, rejects a second request, and survives Account Service outage', async () => {
+    it('enrolls without focus on Settings intent, rejects a second request, and survives Account Service outage', async () => {
         const requesterModules = useProductionClient(requesterClient);
 
         // --- Focused Home A with existing credentials and group selection ---
@@ -583,69 +637,6 @@ describe('core e2e: Account Directory Home enrollment through the production cal
             .accountDirectoryAuthCredentials.get(directoryTarget!);
         expect(directoryCredentialsBeforeRetry?.token === directoryToken).toBe(true);
 
-        // --- Welcome intent (A7/G02-4): the unauthenticated entry continuation
-        // enrolls with `enter_preferred_home`. The same detached continuation
-        // applies the intent after approval: Lane 04's canonical explicit-open
-        // owner switches the focused Home to the exact enrolled preferred Home
-        // — the only enrollment path allowed to change focus. ---
-        const welcomeSession = requesterModules.directorySession.createAccountDirectorySession(
-            directoryTarget!,
-            { capability: directoryCapability },
-        );
-        const welcomeRefresh = await requesterModules.refreshDirectory.refreshAccountHomeDirectory(welcomeSession);
-        expect(welcomeRefresh).toMatchObject({
-            status: 'ready',
-            preferredHomeServerIdentityId: homeBIdentity,
-        });
-        const welcomeEnrollment = await requesterModules.enrollment.enrollPreferredDirectoryHome(welcomeSession, {
-            entryIntent: 'enter_preferred_home',
-        });
-        expect(welcomeEnrollment).toMatchObject({ kind: 'approval_required' });
-        if (welcomeEnrollment.kind !== 'approval_required') throw new Error('unreachable');
-        expect(welcomeEnrollment.homeServerIdentityId).toBe(homeBIdentity);
-        const welcomePending = requesterModules.enrollment.getPendingPreferredHomeEnrollment();
-        expect(welcomePending).toMatchObject({
-            approvalId: welcomeEnrollment.approvalId,
-            entryIntent: 'enter_preferred_home',
-            homeServerIdentityId: homeBIdentity,
-        });
-
-        useProductionClient(approverClient);
-        const welcomeListed = await approverModules.approvalClient.listHomeDeviceApprovals(approvalTarget);
-        expect(welcomeListed.ok).toBe(true);
-        if (!welcomeListed.ok) throw new Error('unreachable');
-        expect(welcomeListed.items.map((item) => item.approvalId)).toEqual([welcomeEnrollment.approvalId]);
-        const welcomeDecision = await approverModules.approvalClient.decideHomeDeviceApproval(
-            approvalTarget,
-            welcomeEnrollment.approvalId,
-            'approve',
-        );
-        expect(welcomeDecision).toMatchObject({ ok: true, status: 'approved' });
-
-        useProductionClient(requesterClient);
-        const welcomeResumed = await requesterModules.enrollment.resumePendingPreferredHomeEnrollment();
-        expect(welcomeResumed).toEqual({ kind: 'enrolled', homeServerIdentityId: homeBIdentity });
-        expect(requesterModules.enrollment.getPendingPreferredHomeEnrollment()).toBeNull();
-
-        // The exact enrolled preferred Home is now the focused Home, opened
-        // through the real switch owner, and the exact credential sits under
-        // the immutable target while the restricted namespace stays separate.
-        expect(requesterModules.serverProfiles.getActiveServerSnapshot()).toMatchObject({
-            serverId: homeBIdentity,
-            serverUrl: homeBBaseUrl,
-        });
-        const storedBAfterWelcomeEntry = await requesterModules.tokenStorage.TokenStorage
-            .getCredentialsForServerUrl(homeBBaseUrl, { serverId: homeBIdentity });
-        expect(Object.keys(storedBAfterWelcomeEntry ?? {})).toEqual(['token']);
-        expect(storedBAfterWelcomeEntry!.token).toEqual(expect.any(String));
-        expect(storedBAfterWelcomeEntry!.token!.length).toBeGreaterThan(0);
-        expect(storedBAfterWelcomeEntry!.token).not.toBe(directoryToken);
-        enrolledHomeBToken = storedBAfterWelcomeEntry!.token!;
-        const welcomeHomeProfile = await fetchJson<unknown>(`${homeBBaseUrl}/v1/account/profile`, {
-            headers: bearer(enrolledHomeBToken),
-        });
-        expect(welcomeHomeProfile.status).toBe(200);
-
         // Second enrollment round against the same directory: new assertion,
         // new requester key, fresh pending approval.
         const retrySession = requesterModules.directorySession.createAccountDirectorySession(
@@ -755,12 +746,9 @@ describe('core e2e: Account Directory Home enrollment through the production cal
             headers: bearer(enrolledHomeBToken),
         });
         expect(profileAfterDirectoryDelete.status).toBe(200);
-        // Directory mutations cannot move the Welcome-opened preferred Home
-        // out of focus, and the saved view state stays untouched.
-        expect(requesterModules.serverProfiles.getActiveServerSnapshot()).toMatchObject({
-            serverId: homeBIdentity,
-            serverUrl: homeBBaseUrl,
-        });
+        // Directory mutations cannot move focus away from the independently
+        // selected Home A, and the saved view state stays untouched.
+        expect(requesterModules.serverProfiles.getActiveServerSnapshot()).toMatchObject(activeBefore);
         expect(requesterModules.serverProfiles.loadHomeViewState()).toMatchObject({
             activeTargetId: focusedServerId,
             groups: [{ id: 'g', serverIds: [focusedServerId] }],
@@ -778,10 +766,7 @@ describe('core e2e: Account Directory Home enrollment through the production cal
             headers: bearer(enrolledHomeBToken),
         });
         expect(profileAfterOutage.status).toBe(200);
-        expect(requesterModules.serverProfiles.getActiveServerSnapshot()).toMatchObject({
-            serverId: homeBIdentity,
-            serverUrl: homeBBaseUrl,
-        });
+        expect(requesterModules.serverProfiles.getActiveServerSnapshot()).toMatchObject(activeBefore);
         await approvalTransportResolution.transport.close();
     }, 300_000);
 
@@ -789,7 +774,12 @@ describe('core e2e: Account Directory Home enrollment through the production cal
         await accountService?.stop().catch(() => {});
         await homeA?.stop().catch(() => {});
         await homeB?.stop().catch(() => {});
+        await homeAIngress?.stop().catch(() => {});
+        await homeBIngress?.stop().catch(() => {});
         await stopOAuth?.().catch(() => {});
+        if (previousDispatcher) setGlobalDispatcher(previousDispatcher);
+        await exactCaDispatcher?.close().catch(() => {});
+        await tlsFixture?.cleanup().catch(() => {});
         if (previousStorageScope === undefined) delete process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE;
         else process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = previousStorageScope;
     });
