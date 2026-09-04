@@ -1,79 +1,75 @@
-import spawn from 'cross-spawn';
-import { createServerUrlComparableKey } from '@happier-dev/protocol';
+import {
+  assertResolvedHomeTargetIdentity,
+  createTransferableHomeTargetInput,
+  parseHomeTargetInput,
+  type ResolvedHomeTarget,
+} from '@happier-dev/cli-common/homeTarget';
+import {
+  runRemoteHomeEnrollmentRecipe,
+  type HappierJsonExecutor,
+} from '@happier-dev/cli-common/systemTasks';
 
 import { approveTerminalAuthRequest } from '@/auth/terminalAuthApproval';
 import { writeJsonStdout } from '@/cli/output/jsonEnvelope';
-import { safeBashSingleQuote } from '@/capabilities/systemTasks/ssh/sshTransport';
-import { configuration } from '@/configuration';
-import { promptForCurrentMachineReachableServerUrl } from '@/server/reachability/promptCurrentMachineReachableServerUrl';
-import { applyServerSelectionFromArgs } from '@/server/serverSelection';
-import { isLoopbackHttpServerUrl } from '@/server/serverUrlClassification';
-import { isInteractiveTerminal } from '@/terminal/prompts/promptInput';
-import { buildOpenSshCommand } from '@happier-dev/cli-common/ssh';
 import { fetchServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
+import { resolveCliHomeTarget, resolveCurrentCliHomeTarget } from '@/server/homeTarget';
+import { parseCliHomeTargetArgs } from '@/server/homeTargetCliArgs';
+import { createLiveRemoteEnrollmentExecutor } from '@/capabilities/systemTasks/ssh/liveRemoteSshBootstrap';
 
 type JsonRecord = Record<string, unknown>;
 
 type PairRemoteDeps = Readonly<{
-  isInteractiveTerminal: () => boolean;
-  promptForCurrentMachineReachableServerUrl: typeof promptForCurrentMachineReachableServerUrl;
+  resolveHomeTarget: () => Promise<ResolvedHomeTarget>;
   fetchServerFeaturesSnapshot: typeof fetchServerFeaturesSnapshot;
+  createEnrollmentExecutor: (params: Readonly<{
+    target: string;
+    happierCommand: string;
+    signal?: AbortSignal;
+  }>) => HappierJsonExecutor;
+  signal?: AbortSignal;
+  parseHomeTargetArgs: typeof parseCliHomeTargetArgs;
 }>;
 
-type RemoteServerSelection = Readonly<{
-  serverUrl: string;
-  webappUrl: string;
-  localServerUrl: string | null;
-}>;
-
+const PAIR_REMOTE_TIMEOUT_MS = 10 * 60_000;
 const DEFAULT_DEPS: PairRemoteDeps = {
-  isInteractiveTerminal,
-  promptForCurrentMachineReachableServerUrl,
+  resolveHomeTarget: resolveCurrentCliHomeTarget,
   fetchServerFeaturesSnapshot,
+  createEnrollmentExecutor: ({ target, happierCommand, signal }) => createLiveRemoteEnrollmentExecutor({
+    ssh: { target, auth: 'agent' },
+    auth: { mode: 'agent' },
+    knownHostsMode: 'system',
+    happierCommand,
+    signal,
+  }),
+  parseHomeTargetArgs: parseCliHomeTargetArgs,
 };
 
 function takeFlagValue(args: string[], name: string): { value: string | null; rest: string[] } {
   const rest: string[] = [];
   let value: string | null = null;
-
-  for (let i = 0; i < args.length; i += 1) {
-    const a = String(args[i] ?? '');
-    if (a === name) {
-      const next = String(args[i + 1] ?? '');
-      if (!next || next.startsWith('--')) {
-        throw new Error(`Missing value for ${name}`);
-      }
+  for (let index = 0; index < args.length; index += 1) {
+    const current = String(args[index] ?? '');
+    if (current === name) {
+      const next = String(args[index + 1] ?? '');
+      if (!next || next.startsWith('--')) throw new Error(`Missing value for ${name}`);
       value = next;
-      i += 1;
+      index += 1;
       continue;
     }
-    if (a.startsWith(`${name}=`)) {
-      const v = a.slice(`${name}=`.length);
-      if (!v) throw new Error(`Missing value for ${name}`);
-      value = v;
+    if (current.startsWith(`${name}=`)) {
+      const next = current.slice(`${name}=`.length);
+      if (!next) throw new Error(`Missing value for ${name}`);
+      value = next;
       continue;
     }
-    rest.push(a);
+    rest.push(current);
   }
-
   return { value, rest };
 }
 
-function takeFlagBool(args: string[], name: string): { present: boolean; rest: string[] } {
+function takeFlag(args: string[], name: string): { present: boolean; rest: string[] } {
   const rest = args.filter((arg) => arg !== name);
   return { present: rest.length !== args.length, rest };
-}
-
-function coalesceRemoteServerUrlFlag(params: Readonly<{
-  remoteServerUrl: string | null;
-  serverUrlForRemote: string | null;
-}>): string | null {
-  const legacy = params.remoteServerUrl?.trim() || null;
-  const clearer = params.serverUrlForRemote?.trim() || null;
-  if (legacy && clearer && legacy !== clearer) {
-    fail('Use only one of --server-url-for-remote or --remote-server-url, or pass the same URL to both.', 2);
-  }
-  return clearer ?? legacy;
 }
 
 function fail(message: string, exitCode: 1 | 2 = 1): never {
@@ -81,378 +77,163 @@ function fail(message: string, exitCode: 1 | 2 = 1): never {
   process.exit(exitCode);
 }
 
-function normalizeUrlOrFail(raw: string, label: string): string {
-  const value = String(raw ?? '').trim();
-  if (!value) fail(`Missing value for ${label}`, 2);
-  try {
-    const url = new URL(value);
-    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-      fail(`Invalid ${label} protocol: ${url.protocol} (expected http/https)`, 2);
-    }
-    return url.toString().replace(/\/+$/, '');
-  } catch {
-    fail(`Invalid ${label}: ${value}`, 2);
+function readExplicitRemoteUrl(args: string[]): Readonly<{ url: string | null; rest: string[] }> {
+  const legacy = takeFlagValue(args, '--remote-server-url');
+  const current = takeFlagValue(legacy.rest, '--server-url-for-remote');
+  const legacyUrl = legacy.value?.trim() || null;
+  const currentUrl = current.value?.trim() || null;
+  if (legacyUrl && currentUrl && legacyUrl !== currentUrl) {
+    fail('Use only one of --server-url-for-remote or --remote-server-url, or pass the same URL to both.', 2);
   }
+  return { url: currentUrl ?? legacyUrl, rest: current.rest };
 }
 
-function deriveDefaultWebappUrl(serverUrl: string): string {
-  if (serverUrl.replace(/\/+$/, '') === 'https://api.happier.dev') {
-    return 'https://app.happier.dev';
-  }
-  try {
-    return new URL(serverUrl).origin;
-  } catch {
-    return serverUrl;
-  }
-}
-
-function urlsReferToSameServer(leftRaw: string, rightRaw: string): boolean {
-  const left = String(leftRaw ?? '').trim().replace(/\/+$/, '');
-  const right = String(rightRaw ?? '').trim().replace(/\/+$/, '');
-  if (!left || !right) return false;
-  try {
-    return createServerUrlComparableKey(left) === createServerUrlComparableKey(right);
-  } catch {
-    return left === right;
-  }
-}
-
-async function resolveRemoteServerSelection(params: Readonly<{
-  remoteServerUrl: string | null;
-  remoteLocalServerUrl: string | null;
-  remoteWebappUrl: string | null;
-  json: boolean;
-  deps: PairRemoteDeps;
-}>): Promise<RemoteServerSelection> {
-  const explicitRemoteServerUrl = params.remoteServerUrl
-    ? normalizeUrlOrFail(params.remoteServerUrl, '--server-url-for-remote')
+async function readHomeIdentity(target: ResolvedHomeTarget, deps: PairRemoteDeps): Promise<string | null> {
+  if (target.homeServerIdentityId) return target.homeServerIdentityId;
+  const snapshot = await deps.fetchServerFeaturesSnapshot({
+    serverUrl: target.applicationUrl,
+    signal: deps.signal,
+  });
+  return snapshot.status === 'ready'
+    ? snapshot.features.capabilities.serverIdentity.serverIdentityId?.trim() ?? null
     : null;
-  const explicitRemoteLocalServerUrl = params.remoteLocalServerUrl
-    ? normalizeUrlOrFail(params.remoteLocalServerUrl, '--remote-local-server-url')
-    : null;
-
-  if (!explicitRemoteServerUrl && isLoopbackHttpServerUrl(configuration.serverUrl)) {
-    if (params.json || !params.deps.isInteractiveTerminal()) {
-      fail(
-        `The selected relay is only reachable from this computer (${configuration.serverUrl}). ` +
-          'Provide --server-url-for-remote <url> (or --remote-server-url <url>) with an address the remote machine can use to reach this computer.',
-      );
-    }
-
-    const answer = (await params.deps.promptForCurrentMachineReachableServerUrl({
-      localServerUrl: configuration.serverUrl,
-      remoteDescription: 'the remote machine',
-    })).trim();
-    const promptedRemoteServerUrl = normalizeUrlOrFail(answer, '--server-url-for-remote');
-    const promptedRemoteWebappUrl = params.remoteWebappUrl
-      ? normalizeUrlOrFail(params.remoteWebappUrl, '--remote-webapp-url')
-      : deriveDefaultWebappUrl(promptedRemoteServerUrl);
-    return {
-      serverUrl: promptedRemoteServerUrl,
-      webappUrl: promptedRemoteWebappUrl,
-      localServerUrl: null,
-    };
-  }
-
-  const serverUrl = explicitRemoteServerUrl ?? configuration.serverUrl;
-  const webappUrl = params.remoteWebappUrl
-    ? normalizeUrlOrFail(params.remoteWebappUrl, '--remote-webapp-url')
-    : explicitRemoteServerUrl
-      ? deriveDefaultWebappUrl(serverUrl)
-      : configuration.webappUrl;
-
-  return {
-    serverUrl,
-    webappUrl,
-    localServerUrl: explicitRemoteLocalServerUrl,
-  };
-}
-
-function buildRemoteServerArgs(selection: RemoteServerSelection): string[] {
-  return [
-    '--server-url',
-    selection.serverUrl,
-    '--webapp-url',
-    selection.webappUrl,
-    ...(selection.localServerUrl && !urlsReferToSameServer(selection.localServerUrl, selection.serverUrl)
-      ? ['--local-server-url', selection.localServerUrl]
-      : []),
-  ];
-}
-
-function buildRemoteShellCommand(argv: readonly string[]): string {
-  return argv.map((part) => safeBashSingleQuote(String(part))).join(' ');
-}
-
-function assertRemoteRequestUsedExpectedRelay(request: JsonRecord, selection: RemoteServerSelection): void {
-  const requestServerUrl = typeof request.serverUrl === 'string' ? request.serverUrl.trim() : '';
-  const requestPublicServerUrl = typeof request.publicServerUrl === 'string' ? request.publicServerUrl.trim() : '';
-  if (!requestServerUrl) return;
-  if (urlsReferToSameServer(requestServerUrl, selection.serverUrl)) return;
-  if (requestPublicServerUrl && urlsReferToSameServer(requestPublicServerUrl, selection.serverUrl)) {
-    if (!selection.localServerUrl || urlsReferToSameServer(requestServerUrl, selection.localServerUrl)) {
-      return;
-    }
-  }
-
-  fail(
-    `Remote auth request was created against a different relay (${requestServerUrl}) than pair-remote is using (${selection.serverUrl}). ` +
-      'Configure the remote with --server-url-for-remote or select the matching local relay with --server.',
-  );
-}
-
-function runSshJson(params: Readonly<{ target: string; remoteArgs: string[] }>): JsonRecord {
-  const invocation = buildOpenSshCommand({
-    sshBin: 'ssh',
-    target: params.target,
-    remoteCommand: ['bash', '-lc', buildRemoteShellCommand(params.remoteArgs)],
-    auth: { mode: 'agent' },
-    knownHostsMode: 'system',
-  });
-  const result = spawn.sync(invocation.command, invocation.args, { stdio: 'pipe' });
-  if (result.error) throw result.error;
-  if (result.status !== 0) {
-    const stderr = Buffer.isBuffer(result.stderr) ? result.stderr.toString('utf8') : String(result.stderr ?? '');
-    throw new Error(`ssh exited with code ${result.status}: ${stderr}`.trim());
-  }
-  const stdout = Buffer.isBuffer(result.stdout) ? result.stdout.toString('utf8') : String(result.stdout ?? '');
-  const lines = stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-  for (const line of lines) {
-    try {
-      const parsed = JSON.parse(line);
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        return parsed as JsonRecord;
-      }
-    } catch {
-      continue;
-    }
-  }
-  throw new Error('Remote command did not return valid JSON');
-}
-
-/**
- * Run an interactive remote command over SSH with a forced TTY (`-t`) so the
- * remote `doctor repair` can prompt the user. Streams stdio live to this
- * process — no buffering, no JSON parsing. Returns the remote exit code so
- * the caller can decide whether the post-pair check succeeded.
- */
-function runSshInteractive(params: Readonly<{ target: string; remoteArgs: string[] }>): number {
-  const invocation = buildOpenSshCommand({
-    sshBin: 'ssh',
-    target: params.target,
-    remoteCommand: ['bash', '-lc', buildRemoteShellCommand(params.remoteArgs)],
-    auth: { mode: 'agent' },
-    knownHostsMode: 'system',
-  });
-  const result = spawn.sync(
-    invocation.command,
-    ['-t', ...invocation.args],
-    { stdio: 'inherit' },
-  );
-  if (result.error) throw result.error;
-  return result.status ?? 1;
-}
-
-/**
- * Run a non-interactive remote command over SSH, returning stdout. Used for
- * the JSON post-pair check so we can append the report to our own JSON output.
- */
-function runSshCapture(params: Readonly<{ target: string; remoteArgs: string[] }>): {
-  status: number;
-  stdout: string;
-  stderr: string;
-} {
-  const invocation = buildOpenSshCommand({
-    sshBin: 'ssh',
-    target: params.target,
-    remoteCommand: ['bash', '-lc', buildRemoteShellCommand(params.remoteArgs)],
-    auth: { mode: 'agent' },
-    knownHostsMode: 'system',
-  });
-  const result = spawn.sync(invocation.command, invocation.args, { stdio: 'pipe' });
-  if (result.error) throw result.error;
-  const stdout = Buffer.isBuffer(result.stdout) ? result.stdout.toString('utf8') : String(result.stdout ?? '');
-  const stderr = Buffer.isBuffer(result.stderr) ? result.stderr.toString('utf8') : String(result.stderr ?? '');
-  return { status: result.status ?? 1, stdout, stderr };
 }
 
 export async function handleAuthPairRemote(argsRaw: string[], deps: Partial<PairRemoteDeps> = {}): Promise<void> {
   const effectiveDeps: PairRemoteDeps = { ...DEFAULT_DEPS, ...deps };
-  let args = await applyServerSelectionFromArgs(argsRaw);
-
-  const jsonFlag = takeFlagBool(args, '--json');
-  args = jsonFlag.rest;
-  const json = jsonFlag.present;
-
-  const noPostCheck = takeFlagBool(args, '--no-post-check');
+  const parsedTargetArgs = await effectiveDeps.parseHomeTargetArgs(argsRaw);
+  let args = parsedTargetArgs.rest;
+  const json = takeFlag(args, '--json');
+  args = json.rest;
+  const noPostCheck = takeFlag(args, '--no-post-check');
   args = noPostCheck.rest;
-  const postCheckEnabled = !noPostCheck.present;
 
   const ssh = takeFlagValue(args, '--ssh');
   args = ssh.rest;
-  if (!ssh.value) {
-    console.error('Missing required flag: --ssh <user@host>');
-    process.exit(2);
-  }
-
+  if (!ssh.value) fail('Missing required flag: --ssh <user@host>', 2);
   const remoteCommand = takeFlagValue(args, '--remote-command');
   args = remoteCommand.rest;
-  const remoteServerUrl = takeFlagValue(args, '--remote-server-url');
-  args = remoteServerUrl.rest;
-  const serverUrlForRemote = takeFlagValue(args, '--server-url-for-remote');
-  args = serverUrlForRemote.rest;
-  const remoteLocalServerUrl = takeFlagValue(args, '--remote-local-server-url');
-  args = remoteLocalServerUrl.rest;
+  const remoteUrl = readExplicitRemoteUrl(args);
+  args = remoteUrl.rest;
+
+  // Released URL-only flags remain thin compatibility adapters. They no
+  // longer decide the remote auth protocol or force a loopback Home to invent
+  // a public URL.
+  const remoteLocalUrl = takeFlagValue(args, '--remote-local-server-url');
+  args = remoteLocalUrl.rest;
   const remoteWebappUrl = takeFlagValue(args, '--remote-webapp-url');
   args = remoteWebappUrl.rest;
-  if (args.length > 0) {
-    fail(`Unknown auth pair-remote arguments: ${args.join(' ')}`, 2);
+  if ((remoteLocalUrl.value || remoteWebappUrl.value) && !remoteUrl.url) {
+    fail('--remote-local-server-url and --remote-webapp-url require --server-url-for-remote.', 2);
   }
-
-  const remoteSelection = await resolveRemoteServerSelection({
-    remoteServerUrl: coalesceRemoteServerUrlFlag({
-      remoteServerUrl: remoteServerUrl.value,
-      serverUrlForRemote: serverUrlForRemote.value,
-    }),
-    remoteLocalServerUrl: remoteLocalServerUrl.value,
-    remoteWebappUrl: remoteWebappUrl.value,
-    json,
-    deps: effectiveDeps,
-  });
-  const remoteExecutable = remoteCommand.value?.trim() || 'happier';
-  const remoteServerArgs = buildRemoteServerArgs(remoteSelection);
-
-  if (!json) {
-    console.log(`Requesting remote authentication on ${ssh.value}...`);
+  if (parsedTargetArgs.target && remoteUrl.url) {
+    fail('Do not combine a Home target with --server-url-for-remote.', 2);
   }
-  const request = runSshJson({
+  if (args.length > 0) fail(`Unknown auth pair-remote arguments: ${args.join(' ')}`, 2);
+
+  const selectedHomeTarget = parsedTargetArgs.target
+    ? await resolveCliHomeTarget(parsedTargetArgs.target)
+    : await effectiveDeps.resolveHomeTarget();
+  const resolvedHomeTarget = remoteUrl.url
+    ? await resolveCliHomeTarget({ kind: 'https_url', url: remoteUrl.url })
+    : selectedHomeTarget;
+  const executor = effectiveDeps.createEnrollmentExecutor({
     target: ssh.value,
-    remoteArgs: [remoteExecutable, 'auth', 'request', '--json', '--persist', ...remoteServerArgs],
+    happierCommand: remoteCommand.value?.trim() || 'happier',
+    signal: effectiveDeps.signal,
   });
-  assertRemoteRequestUsedExpectedRelay(request, remoteSelection);
-  const requestedServerIdentityId = typeof request.serverIdentityId === 'string'
-    ? request.serverIdentityId.trim()
-    : '';
-  const localFeatures = await effectiveDeps.fetchServerFeaturesSnapshot({
-    serverUrl: configuration.apiServerUrl,
-  });
-  const selectedServerIdentityId = localFeatures.status === 'ready'
-    ? localFeatures.features.capabilities.serverIdentity.serverIdentityId?.trim() ?? ''
-    : '';
-  if (!requestedServerIdentityId || !selectedServerIdentityId) {
-    fail('Unable to verify the stable Home identity for the remote authentication request. No approval was sent.');
-  }
-  if (requestedServerIdentityId !== selectedServerIdentityId) {
-    fail(
-      `Remote authentication targets Home ${requestedServerIdentityId}, but the selected local Home is `
-      + `${selectedServerIdentityId}. No approval was sent.`,
-    );
-  }
-  const publicKey = typeof request?.publicKey === 'string' ? request.publicKey : '';
-  if (!publicKey) {
-    console.error('Remote `happier auth request --json` output did not include "publicKey".');
-    process.exit(1);
-  }
+  let publicKey: string | null = null;
+  const transferableTarget = createTransferableHomeTargetInput(resolvedHomeTarget);
+  const remoteHomeTargetInput = transferableTarget.kind === 'https_url'
+    ? parseHomeTargetInput({
+        ...transferableTarget,
+        ...(remoteLocalUrl.value ? { localUrl: remoteLocalUrl.value } : {}),
+        ...(remoteWebappUrl.value ? { webappUrl: remoteWebappUrl.value } : {}),
+      })
+    : transferableTarget;
 
-  try {
-    if (!json) {
-      console.log('Approving remote authentication request...');
+  if (!json.present) console.log(`Requesting remote authentication on ${ssh.value}...`);
+  const result = await runRemoteHomeEnrollmentRecipe({
+    executor,
+    homeTargetInput: remoteHomeTargetInput,
+    signal: effectiveDeps.signal,
+    timeoutMs: PAIR_REMOTE_TIMEOUT_MS,
+    approvePairingRequest: async (request) => {
+      publicKey = request.publicKey;
+      const selectedIdentity = await readHomeIdentity(selectedHomeTarget, effectiveDeps);
+      if (!selectedIdentity) {
+        throw new Error('Unable to verify the selected Home identity. No approval was sent.');
+      }
+      const routeIdentity = await readHomeIdentity(resolvedHomeTarget, effectiveDeps);
+      if (!routeIdentity) {
+        throw new Error('Unable to verify the remote Home route identity. No approval was sent.');
+      }
+      assertResolvedHomeTargetIdentity(selectedHomeTarget, selectedIdentity);
+      assertResolvedHomeTargetIdentity(resolvedHomeTarget, routeIdentity);
+      if (routeIdentity !== selectedIdentity) {
+        throw new Error(
+          `The remote Home route resolves to ${routeIdentity}, but the selected Home is ${selectedIdentity}. `
+          + 'No approval was sent.',
+        );
+      }
+      if (request.homeServerIdentityId !== selectedIdentity) {
+        throw new Error(
+          `Remote authentication targets Home ${request.homeServerIdentityId}, but the selected Home is `
+          + `${selectedIdentity}. No approval was sent.`,
+        );
+      }
+      await approveTerminalAuthRequest({
+        publicKey: request.publicKey,
+        pairing: request.pairing,
+        supportsTokenOnly: true,
+        target: resolvedHomeTarget,
+      });
+    },
+  });
+
+  const remoteServerId = result.remoteProfileId;
+  let postCheck: JsonRecord | null = null;
+  if (!noPostCheck.present && remoteServerId) {
+    const checked = await executor.runHappierText([
+      'doctor', 'repair', '--report-only', '--json', '--server', remoteServerId,
+    ], { signal: effectiveDeps.signal, includeStdoutInError: false });
+    let report: unknown = null;
+    try {
+      report = checked.stdout.trim() ? JSON.parse(checked.stdout.trim()) : null;
+    } catch {
+      report = null;
     }
-    // Forward the remote v3 pairing context verbatim so the approval seals a
-    // pairing-secret-bound v3 response. The approval owner is the single
-    // validator and material decision-maker: absent, malformed, or expired
-    // context fails closed there instead of degrading to an unbound legacy
-    // response. Only the short-lived pairing context crosses this boundary —
-    // never the claim secret or any persisted credential.
-    const remotePairing: unknown = request.pairing;
-    await approveTerminalAuthRequest({
-      publicKey,
-      ...(remotePairing !== undefined && remotePairing !== null ? { pairing: remotePairing } : {}),
-      ...(request.supportsTokenOnly === true ? { supportsTokenOnly: true } : {}),
-    });
-  } catch (error) {
-    console.error(error instanceof Error ? error.message : 'Failed to approve auth request.');
-    process.exit(1);
+    postCheck = {
+      ranWithServerId: remoteServerId,
+      exitCode: checked.status,
+      report,
+      ...(report === null && checked.stdout ? { rawStdout: checked.stdout } : {}),
+      ...(checked.stderr ? { stderr: checked.stderr } : {}),
+    };
+  } else if (!noPostCheck.present) {
+    postCheck = { skipped: true, reason: 'remote-server-id-unavailable' };
   }
 
-  if (!json) {
-    console.log('Waiting for the remote machine to claim credentials...');
-  }
-  runSshJson({
-    target: ssh.value,
-    remoteArgs: [remoteExecutable, 'auth', 'wait', '--public-key', publicKey, '--json', '--persist', ...remoteServerArgs],
-  });
-
-  // Capture the remote-side serverId from the request envelope so the
-  // post-pair `doctor repair` can scope to that specific server profile and
-  // surface absence-findings (e.g. "server profile missing") if the remote's
-  // settings haven't refreshed yet between the wait and the doctor invocation.
-  const remoteServerId = typeof request.serverId === 'string' && request.serverId.trim()
-    ? request.serverId.trim()
-    : null;
-
-  if (json) {
+  if (json.present) {
     const envelope: JsonRecord = {
       success: true,
       ssh: ssh.value,
-      publicKey,
-      remoteServerUrl: remoteSelection.serverUrl,
+      ...(publicKey ? { publicKey } : {}),
+      homeServerIdentityId: result.homeServerIdentityId,
+      machineId: result.machineId,
+      remoteServerUrl: resolvedHomeTarget.canonicalAuthUrl,
       remoteServerId,
+      ...(!noPostCheck.present ? { postCheck } : {}),
     };
-    if (postCheckEnabled) {
-      if (!remoteServerId) {
-        envelope.postCheck = {
-          skipped: true,
-          reason: 'remote-server-id-unavailable',
-        };
-      } else {
-        const postCheckArgs = [
-          remoteExecutable, 'doctor', 'repair', '--report-only', '--json',
-          '--server', remoteServerId,
-        ];
-        const captured = runSshCapture({ target: ssh.value, remoteArgs: postCheckArgs });
-        const trimmed = captured.stdout.trim();
-        let parsed: unknown = null;
-        if (trimmed) {
-          try {
-            parsed = JSON.parse(trimmed);
-          } catch {
-            parsed = null;
-          }
-        }
-        envelope.postCheck = {
-          ranWithServerId: remoteServerId,
-          exitCode: captured.status,
-          report: parsed,
-          rawStdout: parsed === null ? captured.stdout : undefined,
-          stderr: captured.stderr || undefined,
-        };
-      }
-    }
     await writeJsonStdout(envelope);
     return;
   }
-
   console.log(`Remote machine paired: ${ssh.value}`);
-
-  if (postCheckEnabled) {
+  if (!noPostCheck.present) {
     if (!remoteServerId) {
-      console.log('');
-      console.log('Skipping post-pair diagnostics because the remote CLI did not report the paired server profile id.');
-      console.log(`Upgrade the remote CLI, then run \`${remoteExecutable} doctor repair\` on the remote if it needs service repair.`);
-      return;
-    }
-    console.log('');
-    console.log('Running post-pair diagnostics on the remote machine...');
-    console.log('');
-    const postCheckArgs = [
-      remoteExecutable, 'doctor', 'repair',
-      '--server', remoteServerId,
-    ];
-    const exitCode = runSshInteractive({ target: ssh.value, remoteArgs: postCheckArgs });
-    if (exitCode !== 0) {
-      console.error(`Post-pair doctor repair exited with code ${exitCode}.`);
-      console.error(`Re-run on the remote: \`${remoteExecutable} doctor repair${remoteServerId ? ` --server ${remoteServerId}` : ''}\`.`);
+      console.log('Skipping post-pair diagnostics because the remote CLI did not report the paired Home profile id.');
+    } else if ((postCheck?.exitCode as number | undefined) !== 0) {
+      console.error(`Post-pair diagnostics exited with code ${String(postCheck?.exitCode ?? 1)}.`);
     }
   }
 }

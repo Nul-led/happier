@@ -6,6 +6,9 @@ import {
 } from '@/auth/terminalAuthApproval';
 import { writeJsonStdout } from '@/cli/output/jsonEnvelope';
 import { applyServerSelectionFromArgs } from '@/server/serverSelection';
+import { parseHomeTargetInput } from '@happier-dev/cli-common/homeTarget';
+import type { ResolvedHomeTarget } from '@happier-dev/cli-common/homeTarget';
+import { resolveCliHomeTarget } from '@/server/homeTarget';
 
 function fail(message: string, exitCode: 1 | 2): never {
   console.error(message);
@@ -49,8 +52,29 @@ async function readRequestPairingEnvelope(path: string): Promise<Record<string, 
   }
 }
 
+async function readRequestPairingEnvelopeFromStdin(): Promise<Record<string, unknown>> {
+  const chunks: Buffer[] = [];
+  let totalBytes = 0;
+  for await (const chunk of process.stdin) {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    totalBytes += bytes.length;
+    if (totalBytes > 64 * 1024) {
+      fail('The request JSON on stdin exceeds the 65536-byte limit.', 2);
+    }
+    chunks.push(bytes);
+  }
+  try {
+    const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not an object');
+    return parsed as Record<string, unknown>;
+  } catch {
+    fail('The request JSON on stdin must be a JSON object.', 2);
+  }
+}
+
 export async function handleAuthApprove(argsRaw: string[]): Promise<void> {
-  const args = await applyServerSelectionFromArgs(argsRaw);
+  const homeTargetFromRequestJson = argsRaw.includes('--home-target-from-request-json');
+  const args = homeTargetFromRequestJson ? argsRaw : await applyServerSelectionFromArgs(argsRaw);
 
   const json = args.includes('--json');
   if (!json) {
@@ -69,11 +93,32 @@ export async function handleAuthApprove(argsRaw: string[]): Promise<void> {
     fail('Missing value for --request-json-file <path>', 2);
   }
   const requestJsonFile = requestJsonFileRaw || null;
+  const requestJsonStdin = args.includes('--request-json-stdin');
+  if (requestJsonFile && requestJsonStdin) {
+    fail('Use only one of --request-json-file or --request-json-stdin.', 2);
+  }
+  if (homeTargetFromRequestJson && (!requestJsonStdin || requestJsonFile || args.includes('--persist'))) {
+    fail('SSH enrollment approval requires one non-persisted request envelope on stdin.', 2);
+  }
 
   let pairing: unknown;
   let supportsTokenOnly = false;
-  if (requestJsonFile) {
-    const envelope = await readRequestPairingEnvelope(requestJsonFile);
+  let target: ResolvedHomeTarget | undefined;
+  if (requestJsonFile || requestJsonStdin) {
+    const envelope = requestJsonStdin
+      ? await readRequestPairingEnvelopeFromStdin()
+      : await readRequestPairingEnvelope(String(requestJsonFile));
+    if (homeTargetFromRequestJson) {
+      const expectedKeys = new Set(['homeTarget', 'pairing', 'publicKey', 'supportsTokenOnly']);
+      if (Object.keys(envelope).some((key) => !expectedKeys.has(key)) || envelope.homeTarget === undefined) {
+        fail('The SSH enrollment request envelope has unexpected or missing fields.', 2);
+      }
+      try {
+        target = await resolveCliHomeTarget(parseHomeTargetInput(envelope.homeTarget));
+      } catch {
+        fail('The SSH enrollment request envelope contains an invalid Home target.', 2);
+      }
+    }
     const envelopePublicKey = typeof envelope.publicKey === 'string' ? envelope.publicKey : '';
     if (envelopePublicKey) {
       const envelopeKey = decodePublicKeyBytes(envelopePublicKey);
@@ -100,11 +145,12 @@ export async function handleAuthApprove(argsRaw: string[]): Promise<void> {
       publicKey: String(publicKeyRaw),
       ...(pairing ? { pairing } : {}),
       ...(supportsTokenOnly ? { supportsTokenOnly: true } : {}),
+      ...(target ? { target } : {}),
     });
   } catch (error) {
     if (error instanceof TerminalPairingContextRequiredError) {
       console.error(error.message);
-      if (!requestJsonFile) {
+      if (!requestJsonFile && !requestJsonStdin) {
         console.error(
           'Save the remote `happier auth request --json` output to a file and re-run with '
             + '--request-json-file <path>, or pair with `happier auth pair-remote --ssh <user@host>`.',

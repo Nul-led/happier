@@ -3,7 +3,7 @@ import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { wantsJson, printJsonEnvelope } from "@/cli/output/jsonEnvelope";
-import { buildSshCommand, safeBashSingleQuote, type SshAuth } from '@/capabilities/systemTasks/ssh/sshTransport';
+import { safeBashSingleQuote, type SshAuth } from '@/capabilities/systemTasks/ssh/sshTransport';
 import { isInteractiveTerminal, promptInput } from '@/terminal/prompts/promptInput';
 import { promptSecret } from '@/terminal/prompts/promptSecret';
 import { resolveHappyHomeDirFromEnvironment } from "@happier-dev/cli-common/agents";
@@ -15,14 +15,21 @@ import {
     resolveRelayAccessConfiguredCanonicalPublicServerUrl,
 } from "@happier-dev/cli-common/relayAccess";
 import type { RelayAccessConfig, RelayAccessExecutionContext, RelayAccessProviderId } from "@happier-dev/cli-common/relayAccess";
-import { readKnownHostsTextSync, sshKeyscanSync, writeKnownHostsTextSync } from '@happier-dev/cli-common/ssh';
+import {
+    readKnownHostsTextSync,
+    runOpenSshRemoteCommand,
+    sshKeyscanSync,
+    writeKnownHostsTextSync,
+} from '@happier-dev/cli-common/ssh';
 import * as systemTasks from '@happier-dev/cli-common/systemTasks';
 import type { SystemTaskJsonObject } from '@happier-dev/protocol';
-import { getActiveServerProfile, upsertServerProfileByUrl } from '@/server/serverProfiles';
+import { getActiveServerProfile } from '@/server/serverProfiles';
 import { isLocalishServerUrl } from '@/server/serverUrlClassification';
-import { reloadConfiguration } from '@/configuration';
-import { defaultWebappUrlFromServerUrl } from '../server/commandUtilities';
-import { runServerSelectionBackgroundServiceFollowUp } from '../backgroundServiceFollowUp';
+import type { ServerSelectionMutationMode } from '../backgroundServiceFollowUp';
+
+type RelayAccessSubcommandOptions = Readonly<{
+    selectionMutationMode?: ServerSelectionMutationMode;
+}>;
 
 type RelayAccessJsonResult = Readonly<{
     configured: boolean;
@@ -43,7 +50,7 @@ export function showRelayAccessHelp(): void {
         notes: [
             'Providers: localOnly, tailscaleServe, tailscaleFunnel, lan, cloudflareNamed',
             'When configuring tailscale/cloudflare, the share URL may require completing provider setup on the host before it becomes available.',
-            'When a local provider returns a share URL, the active local relay profile adopts it while retaining its local upstream URL; disabling the provider restores that local URL.',
+            'Share URLs are provider status only. Home routes are admitted through server-published connection descriptors.',
             'When using --ssh, Happier manages an app-scoped known_hosts file (StrictHostKeyChecking=yes). Use --yes to auto-accept host trust prompts in non-interactive runs.',
         ],
     }));
@@ -164,58 +171,6 @@ async function resolveRelayAccessUpstreamUrl(explicitValue: string | null): Prom
     }
 
     throw new Error('Missing required upstream URL: pass --upstream-url <url> or activate a server profile with a local URL.');
-}
-
-async function adoptLocalRelayAccessShareUrl(shareUrl: string): Promise<boolean> {
-    const active = await getActiveServerProfile().catch(() => null);
-    const localServerUrl = resolveActiveLocalRelayUrl(active);
-    if (!active) return false;
-    if (!localServerUrl || active.serverUrl === shareUrl) return false;
-
-    await upsertServerProfileByUrl({
-        name: active.name,
-        serverUrl: shareUrl,
-        localServerUrl,
-        webappUrl: defaultWebappUrlFromServerUrl(shareUrl),
-        use: true,
-    });
-    reloadConfiguration();
-    return true;
-}
-
-async function resolveLocalRelayAccessProfileRevert(): Promise<Readonly<{
-    active: Awaited<ReturnType<typeof getActiveServerProfile>>;
-    localServerUrl: string;
-}> | null> {
-    const active = await getActiveServerProfile().catch(() => null);
-    const localServerUrl = resolveActiveLocalRelayUrl(active);
-    if (!active || !localServerUrl) return null;
-
-    const configuredShareUrl = await resolveRelayAccessConfiguredCanonicalPublicServerUrl(process.env, {
-        upstreamUrl: localServerUrl,
-    });
-    if (!configuredShareUrl) return null;
-    if (
-        normalizeRelayAccessCanonicalPublicServerUrl(active.serverUrl)
-        !== normalizeRelayAccessCanonicalPublicServerUrl(configuredShareUrl)
-    ) {
-        return null;
-    }
-    return { active, localServerUrl };
-}
-
-async function revertLocalRelayAccessProfile(params: Readonly<{
-    active: Awaited<ReturnType<typeof getActiveServerProfile>>;
-    localServerUrl: string;
-}>): Promise<void> {
-    await upsertServerProfileByUrl({
-        name: params.active.name,
-        serverUrl: params.localServerUrl,
-        localServerUrl: params.localServerUrl,
-        webappUrl: defaultWebappUrlFromServerUrl(params.localServerUrl),
-        use: true,
-    });
-    reloadConfiguration();
 }
 
 function parseConfigFromArgs(providerId: RelayAccessProviderId, args: string[]): RelayAccessConfig {
@@ -550,7 +505,7 @@ function createRelayAccessSshRunner(params: Readonly<{
     return {
         runRemoteText: async (remoteCommand: string) => {
             await ensureHostTrusted();
-            const { command, args, env } = buildSshCommand({
+            return await runOpenSshRemoteCommand({
                 sshBin: 'ssh',
                 target: ssh.target,
                 remoteCommand: ['bash', '-lc', safeBashSingleQuote(remoteCommand)],
@@ -562,14 +517,9 @@ function createRelayAccessSshRunner(params: Readonly<{
                 serverAliveIntervalSec: 15,
                 serverAliveCountMax: 3,
                 ...(ssh.sshConfigFile ? { sshConfigFile: ssh.sshConfigFile } : {}),
+                rejectOnNonZero: false,
+                errorPrefix: 'Relay access SSH command failed',
             });
-
-            const out = spawnSync(command, args, { encoding: 'utf8', ...(env ? { env } : {}) });
-            return {
-                status: typeof out.status === 'number' ? out.status : 1,
-                stdout: String(out.stdout ?? ''),
-                stderr: String(out.stderr ?? out.error?.message ?? ''),
-            };
         },
     };
 }
@@ -832,10 +782,6 @@ async function cmdConfigure(args: string[]): Promise<void> {
         state: snapshot.status.state,
     };
 
-    const adoptedShareUrl = target.kind === 'local' && payload.shareUrl
-        ? await adoptLocalRelayAccessShareUrl(payload.shareUrl)
-        : false;
-
     if (json) {
         await printJsonEnvelope({
             ok: true,
@@ -856,12 +802,6 @@ async function cmdConfigure(args: string[]): Promise<void> {
         console.log(warn("Share URL not available yet. Complete the required setup and retry `happier relay access status`."));
     }
 
-    if (adoptedShareUrl && payload.shareUrl) {
-        await runServerSelectionBackgroundServiceFollowUp({
-            interactive: isInteractiveTerminal(),
-            targetServerUrl: payload.shareUrl,
-        });
-    }
 }
 
 async function cmdDisable(args: string[]): Promise<void> {
@@ -883,13 +823,6 @@ async function cmdDisable(args: string[]): Promise<void> {
         throw new Error(`Unknown relay access disable arguments: ${rest.join(' ')}`);
     }
 
-    // Resolve this before the provider config is removed. Only a profile still
-    // pointing at that provider's own share URL is eligible for reversion; a
-    // profile the user changed independently must remain untouched.
-    const profileRevert = target.kind === 'local'
-        ? await resolveLocalRelayAccessProfileRevert()
-        : null;
-
     const kind = systemTasks.createRelayAccessDisableTaskKind({
         readConfig: async (params) => await readRelayAccessConfig({ ...params, ...(sshRunner ? { runner: sshRunner } : {}) }),
         writeConfig: async (params) => {
@@ -907,25 +840,18 @@ async function cmdDisable(args: string[]): Promise<void> {
         },
     });
 
-    if (profileRevert) {
-        await revertLocalRelayAccessProfile(profileRevert);
-    }
-
     if (json) {
         const payload: RelayAccessJsonResult = { configured: false, providerId: null, shareUrl: null, state: "disabled" };
         await printJsonEnvelope({ ok: true, kind: "relay_access_disable", data: payload });
         return;
     }
     console.log(ok("Relay access disabled."));
-    if (profileRevert) {
-        await runServerSelectionBackgroundServiceFollowUp({
-            interactive: isInteractiveTerminal(),
-            targetServerUrl: profileRevert.localServerUrl,
-        });
-    }
 }
 
-export async function runRelayAccessSubcommand(args: string[]): Promise<boolean> {
+export async function runRelayAccessSubcommand(
+    args: string[],
+    options: RelayAccessSubcommandOptions = {},
+): Promise<boolean> {
     const sub = String(args[0] ?? "").trim();
     const wantsHelp = args.includes('--help') || args.includes('-h');
     if (!sub || sub === 'help' || sub === '--help' || sub === '-h' || wantsHelp) {

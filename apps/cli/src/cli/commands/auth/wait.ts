@@ -1,23 +1,21 @@
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
-import axios from 'axios';
 import tweetnacl from 'tweetnacl';
-import { normalizeServerIdentityIdCapability } from '@happier-dev/protocol';
+import {
+  HomeConnectionDescriptorV1Schema,
+  normalizeServerIdentityIdCapability,
+  type HomeConnectionDescriptorV1,
+} from '@happier-dev/protocol';
 
 import { decodeBase64 } from '@/api/encryption';
 import { writeJsonStdout } from '@/cli/output/jsonEnvelope';
 import { configuration } from '@/configuration';
-import {
-  writeCredentialsDataKey,
-  writeCredentialsTokenOnly,
-  type Credentials,
-  type StoredCredentials,
-} from '@/persistence';
+import type { StoredCredentials } from '@/persistence';
 import { applyServerSelectionFromArgs } from '@/server/serverSelection';
-import { ensureMachineIdForCredentials } from '@/ui/auth';
-import { ApiClient } from '@/api/api';
-import { ensureMachineRegistered } from '@/api/machine/ensureMachineRegistered';
-import { initialMachineMetadata } from '@/daemon/machine/metadata';
+import {
+  persistTerminalEnrollmentCredential,
+  registerTerminalEnrollmentMachine,
+} from '@/auth/persistTerminalEnrollmentCredential';
 import {
   openTerminalProvisioningResponse,
 } from '@/auth/terminalProvisioningResponse';
@@ -25,6 +23,14 @@ import {
   readProtectedLocalStateFile,
   removeProtectedLocalStateFile,
 } from '@/utils/fs/protectedLocalState';
+import { resolveCliHomeTarget, resolveCurrentCliHomeTarget } from '@/server/homeTarget';
+import { acquireTerminalAuthEnrollmentRuntime } from '@/auth/terminalAuthEnrollmentRuntime';
+import {
+  claimTerminalAuthRequest,
+  readTerminalAuthRequestStatus,
+  verifyTerminalAuthEnrollmentRuntime,
+} from '@/auth/terminalAuthEnrollmentClient';
+import { fetchServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
 
 type PendingAuthState = Readonly<{
   publicKey: string;
@@ -36,6 +42,7 @@ type PendingAuthState = Readonly<{
   pairingExpiresAtMs: number;
   supportsTokenOnly: true;
   pairingRequirement: 'v3';
+  homeConnectionDescriptor?: HomeConnectionDescriptorV1;
   createdAt: string;
 }>;
 
@@ -104,6 +111,7 @@ function parsePendingAuthState(raw: string): PendingAuthState {
     pairingExpiresAtMs,
     supportsTokenOnly,
     pairingRequirement,
+    homeConnectionDescriptor,
   } = parsed;
   if (typeof publicKey !== 'string' || !hasCanonicalEncodedLength(publicKey, 'base64', 32)) {
     throw new Error('Invalid auth state (publicKey)');
@@ -122,6 +130,15 @@ function parsePendingAuthState(raw: string): PendingAuthState {
   }
   if (pairingRequirement !== 'v3') {
     throw new Error('Invalid auth state (pairingRequirement)');
+  }
+  const parsedDescriptor = homeConnectionDescriptor === undefined
+    ? undefined
+    : HomeConnectionDescriptorV1Schema.safeParse(homeConnectionDescriptor);
+  if (parsedDescriptor && !parsedDescriptor.success) {
+    throw new Error('Invalid auth state (homeConnectionDescriptor)');
+  }
+  if (parsedDescriptor?.success && parsedDescriptor.data.homeServerIdentityId !== normalizedServerIdentityId) {
+    throw new Error('Invalid auth state (homeConnectionDescriptor identity)');
   }
 
   if (typeof pairingSecret !== 'string' || !hasCanonicalEncodedLength(pairingSecret, 'base64url', 32)) {
@@ -149,6 +166,7 @@ function parsePendingAuthState(raw: string): PendingAuthState {
     pairingExpiresAtMs,
     supportsTokenOnly: true,
     pairingRequirement: 'v3',
+    ...(parsedDescriptor?.success ? { homeConnectionDescriptor: parsedDescriptor.data } : {}),
   };
 }
 
@@ -160,15 +178,7 @@ async function completeClaimedCredentialHandoff(params: Readonly<{
   // must no longer be retryable even if the subsequent registration fails.
   await removeProtectedLocalStateFile(params.statePath, PENDING_AUTH_STATE_PROTECTION);
   try {
-    const { machineId } = await ensureMachineIdForCredentials(params.credentials);
-    const api = await ApiClient.create(params.credentials);
-    const registered = await ensureMachineRegistered({
-      api,
-      machineId,
-      metadata: initialMachineMetadata,
-      caller: 'auth.wait',
-    });
-    return registered.machineId;
+    return await registerTerminalEnrollmentMachine(params.credentials);
   } catch (cause) {
     throw new Error(
       'Authentication credentials were saved, but machine registration is incomplete. '
@@ -205,27 +215,54 @@ export async function handleAuthWait(argsRaw: string[]): Promise<void> {
     createdAtMs: state.pairingCreatedAtMs,
     expiresAtMs: state.pairingExpiresAtMs,
   };
-
+  const selectedTarget = state.homeConnectionDescriptor
+    ? await resolveCliHomeTarget({
+        kind: 'descriptor',
+        descriptor: state.homeConnectionDescriptor,
+        authority: 'trusted_enrollment',
+      })
+    : await resolveCurrentCliHomeTarget();
+  const target = selectedTarget.descriptor
+    ? selectedTarget
+    : await resolveCliHomeTarget({ kind: 'https_url', url: configuration.apiServerUrl });
+  const acquired = target.descriptor
+    ? await acquireTerminalAuthEnrollmentRuntime(target.descriptor, target.preferredTransport)
+    : {
+        ok: true as const,
+        runtime: {
+          runtimeOrigin: target.applicationUrl,
+          carrier: 'https' as const,
+          authenticatedCredentialDestination: {
+            kind: 'https' as const,
+            applicationUrl: target.applicationUrl,
+          },
+        },
+        close: async () => {},
+      };
+  if (!acquired.ok) throw new Error('Unable to acquire the selected Home enrollment carrier');
   const pollIntervalMsRaw = Number(process.env.HAPPIER_AUTH_POLL_INTERVAL_MS ?? '');
   const pollIntervalMs = Number.isFinite(pollIntervalMsRaw) && pollIntervalMsRaw > 0 ? pollIntervalMsRaw : 1000;
 
-  while (true) {
-    const statusRes = await axios.get(`${configuration.apiServerUrl}/v1/auth/request/status`, {
-      params: { publicKey: state.publicKey },
-    });
-    const status = statusRes?.data?.status;
+  try {
+    if (target.descriptor) {
+      const initialSnapshot = await fetchServerFeaturesSnapshot({ serverUrl: acquired.runtime.runtimeOrigin });
+      verifyTerminalAuthEnrollmentRuntime({ target, runtime: acquired.runtime, snapshot: initialSnapshot });
+    }
+    while (true) {
+    const statusData = await readTerminalAuthRequestStatus({ runtime: acquired.runtime, publicKey: state.publicKey });
+    const status = isRecord(statusData) ? statusData.status : undefined;
     if (status === 'not_found') {
       console.error('Authentication request expired. Run `happier auth request --json` again.');
       process.exit(1);
     }
 
     if (status === 'authorized') {
-      const claimRes = await axios.post(`${configuration.apiServerUrl}/v1/auth/request/claim`, {
+      const claimData = await claimTerminalAuthRequest({
+        runtime: acquired.runtime,
         publicKey: state.publicKey,
         claimSecret: state.claimSecret,
       });
-      const claimData = claimRes?.data;
-      if (claimData?.state !== 'authorized') {
+      if (!isRecord(claimData) || claimData.state !== 'authorized') {
         await new Promise((r) => setTimeout(r, pollIntervalMs));
         continue;
       }
@@ -244,6 +281,13 @@ export async function handleAuthWait(argsRaw: string[]): Promise<void> {
         console.error('Unexpected response from server.');
         process.exit(1);
       }
+      if (target.descriptor) {
+        const authenticatedSnapshot = await fetchServerFeaturesSnapshot({
+          serverUrl: acquired.runtime.runtimeOrigin,
+          token,
+        });
+        verifyTerminalAuthEnrollmentRuntime({ target, runtime: acquired.runtime, snapshot: authenticatedSnapshot });
+      }
 
       const terminalSecretKey = decodeBase64(state.secretKey);
       const opened = openTerminalProvisioningResponse({
@@ -259,39 +303,15 @@ export async function handleAuthWait(argsRaw: string[]): Promise<void> {
         process.exit(1);
       }
 
-      if (opened.type === 'dataKey') {
-        const machineKey = opened.key;
-        const publicKey = tweetnacl.box.keyPair.fromSecretKey(machineKey).publicKey;
-        await writeCredentialsDataKey({ publicKey, machineKey, token });
-        const credentials: Credentials = {
-          token,
-          encryption: {
-            type: 'dataKey',
-            publicKey,
-            machineKey,
-          },
-        };
-        const machineId = await completeClaimedCredentialHandoff({ credentials, statePath });
-        await writeJsonStdout({
-          success: true,
-          token,
-          encryptionType: 'dataKey' as const,
-          pairingAuthentication: 'v3' as const,
-          machineId,
-        });
-        return;
-      }
-
-      await writeCredentialsTokenOnly({ token });
-      const credentials: StoredCredentials = {
-        token,
-        encryption: null,
-      };
-      const machineId = await completeClaimedCredentialHandoff({ credentials, statePath });
+      const persisted = await persistTerminalEnrollmentCredential({ token, opened });
+      const machineId = await completeClaimedCredentialHandoff({
+        credentials: persisted.credentials,
+        statePath,
+      });
       await writeJsonStdout({
         success: true,
         token,
-        encryptionType: 'tokenOnly' as const,
+        encryptionType: persisted.encryptionType,
         pairingAuthentication: 'v3' as const,
         machineId,
       });
@@ -299,5 +319,8 @@ export async function handleAuthWait(argsRaw: string[]): Promise<void> {
     }
 
     await new Promise((r) => setTimeout(r, pollIntervalMs));
+    }
+  } finally {
+    await acquired.close();
   }
 }

@@ -6,10 +6,16 @@ import {
   resolveTerminalProvisioningVariantV2,
   sealTerminalProvisioningV3Payload,
   sealTerminalProvisioningV3TokenOnlyPayload,
+  normalizeServerIdentityIdCapability,
 } from '@happier-dev/protocol';
+import type { ResolvedHomeTarget } from '@happier-dev/cli-common/homeTarget';
 
 import { configuration } from '@/configuration';
-import { readStoredCredentials, type StoredCredentials } from '@/persistence';
+import { readStoredCredentials, readStoredCredentialsForServerId, type StoredCredentials } from '@/persistence';
+import { getServerProfile } from '@/server/serverProfiles';
+import { acquireTerminalAuthEnrollmentRuntime } from '@/auth/terminalAuthEnrollmentRuntime';
+import { verifyTerminalAuthEnrollmentRuntime } from '@/auth/terminalAuthEnrollmentClient';
+import { fetchServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
 
 export class TokenOnlyTerminalApprovalUpgradeRequiredError extends Error {
   readonly code = 'TOKEN_ONLY_TERMINAL_APPROVAL_UPGRADE_REQUIRED' as const;
@@ -248,9 +254,13 @@ export async function approveTerminalAuthRequest(params: Readonly<{
   publicKey: string;
   pairing?: unknown;
   supportsTokenOnly?: boolean;
+  target?: ResolvedHomeTarget;
 }>): Promise<void> {
   const recipientPk = decodePublicKey(params.publicKey);
-  const creds = await readStoredCredentials();
+  const targetCredentials = params.target
+    ? await resolveCredentialsForApprovalTarget(params.target)
+    : null;
+  const creds = params.target ? targetCredentials?.credentials ?? null : await readStoredCredentials();
   if (!creds) {
     throw new Error('Not authenticated. Run `happier auth login` first.');
   }
@@ -269,13 +279,93 @@ export async function approveTerminalAuthRequest(params: Readonly<{
     supportsTokenOnly: params.supportsTokenOnly === true,
   });
 
-  await axios.post(
-    `${configuration.apiServerUrl}/v1/auth/response`,
+  const acquired = params.target?.descriptor
+    ? await acquireTerminalAuthEnrollmentRuntime(params.target.descriptor, params.target.preferredTransport)
+    : null;
+  if (acquired && !acquired.ok) {
+    throw new Error('Unable to acquire the selected Home enrollment carrier.');
+  }
+  const runtimeOrigin = acquired?.ok
+    ? acquired.runtime.runtimeOrigin
+    : params.target?.applicationUrl ?? configuration.apiServerUrl;
+  try {
+    if (acquired?.ok && params.target) {
+      const snapshot = await fetchServerFeaturesSnapshot({ serverUrl: runtimeOrigin, token: creds.token });
+      verifyTerminalAuthEnrollmentRuntime({ target: params.target, runtime: acquired.runtime, snapshot });
+    }
+    if (params.target?.authority === 'manual_url' && targetCredentials?.observedHomeServerIdentityId) {
+      const authenticatedSnapshot = await fetchServerFeaturesSnapshot({ serverUrl: runtimeOrigin, token: creds.token });
+      const authenticatedIdentity = authenticatedSnapshot.status === 'ready'
+        ? normalizeServerIdentityIdCapability(
+            authenticatedSnapshot.features.capabilities.serverIdentity?.serverIdentityId,
+          )
+        : null;
+      if (authenticatedIdentity !== targetCredentials.observedHomeServerIdentityId) {
+        throw new Error('The explicit remote Home route changed identity before approval. No approval was sent.');
+      }
+    }
+    await axios.post(
+    `${runtimeOrigin}/v1/auth/response`,
     {
       publicKey: encodePublicKeyBase64(recipientPk),
       response: material.response,
       responseKind: material.kind,
     },
     { headers: { ...buildCurrentAccountStoredContentCompatibilityHttpHeaders(), Authorization: `Bearer ${creds.token}` } },
-  );
+    );
+  } finally {
+    if (acquired?.ok) await acquired.close();
+  }
+}
+
+async function resolveCredentialsForApprovalTarget(target: ResolvedHomeTarget): Promise<Readonly<{
+  credentials: StoredCredentials;
+  observedHomeServerIdentityId: string | null;
+}> | null> {
+  const profileReferences = [
+    target.profileId,
+    target.homeServerIdentityId,
+    target.applicationUrl,
+    target.canonicalAuthUrl,
+  ].filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
+
+  if (target.authority !== 'manual_url') {
+    for (const profileReference of profileReferences) {
+      try {
+        const profile = await getServerProfile(profileReference);
+        const observedIdentity = profile.homeConnectionDescriptor?.homeServerIdentityId ?? null;
+        if (target.homeServerIdentityId && observedIdentity && observedIdentity !== target.homeServerIdentityId) {
+          continue;
+        }
+        const credentials = await readStoredCredentialsForServerId(profile.id);
+        if (credentials) return { credentials, observedHomeServerIdentityId: null };
+      } catch (error) {
+        if (!(error instanceof Error) || !error.message.includes('not found')) throw error;
+      }
+    }
+  }
+
+  // Released pair-remote URL flags may name a public route for a saved
+  // loopback Home. URL coincidence cannot select that Home's bearer. Observe
+  // the stable identity at the explicit route first, then bind credentials by
+  // that identity. A route that does not resolve to a saved Home fails before
+  // any bearer is disclosed.
+  if (target.authority === 'manual_url') {
+    const snapshot = await fetchServerFeaturesSnapshot({ serverUrl: target.applicationUrl });
+    const observedHomeServerIdentityId = snapshot.status === 'ready'
+      ? normalizeServerIdentityIdCapability(snapshot.features.capabilities.serverIdentity?.serverIdentityId)
+      : null;
+    if (!observedHomeServerIdentityId) {
+      throw new Error('Unable to verify the explicit remote Home route. No approval was sent.');
+    }
+    try {
+      const profile = await getServerProfile(observedHomeServerIdentityId);
+      const credentials = await readStoredCredentialsForServerId(profile.id);
+      if (credentials) return { credentials, observedHomeServerIdentityId };
+    } catch (error) {
+      if (!(error instanceof Error) || !error.message.includes('not found')) throw error;
+    }
+    throw new Error('The explicit remote Home route does not match a saved Home. No approval was sent.');
+  }
+  return null;
 }

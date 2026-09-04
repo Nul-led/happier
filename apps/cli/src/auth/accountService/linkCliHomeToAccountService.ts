@@ -1,0 +1,190 @@
+import { publishAccountServiceHomeLink } from '@happier-dev/cli-common/accountService';
+import { resolveHappyHomeDirFromEnvironment } from '@happier-dev/cli-common/agents';
+import {
+  ACCOUNT_DIRECTORY_ME_HTTP_PATH_V1,
+  ACCOUNT_DIRECTORY_ERROR_CODES_V1,
+  AccountDirectoryCapabilitiesSchema,
+  AccountDirectoryHomePutRequestV1Schema,
+  AccountDirectoryHomePutResponseV1Schema,
+  AccountDirectoryLinkPutRequestV1Schema,
+  AccountDirectoryLinkPutResponseV1Schema,
+  AccountDirectoryMeResponseV1Schema,
+  AccountDirectoryRouteErrorResponseV1Schema,
+  buildAccountDirectoryHomeHttpPathV1,
+  buildAccountDirectoryLinkHttpPathV1,
+  normalizeServerIdentityIdCapability,
+} from '@happier-dev/protocol';
+
+import { acquireTerminalAuthEnrollmentRuntime } from '@/auth/terminalAuthEnrollmentRuntime';
+import { fetchServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
+import { readStoredCredentialsForServerId } from '@/persistence';
+import { getActiveServerProfile, getServerProfile, type ServerProfile } from '@/server/serverProfiles';
+
+import {
+  createCliAccountServiceSessionOwner,
+  type CliAccountServiceRestrictedCredential,
+  type CliAccountServiceSelection,
+} from './cliAccountServiceSession';
+
+export type CliHomeLinkResult =
+  | Readonly<{ kind: 'linked'; homeServerIdentityId: string }>
+  | Readonly<{ kind: 'relink_required'; homeServerIdentityId: string }>
+  | Readonly<{ kind: 'unavailable'; reason: 'home_profile_unavailable' | 'home_credentials_unavailable' | 'account_service_credentials_unavailable' | 'home_transport_unavailable' }>
+  | Readonly<{ kind: 'cancelled' | 'failed' }>;
+
+class CliHomeRelinkConflictError extends Error {}
+class CliHomeTransportUnavailableError extends Error {}
+
+function endpointUrl(endpoint: string, path: string): string {
+  return `${endpoint.replace(/\/+$/u, '')}${path}`;
+}
+
+async function parsedRequest<T>(input: Readonly<{
+  url: string;
+  token: string;
+  schema: { safeParse(value: unknown): { success: true; data: T } | { success: false } };
+  init?: RequestInit;
+  signal?: AbortSignal;
+}>): Promise<T> {
+  const headers = new Headers(input.init?.headers);
+  headers.set('Accept', 'application/json');
+  headers.set('Authorization', `Bearer ${input.token}`);
+  const response = await fetch(input.url, { ...input.init, headers, signal: input.signal });
+  if (!response.ok) {
+    if (response.status === 409) {
+      const payload: unknown = await response.json().catch(() => null);
+      const parsed = AccountDirectoryRouteErrorResponseV1Schema.safeParse(payload);
+      if (parsed.success && parsed.data.error === ACCOUNT_DIRECTORY_ERROR_CODES_V1.invalidRequest) {
+        throw new CliHomeRelinkConflictError();
+      }
+    }
+    throw new Error(`Account Service Home-link request failed (${response.status})`);
+  }
+  const parsed = input.schema.safeParse(await response.json().catch(() => null));
+  if (!parsed.success) throw new Error('Invalid Account Service Home-link response');
+  return parsed.data;
+}
+
+export async function linkCliHomeToAccountService(input: Readonly<{
+  homeServerIdentityId?: string;
+  relink: boolean;
+  signal?: AbortSignal;
+}>): Promise<CliHomeLinkResult> {
+  let profile: ServerProfile;
+  try {
+    profile = input.homeServerIdentityId
+      ? await getServerProfile(input.homeServerIdentityId)
+      : await getActiveServerProfile();
+  } catch {
+    return { kind: 'unavailable', reason: 'home_profile_unavailable' };
+  }
+  const descriptor = profile.homeConnectionDescriptor;
+  if (!descriptor || profile.homeConnectionDescriptorAuthority !== 'exact') {
+    return { kind: 'unavailable', reason: 'home_profile_unavailable' };
+  }
+
+  const session = createCliAccountServiceSessionOwner({
+    happyHomeDir: resolveHappyHomeDirFromEnvironment(process.env),
+  });
+  let selection: CliAccountServiceSelection | null;
+  try {
+    selection = await session.readSelection();
+  } catch {
+    return { kind: 'failed' };
+  }
+  if (!selection) return { kind: 'unavailable', reason: 'account_service_credentials_unavailable' };
+  let accountServiceCredential: CliAccountServiceRestrictedCredential | null;
+  try {
+    accountServiceCredential = await session.readCredential(selection);
+  } catch {
+    return { kind: 'failed' };
+  }
+  if (!accountServiceCredential) return { kind: 'unavailable', reason: 'account_service_credentials_unavailable' };
+
+  const snapshot = await fetchServerFeaturesSnapshot({
+    serverUrl: selection.endpoint,
+    token: accountServiceCredential.token,
+    signal: input.signal,
+  });
+  const capability = snapshot.status === 'ready'
+    ? AccountDirectoryCapabilitiesSchema.safeParse(snapshot.features.capabilities.accountDirectory)
+    : null;
+  const observedIdentity = snapshot.status === 'ready'
+    ? normalizeServerIdentityIdCapability(snapshot.features.capabilities.serverIdentity.serverIdentityId)
+    : null;
+  if (!capability?.success || !capability.data.homeDirectory || observedIdentity !== selection.serverIdentityId) {
+    return { kind: 'failed' };
+  }
+
+  const result = await publishAccountServiceHomeLink({
+    home: {
+      homeServerIdentityId: descriptor.homeServerIdentityId,
+      canonicalServerUrl: descriptor.canonicalServerUrl,
+      label: profile.name,
+      connectionDescriptor: descriptor,
+    },
+    issuerServerIdentityId: selection.serverIdentityId,
+    issuerSigningKeyId: capability.data.homeLoginAssertion.keyId,
+    issuerSigningPublicKeyBase64Url: capability.data.homeLoginAssertion.publicKeyBase64Url,
+    relink: input.relink,
+    shouldCancel: () => input.signal?.aborted === true,
+    adapters: {
+      readHomeCredential: async () => await readStoredCredentialsForServerId(profile.id),
+      readAccountServiceCredential: async (identity) => identity === selection.serverIdentityId
+        ? accountServiceCredential
+        : null,
+      readAccountSubject: async (credential) => (await parsedRequest({
+        url: endpointUrl(selection.endpoint, ACCOUNT_DIRECTORY_ME_HTTP_PATH_V1),
+        token: credential.token,
+        schema: AccountDirectoryMeResponseV1Schema,
+        signal: input.signal,
+      })).accountId,
+      publishLinkToHome: async ({ credential, issuerSubjectId, relink }) => {
+        const acquired = await acquireTerminalAuthEnrollmentRuntime(descriptor);
+        if (!acquired.ok) throw new CliHomeTransportUnavailableError();
+        try {
+          const body = AccountDirectoryLinkPutRequestV1Schema.parse({
+            v: 1,
+            issuerServerIdentityId: selection.serverIdentityId,
+            issuerSubjectId,
+            issuerSigningKeyId: capability.data.homeLoginAssertion.keyId,
+            issuerSigningPublicKeyBase64Url: capability.data.homeLoginAssertion.publicKeyBase64Url,
+            relink,
+          });
+          await parsedRequest({
+            url: endpointUrl(acquired.runtime.runtimeOrigin, buildAccountDirectoryLinkHttpPathV1(selection.serverIdentityId)),
+            token: credential.token,
+            schema: AccountDirectoryLinkPutResponseV1Schema,
+            init: { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
+            signal: input.signal,
+          });
+        } finally {
+          await acquired.close().catch(() => undefined);
+        }
+      },
+      publishHomeToAccountService: async ({ home, credential }) => {
+        const body = AccountDirectoryHomePutRequestV1Schema.parse({
+          v: 1,
+          label: home.label,
+          connectionDescriptor: home.connectionDescriptor,
+        });
+        await parsedRequest({
+          url: endpointUrl(selection.endpoint, buildAccountDirectoryHomeHttpPathV1(home.homeServerIdentityId)),
+          token: credential.token,
+          schema: AccountDirectoryHomePutResponseV1Schema,
+          init: { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
+        });
+      },
+    },
+  });
+  if (result.kind === 'linked') return result;
+  if (result.kind === 'cancelled') return { kind: 'cancelled' };
+  if (result.kind === 'unavailable') return { kind: 'unavailable', reason: result.reason };
+  if (result.error instanceof CliHomeRelinkConflictError && !input.relink) {
+    return { kind: 'relink_required', homeServerIdentityId: descriptor.homeServerIdentityId };
+  }
+  if (result.error instanceof CliHomeTransportUnavailableError) {
+    return { kind: 'unavailable', reason: 'home_transport_unavailable' };
+  }
+  return { kind: 'failed' };
+}

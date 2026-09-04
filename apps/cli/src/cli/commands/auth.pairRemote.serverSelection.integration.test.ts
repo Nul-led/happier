@@ -1,470 +1,107 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import fastify from 'fastify';
-import tweetnacl from 'tweetnacl';
-import { buildOpenSshCommand } from '@happier-dev/cli-common/ssh';
+import { describe, expect, it, vi } from 'vitest';
+import type { HappierJsonExecutor } from '@happier-dev/cli-common/systemTasks';
 
-import { createEnvKeyScope } from '@/testkit/env/envScope';
-import { createTempDir, removeTempDir } from '@/testkit/fs/tempDir';
-import { installAxiosFastifyAdapter } from '@/testkit/http/axiosAdapter';
-import { captureConsoleLogAndMuteStdout } from '@/testkit/logger/captureOutput';
-import { setStdioTtyForTest } from '@/testkit/process/stdio';
-import { safeBashSingleQuote } from '@/capabilities/systemTasks/ssh/sshTransport';
-
-const spawnSyncMock = vi.fn();
-const SERVER_IDENTITY_ID = 'srv_pair_remote_home';
-
-function currentPairingContext(): Readonly<{
-  secretB64Url: string;
-  createdAtMs: number;
-  expiresAtMs: number;
-}> {
-  const nowMs = Date.now();
-  return {
-    secretB64Url: Buffer.from(new Uint8Array(32).fill(11)).toString('base64url'),
-    createdAtMs: nowMs - 60_000,
-    expiresAtMs: nowMs + 600_000,
-  };
-}
-
-async function writeCurrentDataKeyCredentials(): Promise<void> {
-  const machineKey = new Uint8Array(32).fill(9);
-  const { writeCredentialsDataKey } = await import('@/persistence');
-  await writeCredentialsDataKey({
-    publicKey: tweetnacl.box.keyPair.fromSecretKey(machineKey).publicKey,
-    machineKey,
-    token: 'local-token',
-  });
-}
-
-function expectPairRemoteSshInvocation(
-  call: readonly unknown[] | undefined,
-  params: Readonly<{
-    target: string;
-    remoteCommand: string;
-  }>,
-): void {
-  expect(call?.[0]).toBe('ssh');
-  const actualArgs = Array.isArray(call?.[1]) ? call[1].map((entry) => String(entry)) : [];
-  const expectedArgs = buildOpenSshCommand({
-    sshBin: 'ssh',
-    target: params.target,
-    remoteCommand: ['bash', '-lc', params.remoteCommand],
-    auth: { mode: 'agent' },
-    knownHostsMode: 'system',
-  }).args;
-  expect(actualArgs).toEqual(expectedArgs);
-}
-
-vi.mock('cross-spawn', () => {
-  return {
-    default: {
-      sync: (...args: any[]) => spawnSyncMock(...(args as [string, string[], any])),
-    },
-  };
-});
-
+const { approveTerminalAuthRequest, writeJsonStdout } = vi.hoisted(() => ({
+  approveTerminalAuthRequest: vi.fn(async () => undefined),
+  writeJsonStdout: vi.fn(async () => undefined),
+}));
+vi.mock('@/auth/terminalAuthApproval', () => ({ approveTerminalAuthRequest }));
+vi.mock('@/server/serverSelection', () => ({ applyServerSelectionFromArgs: async (args: string[]) => args }));
 vi.mock('@/features/serverFeaturesClient', () => ({
   fetchServerFeaturesSnapshot: vi.fn(async () => ({
     status: 'ready',
     features: { capabilities: { serverIdentity: { serverIdentityId: 'srv_pair_remote_home' } } },
   })),
 }));
+vi.mock('@/cli/output/jsonEnvelope', () => ({ writeJsonStdout }));
 
-describe('auth pair-remote server selection', () => {
-  const envKeys = [
-    'HAPPIER_HOME_DIR',
-    'HAPPIER_LOCAL_SERVER_URL',
-    'HAPPIER_SERVER_URL',
-    'HAPPIER_PUBLIC_SERVER_URL',
-    'HAPPIER_WEBAPP_URL',
-    'HAPPIER_VARIANT',
-  ] as const;
+import { handleAuthPairRemote } from './auth/pairRemote';
 
-  let restoreTty: (() => void) | null = null;
-  let localHomeDir = '';
-  let envScope = createEnvKeyScope(envKeys);
+const HOME_SERVER_IDENTITY_ID = 'srv_pair_remote_home';
 
-  beforeEach(async () => {
-    vi.useRealTimers();
-    envScope = createEnvKeyScope(envKeys);
-    localHomeDir = await createTempDir('happier-cli-auth-local-');
-    restoreTty = setStdioTtyForTest({ stdin: false, stdout: false });
-    spawnSyncMock.mockReset();
+describe('auth pair-remote released URL selection', () => {
+  it('keeps released URL aliases as thin inputs to the single-process enrollment command', async () => {
+    const seen: Array<Readonly<{ args: readonly string[]; input?: string }>> = [];
+    const executor: HappierJsonExecutor = {
+      runHappierText: async (args, options) => {
+        seen.push({ args, ...(options?.input ? { input: options.input } : {}) });
+        if (args[0] === 'doctor') {
+          return { status: 0, stdout: JSON.stringify({ ok: true, kind: 'doctor_report' }), stderr: '' };
+        }
+        const now = Date.now();
+        const stdout = [
+          JSON.stringify({
+            kind: 'remote_home_enrollment_pairing_request',
+            protocolVersion: 1,
+            publicKey: Buffer.alloc(32, 3).toString('base64'),
+            homeServerIdentityId: HOME_SERVER_IDENTITY_ID,
+            pairing: {
+              secretB64Url: Buffer.alloc(32, 4).toString('base64url'),
+              createdAtMs: now,
+              expiresAtMs: now + 60_000,
+            },
+            supportsTokenOnly: true,
+            pairingRequirement: 'v3',
+          }),
+          JSON.stringify({
+            kind: 'remote_home_enrollment_result',
+            protocolVersion: 1,
+            success: true,
+            homeServerIdentityId: HOME_SERVER_IDENTITY_ID,
+            machineId: 'remote-machine',
+            encryptionType: 'dataKey',
+            pairingAuthentication: 'v3',
+            remoteProfileId: 'remote-home-profile',
+          }),
+        ].join('\n') + '\n';
+        options?.onStdoutChunk?.(stdout);
+        return { status: 0, stdout, stderr: '' };
+      },
+      runHappierJson: async () => {
+        throw new Error('split JSON command is not allowed');
+      },
+    };
+
+    await handleAuthPairRemote([
+      '--ssh',
+      'user@host',
+      '--json',
+      '--remote-server-url',
+      'https://relay.example.test',
+      '--remote-local-server-url',
+      'http://127.0.0.1:3010',
+      '--remote-webapp-url',
+      'https://app.example.test',
+    ], {
+      createEnrollmentExecutor: () => executor,
+    });
+
+    expect(seen[0]).toEqual({
+      args: ['auth', 'enroll-remote', '--json-lines', '--home-target-stdin'],
+      input: JSON.stringify({
+        kind: 'https_url',
+        url: 'https://relay.example.test',
+        localUrl: 'http://127.0.0.1:3010',
+        webappUrl: 'https://app.example.test',
+      }),
+    });
+    expect(seen[1]?.args).toEqual([
+      'doctor', 'repair', '--report-only', '--json', '--server', 'remote-home-profile',
+    ]);
+    expect(approveTerminalAuthRequest).toHaveBeenCalledWith(expect.objectContaining({
+      supportsTokenOnly: true,
+      target: expect.objectContaining({
+        authority: 'manual_url',
+        applicationUrl: 'https://relay.example.test',
+      }),
+    }));
+    expect(JSON.stringify(seen)).not.toMatch(/auth.*(?:request|wait)|--persist|local-token/u);
+    expect(writeJsonStdout).toHaveBeenCalledWith(expect.objectContaining({
+      remoteServerId: 'remote-home-profile',
+      postCheck: expect.objectContaining({
+        ranWithServerId: 'remote-home-profile',
+        exitCode: 0,
+      }),
+    }));
   });
-
-  afterEach(async () => {
-    restoreTty?.();
-    restoreTty = null;
-    envScope.restore();
-    vi.resetModules();
-    vi.unstubAllGlobals();
-    await removeTempDir(localHomeDir);
-  });
-
-  it('pairs in text mode with an explicit remote server URL while approving through the local API URL', async () => {
-    const requests = new Map<string, { response: string | null }>();
-    const app = fastify({ logger: false });
-
-    app.post('/v1/auth/response', async (req, reply) => {
-      const authHeader = String((req.headers as any)?.authorization ?? '');
-      if (authHeader !== 'Bearer local-token') return reply.code(401).send({ error: 'unauthorized' });
-      const body = req.body as { publicKey?: unknown; response?: unknown } | undefined;
-      const publicKey = typeof body?.publicKey === 'string' ? body.publicKey : '';
-      const response = typeof body?.response === 'string' ? body.response : '';
-      if (!publicKey || !response) return reply.code(400).send({ error: 'invalid' });
-      requests.set(publicKey, { response });
-      return reply.send({ success: true });
-    });
-
-    await app.ready();
-    const restoreAxios = installAxiosFastifyAdapter({ app, origin: 'http://happier-auth.test' });
-    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((code?: string | number | null | undefined): never => {
-      throw new Error(`process.exit:${String(code ?? '')}`);
-    });
-
-    try {
-      envScope.patch({
-        HAPPIER_HOME_DIR: localHomeDir,
-        HAPPIER_SERVER_URL: 'http://happier-auth.test',
-        HAPPIER_LOCAL_SERVER_URL: 'http://happier-auth.test',
-        HAPPIER_PUBLIC_SERVER_URL: 'https://relay.example.test',
-        HAPPIER_WEBAPP_URL: 'https://app.example.test',
-        HAPPIER_VARIANT: 'stable',
-      });
-      vi.resetModules();
-      await writeCurrentDataKeyCredentials();
-
-      const remoteKeypair = tweetnacl.box.keyPair();
-      const remotePublicKey = Buffer.from(remoteKeypair.publicKey).toString('base64');
-      const remoteRequestJson = JSON.stringify({
-        publicKey: remotePublicKey,
-        serverIdentityId: SERVER_IDENTITY_ID,
-        serverUrl: 'https://relay.example.test',
-        pairing: currentPairingContext(),
-      });
-
-      spawnSyncMock
-        .mockImplementationOnce(() => ({
-          status: 0,
-          stdout: Buffer.from(remoteRequestJson + '\n', 'utf8'),
-          stderr: Buffer.alloc(0),
-        }))
-        .mockImplementationOnce(() => ({
-          status: 0,
-          stdout: Buffer.from(JSON.stringify({ success: true }) + '\n', 'utf8'),
-          stderr: Buffer.alloc(0),
-        }));
-
-      vi.resetModules();
-      const { handleAuthPairRemote } = await import('./auth/pairRemote');
-      const output = captureConsoleLogAndMuteStdout();
-      try {
-        await expect(handleAuthPairRemote([
-          '--ssh',
-          'user@host',
-          '--no-post-check',
-          '--remote-server-url',
-          'https://relay.example.test',
-          '--remote-webapp-url',
-          'https://app.example.test',
-        ])).resolves.toBeUndefined();
-      } finally {
-        output.restore();
-      }
-
-      expect(requests.has(remotePublicKey)).toBe(true);
-      expect(output.logs.join('\n')).toContain('Remote machine paired');
-      expectPairRemoteSshInvocation(spawnSyncMock.mock.calls[0], {
-        target: 'user@host',
-        remoteCommand: [
-          safeBashSingleQuote('happier'),
-          safeBashSingleQuote('auth'),
-          safeBashSingleQuote('request'),
-          safeBashSingleQuote('--json'),
-          safeBashSingleQuote('--persist'),
-          safeBashSingleQuote('--server-url'),
-          safeBashSingleQuote('https://relay.example.test'),
-          safeBashSingleQuote('--webapp-url'),
-          safeBashSingleQuote('https://app.example.test'),
-        ].join(' '),
-      });
-    } finally {
-      exitSpy.mockRestore();
-      restoreAxios();
-      await app.close().catch(() => {});
-    }
-  }, 20_000);
-
-  it('prompts with current-machine reachable address choices when the selected relay is loopback-only', async () => {
-    const requests = new Map<string, { response: string | null }>();
-    const app = fastify({ logger: false });
-
-    app.post('/v1/auth/response', async (req, reply) => {
-      const authHeader = String((req.headers as any)?.authorization ?? '');
-      if (authHeader !== 'Bearer local-token') return reply.code(401).send({ error: 'unauthorized' });
-      const body = req.body as { publicKey?: unknown; response?: unknown } | undefined;
-      const publicKey = typeof body?.publicKey === 'string' ? body.publicKey : '';
-      const response = typeof body?.response === 'string' ? body.response : '';
-      if (!publicKey || !response) return reply.code(400).send({ error: 'invalid' });
-      requests.set(publicKey, { response });
-      return reply.send({ success: true });
-    });
-
-    await app.ready();
-    const restoreAxios = installAxiosFastifyAdapter({ app, origin: 'http://127.0.0.1:52753' });
-    const restoreInteractiveTty = setStdioTtyForTest({ stdin: true, stdout: true });
-
-    try {
-      envScope.patch({
-        HAPPIER_HOME_DIR: localHomeDir,
-        HAPPIER_SERVER_URL: 'http://127.0.0.1:52753',
-        HAPPIER_WEBAPP_URL: 'http://127.0.0.1:52753',
-        HAPPIER_VARIANT: 'stable',
-      });
-      vi.resetModules();
-      await writeCurrentDataKeyCredentials();
-
-      const remoteKeypair = tweetnacl.box.keyPair();
-      const remotePublicKey = Buffer.from(remoteKeypair.publicKey).toString('base64');
-      const remoteReachableUrl = 'http://100.96.55.1:52753';
-
-      spawnSyncMock
-        .mockImplementationOnce(() => ({
-          status: 0,
-          stdout: Buffer.from(JSON.stringify({
-            publicKey: remotePublicKey,
-            serverIdentityId: SERVER_IDENTITY_ID,
-            serverUrl: remoteReachableUrl,
-            pairing: currentPairingContext(),
-          }) + '\n', 'utf8'),
-          stderr: Buffer.alloc(0),
-        }))
-        .mockImplementationOnce(() => ({
-          status: 0,
-          stdout: Buffer.from(JSON.stringify({ success: true }) + '\n', 'utf8'),
-          stderr: Buffer.alloc(0),
-      }));
-
-      const promptForCurrentMachineReachableServerUrl = vi.fn(async () => remoteReachableUrl);
-
-      vi.resetModules();
-      const { handleAuthPairRemote } = await import('./auth/pairRemote');
-      const output = captureConsoleLogAndMuteStdout();
-      try {
-        await expect(handleAuthPairRemote(['--ssh', 'user@host', '--no-post-check'], {
-          promptForCurrentMachineReachableServerUrl,
-        })).resolves.toBeUndefined();
-      } finally {
-        output.restore();
-      }
-
-      expect(promptForCurrentMachineReachableServerUrl).toHaveBeenCalledWith(expect.objectContaining({
-        localServerUrl: 'http://127.0.0.1:52753',
-      }));
-      expect(requests.has(remotePublicKey)).toBe(true);
-      expectPairRemoteSshInvocation(spawnSyncMock.mock.calls[0], {
-        target: 'user@host',
-        remoteCommand: [
-          safeBashSingleQuote('happier'),
-          safeBashSingleQuote('auth'),
-          safeBashSingleQuote('request'),
-          safeBashSingleQuote('--json'),
-          safeBashSingleQuote('--persist'),
-          safeBashSingleQuote('--server-url'),
-          safeBashSingleQuote(remoteReachableUrl),
-          safeBashSingleQuote('--webapp-url'),
-          safeBashSingleQuote(remoteReachableUrl),
-        ].join(' '),
-      });
-    } finally {
-      restoreInteractiveTty();
-      restoreAxios();
-      await app.close().catch(() => {});
-    }
-  }, 20_000);
-
-  it('fails before ssh when the selected relay is loopback and no remote server URL is provided', async () => {
-    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((code?: string | number | null | undefined): never => {
-      throw new Error(`process.exit:${String(code ?? '')}`);
-    });
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-
-    try {
-      envScope.patch({
-        HAPPIER_HOME_DIR: localHomeDir,
-        HAPPIER_SERVER_URL: 'http://127.0.0.1:52753',
-        HAPPIER_WEBAPP_URL: 'http://127.0.0.1:52753',
-        HAPPIER_VARIANT: 'stable',
-      });
-      spawnSyncMock.mockImplementationOnce(() => ({
-        status: 0,
-        stdout: Buffer.from(JSON.stringify({ publicKey: Buffer.from(new Uint8Array(32)).toString('base64') }) + '\n', 'utf8'),
-        stderr: Buffer.alloc(0),
-      }));
-
-      vi.resetModules();
-      const { handleAuthPairRemote } = await import('./auth/pairRemote');
-      await expect(handleAuthPairRemote(['--ssh', 'user@host', '--json'])).rejects.toThrow('process.exit:1');
-
-      expect(spawnSyncMock).not.toHaveBeenCalled();
-      expect(errorSpy.mock.calls.map((call) => call.join(' ')).join('\n')).toContain('--remote-server-url');
-    } finally {
-      errorSpy.mockRestore();
-      exitSpy.mockRestore();
-    }
-  });
-
-  it('stops before approval when the remote request reports a different relay', async () => {
-    const requests = new Map<string, { response: string | null }>();
-    const app = fastify({ logger: false });
-
-    app.post('/v1/auth/response', async (req, reply) => {
-      const body = req.body as { publicKey?: unknown; response?: unknown } | undefined;
-      const publicKey = typeof body?.publicKey === 'string' ? body.publicKey : '';
-      const response = typeof body?.response === 'string' ? body.response : '';
-      if (publicKey && response) {
-        requests.set(publicKey, { response });
-      }
-      return reply.send({ success: true });
-    });
-
-    await app.ready();
-    const restoreAxios = installAxiosFastifyAdapter({ app, origin: 'https://relay.example.test' });
-    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((code?: string | number | null | undefined): never => {
-      throw new Error(`process.exit:${String(code ?? '')}`);
-    });
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-
-    try {
-      envScope.patch({
-        HAPPIER_HOME_DIR: localHomeDir,
-        HAPPIER_SERVER_URL: 'https://relay.example.test',
-        HAPPIER_WEBAPP_URL: 'https://app.example.test',
-        HAPPIER_VARIANT: 'stable',
-      });
-      vi.resetModules();
-      await writeCurrentDataKeyCredentials();
-
-      const remotePublicKey = Buffer.from(tweetnacl.box.keyPair().publicKey).toString('base64');
-      spawnSyncMock
-        .mockImplementationOnce(() => ({
-          status: 0,
-          stdout: Buffer.from(JSON.stringify({
-            publicKey: remotePublicKey,
-            serverIdentityId: SERVER_IDENTITY_ID,
-            serverUrl: 'https://other-relay.example.test',
-          }) + '\n', 'utf8'),
-          stderr: Buffer.alloc(0),
-        }))
-        .mockImplementationOnce(() => ({
-          status: 0,
-          stdout: Buffer.from(JSON.stringify({ success: true }) + '\n', 'utf8'),
-          stderr: Buffer.alloc(0),
-        }));
-
-      vi.resetModules();
-      const { handleAuthPairRemote } = await import('./auth/pairRemote');
-      await expect(handleAuthPairRemote(['--ssh', 'user@host', '--json'])).rejects.toThrow('process.exit:1');
-
-      expect(requests.size).toBe(0);
-      expect(spawnSyncMock).toHaveBeenCalledTimes(1);
-      expect(errorSpy.mock.calls.map((call) => call.join(' ')).join('\n')).toContain('different relay');
-    } finally {
-      errorSpy.mockRestore();
-      exitSpy.mockRestore();
-      restoreAxios();
-      await app.close().catch(() => {});
-    }
-  }, 20_000);
-
-  it('accepts the canonical relay identity from publicServerUrl when the remote request uses a local relay URL', async () => {
-    const requests = new Map<string, { response: string | null }>();
-    const app = fastify({ logger: false });
-
-    app.post('/v1/auth/response', async (req, reply) => {
-      const authHeader = String((req.headers as any)?.authorization ?? '');
-      if (authHeader !== 'Bearer local-token') return reply.code(401).send({ error: 'unauthorized' });
-      const body = req.body as { publicKey?: unknown; response?: unknown } | undefined;
-      const publicKey = typeof body?.publicKey === 'string' ? body.publicKey : '';
-      const response = typeof body?.response === 'string' ? body.response : '';
-      if (!publicKey || !response) return reply.code(400).send({ error: 'invalid' });
-      requests.set(publicKey, { response });
-      return reply.send({ success: true });
-    });
-
-    await app.ready();
-    const restoreAxios = installAxiosFastifyAdapter({ app, origin: 'http://127.0.0.1:52753' });
-    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((code?: string | number | null | undefined): never => {
-      throw new Error(`process.exit:${String(code ?? '')}`);
-    });
-
-    try {
-      envScope.patch({
-        HAPPIER_HOME_DIR: localHomeDir,
-        HAPPIER_SERVER_URL: 'http://127.0.0.1:52753',
-        HAPPIER_LOCAL_SERVER_URL: 'http://127.0.0.1:52753',
-        HAPPIER_PUBLIC_SERVER_URL: 'https://relay.example.test',
-        HAPPIER_WEBAPP_URL: 'https://app.example.test',
-        HAPPIER_VARIANT: 'stable',
-      });
-      vi.resetModules();
-      await writeCurrentDataKeyCredentials();
-
-      const remotePublicKey = Buffer.from(tweetnacl.box.keyPair().publicKey).toString('base64');
-      spawnSyncMock
-        .mockImplementationOnce(() => ({
-          status: 0,
-          stdout: Buffer.from(JSON.stringify({
-            publicKey: remotePublicKey,
-            serverIdentityId: SERVER_IDENTITY_ID,
-            serverUrl: 'http://127.0.0.1:52753',
-            publicServerUrl: 'https://relay.example.test',
-            pairing: currentPairingContext(),
-          }) + '\n', 'utf8'),
-          stderr: Buffer.alloc(0),
-        }))
-        .mockImplementationOnce(() => ({
-          status: 0,
-          stdout: Buffer.from(JSON.stringify({ success: true }) + '\n', 'utf8'),
-          stderr: Buffer.alloc(0),
-        }));
-
-      vi.resetModules();
-      const { handleAuthPairRemote } = await import('./auth/pairRemote');
-      await expect(handleAuthPairRemote([
-        '--ssh',
-        'user@host',
-        '--json',
-        '--no-post-check',
-        '--server-url-for-remote',
-        'https://relay.example.test',
-        '--remote-local-server-url',
-        'http://127.0.0.1:52753',
-        '--remote-webapp-url',
-        'https://app.example.test',
-      ])).resolves.toBeUndefined();
-
-      expect(requests.has(remotePublicKey)).toBe(true);
-      expectPairRemoteSshInvocation(spawnSyncMock.mock.calls[0], {
-        target: 'user@host',
-        remoteCommand: [
-          safeBashSingleQuote('happier'),
-          safeBashSingleQuote('auth'),
-          safeBashSingleQuote('request'),
-          safeBashSingleQuote('--json'),
-          safeBashSingleQuote('--persist'),
-          safeBashSingleQuote('--server-url'),
-          safeBashSingleQuote('https://relay.example.test'),
-          safeBashSingleQuote('--webapp-url'),
-          safeBashSingleQuote('https://app.example.test'),
-          safeBashSingleQuote('--local-server-url'),
-          safeBashSingleQuote('http://127.0.0.1:52753'),
-        ].join(' '),
-      });
-    } finally {
-      exitSpy.mockRestore();
-      restoreAxios();
-      await app.close().catch(() => {});
-    }
-  }, 20_000);
 });

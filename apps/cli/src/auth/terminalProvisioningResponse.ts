@@ -65,8 +65,7 @@ export function openTerminalProvisioningResponse(params: Readonly<{
       : null;
   }
 
-  // Current requesters always carry authenticated v3 pairing context. No
-  // released or predecessor pending state can resume here without it, so an
-  // unbound v1/v2 response is an unsafe downgrade rather than compatibility.
+  // An active request with v3 context never falls back to an unbound v1/v2
+  // response.
   return null;
 }

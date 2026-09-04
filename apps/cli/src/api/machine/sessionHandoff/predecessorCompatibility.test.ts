@@ -636,7 +636,7 @@ describe('session handoff predecessor wire compatibility', () => {
       })).resolves.toEqual({
         ok: false,
         errorCode: 'workspace_sync_update_required',
-        error: 'workspace_sync_update_required',
+        error: 'Workspace handoff requires a workspace sync capable client',
       });
     } finally {
       await rm(activeServerDir, { recursive: true, force: true });

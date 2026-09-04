@@ -9,6 +9,7 @@ import { handleAuthPairRemote } from './auth/pairRemote';
 import { handleAuthRequest } from './auth/request';
 import { handleAuthStatus } from './auth/status';
 import { handleAuthWait } from './auth/wait';
+import { handleAuthEnrollRemote } from './auth/enrollRemote';
 
 type SafeAuthErrorDiagnostic = Readonly<{
   name: string;
@@ -76,6 +77,9 @@ export async function handleAuthCommand(args: string[]): Promise<void> {
       return;
     case 'pair-remote':
       await handleAuthPairRemote(args.slice(1));
+      return;
+    case 'enroll-remote':
+      await handleAuthEnrollRemote(args.slice(1));
       return;
     case 'logout':
       await handleAuthLogout(args.slice(1));

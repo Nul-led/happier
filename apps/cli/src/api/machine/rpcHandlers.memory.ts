@@ -13,16 +13,11 @@ import { searchTier1Memory, searchTier2Memory } from '@/daemon/memory/searchMemo
 import { getMemoryWindow } from '@/daemon/memory/getMemoryWindow';
 import { openDeepIndexDb } from '@/daemon/memory/deepIndex/deepIndexDb';
 import { openSummaryShardIndexDb } from '@/daemon/memory/summaryShardIndexDb';
-import { stat } from 'node:fs/promises';
-import { join } from 'node:path';
-import { mkdirSync } from 'node:fs';
-
-import { resolveMemoryIndexPaths } from '@/daemon/memory/memoryIndexPaths';
 import { resolveOperationalMemoryEmbeddingsSettings } from '@/daemon/memory/resolveOperationalMemoryEmbeddingsSettings';
-import { deriveSettingsSecretsReadKeysForCredentials } from '@/settings/secrets/settingsSecretsKey';
 
 import type { RpcHandlerManager } from '../rpc/RpcHandlerManager';
 import type { MemoryWorkerHandle } from '@/daemon/memory/memoryWorker';
+import { getSqliteFootprintBytes } from '@/daemon/memory/sqliteFootprint';
 
 const EnsureUpToDateParamsSchema = z
   .object({
@@ -59,6 +54,8 @@ export function registerMachineMemoryRpcHandlers(params: Readonly<{
     const embeddingsDiagnostics = memoryWorker.getEmbeddingsDiagnostics();
     const tier1DbPath = memoryWorker.getTier1DbPath();
     const deepDbPath = memoryWorker.getDeepDbPath();
+    const tier1DbPhysicalPath = memoryWorker.getTier1DbPhysicalPath?.() ?? tier1DbPath;
+    const deepDbPhysicalPath = memoryWorker.getDeepDbPhysicalPath?.() ?? deepDbPath;
     const hintsIndexReady = typeof tier1DbPath === 'string' && tier1DbPath.trim().length > 0;
     const deepIndexReady = typeof deepDbPath === 'string' && deepDbPath.trim().length > 0;
     const tier1Stats = (() => {
@@ -95,15 +92,9 @@ export function registerMachineMemoryRpcHandlers(params: Readonly<{
     const activeIndexSearchable = settings.indexMode === 'deep' ? deepIndexHasContent : hintsIndexHasContent;
     const workerStatus = memoryWorker.getWorkerStatus();
 
-    const readBytes = async (path: string | null): Promise<number | null> => {
-      if (!path) return null;
-      try {
-        const s = await stat(path);
-        return typeof s.size === 'number' && Number.isFinite(s.size) ? Math.max(0, Math.trunc(s.size)) : null;
-      } catch {
-        return null;
-      }
-    };
+    const readBytes = async (path: string | null): Promise<number | null> => (
+      path ? await getSqliteFootprintBytes(path) : null
+    );
 
     const indexContent = tier1Stats || deepStats
       ? {
@@ -146,8 +137,8 @@ export function registerMachineMemoryRpcHandlers(params: Readonly<{
       embeddingsUsingFallback: embeddingsDiagnostics.usingFallback,
       tier1DbPath,
       deepDbPath,
-      tier1DbBytes: await readBytes(tier1DbPath),
-      deepDbBytes: await readBytes(deepDbPath),
+      tier1DbBytes: await readBytes(tier1DbPhysicalPath),
+      deepDbBytes: await readBytes(deepDbPhysicalPath),
       indexContent,
       worker: workerStatus ?? null,
       queue: tier1Stats?.queue
@@ -191,16 +182,16 @@ export function registerMachineMemoryRpcHandlers(params: Readonly<{
     return next;
   });
 
-  rpcHandlerManager.registerHandler(RPC_METHODS.DAEMON_MEMORY_ENSURE_UP_TO_DATE, async (raw: unknown) => {
+  rpcHandlerManager.registerHandler(RPC_METHODS.DAEMON_MEMORY_ENSURE_UP_TO_DATE, async (raw: unknown, context) => {
     const parsed = EnsureUpToDateParamsSchema.safeParse(raw ?? {});
     if (!parsed.success) {
       return { ok: false, errorCode: 'invalid_parameters', error: 'invalid_parameters' };
     }
-    await memoryWorker.ensureUpToDate(parsed.data.sessionId);
+    await memoryWorker.ensureUpToDate(parsed.data.sessionId, context?.signal);
     return { ok: true };
   });
 
-  rpcHandlerManager.registerHandler(RPC_METHODS.DAEMON_MEMORY_SEARCH, async (raw: unknown): Promise<MemorySearchResultV1> => {
+  rpcHandlerManager.registerHandler(RPC_METHODS.DAEMON_MEMORY_SEARCH, async (raw: unknown, context): Promise<MemorySearchResultV1> => {
     const parsed = MemorySearchQueryV1Schema.safeParse(raw);
     if (!parsed.success) {
       return { v: 1, ok: false, errorCode: 'memory_invalid_query', error: 'memory_invalid_query' };
@@ -216,25 +207,10 @@ export function registerMachineMemoryRpcHandlers(params: Readonly<{
       const deepPath = memoryWorker.getDeepDbPath();
       if (!deepPath) return { v: 1, ok: false, errorCode: 'memory_index_missing', error: 'memory_index_missing' };
       const embeddings = resolveOperationalMemoryEmbeddingsSettings(settings.embeddings);
-      const embeddingsProviderSettings = resolveOperationalMemoryEmbeddingsSettings(settings.embeddings);
       const embedQuery = await (async () => {
-        if (!embeddings?.enabled || !embeddingsProviderSettings?.enabled) return undefined;
-        const paths = resolveMemoryIndexPaths();
-        const cacheDir = join(paths.modelsDir, 'transformers');
-        try {
-          mkdirSync(cacheDir, { recursive: true });
-        } catch {
-          // best-effort
-        }
-        const { readStoredCredentials } = await import('@/persistence');
-        const credentials = await readStoredCredentials();
-        const { resolveEmbeddingsProvider } = await import('@/daemon/memory/deepIndex/embeddings/resolveEmbeddingsProvider');
-        const provider = await resolveEmbeddingsProvider({
-          settings: embeddingsProviderSettings,
-          cacheDir,
-          settingsSecretsReadKeys: credentials ? deriveSettingsSecretsReadKeysForCredentials(credentials) : [],
-        });
-        return provider.provider?.embedQuery;
+        if (!embeddings?.enabled) return undefined;
+        const provider = await memoryWorker.resolveEmbeddingsProvider?.(context?.signal);
+        return provider?.provider?.embedQuery;
       })();
       return await searchTier2Memory({
         dbPath: deepPath,
@@ -243,6 +219,7 @@ export function registerMachineMemoryRpcHandlers(params: Readonly<{
         candidateLimit: settings.deep.candidateLimit,
         ...(embeddings ? { embeddings } : {}),
         ...(embedQuery ? { embedQuery } : {}),
+        ...(context?.signal ? { signal: context.signal } : {}),
       });
     }
 
@@ -251,7 +228,7 @@ export function registerMachineMemoryRpcHandlers(params: Readonly<{
     return searchTier1Memory({ dbPath: tier1Path, query: parsed.data });
   });
 
-  rpcHandlerManager.registerHandler(RPC_METHODS.DAEMON_MEMORY_GET_WINDOW, async (raw: unknown): Promise<MemoryWindowV1> => {
+  rpcHandlerManager.registerHandler(RPC_METHODS.DAEMON_MEMORY_GET_WINDOW, async (raw: unknown, context): Promise<MemoryWindowV1> => {
     const parsed = GetWindowParamsSchema.safeParse(raw);
     if (!parsed.success) {
       return MemoryWindowV1Schema.parse({ v: 1, snippets: [], citations: [] });
@@ -278,6 +255,7 @@ export function registerMachineMemoryRpcHandlers(params: Readonly<{
       seqTo: parsed.data.seqTo,
       paddingMessages: memoryWorker.getSettings().hints.paddingMessagesOnVerify,
       contentPolicy: settings.contentPolicy,
+      ...(context?.signal ? { signal: context.signal } : {}),
     });
     return MemoryWindowV1Schema.parse(window);
   });

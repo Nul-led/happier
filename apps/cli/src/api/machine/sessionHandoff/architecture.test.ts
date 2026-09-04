@@ -6,7 +6,6 @@ import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 
 import {
     classifyWorkspaceSyncAdmission,
-    hasRetiredWorkspaceTransfer,
 } from './workspaceSyncGuard';
 import { projectReleasedSessionHandoffRequestForMethod } from './predecessorCompatibility';
 
@@ -84,7 +83,6 @@ describe('sessionHandoff architecture', () => {
             handoffId: 'handoff_retired',
             workspaceTransfer: { enabled: true, strategy: 'sync_changes', conflictPolicy: 'replace_existing' },
         };
-        expect(hasRetiredWorkspaceTransfer(retiredTransferRequest)).toBe(true);
         expect(classifyWorkspaceSyncAdmission(retiredTransferRequest)).toEqual({ kind: 'update_required' });
         expect(classifyWorkspaceSyncAdmission({
             handoffId: 'handoff_retired_reverse',

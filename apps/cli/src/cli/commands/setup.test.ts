@@ -6,9 +6,12 @@ import { join } from 'node:path';
 import type { BackgroundServiceSetupGuidance } from '@happier-dev/cli-common/systemTasks';
 import type { SyncInstalledFirstPartyShimsResult } from '@happier-dev/cli-common/firstPartyRuntime';
 import type { ActiveServerStoredTokenValidationResult } from '@/auth/validateStoredAuthTokenAgainstActiveServer';
+import type { HomeConnectionDescriptorV1 } from '@happier-dev/protocol';
 import { captureConsoleLogAndMuteStdout, captureStdoutJsonOutput } from '@/testkit/logger/captureOutput';
 import { createEnvKeyScope } from '@/testkit/env/envScope';
 import { withTempDir } from '@/testkit/fs/tempDir';
+import { reconcileCreatedPersonalHome } from './home/createLocalPersonalHome';
+import { handleHomeCommand, type HomeCommandDeps } from './home';
 
 const { getAgentCliSetupRecommendedIdsMock } = vi.hoisted(() => ({
   getAgentCliSetupRecommendedIdsMock: vi.fn(() => ['alpha', 'beta']),
@@ -65,6 +68,7 @@ describe('happier setup', () => {
     'HAPPIER_PUBLIC_SERVER_URL',
     'HAPPIER_WEBAPP_URL',
     'HAPPIER_ACTIVE_SERVER_ID',
+    'HAPPIER_NONINTERACTIVE',
     'PATH',
     'HOME',
   ] as const;
@@ -92,6 +96,7 @@ function withoutAgentCliPathOverrides(): () => void {
     output = captureConsoleLogAndMuteStdout();
     validateStoredAuthTokenAgainstActiveServerMock.mockReset();
     validateStoredAuthTokenAgainstActiveServerMock.mockResolvedValue({ state: 'valid', httpStatus: 200 });
+    process.exitCode = undefined;
   });
 
   afterEach(() => {
@@ -104,6 +109,132 @@ function withoutAgentCliPathOverrides(): () => void {
   async function importHandleSetupCommand(): Promise<typeof import('./setup')> {
     return await import('./setup');
   }
+
+  it('reconciles an authenticated created Home exactly once without reporting setup incomplete', async () => {
+    const previousExitCode = process.exitCode;
+    process.exitCode = undefined;
+    try {
+      const { handleSetupCommand } = await importHandleSetupCommand();
+      const useProfile = vi.fn(async () => ({ id: 'personal-home' } as never));
+      const reload = vi.fn();
+      const setupInvocations: string[][] = [];
+      const serviceSteps: string[][] = [];
+      output.logs.length = 0;
+
+      await reconcileCreatedPersonalHome('personal-home', {
+        useProfile,
+        reload,
+        quiet: true,
+        runSetup: async (args, setupDeps) => {
+          setupInvocations.push([...args]);
+          await handleSetupCommand(args, {
+            ...setupDeps,
+            applyServerSelectionFromArgs: async (selectionArgs) => selectionArgs.filter(
+              (argument) => argument !== '--server' && argument !== 'personal-home' && argument !== '--persist',
+            ),
+            readCredentialsFn: async () => ({ token: 'personal-home-token', encryption: null }),
+            readSettingsFn: async () => ({ machineId: 'machine-local', machineIdConfirmedByServer: true } as never),
+            isInteractiveTerminalFn: () => false,
+            readBackgroundServiceSetupGuidanceFn: async () => createBackgroundServiceSetupGuidance(),
+            runHappyCliStepFn: async (argv) => {
+              serviceSteps.push([...argv]);
+              return 0;
+            },
+            listInstalledAgentIdsFn: async () => ['codex'],
+          });
+        },
+      });
+
+      expect(useProfile).toHaveBeenCalledOnce();
+      expect(reload).toHaveBeenCalledOnce();
+      expect(setupInvocations).toEqual([['--server', 'personal-home', '--skip-providers', '--yes']]);
+      expect(serviceSteps).toEqual([['service', 'install'], ['service', 'start']]);
+      expect(output.logs).toEqual([]);
+      expect(process.exitCode).toBeUndefined();
+    } finally {
+      process.exitCode = previousExitCode;
+    }
+  });
+
+  it('continues interactive Home creation through the real setup adapter before pairing or readiness output', async () => {
+    const { handleSetupCommand } = await importHandleSetupCommand();
+    const serviceSteps: string[][] = [];
+    const order: string[] = [];
+    let serviceExitCode = 0;
+    const pairDevice = vi.fn(async () => {
+      order.push('pair');
+      return { kind: 'completed' as const, requestedDeviceLabel: 'Phone' };
+    });
+    const linkAccount = vi.fn(async () => {
+      order.push('link');
+      return { kind: 'linked' as const, homeServerIdentityId: 'srv_personal_home' };
+    });
+    const deps: HomeCommandDeps = {
+      createRunner: () => { throw new Error('system-task runner is not used by local creation'); },
+      resolvePath: (value) => value,
+      isInteractiveTerminal: () => true,
+      promptInput: async () => 'yes',
+      sleep: async () => undefined,
+      resolveDefaultChannel: () => 'dev',
+      createPersonalHome: async () => {
+        order.push('create');
+        return {
+          profileId: 'personal-home',
+          homeServerIdentityId: 'srv_personal_home',
+          canonicalServerUrl: 'http://127.0.0.1:43123',
+          accountCreated: true,
+        };
+      },
+      reconcileCreatedHome: async (profileId, options) => {
+        order.push('reconcile');
+        await reconcileCreatedPersonalHome(profileId, {
+          ...options,
+          useProfile: async () => ({ id: profileId } as never),
+          reload: vi.fn(),
+          runSetup: async (args, setupDeps) => await handleSetupCommand(args, {
+            ...setupDeps,
+            applyServerSelectionFromArgs: async (selectionArgs) => selectionArgs.filter(
+              (argument) => argument !== '--server' && argument !== profileId && argument !== '--persist',
+            ),
+            readCredentialsFn: async () => ({ token: 'personal-home-token', encryption: null }),
+            readSettingsFn: async () => ({ machineId: 'machine-local', machineIdConfirmedByServer: true } as never),
+            isInteractiveTerminalFn: () => false,
+            readBackgroundServiceSetupGuidanceFn: async () => createBackgroundServiceSetupGuidance(),
+            runHappyCliStepFn: async (argv) => {
+              serviceSteps.push([...argv]);
+              order.push(argv.join(' '));
+              return serviceExitCode;
+            },
+            listInstalledAgentIdsFn: async () => ['codex'],
+          }),
+        });
+      },
+      pairDevice,
+      linkAccount,
+    };
+
+    output.logs.length = 0;
+    await handleHomeCommand(['create', '--link-account', 'auto'], deps);
+
+    expect(serviceSteps).toEqual([['service', 'install'], ['service', 'start']]);
+    expect(order).toEqual(['create', 'reconcile', 'service install', 'service start', 'pair', 'link']);
+    expect(process.exitCode).toBeUndefined();
+    expect(output.logs.some((line) => line.includes('Personal Home ready'))).toBe(true);
+
+    serviceExitCode = 17;
+    serviceSteps.length = 0;
+    order.length = 0;
+    pairDevice.mockClear();
+    linkAccount.mockClear();
+    output.logs.length = 0;
+    await expect(handleHomeCommand(['create', '--link-account', 'auto'], deps)).rejects.toMatchObject({
+      code: 'home_create_reconciliation_failed',
+    });
+    expect(serviceSteps).toEqual([['service', 'install']]);
+    expect(pairDevice).not.toHaveBeenCalled();
+    expect(linkAccount).not.toHaveBeenCalled();
+    expect(output.logs.some((line) => line.includes('Personal Home ready'))).toBe(false);
+  });
 
   it('prints a setup_plan JSON envelope', async () => {
     await withTempDir('happier-setup-plan-json-', async (homeDir) => {
@@ -136,14 +267,13 @@ function withoutAgentCliPathOverrides(): () => void {
       await handleSetupCommand(['--help']);
       const text = stripAnsi(output.logs.join('\n'));
       expect(text).toContain('setup');
-      expect(text).toContain('Guided setup');
       expect(text).toContain('Usage:');
       expect(text).toContain('happier setup plan');
       expect(text).toContain('Examples:');
-      expect(text).toContain('happier setup --relay-url https://relay.example.test --provider alpha --provider beta');
-      expect(text).not.toContain('happier setup --relay-url https://relay.example.test --provider codex --provider claude');
+      expect(text).toContain('happier setup --home-url https://home.example.test --provider alpha --provider beta');
+      expect(text).not.toContain('happier setup --home-url https://home.example.test --provider codex --provider claude');
       expect(text).toContain('Notes:');
-      expect(text).toContain('Sets up this computer for a server');
+      expect(text).toContain('Connects this computer to a Home');
       expect(text).not.toContain('Sets up this computer for a Relay');
       expect(text).not.toContain('Description:');
     });
@@ -158,7 +288,7 @@ function withoutAgentCliPathOverrides(): () => void {
       const text = stripAnsi(output.logs.join('\n'));
       expect(output.logs[0]?.startsWith('\n')).toBe(false);
       expect(text).toContain('Setup plan');
-      expect(text).toContain('Server:');
+      expect(text).toContain('Home:');
       expect(text).toContain('https://relay.example.test');
       expect(text).toContain('1. happier auth login');
     });
@@ -201,12 +331,352 @@ function withoutAgentCliPathOverrides(): () => void {
         );
 
         expect(calls).toEqual([]);
-        expect(stripAnsi(output.logs.join('\n'))).toContain('happier auth login');
+        expect(stripAnsi(output.logs.join('\n'))).toContain('happier setup --relay-url https://relay.example.test');
         expect(process.exitCode).toBe(1);
       } finally {
         process.exitCode = previousExitCode;
       }
     });
+  });
+
+  it('keeps public --yes incomplete even when the named Home already has valid credentials', async () => {
+    await withTempDir('happier-setup-yes-valid-home-incomplete-', async (homeDir) => {
+      envScope.patch({ HAPPIER_HOME_DIR: homeDir, HAPPIER_SERVER_URL: 'https://home.example.test', HAPPIER_ACTIVE_SERVER_ID: undefined });
+      vi.resetModules();
+      const { handleSetupCommand } = await importHandleSetupCommand();
+      const child = vi.fn(async () => 0);
+      const previousExitCode = process.exitCode;
+      process.exitCode = undefined;
+      try {
+        await handleSetupCommand(['--home-url', 'https://home.example.test', '--yes'], {
+          applyServerSelectionFromArgs: async (selectionArgs) => selectionArgs.filter(
+            (argument) => !['--server-url', 'https://home.example.test', '--yes'].includes(argument),
+          ),
+          readCredentialsFn: async () => ({ token: 'valid-token', encryption: null }),
+          readSettingsFn: async () => ({ machineId: 'machine', machineIdConfirmedByServer: true } as never),
+          isInteractiveTerminalFn: () => false,
+          runHappyCliStepFn: child,
+        });
+
+        expect(child).not.toHaveBeenCalled();
+        expect(stripAnsi(output.logs.join('\n'))).toContain('happier setup --home-url https://home.example.test');
+        expect(process.exitCode).toBe(1);
+      } finally {
+        process.exitCode = previousExitCode;
+      }
+    });
+  });
+
+  it('reports explicit --yes JSON as incomplete after target application', async () => {
+    await withTempDir('happier-setup-yes-json-incomplete-', async (homeDir) => {
+      envScope.patch({ HAPPIER_HOME_DIR: homeDir, HAPPIER_SERVER_URL: 'https://api.happier.dev', HAPPIER_ACTIVE_SERVER_ID: undefined });
+      vi.resetModules();
+      const { handleSetupCommand } = await importHandleSetupCommand();
+      output.restore();
+      const jsonOutput = captureStdoutJsonOutput();
+      try {
+        await handleSetupCommand(['--home-url', 'https://home.example.test', '--yes', '--json'], {
+          applyServerSelectionFromArgs: async () => ['--yes', '--json'],
+          isInteractiveTerminalFn: () => false,
+        });
+        expect(jsonOutput.json()).toMatchObject({
+          v: 1,
+          ok: false,
+          kind: 'setup',
+          error: { code: 'interactive_approval_required', state: 'incomplete', targetApplied: true },
+        });
+        expect(process.exitCode).toBe(1);
+      } finally {
+        jsonOutput.restore();
+        output = captureConsoleLogAndMuteStdout();
+      }
+    });
+  });
+
+  it('resolves and adopts an Iroh-only descriptor, then focuses it only after authentication succeeds', async () => {
+    await withTempDir('happier-setup-iroh-descriptor-', async (homeDir) => {
+      envScope.patch({ HAPPIER_HOME_DIR: homeDir, HAPPIER_SERVER_URL: 'https://api.happier.dev', HAPPIER_ACTIVE_SERVER_ID: undefined });
+      vi.resetModules();
+      const { handleSetupCommand } = await importHandleSetupCommand();
+      const descriptor: HomeConnectionDescriptorV1 = {
+        v: 1,
+        homeServerIdentityId: 'srv_iroh_home',
+        canonicalServerUrl: 'http://127.0.0.1:3005',
+        revision: 1,
+        endpoints: [{ kind: 'iroh', endpointId: 'a'.repeat(64) }],
+      };
+      const resolveHomeTargetFn = vi.fn(async () => ({
+        profileId: null,
+        homeServerIdentityId: descriptor.homeServerIdentityId,
+        descriptor,
+        canonicalAuthUrl: descriptor.canonicalServerUrl,
+        applicationUrl: descriptor.canonicalServerUrl,
+        webappUrl: 'https://app.happier.dev',
+        credentialDestination: {
+          v: 1 as const,
+          homeServerIdentityId: descriptor.homeServerIdentityId,
+          canonicalServerUrl: descriptor.canonicalServerUrl,
+          applicationEndpointUrls: [],
+          irohEndpointIds: ['a'.repeat(64)],
+        },
+        preferredTransport: 'iroh' as const,
+        authority: 'trusted_enrollment' as const,
+      }));
+      const adoptDescriptorFn = vi.fn(async () => ({ profile: { id: 'iroh-home' } } as never));
+      const useProfileFn = vi.fn(async (_profileId: string) => ({ id: 'iroh-home' } as never));
+      const childCalls: string[][] = [];
+      const order: string[] = [];
+
+      await handleSetupCommand(['--home-descriptor-file', '/tmp/home.json', '--skip-daemon', '--skip-providers'], {
+        readHomeDescriptorTextFn: async () => JSON.stringify(descriptor),
+        resolveHomeTargetFn,
+        resolveCurrentHomeTargetFn: resolveHomeTargetFn,
+        adoptHomeDescriptorFn: adoptDescriptorFn,
+        useHomeProfileFn: async (profileId) => {
+          order.push(`focus:${profileId}`);
+          return await useProfileFn(profileId);
+        },
+        readCredentialsFn: async () => null,
+        readSettingsFn: async () => ({ machineId: null } as never),
+        isInteractiveTerminalFn: () => true,
+        promptInputFn: async () => '',
+        runHappyCliStepFn: async (argv) => {
+          childCalls.push([...argv]);
+          order.push(`child:${argv.join(' ')}`);
+          return 0;
+        },
+      });
+
+      expect(resolveHomeTargetFn).toHaveBeenCalledWith({ kind: 'descriptor', descriptor, authority: 'trusted_enrollment' });
+      expect(adoptDescriptorFn).toHaveBeenCalledWith(expect.objectContaining({ descriptor, observation: 'exact', use: false }));
+      expect(useProfileFn).toHaveBeenCalledWith('iroh-home');
+      expect(childCalls).toEqual([['auth', 'login', '--wait-timeout', '300', '--no-daemon-start']]);
+      expect(order).toEqual([
+        'child:auth login --wait-timeout 300 --no-daemon-start',
+        'focus:iroh-home',
+      ]);
+    });
+  });
+
+  it('keeps the previous active Home focused when descriptor authentication fails', async () => {
+    await withTempDir('happier-setup-iroh-descriptor-auth-failure-', async (homeDir) => {
+      envScope.patch({ HAPPIER_HOME_DIR: homeDir, HAPPIER_SERVER_URL: 'https://api.happier.dev', HAPPIER_ACTIVE_SERVER_ID: undefined });
+      vi.resetModules();
+      const { handleSetupCommand } = await importHandleSetupCommand();
+      const descriptor: HomeConnectionDescriptorV1 = {
+        v: 1,
+        homeServerIdentityId: 'srv_failed_home',
+        canonicalServerUrl: 'http://127.0.0.1:3005',
+        revision: 1,
+        endpoints: [{ kind: 'iroh', endpointId: 'b'.repeat(64) }],
+      };
+      const resolved = {
+        profileId: null,
+        homeServerIdentityId: descriptor.homeServerIdentityId,
+        descriptor,
+        canonicalAuthUrl: descriptor.canonicalServerUrl,
+        applicationUrl: descriptor.canonicalServerUrl,
+        webappUrl: 'https://app.happier.dev',
+        credentialDestination: {
+          v: 1 as const,
+          homeServerIdentityId: descriptor.homeServerIdentityId,
+          canonicalServerUrl: descriptor.canonicalServerUrl,
+          applicationEndpointUrls: [],
+          irohEndpointIds: ['b'.repeat(64)],
+        },
+        preferredTransport: 'iroh' as const,
+        authority: 'trusted_enrollment' as const,
+      };
+      const useProfileFn = vi.fn(async () => ({ id: 'failed-home' } as never));
+
+      await handleSetupCommand(['--home-descriptor-file', '/tmp/home.json', '--skip-daemon', '--skip-providers'], {
+        readHomeDescriptorTextFn: async () => JSON.stringify(descriptor),
+        resolveHomeTargetFn: async () => resolved,
+        resolveCurrentHomeTargetFn: async () => resolved,
+        adoptHomeDescriptorFn: async () => ({ profile: { id: 'failed-home' } } as never),
+        useHomeProfileFn: useProfileFn,
+        readCredentialsFn: async () => null,
+        readSettingsFn: async () => ({ machineId: null } as never),
+        isInteractiveTerminalFn: () => true,
+        promptInputFn: async () => '',
+        runHappyCliStepFn: async () => 19,
+      });
+
+      expect(useProfileFn).not.toHaveBeenCalled();
+      expect(process.exitCode).toBe(19);
+    });
+  });
+
+  it('keeps the previous active Home focused when saved HTTPS Home authentication fails', async () => {
+    await withTempDir('happier-setup-saved-home-auth-failure-', async (homeDir) => {
+      envScope.patch({ HAPPIER_HOME_DIR: homeDir, HAPPIER_SERVER_URL: 'https://api.happier.dev', HAPPIER_ACTIVE_SERVER_ID: undefined });
+      vi.resetModules();
+      const { handleSetupCommand } = await importHandleSetupCommand();
+      const useProfileFn = vi.fn(async () => ({ id: 'candidate-home' } as never));
+
+      await handleSetupCommand(['--home-url', 'https://candidate.example.test', '--skip-daemon', '--skip-providers'], {
+        prepareServerSelectionFromArgsFn: async () => ({
+          rest: ['--skip-daemon', '--skip-providers'],
+          profileId: 'candidate-home',
+        }),
+        resolveCurrentHomeTargetFn: async () => ({
+          profileId: 'candidate-home',
+          homeServerIdentityId: null,
+          descriptor: null,
+          canonicalAuthUrl: 'https://candidate.example.test',
+          applicationUrl: 'https://candidate.example.test',
+          webappUrl: 'https://candidate.example.test',
+          credentialDestination: null,
+          preferredTransport: 'https',
+          authority: 'manual_url',
+        }),
+        useHomeProfileFn: useProfileFn,
+        readCredentialsFn: async () => null,
+        readSettingsFn: async () => ({ machineId: null } as never),
+        isInteractiveTerminalFn: () => true,
+        promptInputFn: async () => '',
+        runHappyCliStepFn: async () => 23,
+      });
+
+      expect(useProfileFn).not.toHaveBeenCalled();
+      expect(process.exitCode).toBe(23);
+    });
+  });
+
+  it('stops setup after a cancelled auth child without focusing the target or starting service/providers', async () => {
+    await withTempDir('happier-setup-auth-cancel-incomplete-', async (homeDir) => {
+      envScope.patch({ HAPPIER_HOME_DIR: homeDir, HAPPIER_SERVER_URL: 'https://api.happier.dev', HAPPIER_ACTIVE_SERVER_ID: undefined });
+      vi.resetModules();
+      const { handleSetupCommand } = await importHandleSetupCommand();
+      const useProfileFn = vi.fn(async () => ({ id: 'candidate-home' } as never));
+      const calls: string[][] = [];
+
+      await handleSetupCommand(['--home-url', 'https://candidate.example.test'], {
+        prepareServerSelectionFromArgsFn: async () => ({ rest: [], profileId: 'candidate-home' }),
+        resolveCurrentHomeTargetFn: async () => ({
+          profileId: 'candidate-home',
+          homeServerIdentityId: null,
+          descriptor: null,
+          canonicalAuthUrl: 'https://candidate.example.test',
+          applicationUrl: 'https://candidate.example.test',
+          webappUrl: 'https://candidate.example.test',
+          credentialDestination: null,
+          preferredTransport: 'https',
+          authority: 'manual_url',
+        }),
+        useHomeProfileFn: useProfileFn,
+        readCredentialsFn: async () => null,
+        readSettingsFn: async () => ({ machineId: null } as never),
+        isInteractiveTerminalFn: () => true,
+        promptInputFn: async () => '',
+        readBackgroundServiceSetupGuidanceFn: async () => createBackgroundServiceSetupGuidance(),
+        runHappyCliStepFn: async (argv) => {
+          calls.push([...argv]);
+          return argv[0] === 'auth' ? 1 : 0;
+        },
+      });
+
+      expect(calls).toEqual([['auth', 'login', '--wait-timeout', '300', '--no-daemon-start']]);
+      expect(useProfileFn).not.toHaveBeenCalled();
+      expect(process.exitCode).toBe(1);
+      expect(stripAnsi(output.logs.join('\n'))).not.toContain('Setup complete.');
+    });
+  });
+
+  it('rejects a missing descriptor value before selecting or authenticating', async () => {
+    const { handleSetupCommand } = await importHandleSetupCommand();
+    const select = vi.fn(async (args: string[]) => args);
+    const child = vi.fn(async () => 0);
+
+    await expect(handleSetupCommand(['--home-descriptor-file'], {
+      applyServerSelectionFromArgs: select,
+      isInteractiveTerminalFn: () => true,
+      runHappyCliStepFn: child,
+    })).rejects.toThrow('Missing value for --home-descriptor-file');
+
+    expect(select).not.toHaveBeenCalled();
+    expect(child).not.toHaveBeenCalled();
+  });
+
+  it('rejects competing descriptor and saved-Home targets before mutation', async () => {
+    const { handleSetupCommand } = await importHandleSetupCommand();
+    const select = vi.fn(async (args: string[]) => args);
+    const child = vi.fn(async () => 0);
+
+    await expect(handleSetupCommand(['--home-descriptor-file', '/tmp/home.json', '--home', 'saved-home'], {
+      applyServerSelectionFromArgs: select,
+      isInteractiveTerminalFn: () => true,
+      runHappyCliStepFn: child,
+    })).rejects.toThrow('Use only one explicit Home target');
+
+    expect(select).not.toHaveBeenCalled();
+    expect(child).not.toHaveBeenCalled();
+  });
+
+  it('delegates an explicit create choice to home create without installing a generic relay', async () => {
+    await withTempDir('happier-setup-create-delegation-', async (homeDir) => {
+      envScope.patch({ HAPPIER_HOME_DIR: homeDir, HAPPIER_SERVER_URL: 'https://api.happier.dev', HAPPIER_ACTIVE_SERVER_ID: undefined });
+      vi.resetModules();
+      const { handleSetupCommand } = await importHandleSetupCommand();
+      const calls: string[][] = [];
+      const prompts: string[] = [];
+
+      await handleSetupCommand(['--skip-providers'], {
+        readCredentialsFn: async () => null,
+        readSettingsFn: async () => ({ machineId: null } as never),
+        isInteractiveTerminalFn: () => true,
+        promptInputFn: async (prompt) => {
+          prompts.push(prompt);
+          if (prompt.includes('Run setup now?')) return '';
+          if (prompt.includes('No preferred Home')) return 'c';
+          return '';
+        },
+        runAccountServiceHomeEntryFn: async () => ({ kind: 'no_preferred_home' }),
+        runHappyCliStepFn: async (argv) => { calls.push([...argv]); return 0; },
+      });
+
+      expect(calls).toEqual([['home', 'create']]);
+      expect(calls.flat()).not.toContain('relay');
+      expect(stripAnsi(prompts.join('\n'))).toContain('No preferred Home');
+    });
+  });
+
+  it('treats HAPPIER_NONINTERACTIVE as zero-mutation even when a TTY is present', async () => {
+    await withTempDir('happier-setup-env-noninteractive-', async (homeDir) => {
+      envScope.patch({ HAPPIER_HOME_DIR: homeDir, HAPPIER_SERVER_URL: 'https://api.happier.dev', HAPPIER_ACTIVE_SERVER_ID: undefined, HAPPIER_NONINTERACTIVE: '1' });
+      vi.resetModules();
+      const { handleSetupCommand } = await importHandleSetupCommand();
+      const select = vi.fn(async (args: string[]) => args);
+      const child = vi.fn(async () => 0);
+      const previousExitCode = process.exitCode;
+      try {
+        await handleSetupCommand(['--home-url', 'https://home.example.test'], {
+          applyServerSelectionFromArgs: select,
+          isInteractiveTerminalFn: () => true,
+          runHappyCliStepFn: child,
+        });
+        expect(select).not.toHaveBeenCalled();
+        expect(child).not.toHaveBeenCalled();
+        expect(process.exitCode).toBe(1);
+      } finally {
+        process.exitCode = previousExitCode;
+      }
+    });
+  });
+
+  it('does not consume descriptor stdin when non-interactive setup must change nothing', async () => {
+    const { handleSetupCommand } = await importHandleSetupCommand();
+    const readHomeDescriptorTextFn = vi.fn(async () => {
+      throw new Error('descriptor stdin must not be read');
+    });
+
+    await handleSetupCommand(['--home-descriptor-file', '-', '--non-interactive'], {
+      readHomeDescriptorTextFn,
+      isInteractiveTerminalFn: () => false,
+    });
+
+    expect(readHomeDescriptorTextFn).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(1);
   });
 
   it('writes nothing when --yes does not name a relay', async () => {
@@ -232,7 +702,7 @@ function withoutAgentCliPathOverrides(): () => void {
 
         expect(applyServerSelectionFromArgs).not.toHaveBeenCalled();
         expect(runHappyCliStepFn).not.toHaveBeenCalled();
-        expect(stripAnsi(output.logs.join('\n'))).toContain('choose a relay');
+        expect(stripAnsi(output.logs.join('\n'))).toContain('choose a Home');
         expect(process.exitCode).toBe(1);
       } finally {
         process.exitCode = previousExitCode;
@@ -240,7 +710,7 @@ function withoutAgentCliPathOverrides(): () => void {
     });
   });
 
-  it('skips auth when credentials already exist', async () => {
+  it('keeps public --yes incomplete when credentials already exist', async () => {
     await withTempDir('happier-setup-skip-auth-', async (homeDir) => {
       envScope.patch({ HAPPIER_HOME_DIR: homeDir, HAPPIER_SERVER_URL: 'https://api.happier.dev', HAPPIER_ACTIVE_SERVER_ID: undefined });
       vi.resetModules();
@@ -250,9 +720,9 @@ function withoutAgentCliPathOverrides(): () => void {
       await handleSetupCommand(
         ['--relay-url', 'https://relay.example.test', '--yes', '--skip-daemon'],
         {
-          applyServerSelectionFromArgs: async (args) => args,
+          applyServerSelectionFromArgs: async () => ['--yes', '--skip-daemon'],
           readCredentialsFn: async () => ({ encryption: { type: 'legacy', secret: new Uint8Array([1]) }, token: 't' } as any),
-          readSettingsFn: async () => ({ machineId: 'mid_123' } as any),
+          readSettingsFn: async () => ({ machineId: 'mid_123', machineIdConfirmedByServer: true } as any),
           isInteractiveTerminalFn: () => false,
           promptInputFn: async () => {
             throw new Error('prompt should not be used');
@@ -264,9 +734,7 @@ function withoutAgentCliPathOverrides(): () => void {
         },
       );
 
-      expect(calls).toEqual([
-        ['agents', 'setup', '--yes'],
-      ]);
+      expect(calls).toEqual([]);
     });
   });
 
@@ -280,7 +748,7 @@ function withoutAgentCliPathOverrides(): () => void {
       await handleSetupCommand(
         ['--relay-url', 'https://relay.example.test', '--yes', '--skip-daemon'],
         {
-          applyServerSelectionFromArgs: async (args) => args,
+          applyServerSelectionFromArgs: async () => ['--yes', '--skip-daemon'],
           readCredentialsFn: async () => ({ encryption: { type: 'legacy', secret: new Uint8Array([1]) }, token: 't' } as any),
           readSettingsFn: async () => ({ machineId: null } as any),
           isInteractiveTerminalFn: () => false,
@@ -295,7 +763,7 @@ function withoutAgentCliPathOverrides(): () => void {
       );
 
       expect(calls).toEqual([]);
-      expect(stripAnsi(output.logs.join('\n'))).toContain('happier auth login');
+      expect(stripAnsi(output.logs.join('\n'))).toContain('happier setup --relay-url https://relay.example.test');
     });
   });
 
@@ -321,7 +789,7 @@ function withoutAgentCliPathOverrides(): () => void {
         {
           applyServerSelectionFromArgs,
           readCredentialsFn: async () => ({ encryption: { type: 'legacy', secret: new Uint8Array([1]) }, token: 't' } as any),
-          readSettingsFn: async () => ({ machineId: 'mid_123' } as any),
+          readSettingsFn: async () => ({ machineId: 'mid_123', machineIdConfirmedByServer: true } as any),
           isInteractiveTerminalFn: () => false,
           promptInputFn: async () => {
             throw new Error('prompt should not be used');
@@ -333,9 +801,7 @@ function withoutAgentCliPathOverrides(): () => void {
         },
       );
 
-      expect(calls).toEqual([
-        ['agents', 'setup', '--yes'],
-      ]);
+      expect(calls).toEqual([]);
     });
   });
 
@@ -353,7 +819,7 @@ function withoutAgentCliPathOverrides(): () => void {
             throw new Error('relay selection should not be re-applied when the relay URL already matches the active server');
           },
           readCredentialsFn: async () => ({ encryption: { type: 'legacy', secret: new Uint8Array([1]) }, token: 't' } as any),
-          readSettingsFn: async () => ({ machineId: 'mid_123' } as any),
+          readSettingsFn: async () => ({ machineId: 'mid_123', machineIdConfirmedByServer: true } as any),
           isInteractiveTerminalFn: () => false,
           promptInputFn: async () => {
             throw new Error('prompt should not be used');
@@ -365,9 +831,7 @@ function withoutAgentCliPathOverrides(): () => void {
         },
       );
 
-      expect(calls).toEqual([
-        ['agents', 'setup', '--yes'],
-      ]);
+      expect(calls).toEqual([]);
     });
   });
 
@@ -393,9 +857,11 @@ function withoutAgentCliPathOverrides(): () => void {
       await handleSetupCommand(
         ['--relay-url', 'https://relay.example.test', '--yes'],
         {
-          applyServerSelectionFromArgs: async (args) => args,
+          quiet: true,
+          invocation: 'authenticated-home-create-continuation',
+          applyServerSelectionFromArgs: async () => ['--yes'],
           readCredentialsFn: async () => ({ encryption: { type: 'legacy', secret: new Uint8Array([1]) }, token: 't' } as any),
-          readSettingsFn: async () => ({ machineId: 'mid_123' } as any),
+          readSettingsFn: async () => ({ machineId: 'mid_123', machineIdConfirmedByServer: true } as any),
           isInteractiveTerminalFn: () => true,
           promptInputFn,
           readBackgroundServiceSetupGuidanceFn: async () => createBackgroundServiceSetupGuidance({
@@ -494,9 +960,11 @@ function withoutAgentCliPathOverrides(): () => void {
       await handleSetupCommand(
         ['--relay-url', 'https://relay.example.test', '--yes'],
         {
-          applyServerSelectionFromArgs: async (args) => args,
+          quiet: true,
+          invocation: 'authenticated-home-create-continuation',
+          applyServerSelectionFromArgs: async () => ['--yes'],
           readCredentialsFn: async () => ({ encryption: { type: 'legacy', secret: new Uint8Array([1]) }, token: 't' } as any),
-          readSettingsFn: async () => ({ machineId: 'mid_123' } as any),
+          readSettingsFn: async () => ({ machineId: 'mid_123', machineIdConfirmedByServer: true } as any),
           isInteractiveTerminalFn: () => true,
           promptInputFn,
           readBackgroundServiceSetupGuidanceFn: async () => createBackgroundServiceSetupGuidance({
@@ -546,9 +1014,11 @@ function withoutAgentCliPathOverrides(): () => void {
       await handleSetupCommand(
         ['--relay-url', 'https://relay.example.test', '--yes'],
         {
-          applyServerSelectionFromArgs: async (args) => args,
+          quiet: true,
+          invocation: 'authenticated-home-create-continuation',
+          applyServerSelectionFromArgs: async () => ['--yes'],
           readCredentialsFn: async () => ({ encryption: { type: 'legacy', secret: new Uint8Array([1]) }, token: 't' } as any),
-          readSettingsFn: async () => ({ machineId: 'mid_123' } as any),
+          readSettingsFn: async () => ({ machineId: 'mid_123', machineIdConfirmedByServer: true } as any),
           isInteractiveTerminalFn: () => false,
           promptInputFn: async () => {
             throw new Error('prompt should not be used');
@@ -591,9 +1061,11 @@ function withoutAgentCliPathOverrides(): () => void {
       await handleSetupCommand(
         ['--relay-url', 'https://new-relay.example.test', '--yes'],
         {
-          applyServerSelectionFromArgs: async (args) => args,
+          quiet: true,
+          invocation: 'authenticated-home-create-continuation',
+          applyServerSelectionFromArgs: async () => ['--yes'],
           readCredentialsFn: async () => ({ encryption: { type: 'legacy', secret: new Uint8Array([1]) }, token: 't' } as any),
-          readSettingsFn: async () => ({ machineId: 'mid_123' } as any),
+          readSettingsFn: async () => ({ machineId: 'mid_123', machineIdConfirmedByServer: true } as any),
           isInteractiveTerminalFn: () => false,
           promptInputFn: async () => {
             throw new Error('prompt should not be used');
@@ -648,12 +1120,14 @@ function withoutAgentCliPathOverrides(): () => void {
         .mockResolvedValueOnce('y')
         .mockResolvedValueOnce('n');
 
-      await handleSetupCommand(
+      await expect(handleSetupCommand(
         ['--relay-url', 'https://relay.example.test', '--yes'],
         {
+          quiet: true,
+          invocation: 'authenticated-home-create-continuation',
           applyServerSelectionFromArgs: async (args) => args,
           readCredentialsFn: async () => ({ encryption: { type: 'legacy', secret: new Uint8Array([1]) }, token: 't' } as any),
-          readSettingsFn: async () => ({ machineId: 'mid_123' } as any),
+          readSettingsFn: async () => ({ machineId: 'mid_123', machineIdConfirmedByServer: true } as any),
           isInteractiveTerminalFn: () => true,
           promptInputFn,
           readBackgroundServiceSetupGuidanceFn: async () => createBackgroundServiceSetupGuidance({
@@ -702,7 +1176,7 @@ function withoutAgentCliPathOverrides(): () => void {
             return 0;
           },
         },
-      );
+      )).rejects.toMatchObject({ code: 'home_create_reconciliation_failed' });
 
       expect(promptInputFn).toHaveBeenNthCalledWith(
         1,
@@ -718,6 +1192,47 @@ function withoutAgentCliPathOverrides(): () => void {
     });
   });
 
+  it('reports guided background-service cancellation as incomplete without running service or provider steps', async () => {
+    await withTempDir('happier-setup-guidance-cancel-incomplete-', async (homeDir) => {
+      envScope.patch({ HAPPIER_HOME_DIR: homeDir, HAPPIER_SERVER_URL: 'https://relay.example.test', HAPPIER_ACTIVE_SERVER_ID: undefined });
+      vi.resetModules();
+      const { handleSetupCommand } = await importHandleSetupCommand();
+      const calls: string[][] = [];
+      const promptInputFn = vi.fn<(prompt: string) => Promise<string>>()
+        .mockResolvedValueOnce('y')
+        .mockResolvedValueOnce('n');
+
+      await handleSetupCommand(['--relay-url', 'https://relay.example.test'], {
+        readCredentialsFn: async () => ({ encryption: null, token: 't' }),
+        readSettingsFn: async () => ({ machineId: 'mid_123', machineIdConfirmedByServer: true } as never),
+        isInteractiveTerminalFn: () => true,
+        promptInputFn,
+        readBackgroundServiceSetupGuidanceFn: async () => createBackgroundServiceSetupGuidance({
+          exactDefaultServiceExists: false,
+          conflictingServices: [{
+            label: 'com.happier.cli.daemon.stable.default',
+            releaseChannel: 'stable',
+            targetMode: 'pinned',
+            running: true,
+            serverUrl: 'https://other.example.test',
+            happierHomeDir: homeDir,
+          }],
+          shouldPromptForServiceReplacement: true,
+        }),
+        runHappyCliStepFn: async (argv) => {
+          calls.push([...argv]);
+          return 0;
+        },
+      });
+
+      expect(calls).toEqual([]);
+      expect(process.exitCode).toBe(1);
+      const text = stripAnsi(output.logs.join('\n'));
+      expect(text).toContain('Aborted.');
+      expect(text).not.toContain('Setup complete.');
+    });
+  });
+
   it('fails closed in non-interactive mode when guided daemon setup needs release-channel or service decisions', async () => {
     await withTempDir('happier-setup-guided-noninteractive-', async (homeDir) => {
       envScope.patch({ HAPPIER_HOME_DIR: homeDir, HAPPIER_SERVER_URL: 'https://relay.example.test', HAPPIER_ACTIVE_SERVER_ID: undefined });
@@ -727,9 +1242,11 @@ function withoutAgentCliPathOverrides(): () => void {
       await expect(handleSetupCommand(
         ['--relay-url', 'https://relay.example.test', '--yes'],
         {
+          quiet: true,
+          invocation: 'authenticated-home-create-continuation',
           applyServerSelectionFromArgs: async (args) => args,
           readCredentialsFn: async () => ({ encryption: { type: 'legacy', secret: new Uint8Array([1]) }, token: 't' } as any),
-          readSettingsFn: async () => ({ machineId: 'mid_123' } as any),
+          readSettingsFn: async () => ({ machineId: 'mid_123', machineIdConfirmedByServer: true } as any),
           isInteractiveTerminalFn: () => false,
           promptInputFn: async () => {
             throw new Error('prompt should not be used');
@@ -774,15 +1291,13 @@ function withoutAgentCliPathOverrides(): () => void {
 
       try {
         await handleSetupCommand(
-          ['--relay-url', 'https://relay.example.test', '--yes', '--skip-daemon', '--skip-providers'],
+          ['--relay-url', 'https://relay.example.test', '--skip-daemon', '--skip-providers'],
           {
             applyServerSelectionFromArgs: async (args) => args,
             readCredentialsFn: async () => ({ encryption: { type: 'legacy', secret: new Uint8Array([1]) }, token: 't' } as any),
-            readSettingsFn: async () => ({ machineId: 'mid_123' } as any),
-            isInteractiveTerminalFn: () => false,
-            promptInputFn: async () => {
-              throw new Error('prompt should not be used');
-            },
+            readSettingsFn: async () => ({ machineId: 'mid_123', machineIdConfirmedByServer: true } as any),
+            isInteractiveTerminalFn: () => true,
+            promptInputFn: async () => '',
             runHappyCliStepFn: async () => 0,
           },
         );
@@ -805,15 +1320,13 @@ function withoutAgentCliPathOverrides(): () => void {
       const { handleSetupCommand } = await importHandleSetupCommand();
 
       await handleSetupCommand(
-        ['--relay-url', 'https://relay.example.test', '--yes', '--skip-daemon', '--skip-providers'],
+        ['--relay-url', 'https://relay.example.test', '--skip-daemon', '--skip-providers'],
         {
           applyServerSelectionFromArgs: async (args) => args,
           readCredentialsFn: async () => ({ encryption: { type: 'legacy', secret: new Uint8Array([1]) }, token: 't' } as any),
-          readSettingsFn: async () => ({ machineId: 'mid_123' } as any),
-          isInteractiveTerminalFn: () => false,
-          promptInputFn: async () => {
-            throw new Error('prompt should not be used');
-          },
+          readSettingsFn: async () => ({ machineId: 'mid_123', machineIdConfirmedByServer: true } as any),
+          isInteractiveTerminalFn: () => true,
+          promptInputFn: async () => '',
           runHappyCliStepFn: async () => 0,
           listInstalledAgentIdsFn: async () => ['alpha'],
         },
@@ -832,15 +1345,13 @@ function withoutAgentCliPathOverrides(): () => void {
       const { handleSetupCommand } = await importHandleSetupCommand();
 
       await handleSetupCommand(
-        ['--relay-url', 'https://relay.example.test', '--yes', '--skip-daemon'],
+        ['--relay-url', 'https://relay.example.test', '--skip-daemon'],
         {
           applyServerSelectionFromArgs: async (args) => args,
           readCredentialsFn: async () => ({ encryption: { type: 'legacy', secret: new Uint8Array([1]) }, token: 't' } as any),
-          readSettingsFn: async () => ({ machineId: 'mid_123' } as any),
-          isInteractiveTerminalFn: () => false,
-          promptInputFn: async () => {
-            throw new Error('prompt should not be used');
-          },
+          readSettingsFn: async () => ({ machineId: 'mid_123', machineIdConfirmedByServer: true } as any),
+          isInteractiveTerminalFn: () => true,
+          promptInputFn: async () => '',
           runHappyCliStepFn: async () => 0,
           listInstalledAgentIdsFn: async () => [],
         },
@@ -874,7 +1385,7 @@ function withoutAgentCliPathOverrides(): () => void {
           },
         );
 
-        expect(calls).toEqual([['auth', 'login', '--wait-timeout', '300']]);
+        expect(calls).toEqual([['auth', 'login', '--wait-timeout', '300', '--no-daemon-start']]);
         expect(process.exitCode).toBe(1);
       } finally {
         process.exitCode = previousExitCode;
@@ -882,13 +1393,45 @@ function withoutAgentCliPathOverrides(): () => void {
     });
   });
 
-
   /**
    * Credentials are stored per relay profile, so the relay has to be settled
    * before `happier auth login` runs: a self-hoster who signs in first and points
    * at their own relay afterwards ends up with two accounts, not a moved one.
    */
   describe('where the relay lives', () => {
+    it('runs the Account Service Home-entry coordinator for fresh default Cloud setup instead of generic Home auth', async () => {
+      await withTempDir('happier-setup-account-service-default-', async (homeDir) => {
+        envScope.patch({ HAPPIER_HOME_DIR: homeDir, HAPPIER_SERVER_URL: 'https://api.happier.dev', HAPPIER_ACTIVE_SERVER_ID: undefined });
+        vi.resetModules();
+        const { handleSetupCommand } = await importHandleSetupCommand();
+
+        const runAccountServiceHomeEntryFn = vi.fn(async () => ({
+          kind: 'preferred_home_enrolled' as const,
+          homeServerIdentityId: 'srv_home_studio',
+          profileId: 'studio',
+        }));
+        const childCalls: string[][] = [];
+
+        await handleSetupCommand(['--skip-daemon', '--skip-providers'], {
+          applyServerSelectionFromArgs: async (selectionArgs) => selectionArgs.filter(
+            (argument) => argument !== '--server' && argument !== 'cloud',
+          ),
+          readCredentialsFn: async () => null,
+          readSettingsFn: async () => ({ machineId: null } as any),
+          isInteractiveTerminalFn: () => true,
+          promptInputFn: async (prompt) => prompt.includes('Where does your relay live?') ? 'c' : '',
+          runAccountServiceHomeEntryFn,
+          runHappyCliStepFn: async (argv) => {
+            childCalls.push([...argv]);
+            return 0;
+          },
+        });
+
+        expect(runAccountServiceHomeEntryFn).toHaveBeenCalledTimes(1);
+        expect(childCalls).not.toContainEqual(expect.arrayContaining(['auth', 'login']));
+      });
+    });
+
     it('does not install or select the chosen relay when the user declines the run confirmation', async () => {
       await withTempDir('happier-setup-relay-confirm-before-write-', async (homeDir) => {
         envScope.patch({ HAPPIER_HOME_DIR: homeDir, HAPPIER_SERVER_URL: 'https://api.happier.dev', HAPPIER_ACTIVE_SERVER_ID: undefined });
@@ -913,6 +1456,8 @@ function withoutAgentCliPathOverrides(): () => void {
         });
 
         expect(calls).toEqual([]);
+        expect(process.exitCode).toBe(1);
+        expect(stripAnsi(output.logs.join('\n'))).not.toContain('Setup complete.');
       });
     });
 
@@ -925,37 +1470,93 @@ function withoutAgentCliPathOverrides(): () => void {
 
         const prompts: string[] = [];
         const calls: string[][] = [];
+        const accountServiceEntry = vi.fn(async () => ({
+          kind: 'preferred_home_enrolled' as const,
+          homeServerIdentityId: 'srv_home',
+          profileId: 'home',
+        }));
         await handleSetupCommand(['--skip-daemon', '--skip-providers'], {
           applyServerSelectionFromArgs: async (args) => args.filter((arg) => arg !== '--server' && arg !== 'cloud'),
           readCredentialsFn: async () => ({ encryption: { type: 'legacy', secret: new Uint8Array([1]) }, token: 'rejected' } as any),
-          readSettingsFn: async () => ({ machineId: 'mid_123' } as any),
+          readSettingsFn: async () => ({ machineId: 'mid_123', machineIdConfirmedByServer: true } as any),
           isInteractiveTerminalFn: () => true,
           promptInputFn: async (prompt: string) => {
             prompts.push(prompt);
             return prompt.includes('Where does your relay live?') ? 'c' : '';
           },
+          runAccountServiceHomeEntryFn: accountServiceEntry,
           runHappyCliStepFn: async (argv) => {
             calls.push([...argv]);
             return 0;
           },
         });
 
-        expect(stripAnsi(prompts.join('\n'))).toContain('Where does your relay live?');
-        expect(calls).toEqual([['auth', 'login', '--wait-timeout', '300']]);
+        expect(stripAnsi(prompts.join('\n'))).not.toContain('Where does your relay live?');
+        expect(accountServiceEntry).toHaveBeenCalledTimes(1);
+        expect(calls).toEqual([]);
       });
     });
 
-    it('asks where the relay lives and installs a relay on this computer before signing in', async () => {
+    it('retains an unavailable active Home and never starts selection or authentication', async () => {
+      await withTempDir('happier-setup-home-unavailable-', async (homeDir) => {
+        envScope.patch({ HAPPIER_HOME_DIR: homeDir, HAPPIER_SERVER_URL: 'https://home.example.test', HAPPIER_ACTIVE_SERVER_ID: undefined });
+        validateStoredAuthTokenAgainstActiveServerMock.mockResolvedValue({
+          state: 'unknown',
+          httpStatus: null,
+          reasonCode: 'TimeoutError',
+        });
+        vi.resetModules();
+        const { handleSetupCommand } = await importHandleSetupCommand();
+
+        const selection = vi.fn(async (selectionArgs: string[]) => selectionArgs);
+        const calls: string[][] = [];
+        const prompts: string[] = [];
+        const previousExitCode = process.exitCode;
+        try {
+          await handleSetupCommand(['--skip-daemon', '--skip-providers'], {
+            applyServerSelectionFromArgs: selection,
+            readCredentialsFn: async () => ({
+              encryption: null,
+              token: 'stored-token',
+              credentialProvenance: 'stored_session',
+            }),
+            readSettingsFn: async () => ({
+              machineId: 'machine-confirmed',
+              machineIdConfirmedByServer: true,
+            }) as Awaited<ReturnType<typeof import('@/persistence').readSettings>>,
+            isInteractiveTerminalFn: () => true,
+            promptInputFn: async (prompt) => {
+              prompts.push(prompt);
+              return '';
+            },
+            runHappyCliStepFn: async (argv) => {
+              calls.push([...argv]);
+              return 0;
+            },
+          });
+
+          expect(selection).not.toHaveBeenCalled();
+          expect(calls).toEqual([]);
+          expect(stripAnsi(output.logs.join('\n'))).toContain('did not answer');
+          expect(stripAnsi(output.logs.join('\n'))).toContain('Stored sign-in was kept');
+          expect(stripAnsi(prompts.join('\n'))).not.toContain('Where does your relay live?');
+          expect(process.exitCode).toBe(1);
+        } finally {
+          process.exitCode = previousExitCode;
+        }
+      });
+    });
+
+    it('uses the default Account Service without installing a relay on this computer', async () => {
       await withTempDir('happier-setup-relay-question-this-computer-', async (homeDir) => {
         envScope.patch({ HAPPIER_HOME_DIR: homeDir, HAPPIER_SERVER_URL: 'http://127.0.0.1:3005', HAPPIER_ACTIVE_SERVER_ID: undefined });
         vi.resetModules();
         const { handleSetupCommand } = await importHandleSetupCommand();
 
         const calls: string[][] = [];
-        const childEnvs: Array<NodeJS.ProcessEnv | undefined> = [];
         const prompts: string[] = [];
         await handleSetupCommand(
-          ['--skip-daemon', '--skip-providers'],
+          ['--skip-providers'],
           {
             applyServerSelectionFromArgs: async (args) => args,
             readCredentialsFn: async () => null,
@@ -965,27 +1566,29 @@ function withoutAgentCliPathOverrides(): () => void {
               prompts.push(prompt);
               return prompt.includes('Where does your relay live?') ? 't' : '';
             },
-            runHappyCliStepFn: async (argv, options) => {
+            runAccountServiceHomeEntryFn: async () => ({
+              kind: 'preferred_home_enrolled', homeServerIdentityId: 'srv_home', profileId: 'home',
+            }),
+            readBackgroundServiceSetupGuidanceFn: async () => createBackgroundServiceSetupGuidance({
+              targetServerUrl: 'http://127.0.0.1:3005',
+            }),
+            runHappyCliStepFn: async (argv) => {
               calls.push([...argv]);
-              childEnvs.push(options?.env);
               return 0;
             },
           },
         );
 
         const asked = stripAnsi(prompts.join('\n'));
-        expect(asked).toContain('Where does your relay live?');
-        expect(asked).toContain('Happier Cloud');
-        expect(asked).toContain('On this computer');
+        expect(asked).not.toContain('Where does your relay live?');
         expect(calls).toEqual([
-          ['relay', 'host', 'install'],
-          ['auth', 'login', '--wait-timeout', '300', '--method', 'web'],
+          ['service', 'install'],
+          ['service', 'start'],
         ]);
-        expect(childEnvs[0]?.HAPPIER_DEFER_SERVER_SELECTION_FOLLOW_UP).toBe('1');
       });
     });
 
-    it('selects Happier Cloud as a real step when another relay is already active', async () => {
+    it('lets the Account Service owner reuse its persisted custom selection without a Cloud override', async () => {
       await withTempDir('happier-setup-relay-question-cloud-', async (homeDir) => {
         envScope.patch({ HAPPIER_HOME_DIR: homeDir, HAPPIER_SERVER_URL: 'https://relay.example.test', HAPPIER_ACTIVE_SERVER_ID: undefined });
         vi.resetModules();
@@ -993,8 +1596,18 @@ function withoutAgentCliPathOverrides(): () => void {
 
         const selectionArgs: string[][] = [];
         const calls: string[][] = [];
+        const persistedAccountServiceEndpoint = 'https://accounts.company.example';
+        const contactedAccountServiceEndpoints: string[] = [];
+        const accountServiceEntry = vi.fn(async (input: Readonly<{ endpoint?: string }>) => {
+          contactedAccountServiceEndpoints.push(input.endpoint ?? persistedAccountServiceEndpoint);
+          return {
+            kind: 'preferred_home_enrolled' as const,
+            homeServerIdentityId: 'srv_home',
+            profileId: 'home',
+          };
+        });
         await handleSetupCommand(
-          ['--skip-daemon', '--skip-providers'],
+          ['--skip-providers'],
           {
             applyServerSelectionFromArgs: async (args) => {
               selectionArgs.push([...args]);
@@ -1004,6 +1617,8 @@ function withoutAgentCliPathOverrides(): () => void {
             readSettingsFn: async () => ({ machineId: null } as any),
             isInteractiveTerminalFn: () => true,
             promptInputFn: async (prompt: string) => (prompt.includes('Where does your relay live?') ? 'c' : ''),
+            runAccountServiceHomeEntryFn: accountServiceEntry,
+            readBackgroundServiceSetupGuidanceFn: async () => createBackgroundServiceSetupGuidance(),
             runHappyCliStepFn: async (argv) => {
               calls.push([...argv]);
               return 0;
@@ -1011,12 +1626,17 @@ function withoutAgentCliPathOverrides(): () => void {
           },
         );
 
-        expect(selectionArgs[0]).toEqual(['--server', 'cloud', '--skip-daemon', '--skip-providers']);
-        expect(calls).toEqual([['auth', 'login', '--wait-timeout', '300']]);
+        expect(selectionArgs).toEqual([]);
+        expect(accountServiceEntry).toHaveBeenCalledWith(expect.not.objectContaining({ endpoint: expect.anything() }));
+        expect(contactedAccountServiceEndpoints).toEqual([persistedAccountServiceEndpoint]);
+        expect(calls).toEqual([
+          ['service', 'install'],
+          ['service', 'start'],
+        ]);
       });
     });
 
-    it('points this computer at a relay the user already runs', async () => {
+    it('does not enter the legacy relay chooser when setup has no explicit target', async () => {
       await withTempDir('happier-setup-relay-question-existing-', async (homeDir) => {
         envScope.patch({ HAPPIER_HOME_DIR: homeDir, HAPPIER_SERVER_URL: 'https://api.happier.dev', HAPPIER_ACTIVE_SERVER_ID: undefined });
         vi.resetModules();
@@ -1024,9 +1644,8 @@ function withoutAgentCliPathOverrides(): () => void {
 
         const applyServerSelectionFromArgs = vi.fn(async (args: string[]) => args);
         const calls: string[][] = [];
-        const childEnvs: Array<NodeJS.ProcessEnv | undefined> = [];
         await handleSetupCommand(
-          ['--skip-daemon', '--skip-providers'],
+          ['--skip-providers'],
           {
             applyServerSelectionFromArgs,
             readCredentialsFn: async () => null,
@@ -1037,9 +1656,12 @@ function withoutAgentCliPathOverrides(): () => void {
               if (stripAnsi(prompt).includes('Relay URL')) return 'https://relay.example.test';
               return '';
             },
-            runHappyCliStepFn: async (argv, options) => {
+            runAccountServiceHomeEntryFn: async () => ({
+              kind: 'preferred_home_enrolled', homeServerIdentityId: 'srv_home', profileId: 'home',
+            }),
+            readBackgroundServiceSetupGuidanceFn: async () => createBackgroundServiceSetupGuidance(),
+            runHappyCliStepFn: async (argv) => {
               calls.push([...argv]);
-              childEnvs.push(options?.env);
               return 0;
             },
           },
@@ -1047,10 +1669,9 @@ function withoutAgentCliPathOverrides(): () => void {
 
         expect(applyServerSelectionFromArgs).not.toHaveBeenCalled();
         expect(calls).toEqual([
-          ['server', 'add', '--server-url', 'https://relay.example.test', '--name', 'relay.example.test', '--use'],
-          ['auth', 'login', '--wait-timeout', '300'],
+          ['service', 'install'],
+          ['service', 'start'],
         ]);
-        expect(childEnvs[0]?.HAPPIER_DEFER_SERVER_SELECTION_FOLLOW_UP).toBe('1');
       });
     });
 
@@ -1081,7 +1702,7 @@ function withoutAgentCliPathOverrides(): () => void {
         );
 
         expect(stripAnsi(prompts.join('\n'))).not.toContain('Where does your relay live?');
-        expect(calls).toEqual([['auth', 'login', '--wait-timeout', '300']]);
+        expect(calls).toEqual([['auth', 'login', '--wait-timeout', '300', '--no-daemon-start']]);
       });
     });
 
@@ -1097,7 +1718,7 @@ function withoutAgentCliPathOverrides(): () => void {
           {
             applyServerSelectionFromArgs: async (args) => args,
             readCredentialsFn: async () => ({ encryption: { type: 'legacy', secret: new Uint8Array([1]) }, token: 't' } as any),
-            readSettingsFn: async () => ({ machineId: 'mid_123' } as any),
+            readSettingsFn: async () => ({ machineId: 'mid_123', machineIdConfirmedByServer: true } as any),
             isInteractiveTerminalFn: () => true,
             promptInputFn: async (prompt: string) => {
               prompts.push(prompt);
@@ -1140,11 +1761,11 @@ function withoutAgentCliPathOverrides(): () => void {
         );
 
         expect(stripAnsi(prompts.join('\n'))).not.toContain('Where does your relay live?');
-        expect(calls).toEqual([['auth', 'login', '--wait-timeout', '300']]);
+        expect(calls).toEqual([['auth', 'login', '--wait-timeout', '300', '--no-daemon-start']]);
       });
     });
 
-    it('offers the relay-access providers when the installed relay is reachable from this computer only', async () => {
+    it('does not offer relay-access providers during default Account Service entry', async () => {
       await withTempDir('happier-setup-relay-access-offer-', async (homeDir) => {
         envScope.patch({ HAPPIER_HOME_DIR: homeDir, HAPPIER_SERVER_URL: undefined, HAPPIER_ACTIVE_SERVER_ID: undefined });
         vi.resetModules();
@@ -1165,39 +1786,19 @@ function withoutAgentCliPathOverrides(): () => void {
               if (prompt.includes('How should your phone reach this relay?')) return 'tailscaleServe';
               return '';
             },
+            runAccountServiceHomeEntryFn: async () => ({
+              kind: 'preferred_home_enrolled', homeServerIdentityId: 'srv_home', profileId: 'home',
+            }),
             runHappyCliStepFn: async (argv) => {
               calls.push([...argv]);
-              if (argv.join(' ') === 'relay host install') {
-                const { upsertServerProfileByUrl } = await import('@/server/serverProfiles');
-                await upsertServerProfileByUrl({
-                  name: 'local relay',
-                  serverUrl: 'http://127.0.0.1:3005',
-                  webappUrl: 'http://127.0.0.1:3005',
-                  use: true,
-                });
-              }
-              if (argv.join(' ') === 'relay access configure --provider tailscaleServe') {
-                const { upsertServerProfileByUrl } = await import('@/server/serverProfiles');
-                await upsertServerProfileByUrl({
-                  name: 'local relay',
-                  serverUrl: 'https://machine.tailnet.ts.net',
-                  localServerUrl: 'http://127.0.0.1:3005',
-                  webappUrl: 'https://machine.tailnet.ts.net',
-                  use: true,
-                });
-              }
               return 0;
             },
           },
         );
 
-        expect(stripAnsi(prompts.join('\n'))).toContain('How should your phone reach this relay?');
+        expect(stripAnsi(prompts.join('\n'))).not.toContain('How should your phone reach this relay?');
         expect(stripAnsi(prompts.join('\n'))).not.toContain('Tailscale Funnel');
-        expect(calls).toEqual([
-          ['relay', 'host', 'install'],
-          ['relay', 'access', 'configure', '--provider', 'tailscaleServe'],
-          ['auth', 'login', '--wait-timeout', '300'],
-        ]);
+        expect(calls).toEqual([]);
       });
     });
   });

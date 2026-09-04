@@ -1,8 +1,10 @@
-import type {
-    ComposerContentHandleV1,
-    PromptAssetReadRequest,
-    PromptRegistryFetchItemRequestV1,
-    TransferEndpointCandidate,
+import {
+    WorkspaceContentPolicyV1Schema,
+    type ComposerContentHandleV1,
+    type PromptAssetReadRequest,
+    type PromptRegistryFetchItemRequestV1,
+    type TransferEndpointCandidate,
+    type WorkspaceContentPolicyV1,
 } from '@happier-dev/protocol';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 
@@ -25,7 +27,9 @@ export type DirectTransferExportPrepareRequest =
         t: 'workspace_sync_seed_v1';
         operationId: string;
         sourceWorkspaceRefId: string;
-        contentSelection: 'git_worktree' | 'all_files';
+        targetMachineId: string;
+        /** Complete bounded selection policy, self-verified by its canonical digest. */
+        contentPolicy: WorkspaceContentPolicyV1;
     }>
     | Readonly<{
         t: 'composer_media_stage_inspect_v1';
@@ -70,10 +74,11 @@ export function registerMachineDirectTransferExportRpcHandlers(params: Readonly<
     params.rpcHandlerManager.registerHandler(RPC_METHODS.DAEMON_DIRECT_TRANSFER_EXPORT_PREPARE, async (data: unknown) => {
         const request = data as DirectTransferExportPrepareRequest | null;
         const validSeed = request?.t !== 'workspace_sync_seed_v1' || (
-            Object.keys(request).length === 4
+            Object.keys(request).length === 5
             && typeof request.operationId === 'string' && request.operationId.length > 0
             && typeof request.sourceWorkspaceRefId === 'string' && request.sourceWorkspaceRefId.length > 0
-            && (request.contentSelection === 'git_worktree' || request.contentSelection === 'all_files')
+            && typeof request.targetMachineId === 'string' && request.targetMachineId.length > 0
+            && WorkspaceContentPolicyV1Schema.safeParse(request.contentPolicy).success
         );
         if (!request || typeof request !== 'object' || !validSeed) {
             return { success: false, error: 'Invalid direct transfer export request' } satisfies DirectTransferExportPrepareResponse;

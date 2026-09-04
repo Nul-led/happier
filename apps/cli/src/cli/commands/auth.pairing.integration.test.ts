@@ -107,13 +107,13 @@ describe('auth pairing commands (request/approve/wait) (json)', () => {
       return reply.send({ state: 'requested' });
     });
     await app.ready();
-    const restoreAxios = installAxiosFastifyAdapter({ app, origin: 'http://happier-auth.test' });
+    const restoreAxios = installAxiosFastifyAdapter({ app, origin: 'https://happier-auth.test' });
 
     try {
       envScope.patch({
         HAPPIER_HOME_DIR: remoteHomeDir,
-        HAPPIER_SERVER_URL: 'http://happier-auth.test',
-        HAPPIER_PUBLIC_SERVER_URL: 'http://happier-auth.test',
+        HAPPIER_SERVER_URL: 'https://happier-auth.test',
+        HAPPIER_PUBLIC_SERVER_URL: 'https://happier-auth.test',
         HAPPIER_WEBAPP_URL: 'http://webapp.test',
       });
       vi.resetModules();
@@ -153,6 +153,47 @@ describe('auth pairing commands (request/approve/wait) (json)', () => {
         expect(state.serverIdentityId).toBe(SERVER_IDENTITY_ID);
         expect(request.links?.webUrl).toContain(`serverIdentityId=${SERVER_IDENTITY_ID}`);
         expect(request.links?.mobileUrl).toContain(`serverIdentityId=${SERVER_IDENTITY_ID}`);
+      } finally {
+        output.restore();
+      }
+    } finally {
+      restoreAxios();
+      await app.close().catch(() => {});
+    }
+  });
+
+  it('emits only the short-lived v3 pairing context for authenticated SSH transport', async () => {
+    const app = fastify({ logger: false });
+    app.post('/v1/auth/request', async (_req, reply) => reply.send({ state: 'requested' }));
+    await app.ready();
+    const restoreAxios = installAxiosFastifyAdapter({ app, origin: 'https://happier-auth.test' });
+
+    try {
+      envScope.patch({
+        HAPPIER_HOME_DIR: remoteHomeDir,
+        HAPPIER_SERVER_URL: 'https://happier-auth.test',
+        HAPPIER_PUBLIC_SERVER_URL: 'https://happier-auth.test',
+        HAPPIER_WEBAPP_URL: 'http://webapp.test',
+      });
+      vi.resetModules();
+      vi.stubGlobal('fetch', vi.fn(async () => createFeaturesResponse()));
+
+      const { handleAuthRequest } = await import('./auth/request');
+      const output = captureConsoleLogAndMuteStdout();
+      try {
+        await handleAuthRequest(['--json', '--remote-pairing-context']);
+        const request = JSON.parse(output.logs[0] ?? '') as Record<string, unknown>;
+        expect(request).toMatchObject({
+          serverIdentityId: SERVER_IDENTITY_ID,
+          supportsTokenOnly: true,
+          pairingRequirement: 'v3',
+        });
+        expect(request).toHaveProperty('publicKey');
+        expect(request).toHaveProperty('pairing');
+        expect(request).not.toHaveProperty('claimSecret');
+        expect(request).not.toHaveProperty('stateFile');
+        expect(request).not.toHaveProperty('links');
+        expect(request).not.toHaveProperty('publicKeyB64Url');
       } finally {
         output.restore();
       }
@@ -223,14 +264,14 @@ describe('auth pairing commands (request/approve/wait) (json)', () => {
     });
 
     await app.ready();
-    const restoreAxios = installAxiosFastifyAdapter({ app, origin: 'http://happier-auth.test' });
+    const restoreAxios = installAxiosFastifyAdapter({ app, origin: 'https://happier-auth.test' });
 
     try {
       // 1) Remote: create pairing request (json output should be clean even in dev variant)
       envScope.patch({
         HAPPIER_HOME_DIR: remoteHomeDir,
-        HAPPIER_SERVER_URL: 'http://happier-auth.test',
-        HAPPIER_PUBLIC_SERVER_URL: 'http://happier-auth.test',
+        HAPPIER_SERVER_URL: 'https://happier-auth.test',
+        HAPPIER_PUBLIC_SERVER_URL: 'https://happier-auth.test',
         HAPPIER_WEBAPP_URL: 'http://webapp.test',
         HAPPIER_NO_BROWSER_OPEN: '1',
         HAPPIER_AUTH_METHOD: 'web',
@@ -255,13 +296,13 @@ describe('auth pairing commands (request/approve/wait) (json)', () => {
         remoteOutput.restore();
       }
       expect(typeof requestJson.publicKey).toBe('string');
-      expect(typeof requestJson.claimSecret).toBe('string');
+      expect(requestJson).not.toHaveProperty('claimSecret');
 
       // 2) Local: approve using existing local credentials (token never leaves local machine)
       envScope.patch({
         HAPPIER_HOME_DIR: localHomeDir,
-        HAPPIER_SERVER_URL: 'http://happier-auth.test',
-        HAPPIER_PUBLIC_SERVER_URL: 'http://happier-auth.test',
+        HAPPIER_SERVER_URL: 'https://happier-auth.test',
+        HAPPIER_PUBLIC_SERVER_URL: 'https://happier-auth.test',
         HAPPIER_WEBAPP_URL: 'http://webapp.test',
         HAPPIER_VARIANT: 'stable',
       });
@@ -288,8 +329,8 @@ describe('auth pairing commands (request/approve/wait) (json)', () => {
       // 3) Remote: wait + claim, then write credentials (dataKey)
       envScope.patch({
         HAPPIER_HOME_DIR: remoteHomeDir,
-        HAPPIER_SERVER_URL: 'http://happier-auth.test',
-        HAPPIER_PUBLIC_SERVER_URL: 'http://happier-auth.test',
+        HAPPIER_SERVER_URL: 'https://happier-auth.test',
+        HAPPIER_PUBLIC_SERVER_URL: 'https://happier-auth.test',
         HAPPIER_WEBAPP_URL: 'http://webapp.test',
         HAPPIER_AUTH_POLL_INTERVAL_MS: '1',
         HAPPIER_VARIANT: 'stable',
@@ -341,13 +382,13 @@ describe('auth pairing commands (request/approve/wait) (json)', () => {
     });
 
     await app.ready();
-    const restoreAxios = installAxiosFastifyAdapter({ app, origin: 'http://happier-auth.test' });
+    const restoreAxios = installAxiosFastifyAdapter({ app, origin: 'https://happier-auth.test' });
 
     try {
       envScope.patch({
         HAPPIER_HOME_DIR: remoteHomeDir,
-        HAPPIER_SERVER_URL: 'http://happier-auth.test',
-        HAPPIER_PUBLIC_SERVER_URL: 'http://happier-auth.test',
+        HAPPIER_SERVER_URL: 'https://happier-auth.test',
+        HAPPIER_PUBLIC_SERVER_URL: 'https://happier-auth.test',
         HAPPIER_WEBAPP_URL: 'http://webapp.test',
         HAPPIER_NO_BROWSER_OPEN: '1',
         HAPPIER_AUTH_METHOD: 'web',
@@ -445,13 +486,13 @@ describe('auth pairing commands (request/approve/wait) (json)', () => {
     });
 
     await app.ready();
-    const restoreAxios = installAxiosFastifyAdapter({ app, origin: 'http://happier-auth.test' });
+    const restoreAxios = installAxiosFastifyAdapter({ app, origin: 'https://happier-auth.test' });
 
     try {
       envScope.patch({
         HAPPIER_HOME_DIR: localHomeDir,
-        HAPPIER_SERVER_URL: 'http://happier-auth.test',
-        HAPPIER_PUBLIC_SERVER_URL: 'http://happier-auth.test',
+        HAPPIER_SERVER_URL: 'https://happier-auth.test',
+        HAPPIER_PUBLIC_SERVER_URL: 'https://happier-auth.test',
         HAPPIER_WEBAPP_URL: 'http://webapp.test',
         HAPPIER_NO_BROWSER_OPEN: '1',
         HAPPIER_AUTH_METHOD: 'web',

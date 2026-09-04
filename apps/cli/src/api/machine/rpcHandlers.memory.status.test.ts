@@ -74,6 +74,10 @@ describe('rpcHandlers.memory (status)', () => {
       const deepPath = join(dir, 'deep.sqlite');
       await writeFile(tier1Path, Buffer.from('hello'), 'utf8');
       await writeFile(deepPath, Buffer.from('worldworld'), 'utf8');
+      await writeFile(`${tier1Path}-wal`, Buffer.alloc(7));
+      await writeFile(`${tier1Path}-shm`, Buffer.alloc(11));
+      await writeFile(`${deepPath}-wal`, Buffer.alloc(13));
+      await writeFile(`${deepPath}-shm`, Buffer.alloc(17));
 
       const handlers = new Map<string, (raw: unknown) => Promise<unknown>>();
       const rpcHandlerManager = {
@@ -134,8 +138,36 @@ describe('rpcHandlers.memory (status)', () => {
       expect(out.embeddingsUsingFallback).toBe(false);
       expect(out.tier1DbPath).toBe(tier1Path);
       expect(out.deepDbPath).toBe(deepPath);
-      expect(out.tier1DbBytes).toBeGreaterThan(0);
-      expect(out.deepDbBytes).toBeGreaterThan(0);
+      expect(out.tier1DbBytes).toBeGreaterThan(5);
+      expect(out.deepDbBytes).toBeGreaterThan(10);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('measures canonical sqlite files after worker handles are closed', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'happier-rpc-memory-status-closed-'));
+    try {
+      const tier1Path = join(dir, 'memory.sqlite');
+      await writeFile(tier1Path, Buffer.alloc(5));
+      await writeFile(`${tier1Path}-wal`, Buffer.alloc(7));
+      await writeFile(`${tier1Path}-shm`, Buffer.alloc(11));
+      const handlers = new Map<string, (raw: unknown) => Promise<unknown>>();
+      registerMachineMemoryRpcHandlers({
+        rpcHandlerManager: { registerHandler: (method: string, handler: (raw: unknown) => Promise<unknown>) => handlers.set(method, handler) } as any,
+        memoryWorker: {
+          getSettings: () => ({ v: 1, enabled: false, indexMode: 'hints', embeddings: { mode: 'disabled', presetId: 'balanced', custom: null, blend: { ftsWeight: 0.7, embeddingWeight: 0.3 } } }),
+          getEmbeddingsDiagnostics: () => ({ mode: 'disabled', presetId: null, providerKind: null, modelId: null, runtimeState: 'unavailable', usingFallback: false }),
+          getWorkerStatus: () => ({ state: 'disabled', lastTickAtMs: null, lastInventoryAtMs: null, currentSessionId: null, currentPhase: null }),
+          getTier1DbPath: () => null,
+          getDeepDbPath: () => null,
+          getTier1DbPhysicalPath: () => tier1Path,
+          getDeepDbPhysicalPath: () => join(dir, 'deep.sqlite'),
+        } as any,
+      });
+      const out = MemoryStatusV1Schema.parse(await handlers.get(RPC_METHODS.DAEMON_MEMORY_STATUS)!(null));
+      expect(out.tier1DbPath).toBeNull();
+      expect(out.tier1DbBytes).toBe(23);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

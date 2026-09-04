@@ -72,9 +72,9 @@ describe('rpcHandlers.memory (window retrieval)', () => {
       ],
     });
 
-    const handlers = new Map<string, (raw: unknown) => Promise<unknown>>();
+    const handlers = new Map<string, (raw: unknown, context?: Readonly<{ signal: AbortSignal }>) => Promise<unknown>>();
     const rpcHandlerManager = {
-      registerHandler: (method: string, handler: (params: unknown) => Promise<unknown>) => {
+      registerHandler: (method: string, handler: (params: unknown, context?: Readonly<{ signal: AbortSignal }>) => Promise<unknown>) => {
         handlers.set(method, handler);
       },
     } as unknown as RpcHandlerManager; // Test boundary: this registration helper only reads registerHandler.
@@ -179,15 +179,17 @@ describe('rpcHandlers.memory (window retrieval)', () => {
     const handler = handlers.get(RPC_METHODS.DAEMON_MEMORY_GET_WINDOW);
     expect(handler).toBeTruthy();
 
+    const controller = new AbortController();
     const result = await handler!({
       v: 1,
       sessionId: 'sess-memory-window',
       seqFrom: 1,
       seqTo: 1,
-    });
+    }, { signal: controller.signal });
 
     const window = result as { snippets: Array<{ text: string }> };
     expect(window.snippets).toHaveLength(1);
     expect(window.snippets[0]!.text).toContain('handler reasoning sentinel');
+    expect(fetchSessionByIdMock).toHaveBeenCalledWith(expect.objectContaining({ signal: controller.signal }));
   });
 });

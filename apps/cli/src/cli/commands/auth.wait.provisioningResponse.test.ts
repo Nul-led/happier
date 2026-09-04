@@ -62,8 +62,8 @@ describe('auth wait provisioning response', () => {
   }>): Promise<string> {
     envScope.patch({
       HAPPIER_HOME_DIR: localHomeDir,
-      HAPPIER_SERVER_URL: 'http://happier-auth.test',
-      HAPPIER_PUBLIC_SERVER_URL: 'http://happier-auth.test',
+      HAPPIER_SERVER_URL: 'https://happier-auth.test',
+      HAPPIER_PUBLIC_SERVER_URL: 'https://happier-auth.test',
       HAPPIER_WEBAPP_URL: 'http://webapp.test',
       HAPPIER_AUTH_POLL_INTERVAL_MS: '10',
     });
@@ -199,7 +199,7 @@ describe('auth wait provisioning response', () => {
     });
     const app = authServerApp({ responseB64: Buffer.from(sealed).toString('base64') });
     await app.ready();
-    const restoreAxios = installAxiosFastifyAdapter({ app, origin: 'http://happier-auth.test' });
+    const restoreAxios = installAxiosFastifyAdapter({ app, origin: 'https://happier-auth.test' });
 
     try {
       vi.doMock('@/features/serverFeaturesClient', () => ({
@@ -277,7 +277,7 @@ describe('auth wait provisioning response', () => {
       machineRegistrationStatus: 503,
     });
     await app.ready();
-    const restoreAxios = installAxiosFastifyAdapter({ app, origin: 'http://happier-auth.test' });
+    const restoreAxios = installAxiosFastifyAdapter({ app, origin: 'https://happier-auth.test' });
 
     try {
       vi.doMock('@/features/serverFeaturesClient', () => ({
@@ -341,7 +341,7 @@ describe('auth wait provisioning response', () => {
       serverIdentityId: 'srv_other_home',
     });
     await app.ready();
-    const restoreAxios = installAxiosFastifyAdapter({ app, origin: 'http://happier-auth.test' });
+    const restoreAxios = installAxiosFastifyAdapter({ app, origin: 'https://happier-auth.test' });
     const exitSpy = vi.spyOn(process, 'exit').mockImplementation((code?: string | number | null | undefined): never => {
       throw new Error(`process.exit:${String(code ?? '')}`);
     });
@@ -377,7 +377,7 @@ describe('auth wait provisioning response', () => {
 
     const app = authServerApp({ responseB64: 'A'.repeat(8192) });
     await app.ready();
-    const restoreAxios = installAxiosFastifyAdapter({ app, origin: 'http://happier-auth.test' });
+    const restoreAxios = installAxiosFastifyAdapter({ app, origin: 'https://happier-auth.test' });
     const exitSpy = vi.spyOn(process, 'exit').mockImplementation((code?: string | number | null | undefined): never => {
       throw new Error(`process.exit:${String(code ?? '')}`);
     });
@@ -446,7 +446,7 @@ describe('auth wait provisioning response', () => {
       });
     });
     await app.ready();
-    const restoreAxios = installAxiosFastifyAdapter({ app, origin: 'http://happier-auth.test' });
+    const restoreAxios = installAxiosFastifyAdapter({ app, origin: 'https://happier-auth.test' });
     const exitSpy = vi.spyOn(process, 'exit').mockImplementation((code?: string | number | null | undefined): never => {
       throw new Error(`process.exit:${String(code ?? '')}`);
     });

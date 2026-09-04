@@ -20,7 +20,10 @@ import {
   isInteractiveTerminal,
   normalizeUrlOrThrow,
 } from '../server/commandUtilities';
-import { runServerSelectionBackgroundServiceFollowUp } from '../backgroundServiceFollowUp';
+import {
+  completeServerSelectionMutation,
+  type ServerSelectionMutationMode,
+} from '../backgroundServiceFollowUp';
 
 import { createServerUrlComparableKey } from '@happier-dev/protocol';
 
@@ -113,7 +116,10 @@ async function cmdInspectTarget(args: string[]): Promise<void> {
   ], { indent: '  ' }));
 }
 
-type CmdSetOptions = Readonly<{ silent?: boolean }>;
+type CmdSetOptions = Readonly<{
+  silent?: boolean;
+  selectionMutationMode?: ServerSelectionMutationMode;
+}>;
 
 type RelayProfileEnvKey =
   | 'HAPPIER_ACTIVE_SERVER_ID'
@@ -319,7 +325,8 @@ async function cmdSet(args: string[], options: CmdSetOptions = {}): Promise<void
 
   // Saving a profile changes nothing for a running daemon; activating one does.
   if (used) {
-    await runServerSelectionBackgroundServiceFollowUp({
+    await completeServerSelectionMutation({
+      mode: options.selectionMutationMode ?? 'standalone',
       interactive: isInteractiveTerminal(),
       targetServerUrl: upserted.serverUrl,
     });
@@ -395,16 +402,20 @@ async function cmdStartDaemon(args: string[]): Promise<void> {
   });
 }
 
-export async function runRelaySubcommand(subcommand: string, args: string[]): Promise<boolean> {
+export async function runRelaySubcommand(
+  subcommand: string,
+  args: string[],
+  options: Readonly<{ selectionMutationMode?: ServerSelectionMutationMode }> = {},
+): Promise<boolean> {
   switch (subcommand) {
     case 'inspect-target':
       await cmdInspectTarget(args.slice(1));
       return true;
     case 'set':
-      await cmdSet(args.slice(1));
+      await cmdSet(args.slice(1), options);
       return true;
     case 'use':
-      await cmdUse(args.slice(1));
+      await cmdUse(args.slice(1), options);
       return true;
     case 'add':
       await cmdAdd(args.slice(1));
@@ -416,10 +427,10 @@ export async function runRelaySubcommand(subcommand: string, args: string[]): Pr
       await cmdAuth(args.slice(1));
       return true;
     case 'host':
-      await runRelayHostSubcommand(args.slice(1));
+      await runRelayHostSubcommand(args.slice(1), options);
       return true;
     case 'access':
-      await runRelayAccessSubcommand(args.slice(1));
+      await runRelayAccessSubcommand(args.slice(1), options);
       return true;
     default:
       return false;

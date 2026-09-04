@@ -21,6 +21,7 @@ import type {
   SpawnSessionOptions,
   SpawnSessionResult,
 } from '../../../session/shared/spawnSessionContract';
+import { classifyWorkspaceSyncAdmission, workspaceSyncUpdateRequired } from './workspaceSyncGuard';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -114,11 +115,22 @@ const ReleasedMetadataV2Schema = z.object({
     }).optional(),
 }).strict();
 
+// Released shape provenance: immutable tag cli-v0.2.11,
+// packages/protocol/src/sessionControl/handoff/handoffSchemas.ts. The released
+// delegated start path supplies optional requestId (max 2000),
+// targetSessionStorageMode, and targetPath alongside workspaceTransfer. They
+// are declared here so a real released request still parses and the retired
+// workspaceTransfer field reaches the start handler's typed
+// workspace_sync_update_required guard instead of being rejected as
+// invalid_request before that guard can run.
 const ReleasedStartRequestSchema = z.object({
+  requestId: z.string().min(1).max(2000).optional(),
   sessionId: z.string().min(1).max(RELEASED_HANDOFF_ID_MAX),
   sourceMachineId: z.string().min(1).max(RELEASED_MACHINE_ID_MAX),
   targetMachineId: z.string().min(1).max(RELEASED_MACHINE_ID_MAX),
   sessionStorageMode: z.enum(['direct', 'persisted']),
+  targetSessionStorageMode: z.enum(['direct', 'persisted']).optional(),
+  targetPath: z.string().min(1).max(RELEASED_PATH_MAX).optional(),
   preferredTransportStrategies: z.array(z.enum(['direct_peer', 'server_routed_stream']))
     .min(1).max(4).readonly(),
   negotiatedTransportStrategy: z.enum(['direct_peer', 'server_routed_stream']).optional(),
@@ -565,9 +577,7 @@ export function registerSessionHandoffPredecessorCompatibilityHandlers(input: Re
     async (raw: unknown) => {
       const parsed = PredecessorPrepareTargetRequestV2Schema.safeParse(raw);
       if (!parsed.success) return invalidRequest();
-      if (parsed.data.workspaceTransfer !== undefined) {
-        return { ok: false, errorCode: 'workspace_sync_update_required', error: 'workspace_sync_update_required' } as const;
-      }
+      if (classifyWorkspaceSyncAdmission(parsed.data).kind === 'update_required') return workspaceSyncUpdateRequired();
       const { sessionId, ...canonicalRequest } = parsed.data;
       const result = await input.prepareTarget(canonicalRequest);
       const finalResponse = SessionHandoffPrepareTargetResponseSchema.safeParse(result);
@@ -666,16 +676,7 @@ export function registerSessionHandoffPredecessorCompatibilityHandlers(input: Re
     async (raw: unknown) => {
       const parsed = PredecessorCommitRequestV2Schema.safeParse(raw);
       if (!parsed.success || (parsed.data.mode ?? 'target') !== 'target') return invalidRequest();
-      if (
-        parsed.data.workspaceReplicationReverseSourceRootPath !== undefined
-        || parsed.data.workspaceReplicationReverseTargetRootPath !== undefined
-      ) {
-        return {
-          ok: false,
-          errorCode: 'workspace_sync_update_required',
-          error: 'workspace_sync_update_required',
-        } as const;
-      }
+      if (classifyWorkspaceSyncAdmission(parsed.data).kind === 'update_required') return workspaceSyncUpdateRequired();
       const found = await input.prepareJobStore.findByHandoffId(parsed.data.handoffId);
       const job = found?.schemaVersion === 2 ? found : null;
       if (!isExactPreparedTarget(job, parsed.data)) {

@@ -2,9 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Settings, StoredCredentials } from '@/persistence';
 import type { ActiveServerStoredTokenValidationResult } from '@/auth/validateStoredAuthTokenAgainstActiveServer';
 
-const authAndSetupMachineIfNeededMock = vi.hoisted(() => vi.fn(async () => ({
+const authAndSetupMachineIfNeededMock = vi.hoisted(() => vi.fn(async (_opts?: unknown) => ({
   machineId: 'm1',
-  credentials: { token: 't1', encryption: { type: 'legacy', secret: new Uint8Array(32) } },
+  credentials: { token: 't1', encryption: { type: 'legacy' as const, secret: new Uint8Array(32) } },
 })));
 const validateStoredAuthTokenAgainstActiveServerMock = vi.hoisted(() =>
   vi.fn<(token: string) => Promise<ActiveServerStoredTokenValidationResult>>(async () => ({ state: 'valid', httpStatus: 200 })),
@@ -21,7 +21,7 @@ const isDaemonStopIncompleteErrorMock = vi.hoisted(() => vi.fn((error: unknown) 
 )));
 
 vi.mock('@/ui/auth', () => ({
-  authAndSetupMachineIfNeeded: () => authAndSetupMachineIfNeededMock(),
+  authAndSetupMachineIfNeeded: (opts?: unknown) => authAndSetupMachineIfNeededMock(opts),
 }));
 
 vi.mock('@/auth/validateStoredAuthTokenAgainstActiveServer', () => ({
@@ -126,6 +126,39 @@ describe('happier auth login --print-configure-links', () => {
       expect(authAndSetupMachineIfNeededMock).toHaveBeenCalled();
     } finally {
       consoleSpy.mockRestore();
+    }
+  });
+
+  it('passes setup-managed caller intent when setup owns daemon reconciliation', async () => {
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const { handleAuthLogin } = await import('./login');
+      await handleAuthLogin(['--no-daemon-start']);
+      expect(authAndSetupMachineIfNeededMock).toHaveBeenCalledWith({ callerIntent: 'setup-managed' });
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+
+  it('maps setup-managed authentication cancellation to a nonzero child outcome', async () => {
+    authAndSetupMachineIfNeededMock.mockRejectedValueOnce(Object.assign(
+      new Error('Authentication cancelled'),
+      { code: 'authentication_cancelled' },
+    ));
+    const consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: string | number | null) => {
+      throw new Error(`process.exit:${String(code ?? '')}`);
+    }) as typeof process.exit);
+    try {
+      const { handleAuthLogin } = await import('./login');
+      await expect(handleAuthLogin(['--no-daemon-start'])).rejects.toThrow('process.exit:1');
+      expect(authAndSetupMachineIfNeededMock).toHaveBeenCalledWith({ callerIntent: 'setup-managed' });
+      expect(exitSpy).toHaveBeenCalledWith(1);
+    } finally {
+      exitSpy.mockRestore();
+      consoleErrorSpy.mockRestore();
+      consoleLogSpy.mockRestore();
     }
   });
 

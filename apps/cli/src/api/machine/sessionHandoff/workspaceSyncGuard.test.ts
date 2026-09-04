@@ -8,7 +8,6 @@ const policyInput = {
   selection: 'all_files' as const,
   extraIgnorePatterns: [],
   extraIncludePatterns: [],
-  includeGitDirectory: false,
 };
 const policy = { ...policyInput, policyDigest: computeWorkspaceSyncPolicyDigest(policyInput) };
 

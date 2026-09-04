@@ -40,6 +40,7 @@ export async function handleAuthLogin(args: string[]): Promise<void> {
 
   args = await applyServerSelectionFromArgs(args);
 
+  const callerIntent = args.includes('--no-daemon-start') ? 'setup-managed' : 'standalone';
   const forceAuth = args.includes('--force') || args.includes('-f');
   const noOpen = args.includes('--no-open') || args.includes('--no-browser') || args.includes('--no-browser-open');
   const printConfigureLinks = args.includes('--print-configure-links');
@@ -147,7 +148,7 @@ export async function handleAuthLogin(args: string[]): Promise<void> {
   }
 
   try {
-    const result = await authAndSetupMachineIfNeeded();
+    const result = await authAndSetupMachineIfNeeded({ callerIntent });
     const out = createOutputBuilder();
     out.blank();
     out.line(ok('Authentication successful'));

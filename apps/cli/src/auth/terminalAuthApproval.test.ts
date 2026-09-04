@@ -36,6 +36,7 @@ describe('approveTerminalAuthRequest', () => {
     envScope.restore();
     envScope = createEnvKeyScope(envKeys);
     mockPost.mockReset();
+    vi.unstubAllGlobals();
     vi.resetModules();
   });
 
@@ -116,6 +117,245 @@ describe('approveTerminalAuthRequest', () => {
       expect(mockPost).toHaveBeenCalledTimes(1);
       const [url] = mockPost.mock.calls[0] ?? [];
       expect(url).toBe('http://127.0.0.1:53288/v1/auth/response');
+    });
+  });
+
+  it('uses the explicitly targeted Home profile and credential instead of the active Home', async () => {
+    await withTempDir('happier-cli-terminal-auth-explicit-home-', async (homeDir) => {
+      envScope.patch({
+        HAPPIER_HOME_DIR: homeDir,
+        HAPPIER_SERVER_URL: undefined,
+        HAPPIER_LOCAL_SERVER_URL: undefined,
+        HAPPIER_PUBLIC_SERVER_URL: undefined,
+        HAPPIER_WEBAPP_URL: undefined,
+        HAPPIER_ACTIVE_SERVER_ID: undefined,
+      });
+      writeFileSync(join(homeDir, 'settings.json'), JSON.stringify({
+        schemaVersion: 5,
+        onboardingCompleted: true,
+        activeServerId: 'home-a',
+        servers: {
+          'home-a': {
+            id: 'home-a', name: 'Home A', serverUrl: 'https://home-a.example.test',
+            webappUrl: 'https://home-a.example.test', createdAt: 1, updatedAt: 1, lastUsedAt: 1,
+          },
+          'home-b': {
+            id: 'home-b', name: 'Home B', serverUrl: 'https://home-b.example.test',
+            webappUrl: 'https://home-b.example.test', createdAt: 1, updatedAt: 1, lastUsedAt: 1,
+          },
+        },
+      }), 'utf8');
+      for (const [profileId, token] of [['home-a', 'token-a'], ['home-b', 'token-b']] as const) {
+        const profileDir = join(homeDir, 'servers', profileId);
+        mkdirSync(profileDir, { recursive: true });
+        writeFileSync(join(profileDir, 'access.key'), JSON.stringify({ token, encryption: null }), 'utf8');
+      }
+
+      const configMod = await import('@/configuration');
+      configMod.reloadConfiguration();
+      expect(configMod.configuration.activeServerId).toBe('home-a');
+      const { resolveCliHomeTarget } = await import('@/server/homeTarget');
+      const target = await resolveCliHomeTarget({ kind: 'saved_profile', profileRef: 'home-b' });
+      mockPost.mockResolvedValueOnce({ status: 200, data: {} });
+
+      const approval = await import('./terminalAuthApproval');
+      await approval.approveTerminalAuthRequest({
+        publicKey: Buffer.alloc(32, 3).toString('base64'),
+        pairing: {
+          secretB64Url: Buffer.alloc(32, 11).toString('base64url'),
+          createdAtMs: Date.now() - 1_000,
+          expiresAtMs: Date.now() + 60_000,
+        },
+        supportsTokenOnly: true,
+        target,
+      });
+
+      expect(mockPost).toHaveBeenCalledTimes(1);
+      const [url, _body, options] = mockPost.mock.calls[0] ?? [];
+      expect(url).toBe('https://home-b.example.test/v1/auth/response');
+      expect(options).toMatchObject({ headers: { Authorization: 'Bearer token-b' } });
+    });
+  });
+
+  it('binds a released remote public-route alias to the saved Home identity before using its credential', async () => {
+    await withTempDir('happier-cli-terminal-auth-route-alias-', async (homeDir) => {
+      envScope.patch({
+        HAPPIER_HOME_DIR: homeDir,
+        HAPPIER_SERVER_URL: undefined,
+        HAPPIER_LOCAL_SERVER_URL: undefined,
+        HAPPIER_PUBLIC_SERVER_URL: undefined,
+        HAPPIER_WEBAPP_URL: undefined,
+        HAPPIER_ACTIVE_SERVER_ID: undefined,
+      });
+      writeFileSync(join(homeDir, 'settings.json'), JSON.stringify({
+        schemaVersion: 5,
+        onboardingCompleted: true,
+        activeServerId: 'home-loopback',
+        servers: {
+          'home-loopback': {
+            id: 'home-loopback',
+            name: 'Loopback Home',
+            serverUrl: 'http://127.0.0.1:3005',
+            webappUrl: 'http://127.0.0.1:3005',
+            homeConnectionDescriptor: {
+              v: 1,
+              homeServerIdentityId: 'srv_route_alias_home',
+              canonicalServerUrl: 'http://127.0.0.1:3005',
+              revision: 1,
+              endpoints: [{ kind: 'iroh', endpointId: 'a'.repeat(64) }],
+            },
+            createdAt: 1,
+            updatedAt: 1,
+            lastUsedAt: 1,
+          },
+        },
+      }), 'utf8');
+      const profileDir = join(homeDir, 'servers', 'home-loopback');
+      mkdirSync(profileDir, { recursive: true });
+      writeFileSync(join(profileDir, 'access.key'), JSON.stringify({ token: 'token-loopback', encryption: null }), 'utf8');
+      const featuresBody = JSON.stringify({
+        features: {},
+        capabilities: { serverIdentity: { serverIdentityId: 'srv_route_alias_home' } },
+      });
+      const fetchMock = vi.fn(async () => new Response(featuresBody, {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }));
+      vi.stubGlobal('fetch', fetchMock);
+      mockPost.mockResolvedValueOnce({ status: 200, data: {} });
+
+      const { resolveCliHomeTarget } = await import('@/server/homeTarget');
+      const target = await resolveCliHomeTarget({ kind: 'https_url', url: 'https://public-route.example.test' });
+      const approval = await import('./terminalAuthApproval');
+      await approval.approveTerminalAuthRequest({
+        publicKey: Buffer.alloc(32, 3).toString('base64'),
+        pairing: {
+          secretB64Url: Buffer.alloc(32, 11).toString('base64url'),
+          createdAtMs: Date.now() - 1_000,
+          expiresAtMs: Date.now() + 60_000,
+        },
+        supportsTokenOnly: true,
+        target,
+      });
+
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://public-route.example.test/v1/features',
+        expect.objectContaining({ method: 'GET' }),
+      );
+      expect(mockPost).toHaveBeenCalledWith(
+        'https://public-route.example.test/v1/auth/response',
+        expect.anything(),
+        expect.objectContaining({ headers: expect.objectContaining({ Authorization: 'Bearer token-loopback' }) }),
+      );
+    });
+  });
+
+  it('refuses a released remote public-route alias whose observed identity is not a saved Home', async () => {
+    await withTempDir('happier-cli-terminal-auth-route-mismatch-', async (homeDir) => {
+      envScope.patch({
+        HAPPIER_HOME_DIR: homeDir,
+        HAPPIER_SERVER_URL: undefined,
+        HAPPIER_LOCAL_SERVER_URL: undefined,
+        HAPPIER_PUBLIC_SERVER_URL: undefined,
+        HAPPIER_WEBAPP_URL: undefined,
+        HAPPIER_ACTIVE_SERVER_ID: undefined,
+      });
+      writeFileSync(join(homeDir, 'settings.json'), JSON.stringify({
+        schemaVersion: 5,
+        onboardingCompleted: true,
+        activeServerId: 'home-loopback',
+        servers: {
+          'home-loopback': {
+            id: 'home-loopback',
+            name: 'Loopback Home',
+            serverUrl: 'http://127.0.0.1:3005',
+            webappUrl: 'http://127.0.0.1:3005',
+            homeConnectionDescriptor: {
+              v: 1,
+              homeServerIdentityId: 'srv_expected_home',
+              canonicalServerUrl: 'http://127.0.0.1:3005',
+              revision: 1,
+              endpoints: [{ kind: 'iroh', endpointId: 'a'.repeat(64) }],
+            },
+            createdAt: 1,
+            updatedAt: 1,
+            lastUsedAt: 1,
+          },
+        },
+      }), 'utf8');
+      const profileDir = join(homeDir, 'servers', 'home-loopback');
+      mkdirSync(profileDir, { recursive: true });
+      writeFileSync(join(profileDir, 'access.key'), JSON.stringify({ token: 'token-loopback', encryption: null }), 'utf8');
+      vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+        features: {},
+        capabilities: { serverIdentity: { serverIdentityId: 'srv_other_home' } },
+      }), { status: 200, headers: { 'content-type': 'application/json' } })));
+
+      const { resolveCliHomeTarget } = await import('@/server/homeTarget');
+      const target = await resolveCliHomeTarget({ kind: 'https_url', url: 'https://wrong-route.example.test' });
+      const approval = await import('./terminalAuthApproval');
+      await expect(approval.approveTerminalAuthRequest({
+        publicKey: Buffer.alloc(32, 3).toString('base64'),
+        pairing: {
+          secretB64Url: Buffer.alloc(32, 11).toString('base64url'),
+          createdAtMs: Date.now() - 1_000,
+          expiresAtMs: Date.now() + 60_000,
+        },
+        supportsTokenOnly: true,
+        target,
+      })).rejects.toThrow('does not match a saved Home');
+      expect(mockPost).not.toHaveBeenCalled();
+    });
+  });
+
+  it('does not select a bearer by URL coincidence when the explicit route profile has no stable Home identity', async () => {
+    await withTempDir('happier-cli-terminal-auth-url-only-profile-', async (homeDir) => {
+      envScope.patch({
+        HAPPIER_HOME_DIR: homeDir,
+        HAPPIER_SERVER_URL: undefined,
+        HAPPIER_LOCAL_SERVER_URL: undefined,
+        HAPPIER_PUBLIC_SERVER_URL: undefined,
+        HAPPIER_WEBAPP_URL: undefined,
+        HAPPIER_ACTIVE_SERVER_ID: undefined,
+      });
+      writeFileSync(join(homeDir, 'settings.json'), JSON.stringify({
+        schemaVersion: 5,
+        onboardingCompleted: true,
+        activeServerId: 'url-only',
+        servers: {
+          'url-only': {
+            id: 'url-only',
+            name: 'URL-only profile',
+            serverUrl: 'https://public-route.example.test',
+            webappUrl: 'https://public-route.example.test',
+            createdAt: 1,
+            updatedAt: 1,
+            lastUsedAt: 1,
+          },
+        },
+      }), 'utf8');
+      const profileDir = join(homeDir, 'servers', 'url-only');
+      mkdirSync(profileDir, { recursive: true });
+      writeFileSync(join(profileDir, 'access.key'), JSON.stringify({ token: 'must-not-be-used', encryption: null }), 'utf8');
+      vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+        features: {},
+        capabilities: { serverIdentity: { serverIdentityId: 'srv_observed_but_unsaved' } },
+      }), { status: 200, headers: { 'content-type': 'application/json' } })));
+
+      const { resolveCliHomeTarget } = await import('@/server/homeTarget');
+      const target = await resolveCliHomeTarget({ kind: 'https_url', url: 'https://public-route.example.test' });
+      const approval = await import('./terminalAuthApproval');
+      await expect(approval.approveTerminalAuthRequest({
+        publicKey: Buffer.alloc(32, 3).toString('base64'),
+        pairing: {
+          secretB64Url: Buffer.alloc(32, 11).toString('base64url'),
+          createdAtMs: Date.now() - 1_000,
+          expiresAtMs: Date.now() + 60_000,
+        },
+        supportsTokenOnly: true,
+        target,
+      })).rejects.toThrow('does not match a saved Home');
+      expect(mockPost).not.toHaveBeenCalled();
     });
   });
 

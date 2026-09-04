@@ -83,15 +83,14 @@ describe('openTerminalProvisioningResponse', () => {
     })).toBeNull();
   });
 
-  it('rejects unbound v2 and v1 responses even when pairing context is missing', () => {
-    const v2Plaintext = new Uint8Array(33);
-    v2Plaintext[0] = 0;
-    v2Plaintext.set(new Uint8Array(32).fill(7), 1);
-    const v2Payload = sealBoxBundle({
-      plaintext: v2Plaintext,
-      recipientPublicKey: terminalPublicKey,
-      randomBytes: deterministicRandomBytes,
-    });
+  it('rejects the exact ui-desktop-v0.2.0 v2 writer vector when the request has no authenticated pairing context', () => {
+    // Produced by ui-desktop-v0.2.0 (ed11a23e45fb18b6ef7a7f13c256ab148c8d50a3):
+    // buildTerminalResponseV2 -> sealTerminalProvisioningV2Payload, using the released
+    // protocol test's deterministic 1..N random stream and content key 0x07 * 32.
+    const v2Payload = new Uint8Array(Buffer.from(
+      'B6N8vBQgk8i3VdwbEOhstCY3StFqqFPtC9_AsrhtHHwhIiMkJSYnKCkqKywtLi8wMTIzNDU2NzgDhCGsaO3HE1QCmVRI53EX6BZypF58bPTCrcy7yQAnBzlu7moAcSe4cBfqRgAJEnMi',
+      'base64url',
+    ));
     const v1Payload = sealBoxBundle({
       plaintext: new Uint8Array(32).fill(5),
       recipientPublicKey: terminalPublicKey,

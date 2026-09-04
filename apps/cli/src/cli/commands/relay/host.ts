@@ -10,7 +10,10 @@ import { isInteractiveTerminal, promptInput } from '@/terminal/prompts/promptInp
 import { listCurrentMachineNetworkAddressCandidates } from '@/server/reachability/currentMachineReachableServerUrlCandidates';
 import { buildServerUrlReachabilityHintLines } from '@/server/reachability/serverUrlReachabilityHint';
 import { getActiveServerProfile, upsertServerProfileByUrl, type ServerProfile } from '@/server/serverProfiles';
-import { runServerSelectionBackgroundServiceFollowUp } from '../backgroundServiceFollowUp';
+import {
+  completeServerSelectionMutation,
+  type ServerSelectionMutationMode,
+} from '../backgroundServiceFollowUp';
 
 import {
   prepareFirstPartyComponentPayloadFromGitHubRelease,
@@ -25,7 +28,7 @@ import {
   type RelayRuntimeTaskParams,
   type SystemTaskSshConnectionConfig,
 } from '@happier-dev/cli-common/systemTasks';
-import { readKnownHostsTextSync, writeKnownHostsTextSync } from '@happier-dev/cli-common/ssh';
+import { readKnownHostsTextSync, runOpenSshRemoteCommand, writeKnownHostsTextSync } from '@happier-dev/cli-common/ssh';
 import { renderHelpPage } from '@happier-dev/cli-common/output';
 import { getReleaseRingPublicLabel, normalizePublicReleaseRingId } from '@happier-dev/release-runtime/releaseRings';
 import { defaultNameFromUrl, defaultWebappUrlFromServerUrl } from '../server/commandUtilities';
@@ -49,7 +52,7 @@ type RelayHostInstallJson = Readonly<{
 export function showRelayHostHelp(subcommand?: string): void {
   const installUsage = {
     label: 'happier relay host install [--ssh <user@host>] [--mode user|system] [--channel stable|preview|dev] [--env KEY=VALUE]... [--server-binary <path>] [--lan | --expose | --host <ip>] [--preserve-active-server] [--yes] [--json]',
-    description: 'Install or update a relay host',
+    description: 'Install or update the generic/operator server runtime',
   };
   const usage = subcommand === 'install'
     ? [installUsage]
@@ -60,9 +63,10 @@ export function showRelayHostHelp(subcommand?: string): void {
       ];
   console.log(renderHelpPage({
     title: subcommand === 'install' ? 'happier relay host install' : 'happier relay host',
-    subtitle: 'Install and control a local or remote relay host',
+    subtitle: 'Advanced/operator server runtime deployment',
     usage,
     notes: [
+      'This command does not create or convert a Personal Home. Use `happier home create [--ssh user@host]` for that.',
       '--lan binds to an auto-detected LAN or Tailscale address.',
       '--expose binds to all interfaces; --host binds to one explicit address.',
       '--preserve-active-server keeps the current CLI relay profile after installation.',
@@ -407,7 +411,7 @@ function buildSshRunner(ssh: SystemTaskSshConnectionConfig) {
     knownHostsMode,
     runRemoteText: async (remoteCommand: string) => {
       ensureTrustedHostKeySeeded(ssh, knownHostsMode);
-      const invocation = buildSshCommand({
+      return await runOpenSshRemoteCommand({
         sshBin: 'ssh',
         target: ssh.target,
         remoteCommand: ['bash', '-lc', quoteForRemoteBash(remoteCommand)],
@@ -419,8 +423,9 @@ function buildSshRunner(ssh: SystemTaskSshConnectionConfig) {
         connectTimeoutSec: 10,
         serverAliveIntervalSec: 15,
         serverAliveCountMax: 3,
+        rejectOnNonZero: false,
+        errorPrefix: `Relay host SSH command failed for ${ssh.target}`,
       });
-      return runCommandCapture(invocation.command, invocation.args);
     },
     copyLocalDirectoryToRemote: async (localPath: string, remotePath: string) => {
       ensureTrustedHostKeySeeded(ssh, knownHostsMode);
@@ -510,7 +515,10 @@ function resolveRelayRuntimeTaskParams(params: Readonly<{
   };
 }
 
-export async function runRelayHostSubcommand(args: string[]): Promise<void> {
+export async function runRelayHostSubcommand(
+  args: string[],
+  options: Readonly<{ selectionMutationMode?: ServerSelectionMutationMode }> = {},
+): Promise<void> {
   const op = String(args[0] ?? '').trim();
   if (op === '--help' || op === '-h' || args.slice(1).some((arg) => arg === '--help' || arg === '-h')) {
     showRelayHostHelp(op === '--help' || op === '-h' ? undefined : op);
@@ -881,7 +889,8 @@ export async function runRelayHostSubcommand(args: string[]): Promise<void> {
       && relayProfileConnectionIdentity(activeProfileBeforeInstall)
         !== relayProfileConnectionIdentity(activeProfileAfterInstall)
     ) {
-      await runServerSelectionBackgroundServiceFollowUp({
+      await completeServerSelectionMutation({
+        mode: options.selectionMutationMode ?? 'standalone',
         interactive: isInteractiveTerminal(),
         targetServerUrl: activeProfileAfterInstall.serverUrl,
       });

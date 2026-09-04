@@ -21,20 +21,6 @@ export function workspaceSyncUpdateRequired(): WorkspaceSyncUpdateRequired {
 }
 
 /**
- * Detect a retired request field without relying on a schema parser.  The
- * current protocol schema rejects this field, but inspecting raw input first
- * lets callers return the typed update-required result instead of a generic
- * invalid-request response (and, importantly, before any side effects).
- */
-export function hasRetiredWorkspaceTransfer(raw: unknown): boolean {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false;
-  if (!Object.prototype.hasOwnProperty.call(raw, 'workspaceTransfer')) return false;
-  const value = (raw as Readonly<Record<string, unknown>>).workspaceTransfer;
-  return Boolean(value && typeof value === 'object' && !Array.isArray(value)
-    && (value as Readonly<Record<string, unknown>>).enabled === true);
-}
-
-/**
  * Detect a workspace action that this handoff owner cannot execute.  The
  * canonical workspace-sync adapter owns workspace preparation; until it is
  * available, handoff must reject the action before reading state or stopping
