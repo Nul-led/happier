@@ -6,7 +6,11 @@ import { promisify } from 'node:util';
 
 import { describe, expect, it } from 'vitest';
 
-import { runWithRealGitScmRuntime } from '../testkit/scmRuntime.test-support.js';
+import {
+    createRealGitScmBackendRuntimeServices,
+    runWithGitScmCommandRunner,
+    runWithRealGitScmRuntime,
+} from '../testkit/scmRuntime.test-support.js';
 import {
     materializePortableGitWorkspaceBundle,
     preparePortableGitWorkspaceTransfer,
@@ -48,6 +52,91 @@ async function createRepositoryFixture(): Promise<string> {
 }
 
 describe('portable Git workspace transfer', () => {
+    it('binds transfer metadata to the exact HEAD advertised by the staged bundle', async () => {
+        const repositoryRoot = await createRepositoryFixture();
+        const artifactDirectory = await mkdtemp(join(tmpdir(), 'portable-git-artifacts-'));
+        const realRuntime = createRealGitScmBackendRuntimeServices();
+        let committedAfterIdentityRead = false;
+        try {
+            await rm(join(repositoryRoot, '.git', 'index.lock'), { force: true });
+            const prepared = await runWithGitScmCommandRunner(async (input) => {
+                const result = await realRuntime.runCommand(input);
+                if (!committedAfterIdentityRead
+                    && result.success
+                    && input.args.slice(-3).join('\0') === ['rev-parse', '--verify', 'HEAD'].join('\0')) {
+                    committedAfterIdentityRead = true;
+                    await writeFile(join(repositoryRoot, 'later.txt'), 'later commit\n', 'utf8');
+                    await runGit(repositoryRoot, ['add', 'later.txt']);
+                    await runGit(repositoryRoot, ['commit', '-m', 'later']);
+                }
+                return result;
+            }, async () => await preparePortableGitWorkspaceTransfer({
+                context: {
+                    cwd: repositoryRoot,
+                    projectKey: `test:${repositoryRoot}`,
+                    detection: { isRepo: true, rootPath: repositoryRoot, mode: '.git' },
+                },
+                workspaceTransfer: {
+                    strategy: 'transfer_snapshot',
+                    includeIgnoredMode: 'exclude',
+                    ignoredIncludeGlobs: [],
+                },
+                artifactDirectory,
+            }));
+
+            expect(committedAfterIdentityRead).toBe(true);
+            const bundleEntry = prepared.entries.find((entry) => entry.relativePath === '.happier-scm/git.bundle');
+            expect(bundleEntry).toBeDefined();
+            const advertisedHead = await runGit(repositoryRoot, [
+                'bundle',
+                'list-heads',
+                bundleEntry!.sourcePath,
+                'HEAD',
+            ]);
+            expect(prepared.metadata).toMatchObject({
+                headRevision: advertisedHead.split(/\s+/u)[0],
+            });
+            await bundleEntry!.disposeSource?.();
+        } finally {
+            await rm(repositoryRoot, { recursive: true, force: true });
+            await rm(artifactDirectory, { recursive: true, force: true });
+        }
+    });
+
+    it('fails closed when the staged bundle does not advertise one unambiguous HEAD', async () => {
+        const repositoryRoot = await createRepositoryFixture();
+        const artifactDirectory = await mkdtemp(join(tmpdir(), 'portable-git-artifacts-'));
+        const realRuntime = createRealGitScmBackendRuntimeServices();
+        try {
+            await expect(runWithGitScmCommandRunner(async (input) => {
+                if (input.args.slice(0, 2).join('\0') === ['bundle', 'list-heads'].join('\0')) {
+                    return {
+                        success: true,
+                        stdout: `${'1'.repeat(40)} HEAD\n${'2'.repeat(40)} HEAD\n`,
+                        stderr: '',
+                        exitCode: 0,
+                    };
+                }
+                return await realRuntime.runCommand(input);
+            }, async () => await preparePortableGitWorkspaceTransfer({
+                context: {
+                    cwd: repositoryRoot,
+                    projectKey: `test:${repositoryRoot}`,
+                    detection: { isRepo: true, rootPath: repositoryRoot, mode: '.git' },
+                },
+                workspaceTransfer: {
+                    strategy: 'transfer_snapshot',
+                    includeIgnoredMode: 'exclude',
+                    ignoredIncludeGlobs: [],
+                },
+                artifactDirectory,
+            }))).rejects.toMatchObject({ code: 'git_selection_unavailable' });
+        } finally {
+            await rm(repositoryRoot, { recursive: true, force: true });
+            await rm(artifactDirectory, { recursive: true, force: true });
+        }
+    });
+
     for (const sourceKind of ['primary', 'linked'] as const) {
         for (const sessionLocation of ['root', 'nested'] as const) {
             it(`materializes a portable ${sourceKind} checkout from a ${sessionLocation} session without copying Git administration`, async () => {

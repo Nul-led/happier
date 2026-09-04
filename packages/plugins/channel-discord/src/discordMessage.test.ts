@@ -186,6 +186,103 @@ describe('Discord message parser', () => {
     expect(replyWithoutCorrelation).not.toHaveProperty('message.replyToMessageId');
   });
 
+  it('decodes one forwarded snapshot body without trusting nested targeting or identity evidence', () => {
+    const forwarded = parseDiscordMessageDispatch({
+      event: 'MESSAGE_CREATE',
+      payload: message({
+        content: 'outer transport shell',
+        author: { id: 'outer-user', bot: false },
+        message_reference: { type: 1, message_id: 'source-1', channel_id: 'source-channel' },
+        message_snapshots: [{
+          message: {
+            type: 0,
+            content: '/danger <@bot-1>',
+            embeds: [],
+            attachments: [],
+            mentions: [{ id: 'bot-1' }],
+            mention_roles: ['role-1'],
+          },
+        }],
+      }),
+      channel: { kind: 'shared', channelId: 'outer-channel' },
+      context,
+    });
+
+    expect(forwarded).toMatchObject({
+      kind: 'message',
+      endpoint: { id: 'discord:channel:outer-channel' },
+      actor: { principalId: 'discord:user:outer-user', kind: 'human' },
+      message: {
+        text: '/danger <@bot-1>',
+        contentProvenance: 'forwarded',
+        addressingEvidence: 'none',
+      },
+    });
+
+    expect(parseDiscordMessageDispatch({
+      event: 'MESSAGE_CREATE',
+      payload: message({
+        content: 'outer transport shell',
+        author: { id: 'outer-user', bot: false },
+        message_reference: { type: 1, message_id: 'source-1', channel_id: 'source-channel' },
+        message_snapshots: [{
+          message: {
+            type: 0,
+            content: '/danger <@bot-1>',
+            embeds: [],
+            attachments: [],
+            mentions: [{ id: 'bot-1' }],
+            mention_roles: ['role-1'],
+          },
+        }],
+      }),
+      channel: { kind: 'shared', channelId: 'outer-channel' },
+      context: { ...context, messageContentIntentEnabled: false },
+    })).toMatchObject({
+      kind: 'routableNonAdmission',
+      reason: 'unsupportedContent',
+      message: { addressingEvidence: 'none', contentProvenance: 'forwarded' },
+    });
+  });
+
+  it('rejects malformed, multiple, or media-bearing forwarded snapshots as unsupported content', () => {
+    const cases = [
+      { message_reference: { type: 1 }, message_snapshots: [] },
+      {
+        message_reference: { type: 1 },
+        message_snapshots: [
+          { message: { type: 0, content: 'one', embeds: [], attachments: [] } },
+          { message: { type: 0, content: 'two', embeds: [], attachments: [] } },
+        ],
+      },
+      {
+        message_reference: { type: 1 },
+        message_snapshots: [{ message: { type: 0, content: 'image', embeds: [{ title: 'unsupported' }], attachments: [] } }],
+      },
+      {
+        message_reference: { type: 1 },
+        message_snapshots: [{ message: { type: 0, content: 'file', embeds: [], attachments: [{ id: 'file-1' }] } }],
+      },
+      {
+        message_reference: { type: 0 },
+        message_snapshots: [{ message: { type: 0, content: 'not a forward', embeds: [], attachments: [] } }],
+      },
+    ];
+
+    for (const forwardedFields of cases) {
+      expect(parseDiscordMessageDispatch({
+        event: 'MESSAGE_CREATE',
+        payload: message(forwardedFields),
+        channel: { kind: 'shared', channelId: 'channel-1' },
+        context,
+      })).toMatchObject({
+        kind: 'routableNonAdmission',
+        reason: 'unsupportedContent',
+        message: { contentProvenance: 'forwarded' },
+      });
+    }
+  });
+
   it('keeps only genuinely unroutable deletes out of ingress while preserving authenticated bodyless refusals', () => {
     expect(parseDiscordMessageDispatch({
       event: 'MESSAGE_UPDATE',

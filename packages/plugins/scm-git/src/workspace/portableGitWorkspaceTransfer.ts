@@ -44,7 +44,7 @@ export async function resolvePortableGitWorkspaceRoot(input: Readonly<{
     };
 }
 
-async function runGitOrThrow(cwd: string, args: readonly string[]): Promise<void> {
+async function runGitOrThrow(cwd: string, args: readonly string[]): Promise<string> {
     const result = await runScmCommand({
         bin: 'git',
         cwd,
@@ -55,6 +55,28 @@ async function runGitOrThrow(cwd: string, args: readonly string[]): Promise<void
     if (!result.success) {
         throw selectionUnavailable((result.stderr || result.stdout || 'Git command failed').trim());
     }
+    return result.stdout;
+}
+
+async function readPortableBundleHeadRevision(input: Readonly<{
+    repositoryRoot: string;
+    bundlePath: string;
+}>): Promise<string> {
+    const output = await runGitOrThrow(input.repositoryRoot, [
+        'bundle',
+        'list-heads',
+        input.bundlePath,
+        'HEAD',
+    ]);
+    const advertisedHeads = output
+        .trim()
+        .split(/\r?\n/u)
+        .map((line) => /^([0-9a-f]{40})\s+HEAD$/iu.exec(line.trim()))
+        .filter((match): match is RegExpExecArray => match !== null);
+    if (advertisedHeads.length !== 1) {
+        throw selectionUnavailable('Portable Git bundle does not advertise exactly one usable HEAD revision');
+    }
+    return advertisedHeads[0]![1]!.toLowerCase();
 }
 
 export async function preparePortableGitWorkspaceTransfer(
@@ -77,20 +99,6 @@ export async function preparePortableGitWorkspaceTransfer(
         },
     };
 
-    const [entries, metadata] = await Promise.all([
-        resolveGitWorkspaceTransferEntries(repositoryInput),
-        resolveGitWorkspaceTransferMetadata(repositoryInput),
-    ]);
-    if (!metadata?.headRevision) {
-        throw selectionUnavailable('Git workspace has no portable HEAD revision');
-    }
-    if (entries.some((entry) => (
-        entry.relativePath === '.happier-scm'
-        || entry.relativePath.startsWith('.happier-scm/')
-    ))) {
-        throw selectionUnavailable('Git workspace collides with the portable SCM artifact path');
-    }
-
     await mkdir(input.artifactDirectory, { recursive: true });
     const bundleDirectory = await mkdtemp(join(input.artifactDirectory, 'git-workspace-bundle-'));
     const bundlePath = join(bundleDirectory, 'git.bundle');
@@ -101,26 +109,44 @@ export async function preparePortableGitWorkspaceTransfer(
             bundlePath,
             'HEAD',
         ]);
+        const bundledHeadRevision = await readPortableBundleHeadRevision({
+            repositoryRoot,
+            bundlePath,
+        });
+        const [entries, metadata] = await Promise.all([
+            resolveGitWorkspaceTransferEntries(repositoryInput),
+            resolveGitWorkspaceTransferMetadata(repositoryInput),
+        ]);
+        if (!metadata) {
+            throw selectionUnavailable('Git workspace has no portable checkout metadata');
+        }
+        if (entries.some((entry) => (
+            entry.relativePath === '.happier-scm'
+            || entry.relativePath.startsWith('.happier-scm/')
+        ))) {
+            throw selectionUnavailable('Git workspace collides with the portable SCM artifact path');
+        }
+
+        return createScmWorkspaceIntegrationWorkspaceTransferResult({
+            entries: [
+                ...entries,
+                createScmWorkspaceIntegrationWorkspaceTransferEntry({
+                    relativePath: PORTABLE_BUNDLE_RELATIVE_PATH,
+                    sourcePath: bundlePath,
+                    disposeSource: async () => await rm(bundleDirectory, { recursive: true, force: true }),
+                }),
+            ],
+            metadata: {
+                ...metadata,
+                headRevision: bundledHeadRevision,
+                sessionRelativeCwd,
+                portableBundle: { v: 1, relativePath: PORTABLE_BUNDLE_RELATIVE_PATH },
+            },
+        });
     } catch (error) {
         await rm(bundleDirectory, { recursive: true, force: true });
         throw error;
     }
-
-    return createScmWorkspaceIntegrationWorkspaceTransferResult({
-        entries: [
-            ...entries,
-            createScmWorkspaceIntegrationWorkspaceTransferEntry({
-                relativePath: PORTABLE_BUNDLE_RELATIVE_PATH,
-                sourcePath: bundlePath,
-                disposeSource: async () => await rm(bundleDirectory, { recursive: true, force: true }),
-            }),
-        ],
-        metadata: {
-            ...metadata,
-            sessionRelativeCwd,
-            portableBundle: { v: 1, relativePath: PORTABLE_BUNDLE_RELATIVE_PATH },
-        },
-    });
 }
 
 export async function materializePortableGitWorkspaceBundle(input: Readonly<{

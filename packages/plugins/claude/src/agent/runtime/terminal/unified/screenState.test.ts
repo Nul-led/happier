@@ -516,6 +516,97 @@ describe('parseClaudeScreenState — empty-composer placeholder hint (2.1.174 fr
 });
 
 describe('parseClaudeScreenState — unrecognized confirmation dialogs (P-B fail-closed)', () => {
+  it('recognizes Claude 2.1.259 hidden-shortcut trust choices as a dialog, not a composer draft', () => {
+    const state = parseClaudeScreenState([
+      'Quick safety check: is this a project you created or one you trust?',
+      '',
+      '❯ No, exit',
+      '  Yes, I trust this folder',
+      '',
+      'Enter to confirm · Esc to cancel',
+    ].join('\n'));
+
+    expect(state.trustFolderPromptVisible).toBe(true);
+    expect(state.userDraftPresent).toBe(false);
+    expect(state.visibleDialogSelection).toEqual({
+      kind: 'focused',
+      options: [
+        { label: 'No, exit', focused: true },
+        { label: 'Yes, I trust this folder', focused: false },
+      ],
+    });
+  });
+
+  it.each([
+    ['switch model', [
+      'Switch model?', '', '❯ No, go back', '  Yes, switch', '', 'Enter to confirm · Esc to cancel',
+    ], 'switchModelDialogVisible'],
+    ['effort change', [
+      'Change effort level?',
+      'Switching to high means the full history gets re-read before Claude can continue.',
+      '', '❯ No, go back', '  Yes, switch to high', '', 'Enter to confirm · Esc to cancel',
+    ], 'effortChangeDialogVisible'],
+    ['resume choice', [
+      'This session is 18h old and 560.4k tokens.', '',
+      '❯ Resume from summary (recommended)', '  Resume full session as-is', '  Don’t ask me again',
+      '', 'Enter to confirm · Esc to cancel',
+    ], 'resumeChoiceDialogVisible'],
+    ['safeguard pause', [
+      'Session paused', 'Fable 5\'s safeguards flagged this message.', '',
+      '❯ Switch to Opus 4.8', '  Edit prompt and retry with Fable 5', '', 'Enter to confirm · Esc to cancel',
+    ], 'safeguardPauseDialogVisible'],
+    ['usage limit', [
+      "You've hit your session limit · resets 2:40am (Europe/Zurich)", 'What do you want to do?', '',
+      '❯ Stop and wait for limit to reset', '  Switch to usage credits', '', 'Enter to confirm · Esc to cancel',
+    ], 'usageLimitDialogVisible'],
+  ] as const)('recognizes a hidden-shortcut %s chooser from semantics and presentation', (_name, lines, key) => {
+    const state = parseClaudeScreenState(lines.join('\n'));
+
+    expect(state[key]).toBe(true);
+    expect(state.visibleDialogSelection?.kind).toBe('focused');
+    expect(state.userDraftPresent).toBe(false);
+  });
+
+  it('captures an unknown hidden-shortcut dialog as a generic choice', () => {
+    const state = parseClaudeScreenState([
+      'Choose a newly introduced behavior',
+      '',
+      '❯ Do the new thing',
+      '  Cancel',
+      '',
+      'Enter to confirm · Esc to cancel',
+    ].join('\n'));
+
+    expect(state.unrecognizedConfirmationDialogVisible).toBe(true);
+    expect(state.unrecognizedConfirmationDialog?.options).toEqual([
+      { choice: 'option_1', label: 'Do the new thing' },
+      { choice: 'option_2', label: 'Cancel' },
+    ]);
+    expect(state.userDraftPresent).toBe(false);
+  });
+
+  it('captures the live external-imports confirmation as a generic dialog', () => {
+    const state = parseClaudeScreenState([
+      'Allow external CLAUDE.md file imports?',
+      '',
+      'This project imports instructions from outside the current working directory.',
+      '',
+      '❯ No, disable external imports',
+      '  Yes, allow external imports',
+      '',
+      'Enter to confirm · Esc to cancel',
+    ].join('\n'));
+
+    expect(state.unrecognizedConfirmationDialog).toMatchObject({
+      context: ['Allow external CLAUDE.md file imports?', 'This project imports instructions from outside the current working directory.'],
+      options: [
+        { choice: 'option_1', label: 'No, disable external imports' },
+        { choice: 'option_2', label: 'Yes, allow external imports' },
+      ],
+    });
+    expect(state.userDraftPresent).toBe(false);
+  });
+
   // Shape mirrors the live 2.1.170/2.1.173 selection dialogs (`Switch model?` / `Change effort
   // level?`): a `❯`-marked numbered option list. An UNRECOGNIZED heading must fail closed —
   // typing or Escape could answer/decline it (incident cmq8y3nlx class).

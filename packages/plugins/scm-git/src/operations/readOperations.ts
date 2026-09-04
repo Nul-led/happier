@@ -13,6 +13,12 @@ import { normalizeCommitRef, normalizeRepoRootRelativePath, runScmCommand } from
 
 const GIT_LOG_FIELDS_PER_ENTRY = 7;
 
+/** Git's --author matcher is a basic regular expression, unlike --grep -F. Escape
+ * the basic-regex metacharacters so user input is interpreted literally. */
+function escapeGitAuthorPattern(value: string): string {
+    return value.replace(/[\\.^$*\[\]]/g, '\\$&');
+}
+
 function parseGitLogEntries(rawOutput: string): ScmLogEntry[] {
     const rows: string[][] = [];
     let currentRow: string[] = [];
@@ -158,11 +164,15 @@ export async function gitDiffCommit(input: {
  * SHA on top of the text/author arms. Anything else (spaces, `-`, `:`, …) can only be a text
  * match and must never reach git as a revision argument.
  */
-const GIT_SHA_LIKE_QUERY_PATTERN = /^[0-9a-f]{7,40}$/i;
+const GIT_SHA_LIKE_QUERY_PATTERN = /^[0-9a-f]{7,64}$/i;
 
 function isGitUnknownRevisionFailure(stderr: string | undefined): boolean {
     const lower = String(stderr ?? '').toLowerCase();
-    return lower.includes('unknown revision') || lower.includes('ambiguous argument');
+    return lower.includes('unknown revision')
+        || lower.includes('ambiguous argument')
+        || lower.includes('not a valid object name')
+        || lower.includes('not a valid commit name')
+        || lower.includes('bad object');
 }
 
 type GitLogMatchArm =
@@ -188,6 +198,31 @@ async function runGitLogMatchArm(input: {
             : { ok: false, stderr: result.stderr || 'Failed to search commits' };
     }
     return { ok: true, entries: parseGitLogEntries(result.stdout) };
+}
+
+async function runGitShaLogMatchArm(input: {
+    cwd: string;
+    query: string;
+    signal?: AbortSignal;
+}): Promise<GitLogMatchArm> {
+    const ancestry = await runScmCommand({
+        bin: 'git',
+        cwd: input.cwd,
+        args: ['merge-base', '--is-ancestor', input.query, 'HEAD'],
+        timeoutMs: 15_000,
+        signal: input.signal,
+    });
+    if (!ancestry.success) {
+        if (ancestry.exitCode === 1 || isGitUnknownRevisionFailure(ancestry.stderr)) {
+            return { ok: false, unknownRevision: true };
+        }
+        return { ok: false, stderr: ancestry.stderr || 'Failed to verify commit ancestry' };
+    }
+    return runGitLogMatchArm({
+        cwd: input.cwd,
+        args: ['--max-count=1', input.query],
+        signal: input.signal,
+    });
 }
 
 function mergeGitLogMatchArms(arms: readonly GitLogMatchArm[]): ScmLogEntry[] {
@@ -241,24 +276,31 @@ export async function gitLogList(input: {
     // checkout; the merged page is sliced once. There is no all-history walk and no all-ref
     // (`--all`) fanout — the ref scope stays the checkout's current branch.
     const readBound = limit + skip;
-    const armArgs: string[][] = [
+    const arms: Array<Promise<GitLogMatchArm>> = [
         // Commit subject and body text (`--grep` inspects the whole message). Fixed strings
         // keep the user's query from acting as a regular expression.
-        ['-i', '-F', `--grep=${query}`, `--max-count=${readBound}`],
+        runGitLogMatchArm({
+            cwd: context.cwd,
+            args: ['-i', '-F', `--grep=${query}`, `--max-count=${readBound}`],
+            signal: input.signal,
+        }),
         // Author name and email (git matches `Name <email>` as one string).
-        ['-i', '-F', `--author=${query}`, `--max-count=${readBound}`],
+        runGitLogMatchArm({
+            cwd: context.cwd,
+            args: ['-i', `--author=${escapeGitAuthorPattern(query)}`, `--max-count=${readBound}`],
+            signal: input.signal,
+        }),
     ];
     if (GIT_SHA_LIKE_QUERY_PATTERN.test(query)) {
-        // A revision argument makes git walk its ancestors; the search contract resolves the
-        // single commit whose SHA carries this prefix, so cap the walk at one.
-        armArgs.push(['--max-count=1', query]);
+        // Resolve the SHA only after proving it belongs to the current checkout's HEAD
+        // ancestry. A bare revision argument would also admit commits reachable solely from
+        // another local branch, contradicting this operation's current-branch scope.
+        arms.push(runGitShaLogMatchArm({ cwd: context.cwd, query, signal: input.signal }));
     }
 
-    const arms = await Promise.all(
-        armArgs.map((args) => runGitLogMatchArm({ cwd: context.cwd, args, signal: input.signal })),
-    );
+    const settledArms = await Promise.all(arms);
 
-    const failedArm = arms.find((arm): arm is Extract<GitLogMatchArm, { ok: false; stderr: string }> => !arm.ok && !('unknownRevision' in arm));
+    const failedArm = settledArms.find((arm): arm is Extract<GitLogMatchArm, { ok: false; stderr: string }> => !arm.ok && !('unknownRevision' in arm));
     if (failedArm) {
         // The text and author arms read the same repository; one hard failure means the
         // repository itself cannot answer (the unknown-revision case is filtered out above).
@@ -271,7 +313,7 @@ export async function gitLogList(input: {
 
     return {
         success: true,
-        entries: mergeGitLogMatchArms(arms).slice(skip, skip + limit),
+        entries: mergeGitLogMatchArms(settledArms).slice(skip, skip + limit),
         queryApplied: true,
     };
 }

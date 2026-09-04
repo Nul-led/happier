@@ -365,6 +365,23 @@ function addressingFromMessage(message: TelegramIncomingMessage, identity: Teleg
   return { addressingEvidence: 'none' };
 }
 
+/**
+ * Telegram addresses group commands as `/command@BotUsername`. Only the
+ * provider can authenticate that suffix because only it owns the `bot_command`
+ * entity and the current bot identity. Core still owns the command grammar;
+ * this boundary removes only Telegram's addressed-command suffix.
+ */
+function commandTextFromMessage(message: TelegramIncomingMessage, identity: TelegramBotIdentity): string | null {
+  if (message.text === null) return null;
+  const entity = message.textEntities.find((candidate) => candidate.type === 'bot_command' && candidate.offset === 0);
+  if (entity === undefined) return message.text;
+  const match = /^(\/[A-Za-z0-9_]+)@([A-Za-z0-9_]{5,32})$/u.exec(entity.text);
+  if (match === null || match[2]?.toLocaleLowerCase('en-US') !== identity.username.toLocaleLowerCase('en-US')) {
+    return message.text;
+  }
+  return `${match[1]}${message.text.slice(entity.text.length)}`;
+}
+
 function normalizedIngressFromUpdate(
   update: TelegramUpdate,
   identity: TelegramBotIdentity,
@@ -405,17 +422,18 @@ function normalizedIngressFromUpdate(
     return { kind: 'routableNonAdmission', shell, reason: 'unsupportedEdit' };
   }
   const shell: ConversationAuthenticatedObservationShellV1 = { ...envelope, message: messageFacts };
-  if (message.text === null) {
+  const commandText = commandTextFromMessage(message, identity);
+  if (commandText === null) {
     return { kind: 'routableNonAdmission', shell, reason: 'unsupportedContent' };
   }
-  if (telegramTextEncoder.encode(message.text).byteLength > MAX_CONVERSATION_INGRESS_TEXT_UTF8_BYTES) {
+  if (telegramTextEncoder.encode(commandText).byteLength > MAX_CONVERSATION_INGRESS_TEXT_UTF8_BYTES) {
     return { kind: 'routableNonAdmission', shell, reason: 'messageTooLarge' };
   }
   return {
     kind: 'fullText',
     observation: {
       ...shell,
-      message: { ...shell.message, text: message.text },
+      message: { ...shell.message, text: commandText },
     },
   };
 }

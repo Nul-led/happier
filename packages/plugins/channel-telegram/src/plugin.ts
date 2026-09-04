@@ -212,8 +212,8 @@ export const { manifest: PLUGIN_MANIFEST, activate } = definePlugin({
       run: testTelegramConnection,
     },
     [TELEGRAM_CHANNEL_ACTION_IDS.endpointResolve]: {
-      title: 'Resolve Telegram Channel destination',
-      description: 'Resolves a Telegram chat or channel destination for delivery.',
+      title: 'Resolve Telegram chat destination',
+      description: 'Resolves a Telegram direct chat, group, supergroup, or topic for delivery; broadcast channels are unsupported.',
       execution: { target: 'daemon' },
       inputSchema: providers.operations.endpointResolve.declaration.input.schema.jsonSchema,
       resultSchema: providers.operations.endpointResolve.declaration.resultSchema.jsonSchema,

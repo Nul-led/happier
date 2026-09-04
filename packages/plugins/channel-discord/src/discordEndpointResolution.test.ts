@@ -63,4 +63,16 @@ describe('Discord endpoint resolution', () => {
     expect(candidates).not.toContainEqual(expect.objectContaining({ id: 'discord:channel:alice' }));
   });
 
+  it('never exposes a permission-only forum or media parent as an endpoint candidate', () => {
+    expect(resolveDiscordEndpointCandidates({
+      query: 'parent-1',
+      knownChannels: [{
+        channelId: 'parent-1',
+        kind: 'permissionParent',
+        guildId: 'guild-1',
+        permissionOverwrites: [],
+      }],
+    })).toEqual([]);
+  });
+
 });

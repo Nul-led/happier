@@ -189,7 +189,11 @@ export async function saplingLogList(input: {
         runSaplingLog(['log', '-k', query, '--limit', String(readBound), '--template', SAPLING_LOG_TEMPLATE], context.cwd, input.signal),
     ];
     if (SAPLING_SHA_LIKE_QUERY_PATTERN.test(query)) {
-        arms.push(runSaplingLog(['log', '-r', query, '--template', SAPLING_LOG_TEMPLATE], context.cwd, input.signal));
+        // `id(query)` resolves full or abbreviated node ids, while intersecting with
+        // `ancestors(.)` keeps the result inside the checkout's current-parent history.
+        // A bare `-r query` also admits commits reachable only from another local head.
+        const revision = `ancestors(.) & id(${query})`;
+        arms.push(runSaplingLog(['log', '-r', revision, '--template', SAPLING_LOG_TEMPLATE], context.cwd, input.signal));
     }
 
     const settledArms = await Promise.all(arms);

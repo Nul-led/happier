@@ -761,6 +761,91 @@ describe('Telegram Channel provider actions', () => {
     expect(observations.get('telegram:update:50')?.message).not.toHaveProperty('replyToMessageId');
   });
 
+  it.each([
+    ['/pair@HappierBot ABCD2345', '/pair ABCD2345'],
+    ['/start@happierbot ABCD2345', '/start ABCD2345'],
+    ['/allow@HAPPIERBOT request-1 session', '/allow request-1 session'],
+  ])('normalizes an offset-zero command for the authenticated bot while retaining raw provider evidence', async (rawText, commandText) => {
+    const commandLength = rawText.indexOf(' ');
+    const http = {
+      request: vi.fn(async (input: TelegramHttpRequestInput) => response(
+        input.url.endsWith('/getMe')
+          ? botIdentity()
+          : {
+              ok: true,
+              result: [{
+                update_id: 42,
+                message: {
+                  message_id: 1,
+                  date: 1_700_000_000,
+                  chat: { id: 456, type: 'private' },
+                  from: { id: 789, is_bot: false },
+                  text: rawText,
+                  entities: [{ type: 'bot_command', offset: 0, length: commandLength }],
+                },
+              }],
+            },
+      )),
+    };
+
+    const result = await pollTelegramObservations({
+      ...connection,
+      checkpoint: { v: 1, offset: '42', caughtUpAtMs: Date.now() },
+      limit: 10,
+      waitMs: 0,
+    }, coreContext(http));
+
+    expect(result).toMatchObject({
+      kind: 'batch',
+      observations: [{
+        observation: { kind: 'fullText', observation: { message: { text: commandText } } },
+        eventCandidate: { payload: { text: rawText } },
+      }],
+    });
+  });
+
+  it.each([
+    {
+      text: '/start@AnotherBot ABCD2345',
+      entities: [{ type: 'bot_command', offset: 0, length: 17 }],
+    },
+    {
+      text: 'note /start@HappierBot ABCD2345',
+      entities: [{ type: 'bot_command', offset: 5, length: 17 }],
+    },
+  ])('does not grant command authority to a wrong-bot or nonzero Telegram command entity', async ({ text, entities }) => {
+    const http = {
+      request: vi.fn(async (input: TelegramHttpRequestInput) => response(
+        input.url.endsWith('/getMe')
+          ? botIdentity()
+          : {
+              ok: true,
+              result: [{
+                update_id: 42,
+                message: {
+                  message_id: 1,
+                  date: 1_700_000_000,
+                  chat: { id: 456, type: 'private' },
+                  from: { id: 789, is_bot: false },
+                  text,
+                  entities,
+                },
+              }],
+            },
+      )),
+    };
+
+    await expect(pollTelegramObservations({
+      ...connection,
+      checkpoint: { v: 1, offset: '42', caughtUpAtMs: Date.now() },
+      limit: 10,
+      waitMs: 0,
+    }, coreContext(http))).resolves.toMatchObject({
+      kind: 'batch',
+      observations: [{ observation: { kind: 'fullText', observation: { message: { text } } } }],
+    });
+  });
+
   it('delivers a private-chat thread endpoint with its Telegram message thread ID', async () => {
     const http = {
       request: vi.fn(async (input: TelegramHttpRequestInput) => {

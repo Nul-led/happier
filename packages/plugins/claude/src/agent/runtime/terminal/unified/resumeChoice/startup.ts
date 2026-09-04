@@ -212,24 +212,10 @@ export function createClaudeUnifiedResumeChoiceStartupHandler(params: Readonly<{
       .digest('hex')
       .slice(0, 24);
     const requestId = `${params.sessionId}:claude-dialog:${digest}`;
-    const task = params.ctx.sessions.current.permissions.requestDecision({
-      provider: CLAUDE_UNIFIED_TERMINAL_PROVIDER_ID,
-      source: CLAUDE_UNIFIED_TERMINAL_DIALOG_CHOICE_REQUEST_SOURCE,
-      requestId,
-      toolCallId: requestId,
-      toolName: 'AskUserQuestion',
-      input: buildClaudeUnifiedDialogQuestionInput(dialog),
-      reason: dialog.requestReason,
-    }, { signal: abort.signal }).then(async (result) => {
-      if (pendingRequest !== task || pendingIdentity !== identity || abort.signal.aborted) return;
-      // An incomplete/ambiguous prompt is navigation-only. A returned UI value can never become
-      // terminal input; the exact episode remains closed until the visible identity changes.
-      if (dialog.kind === 'unrecognized' && dialog.mode === 'notice') {
-        closedIdentity = identity;
-        return;
-      }
+    let appliedByAcknowledgement = false;
+    const applyDecision = async (result: PermissionDecisionResult): Promise<boolean> => {
       const dialogOption = resolveClaudeUnifiedDialogSelectedOption(readDecisionAnswers(result), dialog.options);
-      const answered = dialogOption && dialog.kind === 'recognized'
+      return dialogOption && dialog.kind === 'recognized'
         ? await answerVia(dialog.dialogId, identity, dialogOption)
         : dialogOption && dialog.kind === 'unrecognized'
           ? await answerClaudeUnifiedRegisteredDialog({
@@ -241,7 +227,36 @@ export function createClaudeUnifiedResumeChoiceStartupHandler(params: Readonly<{
             wait: params.wait,
           }).then((answerResult) => answerResult.status === 'answered' || answerResult.status === 'not_visible')
           : false;
-      if (!answered) closedIdentity = identity;
+    };
+    const task = params.ctx.sessions.current.permissions.requestDecision({
+      provider: CLAUDE_UNIFIED_TERMINAL_PROVIDER_ID,
+      source: CLAUDE_UNIFIED_TERMINAL_DIALOG_CHOICE_REQUEST_SOURCE,
+      requestId,
+      toolCallId: requestId,
+      toolName: 'AskUserQuestion',
+      input: buildClaudeUnifiedDialogQuestionInput(dialog),
+      reason: dialog.requestReason,
+    }, {
+      signal: abort.signal,
+      acknowledgeDecisionApplication: async (result) => {
+        if (result.decision === 'denied' || result.decision === 'abort') return;
+        if (dialog.kind === 'unrecognized' && dialog.mode === 'notice') return;
+        if (!await applyDecision(result)) {
+          throw new Error('claude_unified_dialog_terminal_answer_failed');
+        }
+        appliedByAcknowledgement = true;
+      },
+    }).then(async (result) => {
+      if (pendingRequest !== task || pendingIdentity !== identity || abort.signal.aborted) return;
+      // An incomplete/ambiguous prompt is navigation-only. A returned UI value can never become
+      // terminal input; the exact episode remains closed until the visible identity changes.
+      if (dialog.kind === 'unrecognized' && dialog.mode === 'notice') {
+        closedIdentity = identity;
+        return;
+      }
+      // Released hosts call the application acknowledgement above before resolving this promise.
+      // Retain the legacy continuation for a mixed-version host that ignores the new optional hook.
+      if (!appliedByAcknowledgement && !await applyDecision(result)) closedIdentity = identity;
     }).catch(() => {
       if (pendingRequest === task) closedIdentity = identity;
     }).finally(() => {

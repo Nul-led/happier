@@ -4044,11 +4044,16 @@ describe('transferConversationConnectionForInvocation predecessor custody recove
     connectionId: string;
     collection: ReturnType<typeof createMutableConnectionStateCollection>;
   }>) {
+    let blockedConverge: Readonly<{
+      entered: () => void;
+      released: Promise<void>;
+    }> | undefined;
     const state = {
       target: { ...OLD_ORIGIN.materializationRef } as Readonly<Record<string, string>>,
       targetIntentEpoch: null as number | null,
       revision: 4,
       failNextConverge: false,
+      loseNextConvergeResponse: false,
       abortNextConverge: undefined as AbortController | undefined,
       /** Retained row revision observed at each endpoint call, in order. */
       observedRevisions: [] as Array<number | undefined>,
@@ -4058,6 +4063,12 @@ describe('transferConversationConnectionForInvocation predecessor custody recove
     const execute = vi.fn(async (actionId: string, actionInput: unknown) => {
       state.observedRevisions.push(input.collection.rows.get(input.connectionId)?.revision);
       if (actionId === 'plugin.webhook.endpoint.convergeTarget') {
+        if (blockedConverge !== undefined) {
+          const blocked = blockedConverge;
+          blockedConverge = undefined;
+          blocked.entered();
+          await blocked.released;
+        }
         if (state.abortNextConverge !== undefined) {
           const controller = state.abortNextConverge;
           state.abortNextConverge = undefined;
@@ -4087,6 +4098,10 @@ describe('transferConversationConnectionForInvocation predecessor custody recove
           state.targetIntentEpoch = request.targetIntentEpoch;
           state.revision += 1;
         }
+        if (state.loseNextConvergeResponse) {
+          state.loseNextConvergeResponse = false;
+          throw new Error('endpoint target committed before its response was lost');
+        }
         return {
           kind: 'converged',
           webhookEndpointId: DURABLE_PUSH_WEBHOOK_ENDPOINT_ID,
@@ -4105,7 +4120,15 @@ describe('transferConversationConnectionForInvocation predecessor custody recove
       }
       throw new Error(`Unexpected generic Action: ${actionId}`);
     });
-    return { state, execute };
+    const pauseNextConverge = () => {
+      let markEntered!: () => void;
+      let release!: () => void;
+      const entered = new Promise<void>((resolve) => { markEntered = resolve; });
+      const released = new Promise<void>((resolve) => { release = resolve; });
+      blockedConverge = { entered: markEntered, released };
+      return { entered, release };
+    };
+    return { state, execute, pauseNextConverge };
   }
 
   /**
@@ -4340,6 +4363,170 @@ describe('transferConversationConnectionForInvocation predecessor custody recove
     expect(collection.rows.get(connectionId)).toMatchObject({
       revision: 6,
       value: { payload: { authorityEpoch: 5, pendingOldTransportStop: null } },
+    });
+  });
+
+  it('keeps endpoint-retarget custody across concurrent delete and durable-to-non-durable requests', async () => {
+    const connectionId = 'connection-transfer-push-retarget-serialized';
+    const collection = createMutableConnectionStateCollection();
+    collection.rows.set(connectionId, durablePushConnectionRow({
+      connectionId,
+      revision: 4,
+      authority: transferAuthority(),
+    }));
+    const stopInputs: unknown[] = [];
+    const stopOrigins: unknown[] = [];
+    const endpoint = webhookEndpointBoundary({ connectionId, collection });
+    const durableProvider = transferProviderExecutor({
+      supportedTransports: ['durablePush'],
+      recommendedTransport: 'durablePush',
+      replayContinuity: 'none',
+      stopInputs,
+      stopOrigins,
+    });
+
+    const convergeGate = endpoint.pauseNextConverge();
+    const retarget = transferConversationConnectionForInvocation({
+      connectionId,
+      expectedRevision: 4,
+      expectedAuthorityEpoch: 4,
+      providerSelection,
+      providerSetupInput: { source: 'same' },
+      credentialRef: null,
+      selectedTransport: 'durablePush',
+    }, transferContext({ stateCollection: collection, provider: durableProvider, execute: endpoint.execute }));
+    await convergeGate.entered;
+
+    const endpointCallsAfterPendingRetarget = endpoint.execute.mock.calls.length;
+    try {
+      await expect(deleteConversationConnectionForInvocation({
+        connectionId,
+        expectedRevision: 5,
+      }, transferContext({ stateCollection: collection, provider: durableProvider, execute: endpoint.execute })))
+        .rejects.toMatchObject({
+          code: 'channels_connection_delete_endpoint_retarget_repair_required',
+          retryable: true,
+        });
+
+      const pullProvider = transferProviderExecutor({
+        supportedTransports: ['checkpointedPull'],
+        recommendedTransport: 'checkpointedPull',
+        replayContinuity: 'checkpointed',
+        stopInputs,
+        stopOrigins,
+      });
+      await expect(transferConversationConnectionForInvocation({
+        connectionId,
+        expectedRevision: 5,
+        expectedAuthorityEpoch: 5,
+        providerSelection,
+        providerSetupInput: { source: 'pull' },
+        credentialRef: null,
+        selectedTransport: 'checkpointedPull',
+      }, transferContext({ stateCollection: collection, provider: pullProvider, execute: endpoint.execute })))
+        .rejects.toMatchObject({
+          code: 'channels_connection_transfer_endpoint_retarget_repair_required',
+          retryable: true,
+        });
+
+      expect(collection.rows.get(connectionId)).toMatchObject({
+        revision: 5,
+        value: {
+          payload: {
+            authorityEpoch: 5,
+            transport: {
+              kind: 'durablePush',
+              webhookEndpointId: DURABLE_PUSH_WEBHOOK_ENDPOINT_ID,
+            },
+            pendingOldTransportStop: {
+              endpointRetarget: 'pending',
+              acceptedPossibleLoss: false,
+            },
+          },
+        },
+      });
+    } finally {
+      convergeGate.release();
+    }
+
+    await expect(retarget).resolves.toMatchObject({
+      kind: 'transferred',
+      revision: 6,
+      authorityEpoch: 5,
+    });
+
+    expect(stopInputs).toEqual([]);
+    expect(endpoint.execute.mock.calls).toHaveLength(endpointCallsAfterPendingRetarget);
+    expect(endpoint.execute.mock.calls.every(([actionId]) => (
+      actionId === 'plugin.webhook.endpoint.convergeTarget'
+    ))).toBe(true);
+    expect(collection.rows.get(connectionId)).toMatchObject({
+      revision: 6,
+      value: { payload: { pendingOldTransportStop: null } },
+    });
+  });
+
+  it('rejoins after the endpoint commits its target and loses the convergence response', async () => {
+    const connectionId = 'connection-transfer-push-endpoint-response-lost';
+    const collection = createMutableConnectionStateCollection();
+    collection.rows.set(connectionId, durablePushConnectionRow({
+      connectionId,
+      revision: 4,
+      authority: transferAuthority(),
+    }));
+    const stopInputs: unknown[] = [];
+    const stopOrigins: unknown[] = [];
+    const endpoint = webhookEndpointBoundary({ connectionId, collection });
+    const provider = transferProviderExecutor({
+      supportedTransports: ['durablePush'],
+      recommendedTransport: 'durablePush',
+      replayContinuity: 'none',
+      stopInputs,
+      stopOrigins,
+    });
+    const transferInput = {
+      connectionId,
+      expectedRevision: 4,
+      expectedAuthorityEpoch: 4,
+      providerSelection,
+      providerSetupInput: { source: 'same' },
+      credentialRef: null,
+      selectedTransport: 'durablePush',
+    } as const;
+
+    endpoint.state.loseNextConvergeResponse = true;
+    await expect(transferConversationConnectionForInvocation(
+      transferInput,
+      transferContext({ stateCollection: collection, provider, execute: endpoint.execute }),
+    )).resolves.toEqual({
+      kind: 'transferPendingOldStop',
+      connectionId,
+      revision: 5,
+      authorityEpoch: 5,
+    });
+    expect(endpoint.state.target).toEqual(REPLACEMENT_MATERIALIZATION);
+    expect(endpoint.state.revision).toBe(5);
+    expect(collection.rows.get(connectionId)).toMatchObject({
+      revision: 5,
+      value: { payload: { pendingOldTransportStop: { endpointRetarget: 'pending' } } },
+    });
+
+    const providerCallsBeforeRetry = provider.mock.calls.length;
+    await expect(transferConversationConnectionForInvocation(
+      transferInput,
+      transferContext({ stateCollection: collection, provider, execute: endpoint.execute }),
+    )).resolves.toEqual({
+      kind: 'transferred',
+      connectionId,
+      revision: 6,
+      authorityEpoch: 5,
+    });
+    expect(provider.mock.calls.length).toBe(providerCallsBeforeRetry);
+    expect(endpoint.state.revision).toBe(5);
+    expect(stopInputs).toEqual([]);
+    expect(collection.rows.get(connectionId)).toMatchObject({
+      revision: 6,
+      value: { payload: { pendingOldTransportStop: null } },
     });
   });
 

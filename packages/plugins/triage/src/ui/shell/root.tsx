@@ -536,8 +536,16 @@ export function TriageListShell(props: TriageListShellProps = {}): React.ReactEl
     [rowsByKey, state],
   );
   const currentUiContext = React.useMemo(
-    () => projectTriageCurrentUiContextV1({ surface, visibleRows: currentUiContextRows }),
-    [currentUiContextRows, surface],
+    () => projectTriageCurrentUiContextV1({
+      surface,
+      visibleRows: currentUiContextRows,
+      formatOpenEntryTitle: (title) => text(
+        'plugins.triage.currentContext.openEntry',
+        'Open {title}',
+        { title },
+      ),
+    }),
+    [currentUiContextRows, surface, text],
   );
 
   useTriageCurrentUiContextPublication(hostApi, currentUiContext);

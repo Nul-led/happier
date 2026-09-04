@@ -1217,6 +1217,12 @@ function assertTransferStartAccepted(input: ReturnType<typeof startConversationC
         'Connection transfer is blocked by unresolved old-transport stop custody.',
         true,
       );
+    case 'endpointRetargetRepairRequired':
+      throw pluginError(
+        'channels_connection_transfer_endpoint_retarget_repair_required',
+        'The retained durable-push endpoint must be repaired before transferring this connection away from it.',
+        true,
+      );
     case 'authorityEpochExhausted':
       throw pluginError(
         'channels_connection_transfer_authority_epoch_exhausted',
@@ -3248,6 +3254,13 @@ export async function deleteConversationConnectionForInvocation(
       }
       if (start.code === 'oldTransportStopPending') {
         throw pluginError('channels_connection_delete_old_transport_stop_pending', 'Connection replacement already retains unresolved old-stop custody.', true);
+      }
+      if (start.code === 'endpointRetargetRepairRequired') {
+        throw pluginError(
+          'channels_connection_delete_endpoint_retarget_repair_required',
+          'The retained durable-push endpoint must be repaired before deleting this connection.',
+          true,
+        );
       }
       throw pluginError('channels_connection_delete_stop_request_invalid', 'Connection deletion could not freeze its exact stop request.');
     }

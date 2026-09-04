@@ -223,14 +223,23 @@ export type ConversationConnectionDeleteStartResultV1 =
   | Readonly<{ kind: 'rejoined'; connection: ConversationConnectionLifecycleStateV1 }>
   | Readonly<{
     kind: 'rejected';
-    code: 'authorityEpochExhausted' | 'oldTransportStopPending' | 'stopRequestInvalid';
+    code:
+      | 'authorityEpochExhausted'
+      | 'oldTransportStopPending'
+      | 'endpointRetargetRepairRequired'
+      | 'stopRequestInvalid';
   }>;
 
 export type ConversationConnectionTransferStartResultV1 =
   | Readonly<{ kind: 'transferPendingOldStop'; connection: ConversationConnectionLifecycleStateV1 }>
   | Readonly<{
     kind: 'rejected';
-    code: 'deleteInProgress' | 'oldTransportStopPending' | 'authorityEpochExhausted' | 'stopRequestInvalid';
+    code:
+      | 'deleteInProgress'
+      | 'oldTransportStopPending'
+      | 'endpointRetargetRepairRequired'
+      | 'authorityEpochExhausted'
+      | 'stopRequestInvalid';
   }>;
 
 export type ConversationConnectionStopConfirmationResultV1 =
@@ -505,21 +514,39 @@ export function hasAcceptedConversationTransferLoss(input: Readonly<{
 }
 
 /**
- * Whether a replacing destructive transition may take over the retained
- * old-transport slot for this exact connection. Settled accepted loss and an
- * owed endpoint retarget are the only two custodies a replacement may absorb:
- * one is already-settled disclosure, and the other is a desire the replacement
- * itself restates. Live provider-stop custody always blocks.
+ * The one admission predicate for replacing retained old-transport custody.
+ *
+ * Settled accepted loss is disclosure rather than live custody and may be
+ * replaced by either destructive transition. An owed endpoint retarget is
+ * different: delete or a durable-to-non-durable transfer would erase the only
+ * repair intent while the generic endpoint may already have moved. Only the
+ * next authority epoch retaining this connection's same durable endpoint may
+ * supersede it and converge that endpoint directly on the newer target.
  */
-function mayReplaceRetainedOldTransportCustody(input: Readonly<{
+function decideRetainedOldTransportCustodyReplacement(input: Readonly<{
   current: ConversationConnectionLifecycleStateV1;
   connectionId: string;
-}>): boolean {
+  replacement:
+    | Readonly<{ kind: 'delete' }>
+    | Readonly<{
+      kind: 'transfer';
+      pendingOldTransportStop: ConversationPendingOldTransportStopTransferStartV1;
+    }>;
+}>): 'allowed' | 'oldTransportStopPending' | 'endpointRetargetRepairRequired' {
   const pending = input.current.pendingOldTransportStop;
-  if (pending === null) return true;
-  return pending.stopRequest.connectionId === input.connectionId
-    && (hasAcceptedConversationTransferLoss(input.current)
-      || owesOnlyConversationEndpointRetarget(pending));
+  if (pending === null) return 'allowed';
+  if (pending.stopRequest.connectionId !== input.connectionId) return 'oldTransportStopPending';
+  if (hasAcceptedConversationTransferLoss(input.current)) return 'allowed';
+  if (!owesOnlyConversationEndpointRetarget(pending)) return 'oldTransportStopPending';
+
+  if (input.replacement.kind === 'transfer'
+    && pending.stopRequest.authorityEpoch === input.current.authorityEpoch
+    && input.replacement.pendingOldTransportStop.predecessorTransportKind === 'durablePush'
+    && input.replacement.pendingOldTransportStop.endpointRetarget === 'pending'
+    && input.replacement.pendingOldTransportStop.stopRequest.authorityEpoch > pending.stopRequest.authorityEpoch) {
+    return 'allowed';
+  }
+  return 'endpointRetargetRepairRequired';
 }
 
 /**
@@ -617,11 +644,13 @@ export function startConversationConnectionDelete(input: Readonly<{
   if (current.deletionState !== 'none') {
     return { kind: 'rejoined', connection: current };
   }
-  if (!mayReplaceRetainedOldTransportCustody({
+  const custodyDecision = decideRetainedOldTransportCustodyReplacement({
     current,
     connectionId: input.pendingOldTransportStop.stopRequest.connectionId,
-  })) {
-    return { kind: 'rejected', code: 'oldTransportStopPending' };
+    replacement: { kind: 'delete' },
+  });
+  if (custodyDecision !== 'allowed') {
+    return { kind: 'rejected', code: custodyDecision };
   }
   if (!hasAuthoritySteps(current.authorityEpoch, 1)) {
     return { kind: 'rejected', code: 'authorityEpochExhausted' };
@@ -680,11 +709,16 @@ export function startConversationConnectionTransfer(input: Readonly<{
   if (current.deletionState !== 'none') {
     return { kind: 'rejected', code: 'deleteInProgress' };
   }
-  if (!mayReplaceRetainedOldTransportCustody({
+  const custodyDecision = decideRetainedOldTransportCustodyReplacement({
     current,
     connectionId: input.pendingOldTransportStop.stopRequest.connectionId,
-  })) {
-    return { kind: 'rejected', code: 'oldTransportStopPending' };
+    replacement: {
+      kind: 'transfer',
+      pendingOldTransportStop: input.pendingOldTransportStop,
+    },
+  });
+  if (custodyDecision !== 'allowed') {
+    return { kind: 'rejected', code: custodyDecision };
   }
   if (!hasAuthoritySteps(current.authorityEpoch, 1)) {
     return { kind: 'rejected', code: 'authorityEpochExhausted' };

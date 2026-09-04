@@ -30,6 +30,52 @@ async function withHostScmRuntime<T>(callback: () => Promise<T>): Promise<T> {
 }
 
 describe('resolveGitWorkspaceTransferEntries', () => {
+    it('applies the bounded policy overlay to tracked and untracked seed entries while explicit includes win', async () => {
+        const repoRoot = await makeTempDir('git-transfer-policy-overlay-');
+
+        try {
+            await runGit(repoRoot, ['init']);
+            await configureGitRepo(repoRoot);
+            await mkdir(join(repoRoot, 'dist'), { recursive: true });
+            await mkdir(join(repoRoot, 'ignored'), { recursive: true });
+            await writeFile(join(repoRoot, '.gitignore'), 'ignored/**\n', 'utf8');
+            await writeFile(join(repoRoot, 'dist', 'tracked.txt'), 'tracked\n', 'utf8');
+            await writeFile(join(repoRoot, 'dist', 'ordinary.txt'), 'ordinary\n', 'utf8');
+            await writeFile(join(repoRoot, 'ignored', 'all-files.txt'), 'all files\n', 'utf8');
+            await writeFile(join(repoRoot, 'ignored', 'selected.txt'), 'selected\n', 'utf8');
+            await runGit(repoRoot, ['add', '.gitignore', 'dist/tracked.txt']);
+            await runGit(repoRoot, ['commit', '-m', 'initial']);
+
+            const entries = await withHostScmRuntime(async () => await resolveGitWorkspaceTransferEntries({
+                context: {
+                    cwd: repoRoot,
+                    projectKey: `test:${repoRoot}`,
+                    detection: {
+                        isRepo: true,
+                        rootPath: repoRoot,
+                        mode: '.git',
+                    },
+                },
+                workspaceTransfer: {
+                    strategy: 'transfer_snapshot',
+                    includeIgnoredMode: 'include_selected',
+                    ignoredIncludeGlobs: ['dist/tracked.txt', 'ignored/selected.txt'],
+                    includeAllIgnored: true,
+                    extraIgnorePatterns: ['dist/**', 'ignored/selected.txt'],
+                },
+            }));
+
+            expect(entries.map((entry) => entry.relativePath)).toEqual([
+                '.gitignore',
+                'dist/tracked.txt',
+                'ignored/all-files.txt',
+                'ignored/selected.txt',
+            ]);
+        } finally {
+            await rm(repoRoot, { recursive: true, force: true });
+        }
+    });
+
     it('never exports checkout administration from a primary checkout', async () => {
         const repoRoot = await makeTempDir('git-transfer-primary-');
 

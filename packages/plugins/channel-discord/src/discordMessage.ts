@@ -83,6 +83,67 @@ function hasEntries(value: unknown): value is readonly unknown[] {
   return Array.isArray(value) && value.length > 0;
 }
 
+type DiscordForwardedSnapshotBody =
+  | Readonly<{ kind: 'none' }>
+  | Readonly<{ kind: 'supported'; content: string }>
+  | Readonly<{ kind: 'unsupported' }>;
+
+const DISCORD_SNAPSHOT_MESSAGE_KEYS = new Set([
+  'type',
+  'content',
+  'embeds',
+  'attachments',
+  'timestamp',
+  'edited_timestamp',
+  'flags',
+  'mentions',
+  'mention_roles',
+  'stickers',
+  'sticker_items',
+  'components',
+]);
+
+function readForwardedSnapshotBody(payload: JsonRecord): DiscordForwardedSnapshotBody {
+  if (!Object.hasOwn(payload, 'message_snapshots')) return { kind: 'none' };
+  const reference = isRecord(payload.message_reference) ? payload.message_reference : null;
+  const snapshots = Array.isArray(payload.message_snapshots) ? payload.message_snapshots : null;
+  if (
+    reference?.type !== 1
+    || readNonEmptyString(reference.message_id) === null
+    || readNonEmptyString(reference.channel_id) === null
+    || snapshots?.length !== 1
+  ) return { kind: 'unsupported' };
+
+  const snapshot = isRecord(snapshots[0]) ? snapshots[0] : null;
+  if (snapshot === null || Object.keys(snapshot).length !== 1 || !isRecord(snapshot.message)) {
+    return { kind: 'unsupported' };
+  }
+  const message = snapshot.message;
+  if (Object.keys(message).some((key) => !DISCORD_SNAPSHOT_MESSAGE_KEYS.has(key))) {
+    return { kind: 'unsupported' };
+  }
+  const messageType = readNonNegativeInteger(message.type);
+  const supportedMessageTypes = messageType === 0 || messageType === 19 || messageType === 20 || messageType === 23;
+  if (
+    !supportedMessageTypes
+    || typeof message.content !== 'string'
+    || !Array.isArray(message.embeds)
+    || !Array.isArray(message.attachments)
+    || (message.mentions !== undefined && !Array.isArray(message.mentions))
+    || (message.mention_roles !== undefined && !Array.isArray(message.mention_roles))
+    || (message.stickers !== undefined && !Array.isArray(message.stickers))
+    || (message.sticker_items !== undefined && !Array.isArray(message.sticker_items))
+    || (message.components !== undefined && !Array.isArray(message.components))
+    || (message.flags !== undefined && readNonNegativeInteger(message.flags) === null)
+    || (message.timestamp !== undefined && readNonEmptyString(message.timestamp) === null)
+    || (message.edited_timestamp !== undefined
+      && message.edited_timestamp !== null
+      && readNonEmptyString(message.edited_timestamp) === null)
+  ) return { kind: 'unsupported' };
+  if (hasEntries(message.attachments) || hasEntries(message.embeds)) return { kind: 'unsupported' };
+  return message.content ? { kind: 'supported', content: message.content } : { kind: 'unsupported' };
+}
+
 function exceedsIngressTextLimit(text: string): boolean {
   return new TextEncoder().encode(text).byteLength > MAX_CONVERSATION_INGRESS_TEXT_UTF8_BYTES;
 }
@@ -223,7 +284,8 @@ export function parseDiscordMessageDispatch(input: Readonly<{
   const revision = editedTimestamp !== null && Number.isSafeInteger(Date.parse(editedTimestamp))
     ? editedTimestamp
     : undefined;
-  const contentProvenance = hasEntries(payload.message_snapshots)
+  const forwardedSnapshot = readForwardedSnapshotBody(payload);
+  const contentProvenance = forwardedSnapshot.kind !== 'none'
     ? 'forwarded'
     : readNonEmptyString(payload.application_id) !== null
       ? 'viaBot'
@@ -254,10 +316,18 @@ export function parseDiscordMessageDispatch(input: Readonly<{
   if (messageType !== 0 && messageType !== 19) {
     return { ...routingEvidence, kind: 'routableNonAdmission', reason: 'unsupportedContent' };
   }
-  if (hasEntries(payload.attachments) || hasEntries(payload.embeds)) {
+  if (
+    forwardedSnapshot.kind === 'unsupported'
+    || hasEntries(payload.attachments)
+    || hasEntries(payload.embeds)
+  ) {
     return { ...routingEvidence, kind: 'routableNonAdmission', reason: 'unsupportedContent' };
   }
-  const content = typeof payload.content === 'string' ? payload.content : null;
+  const content = forwardedSnapshot.kind === 'supported'
+    ? forwardedSnapshot.content
+    : typeof payload.content === 'string'
+      ? payload.content
+      : null;
   if (
     !content
     || (!input.context.messageContentIntentEnabled && !isAllowedWithoutMessageContent(endpoint, addressingEvidence))

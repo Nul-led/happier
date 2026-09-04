@@ -400,6 +400,12 @@ export async function setupDiscordAutomationMessageSource(
       message: 'The selected Discord bot cannot see that channel.',
     });
   }
+  if (channel.kind === 'permissionParent') {
+    throw new PluginError({
+      code: 'discord_automation_source_channel_unsupported',
+      message: 'Discord forum and media parent channels cannot contain messages directly.',
+    });
+  }
   const sourceConfig: DiscordAutomationMessageSourceConfigV1 = Object.freeze({
     v: 1,
     applicationId: identity.applicationId,

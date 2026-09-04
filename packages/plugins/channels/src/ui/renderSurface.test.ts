@@ -1102,6 +1102,7 @@ describe('Channels mounted provider setup recovery', () => {
         contributor: providerSetupOperation.contributor,
       },
       connectedAccount: { kind: 'none' as const },
+      presentation: { connectedAccountLabel: null, machineDisplayName: null },
     };
     const submittedRemediation = {
       kind: 'submitted' as const,
@@ -1116,6 +1117,7 @@ describe('Channels mounted provider setup recovery', () => {
         contributor: providerSetupRemediationOperation.contributor,
       },
       connectedAccount: { kind: 'none' as const },
+      presentation: { connectedAccountLabel: null, machineDisplayName: null },
     };
     let prepareCount = 0;
     let remediationInput: unknown;
@@ -1202,6 +1204,7 @@ describe('Channels mounted provider setup recovery', () => {
         contributor: providerSetupOperation.contributor,
       },
       connectedAccount: { kind: 'none' as const },
+      presentation: { connectedAccountLabel: null, machineDisplayName: null },
     };
     let selectionCount = 0;
     const selectActionInput = vi.fn(async (_input: PluginUiTestkitSelectActionInputInput) => {
@@ -1257,6 +1260,7 @@ describe('Channels mounted provider setup recovery', () => {
         contributor: providerSetupOperation.contributor,
       },
       connectedAccount: { kind: 'none' as const },
+      presentation: { connectedAccountLabel: null, machineDisplayName: null },
     };
     const submittedRemediation = {
       kind: 'submitted' as const,
@@ -1271,6 +1275,7 @@ describe('Channels mounted provider setup recovery', () => {
         contributor: providerSetupRemediationOperation.contributor,
       },
       connectedAccount: { kind: 'none' as const },
+      presentation: { connectedAccountLabel: null, machineDisplayName: null },
     };
     let selectionCount = 0;
     const selectActionInput = vi.fn(async (_input: PluginUiTestkitSelectActionInputInput) => {
@@ -1338,6 +1343,7 @@ describe('Channels mounted provider setup recovery', () => {
         contributor: providerSetupOperation.contributor,
       },
       connectedAccount: { kind: 'none' as const },
+      presentation: { connectedAccountLabel: null, machineDisplayName: null },
     };
     let selectionCount = 0;
     const selectActionInput = vi.fn(async (_input: PluginUiTestkitSelectActionInputInput) => {
@@ -1418,6 +1424,10 @@ describe('Channels mounted provider setup recovery', () => {
         contributor: providerSetupOperation.contributor,
       },
       connectedAccount: { kind: 'selected' as const, fieldPath: 'credentialRef', ref: credentialRef },
+      presentation: {
+        connectedAccountLabel: 'Work account',
+        machineDisplayName: 'Development Mac',
+      },
     };
     const selectedActionInput = {
       operation: providerSetupOperation,
@@ -1440,6 +1450,7 @@ describe('Channels mounted provider setup recovery', () => {
           overlapSafety: 'safe',
           replayContinuity: 'none',
           outboundTextLimit: { maximum: 4_000, unit: 'unicodeCodePoints' },
+          destinationLabel: '#engineering',
           setupGuidance: {
             externalUrl: setupGuidanceUrl,
             requiredPermissionsLabel: 'Read messages, Send messages',
@@ -1472,6 +1483,10 @@ describe('Channels mounted provider setup recovery', () => {
 
     try {
       await fixture.press(await fixture.getByRole('button', { name: 'Set up Integration provider' }));
+      await expect(fixture.getByText('Work account')).resolves.toBeDefined();
+      await expect(fixture.getByText('Development Mac')).resolves.toBeDefined();
+      await expect(fixture.getByText('#engineering')).resolves.toBeDefined();
+      expect(document.body.textContent).toContain('Messages sent during an interruption may not be recoverable.');
       await expect(fixture.getByText('Read messages, Send messages')).resolves.toBeDefined();
       await fixture.press(await fixture.getByRole('link', { name: 'Resolve provider setup' }));
       expect(openedLinks).toEqual([setupGuidanceUrl]);
@@ -1532,6 +1547,7 @@ describe('Channels mounted provider setup recovery', () => {
         contributor: providerSetupOperation.contributor,
       },
       connectedAccount: { kind: 'selected' as const, fieldPath: 'credentialRef', ref: credentialRef },
+      presentation: { connectedAccountLabel: 'Work account', machineDisplayName: 'Development Mac' },
     };
     const selectedActionInput = {
       operation: providerSetupOperation,
@@ -1753,6 +1769,7 @@ describe('Channels mounted provider setup recovery', () => {
         contributor: providerSetupOperation.contributor,
       },
       connectedAccount: { kind: 'selected' as const, fieldPath: 'credentialRef', ref: credentialRef },
+      presentation: { connectedAccountLabel: 'Work account', machineDisplayName: 'Development Mac' },
     };
     const accountLifetime = new AbortController();
     let releaseCreateBeforeProvider: (() => void) | undefined;
@@ -1865,6 +1882,7 @@ describe('Channels mounted provider setup recovery', () => {
         contributor: providerSetupOperation.contributor,
       },
       connectedAccount: { kind: 'none' as const },
+      presentation: { connectedAccountLabel: null, machineDisplayName: null },
     };
     const selectActionInput = vi.fn(async (_input: PluginUiTestkitSelectActionInputInput) => {
       selectionCount += 1;
@@ -1954,6 +1972,7 @@ describe('Channels mounted provider setup recovery', () => {
         contributor: providerSetupOperation.contributor,
       },
       connectedAccount: { kind: 'none' as const },
+      presentation: { connectedAccountLabel: null, machineDisplayName: null },
     }));
     const executeAction = vi.fn(async ({ action }: PluginUiTestkitExecuteActionInput) => {
       if (action === CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionPrepare) {
@@ -4737,7 +4756,10 @@ describe('Channels mounted binding editor', () => {
         name: 'All allowed messages',
         state: { checked: false },
       }));
-      await enterTextByAccessibleLabel('Inbound debounce (ms)', '750');
+      await fixture.press(await fixture.getByRole('radio', {
+        name: '0.75 seconds',
+        state: { checked: false },
+      }));
       await fixture.press(await fixture.getByRole('radio', {
         name: 'Provider default',
         state: { checked: false },
@@ -5725,7 +5747,7 @@ describe('Channels connection policy editing across a source change', () => {
     }, input.digestDigit);
   }
 
-  const observationAgeLabel = 'Maximum observation age in milliseconds';
+  const editedObservationAge = '5 minutes';
 
   it('keeps an in-progress policy edit when the connection changes elsewhere and locks saving until an explicit reload', async () => {
     // A background reread used to silently rebase the draft: the edit the
@@ -5765,7 +5787,10 @@ describe('Channels connection policy editing across a source change', () => {
 
     try {
       await pressByTestId('channels-connection-connection-1');
-      await enterTextByAccessibleLabel(observationAgeLabel, '90000');
+      await fixture.press(await fixture.getByRole('radio', {
+        name: editedObservationAge,
+        state: { checked: false },
+      }));
       expect(document.querySelector('[data-testid="channels-connection-source-changed"]')).toBeNull();
 
       // Another writer advances the connection while the edit is open.
@@ -5777,10 +5802,10 @@ describe('Channels connection policy editing across a source change', () => {
       });
       await pressByTestId('channels-detail-resource-refresh');
 
-      const field = Array.from(document.querySelectorAll<HTMLInputElement>('input')).find((candidate) => (
-        candidate.getAttribute('aria-label') === observationAgeLabel
-      ));
-      expect(field?.value).toBe('90000');
+      await expect(fixture.getByRole('radio', {
+        name: editedObservationAge,
+        state: { checked: true },
+      })).resolves.toBeDefined();
       const notice = document.querySelector<HTMLElement>('[data-testid="channels-connection-source-changed"]');
       expect(notice).not.toBeNull();
       const save = document.querySelector<HTMLElement>('[data-testid="channels-connection-save"]');
@@ -5794,10 +5819,74 @@ describe('Channels connection policy editing across a source change', () => {
       await vi.waitFor(() => {
         expect(document.querySelector('[data-testid="channels-connection-source-changed"]')).toBeNull();
       });
-      const reloaded = Array.from(document.querySelectorAll<HTMLInputElement>('input')).find((candidate) => (
-        candidate.getAttribute('aria-label') === observationAgeLabel
-      ));
-      expect(reloaded?.value).toBe('120000');
+      await expect(fixture.getByRole('radio', {
+        name: '2 minutes',
+        state: { checked: true },
+      })).resolves.toBeDefined();
+      expect(document.querySelector('[data-testid="channels-connection-save"]')?.getAttribute('aria-disabled'))
+        .not.toBe('true');
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  it('does not report the editor own successful save as a change made elsewhere', async () => {
+    // The retained-draft rule must not fire on the revision the person just
+    // caused: their edit is what the new policy says, so there is nothing to
+    // lose and nothing to warn about.
+    let current = connectionsResourceAtRevision({
+      revision: 1,
+      enabled: true,
+      maximumObservationAgeMs: 60_000,
+      digestDigit: 'b',
+    });
+    const executeAction = vi.fn(async () => {
+      current = connectionsResourceAtRevision({
+        revision: 2,
+        enabled: true,
+        maximumObservationAgeMs: 5 * 60_000,
+        digestDigit: 'c',
+      });
+      return { kind: 'ready' as const, connectionId: 'connection-1', revision: 2, authorityEpoch: 1 };
+    });
+    const fixture = await createPluginUiTestkit({
+      identity: {
+        pluginId: 'happier.channels',
+        pluginVersion: '0.0.0',
+        viewId: 'channels-account',
+        generation: 'channels-connection-own-save',
+        sessionId: 'session-1',
+      },
+      surface: renderSurface,
+      surfaceContext: createChannelsSurfaceContext(),
+      adapter: createChannelsSemanticAdapter(),
+      handlers: {
+        selectActionInput: async () => ({ kind: 'cancelled' as const }),
+        executeAction,
+        readResource: async ({ resource }) => {
+          const localId = typeof resource === 'string' ? resource : resource.localId;
+          if (localId === BINDINGS_RESOURCE.localId) return bindingsResource;
+          if (localId === CONNECTIONS_RESOURCE.localId) return current;
+          throw new Error(`Unexpected Resource: ${localId}`);
+        },
+      },
+    });
+
+    try {
+      await pressByTestId('channels-connection-connection-1');
+      await fixture.press(await fixture.getByRole('radio', {
+        name: editedObservationAge,
+        state: { checked: false },
+      }));
+      await pressByTestId('channels-connection-save');
+      await vi.waitFor(() => {
+        expect(executeAction).toHaveBeenCalledTimes(1);
+      });
+
+      await vi.waitFor(() => {
+        expect(document.querySelector('[data-testid="channels-save-outcome"]')).not.toBeNull();
+      });
+      expect(document.querySelector('[data-testid="channels-connection-source-changed"]')).toBeNull();
       expect(document.querySelector('[data-testid="channels-connection-save"]')?.getAttribute('aria-disabled'))
         .not.toBe('true');
     } finally {
@@ -5850,10 +5939,10 @@ describe('Channels connection policy editing across a source change', () => {
       await pressByTestId('channels-detail-resource-refresh');
 
       expect(document.querySelector('[data-testid="channels-connection-source-changed"]')).toBeNull();
-      const field = Array.from(document.querySelectorAll<HTMLInputElement>('input')).find((candidate) => (
-        candidate.getAttribute('aria-label') === observationAgeLabel
-      ));
-      expect(field?.value).toBe('120000');
+      await expect(fixture.getByRole('radio', {
+        name: '2 minutes',
+        state: { checked: true },
+      })).resolves.toBeDefined();
       expect(document.querySelector('[data-testid="channels-connection-save"]')?.getAttribute('aria-disabled'))
         .not.toBe('true');
     } finally {
@@ -6102,13 +6191,28 @@ describe('Channels connection lifecycle actions', () => {
         contributor: providerSetupOperation.contributor,
       },
       connectedAccount: { kind: 'selected' as const, fieldPath: 'credentialRef', ref: credentialRef },
+      presentation: {
+        connectedAccountLabel: 'Operations account',
+        machineDisplayName: 'Office workstation',
+      },
     };
     const selectedActionInput = {
       operation: providerSetupOperation,
       result: submittedProviderSetup,
     } as const;
     const selectActionInput = vi.fn(async () => submittedProviderSetup);
-    const executeAction = vi.fn(async (request: PluginUiTestkitExecuteActionInput) => {
+    const executeAction = vi.fn(async (request: PluginUiTestkitExecuteActionInput): Promise<JsonValue> => {
+      if (request.action === CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionPrepare) {
+        return {
+          kind: 'ready',
+          supportedTransports: ['checkpointedPull', 'socket'],
+          recommendedTransport: 'socket',
+          overlapSafety: 'safe',
+          replayContinuity: 'checkpointed',
+          outboundTextLimit: { maximum: 4_000, unit: 'unicodeCodePoints' },
+          destinationLabel: '#operations',
+        };
+      }
       if (request.action !== CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionTransfer) {
         throw new Error(`Unexpected mounted Action: ${String(request.action)}`);
       }
@@ -6167,19 +6271,22 @@ describe('Channels connection lifecycle actions', () => {
 
       await fixture.press(await fixture.getByRole('button', { name: 'Transfer connection' }));
       await fixture.press(await fixture.getByRole('button', { name: 'Transfer with Integration provider' }));
+      await expect(fixture.getByText('Operations account')).resolves.toBeDefined();
+      await expect(fixture.getByText('Office workstation')).resolves.toBeDefined();
+      await expect(fixture.getByText('#operations')).resolves.toBeDefined();
       await expect(fixture.getByRole('radio', {
-        name: 'Durable push',
+        name: 'Receives messages even while this machine is offline',
         state: { checked: false },
       })).resolves.toBeDefined();
       await fixture.press(await fixture.getByRole('radio', {
-        name: 'Live socket',
+        name: 'Receives messages while this machine is online',
         state: { checked: false },
       }));
       await fixture.press(await fixture.getByRole('button', { name: 'Back' }));
       await expect(fixture.queryByRole('button', { name: 'Confirm transfer' })).resolves.toBeUndefined();
       await fixture.press(await fixture.getByRole('button', { name: 'Transfer with Integration provider' }));
       await expect(fixture.getByRole('radio', {
-        name: 'Live socket',
+        name: 'Receives messages while this machine is online',
         state: { checked: true },
       })).resolves.toBeDefined();
       await fixture.press(await fixture.getByRole('button', { name: 'Confirm transfer' }));
@@ -6190,12 +6297,9 @@ describe('Channels connection lifecycle actions', () => {
           request: { operation: providerSetupOperation },
           signal: expect.anything(),
         });
-        expect(executeAction).toHaveBeenCalledTimes(1);
+        expect(executeAction).toHaveBeenCalledTimes(3);
         expect(connectionsReadCount).toBeGreaterThanOrEqual(2);
       });
-      expect(executeAction.mock.calls.map(([request]) => request.action)).not.toContain(
-        CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionPrepare,
-      );
       expect(executeAction.mock.calls.map(([request]) => request.action)).not.toContain(
         CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionCreate,
       );
@@ -6218,8 +6322,16 @@ describe('Channels connection lifecycle actions', () => {
         contributor: providerSetupOperation.contributor,
       },
       connectedAccount: { kind: 'none' as const },
+      presentation: { connectedAccountLabel: null, machineDisplayName: null },
     };
     const executeAction = vi.fn(async ({ action }: PluginUiTestkitExecuteActionInput): Promise<JsonValue> => {
+      if (action === CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionPrepare) {
+        return {
+          kind: 'ready', supportedTransports: ['checkpointedPull', 'socket'],
+          recommendedTransport: 'checkpointedPull', overlapSafety: 'safe',
+          replayContinuity: 'checkpointed', outboundTextLimit: { maximum: 4_000, unit: 'unicodeCodePoints' },
+        };
+      }
       if (action !== CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionTransfer) {
         throw new Error(`Unexpected mounted Action: ${String(action)}`);
       }
@@ -6314,6 +6426,7 @@ describe('Channels connection lifecycle actions', () => {
         contributor: providerSetupOperation.contributor,
       },
       connectedAccount: { kind: 'none' as const },
+      presentation: { connectedAccountLabel: null, machineDisplayName: null },
     };
     const selectedActionInput = { operation: providerSetupOperation, result: submittedProviderSetup } as const;
     // Requests are recorded rather than asserted inside the boundary mock: a
@@ -6323,6 +6436,13 @@ describe('Channels connection lifecycle actions', () => {
     const executeAction = vi.fn(async (
       request: PluginUiTestkitExecuteActionInput,
     ): Promise<JsonValue> => {
+      if (request.action === CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionPrepare) {
+        return {
+          kind: 'ready', supportedTransports: ['checkpointedPull', 'durablePush'],
+          recommendedTransport: 'checkpointedPull', overlapSafety: 'safe',
+          replayContinuity: 'checkpointed', outboundTextLimit: { maximum: 4_000, unit: 'unicodeCodePoints' },
+        };
+      }
       if (request.action === 'plugin.webhook.endpoint.ensure') {
         expect(request.selectedActionInput).toBeUndefined();
         return {
@@ -6385,11 +6505,12 @@ describe('Channels connection lifecycle actions', () => {
       await fixture.press(await fixture.getByRole('button', { name: 'Transfer connection' }));
       await fixture.press(await fixture.getByRole('button', { name: 'Transfer with Integration provider' }));
       await fixture.press(await fixture.getByRole('radio', {
-        name: 'Durable push',
+        name: 'Receives messages even while this machine is offline',
         state: { checked: false },
       }));
       await fixture.press(await fixture.getByRole('button', { name: 'Confirm transfer' }));
       await vi.waitFor(() => expect(executeAction.mock.calls.map(([request]) => request.action)).toEqual([
+        CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionPrepare,
         CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionTransfer,
         'plugin.webhook.endpoint.ensure',
         CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionTransfer,
@@ -6428,6 +6549,7 @@ describe('Channels connection lifecycle actions', () => {
         contributor: providerSetupOperation.contributor,
       },
       connectedAccount: { kind: 'none' as const },
+      presentation: { connectedAccountLabel: null, machineDisplayName: null },
     };
     const selectedActionInput = { operation: providerSetupOperation, result: submittedProviderSetup } as const;
     const endpointRequiredResult = {
@@ -6463,6 +6585,13 @@ describe('Channels connection lifecycle actions', () => {
     const executeAction = vi.fn(async (
       request: PluginUiTestkitExecuteActionInput,
     ): Promise<JsonValue> => {
+      if (request.action === CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionPrepare) {
+        return {
+          kind: 'ready', supportedTransports: ['checkpointedPull', 'durablePush'],
+          recommendedTransport: 'checkpointedPull', overlapSafety: 'safe',
+          replayContinuity: 'checkpointed', outboundTextLimit: { maximum: 4_000, unit: 'unicodeCodePoints' },
+        };
+      }
       if (request.action === 'plugin.webhook.endpoint.ensure') {
         ensureInputs.push(request.input);
         endpointEnsureCalls += 1;
@@ -6525,12 +6654,13 @@ describe('Channels connection lifecycle actions', () => {
       await fixture.press(await fixture.getByRole('button', { name: 'Transfer connection' }));
       await fixture.press(await fixture.getByRole('button', { name: 'Transfer with Integration provider' }));
       await fixture.press(await fixture.getByRole('radio', {
-        name: 'Durable push',
+        name: 'Receives messages even while this machine is offline',
         state: { checked: false },
       }));
       await fixture.press(await fixture.getByRole('button', { name: 'Confirm transfer' }));
       await vi.waitFor(() => {
         expect(executeAction.mock.calls.map(([request]) => request.action)).toEqual([
+          CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionPrepare,
           CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionTransfer,
           'plugin.webhook.endpoint.ensure',
         ]);
@@ -6551,7 +6681,7 @@ describe('Channels connection lifecycle actions', () => {
         state: { disabled: true },
       })).resolves.toBeDefined();
       await expect(fixture.getByRole('radio', {
-        name: 'Durable push',
+        name: 'Receives messages even while this machine is offline',
         state: { checked: true, disabled: true },
       })).resolves.toBeDefined();
       await expect(fixture.getByRole('button', {
@@ -6563,6 +6693,7 @@ describe('Channels connection lifecycle actions', () => {
       // rejoins the retained ensure directly, then runs only the final
       // continuation transfer.
       await vi.waitFor(() => expect(executeAction.mock.calls.map(([request]) => request.action)).toEqual([
+        CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionPrepare,
         CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionTransfer,
         'plugin.webhook.endpoint.ensure',
         'plugin.webhook.endpoint.ensure',
@@ -6640,6 +6771,7 @@ describe('Channels connection lifecycle actions', () => {
         contributor: providerSetupOperation.contributor,
       },
       connectedAccount: { kind: 'none' as const },
+      presentation: { connectedAccountLabel: null, machineDisplayName: null },
     };
     const fixture = await createPluginUiTestkit({
       identity: {
@@ -6654,8 +6786,15 @@ describe('Channels connection lifecycle actions', () => {
       adapter: createChannelsSemanticAdapter(),
       handlers: {
         selectActionInput: async () => submittedProviderSetup,
-        executeAction: async () => {
-          throw new Error('Cancelled provider selection must not invoke a transfer Action.');
+        executeAction: async ({ action }) => {
+          if (action === CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionPrepare) {
+            return {
+              kind: 'ready', supportedTransports: ['checkpointedPull', 'durablePush'],
+              recommendedTransport: 'durablePush', overlapSafety: 'safe',
+              replayContinuity: 'checkpointed', outboundTextLimit: { maximum: 4_000, unit: 'unicodeCodePoints' },
+            };
+          }
+          throw new Error('No transfer confirmation was pressed.');
         },
         readResource: async ({ resource }) => {
           const localId = typeof resource === 'string' ? resource : resource.localId;
@@ -6676,7 +6815,7 @@ describe('Channels connection lifecycle actions', () => {
           .not.toBeNull();
       });
       await expect(fixture.getByRole('radio', {
-        name: 'Durable push',
+        name: 'Receives messages even while this machine is offline',
         state: { checked: true },
       })).resolves.toBeDefined();
     } finally {
@@ -8440,6 +8579,7 @@ describe('Channels first connection continuation', () => {
         contributor: providerSetupOperation.contributor,
       },
       connectedAccount: { kind: 'none' as const },
+      presentation: { connectedAccountLabel: null, machineDisplayName: null },
     };
     let connectionCreated = false;
     const createdConnectionsResource = jsonResource({

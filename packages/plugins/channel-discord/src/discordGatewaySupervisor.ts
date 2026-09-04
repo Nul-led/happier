@@ -63,7 +63,7 @@ type WorkerStopIntent = 'reconcile' | 'explicit' | 'generationRetired' | 'author
 
 /**
  * Why stopping a still-resumable session justifies a continuity-loss fact in
- * exactly two cases: an authoritative listing/reading failure, and generation
+ * authority-loss cases: an authoritative listing/reading failure and generation
  * retirement. Both discard the worker's process-local resume coordinates, so
  * the replacement session can only Identify fresh and may miss everything
  * Discord dispatched in the interval; queueing the existing gap through the
@@ -74,12 +74,18 @@ const UNPROVEN_CONTINUITY_GAP_FACT = Object.freeze({
   reason: 'applicationAdmissionLost',
 } as const);
 
+const REPLACEMENT_CONTINUITY_GAP_FACT = Object.freeze({
+  kind: 'historyGap',
+  reason: 'providerHistoryUnavailable',
+} as const);
+
 type WorkerEntry = {
   snapshot: ConversationProviderConnectionReconciliationSnapshotV1;
   fingerprint: string;
   controller: AbortController;
   worker: DiscordGatewayWorker | null;
   stopIntent: WorkerStopIntent | null;
+  replacementSnapshot: ConversationProviderConnectionReconciliationSnapshotV1 | null;
   explicitStopAuthorityEpoch: number | null;
   completion: Promise<void>;
 };
@@ -383,17 +389,28 @@ export function createDiscordGatewaySupervisor(options: DiscordGatewaySupervisor
         ? result.transportFact
         : undefined;
     if (transportFact !== undefined) addFact(entry.snapshot, transportFact);
-    // Only an authoritative listing/reading failure or generation retirement
-    // converts the worker's continuity disclosure into a gap fact: both lose
-    // the held resume coordinates with no continuity successor. Explicit
-    // stops report their own stopConfirmed custody instead, and a worker
-    // replaced by reconciliation is a deliberate same-loop restart.
+    // Authority loss and generation retirement attribute the gap to the old
+    // authority. A material reconciliation replacement instead attributes its
+    // distinct provider-history gap to the successor below. Explicit stops
+    // report their own stopConfirmed custody and never create either gap.
     if (
       (entry.stopIntent === 'authorityUnavailable' || entry.stopIntent === 'generationRetired')
       && result.kind === 'stopped'
       && result.unprovenContinuity === true
     ) {
       addFact(entry.snapshot, UNPROVEN_CONTINUITY_GAP_FACT);
+    }
+    if (
+      entry.stopIntent === 'reconcile'
+      && entry.replacementSnapshot !== null
+      && result.kind === 'stopped'
+      && result.unprovenContinuity === true
+    ) {
+      // The old Gateway cannot prove it resumed through the material
+      // configuration change. Attribute the existing provider-history gap to
+      // the successor authority so core blocks that replacement until the
+      // fact has been projected; the retired snapshot is no longer current.
+      addFact(entry.replacementSnapshot, REPLACEMENT_CONTINUITY_GAP_FACT);
     }
     const providerReadinessFact = providerReadinessFactFromWorkerResult(result);
     if (providerReadinessFact !== undefined) addFact(entry.snapshot, providerReadinessFact);
@@ -557,6 +574,7 @@ export function createDiscordGatewaySupervisor(options: DiscordGatewaySupervisor
       controller,
       worker: null,
       stopIntent: null,
+      replacementSnapshot: null,
       explicitStopAuthorityEpoch: null,
       completion: Promise.resolve(),
     };
@@ -730,6 +748,7 @@ export function createDiscordGatewaySupervisor(options: DiscordGatewaySupervisor
         // Discord Resume cannot change Identify intents. Wait for the worker
         // owning the old strict demand to finish, then the next authoritative
         // reconciliation starts a fresh IDENTIFY under the new demand.
+        existing.replacementSnapshot = snapshot;
         stopWorker(existing, 'reconcile');
         continue;
       }

@@ -124,6 +124,28 @@ describe('Discord application Message Content preflight', () => {
 });
 
 describe('Discord channel lookup', () => {
+  it.each([15, 16])('decodes channel type %i only as permission-bearing thread-parent evidence', async (type) => {
+    const api = createDiscordBotApi({
+      token: 'bot-token',
+      http: {
+        request: vi.fn(async () => response({
+          id: 'parent-1',
+          type,
+          guild_id: 'guild-1',
+          name: 'Forum parent',
+          permission_overwrites: [],
+        })),
+      },
+    });
+
+    await expect(api.getChannel({ channelId: 'parent-1' })).resolves.toEqual({
+      channelId: 'parent-1',
+      kind: 'permissionParent',
+      guildId: 'guild-1',
+      permissionOverwrites: [],
+    });
+  });
+
   it('keeps an authoritative 404 distinct from malformed successful channel responses', async () => {
     const absent = createDiscordBotApi({
       token: 'bot-token',

@@ -1,5 +1,6 @@
 import type { TerminalControlPort } from '@happier-dev/plugin-sdk/agents/runtime';
 
+import type { ClaudeScreenState } from '../screenState.js';
 import { captureScreenState, sendResultToFailure } from './controlRuntime.js';
 import {
   getClaudeUnifiedDialogIdentity,
@@ -9,14 +10,7 @@ import {
 } from './dialogRegistry.js';
 import { DEFAULT_CLAUDE_TUI_CONTROL_TIMINGS } from './types.js';
 
-/**
- * The ONE recipe-driven answerer for every recognized Claude Unified dialog. It replaces the
- * per-dialog `answerClaude*Dialog` helpers so there is a single owner for the option's exact answer
- * recipe. It always RECAPTURES the screen before typing and re-resolves the visible dialog
- * from the registry: if the recaptured dialog id no longer matches the one the caller decided to
- * answer (an A→B dialog replacement between the publish decision and the keystroke), it types
- * NOTHING and reports `dialog_changed` so the caller can cancel and republish for the new dialog.
- */
+/** The one presentation-aware answerer for every Claude Unified selection dialog. */
 export type ClaudeUnifiedDialogAnswerResult =
   | Readonly<{ status: 'answered' }>
   | Readonly<{ status: 'not_visible' }>
@@ -27,28 +21,6 @@ function failed(reason: string): ClaudeUnifiedDialogAnswerResult {
   return { status: 'failed', reason };
 }
 
-export type ClaudeUnifiedDialogOptionSubmissionResult =
-  | Readonly<{ status: 'submitted' }>
-  | Readonly<{ status: 'failed'; reason: string }>;
-
-/**
- * The one terminal-write owner for a registered Claude numbered-dialog option. Claude's numeric
- * hotkeys submit immediately; appending Enter can submit into the next composer after the dialog
- * closes (for resume-from-summary this can start a second `/compact`).
- */
-export async function submitClaudeUnifiedDialogOption(params: Readonly<{
-  port: TerminalControlPort;
-  option: ClaudeUnifiedDialogOption;
-  onSubmitted?: (() => void) | undefined;
-}>): Promise<ClaudeUnifiedDialogOptionSubmissionResult> {
-  const literalFailure = sendResultToFailure(await params.port.sendLiteralText(params.option.answer.text));
-  if (literalFailure) {
-    return { status: 'failed', reason: literalFailure.reason ?? literalFailure.kind };
-  }
-  params.onSubmitted?.();
-  return { status: 'submitted' };
-}
-
 function captureFailureReason(
   failure: Extract<Awaited<ReturnType<typeof captureScreenState>>, { kind: 'host_dead' | 'capture_failed' }>,
 ): string {
@@ -57,42 +29,96 @@ function captureFailureReason(
     : failure.reason;
 }
 
+async function sendKey(port: TerminalControlPort, key: 'ArrowUp' | 'ArrowDown' | 'Enter') {
+  const failure = sendResultToFailure(await port.sendSpecialKey(key));
+  return failure ? failed(failure.reason ?? failure.kind) : null;
+}
+
 export async function answerClaudeUnifiedRegisteredDialog(params: Readonly<{
   port: TerminalControlPort;
   dialogId: ClaudeUnifiedDialogId;
   expectedIdentity?: string | undefined;
   option: ClaudeUnifiedDialogOption;
+  initialState?: ClaudeScreenState | undefined;
+  verifyAfterSubmit?: boolean | undefined;
   settleMs: number;
   wait: (ms: number) => Promise<void>;
   /** Fired after the option's complete answer recipe was successfully written to the terminal. */
   onSubmitted?: (() => void) | undefined;
 }>): Promise<ClaudeUnifiedDialogAnswerResult> {
-  const before = await captureScreenState(params.port);
-  if (before.kind !== 'state') return failed(captureFailureReason(before));
+  let captured = params.initialState
+    ? { kind: 'state' as const, state: params.initialState }
+    : await captureScreenState(params.port);
+  if (captured.kind !== 'state') return failed(captureFailureReason(captured));
 
-  const beforeDialog = resolveClaudeUnifiedVisibleDialog(before.state);
-  if (!beforeDialog) return { status: 'not_visible' };
+  let dialog = resolveClaudeUnifiedVisibleDialog(captured.state);
+  if (!dialog) return { status: 'not_visible' };
   if (
-    beforeDialog.dialogId !== params.dialogId
-    || (params.expectedIdentity !== undefined && getClaudeUnifiedDialogIdentity(beforeDialog) !== params.expectedIdentity)
+    dialog.dialogId !== params.dialogId
+    || (params.expectedIdentity !== undefined && getClaudeUnifiedDialogIdentity(dialog) !== params.expectedIdentity)
   ) {
-    return { status: 'dialog_changed', dialogId: beforeDialog.dialogId };
+    return { status: 'dialog_changed', dialogId: dialog.dialogId };
   }
 
-  const submission = await submitClaudeUnifiedDialogOption({
-    port: params.port,
-    option: params.option,
-    onSubmitted: params.onSubmitted,
-  });
-  if (submission.status === 'failed') return failed(submission.reason);
+  let currentOption = dialog.options.find((candidate) => candidate.choice === params.option.choice);
+  if (!currentOption) return { status: 'dialog_changed', dialogId: dialog.dialogId };
+  if (currentOption.answer.kind === 'unavailable') return failed('selection_unavailable');
 
+  if (currentOption.answer.kind === 'literal') {
+    const failure = sendResultToFailure(await params.port.sendLiteralText(currentOption.answer.text));
+    if (failure) return failed(failure.reason ?? failure.kind);
+  } else {
+    const targetLabel = currentOption.answer.targetLabel;
+    const maxSteps = Math.max(1, captured.state.visibleDialogSelection?.options.length ?? 0);
+    let submitted = false;
+    for (let step = 0; step <= maxSteps; step += 1) {
+      const presentation = captured.state.visibleDialogSelection;
+      if (!presentation || presentation.kind !== 'focused') return failed('selection_presentation_changed');
+      const targetIndexes = presentation.options.flatMap((candidate, index) => (
+        candidate.label === targetLabel ? [index] : []
+      ));
+      const focusedIndexes = presentation.options.flatMap((candidate, index) => candidate.focused ? [index] : []);
+      if (targetIndexes.length !== 1 || focusedIndexes.length !== 1) return failed('selection_ambiguous');
+      const targetIndex = targetIndexes[0]!;
+      const focusedIndex = focusedIndexes[0]!;
+      if (focusedIndex === targetIndex) {
+        const failure = await sendKey(params.port, 'Enter');
+        if (failure) return failure;
+        submitted = true;
+        break;
+      }
+
+      const failure = await sendKey(params.port, targetIndex > focusedIndex ? 'ArrowDown' : 'ArrowUp');
+      if (failure) return failure;
+      await params.wait(params.settleMs);
+      const next = await captureScreenState(params.port);
+      if (next.kind !== 'state') return failed(captureFailureReason(next));
+      const nextDialog = resolveClaudeUnifiedVisibleDialog(next.state);
+      if (!nextDialog) return failed('dialog_disappeared_during_navigation');
+      if (
+        nextDialog.dialogId !== params.dialogId
+        || (params.expectedIdentity !== undefined && getClaudeUnifiedDialogIdentity(nextDialog) !== params.expectedIdentity)
+      ) {
+        return { status: 'dialog_changed', dialogId: nextDialog.dialogId };
+      }
+      const nextFocused = next.state.visibleDialogSelection?.options.findIndex((candidate) => candidate.focused) ?? -1;
+      if (nextFocused === focusedIndex) return failed('selection_did_not_move');
+      captured = next;
+      dialog = nextDialog;
+      currentOption = dialog.options.find((candidate) => candidate.choice === params.option.choice);
+      if (!currentOption || currentOption.answer.kind !== 'selection') return failed('selection_presentation_changed');
+    }
+    if (!submitted) return failed('selection_target_unreachable');
+  }
+
+  params.onSubmitted?.();
+  if (params.verifyAfterSubmit === false) return { status: 'answered' };
   const { verifyPollIntervalMs, verifyPollTimeoutMs } = DEFAULT_CLAUDE_TUI_CONTROL_TIMINGS;
   const maxVerifyPolls = Math.max(1, Math.ceil(verifyPollTimeoutMs / verifyPollIntervalMs));
   for (let poll = 0; poll < maxVerifyPolls; poll += 1) {
     await params.wait(poll === 0 ? params.settleMs : verifyPollIntervalMs);
     const after = await captureScreenState(params.port);
     if (after.kind !== 'state') return failed(captureFailureReason(after));
-
     const afterDialog = resolveClaudeUnifiedVisibleDialog(after.state);
     const sameDialog = afterDialog && (
       params.expectedIdentity === undefined

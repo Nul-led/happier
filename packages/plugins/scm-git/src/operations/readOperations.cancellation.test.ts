@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { runScmCommandMock } = vi.hoisted(() => ({
   runScmCommandMock: vi.fn(),
@@ -13,6 +13,29 @@ vi.mock('../runtime.js', () => ({
 import { gitLogList } from './readOperations.js';
 
 describe('gitLogList cancellation', () => {
+  beforeEach(() => {
+    runScmCommandMock.mockReset();
+  });
+
+  it('recognizes a 64-hex SHA-256 candidate and verifies HEAD ancestry before reading it', async () => {
+    runScmCommandMock.mockResolvedValue({ success: true, stdout: '', stderr: '', exitCode: 0 });
+    const sha256 = 'd'.repeat(64);
+
+    const result = await gitLogList({
+      context: { cwd: '/repo', projectKey: 'test:/repo', detection: { isRepo: true, rootPath: '/repo', mode: '.git' } },
+      request: { cwd: '/repo', query: sha256, limit: 10 },
+    });
+
+    expect(result).toMatchObject({ success: true, queryApplied: true, entries: [] });
+    expect(runScmCommandMock).toHaveBeenCalledTimes(4);
+    expect(runScmCommandMock.mock.calls[2]?.[0]).toMatchObject({
+      args: ['merge-base', '--is-ancestor', sha256, 'HEAD'],
+    });
+    expect(runScmCommandMock.mock.calls[3]?.[0]).toMatchObject({
+      args: ['log', '--max-count=1', sha256, expect.any(String)],
+    });
+  });
+
   it('shares one AbortSignal across every concurrent commit-query arm and waits for all to terminate', async () => {
     const controller = new AbortController();
     const terminated: number[] = [];

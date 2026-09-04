@@ -1,6 +1,6 @@
 import { ProviderContributionV1Schema } from '@happier-dev/plugin-sdk/providers';
 
-import { CLAUDE_STATIC_MODELS } from '../agent/models.js';
+import { ANTHROPIC_STATIC_MODELS } from './catalog.js';
 
 export const ANTHROPIC_PROVIDER_CONTRIBUTION = ProviderContributionV1Schema.parse({
   v: 1,
@@ -36,7 +36,7 @@ export const ANTHROPIC_PROVIDER_CONTRIBUTION = ProviderContributionV1Schema.pars
     source: 'static+probe',
     manualModelPolicy: 'allowed',
     membershipPolicy: 'probe-authoritative',
-    staticModels: CLAUDE_STATIC_MODELS,
+    staticModels: ANTHROPIC_STATIC_MODELS,
     probes: [{
       endpointTemplateId: 'anthropic',
       path: '/v1/models?limit=1000',

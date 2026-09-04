@@ -188,7 +188,10 @@ export function createTelegramAutomationEventCandidate(input: Readonly<{
       chatId: message.chatId,
       chatType: message.chatType,
       messageId: message.messageId,
-      text: input.observation.observation.message.text,
+      // Channels may normalize Telegram's `/command@CurrentBot` transport
+      // addressing before command policy. Automation evidence retains the
+      // provider's original message text instead of inheriting that view.
+      text: message.text ?? input.observation.observation.message.text,
       ...(message.senderId === null ? {} : { senderId: message.senderId }),
       senderIsBot: message.senderIsBot,
     },

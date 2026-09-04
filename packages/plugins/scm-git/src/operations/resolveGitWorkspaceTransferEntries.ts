@@ -52,8 +52,8 @@ async function listGitManagedPaths(sourcePath: string): Promise<readonly string[
     });
 }
 
-async function listSelectedIgnoredPaths(sourcePath: string, ignoredIncludeGlobs: readonly string[]): Promise<readonly string[]> {
-    if (ignoredIncludeGlobs.length === 0) {
+async function listSelectedIgnoredPaths(sourcePath: string, pathspecs: readonly string[]): Promise<readonly string[]> {
+    if (pathspecs.length === 0) {
         return [];
     }
 
@@ -68,7 +68,62 @@ async function listSelectedIgnoredPaths(sourcePath: string, ignoredIncludeGlobs:
             '-i',
             '--exclude-standard',
             '--',
-            ...ignoredIncludeGlobs,
+            ...pathspecs,
+        ],
+    });
+}
+
+async function listSelectedManagedPaths(sourcePath: string, pathspecs: readonly string[]): Promise<readonly string[]> {
+    if (pathspecs.length === 0) {
+        return [];
+    }
+
+    return await runGitNullSeparatedPathList({
+        cwd: sourcePath,
+        args: [
+            '-C',
+            sourcePath,
+            'ls-files',
+            '-z',
+            '--cached',
+            '--others',
+            '--exclude-standard',
+            '--',
+            ...pathspecs,
+        ],
+    });
+}
+
+const MAX_WORKSPACE_POLICY_PATTERNS = 128;
+const MAX_WORKSPACE_POLICY_PATTERN_LENGTH = 1024;
+
+function validatePolicyPatterns(patterns: readonly string[]): void {
+    if (patterns.length > MAX_WORKSPACE_POLICY_PATTERNS
+        || patterns.some((pattern) => pattern.length < 1
+            || pattern.length > MAX_WORKSPACE_POLICY_PATTERN_LENGTH
+            || pattern.includes('\0'))) {
+        throw Object.assign(new Error('Workspace seed content policy is invalid'), {
+            code: 'git_selection_unavailable',
+        });
+    }
+}
+
+async function listExtraIgnoredPaths(sourcePath: string, patterns: readonly string[]): Promise<readonly string[]> {
+    if (patterns.length === 0) return [];
+    validatePolicyPatterns(patterns);
+    return await runGitNullSeparatedPathList({
+        cwd: sourcePath,
+        args: [
+            '-C',
+            sourcePath,
+            'ls-files',
+            '-z',
+            '--cached',
+            '--others',
+            '-i',
+            ...patterns.map((pattern) => `--exclude=${pattern}`),
+            '--',
+            '.',
         ],
     });
 }
@@ -77,8 +132,28 @@ export async function resolveGitWorkspaceTransferEntries(input: ScmWorkspaceInte
     const sourcePath = input.context.cwd;
     const relativePaths = new Set(await listGitManagedPaths(sourcePath));
 
+    if (input.workspaceTransfer.includeAllIgnored === true) {
+        for (const relativePath of await listSelectedIgnoredPaths(sourcePath, ['.'])) {
+            relativePaths.add(relativePath);
+        }
+    }
+
+    for (const relativePath of await listExtraIgnoredPaths(
+        sourcePath,
+        input.workspaceTransfer.extraIgnorePatterns ?? [],
+    )) {
+        relativePaths.delete(relativePath);
+    }
+
+    // Explicit re-includes have final precedence, matching the continuous
+    // Git-worktree policy compiled by the Mutagen owner.
     if (input.workspaceTransfer.includeIgnoredMode === 'include_selected') {
-        for (const relativePath of await listSelectedIgnoredPaths(sourcePath, [...input.workspaceTransfer.ignoredIncludeGlobs])) {
+        const explicitIncludes = [...input.workspaceTransfer.ignoredIncludeGlobs];
+        validatePolicyPatterns(explicitIncludes);
+        for (const relativePath of await listSelectedManagedPaths(sourcePath, explicitIncludes)) {
+            relativePaths.add(relativePath);
+        }
+        for (const relativePath of await listSelectedIgnoredPaths(sourcePath, explicitIncludes)) {
             relativePaths.add(relativePath);
         }
     }

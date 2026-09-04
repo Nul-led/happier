@@ -153,6 +153,28 @@ describe('gitLogList bounded commit query', () => {
         expect(shas(byBody.entries ?? [])).toEqual([headSha]);
     });
 
+    it('treats author queries as literal text rather than regular expressions', async () => {
+        const punctuationAuthor = await commitFile({
+            fileName: 'punctuation.txt',
+            message: 'chore: punctuation author',
+            authorName: 'Ada [Core].',
+            authorEmail: 'ada+core@example.com',
+            dateIso: '2026-01-04T00:00:00Z',
+        });
+
+        const regexMeta = await logQuery({
+            context: buildContext(),
+            request: { cwd: repoRoot, query: '.*', limit: 10 },
+        });
+        expect(shas(regexMeta.entries ?? [])).toEqual([]);
+
+        const bracket = await logQuery({
+            context: buildContext(),
+            request: { cwd: repoRoot, query: '[Core].', limit: 10 },
+        });
+        expect(shas(bracket.entries ?? [])).toEqual([punctuationAuthor]);
+    });
+
     it('matches an abbreviated SHA prefix', async () => {
         const prefix = headSha.slice(0, 8);
         const bySha = await logQuery({
@@ -172,6 +194,28 @@ describe('gitLogList bounded commit query', () => {
         expect(bySha.success).toBe(true);
         expect(bySha.queryApplied).toBe(true);
         expect(bySha.entries).toEqual([]);
+    });
+
+    it('does not return full or abbreviated SHA matches outside HEAD ancestry', async () => {
+        await runGit(repoRoot, ['checkout', '-b', 'off-branch', 'HEAD~1']);
+        const offBranchSha = await commitFile({
+            fileName: 'off-branch.txt',
+            message: 'feat: off-branch only',
+            authorName: 'Linus Torvalds',
+            authorEmail: 'linus@example.com',
+            dateIso: '2026-01-04T00:00:00Z',
+        });
+        await runGit(repoRoot, ['checkout', 'main']);
+
+        for (const query of [offBranchSha, offBranchSha.slice(0, 8)]) {
+            const result = await logQuery({
+                context: buildContext(),
+                request: { cwd: repoRoot, query, limit: 10 },
+            });
+            expect(result.success).toBe(true);
+            expect(result.queryApplied).toBe(true);
+            expect(result.entries).toEqual([]);
+        }
     });
 
     it('merges overlapping match arms, dedupes, and orders newest first', async () => {

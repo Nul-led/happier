@@ -66,6 +66,19 @@ const UNKNOWN_DIALOG = [
   '  2. Continue anyway',
 ].join('\n');
 
+const HIDDEN_UNKNOWN_DIALOG = [
+  'Allow external CLAUDE.md file imports?',
+  '',
+  '❯ No, disable external imports',
+  '  Yes, allow external imports',
+  '',
+  'Enter to confirm · Esc to cancel',
+].join('\n');
+
+const HIDDEN_UNKNOWN_DIALOG_TARGET_FOCUSED = HIDDEN_UNKNOWN_DIALOG
+  .replace('❯ No, disable external imports', '  No, disable external imports')
+  .replace('  Yes, allow external imports', '❯ Yes, allow external imports');
+
 const AMBIGUOUS_UNKNOWN_DIALOG = [
   UNKNOWN_DIALOG,
   '',
@@ -87,7 +100,11 @@ function createContext(requestDecision = vi.fn(async () => ({ decision: 'approve
   const events = createEventsFixture();
   return createPluginContextFixture(terminalHost.service, events.service, {
     sessionPermissions: {
-      requestDecision,
+      requestDecision: async (request, options) => {
+        const result = await requestDecision(request, options);
+        await options?.acknowledgeDecisionApplication?.(result);
+        return result;
+      },
       getMode: () => 'default',
     },
   });
@@ -494,6 +511,38 @@ describe('createClaudeUnifiedResumeChoiceStartupHandler', () => {
           options: [
             expect.objectContaining({ label: 'Delete history' }),
             expect.objectContaining({ label: 'Continue anyway' }),
+          ],
+        })],
+      }),
+    }), expect.anything());
+  });
+
+  it('publishes and applies a future hidden-index generic dialog through verified focus navigation', async () => {
+    const requestDecision = vi.fn(async () => ({
+      decision: 'approved' as const,
+      answers: { claudeUnifiedTerminalGenericDialog: 'option_2' },
+    }));
+    const port = createFakeControlPort({
+      captures: [HIDDEN_UNKNOWN_DIALOG, HIDDEN_UNKNOWN_DIALOG_TARGET_FOCUSED, IDLE_COMPOSER],
+    });
+    const handler = createClaudeUnifiedResumeChoiceStartupHandler({
+      ctx: createContext(requestDecision),
+      sessionId: 'session-1',
+      policy: 'ask_every_time',
+      port,
+      settleMs: 0,
+      wait: async () => undefined,
+    });
+
+    expect(await handler.handle(parseClaudeScreenState(HIDDEN_UNKNOWN_DIALOG))).toBe('waiting_for_user');
+    await vi.waitFor(() => expect(port.sentKeys).toEqual(['ArrowDown', 'Enter']));
+    expect(port.sentLiteral).toEqual([]);
+    expect(requestDecision).toHaveBeenCalledWith(expect.objectContaining({
+      input: expect.objectContaining({
+        questions: [expect.objectContaining({
+          options: [
+            expect.objectContaining({ label: 'No, disable external imports' }),
+            expect.objectContaining({ label: 'Yes, allow external imports' }),
           ],
         })],
       }),

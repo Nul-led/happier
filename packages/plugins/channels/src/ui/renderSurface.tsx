@@ -5,6 +5,7 @@ import type {
   PluginActionInputById,
   PluginActionResultById,
 } from '@happier-dev/plugin-sdk/actions';
+import { readActionInputOptionValue } from '@happier-dev/plugin-sdk/actions';
 import type {
   PluginUiActionExecutionOptions,
   PluginUiTargetedContributionsV1,
@@ -94,6 +95,7 @@ import {
   type ConversationBindingTargetV1,
   type ConversationBindingV1,
   type ConversationConnectionCreateInputV1,
+  type ConversationConnectionPrepareResultV1,
   type ConversationConnectionEndpointRequiredResultV1,
   type ConversationConnectionWebhookEndpointSetupRequiredResultV1,
   type ConversationPairingResourceV1,
@@ -169,6 +171,15 @@ const MILLISECONDS_PER_SECOND = 1_000;
 const MILLISECONDS_PER_MINUTE = 60 * MILLISECONDS_PER_SECOND;
 const MILLISECONDS_PER_HOUR = 60 * MILLISECONDS_PER_MINUTE;
 const MILLISECONDS_PER_DAY = 24 * MILLISECONDS_PER_HOUR;
+const OBSERVATION_AGE_PRESETS_MS = Object.freeze([
+  MILLISECONDS_PER_MINUTE,
+  5 * MILLISECONDS_PER_MINUTE,
+  MILLISECONDS_PER_HOUR,
+  MILLISECONDS_PER_DAY,
+  7 * MILLISECONDS_PER_DAY,
+  30 * MILLISECONDS_PER_DAY,
+]);
+const INBOUND_GROUPING_PRESETS_MS = Object.freeze([0, 250, 500, 750, 1_000, 2_000, 5_000]);
 
 type ConnectionTransport = ConversationConnectionManagementRow['selectedTransport'];
 type ConnectionDeletionState = ConversationConnectionManagementRow['deletionState'];
@@ -270,10 +281,21 @@ type PreparedConnectionSetup = Readonly<{
   supportedTransports: readonly ConnectionCreateTransport[];
   selectedTransport: ConnectionCreateTransport;
   maximumObservationAgeMs: string;
+  presentation: PreparedConnectionPresentation;
   setupGuidance?: Readonly<{
     externalUrl: string;
     requiredPermissionsLabel: string;
   }>;
+}>;
+type PreparedConnectionReady = Extract<ConversationConnectionPrepareResultV1, Readonly<{ kind: 'ready' }>>;
+type PreparedConnectionPresentation = Readonly<{
+  providerDisplayName: string;
+  connectedAccountLabel: string | null;
+  machineDisplayName: string | null;
+  destinationLabel?: string;
+  overlapSafety: PreparedConnectionReady['overlapSafety'];
+  replayContinuity: PreparedConnectionReady['replayContinuity'];
+  outboundTextLimit: PreparedConnectionReady['outboundTextLimit'];
 }>;
 type ProviderSetupFormDraft = Readonly<{
   operationKey: string;
@@ -1568,6 +1590,75 @@ function transportLabel(transport: ConnectionTransport, t: Translate): string {
   return t('plugins.channels.surface.transportDurablePush', 'Durable push');
 }
 
+function transportOutcomeLabel(transport: ConnectionTransport, t: Translate): string {
+  if (transport === 'checkpointedPull') {
+    return t('plugins.channels.surface.transportCheckpointedPullOutcome', 'Keeps up after reconnecting');
+  }
+  if (transport === 'socket') {
+    return t('plugins.channels.surface.transportSocketOutcome', 'Receives messages while this machine is online');
+  }
+  return t('plugins.channels.surface.transportDurablePushOutcome', 'Receives messages even while this machine is offline');
+}
+
+function connectionPolicyOutcome(
+  presentation: PreparedConnectionPresentation,
+  t: Translate,
+): string {
+  const overlap = presentation.overlapSafety === 'safe'
+    ? t('plugins.channels.surface.connectionReviewOverlapSafe', 'Switching delivery methods is designed to avoid duplicate provider delivery.')
+    : presentation.overlapSafety === 'providerExclusive'
+      ? t('plugins.channels.surface.connectionReviewOverlapExclusive', 'The provider permits only one active delivery method, so switching may briefly pause incoming messages.')
+      : t('plugins.channels.surface.connectionReviewOverlapDestructive', 'Changing delivery methods replaces the provider setup and can interrupt incoming messages.');
+  const replay = presentation.replayContinuity === 'checkpointed'
+    ? t('plugins.channels.surface.connectionReviewReplayCheckpointed', 'After an interruption, Happier can continue from its saved position.')
+    : presentation.replayContinuity === 'sessionBound'
+      ? t('plugins.channels.surface.connectionReviewReplaySession', 'Continuity lasts only while the selected machine process remains available.')
+      : t('plugins.channels.surface.connectionReviewReplayNone', 'Messages sent during an interruption may not be recoverable.');
+  return `${overlap} ${replay}`;
+}
+
+function ConnectionPreparationReview(props: Readonly<{
+  presentation: PreparedConnectionPresentation;
+  selectedTransport: ConnectionCreateTransport;
+  accountEncryptionMode: 'plain' | 'e2ee';
+  testID: string;
+  t: Translate;
+}>): React.ReactElement {
+  const unavailable = props.t('plugins.channels.surface.summaryUnavailable', 'Unavailable');
+  return (
+    <Stack gap="small" testID={props.testID}>
+      <Heading level={4} value={props.t('plugins.channels.surface.connectionReviewTitle', 'Review connection')} />
+      <Metadata
+        title={props.t('plugins.channels.surface.connectionReviewSummary', 'Connection summary')}
+        entries={[
+          { label: props.t('plugins.channels.surface.provider', 'Provider'), value: props.presentation.providerDisplayName },
+          { label: props.t('plugins.channels.surface.connectionAccount', 'Connected Account'), value: props.presentation.connectedAccountLabel ?? unavailable },
+          { label: props.t('plugins.channels.surface.selectedMachineSummary', 'Runs on your selected machine'), value: props.presentation.machineDisplayName ?? unavailable },
+          { label: props.t('plugins.channels.surface.bindingCreateConversation', 'Destination'), value: props.presentation.destinationLabel ?? unavailable },
+          { label: props.t('plugins.channels.surface.transport', 'Transport'), value: transportOutcomeLabel(props.selectedTransport, props.t) },
+          { label: props.t('plugins.channels.surface.connectionReviewContinuity', 'Continuity'), value: connectionPolicyOutcome(props.presentation, props.t) },
+        ]}
+      />
+      <Banner
+        tone="info"
+        title={props.accountEncryptionMode === 'plain'
+          ? props.t(
+            'plugins.channels.surface.bindingCreatePrivacyPlain',
+            'Storage and privacy: Channel configuration, binding policy, provider-derived identities, and externally bridged Session content use the documented server, database, and backup visibility of their canonical plain Account/Session owners.',
+          )
+          : props.t(
+            'plugins.channels.surface.bindingCreatePrivacyE2ee',
+            'Storage and privacy: in persisted Happier Account data, private fields remain inside canonical encrypted envelopes and only the bounded routing/index projection is server-readable.',
+          )}
+        description={props.t(
+          'plugins.channels.surface.bindingCreatePrivacyTransit',
+          'The connected provider always sees this conversation. Deliveries that arrive through a Happier-hosted webhook endpoint also pass through the Happier server, which reads and verifies the raw provider request before sealing it.',
+        )}
+      />
+    </Stack>
+  );
+}
+
 function formatObservationAge(value: number, t: Translate): string {
   const units = [
     [MILLISECONDS_PER_DAY, 'plugins.channels.surface.day', 'plugins.channels.surface.days', 'day', 'days'],
@@ -1586,6 +1677,18 @@ function formatObservationAge(value: number, t: Translate): string {
   return `${secondsText} ${seconds === 1
     ? t('plugins.channels.surface.second', 'second')
     : t('plugins.channels.surface.seconds', 'seconds')}`;
+}
+
+function durationPresetOptions(
+  presets: readonly number[],
+  currentValue: string,
+  t: Translate,
+): readonly Readonly<{ value: string; label: string }>[] {
+  const current = Number(currentValue);
+  const values = Number.isInteger(current) && current >= 0
+    ? [...new Set([...presets, current])].sort((left, right) => left - right)
+    : presets;
+  return values.map((value) => ({ value: String(value), label: formatObservationAge(value, t) }));
 }
 
 function parseResourceErrorMessage(
@@ -5564,11 +5667,17 @@ function BindingPolicyControls(props: Readonly<{
           onChange((current) => ({ ...current, inputMode }));
         }}
       />
-      <Form.TextField
-        label={props.t('plugins.channels.surface.bindingEditDebounce', 'Inbound debounce (ms)')}
+      <Form.Select
+        testID="channels-binding-inbound-debounce"
+        label={props.t('plugins.channels.surface.bindingEditDebounce', 'Message grouping delay')}
+        options={durationPresetOptions(INBOUND_GROUPING_PRESETS_MS, fields.inboundDebounceMs, props.t)}
         value={fields.inboundDebounceMs}
         disabled={props.disabled}
-        onChange={(inboundDebounceMs) => onChange((current) => ({ ...current, inboundDebounceMs }))}
+        onChange={(inboundDebounceMs) => {
+          const selected = readActionInputOptionValue(inboundDebounceMs);
+          if (typeof selected !== 'string') return;
+          onChange((current) => ({ ...current, inboundDebounceMs: selected }));
+        }}
       />
       {props.debounceValid ? null : (
         <Text
@@ -7882,24 +7991,42 @@ function connectionPolicyDraft(connection: ChannelsConnection): ConnectionPolicy
   };
 }
 
-function connectionPolicyDraftIsDirty(draft: ConnectionPolicyDraft): boolean {
-  return draft.enabled !== draft.base.enabled
+/**
+ * Work a rebase would throw away.
+ *
+ * Two separate facts have to hold. An untouched editor has nothing to lose, so
+ * it always rebases. An edited one still has nothing to lose when the incoming
+ * policy already says exactly what the draft says — which is precisely the
+ * revision the person's own successful save produced, and reporting that as a
+ * change made elsewhere would be false.
+ */
+function connectionPolicyDraftHasUnsavedWork(
+  draft: ConnectionPolicyDraft,
+  connection: ChannelsConnection,
+): boolean {
+  const edited = draft.enabled !== draft.base.enabled
     || draft.maximumObservationAgeMs !== draft.base.maximumObservationAgeMs;
+  return edited && (
+    draft.enabled !== connection.enabled
+    || draft.maximumObservationAgeMs !== String(connection.maximumObservationAgeMs)
+  );
 }
 
 /**
- * A newer revision rebases an untouched editor silently — there is nothing to
- * lose and nothing worth interrupting for. A dirty editor keeps its draft and
- * stays behind that revision, which is exactly what
- * `connectionPolicyDraftSourceChanged` then discloses: saving against a
- * revision the person never read would overwrite the other writer's change.
+ * A newer revision rebases an editor with no unsaved work silently — there is
+ * nothing worth interrupting for. Otherwise the draft is kept and stays behind
+ * that revision, which is exactly what `connectionPolicyDraftSourceChanged`
+ * then discloses: saving against a revision the person never read would
+ * overwrite the other writer's change.
  */
 function currentConnectionPolicyDraft(
   draft: ConnectionPolicyDraft,
   connection: ChannelsConnection,
 ): ConnectionPolicyDraft {
   if (draft.revision === connection.revision) return draft;
-  return connectionPolicyDraftIsDirty(draft) ? draft : connectionPolicyDraft(connection);
+  return connectionPolicyDraftHasUnsavedWork(draft, connection)
+    ? draft
+    : connectionPolicyDraft(connection);
 }
 
 function connectionPolicyDraftSourceChanged(
@@ -8424,18 +8551,20 @@ function ConnectionPolicyEditor(props: Readonly<{
         disabled={updateUnavailable || saving || mutationUnavailable}
         issue={validationIssue}
       >
-        <Form.TextField
+        <Form.Select
           testID="channels-connection-observation-age"
           label={props.t(
             'plugins.channels.surface.maximumObservationAgeInput',
-            'Maximum observation age in milliseconds',
+            'How long incoming messages stay eligible',
           )}
+          options={durationPresetOptions(OBSERVATION_AGE_PRESETS_MS, props.draft.maximumObservationAgeMs, props.t)}
           value={props.draft.maximumObservationAgeMs}
           onChange={(next) => {
-            props.onMaximumObservationAgeMsChange(next);
+            const selected = readActionInputOptionValue(next);
+            if (typeof selected !== 'string') return;
+            props.onMaximumObservationAgeMsChange(selected);
             if (validationIssue !== undefined) setValidationIssue(undefined);
           }}
-          keyboardType="numeric"
           disabled={updateUnavailable || saving || mutationUnavailable}
         />
       </Form.Field>
@@ -8995,6 +9124,10 @@ function ConnectionTransferControls(props: Readonly<{
 }>): React.ReactElement | null {
   const hostApi = usePluginHostApi();
   const surface = useSurfaceContext();
+  const resolveProviderDisplayName = usePluginBrandDisplayNameResolver();
+  const prepareAction = useExecutePluginAction(
+    CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionPrepare,
+  );
   const transferAction = useExecutePluginAction(
     CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionTransfer,
   );
@@ -9008,6 +9141,7 @@ function ConnectionTransferControls(props: Readonly<{
       : 'checkpointedPull',
   );
   const [selectionUnavailable, setSelectionUnavailable] = React.useState(false);
+  const [preparedPresentation, setPreparedPresentation] = React.useState<PreparedConnectionPresentation | undefined>();
   const [transferFailed, setTransferFailed] = React.useState(false);
   const [endpointSetupRequired, setEndpointSetupRequired] = React.useState<EndpointSetupPresentation | undefined>();
   // The transfer form's two phases announce themselves through the same mounted
@@ -9059,6 +9193,8 @@ function ConnectionTransferControls(props: Readonly<{
   // core-minted idempotency key while that press rejoins the exact same ensure.
   const actionUnavailable = transferBlocked
     || selectionPending
+    || prepareAction.execution.status === 'pending'
+    || prepareAction.execution.status === 'outcomeUnknown'
     || transferAction.execution.status === 'pending'
     || transferOutcomeUnknown
     || ensureEndpointAction.execution.status === 'pending';
@@ -9075,6 +9211,7 @@ function ConnectionTransferControls(props: Readonly<{
     setSelectedOperationKey(undefined);
     setSelectedTransport(defaultTransport);
     setSelectionUnavailable(false);
+    setPreparedPresentation(undefined);
     setTransferFailed(false);
     setEndpointSetupRequired(undefined);
     transferAction.reset();
@@ -9092,6 +9229,7 @@ function ConnectionTransferControls(props: Readonly<{
     setSelectedOperationKey(undefined);
     setSelectedTransport(defaultTransport);
     setSelectionUnavailable(false);
+    setPreparedPresentation(undefined);
     setTransferFailed(false);
     setEndpointSetupRequired(undefined);
     transferAction.reset();
@@ -9118,6 +9256,7 @@ function ConnectionTransferControls(props: Readonly<{
     retireSelectedProviderSetup();
     setSelectedOperationKey(undefined);
     setSelectionUnavailable(false);
+    setPreparedPresentation(undefined);
     setTransferFailed(false);
     setEndpointSetupRequired(undefined);
     transferAction.reset();
@@ -9128,6 +9267,7 @@ function ConnectionTransferControls(props: Readonly<{
     retireSelectedProviderSetup();
     setSelectedOperationKey(undefined);
     setSelectionUnavailable(false);
+    setPreparedPresentation(undefined);
     setTransferFailed(false);
     setEndpointSetupRequired(undefined);
     transferAction.reset();
@@ -9164,6 +9304,7 @@ function ConnectionTransferControls(props: Readonly<{
     // this transient settlement, so it cannot reach the terminal Action.
     retireSelectedProviderSetup();
     setSelectedOperationKey(undefined);
+    setPreparedPresentation(undefined);
     setSelectionUnavailable(true);
   }, [operations, retireSelectedProviderSetup]);
 
@@ -9202,12 +9343,42 @@ function ConnectionTransferControls(props: Readonly<{
         return;
       }
       selectedProviderSetupActionInputRef.current = { operation, result: selection };
+      const selectedActionInput = { operation, result: selection };
+      const preparedSettlement = await prepareAction.execute({
+        providerSelection: selection.selection,
+        providerSetupInput: selection.input,
+        credentialRef: selection.connectedAccount.kind === 'selected'
+          ? selection.connectedAccount.ref
+          : null,
+      }, { signal: props.signal, selectedActionInput });
+      if (!mountedRef.current || props.signal.aborted) return;
+      if (preparedSettlement.status !== 'success') {
+        retireSelectedProviderSetup();
+        setSelectionUnavailable(true);
+        return;
+      }
+      const prepared = ConversationConnectionPrepareResultV1Schema.safeParse(preparedSettlement.result);
+      if (!prepared.success || prepared.data.kind !== 'ready') {
+        retireSelectedProviderSetup();
+        setSelectionUnavailable(true);
+        return;
+      }
+      setPreparedPresentation({
+        providerDisplayName: resolveProviderDisplayName(operation.contributor.pluginId)
+          ?? props.t('plugins.channels.surface.providerFallback', 'Integration provider'),
+        connectedAccountLabel: selection.presentation.connectedAccountLabel,
+        machineDisplayName: selection.presentation.machineDisplayName,
+        ...(prepared.data.destinationLabel === undefined ? {} : { destinationLabel: prepared.data.destinationLabel }),
+        overlapSafety: prepared.data.overlapSafety,
+        replayContinuity: prepared.data.replayContinuity,
+        outboundTextLimit: prepared.data.outboundTextLimit,
+      });
       setSelectedOperationKey(pluginUiTargetedContributionOperationKey(operation));
     } finally {
       selectionPendingRef.current = false;
       if (mountedRef.current && !props.signal.aborted) setSelectionPending(false);
     }
-  }, [ensureEndpointAction.execution.status, hostApi, props.signal, retireSelectedProviderSetup, transferAction, transferBlocked]);
+  }, [ensureEndpointAction.execution.status, hostApi, prepareAction, props.signal, props.t, resolveProviderDisplayName, retireSelectedProviderSetup, transferAction, transferBlocked]);
 
   const transfer = React.useCallback(async () => {
     // An ambiguous endpoint ensure stays admitted here: the next deliberate
@@ -9430,6 +9601,15 @@ function ConnectionTransferControls(props: Readonly<{
           })}
           {selectedOperationKey === undefined ? null : (
             <>
+              {preparedPresentation === undefined ? null : (
+                <ConnectionPreparationReview
+                  presentation={preparedPresentation}
+                  selectedTransport={selectedTransport}
+                  accountEncryptionMode={surface.accountEncryptionMode}
+                  testID="channels-connection-transfer-review"
+                  t={props.t}
+                />
+              )}
               <Button
                 testID="channels-connection-transfer-back"
                 title={props.t('plugins.channels.surface.back', 'Back')}
@@ -9444,7 +9624,7 @@ function ConnectionTransferControls(props: Readonly<{
                 label={props.t('plugins.channels.surface.transport', 'Transport')}
                 options={transferTransports.map((transport) => ({
                   value: transport,
-                  label: transportLabel(transport, props.t),
+                  label: transportOutcomeLabel(transport, props.t),
                 }))}
                 value={selectedTransport}
                 disabled={transferIdentityUnavailable}
@@ -10424,6 +10604,7 @@ function ProviderSetupPicker(props: Readonly<{
 }>): React.ReactElement | null {
   const hostApi = usePluginHostApi();
   const surface = useSurfaceContext();
+  const resolveProviderDisplayName = usePluginBrandDisplayNameResolver();
   const prepareAction = useExecutePluginAction(CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionPrepare);
   const createAction = useExecutePluginAction(CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionCreate);
   // The incumbent generic present-user endpoint Action. The surface only
@@ -10620,6 +10801,10 @@ function ProviderSetupPicker(props: Readonly<{
         const {
           supportedTransports,
           recommendedTransport: selectedTransport,
+          destinationLabel,
+          overlapSafety,
+          replayContinuity,
+          outboundTextLimit,
           setupGuidance,
         } = prepared.data;
         setRemediationSetupOperation(undefined);
@@ -10636,6 +10821,16 @@ function ProviderSetupPicker(props: Readonly<{
             supportedTransports,
             selectedTransport,
             maximumObservationAgeMs: String(CONVERSATION_OBSERVATION_AGE_MS_FOR_OMITTED_FIELD_V1),
+            presentation: {
+              providerDisplayName: resolveProviderDisplayName(operation.contributor.pluginId)
+                ?? props.t('plugins.channels.surface.providerFallback', 'Integration provider'),
+              connectedAccountLabel: selection.presentation.connectedAccountLabel,
+              machineDisplayName: selection.presentation.machineDisplayName,
+              ...(destinationLabel === undefined ? {} : { destinationLabel }),
+              overlapSafety,
+              replayContinuity,
+              outboundTextLimit,
+            },
             ...(setupGuidance === undefined ? {} : { setupGuidance }),
           });
           setFeedback('ready');
@@ -10648,7 +10843,7 @@ function ProviderSetupPicker(props: Readonly<{
       setRemediationSetupOperation(undefined);
       setFeedback('preparationUnavailable');
     }
-  }, [prepareAction, props.signal]);
+  }, [prepareAction, props.signal, props.t, resolveProviderDisplayName]);
 
   const selectProvider = React.useCallback(async (operation: ProviderSetupOperation) => {
     if (props.signal.aborted
@@ -11357,6 +11552,13 @@ function ProviderSetupPicker(props: Readonly<{
       ) : null}
       {preparedConnection !== undefined ? (
         <Stack gap="small" testID="channels-provider-setup-connection-form">
+          <ConnectionPreparationReview
+            presentation={preparedConnection.presentation}
+            selectedTransport={preparedConnection.selectedTransport}
+            accountEncryptionMode={surface.accountEncryptionMode}
+            testID="channels-provider-setup-review"
+            t={props.t}
+          />
           {preparedConnection.setupGuidance === undefined ? null : (
             <Stack gap="small" testID="channels-provider-setup-guidance">
               <Heading
@@ -11391,7 +11593,7 @@ function ProviderSetupPicker(props: Readonly<{
               label={props.t('plugins.channels.surface.transport', 'Transport')}
               options={preparedConnection.supportedTransports.map((transport) => ({
                 value: transport,
-                label: transportLabel(transport, props.t),
+                label: transportOutcomeLabel(transport, props.t),
                 testID: `channels-provider-setup-transport-${transport}`,
               }))}
               value={preparedConnection.selectedTransport}
@@ -11410,15 +11612,22 @@ function ProviderSetupPicker(props: Readonly<{
             disabled={actionUnavailable}
             issue={createValidationIssue}
           >
-            <Form.TextField
+            <Form.Select
               testID="channels-provider-setup-observation-age"
               label={props.t(
                 'plugins.channels.surface.maximumObservationAgeInput',
-                'Maximum observation age in milliseconds',
+                'How long incoming messages stay eligible',
+              )}
+              options={durationPresetOptions(
+                OBSERVATION_AGE_PRESETS_MS,
+                preparedConnection.maximumObservationAgeMs,
+                props.t,
               )}
               value={preparedConnection.maximumObservationAgeMs}
-              onChange={onObservationAgeChange}
-              keyboardType="numeric"
+              onChange={(next) => {
+                const selected = readActionInputOptionValue(next);
+                if (typeof selected === 'string') onObservationAgeChange(selected);
+              }}
               disabled={actionUnavailable}
             />
           </Form.Field>

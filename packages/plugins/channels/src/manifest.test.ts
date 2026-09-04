@@ -305,7 +305,7 @@ describe('Channels core manifest', () => {
       'plugins.channels.surface.currentPolicy': 'Current connection policy',
       'plugins.channels.surface.technicalDetails': 'Technical details',
       'plugins.channels.surface.maximumObservationAgeDescription': 'Accept incoming observations no older than this limit.',
-      'plugins.channels.surface.maximumObservationAgeInput': 'Maximum observation age in milliseconds',
+      'plugins.channels.surface.maximumObservationAgeInput': 'How long incoming messages stay eligible',
       'plugins.channels.surface.minute': 'minute',
       'plugins.channels.surface.days': 'days',
     });

@@ -29,6 +29,15 @@ export type ClaudeUnifiedGenericNumberedDialog = Readonly<{
   signature: string;
 }>;
 
+export type ClaudeUnifiedDialogSelectionPresentation = Readonly<{
+  kind: 'indexed' | 'focused';
+  options: readonly Readonly<{
+    label: string;
+    focused: boolean;
+    shortcut?: string | undefined;
+  }>[];
+}>;
+
 export type ClaudeScreenState = Readonly<{
   text: string;
   inputBoxInteractive: boolean;
@@ -58,6 +67,8 @@ export type ClaudeScreenState = Readonly<{
   unrecognizedConfirmationDialogVisible: boolean;
   /** Safe bounded capture of the currently visible numbered block, including recognized dialogs. */
   visibleNumberedDialog: ClaudeUnifiedGenericNumberedDialog | null;
+  /** Current provider-rendered selection mechanics, used to derive answers at send time. */
+  visibleDialogSelection: ClaudeUnifiedDialogSelectionPresentation | null;
   /** Safe generic presentation, or null when the numbered prompt is incomplete/ambiguous. */
   unrecognizedConfirmationDialog: ClaudeUnifiedGenericNumberedDialog | null;
   /** Lowercased target level from the dialog body ("Switching to high means…"), when visible. */
@@ -151,6 +162,11 @@ const NUMBERED_DIALOG_OPTION_LINE = new RegExp(
   'u',
 );
 const FOCUSED_SELECTION_LINE = new RegExp(`^[^\\S\\n]*${SELECTION_FOCUS_GLYPH_SOURCE}`, 'u');
+const FOCUSED_UNINDEXED_SELECTION_LINE = new RegExp(
+  `^[^\\S\\n]*${SELECTION_FOCUS_GLYPH_SOURCE}[^\\S\\n]+(?!\\d+\\.|[◯◉○●◐◑])(.+?)[^\\S\\n]*$`,
+  'u',
+);
+const SELECTION_CONFIRM_HINT = /enter to confirm[^\n]*esc to cancel/i;
 const EFFORT_CHANGE_DIALOG_TARGET = /switching to\s+([a-z]+)\s+means the full history/i;
 const PERMISSION_PROMPT = /do you want to proceed\?/i;
 // Legacy wording plus the real 2.1.170 `/permissions` editor tab row
@@ -482,12 +498,20 @@ function resolveVisibleEffort(text: string): string | null {
   return status?.[1] ? status[1].trim().toLowerCase() : null;
 }
 
-function resolveResumeChoiceDialogOptions(text: string): readonly ClaudeUnifiedResumeChoiceAnswer[] {
+function resolveResumeChoiceDialogOptions(
+  text: string,
+  presentation: ClaudeUnifiedDialogSelectionPresentation | null,
+): readonly ClaudeUnifiedResumeChoiceAnswer[] {
   const tail = tailLines(text, 30);
   if (!RESUME_CHOICE_DIALOG_HEADING.test(tail)) return [];
   const options: ClaudeUnifiedResumeChoiceAnswer[] = [];
-  if (RESUME_CHOICE_FROM_SUMMARY_OPTION.test(tail)) options.push('resume_from_summary');
-  if (RESUME_CHOICE_FULL_SESSION_OPTION.test(tail)) options.push('resume_full_session');
+  const labels = presentation?.options.map((option) => option.label) ?? [];
+  if (RESUME_CHOICE_FROM_SUMMARY_OPTION.test(tail) || labels.some((label) => /^resume from summary\b/iu.test(label))) {
+    options.push('resume_from_summary');
+  }
+  if (RESUME_CHOICE_FULL_SESSION_OPTION.test(tail) || labels.some((label) => /^resume full session\b/iu.test(label))) {
+    options.push('resume_full_session');
+  }
   return options.length === 2 ? options : [];
 }
 
@@ -508,11 +532,17 @@ function readNumberedSelectionLabel(text: string, number: 1 | 2): string | null 
   return label.length > 0 ? label : null;
 }
 
-function resolveSafeguardPauseDialogOptions(text: string): readonly ClaudeUnifiedSafeguardPauseDialogOption[] {
+function resolveSafeguardPauseDialogOptions(
+  text: string,
+  presentation: ClaudeUnifiedDialogSelectionPresentation | null,
+): readonly ClaudeUnifiedSafeguardPauseDialogOption[] {
   const tail = tailLines(text, 30);
   if (!SAFEGUARD_PAUSE_DIALOG_HEAD.test(tail) || !SAFEGUARD_PAUSE_DIALOG_BODY.test(tail)) return [];
-  const switchLabel = readNumberedSelectionLabel(tail, 1);
-  const retryLabel = readNumberedSelectionLabel(tail, 2);
+  const labels = presentation?.options.map((option) => option.label) ?? [];
+  const switchLabel = labels.find((label) => SAFEGUARD_PAUSE_SWITCH_OPTION.test(label))
+    ?? readNumberedSelectionLabel(tail, 1);
+  const retryLabel = labels.find((label) => SAFEGUARD_PAUSE_RETRY_OPTION.test(label))
+    ?? readNumberedSelectionLabel(tail, 2);
   const switchModel = switchLabel ? SAFEGUARD_PAUSE_SWITCH_OPTION.exec(switchLabel)?.[1]?.trim() : null;
   const retryModel = retryLabel ? SAFEGUARD_PAUSE_RETRY_OPTION.exec(retryLabel)?.[1]?.trim() : null;
   if (!switchLabel || !retryLabel || !switchModel || !SAFEGUARD_PAUSE_RETRY_OPTION.test(retryLabel)) return [];
@@ -574,22 +604,110 @@ function resolveGenericNumberedDialog(
   };
 }
 
+type FocusedSelectionBlock = Readonly<{
+  start: number;
+  options: ClaudeUnifiedDialogSelectionPresentation['options'];
+}>;
+
+function resolveFocusedSelectionBlock(text: string): FocusedSelectionBlock | null {
+  if (!SELECTION_CONFIRM_HINT.test(text)) return null;
+  const lines = text.split('\n');
+  const focusedIndexes = lines.flatMap((line, index) => (
+    FOCUSED_UNINDEXED_SELECTION_LINE.test(line) ? [index] : []
+  ));
+  if (focusedIndexes.length !== 1) return null;
+  const focusedIndex = focusedIndexes[0]!;
+  let start = focusedIndex;
+  let end = focusedIndex;
+  while (start > 0 && (lines[start - 1] ?? '').trim().length > 0) start -= 1;
+  while (end + 1 < lines.length && (lines[end + 1] ?? '').trim().length > 0) end += 1;
+  const block = lines.slice(start, end + 1);
+  if (block.length < 2 || block.length > 9) return null;
+  const options = block.map((line, index) => {
+    const focused = start + index === focusedIndex;
+    return {
+      label: focused
+        ? (FOCUSED_UNINDEXED_SELECTION_LINE.exec(line)?.[1] ?? '').trim()
+        : line.trim(),
+      focused,
+    };
+  });
+  if (options.some((option) => option.label.length < 1 || option.label.length > 120)) return null;
+  const normalizedLabels = options.map((option) => option.label.toLocaleLowerCase());
+  if (new Set(normalizedLabels).size !== normalizedLabels.length) return null;
+  return { start, options };
+}
+
+function resolveGenericSelectionDialog(
+  text: string,
+  numbered: ClaudeUnifiedGenericNumberedDialog | null,
+  presentation: ClaudeUnifiedDialogSelectionPresentation | null,
+): ClaudeUnifiedGenericNumberedDialog | null {
+  if (numbered) return numbered;
+  if (presentation?.kind !== 'focused') return null;
+  const focused = resolveFocusedSelectionBlock(text);
+  if (!focused) return null;
+  const lines = text.split('\n');
+  const context = lines
+    .slice(Math.max(0, focused.start - 4), focused.start)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(-3);
+  if (context.length === 0 || context.some((line) => line.length > 160)) return null;
+  const options = focused.options.map((candidate, index) => ({
+    choice: `option_${index + 1}`,
+    label: candidate.label,
+  }));
+  const signature = JSON.stringify({ context, options });
+  if (signature.length > 1_024) return null;
+  return { context, options, signature };
+}
+
+function resolveDialogSelectionPresentation(
+  text: string,
+  numbered: ClaudeUnifiedGenericNumberedDialog | null,
+): ClaudeUnifiedDialogSelectionPresentation | null {
+  if (numbered) {
+    const lines = text.split('\n');
+    return {
+      kind: 'indexed',
+      options: numbered.options.map((option) => {
+        const pattern = new RegExp(
+          `^[^\\S\\n]*(?:${SELECTION_FOCUS_GLYPH_SOURCE}[^\\S\\n]*)?${option.choice}\\.[^\\S\\n]+`,
+          'u',
+        );
+        const row = lines.find((line) => pattern.test(line));
+        return {
+          label: option.label,
+          shortcut: option.choice,
+          focused: row ? FOCUSED_SELECTION_LINE.test(row) : false,
+        };
+      }),
+    };
+  }
+
+  const focused = resolveFocusedSelectionBlock(text);
+  return focused ? { kind: 'focused', options: focused.options } : null;
+}
+
 export function parseClaudeScreenState(rawText: string, context?: ClaudeScreenParseContext): ClaudeScreenState {
   const text = normalizeClaudeCapturedScreen(rawText);
   const visibleTail = tailLines(text, 30);
-  const usageLimitDialogCandidate = (
+  const usageLimitSemanticMatch = (
     USAGE_LIMIT_DIALOG.test(visibleTail)
     || CROPPED_USAGE_LIMIT_DIALOG.test(visibleTail)
-  )
+  );
+  const usageLimitDialogCandidate = usageLimitSemanticMatch
     ? resolveGenericNumberedDialog(visibleTail, 1)
     : null;
   const visibleNumberedDialog = usageLimitDialogCandidate ?? resolveGenericNumberedDialog(visibleTail);
+  const visibleDialogSelection = resolveDialogSelectionPresentation(visibleTail, visibleNumberedDialog);
 
   const switchModelDialogVisible = SWITCH_MODEL_DIALOG.test(text);
-  const usageLimitDialogVisible = usageLimitDialogCandidate !== null;
-  const resumeChoiceDialogOptions = resolveResumeChoiceDialogOptions(text);
+  const usageLimitDialogVisible = usageLimitSemanticMatch && visibleDialogSelection !== null;
+  const resumeChoiceDialogOptions = resolveResumeChoiceDialogOptions(text, visibleDialogSelection);
   const resumeChoiceDialogVisible = resumeChoiceDialogOptions.length === 2;
-  const safeguardPauseDialogOptions = resolveSafeguardPauseDialogOptions(text);
+  const safeguardPauseDialogOptions = resolveSafeguardPauseDialogOptions(text, visibleDialogSelection);
   const safeguardPauseDialogVisible = safeguardPauseDialogOptions.length > 0;
   const effortChangeDialogVisible = EFFORT_CHANGE_DIALOG.test(text);
   const effortChangeDialogTarget = effortChangeDialogVisible
@@ -610,13 +728,16 @@ export function parseClaudeScreenState(rawText: string, context?: ClaudeScreenPa
   const activeComposerOwnsInput = hasComposer && composerState.cursorRelation !== null;
   const composerHasSlash = hasComposer && composerContent.startsWith('/');
   const slashPickerOpen = composerHasSlash && SLASH_SUGGESTION_LINE.test(text);
-  const userDraftPresent = hasComposer && composerContent.length > 0 && !composerHasSlash;
+  const userDraftPresent = hasComposer
+    && composerContent.length > 0
+    && !composerHasSlash
+    && visibleDialogSelection?.kind !== 'focused';
 
   // Known matchers already establish the dialog class, so bind their mutable visible context/options
   // from the active tail instead of unrelated numbered scrollback. Unknown dialogs remain stricter:
-  // their generic answer path requires exactly one unambiguous block across the complete capture.
+  // their generic answer path requires exactly one bounded, unambiguous selection block.
   const unrecognizedConfirmationDialogVisible =
-    NUMBERED_SELECTION_OPTION.test(text)
+    (NUMBERED_SELECTION_OPTION.test(text) || visibleDialogSelection?.kind === 'focused')
     && !activeComposerOwnsInput
     && !switchModelDialogVisible
     && !usageLimitDialogVisible
@@ -627,7 +748,7 @@ export function parseClaudeScreenState(rawText: string, context?: ClaudeScreenPa
     && !permissionPromptVisible
     && !permissionEditorOpen;
   const unrecognizedConfirmationDialog = unrecognizedConfirmationDialogVisible
-    ? resolveGenericNumberedDialog(text)
+    ? resolveGenericSelectionDialog(visibleTail, visibleNumberedDialog, visibleDialogSelection)
     : null;
 
   const anyDialog =
@@ -671,6 +792,7 @@ export function parseClaudeScreenState(rawText: string, context?: ClaudeScreenPa
     effortChangeDialogVisible,
     unrecognizedConfirmationDialogVisible,
     visibleNumberedDialog,
+    visibleDialogSelection,
     unrecognizedConfirmationDialog,
     effortChangeDialogTarget,
     latestEffortConfirmation: latestEffort === null ? null : { kind: latestEffort.kind, level: latestEffort.level },

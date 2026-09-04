@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { AgentSessionRuntimeContext } from '@happier-dev/plugin-sdk/agents/runtime';
+import type { SessionPermissionsService } from '@happier-dev/plugin-sdk/sessions';
 import { join } from 'node:path';
 
 import {
+  createNativePermissionDecisionAdapter,
   openClaudeNativeUnifiedTerminalSession,
   resolveClaudeNativeUnifiedResume,
 } from './nativeSession.js';
@@ -15,6 +17,10 @@ function createContext(): AgentSessionRuntimeContext {
       storage: { daemonSession: { get: vi.fn(), set: vi.fn() } },
       logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
       exec: {},
+      interactions: {
+        confirm: vi.fn(async () => ({ status: 'approved' as const })),
+        askQuestions: vi.fn(),
+      },
     },
     ui: { askQuestions: vi.fn(), confirm: vi.fn() },
     session: {
@@ -40,6 +46,23 @@ function createContext(): AgentSessionRuntimeContext {
 }
 
 describe('openClaudeNativeUnifiedTerminalSession', () => {
+  it('acknowledges an accepted native permission decision before resolving it', async () => {
+    const requestDecision = createNativePermissionDecisionAdapter(createContext())
+      .requestDecision as SessionPermissionsService['requestDecision'];
+    const acknowledgeDecisionApplication = vi.fn(async () => undefined);
+
+    const result = await requestDecision({
+      provider: 'claude',
+      requestId: 'dialog-1',
+      toolCallId: 'dialog-1',
+      toolName: 'Read',
+      input: { file_path: '/tmp/example' },
+    }, { acknowledgeDecisionApplication });
+
+    expect(result.decision).toBe('approved');
+    expect(acknowledgeDecisionApplication).toHaveBeenCalledWith(result);
+  });
+
   it('preserves the requested provider identity and canonical transcript path for native resume', async () => {
     const cwd = '/tmp/claude-native-resume';
     const providerSessionId = 'provider-session-resume';

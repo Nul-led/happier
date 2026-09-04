@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { ProviderContributionV1Schema } from '@happier-dev/plugin-sdk/providers';
 import { buildQualifiedPluginContributionKey } from '@happier-dev/protocol';
 
-import { CLAUDE_STATIC_MODELS } from '../agent/models.js';
+import { ANTHROPIC_STATIC_MODELS } from './catalog.js';
 import { PLUGIN_MANIFEST } from '../manifest.js';
 import { ANTHROPIC_PROVIDER_CONTRIBUTION } from './contribution.js';
 import {
@@ -47,7 +47,7 @@ describe('Anthropic Provider contribution', () => {
     expect(contribution).toEqual(ANTHROPIC_PROVIDER_CONTRIBUTION);
     expect(() => ProviderContributionV1Schema.parse(ANTHROPIC_PROVIDER_CONTRIBUTION)).not.toThrow();
     expect(contribution?.catalog.source === 'static+probe' && contribution.catalog.staticModels)
-      .toEqual(CLAUDE_STATIC_MODELS);
+      .toEqual(ANTHROPIC_STATIC_MODELS);
     expect(contribution?.catalog.source === 'static+probe'
       && contribution.catalog.staticModels.find(({ id }) => id === 'claude-opus-4-6'))
       .toMatchObject({

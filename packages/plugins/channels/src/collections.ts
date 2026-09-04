@@ -1076,9 +1076,10 @@ const INGRESS_CENSUS_COMPACTED_SCHEMA = {
   properties: {
     shell: ConversationAuthenticatedObservationShellV1JsonSchema,
     replayDigest: { type: 'string', pattern: '^[A-Za-z0-9_-]{43}$' },
-    // A settled attention row remains independently visible until this
-    // census's frozen horizon. Persist its exact identity here so retention
-    // never needs an Account-wide reverse scan after discarding fan-out.
+    // The field name is retained from the existing private shape. It now names
+    // every terminal member kept for the separate physical-forgetting step;
+    // predecessor rows contain only attention ids because their other members
+    // were already retired before compaction.
     retainedAttentionObligationRowIds: {
       type: 'array',
       items: OPAQUE_ROUTING_ROW_ID_SCHEMA,

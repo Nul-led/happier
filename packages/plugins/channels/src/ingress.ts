@@ -386,7 +386,11 @@ type IngressCensusCompacted = Readonly<{
   shell: ConversationAuthenticatedObservationShellV1;
   /** One digest over the replay-relevant text and Event candidate together. */
   replayDigest: string;
-  /** Exact terminal-attention members retained until this census horizon. */
+  /**
+   * Exact terminal members retained until this census is physically
+   * forgettable. The property name is preserved from the predecessor private
+   * shape, whose non-attention members were already retired at compaction.
+   */
   retainedAttentionObligationRowIds: readonly string[];
 }>;
 
@@ -1072,6 +1076,24 @@ function readIngressCensusCompacted(value: JsonValue | undefined): IngressCensus
   };
 }
 
+function ingressCensusMatchesObligation(input: Readonly<{
+  census: IngressCensusRecord;
+  obligation: IngressObligationRecord;
+}>): boolean {
+  const target = input.obligation.payload.target;
+  return target?.kind === 'event'
+    ? input.census.payload.eventCandidate !== null
+      && pluginJsonValuesEqual(input.census.payload.eventCandidate, target.candidate)
+    : input.obligation['binding-id'] !== undefined
+      && input.obligation.payload.sourceAuthority.bindingRevision !== null
+      && input.obligation.payload.sourceAuthority.bindingAuthorityEpoch !== null
+      && input.census.payload.matchedBindings.some((member) => (
+        member.bindingId === input.obligation['binding-id']
+        && member.bindingRevision === input.obligation.payload.sourceAuthority.bindingRevision
+        && member.bindingAuthorityEpoch === input.obligation.payload.sourceAuthority.bindingAuthorityEpoch
+      ));
+}
+
 async function readPreparedIngressCensusForObligation(input: Readonly<{
   context: PluginInvocationContext;
   obligation: IngressObligationRecord;
@@ -1081,24 +1103,11 @@ async function readPreparedIngressCensusForObligation(input: Readonly<{
     input.obligation.payload.censusId,
     { signal: input.context.signal },
   )) ?? null);
-  const target = input.obligation.payload.target;
-  const matchingPreparedMember = target?.kind === 'event'
-    ? census?.value.payload.eventCandidate !== null
-      && census?.value.payload.eventCandidate !== undefined
-      && pluginJsonValuesEqual(census.value.payload.eventCandidate, target.candidate)
-    : input.obligation['binding-id'] !== undefined
-      && input.obligation.payload.sourceAuthority.bindingRevision !== null
-      && input.obligation.payload.sourceAuthority.bindingAuthorityEpoch !== null
-      && census?.value.payload.matchedBindings.some((member) => (
-        member.bindingId === input.obligation['binding-id']
-        && member.bindingRevision === input.obligation.payload.sourceAuthority.bindingRevision
-        && member.bindingAuthorityEpoch === input.obligation.payload.sourceAuthority.bindingAuthorityEpoch
-      ));
   if (
     census === undefined
     || census.value.payload.phase !== 'prepared'
     || census.value['connection-id'] !== input.obligation['connection-id']
-    || !matchingPreparedMember
+    || !ingressCensusMatchesObligation({ census: census.value, obligation: input.obligation })
   ) {
     throw pluginError(
       'channels_ingress_census_unprepared',
@@ -2548,6 +2557,30 @@ function retryDueIngressObligationValue(input: Readonly<{
       lifecycle: { phase: 'retryDue', attemptCount, dueAt },
       disposition: null,
       nonAdmission: null,
+    },
+  };
+}
+
+/**
+ * Preparation recovery is not an admission attempt. Move its ready member by
+ * the zero-attempt retry delay so one interrupted census cannot permanently
+ * occupy the bounded due page while preserving the original attempt counter.
+ */
+function preparingCensusRetryIngressObligationValue(input: Readonly<{
+  obligation: IngressObligationRecord;
+  now: number;
+}>): JsonRecord {
+  const dueAt = input.now + conversationRetryDelayMs(0);
+  return {
+    ...input.obligation,
+    [CHANNEL_STATE_FIELD.dueAt]: dueAt,
+    [CHANNEL_STATE_FIELD.updatedAt]: input.now,
+    payload: {
+      ...input.obligation.payload,
+      lifecycle: {
+        ...input.obligation.payload.lifecycle,
+        dueAt,
+      },
     },
   };
 }
@@ -4266,13 +4299,9 @@ async function dispatchIngressObligation(input: Readonly<{
         expectedExecutionOrigin: target.executionOrigin,
       },
     );
-    if (!arePluginMachineExecutionOriginsEqual(execution.executionOrigin, target.executionOrigin)) {
-      throw pluginError(
-        'channels_ingress_event_execution_origin_changed',
-        'The provider Event action settled from an origin that is no longer frozen for this ingress obligation.',
-        true,
-      );
-    }
+    // Origin equality for this origin-bearing call is the host Actions
+    // owner's fence: a settled result proves the frozen target origin stayed
+    // current across the provider effect, so no consumer re-check follows.
     const admission = ConversationProviderAutomationEventAdmitResultV1Schema.parse(execution.result);
     if (admission.kind === 'unsettled') {
       const exhausted = obligation.value.payload.lifecycle.attemptCount >= MAX_CONVERSATION_DELIVERY_ATTEMPTS;
@@ -4924,14 +4953,11 @@ async function ingestConversationObservationForInvocation(
       { signal: context.signal },
     )) ?? null);
     if (obligation === undefined) {
-      // Retention retires members before it compacts or deletes the census
-      // that names them, so an interrupted pass leaves exactly one benign
-      // absent shape: a census that already proves the settled
-      // retention-eligible state this same owner's sweep requires. Absence
-      // counts as terminally retired only under that proof — the replay stays
-      // checkpoint-safe with no recreated obligation or provider effect —
-      // while any other absent member is missing durable state, never a
-      // retention outcome.
+      // Predecessor retention could retire members before compacting or
+      // deleting the census that named them. An absent member is benign only
+      // when this same owner's retained witness proves that physical
+      // retirement was eligible; otherwise it is missing durable state, never
+      // a retention outcome.
       if (await readSettledIngressUnit({ context, census }) === undefined) {
         throw pluginError(
           'channels_ingress_obligation_missing',
@@ -5079,6 +5105,34 @@ export async function runConversationIngressDueWorkForInvocation(input: Readonly
       || obligation.value.payload.lifecycle.dueAt > now
     ) continue;
     try {
+      const rawCensus = readStateRow(await collection.get(
+        obligation.value.payload.censusId,
+        { signal: context.signal },
+      )) ?? null;
+      const census = asIngressCensus(rawCensus);
+      if (
+        census === undefined
+        || census.value['connection-id'] !== obligation.value['connection-id']
+        || !ingressCensusMatchesObligation({ census: census.value, obligation: obligation.value })
+        || census.value.payload.normalizedIngress === null
+      ) {
+        await collection.batch([{
+          kind: 'put',
+          value: blockedIngressObligationValue({ obligation: obligation.value, now }),
+          expectedRevision: obligation.row.revision,
+        }], { signal: context.signal });
+        processed += 1;
+        continue;
+      }
+      if (census.value.payload.phase === 'preparing') {
+        await collection.batch([{
+          kind: 'put',
+          value: preparingCensusRetryIngressObligationValue({ obligation: obligation.value, now }),
+          expectedRevision: obligation.row.revision,
+        }], { signal: context.signal });
+        processed += 1;
+        continue;
+      }
       const ingress = await readPreparedIngressForObligation({ context, obligation: obligation.value });
       const connection = asConnection(readStateRow(await collection.get(
         obligation.value['connection-id'],
@@ -5137,40 +5191,32 @@ function isIngressCensusPastFrozenRetentionHorizon(input: Readonly<{
 }
 
 /**
- * A census unit is settled when replay is impossible and every member has
- * settled terminally. A checkpointed pull proves the replay half with its
- * coverage fact; direct ingress has no replay source to prove. A contradictory
- * immutable-evidence fact also closes replay: it is retained as attention
- * evidence, but must not keep duplicating a body after its members settle. A
- * member row that disappears afterward is a completed deletion, not a retry
- * obligation.
+ * A census body is settled once preparation completed and every member is
+ * terminal. Provider checkpoint coverage is deliberately not part of that
+ * content-minimization decision: the compact shell and digest preserve replay
+ * equality until the separate physical-forgetting predicate becomes true.
  *
- * A terminal member's `attention` is an owner-visible diagnostic with no
- * recovery action attached, so it expires with the row exactly as c0.56's
- * outward `notDelivered` does. What still pins a census is unfinished work an
- * owner can act on: a non-terminal `blocked` member awaiting its retry.
- * Contradictory occurrence evidence remains indefinitely, but its terminal
- * shape is the compact census itself rather than every historical fanout row.
+ * Attention remains a physical-forgetting gate even when its member is
+ * terminal. Compaction removes the duplicated body and terminal attention's
+ * frozen effect inputs, but preserves the minimal attention row and its exact
+ * identity.
  *
- * Settlement is what makes the retained body redundant, and the horizon is
- * what makes the whole unit expendable, so this one predicate serves both the
- * in-place compaction and the delete.
+ * Settlement makes the retained body redundant. It does not itself make any
+ * row physically forgettable.
  */
 async function readSettledIngressUnit(input: Readonly<{
   context: PluginInvocationContext;
   census: Readonly<{ row: StateRow; value: IngressCensusRecord }>;
+  now?: number;
 }>): Promise<IngressRetentionCandidate | undefined> {
   const { census } = input;
-  const hasConflict = census.value.payload.conflict !== null;
+  const now = input.now ?? Date.now();
   if (
     // A `preparing` census is unfinished admitted work, not expired evidence.
     // Its members may not all exist yet and it still holds the only copy of the
     // captured inbound message, so the horizon may never reclaim it: a replay
     // rejoins the census and finishes preparation instead.
     census.value.payload.phase !== 'prepared'
-    || (!hasConflict
-      && requiresIngressCensusCheckpointCoverage(census.value)
-      && census.value.payload.checkpointCoveredAt === null)
   ) return undefined;
 
   const collection = requireChannelsAccountStorage(input.context).collection(CHANNEL_STATE_COLLECTION);
@@ -5181,8 +5227,13 @@ async function readSettledIngressUnit(input: Readonly<{
   if (connection === undefined) return undefined;
   const shell = censusIngressShell(census.value.payload);
   const obligations: Array<Readonly<{ row: StateRow; value: IngressObligationRecord }>> = [];
-  const compactedAttentionIds = census.value.payload.compacted?.retainedAttentionObligationRowIds;
-  const obligationIdentities = compactedAttentionIds === undefined
+  const compactedObligationIds = census.value.payload.compacted?.retainedAttentionObligationRowIds;
+  const absentUncompactedMemberIsRetired = census.value.payload.conflict === null
+    && !census.value.attention
+    && (!requiresIngressCensusCheckpointCoverage(census.value)
+      || census.value.payload.checkpointCoveredAt !== null)
+    && isIngressCensusPastFrozenRetentionHorizon({ census: census.value, now });
+  const obligationIdentities = compactedObligationIds === undefined
     ? await Promise.all(ingressCensusObligationMembers(census.value.payload).map(async (member) => ({
       obligationId: await deriveIngressObligationRowIdForCensusMember({
         routingIdentityKey: connection.value.payload.routingIdentityKey,
@@ -5192,7 +5243,7 @@ async function readSettledIngressUnit(input: Readonly<{
       }),
       member,
     })))
-    : compactedAttentionIds.map((obligationId) => ({ obligationId, member: undefined }));
+    : compactedObligationIds.map((obligationId) => ({ obligationId, member: undefined }));
   for (const { obligationId, member } of obligationIdentities) {
     const obligation = asIngressObligation(readStateRow(await collection.get(
       obligationId,
@@ -5202,12 +5253,12 @@ async function readSettledIngressUnit(input: Readonly<{
     // row is a completed prior deletion of an already-eligible unit. A retained
     // row must still satisfy the monotonic terminal invariant itself: a member
     // that has not settled is unfinished work, never expired evidence.
-    if (obligation === undefined) continue;
+    if (obligation === undefined) {
+      if (compactedObligationIds === undefined && !absentUncompactedMemberIsRetired) return undefined;
+      continue;
+    }
     if (member === undefined) {
-      if (
-        obligation.value.payload.censusId !== census.value.id
-        || !obligation.value.attention
-      ) return undefined;
+      if (obligation.value.payload.censusId !== census.value.id) return undefined;
     } else if (!ingressObligationMatchesCensusMember({
       censusId: census.value.id,
       member,
@@ -5221,14 +5272,27 @@ async function readSettledIngressUnit(input: Readonly<{
   return { census, connection, obligations };
 }
 
+function isIngressRetentionCandidatePhysicallyForgettable(input: Readonly<{
+  candidate: IngressRetentionCandidate;
+  now: number;
+}>): boolean {
+  const { census, obligations } = input.candidate;
+  return census.value.payload.conflict === null
+    && !census.value.attention
+    && obligations.every((obligation) => !obligation.value.attention)
+    && (!requiresIngressCensusCheckpointCoverage(census.value)
+      || census.value.payload.checkpointCoveredAt !== null)
+    && isIngressCensusPastFrozenRetentionHorizon({ census: census.value, now: input.now });
+}
+
 async function deleteIngressRetentionCandidate(input: Readonly<{
   context: PluginInvocationContext;
   candidate: IngressRetentionCandidate;
 }>): Promise<boolean> {
   const collection = requireChannelsAccountStorage(input.context).collection(CHANNEL_STATE_COLLECTION);
   // Every retained member is redundant once the unit is past its frozen
-  // horizon, so the same atomic retirement that compaction uses removes them
-  // before the census that names them.
+  // horizon, so physical retirement removes them before the census that names
+  // them. An interrupted pass resumes from that still-live census anchor.
   if (!await retireIngressObligations({
     context: input.context,
     obligations: input.candidate.obligations,
@@ -5306,9 +5370,9 @@ function compactedIngressCensusValue(input: Readonly<{
       maximumObservationAgeMs,
       checkpointCoveredAt,
       conflict,
-      // The compact shell/digest plus exact retained-attention row identities
-      // are now the complete replay/retention witness, so no original fanout
-      // or Event payload survives here.
+      // The compact shell/digest plus exact retained member identities are now
+      // the complete replay/retention witness, so no original fanout or Event
+      // payload survives here.
       eventCandidate: null,
       matchedBindings: [],
     },
@@ -5318,8 +5382,8 @@ function compactedIngressCensusValue(input: Readonly<{
 /**
  * Terminal attention has no retry or external effect left to reconstruct. Its
  * public projection needs only the row identity, owner, terminal lifecycle and
- * non-admission fact, so discard the frozen target and mediation tuples while
- * preserving the original attention timestamp and member correspondence.
+ * disposition/attention facts, so discard the frozen target and mediation
+ * tuples while preserving member correspondence.
  */
 function compactedTerminalAttentionObligationValue(
   obligation: IngressObligationRecord,
@@ -5350,29 +5414,64 @@ async function compactSettledIngressCensus(input: Readonly<{
   const priorCompacted = census.value.payload.compacted;
   if (normalizedIngress !== null && normalizedIngress.kind !== 'fullText') return false;
   const collection = requireChannelsAccountStorage(input.context).collection(CHANNEL_STATE_COLLECTION);
-  // Ordinary terminal attention remains independently inspectable until the
-  // frozen horizon deletes the whole unit, and its compact census keeps the
-  // exact row identities for that deletion. A census conflict is already the
-  // durable minimal explanation; all terminal member rows are redundant and
-  // must be removed instead of becoming unreachable orphans.
-  const retainedAttentionObligations = census.value.payload.conflict === null
-    ? input.candidate.obligations.filter((obligation) => obligation.value.attention)
-    : [];
-  const retainedAttentionRowIds = new Set(
-    retainedAttentionObligations.map((obligation) => obligation.row.rowId),
+  const nextRetainedObligationRowIds = input.candidate.obligations.map(
+    (obligation) => obligation.row.rowId,
   );
-  const prunableObligations = input.candidate.obligations.filter(
-    (obligation) => !retainedAttentionRowIds.has(obligation.row.rowId),
-  );
-  const { maxBatchRows } = await collection.limits({ signal: input.context.signal });
-  const attentionCompactions = retainedAttentionObligations.filter((obligation) => (
-    obligation.value.payload.target !== null
-    || obligation.value.payload.approvalTurnId !== null
-    || obligation.value.payload.userActionAnswerTurnId !== null
-  ));
-  for (let offset = 0; offset < attentionCompactions.length; offset += maxBatchRows) {
+  const alreadyCompacted = normalizedIngress === null
+    && priorCompacted !== null
+    && pluginJsonValuesEqual(
+      priorCompacted.retainedAttentionObligationRowIds,
+      nextRetainedObligationRowIds,
+    );
+  let censusCompacted = false;
+  if (!alreadyCompacted) {
+    const witness = normalizedIngress === null
+      ? priorCompacted
+      : {
+        shell: ingressShell(normalizedIngress),
+        replayDigest: await deriveIngressCensusReplayDigest({
+          routingIdentityKey: connection.value.payload.routingIdentityKey,
+          text: normalizedIngress.observation.message.text,
+          eventCandidate: census.value.payload.eventCandidate,
+        }),
+      };
+    // A census carrying neither an admitted body nor a compact witness has no
+    // replay identity to preserve, so it is not this owner's to rewrite.
+    if (witness === null) return false;
     assertNotAborted(input.context.signal);
-    const result = await collection.batch(attentionCompactions.slice(
+    const result = await collection.batch([{
+      kind: 'put',
+      value: compactedIngressCensusValue({
+        census: census.value,
+        compacted: {
+          shell: witness.shell,
+          replayDigest: witness.replayDigest,
+          retainedAttentionObligationRowIds: nextRetainedObligationRowIds,
+        },
+        now: input.now,
+      }),
+      expectedRevision: census.row.revision,
+    }], { signal: input.context.signal });
+    if (result.status === 'conflict') return false;
+    censusCompacted = true;
+  }
+  // Every terminal row remains independently inspectable and exactly named
+  // until the separate physical-forgetting predicate is met. Terminal
+  // attention no longer needs its frozen effect inputs. The census commits its
+  // exact member anchor first, so a partial attention-compaction pass always
+  // resumes from the compacted identity list.
+  const { maxBatchRows } = await collection.limits({ signal: input.context.signal });
+  const obligationCompactions = input.candidate.obligations.filter((obligation) => (
+    obligation.value.attention
+    && (
+      obligation.value.payload.target !== null
+      || obligation.value.payload.approvalTurnId !== null
+      || obligation.value.payload.userActionAnswerTurnId !== null
+    )
+  ));
+  for (let offset = 0; offset < obligationCompactions.length; offset += maxBatchRows) {
+    assertNotAborted(input.context.signal);
+    const result = await collection.batch(obligationCompactions.slice(
       offset,
       offset + maxBatchRows,
     ).map((obligation) => ({
@@ -5380,58 +5479,9 @@ async function compactSettledIngressCensus(input: Readonly<{
       value: compactedTerminalAttentionObligationValue(obligation.value),
       expectedRevision: obligation.row.revision,
     })), { signal: input.context.signal });
-    if (result.status === 'conflict') return false;
+    if (result.status === 'conflict') return censusCompacted;
   }
-  const nextRetainedAttentionObligationRowIds = retainedAttentionObligations.map(
-    (obligation) => obligation.row.rowId,
-  );
-  // An already-compact unit with nothing left to retire and the same retained
-  // attention set is settled: rewriting it would only churn its revision.
-  if (
-    normalizedIngress === null
-    && priorCompacted !== null
-    && prunableObligations.length === 0
-    && pluginJsonValuesEqual(
-      priorCompacted.retainedAttentionObligationRowIds,
-      nextRetainedAttentionObligationRowIds,
-    )
-  ) return false;
-  // Retire every redundant member before the census stops naming it. Until the
-  // compact value commits, the census keeps the complete frozen fanout, so an
-  // interrupted pass re-derives the same member identities on its next wake and
-  // simply observes the already retired ones as absent.
-  if (!await retireIngressObligations({
-    context: input.context,
-    obligations: prunableObligations,
-  })) return false;
-  const witness = normalizedIngress === null
-    ? priorCompacted
-    : {
-      shell: ingressShell(normalizedIngress),
-      replayDigest: await deriveIngressCensusReplayDigest({
-        routingIdentityKey: connection.value.payload.routingIdentityKey,
-        text: normalizedIngress.observation.message.text,
-        eventCandidate: census.value.payload.eventCandidate,
-      }),
-    };
-  // A census carrying neither an admitted body nor a compact witness has no
-  // replay identity to preserve, so it is not this owner's to rewrite.
-  if (witness === null) return false;
-  assertNotAborted(input.context.signal);
-  const result = await collection.batch([{
-    kind: 'put',
-    value: compactedIngressCensusValue({
-      census: census.value,
-      compacted: {
-        shell: witness.shell,
-        replayDigest: witness.replayDigest,
-        retainedAttentionObligationRowIds: nextRetainedAttentionObligationRowIds,
-      },
-      now: input.now,
-    }),
-    expectedRevision: census.row.revision,
-  }], { signal: input.context.signal });
-  return result.status === 'updated';
+  return censusCompacted;
 }
 
 export type ConversationIngressRetentionRunResult = Readonly<{
@@ -5475,12 +5525,9 @@ export async function runConversationIngressRetentionForInvocation(input: Readon
     assertNotAborted(context.signal);
     const census = asIngressCensus(readStateRow(raw) ?? null);
     if (census === undefined) continue;
-    const candidate = await readSettledIngressUnit({ context, census });
+    const candidate = await readSettledIngressUnit({ context, census, now });
     if (candidate === undefined) continue;
-    if (
-      census.value.payload.conflict === null
-      && isIngressCensusPastFrozenRetentionHorizon({ census: census.value, now })
-    ) {
+    if (isIngressRetentionCandidatePhysicallyForgettable({ candidate, now })) {
       // Past the frozen horizon the whole unit is expendable, so its retained
       // members and the census itself retire together. Compaction is no longer
       // an intermediate step: deletion removes the same body it would have
@@ -6681,16 +6728,8 @@ export async function acceptConversationStreamBaselineForInvocation(
     },
   );
   assertNotAborted(context.signal);
-  if (!arePluginMachineExecutionOriginsEqual(
-    execution.executionOrigin,
-    connection.value.payload.transportOrigin,
-  )) {
-    throw pluginError(
-      'channels_stream_baseline_stale_authority',
-      'The provider poll settled from an origin that is no longer current for the Channel connection.',
-      true,
-    );
-  }
+  // Origin equality for this call is the host Actions owner's fence: the
+  // settled origin-bearing result already proves expected == before == after.
   let result: ReturnType<typeof ConversationPollResultV1Schema.parse>;
   try {
     result = readConversationPollResultForAdmission(execution.result);
@@ -7271,19 +7310,10 @@ export async function runConversationCheckpointedPollForInvocation(input: Readon
     return failure;
   }
   assertNotAborted(context.signal);
-  if (!arePluginMachineExecutionOriginsEqual(execution.executionOrigin, connection.value.payload.transportOrigin)) {
-    return await settleCurrentCheckpointedPollFailure({
-      context,
-      connection,
-      evidence: {
-        kind: 'action',
-        code: 'channels_checkpointed_poll_execution_origin_mismatch',
-        message: 'The provider poll settled from an origin that is no longer current for the Channel connection.',
-      },
-      retryableProviderResult: false,
-    });
-  }
-
+  // Origin equality for the call itself is the host Actions owner's fence
+  // (expected == before == after). The fence below is a distinct retained
+  // fact: the persisted row must still name the settled origin at the
+  // starting revision before the poll result may be applied.
   let current = await readEligibleCheckpointedPollConnection({ context, connectionId: input.connectionId });
   if (
     current === undefined

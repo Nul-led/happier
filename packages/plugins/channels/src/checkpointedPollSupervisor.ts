@@ -3,6 +3,7 @@ import type { JsonValue } from '@happier-dev/plugin-sdk';
 import { PLUGIN_COLLECTION_QUERY_MAX_ROWS_V1 } from '@happier-dev/plugin-sdk/collections';
 import {
   MAX_CONVERSATION_CONNECTIONS_PER_ACCOUNT,
+  MAX_CONVERSATION_RECEIVE_WAIT_MS,
   MIN_CONVERSATION_OBSERVATION_AGE_MS,
 } from '@happier-dev/channels-protocol/v1';
 
@@ -274,7 +275,7 @@ export function createIngressSupervisor(
             if (inFlightPollsByConnectionId.has(connectionId)) continue;
             const poll = (async () => {
               try {
-                await runPoll({ connectionId, waitMs: reconciliationIntervalMs }, workerContext);
+                await runPoll({ connectionId, waitMs: MAX_CONVERSATION_RECEIVE_WAIT_MS }, workerContext);
               } catch (error) {
                 if (supervisorController.signal.aborted) return;
                 logIngressSupervisorFailure(workerContext, 'poll', error);

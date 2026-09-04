@@ -287,7 +287,7 @@ async function verifyCurrentDiscordEndpointPermissions(input: Readonly<{
     return invalidConfiguration('Discord did not confirm the current parent channel for this target.');
   }
   if (permissionChannel.kind === 'notReady') return failureFromApi(permissionChannel);
-  if (permissionChannel.kind !== 'shared') {
+  if (permissionChannel.kind !== 'shared' && permissionChannel.kind !== 'permissionParent') {
     return invalidConfiguration('Discord did not confirm a permission-bearing shared channel for this target.');
   }
   const guildId = input.channel.guildId;

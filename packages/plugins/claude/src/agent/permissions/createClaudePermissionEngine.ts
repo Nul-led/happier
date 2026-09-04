@@ -1,4 +1,7 @@
-import type { SessionPermissionDecisionResult as SessionPermissionDecisionResultV1 } from '@happier-dev/plugin-sdk/sessions';
+import type {
+    SessionPermissionDecisionResult as SessionPermissionDecisionResultV1,
+    SessionPermissionsService,
+} from '@happier-dev/plugin-sdk/sessions';
 
 import type { PermissionResult } from '../sdk/types.js';
 import {
@@ -24,12 +27,7 @@ export type ClaudePermissionDecision = SessionPermissionDecisionResultV1;
 export type ClaudePermissionContext = Readonly<{
     sessions: Readonly<{
         current: Readonly<{
-            permissions: Readonly<{
-                requestDecision(
-                    request: Readonly<Record<string, unknown>>,
-                    options?: Readonly<{ signal?: AbortSignal }>,
-                ): Promise<ClaudePermissionDecision>;
-            }>;
+            permissions: Pick<SessionPermissionsService, 'requestDecision'>;
         }>;
     }>;
 }>;
@@ -89,7 +87,9 @@ export function createClaudePermissionEngine(ctx: ClaudePermissionContext): Clau
     return Object.freeze({
         async canCallTool(toolName, input, options = {}) {
             const normalizedInput = normalizeToolInput(input);
-            const publishedInput = normalizeAskUserQuestionInputForPublication(toolName, normalizedInput);
+            const publishedInput = normalizeToolInput(
+                normalizeAskUserQuestionInputForPublication(toolName, normalizedInput),
+            );
             const requestId = resolveRequestId(toolName, options.requestId, options.toolUseId);
             const result = await ctx.sessions.current.permissions.requestDecision({
                 provider: 'claude',

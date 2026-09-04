@@ -20,6 +20,7 @@ import {
     verifyGitPreparedReviewWorkspace,
     realizeGitWorkspaceCheckout,
     reconcileGitWorkspacePostMaterialization,
+    resolveGitWorkspaceTransferSource,
     resolveGitWorkspaceTransferSourceEntries,
     resolveGitWorkspaceTransferSourceMetadata,
 } from './workspaceIntegration.js';
@@ -62,6 +63,9 @@ export function createGitBackend(): ScmBackend {
             realizeWorkspaceCheckout: realizeGitWorkspaceCheckout,
             createWorkspaceCheckout: createGitWorkspaceCheckout,
             materializeWorkspaceCheckout: materializeGitWorkspaceSourceCheckout,
+            resolveWorkspaceTransfer: resolveGitWorkspaceTransferSource,
+            // Retained so a host that predates the combined handler still
+            // resolves a Git transfer; the combined handler wins when present.
             resolveWorkspaceTransferEntries: resolveGitWorkspaceTransferSourceEntries,
             resolveWorkspaceTransferMetadata: resolveGitWorkspaceTransferSourceMetadata,
             assertPortableWorkspaceEntries: assertPortableGitWorkspaceEntries,

@@ -45,6 +45,7 @@ export type TelegramChat = Readonly<{
 
 export type TelegramTextEntity = Readonly<{
   type: string;
+  offset: number;
   text: string;
   userId: string | null;
 }>;
@@ -284,6 +285,7 @@ function parseTextEntities(value: unknown, text: string | null): readonly Telegr
     }
     entities.push({
       type,
+      offset,
       text: text.slice(offset, offset + length),
       userId: userId === null ? null : String(userId),
     });
@@ -505,15 +507,14 @@ export function createTelegramBotApi(input: Readonly<{
       // Telegram serves one exclusive getUpdates consumer. A 409 here is the
       // restart-overlap conflict that Channels' bounded poll-failure budget
       // retries with its shared backoff curve; other Bot API 409s remain
-      // permanent conflicts. Only a retry_after parameter Telegram itself
-      // supplies may cross this boundary as `retryAfterMs` evidence — a local
-      // policy delay must never be presented as a provider hint.
+      // permanent conflicts. The bounded conflict delay is local Channels
+      // policy, not provider evidence, so no `retry_after` value crosses this
+      // boundary for a 409.
       if (!envelope.ok) {
         return envelope.errorCode === 409
           ? {
               kind: 'providerConflict',
               diagnostic: envelope.description,
-              ...(envelope.retryAfterMs === undefined ? {} : { retryAfterMs: envelope.retryAfterMs }),
             }
           : mapReadFailure(envelope);
       }

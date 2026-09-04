@@ -9,8 +9,10 @@ import type {
     ScmWorkspaceIntegrationWorkspaceCheckoutRealizationResult,
     ScmWorkspaceIntegrationWorkspaceCheckoutMaterializationInput,
     ScmWorkspaceIntegrationWorkspaceTransferInput,
+    ScmWorkspaceIntegrationWorkspaceTransferResult,
     ScmWorkspaceIntegrationWorkspaceLocationInspection,
 } from './types.js';
+import { createScmWorkspaceIntegrationWorkspaceTransferResult } from './workspace/workspaceTransfer.js';
 import {
     resolveScmWorkspaceIntegrationCheckoutMaterializationPreviousTargetPath,
     resolveScmWorkspaceIntegrationCheckoutMaterializationSourcePath,
@@ -263,6 +265,28 @@ export async function realizeGitWorkspaceCheckout(
             baseRef: resolveScmWorkspaceIntegrationWorkspaceCheckoutRealizationBaseRef(input.workspaceCheckoutRealization),
             branchMode: resolveScmWorkspaceIntegrationWorkspaceCheckoutRealizationBranchMode(input.workspaceCheckoutRealization),
         },
+    });
+}
+
+/**
+ * Resolves entries and metadata from one observation of the worktree. The
+ * portable path stages a Git bundle while listing entries, so the metadata that
+ * names that bundle must come from the same call: resolving them separately
+ * re-reads HEAD and the worktree root and can describe an artifact the returned
+ * entries never contained.
+ */
+export async function resolveGitWorkspaceTransferSource(
+    input: ScmWorkspaceIntegrationWorkspaceTransferInput,
+): Promise<ScmWorkspaceIntegrationWorkspaceTransferResult | null> {
+    if (input.workspaceTransfer.strategy === 'transfer_snapshot' && input.artifactDirectory) {
+        return await preparePortableGitWorkspaceTransfer({
+            ...input,
+            artifactDirectory: input.artifactDirectory,
+        });
+    }
+    return createScmWorkspaceIntegrationWorkspaceTransferResult({
+        entries: await resolveGitWorkspaceTransferEntries(input),
+        metadata: await resolveGitWorkspaceTransferMetadata(input),
     });
 }
 

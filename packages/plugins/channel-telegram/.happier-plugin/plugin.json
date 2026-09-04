@@ -807,7 +807,7 @@
           }
         ],
         "dangerLevel": "safe",
-        "description": "Resolves a Telegram chat or channel destination for delivery.",
+        "description": "Resolves a Telegram direct chat, group, supergroup, or topic for delivery; broadcast channels are unsupported.",
         "execution": {
           "target": "daemon"
         },
@@ -1204,7 +1204,7 @@
           "plugin",
           "ui"
         ],
-        "title": "Resolve Telegram Channel destination"
+        "title": "Resolve Telegram chat destination"
       },
       {
         "connectedAccountPurposeBindings": [

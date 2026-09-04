@@ -269,6 +269,15 @@ function parseKnownChannel(value: unknown, expectedChannelId: string): DiscordKn
       ...(permissionOverwrites === undefined ? {} : { permissionOverwrites }),
     };
   }
+  if (type === 15 || type === 16) {
+    if (guildId === undefined || permissionOverwrites === undefined) return null;
+    return {
+      channelId,
+      kind: 'permissionParent',
+      guildId,
+      permissionOverwrites,
+    };
+  }
   if (type === 10 || type === 11 || type === 12) {
     const parentChannelId = nonEmptyString(value.parent_id);
     if (!parentChannelId) return null;

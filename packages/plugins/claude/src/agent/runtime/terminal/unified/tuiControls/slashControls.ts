@@ -9,7 +9,7 @@ import { isSafeWindowForSlashControl, type ClaudeScreenState } from '../screenSt
 import type { SettingsGuard } from './settingsGuard.js';
 import type { ClaudeTuiControlTelemetrySink } from './telemetry.js';
 import type { ApplyRuntimeConfigReason } from './types.js';
-import { submitClaudeUnifiedDialogOption } from './dialogAnswer.js';
+import { answerClaudeUnifiedRegisteredDialog } from './dialogAnswer.js';
 import {
   getClaudeUnifiedRecognizedDialogRegistryEntry,
   resolveClaudeUnifiedRegisteredDialogOption,
@@ -123,7 +123,15 @@ async function submitOwnedDialogChoice(params: Readonly<{
 }>): Promise<boolean> {
   const option = resolveClaudeUnifiedRegisteredDialogOption(params.state, params.entry, params.choice);
   if (!option) return false;
-  return (await submitClaudeUnifiedDialogOption({ port: params.port, option })).status === 'submitted';
+  return (await answerClaudeUnifiedRegisteredDialog({
+    port: params.port,
+    dialogId: params.entry.dialogId,
+    option,
+    initialState: params.state,
+    verifyAfterSubmit: false,
+    settleMs: 0,
+    wait: async () => undefined,
+  })).status === 'answered';
 }
 
 type LeftoverDialogResolution = Readonly<{

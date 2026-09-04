@@ -723,6 +723,73 @@ describe('Discord Gateway supervisor', () => {
     expect(second.worker.stop).toHaveBeenCalledTimes(1);
   });
 
+  it('reports unproven continuity against the successor authority before a fingerprint replacement starts', async () => {
+    let current = snapshot({ authorityEpoch: 7, requiresFullSharedMessageContent: false });
+    const lifecycle: string[] = [];
+    let resolveFirst!: (result: DiscordGatewayWorkerResult) => void;
+    const firstWorker = {
+      result: new Promise<DiscordGatewayWorkerResult>((resolve) => { resolveFirst = resolve; }),
+      stop: vi.fn(() => resolveFirst({ kind: 'stopped', unprovenContinuity: true })),
+    };
+    let resolveSecond!: (result: DiscordGatewayWorkerResult) => void;
+    const secondWorker = {
+      result: new Promise<DiscordGatewayWorkerResult>((resolve) => { resolveSecond = resolve; }),
+      stop: vi.fn(() => resolveSecond({ kind: 'stopped' })),
+    };
+    const workerFactory = vi.fn(() => {
+      lifecycle.push('worker');
+      return workerFactory.mock.calls.length === 1 ? firstWorker : secondWorker;
+    });
+    const supervisor = createDiscordGatewaySupervisor({ workerFactory });
+    const { background } = supervisorBackgroundHarness({
+      supervisor,
+      connectedAccounts: {
+        materialize: vi.fn(async () => ({ kind: 'environment' as const, env: { DISCORD_BOT_TOKEN: 'bot-token' } })),
+      },
+      http: {
+        request: vi.fn(async (request: Readonly<{ url: string }>) => response(
+          request.url.endsWith('/oauth2/applications/@me')
+            ? { id: 'application-1', flags: 1 << 18, flags_new: String(1 << 18) }
+            : { id: 'bot-1', username: 'Happier Bot', bot: true },
+        )),
+        openWebSocket: vi.fn(),
+      },
+      executeCore: async (action, actionInput) => {
+        if (action.localId === CONVERSATION_CORE_PROVIDER_ACTION_IDS_V1.connectionsList) {
+          return { [current.connectionId]: current };
+        }
+        if (action.localId === CONVERSATION_CORE_PROVIDER_ACTION_IDS_V1.transportFactReport) {
+          lifecycle.push(`fact:${JSON.stringify(actionInput)}`);
+          return { kind: 'recorded' };
+        }
+        throw new Error(`Unexpected core Action ${action.localId}`);
+      },
+    });
+
+    await supervisor.reconcile(background);
+    await vi.waitFor(() => expect(workerFactory).toHaveBeenCalledTimes(1));
+
+    current = snapshot({ authorityEpoch: 8, requiresFullSharedMessageContent: true });
+    await supervisor.reconcile(background);
+    expect(firstWorker.stop).toHaveBeenCalledTimes(1);
+    expect(workerFactory).toHaveBeenCalledTimes(1);
+
+    await supervisor.reconcile(background);
+    await vi.waitFor(() => expect(workerFactory).toHaveBeenCalledTimes(2));
+
+    expect(lifecycle).toEqual([
+      'worker',
+      `fact:${JSON.stringify({
+        connectionId: 'connection-1',
+        authorityEpoch: 8,
+        fact: { kind: 'historyGap', reason: 'providerHistoryUnavailable' },
+      })}`,
+      'worker',
+    ]);
+    expect(workerFactory).toHaveBeenCalledTimes(2);
+    await supervisor.dispose();
+  });
+
   it('projects Gateway backoff and recovery through exact current socket sources', async () => {
     const current = snapshot();
     const reports: unknown[] = [];

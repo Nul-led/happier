@@ -11,34 +11,19 @@
  * - 1M-capable: Sonnet 5, Fable 5, Mythos 5, Opus 4.6 and later, Sonnet 4.6.
  * - Always-1M on the API (no opt-in needed): Opus 5, Sonnet 5, Fable 5, Mythos 5, Opus 4.8, Opus 4.7 — the explicit
  *   `[1m]` toggle is only meaningful where 1M is opt-in (Sonnet 4.6, Opus 4.6).
+ *
+ * The Provider catalog owns that model membership. These Claude-Agent helpers
+ * retain only CLI variant parsing and usage-window behavior.
  */
 
+import {
+    ANTHROPIC_1M_CONTEXT_WINDOW_TOKENS,
+    isAnthropic1mAlwaysOnModelId,
+    isAnthropic1mContextOptInModelId,
+    isAnthropic1mContextSupportedModelId,
+} from '../provider/catalog.js';
+
 export const CLAUDE_1M_SUFFIX = '[1m]';
-
-const CLAUDE_1M_CONTEXT_MODEL_IDS: ReadonlySet<string> = new Set([
-    'claude-opus-5',
-    'claude-sonnet-5',
-    'claude-fable-5',
-    'claude-mythos-5',
-    'claude-opus-4-8',
-    'claude-opus-4-7',
-    'claude-opus-4-6',
-    'claude-sonnet-4-6',
-]);
-
-const CLAUDE_1M_ALWAYS_ON_MODEL_IDS: ReadonlySet<string> = new Set([
-    'claude-opus-5',
-    'claude-sonnet-5',
-    'claude-fable-5',
-    'claude-mythos-5',
-    'claude-opus-4-8',
-    'claude-opus-4-7',
-]);
-
-function normalizeForLookup(raw: unknown): string {
-    const value = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
-    return value.replace(/\[[^\]]*\]$/u, '');
-}
 
 /** True when the id carries an explicit trailing `[1m]` variant suffix. */
 export function isClaude1mModelId(modelIdRaw: unknown): boolean {
@@ -59,21 +44,21 @@ export function toClaude1mModelId(modelIdRaw: string): string {
 
 /** True when the underlying model supports a 1M context window (`[1m]`-tolerant). */
 export function isClaude1mContextSupportedModelId(modelIdRaw: unknown): boolean {
-    return CLAUDE_1M_CONTEXT_MODEL_IDS.has(normalizeForLookup(modelIdRaw));
+    return isAnthropic1mContextSupportedModelId(modelIdRaw);
 }
 
 /** True when the model ALWAYS runs 1M on the API, so an opt-in toggle is meaningless. */
 export function isClaude1mAlwaysOnModelId(modelIdRaw: unknown): boolean {
-    return CLAUDE_1M_ALWAYS_ON_MODEL_IDS.has(normalizeForLookup(modelIdRaw));
+    return isAnthropic1mAlwaysOnModelId(modelIdRaw);
 }
 
 /** True when 1M is genuinely opt-in for the model (supported but not always-on). */
 export function isClaude1mContextOptInModelId(modelIdRaw: unknown): boolean {
-    return isClaude1mContextSupportedModelId(modelIdRaw) && !isClaude1mAlwaysOnModelId(modelIdRaw);
+    return isAnthropic1mContextOptInModelId(modelIdRaw);
 }
 
 export const CLAUDE_DEFAULT_CONTEXT_WINDOW_TOKENS = 200_000;
-export const CLAUDE_1M_CONTEXT_WINDOW_TOKENS = 1_000_000;
+export const CLAUDE_1M_CONTEXT_WINDOW_TOKENS = ANTHROPIC_1M_CONTEXT_WINDOW_TOKENS;
 
 /** Claude context-window sizes Happier knows about, ascending. */
 export const CLAUDE_KNOWN_CONTEXT_WINDOW_TOKENS: readonly number[] = Object.freeze([

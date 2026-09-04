@@ -58,6 +58,10 @@
       "types": "./dist/agent/runtime/reasoningEffort.d.ts",
       "default": "./dist/agent/runtime/reasoningEffort.js"
     },
+    "./provider/catalog": {
+      "types": "./dist/provider/catalog.d.ts",
+      "default": "./dist/provider/catalog.js"
+    },
     "./agent/permissions/requestSource": {
       "types": "./dist/agent/permissions/requestSource.d.ts",
       "default": "./dist/agent/permissions/requestSource.js"

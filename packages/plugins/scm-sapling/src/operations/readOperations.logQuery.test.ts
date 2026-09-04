@@ -171,7 +171,31 @@ describe('saplingLogList bounded commit query', () => {
         const calls = commandCalls();
         expect(calls).toHaveLength(2);
         expect(calls[1]?.args[0]).toBe('log');
-        expect(calls[1]?.args).toContain('cccccccc');
+        expect(calls[1]?.args).toContain('ancestors(.) & id(cccccccc)');
+    });
+
+    it('constrains full and abbreviated SHA matches to current-parent ancestry', async () => {
+        runScmCommandMock.mockImplementation(async (input: { args: string[] }) => {
+            if (input.args.includes('-k')) {
+                return { success: true, stdout: '', stderr: '', exitCode: 0 };
+            }
+            return { success: true, stdout: '', stderr: '', exitCode: 0 };
+        });
+
+        for (const query of ['c'.repeat(40), 'cccccccc']) {
+            const response = await saplingLogList({
+                context,
+                request: { cwd: '/repo', query, limit: 10 } satisfies ScmLogListRequest,
+            });
+            expect(response.success).toBe(true);
+        }
+
+        const revisionCalls = commandCalls().filter(({ args }) => args.includes('-r'));
+        expect(revisionCalls).toHaveLength(2);
+        expect(revisionCalls.map(({ args }) => args[args.indexOf('-r') + 1])).toEqual([
+            `ancestors(.) & id(${'c'.repeat(40)})`,
+            'ancestors(.) & id(cccccccc)',
+        ]);
     });
 
     it('returns typed empty success when the SHA arm cannot resolve an unknown revision', async () => {

@@ -594,6 +594,51 @@ describe('Discord Channels provider Actions', () => {
     ]);
   });
 
+  it.each([15, 16])('inherits thread permissions from a type %i parent without exposing the parent as a target', async (parentType) => {
+    const { context } = channelsCallerContext({
+      async request(request) {
+        if (request.url.endsWith('/oauth2/applications/@me')) return jsonResponse({ id: 'application-1' });
+        if (request.url.endsWith('/users/@me')) return jsonResponse({ id: 'discord-bot-1', username: 'Happier', bot: true });
+        if (request.url.endsWith('/channels/101')) {
+          return jsonResponse({ id: '101', type: 11, guild_id: 'guild-1', parent_id: '102' });
+        }
+        if (request.url.endsWith('/channels/102')) {
+          return jsonResponse({ id: '102', type: parentType, guild_id: 'guild-1', permission_overwrites: [] });
+        }
+        if (request.url.endsWith('/guilds/guild-1/members/discord-bot-1')) {
+          return jsonResponse({ user: { id: 'discord-bot-1' }, roles: [] });
+        }
+        if (request.url.endsWith('/guilds/guild-1/roles')) {
+          return jsonResponse([{ id: 'guild-1', permissions: '274877973504' }]);
+        }
+        throw new Error(`Unexpected Discord request: ${request.url}`);
+      },
+    });
+
+    await expect(resolveDiscordEndpoint({
+      v: 1,
+      connectionId: 'connection-1',
+      providerConnectionKey: 'discord:application:application-1',
+      providerConfigVersion: 1,
+      providerConfig: {
+        applicationId: 'application-1',
+        botUserId: 'discord-bot-1',
+        inviteUrl: 'https://discord.com/oauth2/authorize?client_id=application-1&scope=bot&permissions=274877975552',
+      },
+      credentialRef,
+      query: '101',
+      kinds: ['thread'],
+    }, context as Parameters<typeof resolveDiscordEndpoint>[1])).resolves.toEqual({
+      kind: 'resolved',
+      candidates: [{
+        kind: 'thread',
+        audience: 'shared',
+        id: 'discord:channel:101',
+        parentId: 'discord:channel:102',
+      }],
+    });
+  });
+
   it('applies current channel overwrites after current bot-role permissions before resolving a shared target', async () => {
     const { context } = channelsCallerContext({
       async request(request) {

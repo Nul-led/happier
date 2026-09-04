@@ -4,6 +4,10 @@ import {
   type AgentSessionRuntimeContext,
 } from '@happier-dev/plugin-sdk/agents/runtime';
 import type { TerminalHostPreference } from '@happier-dev/plugin-sdk/agents/runtime';
+import type {
+  SessionPermissionDecisionRequest,
+  SessionPermissionsService,
+} from '@happier-dev/plugin-sdk/sessions';
 import { join } from 'node:path';
 import {
   DEFAULT_CLAUDE_UNIFIED_TERMINAL_WORKSPACE_TRUST_POLICY,
@@ -63,12 +67,12 @@ function readUpdatedPermissions(
     : undefined;
 }
 
-function createNativePermissionDecisionAdapter(context: AgentSessionRuntimeContext) {
+export function createNativePermissionDecisionAdapter(context: AgentSessionRuntimeContext) {
   const engine = createClaudeNativePermissionEngine(context);
   return {
     async requestDecision(
-      request: Readonly<Record<string, unknown>>,
-      options?: Readonly<{ signal?: AbortSignal }>,
+      request: SessionPermissionDecisionRequest,
+      options?: Parameters<SessionPermissionsService['requestDecision']>[1],
     ): Promise<ClaudePermissionDecision> {
       const toolName = typeof request.toolName === 'string' ? request.toolName.trim() : '';
       if (!toolName) return { decision: 'denied', rationale: 'Claude supplied an invalid tool request.' };
@@ -82,7 +86,7 @@ function createNativePermissionDecisionAdapter(context: AgentSessionRuntimeConte
       const updatedPermissions = result.behavior === 'allow'
         ? readUpdatedPermissions(result.updatedPermissions)
         : undefined;
-      return result.behavior === 'allow'
+      const decision: ClaudePermissionDecision = result.behavior === 'allow'
         ? {
             decision: 'approved',
             updatedInput: result.updatedInput,
@@ -92,6 +96,8 @@ function createNativePermissionDecisionAdapter(context: AgentSessionRuntimeConte
             decision: 'denied',
             rationale: result.message,
           };
+      await options?.acknowledgeDecisionApplication?.(decision);
+      return decision;
     },
   };
 }

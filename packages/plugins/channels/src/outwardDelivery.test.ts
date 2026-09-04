@@ -1000,7 +1000,7 @@ describe('Channels control-response outward custody', () => {
     );
   });
 
-  it('settles a retained Session projection as unknown when the provider Action origin is not current', async () => {
+  it('trusts a host-settled provider delivery result without re-deriving execution-origin equality', async () => {
     const state = new MemoryAccountCollection();
     await state.put(providerConnectionRow(), { expectedRevision: 'absent' });
     await state.put({
@@ -1046,7 +1046,10 @@ describe('Channels control-response outward custody', () => {
       actions: { executeAdmittedTargetedOperationWithExecutionOrigin } as never,
     })).resolves.toMatchObject({
       kind: 'settled',
-      custody: { state: 'outcomeUnknown' },
+      custody: {
+        state: 'delivered',
+        providerMessageIds: ['provider-message-1'],
+      },
     });
   });
 

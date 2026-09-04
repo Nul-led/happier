@@ -38,12 +38,97 @@ const IDLE_COMPOSER = [
   '──────────────────────────────',
 ].join('\n');
 
+const HIDDEN_TRUST_DIALOG = [
+  'Quick safety check: is this a project you created or one you trust?',
+  '',
+  '❯ No, exit',
+  '  Yes, I trust this folder',
+  '',
+  'Enter to confirm · Esc to cancel',
+].join('\n');
+
+const HIDDEN_UNKNOWN_DIALOG = [
+  'Allow external CLAUDE.md file imports?',
+  '',
+  '❯ No, disable external imports',
+  '  Yes, allow external imports',
+  '',
+  'Enter to confirm · Esc to cancel',
+].join('\n');
+
 function confirmOption(dialogId: 'effort_change') {
   const entry = getClaudeUnifiedRecognizedDialogRegistryEntry(dialogId);
   return entry.options({ effortChangeDialogTarget: 'high' } as never)[0];
 }
 
 describe('answerClaudeUnifiedRegisteredDialog', () => {
+  it('navigates a hidden-shortcut dialog to the semantic target and confirms it', async () => {
+    const state = parseClaudeScreenState(HIDDEN_TRUST_DIALOG);
+    const dialog = resolveClaudeUnifiedVisibleDialog(state);
+    expect(dialog?.kind).toBe('recognized');
+    const option = dialog?.kind === 'recognized'
+      ? dialog.options.find((candidate) => candidate.choice === 'trust_once')
+      : null;
+    const focusedTrust = HIDDEN_TRUST_DIALOG.replace('❯ No, exit', '  No, exit').replace('  Yes, I trust this folder', '❯ Yes, I trust this folder');
+    const port = createFakeControlPort({ captures: [HIDDEN_TRUST_DIALOG, focusedTrust, IDLE_COMPOSER] });
+
+    const result = await answerClaudeUnifiedRegisteredDialog({
+      port,
+      dialogId: 'trust_folder',
+      option: option!,
+      settleMs: 0,
+      wait: async () => undefined,
+    });
+
+    expect(result).toEqual({ status: 'answered' });
+    expect(port.sentLiteral).toEqual([]);
+    expect(port.sentKeys).toEqual(['ArrowDown', 'Enter']);
+  });
+
+  it('never presses Enter when hidden-shortcut focus does not visibly move', async () => {
+    const state = parseClaudeScreenState(HIDDEN_TRUST_DIALOG);
+    const dialog = resolveClaudeUnifiedVisibleDialog(state);
+    const option = dialog?.kind === 'recognized'
+      ? dialog.options.find((candidate) => candidate.choice === 'trust_once')
+      : null;
+    const port = createFakeControlPort({ captures: [HIDDEN_TRUST_DIALOG, HIDDEN_TRUST_DIALOG] });
+
+    const result = await answerClaudeUnifiedRegisteredDialog({
+      port,
+      dialogId: 'trust_folder',
+      option: option!,
+      settleMs: 0,
+      wait: async () => undefined,
+    });
+
+    expect(result.status).toBe('failed');
+    expect(port.sentKeys).toEqual(['ArrowDown']);
+  });
+
+  it('uses verified navigation for a future hidden-shortcut dialog parsed generically', async () => {
+    const state = parseClaudeScreenState(HIDDEN_UNKNOWN_DIALOG);
+    const dialog = resolveClaudeUnifiedVisibleDialog(state);
+    expect(dialog?.kind).toBe('unrecognized');
+    const option = dialog?.kind === 'unrecognized' ? dialog.options[1] : null;
+    const focusedTarget = HIDDEN_UNKNOWN_DIALOG
+      .replace('❯ No, disable external imports', '  No, disable external imports')
+      .replace('  Yes, allow external imports', '❯ Yes, allow external imports');
+    const port = createFakeControlPort({ captures: [HIDDEN_UNKNOWN_DIALOG, focusedTarget, IDLE_COMPOSER] });
+
+    const result = await answerClaudeUnifiedRegisteredDialog({
+      port,
+      dialogId: 'unrecognized_confirmation',
+      expectedIdentity: getClaudeUnifiedDialogIdentity(dialog!),
+      option: option!,
+      settleMs: 0,
+      wait: async () => undefined,
+    });
+
+    expect(result).toEqual({ status: 'answered' });
+    expect(port.sentLiteral).toEqual([]);
+    expect(port.sentKeys).toEqual(['ArrowDown', 'Enter']);
+  });
+
   it('types zero bytes when a same-id dialog option mutates before the answer', async () => {
     const original = parseClaudeScreenState([
       'Session paused',

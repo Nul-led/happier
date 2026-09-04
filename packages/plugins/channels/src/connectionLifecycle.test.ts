@@ -1227,23 +1227,41 @@ describe('Conversation connection transfer predecessor custody', () => {
     });
   });
 
-  it('lets the next transfer or delete supersede an unrepaired endpoint retarget', () => {
+  it('blocks delete and durable-to-non-durable transfer until an owed endpoint retarget is repaired', () => {
     const owedRetarget = transferPending({
       predecessorTransportKind: 'durablePush',
       endpointRetarget: 'pending',
     });
 
-    // A retransfer names the new desired target, and the same idempotent repair
-    // converges the endpoint onto it. The older move is superseded, not lost.
+    expect(startDelete(owedRetarget)).toEqual({
+      kind: 'rejected',
+      code: 'endpointRetargetRepairRequired',
+    });
+    expect(startTransfer({
+      predecessorTransportKind: 'durablePush',
+      endpointRetarget: 'notRequired',
+      current: owedRetarget,
+    })).toEqual({
+      kind: 'rejected',
+      code: 'endpointRetargetRepairRequired',
+    });
+  });
+
+  it('lets only a newer durable transfer of the retained endpoint supersede an owed retarget', () => {
+    const owedRetarget = transferPending({
+      predecessorTransportKind: 'durablePush',
+      endpointRetarget: 'pending',
+    });
+
+    // `pending` on both successive durable predecessors means the connection
+    // retained its one endpoint identity. The new request is E+1, so the same
+    // generic convergence owner can safely move that endpoint directly to the
+    // newer desired target.
     expect(startTransfer({
       predecessorTransportKind: 'durablePush',
       endpointRetarget: 'pending',
       current: owedRetarget,
     })).toMatchObject({ kind: 'transferPendingOldStop' });
-
-    // Delete drops the Channels reference to that endpoint entirely, so the
-    // owed move has nothing left to serve.
-    expect(startDelete(owedRetarget)).toMatchObject({ kind: 'deletePending' });
 
     // A retired socket consumer still owes a real provider stop, which no
     // replacement desire can discharge.

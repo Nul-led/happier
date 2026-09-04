@@ -68,7 +68,7 @@ describe('Telegram Bot API adapter', () => {
     });
   });
 
-  it('keeps a retry_after Telegram supplies on a getUpdates 409 as provider evidence', async () => {
+  it('does not turn a retry_after attached to getUpdates 409 into provider delay evidence', async () => {
     const api = createTelegramBotApi({
       token: 'secret-token',
       http: {
@@ -86,7 +86,6 @@ describe('Telegram Bot API adapter', () => {
     await expect(api.getUpdates({ offset: '42', limit: 50, timeoutSeconds: 30 })).resolves.toEqual({
       kind: 'providerConflict',
       diagnostic: 'Conflict: terminated by other getUpdates request',
-      retryAfterMs: 3_000,
     });
   });
 

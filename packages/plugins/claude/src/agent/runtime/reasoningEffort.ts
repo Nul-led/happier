@@ -1,83 +1,24 @@
-import type { AgentModelOption } from '@happier-dev/plugin-sdk/agents';
 import type { AgentSessionProviderBinding } from '@happier-dev/plugin-sdk/agents/runtime';
 
 import { CLAUDE_FLAGSHIP_MODEL_ID } from '../flagshipModel.js';
+import {
+    ANTHROPIC_EFFORT_LEVELS,
+    resolveAnthropicDefaultEffortLevelForModelId,
+    resolveAnthropicEffortLevelsForModelId,
+    type AnthropicEffortLevel,
+} from '../../provider/catalog.js';
 
-export const CLAUDE_EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
-export type ClaudeEffortLevel = (typeof CLAUDE_EFFORT_LEVELS)[number];
+export const CLAUDE_EFFORT_LEVELS = ANTHROPIC_EFFORT_LEVELS;
+export type ClaudeEffortLevel = AnthropicEffortLevel;
 
 export function normalizeClaudeEffortLevel(raw: unknown): ClaudeEffortLevel | null {
     const value = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
     return CLAUDE_EFFORT_LEVELS.find((level) => level === value) ?? null;
 }
 
-export function formatClaudeEffortLevelLabel(level: ClaudeEffortLevel): string {
-    switch (level) {
-        case 'low': return 'Low';
-        case 'medium': return 'Medium';
-        case 'high': return 'High';
-        case 'xhigh': return 'XHigh';
-        case 'max': return 'Max';
-    }
-}
-
-/** Claude-specific model-option policy remains private to the Claude plugin. */
-export function buildClaudeModelOptions(input: Readonly<{
-    supportedLevels: readonly ClaudeEffortLevel[];
-    defaultEffort?: ClaudeEffortLevel | null;
-}>): readonly AgentModelOption[] {
-    const supported = new Set(input.supportedLevels);
-    const levels = CLAUDE_EFFORT_LEVELS.filter((level) => supported.has(level));
-    if (levels.length === 0) return [];
-
-    const currentValue = input.defaultEffort && supported.has(input.defaultEffort)
-        ? input.defaultEffort
-        : supported.has('high')
-          ? 'high'
-          : levels[levels.length - 1]!;
-    const options: AgentModelOption[] = [{
-        id: 'reasoning_effort',
-        name: 'Thinking',
-        type: 'select',
-        currentValue,
-        options: levels.map((level) => ({
-            value: level,
-            name: formatClaudeEffortLevelLabel(level),
-        })),
-    }];
-
-    if (supported.has('xhigh')) {
-        options.push({
-            id: 'ultracode',
-            name: 'Ultracode',
-            description: 'Maximum coding effort. Forces XHigh Thinking effort while enabled.',
-            type: 'boolean',
-            currentValue: 'false',
-            overridesWhenOn: {
-                optionIds: ['reasoning_effort'],
-                forcedValue: 'xhigh',
-            },
-        });
-    }
-
-    return options;
-}
-
 type ClaudeProviderModel = AgentSessionProviderBinding['model'];
 
 const CLAUDE_EFFORT_LEVEL_PRIORITY: readonly ClaudeEffortLevel[] = CLAUDE_EFFORT_LEVELS;
-
-const CLAUDE_EFFORT_LEVELS_BY_MODEL_ID: ReadonlyMap<string, readonly ClaudeEffortLevel[]> = new Map([
-    ['claude-opus-5', ['low', 'medium', 'high', 'xhigh', 'max']],
-    ['claude-sonnet-5', ['low', 'medium', 'high', 'xhigh', 'max']],
-    ['claude-fable-5', ['low', 'medium', 'high', 'xhigh', 'max']],
-    ['claude-mythos-5', ['low', 'medium', 'high', 'xhigh', 'max']],
-    ['claude-opus-4-8', ['low', 'medium', 'high', 'xhigh', 'max']],
-    ['claude-opus-4-7', ['low', 'medium', 'high', 'xhigh', 'max']],
-    ['claude-opus-4-6', ['low', 'medium', 'high', 'max']],
-    ['claude-sonnet-4-6', ['low', 'medium', 'high', 'max']],
-    ['claude-opus-4-5', ['low', 'medium', 'high']],
-]);
 
 function normalizeModelId(raw: unknown): string {
     // Lookup-only normalization: a trailing bracket variant suffix (e.g. the `[1m]`
@@ -115,8 +56,7 @@ export function isClaudeEffortSupportedForProviderModel(
 }
 
 export function resolveClaudeEffortLevelsForModelId(modelIdRaw: unknown): readonly ClaudeEffortLevel[] {
-    const modelId = normalizeModelId(modelIdRaw);
-    return modelId.length > 0 ? (CLAUDE_EFFORT_LEVELS_BY_MODEL_ID.get(modelId) ?? []) : [];
+    return resolveAnthropicEffortLevelsForModelId(modelIdRaw);
 }
 
 function resolveClaudeEffortLevelsForKnownAliasOrModel(modelIdRaw: unknown): readonly ClaudeEffortLevel[] {
@@ -154,10 +94,7 @@ function resolveClaudeEffortLevelsForKnownAliasOrModel(modelIdRaw: unknown): rea
 }
 
 export function resolveClaudeDefaultEffortLevelForModelId(modelIdRaw: unknown): ClaudeEffortLevel | null {
-    const modelId = normalizeModelId(modelIdRaw);
-    const levels = resolveClaudeEffortLevelsForModelId(modelId);
-    if (levels.length === 0) return null;
-    return modelId === 'claude-opus-4-7' ? 'xhigh' : 'high';
+    return resolveAnthropicDefaultEffortLevelForModelId(modelIdRaw);
 }
 
 export function resolveClaudeDefaultEffortForKnownAliasOrModel(modelIdRaw: unknown): ClaudeEffortLevel | null {

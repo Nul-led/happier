@@ -23,7 +23,18 @@ import {
   reduceTriageSurfaceV1,
   type TriageSurfaceStateV1,
 } from './state/surface.js';
-import { projectTriageCurrentUiContextV1 } from './currentContext.js';
+import { projectTriageCurrentUiContextV1 as projectTriageCurrentUiContextOwnerV1 } from './currentContext.js';
+
+type ProjectInput = Parameters<typeof projectTriageCurrentUiContextOwnerV1>[0];
+
+function projectTriageCurrentUiContextV1(
+  input: Omit<ProjectInput, 'formatOpenEntryTitle'> & Partial<Pick<ProjectInput, 'formatOpenEntryTitle'>>,
+): PluginUiContextEnrichmentV1 {
+  return projectTriageCurrentUiContextOwnerV1({
+    ...input,
+    formatOpenEntryTitle: input.formatOpenEntryTitle ?? ((title) => `Open ${title}`),
+  });
+}
 
 const SOURCE = { pluginId: 'happier.example.source', localId: 'example-forge' } as const;
 const INSTANCE = '11111111-1111-4111-8111-111111111111' as TriageSourceInstanceIdV1;
@@ -270,6 +281,17 @@ describe('Triage current UI context projection', () => {
     const command = commands[0]?.command;
     if (command?.kind !== 'openSurface') throw new Error('expected command');
     expect(parseTriageRouteSubPathV1(command.subPath).selection).toEqual(entryRef('B'));
+  });
+
+  it('uses the shell translation formatter for command titles', () => {
+    const context = projectTriageCurrentUiContextV1({
+      surface: selected('A'),
+      visibleRows: [row({ entryId: 'A', title: 'Issue A' }), row({ entryId: 'B', title: 'Issue B' })],
+      formatOpenEntryTitle: (title) => `Eintrag öffnen: ${title}`,
+    });
+
+    expect(openSurfaceCommands(context).map((command) => command.title))
+      .toEqual(['Eintrag öffnen: Issue B']);
   });
 
   it('replaces issue A with B and offers only the now-neighboring A command', () => {

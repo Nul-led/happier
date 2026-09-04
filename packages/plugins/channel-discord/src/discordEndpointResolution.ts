@@ -6,7 +6,7 @@ import type {
 import { createDiscordChannelEndpointId } from './discordPluginConstants.js';
 import type { DiscordPermissionOverwriteEvidence } from './discordSetup.js';
 
-export type DiscordKnownChannel = Readonly<{
+type DiscordEndpointChannel = Readonly<{
   channelId: string;
   kind: 'direct' | 'shared' | 'thread';
   label?: string;
@@ -14,6 +14,14 @@ export type DiscordKnownChannel = Readonly<{
   parentLabel?: string;
   guildId?: string;
   permissionOverwrites?: readonly DiscordPermissionOverwriteEvidence[];
+}>;
+
+export type DiscordKnownChannel = DiscordEndpointChannel | Readonly<{
+  channelId: string;
+  /** Forum/media parents carry thread permission evidence but are not targets. */
+  kind: 'permissionParent';
+  guildId: string;
+  permissionOverwrites: readonly DiscordPermissionOverwriteEvidence[];
 }>;
 
 function requireNonEmpty(value: string, name: string): string {
@@ -27,7 +35,7 @@ function matchesQuery(query: string, values: readonly (string | undefined)[]): b
   return values.some((value) => value !== undefined && value.toLocaleLowerCase().includes(normalizedQuery));
 }
 
-function endpointFromKnownChannel(channel: DiscordKnownChannel): ConversationResolvedEndpointV1 {
+function endpointFromKnownChannel(channel: DiscordEndpointChannel): ConversationResolvedEndpointV1 {
   const channelId = requireNonEmpty(channel.channelId, 'Discord channel ID');
   const label = channel.label?.trim();
   if (channel.kind === 'direct') {
@@ -74,6 +82,7 @@ export function resolveDiscordEndpointCandidates(input: Readonly<{
   const resolved: ConversationResolvedEndpointV1[] = [];
 
   for (const channel of input.knownChannels) {
+    if (channel.kind === 'permissionParent') continue;
     if (allowedKinds && !allowedKinds.has(channel.kind)) continue;
     const candidate = endpointFromKnownChannel(channel);
     if (!matchesQuery(query, [channel.channelId, channel.label, channel.parentChannelId, channel.parentLabel])) continue;

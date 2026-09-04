@@ -2,6 +2,7 @@ import type { BackgroundServiceContext } from '@happier-dev/plugin-sdk/backgroun
 import { PluginError, type PluginServices } from '@happier-dev/plugin-sdk';
 import {
   MAX_CONVERSATION_CONNECTIONS_PER_ACCOUNT,
+  MAX_CONVERSATION_RECEIVE_WAIT_MS,
   MIN_CONVERSATION_OBSERVATION_AGE_MS,
 } from '@happier-dev/channels-protocol/v1';
 import { describe, expect, it, vi } from 'vitest';
@@ -82,7 +83,7 @@ describe('Checkpointed poll supervisor', () => {
     const runPoll = vi.fn(async (input: Readonly<{ connectionId: string; waitMs: number }>) => {
       calls.push('poll');
       callTimes.push(now);
-      expect(input).toEqual({ connectionId: 'connection-1', waitMs: 1_000 });
+      expect(input).toEqual({ connectionId: 'connection-1', waitMs: MAX_CONVERSATION_RECEIVE_WAIT_MS });
       if (callTimes.length === 1) return { kind: 'retry' as const, retryAfterMs: 2_000 };
       generation.abort(new Error('test complete'));
       return { kind: 'ineligible' as const };
@@ -471,6 +472,27 @@ describe('Checkpointed poll supervisor', () => {
     releaseSlowPoll?.();
     generation.abort(new Error('test complete'));
     await run;
+    await supervisor.dispose();
+  });
+
+  it('decouples the provider long-poll wait from the one-second reconciliation cadence', async () => {
+    const generation = new AbortController();
+    let observedWaitMs: number | undefined;
+    const supervisor = createIngressSupervisor({
+      runDueWork: async () => 0,
+      runRetention: async () => ({}),
+      runPoll: async (input, context) => {
+        observedWaitMs = input.waitMs;
+        generation.abort(new Error('wait observed'));
+        expect(context.signal.aborted).toBe(true);
+        return { kind: 'ineligible' as const };
+      },
+      reconciliationIntervalMs: 1_000,
+    });
+
+    await supervisor.run(backgroundContext(generation.signal));
+
+    expect(observedWaitMs).toBe(MAX_CONVERSATION_RECEIVE_WAIT_MS);
     await supervisor.dispose();
   });
 

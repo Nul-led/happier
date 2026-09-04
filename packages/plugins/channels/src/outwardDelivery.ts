@@ -30,7 +30,6 @@ import {
   type AutomationResultDeliverySourceV1,
 } from '@happier-dev/plugin-sdk/automations';
 import {
-  arePluginMachineExecutionOriginsEqual,
   isPluginError,
   PluginError,
   type TargetedContributionsService,
@@ -3513,10 +3512,9 @@ function createConversationOutwardDeliveryProviderActionBoundary(input: Readonly
         }
         throw error;
       }
-      if (!arePluginMachineExecutionOriginsEqual(
-        execution.executionOrigin,
-        current.expectedExecutionOrigin,
-      )) return { kind: 'outcomeUnknown' };
+      // Origin equality is the host Actions owner's fence: a settled
+      // origin-bearing call already proves expected == before == after, so
+      // the returned origin is the settled transport authority.
       const result = ConversationDeliveryResultV1Schema.safeParse(execution.result);
       return result.success ? result.data : { kind: 'outcomeUnknown' };
     },

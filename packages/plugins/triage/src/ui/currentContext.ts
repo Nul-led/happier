@@ -69,6 +69,7 @@ function withCommands(
 export function projectTriageCurrentUiContextV1(input: Readonly<{
   surface: TriageSurfaceStateV1;
   visibleRows: readonly TriageListRowV1[];
+  formatOpenEntryTitle: (title: string) => string;
 }>): PluginUiContextEnrichmentV1 {
   const target = resolveTriageActionTargetV1(input.surface);
   const selectedKey = target.kind === 'entry'
@@ -134,7 +135,7 @@ export function projectTriageCurrentUiContextV1(input: Readonly<{
       continue;
     }
     commands.push(Object.freeze({
-      title: `Open ${display.title}`,
+      title: input.formatOpenEntryTitle(display.title),
       command: Object.freeze({
         kind: 'openSurface',
         destination: TRIAGE_ENTRY_DETAIL_DESTINATION_V1,
